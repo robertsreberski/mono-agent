@@ -126,8 +126,8 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "mcpCallMaxTotalTimeoutMs": 2700000    // hard per-call wall clock (45 min); progress cannot extend it
   },
 
-  // Human-in-the-loop bridge: blocking ask_user + tool progress → channel status
-  // messages. Optional — auto-starts when ask_user is in tools.allowedTools.
+  // Human-in-the-loop bridge: blocking AskUser + tool progress → channel status
+  // messages. Optional — auto-starts when AskUser is in tools.allowedTools.
   "interaction": {
     "bridge": { "host": "127.0.0.1", "port": 0 }, // 0 = ephemeral; tools get the URL via env
     "askUser": { "timeoutMs": 600000 },           // max wait per question (10 min)

@@ -72,4 +72,4 @@ Channels and programmatic callers can supply per-request tool and sandbox polici
 - **[MCP Servers](/tools/mcp/)** — authoring `mcp.json`, stdio/sse/http transports, how servers are inlined for SDK runtimes versus path-forwarded for CLI runtimes.
 - **[Sandbox](/tools/sandbox/)** — native srt confinement, filesystem scopes, network modes, and the fail-closed vs unsafe-host-process fallback.
 
-For app-owned send tools (`slack_send_message`, `telegram_send_message`) that route through enabled channel adapters, see [Delivery & Send Tools](/channels/delivery-and-send-tools/).
+For app-owned send tools (`SlackSendMessage`, `TelegramSendMessage`) that route through enabled channel adapters, see [Delivery & Send Tools](/channels/delivery-and-send-tools/).

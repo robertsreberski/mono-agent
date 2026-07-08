@@ -23,7 +23,7 @@ A Telegram bot that answers via long-polling, captures every turn into BuJo memo
 - [`memory.bujo`](/memory/rituals/) — BuJo tier: capture + scheduled consolidation (config)
 - [`memory.per-turn-capture`](/memory/capture-and-recall/) — `writeMode: "capture"` records each turn asynchronously (config)
 - [`memory.bujo-consolidation`](/memory/rituals/) — in-app lightweight consolidation (config / auto)
-- [`memory.recall-tool`](/memory/capture-and-recall/) — `memory_recall` tool auto-provisioned for journal/bujo with embeddings (auto)
+- [`memory.recall-tool`](/memory/capture-and-recall/) — `MemoryRecall` tool auto-provisioned for journal/bujo with embeddings (auto)
 - [`memory.embeddings-config`](/memory/embeddings/) — embeddings provider for semantic recall (config)
 
 ## Configuration
@@ -82,7 +82,7 @@ Use the exact `nomic-embed-text:v1.5` tag; the bare `nomic-embed-text` tag resol
 ## Smoke test
 
 :::tip
-From the allowed Telegram chat, send a message; verify the typing indicator then a final answer. Then ask about a previously stated fact and confirm `memory_recall` appears in the run JSONL artifact and the answer uses it.
+From the allowed Telegram chat, send a message; verify the typing indicator then a final answer. Then ask about a previously stated fact and confirm `MemoryRecall` appears in the run JSONL artifact and the answer uses it.
 :::
 
 ## Related

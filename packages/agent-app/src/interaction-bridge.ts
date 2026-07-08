@@ -8,7 +8,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
  * behind a channel conversation while a tool call is in flight.
  *
  * Two capabilities share it:
- * - Blocking `ask_user`: POST /v1/asks registers a pending ask (question posted
+ * - Blocking `AskUser`: POST /v1/asks registers a pending ask (question posted
  *   through the channel's sink); the tool long-polls GET /v1/asks/:id until the
  *   channel intercepts the user's next message and resolves it.
  * - Tool progress: POST /v1/progress fans out to the channel sink's postStatus
@@ -16,7 +16,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
  *
  * The registry is in-memory by design: on an app restart pending asks vanish and
  * the user's later reply simply arrives as a normal next turn (multi-turn
- * degradation), which the ask_user tool description tells the model to expect.
+ * degradation), which the AskUser tool description tells the model to expect.
  */
 
 export interface ChannelInteractionSink {
@@ -50,7 +50,7 @@ export interface InteractionBridgeHandle {
   tryResolveAsk(conversationId: string, answer: string): boolean;
   /** Fail every pending ask on the conversation (user cancelled the run). */
   cancelAsks(conversationId: string): void;
-  /** Environment consumed by tool child processes (ask_user, project MCP servers). */
+  /** Environment consumed by tool child processes (AskUser, project MCP servers). */
   env(): Record<string, string>;
   stop(): Promise<void>;
 }

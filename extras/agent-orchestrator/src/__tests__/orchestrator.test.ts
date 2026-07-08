@@ -36,7 +36,7 @@ describe("createCollaboratorToolRuntimeExtension", () => {
     });
     cleanupTasks.push(extension.cleanup);
 
-    expect(extension.runtimeOptions.allowedTools).toEqual(["ask_collaborator"]);
+    expect(extension.runtimeOptions.allowedTools).toEqual(["AskCollaborator"]);
     expect(extension.runtimeOptions.mcpServers).toEqual({
       collaborators: { type: "http", url: extension.url },
     });
@@ -44,10 +44,10 @@ describe("createCollaboratorToolRuntimeExtension", () => {
     const client = await connectClient(extension.url);
     try {
       const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name)).toEqual(["ask_collaborator"]);
+      expect(tools.tools.map((tool) => tool.name)).toEqual(["AskCollaborator"]);
 
       const first = await client.callTool({
-        name: "ask_collaborator",
+        name: "AskCollaborator",
         arguments: {
           id: "researcher",
           message: "Check market context.",
@@ -55,7 +55,7 @@ describe("createCollaboratorToolRuntimeExtension", () => {
         },
       });
       const second = await client.callTool({
-        name: "ask_collaborator",
+        name: "AskCollaborator",
         arguments: {
           id: "worker",
           message: "Inspect local notes.",
@@ -94,11 +94,11 @@ describe("createCollaboratorToolRuntimeExtension", () => {
     const client = await connectClient(extension.url);
     try {
       const unknown = await client.callTool({
-        name: "ask_collaborator",
+        name: "AskCollaborator",
         arguments: { id: "worker", message: "Help." },
       });
       const exhausted = await client.callTool({
-        name: "ask_collaborator",
+        name: "AskCollaborator",
         arguments: { id: "researcher", message: "Try after the cap." },
       });
 

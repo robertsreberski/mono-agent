@@ -23,13 +23,38 @@ export const BUILTIN_TOOL_NAMES = [
 
 /** Adapter send tools — require BOTH an `allowedTools` entry AND an enabled channel. */
 export const ADAPTER_SEND_TOOL_NAMES = [
-  "slack_send_message",
-  "telegram_send_message",
-  "telegram_ask",
-  "telegram_send_document",
-  "telegram_send_photo",
-  "ask_user",
+  "SlackSendMessage",
+  "TelegramSendMessage",
+  "TelegramAskButtons",
+  "TelegramSendFile",
+  "AskUser",
 ] as const;
+
+/**
+ * Old snake_case tool names accepted as INPUT aliases so existing fleet/user
+ * configs keep working after the PascalCase rename. Each maps to its canonical
+ * new name; `telegram_send_document`/`telegram_send_photo` both collapse to the
+ * single `TelegramSendFile` tool. The allow/deny matcher and doctor normalize
+ * through this map — the new PascalCase names are the only ones ever registered,
+ * emitted, or recommended.
+ */
+export const LEGACY_TOOL_ALIASES: Record<string, string> = {
+  slack_send_message: "SlackSendMessage",
+  telegram_send_message: "TelegramSendMessage",
+  telegram_ask: "TelegramAskButtons",
+  telegram_send_document: "TelegramSendFile",
+  telegram_send_photo: "TelegramSendFile",
+  ask_user: "AskUser",
+  memory_recall: "MemoryRecall",
+  read_skill: "ReadSkill",
+  ask_collaborator: "AskCollaborator",
+  notify_conversation: "NotifyConversation",
+};
+
+/** The canonical new name for a tool, resolving a legacy snake_case alias if given. */
+export function canonicalToolName(name: string): string {
+  return LEGACY_TOOL_ALIASES[name] ?? name;
+}
 
 /** Safe read-only default pre-checked for every new agent. */
 export const DEFAULT_SAFE_TOOLS = ["Read", "Glob", "Grep"] as const;
@@ -40,9 +65,13 @@ export type AdapterSendToolName = (typeof ADAPTER_SEND_TOOL_NAMES)[number];
 /** All offline-knowable tool names (built-in ∪ adapter send). */
 const KNOWN_TOOL_NAMES: readonly string[] = [...BUILTIN_TOOL_NAMES, ...ADAPTER_SEND_TOOL_NAMES];
 
-/** True when `name` is a built-in or an adapter send tool (exact, case-sensitive match). */
+/**
+ * True when `name` is a built-in or an adapter send tool (exact, case-sensitive
+ * match). Legacy snake_case aliases are also accepted so an old config keeps
+ * validating cleanly through the rename.
+ */
 export function isKnownToolName(name: string): boolean {
-  return name === ALLOW_ALL_TOOLS || KNOWN_TOOL_NAMES.includes(name);
+  return name === ALLOW_ALL_TOOLS || KNOWN_TOOL_NAMES.includes(name) || name in LEGACY_TOOL_ALIASES;
 }
 
 /** True when `list` contains the global allow-all sentinel (`"*"`). */

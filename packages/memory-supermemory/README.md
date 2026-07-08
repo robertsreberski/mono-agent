@@ -37,7 +37,7 @@ const block = await store.load("conv-1", "preferences");
   markdown block capped at `maxBytes`. Degrades to `undefined` on any error.
 - `appendHostSummary` / `scheduleCapture` → `POST /v3/documents` (one-liner / full turn,
   async server-side extraction). Writes never throw.
-- `recall(query)` → hits shaped for the in-app `memory_recall` MCP tool.
+- `recall(query)` → hits shaped for the in-app `MemoryRecall` MCP tool.
 
 ## Public API
 
@@ -58,7 +58,7 @@ injectable seam (`SupermemoryFetch`) so the store is fully unit-testable without
 ## What This Package Does Not Own
 
 It does not own backend selection (that is `config.memory.backend`) or the
-`memory_recall` tool wiring; both are resolved in `@mono-agent/agent-app`. It also does not own
+`MemoryRecall` tool wiring; both are resolved in `@mono-agent/agent-app`. It also does not own
 the Supermemory service itself (extraction, consolidation, and storage all happen
 server-side). It does not run BuJo scheduled consolidation and ignores `mode`/`embeddings`/`llm`.
 

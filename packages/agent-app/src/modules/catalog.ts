@@ -86,7 +86,7 @@ const channelTelegram: CapabilityModule = {
     };
   },
   envExampleLines: () => ["# Telegram bot token from @BotFather", "MONO_AGENT_TELEGRAM_TOKEN="],
-  recommendedTools: ["telegram_send_message", "telegram_ask"],
+  recommendedTools: ["TelegramSendMessage", "TelegramAskButtons"],
   validateExpectations: [
     { sectionId: "channel:telegram", mustBe: "ok", note: "Set MONO_AGENT_TELEGRAM_TOKEN in .env." },
   ],
@@ -133,7 +133,7 @@ const channelSlack: CapabilityModule = {
     "MONO_AGENT_SLACK_BOT_TOKEN=",
     "MONO_AGENT_SLACK_APP_TOKEN=",
   ],
-  recommendedTools: ["slack_send_message"],
+  recommendedTools: ["SlackSendMessage"],
   validateExpectations: [
     {
       sectionId: "channel:slack",

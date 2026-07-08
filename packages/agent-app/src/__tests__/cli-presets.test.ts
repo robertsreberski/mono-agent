@@ -65,8 +65,8 @@ describe("answersFromCli", () => {
     const answers = answersFromCli({ presetId: "telegram-assistant", withChannels: ["slack"] });
     expect(answers.channels).toContain("channel:telegram");
     expect(answers.channels).toContain("channel:slack");
-    expect(answers.allowedTools).toContain("telegram_send_message");
-    expect(answers.allowedTools).toContain("slack_send_message");
+    expect(answers.allowedTools).toContain("TelegramSendMessage");
+    expect(answers.allowedTools).toContain("SlackSendMessage");
     // The read-only safe defaults are always present.
     expect(answers.allowedTools).toContain("Read");
   });

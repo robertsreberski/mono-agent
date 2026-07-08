@@ -44,8 +44,8 @@ The wizard composes an agent from these modules. Selecting one auto-checks its r
 | Module | What it adds | Recommends tools |
 | --- | --- | --- |
 | `channel:webhook` | HTTP loopback endpoint — the zero-credential smoke channel. | — |
-| `channel:telegram` | Chat with your agent via a Telegram bot (chat-id allowlist). | `telegram_send_message`, `telegram_ask` |
-| `channel:slack` | Socket-Mode Slack bot scoped to a channel allowlist. | `slack_send_message` |
+| `channel:telegram` | Chat with your agent via a Telegram bot (chat-id allowlist). | `TelegramSendMessage`, `TelegramAskButtons` |
+| `channel:slack` | Socket-Mode Slack bot scoped to a channel allowlist. | `SlackSendMessage` |
 | `channel:openai-api` | Expose the runtime as an OpenAI-compatible loopback endpoint. | — |
 | `channel:cron` | Run the agent on a schedule; scaffolds `cron/digest.md`. | — |
 | `channel:a2a` | Expose the agent over A2A (Agent Card + provider endpoint). | — |
@@ -58,7 +58,7 @@ The wizard composes an agent from these modules. Selecting one auto-checks its r
 
 ### The tools step and the no-tools guardrail
 
-The tools multiselect is the step that keeps you out of the "no-tools trap". It is pre-checked with a safe read-only default (`Read`, `Glob`, `Grep`) plus every selected module's recommended tools — for example a Telegram channel pre-checks `telegram_send_message`/`telegram_ask`, and the sandbox pre-checks the code tools. Two kinds of tools are **not** gated by this list and are never shown: memory recall (auto-provisioned from `memory.recallTool.enabled`) and MCP-server tools (`mcp__…`, owned by their servers).
+The tools multiselect is the step that keeps you out of the "no-tools trap". It is pre-checked with a safe read-only default (`Read`, `Glob`, `Grep`) plus every selected module's recommended tools — for example a Telegram channel pre-checks `TelegramSendMessage`/`TelegramAskButtons`, and the sandbox pre-checks the code tools. Two kinds of tools are **not** gated by this list and are never shown: memory recall (auto-provisioned from `memory.recallTool.enabled`) and MCP-server tools (`mcp__…`, owned by their servers).
 
 Deselect everything and the wizard warns loudly — "⚠ Zero tools selected — the agent will be chat-only" — and makes you confirm before continuing. The same guardrail runs after the fact: an empty `tools.allowedTools` reports `waiting` in [`validate`/`doctor`](/observability/cli-reference/#validate) (never a silent `ok`) with:
 
@@ -68,7 +68,7 @@ proactive messages. Add names to tools.allowedTools (e.g. Read, Glob, Grep), or 
 `mono-agent init` in an empty folder to pick tools interactively.
 ```
 
-`validate`/`doctor` also flag an **unknown tool name** with a "did you mean" hint (e.g. `read` → `Read`; pi silently drops unknown names), and cross-check adapter **send tools against channels** — a `telegram_send_message` in the allowlist with Telegram disabled downgrades the tools section to `waiting` with a note; the reverse — a channel enabled with no matching send tool — is a non-fatal hint (the section stays `ok`: replies still work, but the agent can't send proactively).
+`validate`/`doctor` also flag an **unknown tool name** with a "did you mean" hint (e.g. `read` → `Read`; pi silently drops unknown names), and cross-check adapter **send tools against channels** — a `TelegramSendMessage` in the allowlist with Telegram disabled downgrades the tools section to `waiting` with a note; the reverse — a channel enabled with no matching send tool — is a non-fatal hint (the section stays `ok`: replies still work, but the agent can't send proactively).
 
 ## Sandbox
 

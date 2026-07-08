@@ -8,14 +8,14 @@ sidebar:
 
 This playbook shows the capabilities unlocked by two composable framework features and how they fit together in one agent:
 
-1. **Blocking `ask_user`** — a tool the agent calls mid-turn to ask the user a free-text question and **wait** for the reply, which comes back as the tool result (so the agent keeps its full working context instead of ending the turn and re-orienting later).
+1. **Blocking `AskUser`** — a tool the agent calls mid-turn to ask the user a free-text question and **wait** for the reply, which comes back as the tool result (so the agent keeps its full working context instead of ending the turn and re-orienting later).
 2. **Long-running tools with live progress + keep-alive** — a tool call can run for minutes (transcription, rendering, a slow API), stream status to the chat, and never trip the runtime's inactivity timeout because tool progress resets it.
-3. **Large inbound/outbound media** — a self-hosted Telegram Bot API server lifts the 20 MB bot-download limit to 2 GB, and `telegram_send_document` delivers big files back by local `file://` path with no in-process buffering.
+3. **Large inbound/outbound media** — a self-hosted Telegram Bot API server lifts the 20 MB bot-download limit to 2 GB, and `TelegramSendFile` delivers big files back by local `file://` path with no in-process buffering.
 
 The worked example is a **transcription assistant**: send it a voice note or a long recording, it asks who is speaking and in what language, transcribes via a local WhisperKit server (minutes for a long file), and returns the transcript as a document.
 
 :::note
-`ask_user` and tool progress are powered by the app's **interaction bridge** — a loopback HTTP registry `mono-agent` starts automatically when `ask_user` is allowed (or the `interaction` block is present). Nothing is exposed off-host. See [Delivery and Send Tools](/channels/delivery-and-send-tools/) and [Telegram](/channels/telegram/).
+`AskUser` and tool progress are powered by the app's **interaction bridge** — a loopback HTTP registry `mono-agent` starts automatically when `AskUser` is allowed (or the `interaction` block is present). Nothing is exposed off-host. See [Delivery and Send Tools](/channels/delivery-and-send-tools/) and [Telegram](/channels/telegram/).
 :::
 
 ## Who this is for
@@ -28,12 +28,12 @@ A Telegram agent that: asks the user for context before it acts (blocking), runs
 
 ## Features used
 
-- **`ask_user`** — blocking, channel-agnostic "ask a question and wait for the reply" tool; allow it in `tools.allowedTools`. One consolidated question per conversation; graceful timeout. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
-- **`interaction`** — the app-owned bridge block (`bridge.port`, `askUser.timeoutMs`, `progress.enabled`); auto-starts when `ask_user` is allowed. See [Env Vars](/config/env-vars/). *(config)*
+- **`AskUser`** — blocking, channel-agnostic "ask a question and wait for the reply" tool; allow it in `tools.allowedTools`. One consolidated question per conversation; graceful timeout. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
+- **`interaction`** — the app-owned bridge block (`bridge.port`, `askUser.timeoutMs`, `progress.enabled`); auto-starts when `AskUser` is allowed. See [Env Vars](/config/env-vars/). *(config)*
 - **`tools.mcpCallTimeoutMs` / `tools.mcpCallMaxTotalTimeoutMs`** — inactivity timeout (reset by tool progress) and the hard per-call wall clock; raise the latter for long jobs. See [Env Vars](/config/env-vars/). *(config)*
 - **tool progress → channel status** — a tool `POST`s progress to the bridge (`MONO_AGENT_INTERACTION_BRIDGE_URL`/`_TOKEN`, exported to every tool child) and it appears as a chat status message edited in place. *(code, in your MCP tool)*
 - **`telegram.apiRoot` + `telegram.attachments`** — point the adapter at a self-hosted Bot API server and raise the download/upload caps (2 GB ceiling). See [Telegram → Self-hosted Bot API server](/channels/telegram/). *(config)*
-- **`telegram_send_document`** — deliver a generated file; with `apiRoot` set, a `path` upload streams by `file://` with no buffering. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
+- **`TelegramSendFile`** — deliver a generated file; with `apiRoot` set, a `path` upload streams by `file://` with no buffering. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
 - **`telegram.bot`** — inbound audio/voice is downloaded and handed to the agent as a saved file path; the adapter chat allowlist is the boundary. See [Telegram](/channels/telegram/). *(config)*
 
 ## Configure
@@ -50,7 +50,7 @@ A Telegram agent that: asks the user for context before it acts (blocking), runs
   },
   "context": { "identityPath": "./IDENTITY.md", "selectedSkills": [] },
   "tools": {
-    "allowedTools": ["Read", "Bash", "ask_user", "telegram_send_message", "telegram_send_document"],
+    "allowedTools": ["Read", "Bash", "AskUser", "TelegramSendMessage", "TelegramSendFile"],
     "mcpConfigPath": "./.mcp.json",
     "mcpCallTimeoutMs": 120000,        // inactivity cap; tool progress resets it
     "mcpCallMaxTotalTimeoutMs": 2700000 // hard per-call wall clock (45 min) for long jobs
@@ -89,9 +89,9 @@ The self-hosted Bot API server (only needed for attachments over 20 MB) runs loo
 ## How the turn flows
 
 1. A voice note or recording arrives. The adapter downloads it (up to `attachments.maxBytes`, via the self-hosted server for big files) and hands the agent the saved file path.
-2. **Caption-first**: if the caption already gives language/speakers, the agent skips asking. Otherwise it calls **`ask_user`** with one consolidated question and *blocks*. Your next plain-text message resolves the tool call (a 👍 acknowledges it); the agent continues on the same turn with your answer.
+2. **Caption-first**: if the caption already gives language/speakers, the agent skips asking. Otherwise it calls **`AskUser`** with one consolidated question and *blocks*. Your next plain-text message resolves the tool call (a 👍 acknowledges it); the agent continues on the same turn with your answer.
 3. The agent calls the long-running `transcribe` tool. That tool `POST`s progress to the bridge ("Transcribing 12:31… 45s elapsed"), which shows as a status message edited in place, and emits MCP progress notifications that keep the call alive well past 120s.
-4. The transcript is written to disk and delivered via **`telegram_send_document`** — a `path` upload, so with `apiRoot` set the file is sent by `file://` with no buffering.
+4. The transcript is written to disk and delivered via **`TelegramSendFile`** — a `path` upload, so with `apiRoot` set the file is sent by `file://` with no buffering.
 
 Writing the progress side of a long tool is a few lines — post to the bridge using the env the app exports to every tool child:
 
@@ -111,11 +111,11 @@ if (url && token) {
 ## Validate & start
 
 ```bash
-mono-agent validate --config ./mono-agent.config.json   # confirms ask_user is allowed, apiRoot parses, caps in range
+mono-agent validate --config ./mono-agent.config.json   # confirms AskUser is allowed, apiRoot parses, caps in range
 mono-agent start --config ./mono-agent.config.json
 ```
 
-`validate` shows `Tools & MCP` with `ask_user` allowed and the interaction bridge ready; the bridge starts on `start`.
+`validate` shows `Tools & MCP` with `AskUser` allowed and the interaction bridge ready; the bridge starts on `start`.
 
 ## Smoke test
 
@@ -123,11 +123,11 @@ mono-agent start --config ./mono-agent.config.json
 2. **Long job + progress**: for a multi-minute recording, watch the status message update in place; the call must not die at 120s (proof the keep-alive works).
 3. **Large media**: send a recording over 20 MB (needs the self-hosted server). It downloads and transcribes; a plain hosted bot would have skipped it.
 4. **File delivery**: the transcript comes back as an attached `.md` document, not pasted into the chat.
-5. **Timeout path**: let an `ask_user` question sit past `askUser.timeoutMs` — the tool returns gracefully and your later reply arrives as a normal next turn.
+5. **Timeout path**: let an `AskUser` question sit past `askUser.timeoutMs` — the tool returns gracefully and your later reply arrives as a normal next turn.
 
 ## Notes & limits
 
 - Inbound attachment bytes travel as base64 through the request, so keep `attachments.maxBytes` at or below ~256 MiB (peak transient memory ≈ 3.4× the file size). For files beyond that, send a local path in a message instead — the agent runs on the same host.
-- One pending `ask_user` per conversation; the model must consolidate its questions. On an app restart a pending ask degrades to normal multi-turn (the reply arrives as the next message).
+- One pending `AskUser` per conversation; the model must consolidate its questions. On an app restart a pending ask degrades to normal multi-turn (the reply arrives as the next message).
 - `mcpCallMaxTotalTimeoutMs` is the unresettable ceiling (default 45 min); a job longer than that is cut off regardless of progress.
 - Everything here is loopback-only: the interaction bridge binds `127.0.0.1`, and the self-hosted Bot API server must be started with `--http-ip-address=127.0.0.1`. Long polling means nothing inbound is exposed.

@@ -17,6 +17,7 @@ import type {
 import * as z from "zod/v4";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
+import { LEGACY_TOOL_ALIASES } from "./modules/known-tools.js";
 import { appendPostedMessage } from "./posted-message-index.js";
 
 // Lazy per module (mirrors channels.ts): a config without slack/telegram
@@ -33,7 +34,7 @@ const loadTelegramModule = async (): Promise<TelegramAdapterModule> =>
 /**
  * Model-visible send tools for explicitly allowed, already-enabled communication adapters.
  *
- * This mirrors `memory_recall`: agent-app injects a stdio MCP server through
+ * This mirrors `MemoryRecall`: agent-app injects a stdio MCP server through
  * per-request runtime options. The adapter config remains the source of truth:
  * if Slack or Telegram is disabled, invalid, blocked by tool policy, or lacks an
  * allowed destination policy, the corresponding send tool is not exposed. When
@@ -55,14 +56,14 @@ export interface TelegramSendToolSettings {
   readonly allowAllChats: boolean;
   /** Self-hosted Bot API server base URL (also unlocks file:// path uploads). */
   readonly apiRoot?: string;
-  /** Upload cap for send_document/send_photo; the resolver fills the 20 MiB default. */
+  /** Upload cap for the TelegramSendFile tool; the resolver fills the 20 MiB default. */
   readonly maxUploadBytes?: number;
   /** Which telegram tools the policy permits (the adapter config gates the rest). */
   readonly tools: {
     readonly send: boolean;
     readonly ask: boolean;
-    readonly document: boolean;
-    readonly photo: boolean;
+    /** The single TelegramSendFile tool (document + photo via a `kind` param). */
+    readonly file: boolean;
   };
 }
 
@@ -100,7 +101,7 @@ export interface AdapterSendToolsRuntimeExtension {
 
 /**
  * Where a posted message should be linked back to its producing conversation.
- * Forwarded to the stdio child so `slack_send_message` can record
+ * Forwarded to the stdio child so `SlackSendMessage` can record
  * `(channel, ts) → conversationId` — see {@link appendPostedMessage}.
  */
 export interface AdapterSendToolsIndexing {
@@ -125,26 +126,23 @@ export async function resolveAdapterSendToolsSettings(
   input: MonoAgentAppConfigInput,
   options: AdapterSendToolsResolveOptions = {},
 ): Promise<AdapterSendToolsSettings | undefined> {
-  const telegramSendAllowed = isAdapterToolAllowed("telegram_send_message", options);
-  const telegramAskAllowed = isAdapterToolAllowed("telegram_ask", options);
-  const telegramDocumentAllowed = isAdapterToolAllowed("telegram_send_document", options);
-  const telegramPhotoAllowed = isAdapterToolAllowed("telegram_send_photo", options);
-  const telegramAnyAllowed =
-    telegramSendAllowed || telegramAskAllowed || telegramDocumentAllowed || telegramPhotoAllowed;
+  const telegramSendAllowed = isAdapterToolAllowed("TelegramSendMessage", options);
+  const telegramAskAllowed = isAdapterToolAllowed("TelegramAskButtons", options);
+  const telegramFileAllowed = isAdapterToolAllowed("TelegramSendFile", options);
+  const telegramAnyAllowed = telegramSendAllowed || telegramAskAllowed || telegramFileAllowed;
   const [slack, telegram] = await Promise.all([
-    isAdapterToolAllowed("slack_send_message", options)
+    isAdapterToolAllowed("SlackSendMessage", options)
       ? resolveSlackSendToolSettings(input, options)
       : undefined,
     telegramAnyAllowed
       ? resolveTelegramSendToolSettings(input, options, {
           send: telegramSendAllowed,
           ask: telegramAskAllowed,
-          document: telegramDocumentAllowed,
-          photo: telegramPhotoAllowed,
+          file: telegramFileAllowed,
         })
       : undefined,
   ]);
-  const askUser = isAdapterToolAllowed("ask_user", options)
+  const askUser = isAdapterToolAllowed("AskUser", options)
     ? resolveAskUserToolSettings(input.env)
     : undefined;
   if (slack === undefined && telegram === undefined && askUser === undefined) {
@@ -158,7 +156,7 @@ export async function resolveAdapterSendToolsSettings(
 }
 
 /**
- * ask_user is available only when the app exported a live interaction bridge
+ * AskUser is available only when the app exported a live interaction bridge
  * into the environment (URL + bearer token). The producing conversation id is
  * per-request env, present in the spawned child.
  */
@@ -182,22 +180,19 @@ function resolveAskUserToolSettings(env: Record<string, string | undefined>): As
 export function adapterSendToolNames(settings: AdapterSendToolsSettings): readonly string[] {
   const names: string[] = [];
   if (settings.slack !== undefined) {
-    names.push("slack_send_message");
+    names.push("SlackSendMessage");
   }
   if (settings.telegram?.tools.send === true) {
-    names.push("telegram_send_message");
+    names.push("TelegramSendMessage");
   }
   if (settings.telegram?.tools.ask === true) {
-    names.push("telegram_ask");
+    names.push("TelegramAskButtons");
   }
-  if (settings.telegram?.tools.document === true) {
-    names.push("telegram_send_document");
-  }
-  if (settings.telegram?.tools.photo === true) {
-    names.push("telegram_send_photo");
+  if (settings.telegram?.tools.file === true) {
+    names.push("TelegramSendFile");
   }
   if (settings.askUser !== undefined) {
-    names.push("ask_user");
+    names.push("AskUser");
   }
   return names;
 }
@@ -216,7 +211,7 @@ export function isAdapterSendToolAllowed(
 
 /**
  * Per-request context forwarded to the stdio child. `conversationId` alone
- * targets ask_user at the producing conversation; `indexPath` additionally
+ * targets AskUser at the producing conversation; `indexPath` additionally
  * enables the posted-message index (Slack reply continuity).
  */
 export interface AdapterSendToolsChildContext {
@@ -281,7 +276,7 @@ export function adapterSendToolsMcpServerSpec(
 /**
  * Per-request runtime extension that injects the adapter-send stdio MCP server. It
  * reads the request's producing conversationId and, when an `indexPath` is
- * configured, forwards both to the child so a `slack_send_message` post is linked
+ * configured, forwards both to the child so a `SlackSendMessage` post is linked
  * back to this conversation (so a later in-thread reply resumes it).
  */
 export function createAdapterSendToolsRuntimeExtension(
@@ -293,7 +288,7 @@ export function createAdapterSendToolsRuntimeExtension(
   return async (input) => {
     const conversationId = input?.request?.conversationId;
     const hasConversation = typeof conversationId === "string" && conversationId.trim().length > 0;
-    // The conversation id is forwarded whenever known — ask_user targets it even
+    // The conversation id is forwarded whenever known — AskUser targets it even
     // without indexing; the index path additionally enables posted-message links.
     const context: AdapterSendToolsChildContext | undefined = hasConversation
       ? { conversationId, ...(indexPath === undefined ? {} : { indexPath }) }
@@ -347,14 +342,11 @@ export async function createAdapterSendToolsServer(
     if (settings.telegram.tools.ask) {
       registerTelegramAskTool(server, settings.telegram, clients.telegram, adapter);
     }
-    if (settings.telegram.tools.document) {
-      registerTelegramSendFileTool(server, settings.telegram, clients.telegram, "document", adapter);
-    }
-    if (settings.telegram.tools.photo) {
-      registerTelegramSendFileTool(server, settings.telegram, clients.telegram, "photo", adapter);
+    if (settings.telegram.tools.file) {
+      registerTelegramSendFileTool(server, settings.telegram, clients.telegram, adapter);
     }
   }
-  // ask_user needs a target conversation; the parent app process resolves the
+  // AskUser needs a target conversation; the parent app process resolves the
   // settings without one (for tool-name gating) and must not register the tool.
   if (settings.askUser?.conversationId !== undefined) {
     registerAskUserTool(server, { ...settings.askUser, conversationId: settings.askUser.conversationId });
@@ -371,7 +363,7 @@ function registerAskUserTool(
   settings: AskUserToolSettings & { readonly conversationId: string },
 ): void {
   server.registerTool(
-    "ask_user",
+    "AskUser",
     {
       title: "Ask the user and wait",
       description:
@@ -399,7 +391,7 @@ function registerAskUserTool(
         );
       }
       if (created.status !== 201 || typeof created.body.askId !== "string") {
-        throw new Error(`ask_user: the interaction bridge rejected the ask (HTTP ${String(created.status)}).`);
+        throw new Error(`AskUser: the interaction bridge rejected the ask (HTTP ${String(created.status)}).`);
       }
       const askId = created.body.askId;
       const startedMs = Date.now();
@@ -410,7 +402,7 @@ function registerAskUserTool(
           `/v1/asks/${encodeURIComponent(askId)}?waitMs=${String(ASK_USER_POLL_WAIT_MS)}`,
         );
         if (poll.status !== 200) {
-          throw new Error(`ask_user: lost the pending ask (HTTP ${String(poll.status)}).`);
+          throw new Error(`AskUser: lost the pending ask (HTTP ${String(poll.status)}).`);
         }
         // Keep-alive: progress notifications reset the runtime's MCP inactivity
         // timeout so a long human wait cannot kill the tool call.
@@ -505,7 +497,7 @@ function registerSlackSendTool(
   indexing?: AdapterSendToolsIndexing,
 ): void {
   server.registerTool(
-    "slack_send_message",
+    "SlackSendMessage",
     {
       title: "Send Slack message",
       description: "Send a message to an allowed Slack channel or DM ID using the configured Slack adapter bot token.",
@@ -552,7 +544,7 @@ function registerTelegramSendTool(
   client: Pick<TelegramMessageSender, "sendMessage">,
 ): void {
   server.registerTool(
-    "telegram_send_message",
+    "TelegramSendMessage",
     {
       title: "Send Telegram message",
       description: "Send a message to an allowed Telegram chat using the configured Telegram adapter bot token.",
@@ -588,11 +580,11 @@ function registerTelegramAskTool(
   adapter: TelegramAdapterModule,
 ): void {
   server.registerTool(
-    "telegram_ask",
+    "TelegramAskButtons",
     {
       title: "Ask via Telegram buttons",
       description:
-        "Ask the owner a question in an allowed Telegram chat with tappable inline-keyboard options (e.g. a confirmation or a multiple-choice). This tool returns immediately after posting the question; it does NOT wait for the answer. When the user taps a button, their choice arrives as a new message on the same conversation, so continue on that next turn.",
+        "Ask the owner a question in an allowed Telegram chat with tappable inline-keyboard buttons (e.g. a confirmation or a multiple-choice). This tool returns immediately after posting the question; it does NOT wait for the answer. When the user taps a button, their choice arrives as a new message on the same conversation, so continue on that next turn.",
       inputSchema: {
         chat_id: z.union([z.string().min(1), z.number().int()]).describe("Telegram chat id from the adapter allowlist."),
         question: z.string().min(1).describe("The question to show above the buttons."),
@@ -634,28 +626,27 @@ function registerTelegramAskTool(
 }
 
 /**
- * Register `telegram_send_document` / `telegram_send_photo`. Both accept the file
- * as base64 `data` (with a `filename`) OR a workspace `path` (filename derived
- * from the basename), enforce the adapter allowlist, and bound the size to the
- * adapter's inbound cap before uploading via the adapter-owned sender.
+ * Register the single `TelegramSendFile` tool. A required `kind` param selects
+ * `"document"` (any file, shown as a downloadable document) or `"photo"` (an image
+ * shown inline). Both accept the file as base64 `data` (with a `filename`) OR a
+ * workspace `path` (filename derived from the basename), enforce the adapter
+ * allowlist, and bound the size to the adapter's inbound cap before uploading via
+ * the adapter-owned sender.
  */
 function registerTelegramSendFileTool(
   server: McpServer,
   settings: TelegramSendToolSettings,
   client: Pick<TelegramMessageSender, "sendDocument" | "sendPhoto">,
-  kind: "document" | "photo",
   adapter: TelegramAdapterModule,
 ): void {
-  const toolName = kind === "document" ? "telegram_send_document" : "telegram_send_photo";
   server.registerTool(
-    toolName,
+    "TelegramSendFile",
     {
-      title: kind === "document" ? "Send Telegram document" : "Send Telegram photo",
+      title: "Send Telegram file",
       description:
-        kind === "document"
-          ? "Upload and send a file (document) to an allowed Telegram chat. Provide the bytes as base64 `data` with a `filename`, or a workspace `path` (preferred — with a self-hosted Bot API server a `path` upload streams from disk with no size buffering, up to the configured cap)."
-          : "Upload and send an image (photo, shown inline) to an allowed Telegram chat. Provide the bytes as base64 `data`, or a workspace `path`.",
+        "Upload and send a file to an allowed Telegram chat. Set `kind:\"document\"` to send any file (shown as a downloadable document) or `kind:\"photo\"` to send an image inline. Provide the bytes as base64 `data` (with a `filename` — required for a document), or a workspace `path` (preferred — with a self-hosted Bot API server a `path` upload streams from disk with no size buffering, up to the configured cap).",
       inputSchema: {
+        kind: z.enum(["document", "photo"]).describe("`document` for any file (downloadable), `photo` for an image shown inline."),
         chat_id: z.union([z.string().min(1), z.number().int()]).describe("Telegram chat id from the adapter allowlist."),
         data: z.string().min(1).optional().describe("Base64-encoded file bytes. Provide this or `path`."),
         path: z.string().min(1).optional().describe("Path to a file to upload (resolved against the agent working dir). Provide this or `data`."),
@@ -664,6 +655,7 @@ function registerTelegramSendFileTool(
       },
     },
     async (args) => {
+      const kind = args.kind;
       assertTelegramChatAllowed(settings, args.chat_id);
       const maxUploadBytes = settings.maxUploadBytes ?? adapter.DEFAULT_ATTACHMENT_MAX_BYTES;
       // file:// fast path: a --local self-hosted server reads the file straight
@@ -819,7 +811,7 @@ function assertSlackChannelAllowed(settings: SlackSendToolSettings, channel: str
   if (settings.allowAllChannels || settings.allowedChannelIds.includes(normalizeSlackChannelId(channel))) {
     return;
   }
-  throw new Error("slack_send_message: channel is not allowed by Slack adapter config.");
+  throw new Error("SlackSendMessage: channel is not allowed by Slack adapter config.");
 }
 
 function assertTelegramChatAllowed(settings: TelegramSendToolSettings, chatId: TelegramChatId): void {
@@ -827,7 +819,7 @@ function assertTelegramChatAllowed(settings: TelegramSendToolSettings, chatId: T
   if (settings.allowAllChats || settings.allowedChatIds.includes(normalized)) {
     return;
   }
-  throw new Error("telegram_send_message: chat_id is not allowed by Telegram adapter config.");
+  throw new Error("TelegramSendMessage: chat_id is not allowed by Telegram adapter config.");
 }
 
 function optionalString(value: string | undefined): string | undefined {
@@ -842,9 +834,21 @@ function normalizeSlackChannelId(value: string): string {
   return value.trim().toLowerCase();
 }
 
+/** The legacy snake_case names that alias to the canonical new `name` (may be empty). */
+function legacyAliasesFor(name: string): readonly string[] {
+  return Object.keys(LEGACY_TOOL_ALIASES).filter((legacy) => LEGACY_TOOL_ALIASES[legacy] === name);
+}
+
 function isAdapterToolAllowed(name: string, options: AdapterSendToolsResolveOptions): boolean {
   const wildcard = `mcp__${ADAPTER_SEND_TOOLS_MCP_SERVER_NAME}__*`;
-  const aliases = [name, `mcp__${ADAPTER_SEND_TOOLS_MCP_SERVER_NAME}__${name}`];
+  // Match the canonical new name AND every legacy snake_case alias that maps to it.
+  // A pre-rename config listing e.g. the `telegram_send_photo` alias still enables
+  // the collapsed `TelegramSendFile` tool; each is matched bare + mcp-prefixed.
+  const matchNames = [name, ...legacyAliasesFor(name)];
+  const aliases = matchNames.flatMap((matchName) => [
+    matchName,
+    `mcp__${ADAPTER_SEND_TOOLS_MCP_SERVER_NAME}__${matchName}`,
+  ]);
   const allowed = options.allowedTools ?? [];
   const disallowed = options.disallowedTools ?? [];
   if (disallowed.includes(wildcard) || aliases.some((alias) => disallowed.includes(alias))) {

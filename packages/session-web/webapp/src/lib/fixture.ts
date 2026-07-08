@@ -65,7 +65,7 @@ export const FIXTURE_SESSIONS: Session[] = [
       cost: 0.6415,
       steps: 7,
     },
-    toolCounts: { read_skill: 1, Bash: 1, Grep: 1 },
+    toolCounts: { ReadSkill: 1, Bash: 1, Grep: 1 },
     steps: [
       {
         k: "prompt",
@@ -85,7 +85,7 @@ export const FIXTURE_SESSIONS: Session[] = [
         calls: [
           {
             id: "call_readskill_1",
-            name: "read_skill",
+            name: "ReadSkill",
             dig: "focus-scan",
             raw: '{\n  "name": "focus-scan"\n}',
             ok: true,
@@ -105,7 +105,7 @@ export const FIXTURE_SESSIONS: Session[] = [
         k: "result",
         ts: "2026-07-04T07:10:14.221Z",
         tcid: "call_readskill_1",
-        tool: "read_skill",
+        tool: "ReadSkill",
         ok: true,
         dig: "Configured skills root: /Users/example/personal-agent/skills",
         text: "Skill directory: /Users/example/personal-agent/skills/focus-scan\nPath rule: files referenced by SKILL.md are bundled with the skill.",
@@ -390,7 +390,7 @@ export const FIXTURE_SESSIONS: Session[] = [
       cost: 0.071,
       steps: 5,
     },
-    toolCounts: { memory_recall: 1, Edit: 1 },
+    toolCounts: { MemoryRecall: 1, Edit: 1 },
     steps: [
       {
         k: "prompt",
@@ -409,7 +409,7 @@ export const FIXTURE_SESSIONS: Session[] = [
         calls: [
           {
             id: "call_mem_1",
-            name: "memory_recall",
+            name: "MemoryRecall",
             dig: "today's journal entries",
             raw: '{\n  "query": "today journal entries",\n  "k": 40\n}',
             ok: true,
@@ -422,7 +422,7 @@ export const FIXTURE_SESSIONS: Session[] = [
         k: "result",
         ts: "2026-07-04T03:00:19.900Z",
         tcid: "call_mem_1",
-        tool: "memory_recall",
+        tool: "MemoryRecall",
         ok: true,
         dig: "17 entries recalled",
         text: "17 journal entries recalled; 3 near-duplicates flagged for merge.",
@@ -494,7 +494,7 @@ export const FIXTURE_SESSIONS: Session[] = [
       cost: 0.523,
       steps: 8,
     },
-    toolCounts: { Bash: 3, read_skill: 1 },
+    toolCounts: { Bash: 3, ReadSkill: 1 },
     steps: [
       {
         k: "prompt",
@@ -575,7 +575,7 @@ export const FIXTURE_SESSIONS: Session[] = [
         calls: [
           {
             id: "call_skill_b",
-            name: "read_skill",
+            name: "ReadSkill",
             dig: "briefing",
             raw: '{\n  "name": "briefing"\n}',
             ok: true,
@@ -588,7 +588,7 @@ export const FIXTURE_SESSIONS: Session[] = [
         k: "result",
         ts: "2026-07-04T06:31:44.220Z",
         tcid: "call_skill_b",
-        tool: "read_skill",
+        tool: "ReadSkill",
         ok: true,
         dig: "briefing skill: under 120 words, one nudge",
         text: "Keep the briefing under 120 words. Exactly one gentle nudge. Deliver verbatim via native notify.",

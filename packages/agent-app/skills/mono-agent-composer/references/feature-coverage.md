@@ -35,7 +35,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Config-aware memory preview CLI (stats/today/show/search/top for the configured backend; local search warns and falls back to FTS-only when embeddings are down) | cli | `mono-agent memory stats\|today\|show <date>\|search <query>\|top [--limit <n>] [--json]` |
 | Memory liveness check (root writable; provider-specific Ollama checks only when embeddings/chat use Ollama; BuJo LLM config + consolidation cadence — loud warn, no silent fallback) | cli | `mono-agent validate` |
 | Host summaries appended after runs | config | `memory.writeMode: "append-host-summary"` |
-| Auto-provisioned read-only `memory_recall` tool (hybrid keyword+semantic search) exposed to the agent from the single memory config; no chat LLM | config | `config.memory.recallTool.enabled` (`MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`, default on for journal/bujo with embeddings) |
+| Auto-provisioned read-only `MemoryRecall` tool (hybrid keyword+semantic search) exposed to the agent from the single memory config; no chat LLM | config | `config.memory.recallTool.enabled` (`MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`, default on for journal/bujo with embeddings) |
 
 ## Tools, MCP, sandbox
 
@@ -44,7 +44,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Fail-closed tool policy (empty allowlist = no tools) | auto | default |
 | Tool allow/deny lists (deny wins) | config | `tools.allowedTools`, `tools.disallowedTools` |
 | MCP servers (stdio/sse/http) from a JSON file | config | `tools.mcpConfigPath` |
-| Adapter-derived send tools for enabled Slack/Telegram adapters | config | `tools.allowedTools` must include `slack_send_message` / `telegram_send_message`; valid `slack.*` / `telegram.*` config and existing adapter allowlists provide credentials and destination bounds |
+| Adapter-derived send tools for enabled Slack/Telegram adapters | config | `tools.allowedTools` must include `SlackSendMessage` / `TelegramSendMessage`; valid `slack.*` / `telegram.*` config and existing adapter allowlists provide credentials and destination bounds |
 | Sandbox on/off + srt engine | config | `sandbox.mode` |
 | Network policy (none/localhost/allowlist/all) | config | `sandbox.network.{mode,allowlist}` |
 | Filesystem scopes (readable/writable roots, deny-write globs) | config | `sandbox.readableRoots`, `sandbox.writableRoots`, `sandbox.denyWrite` |
@@ -87,4 +87,4 @@ Every framework capability and how a composed agent reaches it. This table is th
 | `.env` auto-loading | cli | automatic; `--env-file <path>` |
 | Explicit failure objects (no fake success) | auto | harness |
 | Per-request runtime options, custom memory/history stores | code | `createConfiguredAgentResponder` options |
-| Multi-agent delegation (`ask_collaborator` loopback MCP tool) | code | `@mono-agent/agent-orchestrator` |
+| Multi-agent delegation (`AskCollaborator` loopback MCP tool) | code | `@mono-agent/agent-orchestrator` |

@@ -6,7 +6,7 @@ sidebar:
 
 # Slack Team Bot with MCP Tools
 
-This playbook builds a shared Slack bot that answers when mentioned in allow-listed channels, calls a custom team MCP tool plus `Read`/`Grep`, and can post proactively with `slack_send_message`.
+This playbook builds a shared Slack bot that answers when mentioned in allow-listed channels, calls a custom team MCP tool plus `Read`/`Grep`, and can post proactively with `SlackSendMessage`.
 
 ## Who this is for
 
@@ -14,7 +14,7 @@ A DevOps engineer running a shared team bot.
 
 ## Goal
 
-A Slack Socket Mode bot, mention-triggered in allowed channels, with a custom MCP tool plus `Read`/`Grep` and the `slack_send_message` tool for proactive posts.
+A Slack Socket Mode bot, mention-triggered in allowed channels, with a custom MCP tool plus `Read`/`Grep` and the `SlackSendMessage` tool for proactive posts.
 
 ## Features used
 
@@ -27,7 +27,7 @@ A Slack Socket Mode bot, mention-triggered in allowed channels, with a custom MC
 
 ## Configuration
 
-The Slack section runs in Socket Mode (both `botToken` and `appToken` are required); mentions are detected by `botUserIds` and `mentionTextAliases`, and the bot only responds in `allowedChannelIds`. The tool allowlist is fail-closed, so `slack_send_message` and the custom `deployTool` must be named explicitly. `concurrency` bounds in-flight work app-wide.
+The Slack section runs in Socket Mode (both `botToken` and `appToken` are required); mentions are detected by `botUserIds` and `mentionTextAliases`, and the bot only responds in `allowedChannelIds`. The tool allowlist is fail-closed, so `SlackSendMessage` and the custom `deployTool` must be named explicitly. `concurrency` bounds in-flight work app-wide.
 
 ```json
 {
@@ -43,7 +43,7 @@ The Slack section runs in Socket Mode (both `botToken` and `appToken` are requir
     "mentionTextAliases": ["@agent"]
   },
   "tools": {
-    "allowedTools": ["Read", "Grep", "slack_send_message", "deployTool"],
+    "allowedTools": ["Read", "Grep", "SlackSendMessage", "deployTool"],
     "mcpConfigPath": "./mcp.json"
   },
   "concurrency": {
@@ -64,14 +64,14 @@ The exact MCP tool name (`deployTool` here) must match the name your server adve
 1. Create a Slack app with Socket Mode (app token `connections:write`) and a bot token (`chat:write`).
 2. `mono-agent init --model claude:claude-sonnet-4-6`
 3. Write `mcp.json` with the team's stdio MCP server; add `deployTool`'s exact name to `tools.allowedTools`.
-4. Add the `slack` section + `slack_send_message` to `allowedTools`; set concurrency bounds (note: per-channel scope).
+4. Add the `slack` section + `SlackSendMessage` to `allowedTools`; set concurrency bounds (note: per-channel scope).
 5. `mono-agent validate`, then `mono-agent start` (confirm Slack is running with both tokens).
 6. Mention the bot in an allowed channel and confirm a 👀 reaction, then a final reply.
 
 ## Smoke test
 
 :::tip
-Mention `@agent` in the allowed channel; verify the seen reaction, a final answer, the MCP tool firing in the run artifact, and that `slack_send_message` can post to the allowed channel (and is rejected for a non-allowed one).
+Mention `@agent` in the allowed channel; verify the seen reaction, a final answer, the MCP tool firing in the run artifact, and that `SlackSendMessage` can post to the allowed channel (and is rejected for a non-allowed one).
 :::
 
 ## Related

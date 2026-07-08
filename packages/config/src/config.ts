@@ -604,7 +604,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
         ? embeddings
         : { ...embeddings, dim };
 
-  // Read-only memory_recall tool. For the bujo backend, recall needs embeddings + FTS (no chat
+  // Read-only MemoryRecall tool. For the bujo backend, recall needs embeddings + FTS (no chat
   // LLM), so it defaults on whenever the resolved tier can rank semantically — mode !== "lite"
   // AND embeddings are configured — and off for lite. External backends always have search, so
   // recall defaults on whenever their block is present. An explicit env/JSON value always wins.

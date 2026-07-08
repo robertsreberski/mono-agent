@@ -821,7 +821,7 @@
           "additionalProperties": false,
           "properties": {
             "host": {
-              "description": "Loopback host for the app-owned ask_user/tool-progress bridge.",
+              "description": "Loopback host for the app-owned AskUser/tool-progress bridge.",
               "examples": [
                 "127.0.0.1"
               ],
@@ -843,7 +843,7 @@
           "additionalProperties": false,
           "properties": {
             "timeoutMs": {
-              "description": "Maximum wait for one ask_user question.",
+              "description": "Maximum wait for one AskUser question.",
               "examples": [
                 600000
               ],

@@ -83,15 +83,15 @@ pnpm run test:demo
 | TUI | Start the host and complete one local prompt. |
 | Telegram | Send one allowed chat message and verify the reply. |
 | Slack | Send one allowed DM or channel message and verify formatting. |
-| Adapter send tools | When `tools.allowedTools` includes `slack_send_message` / `telegram_send_message`, call them from a non-Slack/Telegram surface such as TUI, cron, or OpenAI API to an allowed destination and verify delivery. |
+| Adapter send tools | When `tools.allowedTools` includes `SlackSendMessage` / `TelegramSendMessage`, call them from a non-Slack/Telegram surface such as TUI, cron, or OpenAI API to an allowed destination and verify delivery. |
 | WhatsApp | Send one allowed sender/group trigger and verify the reply. |
 | OpenAI API | `curl /v1/models` and `/v1/chat/completions`. |
 | A2A | Send text to the Agent Card URL with `sendA2AMessage()`. |
 | Webhook | `curl` the invocation path and inspect the response body/status. |
 | Cron | Run a one-off scheduled invocation or wait for one tick. |
 | Observability | Confirm a run writes a redacted JSONL artifact; if an `observability.exporters` Phoenix entry is set, confirm the trace appears in Phoenix. |
-| Memory recall tool | With `memory.recallTool.enabled` (default on for journal/bujo with embeddings), ask the agent to recall an old note and confirm `memory_recall` appears in the run artifact and returns it. |
-| Semantic memory search | With `memory.embeddings` set (Ollama: `ollama pull nomic-embed-text:v1.5` first), ask a paraphrased question about an old note and confirm `memory_recall` (hybrid keyword + semantic) returns it. |
+| Memory recall tool | With `memory.recallTool.enabled` (default on for journal/bujo with embeddings), ask the agent to recall an old note and confirm `MemoryRecall` appears in the run artifact and returns it. |
+| Semantic memory search | With `memory.embeddings` set (Ollama: `ollama pull nomic-embed-text:v1.5` first), ask a paraphrased question about an old note and confirm `MemoryRecall` (hybrid keyword + semantic) returns it. |
 
 ## Failure Handling
 

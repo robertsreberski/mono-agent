@@ -126,12 +126,12 @@ A misconfigured channel surfaces a `waiting_for_config` reason in `mono-agent va
 
 ## Sending into Slack from the agent
 
-When the Slack adapter is enabled, the app can expose an MCP send tool, `slack_send_message`, that lets the agent post into the same workspace from any run (including cron and webhook turns). It is **off by default** — add the exact tool name to `tools.allowedTools`:
+When the Slack adapter is enabled, the app can expose an MCP send tool, `SlackSendMessage`, that lets the agent post into the same workspace from any run (including cron and webhook turns). It is **off by default** — add the exact tool name to `tools.allowedTools`:
 
 ```json
 {
   "tools": {
-    "allowedTools": ["slack_send_message"]
+    "allowedTools": ["SlackSendMessage"]
   }
 }
 ```
@@ -143,7 +143,7 @@ The existing Slack adapter config (tokens + channel allowlist) provides the cred
 - [Channels overview](/channels/)
 - [Telegram](/channels/telegram/) — the other mention-triggered, final-only chat channel
 - [Delivery and send tools](/channels/delivery-and-send-tools/) — final-only delivery, working indicators, send tools
-- [Cron](/channels/cron/) and [Webhook](/channels/webhook/) — proactive turns that can call `slack_send_message`
+- [Cron](/channels/cron/) and [Webhook](/channels/webhook/) — proactive turns that can call `SlackSendMessage`
 - [Tool policy](/tools/policy/) — gating `allowedTools`
 - [Environment variables](/config/env-vars/)
 - Playbook: [Slack team bot with MCP tools](/playbooks/slack-team-bot-mcp-tools/)

@@ -133,7 +133,7 @@ The injected store wins over anything `config.memory` would otherwise build, and
 
 ## Per-request runtime options (`runtimeOptionsForRequest`)
 
-`runtimeOptionsForRequest` is a callback invoked once per turn to compute run options scoped to that request. The app uses it internally to attach the per-turn `memory_recall` and adapter send tools; you can supply your own to vary tools, system context, or other run options per request.
+`runtimeOptionsForRequest` is a callback invoked once per turn to compute run options scoped to that request. The app uses it internally to attach the per-turn `MemoryRecall` and adapter send tools; you can supply your own to vary tools, system context, or other run options per request.
 
 ```ts
 import { createConfiguredAgentResponder } from "@mono-agent/agent-app";

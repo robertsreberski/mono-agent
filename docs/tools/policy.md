@@ -63,12 +63,12 @@ Commands run by `Bash` are further constrained by the [sandbox](/tools/sandbox/)
 
 ## Adapter send tools
 
-The app can expose MCP tools that send messages back out through an already-enabled channel adapter: `slack_send_message` and `telegram_send_message` (coverage: `config`). These are **not** on by default — they must be added to `tools.allowedTools` by their exact name, and the matching `slack.*` / `telegram.*` adapter config must be present and valid.
+The app can expose MCP tools that send messages back out through an already-enabled channel adapter: `SlackSendMessage` and `TelegramSendMessage` (coverage: `config`). These are **not** on by default — they must be added to `tools.allowedTools` by their exact name, and the matching `slack.*` / `telegram.*` adapter config must be present and valid.
 
 ```json
 {
   "tools": {
-    "allowedTools": ["Read", "Grep", "slack_send_message", "telegram_send_message"]
+    "allowedTools": ["Read", "Grep", "SlackSendMessage", "TelegramSendMessage"]
   }
 }
 ```

@@ -70,7 +70,7 @@ describe("claude-cli mcp.json temp file permissions (F13)", () => {
       model: { sdk: "claude-code", model: "claude-sonnet-4-6" },
       messages: [{ role: "user", content: "hi" }],
       mcpServers: {
-        memory_recall: {
+        MemoryRecall: {
           command: "node",
           args: ["recall-server.js"],
           env: { MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "sk-secret-value" },

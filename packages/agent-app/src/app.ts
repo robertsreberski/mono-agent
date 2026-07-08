@@ -248,7 +248,7 @@ class MonoAgentAppController implements MonoAgentApp {
   private sharedMemoryBuild: Promise<Awaited<ReturnType<typeof createConfiguredMemory>>> | undefined;
   private configApplyTail: Promise<void> = Promise.resolve();
   private stopped = false;
-  // Interaction bridge (ask_user + tool progress): lazily started once, shared
+  // Interaction bridge (AskUser + tool progress): lazily started once, shared
   // by every channel; the exported env keys are tracked for cleanup on stop.
   private interactionBridge: InteractionBridgeHandle | undefined;
   private interactionBridgeStart: Promise<InteractionBridgeHandle | undefined> | undefined;
@@ -571,14 +571,14 @@ class MonoAgentAppController implements MonoAgentApp {
   }
 
   /**
-   * Start the interaction bridge once, when the ask_user tool is allowed by the
+   * Start the interaction bridge once, when the AskUser tool is allowed by the
    * tool policy or the operator configured the `interaction` block. Exports the
    * bridge env into the app env AND process env so settings resolution and
    * spawned stdio tool children (which inherit process.env) can reach it.
    */
   private ensureInteractionBridge(coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined> {
     this.interactionBridgeStart ??= (async () => {
-      const askUserAllowed = isAdapterSendToolAllowed("ask_user", {
+      const askUserAllowed = isAdapterSendToolAllowed("AskUser", {
         allowedTools: coreConfig.tools.allowedTools,
         disallowedTools: coreConfig.tools.disallowedTools,
       });
@@ -603,7 +603,7 @@ class MonoAgentAppController implements MonoAgentApp {
         this.logger?.info?.("Interaction bridge started.", { url: bridge.url });
         return bridge;
       } catch (error) {
-        this.logger?.warn?.("Interaction bridge failed to start; ask_user and tool progress are unavailable.", {
+        this.logger?.warn?.("Interaction bridge failed to start; AskUser and tool progress are unavailable.", {
           reason: reasonOf(error),
         });
         return undefined;
@@ -863,7 +863,7 @@ class MonoAgentAppController implements MonoAgentApp {
     // posted messages to their producing conversation (in-thread reply continuity).
     const postedMessageIndexPath = resolvePostedMessageIndexPath(await resolveAppArtifactDir(input));
 
-    // The bridge must exist BEFORE the responder is built (ask_user settings
+    // The bridge must exist BEFORE the responder is built (AskUser settings
     // resolution reads the exported bridge env) and before driver.start (sink
     // registration + pending-ask interception).
     const interactionBridge = await this.ensureInteractionBridge(coreConfig);
@@ -1088,7 +1088,7 @@ class MonoAgentAppController implements MonoAgentApp {
     if (settings === undefined) {
       return undefined;
     }
-    this.logger?.info?.("Read-only memory_recall tool enabled.", {
+    this.logger?.info?.("Read-only MemoryRecall tool enabled.", {
       provider: "supermemory" in settings ? "supermemory" : settings.embeddings?.provider ?? "fts-only",
     });
     return createMemoryRecallRuntimeExtension(settings, this.cwd);
@@ -1096,7 +1096,7 @@ class MonoAgentAppController implements MonoAgentApp {
 
   /**
    * Optional CLOUD-ONLY escape hatch: when `memory.supermemory.exposeMcpServer` is on, ALSO inject
-   * Supermemory's hosted MCP server alongside the in-app `memory_recall` tool. The hosted MCP cannot
+   * Supermemory's hosted MCP server alongside the in-app `MemoryRecall` tool. The hosted MCP cannot
    * point at a self-hosted instance, so self-hosters rely on the in-app recall tool; this just adds
    * the cloud server's richer tools for cloud deployments. Requires an apiKey (skipped + warned if
    * absent).
@@ -1136,7 +1136,7 @@ class MonoAgentAppController implements MonoAgentApp {
     }
     const toolNames = adapterSendToolNames(settings);
     this.logger?.info?.("Adapter send tools enabled.", { tools: toolNames });
-    // Forward the posted-message index path so `slack_send_message` links each post
+    // Forward the posted-message index path so `SlackSendMessage` links each post
     // back to the producing conversation (so a later in-thread reply resumes it).
     const indexPath = resolvePostedMessageIndexPath(await resolveAppArtifactDir(input));
     return createAdapterSendToolsRuntimeExtension(this.configPath, this.cwd, toolNames, indexPath);

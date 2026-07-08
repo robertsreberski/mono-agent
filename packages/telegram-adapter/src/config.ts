@@ -59,7 +59,7 @@ export interface TelegramAttachmentsConfig {
   readonly maxBytes?: number;
   /** Per-file download timeout (ms) on the URL branch. Omit for the adapter default (30s). */
   readonly downloadTimeoutMs?: number;
-  /** Upload cap (bytes) for the telegram_send_document/photo tools. Omit for 20 MiB. */
+  /** Upload cap (bytes) for the TelegramSendFile tool. Omit for 20 MiB. */
   readonly maxUploadBytes?: number;
 }
 

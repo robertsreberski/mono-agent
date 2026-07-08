@@ -32,7 +32,7 @@ import {
 } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { adapterSendToolNames, isAdapterSendToolAllowed, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
-import { isKnownToolName, isMcpToolName, suggestToolName } from "./modules/known-tools.js";
+import { canonicalToolName, isKnownToolName, isMcpToolName, suggestToolName } from "./modules/known-tools.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
@@ -148,8 +148,8 @@ export async function validateMonoAgentFolder(
 
 /** Adapter send tools each channel owns; an allowed entry needs BOTH the tool AND the enabled channel. */
 const CHANNEL_OWNED_SEND_TOOLS: Record<string, readonly string[]> = {
-  slack: ["slack_send_message"],
-  telegram: ["telegram_send_message", "telegram_ask", "telegram_send_document", "telegram_send_photo"],
+  slack: ["SlackSendMessage"],
+  telegram: ["TelegramSendMessage", "TelegramAskButtons", "TelegramSendFile"],
 };
 
 /**
@@ -764,18 +764,19 @@ async function toolsSection(config: MonoAgentConfig, input: MonoAgentAppConfigIn
         }
         continue;
       }
-      if (name === "memory_recall") {
-        // memory_recall is auto-provisioned from memory.recallTool.enabled and is NOT
+      // Accept both the new `MemoryRecall` and the legacy `memory_recall` alias.
+      if (canonicalToolName(name) === "MemoryRecall") {
+        // MemoryRecall is auto-provisioned from memory.recallTool.enabled and is NOT
         // allowlist-gated. Listing it is harmless redundancy WHEN recall is on, but a
         // real misconfiguration when it is off (the user expects a recall they won't get).
         if (config.memory?.recallTool?.enabled === true) {
           details.push(
-            "memory_recall in allowedTools has no effect — recall is auto-provisioned by memory.recallTool.enabled (already on). You can remove this entry.",
+            `${name} in allowedTools has no effect — recall is auto-provisioned by memory.recallTool.enabled (already on). You can remove this entry.`,
           );
         } else {
           status = "waiting";
           details.push(
-            "memory_recall is in allowedTools but memory.recallTool.enabled is off — recall will not work. Enable memory.recallTool (or remove this entry).",
+            `${name} is in allowedTools but memory.recallTool.enabled is off — recall will not work. Enable memory.recallTool (or remove this entry).`,
           );
         }
         continue;

@@ -6,7 +6,7 @@ Category: `execution`
 
 ## Responsibility
 
-Reusable orchestration helpers for exposing named collaborator responders to an orchestrator runtime. The first surface is a loopback MCP tool named `ask_collaborator` that lets the orchestrator model decide which collaborator to ask, and how many times, before producing its final answer.
+Reusable orchestration helpers for exposing named collaborator responders to an orchestrator runtime. The first surface is a loopback MCP tool named `AskCollaborator` that lets the orchestrator model decide which collaborator to ask, and how many times, before producing its final answer.
 
 This is a **plugin-tier** package: it publishes to npm in the mono-agent lockstep at the same version as the core packages, but it is not part of the core `@mono-agent/agent-app` dependency closure. Hosts consume it directly as a request-scoped runtime extension — it is not a `channels.plugins[]` channel.
 

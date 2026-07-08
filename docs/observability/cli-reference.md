@@ -183,7 +183,7 @@ mono-agent memory top --limit 20
 | `stats` | Shows backend, configured/effective tier, write mode, recall-tool state, local root, memory/entity counts, store sizes, last capture/access/consolidation signals, and top entities. For Supermemory it reports the known remote endpoint/container and explicitly lists fields that are not knowable locally. |
 | `today` | Renders today's local BuJo daily log. |
 | `show <YYYY-MM-DD>` | Renders one local BuJo daily log by date. Both current `daily/YYYY-MM-DD.md` and older root-level `YYYY-MM-DD.md` layouts are recognized. |
-| `search <query>` | Uses the same recall-store construction as `memory_recall`. Local BuJo/journal search returns scores plus sources; if configured embeddings are unavailable, it retries FTS-only and prints a warning. Supermemory search proxies the remote API. |
+| `search <query>` | Uses the same recall-store construction as `MemoryRecall`. Local BuJo/journal search returns scores plus sources; if configured embeddings are unavailable, it retries FTS-only and prints a warning. Supermemory search proxies the remote API. |
 | `top` | Shows highest-salience local BuJo/journal memories with salience, type/status, and source. Supermemory has no local salience ranking, so it tells you to use search. |
 
 | Flag | Effect |

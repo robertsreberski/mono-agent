@@ -51,7 +51,7 @@ Use this path when the agent needs identity, selected skills, history, and optio
 | Memory substrate (schema, migrations, FTS+vector db, RRF) | `@mono-agent/memory/store` | SQLite storage, BM25 FTS, optional vector index, hybrid recall; re-exports `MemoryStore`/`MemoryBlock`/`MemoryWriteResult` from `@mono-agent/agent-contracts` |
 | Memory engine (all tiers: lite/journal/bujo) | `@mono-agent/memory/bujo` | `BujoMemoryStore` — tier-aware: FTS recall (lite), hybrid recall + decay (journal), LLM capture/reconcile + entity graph + scheduled consolidation (bujo) |
 | Embedding providers | `@mono-agent/memory/search` | Ollama/OpenAI embedding providers used by the store subpath for vector recall |
-| Recall tool surface | `@mono-agent/agent-app` (bundled) | Auto-provisions a read-only `memory_recall` tool (hybrid keyword+semantic search) from `config.memory.recallTool.enabled`; spawns the bundled `mono-agent-memory` stdio child using the same memory root + embeddings as the in-app memory |
+| Recall tool surface | `@mono-agent/agent-app` (bundled) | Auto-provisions a read-only `MemoryRecall` tool (hybrid keyword+semantic search) from `config.memory.recallTool.enabled`; spawns the bundled `mono-agent-memory` stdio child using the same memory root + embeddings as the in-app memory |
 
 Mono-agent selected skills are not auto-selected by description. The host chooses `context.selectedSkills`, and the harness loads those exact bodies.
 

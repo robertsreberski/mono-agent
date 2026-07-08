@@ -93,7 +93,7 @@ describe("validateMonoAgentFolder", () => {
     const configPath = await writeConfig({
       runtime: { model: "pi:openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },
-      tools: { allowedTools: ["slack_send_message", "telegram_send_message"] },
+      tools: { allowedTools: ["SlackSendMessage", "TelegramSendMessage"] },
       slack: {
         enabled: true,
         botToken: "xoxb-test",
@@ -111,8 +111,8 @@ describe("validateMonoAgentFolder", () => {
 
     const tools = sectionById(report, "tools");
     expect(tools.status).toBe("ok");
-    expect(tools.details.join("\n")).toContain("slack_send_message");
-    expect(tools.details.join("\n")).toContain("telegram_send_message");
+    expect(tools.details.join("\n")).toContain("SlackSendMessage");
+    expect(tools.details.join("\n")).toContain("TelegramSendMessage");
   });
 
   it("fails when the identity file is missing", async () => {
@@ -1653,11 +1653,11 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(report.ok).toBe(true);
   });
 
-  it("notes memory_recall as a harmless no-op (status ok) when recall is enabled", async () => {
-    // recallTool enabled → memory_recall is auto-provisioned; listing it is redundant
+  it("notes MemoryRecall as a harmless no-op (status ok) when recall is enabled", async () => {
+    // recallTool enabled → MemoryRecall is auto-provisioned; listing it is redundant
     // but harmless, so it is an INFO note that does not downgrade the tools status.
     const configPath = await writeToolsConfig(
-      { allowedTools: ["memory_recall", "Read"] },
+      { allowedTools: ["MemoryRecall", "Read"] },
       { memory: { mode: "lite", path: dir, recallTool: { enabled: true } } },
     );
 
@@ -1669,9 +1669,9 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(report.ok).toBe(true);
   });
 
-  it("flags memory_recall in allowedTools as waiting when recall is not enabled", async () => {
+  it("flags MemoryRecall in allowedTools as waiting when recall is not enabled", async () => {
     // No recallTool.enabled → recall will not work despite the allowlist entry.
-    const configPath = await writeToolsConfig({ allowedTools: ["memory_recall"] });
+    const configPath = await writeToolsConfig({ allowedTools: ["MemoryRecall"] });
 
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
 
@@ -1695,7 +1695,7 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
   it("Direction A: warns when a send tool is allowed but its channel is disabled", async () => {
     // `Read` keeps the allowlist non-empty and known, so the ONLY reason for
     // waiting is the cross-check (not the empty-allowlist or unknown-name checks).
-    const configPath = await writeToolsConfig({ allowedTools: ["telegram_send_message", "Read"] });
+    const configPath = await writeToolsConfig({ allowedTools: ["TelegramSendMessage", "Read"] });
 
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
 

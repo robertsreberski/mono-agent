@@ -86,12 +86,12 @@ Consequences:
 
 - Setting `tools.allowedTools: []` ("no built-in tools") still leaves every MCP tool available.
 - An MCP tool's availability is governed by whether its server is **declared** in `mcp.json` / `tools.mcpServers`, not by the allowlist. To withhold an MCP tool, remove or don't declare its server.
-- This same model covers app-injected MCP tools such as `memory_recall` and the `ask-collaborator` orchestration tool — they are gated by their own enable switches, not by the allowlist.
+- This same model covers app-injected MCP tools such as `MemoryRecall` and the `ask-collaborator` orchestration tool — they are gated by their own enable switches, not by the allowlist.
 
-The `memory_recall` description is written to direct **proactive** recall: the agent is told to call it whenever context is missing or uncertain, before assuming or asking. This is behavioral guidance, not a gate — `memory_recall`'s availability is still governed by `config.memory.recallTool.enabled`. See [Capture & recall](/memory/capture-and-recall/).
+The `MemoryRecall` description is written to direct **proactive** recall: the agent is told to call it whenever context is missing or uncertain, before assuming or asking. This is behavioral guidance, not a gate — `MemoryRecall`'s availability is still governed by `config.memory.recallTool.enabled`. See [Capture & recall](/memory/capture-and-recall/).
 
 :::caution
-The one exception is the **app-owned adapter send tools** (`slack_send_message`, `telegram_send_message`). Although they are delivered as MCP tools, they are deliberately opt-in: their exact tool names **must** appear in `tools.allowedTools`, in addition to valid `slack.*` / `telegram.*` adapter config. See [Delivery & send tools](/channels/delivery-and-send-tools/).
+The one exception is the **app-owned adapter send tools** (`SlackSendMessage`, `TelegramSendMessage`). Although they are delivered as MCP tools, they are deliberately opt-in: their exact tool names **must** appear in `tools.allowedTools`, in addition to valid `slack.*` / `telegram.*` adapter config. See [Delivery & send tools](/channels/delivery-and-send-tools/).
 :::
 
 For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/policy/). For how `Bash` is confined, see [Sandbox](/tools/sandbox/).
@@ -100,6 +100,6 @@ For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/po
 
 - [Tool policy](/tools/policy/) — the built-in allow/deny model that MCP tools sit outside of.
 - [Tools & guards](/runtime/tools-and-guards/) — built-in tool catalog and runtime guards.
-- [Capture & recall](/memory/capture-and-recall/) — `memory_recall`, an app-injected MCP tool.
+- [Capture & recall](/memory/capture-and-recall/) — `MemoryRecall`, an app-injected MCP tool.
 - [Slack team bot with MCP tools](/playbooks/slack-team-bot-mcp-tools/) — end-to-end playbook wiring MCP servers into a channel agent.
 - Need to register MCP servers from code instead of config? See [Programmatic composition](/programmatic/composition/).

@@ -50,22 +50,55 @@ afterEach(async () => {
 
 describe("isAdapterSendToolAllowed global allow-all", () => {
   it("allows an adapter send tool under the global '*' wildcard", () => {
-    expect(isAdapterSendToolAllowed("slack_send_message", { allowedTools: ["*"] })).toBe(true);
-    expect(isAdapterSendToolAllowed("telegram_send_message", { allowedTools: ["*"] })).toBe(true);
+    expect(isAdapterSendToolAllowed("SlackSendMessage", { allowedTools: ["*"] })).toBe(true);
+    expect(isAdapterSendToolAllowed("TelegramSendMessage", { allowedTools: ["*"] })).toBe(true);
   });
 
   it("lets an explicit deny win over the global '*' wildcard", () => {
     expect(
-      isAdapterSendToolAllowed("slack_send_message", {
+      isAdapterSendToolAllowed("SlackSendMessage", {
         allowedTools: ["*"],
-        disallowedTools: ["slack_send_message"],
+        disallowedTools: ["SlackSendMessage"],
       }),
     ).toBe(false);
   });
 
   it("still denies when neither the global '*' nor a matching entry is present", () => {
-    expect(isAdapterSendToolAllowed("slack_send_message", { allowedTools: [] })).toBe(false);
-    expect(isAdapterSendToolAllowed("slack_send_message", { allowedTools: ["Read"] })).toBe(false);
+    expect(isAdapterSendToolAllowed("SlackSendMessage", { allowedTools: [] })).toBe(false);
+    expect(isAdapterSendToolAllowed("SlackSendMessage", { allowedTools: ["Read"] })).toBe(false);
+  });
+});
+
+describe("isAdapterSendToolAllowed legacy snake_case aliases", () => {
+  it("accepts BOTH the new PascalCase name and its legacy snake_case alias", () => {
+    // New canonical name.
+    expect(isAdapterSendToolAllowed("SlackSendMessage", { allowedTools: ["SlackSendMessage"] })).toBe(true);
+    // Legacy alias in an existing config still enables the renamed tool.
+    expect(isAdapterSendToolAllowed("SlackSendMessage", { allowedTools: ["slack_send_message"] })).toBe(true);
+    expect(isAdapterSendToolAllowed("TelegramSendMessage", { allowedTools: ["telegram_send_message"] })).toBe(true);
+    expect(isAdapterSendToolAllowed("TelegramAskButtons", { allowedTools: ["telegram_ask"] })).toBe(true);
+    expect(isAdapterSendToolAllowed("AskUser", { allowedTools: ["ask_user"] })).toBe(true);
+  });
+
+  it("maps BOTH legacy file-tool aliases onto the collapsed TelegramSendFile tool", () => {
+    expect(isAdapterSendToolAllowed("TelegramSendFile", { allowedTools: ["TelegramSendFile"] })).toBe(true);
+    expect(isAdapterSendToolAllowed("TelegramSendFile", { allowedTools: ["telegram_send_document"] })).toBe(true);
+    expect(isAdapterSendToolAllowed("TelegramSendFile", { allowedTools: ["telegram_send_photo"] })).toBe(true);
+  });
+
+  it("honors a deny listing the legacy alias against a new-name allow (and vice versa)", () => {
+    expect(
+      isAdapterSendToolAllowed("SlackSendMessage", {
+        allowedTools: ["SlackSendMessage"],
+        disallowedTools: ["slack_send_message"],
+      }),
+    ).toBe(false);
+    expect(
+      isAdapterSendToolAllowed("TelegramSendFile", {
+        allowedTools: ["telegram_send_photo"],
+        disallowedTools: ["TelegramSendFile"],
+      }),
+    ).toBe(false);
   });
 });
 
@@ -96,7 +129,7 @@ describe("resolveAdapterSendToolsSettings", () => {
 
     const settings = await resolveAdapterSendToolsSettings(
       { env: {}, cwd: dir, configPath },
-      { allowedTools: ["slack_send_message", "telegram_send_message"] },
+      { allowedTools: ["SlackSendMessage", "TelegramSendMessage"] },
     );
 
     expect(settings).toEqual({
@@ -110,10 +143,10 @@ describe("resolveAdapterSendToolsSettings", () => {
         allowedChatIds: ["42", "-100"],
         allowAllChats: false,
         maxUploadBytes: 20 * 1024 * 1024,
-        tools: { send: true, ask: false, document: false, photo: false },
+        tools: { send: true, ask: false, file: false },
       },
     });
-    expect(adapterSendToolNames(settings!)).toEqual(["slack_send_message", "telegram_send_message"]);
+    expect(adapterSendToolNames(settings!)).toEqual(["SlackSendMessage", "TelegramSendMessage"]);
   });
 
   it("does not expose send tools unless tool policy explicitly allows them", async () => {
@@ -135,7 +168,7 @@ describe("resolveAdapterSendToolsSettings", () => {
     await expect(resolveAdapterSendToolsSettings({ env: {}, cwd: dir, configPath })).resolves.toBeUndefined();
     await expect(resolveAdapterSendToolsSettings(
       { env: {}, cwd: dir, configPath },
-      { allowedTools: ["slack_send_message"], disallowedTools: ["slack_send_message"] },
+      { allowedTools: ["SlackSendMessage"], disallowedTools: ["SlackSendMessage"] },
     )).resolves.toBeUndefined();
     await expect(resolveAdapterSendToolsSettings(
       { env: {}, cwd: dir, configPath },
@@ -146,7 +179,7 @@ describe("resolveAdapterSendToolsSettings", () => {
     )).resolves.toBeUndefined();
   });
 
-  it("exposes telegram_ask (and not telegram_send_message) when only the ask tool is allowed", async () => {
+  it("exposes TelegramAskButtons (and not TelegramSendMessage) when only the ask tool is allowed", async () => {
     const configPath = await writeConfig({
       ...baseConfig(),
       telegram: { enabled: true, botToken: "telegram-token", allowedChatIds: ["42"] },
@@ -154,11 +187,26 @@ describe("resolveAdapterSendToolsSettings", () => {
 
     const settings = await resolveAdapterSendToolsSettings(
       { env: {}, cwd: dir, configPath },
-      { allowedTools: ["telegram_ask"] },
+      { allowedTools: ["TelegramAskButtons"] },
     );
 
     expect(settings?.telegram).toMatchObject({ tools: { send: false, ask: true } });
-    expect(adapterSendToolNames(settings!)).toEqual(["telegram_ask"]);
+    expect(adapterSendToolNames(settings!)).toEqual(["TelegramAskButtons"]);
+  });
+
+  it("resolves the collapsed TelegramSendFile tool from a legacy telegram_send_photo config entry", async () => {
+    const configPath = await writeConfig({
+      ...baseConfig(),
+      telegram: { enabled: true, botToken: "telegram-token", allowedChatIds: ["42"] },
+    });
+
+    const settings = await resolveAdapterSendToolsSettings(
+      { env: {}, cwd: dir, configPath },
+      { allowedTools: ["telegram_send_photo"] },
+    );
+
+    expect(settings?.telegram).toMatchObject({ tools: { send: false, ask: false, file: true } });
+    expect(adapterSendToolNames(settings!)).toEqual(["TelegramSendFile"]);
   });
 
   it("skips an invalid enabled adapter without exposing a partial broken tool", async () => {
@@ -172,7 +220,7 @@ describe("resolveAdapterSendToolsSettings", () => {
     const settings = await resolveAdapterSendToolsSettings(
       { env: {}, cwd: dir, configPath },
       {
-        allowedTools: ["slack_send_message", "telegram_send_message"],
+        allowedTools: ["SlackSendMessage", "TelegramSendMessage"],
         logger: { warn: (message) => { warnings.push(message); } },
       },
     );
@@ -185,7 +233,7 @@ describe("resolveAdapterSendToolsSettings", () => {
 
 describe("adapter send tools MCP spec/env", () => {
   it("passes only the config path through child-process env and points at the adapter-send entrypoint", () => {
-    const allowedTools = ["slack_send_message"];
+    const allowedTools = ["SlackSendMessage"];
     const env = adapterSendToolsMcpEnv("/agent/mono-agent.config.json", allowedTools);
     const spec = adapterSendToolsMcpServerSpec("/agent/mono-agent.config.json", "/agent", allowedTools);
 
@@ -212,7 +260,7 @@ describe("adapter send tools MCP spec/env", () => {
   });
 
   it("forwards the producing conversation id and index path when indexing is configured, and parses them back", () => {
-    const allowedTools = ["slack_send_message"];
+    const allowedTools = ["SlackSendMessage"];
     const indexing = { conversationId: "scheduled-scan#2026-06-22", indexPath: "/agent/artifacts/posted-message-index.jsonl" };
     const env = adapterSendToolsMcpEnv("/agent/mono-agent.config.json", allowedTools, indexing);
 
@@ -223,8 +271,8 @@ describe("adapter send tools MCP spec/env", () => {
     expect(adapterSendToolsChildConfigFromEnv(env, "/agent").indexing).toEqual(indexing);
   });
 
-  it("always forwards the producing conversation id so ask_user can target the conversation without indexing", async () => {
-    const extension = createAdapterSendToolsRuntimeExtension("/agent/mono-agent.config.json", "/agent", ["ask_user"]);
+  it("always forwards the producing conversation id so AskUser can target the conversation without indexing", async () => {
+    const extension = createAdapterSendToolsRuntimeExtension("/agent/mono-agent.config.json", "/agent", ["AskUser"]);
 
     const result = await extension({ request: { conversationId: "telegram:42#2026-07-02" } });
 
@@ -258,16 +306,16 @@ describe("adapter send MCP tools", () => {
 
     await withMcpClient(server, async (client) => {
       const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name).sort()).toEqual(["slack_send_message", "telegram_send_message"]);
+      expect(tools.tools.map((tool) => tool.name).sort()).toEqual(["SlackSendMessage", "TelegramSendMessage"]);
 
       const slackResult = await client.callTool({
-        name: "slack_send_message",
+        name: "SlackSendMessage",
         arguments: { channel: " C1 ", text: "hello", thread_ts: "171.1", unfurl_links: false },
       });
       expect(slackResult.structuredContent).toEqual({ ok: true, channel: "C1", ts: "171.123" });
 
       const telegramResult = await client.callTool({
-        name: "telegram_send_message",
+        name: "TelegramSendMessage",
         arguments: { chat_id: -100, text: "hi", disable_web_page_preview: true },
       });
       expect(telegramResult.structuredContent).toEqual({ ok: true, chat_id: -100, message_id: 77 });
@@ -277,14 +325,14 @@ describe("adapter send MCP tools", () => {
     expect(telegramCalls).toEqual([{ chat_id: -100, text: "hi", disable_web_page_preview: true }]);
   });
 
-  it("telegram_ask posts the question with an inline keyboard of callback options", async () => {
+  it("TelegramAskButtons posts the question with an inline keyboard of callback options", async () => {
     const telegramCalls: TelegramSendMessageParams[] = [];
     const settings: AdapterSendToolsSettings = {
       telegram: {
         botToken: "telegram-token",
         allowedChatIds: ["42"],
         allowAllChats: false,
-        tools: { send: false, ask: true, document: false, photo: false },
+        tools: { send: false, ask: true, file: false },
       },
     };
     const server = await createAdapterSendToolsServer(settings, {
@@ -298,10 +346,10 @@ describe("adapter send MCP tools", () => {
 
     await withMcpClient(server, async (client) => {
       const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name)).toEqual(["telegram_ask"]);
+      expect(tools.tools.map((tool) => tool.name)).toEqual(["TelegramAskButtons"]);
 
       const result = await client.callTool({
-        name: "telegram_ask",
+        name: "TelegramAskButtons",
         arguments: { chat_id: 42, question: "Deploy now?", options: ["Approve", "Reject"] },
       });
       expect(result.structuredContent).toMatchObject({ ok: true, chat_id: 42, message_id: 88 });
@@ -317,14 +365,14 @@ describe("adapter send MCP tools", () => {
     });
   });
 
-  it("telegram_send_document uploads base64 bytes with the given filename and caption", async () => {
+  it("TelegramSendFile uploads base64 bytes with the given filename and caption", async () => {
     const docCalls: Array<{ chat_id: unknown; filename: string; bytes: number; caption?: string }> = [];
     const settings: AdapterSendToolsSettings = {
       telegram: {
         botToken: "telegram-token",
         allowedChatIds: ["42"],
         allowAllChats: false,
-        tools: { send: false, ask: false, document: true, photo: false },
+        tools: { send: false, ask: false, file: true },
       },
     };
     const server = await createAdapterSendToolsServer(settings, {
@@ -345,11 +393,11 @@ describe("adapter send MCP tools", () => {
     const data = Buffer.from("hello report").toString("base64");
     await withMcpClient(server, async (client) => {
       const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name)).toEqual(["telegram_send_document"]);
+      expect(tools.tools.map((tool) => tool.name)).toEqual(["TelegramSendFile"]);
 
       const result = await client.callTool({
-        name: "telegram_send_document",
-        arguments: { chat_id: 42, data, filename: "report.txt", caption: "Daily report" },
+        name: "TelegramSendFile",
+        arguments: { kind: "document", chat_id: 42, data, filename: "report.txt", caption: "Daily report" },
       });
       expect(result.structuredContent).toMatchObject({ ok: true, chat_id: 42, message_id: 91, filename: "report.txt" });
     });
@@ -357,13 +405,13 @@ describe("adapter send MCP tools", () => {
     expect(docCalls).toEqual([{ chat_id: 42, filename: "report.txt", bytes: "hello report".length, caption: "Daily report" }]);
   });
 
-  it("telegram_send_document rejects when neither data nor path is provided", async () => {
+  it("TelegramSendFile rejects when neither data nor path is provided", async () => {
     const settings: AdapterSendToolsSettings = {
       telegram: {
         botToken: "telegram-token",
         allowedChatIds: ["42"],
         allowAllChats: false,
-        tools: { send: false, ask: false, document: true, photo: false },
+        tools: { send: false, ask: false, file: true },
       },
     };
     const sendDocument = vi.fn();
@@ -371,8 +419,8 @@ describe("adapter send MCP tools", () => {
 
     await withMcpClient(server, async (client) => {
       const result = await client.callTool({
-        name: "telegram_send_document",
-        arguments: { chat_id: 42, filename: "x.txt" },
+        name: "TelegramSendFile",
+        arguments: { kind: "document", chat_id: 42, filename: "x.txt" },
       });
       expect(result.isError).toBe(true);
     });
@@ -380,21 +428,21 @@ describe("adapter send MCP tools", () => {
     expect(sendDocument).not.toHaveBeenCalled();
   });
 
-  it("telegram_ask rejects a chat outside the adapter allowlist before calling the client", async () => {
+  it("TelegramAskButtons rejects a chat outside the adapter allowlist before calling the client", async () => {
     const telegram = { sendMessage: vi.fn() };
     const settings: AdapterSendToolsSettings = {
       telegram: {
         botToken: "telegram-token",
         allowedChatIds: ["42"],
         allowAllChats: false,
-        tools: { send: false, ask: true, document: false, photo: false },
+        tools: { send: false, ask: true, file: false },
       },
     };
     const server = await createAdapterSendToolsServer(settings, { telegram });
 
     await withMcpClient(server, async (client) => {
       const result = await client.callTool({
-        name: "telegram_ask",
+        name: "TelegramAskButtons",
         arguments: { chat_id: 999, question: "Deploy?", options: ["Yes", "No"] },
       });
       expect(result.isError).toBe(true);
@@ -410,21 +458,21 @@ describe("adapter send MCP tools", () => {
 
     await withMcpClient(server, async (client) => {
       const slackResult = await client.callTool({
-        name: "slack_send_message",
+        name: "SlackSendMessage",
         arguments: { channel: "C999", text: "blocked" },
       });
       expect(slackResult.isError).toBe(true);
       expect(slackResult.content).toEqual([
-        { type: "text", text: "slack_send_message: channel is not allowed by Slack adapter config." },
+        { type: "text", text: "SlackSendMessage: channel is not allowed by Slack adapter config." },
       ]);
 
       const telegramResult = await client.callTool({
-        name: "telegram_send_message",
+        name: "TelegramSendMessage",
         arguments: { chat_id: 999, text: "blocked" },
       });
       expect(telegramResult.isError).toBe(true);
       expect(telegramResult.content).toEqual([
-        { type: "text", text: "telegram_send_message: chat_id is not allowed by Telegram adapter config." },
+        { type: "text", text: "TelegramSendMessage: chat_id is not allowed by Telegram adapter config." },
       ]);
     });
 
@@ -434,7 +482,7 @@ describe("adapter send MCP tools", () => {
 });
 
 describe("adapter send tool posted-message indexing", () => {
-  it("records a successful slack_send_message as (channel, ts) → producing conversation, de-bucketed", async () => {
+  it("records a successful SlackSendMessage as (channel, ts) → producing conversation, de-bucketed", async () => {
     const indexPath = resolvePostedMessageIndexPath(dir);
     const server = await createAdapterSendToolsServer(
       bothAdaptersSettings(),
@@ -449,17 +497,17 @@ describe("adapter send tool posted-message indexing", () => {
     );
 
     await withMcpClient(server, async (client) => {
-      const result = await client.callTool({ name: "slack_send_message", arguments: { channel: "C1", text: "hello" } });
+      const result = await client.callTool({ name: "SlackSendMessage", arguments: { channel: "C1", text: "hello" } });
       expect(result.structuredContent).toMatchObject({ ok: true, channel: "C1", ts: "170.000100" });
     });
 
     expect(await lookupProducingConversation(indexPath, "C1", "170.000100")).toBe("scheduled-scan");
   });
 
-  it("end-to-end: a scan's slack_send_message post lets a later in-thread reply resume the scan conversation", async () => {
+  it("end-to-end: a scan's SlackSendMessage post lets a later in-thread reply resume the scan conversation", async () => {
     const indexPath = resolvePostedMessageIndexPath(dir);
 
-    // 1) Producer — the scheduled scan posts its summary via slack_send_message,
+    // 1) Producer — the scheduled scan posts its summary via SlackSendMessage,
     //    running under the synthetic cron conversationId.
     const producer = await createAdapterSendToolsServer(
       bothAdaptersSettings(),
@@ -473,7 +521,7 @@ describe("adapter send tool posted-message indexing", () => {
       { conversationId: "scheduled-scan#2026-06-22", indexPath },
     );
     await withMcpClient(producer, async (client) => {
-      await client.callTool({ name: "slack_send_message", arguments: { channel: "C1", text: "scheduled scan: suggested next step" } });
+      await client.callTool({ name: "SlackSendMessage", arguments: { channel: "C1", text: "scheduled scan: suggested next step" } });
     });
     // Sanity: the producer wrote the linkage.
     expect(await lookupProducingConversation(indexPath, "C1", "170.000100")).toBe("scheduled-scan");
@@ -512,7 +560,7 @@ describe("adapter send tool posted-message indexing", () => {
     });
 
     await withMcpClient(server, async (client) => {
-      await client.callTool({ name: "slack_send_message", arguments: { channel: "C1", text: "hello" } });
+      await client.callTool({ name: "SlackSendMessage", arguments: { channel: "C1", text: "hello" } });
     });
 
     expect(await lookupProducingConversation(indexPath, "C1", "171.123")).toBeUndefined();
@@ -523,7 +571,7 @@ describe("adapter send tool app composition", () => {
   it("injects adapter send MCP server into app-served runtime requests", async () => {
     const configPath = await writeConfig({
       ...baseConfig(),
-      tools: { allowedTools: ["slack_send_message", "telegram_send_message"], disallowedTools: [] },
+      tools: { allowedTools: ["SlackSendMessage", "TelegramSendMessage"], disallowedTools: [] },
       webhook: { enabled: true },
       slack: {
         enabled: true,
@@ -570,7 +618,7 @@ describe("adapter send tool app composition", () => {
     expect(server).toMatchObject({ type: "stdio", command: process.execPath, cwd: dir });
     expect(server?.env).toMatchObject({
       MONO_AGENT_ADAPTER_TOOLS_CONFIG_PATH: configPath,
-      MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS: JSON.stringify(["slack_send_message", "telegram_send_message"]),
+      MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS: JSON.stringify(["SlackSendMessage", "TelegramSendMessage"]),
     });
     expect(JSON.stringify(server?.env)).not.toContain("xoxb-slack");
     expect(JSON.stringify(server?.env)).not.toContain("telegram-token");
@@ -606,7 +654,7 @@ function bothAdaptersSettings(): AdapterSendToolsSettings {
       botToken: "telegram-token",
       allowedChatIds: ["42", "-100"],
       allowAllChats: false,
-      tools: { send: true, ask: false, document: false, photo: false },
+      tools: { send: true, ask: false, file: false },
     },
   };
 }
@@ -681,8 +729,8 @@ function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => 
   return fake;
 }
 
-describe("ask_user tool", () => {
-  it("resolves askUser settings and the tool name when the policy allows ask_user and the bridge env is present", async () => {
+describe("AskUser tool", () => {
+  it("resolves askUser settings and the tool name when the policy allows AskUser and the bridge env is present", async () => {
     const configPath = await writeConfig(baseConfig());
 
     const settings = await resolveAdapterSendToolsSettings(
@@ -695,7 +743,7 @@ describe("ask_user tool", () => {
         cwd: dir,
         configPath,
       },
-      { allowedTools: ["ask_user"] },
+      { allowedTools: ["AskUser"] },
     );
 
     expect(settings?.askUser).toEqual({
@@ -703,7 +751,7 @@ describe("ask_user tool", () => {
       bridgeToken: "bridge-token",
       timeoutMs: 5000,
     });
-    expect(adapterSendToolNames(settings as AdapterSendToolsSettings)).toEqual(["ask_user"]);
+    expect(adapterSendToolNames(settings as AdapterSendToolsSettings)).toEqual(["AskUser"]);
   });
 
   it("omits askUser when the interaction bridge env is missing", async () => {
@@ -711,7 +759,7 @@ describe("ask_user tool", () => {
 
     const settings = await resolveAdapterSendToolsSettings(
       { env: {}, cwd: dir, configPath },
-      { allowedTools: ["ask_user"] },
+      { allowedTools: ["AskUser"] },
     );
 
     expect(settings).toBeUndefined();
@@ -724,7 +772,7 @@ describe("ask_user tool", () => {
           botToken: "telegram-token",
           allowedChatIds: ["42"],
           allowAllChats: false,
-          tools: { send: true, ask: false, document: false, photo: false },
+          tools: { send: true, ask: false, file: false },
         },
         askUser: { bridgeUrl: "http://127.0.0.1:1", bridgeToken: "t", timeoutMs: 1_000 },
       },
@@ -732,7 +780,7 @@ describe("ask_user tool", () => {
     );
     await withMcpClient(server, async (client) => {
       const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name)).toEqual(["telegram_send_message"]);
+      expect(tools.tools.map((tool) => tool.name)).toEqual(["TelegramSendMessage"]);
     });
   });
 
@@ -758,7 +806,7 @@ describe("ask_user tool", () => {
         {},
       );
       await withMcpClient(server, async (client) => {
-        const pending = client.callTool({ name: "ask_user", arguments: { question: "Who is speaking?" } });
+        const pending = client.callTool({ name: "AskUser", arguments: { question: "Who is speaking?" } });
         await vi.waitFor(() => {
           expect(posts).toEqual(["Who is speaking?"]);
         });
@@ -796,7 +844,7 @@ describe("ask_user tool", () => {
         {},
       );
       await withMcpClient(server, async (client) => {
-        const result = await client.callTool({ name: "ask_user", arguments: { question: "second?" } });
+        const result = await client.callTool({ name: "AskUser", arguments: { question: "second?" } });
         expect(result.structuredContent).toMatchObject({ answered: false, reason: "already_pending" });
       });
     } finally {
@@ -805,7 +853,7 @@ describe("ask_user tool", () => {
   });
 });
 
-describe("telegram_send_document path upload", () => {
+describe("TelegramSendFile path upload", () => {
   it("uploads a workspace file by path, deriving the filename from the basename", async () => {
     const filePath = join(dir, "transcript.md");
     await writeFile(filePath, "# Transcript\n\nhello", "utf8");
@@ -818,7 +866,7 @@ describe("telegram_send_document path upload", () => {
         botToken: "telegram-token",
         allowedChatIds: ["42"],
         allowAllChats: false,
-        tools: { send: false, ask: false, document: true, photo: false },
+        tools: { send: false, ask: false, file: true },
       },
     };
     const server = await createAdapterSendToolsServer(settings, {
@@ -827,8 +875,8 @@ describe("telegram_send_document path upload", () => {
 
     await withMcpClient(server, async (client) => {
       const result = await client.callTool({
-        name: "telegram_send_document",
-        arguments: { chat_id: 42, path: filePath, caption: "your transcript" },
+        name: "TelegramSendFile",
+        arguments: { kind: "document", chat_id: 42, path: filePath, caption: "your transcript" },
       });
       expect(result.structuredContent).toMatchObject({ ok: true, filename: "transcript.md" });
     });
@@ -860,7 +908,7 @@ describe("self-hosted server send tools", () => {
 
     const settings = await resolveAdapterSendToolsSettings(
       { env: {}, cwd: dir, configPath },
-      { allowedTools: ["telegram_send_document"] },
+      { allowedTools: ["TelegramSendFile"] },
     );
 
     expect(settings?.telegram).toMatchObject({
@@ -877,7 +925,7 @@ describe("self-hosted server send tools", () => {
 
     const settings = await resolveAdapterSendToolsSettings(
       { env: {}, cwd: dir, configPath },
-      { allowedTools: ["telegram_send_document"] },
+      { allowedTools: ["TelegramSendFile"] },
     );
 
     expect(settings?.telegram?.maxUploadBytes).toBe(20 * 1024 * 1024);
@@ -898,7 +946,7 @@ describe("self-hosted server send tools", () => {
         allowAllChats: false,
         apiRoot: "http://127.0.0.1:8081",
         maxUploadBytes: 20 * 1024 * 1024,
-        tools: { send: false, ask: false, document: true, photo: false },
+        tools: { send: false, ask: false, file: true },
       },
     };
     const server = await createAdapterSendToolsServer(settings, {
@@ -907,8 +955,8 @@ describe("self-hosted server send tools", () => {
 
     await withMcpClient(server, async (client) => {
       const result = await client.callTool({
-        name: "telegram_send_document",
-        arguments: { chat_id: 42, path: filePath, caption: "your transcript" },
+        name: "TelegramSendFile",
+        arguments: { kind: "document", chat_id: 42, path: filePath, caption: "your transcript" },
       });
       expect(result.structuredContent).toMatchObject({ ok: true });
     });
@@ -930,7 +978,7 @@ describe("self-hosted server send tools", () => {
         allowAllChats: false,
         apiRoot: "http://127.0.0.1:8081",
         maxUploadBytes: 20 * 1024 * 1024,
-        tools: { send: false, ask: false, document: true, photo: false },
+        tools: { send: false, ask: false, file: true },
       },
     };
     const server = await createAdapterSendToolsServer(settings, {
@@ -939,8 +987,8 @@ describe("self-hosted server send tools", () => {
 
     await withMcpClient(server, async (client) => {
       const result = await client.callTool({
-        name: "telegram_send_document",
-        arguments: { chat_id: 42, path: filePath },
+        name: "TelegramSendFile",
+        arguments: { kind: "document", chat_id: 42, path: filePath },
       });
       expect(result.structuredContent).toMatchObject({ ok: true });
     });
@@ -958,7 +1006,7 @@ describe("self-hosted server send tools", () => {
         allowedChatIds: ["42"],
         allowAllChats: false,
         maxUploadBytes: 8,
-        tools: { send: false, ask: false, document: true, photo: false },
+        tools: { send: false, ask: false, file: true },
       },
     };
     const server = await createAdapterSendToolsServer(settings, {
@@ -967,8 +1015,8 @@ describe("self-hosted server send tools", () => {
 
     await withMcpClient(server, async (client) => {
       const result = await client.callTool({
-        name: "telegram_send_document",
-        arguments: { chat_id: 42, data: Buffer.from("way more than eight bytes").toString("base64"), filename: "x.md" },
+        name: "TelegramSendFile",
+        arguments: { kind: "document", chat_id: 42, data: Buffer.from("way more than eight bytes").toString("base64"), filename: "x.md" },
       });
       expect(result.isError).toBe(true);
       expect(JSON.stringify(result.content)).toContain("upload cap");

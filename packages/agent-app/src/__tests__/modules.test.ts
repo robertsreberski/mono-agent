@@ -104,7 +104,7 @@ describe("known-tools", () => {
   it("recognizes exact built-in and adapter-send tool names, case-sensitively", () => {
     expect(isKnownToolName("Read")).toBe(true);
     expect(isKnownToolName("read")).toBe(false);
-    expect(isKnownToolName("telegram_ask")).toBe(true);
+    expect(isKnownToolName("TelegramAskButtons")).toBe(true);
     expect(isKnownToolName("nope")).toBe(false);
   });
 

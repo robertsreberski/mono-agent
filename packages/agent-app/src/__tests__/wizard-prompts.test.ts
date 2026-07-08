@@ -63,10 +63,10 @@ describe("wizard prompt builders", () => {
     const values = options.map((option) => option.value);
     expect(values.slice(0, BUILTIN_TOOL_NAMES.length)).toEqual([...BUILTIN_TOOL_NAMES]);
     expect(values.slice(BUILTIN_TOOL_NAMES.length)).toEqual([
-      "telegram_send_message",
-      "telegram_ask",
+      "TelegramSendMessage",
+      "TelegramAskButtons",
     ]);
-    const ask = options.find((option) => option.value === "telegram_ask");
+    const ask = options.find((option) => option.value === "TelegramAskButtons");
     expect(ask?.hint).toContain("Telegram is on");
   });
 

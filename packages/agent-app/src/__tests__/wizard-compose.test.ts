@@ -156,8 +156,8 @@ describe("wizard composer — per-preset invariants", () => {
 
   it("telegram-assistant: telegram send tools + bujo memory on the composer model", () => {
     const plan = composeWizardPlan(presetAnswers(PRESET_CATALOG.find((p) => p.id === "telegram-assistant")!), CTX);
-    expect(plan.configJson.tools?.allowedTools).toContain("telegram_send_message");
-    expect(plan.configJson.tools?.allowedTools).toContain("telegram_ask");
+    expect(plan.configJson.tools?.allowedTools).toContain("TelegramSendMessage");
+    expect(plan.configJson.tools?.allowedTools).toContain("TelegramAskButtons");
     expect(plan.configJson.memory?.mode).toBe("bujo");
     expect(plan.configJson.memory?.llm?.model).toBe("claude:claude-sonnet-4-6");
   });

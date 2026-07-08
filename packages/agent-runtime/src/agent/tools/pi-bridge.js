@@ -309,7 +309,7 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
 }
 
 /**
- * Progressive skill disclosure: exposes a `read_skill` tool so the agent can pull
+ * Progressive skill disclosure: exposes a `ReadSkill` tool so the agent can pull
  * a named skill's FULL body on demand (skills are otherwise injected index-only).
  *
  * Two input shapes are accepted, matching what hosts pass:
@@ -318,7 +318,7 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
  *    back-compat `dataDir` (skills under `<dataDir>/skills`). This path is UNCHANGED.
  *  - pi's neutral `Skill` shape (`{name, description, content, filePath, ...}`,
  *    what worklab passes): each skill carries an absolute `filePath`. When NO shared
- *    `skillsRoot`/`dataDir` is configured, read_skill derives each skill's root from
+ *    `skillsRoot`/`dataDir` is configured, ReadSkill derives each skill's root from
  *    its own `filePath` — pi has no lazy-body equivalent, so the body is still read
  *    from disk on demand rather than injected up front.
  *
@@ -361,7 +361,7 @@ function readSkillTool(skillNames = [], { skillsRoot, dataDir, skills = [] } = {
   if (!enumNames.length) return null;
 
   return {
-    name: "read_skill",
+    name: "ReadSkill",
     label: "Read Skill",
     description: "Load the full instructions for a named skill.",
     parameters: objectSchema({ name: { type: "string", enum: enumNames } }, ["name"]),
@@ -504,9 +504,9 @@ export function getPiBuiltinTools(allowedTools, {
   const names = selected.filter((name) => !denied.has(name));
   const tools = names.map((name) => all[name]).filter(Boolean);
   const skillTool = readSkillTool(skillNames, { skillsRoot, dataDir, skills });
-  // Deny-check both the future PascalCase name and the legacy snake_case (the
-  // rename lands in a later task) so the denylist works across the transition.
-  if (skillTool && !denied.has("ReadSkill") && !denied.has("read_skill")) tools.push(skillTool);
+  // Deny-check the canonical PascalCase name AND the legacy snake_case alias so
+  // an old denylist keeps disabling the tool after the rename.
+  if (skillTool && !denied.has("ReadSkill") && !denied.has("read_skill" /* legacy alias */)) tools.push(skillTool);
   const gated = approvalManager
     ? wrapToolsWithApprovalGate(tools, approvalManager, { model: approvalModel })
     : tools;

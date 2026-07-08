@@ -6,7 +6,7 @@ sidebar:
 
 # Delivery, streaming & send tools
 
-This page explains how mono-agent delivers answers across channels (final-only vs. token streaming), which delivery and message-text knobs are config vs. code-only, how the app-owned MCP send tools (`slack_send_message`, `telegram_send_message`) let the agent push messages back through an already-configured chat adapter, and how native proactive delivery works for cron/webhook turns.
+This page explains how mono-agent delivers answers across channels (final-only vs. token streaming), which delivery and message-text knobs are config vs. code-only, how the app-owned MCP send tools (`SlackSendMessage`, `TelegramSendMessage`) let the agent push messages back through an already-configured chat adapter, and how native proactive delivery works for cron/webhook turns.
 
 ## Delivery semantics per channel
 
@@ -50,30 +50,29 @@ Because these are code-only, they live in your driver wiring rather than `mono-a
 
 mono-agent derives MCP **send tools** from already-enabled chat adapters so the agent can push a message back into a chat from inside a turn:
 
-- `slack_send_message` — send through the configured Slack adapter
-- `telegram_send_message` — send through the configured Telegram adapter
-- `telegram_ask` — post an inline-keyboard question (2–8 option labels) through the Telegram adapter
-- `telegram_send_document` — upload and send a file through the Telegram adapter
-- `telegram_send_photo` — upload and send an image (shown inline) through the Telegram adapter
-- `ask_user` — ask ONE free-text question on the current conversation and **block until the user replies** (channel-agnostic; see below)
+- `SlackSendMessage` — send through the configured Slack adapter
+- `TelegramSendMessage` — send through the configured Telegram adapter
+- `TelegramAskButtons` — post an inline-keyboard question (2–8 option labels) through the Telegram adapter
+- `TelegramSendFile` — upload and send a file (`kind:"document"`) or an inline image (`kind:"photo"`) through the Telegram adapter
+- `AskUser` — ask ONE free-text question on the current conversation and **block until the user replies** (channel-agnostic; see below)
 
 Coverage: `config`. Two conditions must both hold for a send tool to work:
 
-1. The **exact tool name** must appear in `tools.allowedTools` (e.g. `slack_send_message`, `telegram_send_message`, `telegram_ask`, `telegram_send_document`, `telegram_send_photo`). The fail-closed tool policy excludes them otherwise.
-2. The corresponding adapter must have **valid config** — `slack.*` for `slack_send_message`, `telegram.*` for the Telegram tools — which supplies the credentials and the destination bounds.
+1. The **exact tool name** must appear in `tools.allowedTools` (e.g. `SlackSendMessage`, `TelegramSendMessage`, `TelegramAskButtons`, `TelegramSendFile`). The fail-closed tool policy excludes them otherwise.
+2. The corresponding adapter must have **valid config** — `slack.*` for `SlackSendMessage`, `telegram.*` for the Telegram tools — which supplies the credentials and the destination bounds.
 
 ### Telegram interactive send tools
 
-`telegram_ask`, `telegram_send_document`, and `telegram_send_photo` (added by the Telegram interactivity work) are gated exactly like the plain send tools above: their exact name in `tools.allowedTools` plus valid `telegram.*` config, with the adapter chat allowlist (`telegram.allowedChatIds` / `telegram.allowAllChats`) remaining the destination boundary.
+`TelegramAskButtons` and `TelegramSendFile` (added by the Telegram interactivity work) are gated exactly like the plain send tools above: their exact name in `tools.allowedTools` plus valid `telegram.*` config, with the adapter chat allowlist (`telegram.allowedChatIds` / `telegram.allowAllChats`) remaining the destination boundary.
 
-- **`telegram_ask`** posts an inline-keyboard question with **2–8** option labels and **returns immediately** — it does not block the turn waiting for an answer. When the user taps a button, the tapped label arrives as a **new message on the same conversation**, so the agent continues on the next turn (just like a typed reply). Allowing `telegram_ask` is also the single switch that subscribes the bot to `callback_query` updates and wires the tap handler. See [Telegram](/channels/telegram/) for the full interactivity setup.
-- **`telegram_send_document`** and **`telegram_send_photo`** upload and send a file/image to an allowed chat. Each accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path` (filename derived from the path), plus an optional `caption`. Uploads are bounded by the adapter's attachment size cap (~20 MB).
+- **`TelegramAskButtons`** posts an inline-keyboard question with **2–8** option labels and **returns immediately** — it does not block the turn waiting for an answer. When the user taps a button, the tapped label arrives as a **new message on the same conversation**, so the agent continues on the next turn (just like a typed reply). Allowing `TelegramAskButtons` is also the single switch that subscribes the bot to `callback_query` updates and wires the tap handler. See [Telegram](/channels/telegram/) for the full interactivity setup.
+- **`TelegramSendFile`** uploads and sends a file (`kind:"document"`) or an inline image (`kind:"photo"`) to an allowed chat. It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path` (filename derived from the path), plus an optional `caption`. Uploads are bounded by the adapter's attachment size cap (~20 MB).
 
 The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels`, `telegram.allowedChatIds` / `telegram.allowAllChats`) **remains the destination boundary**: allowing the tool does not widen where the agent may send. A send to a destination outside the adapter allowlist is refused.
 
-### `ask_user` — blocking free-text ask (interaction bridge)
+### `AskUser` — blocking free-text ask (interaction bridge)
 
-`ask_user` is the blocking counterpart to `telegram_ask`: the tool call posts a free-text question to the current conversation's chat and **waits for the user's next message**, which is returned as the tool result — so the agent keeps its full mid-turn context. It is channel-agnostic and backed by the app's **interaction bridge** (a loopback HTTP registry started automatically when `ask_user` is in `tools.allowedTools`; tune it via the `interaction` config block).
+`AskUser` is the blocking counterpart to `TelegramAskButtons`: the tool call posts a free-text question to the current conversation's chat and **waits for the user's next message**, which is returned as the tool result — so the agent keeps its full mid-turn context. It is channel-agnostic and backed by the app's **interaction bridge** (a loopback HTTP registry started automatically when `AskUser` is in `tools.allowedTools`; tune it via the `interaction` config block).
 
 - While an ask is pending, the user's next **plain-text** message on that chat is consumed as the ANSWER (acknowledged with a 👍 reaction) and never runs as a turn; media and `/`-commands pass through normally, and `/cancel` fails the pending ask.
 - One pending ask per conversation: consolidate everything into a single question. A second concurrent ask returns an "already pending" result.
@@ -84,7 +83,7 @@ The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels
 ```json
 {
   "tools": {
-    "allowedTools": ["Read", "Grep", "slack_send_message", "telegram_send_message", "telegram_ask"]
+    "allowedTools": ["Read", "Grep", "SlackSendMessage", "TelegramSendMessage", "TelegramAskButtons"]
   },
   "slack": {
     "enabled": true,
@@ -131,7 +130,7 @@ To send nothing for a tick or request, the agent either produces an **empty fina
 
 ### How native notification differs from send tools
 
-| | **Native notify** (`notify: true`) | **Send tools** (`slack_send_message` / `telegram_send_message`) |
+| | **Native notify** (`notify: true`) | **Send tools** (`SlackSendMessage` / `TelegramSendMessage`) |
 |---|---|---|
 | Effect | Posts the final answer **verbatim** and records it as a remembered turn | Posts a message into a **channel** (side-channel; not a turn) |
 | Available on | **cron / webhook turns** (opt-in per job/endpoint) | any turn |

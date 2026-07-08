@@ -47,9 +47,9 @@ export interface TelegramAdapterStartOptions {
   readonly commands?: readonly TelegramCommandConfig[];
   /** Per-state lifecycle reactions (👀/👍/👎). Omit to disable. */
   readonly reactions?: TelegramReactionsConfig;
-  /** Subscribe to and handle inline-keyboard taps (telegram_ask callbacks). Default off. */
+  /** Subscribe to and handle inline-keyboard taps (TelegramAskButtons callbacks). Default off. */
   readonly callbacksEnabled?: boolean;
-  /** Pending-ask interceptor for blocking ask_user round-trips (checked pre-admission). */
+  /** Pending-ask interceptor for blocking AskUser round-trips (checked pre-admission). */
   readonly pendingAsks?: TelegramPendingAsks;
   /** Base URL of a self-hosted Bot API server (API calls + file downloads). Omit for api.telegram.org. */
   readonly apiRoot?: string;
@@ -84,7 +84,7 @@ export interface TelegramAdapterStartResult {
    * channel — owns the message.
    */
   notify(chatId: TelegramChatId, text: string, options?: TelegramNotifyOptions): Promise<TelegramNotifyResult>;
-  /** Post a plain message directly (no model turn, no history) — ask_user questions. */
+  /** Post a plain message directly (no model turn, no history) — AskUser questions. */
   post(chatId: TelegramChatId, text: string): Promise<void>;
   /** Post or edit-in-place a keyed tool-progress status line (best-effort). */
   postStatus(

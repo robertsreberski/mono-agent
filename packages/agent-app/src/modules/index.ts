@@ -16,10 +16,12 @@ export {
   ADAPTER_SEND_TOOL_NAMES,
   ALLOW_ALL_TOOLS,
   BUILTIN_TOOL_NAMES,
+  canonicalToolName,
   DEFAULT_SAFE_TOOLS,
   isAllowAllTools,
   isKnownToolName,
   isMcpToolName,
+  LEGACY_TOOL_ALIASES,
   suggestToolName,
 } from "./known-tools.js";
 
