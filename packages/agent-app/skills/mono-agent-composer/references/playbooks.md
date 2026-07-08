@@ -44,7 +44,7 @@ Flow, check whether one of these fits and adapt it. Verify every key against
   "concurrency": { "maxConcurrentRuns": 4, "maxPendingRuns": 8 }
 }
 ```
-**Steps:** create a Slack app (Socket Mode app token + bot token) → `mono-agent init` → write `mcp.json` and add the MCP tool's exact name to `allowedTools` → add slack + `SlackSendMessage` → `validate` → `start`.
+**Steps:** create a Slack app (Socket Mode app token + bot token) → `mono-agent init` (allow-all by default) → write `mcp.json` (the MCP tool becomes available from the server declaration — MCP tools aren't gated by `allowedTools`) → add slack; `SlackSendMessage` is auto-available under allow-all, or name it if you narrow to a specific allowlist → `validate` → `start`.
 **Smoke:** mention the bot in an allowed channel; confirm the 👀 reaction, final answer, the MCP tool firing in the artifact, and that `SlackSendMessage` posts only to allowed channels.
 
 ## 3. Fully local Ollama agent (no cloud)
@@ -160,16 +160,16 @@ const ext = createCollaboratorToolRuntimeExtension({
 ## 9. Sandboxed code agent (loopback only, deny .env)
 **For:** a security team deploying an internal code assistant.
 **Goal:** read repos + run Bash inside the native srt sandbox with loopback-only network access and protected secrets.
-**Features:** `sandbox.mode`, `sandbox.network-policy`, `sandbox.filesystem-scopes`, `sandbox.fallback`, `tool-policy.allowlist`, `memory.journal`.
+**Features:** `sandbox.mode`, `sandbox.network-policy`, `sandbox.filesystem-scopes`, `sandbox.fallback`, `tool-policy.allow-all`, `memory.journal`.
 
 ```json
 {
   "runtime": { "model": "claude:claude-sonnet-4-6" },
-  "tools": { "allowedTools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"] },
+  "tools": { "allowedTools": ["*"] },
   "sandbox": { "mode": "native", "network": { "mode": "localhost" }, "readableRoots": ["."], "writableRoots": ["."], "denyWrite": [".env", ".env.*", ".git/config", ".git/hooks/**"], "fallback": "fail-closed" }
 }
 ```
-**Steps:** `mono-agent init --memory journal` → allow Read/Write/Edit/Glob/Grep/Bash → `sandbox.mode native` + `network localhost` + deny-write defaults → keep `fallback: fail-closed` (do NOT set `unsafe-host-process`) → `validate` → `start`.
+**Steps:** `mono-agent init --memory journal` → leave tools at the allow-all default (`["*"]`); the **sandbox**, not an allowlist, is what constrains the code tools → `sandbox.mode native` + `network localhost` + deny-write defaults → keep `fallback: fail-closed` (do NOT set `unsafe-host-process`) → `validate` → `start`.
 **Smoke:** ask it to read a file + run Bash (works), then fetch an external URL or write `.env` (both blocked in the artifact). Note: provider CLI bridges run their own tool loops and may not be srt-wrapped — pair with provider sandboxing.
 
 ## 10. Phoenix-observed agent with the TUI

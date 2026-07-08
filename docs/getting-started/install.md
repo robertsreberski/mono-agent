@@ -106,7 +106,7 @@ cd my-agent
 mono-agent init
 ```
 
-On a terminal with no flags, `mono-agent init` is a **step-by-step wizard**: start from a [preset](/reference/recipes/) or go fully custom, then answer model, channels, memory, **tools** (a multiselect pre-checked with a safe default and your channels' send tools — so you don't end up with a tool-less agent), sandbox, and observability, before it scaffolds and immediately runs `validate`. Pass `--yes` or any flag (or run in a non-TTY) to write the scaffold non-interactively instead:
+On a terminal with no flags, `mono-agent init` is a **step-by-step wizard**: start from a [preset](/reference/recipes/) or go fully custom, then answer model, channels, memory, **tools** (a single "Allow all tools? [Yes]" — the default — or decline to hand-pick a specific list), sandbox, and observability, before it scaffolds and immediately runs `validate`. Pass `--yes` or any flag (or run in a non-TTY) to write the scaffold non-interactively instead:
 
 ```bash
 mono-agent init --preset telegram-assistant --yes   # scaffold from a preset

@@ -103,10 +103,10 @@ my-agent/
     "consolidation": { "enabled": true, "cron": "0 */2 * * *" } // default: every two hours
   },
 
-  // Fail-closed tool policy + MCP servers. Deny wins; overlap is rejected.
+  // Tool policy (allow-all by default) + MCP servers. Deny wins; overlap is rejected.
   "tools": {
-    "allowedTools": ["Read", "Grep"],      // built-ins: Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch
-    "disallowedTools": ["Bash"],
+    "allowedTools": ["*"],                 // omit or ["*"] = all tools; ["Read","Bash"] = just those; [] = none (chat-only)
+    "disallowedTools": ["Bash"],           // deny wins even under allow-all; the escape hatch to subtract one tool
     "mcpConfigPath": "./mcp.json"          // stdio/sse/http servers; inlined for SDK runtimes
   },
 

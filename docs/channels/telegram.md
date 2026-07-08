@@ -107,7 +107,7 @@ Only the push notification is suppressed (`disable_notification`); the message s
 
 ### Asking you a question (inline keyboards)
 
-Expose the `TelegramAskButtons` app tool to let the agent ask you a structured question with tappable buttons — a confirmation, an approval, or a multiple choice — instead of waiting for free-text. Add it to `tools.allowedTools`:
+The `TelegramAskButtons` app tool lets the agent ask you a structured question with tappable buttons — a confirmation, an approval, or a multiple choice — instead of waiting for free-text. Under the **allow-all** tool default it is available once Telegram is enabled; under a **specific** `tools.allowedTools` you add its exact name:
 
 ```json
 { "tools": { "allowedTools": ["TelegramAskButtons"] } }
@@ -117,7 +117,7 @@ The tool takes a `question` and 2–8 option labels and posts an inline keyboard
 
 ### Sending files
 
-Expose `TelegramSendFile` to let the agent send a generated file or image back to an allowed chat. A required `kind` selects `"document"` (any file, downloadable) or `"photo"` (an image shown inline). It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path`, plus an optional `caption`; uploads are bounded by the adapter's attachment size cap.
+`TelegramSendFile` lets the agent send a generated file or image back to an allowed chat (available under the allow-all default; name it explicitly under a specific `tools.allowedTools`). A required `kind` selects `"document"` (any file, downloadable) or `"photo"` (an image shown inline). It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path`, plus an optional `caption`; uploads are bounded by the adapter's attachment size cap.
 
 ```json
 { "tools": { "allowedTools": ["TelegramSendFile"] } }
@@ -180,7 +180,7 @@ Operational notes for the daemon: it binds `0.0.0.0` **by default** — always p
 
 ## Sending without a prompt
 
-When the Telegram adapter is enabled you can let the agent send Telegram messages on its own initiative by exposing the `TelegramSendMessage` app tool. Add the exact tool name to `tools.allowedTools`:
+When the Telegram adapter is enabled the agent can send Telegram messages on its own initiative through the `TelegramSendMessage` app tool. Under the **allow-all** tool default it is available automatically; under a **specific** `tools.allowedTools` add the exact tool name (and `disallowedTools` removes it):
 
 ```json
 {

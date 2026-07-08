@@ -95,10 +95,10 @@ The entity graph that BuJo capture maintains is part of the BuJo capture pipelin
 
 | Feature id | Coverage | Config key(s) | Env var(s) | Prose page | Playbook(s) |
 | --- | --- | --- | --- | --- | --- |
-| `tool-policy.fail-closed` | auto | (default when `tools` lists are empty) | — | [Tool policy](/tools/policy/) | — |
-| `tool-policy.allowlist` / `tool-policy.denylist` | config | `tools.allowedTools`, `tools.disallowedTools` | `MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS` | [Tool policy](/tools/policy/) | — |
+| `tool-policy.allow-all` | config | omitted / `["*"]` `tools.allowedTools` = all tools (the default); `[]` = none | `MONO_AGENT_ALLOWED_TOOLS` | [Tool policy](/tools/policy/) | — |
+| `tool-policy.allowlist` / `tool-policy.denylist` | config | `tools.allowedTools`, `tools.disallowedTools` (deny wins, even under allow-all) | `MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS` | [Tool policy](/tools/policy/) | — |
 | `tool-policy.mcp-servers` | config | `tools.mcpConfigPath` | `MONO_AGENT_MCP_CONFIG_PATH` | [MCP](/tools/mcp/) | [Slack team bot + MCP tools](/playbooks/slack-team-bot-mcp-tools/) |
-| `agent-app.adapter-send-tools` | config | `tools.allowedTools` (`SlackSendMessage`, `TelegramSendMessage`) + valid `slack.*` / `telegram.*` config | `MONO_AGENT_ALLOWED_TOOLS` | [Delivery & send tools](/channels/delivery-and-send-tools/) | [Cron digest + native notify](/playbooks/cron-digest-proactive-notify/) |
+| `agent-app.adapter-send-tools` | config | auto-available under allow-all once the channel is enabled; a specific `tools.allowedTools` needs the exact names (`SlackSendMessage`, `TelegramSendMessage`) + valid `slack.*` / `telegram.*` config | `MONO_AGENT_ALLOWED_TOOLS` | [Delivery & send tools](/channels/delivery-and-send-tools/) | [Cron digest + native notify](/playbooks/cron-digest-proactive-notify/) |
 
 ## Channels
 

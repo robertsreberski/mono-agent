@@ -25,8 +25,8 @@ Point `tools.mcpConfigPath` at an `mcp.json` file describing one or more MCP ser
 | Key | Type | Notes |
 | --- | --- | --- |
 | `tools.mcpConfigPath` | string | Path to an `mcp.json`. Resolved against the workspace, not the config file. |
-| `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools only (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `WebFetch`, `WebSearch`). Does not affect MCP tools. |
-| `tools.disallowedTools` | string[] | Denylist for built-in tools; deny always wins. Does not affect MCP tools. |
+| `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `WebFetch`, `WebSearch`) and adapter send tools. Omit (or `["*"]`) for allow-all; a specific list narrows to those names. Does not affect MCP tools. |
+| `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, and adapter send tools. On the pi-native runtime it does **not** filter external MCP-server tools (see below). |
 
 Env var: `MONO_AGENT_MCP_CONFIG_PATH` overrides `tools.mcpConfigPath`.
 
@@ -84,14 +84,15 @@ This is the load-bearing rule. `tools.allowedTools` / `tools.disallowedTools` fi
 
 Consequences:
 
-- Setting `tools.allowedTools: []` ("no built-in tools") still leaves every MCP tool available.
+- Under allow-all (the default) MCP tools are available because their server is declared, not because of the wildcard. Setting `tools.allowedTools: []` ("no built-in tools") still leaves every MCP tool available.
 - An MCP tool's availability is governed by whether its server is **declared** in `mcp.json` / `tools.mcpServers`, not by the allowlist. To withhold an MCP tool, remove or don't declare its server.
-- This same model covers app-injected MCP tools such as `MemoryRecall` and the `ask-collaborator` orchestration tool — they are gated by their own enable switches, not by the allowlist.
+- On the **pi-native runtime**, `disallowedTools` does **not** filter external MCP-server tools either — declaring the server is the only lever. (The Claude/Codex CLI runtimes do pass `--disallowedTools` down to the CLI.) So to hard-restrict an external MCP tool on pi, don't declare its server.
+- This same model covers app-injected MCP tools such as `MemoryRecall` and the `AskCollaborator` orchestration tool — they are gated by their own enable switches, not by the allowlist.
 
 The `MemoryRecall` description is written to direct **proactive** recall: the agent is told to call it whenever context is missing or uncertain, before assuming or asking. This is behavioral guidance, not a gate — `MemoryRecall`'s availability is still governed by `config.memory.recallTool.enabled`. See [Capture & recall](/memory/capture-and-recall/).
 
-:::caution
-The one exception is the **app-owned adapter send tools** (`SlackSendMessage`, `TelegramSendMessage`). Although they are delivered as MCP tools, they are deliberately opt-in: their exact tool names **must** appear in `tools.allowedTools`, in addition to valid `slack.*` / `telegram.*` adapter config. See [Delivery & send tools](/channels/delivery-and-send-tools/).
+:::note
+The **app-owned adapter send tools** (`SlackSendMessage`, `TelegramSendMessage`, `TelegramAskButtons`, `TelegramSendFile`, `AskUser`) are delivered as MCP tools but, unlike external MCP tools, they **are** governed by the tool policy. Under allow-all (the default) they become available automatically once the matching channel is enabled — no allowlist entry needed. They only need an explicit `tools.allowedTools` entry when you switch to a hand-picked allowlist, and a `disallowedTools` entry removes them on any runtime. Valid `slack.*` / `telegram.*` adapter config is required either way. See [Delivery & send tools](/channels/delivery-and-send-tools/).
 :::
 
 For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/policy/). For how `Bash` is confined, see [Sandbox](/tools/sandbox/).

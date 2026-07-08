@@ -29,10 +29,10 @@ mono-agent init --model claude:claude-sonnet-4-6
 ```
 
 :::tip
-Prefer a guided first run? On a terminal, run `mono-agent init` **with no flags** to launch the step-by-step wizard: start from a [preset](/reference/recipes/) or go custom, then it walks you through model, channels, memory, and — importantly — the **tools** your agent may call (pre-checked with a safe default plus your channels' send tools, so the agent isn't left tool-less), before scaffolding and auto-validating. See the [`init` section of the CLI reference](/observability/cli-reference/#init) for the flags that skip the wizard, and [Presets & capability modules](/reference/recipes/) for what each preset sets up.
+Prefer a guided first run? On a terminal, run `mono-agent init` **with no flags** to launch the step-by-step wizard: start from a [preset](/reference/recipes/) or go custom, then it walks you through model, channels, memory, and the **tools** your agent may call — a single "Allow all tools? [Yes]" (the default), or decline to hand-pick a specific list — before scaffolding and auto-validating. See the [`init` section of the CLI reference](/observability/cli-reference/#init) for the flags that skip the wizard, and [Presets & capability modules](/reference/recipes/) for what each preset sets up.
 :::
 
-Passing a flag like `--model` (as below) skips the wizard and writes the scaffold non-interactively — the composer still pre-selects a safe read-only tool set (`Read`, `Glob`, `Grep`) plus any channel/sandbox tools your selection implies.
+Passing a flag like `--model` (as below) skips the wizard and writes the scaffold non-interactively — the composer defaults `tools.allowedTools` to allow-all (`["*"]`), so the agent can use every built-in and any enabled channel's send tools out of the box.
 
 Optional flags:
 
@@ -59,7 +59,7 @@ mono-agent init \
 - **`IDENTITY.md`** — role, boundaries, and a Knowledge section that references any `AGENTS.md`, `CLAUDE.md`, `README.md`, or `SOUL.md` already present in the folder. Edit this to describe what your agent is for. See [Identity and Soul](/context/identity-and-soul/).
 - **`.mono-agent/`** — working directories: `.mono-agent/artifacts` (run output) and `.mono-agent/workspace`.
 
-The generated config (with `--fallback-models` and `--memory bujo`) looks like this — note that `tools.allowedTools` is pre-filled with the safe read-only default, and the `bujo` tier scaffolds its embeddings, capture LLM, and recall tool:
+The generated config (with `--fallback-models` and `--memory bujo`) looks like this — note that `tools.allowedTools` defaults to allow-all (`["*"]`), and the `bujo` tier scaffolds its embeddings, capture LLM, and recall tool:
 
 ```json
 {
@@ -73,7 +73,7 @@ The generated config (with `--fallback-models` and `--memory bujo`) looks like t
     "selectedSkills": []
   },
   "tools": {
-    "allowedTools": ["Read", "Glob", "Grep"],
+    "allowedTools": ["*"],
     "disallowedTools": []
   },
   "artifacts": {

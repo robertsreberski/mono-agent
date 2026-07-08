@@ -72,21 +72,21 @@ Use `@mono-agent/agent-harness` directly when a host needs custom prompt/runtime
 
 ## Tools And MCP Join
 
-Use `@mono-agent/agent-harness` for fail-closed tool/MCP policy normalization:
+Use `@mono-agent/agent-harness` for tool/MCP policy normalization. The **config** default is allow-all (`["*"]`); `createToolPolicy` itself does no defaulting, and the harness's no-policy safety net is `failClosedToolPolicy()` (an empty, fail-closed policy):
 
 ```ts
 import { createToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/agent-harness";
 
 const policy = createToolPolicy({
-  allowedTools: ["Read", "Grep"],
-  disallowedTools: ["WebFetch"],
+  allowedTools: ["*"],              // ["*"] = all; ["Read","Grep"] = specific; [] = none
+  disallowedTools: ["WebFetch"],   // deny wins, even under allow-all
   mcpConfigPath: "./mcp.json",
 });
 
 const runtimeOptions = toolPolicyToRuntimeOptions(policy);
 ```
 
-Do not grant broad tool access as a fallback. If the requested task needs tools, ask for the narrow allowlist or MCP config path.
+Match the user's intent: allow-all is the recommended default. Prefer subtracting with `disallowedTools` over hand-curating an allowlist, and only narrow to a specific list when the user asks for it.
 
 ## Adapter Join
 

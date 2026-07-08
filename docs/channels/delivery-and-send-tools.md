@@ -58,12 +58,12 @@ mono-agent derives MCP **send tools** from already-enabled chat adapters so the 
 
 Coverage: `config`. Two conditions must both hold for a send tool to work:
 
-1. The **exact tool name** must appear in `tools.allowedTools` (e.g. `SlackSendMessage`, `TelegramSendMessage`, `TelegramAskButtons`, `TelegramSendFile`). The fail-closed tool policy excludes them otherwise.
+1. The tool must be **permitted by the policy**. Under allow-all (the default) that is automatic once the channel is enabled — no allowlist entry needed. If you use a **specific** `tools.allowedTools`, the exact tool name must appear in it (e.g. `SlackSendMessage`, `TelegramSendMessage`, `TelegramAskButtons`, `TelegramSendFile`). A `disallowedTools` entry removes the tool on any runtime.
 2. The corresponding adapter must have **valid config** — `slack.*` for `SlackSendMessage`, `telegram.*` for the Telegram tools — which supplies the credentials and the destination bounds.
 
 ### Telegram interactive send tools
 
-`TelegramAskButtons` and `TelegramSendFile` (added by the Telegram interactivity work) are gated exactly like the plain send tools above: their exact name in `tools.allowedTools` plus valid `telegram.*` config, with the adapter chat allowlist (`telegram.allowedChatIds` / `telegram.allowAllChats`) remaining the destination boundary.
+`TelegramAskButtons` and `TelegramSendFile` (added by the Telegram interactivity work) are gated exactly like the plain send tools above: permitted by the policy (automatic under allow-all, or their exact name in a specific `tools.allowedTools`) plus valid `telegram.*` config, with the adapter chat allowlist (`telegram.allowedChatIds` / `telegram.allowAllChats`) remaining the destination boundary.
 
 - **`TelegramAskButtons`** posts an inline-keyboard question with **2–8** option labels and **returns immediately** — it does not block the turn waiting for an answer. When the user taps a button, the tapped label arrives as a **new message on the same conversation**, so the agent continues on the next turn (just like a typed reply). Allowing `TelegramAskButtons` is also the single switch that subscribes the bot to `callback_query` updates and wires the tap handler. See [Telegram](/channels/telegram/) for the full interactivity setup.
 - **`TelegramSendFile`** uploads and sends a file (`kind:"document"`) or an inline image (`kind:"photo"`) to an allowed chat. It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path` (filename derived from the path), plus an optional `caption`. Uploads are bounded by the adapter's attachment size cap (~20 MB).
@@ -72,7 +72,7 @@ The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels
 
 ### `AskUser` — blocking free-text ask (interaction bridge)
 
-`AskUser` is the blocking counterpart to `TelegramAskButtons`: the tool call posts a free-text question to the current conversation's chat and **waits for the user's next message**, which is returned as the tool result — so the agent keeps its full mid-turn context. It is channel-agnostic and backed by the app's **interaction bridge** (a loopback HTTP registry started automatically when `AskUser` is in `tools.allowedTools`; tune it via the `interaction` config block).
+`AskUser` is the blocking counterpart to `TelegramAskButtons`: the tool call posts a free-text question to the current conversation's chat and **waits for the user's next message**, which is returned as the tool result — so the agent keeps its full mid-turn context. It is channel-agnostic and backed by the app's **interaction bridge** (a loopback HTTP registry started automatically when `AskUser` is allowed — under the allow-all default, or listed in a specific `tools.allowedTools`; tune it via the `interaction` config block).
 
 - While an ask is pending, the user's next **plain-text** message on that chat is consumed as the ANSWER (acknowledged with a 👍 reaction) and never runs as a turn; media and `/`-commands pass through normally, and `/cancel` fails the pending ask.
 - One pending ask per conversation: consolidate everything into a single question. A second concurrent ask returns an "already pending" result.
@@ -135,7 +135,7 @@ To send nothing for a tick or request, the agent either produces an **empty fina
 | Effect | Posts the final answer **verbatim** and records it as a remembered turn | Posts a message into a **channel** (side-channel; not a turn) |
 | Available on | **cron / webhook turns** (opt-in per job/endpoint) | any turn |
 | Agent involvement | None — the app delivers the final answer; no tool call | Agent calls the tool explicitly |
-| Allowlist entry | **Not** a `tools.allowedTools` entry (config-level toggle) | **Required** — exact tool name in `tools.allowedTools` |
+| Allowlist entry | **Not** a `tools.allowedTools` entry (config-level toggle) | Available under allow-all (the default); a specific `tools.allowedTools` needs the exact tool name |
 | Destination bound | The owning channel's allowlist | The owning channel's allowlist |
 | Channels | Telegram + Slack | Telegram + Slack |
 

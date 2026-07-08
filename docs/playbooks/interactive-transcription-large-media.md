@@ -28,7 +28,7 @@ A Telegram agent that: asks the user for context before it acts (blocking), runs
 
 ## Features used
 
-- **`AskUser`** — blocking, channel-agnostic "ask a question and wait for the reply" tool; allow it in `tools.allowedTools`. One consolidated question per conversation; graceful timeout. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
+- **`AskUser`** — blocking, channel-agnostic "ask a question and wait for the reply" tool; available under the allow-all default, or name it in a specific `tools.allowedTools` (this playbook uses a specific list). One consolidated question per conversation; graceful timeout. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
 - **`interaction`** — the app-owned bridge block (`bridge.port`, `askUser.timeoutMs`, `progress.enabled`); auto-starts when `AskUser` is allowed. See [Env Vars](/config/env-vars/). *(config)*
 - **`tools.mcpCallTimeoutMs` / `tools.mcpCallMaxTotalTimeoutMs`** — inactivity timeout (reset by tool progress) and the hard per-call wall clock; raise the latter for long jobs. See [Env Vars](/config/env-vars/). *(config)*
 - **tool progress → channel status** — a tool `POST`s progress to the bridge (`MONO_AGENT_INTERACTION_BRIDGE_URL`/`_TOKEN`, exported to every tool child) and it appears as a chat status message edited in place. *(code, in your MCP tool)*

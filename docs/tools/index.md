@@ -6,9 +6,9 @@ sidebar:
 
 # Tools, MCP & Sandbox
 
-This section covers how an agent's tool surface is controlled in mono-agent: the **fail-closed tool policy** (`@mono-agent/agent-harness`) that allow/deny-lists built-in and MCP tools, the **MCP servers** you attach to extend that surface, and the **native sandbox** (`@mono-agent/runtime-adapter`) that confines what tools like `Bash`, `Write`, and `Edit` may touch on disk and over the network.
+This section covers how an agent's tool surface is controlled in mono-agent: the **tool policy** (`@mono-agent/agent-harness`) that allow/deny-lists built-in and adapter tools, the **MCP servers** you attach to extend that surface, and the **native sandbox** (`@mono-agent/runtime-adapter`) that confines what tools like `Bash`, `Write`, and `Edit` may touch on disk and over the network.
 
-All three are configured in `mono-agent.config.json` and are enforced by the harness — they are not advisory. The default posture is restrictive: tools are denied unless allowed, and filesystem/network access is scoped to the workspace.
+All three are configured in `mono-agent.config.json` and are enforced by the harness — they are not advisory. The tool policy is **allow-all by default** (omit `tools.allowedTools` and the agent gets every tool; subtract with `disallowedTools`), while the sandbox stays restrictive: filesystem/network access is scoped to the workspace unless you widen it.
 
 ## The three pieces
 
@@ -54,12 +54,16 @@ Equivalent environment overrides exist for headless deploys:
 | `sandbox.network.mode` / `.allowlist` | `MONO_AGENT_SANDBOX_NETWORK` / `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST` |
 | `sandbox.fallback` | `MONO_AGENT_SANDBOX_FALLBACK` |
 
-## Fail-closed by default
+## Allow-all by default
 
-When `tools.allowedTools` is empty the policy denies **every** tool — an empty allowlist means no tools, not all tools (coverage: `auto`). Deny always wins over allow, and listing the same tool in both `allowedTools` and `disallowedTools` is rejected as a configuration error.
+Omit `tools.allowedTools` (or set it to `["*"]`) and the policy allows **every** tool — the open default. Narrow it by listing specific names, or opt into a deliberate chat-only agent with an explicit empty list `[]`, which denies every tool (coverage: `config`). Deny always wins over allow — a `disallowedTools` entry is blocked even under allow-all — and listing the same tool in both `allowedTools` and `disallowedTools` is rejected as a configuration error.
 
 :::caution
-If you only set `disallowedTools` and leave `allowedTools` empty, the agent still has no tools — `disallowedTools` subtracts from an allowlist, it does not implicitly allow the rest.
+An **omitted** `allowedTools` and an **explicit empty** `allowedTools: []` are opposites: omitted means all tools, `[]` means none. To subtract a single tool from the open default, leave `allowedTools` off and add the name to `disallowedTools` — you do not need to switch to an explicit allowlist.
+:::
+
+:::note
+Allow-all is the **config** default. Code-defined agents built directly on the harness fall back to `failClosedToolPolicy()` (an empty, fail-closed policy) when constructed with no policy — see [Tool Policy](/tools/policy/#allow-all-by-default).
 :::
 
 ## Request-scoped policies only tighten

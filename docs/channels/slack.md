@@ -126,7 +126,7 @@ A misconfigured channel surfaces a `waiting_for_config` reason in `mono-agent va
 
 ## Sending into Slack from the agent
 
-When the Slack adapter is enabled, the app can expose an MCP send tool, `SlackSendMessage`, that lets the agent post into the same workspace from any run (including cron and webhook turns). It is **off by default** — add the exact tool name to `tools.allowedTools`:
+When the Slack adapter is enabled, the app can expose an MCP send tool, `SlackSendMessage`, that lets the agent post into the same workspace from any run (including cron and webhook turns). Under the **allow-all** tool default it is available automatically once the channel is enabled — no allowlist entry needed. If you narrow to a **specific** `tools.allowedTools`, add the exact tool name; a `disallowedTools` entry removes it:
 
 ```json
 {

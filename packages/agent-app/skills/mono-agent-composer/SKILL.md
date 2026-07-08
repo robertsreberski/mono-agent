@@ -75,7 +75,7 @@ Everything below runs in the user's agent folder, not the workspace.
    mono-agent validate [--preset <id>] [--consumer <path>]
    ```
 
-   Fix every `[error]` section. `[waiting]` channels are fine — they are simply not configured yet. Watch the **Tools & MCP** section: an empty `tools.allowedTools` reports `waiting` (the no-tools trap), and an unknown tool name is flagged with a "did you mean" hint. With `--preset`, the report also flags any capability the preset promised that is not yet live. Re-run until the report says the config is ready.
+   Fix every `[error]` section. `[waiting]` channels are fine — they are simply not configured yet. Watch the **Tools & MCP** section: allow-all (the default) shows `All tools allowed`, an **explicit empty** `tools.allowedTools: []` reports `waiting` (the no-tools trap), and an unknown tool name in a specific allowlist is flagged with a "did you mean" hint. With `--preset`, the report also flags any capability the preset promised that is not yet live. Re-run until the report says the config is ready.
 5. **Start and smoke.**
 
    ```bash

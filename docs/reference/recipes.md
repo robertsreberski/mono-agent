@@ -6,9 +6,9 @@ sidebar:
 
 # Presets & capability modules
 
-`mono-agent init` builds an agent by composing **capability modules** — a channel here, a memory tier there, an optional sandbox — and walking you through the settings that matter. Crucially it walks you through the **tool allowlist**, so you don't end up with an agent that can technically run but can't actually _do_ anything. On a terminal with no flags, `init` is a step-by-step wizard; with `--yes` or any flag (or when stdin is not a TTY) it writes a scaffold non-interactively. Existing files are never overwritten.
+`mono-agent init` builds an agent by composing **capability modules** — a channel here, a memory tier there, an optional sandbox — and walking you through the settings that matter. Tools default to **allow-all** (`["*"]`), so a fresh agent can actually _do_ things out of the box; the wizard still offers to narrow the surface, and you can subtract individual tools later via `tools.disallowedTools`. On a terminal with no flags, `init` is a step-by-step wizard; with `--yes` or any flag (or when stdin is not a TTY) it writes a scaffold non-interactively. Existing files are never overwritten.
 
-**Presets** are saved answer-sets for common shapes. A preset seeds the model, channels, memory, sandbox, and observability choices; the composer fills the rest and recomputes the recommended tool selection, so a preset is just a faster starting point on the same single config-generation path.
+**Presets** are saved answer-sets for common shapes. A preset seeds the model, channels, memory, sandbox, and observability choices; the composer fills the rest and defaults `tools.allowedTools` to allow-all (`["*"]`), so a preset is just a faster starting point on the same single config-generation path.
 
 ## Commands
 
@@ -20,7 +20,7 @@ mono-agent presets show <id>                 # generated config + .env.example +
 mono-agent validate --preset <id>            # completeness report against the preset's promises
 ```
 
-The wizard first asks whether to start from a preset or go fully custom, then prompts for model, channels (multiselect), memory, **tools** (multiselect, pre-checked with a safe default and your channels' send tools), sandbox (only when shell/file tools are in play), observability, and a final review before writing. `--dry-run` previews the files without writing them.
+The wizard first asks whether to start from a preset or go fully custom, then prompts for model, channels (multiselect), memory, **tools** (a single "Allow all tools? [Yes]" confirm — decline to hand-pick a specific list instead), sandbox (in play whenever code tools could run — i.e. under allow-all or an explicit code-tool selection), observability, and a final review before writing. `--dry-run` previews the files without writing them.
 
 ## Presets
 
@@ -58,9 +58,17 @@ The wizard composes an agent from these modules. Selecting one auto-checks its r
 
 ### The tools step and the no-tools guardrail
 
-The tools multiselect is the step that keeps you out of the "no-tools trap". It is pre-checked with a safe read-only default (`Read`, `Glob`, `Grep`) plus every selected module's recommended tools — for example a Telegram channel pre-checks `TelegramSendMessage`/`TelegramAskButtons`, and the sandbox pre-checks the code tools. Two kinds of tools are **not** gated by this list and are never shown: memory recall (auto-provisioned from `memory.recallTool.enabled`) and MCP-server tools (`mcp__…`, owned by their servers).
+The tools step first frames the three tool families so you know what the decision covers:
 
-Deselect everything and the wizard warns loudly — "⚠ Zero tools selected — the agent will be chat-only" — and makes you confirm before continuing. The same guardrail runs after the fact: an empty `tools.allowedTools` reports `waiting` in [`validate`/`doctor`](/observability/cli-reference/#validate) (never a silent `ok`) with:
+- **Always on** — auto-provisioned and **not** gated by this choice: `MemoryRecall` (when the memory tier enables recall), plus `ReadSkill` and MCP-server tools (`mcp__…`, owned by their servers). These are shown dimmed for clarity, never as a checkbox.
+- **Built-ins** — files (`Read`/`Write`/`Edit`/`Glob`/`Grep`), shell (`Bash`), web (`WebFetch`/`WebSearch`).
+- **Channel tools** — the send/ask tools that came with the channels you enabled (e.g. `TelegramSendMessage`, `TelegramAskButtons`, `SlackSendMessage`), plus `AskUser` (ask the human, any channel).
+
+Then it asks a single **"Allow all tools? [Yes]"** — the default. Accepting writes `tools.allowedTools: ["*"]` (every built-in and every enabled channel's send tools; the "Always on" family is unaffected). Declining drops into a specific-tool multiselect, pre-checked with a safe read-only default (`Read`, `Glob`, `Grep`) plus every selected module's recommended tools — for example a Telegram channel pre-checks `TelegramSendMessage`/`TelegramAskButtons`, and the sandbox pre-checks the code tools. Turning individual tools **off** is a config-level concern (`tools.disallowedTools`), not a wizard prompt.
+
+The default scaffold therefore writes `"allowedTools": ["*"]`, and [`validate`/`doctor`](/observability/cli-reference/#validate) reports `All tools allowed.` (or `All tools allowed (except: …)` when a `disallowedTools` list is present).
+
+The no-tools guardrail still catches the deliberate chat-only case. Decline "Allow all" and then deselect everything and the wizard warns loudly — "⚠ Zero tools selected — the agent will be chat-only" — and makes you confirm before continuing. The same guardrail runs after the fact: an **explicit empty** `tools.allowedTools: []` reports `waiting` in `validate`/`doctor` (never a silent `ok`) with:
 
 ```text
 No tools allowed — the agent can chat but cannot read files, run commands, or send
@@ -68,7 +76,7 @@ proactive messages. Add names to tools.allowedTools (e.g. Read, Glob, Grep), or 
 `mono-agent init` in an empty folder to pick tools interactively.
 ```
 
-`validate`/`doctor` also flag an **unknown tool name** with a "did you mean" hint (e.g. `read` → `Read`; pi silently drops unknown names), and cross-check adapter **send tools against channels** — a `TelegramSendMessage` in the allowlist with Telegram disabled downgrades the tools section to `waiting` with a note; the reverse — a channel enabled with no matching send tool — is a non-fatal hint (the section stays `ok`: replies still work, but the agent can't send proactively).
+For a **specific** allowlist, `validate`/`doctor` also flag an **unknown tool name** with a "did you mean" hint (e.g. `read` → `Read`; pi silently drops unknown names), and cross-check adapter **send tools against channels** — a `TelegramSendMessage` in the allowlist with Telegram disabled downgrades the tools section to `waiting` with a note; the reverse — a channel enabled with no matching send tool — is a non-fatal hint (the section stays `ok`: replies still work, but the agent can't send proactively). Under allow-all these per-name checks don't apply.
 
 ## Sandbox
 
@@ -87,6 +95,12 @@ The composed sandbox sets `fallback: "fail-closed"`. If `srt` is unavailable, sa
 ## How presets relate to the config
 
 A preset is not a separate format — `mono-agent presets show <id>` prints the exact `mono-agent.config.json` it would write, plus the `.env.example` and follow-up checklist. Everything a preset (or the wizard) configures can be edited afterwards like any hand-written config, and [`mono-agent config`](/observability/cli-reference/#config) shows the resolved result field-by-field with provenance. The preset catalog lives in `packages/agent-app/src/wizard/presets.ts` and the module catalog in `packages/agent-app/src/modules/catalog.ts`; a parity test (`presets-docs-parity.test.ts`) keeps this page in sync with them.
+
+## Back-compat: legacy tool names
+
+The tools were renamed to PascalCase (`SlackSendMessage`, `TelegramAskButtons`, …). If you have **hand-written** explicit `tools.allowedTools` / `tools.disallowedTools` lists from before the rename, the old snake_case names (`slack_send_message`, `telegram_send_message`, `telegram_ask`, `ask_user`, `read_skill`, …) are still accepted as **deprecated input aliases** — an old list keeps validating and enforcing correctly. The new PascalCase names are the only ones ever registered, emitted, or recommended, so update your lists when convenient.
+
+One collapse to know about: the two former Telegram file tools (`telegram_send_document` and `telegram_send_photo`) are now a single `TelegramSendFile` (it takes a `kind` param). Both legacy names still map to it, so a `disallowedTools` entry for **either** old name denies the whole file tool. Most operators never touched these lists — under allow-all there is nothing to migrate — but if you deny-list by name, re-check it against the [built-in and adapter tool names](/tools/policy/#built-in-tool-names).
 
 ## Deprecations
 

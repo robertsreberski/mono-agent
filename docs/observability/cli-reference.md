@@ -121,7 +121,7 @@ Each section prints a status badge, a label, and its details. The statuses are:
 
 `validate` runs liveness probes, so it can show `waiting` for unreachable network dependencies. The Phoenix exporter check additionally POSTs an empty protobuf to confirm export compatibility, not just reachability — see [Phoenix & backfill](/observability/phoenix-and-backfill/).
 
-The **Tools & MCP** section flags the no-tools trap: an empty `tools.allowedTools` reports `waiting` (never a silent `ok`) — the agent could chat but cannot read files, run commands, or send proactively. It also flags an unknown tool name with a "did you mean" hint (pi silently drops unknown names) and cross-checks adapter send tools against enabled channels. See [Presets & capability modules](/reference/recipes/#the-tools-step-and-the-no-tools-guardrail) for the full contract.
+The **Tools & MCP** section reports the tool policy: allow-all (the default) shows `All tools allowed.` (or `All tools allowed (except: …)` when a `disallowedTools` list is present), while an **explicit empty** `tools.allowedTools: []` flags the no-tools trap — `waiting` (never a silent `ok`), because the agent could chat but cannot read files, run commands, or send proactively. For a specific allowlist it also flags an unknown tool name with a "did you mean" hint (pi silently drops unknown names) and cross-checks adapter send tools against enabled channels. See [Presets & capability modules](/reference/recipes/#the-tools-step-and-the-no-tools-guardrail) for the full contract.
 
 ### Provider credentials
 

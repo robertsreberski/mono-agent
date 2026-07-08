@@ -66,15 +66,17 @@ Fills: `context.skillsRoot`, `context.selectedSkills`, optionally `context.skill
 Question:
 
 ```text
-What tools or MCP servers does the agent actually need?
+What tools does the agent need?
 
-1. No tools yet; fail closed (recommended)
-2. A small allowlist of built-in tools
-3. MCP servers from an mcp.json config file
-4. Both
+1. Allow all tools (recommended — the default: every built-in + enabled channels' send tools)
+2. Allow all, but deny a few by name (tools.disallowedTools)
+3. A specific allowlist of built-in / channel tools
+4. Chat-only, no tools (explicit tools.allowedTools: [])
+
+Plus, independently: MCP servers from an mcp.json config file?
 ```
 
-Fills: `tools.allowedTools`, `tools.disallowedTools` (denylist wins), `tools.mcpConfigPath`. Record exact tool names; do not broaden access as a convenience. To expose adapter-derived send tools, include `SlackSendMessage` / `TelegramSendMessage`; valid enabled Slack/Telegram adapter config and destination allowlists are still required.
+Fills: `tools.allowedTools`, `tools.disallowedTools` (denylist wins, even under allow-all), `tools.mcpConfigPath`. The default is allow-all (`["*"]`) — write that unless the user asks to narrow. Under allow-all the adapter-derived send tools (`SlackSendMessage` / `TelegramSendMessage` / …) are auto-available once the channel is enabled; only a **specific** allowlist needs their exact names added. Valid enabled Slack/Telegram adapter config and destination allowlists are required either way. On the pi-native runtime `disallowedTools` does not filter external MCP-server tools — to withhold one, don't declare its server.
 
 ## 6. Memory Strategy
 
