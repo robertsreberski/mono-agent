@@ -117,6 +117,24 @@ export function modelSelectOptions(candidates: readonly WizardModelCandidate[] =
   ];
 }
 
+/**
+ * Fallback model choices use the same labels/hints as the primary model picker,
+ * but hide the chosen primary and fallbacks already added to the chain. `Other…`
+ * remains as the explicit custom-reference escape hatch; `Done` finishes the
+ * ordered fallback chain.
+ */
+export function fallbackModelSelectOptions(
+  candidates: readonly WizardModelCandidate[] = STATIC_MODEL_CANDIDATES,
+  primaryModel: string,
+  selectedFallbacks: readonly string[] = [],
+): WizardSelectOption[] {
+  const excluded = new Set([primaryModel, ...selectedFallbacks]);
+  return [
+    ...modelSelectOptions(candidates).filter((option) => option.value === "__other__" || !excluded.has(option.value)),
+    { value: "__done__", label: "Done", hint: "finish fallback chain" },
+  ];
+}
+
 /** Reasoning-effort choices. Empty value means no `runtime.effort` is written. */
 export function effortSelectOptions(): WizardSelectOption[] {
   return [
