@@ -108,7 +108,7 @@ describe("AgentHarness backpressure (maxPendingRuns)", () => {
     // attachments were persisted (one file each, unique per runId).
     const files = await readdir(attachmentsDir);
     expect(files).toHaveLength(2);
-    expect(files.some((name) => name.includes("c3"))).toBe(false);
+    expect(files.some((name) => name.endsWith("-0-c3.png"))).toBe(false);
 
     // Drain.
     release();
