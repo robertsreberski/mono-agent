@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   buildMonoAgentConfigView,
+  EFFORT_LEVELS,
   findJsonSecretConfigWarnings,
   findRemovedConfigWarnings,
   readMonoAgentConfigJson,
@@ -82,6 +83,7 @@ interface ParsedCliArgs {
   readonly configPath?: string;
   readonly model?: string;
   readonly fallbackModels?: readonly string[];
+  readonly effort?: string;
   readonly memory?: "lite" | "journal" | "bujo";
   /** init/validate: build/check against this preset id. */
   readonly preset?: string;
@@ -170,6 +172,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let configPath: string | undefined;
   let model: string | undefined;
   let fallbackModels: readonly string[] | undefined;
+  let effort: string | undefined;
   let memory: "lite" | "journal" | "bujo" | undefined;
   let preset: string | undefined;
   let recipe: string | undefined;
@@ -306,6 +309,14 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
           .map((entry) => entry.trim())
           .filter((entry) => entry.length > 0);
         break;
+      case "--effort": {
+        const raw = requireValue(rest, ++i, flag);
+        if (!(EFFORT_LEVELS as readonly string[]).includes(raw)) {
+          throw new Error(`--effort must be ${EFFORT_LEVELS.join(", ")}.`);
+        }
+        effort = raw;
+        break;
+      }
       case "--memory": {
         const raw = requireValue(rest, ++i, flag);
         if (raw !== "lite" && raw !== "journal" && raw !== "bujo") {
@@ -401,6 +412,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(configPath === undefined ? {} : { configPath }),
     ...(model === undefined ? {} : { model }),
     ...(fallbackModels === undefined ? {} : { fallbackModels }),
+    ...(effort === undefined ? {} : { effort }),
     ...(memory === undefined ? {} : { memory }),
     ...(preset === undefined ? {} : { preset }),
     ...(recipe === undefined ? {} : { recipe }),
@@ -482,7 +494,8 @@ interface HelpEntry {
 const HELP_COMMANDS: readonly HelpEntry[] = [
   {
     signature: "mono-agent init [--preset <id>] [--with <csv>] [--yes] [--dry-run]\n" +
-      "                [--model <ref>] [--fallback-models <csv>] [--memory lite|journal|bujo]",
+      "                [--model <ref>] [--fallback-models <csv>] [--effort <level>]\n" +
+      "                [--memory lite|journal|bujo]",
     lines: [
       "Scaffold a mono-agent in the current folder. On a TTY with no flags, launches",
       "the step-by-step wizard; with --yes or any flag, writes the default/preset",
@@ -782,7 +795,7 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
   const wantsWizard = process.stdin.isTTY === true && process.stdout.isTTY === true
     && args.yes !== true && args.preset === undefined && args.recipe === undefined
     && args.model === undefined && args.fallbackModels === undefined
-    && args.memory === undefined && args.withChannels === undefined && args.dryRun !== true;
+    && args.effort === undefined && args.memory === undefined && args.withChannels === undefined && args.dryRun !== true;
   if (wantsWizard) {
     // Existing-config pre-check — don't walk the wizard into a guaranteed no-op.
     if (await pathExists(resolve(process.cwd(), "mono-agent.config.json"))) {
@@ -819,6 +832,7 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
   const answers = answersFromCli({
     ...(args.model === undefined ? {} : { model: args.model }),
     ...(args.fallbackModels === undefined ? {} : { fallbackModels: args.fallbackModels }),
+    ...(args.effort === undefined ? {} : { effort: args.effort }),
     ...(args.memory === undefined ? {} : { memory: args.memory }),
     ...(withChannels === undefined ? {} : { withChannels }),
     ...(presetId === undefined ? {} : { presetId }),

@@ -13,6 +13,7 @@ vi.mock("@clack/prompts", async (importOriginal) => {
 import { BUILTIN_TOOL_NAMES } from "../modules/known-tools.js";
 import {
   channelSelectOptions,
+  effortSelectOptions,
   guard,
   memorySelectOptions,
   modelSelectOptions,
@@ -20,6 +21,11 @@ import {
   toolMultiselectOptions,
   WizardCancelled,
 } from "../wizard/prompts.js";
+import {
+  discoverWizardModelCandidates,
+  rankWizardModelCandidates,
+  type WizardModelCandidate,
+} from "../wizard/model-discovery.js";
 
 describe("wizard prompt builders", () => {
   it("channelSelectOptions lists all six channels, webhook first", () => {
@@ -58,6 +64,27 @@ describe("wizard prompt builders", () => {
     expect(values[values.length - 1]).toBe("__other__");
   });
 
+  it("modelSelectOptions ranks discovered Pi OpenAI-Codex above direct Codex while keeping direct selectable", () => {
+    const ranked = rankWizardModelCandidates([
+      { value: "codex:gpt-5.5", label: "Codex GPT-5.5", source: "codex" },
+      {
+        value: "pi:openai-codex:gpt-5.5",
+        label: "Pi OpenAI-Codex GPT-5.5",
+        source: "pi",
+        discovered: true,
+      },
+    ]);
+
+    const options = modelSelectOptions(ranked);
+    const values = options.map((option) => option.value);
+    expect(values.indexOf("pi:openai-codex:gpt-5.5")).toBeLessThan(values.indexOf("codex:gpt-5.5"));
+    expect(values).toContain("codex:gpt-5.5");
+  });
+
+  it("effortSelectOptions offers default plus the runtime effort enum", () => {
+    expect(effortSelectOptions().map((option) => option.value)).toEqual(["", "none", "low", "medium", "high", "xhigh", "max"]);
+  });
+
   it("toolMultiselectOptions appends a channel's send tools then AskUser after the built-ins", () => {
     const options = toolMultiselectOptions(["channel:telegram"]);
     const values = options.map((option) => option.value);
@@ -86,6 +113,57 @@ describe("wizard prompt builders", () => {
     const options = presetSelectOptions();
     expect(options.length).toBeGreaterThan(1);
     expect(options[options.length - 1]?.value).toBe("__custom__");
+  });
+});
+
+describe("wizard model discovery", () => {
+  it("discovers Pi, OpenCode, Ollama, and LM Studio candidates without dropping static options", async () => {
+    const exec = vi.fn(async (file: string) => {
+      if (file === "opencode") {
+        return { stdout: JSON.stringify({ models: [{ id: "kimi-k2.6" }] }) };
+      }
+      if (file === "ollama") {
+        return { stdout: "NAME ID SIZE MODIFIED\nllama3.1:8b abc 4GB today\n" };
+      }
+      throw new Error(file);
+    });
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ data: [{ id: "qwen/qwen3-8b" }] }), { status: 200 }));
+
+    const result = await discoverWizardModelCandidates({
+      execFile: exec,
+      fetch: fetchImpl,
+      readFile: async () => JSON.stringify({ providers: { "openai-codex": {} } }),
+    });
+
+    const values = result.candidates.map((candidate) => candidate.value);
+    expect(values).toContain("claude:claude-sonnet-4-6");
+    expect(values).toContain("pi:openai-codex:gpt-5.5");
+    expect(values).toContain("codex:gpt-5.5");
+    expect(values.indexOf("pi:openai-codex:gpt-5.5")).toBeLessThan(values.indexOf("codex:gpt-5.5"));
+    expect(values).toContain("pi:opencode-go:kimi-k2.6");
+    expect(values).toContain("pi:ollama:llama3.1:8b");
+    expect(values).toContain("pi:lmstudio:qwen/qwen3-8b");
+    expect(result.statuses.every((status) => status.status === "detected")).toBe(true);
+  });
+
+  it("treats absent provider tools and servers as unavailable status, not thrown errors", async () => {
+    const exec = vi.fn(async () => {
+      throw new Error("missing");
+    });
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("down");
+    });
+
+    const result = await discoverWizardModelCandidates({
+      execFile: exec,
+      fetch: fetchImpl,
+      readFile: async () => {
+        throw new Error("missing");
+      },
+    });
+
+    expect(result.candidates.map((candidate: WizardModelCandidate) => candidate.value)).toContain("codex:gpt-5.5");
+    expect(result.statuses.map((status) => status.status)).toEqual(["unavailable", "unavailable", "unavailable", "unavailable"]);
   });
 });
 

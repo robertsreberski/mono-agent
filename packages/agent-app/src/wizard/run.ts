@@ -15,6 +15,7 @@ import {
 import { findPreset, presetAnswers } from "./presets.js";
 import {
   channelSelectOptions,
+  effortSelectOptions,
   guard,
   memorySelectOptions,
   modelSelectOptions,
@@ -22,6 +23,7 @@ import {
   toolMultiselectOptions,
   WizardCancelled,
 } from "./prompts.js";
+import { discoverWizardModelCandidates, formatModelDiscoveryStatus } from "./model-discovery.js";
 
 /** The outcome of a wizard run: collected answers, or a clean cancellation. */
 export type WizardOutcome =
@@ -36,6 +38,7 @@ export type WizardOutcome =
 interface DraftAnswers {
   model: string;
   fallbackModels: string[];
+  effort: string | undefined;
   channels: string[];
   memory: string | undefined;
   sandbox: boolean;
@@ -85,17 +88,19 @@ async function collectAnswers(ctx: { cwd: string }): Promise<WizardAnswers> {
 }
 
 /**
- * The full custom flow: model → channels → memory → per-module inputs → tools →
- * sandbox (only if code tools were chosen) → observability → summary.
+ * The full custom flow: model → effort → channels → memory → per-module inputs
+ * → tools → sandbox (only if code tools were chosen) → observability → summary.
  */
 async function collectCustom(ctx: { cwd: string }): Promise<WizardAnswers> {
   const draft = draftFrom(defaultAnswers());
 
   // 1. Model.
+  const discovery = await discoverWizardModelCandidates();
+  p.note(formatModelDiscoveryStatus(discovery.statuses), "Model discovery");
   const model = guard(
     await p.select({
       message: "Which model?",
-      options: modelSelectOptions(),
+      options: modelSelectOptions(discovery.candidates),
       initialValue: "claude:claude-sonnet-4-6",
     }),
   );
@@ -122,6 +127,15 @@ async function collectCustom(ctx: { cwd: string }): Promise<WizardAnswers> {
     );
     draft.fallbackModels = splitCsv(raw);
   }
+
+  const effort = guard(
+    await p.select({
+      message: "Reasoning effort?",
+      options: effortSelectOptions(),
+      initialValue: "",
+    }),
+  );
+  draft.effort = effort.length === 0 ? undefined : effort;
 
   // 2. Channels.
   const channels = guard(
@@ -344,7 +358,7 @@ async function pickSpecificTools(draft: DraftAnswers): Promise<void> {
  * they are excluded from the user-facing capabilities line. A "no" cancels.
  */
 async function confirmSummary(draft: DraftAnswers, ctx: { cwd: string }): Promise<void> {
-  if (LOCAL_PROVIDER_MODEL.test(draft.model)) {
+  if ([draft.model, ...draft.fallbackModels].some((model) => LOCAL_PROVIDER_MODEL.test(model))) {
     p.note(
       "A matching local provider block is added automatically.\nThe first turn may be slow while the model loads.",
       "Local model",
@@ -378,6 +392,7 @@ async function confirmSummary(draft: DraftAnswers, ctx: { cwd: string }): Promis
   const alwaysOn = alwaysOnTools(answers);
   const lines = [
     `Model:        ${draft.model}${draft.fallbackModels.length > 0 ? `  (fallbacks: ${draft.fallbackModels.join(", ")})` : ""}`,
+    `Effort:       ${draft.effort ?? "default"}`,
     `Capabilities: ${capabilities.length > 0 ? capabilities.join(", ") : "none"}`,
     `Tools:        ${toolsLine}`,
     ...(alwaysOn.length > 0 ? [`Always on:    ${alwaysOnDisplay(alwaysOn).join(", ")}`] : []),
@@ -406,6 +421,7 @@ function draftFrom(answers: WizardAnswers): DraftAnswers {
   return {
     model: answers.model,
     fallbackModels: [...answers.fallbackModels],
+    effort: answers.effort,
     channels: [...answers.channels],
     memory: answers.memory,
     sandbox: answers.sandbox,
@@ -424,6 +440,7 @@ function toWizardAnswers(draft: DraftAnswers): WizardAnswers {
   return {
     model: draft.model,
     fallbackModels: [...draft.fallbackModels],
+    ...(draft.effort === undefined ? {} : { effort: draft.effort }),
     channels: [...draft.channels],
     ...(draft.memory === undefined ? {} : { memory: draft.memory }),
     sandbox: draft.sandbox,

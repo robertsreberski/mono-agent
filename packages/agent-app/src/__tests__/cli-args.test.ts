@@ -19,7 +19,7 @@ async function tempDir(): Promise<string> {
 }
 
 describe("parseCliArgs", () => {
-  it("parses init with model, fallbacks, and memory", () => {
+  it("parses init with model, fallbacks, effort, and memory", () => {
     expect(
       parseCliArgs([
         "init",
@@ -27,6 +27,8 @@ describe("parseCliArgs", () => {
         "claude:claude-sonnet-4-6",
         "--fallback-models",
         "pi:ollama:gemma4:31b, codex:gpt-5.5",
+        "--effort",
+        "high",
         "--memory",
         "journal",
       ]),
@@ -34,6 +36,7 @@ describe("parseCliArgs", () => {
       command: "init",
       model: "claude:claude-sonnet-4-6",
       fallbackModels: ["pi:ollama:gemma4:31b", "codex:gpt-5.5"],
+      effort: "high",
       memory: "journal",
       positionals: [],
       force: false,
@@ -204,6 +207,7 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["start", "--port", "4100"])).toThrow(/only supported for/u);
     expect(() => parseCliArgs(["start", "--include-memory"])).toThrow(/--include-memory/u);
     expect(() => parseCliArgs(["init", "--memory", "vector"])).toThrow(/--memory/u);
+    expect(() => parseCliArgs(["init", "--effort", "turbo"])).toThrow(/--effort/u);
   });
 
   it("parses --version, -v, and the bare `version` command", () => {

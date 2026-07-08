@@ -69,9 +69,10 @@ describe("answersFromCli", () => {
     expect(answers.allowedTools).toEqual(["*"]);
   });
 
-  it("maps --memory to a module id and lets --model override the preset model", () => {
-    const answers = answersFromCli({ presetId: "local-private", model: "codex:gpt-5.5", memory: "lite" });
+  it("maps --memory to a module id and lets --model/--effort override the preset runtime", () => {
+    const answers = answersFromCli({ presetId: "local-private", model: "codex:gpt-5.5", effort: "high", memory: "lite" });
     expect(answers.model).toBe("codex:gpt-5.5");
+    expect(answers.effort).toBe("high");
     expect(answers.memory).toBe("memory:lite");
   });
 
