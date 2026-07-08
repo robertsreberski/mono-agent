@@ -113,7 +113,7 @@ The `TelegramAskButtons` app tool lets the agent ask you a structured question w
 { "tools": { "allowedTools": ["TelegramAskButtons"] } }
 ```
 
-The tool takes a `question` and 2–8 option labels and posts an inline keyboard, then **returns immediately** (it does not block the turn). When you tap a button, your choice arrives as a **new message on the same conversation**, so the agent continues on the next turn — exactly like a typed reply, on the warm session. Allowing `TelegramAskButtons` is the single switch that also subscribes the bot to `callback_query` updates and wires the tap handler; the chat allowlist still bounds where questions can be sent, and the tap handler re-checks it.
+The tool takes a `question` and 2–8 option labels, posts an inline keyboard, and **waits for your tap**. The tapped label is returned to the same in-flight tool call, so the agent keeps its mid-turn context. If no pending ask exists for a callback, the tap still falls back to the existing synthetic-turn behavior on the same conversation. Allowing `TelegramAskButtons` is the single switch that also subscribes the bot to `callback_query` updates and wires the tap handler; the chat allowlist still bounds where questions can be sent, and the tap handler re-checks it.
 
 ### Sending files
 

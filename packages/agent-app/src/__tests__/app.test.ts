@@ -721,6 +721,36 @@ describe("startMonoAgentApp", () => {
     expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
   });
 
+  it("starts the interaction bridge when TelegramAskButtons is allowed", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      tools: { allowedTools: ["TelegramAskButtons"], disallowedTools: [] },
+      telegram: { enabled: true, botToken: "test-token", allowedChatIds: ["42"] },
+    });
+    let captured: TelegramAdapterStartOptions | undefined;
+    const driver = createTelegramChannelDriver({
+      startAdapter: async (options) => {
+        captured = options;
+        return {
+          stop: async () => undefined,
+          notify: async () => ({ delivered: true }),
+          post: async () => undefined,
+          postStatus: async () => undefined,
+        };
+      },
+    });
+    const env: Record<string, string | undefined> = {};
+
+    const app = await startMonoAgentApp({ cwd: dir, env, drivers: [driver] });
+    try {
+      expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+      expect(captured?.pendingAsks).toBeDefined();
+      expect(captured?.callbacksEnabled).toBe(true);
+    } finally {
+      await app.stop();
+    }
+  });
+
   it("does not start the interaction bridge when neither AskUser nor an interaction block is configured", async () => {
     await writeConfig({
       ...baseConfig(),

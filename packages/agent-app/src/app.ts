@@ -571,8 +571,8 @@ class MonoAgentAppController implements MonoAgentApp {
   }
 
   /**
-   * Start the interaction bridge once, when the AskUser tool is allowed by the
-   * tool policy or the operator configured the `interaction` block. Exports the
+   * Start the interaction bridge once, when a blocking ask tool is allowed by
+   * the tool policy or the operator configured the `interaction` block. Exports the
    * bridge env into the app env AND process env so settings resolution and
    * spawned stdio tool children (which inherit process.env) can reach it.
    */
@@ -582,8 +582,12 @@ class MonoAgentAppController implements MonoAgentApp {
         allowedTools: coreConfig.tools.allowedTools,
         disallowedTools: coreConfig.tools.disallowedTools,
       });
+      const telegramAskAllowed = isAdapterSendToolAllowed("TelegramAskButtons", {
+        allowedTools: coreConfig.tools.allowedTools,
+        disallowedTools: coreConfig.tools.disallowedTools,
+      });
       const settings = await loadInteractionSettings({ env: this.env, configPath: this.configPath });
-      if (!askUserAllowed && !settings.configured) {
+      if (!askUserAllowed && !telegramAskAllowed && !settings.configured) {
         return undefined;
       }
       try {

@@ -11,6 +11,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
  * - Blocking `AskUser`: POST /v1/asks registers a pending ask (question posted
  *   through the channel's sink); the tool long-polls GET /v1/asks/:id until the
  *   channel intercepts the user's next message and resolves it.
+ * - Blocking channel-owned asks (e.g. Telegram buttons): POST /v1/asks with
+ *   `postQuestion:false` registers the same pending ask without duplicating
+ *   channel-specific UI already posted by the tool.
  * - Tool progress: POST /v1/progress fans out to the channel sink's postStatus
  *   (e.g. a Telegram status message edited in place).
  *
@@ -228,21 +231,24 @@ export async function startInteractionBridge(
       return;
     }
     const requested = numberField(body, "timeoutMs");
+    const postQuestion = booleanField(body, "postQuestion") ?? true;
     // The config value is both the default and the ceiling: tools may wait less,
     // never more, than the operator allowed.
     const timeoutMs = Math.min(requested ?? askTimeoutMs, askTimeoutMs);
     const ask = registerAsk(conversationId, question, timeoutMs);
-    try {
-      await sink.postQuestion(conversationId, question);
-    } catch (error) {
-      settleAsk(ask, "cancelled");
-      asksById.delete(ask.askId);
-      options.logger?.warn?.("interaction bridge: posting the ask question failed.", {
-        conversationId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      sendJson(response, 502, { error: "posting the question to the channel failed." });
-      return;
+    if (postQuestion) {
+      try {
+        await sink.postQuestion(conversationId, question);
+      } catch (error) {
+        settleAsk(ask, "cancelled");
+        asksById.delete(ask.askId);
+        options.logger?.warn?.("interaction bridge: posting the ask question failed.", {
+          conversationId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        sendJson(response, 502, { error: "posting the question to the channel failed." });
+        return;
+      }
     }
     sendJson(response, 201, { askId: ask.askId, timeoutMs });
   }
@@ -447,6 +453,11 @@ function stringField(body: Record<string, unknown>, key: string): string | undef
 function numberField(body: Record<string, unknown>, key: string): number | undefined {
   const value = body[key];
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function booleanField(body: Record<string, unknown>, key: string): boolean | undefined {
+  const value = body[key];
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function sendJson(response: ServerResponse, statusCode: number, body: unknown): void {

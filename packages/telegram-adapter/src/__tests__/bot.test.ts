@@ -513,8 +513,30 @@ describe("createTelegramBot", () => {
     expect(reactionEmojis(calls)).toEqual(["👍"]);
   });
 
-  it("re-runs the chosen inline-keyboard option as a turn when callbacks are enabled", async () => {
+  it("resolves a pending ask from an inline-keyboard tap instead of running a turn", async () => {
     const requests: AgentRequest[] = [];
+    const tryResolve = vi.fn(async (_conversationId: string, _answer: string) => true);
+    const { bot, calls } = buildTestBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "Proceeding" };
+      }),
+      callbacksEnabled: true,
+      pendingAsks: { tryResolve, cancel: vi.fn() },
+      stream: { editDebounceMs: 0 },
+    });
+
+    await bot.handleUpdate(callbackUpdate({ data: "ask:0", questionText: "Proceed?" }));
+
+    expect(tryResolve).toHaveBeenCalledWith("telegram:42", "Approve");
+    expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(true);
+    expect(calls.some((call) => call.method === "editMessageReplyMarkup")).toBe(true);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("re-runs the chosen inline-keyboard option as a turn when no pending ask exists", async () => {
+    const requests: AgentRequest[] = [];
+    const tryResolve = vi.fn(async (_conversationId: string, _answer: string) => false);
     const responder: AgentResponder = {
       async respond(request) {
         requests.push(request as AgentRequest);
@@ -524,11 +546,13 @@ describe("createTelegramBot", () => {
     const { bot, calls } = buildTestBot({
       responder,
       callbacksEnabled: true,
+      pendingAsks: { tryResolve, cancel: vi.fn() },
       stream: { editDebounceMs: 0 },
     });
 
     await bot.handleUpdate(callbackUpdate({ data: "ask:0", questionText: "Proceed?" }));
 
+    expect(tryResolve).toHaveBeenCalledWith("telegram:42", "Approve");
     expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(true);
     expect(calls.some((call) => call.method === "editMessageReplyMarkup")).toBe(true);
     expect(requests).toHaveLength(1);

@@ -325,7 +325,9 @@ describe("adapter send MCP tools", () => {
     expect(telegramCalls).toEqual([{ chat_id: -100, text: "hi", disable_web_page_preview: true }]);
   });
 
-  it("TelegramAskButtons posts the question with an inline keyboard of callback options", async () => {
+  it("TelegramAskButtons posts the question with an inline keyboard and waits for the tapped label", async () => {
+    const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, askTimeoutMs: 5_000 });
+    bridge.registerSink("telegram", { postQuestion: async () => {}, postStatus: async () => {} });
     const telegramCalls: TelegramSendMessageParams[] = [];
     const settings: AdapterSendToolsSettings = {
       telegram: {
@@ -333,36 +335,122 @@ describe("adapter send MCP tools", () => {
         allowedChatIds: ["42"],
         allowAllChats: false,
         tools: { send: false, ask: true, file: false },
-      },
-    };
-    const server = await createAdapterSendToolsServer(settings, {
-      telegram: {
-        async sendMessage(params: TelegramSendMessageParams): Promise<TelegramSentMessage> {
-          telegramCalls.push(params);
-          return { message_id: 88, chat: { id: params.chat_id }, text: params.text };
+        askBridge: {
+          bridgeUrl: bridge.url,
+          bridgeToken: bridge.token,
+          timeoutMs: 5_000,
         },
       },
-    });
-
-    await withMcpClient(server, async (client) => {
-      const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name)).toEqual(["TelegramAskButtons"]);
-
-      const result = await client.callTool({
-        name: "TelegramAskButtons",
-        arguments: { chat_id: 42, question: "Deploy now?", options: ["Approve", "Reject"] },
+    };
+    try {
+      const server = await createAdapterSendToolsServer(settings, {
+        telegram: {
+          async sendMessage(params: TelegramSendMessageParams): Promise<TelegramSentMessage> {
+            telegramCalls.push(params);
+            return { message_id: 88, chat: { id: params.chat_id }, text: params.text };
+          },
+        },
       });
-      expect(result.structuredContent).toMatchObject({ ok: true, chat_id: 42, message_id: 88 });
-    });
 
-    expect(telegramCalls).toHaveLength(1);
-    expect(telegramCalls[0]?.text).toBe("Deploy now?");
-    expect(telegramCalls[0]?.reply_markup).toEqual({
-      inline_keyboard: [
-        [{ text: "Approve", callback_data: "ask:0" }],
-        [{ text: "Reject", callback_data: "ask:1" }],
-      ],
-    });
+      await withMcpClient(server, async (client) => {
+        const tools = await client.listTools();
+        expect(tools.tools.map((tool) => tool.name)).toEqual(["TelegramAskButtons"]);
+
+        const pending = client.callTool({
+          name: "TelegramAskButtons",
+          arguments: { chat_id: 42, question: "Deploy now?", options: ["Approve", "Reject"] },
+        });
+        await vi.waitFor(() => {
+          expect(telegramCalls).toHaveLength(1);
+        });
+        expect(bridge.tryResolveAsk("telegram:42", "Approve")).toBe(true);
+        const result = await pending;
+        expect(result.structuredContent).toMatchObject({
+          ok: true,
+          answered: true,
+          answer: "Approve",
+          chat_id: 42,
+          message_id: 88,
+        });
+      });
+
+      expect(telegramCalls[0]?.text).toBe("Deploy now?");
+      expect(telegramCalls[0]?.reply_markup).toEqual({
+        inline_keyboard: [
+          [{ text: "Approve", callback_data: "ask:0" }],
+          [{ text: "Reject", callback_data: "ask:1" }],
+        ],
+      });
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("TelegramAskButtons reports already-pending without sending another keyboard", async () => {
+    const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, askTimeoutMs: 5_000 });
+    bridge.registerSink("telegram", { postQuestion: async () => {}, postStatus: async () => {} });
+    try {
+      const created = await fetch(new URL("/v1/asks", bridge.url), {
+        method: "POST",
+        headers: { authorization: `Bearer ${bridge.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ conversationId: "telegram:42", question: "first?", postQuestion: false }),
+      });
+      expect(created.status).toBe(201);
+      const telegram = { sendMessage: vi.fn() };
+      const server = await createAdapterSendToolsServer(
+        {
+          telegram: {
+            botToken: "telegram-token",
+            allowedChatIds: ["42"],
+            allowAllChats: false,
+            tools: { send: false, ask: true, file: false },
+            askBridge: { bridgeUrl: bridge.url, bridgeToken: bridge.token, timeoutMs: 5_000 },
+          },
+        },
+        { telegram },
+      );
+
+      await withMcpClient(server, async (client) => {
+        const result = await client.callTool({
+          name: "TelegramAskButtons",
+          arguments: { chat_id: 42, question: "second?", options: ["Approve", "Reject"] },
+        });
+        expect(result.structuredContent).toMatchObject({ answered: false, reason: "already_pending" });
+      });
+      expect(telegram.sendMessage).not.toHaveBeenCalled();
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("TelegramAskButtons cleans up the pending ask when sending the keyboard fails", async () => {
+    const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, askTimeoutMs: 5_000 });
+    bridge.registerSink("telegram", { postQuestion: async () => {}, postStatus: async () => {} });
+    try {
+      const server = await createAdapterSendToolsServer(
+        {
+          telegram: {
+            botToken: "telegram-token",
+            allowedChatIds: ["42"],
+            allowAllChats: false,
+            tools: { send: false, ask: true, file: false },
+            askBridge: { bridgeUrl: bridge.url, bridgeToken: bridge.token, timeoutMs: 5_000 },
+          },
+        },
+        { telegram: { sendMessage: vi.fn(async () => { throw new Error("telegram unavailable"); }) } },
+      );
+
+      await withMcpClient(server, async (client) => {
+        const result = await client.callTool({
+          name: "TelegramAskButtons",
+          arguments: { chat_id: 42, question: "Deploy now?", options: ["Approve", "Reject"] },
+        });
+        expect(result.isError).toBe(true);
+      });
+      expect(bridge.tryResolveAsk("telegram:42", "Approve")).toBe(false);
+    } finally {
+      await bridge.stop();
+    }
   });
 
   it("TelegramSendFile uploads base64 bytes with the given filename and caption", async () => {

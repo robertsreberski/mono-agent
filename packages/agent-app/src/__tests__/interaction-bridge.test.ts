@@ -95,6 +95,24 @@ describe("interaction bridge", () => {
     expect(await pending).toEqual({ status: "answered", answer: "Alice and Bob, in Polish" });
   });
 
+  it("registers a pending ask without posting through the sink when postQuestion is false", async () => {
+    const handle = await startBridge();
+    const { posts, sink } = recordingSink();
+    handle.registerSink("telegram", sink);
+
+    const created = await createAsk(handle, {
+      conversationId: "telegram:42",
+      question: "Deploy now?",
+      postQuestion: false,
+    });
+    expect(created.status).toBe(201);
+    const { askId } = (await created.json()) as { askId: string };
+    expect(posts).toEqual([]);
+
+    expect(handle.tryResolveAsk("telegram:42", "Approve")).toBe(true);
+    expect(await awaitAnswer(handle, askId, 1_000)).toEqual({ status: "answered", answer: "Approve" });
+  });
+
   it("normalizes rollover-bucketed conversation ids so a reply on the base id resolves the ask", async () => {
     const handle = await startBridge();
     const { sink } = recordingSink();

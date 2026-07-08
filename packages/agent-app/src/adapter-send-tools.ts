@@ -65,6 +65,7 @@ export interface TelegramSendToolSettings {
     /** The single TelegramSendFile tool (document + photo via a `kind` param). */
     readonly file: boolean;
   };
+  readonly askBridge?: AskUserToolSettings;
 }
 
 /**
@@ -130,6 +131,7 @@ export async function resolveAdapterSendToolsSettings(
   const telegramAskAllowed = isAdapterToolAllowed("TelegramAskButtons", options);
   const telegramFileAllowed = isAdapterToolAllowed("TelegramSendFile", options);
   const telegramAnyAllowed = telegramSendAllowed || telegramAskAllowed || telegramFileAllowed;
+  const telegramAskBridge = telegramAskAllowed ? resolveAskUserToolSettings(input.env) : undefined;
   const [slack, telegram] = await Promise.all([
     isAdapterToolAllowed("SlackSendMessage", options)
       ? resolveSlackSendToolSettings(input, options)
@@ -139,7 +141,7 @@ export async function resolveAdapterSendToolsSettings(
           send: telegramSendAllowed,
           ask: telegramAskAllowed,
           file: telegramFileAllowed,
-        })
+        }, telegramAskBridge)
       : undefined,
   ]);
   const askUser = isAdapterToolAllowed("AskUser", options)
@@ -379,13 +381,13 @@ function registerAskUserTool(
         timeoutMs: settings.timeoutMs,
       });
       if (created.status === 409) {
-        return askUserResult(
+        return askToolResult(
           "A question is already pending for the user. Wait for its answer instead of asking again.",
           { answered: false, reason: "already_pending" },
         );
       }
       if (created.status === 501) {
-        return askUserResult(
+        return askToolResult(
           "This conversation's channel does not support interactive asks. Ask your question in your final reply instead.",
           { answered: false, reason: "unsupported_channel" },
         );
@@ -393,57 +395,69 @@ function registerAskUserTool(
       if (created.status !== 201 || typeof created.body.askId !== "string") {
         throw new Error(`AskUser: the interaction bridge rejected the ask (HTTP ${String(created.status)}).`);
       }
-      const askId = created.body.askId;
-      const startedMs = Date.now();
-      for (;;) {
-        const poll = await askBridgeRequest(
-          settings,
-          "GET",
-          `/v1/asks/${encodeURIComponent(askId)}?waitMs=${String(ASK_USER_POLL_WAIT_MS)}`,
-        );
-        if (poll.status !== 200) {
-          throw new Error(`AskUser: lost the pending ask (HTTP ${String(poll.status)}).`);
-        }
-        // Keep-alive: progress notifications reset the runtime's MCP inactivity
-        // timeout so a long human wait cannot kill the tool call.
-        await sendAskProgress(extra, Math.round((Date.now() - startedMs) / 1000));
-        const status = poll.body.status;
-        if (status === "answered" && typeof poll.body.answer === "string") {
-          return askUserResult(`The user answered:\n${poll.body.answer}`, {
-            answered: true,
-            answer: poll.body.answer,
-          });
-        }
-        if (status === "expired") {
-          return askUserResult(
-            "The user did not answer within the wait window. Their reply will arrive as their next message — wrap up this turn gracefully (proceed with sensible defaults and say what you assumed).",
-            { answered: false, reason: "timeout" },
-          );
-        }
-        if (status === "cancelled") {
-          return askUserResult("The user cancelled the current run. Stop this task.", {
-            answered: false,
-            reason: "cancelled",
-          });
-        }
-      }
+      return await awaitBridgeAsk(settings, created.body.askId, "AskUser", extra);
     },
   );
 }
 
-function askUserResult(
+function askToolResult(
   text: string,
   structured: { answered: boolean; answer?: string; reason?: string },
+  extraStructured: Record<string, unknown> = {},
 ): { content: Array<{ type: "text"; text: string }>; structuredContent: Record<string, unknown> } {
   return {
     content: [{ type: "text", text }],
-    structuredContent: { ok: true, ...structured },
+    structuredContent: { ok: true, ...extraStructured, ...structured },
   };
+}
+
+async function awaitBridgeAsk(
+  settings: AskUserToolSettings,
+  askId: string,
+  toolName: "AskUser" | "TelegramAskButtons",
+  extra: unknown,
+  extraStructured: Record<string, unknown> = {},
+): Promise<{ content: Array<{ type: "text"; text: string }>; structuredContent: Record<string, unknown> }> {
+  const startedMs = Date.now();
+  for (;;) {
+    const poll = await askBridgeRequest(
+      settings,
+      "GET",
+      `/v1/asks/${encodeURIComponent(askId)}?waitMs=${String(ASK_USER_POLL_WAIT_MS)}`,
+    );
+    if (poll.status !== 200) {
+      throw new Error(`${toolName}: lost the pending ask (HTTP ${String(poll.status)}).`);
+    }
+    // Keep-alive: progress notifications reset the runtime's MCP inactivity
+    // timeout so a long human wait cannot kill the tool call.
+    await sendAskProgress(extra, Math.round((Date.now() - startedMs) / 1000));
+    const status = poll.body.status;
+    if (status === "answered" && typeof poll.body.answer === "string") {
+      const answeredText =
+        toolName === "TelegramAskButtons"
+          ? `The user tapped:\n${poll.body.answer}`
+          : `The user answered:\n${poll.body.answer}`;
+      return askToolResult(answeredText, { answered: true, answer: poll.body.answer }, extraStructured);
+    }
+    if (status === "expired") {
+      return askToolResult(
+        "The user did not answer within the wait window. Their reply will arrive as their next message — wrap up this turn gracefully (proceed with sensible defaults and say what you assumed).",
+        { answered: false, reason: "timeout" },
+        extraStructured,
+      );
+    }
+    if (status === "cancelled") {
+      return askToolResult("The user cancelled the current run. Stop this task.", {
+        answered: false,
+        reason: "cancelled",
+      }, extraStructured);
+    }
+  }
 }
 
 async function askBridgeRequest(
   settings: AskUserToolSettings,
-  method: "GET" | "POST",
+  method: "DELETE" | "GET" | "POST",
   path: string,
   body?: Record<string, unknown>,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
@@ -584,7 +598,7 @@ function registerTelegramAskTool(
     {
       title: "Ask via Telegram buttons",
       description:
-        "Ask the owner a question in an allowed Telegram chat with tappable inline-keyboard buttons (e.g. a confirmation or a multiple-choice). This tool returns immediately after posting the question; it does NOT wait for the answer. When the user taps a button, their choice arrives as a new message on the same conversation, so continue on that next turn.",
+        "Ask the owner a question in an allowed Telegram chat with tappable inline-keyboard buttons (e.g. a confirmation or a multiple-choice) and WAIT for their tap. Returns the tapped label. A second concurrent ask in the same chat fails.",
       inputSchema: {
         chat_id: z.union([z.string().min(1), z.number().int()]).describe("Telegram chat id from the adapter allowlist."),
         question: z.string().min(1).describe("The question to show above the buttons."),
@@ -596,31 +610,60 @@ function registerTelegramAskTool(
         note: z.string().min(1).optional().describe("Optional extra context shown beneath the question."),
       },
     },
-    async (args) => {
+    async (args, extra) => {
       assertTelegramChatAllowed(settings, args.chat_id);
+      const bridge = settings.askBridge;
+      if (bridge === undefined) {
+        return askToolResult("TelegramAskButtons requires a live interaction bridge, but none is configured.", {
+          answered: false,
+          reason: "unsupported_channel",
+        });
+      }
       const inlineKeyboard = args.options.map((label, index) => [
         { text: label, callback_data: adapter.telegramAskCallbackData(index) },
       ]);
       const text = args.note === undefined ? args.question : `${args.question}\n\n${args.note}`;
-      const result: TelegramSentMessage = await client.sendMessage({
-        chat_id: args.chat_id,
-        text,
-        reply_markup: { inline_keyboard: inlineKeyboard },
+      const conversationId = `telegram:${String(args.chat_id)}`;
+      const created = await askBridgeRequest(bridge, "POST", "/v1/asks", {
+        conversationId,
+        question: text,
+        timeoutMs: bridge.timeoutMs,
+        postQuestion: false,
       });
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Posted question ${result.message_id} to ${String(result.chat.id)} with ${String(args.options.length)} options. The user's choice will arrive as a new message.`,
-          },
-        ],
-        structuredContent: {
-          ok: true,
-          chat_id: result.chat.id,
-          message_id: result.message_id,
-          options: args.options,
-        },
-      };
+      if (created.status === 409) {
+        return askToolResult(
+          "A question is already pending for this Telegram chat. Wait for its answer instead of asking again.",
+          { answered: false, reason: "already_pending" },
+          { chat_id: args.chat_id },
+        );
+      }
+      if (created.status === 501) {
+        return askToolResult(
+          "This Telegram chat is not registered with the interaction bridge. Ask your question in your final reply instead.",
+          { answered: false, reason: "unsupported_channel" },
+          { chat_id: args.chat_id },
+        );
+      }
+      if (created.status !== 201 || typeof created.body.askId !== "string") {
+        throw new Error(`TelegramAskButtons: the interaction bridge rejected the ask (HTTP ${String(created.status)}).`);
+      }
+      const askId = created.body.askId;
+      let result: TelegramSentMessage;
+      try {
+        result = await client.sendMessage({
+          chat_id: args.chat_id,
+          text,
+          reply_markup: { inline_keyboard: inlineKeyboard },
+        });
+      } catch (error) {
+        await askBridgeRequest(bridge, "DELETE", `/v1/asks/${encodeURIComponent(askId)}`);
+        throw error;
+      }
+      return await awaitBridgeAsk(bridge, askId, "TelegramAskButtons", extra, {
+        chat_id: result.chat.id,
+        message_id: result.message_id,
+        options: args.options,
+      });
     },
   );
 }
@@ -784,6 +827,7 @@ async function resolveTelegramSendToolSettings(
   input: MonoAgentAppConfigInput,
   options: AdapterSendToolsResolveOptions,
   tools: TelegramSendToolSettings["tools"],
+  askBridge: AskUserToolSettings | undefined,
 ): Promise<TelegramSendToolSettings | undefined> {
   try {
     const adapter = await loadTelegramModule();
@@ -798,6 +842,7 @@ async function resolveTelegramSendToolSettings(
       ...(config.apiRoot === undefined ? {} : { apiRoot: config.apiRoot }),
       maxUploadBytes: config.attachments?.maxUploadBytes ?? adapter.DEFAULT_ATTACHMENT_MAX_BYTES,
       tools,
+      ...(askBridge === undefined ? {} : { askBridge }),
     };
   } catch (error) {
     options.logger?.warn?.("Telegram send tool skipped because Telegram adapter config is unavailable.", {
