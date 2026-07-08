@@ -94,7 +94,7 @@ async function discoverPiOpenAiCodex(
   const authPath = opts.piAuthPath ?? join(homedir(), ".pi", "agent", "auth.json");
   try {
     const auth = parseJsonObject(await read(authPath, "utf8"));
-    const providers = parseJsonObject(auth.providers);
+    const providers = readPiAuthProviderMap(auth);
     if (providers["openai-codex"] !== undefined) {
       return {
         candidates: [
@@ -113,6 +113,11 @@ async function discoverPiOpenAiCodex(
   } catch {
     return { candidates: [], status: { provider: "Pi", status: "unavailable", detail: "auth store not found" } };
   }
+}
+
+function readPiAuthProviderMap(auth: Record<string, unknown>): Record<string, unknown> {
+  const nestedProviders = parseJsonObject(auth.providers);
+  return { ...nestedProviders, ...auth };
 }
 
 async function discoverOpenCodeModels(

@@ -132,7 +132,7 @@ describe("wizard model discovery", () => {
     const result = await discoverWizardModelCandidates({
       execFile: exec,
       fetch: fetchImpl,
-      readFile: async () => JSON.stringify({ providers: { "openai-codex": {} } }),
+      readFile: async () => JSON.stringify({ "openai-codex": { type: "oauth" } }),
     });
 
     const values = result.candidates.map((candidate) => candidate.value);
@@ -144,6 +144,23 @@ describe("wizard model discovery", () => {
     expect(values).toContain("pi:ollama:llama3.1:8b");
     expect(values).toContain("pi:lmstudio:qwen/qwen3-8b");
     expect(result.statuses.every((status) => status.status === "detected")).toBe(true);
+  });
+
+  it("reads Pi auth providers from the top-level auth store shape", async () => {
+    const result = await discoverWizardModelCandidates({
+      execFile: async () => {
+        throw new Error("missing");
+      },
+      fetch: async () => {
+        throw new Error("down");
+      },
+      readFile: async () => JSON.stringify({ "openai-codex": { type: "oauth" } }),
+    });
+
+    const values = result.candidates.map((candidate) => candidate.value);
+    expect(values).toContain("pi:openai-codex:gpt-5.5");
+    expect(values.indexOf("pi:openai-codex:gpt-5.5")).toBeLessThan(values.indexOf("codex:gpt-5.5"));
+    expect(result.statuses[0]).toMatchObject({ provider: "Pi", status: "detected" });
   });
 
   it("treats absent provider tools and servers as unavailable status, not thrown errors", async () => {
