@@ -108,6 +108,19 @@ describe("known-tools", () => {
     expect(isKnownToolName("nope")).toBe(false);
   });
 
+  it("treats the canonical PascalCase alias-value names as known, not just their snake_case aliases", () => {
+    // These names exist only as alias VALUES (not in BUILTIN ∪ ADAPTER_SEND). A config
+    // listing the new canonical name must validate at least as cleanly as one listing the
+    // deprecated snake_case spelling — otherwise the canonical name is wrongly "unknown".
+    for (const name of ["ReadSkill", "AskCollaborator", "MemoryRecall", "NotifyConversation"]) {
+      expect(isKnownToolName(name)).toBe(true);
+    }
+    // The deprecated snake_case aliases stay accepted for backwards-compat.
+    for (const alias of ["read_skill", "ask_collaborator", "memory_recall", "notify_conversation"]) {
+      expect(isKnownToolName(alias)).toBe(true);
+    }
+  });
+
   it("treats the allow-all sentinel ('*') as a known tool name", () => {
     expect(ALLOW_ALL_TOOLS).toBe("*");
     expect(isKnownToolName(ALLOW_ALL_TOOLS)).toBe(true);

@@ -32,7 +32,7 @@ import {
 } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { adapterSendToolNames, isAdapterSendToolAllowed, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
-import { canonicalToolName, isKnownToolName, isMcpToolName, suggestToolName } from "./modules/known-tools.js";
+import { canonicalToolName, isAllowAllTools, isKnownToolName, isMcpToolName, suggestToolName } from "./modules/known-tools.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
@@ -178,6 +178,12 @@ function applyToolChannelCrossChecks(
   const extraDetails: string[] = [];
   let status: ValidationStatus = current.status;
 
+  // Under allow-all (`"*"`) the wildcard "allows" every send tool incidentally, so
+  // Direction A must NOT fire for a merely-disabled channel: the user opted into
+  // everything, not that specific send tool, and an unused channel is not a
+  // misconfiguration. Direction B is unaffected (with send tools allowed it never fires).
+  const allowAll = isAllowAllTools(allowedTools);
+
   for (const [channel, sendTools] of Object.entries(CHANNEL_OWNED_SEND_TOOLS)) {
     const section = sections.find((candidate) => candidate.id === `channel:${channel}`);
     if (section === undefined) {
@@ -185,8 +191,9 @@ function applyToolChannelCrossChecks(
     }
     const allowedForCh = sendTools.filter((tool) => isAdapterSendToolAllowed(tool, { allowedTools, disallowedTools }));
     if (section.status === "disabled") {
-      // Direction A: send tool allowed but channel off — the tool will not be exposed.
-      if (allowedForCh.length > 0) {
+      // Direction A: send tool EXPLICITLY allowed but channel off — the tool will not be
+      // exposed. Skipped under allow-all, where the wildcard allowance is incidental.
+      if (!allowAll && allowedForCh.length > 0) {
         extraDetails.push(
           `${allowedForCh.join(", ")} in allowedTools, but the ${channel} channel is disabled — the tool will not be exposed.`,
         );
@@ -743,7 +750,19 @@ async function toolsSection(config: MonoAgentConfig, input: MonoAgentAppConfigIn
   let status: ValidationStatus = "ok";
 
   const allowedTools = config.tools.allowedTools;
-  if (allowedTools.length === 0) {
+  const allowAll = isAllowAllTools(allowedTools);
+  if (allowAll) {
+    // Allow-all (`"*"`): render the policy plainly instead of echoing the raw sentinel
+    // as `Allowed tools: *.`. The disallow list (if any) is folded in as the "except"
+    // clause here, so the separate `Disallowed tools:` line below is skipped for
+    // allow-all to avoid printing it twice. Status stays `ok`; the per-name unknown /
+    // MemoryRecall checks do not apply when every tool is allowed.
+    details.push(
+      config.tools.disallowedTools.length > 0
+        ? `All tools allowed (except: ${config.tools.disallowedTools.join(", ")}).`
+        : "All tools allowed.",
+    );
+  } else if (allowedTools.length === 0) {
     // An agent with no tools can chat but can do nothing else — the user's core
     // "no-tools trap". `waiting` (never `error`) surfaces it without failing a
     // deliberately chat-only agent (`report.ok` only checks for `error`).
@@ -792,7 +811,8 @@ async function toolsSection(config: MonoAgentConfig, input: MonoAgentAppConfigIn
       }
     }
   }
-  if (config.tools.disallowedTools.length > 0) {
+  if (!allowAll && config.tools.disallowedTools.length > 0) {
+    // Under allow-all the disallow list is already folded into the "except" clause above.
     details.push(`Disallowed tools: ${config.tools.disallowedTools.join(", ")}.`);
   }
   if (config.tools.mcpConfigPath !== undefined) {

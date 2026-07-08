@@ -1632,6 +1632,55 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(report.ok).toBe(true);
   });
 
+  it("renders allow-all ('*') cleanly as 'All tools allowed.' (status ok)", async () => {
+    const configPath = await writeToolsConfig({ allowedTools: ["*"] });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("ok");
+    expect(tools.details).toContain("All tools allowed.");
+    // Never the raw sentinel echo, and no "except" clause when nothing is disallowed.
+    expect(tools.details.join("\n")).not.toMatch(/Allowed tools: \*/u);
+    expect(tools.details.join("\n")).not.toMatch(/except/u);
+    expect(report.ok).toBe(true);
+  });
+
+  it("folds disallowedTools into the allow-all line (no separate Disallowed line)", async () => {
+    const configPath = await writeToolsConfig({ allowedTools: ["*"], disallowedTools: ["Bash"] });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("ok");
+    expect(tools.details).toContain("All tools allowed (except: Bash).");
+    // The disallow list is folded into the allow-all line; it must not ALSO print separately.
+    expect(tools.details.join("\n")).not.toMatch(/Disallowed tools:/u);
+    expect(report.ok).toBe(true);
+  });
+
+  it("does not fire Direction B under allow-all (send tools are allowed by '*')", async () => {
+    const configPath = await writeToolsConfig(
+      { allowedTools: ["*"] },
+      { telegram: { enabled: true, allowAllChats: true } },
+    );
+
+    const report = await validateMonoAgentFolder({
+      env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "123:env-bot-token" },
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    expect(sectionById(report, "channel:telegram").status).not.toBe("disabled");
+    const tools = sectionById(report, "tools");
+    // Under allow-all every send tool is allowed, so the "enabled without a send tool" hint
+    // must NOT fire and must not downgrade the status.
+    expect(tools.status).toBe("ok");
+    expect(tools.details.join("\n")).not.toMatch(/telegram is enabled without/u);
+    expect(report.ok).toBe(true);
+  });
+
   it("passes a valid safe-tool allowlist (status ok)", async () => {
     const configPath = await writeToolsConfig({ allowedTools: ["Read", "Glob", "Grep"] });
 

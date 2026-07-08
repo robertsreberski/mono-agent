@@ -62,13 +62,21 @@ export const DEFAULT_SAFE_TOOLS = ["Read", "Glob", "Grep"] as const;
 export type BuiltinToolName = (typeof BUILTIN_TOOL_NAMES)[number];
 export type AdapterSendToolName = (typeof ADAPTER_SEND_TOOL_NAMES)[number];
 
-/** All offline-knowable tool names (built-in ∪ adapter send). */
-const KNOWN_TOOL_NAMES: readonly string[] = [...BUILTIN_TOOL_NAMES, ...ADAPTER_SEND_TOOL_NAMES];
+/**
+ * All offline-knowable tool names: built-ins, adapter send tools, AND the canonical
+ * PascalCase names that only exist as alias VALUES (`ReadSkill`, `AskCollaborator`,
+ * `MemoryRecall`, `NotifyConversation`). Folding in the alias values keeps the new
+ * canonical names at least as "known" as their deprecated snake_case spellings — a
+ * config listing `ReadSkill` must validate as cleanly as one listing `read_skill`.
+ */
+const KNOWN_TOOL_NAMES: readonly string[] = [
+  ...new Set<string>([...BUILTIN_TOOL_NAMES, ...ADAPTER_SEND_TOOL_NAMES, ...Object.values(LEGACY_TOOL_ALIASES)]),
+];
 
 /**
- * True when `name` is a built-in or an adapter send tool (exact, case-sensitive
- * match). Legacy snake_case aliases are also accepted so an old config keeps
- * validating cleanly through the rename.
+ * True when `name` is a built-in, an adapter send tool, or a canonical alias-value
+ * name (exact, case-sensitive match). Legacy snake_case alias KEYS are also accepted
+ * so an old config keeps validating cleanly through the rename.
  */
 export function isKnownToolName(name: string): boolean {
   return name === ALLOW_ALL_TOOLS || KNOWN_TOOL_NAMES.includes(name) || name in LEGACY_TOOL_ALIASES;
@@ -87,7 +95,7 @@ export function isMcpToolName(name: string): boolean {
 /**
  * The closest known tool name for a typo, case-insensitive (e.g. `read` → `Read`),
  * else undefined. Used by doctor for "did you mean" hints. Matches
- * case-insensitively against BUILTIN ∪ ADAPTER_SEND.
+ * case-insensitively against the known set (BUILTIN ∪ ADAPTER_SEND ∪ alias values).
  */
 export function suggestToolName(name: string): string | undefined {
   const lowered = name.toLowerCase();
