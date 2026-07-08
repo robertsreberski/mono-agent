@@ -852,7 +852,10 @@ function isAdapterToolAllowed(name: string, options: AdapterSendToolsResolveOpti
   if (aliases.some((alias) => allowed.includes(alias))) {
     return true;
   }
-  return allowed.includes(wildcard);
+  if (allowed.includes(wildcard)) {
+    return true;
+  }
+  return allowed.includes("*"); // global allow-all (deny check above still wins)
 }
 
 function parseAllowedToolNames(raw: string | undefined): readonly string[] {

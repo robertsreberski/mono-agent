@@ -4,6 +4,11 @@
  * `pi-bridge.js` (built-ins) and `adapter-send-tools.ts` (adapter send tools).
  */
 
+import { ALLOW_ALL_TOOLS } from "@mono-agent/config";
+
+/** Re-export the allow-all sentinel so agent-app callers share one canonical value. */
+export { ALLOW_ALL_TOOLS };
+
 /** Built-in tools gated by `tools.allowedTools` (pi-bridge.js). */
 export const BUILTIN_TOOL_NAMES = [
   "Read",
@@ -37,7 +42,12 @@ const KNOWN_TOOL_NAMES: readonly string[] = [...BUILTIN_TOOL_NAMES, ...ADAPTER_S
 
 /** True when `name` is a built-in or an adapter send tool (exact, case-sensitive match). */
 export function isKnownToolName(name: string): boolean {
-  return KNOWN_TOOL_NAMES.includes(name);
+  return name === ALLOW_ALL_TOOLS || KNOWN_TOOL_NAMES.includes(name);
+}
+
+/** True when `list` contains the global allow-all sentinel (`"*"`). */
+export function isAllowAllTools(list: readonly string[]): boolean {
+  return list.includes(ALLOW_ALL_TOOLS);
 }
 
 /** True when `name` targets an MCP server tool (`mcp__…`) — cannot be validated offline. */

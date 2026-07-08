@@ -553,6 +553,35 @@ describe("layerJsonOntoEnv", () => {
 });
 
 describe("loadMonoAgentConfigWithSources", () => {
+  it("resolves an omitted tools block to the allow-all default (['*'])", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+      }),
+      "utf8",
+    );
+    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    expect(config.tools.allowedTools).toEqual(["*"]);
+  });
+
+  it("resolves an explicit empty tools.allowedTools to [] (chat-only)", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        tools: { allowedTools: [] },
+      }),
+      "utf8",
+    );
+    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    expect(config.tools.allowedTools).toEqual([]);
+  });
+
   it("loads config from JSON when env is missing the required fields", async () => {
     const path = join(dir, "config.json");
     await writeFile(

@@ -30,6 +30,7 @@ import {
   adapterSendToolsMcpServerSpec,
   createAdapterSendToolsRuntimeExtension,
   createAdapterSendToolsServer,
+  isAdapterSendToolAllowed,
   resolveAdapterSendToolsSettings,
 } from "../adapter-send-tools.js";
 import type { AdapterSendToolsSettings } from "../adapter-send-tools.js";
@@ -45,6 +46,27 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
+});
+
+describe("isAdapterSendToolAllowed global allow-all", () => {
+  it("allows an adapter send tool under the global '*' wildcard", () => {
+    expect(isAdapterSendToolAllowed("slack_send_message", { allowedTools: ["*"] })).toBe(true);
+    expect(isAdapterSendToolAllowed("telegram_send_message", { allowedTools: ["*"] })).toBe(true);
+  });
+
+  it("lets an explicit deny win over the global '*' wildcard", () => {
+    expect(
+      isAdapterSendToolAllowed("slack_send_message", {
+        allowedTools: ["*"],
+        disallowedTools: ["slack_send_message"],
+      }),
+    ).toBe(false);
+  });
+
+  it("still denies when neither the global '*' nor a matching entry is present", () => {
+    expect(isAdapterSendToolAllowed("slack_send_message", { allowedTools: [] })).toBe(false);
+    expect(isAdapterSendToolAllowed("slack_send_message", { allowedTools: ["Read"] })).toBe(false);
+  });
 });
 
 describe("resolveAdapterSendToolsSettings", () => {

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ALLOW_ALL_TOOLS,
   baseConfig,
   BUILTIN_TOOL_NAMES,
   type CapabilityModule,
   DEFAULT_MODEL,
+  isAllowAllTools,
   isKnownToolName,
   isMcpToolName,
   resolveModuleInputs,
@@ -104,6 +106,18 @@ describe("known-tools", () => {
     expect(isKnownToolName("read")).toBe(false);
     expect(isKnownToolName("telegram_ask")).toBe(true);
     expect(isKnownToolName("nope")).toBe(false);
+  });
+
+  it("treats the allow-all sentinel ('*') as a known tool name", () => {
+    expect(ALLOW_ALL_TOOLS).toBe("*");
+    expect(isKnownToolName(ALLOW_ALL_TOOLS)).toBe(true);
+  });
+
+  it("detects the allow-all sentinel in a tool list", () => {
+    expect(isAllowAllTools([ALLOW_ALL_TOOLS])).toBe(true);
+    expect(isAllowAllTools(["Read", "*"])).toBe(true);
+    expect(isAllowAllTools(["Read"])).toBe(false);
+    expect(isAllowAllTools([])).toBe(false);
   });
 
   it("detects MCP server tool names by prefix", () => {
