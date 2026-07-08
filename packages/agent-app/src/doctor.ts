@@ -38,6 +38,7 @@ import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
 import { findUnknownAppConfigWarnings } from "./config-reference.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
+import { piAuthWorkingDirectory, piLoginCommandLine } from "./provider-setup.js";
 
 export type ValidationStatus = "ok" | "waiting" | "disabled" | "error";
 
@@ -452,6 +453,8 @@ async function appendPiCredentialDetails(
   for (const { label, ref } of piRefs) {
     const provider = ref.provider as string;
     const refStr = referenceOf(ref);
+    const loginCommand = piLoginCommandLine(provider);
+    const loginCwd = piAuthWorkingDirectory(authPath);
     if (enabledLocalProviders.has(provider)) {
       details.push(`${label} ${refStr}: provider \`${provider}\` configured via config providers.local (keyless local provider).`);
       continue;
@@ -471,7 +474,7 @@ async function appendPiCredentialDetails(
     if (entry === undefined) {
       status = "waiting";
       details.push(
-        `[WARN] ${label} ${refStr}: no Pi credentials found for provider \`${provider}\` (absent from the auth store and models.json). Authenticate it (\`pi auth login ${provider}\`) or set providers.piAuthPath.`,
+        `[WARN] ${label} ${refStr}: no Pi credentials found for provider \`${provider}\` (absent from the auth store and models.json). Authenticate it with \`${loginCommand}\` from ${loginCwd}, or set providers.piAuthPath.`,
       );
       continue;
     }
@@ -481,7 +484,7 @@ async function appendPiCredentialDetails(
     if (isOAuth && expired) {
       status = "waiting";
       details.push(
-        `[WARN] ${label} ${refStr}: OAuth token for \`${provider}\` expired${whenNote} — the runtime auto-refreshes, but if runs fail with "No API key for provider: ${provider}" the refresh is dead; re-authenticate: \`pi auth login ${provider}\`.`,
+        `[WARN] ${label} ${refStr}: OAuth token for \`${provider}\` expired${whenNote} — the runtime auto-refreshes, but if runs fail with "No API key for provider: ${provider}" the refresh is dead; re-authenticate with \`${loginCommand}\` from ${loginCwd}.`,
       );
       continue;
     }

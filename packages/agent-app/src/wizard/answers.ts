@@ -24,6 +24,8 @@ import {
 export interface WizardAnswers {
   readonly model: string;
   readonly fallbackModels: readonly string[];
+  /** Optional runtime reasoning effort (`runtime.effort`), omitted for default provider behavior. */
+  readonly effort?: string;
   /** Channel module ids, e.g. `["channel:webhook","channel:telegram"]`. */
   readonly channels: readonly string[];
   /** Memory module id, or `undefined` for no memory section. */
@@ -82,10 +84,11 @@ const ZERO_TOOLS_WARNING =
  */
 function selectedModuleIds(answers: WizardAnswers): readonly string[] {
   const ids: string[] = [];
-  if (/^pi:ollama:/u.test(answers.model)) {
+  const modelRefs = [answers.model, ...answers.fallbackModels];
+  if (modelRefs.some((model) => /^pi:ollama:/u.test(model))) {
     ids.push("provider:ollama");
   }
-  if (/^pi:lmstudio:/u.test(answers.model)) {
+  if (modelRefs.some((model) => /^pi:lmstudio:/u.test(model))) {
     ids.push("provider:lmstudio");
   }
   for (const channel of answers.channels) {
@@ -225,6 +228,18 @@ function applyFragment(config: Record<string, unknown>, fragment: Record<string,
       };
       continue;
     }
+    if (key === "providers") {
+      const existing = (config.providers as Record<string, unknown> | undefined) ?? {};
+      const incoming = (value as Record<string, unknown> | undefined) ?? {};
+      const existingLocal = Array.isArray(existing.local) ? existing.local : [];
+      const incomingLocal = Array.isArray(incoming.local) ? incoming.local : [];
+      config.providers = {
+        ...existing,
+        ...incoming,
+        ...(existingLocal.length > 0 || incomingLocal.length > 0 ? { local: [...existingLocal, ...incomingLocal] } : {}),
+      };
+      continue;
+    }
     config[key] = value;
   }
 }
@@ -239,7 +254,7 @@ function applyFragment(config: Record<string, unknown>, fragment: Record<string,
 export function composeWizardPlan(answers: WizardAnswers, ctx: ComposeContext): WizardPlan {
   const modules = selectedModules(answers);
   const config: Record<string, unknown> = {
-    ...baseConfig(ctx, answers.model, answers.fallbackModels),
+    ...baseConfig(ctx, answers.model, answers.fallbackModels, answers.effort),
   };
 
   const files: GeneratedFile[] = [];

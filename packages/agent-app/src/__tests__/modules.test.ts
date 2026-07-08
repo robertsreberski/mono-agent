@@ -78,6 +78,14 @@ describe("baseConfig", () => {
     expect(some.runtime?.fallbackModels).toEqual(["codex:gpt-5.5"]);
   });
 
+  it("includes runtime.effort only when supplied", () => {
+    const none = baseConfig({ dirBasename: "a", skillsRootExists: false }, DEFAULT_MODEL, []);
+    expect(none.runtime).not.toHaveProperty("effort");
+
+    const configured = baseConfig({ dirBasename: "a", skillsRootExists: false }, DEFAULT_MODEL, [], "high");
+    expect(configured.runtime?.effort).toBe("high");
+  });
+
   it("starts with an empty allowedTools policy", () => {
     const config = baseConfig({ dirBasename: "a", skillsRootExists: false }, DEFAULT_MODEL, []);
     expect(config.tools?.allowedTools).toEqual([]);

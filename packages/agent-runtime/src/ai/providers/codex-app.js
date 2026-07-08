@@ -116,8 +116,7 @@ function sandboxForPermissionMode(permissionMode) {
 
 function approvalPolicyForPermissionMode(permissionMode) {
   if (permissionMode === "bypassPermissions") return "never";
-  if (permissionMode === "plan") return "on-request";
-  return "on-failure";
+  return "on-request";
 }
 
 function codexMcpConfig(mcpServers = {}) {

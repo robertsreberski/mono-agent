@@ -1,7 +1,9 @@
 import * as p from "@clack/prompts";
+import { EFFORT_LEVELS } from "@mono-agent/config";
 
 import { findModule, modulesByKind } from "../modules/catalog.js";
 import { ADAPTER_SEND_TOOL_NAMES, BUILTIN_TOOL_NAMES } from "../modules/known-tools.js";
+import { STATIC_MODEL_CANDIDATES, type WizardModelCandidate } from "./model-discovery.js";
 import { PRESET_CATALOG } from "./presets.js";
 
 /**
@@ -101,15 +103,25 @@ export function memorySelectOptions(): WizardSelectOption[] {
 }
 
 /**
- * A short curated model menu plus an `__other__` escape hatch that prompts for a
- * free-form `provider:model` reference.
+ * A discovered/ranked model menu plus an `__other__` escape hatch that prompts
+ * for a free-form `provider:model` reference.
  */
-export function modelSelectOptions(): WizardSelectOption[] {
+export function modelSelectOptions(candidates: readonly WizardModelCandidate[] = STATIC_MODEL_CANDIDATES): WizardSelectOption[] {
   return [
-    { value: "claude:claude-sonnet-4-6", label: "Claude Sonnet 4.6", hint: "default" },
-    { value: "codex:gpt-5.5", label: "Codex GPT-5.5" },
-    { value: "pi:ollama:llama3.1:8b", label: "Ollama llama3.1:8b", hint: "fully local" },
+    ...candidates.map((candidate) => ({
+      value: candidate.value,
+      label: candidate.label,
+      ...(candidate.hint === undefined ? {} : { hint: candidate.hint }),
+    })),
     { value: "__other__", label: "Other…", hint: "type a provider:model reference" },
+  ];
+}
+
+/** Reasoning-effort choices. Empty value means no `runtime.effort` is written. */
+export function effortSelectOptions(): WizardSelectOption[] {
+  return [
+    { value: "", label: "Default", hint: "leave runtime.effort unset" },
+    ...EFFORT_LEVELS.map((level) => ({ value: level, label: level })),
   ];
 }
 

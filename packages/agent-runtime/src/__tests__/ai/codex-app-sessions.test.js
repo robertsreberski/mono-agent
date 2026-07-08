@@ -77,6 +77,35 @@ afterEach(async () => {
 });
 
 describe("codex-app persistent sessions", () => {
+  it.each([
+    ["default (unset)", undefined, "on-request", "workspace-write", null],
+    ["default", "default", "on-request", "workspace-write", null],
+    ["plan", "plan", "on-request", "read-only", null],
+    ["acceptEdits", "acceptEdits", "on-request", "workspace-write", null],
+    ["bypassPermissions", "bypassPermissions", "never", "danger-full-access", { type: "dangerFullAccess" }],
+  ])("maps %s permission mode into supported app-server payload policy", async (
+    _label,
+    permissionMode,
+    approvalPolicy,
+    sandbox,
+    sandboxPolicy,
+  ) => {
+    const factory = stubClientFactory({ threadId: `thread-${_label}` });
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, { permissionMode }));
+    expect(result.error).toBeNull();
+
+    const client = factory.clients[0];
+    const threadStart = client.requests.find((r) => r.method === "thread/start");
+    const turnStart = client.requests.find((r) => r.method === "turn/start");
+
+    expect(threadStart?.params.approvalPolicy).toBe(approvalPolicy);
+    expect(threadStart?.params.sandbox).toBe(sandbox);
+    expect(turnStart?.params.approvalPolicy).toBe(approvalPolicy);
+    expect(turnStart?.params.sandboxPolicy).toEqual(sandboxPolicy);
+    expect(threadStart?.params.approvalPolicy).not.toBe("on-failure");
+    expect(turnStart?.params.approvalPolicy).not.toBe("on-failure");
+  });
+
   it("keeps the client alive under sessionKeepAlive and resumes with only turn/start", async () => {
     const factory = stubClientFactory({ threadId: "thread-keep" });
     const first = await generateCodexAppResponse("SYS", runOptions(factory, { sessionKeepAlive: true }));

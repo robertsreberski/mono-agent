@@ -6,9 +6,9 @@ Every framework capability and how a composed agent reaches it. This table is th
 
 | Capability | Coverage | Where |
 | --- | --- | --- |
-| Model backends: claude (sdk/cli), codex (cli), pi sdk providers (OpenAI, Copilot, OpenRouter, Ollama, ...), opencode (cli, `opencode:<provider>:<model>` via the OpenCode server) | config | `runtime.model` |
+| Model backends: claude (sdk/cli), codex (cli direct fallback), pi sdk providers (OpenAI, OpenAI-Codex preferred when Pi auth exists, Copilot, OpenRouter, OpenCode-through-Pi, Ollama, LM Studio, ...), plus hand-authored opencode runtime refs (cli, `opencode:<provider>:<model>` via the OpenCode server) | config | `runtime.model` |
 | Backup models on retryable provider failure | config | `runtime.fallbackModels` |
-| Execution mode (sdk/cli), effort, max turns, workspace | config | `runtime.executionMode`, `runtime.effort`, `runtime.maxTurns`, `runtime.workspace` |
+| Execution mode (sdk/cli), effort, max turns, workspace | config + cli | `runtime.executionMode`, `runtime.effort` (`mono-agent init --effort <level>`), `runtime.maxTurns`, `runtime.workspace` |
 | Tool-permission posture for CLI backends | config | `runtime.permissionMode` |
 | Continuous provider sessions with idle eviction | config | `runtime.session.{mode,idleTimeoutMs}` |
 | Local providers (Ollama / LM Studio / OpenAI-compatible) | config | `providers.local[]` |
@@ -82,7 +82,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Interactive setup wizard (preset/custom; walks model→channels→memory→tools→sandbox→observability) | cli | `mono-agent init` (no flags, on a TTY; `setup` alias) |
 | Tools reporting + no-tools guardrail (allow-all → `All tools allowed`; explicit empty `allowedTools: []` → `waiting`; unknown-tool "did you mean"; send-tool/channel cross-checks) | cli | part of `mono-agent validate`/`doctor`; the wizard's tools step |
 | Resolved config view (every field tagged env/json/default) | cli | `mono-agent config` |
-| Scaffold / validate / start / install-skill | cli | `mono-agent init\|validate [--consumer <path>]\|config\|presets\|start\|install-skill` |
+| Scaffold / validate / start / install-skill | cli | `mono-agent init [--model <ref>] [--fallback-models <csv>] [--effort <level>] [--auth]\|validate [--consumer <path>]\|config\|presets\|start\|install-skill` |
 | Preset capability check (selected preset live?) | cli | `mono-agent validate --preset <id>` |
 | `.env` auto-loading | cli | automatic; `--env-file <path>` |
 | Explicit failure objects (no fake success) | auto | harness |

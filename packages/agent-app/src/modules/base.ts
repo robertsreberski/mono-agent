@@ -33,11 +33,13 @@ export function baseConfig(
   ctx: BaseConfigContext,
   model: string,
   fallbackModels: readonly string[],
+  effort?: string,
 ): MonoAgentConfigJson {
   return {
     runtime: {
       model,
       ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
+      ...(effort === undefined ? {} : { effort }),
       workspace: ".",
     },
     context: {

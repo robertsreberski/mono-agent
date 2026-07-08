@@ -4,7 +4,7 @@ import { configDefaults, defineConfig } from "vitest/config";
 // (`release:test`, `test:demo`) that pass bare relative paths, which Vitest
 // treats as substring filters against *every* discovered test file. Various
 // tools keep full repo copies under gitignored worktree directories
-// (`.claude/worktrees/`, `.ultrawork/`, `.worklab-tmp/`), so without scoping
+// (`.claude/worktrees/`, `.quests-wt/`, `.ultrawork/`, `.worklab-tmp/`), so without scoping
 // discovery those copies are matched too — `release:test` would run the
 // canonical `scripts/release/__tests__/release.test.mjs` plus a divergent copy
 // per worktree, and `test:demo` would fail collecting demo copies whose packages
@@ -17,6 +17,7 @@ export default defineConfig({
       ...configDefaults.exclude,
       "**/.claude/**",
       "**/.git/**",
+      "**/.quests-wt/**",
       "**/.ultrawork/**",
       "**/.worklab-tmp/**",
     ],

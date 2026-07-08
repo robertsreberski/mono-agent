@@ -23,6 +23,7 @@ const WITH_CHANNEL_MODULE_ID: Record<WithChannel, string> = {
 export interface AnswersFromCliArgs {
   readonly model?: string;
   readonly fallbackModels?: readonly string[];
+  readonly effort?: string;
   readonly memory?: "lite" | "journal" | "bujo";
   /** Validated `--with` channel flag names (see {@link WithChannel}). */
   readonly withChannels?: readonly string[];
@@ -56,6 +57,7 @@ export function answersFromCli(args: AnswersFromCliArgs): WizardAnswers {
     ...basePartial,
     ...(args.model === undefined ? {} : { model: args.model }),
     ...(args.fallbackModels === undefined ? {} : { fallbackModels: args.fallbackModels }),
+    ...(args.effort === undefined ? {} : { effort: args.effort }),
     channels: [...channels],
     ...(memory === undefined ? {} : { memory }),
   });

@@ -63,11 +63,11 @@ Everything below runs in the user's agent folder, not the workspace.
 2. **Scaffold.** In the user's folder, prefer the preset path when one fits — scaffold non-interactively with `--yes` (the composer is not the interactive `init` wizard):
 
    ```bash
-   mono-agent init --preset <id> --yes [--with slack,cron] [--dry-run]   # preset + .env.example + checklist
-   mono-agent init --model <ref> [--fallback-models <csv>] [--memory lite|journal|bujo]   # bare scaffold
+   mono-agent init --preset <id> --yes [--with slack,cron] [--effort high] [--auth] [--dry-run]   # preset + .env.example + checklist
+   mono-agent init --model <ref> [--fallback-models <csv>] [--effort <level>] [--auth] [--memory lite|journal|bujo]   # bare scaffold
    ```
 
-   Either writes a `mono-agent.config.json` (with `tools.allowedTools` pre-filled from the selected capabilities' recommended tools), an `IDENTITY.md` that references any knowledge files already present, and `.mono-agent/` working directories (presets also emit a `.env.example` and any extra files). `--dry-run` previews without writing. It never overwrites existing files.
+   Either writes a `mono-agent.config.json` (with `tools.allowedTools` pre-filled from the selected capabilities' recommended tools), an `IDENTITY.md` that references any knowledge files already present, and `.mono-agent/` working directories (presets also emit a `.env.example` and any extra files). `--effort` writes `runtime.effort`; `--auth` opts in to provider setup before writing files; `--dry-run` previews without writing or launching auth/preflight commands. It never overwrites existing files.
 3. **Configure.** Edit `mono-agent.config.json` to match the discovery answers. Read `references/config-blueprint.md` for the full annotated config shape: every channel section, skills, MCP, memory, sandbox, and fallback models. Run `mono-agent config` to see the resolved configuration field-by-field with each value tagged `env` / `json` / `default` — the fastest way to confirm a value came from where you intended.
 4. **Validate.**
 

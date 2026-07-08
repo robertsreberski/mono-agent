@@ -3,9 +3,9 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { parseCliArgs, renderPresetList, renderPresetShow } from "../cli.js";
+import { parseCliArgs, renderPresetList, renderPresetShow, runProviderSetupBeforeInit } from "../cli.js";
 import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
 import { initMonoAgentFolder } from "../init.js";
 import { answersFromCli } from "../wizard/from-flags.js";
@@ -34,6 +34,10 @@ describe("parseCliArgs preset flags & alias normalization", () => {
     expect(parseCliArgs(["init"]).yes).toBeUndefined();
   });
 
+  it("parses init --auth", () => {
+    expect(parseCliArgs(["init", "--auth"])).toMatchObject({ command: "init", auth: true });
+  });
+
   it("parses validate --preset", () => {
     expect(parseCliArgs(["validate", "--preset", "code-sandbox"])).toMatchObject({
       command: "validate",
@@ -60,6 +64,38 @@ describe("parseCliArgs preset flags & alias normalization", () => {
   });
 });
 
+describe("init provider setup gate", () => {
+  it("does not execute provider setup during dry-run even with --auth", async () => {
+    const execute = vi.fn(async () => []);
+    const status = await runProviderSetupBeforeInit({
+      modelRefs: ["codex:gpt-5.5"],
+      cwd: "/agent",
+      auth: true,
+      dryRun: true,
+      execute,
+    });
+    expect(status).toBe("skipped");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("reports provider setup failures as failed", async () => {
+    const status = await runProviderSetupBeforeInit({
+      modelRefs: ["codex:gpt-5.5"],
+      cwd: "/agent",
+      auth: true,
+      dryRun: false,
+      execute: async (plan) => [
+        {
+          action: plan.actions[0]!,
+          status: "failed",
+          detail: "codex login exited 1.",
+        },
+      ],
+    });
+    expect(status).toBe("failed");
+  });
+});
+
 describe("answersFromCli", () => {
   it("unions --with channels onto the preset channels and defaults tools to allow-all", () => {
     const answers = answersFromCli({ presetId: "telegram-assistant", withChannels: ["slack"] });
@@ -69,9 +105,10 @@ describe("answersFromCli", () => {
     expect(answers.allowedTools).toEqual(["*"]);
   });
 
-  it("maps --memory to a module id and lets --model override the preset model", () => {
-    const answers = answersFromCli({ presetId: "local-private", model: "codex:gpt-5.5", memory: "lite" });
+  it("maps --memory to a module id and lets --model/--effort override the preset runtime", () => {
+    const answers = answersFromCli({ presetId: "local-private", model: "codex:gpt-5.5", effort: "high", memory: "lite" });
     expect(answers.model).toBe("codex:gpt-5.5");
+    expect(answers.effort).toBe("high");
     expect(answers.memory).toBe("memory:lite");
   });
 

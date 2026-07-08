@@ -26,7 +26,7 @@ npm i -g @mono-agent/agent-app      # the scoped host that owns the CLI
 
 `create-mono-agent` is a thin installer whose `create-mono-agent` and `mono-agent` bins forward every command to `@mono-agent/agent-app`; behaviour is identical either way. (The bare `mono-agent` npm name isn't ours — npm blocks it as too similar to an unrelated `monoagent` package — so the installer follows the `create-*` convention instead.)
 
-The easiest path on a terminal is the interactive wizard — `mono-agent init` with no flags walks you through a preset (or custom) build: model, channels, memory, and, importantly, the **tools** your agent may call (pre-checked with a safe default plus your channels' send tools, so it isn't left tool-less), then it scaffolds, validates, and prints a secrets checklist:
+The easiest path on a terminal is the interactive wizard — `mono-agent init` with no flags walks you through a preset (or custom) build: model, reasoning effort, channels, memory, and, importantly, the **tools** your agent may call (pre-checked with a safe default plus your channels' send tools, so it isn't left tool-less). Its model picker discovers available Pi OpenAI-Codex auth, OpenCode models recorded as `pi:opencode-go:*`, Ollama models, and LM Studio's local server best-effort; when Pi OpenAI-Codex is configured it is ranked above direct `codex:gpt-5.5`, while the direct Codex CLI path remains selectable as a fallback. The final review includes provider auth/preflight actions for selected Claude, Codex, Pi OAuth, OpenCode-through-Pi, Ollama, and LM Studio refs before it scaffolds, validates, and prints a secrets checklist:
 
 ```bash
 mkdir my-agent
@@ -34,10 +34,10 @@ cd my-agent
 mono-agent init                   # step-by-step wizard on a TTY (`mono-agent setup` is an alias)
 ```
 
-Or drive it with flags (`init` writes the scaffold non-interactively when given any flag, or when stdin is not a TTY):
+Or drive it with flags (`init` writes the scaffold non-interactively when given any flag, or when stdin is not a TTY). Use `--effort` to write `runtime.effort`. Add `--auth` when you want supported provider auth/preflight commands to run before files are written; `--dry-run` never launches them:
 
 ```bash
-mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b
+mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b --effort high --auth
 mono-agent validate               # per-section report; `mono-agent doctor` is an alias
 ```
 
@@ -230,7 +230,8 @@ Run Ollama locally and pull the model first, for example `ollama pull qwen3:8b`.
 Built-in Pi OAuth providers, such as `pi:openai-codex:gpt-5.5`, use the Pi auth
 file instead of `providers.local`. Core config defaults `providers.piAuthPath` to
 `~/.pi/agent/auth.json` and exposes `MONO_AGENT_PI_AUTH_PATH` for hosts that keep
-credentials elsewhere.
+credentials elsewhere. Run `npx @earendil-works/pi-ai login <provider>` from the
+directory containing that auth file when a Pi provider needs OAuth setup.
 
 ## Development Verification
 
