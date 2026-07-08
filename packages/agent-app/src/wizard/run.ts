@@ -5,6 +5,7 @@ import * as p from "@clack/prompts";
 
 import { findModule } from "../modules/catalog.js";
 import { ALLOW_ALL_TOOLS, BUILTIN_TOOL_NAMES, isAllowAllTools } from "../modules/known-tools.js";
+import { planProviderSetup, providerSetupActionCommandLine } from "../provider-setup.js";
 import {
   alwaysOnTools,
   composeWizardPlan,
@@ -27,7 +28,7 @@ import { discoverWizardModelCandidates, formatModelDiscoveryStatus } from "./mod
 
 /** The outcome of a wizard run: collected answers, or a clean cancellation. */
 export type WizardOutcome =
-  | { readonly status: "answers"; readonly answers: WizardAnswers }
+  | { readonly status: "answers"; readonly answers: WizardAnswers; readonly runProviderSetup: boolean }
   | { readonly status: "cancelled" };
 
 /**
@@ -50,6 +51,11 @@ interface DraftAnswers {
 const LOCAL_PROVIDER_MODEL = /^pi:(?:ollama|lmstudio):/u;
 const SANDBOXABLE_TOOLS = new Set(["Bash", "Write", "Edit"]);
 
+interface CollectedAnswers {
+  readonly answers: WizardAnswers;
+  readonly runProviderSetup: boolean;
+}
+
 /**
  * The interactive `init` wizard: a colourful, step-by-step flow that COLLECTS a
  * {@link WizardAnswers} and hands it back — it never writes anything. The caller
@@ -59,8 +65,8 @@ const SANDBOXABLE_TOOLS = new Set(["Bash", "Write", "Edit"]);
  */
 export async function runInitWizard(ctx: { cwd: string }): Promise<WizardOutcome> {
   try {
-    const answers = await collectAnswers(ctx);
-    return { status: "answers", answers };
+    const result = await collectAnswers(ctx);
+    return { status: "answers", answers: result.answers, runProviderSetup: result.runProviderSetup };
   } catch (error) {
     if (error instanceof WizardCancelled) {
       p.cancel("Cancelled — nothing was written.");
@@ -71,7 +77,7 @@ export async function runInitWizard(ctx: { cwd: string }): Promise<WizardOutcome
 }
 
 /** Walk the flow (preset or custom), returning the fully collected answers. */
-async function collectAnswers(ctx: { cwd: string }): Promise<WizardAnswers> {
+async function collectAnswers(ctx: { cwd: string }): Promise<CollectedAnswers> {
   p.intro("mono-agent init — let's build your agent");
 
   const choice = guard(
@@ -91,7 +97,7 @@ async function collectAnswers(ctx: { cwd: string }): Promise<WizardAnswers> {
  * The full custom flow: model → effort → channels → memory → per-module inputs
  * → tools → sandbox (only if code tools were chosen) → observability → summary.
  */
-async function collectCustom(ctx: { cwd: string }): Promise<WizardAnswers> {
+async function collectCustom(ctx: { cwd: string }): Promise<CollectedAnswers> {
   const draft = draftFrom(defaultAnswers());
 
   // 1. Model.
@@ -184,8 +190,8 @@ async function collectCustom(ctx: { cwd: string }): Promise<WizardAnswers> {
   );
 
   // 8. Summary + final confirm.
-  await confirmSummary(draft, ctx);
-  return toWizardAnswers(draft);
+  const runProviderSetup = await confirmSummary(draft, ctx);
+  return { answers: toWizardAnswers(draft), runProviderSetup };
 }
 
 /**
@@ -193,7 +199,7 @@ async function collectCustom(ctx: { cwd: string }): Promise<WizardAnswers> {
  * so we only prompt its per-module inputs, let the operator adjust tools, and
  * confirm the summary.
  */
-async function collectFromPreset(ctx: { cwd: string }, presetId: string): Promise<WizardAnswers> {
+async function collectFromPreset(ctx: { cwd: string }, presetId: string): Promise<CollectedAnswers> {
   const preset = findPreset(presetId);
   // presetSelectOptions only offers known ids; guard defensively regardless.
   if (preset === undefined) {
@@ -204,8 +210,8 @@ async function collectFromPreset(ctx: { cwd: string }, presetId: string): Promis
   const draft = draftFrom(presetAnswers(preset));
   await promptModuleInputs(draft);
   await promptTools(draft);
-  await confirmSummary(draft, ctx);
-  return toWizardAnswers(draft);
+  const runProviderSetup = await confirmSummary(draft, ctx);
+  return { answers: toWizardAnswers(draft), runProviderSetup };
 }
 
 /**
@@ -357,7 +363,7 @@ async function pickSpecificTools(draft: DraftAnswers): Promise<void> {
  * Provider modules are implementation detail (auto-added for local models), so
  * they are excluded from the user-facing capabilities line. A "no" cancels.
  */
-async function confirmSummary(draft: DraftAnswers, ctx: { cwd: string }): Promise<void> {
+async function confirmSummary(draft: DraftAnswers, ctx: { cwd: string }): Promise<boolean> {
   if ([draft.model, ...draft.fallbackModels].some((model) => LOCAL_PROVIDER_MODEL.test(model))) {
     p.note(
       "A matching local provider block is added automatically.\nThe first turn may be slow while the model loads.",
@@ -401,9 +407,31 @@ async function confirmSummary(draft: DraftAnswers, ctx: { cwd: string }): Promis
   ];
   p.note(lines.join("\n"), "Review");
 
+  const setupPlan = planProviderSetup({
+    modelRefs: [answers.model, ...answers.fallbackModels],
+    cwd: ctx.cwd,
+    ...(typeof plan.configJson.providers?.piAuthPath === "string" ? { piAuthPath: plan.configJson.providers.piAuthPath } : {}),
+  });
+  let runProviderSetup = false;
+  if (setupPlan.actions.length > 0) {
+    p.note(
+      setupPlan.actions
+        .map((action) => `${action.label}: ${providerSetupActionCommandLine(action)} (cwd: ${action.cwd})`)
+        .join("\n"),
+      "Provider setup",
+    );
+    runProviderSetup = guard(
+      await p.confirm({
+        message: "Run provider auth/preflight before writing files?",
+        initialValue: false,
+      }),
+    );
+  }
+
   if (!guard(await p.confirm({ message: "Write these files?", initialValue: true }))) {
     throw new WizardCancelled();
   }
+  return runProviderSetup;
 }
 
 /** Seed a mutable draft from immutable answers (defaults or a preset). */

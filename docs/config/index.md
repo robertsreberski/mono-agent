@@ -99,7 +99,7 @@ A handful of capabilities are `code`-only — for example structured output sche
 
 ## Validate before you run
 
-`mono-agent validate` prints a per-section report — **secret placement**, runtime, **provider credentials** (Pi OAuth token presence/expiry for every referenced model), context, memory, tools, sandbox, observability, and every channel — and exits 0 only when the config is ready to start. The provider-credentials check is static and read-only, flagging a keyless or expired-OAuth provider as `waiting` with a `pi auth login <provider>` hint; see [CLI reference → Provider credentials](/observability/cli-reference/#provider-credentials):
+`mono-agent validate` prints a per-section report — **secret placement**, runtime, **provider credentials** (Pi OAuth token presence/expiry for every referenced model), context, memory, tools, sandbox, observability, and every channel — and exits 0 only when the config is ready to start. The provider-credentials check is static and read-only, flagging a keyless or expired-OAuth provider as `waiting` with a `npx @earendil-works/pi-ai login <provider>` hint to run from the directory containing `providers.piAuthPath`; see [CLI reference → Provider credentials](/observability/cli-reference/#provider-credentials):
 
 ```bash
 mono-agent validate

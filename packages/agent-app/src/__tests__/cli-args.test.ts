@@ -27,6 +27,7 @@ describe("parseCliArgs", () => {
         "claude:claude-sonnet-4-6",
         "--fallback-models",
         "pi:ollama:gemma4:31b, codex:gpt-5.5",
+        "--auth",
         "--effort",
         "high",
         "--memory",
@@ -36,6 +37,7 @@ describe("parseCliArgs", () => {
       command: "init",
       model: "claude:claude-sonnet-4-6",
       fallbackModels: ["pi:ollama:gemma4:31b", "codex:gpt-5.5"],
+      auth: true,
       effort: "high",
       memory: "journal",
       positionals: [],
@@ -206,6 +208,7 @@ describe("parseCliArgs", () => {
     // `--port` is a recognized (web-only) flag; it is rejected for non-web commands.
     expect(() => parseCliArgs(["start", "--port", "4100"])).toThrow(/only supported for/u);
     expect(() => parseCliArgs(["start", "--include-memory"])).toThrow(/--include-memory/u);
+    expect(() => parseCliArgs(["validate", "--auth"])).toThrow(/--auth/u);
     expect(() => parseCliArgs(["init", "--memory", "vector"])).toThrow(/--memory/u);
     expect(() => parseCliArgs(["init", "--effort", "turbo"])).toThrow(/--effort/u);
   });
@@ -247,6 +250,7 @@ describe("parseCliArgs", () => {
     expect(renderHelp()).toContain("mono-agent setup");
     expect(renderHelp()).toContain("mono-agent presets");
     expect(renderHelp()).toContain("mono-agent init [--preset");
+    expect(renderHelp()).toContain("--auth runs supported provider auth/preflight commands before writing");
     expect(renderHelp()).toContain("mono-agent web");
     expect(renderHelp()).toContain("--allow-non-loopback");
     expect(renderHelp()).toContain("--include-memory");

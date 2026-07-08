@@ -48,8 +48,10 @@ node <workspace>/packages/agent-app/dist/cli.js start
 
 On an interactive terminal, bare `mono-agent init` (no flags) runs a colourful,
 step-by-step wizard — powered by `@clack/prompts` — that composes the capability
-selection before writing anything; any flag (or a piped/non-TTY invocation) takes
-the silent default/preset scaffold path instead.
+selection before writing anything and can opt in to provider auth/preflight
+commands before the scaffold is created. Any flag (or a piped/non-TTY invocation)
+takes the silent default/preset scaffold path instead; add `--auth` to run
+supported provider setup in that non-interactive path.
 
 Programmatic:
 

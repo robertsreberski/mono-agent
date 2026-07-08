@@ -62,6 +62,8 @@ import type { WithChannel } from "./wizard/from-flags.js";
 import { findPreset, PRESET_CATALOG, presetAnswers, presetIds, RECIPE_TO_PRESET } from "./wizard/presets.js";
 import type { WizardPreset } from "./wizard/presets.js";
 import { runInitWizard } from "./wizard/run.js";
+import { executeProviderSetupPlan, planProviderSetup, providerSetupActionCommandLine } from "./provider-setup.js";
+import type { ProviderSetupPlan, ProviderSetupResult } from "./provider-setup.js";
 import * as ui from "./ui.js";
 
 const DEFAULT_LOG_LINES = 200;
@@ -93,6 +95,8 @@ interface ParsedCliArgs {
   readonly withChannels?: readonly string[];
   /** init: skip the interactive wizard and write the default/preset scaffold. */
   readonly yes?: boolean;
+  /** init: opt in to running provider auth/preflight commands before writing files. */
+  readonly auth?: boolean;
   /** Non-flag arguments (e.g. `presets show <id>`). */
   readonly positionals: readonly string[];
   readonly envFile?: string;
@@ -178,6 +182,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let recipe: string | undefined;
   let withChannels: readonly string[] | undefined;
   let yes = false;
+  let auth = false;
   const positionals: string[] = [];
   let envFile: string | undefined;
   let target: InstallSkillTarget | undefined;
@@ -334,6 +339,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--yes":
         yes = true;
         break;
+      case "--auth":
+        auth = true;
+        break;
       case "--with":
         withChannels = requireValue(rest, ++i, flag)
           .split(",")
@@ -406,6 +414,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (limit !== undefined && cmd !== "memory") {
     throw new Error("--limit is only supported for `mono-agent memory`.");
   }
+  if (auth && cmd !== "init") {
+    throw new Error("--auth is only supported for `mono-agent init`.");
+  }
 
   return {
     command: cmd,
@@ -418,6 +429,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(recipe === undefined ? {} : { recipe }),
     ...(withChannels === undefined ? {} : { withChannels }),
     ...(yes ? { yes } : {}),
+    ...(auth ? { auth } : {}),
     positionals,
     ...(envFile === undefined ? {} : { envFile }),
     ...(target === undefined ? {} : { target }),
@@ -493,14 +505,15 @@ interface HelpEntry {
 
 const HELP_COMMANDS: readonly HelpEntry[] = [
   {
-    signature: "mono-agent init [--preset <id>] [--with <csv>] [--yes] [--dry-run]\n" +
+    signature: "mono-agent init [--preset <id>] [--with <csv>] [--yes] [--auth] [--dry-run]\n" +
       "                [--model <ref>] [--fallback-models <csv>] [--effort <level>]\n" +
       "                [--memory lite|journal|bujo]",
     lines: [
       "Scaffold a mono-agent in the current folder. On a TTY with no flags, launches",
       "the step-by-step wizard; with --yes or any flag, writes the default/preset",
       "scaffold non-interactively. --preset seeds a blueprint, --with adds channels,",
-      "--dry-run previews. Existing files are never overwritten.",
+      "--auth runs supported provider auth/preflight commands before writing;",
+      "--dry-run previews only. Existing files are never overwritten.",
     ],
   },
   {
@@ -806,6 +819,22 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
     if (outcome.status === "cancelled") {
       return 1;
     }
+    if (outcome.runProviderSetup) {
+      const previewPlan = composeWizardPlan(outcome.answers, {
+        dirBasename: basename(process.cwd()),
+        skillsRootExists: await pathExists(resolve(process.cwd(), "skills")),
+      });
+      const setup = await runProviderSetupBeforeInit({
+        modelRefs: [outcome.answers.model, ...outcome.answers.fallbackModels],
+        cwd: process.cwd(),
+        auth: true,
+        dryRun: false,
+        ...(typeof previewPlan.configJson.providers?.piAuthPath === "string" ? { piAuthPath: previewPlan.configJson.providers.piAuthPath } : {}),
+      });
+      if (setup === "failed") {
+        return 1;
+      }
+    }
     const result = await initMonoAgentFolder({ dir: process.cwd(), answers: outcome.answers });
     printInitResult(result);
     const report = await validateMonoAgentFolder({ env: process.env, cwd: process.cwd(), configPath: result.configPath });
@@ -838,12 +867,77 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
     ...(presetId === undefined ? {} : { presetId }),
   });
 
+  const previewPlan = composeWizardPlan(answers, {
+    dirBasename: basename(process.cwd()),
+    skillsRootExists: await pathExists(resolve(process.cwd(), "skills")),
+  });
+  const setup = await runProviderSetupBeforeInit({
+    modelRefs: [answers.model, ...answers.fallbackModels],
+    cwd: process.cwd(),
+    auth: args.auth === true,
+    dryRun: args.dryRun,
+    ...(typeof previewPlan.configJson.providers?.piAuthPath === "string" ? { piAuthPath: previewPlan.configJson.providers.piAuthPath } : {}),
+  });
+  if (setup === "failed") {
+    return 1;
+  }
+
   const result = await initMonoAgentFolder({ dir: process.cwd(), answers, dryRun: args.dryRun });
 
   printInitResult(result);
   printSecretsChecklist(result.plan.secrets);
   printNextSteps(result.configPath);
   return 0;
+}
+
+export type InitProviderSetupStatus = "ok" | "failed" | "skipped";
+
+export interface RunProviderSetupBeforeInitOptions {
+  readonly modelRefs: readonly string[];
+  readonly cwd: string;
+  readonly auth: boolean;
+  readonly dryRun: boolean;
+  readonly piAuthPath?: string;
+  readonly execute?: (plan: ProviderSetupPlan) => Promise<readonly ProviderSetupResult[]>;
+}
+
+export async function runProviderSetupBeforeInit(
+  options: RunProviderSetupBeforeInitOptions,
+): Promise<InitProviderSetupStatus> {
+  const plan = planProviderSetup(options);
+  if (plan.actions.length === 0) {
+    return "skipped";
+  }
+  if (options.dryRun) {
+    process.stdout.write("\n" + ui.heading("Provider setup"));
+    process.stdout.write(ui.style.dim("Dry run - provider auth/preflight commands were not launched.\n"));
+    printProviderSetupPlan(plan);
+    return "skipped";
+  }
+  if (!options.auth) {
+    return "skipped";
+  }
+
+  process.stdout.write("\n" + ui.heading("Provider setup"));
+  printProviderSetupPlan(plan);
+  const results = await (options.execute ?? executeProviderSetupPlan)(plan);
+  for (const result of results) {
+    const badge = result.status === "ok" ? ui.badge("ok") : ui.badge("error");
+    process.stdout.write(`${badge}${result.action.label}: ${result.detail}\n`);
+  }
+  if (results.some((result) => result.status === "failed")) {
+    process.stderr.write(ui.errorLine("Provider setup failed; init stopped before writing files."));
+    return "failed";
+  }
+  return "ok";
+}
+
+function printProviderSetupPlan(plan: ProviderSetupPlan): void {
+  for (const action of plan.actions) {
+    process.stdout.write(
+      `  ${action.label}: ${providerSetupActionCommandLine(action)} ${ui.style.dim(`(cwd: ${action.cwd})`)}\n`,
+    );
+  }
 }
 
 /**

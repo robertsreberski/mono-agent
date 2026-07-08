@@ -26,6 +26,7 @@ import {
   rankWizardModelCandidates,
   type WizardModelCandidate,
 } from "../wizard/model-discovery.js";
+import { executeProviderSetupPlan, planProviderSetup } from "../provider-setup.js";
 
 describe("wizard prompt builders", () => {
   it("channelSelectOptions lists all six channels, webhook first", () => {
@@ -113,6 +114,68 @@ describe("wizard prompt builders", () => {
     const options = presetSelectOptions();
     expect(options.length).toBeGreaterThan(1);
     expect(options[options.length - 1]?.value).toBe("__custom__");
+  });
+});
+
+describe("provider setup planner", () => {
+  it("plans auth and preflight for selected primary and fallback providers", () => {
+    const plan = planProviderSetup({
+      cwd: "/agent",
+      piAuthPath: ".pi/auth.json",
+      modelRefs: [
+        "claude:claude-sonnet-4-6",
+        "codex:gpt-5.5",
+        "pi:openai-codex:gpt-5.5",
+        "pi:opencode-go:kimi-k2.6",
+        "pi:ollama:gemma4:31b",
+        "pi:lmstudio:qwen/qwen3-8b",
+      ],
+    });
+
+    expect(plan.actions.map((action) => action.id)).toEqual([
+      "claude-login",
+      "codex-login",
+      "pi-login:openai-codex",
+      "opencode-models",
+      "ollama-list",
+      "lmstudio-models",
+    ]);
+    expect(plan.actions.find((action) => action.id === "pi-login:openai-codex")).toMatchObject({
+      command: ["npx", "@earendil-works/pi-ai", "login", "openai-codex"],
+      cwd: "/agent/.pi",
+    });
+    expect(plan.actions.find((action) => action.id === "ollama-list")).toMatchObject({
+      command: ["ollama", "list"],
+      cwd: "/agent",
+    });
+    expect(plan.actions.find((action) => action.id === "lmstudio-models")).toMatchObject({
+      url: "http://localhost:1234/v1/models",
+      cwd: "/agent",
+    });
+  });
+
+  it("stops execution on the first failed provider setup action", async () => {
+    const plan = planProviderSetup({
+      cwd: "/agent",
+      modelRefs: ["codex:gpt-5.5", "claude:claude-sonnet-4-6"],
+    });
+    const spawnCalls: string[] = [];
+    const fakeSpawn = vi.fn((file: string, args: readonly string[]) => {
+      spawnCalls.push([file, ...args].join(" "));
+      const listeners = new Map<string, (value: unknown, signal?: unknown) => void>();
+      queueMicrotask(() => listeners.get("close")?.(1, null));
+      return {
+        once: (event: string, listener: (value: unknown, signal?: unknown) => void) => {
+          listeners.set(event, listener);
+        },
+      };
+    });
+
+    const results = await executeProviderSetupPlan(plan, { spawn: fakeSpawn as never });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.status).toBe("failed");
+    expect(spawnCalls).toEqual(["codex login"]);
   });
 });
 
