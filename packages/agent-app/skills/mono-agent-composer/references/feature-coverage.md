@@ -6,7 +6,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 
 | Capability | Coverage | Where |
 | --- | --- | --- |
-| Model backends: claude (sdk/cli), codex (cli direct fallback), pi sdk providers (OpenAI, OpenAI-Codex preferred when Pi auth exists, Copilot, OpenRouter, OpenCode-through-Pi, Ollama, LM Studio, ...), opencode (cli, `opencode:<provider>:<model>` via the OpenCode server) | config | `runtime.model` |
+| Model backends: claude (sdk/cli), codex (cli direct fallback), pi sdk providers (OpenAI, OpenAI-Codex preferred when Pi auth exists, Copilot, OpenRouter, OpenCode-through-Pi, Ollama, LM Studio, ...), plus hand-authored opencode runtime refs (cli, `opencode:<provider>:<model>` via the OpenCode server) | config | `runtime.model` |
 | Backup models on retryable provider failure | config | `runtime.fallbackModels` |
 | Execution mode (sdk/cli), effort, max turns, workspace | config + cli | `runtime.executionMode`, `runtime.effort` (`mono-agent init --effort <level>`), `runtime.maxTurns`, `runtime.workspace` |
 | Tool-permission posture for CLI backends | config | `runtime.permissionMode` |

@@ -649,11 +649,12 @@ const HELP_NOTES = `Background mode runs the agent under launchd, keeping it ali
 .env file in the working directory, the same as foreground mode. The background
 commands require macOS; elsewhere use start --foreground.
 
-Model references look like claude:claude-sonnet-4-6, codex:gpt-5.5,
-pi:<provider>:<model> (e.g. pi:openai-codex:gpt-5.5 or pi:ollama:gemma4:31b),
-or opencode:<provider>:<model>. The init wizard prefers Pi OpenAI-Codex when
-that auth is configured, while direct codex:gpt-5.5 remains selectable as a
-Codex CLI fallback path.
+Init model references look like claude:claude-sonnet-4-6, codex:gpt-5.5,
+or pi:<provider>:<model> (e.g. pi:openai-codex:gpt-5.5,
+pi:opencode-go:kimi-k2.6, or pi:ollama:gemma4:31b). The init wizard prefers
+Pi OpenAI-Codex when that auth is configured, while direct codex:gpt-5.5
+remains selectable as a Codex CLI fallback path. Direct opencode:<provider>:<model>
+refs are for hand-authored runtime backend config.
 
 A .env file in the current folder is loaded automatically when present;
 already-exported shell variables take precedence.
