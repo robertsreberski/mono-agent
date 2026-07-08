@@ -234,6 +234,26 @@ describe("buildMonoAgentConfigView", () => {
     });
     expect(field(inheritedEnvDryRunSections, "artifacts.memoryRetention.dryRun")).toMatchObject({ value: "yes", source: "env" });
   });
+
+  it("labels the allow-all default, explicit chat-only, and a specific allowlist, mirroring the doctor", () => {
+    // Default (no tools block) resolves to ["*"] → the allow-all label, not "default policy".
+    expect(field(buildView(baseEnv), "tools.allowedTools")).toMatchObject({
+      value: "All tools allowed",
+      source: "default",
+    });
+    // Explicit allow-all sentinel also reads as allow-all.
+    expect(field(buildView({ ...baseEnv, MONO_AGENT_ALLOWED_TOOLS: "*" }), "tools.allowedTools").value)
+      .toBe("All tools allowed");
+    // Explicit empty list (chat-only) — declared as JSON `[]`, which survives the env
+    // layering an empty MONO_AGENT_ALLOWED_TOOLS string would be stripped by.
+    expect(field(buildView(baseEnv, { tools: { allowedTools: [] } }), "tools.allowedTools")).toMatchObject({
+      value: "none (chat-only)",
+      source: "json",
+    });
+    // A specific allowlist renders the joined names.
+    expect(field(buildView({ ...baseEnv, MONO_AGENT_ALLOWED_TOOLS: "Read,Bash" }), "tools.allowedTools").value)
+      .toBe("Read, Bash");
+  });
 });
 
 describe("findJsonSecretConfigWarnings", () => {

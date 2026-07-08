@@ -14,3 +14,6 @@ export const EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"] a
  * `MONO_AGENT_PERMISSION_MODE` parsing.
  */
 export const PERMISSION_MODES = ["default", "plan", "acceptEdits", "bypassPermissions"] as const;
+
+/** Sentinel in tools.allowedTools meaning "all built-in tools" (an allow-all wildcard). */
+export const ALLOW_ALL_TOOLS = "*";

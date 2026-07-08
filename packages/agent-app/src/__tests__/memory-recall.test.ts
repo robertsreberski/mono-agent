@@ -249,7 +249,7 @@ describe("memoryRecallMcpServerSpec / env", () => {
   });
 });
 
-describe("memory_recall MCP tool (FTS, hermetic)", () => {
+describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
   it("answers a tools/call against a lite (FTS-only) store", async () => {
     // No embeddings → lite tier → FTS-only recall, so the test needs no Ollama/OpenAI.
     const store = createBujoMemoryStore({ root: dir });
@@ -263,10 +263,10 @@ describe("memory_recall MCP tool (FTS, hermetic)", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name)).toEqual(["memory_recall"]);
+      expect(tools.tools.map((tool) => tool.name)).toEqual(["MemoryRecall"]);
 
       const result = (await client.callTool({
-        name: "memory_recall",
+        name: "MemoryRecall",
         arguments: { query: "deploy pipeline releases" },
       })) as { content: Array<{ type: string; text: string }>; structuredContent?: { hits: Array<{ text: string }> } };
 
@@ -290,7 +290,7 @@ describe("memory_recall MCP tool (FTS, hermetic)", () => {
     await client.connect(clientTransport);
     try {
       const result = (await client.callTool({
-        name: "memory_recall",
+        name: "MemoryRecall",
         arguments: { query: "quantum chromodynamics lattice gauge" },
       })) as { content: Array<{ type: string; text: string }>; structuredContent?: { hits: unknown[] } };
       expect(result.content[0]?.text).toMatch(/No memories matched/u);
@@ -433,7 +433,7 @@ describe("supermemory backend recall", () => {
     await client.connect(clientTransport);
     try {
       const result = (await client.callTool({
-        name: "memory_recall",
+        name: "MemoryRecall",
         arguments: { query: "preferences" },
       })) as { content: Array<{ type: string; text: string }>; structuredContent?: { hits: Array<{ text: string }> } };
       const text = result.content.map((part) => part.text).join("\n");

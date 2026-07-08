@@ -107,20 +107,20 @@ Only the push notification is suppressed (`disable_notification`); the message s
 
 ### Asking you a question (inline keyboards)
 
-Expose the `telegram_ask` app tool to let the agent ask you a structured question with tappable buttons — a confirmation, an approval, or a multiple choice — instead of waiting for free-text. Add it to `tools.allowedTools`:
+The `TelegramAskButtons` app tool lets the agent ask you a structured question with tappable buttons — a confirmation, an approval, or a multiple choice — instead of waiting for free-text. Under the **allow-all** tool default it is available once Telegram is enabled; under a **specific** `tools.allowedTools` you add its exact name:
 
 ```json
-{ "tools": { "allowedTools": ["telegram_ask"] } }
+{ "tools": { "allowedTools": ["TelegramAskButtons"] } }
 ```
 
-The tool takes a `question` and 2–8 option labels and posts an inline keyboard, then **returns immediately** (it does not block the turn). When you tap a button, your choice arrives as a **new message on the same conversation**, so the agent continues on the next turn — exactly like a typed reply, on the warm session. Allowing `telegram_ask` is the single switch that also subscribes the bot to `callback_query` updates and wires the tap handler; the chat allowlist still bounds where questions can be sent, and the tap handler re-checks it.
+The tool takes a `question` and 2–8 option labels and posts an inline keyboard, then **returns immediately** (it does not block the turn). When you tap a button, your choice arrives as a **new message on the same conversation**, so the agent continues on the next turn — exactly like a typed reply, on the warm session. Allowing `TelegramAskButtons` is the single switch that also subscribes the bot to `callback_query` updates and wires the tap handler; the chat allowlist still bounds where questions can be sent, and the tap handler re-checks it.
 
 ### Sending files
 
-Expose `telegram_send_document` and/or `telegram_send_photo` to let the agent send a generated file or image back to an allowed chat. Each accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path`, plus an optional `caption`; uploads are bounded by the adapter's attachment size cap.
+`TelegramSendFile` lets the agent send a generated file or image back to an allowed chat (available under the allow-all default; name it explicitly under a specific `tools.allowedTools`). A required `kind` selects `"document"` (any file, downloadable) or `"photo"` (an image shown inline). It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path`, plus an optional `caption`; uploads are bounded by the adapter's attachment size cap.
 
 ```json
-{ "tools": { "allowedTools": ["telegram_send_document", "telegram_send_photo"] } }
+{ "tools": { "allowedTools": ["TelegramSendFile"] } }
 ```
 
 ## Final-only delivery
@@ -168,24 +168,24 @@ The hosted `api.telegram.org` caps bot downloads at 20 MB. Telegram's official s
 }
 ```
 
-`apiRoot` is applied to every Bot API call, to file downloads, and to the app send tools (`telegram_send_message`/`telegram_ask`/`telegram_send_document`/`telegram_send_photo`).
+`apiRoot` is applied to every Bot API call, to file downloads, and to the app send tools (`TelegramSendMessage`/`TelegramAskButtons`/`TelegramSendFile`).
 
 How it behaves with a `--local` server:
 
 - `getFile` downloads the file into the daemon's `--dir` and returns an **absolute local path**; the adapter detects that shape and reads the bytes from disk (stat-checked against `attachments.maxBytes`), then deletes the daemon's copy — the harness has already persisted its own copy into the attachments dir. A missing file (the daemon expires downloads after ~1–25 h) is a clean skip, never a failed run. A non-`--local` self-hosted server (relative paths) is fetched from `<apiRoot>/file/bot<token>/…` instead.
-- `telegram_send_document` with a `path` input uploads by **`file://` URI** — the daemon reads the file from disk itself, so there is no size buffering in the agent process (the configured `maxUploadBytes` is enforced via stat). If the server rejects the URI, the tool falls back once to a buffered upload. The presented filename is the path's basename.
+- `TelegramSendFile` (`kind:"document"`) with a `path` input uploads by **`file://` URI** — the daemon reads the file from disk itself, so there is no size buffering in the agent process (the configured `maxUploadBytes` is enforced via stat). If the server rejects the URI, the tool falls back once to a buffered upload. The presented filename is the path's basename.
 - **Memory ceiling for inbound files**: attachment bytes still travel as base64 through the request, so keep `attachments.maxBytes` at or below ~256 MiB (peak transient memory is roughly 3.4× the file size; V8's max string length caps the mechanism near 384 MiB decoded).
 
 Operational notes for the daemon: it binds `0.0.0.0` **by default** — always pass `--http-ip-address=127.0.0.1` (it has no TLS/auth beyond the bot token in the path); it needs `api_id`/`api_hash` from [my.telegram.org](https://my.telegram.org); a bot must `logOut` of the hosted API before its first local login, and cannot log back into the hosted API for **10 minutes** after; long polling works unchanged, so no webhook or inbound exposure is needed.
 
 ## Sending without a prompt
 
-When the Telegram adapter is enabled you can let the agent send Telegram messages on its own initiative by exposing the `telegram_send_message` app tool. Add the exact tool name to `tools.allowedTools`:
+When the Telegram adapter is enabled the agent can send Telegram messages on its own initiative through the `TelegramSendMessage` app tool. Under the **allow-all** tool default it is available automatically; under a **specific** `tools.allowedTools` add the exact tool name (and `disallowedTools` removes it):
 
 ```json
 {
   "tools": {
-    "allowedTools": ["telegram_send_message"]
+    "allowedTools": ["TelegramSendMessage"]
   }
 }
 ```

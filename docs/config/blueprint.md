@@ -117,17 +117,18 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "consolidation": { "enabled": true, "cron": "0 */2 * * *" } // default: every two hours
   },
 
-  // Fail-closed tool policy + MCP servers. Deny wins; overlap is rejected.
+  // Tool policy (allow-all by default) + MCP servers. Deny wins; overlap is rejected.
   "tools": {
-    "allowedTools": ["Read", "Grep"],      // built-ins: Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch
-    "disallowedTools": ["Bash"],
+    "allowedTools": ["*"],                 // omit or ["*"] = all tools; ["Read","Bash"] = just those; [] = none (chat-only)
+    "disallowedTools": ["Bash"],           // deny wins even under allow-all; the escape hatch to subtract one tool
     "mcpConfigPath": "./mcp.json",         // stdio/sse/http servers; inlined for SDK runtimes
     "mcpCallTimeoutMs": 120000,            // inactivity cap per MCP call; tool progress resets it
     "mcpCallMaxTotalTimeoutMs": 2700000    // hard per-call wall clock (45 min); progress cannot extend it
   },
 
-  // Human-in-the-loop bridge: blocking ask_user + tool progress → channel status
-  // messages. Optional — auto-starts when ask_user is in tools.allowedTools.
+  // Human-in-the-loop bridge: blocking AskUser + tool progress → channel status
+  // messages. Optional — auto-starts when AskUser is allowed (allow-all, or
+  // listed in tools.allowedTools) or when this block is present.
   "interaction": {
     "bridge": { "host": "127.0.0.1", "port": 0 }, // 0 = ephemeral; tools get the URL via env
     "askUser": { "timeoutMs": 600000 },           // max wait per question (10 min)

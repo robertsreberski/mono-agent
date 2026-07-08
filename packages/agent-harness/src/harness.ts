@@ -590,20 +590,20 @@ export class MonoAgentHarness implements AgentHarness {
       ...(selectedSkills.instructions.length === 0 ? {} : { skillInstructions: selectedSkills.instructions }),
     });
     // Progressive skill disclosure (index mode, opt-in): the index is in the
-    // prompt but the bodies are not — so expose a `read_skill` tool whose enum is
+    // prompt but the bodies are not — so expose a `ReadSkill` tool whose enum is
     // the discovered skill names, letting the agent pull a full body on demand.
     // 'full' mode (the default) keeps today's behavior (selectedSkills bodies
-    // inlined up front) and does NOT add read_skill. Names load only when a
+    // inlined up front) and does NOT add ReadSkill. Names load only when a
     // skillsRoot is set.
     const skillDisclosureNames = await this.loadSkillDisclosureNames();
     return { context, memory, skillDisclosureNames, history, historyOmitted: options.omitHistory };
   }
 
   /**
-   * Discovers the skill names the `read_skill` tool may load (its enum) for
+   * Discovers the skill names the `ReadSkill` tool may load (its enum) for
    * progressive disclosure. Returns [] in "full" disclosure mode or when no
    * skillsRoot is configured, so the runtime never creates the tool there —
-   * preserving the legacy index-only-without-read_skill behavior in those cases.
+   * preserving the legacy index-only-without-ReadSkill behavior in those cases.
    */
   private async loadSkillDisclosureNames(): Promise<readonly string[]> {
     if (this.skillDisclosureMode() !== "index" || this.options.skillsRoot === undefined) {
@@ -803,7 +803,7 @@ export class MonoAgentHarness implements AgentHarness {
       ...(this.options.piSessionsRoot === undefined ? {} : { piSessionsRoot: this.options.piSessionsRoot }),
       // Progressive skill disclosure (index mode): pass the discovered skill names
       // and the skills root so pi-native's getPiBuiltinTools creates the on-demand
-      // `read_skill` tool. These live after the merge so request extensions cannot
+      // `ReadSkill` tool. These live after the merge so request extensions cannot
       // clobber them. Empty in 'full' mode / when no skillsRoot is set, so the
       // tool is not created and behavior matches the legacy path.
       ...(skillDisclosureNames.length > 0 && this.options.skillsRoot !== undefined

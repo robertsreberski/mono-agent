@@ -31,7 +31,8 @@ import {
   resolveAppObservabilityExporters,
 } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
-import { adapterSendToolNames, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
+import { adapterSendToolNames, isAdapterSendToolAllowed, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
+import { canonicalToolName, isAllowAllTools, isKnownToolName, isMcpToolName, suggestToolName } from "./modules/known-tools.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
@@ -131,10 +132,90 @@ export async function validateMonoAgentFolder(
     sections.push(await channelSection(driver, options));
   }
 
+  // Cross-check the built `channel:*` statuses against the tool policy and annotate
+  // the tools section (send-tool-allowed-but-channel-disabled, or channel-enabled-
+  // but-no-send-tool). Only meaningful once coreConfig — and thus the tools section
+  // and the tool policy — loaded.
+  if (coreConfig !== undefined) {
+    applyToolChannelCrossChecks(sections, coreConfig.tools.allowedTools, coreConfig.tools.disallowedTools);
+  }
+
   return {
     sections,
     ok: sections.every((section) => section.status !== "error"),
   };
+}
+
+/** Adapter send tools each channel owns; an allowed entry needs BOTH the tool AND the enabled channel. */
+const CHANNEL_OWNED_SEND_TOOLS: Record<string, readonly string[]> = {
+  slack: ["SlackSendMessage"],
+  telegram: ["TelegramSendMessage", "TelegramAskButtons", "TelegramSendFile"],
+};
+
+/**
+ * Reconciles the already-built `channel:*` section statuses with the tool policy
+ * and mutates the `tools` section in place:
+ * - Direction A: an adapter send tool is allowed but its channel is DISABLED — the
+ *   tool will never be exposed; append a note and downgrade tools to `waiting`
+ *   (unless it is already `error`). This is a genuine misconfiguration.
+ * - Direction B: a channel is ENABLED and not errored but no send tool is allowed —
+ *   replies still work, so this is a HINT only (status unchanged). Skipped for a
+ *   channel in `error` status, where "replies still work" would be misleading.
+ *
+ * Reads the sections built earlier (no channel re-loading). Guards for a missing
+ * tools section (coreConfig failed to load), in which case there is nothing to annotate.
+ */
+function applyToolChannelCrossChecks(
+  sections: ValidationSection[],
+  allowedTools: readonly string[],
+  disallowedTools: readonly string[],
+): void {
+  const toolsIndex = sections.findIndex((section) => section.id === "tools");
+  if (toolsIndex < 0) {
+    return;
+  }
+  const current = sections[toolsIndex]!;
+  const extraDetails: string[] = [];
+  let status: ValidationStatus = current.status;
+
+  // Under allow-all (`"*"`) the wildcard "allows" every send tool incidentally, so
+  // Direction A must NOT fire for a merely-disabled channel: the user opted into
+  // everything, not that specific send tool, and an unused channel is not a
+  // misconfiguration. Direction B is unaffected (with send tools allowed it never fires).
+  const allowAll = isAllowAllTools(allowedTools);
+
+  for (const [channel, sendTools] of Object.entries(CHANNEL_OWNED_SEND_TOOLS)) {
+    const section = sections.find((candidate) => candidate.id === `channel:${channel}`);
+    if (section === undefined) {
+      continue; // Driver not present — nothing to cross-check.
+    }
+    const allowedForCh = sendTools.filter((tool) => isAdapterSendToolAllowed(tool, { allowedTools, disallowedTools }));
+    if (section.status === "disabled") {
+      // Direction A: send tool EXPLICITLY allowed but channel off — the tool will not be
+      // exposed. Skipped under allow-all, where the wildcard allowance is incidental.
+      if (!allowAll && allowedForCh.length > 0) {
+        extraDetails.push(
+          `${allowedForCh.join(", ")} in allowedTools, but the ${channel} channel is disabled — the tool will not be exposed.`,
+        );
+        if (status !== "error") {
+          status = "waiting";
+        }
+      }
+    } else if ((section.status === "ok" || section.status === "waiting") && allowedForCh.length === 0) {
+      // Direction B: channel enabled AND not errored, but no send tool allowed — a
+      // non-fatal hint. An errored channel has a structural problem, so appending
+      // "replies still work…" onto it would be misleading; skip it there.
+      extraDetails.push(
+        `${channel} is enabled without ${sendTools.join("/")} in allowedTools — replies still work, ` +
+          `but the agent cannot send proactively${channel === "telegram" ? " or ask blocking questions" : ""}.`,
+      );
+    }
+  }
+
+  if (extraDetails.length === 0 && status === current.status) {
+    return;
+  }
+  sections[toolsIndex] = { ...current, status, details: [...current.details, ...extraDetails] };
 }
 
 function runtimeSection(config: MonoAgentConfig): ValidationSection {
@@ -668,12 +749,70 @@ async function toolsSection(config: MonoAgentConfig, input: MonoAgentAppConfigIn
   const details: string[] = [];
   let status: ValidationStatus = "ok";
 
-  details.push(
-    config.tools.allowedTools.length === 0
-      ? "No tools allowed (fail-closed default)."
-      : `Allowed tools: ${config.tools.allowedTools.join(", ")}.`,
-  );
-  if (config.tools.disallowedTools.length > 0) {
+  const allowedTools = config.tools.allowedTools;
+  const allowAll = isAllowAllTools(allowedTools);
+  if (allowAll) {
+    // Allow-all (`"*"`): render the policy plainly instead of echoing the raw sentinel
+    // as `Allowed tools: *.`. The disallow list (if any) is folded in as the "except"
+    // clause here, so the separate `Disallowed tools:` line below is skipped for
+    // allow-all to avoid printing it twice. Status stays `ok`; the per-name unknown /
+    // MemoryRecall checks do not apply when every tool is allowed.
+    details.push(
+      config.tools.disallowedTools.length > 0
+        ? `All tools allowed (except: ${config.tools.disallowedTools.join(", ")}).`
+        : "All tools allowed.",
+    );
+  } else if (allowedTools.length === 0) {
+    // An agent with no tools can chat but can do nothing else — the user's core
+    // "no-tools trap". `waiting` (never `error`) surfaces it without failing a
+    // deliberately chat-only agent (`report.ok` only checks for `error`).
+    status = "waiting";
+    details.push(
+      "No tools allowed — the agent can chat but cannot read files, run commands, or send proactive messages. " +
+        "Add names to tools.allowedTools (e.g. Read, Glob, Grep), or re-run `mono-agent init` in an empty folder to pick tools interactively.",
+    );
+  } else {
+    details.push(`Allowed tools: ${allowedTools.join(", ")}.`);
+    let mcpNoteAdded = false;
+    for (const name of allowedTools) {
+      if (isMcpToolName(name)) {
+        // MCP tool names are owned by their servers; we cannot verify them offline.
+        if (!mcpNoteAdded) {
+          details.push("MCP tool names are provided by their servers and cannot be validated offline.");
+          mcpNoteAdded = true;
+        }
+        continue;
+      }
+      // Accept both the new `MemoryRecall` and the legacy `memory_recall` alias.
+      if (canonicalToolName(name) === "MemoryRecall") {
+        // MemoryRecall is auto-provisioned from memory.recallTool.enabled and is NOT
+        // allowlist-gated. Listing it is harmless redundancy WHEN recall is on, but a
+        // real misconfiguration when it is off (the user expects a recall they won't get).
+        if (config.memory?.recallTool?.enabled === true) {
+          details.push(
+            `${name} in allowedTools has no effect — recall is auto-provisioned by memory.recallTool.enabled (already on). You can remove this entry.`,
+          );
+        } else {
+          status = "waiting";
+          details.push(
+            `${name} is in allowedTools but memory.recallTool.enabled is off — recall will not work. Enable memory.recallTool (or remove this entry).`,
+          );
+        }
+        continue;
+      }
+      if (!isKnownToolName(name)) {
+        status = "waiting";
+        const suggestion = suggestToolName(name);
+        details.push(
+          `Unknown tool name "${name}"` +
+            (suggestion !== undefined ? ` — did you mean ${suggestion}?` : "") +
+            " (pi silently drops unknown names).",
+        );
+      }
+    }
+  }
+  if (!allowAll && config.tools.disallowedTools.length > 0) {
+    // Under allow-all the disallow list is already folded into the "except" clause above.
     details.push(`Disallowed tools: ${config.tools.disallowedTools.join(", ")}.`);
   }
   if (config.tools.mcpConfigPath !== undefined) {

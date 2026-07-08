@@ -99,11 +99,11 @@ See [../runtime/local-providers.md](/runtime/local-providers/) for the local pro
 | `MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV` | `memory.supermemory.apiKeyEnv` | Name of the env var holding the key; only the name is persisted in resolved config. |
 | `MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER` | `memory.supermemory.container` | Container/namespace tag scoping this agent's memories. Defaults to the trace `sourceId`. |
 | `MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS` | `memory.supermemory.timeoutMs` | Per-call HTTP timeout (`1`–`600000`, default `10000`). |
-| `MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER` | `memory.supermemory.exposeMcpServer` | Also inject Supermemory's official MCP server alongside the in-app `memory_recall` tool. Default `false`. |
+| `MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER` | `memory.supermemory.exposeMcpServer` | Also inject Supermemory's official MCP server alongside the in-app `MemoryRecall` tool. Default `false`. |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama` or `openai`. See [../memory/embeddings.md](/memory/embeddings/). |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Embedding model string. |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` | Embedding dimension. |
-| `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned `memory_recall` tool; default on for journal/bujo with embeddings, and for the supermemory backend. |
+| `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned `MemoryRecall` tool; default on for journal/bujo with embeddings, and for the supermemory backend. |
 | `MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED` | `memory.consolidation.enabled` | Scheduled BuJo consolidation; default on. |
 | `MONO_AGENT_MEMORY_CONSOLIDATION_CRON` | `memory.consolidation.cron` | Default `0 */2 * * *`. See [../memory/rituals.md](/memory/rituals/). |
 | `MONO_AGENT_MEMORY_LLM_PROVIDER` | `memory.llm.provider` | `ollama` or `agent-host`. Required for BuJo capture and for the app to resolve the effective `bujo` tier that runs scheduled consolidation. |
@@ -127,21 +127,21 @@ They are tolerated so stale environments do not break startup, but they are igno
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_ALLOWED_TOOLS` | `tools.allowedTools` | Allowlist. See [../tools/policy.md](/tools/policy/). |
+| `MONO_AGENT_ALLOWED_TOOLS` | `tools.allowedTools` | Allowlist. **Unset** keeps the allow-all default; `*` is allow-all; an empty value (`""`) is the explicit chat-only `[]`. See [../tools/policy.md](/tools/policy/). |
 | `MONO_AGENT_DISALLOWED_TOOLS` | `tools.disallowedTools` | Denylist (deny wins; overlap rejected). |
 | `MONO_AGENT_MCP_CONFIG_PATH` | `tools.mcpConfigPath` | Path to `mcp.json`. See [../tools/mcp.md](/tools/mcp/). |
 | `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | `tools.mcpCallTimeoutMs` | Inactivity timeout per MCP tool call; tool progress notifications reset it. Default 120000. |
 | `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | `tools.mcpCallMaxTotalTimeoutMs` | Hard wall clock per MCP tool call that progress cannot extend. Default 2700000 (45 min). |
 
-## Interaction (ask_user + tool progress)
+## Interaction (AskUser + tool progress)
 
-The interaction bridge starts automatically when `ask_user` is in `tools.allowedTools` or the `interaction` block is present. It exports `MONO_AGENT_INTERACTION_BRIDGE_URL`/`MONO_AGENT_INTERACTION_BRIDGE_TOKEN` into the process environment for tool children (do not set those two yourself).
+The interaction bridge starts automatically when `AskUser` is allowed (under the allow-all default, or listed in a specific `tools.allowedTools`) or the `interaction` block is present. It exports `MONO_AGENT_INTERACTION_BRIDGE_URL`/`MONO_AGENT_INTERACTION_BRIDGE_TOKEN` into the process environment for tool children (do not set those two yourself).
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_INTERACTION_BRIDGE_HOST` | `interaction.bridge.host` | Loopback bind host. Default `127.0.0.1`. |
 | `MONO_AGENT_INTERACTION_BRIDGE_PORT` | `interaction.bridge.port` | Bridge port. Default `0` (ephemeral — consumers get the URL via env). |
-| `MONO_AGENT_ASK_USER_TIMEOUT_MS` | `interaction.askUser.timeoutMs` | Max wait per `ask_user` question (also the per-ask ceiling). Default 600000 (10 min). |
+| `MONO_AGENT_ASK_USER_TIMEOUT_MS` | `interaction.askUser.timeoutMs` | Max wait per `AskUser` question (also the per-ask ceiling). Default 600000 (10 min). |
 | `MONO_AGENT_PROGRESS_ENABLED` | `interaction.progress.enabled` | Route tool progress posts to channel status messages. Default true. |
 
 ## Sandbox
@@ -188,7 +188,7 @@ Most channels are opt-in via their `enabled` flag (default off). The operator su
 | `MONO_AGENT_TELEGRAM_API_ROOT` | `telegram.apiRoot` | Base URL of a self-hosted Bot API server (e.g. `http://127.0.0.1:8081`). Omit for `api.telegram.org`. See [../channels/telegram.md](/channels/telegram/). |
 | `MONO_AGENT_TELEGRAM_ATTACHMENT_MAX_BYTES` | `telegram.attachments.maxBytes` | Inbound attachment download cap (bytes). Default 20 MiB (the hosted API's hard limit); raise it only with a self-hosted server. |
 | `MONO_AGENT_TELEGRAM_ATTACHMENT_DOWNLOAD_TIMEOUT_MS` | `telegram.attachments.downloadTimeoutMs` | Per-file download timeout (ms) on the URL branch; default `30000`, `0` disables. |
-| `MONO_AGENT_TELEGRAM_UPLOAD_MAX_BYTES` | `telegram.attachments.maxUploadBytes` | Upload cap (bytes) for `telegram_send_document`/`telegram_send_photo`; default 20 MiB. |
+| `MONO_AGENT_TELEGRAM_UPLOAD_MAX_BYTES` | `telegram.attachments.maxUploadBytes` | Upload cap (bytes) for `TelegramSendFile`; default 20 MiB. |
 
 ### Slack
 

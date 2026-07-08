@@ -95,10 +95,10 @@ The entity graph that BuJo capture maintains is part of the BuJo capture pipelin
 
 | Feature id | Coverage | Config key(s) | Env var(s) | Prose page | Playbook(s) |
 | --- | --- | --- | --- | --- | --- |
-| `tool-policy.fail-closed` | auto | (default when `tools` lists are empty) | — | [Tool policy](/tools/policy/) | — |
-| `tool-policy.allowlist` / `tool-policy.denylist` | config | `tools.allowedTools`, `tools.disallowedTools` | `MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS` | [Tool policy](/tools/policy/) | — |
+| `tool-policy.allow-all` | config | omitted / `["*"]` `tools.allowedTools` = all tools (the default); `[]` = none | `MONO_AGENT_ALLOWED_TOOLS` | [Tool policy](/tools/policy/) | — |
+| `tool-policy.allowlist` / `tool-policy.denylist` | config | `tools.allowedTools`, `tools.disallowedTools` (deny wins, even under allow-all) | `MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS` | [Tool policy](/tools/policy/) | — |
 | `tool-policy.mcp-servers` | config | `tools.mcpConfigPath` | `MONO_AGENT_MCP_CONFIG_PATH` | [MCP](/tools/mcp/) | [Slack team bot + MCP tools](/playbooks/slack-team-bot-mcp-tools/) |
-| `agent-app.adapter-send-tools` | config | `tools.allowedTools` (`slack_send_message`, `telegram_send_message`) + valid `slack.*` / `telegram.*` config | `MONO_AGENT_ALLOWED_TOOLS` | [Delivery & send tools](/channels/delivery-and-send-tools/) | [Cron digest + native notify](/playbooks/cron-digest-proactive-notify/) |
+| `agent-app.adapter-send-tools` | config | auto-available under allow-all once the channel is enabled; a specific `tools.allowedTools` needs the exact names (`SlackSendMessage`, `TelegramSendMessage`) + valid `slack.*` / `telegram.*` config | `MONO_AGENT_ALLOWED_TOOLS` | [Delivery & send tools](/channels/delivery-and-send-tools/) | [Cron digest + native notify](/playbooks/cron-digest-proactive-notify/) |
 
 ## Channels
 
@@ -107,7 +107,7 @@ Built-in channels are independent JSON sections: `telegram`, `slack`, `webhook`,
 | Feature id | Coverage | Config key(s) | Env var(s) | Prose page | Playbook(s) |
 | --- | --- | --- | --- | --- | --- |
 | `telegram.long-polling` | config | `telegram.enabled`, `telegram.botToken`, `telegram.allowedChatIds` / `telegram.allowAllChats`, `telegram.pollWatchdogMs` (poll-liveness watchdog, on by default; `0` disables), `telegram.transport.ipFamily` (opt-in IPv4/IPv6 pin) (+ a built-in self-healing long-poll auto-restart, on by default; code-only, no config/env key) | `MONO_AGENT_TELEGRAM_*` (incl. `MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS`, `MONO_AGENT_TELEGRAM_IP_FAMILY`) | [Telegram](/channels/telegram/) | [Telegram BuJo assistant](/playbooks/telegram-personal-assistant-bujo/) |
-| `telegram.interactive` | config | `telegram.commands[]`, `telegram.reactions`, `telegram.quietHours`; `telegram_ask` / `telegram_send_document` / `telegram_send_photo` in `tools.allowedTools` | `MONO_AGENT_TELEGRAM_REACTIONS` | [Telegram](/channels/telegram/) | — |
+| `telegram.interactive` | config | `telegram.commands[]`, `telegram.reactions`, `telegram.quietHours`; `TelegramAskButtons` / `TelegramSendFile` in `tools.allowedTools` | `MONO_AGENT_TELEGRAM_REACTIONS` | [Telegram](/channels/telegram/) | — |
 | `slack.socket-mode` | config | `slack.enabled`, `slack.botToken`, `slack.appToken`, `slack.allowedChannelIds` / `slack.allowAllChannels`, `slack.botUserIds`, `slack.mentionTextAliases`, `slack.stripMentionText`; resilience tuning (all optional, on by default): `slack.heartbeatIntervalMs`, `slack.heartbeatTimeoutMs`, `slack.reconnectInitialBackoffMs`, `slack.reconnectMaxBackoffMs`, `slack.reconnectStabilityMs`, `slack.reconnectStartupGraceMs`, `slack.drainDeadlineMs` | `MONO_AGENT_SLACK_*` (incl. `MONO_AGENT_SLACK_HEARTBEAT_*`, `MONO_AGENT_SLACK_RECONNECT_*`, `MONO_AGENT_SLACK_DRAIN_DEADLINE_MS`) | [Slack](/channels/slack/) | [Slack team bot + MCP tools](/playbooks/slack-team-bot-mcp-tools/) |
 | `channel.plugins` | config | `channels.plugins[]: { package, id?, label?, config? }` | — | [Write your own channel adapter](/programmatic/custom-channels/) | — |
 | `whatsapp.baileys` | config | `channels.plugins[].package: "@mono-agent/whatsapp-adapter"` plus plugin `config.{enabled,allowedChatJids,allowAllChats,groupMode,botJids,mentionTextAliases,stripMentionText}` | `MONO_AGENT_WHATSAPP_*` | [WhatsApp](/channels/whatsapp/) | — |
@@ -144,9 +144,10 @@ Built-in channels are independent JSON sections: `telegram`, `slack`, `webhook`,
 
 | Feature id | Coverage | Config key(s) | Env var(s) | Prose page | Playbook(s) |
 | --- | --- | --- | --- | --- | --- |
-| `app.cli-init` | cli | `mono-agent init [--model] [--fallback-models] [--memory]` | — | [Quickstart](/getting-started/quickstart/) | — |
-| `app.cli-setup` | cli | `mono-agent setup [--recipe <id>] [--with <csv>] [--dry-run] [--model] [--fallback-models] [--memory lite\|journal\|bujo]` | — | [CLI reference](/observability/cli-reference/#setup) | — |
-| `app.cli-recipes` | cli | `mono-agent recipes list \| show <id>` | — | [CLI reference](/observability/cli-reference/#recipes) | — |
+| `app.cli-init` | cli | `mono-agent init [--preset <id>] [--with <csv>] [--yes] [--dry-run] [--model] [--fallback-models] [--memory lite\|journal\|bujo]` | — | [Quickstart](/getting-started/quickstart/) | — |
+| `app.cli-setup` | cli | `mono-agent init` (interactive wizard on a TTY with no flags; `mono-agent setup` is an alias) | — | [CLI reference](/observability/cli-reference/#init) | — |
+| `app.cli-presets` | cli | `mono-agent presets list \| show <id>` (`recipes` alias) | — | [Presets & modules](/reference/recipes/) | — |
+| `app.cli-no-tools-guardrail` | cli | part of `mono-agent validate` / `doctor`; the tools step of `mono-agent init` | — | [Presets & modules](/reference/recipes/#the-tools-step-and-the-no-tools-guardrail) | — |
 | `app.cli-validate` | cli | `mono-agent validate [--consumer] [--config] [--env-file]` | — | [Blueprint](/config/blueprint/) | — |
 | `app.provider-credentials-check` | cli | part of `mono-agent validate`; resolves Pi models against `providers.piAuthPath` + `models.json` | `MONO_AGENT_PI_AUTH_PATH` | [CLI reference](/observability/cli-reference/#provider-credentials) | — |
 | `app.cli-start` | cli | `mono-agent start [--config] [--env-file] [--foreground\|-f]` | — | [Install](/getting-started/install/) | — |

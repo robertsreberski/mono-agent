@@ -52,8 +52,8 @@
       "Bash",
       "WebFetch",
       "WebSearch",
-      "slack_send_message",
-      "memory_recall"
+      "SlackSendMessage",
+      "MemoryRecall"
     ],
     "disallowedTools": [],
     "mcpConfigPath": "./mcp.json"

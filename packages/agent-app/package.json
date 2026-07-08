@@ -30,6 +30,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@clack/prompts": "^1.7.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@mono-agent/agent-contracts": "workspace:0.5.1",
     "@mono-agent/agent-harness": "workspace:0.5.1",

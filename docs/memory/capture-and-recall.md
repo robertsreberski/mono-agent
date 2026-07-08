@@ -4,7 +4,7 @@ sidebar:
   order: 2
 ---
 
-This page covers the two halves of the memory loop: how the host **writes** each completed turn (`memory.writeMode`) and how the agent **reads** what it stored back through the auto-provisioned `memory_recall` tool. Both are driven by the single `config.memory` block — there is no separate `.mcp.json` entry to hand-wire.
+This page covers the two halves of the memory loop: how the host **writes** each completed turn (`memory.writeMode`) and how the agent **reads** what it stored back through the auto-provisioned `MemoryRecall` tool. Both are driven by the single `config.memory` block — there is no separate `.mcp.json` entry to hand-wire.
 
 For tier selection (lite / journal / bujo) and embeddings setup, start at the [Memory overview](/memory/) and [Embeddings](/memory/embeddings/). Recall is the read path; scheduled consolidation is the maintenance path covered in [Consolidation](/memory/rituals/).
 
@@ -72,11 +72,11 @@ The capture pipeline swallows LLM errors (never-throw), so a too-short timeout m
 
 The bujo chat model used by capture is the same `memory.llm` block that lets the app resolve the effective `bujo` tier for [scheduled consolidation](/memory/rituals/). With `memory.llm.provider: "agent-host"` it can point at an SDK runtime model reference (e.g. `pi:openai-codex:gpt-5.5`); the standalone legacy `reflect`/`migrate` CLI commands remain Ollama-only.
 
-## The `memory_recall` tool
+## The `MemoryRecall` tool
 
-The agent reads memory back through a single, read-only `memory_recall` tool: hybrid **keyword (FTS) + vector** search over the same memory it writes to. Coverage: **config** (env: `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`).
+The agent reads memory back through a single, read-only `MemoryRecall` tool: hybrid **keyword (FTS) + vector** search over the same memory it writes to. Coverage: **config** (env: `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`).
 
-`memory_recall` runs **no chat LLM** — recall is embeddings + full-text search only. Durable writes stay in-app on the agent-host LLM via [per-turn capture](#capture--per-turn-intelligent-capture-bujo); recall just reads.
+`MemoryRecall` runs **no chat LLM** — recall is embeddings + full-text search only. Durable writes stay in-app on the agent-host LLM via [per-turn capture](#capture--per-turn-intelligent-capture-bujo); recall just reads.
 
 :::note
 **Where recalled memory appears in the prompt.** Beyond this on-demand tool, the harness *automatically* appends recalled memory to the **user message** at the start of each turn (when a recall returns hits), clearly delimited as background context — it is **not** folded into the system prompt. Riding the user message is what lets memory survive a session resume on runtimes that drop the system prompt. The injected block is not persisted to history, and a `memory_recalled` diagnostic records that recall fired (source + byte size, not the content). See [Context assembly → Memory recall](/context/assembly/#memory-recall).
@@ -84,7 +84,7 @@ The agent reads memory back through a single, read-only `memory_recall` tool: hy
 
 ### How it is provisioned
 
-`agent-app` auto-provisions `memory_recall` from the single `config.memory` block when `config.memory.recallTool.enabled` is true. Under the hood it spawns a bundled stdio MCP child named `mono-agent-memory` (shipped inside `@mono-agent/agent-app`) that exposes only `memory_recall`, configured automatically from `config.memory` — it uses the **same memory root + embeddings** as the in-app memory, so there is nothing to keep in sync.
+`agent-app` auto-provisions `MemoryRecall` from the single `config.memory` block when `config.memory.recallTool.enabled` is true. Under the hood it spawns a bundled stdio MCP child named `mono-agent-memory` (shipped inside `@mono-agent/agent-app`) that exposes only `MemoryRecall`, configured automatically from `config.memory` — it uses the **same memory root + embeddings** as the in-app memory, so there is nothing to keep in sync.
 
 ```json
 {
@@ -132,7 +132,7 @@ Recall uses the graph for one-hop expansion: entries matched by BM25/vector sear
 
 ### Tool policy: recall is gated by `recallTool.enabled`, not `allowedTools`
 
-`memory_recall` is an MCP tool. Like every MCP server tool, it is **gated by its declaration, not by `tools.allowedTools`**. `tools.allowedTools` filters the built-in runtime tools (Read/Bash/…); it does **not** suppress app-injected MCP tools. So `tools.allowedTools: []` ("no built-in tools") still leaves `memory_recall` available when it is enabled.
+`MemoryRecall` is an MCP tool. Like every MCP server tool, it is **gated by its declaration, not by `tools.allowedTools`**. `tools.allowedTools` filters the built-in runtime tools (Read/Bash/…); it does **not** suppress app-injected MCP tools. So `tools.allowedTools: []` ("no built-in tools") still leaves `MemoryRecall` available when it is enabled.
 
 :::caution
 To fully withhold memory reads from the agent, set `config.memory.recallTool.enabled: false` (or run a `lite` tier with no vector recall) — that is the switch that controls this tool, not the allowlist.
@@ -145,7 +145,7 @@ See [Tool policy](/tools/policy/) and [MCP tools](/tools/mcp/) for how MCP-provi
 | Env var | Config key | Notes |
 |---------|-----------|-------|
 | `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture` (`capture` requires `mode: bujo`) |
-| `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned `memory_recall`; default on for journal/bujo with embeddings |
+| `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned `MemoryRecall`; default on for journal/bujo with embeddings |
 | `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo` |
 | `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline (and legacy CLI `reflect`/`migrate`) |
 | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama chat endpoint (default `http://localhost:11434`) |

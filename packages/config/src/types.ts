@@ -125,7 +125,7 @@ export type SessionRollover = "none" | "daily";
 
 /**
  * Skill disclosure mode. "index" injects only the skill index (names +
- * descriptions) plus a `read_skill` tool the agent calls to pull a full body on
+ * descriptions) plus a `ReadSkill` tool the agent calls to pull a full body on
  * demand; "full" inlines `selectedSkills` bodies into the prompt up front. See
  * `MonoAgentConfig.context.skillDisclosure`. Default "full" (legacy behavior); set
  * "index" to opt in to progressive disclosure.
@@ -205,7 +205,7 @@ export interface MonoAgentConfig {
      * How skill bodies reach the agent. "full" (default) preserves the legacy
      * behavior where `selectedSkills` bodies are inlined into the prompt up front
      * (via skillInstructions). "index" injects only the skill INDEX (names +
-     * descriptions) and exposes a `read_skill` tool so the agent pulls a full body
+     * descriptions) and exposes a `ReadSkill` tool so the agent pulls a full body
      * on demand — keeping the system prompt small. Unset = "full".
      */
     readonly skillDisclosure?: SkillDisclosureMode;
@@ -228,7 +228,7 @@ export interface MonoAgentConfig {
     /** LLM for bujo capture and effective tier selection. */
     readonly llm?: MemoryLlmConfig;
     /**
-     * Read-only `memory_recall` tool exposed to the agent (embeddings + FTS, no
+     * Read-only `MemoryRecall` tool exposed to the agent (embeddings + FTS, no
      * chat LLM). Derived from this single memory block — no hand-wired MCP entry.
      * Defaults on when the resolved tier has embeddings; off for lite.
      */

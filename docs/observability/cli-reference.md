@@ -14,10 +14,10 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 
 | Command | Purpose | Key flags |
 | --- | --- | --- |
-| `init` | Scaffold `mono-agent.config.json`, `IDENTITY.md`, and `.mono-agent/` in the current folder (never overwrites existing files). | `--model <ref>`, `--fallback-models <csv>`, `--memory lite\|journal\|bujo` |
-| `setup` | Guided recipe setup when attached to a TTY; flag-driven `init` behavior when stdin is not a TTY. | `--recipe <id>`, `--with <csv>`, `--dry-run`, `--model <ref>`, `--fallback-models <csv>`, `--memory lite\|journal\|bujo` |
-| `recipes` | List executable setup recipes or show a recipe's generated config, `.env.example`, and checklist. | `list`, `show <id>` |
-| `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias). | `--consumer <path>`, `--config <path>`, `--env-file <path>` |
+| `init` | Scaffold `mono-agent.config.json`, `IDENTITY.md`, and `.mono-agent/` in the current folder. On a TTY with no flags it runs the step-by-step wizard (including the tools step); any flag or a non-TTY writes the scaffold non-interactively. Never overwrites existing files. | `--preset <id>`, `--with <csv>`, `--yes`, `--dry-run`, `--model <ref>`, `--fallback-models <csv>`, `--memory lite\|journal\|bujo` |
+| `setup` | Alias of `init`. | (same as `init`) |
+| `presets` | List the built-in setup presets or show a preset's generated config, `.env.example`, and checklist. Replaces `recipes` (still an alias). | `list`, `show <id>` |
+| `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias). With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>` |
 | `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>` |
 | `memory` | Preview the configured memory store from an agent folder: stats, daily logs, search, and top salient memories. | `stats`, `today`, `show <date>`, `search <query>`, `top`, `--limit <n>`, `--json`, `--config <path>`, `--env-file <path>` |
 | `start` | Start the agent as a background launchd service (or foreground worker). | `--config <path>`, `--env-file <path>`, `--foreground` / `-f` |
@@ -57,8 +57,14 @@ Background commands (`start`, `restart`, `stop`, `status`, `logs`) require macOS
 
 Scaffolds a new agent in the current folder. Existing `mono-agent.config.json`, `IDENTITY.md`, and `.mono-agent/` files are kept, not overwritten — re-running is safe.
 
+On an interactive terminal with **no flags**, `init` launches the **step-by-step wizard**: pick a preset or "custom", then answer model, channels (multiselect), memory, **tools** (a multiselect pre-checked with a safe read-only default plus your channels' send tools — it warns loudly if you deselect everything), sandbox (only when shell/file tools are chosen), and observability, ending on a review-and-confirm. It then scaffolds and immediately runs `validate`. With `--yes` or **any** flag (`--preset`, `--model`, `--with`, `--memory`, `--fallback-models`, `--dry-run`), or when stdin is not a TTY, `init` skips the wizard and writes the default/preset scaffold non-interactively. `mono-agent setup` is an alias of `init`.
+
 | Flag | Effect |
 | --- | --- |
+| `--preset <id>` | Seed a blueprint from a saved preset (see [Presets & capability modules](/reference/recipes/)). Skips the wizard. |
+| `--with <csv>` | Add channels on top of the preset/default config. Valid values: `telegram`, `slack`, `webhook`, `openaiApi`, `cron`. |
+| `--yes` | Write the default/preset scaffold without prompting. |
+| `--dry-run` | Preview the files that would be created without writing or validating. |
 | `--model <ref>` | Seed the primary model reference (e.g. `claude:claude-sonnet-4-6`). |
 | `--fallback-models <csv>` | Comma-separated ordered fallback chain. |
 | `--memory lite\|journal\|bujo` | Pick the memory tier to scaffold. Any other value errors. |
@@ -66,46 +72,24 @@ Scaffolds a new agent in the current folder. Existing `mono-agent.config.json`, 
 Model references look like `claude:claude-sonnet-4-6`, `codex:gpt-5.5`, or `pi:<provider>:<model>` (e.g. `pi:ollama:gemma4:31b`).
 
 ```bash
+mono-agent init                              # interactive wizard on a TTY
+mono-agent init --preset telegram-assistant --yes
 mono-agent init --model claude:claude-sonnet-4-6 \
   --fallback-models "codex:gpt-5.5,pi:ollama:gemma4:31b" \
   --memory bujo
 ```
 
-The generated config matches [the config blueprint](/config/blueprint/). See [Backends](/runtime/backends/) for the model reference grammar, [Fallback](/runtime/fallback/) for the chain, and [Capture & recall](/memory/capture-and-recall/) for the memory tiers.
+The generated config matches [the config blueprint](/config/blueprint/). See [Backends](/runtime/backends/) for the model reference grammar, [Fallback](/runtime/fallback/) for the chain, [Capture & recall](/memory/capture-and-recall/) for the memory tiers, and [Presets & capability modules](/reference/recipes/) for the wizard's tools step and the no-tools guardrail.
 
-## `setup`
+The deprecated `--recipe <id>` flag still works: it maps a retired recipe id to the preset that replaced it (with a deprecation notice), or errors with a pointer to the wizard for the fully-retired blueprints. See [Deprecations](/reference/recipes/#deprecations).
 
-Guided setup is the terminal-native companion to `init --recipe`. When stdin is a TTY, it presents the recipe catalog with each recipe's risk level, lets you choose by number or id, prompts for non-secret recipe inputs, offers `--with` channel add-ons, scaffolds through the same `initMonoAgentFolder` path as `init`, then immediately runs validation and the recipe completeness report.
+## `presets`
 
-```bash
-mono-agent setup
-mono-agent setup --recipe personal-telegram-bujo --with slack,cron
-```
-
-| Flag | Effect |
-| --- | --- |
-| `--recipe <id>` | Preselect a recipe and skip the recipe chooser. Use `mono-agent recipes list` to inspect ids. |
-| `--with <csv>` | Preselect core add-on channels. Valid values are `telegram`, `slack`, `webhook`, `openaiApi`, and `cron`. External channels such as WhatsApp and A2A are declared with `channels.plugins[]` or recipe config. |
-| `--model <ref>` | Use this as the default answer for the shared model input. |
-| `--fallback-models <csv>` | Use these as the default fallback-model answer and write them into `runtime.fallbackModels`. |
-| `--memory lite\|journal\|bujo` | Seed memory in non-recipe setup fallback mode. |
-| `--dry-run` | Preview the files that would be created without writing or validating. |
-
-Secret recipe inputs are never prompted and never written to `mono-agent.config.json`. They are shown as a final secrets checklist with their `.env.example` / `.env` variable names. For example, a Telegram recipe tells you to fill `MONO_AGENT_TELEGRAM_TOKEN` after setup rather than asking for the token in the terminal.
-
-When stdin is not a TTY, `setup` does not prompt and falls back to the same flag-driven behavior as `init`. This keeps CI and shell pipelines non-blocking:
+Presets are saved wizard answer-sets. `presets list` shows the ids, titles, descriptions, and risk levels; `presets show <id>` prints the generated `mono-agent.config.json`, any `.env.example` placeholders, scaffolded files, and the validation checklist. `mono-agent recipes …` remains as a deprecated alias.
 
 ```bash
-mono-agent setup --recipe minimal-webhook --dry-run < /dev/null
-```
-
-## `recipes`
-
-Recipes are executable config blueprints. `recipes list` shows the catalog ids, titles, tags, and risk levels; `recipes show <id>` prints the generated `mono-agent.config.json`, any `.env.example` placeholders, scaffolded files, and the validation checklist.
-
-```bash
-mono-agent recipes list
-mono-agent recipes show personal-telegram-bujo
+mono-agent presets list
+mono-agent presets show telegram-assistant
 ```
 
 ## `validate`
@@ -114,12 +98,14 @@ Loads every config section and prints a status report, then exits `0` when the c
 
 ```bash
 mono-agent validate
+mono-agent validate --preset code-sandbox
 mono-agent validate --config ./agents/support.config.json --env-file ./.env.staging
 mono-agent validate --consumer ../local-agent-alpha
 ```
 
 | Flag | Effect |
 | --- | --- |
+| `--preset <id>` | Also report whether the preset's promised capabilities are live — each expectation is checked against the doctor report. The deprecated `--recipe <id>` alias maps to the replacing preset. |
 | `--consumer <path>` | Validate another agent folder read-only. Relative `--config` and `--env-file` paths resolve inside that folder. |
 | `--config <path>` | Use a non-default config file. With `--consumer`, relative paths are inside the consumer folder. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file. With `--consumer`, relative paths are inside the consumer folder. |
@@ -134,6 +120,8 @@ Each section prints a status badge, a label, and its details. The statuses are:
 | `error` | A structural problem that must be fixed; any `error` section fails the run. |
 
 `validate` runs liveness probes, so it can show `waiting` for unreachable network dependencies. The Phoenix exporter check additionally POSTs an empty protobuf to confirm export compatibility, not just reachability — see [Phoenix & backfill](/observability/phoenix-and-backfill/).
+
+The **Tools & MCP** section reports the tool policy: allow-all (the default) shows `All tools allowed.` (or `All tools allowed (except: …)` when a `disallowedTools` list is present), while an **explicit empty** `tools.allowedTools: []` flags the no-tools trap — `waiting` (never a silent `ok`), because the agent could chat but cannot read files, run commands, or send proactively. For a specific allowlist it also flags an unknown tool name with a "did you mean" hint (pi silently drops unknown names) and cross-checks adapter send tools against enabled channels. See [Presets & capability modules](/reference/recipes/#the-tools-step-and-the-no-tools-guardrail) for the full contract.
 
 ### Provider credentials
 
@@ -195,7 +183,7 @@ mono-agent memory top --limit 20
 | `stats` | Shows backend, configured/effective tier, write mode, recall-tool state, local root, memory/entity counts, store sizes, last capture/access/consolidation signals, and top entities. For Supermemory it reports the known remote endpoint/container and explicitly lists fields that are not knowable locally. |
 | `today` | Renders today's local BuJo daily log. |
 | `show <YYYY-MM-DD>` | Renders one local BuJo daily log by date. Both current `daily/YYYY-MM-DD.md` and older root-level `YYYY-MM-DD.md` layouts are recognized. |
-| `search <query>` | Uses the same recall-store construction as `memory_recall`. Local BuJo/journal search returns scores plus sources; if configured embeddings are unavailable, it retries FTS-only and prints a warning. Supermemory search proxies the remote API. |
+| `search <query>` | Uses the same recall-store construction as `MemoryRecall`. Local BuJo/journal search returns scores plus sources; if configured embeddings are unavailable, it retries FTS-only and prints a warning. Supermemory search proxies the remote API. |
 | `top` | Shows highest-salience local BuJo/journal memories with salience, type/status, and source. Supermemory has no local salience ranking, so it tells you to use search. |
 
 | Flag | Effect |

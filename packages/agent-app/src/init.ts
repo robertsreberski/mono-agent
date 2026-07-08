@@ -2,35 +2,15 @@ import { mkdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { writeMonoAgentConfigJson } from "@mono-agent/config";
-import type { MonoAgentConfigJson } from "@mono-agent/config";
 
-import { resolveRecipeInputs } from "./recipes/index.js";
-import type { AgentRecipe, RecipeInputValues } from "./recipes/index.js";
-import { monoAgentConfigWithSchema } from "./config-reference.js";
-
-/** Channels `--with` can switch on, merged onto a recipe's config. */
-export const WITH_CHANNELS = ["telegram", "slack", "webhook", "openaiApi", "cron"] as const;
-export type WithChannel = (typeof WITH_CHANNELS)[number];
-
-export function isWithChannel(value: string): value is WithChannel {
-  return (WITH_CHANNELS as readonly string[]).includes(value);
-}
+import { composeWizardPlan, defaultAnswers } from "./wizard/answers.js";
+import type { ComposeContext, WizardAnswers, WizardPlan } from "./wizard/answers.js";
 
 export interface InitMonoAgentFolderOptions {
   /** Folder the agent is constructed in. Defaults to process.cwd(). */
   readonly dir?: string;
-  /** Primary runtime model reference written into the config. */
-  readonly model?: string;
-  /** Ordered backup model references written into the config. */
-  readonly fallbackModels?: readonly string[];
-  /** Memory strategy: omitted = no memory section. Ignored when a recipe is given. */
-  readonly memory?: "lite" | "journal" | "bujo";
-  /** When set, the config comes from this recipe instead of the default scaffold. */
-  readonly recipe?: AgentRecipe;
-  /** Prompted non-secret values to layer onto recipe defaults. Secret recipe inputs are ignored. */
-  readonly recipeInputs?: RecipeInputValues;
-  /** Additional channels to enable on top of the (recipe or default) config. */
-  readonly withChannels?: readonly WithChannel[];
+  /** The composed capability selection; omitted → {@link defaultAnswers} (the silent default scaffold). */
+  readonly answers?: WizardAnswers;
   /** Plan the scaffold and report it without writing anything. */
   readonly dryRun?: boolean;
 }
@@ -47,18 +27,20 @@ export interface InitMonoAgentFolderResult {
   readonly knowledgeFiles: readonly string[];
   /** True when nothing was written because dryRun was set. */
   readonly dryRun: boolean;
+  /** The composed plan (config, secrets, env example, files, validate expectations). */
+  readonly plan: WizardPlan;
 }
 
-const DEFAULT_MODEL = "claude:claude-sonnet-4-6";
 const KNOWLEDGE_FILE_CANDIDATES = ["AGENTS.md", "CLAUDE.md", "README.md", "SOUL.md"];
 
 /**
  * Non-destructively scaffolds a config-first mono-agent folder: a
- * `mono-agent.config.json` (from the default smoke scaffold or a recipe), an
- * `IDENTITY.md` seeded from any knowledge files already in the folder, the
- * `.mono-agent/` working directories, and — for recipes — a `.env.example` and
- * any recipe files. Existing files are never overwritten. With `dryRun`, nothing
- * is written and `created` reports what would have been.
+ * `mono-agent.config.json` composed from the wizard answers (default scaffold when
+ * none are supplied), an `IDENTITY.md` seeded from any knowledge files already in
+ * the folder, the `.mono-agent/` working directories, and — when the composed plan
+ * carries them — a `.env.example` and any capability files. Existing files are
+ * never overwritten. With `dryRun`, nothing is written and `created` reports what
+ * would have been.
  */
 export async function initMonoAgentFolder(
   options: InitMonoAgentFolderOptions = {},
@@ -93,133 +75,31 @@ export async function initMonoAgentFolder(
     await planFile(subdir, () => mkdir(subdir, { recursive: true }));
   }
 
-  const skillsRootExists = await pathExists(join(dir, "skills"));
-  const configJson = await resolveConfigJson(dir, options, skillsRootExists);
+  const ctx: ComposeContext = {
+    dirBasename: basename(dir),
+    skillsRootExists: await pathExists(join(dir, "skills")),
+  };
+  const answers = options.answers ?? defaultAnswers();
+  const plan = composeWizardPlan(answers, ctx);
+
   const configPath = join(dir, "mono-agent.config.json");
-  await planFile(configPath, () => writeMonoAgentConfigJson({ path: configPath, patch: configJson }));
+  await planFile(configPath, () => writeMonoAgentConfigJson({ path: configPath, patch: plan.configJson }));
 
-  if (options.recipe !== undefined) {
-    const inputs = resolveRecipeInputs(options.recipe, recipeOverrides(options.recipe, options));
-    const envExample = options.recipe.envExample?.(inputs);
-    if (envExample !== undefined && envExample.trim().length > 0) {
-      const envExamplePath = join(dir, ".env.example");
-      await planFile(envExamplePath, () => writeFile(envExamplePath, envExample, { flag: "wx" }));
-    }
-    for (const file of options.recipe.files?.(inputs) ?? []) {
-      const filePath = join(dir, file.path);
-      await planFile(filePath, async () => {
-        await mkdir(dirname(filePath), { recursive: true });
-        await writeFile(filePath, file.contents, { flag: "wx" });
-      });
-    }
+  const envExample = plan.envExample;
+  if (typeof envExample === "string" && envExample.length > 0) {
+    const envExamplePath = join(dir, ".env.example");
+    await planFile(envExamplePath, () => writeFile(envExamplePath, envExample, { flag: "wx" }));
   }
 
-  return { dir, configPath, identityPath, created, skipped, knowledgeFiles, dryRun };
-}
+  for (const file of plan.files) {
+    const filePath = join(dir, file.path);
+    await planFile(filePath, async () => {
+      await mkdir(dirname(filePath), { recursive: true });
+      await writeFile(filePath, file.contents, { flag: "wx" });
+    });
+  }
 
-function recipeOverrides(recipe: AgentRecipe, options: InitMonoAgentFolderOptions): RecipeInputValues {
-  const overrides: Record<string, string | undefined> = { ...(options.recipeInputs ?? {}) };
-  for (const input of recipe.inputs) {
-    if (input.secret === true) {
-      delete overrides[input.id];
-    }
-  }
-  if (options.model !== undefined) {
-    overrides.model = options.model;
-  }
-  return overrides;
-}
-
-async function resolveConfigJson(
-  dir: string,
-  options: InitMonoAgentFolderOptions,
-  skillsRootExists: boolean,
-): Promise<MonoAgentConfigJson> {
-  if (options.recipe !== undefined) {
-    const inputs = resolveRecipeInputs(options.recipe, recipeOverrides(options.recipe, options));
-    return monoAgentConfigWithSchema(withChannels(withRuntimeOverrides(options.recipe.config(inputs), options), options.withChannels ?? []));
-  }
-  return monoAgentConfigWithSchema(withChannels(configTemplate(dir, options, skillsRootExists), options.withChannels ?? []));
-}
-
-function withRuntimeOverrides(
-  config: MonoAgentConfigJson,
-  options: InitMonoAgentFolderOptions,
-): MonoAgentConfigJson {
-  const fallbackModels = (options.fallbackModels ?? []).filter((entry) => entry.trim().length > 0);
-  if (fallbackModels.length === 0) {
-    return config;
-  }
-  return {
-    ...config,
-    runtime: {
-      ...(config.runtime ?? {}),
-      fallbackModels,
-    },
-  } as MonoAgentConfigJson;
-}
-
-/** Switch on additional channels by merging `{ <channel>: { enabled: true } }`. */
-function withChannels(
-  config: MonoAgentConfigJson,
-  channels: readonly WithChannel[],
-): MonoAgentConfigJson {
-  if (channels.length === 0) {
-    return config;
-  }
-  const extra: Record<string, unknown> = {};
-  for (const channel of channels) {
-    extra[channel] = { enabled: true };
-  }
-  return { ...config, ...extra } as MonoAgentConfigJson;
-}
-
-function configTemplate(
-  dir: string,
-  options: InitMonoAgentFolderOptions,
-  skillsRootExists: boolean,
-): MonoAgentConfigJson {
-  const fallbackModels = (options.fallbackModels ?? []).filter((entry) => entry.trim().length > 0);
-  return {
-    runtime: {
-      model: options.model ?? DEFAULT_MODEL,
-      ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
-      workspace: ".",
-    },
-    context: {
-      identityPath: "./IDENTITY.md",
-      selectedSkills: [],
-      ...(skillsRootExists ? { skillsRoot: "./skills" } : {}),
-    },
-    ...(options.memory === undefined
-      ? {}
-      : {
-          memory: {
-            mode: options.memory,
-            path: "./.mono-agent/memory",
-            writeMode: "append-host-summary" as const,
-          },
-        }),
-    tools: {
-      allowedTools: [],
-      disallowedTools: [],
-    },
-    artifacts: {
-      dir: "./.mono-agent/artifacts",
-      retention: {
-        maxAgeDays: 365,
-        maxCount: 50000,
-        dryRun: false,
-      },
-    },
-    traceability: {
-      registryDir: "./.mono-agent/trace-sources",
-      sourceLabel: `Mono Agent (${basename(dir)})`,
-    },
-    webhook: {
-      enabled: true,
-    },
-  } as MonoAgentConfigJson;
+  return { dir, configPath, identityPath, created, skipped, knowledgeFiles, dryRun, plan };
 }
 
 function identityTemplate(dir: string, knowledgeFiles: readonly string[]): string {

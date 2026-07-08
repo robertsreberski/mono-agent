@@ -1,5 +1,5 @@
 import type { JsonEnvFieldSpec, SettingsJsonValue } from "@mono-agent/agent-contracts";
-import { CONFIG_ENV_KEYS } from "@mono-agent/config";
+import { ALLOW_ALL_TOOLS, CONFIG_ENV_KEYS } from "@mono-agent/config";
 import type { ConfigViewFieldId, MonoAgentConfigJson } from "@mono-agent/config";
 import { CRON_CONFIG_FIELDS } from "@mono-agent/cron-adapter";
 import { OPENAI_API_CONFIG_FIELDS } from "@mono-agent/openai-api-adapter";
@@ -56,7 +56,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     defaultLabel: "127.0.0.1",
     defaultValue: "127.0.0.1",
     example: "127.0.0.1",
-    description: "Loopback host for the app-owned ask_user/tool-progress bridge.",
+    description: "Loopback host for the app-owned AskUser/tool-progress bridge.",
   },
   {
     jsonPath: "interaction.bridge.port",
@@ -74,7 +74,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     defaultLabel: "600000",
     defaultValue: 600_000,
     example: 600_000,
-    description: "Maximum wait for one ask_user question.",
+    description: "Maximum wait for one AskUser question.",
   },
   {
     jsonPath: "interaction.progress.enabled",
@@ -524,7 +524,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "memory.llm.timeoutMs": 60_000,
     "memory.consolidation.enabled": true,
     "memory.consolidation.cron": "0 */2 * * *",
-    "tools.allowedTools": [],
+    "tools.allowedTools": [ALLOW_ALL_TOOLS],
     "tools.disallowedTools": [],
     "tools.mcpCallTimeoutMs": 120_000,
     "tools.mcpCallMaxTotalTimeoutMs": 2_700_000,

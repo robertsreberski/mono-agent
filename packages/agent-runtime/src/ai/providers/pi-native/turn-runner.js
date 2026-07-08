@@ -72,13 +72,15 @@ export async function buildTurnTools(runState, {
   const builtIns = capabilities.tool_use === false
     ? []
     : getPiBuiltinTools(options.allowedTools, /** @type {any} */ ({
+      // deny-wins filter applied over the built-ins + ReadSkill inside pi-bridge.
+      disallowedTools: options.disallowedTools,
       skillNames: (options.skills || []).map((/** @type {{name: string}} */ skill) => skill.name),
-      // Full skill objects so read_skill can honor pi's neutral Skill shape
+      // Full skill objects so ReadSkill can honor pi's neutral Skill shape
       // ({name, filePath, ...}) and derive each skill's root from its own
       // filePath when no shared skillsRoot is threaded.
       skills: options.skills || [],
       // Progressive skill disclosure: when the harness threads the skills root
-      // (the directory holding `<name>/SKILL.md`) the read_skill tool resolves
+      // (the directory holding `<name>/SKILL.md`) the ReadSkill tool resolves
       // bodies directly from there. `dataDir` (skills under `<dataDir>/skills`)
       // remains the back-compat fallback; a per-skill filePath is the third path.
       skillsRoot: options.skillsRoot,

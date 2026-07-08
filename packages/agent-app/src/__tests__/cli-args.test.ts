@@ -45,10 +45,10 @@ describe("parseCliArgs", () => {
     });
   });
 
-  it("parses setup with recipe, channel add-ons, and dry-run flags", () => {
-    expect(parseCliArgs(["setup", "--recipe", "full-safe", "--with", "slack,cron", "--dry-run"])).toMatchObject({
-      command: "setup",
-      recipe: "full-safe",
+  it("normalizes setup to init and parses its preset/channel/dry-run flags", () => {
+    expect(parseCliArgs(["setup", "--preset", "starter", "--with", "slack,cron", "--dry-run"])).toMatchObject({
+      command: "init",
+      preset: "starter",
       withChannels: ["slack", "cron"],
       dryRun: true,
     });
@@ -239,8 +239,10 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["start", "--max-runs", "500"])).toThrow(/only supported for/u);
   });
 
-  it("includes setup in the help screen", () => {
+  it("includes setup, presets, and web in the help screen", () => {
     expect(renderHelp()).toContain("mono-agent setup");
+    expect(renderHelp()).toContain("mono-agent presets");
+    expect(renderHelp()).toContain("mono-agent init [--preset");
     expect(renderHelp()).toContain("mono-agent web");
     expect(renderHelp()).toContain("--allow-non-loopback");
     expect(renderHelp()).toContain("--include-memory");

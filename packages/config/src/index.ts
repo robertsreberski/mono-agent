@@ -63,7 +63,7 @@ export type {
   MonoAgentConfigJson,
   ReadMonoAgentConfigJsonResult,
 } from "./json-source.js";
-export { EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
+export { ALLOW_ALL_TOOLS, EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
 export { buildMonoAgentConfigView, CONFIG_ENV_KEYS, findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "./config-view.js";
 export type {
   BuildMonoAgentConfigViewInput,

@@ -46,7 +46,7 @@ A BuJo-tier structure that tracks the people, projects, and things referenced ac
 
 ## Fail-closed
 
-The default-deny posture: an empty tool allowlist means **no** tools are exposed (`tool-policy.fail-closed`, coverage: `auto`), and an unavailable sandbox refuses to run rather than falling back to the host (`sandbox.fallback: "fail-closed"`). See [Tool policy](/tools/policy/) and [Sandbox](/tools/sandbox/).
+The default-deny posture. It survives in two places: the **programmatic** harness default for code-defined agents (`failClosedToolPolicy()` — a harness built with no policy exposes **no** tools; coverage: `auto`), and the sandbox stance (`sandbox.fallback: "fail-closed"` refuses to run rather than falling back to the host). Note the **config** default is the opposite — an omitted `tools.allowedTools` allows every tool (`tool-policy.allow-all`); a deliberate chat-only agent uses an explicit `tools.allowedTools: []`. See [Tool policy](/tools/policy/) and [Sandbox](/tools/sandbox/).
 
 ## Fallback router
 

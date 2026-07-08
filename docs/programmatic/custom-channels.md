@@ -294,7 +294,7 @@ Slack and WhatsApp expose their own message-stream modules with the same shape (
 
 ## Sending and delivery from inside a driver
 
-Your driver talks to the agent through `input.responder`. For replying back into the channel, follow the same delivery contract the built-in channels use — including proactive/out-of-turn sends via the adapter send tools (`slack_send_message` / `telegram_send_message`). See [Delivery and send tools](/channels/delivery-and-send-tools/). For the underlying responder/runtime wiring, see [Composition](/programmatic/composition/); for structured-output and approval gating around runs, see [Approval and structured output](/programmatic/approval-and-structured-output/).
+Your driver talks to the agent through `input.responder`. For replying back into the channel, follow the same delivery contract the built-in channels use — including proactive/out-of-turn sends via the adapter send tools (`SlackSendMessage` / `TelegramSendMessage`). See [Delivery and send tools](/channels/delivery-and-send-tools/). For the underlying responder/runtime wiring, see [Composition](/programmatic/composition/); for structured-output and approval gating around runs, see [Approval and structured output](/programmatic/approval-and-structured-output/).
 
 ## Related pages
 

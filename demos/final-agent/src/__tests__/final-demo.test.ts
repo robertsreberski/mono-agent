@@ -840,7 +840,7 @@ function createFakeTelegramAdapter(): {
           return { delivered: true };
         },
         async post() {
-          // No-op direct send (ask_user question) for the demo's fake adapter.
+          // No-op direct send (AskUser question) for the demo's fake adapter.
         },
         async postStatus() {
           // No-op tool-progress status for the demo's fake adapter.

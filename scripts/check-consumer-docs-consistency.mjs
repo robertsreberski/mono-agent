@@ -79,8 +79,8 @@ const retiredDocReferences = [
     pattern: packageReferencePattern("live", "adapter"),
   },
   {
-    label: "notify_conversation",
-    pattern: /\bnotify_conversation\b/iu,
+    label: "NotifyConversation",
+    pattern: /\bNotifyConversation\b|\bnotify_conversation\b/iu,
   },
 ];
 

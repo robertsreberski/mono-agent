@@ -52,7 +52,7 @@ function request(conversationId = "conv-1", userMessage = "hello") {
 }
 
 describe("AgentHarness progressive skill disclosure wiring", () => {
-  it("index mode (opt-in) threads discovered skill names + skillsRoot so read_skill can be created", async () => {
+  it("index mode (opt-in) threads discovered skill names + skillsRoot so ReadSkill can be created", async () => {
     const { identityPath, skillsRoot } = await fixture(["research", "writing"]);
     const fake = createFakeRuntime();
     const harness = createAgentHarness({
@@ -78,10 +78,10 @@ describe("AgentHarness progressive skill disclosure wiring", () => {
     expect(options.skillsRoot).toBeUndefined();
   });
 
-  it("full disclosure mode (the default, unset) does NOT create read_skill (no skills/skillsRoot threaded)", async () => {
+  it("full disclosure mode (the default, unset) does NOT create ReadSkill (no skills/skillsRoot threaded)", async () => {
     const { identityPath, skillsRoot } = await fixture(["research"]);
     const fake = createFakeRuntime();
-    // skillDisclosure unset — the default is "full", so read_skill must NOT be wired
+    // skillDisclosure unset — the default is "full", so ReadSkill must NOT be wired
     // even when a skillsRoot is configured (byte-for-byte legacy behavior).
     const harness = createAgentHarness({
       identityPath, runtime: fake.runtime, model, executionMode: "sdk", skillsRoot,

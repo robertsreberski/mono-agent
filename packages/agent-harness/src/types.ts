@@ -158,7 +158,7 @@ export interface AgentHarnessOptions {
   /**
    * How skill bodies reach the agent. "full" (default) preserves the legacy
    * up-front inlining of `selectedSkills` bodies (via skillInstructions); "index"
-   * injects the skill INDEX only and wires the runtime's `read_skill` tool so the
+   * injects the skill INDEX only and wires the runtime's `ReadSkill` tool so the
    * agent pulls a full body on demand. Unset = "full".
    */
   readonly skillDisclosure?: "index" | "full";

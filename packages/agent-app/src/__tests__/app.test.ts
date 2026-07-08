@@ -686,10 +686,10 @@ describe("startMonoAgentApp", () => {
     await running.stop();
   });
 
-  it("starts the interaction bridge when ask_user is allowed, exports its env, and hands the hub to channels", async () => {
+  it("starts the interaction bridge when AskUser is allowed, exports its env, and hands the hub to channels", async () => {
     await writeConfig({
       ...baseConfig(),
-      tools: { allowedTools: ["ask_user"], disallowedTools: [] },
+      tools: { allowedTools: ["AskUser"], disallowedTools: [] },
       telegram: { enabled: true, botToken: "test-token", allowedChatIds: ["42"] },
     });
     let captured: TelegramAdapterStartOptions | undefined;
@@ -721,7 +721,7 @@ describe("startMonoAgentApp", () => {
     expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
   });
 
-  it("does not start the interaction bridge when neither ask_user nor an interaction block is configured", async () => {
+  it("does not start the interaction bridge when neither AskUser nor an interaction block is configured", async () => {
     await writeConfig({
       ...baseConfig(),
       telegram: { enabled: true, botToken: "test-token", allowedChatIds: ["42"] },

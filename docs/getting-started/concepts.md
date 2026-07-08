@@ -6,7 +6,7 @@ sidebar:
 
 # Core Concepts
 
-This page defines the mental model behind mono-agent: one config file, one responder, many channels, opt-in everything, and fail-closed defaults. Read it once and the rest of the docs will line up.
+This page defines the mental model behind mono-agent: one config file, one responder, many channels, opt-in everything, and safe defaults (an open tool surface, but locked-down side effects). Read it once and the rest of the docs will line up.
 
 ## Config-first
 
@@ -75,16 +75,16 @@ An enabled-but-incomplete channel reports `waiting_for_config` rather than crash
 There is no "off but configured" trap: a channel with `enabled: false` reports `disabled` even if every other field is filled in.
 :::
 
-## Fail-closed defaults
+## Safe defaults
 
-mono-agent ships locked down. You opt into capability; nothing dangerous is on by default.
+mono-agent ships with an open tool surface but locked-down side effects: the model can *use* tools, but it can't persist memory, reach the network, or message anyone until you opt in.
 
-- **No tools.** An empty `tools.allowedTools` means the agent has zero tools. You list the built-ins you want explicitly (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `WebFetch`, `WebSearch`). Deny wins over allow.
+- **Allow-all tools, deny-wins.** Omit `tools.allowedTools` (or set `["*"]`) and the agent can call every built-in (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `WebFetch`, `WebSearch`) and every enabled channel's send tools. Narrow with a specific list, subtract a single tool with `disallowedTools` (deny wins), or go chat-only with an explicit `tools.allowedTools: []`.
 
   ```json
   {
     "tools": {
-      "allowedTools": ["Read", "Grep"],
+      "allowedTools": ["*"],
       "disallowedTools": ["Bash"]
     }
   }

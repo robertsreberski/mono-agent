@@ -309,7 +309,7 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
 }
 
 /**
- * Progressive skill disclosure: exposes a `read_skill` tool so the agent can pull
+ * Progressive skill disclosure: exposes a `ReadSkill` tool so the agent can pull
  * a named skill's FULL body on demand (skills are otherwise injected index-only).
  *
  * Two input shapes are accepted, matching what hosts pass:
@@ -318,7 +318,7 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
  *    back-compat `dataDir` (skills under `<dataDir>/skills`). This path is UNCHANGED.
  *  - pi's neutral `Skill` shape (`{name, description, content, filePath, ...}`,
  *    what worklab passes): each skill carries an absolute `filePath`. When NO shared
- *    `skillsRoot`/`dataDir` is configured, read_skill derives each skill's root from
+ *    `skillsRoot`/`dataDir` is configured, ReadSkill derives each skill's root from
  *    its own `filePath` — pi has no lazy-body equivalent, so the body is still read
  *    from disk on demand rather than injected up front.
  *
@@ -361,7 +361,7 @@ function readSkillTool(skillNames = [], { skillsRoot, dataDir, skills = [] } = {
   if (!enumNames.length) return null;
 
   return {
-    name: "read_skill",
+    name: "ReadSkill",
     label: "Read Skill",
     description: "Load the full instructions for a named skill.",
     parameters: objectSchema({ name: { type: "string", enum: enumNames } }, ["name"]),
@@ -408,9 +408,10 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
 
 /**
  * @param {any} allowedTools
- * @param {{skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, ctx?: any}} [options]
+ * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, ctx?: any}} [options]
  */
 export function getPiBuiltinTools(allowedTools, {
+  disallowedTools = [],
   skillNames = [],
   skills = [],
   skillsRoot,
@@ -495,10 +496,17 @@ export function getPiBuiltinTools(allowedTools, {
       limit: { type: "integer" },
     }, ["query"]), webSearchToolImpl, toolContext),
   };
-  const names = Array.isArray(allowedTools) ? allowedTools : Object.keys(all);
+  // allowedTools honors the `"*"` allow-all sentinel (and undefined) as "every
+  // built-in"; disallowedTools is the deny-wins filter applied to the final set.
+  const allowAll = !Array.isArray(allowedTools) || allowedTools.includes("*");
+  const selected = allowAll ? Object.keys(all) : allowedTools;
+  const denied = new Set(Array.isArray(disallowedTools) ? disallowedTools : []);
+  const names = selected.filter((name) => !denied.has(name));
   const tools = names.map((name) => all[name]).filter(Boolean);
   const skillTool = readSkillTool(skillNames, { skillsRoot, dataDir, skills });
-  if (skillTool) tools.push(skillTool);
+  // Deny-check the canonical PascalCase name AND the legacy snake_case alias so
+  // an old denylist keeps disabling the tool after the rename.
+  if (skillTool && !denied.has("ReadSkill") && !denied.has("read_skill" /* legacy alias */)) tools.push(skillTool);
   const gated = approvalManager
     ? wrapToolsWithApprovalGate(tools, approvalManager, { model: approvalModel })
     : tools;

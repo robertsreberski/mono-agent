@@ -124,7 +124,7 @@ MONO_AGENT_WHATSAPP_GROUP_MODE=mention
 
 Like the other chat channels, WhatsApp delivers the **final answer** of a run (interim streaming is not surfaced). What the agent is permitted to do inside a run is governed by [tool policy](/tools/policy/).
 
-WhatsApp has **no notify path of its own**. Native cron/webhook notification (`notify: true`) targets only Telegram/Slack destinations — WhatsApp is **not a notify-capable destination**. The agent can still be granted the `slack_send_message` / `telegram_send_message` send tools (if those adapters are enabled) to push messages back through Slack or Telegram, but there is no equivalent for pushing unprompted messages into a WhatsApp chat. See [delivery and send tools](/channels/delivery-and-send-tools/).
+WhatsApp has **no notify path of its own**. Native cron/webhook notification (`notify: true`) targets only Telegram/Slack destinations — WhatsApp is **not a notify-capable destination**. The agent can still be granted the `SlackSendMessage` / `TelegramSendMessage` send tools (if those adapters are enabled) to push messages back through Slack or Telegram, but there is no equivalent for pushing unprompted messages into a WhatsApp chat. See [delivery and send tools](/channels/delivery-and-send-tools/).
 
 ## Related
 

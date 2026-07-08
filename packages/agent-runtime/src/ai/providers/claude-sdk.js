@@ -20,7 +20,7 @@ import { readRuntimeBrand } from "../../agent/tools/shared/runtime-context.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import {
   claudeNativeAgentDefinitions,
-  claudeToolsWithNativeSubagents,
+  resolveClaudeAllowedTools,
 } from "./claude-subagents.js";
 
 function thinkingForEffort(effort) {
@@ -588,6 +588,10 @@ export async function generateClaudeResponse(systemPrompt, options) {
     ? "default"
     : permissionMode;
   const nativeAgents = claudeNativeAgentDefinitions(options.nativeSubagents);
+  // `"*"` allow-all → pass `allowedTools: undefined` so the SDK uses its default
+  // toolset (every tool, incl. Task — not double-added). disallowedTools still
+  // flows through, so deny-wins holds under allow-all.
+  const { allowAll: allowAllTools, tools: resolvedAllowedTools } = resolveClaudeAllowedTools(allowedTools, options.nativeSubagents);
   // Assembled incrementally, then handed across the SDK `query` boundary
   // (outputFormat/resume/maxTurns are attached conditionally below).
   /** @type {any} */
@@ -597,7 +601,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
     cwd,
     permissionMode: effectivePermissionMode,
     ...(effectivePermissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
-    allowedTools: claudeToolsWithNativeSubagents(allowedTools, options.nativeSubagents),
+    allowedTools: allowAllTools ? undefined : resolvedAllowedTools,
     disallowedTools,
     mcpServers,
     ...(approvalManager ? { canUseTool: createClaudeCanUseTool(approvalManager, model.model) } : {}),

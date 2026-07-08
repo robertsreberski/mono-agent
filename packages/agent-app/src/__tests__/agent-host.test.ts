@@ -85,7 +85,7 @@ describe("agent host composition helpers", () => {
         expect(runId).toBe("run-host");
         return {
           runtimeOptions: {
-            allowedTools: ["ask_collaborator"],
+            allowedTools: ["AskCollaborator"],
             mcpServers: {
               collaborators: { type: "http", url: "http://127.0.0.1:9876/mcp" },
             },
@@ -107,7 +107,7 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[0]?.options).toMatchObject({
       cwd: dir,
       maxTurns: 4,
-      allowedTools: ["Read", "ask_collaborator"],
+      allowedTools: ["Read", "AskCollaborator"],
       disallowedTools: ["Write"],
       customProvider: {
         id: "ollama",

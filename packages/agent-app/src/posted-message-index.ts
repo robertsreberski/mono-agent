@@ -8,14 +8,14 @@ import { dirname, join } from "node:path";
  *
  * Why this exists: a scheduled/proactive post (e.g. a daily digest) runs under a
  * synthetic conversationId (e.g. `scheduled-scan`) and posts via
- * `slack_send_message`, which registers no `slack:` conversation. When the user
+ * `SlackSendMessage`, which registers no `slack:` conversation. When the user
  * replies, the Slack adapter derives `slack:<channel>:<posted-ts>` — an id with no
  * history. This index closes that gap: the producer records `(channel, ts) →
  * producing conversationId`; the consumer (inbound dispatch) looks it up and
  * aliases the reply onto the producing conversation.
  *
  * Storage is an append-only JSONL file inside the run-artifact dir. Append-only
- * keeps cross-process writes safe: the `slack_send_message` child process and the
+ * keeps cross-process writes safe: the `SlackSendMessage` child process and the
  * adapter both only ever append (small `O_APPEND` writes are atomic), and only the
  * single adapter process compacts. A `.jsonl` file is ignored by the
  * `.summary.json` artifact scanners (see `seen-conversations.ts`), so it never

@@ -213,7 +213,7 @@ export interface CreateTelegramBotOptions {
    */
   readonly reactions?: TelegramReactionsConfig;
   /**
-   * Handle inline-keyboard taps (`callback_query`) produced by the `telegram_ask`
+   * Handle inline-keyboard taps (`callback_query`) produced by the `TelegramAskButtons`
    * tool: re-run the user's choice as a turn on the same conversation. When set,
    * `callback_query` is added to the default `allowedUpdates`. Default off — with
    * it unset the bot never subscribes to callbacks and the handler is not wired.
@@ -268,7 +268,7 @@ export interface CreateTelegramBotOptions {
   readonly attachments?: DownloadTelegramAttachmentsOptions;
   /**
    * Pending-ask interceptor. Checked in `handleAgentMessage` BEFORE per-chat
-   * admission — a reply sent while a turn is blocked on `ask_user` would
+   * admission — a reply sent while a turn is blocked on `AskUser` would
    * otherwise queue behind that very turn and deadlock until the ask times out.
    */
   readonly pendingAsks?: TelegramPendingAsks;
@@ -305,7 +305,7 @@ export interface TelegramBotController {
   notify(chatId: TelegramChatId, text: string, options?: TelegramNotifyOptions): Promise<TelegramNotifyResult>;
   /**
    * Post a plain message directly (no model turn, no history record). Used by the
-   * interaction bridge for ask_user questions — the question/answer pair reaches
+   * interaction bridge for AskUser questions — the question/answer pair reaches
    * the model as the tool result, so recording it to history would duplicate it.
    */
   post(chatId: TelegramChatId, text: string): Promise<void>;
@@ -424,7 +424,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
 
   const cancelChat = (chatId: TelegramChatId): void => {
     const conversationId = `telegram:${String(chatId)}`;
-    // Fail any pending ask first so a tool blocked on ask_user returns
+    // Fail any pending ask first so a tool blocked on AskUser returns
     // "cancelled by user" instead of waiting out its timeout.
     options.pendingAsks?.cancel(conversationId);
     // Clear queued follow-ups (and signal the harness to abort the in-flight
@@ -564,7 +564,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     });
   }
 
-  // Inline-keyboard callbacks (telegram_ask). Subscribed only when enabled (the
+  // Inline-keyboard callbacks (TelegramAskButtons). Subscribed only when enabled (the
   // default `allowedUpdates` then also includes `callback_query`). The auth gate
   // above already blocks unauthorized chats; we re-check defensively. On a tap we
   // resolve the chosen LABEL from the tapped message's own keyboard (so no

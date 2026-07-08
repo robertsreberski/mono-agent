@@ -101,7 +101,7 @@ The default soul also carries a capability-agnostic recall guardrail:
 
 > Before assuming a fact or asking the user, first check the provided context and any available recall/search tools for the information.
 
-This nudges the agent to consult what it already has — the prompt context and any enabled recall/search tools — before guessing or asking, without implying a specific tool exists. It pairs with the strengthened [`memory_recall` tool description](/tools/mcp/), which directs proactive recall when context is missing or uncertain. If you supply your own `soulPath`, consider keeping an equivalent line so a memory-enabled agent actually reaches for [recall](/memory/capture-and-recall/).
+This nudges the agent to consult what it already has — the prompt context and any enabled recall/search tools — before guessing or asking, without implying a specific tool exists. It pairs with the strengthened [`MemoryRecall` tool description](/tools/mcp/), which directs proactive recall when context is missing or uncertain. If you supply your own `soulPath`, consider keeping an equivalent line so a memory-enabled agent actually reaches for [recall](/memory/capture-and-recall/).
 
 :::note
 The fallback is **the default soul text, not your identity**. Leaving out `soulPath` does not duplicate the identity into the guardrails section — it inserts the framework default instead. Set `context.soulPath` only when you want to replace that baseline.

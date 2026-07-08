@@ -16,14 +16,14 @@ Power users who want to try a best-in-class external memory layer (or already ru
 
 ## Goal
 
-A Telegram bot that answers via long-polling, captures every turn into a local Supermemory instance, and recalls past memories semantically through the same `memory_recall` tool the agent already knows.
+A Telegram bot that answers via long-polling, captures every turn into a local Supermemory instance, and recalls past memories semantically through the same `MemoryRecall` tool the agent already knows.
 
 ## Features used
 
 - [`telegram.long-polling`](/channels/telegram/) — Telegram channel via getUpdates long-polling (config)
 - [`memory.backend-supermemory`](/config/env-vars/) — `memory.backend: "supermemory"` selects the external engine (config)
 - [`memory.per-turn-capture`](/memory/capture-and-recall/) — `writeMode: "capture"` posts each turn for server-side extraction (config)
-- [`memory.recall-tool`](/memory/capture-and-recall/) — `memory_recall` proxies Supermemory search behind the same in-app tool name (auto)
+- [`memory.recall-tool`](/memory/capture-and-recall/) — `MemoryRecall` proxies Supermemory search behind the same in-app tool name (auto)
 
 ## Prerequisites
 
@@ -80,12 +80,12 @@ If you omit `supermemory.container`, it defaults to the agent's trace `sourceId`
 
 - **Capture** — `writeMode: "capture"` posts each full turn to `POST /v3/documents` (fire-and-forget). Supermemory extracts and consolidates facts server-side, so no `memory.llm` is needed. Ingestion is asynchronous: a just-captured turn is not instantly searchable (seconds to minutes).
 - **Recall into context** — at the start of each turn the agent searches your container (`POST /v4/search`, falling back to the legacy `/v3/search` if your build doesn't serve v4) and primes the reply with the top hits. If Supermemory is unreachable the turn proceeds with no memory rather than failing.
-- **The `memory_recall` tool** — the agent can also recall on demand; the tool proxies Supermemory search behind the same name it uses for BuJo, so prompts and skills don't change between backends.
+- **The `MemoryRecall` tool** — the agent can also recall on demand; the tool proxies Supermemory search behind the same name it uses for BuJo, so prompts and skills don't change between backends.
 
 ## Validate and run
 
 ```bash
-mono-agent validate --recipe personal-telegram-supermemory
+mono-agent validate --preset telegram-supermemory
 mono-agent start
 ```
 

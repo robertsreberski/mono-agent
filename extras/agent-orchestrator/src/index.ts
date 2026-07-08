@@ -13,7 +13,7 @@ import type {
 import { assertSafeBind } from "@mono-agent/agent-contracts";
 import * as z from "zod/v4";
 
-export const DEFAULT_COLLABORATOR_TOOL_NAME = "ask_collaborator";
+export const DEFAULT_COLLABORATOR_TOOL_NAME = "AskCollaborator";
 export const DEFAULT_COLLABORATOR_MCP_SERVER_NAME = "collaborators";
 export const DEFAULT_COLLABORATOR_MAX_CALLS = 6;
 
@@ -348,7 +348,7 @@ function normalizeCollaborators(
 
 function normalizeAskArgs(value: unknown): AskCollaboratorArgs {
   if (!isRecord(value)) {
-    throw new TypeError("ask_collaborator arguments must be an object.");
+    throw new TypeError("AskCollaborator arguments must be an object.");
   }
   const normalized: { id: string; message: string; reason?: string } = {
     id: normalizeIdentifier(value.id, "id"),

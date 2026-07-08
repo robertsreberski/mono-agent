@@ -400,7 +400,7 @@ describe("AgentHarness", () => {
         expect(context.sections.map((section) => section.id)).toContain("identity");
         return {
           runtimeOptions: {
-            allowedTools: ["ask_collaborator"],
+            allowedTools: ["AskCollaborator"],
             mcpServers: {
               collaborators: { type: "http", url: "http://127.0.0.1:9876/mcp" },
             },
@@ -421,7 +421,7 @@ describe("AgentHarness", () => {
     // A non-push conversation id is told it is a request-driven run with no interactive user.
     expect(fake.calls[0]?.prompt).toContain("You are currently handling the conversation `conversation-extension`.");
     expect(fake.calls[0]?.prompt).toContain("request-driven run (scheduled, webhook, or API) with no interactive user");
-    expect(fake.calls[0]?.options.allowedTools).toEqual(["Grep", "Read", "ask_collaborator"]);
+    expect(fake.calls[0]?.options.allowedTools).toEqual(["Grep", "Read", "AskCollaborator"]);
     expect(fake.calls[0]?.options.disallowedTools).toEqual(["Write"]);
     expect(fake.calls[0]?.options.mcpServers).toEqual({
       static: { command: "static-mcp" },
