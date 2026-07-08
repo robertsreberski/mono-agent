@@ -10,14 +10,16 @@ Question:
 Which model should drive the agent, and should any backups take over when the provider fails?
 
 1. `claude:<model>` through SDK or CLI mode
-2. `codex:<model>` through CLI mode
-3. `pi:<provider>:<model>` through SDK mode (OpenAI, Copilot, OpenRouter, local Ollama, ...)
-4. A custom MonoRuntimeLike supplied programmatically (escape hatch)
+2. `pi:openai-codex:<model>` through SDK mode (preferred over direct Codex when Pi auth is configured)
+3. `codex:<model>` through CLI mode (direct Codex fallback path)
+4. `pi:<provider>:<model>` through SDK mode (OpenAI, Copilot, OpenRouter, OpenCode-through-Pi, local Ollama, LM Studio, ...)
+5. `opencode:<provider>:<model>` through CLI mode (hand-authored runtime backend)
+6. A custom MonoRuntimeLike supplied programmatically (escape hatch)
 ```
 
 Fills: `runtime.model`, `runtime.fallbackModels` (ordered backup references tried on retryable provider failures), `runtime.executionMode` (usually inferred), `runtime.effort`, `runtime.maxTurns`.
 
-For local models also fill `providers.local` (e.g. an Ollama base URL plus model capabilities). Follow-up only if needed: continuous provider session per conversation (`runtime.session.mode: "continuous"`, default) versus stateless per-message.
+The interactive `mono-agent init` wizard discovers Pi OpenAI-Codex auth, OpenCode models, Ollama models, and LM Studio's local server best-effort. It ranks discovered `pi:openai-codex:gpt-5.5` above direct `codex:gpt-5.5`, maps discovered OpenCode options to `pi:opencode-go:<model>` for setup/preflight, and auto-adds local provider modules when a primary or fallback model uses `pi:ollama:*` or `pi:lmstudio:*`. For local models also fill `providers.local` (e.g. an Ollama or LM Studio base URL plus model capabilities). Follow-up only if needed: continuous provider session per conversation (`runtime.session.mode: "continuous"`, default) versus stateless per-message.
 
 ## 2. Channels Of Communication
 

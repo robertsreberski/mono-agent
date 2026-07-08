@@ -250,7 +250,7 @@ describe("parseCliArgs", () => {
     expect(renderHelp()).toContain("mono-agent setup");
     expect(renderHelp()).toContain("mono-agent presets");
     expect(renderHelp()).toContain("mono-agent init [--preset");
-    expect(renderHelp()).toContain("--auth runs supported provider auth/preflight commands before writing");
+    expect(renderHelp()).toContain("--effort writes runtime.effort, --auth runs supported provider auth/preflight");
     expect(renderHelp()).toContain("mono-agent web");
     expect(renderHelp()).toContain("--allow-non-loopback");
     expect(renderHelp()).toContain("--include-memory");

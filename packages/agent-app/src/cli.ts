@@ -512,8 +512,8 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "Scaffold a mono-agent in the current folder. On a TTY with no flags, launches",
       "the step-by-step wizard; with --yes or any flag, writes the default/preset",
       "scaffold non-interactively. --preset seeds a blueprint, --with adds channels,",
-      "--auth runs supported provider auth/preflight commands before writing;",
-      "--dry-run previews only. Existing files are never overwritten.",
+      "--effort writes runtime.effort, --auth runs supported provider auth/preflight",
+      "commands before writing, and --dry-run previews only. Existing files are never overwritten.",
     ],
   },
   {
@@ -649,8 +649,11 @@ const HELP_NOTES = `Background mode runs the agent under launchd, keeping it ali
 .env file in the working directory, the same as foreground mode. The background
 commands require macOS; elsewhere use start --foreground.
 
-Model references look like claude:claude-sonnet-4-6, codex:gpt-5.5, or
-pi:<provider>:<model> (e.g. pi:ollama:gemma4:31b).
+Model references look like claude:claude-sonnet-4-6, codex:gpt-5.5,
+pi:<provider>:<model> (e.g. pi:openai-codex:gpt-5.5 or pi:ollama:gemma4:31b),
+or opencode:<provider>:<model>. The init wizard prefers Pi OpenAI-Codex when
+that auth is configured, while direct codex:gpt-5.5 remains selectable as a
+Codex CLI fallback path.
 
 A .env file in the current folder is loaded automatically when present;
 already-exported shell variables take precedence.
