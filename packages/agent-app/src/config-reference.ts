@@ -1,5 +1,5 @@
 import type { JsonEnvFieldSpec, SettingsJsonValue } from "@mono-agent/agent-contracts";
-import { CONFIG_ENV_KEYS } from "@mono-agent/config";
+import { ALLOW_ALL_TOOLS, CONFIG_ENV_KEYS } from "@mono-agent/config";
 import type { ConfigViewFieldId, MonoAgentConfigJson } from "@mono-agent/config";
 import { CRON_CONFIG_FIELDS } from "@mono-agent/cron-adapter";
 import { OPENAI_API_CONFIG_FIELDS } from "@mono-agent/openai-api-adapter";
@@ -524,7 +524,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "memory.llm.timeoutMs": 60_000,
     "memory.consolidation.enabled": true,
     "memory.consolidation.cron": "0 */2 * * *",
-    "tools.allowedTools": [],
+    "tools.allowedTools": [ALLOW_ALL_TOOLS],
     "tools.disallowedTools": [],
     "tools.mcpCallTimeoutMs": 120_000,
     "tools.mcpCallMaxTotalTimeoutMs": 2_700_000,

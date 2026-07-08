@@ -4,6 +4,7 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ALLOW_ALL_TOOLS } from "@mono-agent/config";
 import type {
   SlackChatPostMessageResult,
   SlackWebApi,
@@ -855,7 +856,7 @@ function isAdapterToolAllowed(name: string, options: AdapterSendToolsResolveOpti
   if (allowed.includes(wildcard)) {
     return true;
   }
-  return allowed.includes("*"); // global allow-all (deny check above still wins)
+  return allowed.includes(ALLOW_ALL_TOOLS); // global allow-all (deny check above still wins)
 }
 
 function parseAllowedToolNames(raw: string | undefined): readonly string[] {

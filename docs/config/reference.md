@@ -143,7 +143,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `telegram.quietHours` | `object` | `--` | unset | `{"timezone":"Europe/Amsterdam","start":"22:00","end":"07:00"}` | Quiet-hours rules for Telegram notifications. |
 | `telegram.reactions` | `object` | `MONO_AGENT_TELEGRAM_REACTIONS` | unset | `{"working":true,"done":true,"error":true}` | Telegram lifecycle reactions. The env override is boolean and toggles all states. |
 | `telegram.transport.ipFamily` | `integer` | `MONO_AGENT_TELEGRAM_IP_FAMILY` | unset | `example` | Configures transport.ipFamily for the telegram section. |
-| `tools.allowedTools` | `string[]` | `MONO_AGENT_ALLOWED_TOOLS` | [] | `["Read","Grep"]` | Configures allowedTools for the tools section. |
+| `tools.allowedTools` | `string[]` | `MONO_AGENT_ALLOWED_TOOLS` | ["*"] | `["Read","Grep"]` | Configures allowedTools for the tools section. |
 | `tools.disallowedTools` | `string[]` | `MONO_AGENT_DISALLOWED_TOOLS` | [] | `["Read","Grep"]` | Configures disallowedTools for the tools section. |
 | `tools.mcpCallMaxTotalTimeoutMs` | `integer` | `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | 2700000 | `2700000` | Configures mcpCallMaxTotalTimeoutMs for the tools section. |
 | `tools.mcpCallTimeoutMs` | `integer` | `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | 120000 | `120000` | Configures mcpCallTimeoutMs for the tools section. |
