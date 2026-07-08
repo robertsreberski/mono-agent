@@ -125,6 +125,7 @@ describe("provider setup planner", () => {
       modelRefs: [
         "claude:claude-sonnet-4-6",
         "codex:gpt-5.5",
+        "opencode:github-copilot:gpt-5.1",
         "pi:openai-codex:gpt-5.5",
         "pi:opencode-go:kimi-k2.6",
         "pi:ollama:gemma4:31b",
@@ -135,14 +136,19 @@ describe("provider setup planner", () => {
     expect(plan.actions.map((action) => action.id)).toEqual([
       "claude-login",
       "codex-login",
-      "pi-login:openai-codex",
       "opencode-models",
+      "pi-login:openai-codex",
       "ollama-list",
       "lmstudio-models",
     ]);
     expect(plan.actions.find((action) => action.id === "pi-login:openai-codex")).toMatchObject({
       command: ["npx", "@earendil-works/pi-ai", "login", "openai-codex"],
       cwd: "/agent/.pi",
+    });
+    expect(plan.actions.find((action) => action.id === "opencode-models")).toMatchObject({
+      command: ["opencode", "models", "--json"],
+      cwd: "/agent",
+      modelRefs: ["opencode:github-copilot:gpt-5.1", "pi:opencode-go:kimi-k2.6"],
     });
     expect(plan.actions.find((action) => action.id === "ollama-list")).toMatchObject({
       command: ["ollama", "list"],
