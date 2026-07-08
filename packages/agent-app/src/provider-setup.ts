@@ -114,19 +114,6 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
       continue;
     }
 
-    if (ref.sdk === "opencode") {
-      add({
-        id: "opencode-models",
-        kind: "preflight",
-        label: "OpenCode model preflight",
-        modelRefs: [refKey],
-        command: ["opencode", "models", "--json"],
-        cwd: options.cwd,
-        detail: "Checks that OpenCode can list configured models.",
-      });
-      continue;
-    }
-
     if (ref.sdk !== "pi" || typeof ref.provider !== "string") {
       continue;
     }
