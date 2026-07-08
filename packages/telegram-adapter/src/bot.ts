@@ -186,7 +186,12 @@ export class SerialQueue {
  * `/cancel` fails it.
  */
 export interface TelegramPendingAsks {
-  tryResolve(conversationId: string, answer: string): boolean | Promise<boolean>;
+  tryResolve(
+    conversationId: string,
+    answer: string,
+    answerKind?: "text" | "callback",
+  ): boolean | Promise<boolean>;
+  hasPending?(conversationId: string): boolean | Promise<boolean>;
   cancel(conversationId: string): void;
 }
 
@@ -625,7 +630,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           error: errorMessage(error),
         });
       }
-      const consumed = await options.pendingAsks?.tryResolve(`telegram:${String(chatId)}`, label);
+      const consumed = await options.pendingAsks?.tryResolve(`telegram:${String(chatId)}`, label, "callback");
       if (consumed === true) {
         return;
       }
@@ -727,12 +732,14 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       telegramMessage.text.trim().length > 0 &&
       !telegramMessage.text.trimStart().startsWith("/")
     ) {
-      const consumed = await options.pendingAsks.tryResolve(
-        `telegram:${String(chatId)}`,
-        telegramMessage.text,
-      );
+      const conversationId = `telegram:${String(chatId)}`;
+      const consumed = await options.pendingAsks.tryResolve(conversationId, telegramMessage.text, "text");
       if (consumed) {
         await applyReaction(chatId, telegramMessage.message_id, "👍");
+        return;
+      }
+      if (await options.pendingAsks.hasPending?.(conversationId)) {
+        await ctx.reply(messages.busyText);
         return;
       }
     }

@@ -831,10 +831,12 @@ describe("startMonoAgentApp", () => {
     });
     const sinks = new Map<string, ChannelInteractionSink>();
     const tryResolveAsk = vi.fn(() => true);
+    const hasPendingAsk = vi.fn(() => true);
     const cancelAsks = vi.fn();
     const hub: ChannelInteractionHub = {
       registerSink: (channelId, sink) => sinks.set(channelId, sink),
       tryResolveAsk,
+      hasPendingAsk,
       cancelAsks,
     };
 
@@ -849,8 +851,10 @@ describe("startMonoAgentApp", () => {
 
     // The bot receives the pending-ask interceptor bound to the hub…
     expect(captured?.pendingAsks).toBeDefined();
-    await captured?.pendingAsks?.tryResolve("telegram:42", "the answer");
-    expect(tryResolveAsk).toHaveBeenCalledWith("telegram:42", "the answer");
+    await captured?.pendingAsks?.tryResolve("telegram:42", "the answer", "callback");
+    expect(tryResolveAsk).toHaveBeenCalledWith("telegram:42", "the answer", "callback");
+    expect(await captured?.pendingAsks?.hasPending?.("telegram:42")).toBe(true);
+    expect(hasPendingAsk).toHaveBeenCalledWith("telegram:42");
     captured?.pendingAsks?.cancel("telegram:42");
     expect(cancelAsks).toHaveBeenCalledWith("telegram:42");
 

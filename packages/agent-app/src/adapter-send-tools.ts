@@ -221,10 +221,17 @@ export interface AdapterSendToolsChildContext {
   readonly indexPath?: string;
 }
 
+export interface AdapterSendToolsInteractionEnv {
+  readonly bridgeUrl: string;
+  readonly bridgeToken: string;
+  readonly timeoutMs: number;
+}
+
 export function adapterSendToolsMcpEnv(
   configPath: string,
   allowedTools: readonly string[],
   context?: AdapterSendToolsChildContext,
+  interaction?: AdapterSendToolsInteractionEnv,
 ): Record<string, string> {
   return {
     MONO_AGENT_ADAPTER_TOOLS_CONFIG_PATH: configPath,
@@ -235,6 +242,13 @@ export function adapterSendToolsMcpEnv(
     ...(context?.indexPath === undefined
       ? {}
       : { MONO_AGENT_ADAPTER_TOOLS_POST_INDEX_PATH: context.indexPath }),
+    ...(interaction === undefined
+      ? {}
+      : {
+          MONO_AGENT_INTERACTION_BRIDGE_URL: interaction.bridgeUrl,
+          MONO_AGENT_INTERACTION_BRIDGE_TOKEN: interaction.bridgeToken,
+          MONO_AGENT_ASK_USER_TIMEOUT_MS: String(interaction.timeoutMs),
+        }),
   };
 }
 
@@ -265,13 +279,14 @@ export function adapterSendToolsMcpServerSpec(
   cwd: string,
   allowedTools: readonly string[],
   context?: AdapterSendToolsChildContext,
+  interaction?: AdapterSendToolsInteractionEnv,
 ): Record<string, unknown> {
   return {
     type: "stdio",
     command: process.execPath,
     args: [fileURLToPath(new URL("./adapter-send-tools-main.js", import.meta.url))],
     cwd,
-    env: adapterSendToolsMcpEnv(configPath, allowedTools, context),
+    env: adapterSendToolsMcpEnv(configPath, allowedTools, context, interaction),
   };
 }
 
@@ -286,6 +301,7 @@ export function createAdapterSendToolsRuntimeExtension(
   cwd: string,
   allowedTools: readonly string[],
   indexPath?: string,
+  interaction?: AdapterSendToolsInteractionEnv,
 ): (input: AdapterSendToolsRequestInput) => Promise<AdapterSendToolsRuntimeExtension> {
   return async (input) => {
     const conversationId = input?.request?.conversationId;
@@ -298,7 +314,13 @@ export function createAdapterSendToolsRuntimeExtension(
     return {
       runtimeOptions: {
         mcpServers: {
-          [ADAPTER_SEND_TOOLS_MCP_SERVER_NAME]: adapterSendToolsMcpServerSpec(configPath, cwd, allowedTools, context),
+          [ADAPTER_SEND_TOOLS_MCP_SERVER_NAME]: adapterSendToolsMcpServerSpec(
+            configPath,
+            cwd,
+            allowedTools,
+            context,
+            interaction,
+          ),
         },
       },
       cleanup: async () => {},
@@ -629,6 +651,7 @@ function registerTelegramAskTool(
         question: text,
         timeoutMs: bridge.timeoutMs,
         postQuestion: false,
+        answerKind: "callback",
       });
       if (created.status === 409) {
         return askToolResult(

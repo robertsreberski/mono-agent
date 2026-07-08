@@ -95,7 +95,7 @@ describe("interaction bridge", () => {
     expect(await pending).toEqual({ status: "answered", answer: "Alice and Bob, in Polish" });
   });
 
-  it("registers a pending ask without posting through the sink when postQuestion is false", async () => {
+  it("registers a callback-only pending ask without posting through the sink when postQuestion is false", async () => {
     const handle = await startBridge();
     const { posts, sink } = recordingSink();
     handle.registerSink("telegram", sink);
@@ -104,13 +104,17 @@ describe("interaction bridge", () => {
       conversationId: "telegram:42",
       question: "Deploy now?",
       postQuestion: false,
+      answerKind: "callback",
     });
     expect(created.status).toBe(201);
     const { askId } = (await created.json()) as { askId: string };
     expect(posts).toEqual([]);
+    expect(handle.hasPendingAsk("telegram:42")).toBe(true);
 
-    expect(handle.tryResolveAsk("telegram:42", "Approve")).toBe(true);
+    expect(handle.tryResolveAsk("telegram:42", "typed text")).toBe(false);
+    expect(handle.tryResolveAsk("telegram:42", "Approve", "callback")).toBe(true);
     expect(await awaitAnswer(handle, askId, 1_000)).toEqual({ status: "answered", answer: "Approve" });
+    expect(handle.hasPendingAsk("telegram:42")).toBe(false);
   });
 
   it("normalizes rollover-bucketed conversation ids so a reply on the base id resolves the ask", async () => {

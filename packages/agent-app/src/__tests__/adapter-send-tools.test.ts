@@ -282,6 +282,47 @@ describe("adapter send tools MCP spec/env", () => {
     expect(spec.env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID).toBe("telegram:42#2026-07-02");
     expect(spec.env.MONO_AGENT_ADAPTER_TOOLS_POST_INDEX_PATH).toBeUndefined();
   });
+
+  it("forwards interaction bridge env into stdio children for blocking ask tools", async () => {
+    const configPath = await writeConfig({
+      ...baseConfig(),
+      telegram: { enabled: true, botToken: "telegram-token", allowedChatIds: ["42"] },
+    });
+    const interaction = {
+      bridgeUrl: "http://127.0.0.1:43123",
+      bridgeToken: "bridge-token",
+      timeoutMs: 123_000,
+    };
+    const extension = createAdapterSendToolsRuntimeExtension(
+      configPath,
+      dir,
+      ["TelegramAskButtons"],
+      undefined,
+      interaction,
+    );
+
+    const result = await extension({ request: { conversationId: "telegram:42" } });
+
+    const spec = result.runtimeOptions.mcpServers[ADAPTER_SEND_TOOLS_MCP_SERVER_NAME] as {
+      env: Record<string, string | undefined>;
+    };
+    expect(spec.env).toMatchObject({
+      MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID: "telegram:42",
+      MONO_AGENT_INTERACTION_BRIDGE_URL: interaction.bridgeUrl,
+      MONO_AGENT_INTERACTION_BRIDGE_TOKEN: interaction.bridgeToken,
+      MONO_AGENT_ASK_USER_TIMEOUT_MS: "123000",
+    });
+    const settings = await resolveAdapterSendToolsSettings(
+      { env: spec.env, cwd: dir, configPath },
+      { allowedTools: ["TelegramAskButtons"] },
+    );
+    expect(settings?.telegram?.askBridge).toEqual({
+      bridgeUrl: interaction.bridgeUrl,
+      bridgeToken: interaction.bridgeToken,
+      timeoutMs: interaction.timeoutMs,
+      conversationId: "telegram:42",
+    });
+  });
 });
 
 describe("adapter send MCP tools", () => {
@@ -363,7 +404,8 @@ describe("adapter send MCP tools", () => {
         await vi.waitFor(() => {
           expect(telegramCalls).toHaveLength(1);
         });
-        expect(bridge.tryResolveAsk("telegram:42", "Approve")).toBe(true);
+        expect(bridge.tryResolveAsk("telegram:42", "typed text")).toBe(false);
+        expect(bridge.tryResolveAsk("telegram:42", "Approve", "callback")).toBe(true);
         const result = await pending;
         expect(result.structuredContent).toMatchObject({
           ok: true,

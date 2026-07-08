@@ -1143,7 +1143,8 @@ class MonoAgentAppController implements MonoAgentApp {
     // Forward the posted-message index path so `SlackSendMessage` links each post
     // back to the producing conversation (so a later in-thread reply resumes it).
     const indexPath = resolvePostedMessageIndexPath(await resolveAppArtifactDir(input));
-    return createAdapterSendToolsRuntimeExtension(this.configPath, this.cwd, toolNames, indexPath);
+    const interaction = settings.askUser ?? settings.telegram?.askBridge;
+    return createAdapterSendToolsRuntimeExtension(this.configPath, this.cwd, toolNames, indexPath, interaction);
   }
 
   /** Build the configured memory store once and share it across responders + the ritual scheduler. */
