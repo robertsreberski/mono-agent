@@ -65,3 +65,24 @@ export function claudeToolsWithNativeSubagents(allowedTools, nativeSubagents) {
     ? withTaskTool(allowedTools)
     : allowedTools;
 }
+
+/**
+ * Resolve the effective allowed-tools list for the Claude bridges, honoring the
+ * `"*"` allow-all sentinel. Returns `{ allowAll, tools }` where `tools` is the
+ * native-subagent-composed list with any bare `"*"` stripped, so a literal `"*"`
+ * never reaches a CLI flag value or the SDK `query()`. When `allowAll` is true
+ * the caller MUST defer to Claude's default toolset (omit `--tools` / pass
+ * `allowedTools: undefined`) rather than pass `tools` as the tool set — the
+ * default already carries every tool, incl. `Task`, so it is not double-added.
+ * @param {any} allowedTools
+ * @param {any} nativeSubagents
+ * @returns {{allowAll: boolean, tools: any}}
+ */
+export function resolveClaudeAllowedTools(allowedTools, nativeSubagents) {
+  const composed = claudeToolsWithNativeSubagents(allowedTools, nativeSubagents);
+  const allowAll = Array.isArray(composed) && composed.includes("*");
+  const tools = Array.isArray(composed)
+    ? composed.filter((tool) => tool !== "*")
+    : composed;
+  return { allowAll, tools };
+}

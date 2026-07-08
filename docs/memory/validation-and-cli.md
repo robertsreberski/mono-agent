@@ -34,7 +34,7 @@ mono-agent memory stats --json
 
 If memory is disabled or missing from config, the command exits successfully and says no memory backend is configured. For local BuJo/journal/lite memory, `stats` reports the configured and effective tier, write mode, recall-tool state, memory root and database paths, daily-file counts, markdown/database sizes, record/status/type counts, latest capture/access timestamps, and top entities. `today` / `show <date>` print daily markdown when present, and `top` ranks local memories by salience.
 
-`search` uses the same recall path as the `memory_recall` tool. When local semantic embeddings are configured but unavailable, it prints a warning and falls back to FTS-only recall instead of pretending semantic search succeeded. For Supermemory-backed agents, `search` queries Supermemory and `stats` reports the known configured container/base URL while marking local SQLite-only counts as unknown.
+`search` uses the same recall path as the `MemoryRecall` tool. When local semantic embeddings are configured but unavailable, it prints a warning and falls back to FTS-only recall instead of pretending semantic search succeeded. For Supermemory-backed agents, `search` queries Supermemory and `stats` reports the known configured container/base URL while marking local SQLite-only counts as unknown.
 
 ## `mono-agent validate` — memory liveness
 
@@ -197,7 +197,7 @@ For the in-app runtime you can instead use `memory.llm.provider: "agent-host"` f
 ## Related
 
 - [Embeddings](/memory/embeddings/) — providers, models, dimensions, and env vars.
-- [Capture & recall](/memory/capture-and-recall/) — `writeMode` and the `memory_recall` tool.
+- [Capture & recall](/memory/capture-and-recall/) — `writeMode` and the `MemoryRecall` tool.
 - [Consolidation](/memory/rituals/) — in-app consolidation auto-scheduler.
 - [Config blueprint](/config/blueprint/) — the full annotated `memory` block.
 - [Environment variables](/config/env-vars/) — every `MONO_AGENT_MEMORY_*` override.

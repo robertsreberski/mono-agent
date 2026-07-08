@@ -106,7 +106,7 @@ export class SupermemoryMemoryStore implements MemoryStore {
   }
 
   /**
-   * Recall hits shaped for the in-app `memory_recall` MCP tool (Stage 3 reuses the bujo formatter).
+   * Recall hits shaped for the in-app `MemoryRecall` MCP tool (Stage 3 reuses the bujo formatter).
    * Unlike `load`, this propagates client errors so the recall tool can report a search failure.
    */
   async recall(query: string, options?: { readonly topK?: number }): Promise<SupermemoryRecallHit[]> {

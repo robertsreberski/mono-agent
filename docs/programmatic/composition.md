@@ -133,7 +133,7 @@ The injected store wins over anything `config.memory` would otherwise build, and
 
 ## Per-request runtime options (`runtimeOptionsForRequest`)
 
-`runtimeOptionsForRequest` is a callback invoked once per turn to compute run options scoped to that request. The app uses it internally to attach the per-turn `memory_recall` and adapter send tools; you can supply your own to vary tools, system context, or other run options per request.
+`runtimeOptionsForRequest` is a callback invoked once per turn to compute run options scoped to that request. The app uses it internally to attach the per-turn `MemoryRecall` and adapter send tools; you can supply your own to vary tools, system context, or other run options per request.
 
 ```ts
 import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
@@ -166,6 +166,6 @@ Request-scoped options apply at the harness **run boundary**: they are resolved 
 
 `createConfiguredAgentResponder` will not cover hosts that need a custom recorder, a non-config identity/skill loading scheme, or hand-assembled memory and history. In those cases call `@mono-agent/agent-harness` directly. The harness owns loading identity/SOUL and selected skill bodies, reading memory blocks, invoking the runtime, recording run events, appending conversation history, and returning explicit failure objects instead of fake success.
 
-Selected skills are never auto-selected by description — the host passes `selectedSkills` (or `config.context.selectedSkills`) and the harness loads exactly those bodies. For tool/MCP policy, build a fail-closed policy with `@mono-agent/agent-harness` (`createToolPolicy`) rather than granting broad access; see [tool policy](/tools/policy/) and [MCP](/tools/mcp/).
+Selected skills are never auto-selected by description — the host passes `selectedSkills` (or `config.context.selectedSkills`) and the harness loads exactly those bodies. For tool/MCP policy, build a policy with `@mono-agent/agent-harness` (`createToolPolicy`) and pass exactly the surface you want — `["*"]` for all, a specific list to narrow, or `[]` for none; `failClosedToolPolicy()` is the no-policy safety net (the config loader's allow-all default lives in `@mono-agent/config`, not here). See [tool policy](/tools/policy/) and [MCP](/tools/mcp/).
 
 For multi-agent orchestration on top of these primitives, see [multi-agent](/programmatic/multi-agent/); for consuming a remote agent over A2A, see [A2A consumer](/programmatic/a2a-consumer/).

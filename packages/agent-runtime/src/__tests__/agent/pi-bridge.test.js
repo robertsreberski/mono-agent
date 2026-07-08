@@ -523,25 +523,25 @@ describe("pi MCP tool helpers", () => {
     expect(code.filename).toBe("result.json");
   });
 
-  it("creates a reachable read_skill tool from an explicit skillsRoot", async () => {
+  it("creates a reachable ReadSkill tool from an explicit skillsRoot", async () => {
     const root = tempWorkspace();
     const skillsRoot = join(root, "skills");
     mkdirSync(join(skillsRoot, "research"), { recursive: true });
     writeFileSync(join(skillsRoot, "research", "SKILL.md"), "---\nname: research\n---\n# Research\n\nFull research skill body.\n");
 
     const tools = getPiBuiltinTools(["Read"], { skillsRoot, skillNames: ["research"] });
-    const readSkill = tools.find((tool) => tool.name === "read_skill");
+    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
     expect(readSkill).toBeTruthy();
     // The enum is restricted to the supplied skill names.
     expect(readSkill.parameters.properties.name.enum).toEqual(["research"]);
 
-    const result = await readSkill.execute("read_skill:1", { name: "research" });
+    const result = await readSkill.execute("ReadSkill:1", { name: "research" });
     expect(result.content[0].text).toContain("Full research skill body.");
     // Frontmatter is stripped from the returned body.
     expect(result.content[0].text).not.toContain("name: research");
   });
 
-  it("read_skill rejects path traversal and unknown skills", async () => {
+  it("ReadSkill rejects path traversal and unknown skills", async () => {
     const root = tempWorkspace();
     const skillsRoot = join(root, "skills");
     mkdirSync(join(skillsRoot, "research"), { recursive: true });
@@ -550,34 +550,34 @@ describe("pi MCP tool helpers", () => {
     writeFileSync(join(root, "SKILL.md"), "# secret\n\nshould not be reachable\n");
 
     const tools = getPiBuiltinTools([], { skillsRoot, skillNames: ["research", "..", "../secret"] });
-    const readSkill = tools.find((tool) => tool.name === "read_skill");
+    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
     // Traversal-shaped names are filtered out of the enum entirely.
     expect(readSkill.parameters.properties.name.enum).toEqual(["research"]);
     // Executing with a non-existent skill throws rather than reading anything.
-    await expect(readSkill.execute("read_skill:miss", { name: "missing" })).rejects.toThrow("SKILL.md not found");
+    await expect(readSkill.execute("ReadSkill:miss", { name: "missing" })).rejects.toThrow("SKILL.md not found");
   });
 
-  it("read_skill falls back to dataDir (skills under <dataDir>/skills) for back-compat", async () => {
+  it("ReadSkill falls back to dataDir (skills under <dataDir>/skills) for back-compat", async () => {
     const dataDir = tempWorkspace();
     mkdirSync(join(dataDir, "skills", "writing"), { recursive: true });
     writeFileSync(join(dataDir, "skills", "writing", "SKILL.md"), "# Writing\n\nThe writing body.\n");
 
     const tools = getPiBuiltinTools([], { dataDir, skillNames: ["writing"] });
-    const readSkill = tools.find((tool) => tool.name === "read_skill");
+    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
     expect(readSkill).toBeTruthy();
-    const result = await readSkill.execute("read_skill:dd", { name: "writing" });
+    const result = await readSkill.execute("ReadSkill:dd", { name: "writing" });
     expect(result.content[0].text).toContain("The writing body.");
   });
 
-  it("does not create read_skill when neither skillsRoot nor dataDir is supplied", () => {
+  it("does not create ReadSkill when neither skillsRoot nor dataDir is supplied", () => {
     const tools = getPiBuiltinTools([], { skillNames: ["research"] });
-    expect(tools.find((tool) => tool.name === "read_skill")).toBeUndefined();
+    expect(tools.find((tool) => tool.name === "ReadSkill")).toBeUndefined();
   });
 
-  // Phase 5: read_skill accepts pi's neutral Skill shape ({name, description,
+  // Phase 5: ReadSkill accepts pi's neutral Skill shape ({name, description,
   // content, filePath, ...}) and derives each skill's root from its own filePath
   // when no shared skillsRoot/dataDir is threaded.
-  it("read_skill accepts pi's Skill shape and derives root from a nested filePath", async () => {
+  it("ReadSkill accepts pi's Skill shape and derives root from a nested filePath", async () => {
     const root = tempWorkspace();
     const filePath = join(root, "skills", "research", "SKILL.md");
     mkdirSync(join(root, "skills", "research"), { recursive: true });
@@ -586,11 +586,11 @@ describe("pi MCP tool helpers", () => {
     const tools = getPiBuiltinTools([], {
       skills: [{ name: "research", description: "when researching", content: "ignored — read lazily", filePath }],
     });
-    const readSkill = tools.find((tool) => tool.name === "read_skill");
+    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
     expect(readSkill).toBeTruthy();
     expect(readSkill.parameters.properties.name.enum).toEqual(["research"]);
 
-    const result = await readSkill.execute("read_skill:pi", { name: "research" });
+    const result = await readSkill.execute("ReadSkill:pi", { name: "research" });
     expect(result.content[0].text).toContain("pi-shape body.");
     expect(result.content[0].text).not.toContain("name: research");
     // The note points at the skill's own directory (the derived one-up root is
@@ -599,7 +599,7 @@ describe("pi MCP tool helpers", () => {
     expect(result.content[0].text).toContain(join(root, "skills", "research"));
   });
 
-  it("read_skill accepts a flat <root>/<name>.md filePath (pi loadSkills flat form)", async () => {
+  it("ReadSkill accepts a flat <root>/<name>.md filePath (pi loadSkills flat form)", async () => {
     const root = tempWorkspace();
     const filePath = join(root, "writing.md");
     writeFileSync(filePath, "# Writing\n\nflat skill body.\n");
@@ -607,8 +607,8 @@ describe("pi MCP tool helpers", () => {
     const tools = getPiBuiltinTools([], {
       skills: [{ name: "writing", description: "d", content: "c", filePath }],
     });
-    const readSkill = tools.find((tool) => tool.name === "read_skill");
-    const result = await readSkill.execute("read_skill:flat", { name: "writing" });
+    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
+    const result = await readSkill.execute("ReadSkill:flat", { name: "writing" });
     expect(result.content[0].text).toContain("flat skill body.");
   });
 
@@ -628,13 +628,13 @@ describe("pi MCP tool helpers", () => {
       skillNames: ["research"],
       skills: [{ name: "research", description: "d", content: "c", filePath: strayPath }],
     });
-    const readSkill = tools.find((tool) => tool.name === "read_skill");
-    const result = await readSkill.execute("read_skill:shared", { name: "research" });
+    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
+    const result = await readSkill.execute("ReadSkill:shared", { name: "research" });
     expect(result.content[0].text).toContain("shared-root body.");
     expect(result.content[0].text).not.toContain("stray body");
   });
 
-  it("read_skill supports the minimal {name}+skillsRoot form via the skills param", async () => {
+  it("ReadSkill supports the minimal {name}+skillsRoot form via the skills param", async () => {
     // agent-harness passes minimal {name} objects plus a shared skillsRoot; the
     // bridge maps them to skillNames AND forwards the objects. With a shared root
     // the objects lack filePath, so resolution stays on the shared-root path.
@@ -648,20 +648,20 @@ describe("pi MCP tool helpers", () => {
       skillNames: ["research"],
       skills: [{ name: "research" }],
     });
-    const readSkill = tools.find((tool) => tool.name === "read_skill");
+    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
     expect(readSkill.parameters.properties.name.enum).toEqual(["research"]);
-    const result = await readSkill.execute("read_skill:min", { name: "research" });
+    const result = await readSkill.execute("ReadSkill:min", { name: "research" });
     expect(result.content[0].text).toContain("minimal-form body.");
   });
 
-  it("does not create read_skill for pi-shape skills whose name is unsafe or filePath is missing", () => {
+  it("does not create ReadSkill for pi-shape skills whose name is unsafe or filePath is missing", () => {
     const tools = getPiBuiltinTools([], {
       skills: [
         { name: "../escape", description: "d", content: "c", filePath: "/tmp/escape/SKILL.md" },
         { name: "nofile", description: "d", content: "c" },
       ],
     });
-    expect(tools.find((tool) => tool.name === "read_skill")).toBeUndefined();
+    expect(tools.find((tool) => tool.name === "ReadSkill")).toBeUndefined();
   });
 
   it("passes abort signals to Bash tool execution", async () => {
@@ -676,5 +676,79 @@ describe("pi MCP tool helpers", () => {
     setTimeout(() => ac.abort(), 50);
 
     await expect(promise).rejects.toThrow("Error: Command aborted");
+  });
+});
+
+// The set of built-in tool names getPiBuiltinTools owns (Read/Write/Edit/Glob/
+// Grep/Bash/WebFetch/WebSearch). ReadSkill (legacy alias read_skill) is appended separately
+// only when skills are supplied.
+const BUILTIN_TOOL_NAMES = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "WebSearch"];
+
+function toolNames(tools) {
+  return tools.map((tool) => tool.name).sort();
+}
+
+describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", () => {
+  it('treats the "*" sentinel as all built-in tools', () => {
+    const tools = getPiBuiltinTools(["*"], {});
+    expect(toolNames(tools)).toEqual([...BUILTIN_TOOL_NAMES].sort());
+  });
+
+  it("treats undefined as all built-in tools (unchanged)", () => {
+    const tools = getPiBuiltinTools(undefined, {});
+    expect(toolNames(tools)).toEqual([...BUILTIN_TOOL_NAMES].sort());
+  });
+
+  it("treats [] as no built-in tools (unchanged)", () => {
+    expect(getPiBuiltinTools([], {})).toEqual([]);
+  });
+
+  it("selects exactly the named subset (unchanged)", () => {
+    const tools = getPiBuiltinTools(["Read", "Bash"], {});
+    expect(toolNames(tools)).toEqual(["Bash", "Read"]);
+  });
+
+  it('applies disallowedTools to the "*" allow-all set (deny wins)', () => {
+    const tools = getPiBuiltinTools(["*"], { disallowedTools: ["Bash"] });
+    const names = tools.map((tool) => tool.name);
+    expect(names).not.toContain("Bash");
+    expect([...names].sort()).toEqual(BUILTIN_TOOL_NAMES.filter((name) => name !== "Bash").sort());
+  });
+
+  it("applies disallowedTools to an explicit allow list (deny wins)", () => {
+    const tools = getPiBuiltinTools(["Read", "Bash"], { disallowedTools: ["Bash"] });
+    expect(tools.map((tool) => tool.name)).toEqual(["Read"]);
+  });
+
+  it("drops the ReadSkill tool when ReadSkill is disallowed, even with skills present", () => {
+    const root = tempWorkspace();
+    const skillsRoot = join(root, "skills");
+    mkdirSync(join(skillsRoot, "research"), { recursive: true });
+    writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nbody\n");
+
+    // Baseline: ReadSkill is present without the denylist.
+    const withSkill = getPiBuiltinTools(["*"], { skillsRoot, skillNames: ["research"] });
+    expect(withSkill.find((tool) => tool.name === "ReadSkill")).toBeTruthy();
+
+    const denied = getPiBuiltinTools(["*"], {
+      skillsRoot,
+      skillNames: ["research"],
+      disallowedTools: ["ReadSkill"],
+    });
+    expect(denied.find((tool) => tool.name === "ReadSkill")).toBeUndefined();
+  });
+
+  it("drops the ReadSkill tool when the legacy read_skill alias is disallowed", () => {
+    const root = tempWorkspace();
+    const skillsRoot = join(root, "skills");
+    mkdirSync(join(skillsRoot, "research"), { recursive: true });
+    writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nbody\n");
+
+    const denied = getPiBuiltinTools(["*"], {
+      skillsRoot,
+      skillNames: ["research"],
+      disallowedTools: ["read_skill"], // legacy alias
+    });
+    expect(denied.find((tool) => tool.name === "ReadSkill")).toBeUndefined();
   });
 });

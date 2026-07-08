@@ -62,7 +62,7 @@
       "Bash",
       "WebFetch",
       "WebSearch",
-      "telegram_send_message"
+      "TelegramSendMessage"
     ],
     "disallowedTools": [],
     "mcpConfigPath": "./mcp.json"

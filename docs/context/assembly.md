@@ -75,7 +75,7 @@ A few specifics:
 - **Skipped when empty.** A recall that returns no hits injects nothing — no delimiter, no header.
 - **Still traced.** A lightweight `memory_recalled` diagnostic (source + byte size, not the content) keeps the fact that recall fired visible in the run record even though memory no longer appears in the prompt sections.
 
-For the `journal`/`bujo` tiers with embeddings, an auto-provisioned read-only `memory_recall` tool also lets the agent pull more context mid-turn via `config.memory.recallTool.enabled` (`MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`, default on). Recall combines keyword (FTS) and semantic search with no chat LLM. See [Capture and recall](/memory/capture-and-recall/) and [Embeddings](/memory/embeddings/).
+For the `journal`/`bujo` tiers with embeddings, an auto-provisioned read-only `MemoryRecall` tool also lets the agent pull more context mid-turn via `config.memory.recallTool.enabled` (`MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`, default on). Recall combines keyword (FTS) and semantic search with no chat LLM. See [Capture and recall](/memory/capture-and-recall/) and [Embeddings](/memory/embeddings/).
 
 ## Conversation history
 
@@ -117,7 +117,7 @@ Assembly produces the prompt; **compaction** keeps it within the model's context
 
 - [Identity and soul](/context/identity-and-soul/) — sections 1–2
 - [Skills](/context/skills/) — sections 5–6 and the skill index
-- [Capture and recall](/memory/capture-and-recall/) — the user-message memory injection and `memory_recall`
+- [Capture and recall](/memory/capture-and-recall/) — the user-message memory injection and `MemoryRecall`
 - [Delivery and send tools](/channels/delivery-and-send-tools/) — native cron/webhook notify the Session block references
 - [Tools and guards](/runtime/tools-and-guards/) — the bloat guard in context
 - [Composition](/programmatic/composition/) — custom history store and per-request runtime options

@@ -87,7 +87,7 @@ Conversational adapters (Slack/Telegram) do per-conversation admission and attac
 
 ## Sending and proactive delivery
 
-Replies go back over the same channel that received the request. To send *outbound* messages — proactive notifications from cron/webhook turns, or app-owned send tools like `slack_send_message` and `telegram_send_message` — see [Delivery & send tools](/channels/delivery-and-send-tools/). Note that these send tools require the target adapter to already be enabled and configured, and the adapter's own allowlist remains the delivery boundary.
+Replies go back over the same channel that received the request. To send *outbound* messages — proactive notifications from cron/webhook turns, or app-owned send tools like `SlackSendMessage` and `TelegramSendMessage` — see [Delivery & send tools](/channels/delivery-and-send-tools/). Note that these send tools require the target adapter to already be enabled and configured, and the adapter's own allowlist remains the delivery boundary.
 
 ## Custom transports
 

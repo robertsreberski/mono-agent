@@ -103,10 +103,10 @@ my-agent/
     "consolidation": { "enabled": true, "cron": "0 */2 * * *" } // default: every two hours
   },
 
-  // Fail-closed tool policy + MCP servers. Deny wins; overlap is rejected.
+  // Tool policy (allow-all by default) + MCP servers. Deny wins; overlap is rejected.
   "tools": {
-    "allowedTools": ["Read", "Grep"],      // built-ins: Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch
-    "disallowedTools": ["Bash"],
+    "allowedTools": ["*"],                 // omit or ["*"] = all tools; ["Read","Bash"] = just those; [] = none (chat-only)
+    "disallowedTools": ["Bash"],           // deny wins even under allow-all; the escape hatch to subtract one tool
     "mcpConfigPath": "./mcp.json"          // stdio/sse/http servers; inlined for SDK runtimes
   },
 
@@ -278,12 +278,12 @@ my-agent/
 ## Lifecycle
 
 ```bash
-mono-agent recipes list                 # executable blueprints (id, risk, tags)
-mono-agent recipes show <id>            # generated config + .env.example + follow-up checklist
-mono-agent init --recipe <id> [--with slack,cron] [--dry-run]   # scaffold from a blueprint
+mono-agent presets list                 # saved answer-sets (id, risk, description)
+mono-agent presets show <id>            # generated config + .env.example + follow-up checklist
+mono-agent init --preset <id> --yes [--with slack,cron] [--dry-run]   # scaffold from a preset (non-interactive)
 mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b [--memory lite|journal|bujo]
 mono-agent config       # resolved config field-by-field, each value tagged env/json/default
-mono-agent validate [--recipe <id>] [--consumer <path>]     # per-section report; --recipe also checks the recipe's capabilities
+mono-agent validate [--preset <id>] [--consumer <path>]     # per-section report; --preset also checks the preset's capabilities
 mono-agent start        # traceability + every configured channel
 mono-agent restart      # apply config edits (config is JSON-first; restart to re-apply)
 mono-agent restart --force  # restart AND purge persisted pi sessions (fresh start; durable memory kept)

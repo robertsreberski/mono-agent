@@ -40,8 +40,8 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `cron.notifyFailureCooldownHours` | `integer` | `MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS` | 6 | `6` | Configures notifyFailureCooldownHours for the cron section. |
 | `cron.prompt` | `string` | `MONO_AGENT_CRON_PROMPT` | unset | `example` | Configures prompt for the cron section. |
 | `cron.timezone` | `string` | `MONO_AGENT_CRON_TIMEZONE` | UTC | `UTC` | Configures timezone for the cron section. |
-| `interaction.askUser.timeoutMs` | `integer` | `MONO_AGENT_ASK_USER_TIMEOUT_MS` | 600000 | `600000` | Maximum wait for one ask_user question. |
-| `interaction.bridge.host` | `string` | `MONO_AGENT_INTERACTION_BRIDGE_HOST` | 127.0.0.1 | `127.0.0.1` | Loopback host for the app-owned ask_user/tool-progress bridge. |
+| `interaction.askUser.timeoutMs` | `integer` | `MONO_AGENT_ASK_USER_TIMEOUT_MS` | 600000 | `600000` | Maximum wait for one AskUser question. |
+| `interaction.bridge.host` | `string` | `MONO_AGENT_INTERACTION_BRIDGE_HOST` | 127.0.0.1 | `127.0.0.1` | Loopback host for the app-owned AskUser/tool-progress bridge. |
 | `interaction.bridge.port` | `integer` | `MONO_AGENT_INTERACTION_BRIDGE_PORT` | 0 | `0` | Bridge port. 0 chooses an ephemeral port. |
 | `interaction.progress.enabled` | `boolean` | `MONO_AGENT_PROGRESS_ENABLED` | true | `true` | Whether tool progress posts are relayed to channel status messages. |
 | `live.allowNonLoopback` | `boolean` | `MONO_AGENT_LIVE_ALLOW_NON_LOOPBACK` | false | `true` | Configures allowNonLoopback for the live section. |
@@ -143,7 +143,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `telegram.quietHours` | `object` | `--` | unset | `{"timezone":"Europe/Amsterdam","start":"22:00","end":"07:00"}` | Quiet-hours rules for Telegram notifications. |
 | `telegram.reactions` | `object` | `MONO_AGENT_TELEGRAM_REACTIONS` | unset | `{"working":true,"done":true,"error":true}` | Telegram lifecycle reactions. The env override is boolean and toggles all states. |
 | `telegram.transport.ipFamily` | `integer` | `MONO_AGENT_TELEGRAM_IP_FAMILY` | unset | `example` | Configures transport.ipFamily for the telegram section. |
-| `tools.allowedTools` | `string[]` | `MONO_AGENT_ALLOWED_TOOLS` | [] | `["Read","Grep"]` | Configures allowedTools for the tools section. |
+| `tools.allowedTools` | `string[]` | `MONO_AGENT_ALLOWED_TOOLS` | ["*"] | `["Read","Grep"]` | Configures allowedTools for the tools section. |
 | `tools.disallowedTools` | `string[]` | `MONO_AGENT_DISALLOWED_TOOLS` | [] | `["Read","Grep"]` | Configures disallowedTools for the tools section. |
 | `tools.mcpCallMaxTotalTimeoutMs` | `integer` | `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | 2700000 | `2700000` | Configures mcpCallMaxTotalTimeoutMs for the tools section. |
 | `tools.mcpCallTimeoutMs` | `integer` | `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | 120000 | `120000` | Configures mcpCallTimeoutMs for the tools section. |

@@ -28,7 +28,7 @@ import {
 } from "@mono-agent/agent-contracts";
 import type { ConfigErrorFactory } from "@mono-agent/agent-contracts";
 
-import { EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
+import { ALLOW_ALL_TOOLS, EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
 import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, SessionMode, SessionRollover, SkillDisclosureMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
@@ -149,7 +149,12 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     "MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS",
   );
   const tools: MonoAgentConfig["tools"] = {
-    allowedTools: readCsv(input.env.MONO_AGENT_ALLOWED_TOOLS),
+    // Omitted `tools.allowedTools` (env unset) → allow-all default; an explicit empty
+    // list arrives as `MONO_AGENT_ALLOWED_TOOLS=""` (readCsv → []) meaning chat-only.
+    allowedTools:
+      input.env.MONO_AGENT_ALLOWED_TOOLS === undefined
+        ? [ALLOW_ALL_TOOLS]
+        : readCsv(input.env.MONO_AGENT_ALLOWED_TOOLS),
     disallowedTools: readCsv(input.env.MONO_AGENT_DISALLOWED_TOOLS),
     ...(mcpConfigPath === undefined ? {} : { mcpConfigPath }),
     ...(mcpCallTimeoutMs === undefined ? {} : { mcpCallTimeoutMs }),
@@ -599,7 +604,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
         ? embeddings
         : { ...embeddings, dim };
 
-  // Read-only memory_recall tool. For the bujo backend, recall needs embeddings + FTS (no chat
+  // Read-only MemoryRecall tool. For the bujo backend, recall needs embeddings + FTS (no chat
   // LLM), so it defaults on whenever the resolved tier can rank semantically — mode !== "lite"
   // AND embeddings are configured — and off for lite. External backends always have search, so
   // recall defaults on whenever their block is present. An explicit env/JSON value always wins.

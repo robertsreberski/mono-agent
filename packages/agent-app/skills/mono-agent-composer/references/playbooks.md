@@ -29,23 +29,23 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 }
 ```
 **Steps:** `ollama pull nomic-embed-text:v1.5 && ollama pull qwen3.6:latest` → `mono-agent init --model claude:claude-sonnet-4-6 --memory bujo` → add telegram + fill embeddings/llm + `writeMode: capture` → `mono-agent validate` (confirm memory liveness + consolidation cadence) → `mono-agent start`.
-**Smoke:** send a fact from the allowed chat, then ask a paraphrased question later; confirm `memory_recall` in the run JSONL and that the answer uses it.
+**Smoke:** send a fact from the allowed chat, then ask a paraphrased question later; confirm `MemoryRecall` in the run JSONL and that the answer uses it.
 
 ## 2. Slack team bot with MCP tools
 **For:** a DevOps engineer running a shared team bot.
-**Goal:** a mention-triggered Slack Socket Mode bot with a custom MCP tool, Read/Grep, and `slack_send_message` for proactive posts.
+**Goal:** a mention-triggered Slack Socket Mode bot with a custom MCP tool, Read/Grep, and `SlackSendMessage` for proactive posts.
 **Features:** `slack.socket-mode`, `tool-policy.allowlist`, `tool-policy.mcp-servers`, `agent-app.adapter-send-tools`, `runtime.concurrency`.
 
 ```json
 {
   "runtime": { "model": "claude:claude-sonnet-4-6" },
   "slack": { "enabled": true, "botToken": "xoxb-...", "appToken": "xapp-...", "allowedChannelIds": ["C012345"], "botUserIds": ["U012345"], "mentionTextAliases": ["@agent"] },
-  "tools": { "allowedTools": ["Read", "Grep", "slack_send_message", "deployTool"], "mcpConfigPath": "./mcp.json" },
+  "tools": { "allowedTools": ["Read", "Grep", "SlackSendMessage", "deployTool"], "mcpConfigPath": "./mcp.json" },
   "concurrency": { "maxConcurrentRuns": 4, "maxPendingRuns": 8 }
 }
 ```
-**Steps:** create a Slack app (Socket Mode app token + bot token) → `mono-agent init` → write `mcp.json` and add the MCP tool's exact name to `allowedTools` → add slack + `slack_send_message` → `validate` → `start`.
-**Smoke:** mention the bot in an allowed channel; confirm the 👀 reaction, final answer, the MCP tool firing in the artifact, and that `slack_send_message` posts only to allowed channels.
+**Steps:** create a Slack app (Socket Mode app token + bot token) → `mono-agent init` (allow-all by default) → write `mcp.json` (the MCP tool becomes available from the server declaration — MCP tools aren't gated by `allowedTools`) → add slack; `SlackSendMessage` is auto-available under allow-all, or name it if you narrow to a specific allowlist → `validate` → `start`.
+**Smoke:** mention the bot in an allowed channel; confirm the 👀 reaction, final answer, the MCP tool firing in the artifact, and that `SlackSendMessage` posts only to allowed channels.
 
 ## 3. Fully local Ollama agent (no cloud)
 **For:** a privacy-focused user with no cloud budget.
@@ -107,12 +107,12 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 {
   "runtime": { "model": "claude:claude-sonnet-4-6" },
   "slack": { "enabled": true, "botToken": "xoxb-...", "appToken": "xapp-...", "allowedChannelIds": ["C012345"] },
-  "tools": { "allowedTools": ["slack_send_message", "WebSearch"] },
-  "cron": { "jobs": [{ "id": "morning-digest", "enabled": true, "expression": "0 9 * * *", "timezone": "America/New_York", "prompt": "Build the morning digest and post it to #team via slack_send_message.", "conversationId": "daily-digest" }] }
+  "tools": { "allowedTools": ["SlackSendMessage", "WebSearch"] },
+  "cron": { "jobs": [{ "id": "morning-digest", "enabled": true, "expression": "0 9 * * *", "timezone": "America/New_York", "prompt": "Build the morning digest and post it to #team via SlackSendMessage.", "conversationId": "daily-digest" }] }
 }
 ```
-**Steps:** `mono-agent init` → add slack + `slack_send_message` → add the cron job (or `cron/morning-digest.md`) with `conversationId` + IANA timezone → `validate` → `start`.
-**Smoke:** trigger a one-off tick; confirm `slack_send_message` posts the digest to the allowed channel and `conversationId` shares context across ticks.
+**Steps:** `mono-agent init` → add slack + `SlackSendMessage` → add the cron job (or `cron/morning-digest.md`) with `conversationId` + IANA timezone → `validate` → `start`.
+**Smoke:** trigger a one-off tick; confirm `SlackSendMessage` posts the digest to the allowed channel and `conversationId` shares context across ticks.
 
 ## 7. A2A provider + consumer pair
 **For:** a platform integrator connecting two agents over A2A.
@@ -139,9 +139,9 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 **Steps:** provider — `init`, add the `@mono-agent/a2a-adapter` plugin entry with `provider`/`agent`/`skill` + bearer, `validate`, `start`, confirm the Agent Card is reachable. Consumer — set plugin `config.consumer` (or compose `createA2AConsumerResponder`), send text to the provider's Agent Card URL with the bearer.
 **Smoke:** send a message to the provider's Agent Card URL with the bearer; confirm a real response.
 
-## 8. Multi-agent orchestration (`ask_collaborator`) — code
+## 8. Multi-agent orchestration (`AskCollaborator`) — code
 **For:** a workflow designer composing specialist agents.
-**Goal:** one orchestrator delegates to named collaborator responders via the loopback `ask_collaborator` MCP tool.
+**Goal:** one orchestrator delegates to named collaborator responders via the loopback `AskCollaborator` MCP tool.
 **Features:** `orchestrator.ask-collaborator`, `harness.request-runtime-options`, `runtime.custom`.
 
 ```ts
@@ -155,21 +155,21 @@ const ext = createCollaboratorToolRuntimeExtension({
 // pass ext.runtimeOptions via createConfiguredAgentResponder({ runtimeOptionsForRequest })
 // call ext.cleanup() on disposal to close the ephemeral MCP server
 ```
-**Smoke:** give a compound task ("research X then write a summary"); confirm the artifact shows `ask_collaborator` delegating to both, and `cleanup()` closes the MCP port.
+**Smoke:** give a compound task ("research X then write a summary"); confirm the artifact shows `AskCollaborator` delegating to both, and `cleanup()` closes the MCP port.
 
 ## 9. Sandboxed code agent (loopback only, deny .env)
 **For:** a security team deploying an internal code assistant.
 **Goal:** read repos + run Bash inside the native srt sandbox with loopback-only network access and protected secrets.
-**Features:** `sandbox.mode`, `sandbox.network-policy`, `sandbox.filesystem-scopes`, `sandbox.fallback`, `tool-policy.allowlist`, `memory.journal`.
+**Features:** `sandbox.mode`, `sandbox.network-policy`, `sandbox.filesystem-scopes`, `sandbox.fallback`, `tool-policy.allow-all`, `memory.journal`.
 
 ```json
 {
   "runtime": { "model": "claude:claude-sonnet-4-6" },
-  "tools": { "allowedTools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"] },
+  "tools": { "allowedTools": ["*"] },
   "sandbox": { "mode": "native", "network": { "mode": "localhost" }, "readableRoots": ["."], "writableRoots": ["."], "denyWrite": [".env", ".env.*", ".git/config", ".git/hooks/**"], "fallback": "fail-closed" }
 }
 ```
-**Steps:** `mono-agent init --memory journal` → allow Read/Write/Edit/Glob/Grep/Bash → `sandbox.mode native` + `network localhost` + deny-write defaults → keep `fallback: fail-closed` (do NOT set `unsafe-host-process`) → `validate` → `start`.
+**Steps:** `mono-agent init --memory journal` → leave tools at the allow-all default (`["*"]`); the **sandbox**, not an allowlist, is what constrains the code tools → `sandbox.mode native` + `network localhost` + deny-write defaults → keep `fallback: fail-closed` (do NOT set `unsafe-host-process`) → `validate` → `start`.
 **Smoke:** ask it to read a file + run Bash (works), then fetch an external URL or write `.env` (both blocked in the artifact). Note: provider CLI bridges run their own tool loops and may not be srt-wrapped — pair with provider sandboxing.
 
 ## 10. Phoenix-observed agent with the TUI
@@ -216,7 +216,7 @@ const ext = createCollaboratorToolRuntimeExtension({
 
 ## 13. Personal Telegram assistant with Supermemory
 **For:** a power user trying an external memory layer while keeping the agent local.
-**Goal:** a Telegram bot captures turns into a local or hosted Supermemory instance and recalls through the same `memory_recall` tool.
+**Goal:** a Telegram bot captures turns into a local or hosted Supermemory instance and recalls through the same `MemoryRecall` tool.
 **Features:** `telegram.long-polling`, `memory.backend-supermemory`, `memory.per-turn-capture`, `memory.recall-tool`.
 
 ```json
@@ -231,8 +231,8 @@ const ext = createCollaboratorToolRuntimeExtension({
   }
 }
 ```
-**Steps:** run `supermemory-server`, save its `sm_...` key in `.env`, `mono-agent init --recipe personal-telegram-supermemory`, add Telegram token/chat id, `validate`, `start`.
-**Smoke:** send a fact, wait for ingestion, then ask a paraphrased question; confirm the run shows `memory_recall` returning Supermemory hits.
+**Steps:** run `supermemory-server`, save its `sm_...` key in `.env`, `mono-agent init --preset telegram-supermemory --yes`, add Telegram token/chat id, `validate`, `start`.
+**Smoke:** send a fact, wait for ingestion, then ask a paraphrased question; confirm the run shows `MemoryRecall` returning Supermemory hits.
 
 ## 14. Fully local LM Studio agent
 **For:** a privacy-focused user who prefers LM Studio's GUI local server.
@@ -247,21 +247,21 @@ const ext = createCollaboratorToolRuntimeExtension({
   "webhook": { "enabled": true }
 }
 ```
-**Steps:** start LM Studio's local server with the chosen model loaded → `mono-agent init --recipe local-lmstudio-private` → adjust `runtime.model` if the displayed model id differs → `validate` → `start`.
+**Steps:** start LM Studio's local server with the chosen model loaded → `mono-agent init --model pi:lmstudio:qwen3.6-32b --memory lite` (the `pi:lmstudio:*` model auto-adds the LM Studio provider block; there is no LM Studio preset — `local-private` is Ollama-based) → adjust `runtime.model` if the displayed model id differs → `validate` → `start`.
 **Smoke:** `curl` the webhook invoke URL and confirm the response comes from the local LM Studio model.
 
 ## 15. Interactive agent with long jobs and large media
 **For:** a builder whose Telegram agent needs to ask before acting, run multi-minute tools, and exchange large files.
-**Goal:** one Telegram agent uses `ask_user`, long-running MCP tool progress, a self-hosted Bot API server, and `telegram_send_document`.
+**Goal:** one Telegram agent uses `AskUser`, long-running MCP tool progress, a self-hosted Bot API server, and `TelegramSendFile`.
 **Features:** `telegram.long-polling`, `agent-app.adapter-send-tools`, `interaction.ask-user`, `interaction.progress`, `tool-policy.mcp-servers`.
 
 ```json
 {
   "runtime": { "model": "pi:openai-codex:gpt-5.5", "executionMode": "sdk" },
-  "tools": { "allowedTools": ["Read", "ask_user", "telegram_send_document"], "mcpConfigPath": "./.mcp.json", "mcpCallMaxTotalTimeoutMs": 2700000 },
+  "tools": { "allowedTools": ["Read", "AskUser", "TelegramSendFile"], "mcpConfigPath": "./.mcp.json", "mcpCallMaxTotalTimeoutMs": 2700000 },
   "interaction": { "bridge": { "host": "127.0.0.1", "port": 4471 }, "askUser": { "timeoutMs": 600000 }, "progress": { "enabled": true } },
   "telegram": { "enabled": true, "allowedChatIds": ["123456789"], "apiRoot": "http://127.0.0.1:8081", "attachments": { "maxBytes": 268435456, "maxUploadBytes": 268435456 } }
 }
 ```
 **Steps:** run a loopback self-hosted Bot API server if files exceed 20 MB, wire a long-running MCP tool in `.mcp.json`, `validate`, `start`.
-**Smoke:** send media with no caption, answer the `ask_user` question, watch progress update during the long job, and receive the generated file via `telegram_send_document`.
+**Smoke:** send media with no caption, answer the `AskUser` question, watch progress update during the long job, and receive the generated file via `TelegramSendFile`.

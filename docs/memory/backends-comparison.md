@@ -18,7 +18,7 @@ mono-agent's memory engine is pluggable. `memory.backend` selects it:
   server-side.
 
 Both implement the same internal `MemoryStore` contract and surface through the same
-`memory_recall` tool, so the agent's behavior is identical from the model's point of
+`MemoryRecall` tool, so the agent's behavior is identical from the model's point of
 view — what differs is where memory lives, how it's built, and what it costs to run.
 
 > Terminology: "BuJo" names the whole built-in engine here. Its top `bujo` tier (LLM
@@ -41,7 +41,7 @@ view — what differs is where memory lives, how it's built, and what it costs t
 | Privacy / ownership | Fully local, plain-text markdown you can read and `grep` | Local binary keeps data on-machine; the hosted cloud sends it out |
 | Setup effort | Pull Ollama models (for `journal`/`bujo`); zero extra services for `lite` | Install + run `supermemory-server` (and point it at an LLM) |
 | Lock-in / portability | Open SQLite + markdown; no service | Data lives in Supermemory; no shared index with BuJo |
-| `memory_recall` tool | Same tool, same shape | Same tool (proxies Supermemory search behind the same name) |
+| `MemoryRecall` tool | Same tool, same shape | Same tool (proxies Supermemory search behind the same name) |
 
 ## How they differ
 
@@ -64,7 +64,7 @@ consolidation **server-side**: you POST raw turns and it decides what to remembe
 [Write modes, capture & recall](/memory/capture-and-recall/).
 
 ### Recall
-Both back the auto-provisioned `memory_recall` tool and the per-turn recall-into-context.
+Both back the auto-provisioned `MemoryRecall` tool and the per-turn recall-into-context.
 BuJo ranks with embeddings + full-text BM25 fused via RRF, with recency/salience
 weighting and no LLM call (see [Embeddings](/memory/embeddings/)). Supermemory runs its
 own hybrid search. By default neither applies a hard similarity floor, so recall returns
@@ -155,7 +155,7 @@ A full, runnable example lives in the
 - **Async ingestion.** Supermemory captures are eventually searchable, not immediately
   (see latency above).
 - **MCP server is cloud-only.** Supermemory's hosted MCP server can't point at a
-  self-hosted instance, so recall here uses the in-app REST-proxied `memory_recall` tool
+  self-hosted instance, so recall here uses the in-app REST-proxied `MemoryRecall` tool
   (works everywhere). `memory.supermemory.exposeMcpServer: true` additionally injects the
   hosted MCP server for cloud deployments with an API key.
 - **Scheduled consolidation is BuJo-only.** The BuJo scheduler does not run for external backends.

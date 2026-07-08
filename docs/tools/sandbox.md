@@ -39,15 +39,15 @@ The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`. 
 
 The engine id is `srt` (the only built-in engine); `srt` must be on `PATH` for `mode: "native"` to take effect.
 
-Check the engine before trusting a sandboxed recipe:
+Check the engine before trusting a sandboxed preset:
 
 ```bash
 command -v srt
 srt --version
-mono-agent validate --recipe sandboxed-code-agent
+mono-agent validate --preset code-sandbox
 ```
 
-`validate` reports the `Sandbox` section as `ok` only when the native engine is available. If `srt` is missing, a fail-closed policy reports `waiting` with `sandbox_unavailable`; an unsafe fallback reports `waiting` with a warning. The overall config can still validate because `waiting` is not a syntax error, so read the sandbox section and the recipe completeness block before starting.
+`validate` reports the `Sandbox` section as `ok` only when the native engine is available. If `srt` is missing, a fail-closed policy reports `waiting` with `sandbox_unavailable`; an unsafe fallback reports `waiting` with a warning. The overall config can still validate because `waiting` is not a syntax error, so read the sandbox section and the preset completeness block before starting.
 
 ## Mode
 

@@ -6,13 +6,13 @@ sidebar:
 
 # Multi-agent orchestration
 
-This page covers wiring one agent (the *orchestrator*) so its model can delegate to other agents (*collaborators*) at its own discretion, using `createCollaboratorToolRuntimeExtension` from `@mono-agent/agent-orchestrator`. Delegation is model-directed: the extension publishes a single loopback MCP tool, `ask_collaborator`, and the orchestrator model decides whether, when, and how often to call it before producing the final answer.
+This page covers wiring one agent (the *orchestrator*) so its model can delegate to other agents (*collaborators*) at its own discretion, using `createCollaboratorToolRuntimeExtension` from `@mono-agent/agent-orchestrator`. Delegation is model-directed: the extension publishes a single loopback MCP tool, `AskCollaborator`, and the orchestrator model decides whether, when, and how often to call it before producing the final answer.
 
 This is a **code**-only capability — there is no config key for it. See the feature row `orchestrator.ask-collaborator` in [../reference/feature-matrix.md](/reference/feature-matrix/) and the end-to-end recipe in [../playbooks/multi-agent-orchestration.md](/playbooks/multi-agent-orchestration/).
 
 ## How it works
 
-`createCollaboratorToolRuntimeExtension` starts an ephemeral, loopback-only MCP HTTP server for the duration of one orchestrator request. The server exposes one tool (`ask_collaborator` by default). When the orchestrator model calls it, the extension routes the request to the named collaborator's `AgentResponder.respond(...)` and returns the collaborator's text back to the model as the tool result.
+`createCollaboratorToolRuntimeExtension` starts an ephemeral, loopback-only MCP HTTP server for the duration of one orchestrator request. The server exposes one tool (`AskCollaborator` by default). When the orchestrator model calls it, the extension routes the request to the named collaborator's `AgentResponder.respond(...)` and returns the collaborator's text back to the model as the tool result.
 
 - The tool description lists every collaborator by `id`, `label`, and optional `description`, so the model knows who it can ask.
 - Each collaborator is just an `AgentResponder`. It can be an in-process responder, or a remote agent reached over A2A via `createA2AConsumerResponder` (see [a2a-consumer.md](/programmatic/a2a-consumer/)). The orchestrator does not care which.
@@ -37,8 +37,8 @@ import { createCollaboratorToolRuntimeExtension } from "@mono-agent/agent-orches
 | `conversationId` | `string` | (required) | Orchestrator conversation id. Each collaborator turn uses `${conversationId}:${id}`. |
 | `originalUserMessage` | `string` | (required) | The user's request; prepended to every collaborator prompt for context. |
 | `abortSignal` | `AbortSignal` | (required) | Parent turn signal; aborting cancels in-flight collaborator calls. |
-| `maxCalls` | `number` | `6` | Hard cap on total `ask_collaborator` calls per request. Further calls return a visible error. |
-| `toolName` | `string` | `"ask_collaborator"` | Tool name exposed to the model. |
+| `maxCalls` | `number` | `6` | Hard cap on total `AskCollaborator` calls per request. Further calls return a visible error. |
+| `toolName` | `string` | `"AskCollaborator"` | Tool name exposed to the model. |
 | `serverName` | `string` | `"collaborators"` | MCP server key in `runtimeOptions.mcpServers`. |
 | `host` / `port` / `path` | `string` / `number` / `string` | `127.0.0.1` / `0` (ephemeral) / `/mcp` | Bind address for the loopback server. |
 | `allowNonLoopback` | `boolean` | `false` | Required to bind a non-loopback host. |
@@ -107,11 +107,11 @@ A typical local setup runs three roles, each built from `@mono-agent/agent-app`,
 
 | Role | Transport | Tool policy | Trace name |
 | --- | --- | --- | --- |
-| Orchestrator | Telegram (when configured) + loopback A2A; calls `ask_collaborator` | decides delegation, then synthesizes | `multi-agent-orchestrator` |
+| Orchestrator | Telegram (when configured) + loopback A2A; calls `AskCollaborator` | decides delegation, then synthesizes | `multi-agent-orchestrator` |
 | Researcher | loopback A2A provider | `WebSearch`, `WebFetch` allowed | `multi-agent-researcher` |
 | Worker | loopback A2A provider | `Read`, `Grep`, `Bash` allowed; `Write`/`Edit` disallowed | `multi-agent-worker` |
 
-The orchestrator's `ask_collaborator` tool fronts two `createA2AConsumerResponder` collaborators (`researcher`, `worker`). The model may ask one, both, or either repeatedly before answering; a successful turn that uses both records three JSONL runs (and Phoenix spans when an OTLP exporter is configured — see [../observability/phoenix-and-backfill.md](/observability/phoenix-and-backfill/)). Distinct per-role tool policies ([../tools/policy.md](/tools/policy/)) keep the researcher and worker scoped to their jobs.
+The orchestrator's `AskCollaborator` tool fronts two `createA2AConsumerResponder` collaborators (`researcher`, `worker`). The model may ask one, both, or either repeatedly before answering; a successful turn that uses both records three JSONL runs (and Phoenix spans when an OTLP exporter is configured — see [../observability/phoenix-and-backfill.md](/observability/phoenix-and-backfill/)). Distinct per-role tool policies ([../tools/policy.md](/tools/policy/)) keep the researcher and worker scoped to their jobs.
 
 Local Ollama collaborators can take longer than the 60s A2A consumer default when running web or workspace tools before synthesis, so host code can set a longer per-collaborator timeout for those responders.
 

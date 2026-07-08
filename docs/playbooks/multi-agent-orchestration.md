@@ -1,12 +1,12 @@
 ---
-title: "Multi-Agent Orchestration (ask_collaborator)"
+title: "Multi-Agent Orchestration (AskCollaborator)"
 sidebar:
   order: 8
 ---
 
-# Multi-Agent Orchestration (ask_collaborator)
+# Multi-Agent Orchestration (AskCollaborator)
 
-This playbook shows how one orchestrator agent delegates subtasks to named specialist responders (a researcher and a writer) through the loopback `ask_collaborator` MCP tool. The wiring is code-only: you build collaborator responders, create a runtime extension, and attach it to the orchestrator per request.
+This playbook shows how one orchestrator agent delegates subtasks to named specialist responders (a researcher and a writer) through the loopback `AskCollaborator` MCP tool. The wiring is code-only: you build collaborator responders, create a runtime extension, and attach it to the orchestrator per request.
 
 ## Who this is for
 
@@ -14,7 +14,7 @@ Workflow designers composing specialist agents — you want a single orchestrato
 
 ## Goal
 
-One orchestrator agent delegates subtasks to named collaborator responders (researcher, writer) via the loopback `ask_collaborator` MCP tool.
+One orchestrator agent delegates subtasks to named collaborator responders (researcher, writer) via the loopback `AskCollaborator` MCP tool.
 
 ## Features used
 
@@ -52,12 +52,12 @@ const orchestrator = createConfiguredAgentResponder({
 2. Inside `runtimeOptionsForRequest`, call `createCollaboratorToolRuntimeExtension` with the collaborators, `conversationId`, and `maxCalls`.
 3. Return `{ runtimeOptions: extension.runtimeOptions, cleanup: extension.cleanup }` from the callback so the host attaches the loopback tool and closes the ephemeral MCP server when the turn ends.
 4. Run the orchestrator with a task that requires delegation.
-5. Inspect the run artifact for `ask_collaborator` calls.
+5. Inspect the run artifact for `AskCollaborator` calls.
 
 ## Smoke test
 
 :::tip
-Give the orchestrator a compound task ("research X then write a summary"); confirm the run artifact shows `ask_collaborator` delegating to both researcher and writer, and that the returned `cleanup` closes the MCP port at turn end.
+Give the orchestrator a compound task ("research X then write a summary"); confirm the run artifact shows `AskCollaborator` delegating to both researcher and writer, and that the returned `cleanup` closes the MCP port at turn end.
 :::
 
 ## Related

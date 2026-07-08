@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { loadMonoAgentConfig, MonoAgentConfigError, redactMonoAgentConfig } from "../index.js";
+import { ALLOW_ALL_TOOLS, loadMonoAgentConfig, MonoAgentConfigError, redactMonoAgentConfig } from "../index.js";
 
 const baseEnv = {
   MONO_AGENT_MODEL: "pi:openai-codex:gpt-5.5",
@@ -1829,5 +1829,28 @@ describe("loadMonoAgentConfig", () => {
   it("leaves observability undefined when no exporter env is set", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
     expect(config.observability).toBeUndefined();
+  });
+});
+
+describe("loadMonoAgentConfig tools.allowedTools default", () => {
+  it("defaults to allow-all (['*']) when MONO_AGENT_ALLOWED_TOOLS is unset", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    expect(config.tools.allowedTools).toEqual([ALLOW_ALL_TOOLS]);
+    expect(ALLOW_ALL_TOOLS).toBe("*");
+  });
+
+  it("resolves an explicit empty MONO_AGENT_ALLOWED_TOOLS to [] (chat-only)", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_ALLOWED_TOOLS: "" } });
+    expect(config.tools.allowedTools).toEqual([]);
+  });
+
+  it("resolves MONO_AGENT_ALLOWED_TOOLS='*' to ['*']", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_ALLOWED_TOOLS: "*" } });
+    expect(config.tools.allowedTools).toEqual(["*"]);
+  });
+
+  it("resolves an explicit tool list unchanged", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_ALLOWED_TOOLS: "Read,Bash" } });
+    expect(config.tools.allowedTools).toEqual(["Read", "Bash"]);
   });
 });

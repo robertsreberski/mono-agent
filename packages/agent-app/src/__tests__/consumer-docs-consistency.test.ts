@@ -26,7 +26,7 @@ describe("consumer docs/config consistency checker", () => {
       ].join("\n"),
       config: {
         memory: { recallTool: { enabled: true } },
-        tools: { allowedTools: ["memory_recall"], mcpConfigPath: "./mcp.json" },
+        tools: { allowedTools: ["MemoryRecall"], mcpConfigPath: "./mcp.json" },
         observability: { exporters: [{ type: "phoenix" }] },
       },
       mcp: { mcpServers: {} },
@@ -39,12 +39,12 @@ describe("consumer docs/config consistency checker", () => {
     });
   });
 
-  it("passes when README references the configured memory_recall surface", async () => {
+  it("passes when README references the configured MemoryRecall surface", async () => {
     const dir = await writeConsumer({
-      readme: "This consumer uses memory_recall and exports traces to Phoenix.",
+      readme: "This consumer uses MemoryRecall and exports traces to Phoenix.",
       config: {
         memory: { recallTool: { enabled: true } },
-        tools: { allowedTools: ["memory_recall"], mcpConfigPath: "./mcp.json" },
+        tools: { allowedTools: ["MemoryRecall"], mcpConfigPath: "./mcp.json" },
       },
       mcp: { mcpServers: {} },
     });

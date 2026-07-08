@@ -40,6 +40,8 @@ export interface ConsumerContractFixtureResult {
 }
 
 const forbiddenFixtureSecretPattern = /(sk-|xoxb-|bot[0-9]+:|apiKey|token)/u;
+// Guards the retired/deprecated memory MCP surfaces (an mcp.json must not declare a
+// standalone memory server — MemoryRecall is auto-provisioned in-app, never via MCP config).
 const forbiddenMcpMemoryPattern = /@mono-agent\/memory-mcp|\bmemory-mcp\b|\bmemory_note\b|\bmemory_recall\b/u;
 
 export const consumerContractRunSummaryStatuses = {
@@ -78,7 +80,7 @@ const expectedContracts = {
       "Bash",
       "WebFetch",
       "WebSearch",
-      "telegram_send_message",
+      "TelegramSendMessage",
     ],
     channels: {
       telegram: "active",
@@ -108,8 +110,8 @@ const expectedContracts = {
       "Bash",
       "WebFetch",
       "WebSearch",
-      "slack_send_message",
-      "memory_recall",
+      "SlackSendMessage",
+      "MemoryRecall",
     ],
     channels: {
       telegram: "disabled",

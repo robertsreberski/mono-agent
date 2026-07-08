@@ -231,7 +231,7 @@ export function createTelegramChannelDriver(
       const startAdapter = overrides.startAdapter ?? adapter.startTelegramAdapter;
       const result = await startAdapter(telegramStartOptions(input, overrides));
       // Register this channel's interaction sink so the host bridge can post
-      // ask_user questions and tool-progress status lines into Telegram chats.
+      // AskUser questions and tool-progress status lines into Telegram chats.
       // The sink enforces the adapter allowlist: a tool-supplied conversation
       // can never reach a chat the operator never allowlisted.
       input.interaction?.registerSink("telegram", {
@@ -1260,11 +1260,11 @@ function telegramStartOptions(
   input: ChannelStartInput<TelegramAdapterConfig>,
   overrides: TelegramChannelOverrides,
 ): TelegramAdapterStartOptions {
-  // Subscribe to (and handle) inline-keyboard taps only when the `telegram_ask`
+  // Subscribe to (and handle) inline-keyboard taps only when the `TelegramAskButtons`
   // tool is permitted by the tool policy — so enabling the tool is the single
   // switch that turns on the whole ask/answer round-trip. Without it the bot
   // stays message-only and never registers the callback handler.
-  const callbacksEnabled = isAdapterSendToolAllowed("telegram_ask", {
+  const callbacksEnabled = isAdapterSendToolAllowed("TelegramAskButtons", {
     allowedTools: input.coreConfig.tools.allowedTools,
     disallowedTools: input.coreConfig.tools.disallowedTools,
   });

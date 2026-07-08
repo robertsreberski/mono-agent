@@ -10,7 +10,7 @@ import * as z from "zod/v4";
 /**
  * Read-only memory recall, wired from the SINGLE `config.memory` block.
  *
- * When `config.memory.recallTool.enabled` is true, the app exposes a `memory_recall` MCP tool
+ * When `config.memory.recallTool.enabled` is true, the app exposes a `MemoryRecall` MCP tool
  * (server name {@link MEMORY_RECALL_MCP_SERVER_NAME}) to the agent. Recall needs only embeddings +
  * FTS — no chat LLM — so the recall server is built with embeddings alone. When embeddings are
  * absent (lite tier, or an explicit opt-in on a no-embeddings store) recall still serves FTS-only
@@ -386,11 +386,11 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
   });
 }
 
-/** Register the single read-only `memory_recall` tool against a store (bujo or external backend). */
+/** Register the single read-only `MemoryRecall` tool against a store (bujo or external backend). */
 export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
   const server = new McpServer({ name: "agent-memory", version: "0.3.0" });
   server.registerTool(
-    "memory_recall",
+    "MemoryRecall",
     {
       title: "Recall from memory",
       description: "Read-only hybrid (keyword + semantic) search over the agent's long-term memory. Call this proactively whenever you are missing context, unsure about a prior decision, or about to assume or ask the user for something that may already be recorded — recall first, then act.",

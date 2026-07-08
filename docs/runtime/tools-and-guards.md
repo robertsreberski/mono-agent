@@ -38,7 +38,7 @@ Env equivalents: `MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS` (comm
 
 :::note
 :::
-An empty or omitted `allowedTools` means the runtime's default tool set is available subject to `disallowedTools`. Be explicit when you want a tightly scoped agent.
+An **omitted** `allowedTools` (or `["*"]`) allows **every** tool subject to `disallowedTools` — the allow-all default. Listing specific names narrows to those; an **explicit empty** `[]` allows none (a deliberate chat-only agent). Add names to `disallowedTools` to subtract from the open default without switching to a full allowlist.
 
 ## Tool-output bloat guard (auto)
 

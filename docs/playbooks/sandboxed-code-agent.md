@@ -24,7 +24,7 @@ An agent that can read repos and run Bash inside the native `srt` sandbox with l
 - [`sandbox.network-policy`](/tools/sandbox/) — `none` / `localhost` / `allowlist` / `all`
 - [`sandbox.filesystem-scopes`](/tools/sandbox/) — readable/writable roots + deny-write globs
 - [`sandbox.fallback`](/tools/sandbox/) — `fail-closed` vs `unsafe-host-process` when `srt` is unavailable
-- [`tool-policy.allowlist`](/tools/policy/) — restrict the agent to a minimal built-in tool set
+- [`tool-policy.allow-all`](/tools/policy/) — allow-all tools (`["*"]`); the sandbox, not an allowlist, is what constrains the code tools
 - [`memory.journal`](/memory/capture-and-recall/) — local journal recall for prior context
 
 ## Configuration
@@ -35,7 +35,7 @@ An agent that can read repos and run Bash inside the native `srt` sandbox with l
     "model": "claude:claude-sonnet-4-6"
   },
   "tools": {
-    "allowedTools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
+    "allowedTools": ["*"]
   },
   "sandbox": {
     "mode": "native",
@@ -60,9 +60,9 @@ Keep `fallback` at `fail-closed`. Setting `fallback: "unsafe-host-process"` plus
 
 1. `mono-agent init --model claude:claude-sonnet-4-6 --memory journal`
 2. Run `command -v srt && srt --version`; install/fix `srt` before treating the sandbox as available.
-3. Set `tools.allowedTools` to `Read`/`Write`/`Edit`/`Glob`/`Grep`/`Bash`; configure `sandbox.mode` native + `network.mode` localhost + the deny-write defaults.
+3. Leave `tools.allowedTools` at the allow-all default (`["*"]`) — under allow-all the code tools (`Read`/`Write`/`Edit`/`Glob`/`Grep`/`Bash`) are already available, and the **sandbox**, not an allowlist, is what constrains them. Configure `sandbox.mode` native + `network.mode` localhost + the deny-write defaults. (To harden further you *can* still narrow `allowedTools` to a specific set, but it is not what makes this agent safe.)
 4. Keep `fallback` at `fail-closed` (do NOT set `unsafe-host-process`).
-5. `mono-agent validate --recipe sandboxed-code-agent`; the `Sandbox` section should be `ok`. If it is `waiting` with `sandbox_unavailable`, `start` will not silently relax the policy — sandboxed commands will fail closed until `srt` is available.
+5. `mono-agent validate --preset code-sandbox`; the `Sandbox` section should be `ok`. If it is `waiting` with `sandbox_unavailable`, `start` will not silently relax the policy — sandboxed commands will fail closed until `srt` is available.
 6. `mono-agent start`, then `mono-agent status`; confirm the sandbox line reports `effective: native`, the `srt` engine present, and `fallback active: no`.
 7. Ask the agent to inspect the repo and run a Bash command; confirm external network calls are blocked while loopback still works, and confirm it cannot write `.env`.
 8. Note: provider CLI bridges run their own tool loops and are not yet `srt`-wrapped (pair with provider sandboxing).
