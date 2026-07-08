@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   buildMonoAgentConfigView,
+  EFFORT_LEVELS,
   findJsonSecretConfigWarnings,
   findRemovedConfigWarnings,
   readMonoAgentConfigJson,
@@ -61,6 +62,8 @@ import type { WithChannel } from "./wizard/from-flags.js";
 import { findPreset, PRESET_CATALOG, presetAnswers, presetIds, RECIPE_TO_PRESET } from "./wizard/presets.js";
 import type { WizardPreset } from "./wizard/presets.js";
 import { runInitWizard } from "./wizard/run.js";
+import { executeProviderSetupPlan, planProviderSetup, providerSetupActionCommandLine } from "./provider-setup.js";
+import type { ProviderSetupPlan, ProviderSetupResult } from "./provider-setup.js";
 import * as ui from "./ui.js";
 
 const DEFAULT_LOG_LINES = 200;
@@ -82,6 +85,7 @@ interface ParsedCliArgs {
   readonly configPath?: string;
   readonly model?: string;
   readonly fallbackModels?: readonly string[];
+  readonly effort?: string;
   readonly memory?: "lite" | "journal" | "bujo";
   /** init/validate: build/check against this preset id. */
   readonly preset?: string;
@@ -91,6 +95,8 @@ interface ParsedCliArgs {
   readonly withChannels?: readonly string[];
   /** init: skip the interactive wizard and write the default/preset scaffold. */
   readonly yes?: boolean;
+  /** init: opt in to running provider auth/preflight commands before writing files. */
+  readonly auth?: boolean;
   /** Non-flag arguments (e.g. `presets show <id>`). */
   readonly positionals: readonly string[];
   readonly envFile?: string;
@@ -170,11 +176,13 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let configPath: string | undefined;
   let model: string | undefined;
   let fallbackModels: readonly string[] | undefined;
+  let effort: string | undefined;
   let memory: "lite" | "journal" | "bujo" | undefined;
   let preset: string | undefined;
   let recipe: string | undefined;
   let withChannels: readonly string[] | undefined;
   let yes = false;
+  let auth = false;
   const positionals: string[] = [];
   let envFile: string | undefined;
   let target: InstallSkillTarget | undefined;
@@ -306,6 +314,14 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
           .map((entry) => entry.trim())
           .filter((entry) => entry.length > 0);
         break;
+      case "--effort": {
+        const raw = requireValue(rest, ++i, flag);
+        if (!(EFFORT_LEVELS as readonly string[]).includes(raw)) {
+          throw new Error(`--effort must be ${EFFORT_LEVELS.join(", ")}.`);
+        }
+        effort = raw;
+        break;
+      }
       case "--memory": {
         const raw = requireValue(rest, ++i, flag);
         if (raw !== "lite" && raw !== "journal" && raw !== "bujo") {
@@ -322,6 +338,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--yes":
         yes = true;
+        break;
+      case "--auth":
+        auth = true;
         break;
       case "--with":
         withChannels = requireValue(rest, ++i, flag)
@@ -395,17 +414,22 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (limit !== undefined && cmd !== "memory") {
     throw new Error("--limit is only supported for `mono-agent memory`.");
   }
+  if (auth && cmd !== "init") {
+    throw new Error("--auth is only supported for `mono-agent init`.");
+  }
 
   return {
     command: cmd,
     ...(configPath === undefined ? {} : { configPath }),
     ...(model === undefined ? {} : { model }),
     ...(fallbackModels === undefined ? {} : { fallbackModels }),
+    ...(effort === undefined ? {} : { effort }),
     ...(memory === undefined ? {} : { memory }),
     ...(preset === undefined ? {} : { preset }),
     ...(recipe === undefined ? {} : { recipe }),
     ...(withChannels === undefined ? {} : { withChannels }),
     ...(yes ? { yes } : {}),
+    ...(auth ? { auth } : {}),
     positionals,
     ...(envFile === undefined ? {} : { envFile }),
     ...(target === undefined ? {} : { target }),
@@ -481,13 +505,15 @@ interface HelpEntry {
 
 const HELP_COMMANDS: readonly HelpEntry[] = [
   {
-    signature: "mono-agent init [--preset <id>] [--with <csv>] [--yes] [--dry-run]\n" +
-      "                [--model <ref>] [--fallback-models <csv>] [--memory lite|journal|bujo]",
+    signature: "mono-agent init [--preset <id>] [--with <csv>] [--yes] [--auth] [--dry-run]\n" +
+      "                [--model <ref>] [--fallback-models <csv>] [--effort <level>]\n" +
+      "                [--memory lite|journal|bujo]",
     lines: [
       "Scaffold a mono-agent in the current folder. On a TTY with no flags, launches",
       "the step-by-step wizard; with --yes or any flag, writes the default/preset",
       "scaffold non-interactively. --preset seeds a blueprint, --with adds channels,",
-      "--dry-run previews. Existing files are never overwritten.",
+      "--effort writes runtime.effort, --auth runs supported provider auth/preflight",
+      "commands before writing, and --dry-run previews only. Existing files are never overwritten.",
     ],
   },
   {
@@ -623,8 +649,12 @@ const HELP_NOTES = `Background mode runs the agent under launchd, keeping it ali
 .env file in the working directory, the same as foreground mode. The background
 commands require macOS; elsewhere use start --foreground.
 
-Model references look like claude:claude-sonnet-4-6, codex:gpt-5.5, or
-pi:<provider>:<model> (e.g. pi:ollama:gemma4:31b).
+Init model references look like claude:claude-sonnet-4-6, codex:gpt-5.5,
+or pi:<provider>:<model> (e.g. pi:openai-codex:gpt-5.5,
+pi:opencode-go:kimi-k2.6, or pi:ollama:gemma4:31b). The init wizard prefers
+Pi OpenAI-Codex when that auth is configured, while direct codex:gpt-5.5
+remains selectable as a Codex CLI fallback path. Direct opencode:<provider>:<model>
+refs are for hand-authored runtime backend config.
 
 A .env file in the current folder is loaded automatically when present;
 already-exported shell variables take precedence.
@@ -782,7 +812,7 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
   const wantsWizard = process.stdin.isTTY === true && process.stdout.isTTY === true
     && args.yes !== true && args.preset === undefined && args.recipe === undefined
     && args.model === undefined && args.fallbackModels === undefined
-    && args.memory === undefined && args.withChannels === undefined && args.dryRun !== true;
+    && args.effort === undefined && args.memory === undefined && args.withChannels === undefined && args.dryRun !== true;
   if (wantsWizard) {
     // Existing-config pre-check — don't walk the wizard into a guaranteed no-op.
     if (await pathExists(resolve(process.cwd(), "mono-agent.config.json"))) {
@@ -792,6 +822,22 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
     const outcome = await runInitWizard({ cwd: process.cwd() });
     if (outcome.status === "cancelled") {
       return 1;
+    }
+    if (outcome.runProviderSetup) {
+      const previewPlan = composeWizardPlan(outcome.answers, {
+        dirBasename: basename(process.cwd()),
+        skillsRootExists: await pathExists(resolve(process.cwd(), "skills")),
+      });
+      const setup = await runProviderSetupBeforeInit({
+        modelRefs: [outcome.answers.model, ...outcome.answers.fallbackModels],
+        cwd: process.cwd(),
+        auth: true,
+        dryRun: false,
+        ...(typeof previewPlan.configJson.providers?.piAuthPath === "string" ? { piAuthPath: previewPlan.configJson.providers.piAuthPath } : {}),
+      });
+      if (setup === "failed") {
+        return 1;
+      }
     }
     const result = await initMonoAgentFolder({ dir: process.cwd(), answers: outcome.answers });
     printInitResult(result);
@@ -819,10 +865,26 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
   const answers = answersFromCli({
     ...(args.model === undefined ? {} : { model: args.model }),
     ...(args.fallbackModels === undefined ? {} : { fallbackModels: args.fallbackModels }),
+    ...(args.effort === undefined ? {} : { effort: args.effort }),
     ...(args.memory === undefined ? {} : { memory: args.memory }),
     ...(withChannels === undefined ? {} : { withChannels }),
     ...(presetId === undefined ? {} : { presetId }),
   });
+
+  const previewPlan = composeWizardPlan(answers, {
+    dirBasename: basename(process.cwd()),
+    skillsRootExists: await pathExists(resolve(process.cwd(), "skills")),
+  });
+  const setup = await runProviderSetupBeforeInit({
+    modelRefs: [answers.model, ...answers.fallbackModels],
+    cwd: process.cwd(),
+    auth: args.auth === true,
+    dryRun: args.dryRun,
+    ...(typeof previewPlan.configJson.providers?.piAuthPath === "string" ? { piAuthPath: previewPlan.configJson.providers.piAuthPath } : {}),
+  });
+  if (setup === "failed") {
+    return 1;
+  }
 
   const result = await initMonoAgentFolder({ dir: process.cwd(), answers, dryRun: args.dryRun });
 
@@ -830,6 +892,56 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
   printSecretsChecklist(result.plan.secrets);
   printNextSteps(result.configPath);
   return 0;
+}
+
+export type InitProviderSetupStatus = "ok" | "failed" | "skipped";
+
+export interface RunProviderSetupBeforeInitOptions {
+  readonly modelRefs: readonly string[];
+  readonly cwd: string;
+  readonly auth: boolean;
+  readonly dryRun: boolean;
+  readonly piAuthPath?: string;
+  readonly execute?: (plan: ProviderSetupPlan) => Promise<readonly ProviderSetupResult[]>;
+}
+
+export async function runProviderSetupBeforeInit(
+  options: RunProviderSetupBeforeInitOptions,
+): Promise<InitProviderSetupStatus> {
+  const plan = planProviderSetup(options);
+  if (plan.actions.length === 0) {
+    return "skipped";
+  }
+  if (options.dryRun) {
+    process.stdout.write("\n" + ui.heading("Provider setup"));
+    process.stdout.write(ui.style.dim("Dry run - provider auth/preflight commands were not launched.\n"));
+    printProviderSetupPlan(plan);
+    return "skipped";
+  }
+  if (!options.auth) {
+    return "skipped";
+  }
+
+  process.stdout.write("\n" + ui.heading("Provider setup"));
+  printProviderSetupPlan(plan);
+  const results = await (options.execute ?? executeProviderSetupPlan)(plan);
+  for (const result of results) {
+    const badge = result.status === "ok" ? ui.badge("ok") : ui.badge("error");
+    process.stdout.write(`${badge}${result.action.label}: ${result.detail}\n`);
+  }
+  if (results.some((result) => result.status === "failed")) {
+    process.stderr.write(ui.errorLine("Provider setup failed; init stopped before writing files."));
+    return "failed";
+  }
+  return "ok";
+}
+
+function printProviderSetupPlan(plan: ProviderSetupPlan): void {
+  for (const action of plan.actions) {
+    process.stdout.write(
+      `  ${action.label}: ${providerSetupActionCommandLine(action)} ${ui.style.dim(`(cwd: ${action.cwd})`)}\n`,
+    );
+  }
 }
 
 /**

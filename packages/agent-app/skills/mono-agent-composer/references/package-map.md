@@ -127,6 +127,7 @@ Supported model reference families:
 
 - `codex:<model>` with CLI execution
 - `claude:<model>` with SDK or CLI execution
-- `pi:<provider>:<model>` with SDK execution, including local providers such as Ollama
+- `pi:<provider>:<model>` with SDK execution, including Pi OpenAI-Codex, OpenCode-through-Pi (`pi:opencode-go:*`), and local providers such as Ollama and LM Studio
+- `opencode:<provider>:<model>` with CLI execution for hand-authored OpenCode backend config
 
 Provider credentials belong in the provider/runtime environment, not in committed config.

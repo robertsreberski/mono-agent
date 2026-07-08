@@ -14,7 +14,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 
 | Command | Purpose | Key flags |
 | --- | --- | --- |
-| `init` | Scaffold `mono-agent.config.json`, `IDENTITY.md`, and `.mono-agent/` in the current folder. On a TTY with no flags it runs the step-by-step wizard (including the tools step); any flag or a non-TTY writes the scaffold non-interactively. Never overwrites existing files. | `--preset <id>`, `--with <csv>`, `--yes`, `--dry-run`, `--model <ref>`, `--fallback-models <csv>`, `--memory lite\|journal\|bujo` |
+| `init` | Scaffold `mono-agent.config.json`, `IDENTITY.md`, and `.mono-agent/` in the current folder. On a TTY with no flags it runs the step-by-step wizard (including model discovery, effort, provider setup review, and the tools step); any flag or a non-TTY writes the scaffold non-interactively. Never overwrites existing files. | `--preset <id>`, `--with <csv>`, `--yes`, `--auth`, `--dry-run`, `--model <ref>`, `--fallback-models <csv>`, `--effort <level>`, `--memory lite\|journal\|bujo` |
 | `setup` | Alias of `init`. | (same as `init`) |
 | `presets` | List the built-in setup presets or show a preset's generated config, `.env.example`, and checklist. Replaces `recipes` (still an alias). | `list`, `show <id>` |
 | `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias). With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>` |
@@ -57,25 +57,28 @@ Background commands (`start`, `restart`, `stop`, `status`, `logs`) require macOS
 
 Scaffolds a new agent in the current folder. Existing `mono-agent.config.json`, `IDENTITY.md`, and `.mono-agent/` files are kept, not overwritten — re-running is safe.
 
-On an interactive terminal with **no flags**, `init` launches the **step-by-step wizard**: pick a preset or "custom", then answer model, channels (multiselect), memory, **tools** (a multiselect pre-checked with a safe read-only default plus your channels' send tools — it warns loudly if you deselect everything), sandbox (only when shell/file tools are chosen), and observability, ending on a review-and-confirm. It then scaffolds and immediately runs `validate`. With `--yes` or **any** flag (`--preset`, `--model`, `--with`, `--memory`, `--fallback-models`, `--dry-run`), or when stdin is not a TTY, `init` skips the wizard and writes the default/preset scaffold non-interactively. `mono-agent setup` is an alias of `init`.
+On an interactive terminal with **no flags**, `init` launches the **step-by-step wizard**: pick a preset or "custom", then answer model, effort, channels (multiselect), memory, **tools** (a multiselect pre-checked with a safe read-only default plus your channels' send tools — it warns loudly if you deselect everything), sandbox (only when shell/file tools are chosen), and observability, ending on a review-and-confirm. The model step discovers Pi OpenAI-Codex, OpenCode, Ollama, and LM Studio candidates best-effort with short timeouts; discovered `pi:openai-codex:gpt-5.5` is ranked above direct `codex:gpt-5.5`, direct Codex remains available as the Codex CLI fallback, and discovered OpenCode choices are recorded as `pi:opencode-go:*` for provider setup/preflight. The review shows the supported provider setup plan and can run auth/preflight commands before files are written. It then scaffolds and immediately runs `validate`. With `--yes` or **any** flag (`--preset`, `--model`, `--with`, `--memory`, `--fallback-models`, `--effort`, `--auth`, `--dry-run`), or when stdin is not a TTY, `init` skips the wizard and writes the default/preset scaffold non-interactively. `mono-agent setup` is an alias of `init`.
 
 | Flag | Effect |
 | --- | --- |
 | `--preset <id>` | Seed a blueprint from a saved preset (see [Presets & capability modules](/reference/recipes/)). Skips the wizard. |
 | `--with <csv>` | Add channels on top of the preset/default config. Valid values: `telegram`, `slack`, `webhook`, `openaiApi`, `cron`. |
 | `--yes` | Write the default/preset scaffold without prompting. |
+| `--auth` | Opt in to supported provider setup before writing files in non-interactive init: Claude/Codex login commands, Pi OAuth login from the `providers.piAuthPath` directory, and local/OpenCode preflight checks. Ignored by `--dry-run`, which never launches commands. |
 | `--dry-run` | Preview the files that would be created without writing or validating. |
 | `--model <ref>` | Seed the primary model reference (e.g. `claude:claude-sonnet-4-6`). |
 | `--fallback-models <csv>` | Comma-separated ordered fallback chain. |
+| `--effort <level>` | Write `runtime.effort`. Valid values: `none`, `low`, `medium`, `high`, `xhigh`, `max`. |
 | `--memory lite\|journal\|bujo` | Pick the memory tier to scaffold. Any other value errors. |
 
-Model references look like `claude:claude-sonnet-4-6`, `codex:gpt-5.5`, or `pi:<provider>:<model>` (e.g. `pi:ollama:gemma4:31b`).
+Init model references look like `claude:claude-sonnet-4-6`, `codex:gpt-5.5`, or `pi:<provider>:<model>` (e.g. `pi:openai-codex:gpt-5.5`, `pi:opencode-go:kimi-k2.6`, `pi:ollama:gemma4:31b`, or `pi:lmstudio:<model>`). The wizard discovers OpenCode models through `opencode models --json` and records them as `pi:opencode-go:<model>` for provider setup/preflight; direct `opencode:<provider>:<model>` refs remain a runtime backend for hand-authored config, not a first-class init wizard selection.
 
 ```bash
 mono-agent init                              # interactive wizard on a TTY
 mono-agent init --preset telegram-assistant --yes
 mono-agent init --model claude:claude-sonnet-4-6 \
   --fallback-models "codex:gpt-5.5,pi:ollama:gemma4:31b" \
+  --effort high \
   --memory bujo
 ```
 
@@ -128,8 +131,8 @@ The **Tools & MCP** section reports the tool policy: allow-all (the default) sho
 `validate` includes a **Provider credentials** section that resolves every referenced Pi model — the primary `runtime.model`, every `runtime.fallbackModels` entry, and the `agent-host` `memory.llm` model — against the Pi auth store (`providers.piAuthPath`) and its sibling `models.json`. It is **static and read-only**: it never mints tokens or hits the network. For each Pi provider:
 
 - A provider configured via `models.json` (custom/local) needs no OAuth → `ok`.
-- A provider **absent** from both the auth store and `models.json` → `waiting`, with a `[WARN]` line and a `pi auth login <provider>` hint.
-- An OAuth provider whose access token has **expired** → `waiting`, with a `[WARN]` line noting the expiry and the `pi auth login <provider>` re-auth hint (the runtime auto-refreshes, but a dead refresh shows up as `No API key for provider: <provider>` at run time).
+- A provider **absent** from both the auth store and `models.json` → `waiting`, with a `[WARN]` line and a `npx @earendil-works/pi-ai login <provider>` hint to run from the directory containing `providers.piAuthPath`.
+- An OAuth provider whose access token has **expired** → `waiting`, with a `[WARN]` line noting the expiry and the `npx @earendil-works/pi-ai login <provider>` re-auth hint (the runtime auto-refreshes, but a dead refresh shows up as `No API key for provider: <provider>` at run time).
 - If no Pi provider-key models are referenced at all (e.g. an all-`claude:` config), the section reports `disabled` — SDK-authenticated models are checked by their own SDK.
 
 This catches the class of silent failure where an expired OAuth token quietly breaks crons or memory capture without any structural config error. Because the worst it returns is `waiting`, it never blocks `start` — read the section.

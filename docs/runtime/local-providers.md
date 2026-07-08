@@ -16,6 +16,8 @@ This is the same `pi:<provider>:<model>` form used by built-in Pi providers (e.g
 
 Coverage: `config` — `providers.local[]` (`MONO_AGENT_LOCAL_PROVIDERS_JSON`, or the `MONO_AGENT_LOCAL_PROVIDER_*` single-provider env vars).
 
+`mono-agent init` can discover local models while you scaffold: `ollama list` contributes `pi:ollama:<model>` choices, and LM Studio's default local server (`http://localhost:1234/v1/models`) contributes `pi:lmstudio:<model>` choices. Discovery is best-effort and bounded; missing CLIs or stopped servers show status in the wizard without failing the scaffold. Choosing a `pi:ollama:*` or `pi:lmstudio:*` primary or fallback model auto-adds the matching local provider module to the generated config, and `--auth` / interactive provider setup runs a reachability preflight instead of collecting secrets.
+
 ## The provider entry shape
 
 | Key | Type | Notes |
@@ -157,6 +159,8 @@ Some Pi providers — for example `pi:openai-codex` — authenticate via OAuth r
 ```
 
 Override the path with `MONO_AGENT_PI_AUTH_PATH`. This is separate from `providers.local[]`: OAuth providers are built into the Pi backend, while `local[]` registers your own servers.
+
+Run `npx @earendil-works/pi-ai login <provider>` from the directory containing `providers.piAuthPath` when a built-in Pi OAuth provider needs setup or re-auth. `mono-agent validate` only reports missing or expired credentials; it is read-only and never runs the login command.
 
 Coverage: `config` — `providers.piAuthPath` (`MONO_AGENT_PI_AUTH_PATH`).
 

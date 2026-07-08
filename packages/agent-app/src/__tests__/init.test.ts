@@ -57,11 +57,12 @@ describe("initMonoAgentFolder", () => {
     expect(config.cron).toEqual({ enabled: true });
   });
 
-  it("writes fallback models and memory when the answers request them", async () => {
+  it("writes fallback models, effort, and memory when the answers request them", async () => {
     const result = await initMonoAgentFolder({
       dir,
       answers: defaultAnswers({
         model: "claude:claude-sonnet-4-6",
+        effort: "medium",
         fallbackModels: ["pi:ollama:gemma4:31b"],
         memory: "memory:journal",
       }),
@@ -69,6 +70,7 @@ describe("initMonoAgentFolder", () => {
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
     expect(config.runtime.fallbackModels).toEqual(["pi:ollama:gemma4:31b"]);
+    expect(config.runtime.effort).toBe("medium");
     expect(config.memory).toMatchObject({ mode: "journal", path: "./.mono-agent/memory" });
   });
 
