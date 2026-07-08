@@ -34,10 +34,10 @@ cd my-agent
 mono-agent init                   # step-by-step wizard on a TTY (`mono-agent setup` is an alias)
 ```
 
-Or drive it with flags (`init` writes the scaffold non-interactively when given any flag, or when stdin is not a TTY):
+Or drive it with flags (`init` writes the scaffold non-interactively when given any flag, or when stdin is not a TTY). Add `--auth` when you want supported provider auth/preflight commands to run before files are written; `--dry-run` never launches them:
 
 ```bash
-mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b
+mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b --auth
 mono-agent validate               # per-section report; `mono-agent doctor` is an alias
 ```
 
@@ -230,7 +230,8 @@ Run Ollama locally and pull the model first, for example `ollama pull qwen3:8b`.
 Built-in Pi OAuth providers, such as `pi:openai-codex:gpt-5.5`, use the Pi auth
 file instead of `providers.local`. Core config defaults `providers.piAuthPath` to
 `~/.pi/agent/auth.json` and exposes `MONO_AGENT_PI_AUTH_PATH` for hosts that keep
-credentials elsewhere.
+credentials elsewhere. Run `npx @earendil-works/pi-ai login <provider>` from the
+directory containing that auth file when a Pi provider needs OAuth setup.
 
 ## Development Verification
 

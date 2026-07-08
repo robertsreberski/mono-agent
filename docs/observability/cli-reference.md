@@ -128,8 +128,8 @@ The **Tools & MCP** section reports the tool policy: allow-all (the default) sho
 `validate` includes a **Provider credentials** section that resolves every referenced Pi model — the primary `runtime.model`, every `runtime.fallbackModels` entry, and the `agent-host` `memory.llm` model — against the Pi auth store (`providers.piAuthPath`) and its sibling `models.json`. It is **static and read-only**: it never mints tokens or hits the network. For each Pi provider:
 
 - A provider configured via `models.json` (custom/local) needs no OAuth → `ok`.
-- A provider **absent** from both the auth store and `models.json` → `waiting`, with a `[WARN]` line and a `pi auth login <provider>` hint.
-- An OAuth provider whose access token has **expired** → `waiting`, with a `[WARN]` line noting the expiry and the `pi auth login <provider>` re-auth hint (the runtime auto-refreshes, but a dead refresh shows up as `No API key for provider: <provider>` at run time).
+- A provider **absent** from both the auth store and `models.json` → `waiting`, with a `[WARN]` line and a `npx @earendil-works/pi-ai login <provider>` hint to run from the directory containing `providers.piAuthPath`.
+- An OAuth provider whose access token has **expired** → `waiting`, with a `[WARN]` line noting the expiry and the `npx @earendil-works/pi-ai login <provider>` re-auth hint (the runtime auto-refreshes, but a dead refresh shows up as `No API key for provider: <provider>` at run time).
 - If no Pi provider-key models are referenced at all (e.g. an all-`claude:` config), the section reports `disabled` — SDK-authenticated models are checked by their own SDK.
 
 This catches the class of silent failure where an expired OAuth token quietly breaks crons or memory capture without any structural config error. Because the worst it returns is `waiting`, it never blocks `start` — read the section.

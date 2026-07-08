@@ -203,6 +203,22 @@ describe("wizard composer — per-preset invariants", () => {
     const plan = composeWizardPlan(defaultAnswers({ model: "pi:ollama:llama3.1:8b" }), CTX);
     expect(plan.configJson.providers?.local).toBeDefined();
   });
+
+  it("auto-derives local provider blocks from fallback models too", () => {
+    const plan = composeWizardPlan(defaultAnswers({
+      model: "claude:claude-sonnet-4-6",
+      fallbackModels: ["pi:lmstudio:qwen/qwen3-8b", "pi:ollama:gemma4:31b"],
+    }), CTX);
+    expect(plan.selectedModules.map((m) => m.id)).toEqual(
+      expect.arrayContaining(["provider:lmstudio", "provider:ollama"]),
+    );
+    expect(plan.configJson.providers?.local?.map((provider) => provider.type).sort()).toEqual(["lmstudio", "ollama"]);
+  });
+
+  it("writes runtime.effort when wizard answers specify one", () => {
+    const plan = composeWizardPlan(defaultAnswers({ effort: "high" }), CTX);
+    expect(plan.configJson.runtime?.effort).toBe("high");
+  });
 });
 
 describe("wizard composer — default parity with today's scaffold", () => {
