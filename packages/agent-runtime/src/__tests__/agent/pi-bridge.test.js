@@ -678,3 +678,77 @@ describe("pi MCP tool helpers", () => {
     await expect(promise).rejects.toThrow("Error: Command aborted");
   });
 });
+
+// The set of built-in tool names getPiBuiltinTools owns (Read/Write/Edit/Glob/
+// Grep/Bash/WebFetch/WebSearch). ReadSkill (read_skill) is appended separately
+// only when skills are supplied.
+const BUILTIN_TOOL_NAMES = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "WebSearch"];
+
+function toolNames(tools) {
+  return tools.map((tool) => tool.name).sort();
+}
+
+describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", () => {
+  it('treats the "*" sentinel as all built-in tools', () => {
+    const tools = getPiBuiltinTools(["*"], {});
+    expect(toolNames(tools)).toEqual([...BUILTIN_TOOL_NAMES].sort());
+  });
+
+  it("treats undefined as all built-in tools (unchanged)", () => {
+    const tools = getPiBuiltinTools(undefined, {});
+    expect(toolNames(tools)).toEqual([...BUILTIN_TOOL_NAMES].sort());
+  });
+
+  it("treats [] as no built-in tools (unchanged)", () => {
+    expect(getPiBuiltinTools([], {})).toEqual([]);
+  });
+
+  it("selects exactly the named subset (unchanged)", () => {
+    const tools = getPiBuiltinTools(["Read", "Bash"], {});
+    expect(toolNames(tools)).toEqual(["Bash", "Read"]);
+  });
+
+  it('applies disallowedTools to the "*" allow-all set (deny wins)', () => {
+    const tools = getPiBuiltinTools(["*"], { disallowedTools: ["Bash"] });
+    const names = tools.map((tool) => tool.name);
+    expect(names).not.toContain("Bash");
+    expect([...names].sort()).toEqual(BUILTIN_TOOL_NAMES.filter((name) => name !== "Bash").sort());
+  });
+
+  it("applies disallowedTools to an explicit allow list (deny wins)", () => {
+    const tools = getPiBuiltinTools(["Read", "Bash"], { disallowedTools: ["Bash"] });
+    expect(tools.map((tool) => tool.name)).toEqual(["Read"]);
+  });
+
+  it("drops the read_skill tool when ReadSkill is disallowed, even with skills present", () => {
+    const root = tempWorkspace();
+    const skillsRoot = join(root, "skills");
+    mkdirSync(join(skillsRoot, "research"), { recursive: true });
+    writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nbody\n");
+
+    // Baseline: read_skill is present without the denylist.
+    const withSkill = getPiBuiltinTools(["*"], { skillsRoot, skillNames: ["research"] });
+    expect(withSkill.find((tool) => tool.name === "read_skill")).toBeTruthy();
+
+    const denied = getPiBuiltinTools(["*"], {
+      skillsRoot,
+      skillNames: ["research"],
+      disallowedTools: ["ReadSkill"],
+    });
+    expect(denied.find((tool) => tool.name === "read_skill")).toBeUndefined();
+  });
+
+  it("drops the read_skill tool when the legacy read_skill name is disallowed", () => {
+    const root = tempWorkspace();
+    const skillsRoot = join(root, "skills");
+    mkdirSync(join(skillsRoot, "research"), { recursive: true });
+    writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nbody\n");
+
+    const denied = getPiBuiltinTools(["*"], {
+      skillsRoot,
+      skillNames: ["research"],
+      disallowedTools: ["read_skill"],
+    });
+    expect(denied.find((tool) => tool.name === "read_skill")).toBeUndefined();
+  });
+});

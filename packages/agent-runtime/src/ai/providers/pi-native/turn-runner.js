@@ -72,6 +72,8 @@ export async function buildTurnTools(runState, {
   const builtIns = capabilities.tool_use === false
     ? []
     : getPiBuiltinTools(options.allowedTools, /** @type {any} */ ({
+      // deny-wins filter applied over the built-ins + ReadSkill inside pi-bridge.
+      disallowedTools: options.disallowedTools,
       skillNames: (options.skills || []).map((/** @type {{name: string}} */ skill) => skill.name),
       // Full skill objects so read_skill can honor pi's neutral Skill shape
       // ({name, filePath, ...}) and derive each skill's root from its own

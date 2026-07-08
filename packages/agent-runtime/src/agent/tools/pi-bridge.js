@@ -408,9 +408,10 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
 
 /**
  * @param {any} allowedTools
- * @param {{skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, ctx?: any}} [options]
+ * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, ctx?: any}} [options]
  */
 export function getPiBuiltinTools(allowedTools, {
+  disallowedTools = [],
   skillNames = [],
   skills = [],
   skillsRoot,
@@ -495,10 +496,17 @@ export function getPiBuiltinTools(allowedTools, {
       limit: { type: "integer" },
     }, ["query"]), webSearchToolImpl, toolContext),
   };
-  const names = Array.isArray(allowedTools) ? allowedTools : Object.keys(all);
+  // allowedTools honors the `"*"` allow-all sentinel (and undefined) as "every
+  // built-in"; disallowedTools is the deny-wins filter applied to the final set.
+  const allowAll = !Array.isArray(allowedTools) || allowedTools.includes("*");
+  const selected = allowAll ? Object.keys(all) : allowedTools;
+  const denied = new Set(Array.isArray(disallowedTools) ? disallowedTools : []);
+  const names = selected.filter((name) => !denied.has(name));
   const tools = names.map((name) => all[name]).filter(Boolean);
   const skillTool = readSkillTool(skillNames, { skillsRoot, dataDir, skills });
-  if (skillTool) tools.push(skillTool);
+  // Deny-check both the future PascalCase name and the legacy snake_case (the
+  // rename lands in a later task) so the denylist works across the transition.
+  if (skillTool && !denied.has("ReadSkill") && !denied.has("read_skill")) tools.push(skillTool);
   const gated = approvalManager
     ? wrapToolsWithApprovalGate(tools, approvalManager, { model: approvalModel })
     : tools;

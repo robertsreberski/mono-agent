@@ -13,7 +13,7 @@ import { readRuntimeBrand } from "../../agent/tools/shared/runtime-context.js";
 import { buildCapabilitiesUsed } from "../runtime/capabilities-used.js";
 import {
   claudeNativeAgentDefinitions,
-  claudeToolsWithNativeSubagents,
+  resolveClaudeAllowedTools,
 } from "./claude-subagents.js";
 
 const DORMANT_CLI_CAPABILITIES = {
@@ -377,7 +377,10 @@ export function buildCliCommand({
   const normalizedEffort = typeof effort === "string" && effort.trim() ? effort : null;
   if (sdk === "claude-code") {
     const nativeAgents = claudeNativeAgentDefinitions(nativeSubagents);
-    const cliAllowedTools = claudeToolsWithNativeSubagents(allowedTools, nativeSubagents);
+    // `"*"` allow-all → defer to Claude Code's full default toolset (omit
+    // --tools); `cliAllowedTools` is the "*"-stripped explicit list so a bare
+    // "*" never reaches a flag value.
+    const { allowAll: cliAllowAll, tools: cliAllowedTools } = resolveClaudeAllowedTools(allowedTools, nativeSubagents);
     // intelligence-ramp Phase 5.1: when the coordinator hands us a parent
     // session id (recovery continuation, R12), pass --resume so the host
     // CLI can keep its own conversation cache warm. Otherwise stay
@@ -402,7 +405,7 @@ export function buildCliCommand({
       args.push("--add-dir", ...skillDirs);
     }
     if (nativeAgents) args.push("--agents", JSON.stringify(nativeAgents));
-    if (Array.isArray(cliAllowedTools) && cliAllowedTools.length) {
+    if (!cliAllowAll && Array.isArray(cliAllowedTools) && cliAllowedTools.length) {
       args.push("--tools", cliAllowedTools.join(","));
     }
     const autoAllowed = [
