@@ -48,7 +48,6 @@ export const LEGACY_TOOL_ALIASES: Record<string, string> = {
   memory_recall: "MemoryRecall",
   read_skill: "ReadSkill",
   ask_collaborator: "AskCollaborator",
-  notify_conversation: "NotifyConversation",
 };
 
 /** The canonical new name for a tool, resolving a legacy snake_case alias if given. */
@@ -65,7 +64,7 @@ export type AdapterSendToolName = (typeof ADAPTER_SEND_TOOL_NAMES)[number];
 /**
  * All offline-knowable tool names: built-ins, adapter send tools, AND the canonical
  * PascalCase names that only exist as alias VALUES (`ReadSkill`, `AskCollaborator`,
- * `MemoryRecall`, `NotifyConversation`). Folding in the alias values keeps the new
+ * `MemoryRecall`). Folding in the alias values keeps the new
  * canonical names at least as "known" as their deprecated snake_case spellings — a
  * config listing `ReadSkill` must validate as cleanly as one listing `read_skill`.
  */

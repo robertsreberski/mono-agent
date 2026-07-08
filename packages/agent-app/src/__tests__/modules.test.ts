@@ -112,13 +112,16 @@ describe("known-tools", () => {
     // These names exist only as alias VALUES (not in BUILTIN ∪ ADAPTER_SEND). A config
     // listing the new canonical name must validate at least as cleanly as one listing the
     // deprecated snake_case spelling — otherwise the canonical name is wrongly "unknown".
-    for (const name of ["ReadSkill", "AskCollaborator", "MemoryRecall", "NotifyConversation"]) {
+    for (const name of ["ReadSkill", "AskCollaborator", "MemoryRecall"]) {
       expect(isKnownToolName(name)).toBe(true);
     }
     // The deprecated snake_case aliases stay accepted for backwards-compat.
-    for (const alias of ["read_skill", "ask_collaborator", "memory_recall", "notify_conversation"]) {
+    for (const alias of ["read_skill", "ask_collaborator", "memory_recall"]) {
       expect(isKnownToolName(alias)).toBe(true);
     }
+    // The retired loopback tool was deleted — its dead alias no longer resolves.
+    expect(isKnownToolName("NotifyConversation")).toBe(false);
+    expect(isKnownToolName("notify_conversation")).toBe(false);
   });
 
   it("treats the allow-all sentinel ('*') as a known tool name", () => {

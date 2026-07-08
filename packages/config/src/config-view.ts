@@ -1,3 +1,4 @@
+import { ALLOW_ALL_TOOLS } from "./enums.js";
 import type { MonoAgentConfigJson } from "./json-source.js";
 import type {
   RedactedLocalProviderDefinition,
@@ -648,7 +649,11 @@ function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSect
       toField(env, {
         id: "tools.allowedTools",
         label: "Allowed tools",
-        value: tools.allowedTools.length === 0 ? "default policy" : tools.allowedTools.join(", "),
+        value: tools.allowedTools.includes(ALLOW_ALL_TOOLS)
+          ? "All tools allowed"
+          : tools.allowedTools.length === 0
+            ? "none (chat-only)"
+            : tools.allowedTools.join(", "),
         jsonPresent: json.tools?.allowedTools !== undefined,
       }),
       toField(env, {
