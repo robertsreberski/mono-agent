@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
 import { CAPABILITY_MODULES, findModule } from "../modules/index.js";
 import {
+  alwaysOnTools,
   composeWizardPlan,
   type ComposeContext,
   defaultAnswers,
@@ -136,8 +137,15 @@ describe("wizard composer — env-example + secret checklist coverage", () => {
 });
 
 describe("wizard composer — tool selection", () => {
-  it("defaults allowedTools to the read-only safe set", () => {
-    expect(defaultAnswers().allowedTools).toEqual(["Read", "Glob", "Grep"]);
+  it("defaults allowedTools to allow-all (the single scaffold/preset/flag choke point)", () => {
+    expect(defaultAnswers().allowedTools).toEqual(["*"]);
+  });
+
+  it("composes allow-all for every preset (none pin an explicit tool list)", () => {
+    for (const preset of PRESET_CATALOG) {
+      const plan = composeWizardPlan(presetAnswers(preset), CTX);
+      expect(plan.configJson.tools?.allowedTools, preset.id).toEqual(["*"]);
+    }
   });
 
   it("preserves an explicit zero-tools override and warns chat-only", () => {
@@ -145,19 +153,40 @@ describe("wizard composer — tool selection", () => {
     expect(plan.configJson.tools?.allowedTools).toEqual([]);
     expect(plan.warnings.some((w) => w.includes("chat-only"))).toBe(true);
   });
+
+  it("preserves an explicit specific-tool override verbatim (the choose-specific path)", () => {
+    const plan = composeWizardPlan(defaultAnswers({ allowedTools: ["Read", "Bash"] }), CTX);
+    expect(plan.configJson.tools?.allowedTools).toEqual(["Read", "Bash"]);
+    expect(plan.warnings).toEqual([]);
+  });
+});
+
+describe("wizard composer — alwaysOnTools (auto-provisioned, not gated by allowedTools)", () => {
+  it("includes MemoryRecall for a recall-provisioning memory tier (bujo)", () => {
+    expect(alwaysOnTools(defaultAnswers({ memory: "memory:bujo" }))).toEqual(["MemoryRecall"]);
+  });
+
+  it("includes MemoryRecall for journal and supermemory too", () => {
+    expect(alwaysOnTools(defaultAnswers({ memory: "memory:journal" }))).toEqual(["MemoryRecall"]);
+    expect(alwaysOnTools(defaultAnswers({ memory: "memory:supermemory" }))).toEqual(["MemoryRecall"]);
+  });
+
+  it("is empty for lite memory and for no memory", () => {
+    expect(alwaysOnTools(defaultAnswers({ memory: "memory:lite" }))).toEqual([]);
+    expect(alwaysOnTools(defaultAnswers())).toEqual([]);
+  });
 });
 
 describe("wizard composer — per-preset invariants", () => {
-  it("code-sandbox: full code tool set + native fail-closed sandbox", () => {
+  it("code-sandbox: allow-all tools + native fail-closed sandbox", () => {
     const plan = composeWizardPlan(presetAnswers(PRESET_CATALOG.find((p) => p.id === "code-sandbox")!), CTX);
-    expect(plan.configJson.tools?.allowedTools).toEqual(["Read", "Write", "Edit", "Glob", "Grep", "Bash"]);
+    expect(plan.configJson.tools?.allowedTools).toEqual(["*"]);
     expect(plan.configJson.sandbox).toMatchObject({ mode: "native", fallback: "fail-closed" });
   });
 
-  it("telegram-assistant: telegram send tools + bujo memory on the composer model", () => {
+  it("telegram-assistant: allow-all tools + bujo memory on the composer model", () => {
     const plan = composeWizardPlan(presetAnswers(PRESET_CATALOG.find((p) => p.id === "telegram-assistant")!), CTX);
-    expect(plan.configJson.tools?.allowedTools).toContain("TelegramSendMessage");
-    expect(plan.configJson.tools?.allowedTools).toContain("TelegramAskButtons");
+    expect(plan.configJson.tools?.allowedTools).toEqual(["*"]);
     expect(plan.configJson.memory?.mode).toBe("bujo");
     expect(plan.configJson.memory?.llm?.model).toBe("claude:claude-sonnet-4-6");
   });
@@ -190,7 +219,7 @@ describe("wizard composer — default parity with today's scaffold", () => {
     expect(config.artifacts?.retention?.maxCount).toBe(50000);
     expect(config.traceability?.sourceLabel).toBe("Mono Agent (acme)");
     expect(config).not.toHaveProperty("memory");
-    // The one intentional difference from today's scaffold:
-    expect(config.tools?.allowedTools).toEqual(["Read", "Glob", "Grep"]);
+    // The one intentional difference from today's scaffold — the default is now allow-all:
+    expect(config.tools?.allowedTools).toEqual(["*"]);
   });
 });

@@ -4,7 +4,9 @@ import { basename, join } from "node:path";
 import * as p from "@clack/prompts";
 
 import { findModule } from "../modules/catalog.js";
+import { ALLOW_ALL_TOOLS, BUILTIN_TOOL_NAMES, isAllowAllTools } from "../modules/known-tools.js";
 import {
+  alwaysOnTools,
   composeWizardPlan,
   defaultAnswers,
   recommendedToolSelection,
@@ -148,8 +150,9 @@ async function collectCustom(ctx: { cwd: string }): Promise<WizardAnswers> {
   // 5. Tools.
   await promptTools(draft);
 
-  // 6. Sandbox — only meaningful once shell/file tools are in play.
-  if (draft.allowedTools.some((tool) => SANDBOXABLE_TOOLS.has(tool))) {
+  // 6. Sandbox — only meaningful once shell/file tools are in play. Allow-all
+  // includes Bash/Write/Edit, so the sandbox question must still appear under it.
+  if (isAllowAllTools(draft.allowedTools) || draft.allowedTools.some((tool) => SANDBOXABLE_TOOLS.has(tool))) {
     draft.sandbox = guard(
       await p.confirm({
         message: "Sandbox shell/file tools? (native srt, localhost-only network, fails closed if srt is missing)",
@@ -222,18 +225,88 @@ async function promptModuleInputs(draft: DraftAnswers): Promise<void> {
   }
 }
 
+/** Short reasons annotating each always-on tool in the framing note. */
+const ALWAYS_ON_TOOL_REASONS: Readonly<Record<string, string>> = {
+  MemoryRecall: "memory recall is on",
+};
+
+/** The always-on tool names annotated with their reason, e.g. `MemoryRecall (memory recall is on)`. */
+function alwaysOnDisplay(alwaysOn: readonly string[]): string[] {
+  return alwaysOn.map((tool) => {
+    const reason = ALWAYS_ON_TOOL_REASONS[tool];
+    return reason === undefined ? tool : `${tool} (${reason})`;
+  });
+}
+
 /**
- * Prompt the tools multiselect, pre-checking the recommended selection for the
- * current capabilities. An empty selection loops back unless the operator confirms
+ * The channel-contributed send/ask tools for the enabled channels (PascalCase),
+ * minus the channel-agnostic `AskUser` (surfaced on its own line). Reuses the
+ * multiselect option builder so the framing note can never drift from the picker.
+ */
+function channelSendTools(channels: readonly string[]): string[] {
+  return toolMultiselectOptions(channels)
+    .slice(BUILTIN_TOOL_NAMES.length)
+    .map((option) => option.value)
+    .filter((value) => value !== "AskUser");
+}
+
+/**
+ * The three tool families, explained before the allow-all decision so the operator
+ * knows what "Allow all" turns on and what is unaffected by the choice:
+ *   1. Always on — auto-provisioned, NOT gated by this choice (e.g. MemoryRecall).
+ *   2. Built-ins — file/shell/web tools.
+ *   3. Channel tools — the send/ask tools that came with the channels you enabled,
+ *      plus AskUser (ask the human, any channel).
+ */
+function toolSituationFraming(draft: DraftAnswers, alwaysOn: readonly string[]): string {
+  const sends = channelSendTools(draft.channels);
+  const channelLine = sends.length > 0
+    ? `Channel tools (from the channels you enabled): ${sends.join(", ")}, plus AskUser (ask the human, any channel).`
+    : "Channel tools: AskUser (ask the human, any channel).";
+  return [
+    alwaysOn.length > 0
+      ? `Always on (auto-provisioned, not affected by this choice): ${alwaysOnDisplay(alwaysOn).join(", ")}.`
+      : "Always on (auto-provisioned): none for this setup.",
+    "Built-ins: files (Read/Write/Edit/Glob/Grep), shell (Bash), web (WebFetch/WebSearch).",
+    channelLine,
+    '"Allow all" turns on every built-in and channel tool; you can turn specific tools off later via tools.disallowedTools.',
+  ].join("\n");
+}
+
+/**
+ * The tools step: frame the three tool families, then a single "Allow all tools?"
+ * confirm (default yes → `["*"]`). Choosing "No" drops into the specific-tool
+ * multiselect. Always-on tools (MemoryRecall/ReadSkill/MCP) are auto-provisioned and
+ * are surfaced only for clarity — never gated by this choice.
+ */
+async function promptTools(draft: DraftAnswers): Promise<void> {
+  const alwaysOn = alwaysOnTools(toWizardAnswers(draft));
+  p.note(toolSituationFraming(draft, alwaysOn), "Tools");
+
+  const allowAll = guard(
+    await p.confirm({
+      message: "Allow all tools? (recommended — the model can use every built-in and your channels' tools)",
+      initialValue: true,
+    }),
+  );
+  if (allowAll) {
+    draft.allowedTools = [ALLOW_ALL_TOOLS];
+    return;
+  }
+
+  await pickSpecificTools(draft);
+}
+
+/**
+ * The "choose specific tools" multiselect, pre-checking the recommended selection for
+ * the current capabilities. An empty selection loops back unless the operator confirms
  * the chat-only warning. The final list is ordered by the option order so
  * `tools.allowedTools` is deterministic regardless of toggle order.
  */
-async function promptTools(draft: DraftAnswers): Promise<void> {
+async function pickSpecificTools(draft: DraftAnswers): Promise<void> {
   const options = toolMultiselectOptions(draft.channels);
   const optionOrder = new Map(options.map((option, index) => [option.value, index]));
   const recommended = recommendedToolSelection(toWizardAnswers(draft));
-
-  p.note("Memory recall and MCP-server tools are not gated by this list.");
 
   for (;;) {
     const tools = guard(
@@ -297,10 +370,17 @@ async function confirmSummary(draft: DraftAnswers, ctx: { cwd: string }): Promis
   }
 
   const secrets = plan.secrets.map((secret) => secret.envVar);
+  const toolsLine = isAllowAllTools(draft.allowedTools)
+    ? "all tools"
+    : draft.allowedTools.length > 0
+      ? draft.allowedTools.join(", ")
+      : "none (chat-only)";
+  const alwaysOn = alwaysOnTools(answers);
   const lines = [
     `Model:        ${draft.model}${draft.fallbackModels.length > 0 ? `  (fallbacks: ${draft.fallbackModels.join(", ")})` : ""}`,
     `Capabilities: ${capabilities.length > 0 ? capabilities.join(", ") : "none"}`,
-    `Tools:        ${draft.allowedTools.length > 0 ? draft.allowedTools.join(", ") : "none (chat-only)"}`,
+    `Tools:        ${toolsLine}`,
+    ...(alwaysOn.length > 0 ? [`Always on:    ${alwaysOnDisplay(alwaysOn).join(", ")}`] : []),
     `Writes:       ${writes.join(", ")}`,
     `Secrets:      ${secrets.length > 0 ? `${secrets.join(", ")} → .env.example` : "none"}`,
   ];

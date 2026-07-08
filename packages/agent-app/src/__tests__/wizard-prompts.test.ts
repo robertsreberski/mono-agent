@@ -58,21 +58,28 @@ describe("wizard prompt builders", () => {
     expect(values[values.length - 1]).toBe("__other__");
   });
 
-  it("toolMultiselectOptions appends a channel's send tools after the eight built-ins", () => {
+  it("toolMultiselectOptions appends a channel's send tools then AskUser after the built-ins", () => {
     const options = toolMultiselectOptions(["channel:telegram"]);
     const values = options.map((option) => option.value);
     expect(values.slice(0, BUILTIN_TOOL_NAMES.length)).toEqual([...BUILTIN_TOOL_NAMES]);
     expect(values.slice(BUILTIN_TOOL_NAMES.length)).toEqual([
       "TelegramSendMessage",
       "TelegramAskButtons",
+      "AskUser",
     ]);
+    // Channel send-tool hints name the action and the channel.
     const ask = options.find((option) => option.value === "TelegramAskButtons");
-    expect(ask?.hint).toContain("Telegram is on");
+    expect(ask?.hint).toContain("Telegram");
+    expect(ask?.hint).toContain("tappable buttons");
+    const send = options.find((option) => option.value === "TelegramSendMessage");
+    expect(send?.hint).toBe("proactive send (Telegram)");
   });
 
-  it("toolMultiselectOptions returns only the built-ins when no channel is selected", () => {
+  it("toolMultiselectOptions offers the built-ins plus channel-agnostic AskUser with no channel", () => {
     const options = toolMultiselectOptions([]);
-    expect(options.map((option) => option.value)).toEqual([...BUILTIN_TOOL_NAMES]);
+    expect(options.map((option) => option.value)).toEqual([...BUILTIN_TOOL_NAMES, "AskUser"]);
+    const ask = options.find((option) => option.value === "AskUser");
+    expect(ask?.hint).toContain("any channel");
   });
 
   it("presetSelectOptions ends with the __custom__ escape hatch", () => {

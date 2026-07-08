@@ -53,6 +53,27 @@ const BUILTIN_TOOL_HINTS: Readonly<Record<string, string>> = {
 const ADAPTER_SEND_TOOL_SET: ReadonlySet<string> = new Set(ADAPTER_SEND_TOOL_NAMES);
 
 /**
+ * The action each adapter send tool performs; the owning channel's title is appended
+ * so the hint reads e.g. `proactive send (Telegram)`. Keyed by PascalCase tool name.
+ */
+const ADAPTER_SEND_TOOL_ACTIONS: Readonly<Record<string, string>> = {
+  SlackSendMessage: "proactive send",
+  TelegramSendMessage: "proactive send",
+  TelegramAskButtons: "ask via tappable buttons, non-blocking",
+  TelegramSendFile: "send a document or photo",
+};
+
+/**
+ * The channel-agnostic interaction tool. Always offered (even for a restricted agent)
+ * because it asks the human through whichever channel is live and waits for the reply.
+ */
+const ASK_USER_OPTION: WizardSelectOption = {
+  value: "AskUser",
+  label: "AskUser",
+  hint: "ask the human and wait for a typed reply (any channel)",
+};
+
+/**
  * Channel options for the "how will you talk to this agent?" multiselect: every
  * channel module in catalog order (webhook first), value = module id.
  */
@@ -93,9 +114,11 @@ export function modelSelectOptions(): WizardSelectOption[] {
 }
 
 /**
- * The tools multiselect: all eight built-ins first (with per-tool hints), then the
- * adapter send tools contributed by the selected channels (deduped, in channel
- * order). Value = tool name — the exact `tools.allowedTools` entry.
+ * The "choose specific" tools multiselect: all eight built-ins first (with per-tool
+ * hints), then the adapter send tools contributed by the selected channels (deduped,
+ * in channel order, each hint naming its channel + action), then the channel-agnostic
+ * `AskUser`. Value = tool name — the exact `tools.allowedTools` entry. The always-on
+ * tools (`MemoryRecall`/`ReadSkill`/MCP) are auto-provisioned and never listed here.
  */
 export function toolMultiselectOptions(selectedChannelIds: readonly string[]): WizardSelectOption[] {
   const options: WizardSelectOption[] = BUILTIN_TOOL_NAMES.map((name) => ({
@@ -111,17 +134,17 @@ export function toolMultiselectOptions(selectedChannelIds: readonly string[]): W
       continue;
     }
     for (const tool of module.recommendedTools ?? []) {
-      if (!ADAPTER_SEND_TOOL_SET.has(tool) || seen.has(tool)) {
+      // `AskUser` is channel-agnostic and appended once at the end, not per channel.
+      if (!ADAPTER_SEND_TOOL_SET.has(tool) || seen.has(tool) || tool === "AskUser") {
         continue;
       }
       seen.add(tool);
-      options.push({
-        value: tool,
-        label: tool,
-        hint: `${tool} — proactive sends (${module.title} is on)`,
-      });
+      const action = ADAPTER_SEND_TOOL_ACTIONS[tool] ?? "channel action";
+      options.push({ value: tool, label: tool, hint: `${action} (${module.title})` });
     }
   }
+
+  options.push(ASK_USER_OPTION);
   return options;
 }
 

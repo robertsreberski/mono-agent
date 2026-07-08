@@ -3,6 +3,7 @@ import type { MonoAgentConfigJson } from "@mono-agent/config";
 import { monoAgentConfigWithSchema } from "../config-reference.js";
 import {
   ADAPTER_SEND_TOOL_NAMES,
+  ALLOW_ALL_TOOLS,
   baseConfig,
   BUILTIN_TOOL_NAMES,
   type CapabilityModule,
@@ -129,6 +130,45 @@ export function recommendedToolSelection(answers: WizardAnswers): readonly strin
   return ORDERED_TOOL_NAMES.filter((name) => union.has(name));
 }
 
+/** The read-only recall tool auto-provisioned from `memory.recallTool.enabled`. */
+const MEMORY_RECALL_TOOL = "MemoryRecall";
+
+/**
+ * True when the selected memory tier auto-provisions the read-only `MemoryRecall`
+ * tool (its fragment sets `memory.recallTool.enabled`). Derived from the catalog so
+ * it never drifts from the memory modules themselves — journal/bujo/supermemory do,
+ * lite does not.
+ */
+function memoryProvisionsRecall(memoryId: string | undefined): boolean {
+  if (memoryId === undefined) {
+    return false;
+  }
+  const module = findModule(memoryId);
+  if (module?.kind !== "memory") {
+    return false;
+  }
+  const fragment = module.configFragment({ model: DEFAULT_MODEL }) as {
+    memory?: { recallTool?: { enabled?: boolean } };
+  };
+  return fragment.memory?.recallTool?.enabled === true;
+}
+
+/**
+ * The tools this agent auto-provisions regardless of `tools.allowedTools` — the
+ * "always on" set the wizard surfaces so the operator understands they are NOT gated
+ * by the allow-list choice. Today that is `MemoryRecall` when the memory tier enables
+ * recall (journal/bujo/supermemory). `ReadSkill` (skills configured) and MCP-server
+ * tools are also always-on when present, but the basic wizard authors neither, so they
+ * never appear here.
+ */
+export function alwaysOnTools(answers: WizardAnswers): readonly string[] {
+  const tools: string[] = [];
+  if (memoryProvisionsRecall(answers.memory)) {
+    tools.push(MEMORY_RECALL_TOOL);
+  }
+  return tools;
+}
+
 const BASE_ANSWERS: WizardAnswers = {
   model: DEFAULT_MODEL,
   fallbackModels: [],
@@ -137,19 +177,20 @@ const BASE_ANSWERS: WizardAnswers = {
   // exactOptionalPropertyTypes an optional key must be absent, not `undefined`.
   sandbox: false,
   observability: false,
-  allowedTools: [],
+  allowedTools: [ALLOW_ALL_TOOLS],
   moduleInputs: {},
 };
 
 /**
  * The wizard's starting answers with `overrides` shallow-merged on top. Unless an
- * explicit `allowedTools` override is supplied, `allowedTools` is recomputed from
- * {@link recommendedToolSelection} so selecting a channel/memory/sandbox auto-checks
- * its recommended tools. An explicit `[]` override is preserved (the chat-only case).
+ * explicit `allowedTools` override is supplied, `allowedTools` defaults to allow-all
+ * (`["*"]`) — the single choke point that flips the silent scaffold, every preset, and
+ * every non-interactive `--flag` path to allow-all. An explicit override is preserved
+ * verbatim: `["*"]`, a specific list, or `[]` (the chat-only case).
  */
 export function defaultAnswers(overrides?: Partial<WizardAnswers>): WizardAnswers {
   const merged: WizardAnswers = { ...BASE_ANSWERS, ...overrides };
-  const allowedTools = overrides?.allowedTools ?? recommendedToolSelection(merged);
+  const allowedTools = overrides?.allowedTools ?? [ALLOW_ALL_TOOLS];
   return { ...merged, allowedTools };
 }
 

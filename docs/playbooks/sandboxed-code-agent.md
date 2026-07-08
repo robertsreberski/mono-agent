@@ -35,7 +35,7 @@ An agent that can read repos and run Bash inside the native `srt` sandbox with l
     "model": "claude:claude-sonnet-4-6"
   },
   "tools": {
-    "allowedTools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
+    "allowedTools": ["*"]
   },
   "sandbox": {
     "mode": "native",

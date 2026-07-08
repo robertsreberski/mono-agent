@@ -61,14 +61,12 @@ describe("parseCliArgs preset flags & alias normalization", () => {
 });
 
 describe("answersFromCli", () => {
-  it("unions --with channels onto the preset channels and recomputes tools", () => {
+  it("unions --with channels onto the preset channels and defaults tools to allow-all", () => {
     const answers = answersFromCli({ presetId: "telegram-assistant", withChannels: ["slack"] });
     expect(answers.channels).toContain("channel:telegram");
     expect(answers.channels).toContain("channel:slack");
-    expect(answers.allowedTools).toContain("TelegramSendMessage");
-    expect(answers.allowedTools).toContain("SlackSendMessage");
-    // The read-only safe defaults are always present.
-    expect(answers.allowedTools).toContain("Read");
+    // No flag pins a tool list, so the single defaultAnswers choke point yields allow-all.
+    expect(answers.allowedTools).toEqual(["*"]);
   });
 
   it("maps --memory to a module id and lets --model override the preset model", () => {

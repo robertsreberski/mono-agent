@@ -35,8 +35,8 @@ describe("initMonoAgentFolder", () => {
     expect(config.context.identityPath).toBe("./IDENTITY.md");
     expect(config.webhook.enabled).toBe(true);
     expect(config.memory).toBeUndefined();
-    // Deliberate behavior change: the default scaffold pre-checks the read-only safe tools.
-    expect(config.tools.allowedTools).toEqual(["Read", "Glob", "Grep"]);
+    // Deliberate behavior change: the default scaffold now allows all tools (`["*"]`).
+    expect(config.tools.allowedTools).toEqual(["*"]);
 
     const identity = await readFile(result.identityPath, "utf8");
     expect(identity).toContain("# Identity");
