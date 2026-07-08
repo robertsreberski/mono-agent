@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/a2a-adapter",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "A2A provider and consumer adapter for host-compatible runtimes.",
   "type": "module",
   "license": "UNLICENSED",
@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@a2a-js/sdk": "1.0.0-alpha.0",
-    "@mono-agent/agent-contracts": "workspace:0.6.0",
+    "@mono-agent/agent-contracts": "workspace:0.6.1",
     "express": "^5.1.0"
   },
   "devDependencies": {
