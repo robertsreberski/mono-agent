@@ -185,6 +185,55 @@ describe("buildEventSpanAttributes", () => {
     expect(spans[0]?.attributes["mono.agent.tool.name"]).not.toBe("file_edit");
   });
 
+  it("exports provider-native file changes as runtime spans with failed status preserved", () => {
+    const completed = buildEventSpanAttributes(
+      {
+        type: "file_change",
+        status: "completed",
+        changes: [{ path: "notes.txt", kind: "update" }],
+        summary: { files: 1, added_lines: 2, removed_lines: 1, changed_lines: 3, unavailable_count: 0 },
+      },
+      7,
+      makeContext(),
+    );
+    expect(completed.category).toBe("runtime");
+    expect(completed.name).toBe("file change");
+    expect(completed.attributes["mono.agent.event.label"]).toBe("file change");
+    expect(completed.attributes["mono.agent.file_change.status"]).toBe("completed");
+    expect(completed.attributes["mono.agent.file_change.files"]).toBe(1);
+    expect(completed.attributes["mono.agent.file_change.added_lines"]).toBe(2);
+    expect(completed.attributes["mono.agent.file_change.removed_lines"]).toBe(1);
+    expect(completed.attributes["mono.agent.file_change.changed_lines"]).toBe(3);
+    expect(completed.attributes["mono.agent.file_change.unavailable_count"]).toBe(0);
+    expect(completed.attributes).not.toHaveProperty("mono.agent.file_change.paths");
+    expect(spanStatusFor("succeeded", completed.category)).toBe("UNSET");
+
+    const events: RuntimeEventLike[] = [
+      {
+        type: "file_change",
+        status: "failed",
+        is_error: true,
+        changes: [{ path: "notes.txt", kind: "update" }],
+        summary: { files: 1, added_lines: 0, removed_lines: 0, changed_lines: 0, unavailable_count: 1 },
+      },
+    ];
+    const spans = buildEventSpans(events, makeContext());
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.name).toBe("file change failed");
+    expect(spans[0]?.category).toBe("error");
+    expect(spans[0]?.attributes["openinference.span.kind"]).toBe("CHAIN");
+    expect(spans[0]?.attributes["output.value"]).toBe("file change failed");
+    expect(spans[0]?.attributes["mono.agent.file_change.status"]).toBe("failed");
+    expect(spans[0]?.attributes["mono.agent.file_change.files"]).toBe(1);
+    expect(spans[0]?.attributes["mono.agent.file_change.unavailable_count"]).toBe(1);
+    expect(spans[0]?.attributes).not.toHaveProperty("mono.agent.file_change.paths");
+    expect(spanStatusFor("succeeded", spans[0]?.category ?? "runtime")).toBe("ERROR");
+
+    const sensitive = buildEventSpans(events, makeContext({ includeSensitiveData: true }));
+    expect(sensitive[0]?.attributes["mono.agent.file_change.paths"]).toBe("notes.txt");
+  });
+
   it("classifies an assistant text event as message", () => {
     const result = buildEventSpanAttributes(
       { type: "assistant", message: { content: [{ type: "text", text: "hi" }] } },

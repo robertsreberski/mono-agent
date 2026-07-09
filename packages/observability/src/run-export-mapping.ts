@@ -234,6 +234,30 @@ function costAttributes(cost: unknown, usage: unknown): SpanAttributes {
   return usd === undefined ? {} : { "mono.agent.cost_usd": usd };
 }
 
+function fileChangeExportAttributes(event: RuntimeEventLike, ctx: RunExportContext): SpanAttributes {
+  if (event.type !== "file_change") {
+    return {};
+  }
+  const summary = isRecord(event.summary) ? event.summary : undefined;
+  const changes = Array.isArray(event.changes) ? event.changes.filter(isRecord) : [];
+  const paths = changes.map((change) => stringField(change, "path")).filter((path): path is string => path !== undefined);
+  const status = stringField(event, "status") ?? (event.is_error === true || event.error !== undefined ? "failed" : undefined);
+  const files = finiteNumber(summary?.files) ?? (changes.length > 0 ? changes.length : undefined);
+  const addedLines = finiteNumber(summary?.added_lines);
+  const removedLines = finiteNumber(summary?.removed_lines);
+  const changedLines = finiteNumber(summary?.changed_lines);
+  const unavailableCount = finiteNumber(summary?.unavailable_count);
+  return {
+    ...(status === undefined ? {} : { "mono.agent.file_change.status": status }),
+    ...(files === undefined ? {} : { "mono.agent.file_change.files": files }),
+    ...(addedLines === undefined ? {} : { "mono.agent.file_change.added_lines": addedLines }),
+    ...(removedLines === undefined ? {} : { "mono.agent.file_change.removed_lines": removedLines }),
+    ...(changedLines === undefined ? {} : { "mono.agent.file_change.changed_lines": changedLines }),
+    ...(unavailableCount === undefined ? {} : { "mono.agent.file_change.unavailable_count": unavailableCount }),
+    ...(ctx.includeSensitiveData && paths.length > 0 ? { "mono.agent.file_change.paths": paths.join(", ") } : {}),
+  };
+}
+
 /**
  * Build a per-event child span mapping. Category/label/summary are derived via
  * {@link buildEventDescriptors} (the single source of truth shared with the
@@ -265,6 +289,7 @@ export function buildEventSpanAttributes(
     ...(ctx.includeSensitiveData ? { "mono.agent.event.summary": summary } : {}),
     "mono.agent.run_id": ctx.runId,
     ...(ctx.sourceId === undefined ? {} : { "mono.agent.source_id": ctx.sourceId }),
+    ...fileChangeExportAttributes(event, ctx),
   };
   return {
     name: label,
@@ -475,6 +500,7 @@ export function buildEventSpans(
         category,
         attributes: {
           ...baseAttrs(ctx, index, type, category, label),
+          ...fileChangeExportAttributes(event, ctx),
           ...openInferenceAttrs(category, label, ctx.includeSensitiveData ? summary : label, MIME_TEXT),
           ...(ctx.includeSensitiveData ? { "mono.agent.event.summary": summary } : {}),
         },

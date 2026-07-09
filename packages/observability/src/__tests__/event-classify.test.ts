@@ -36,6 +36,17 @@ describe("event-classify exported helpers", () => {
     expect(eventSummary({ summary: "hello" }, "runtime", { summary: "hello" }, 4096)).toBe("hello");
   });
 
+  it("classifies provider-native file changes by their own status", () => {
+    expect(buildEventDescriptors({ type: "file_change", status: "completed" })).toMatchObject({
+      category: "runtime",
+      label: "file change",
+    });
+    expect(buildEventDescriptors({ type: "file_change", status: "failed", is_error: true })).toMatchObject({
+      category: "error",
+      label: "file change failed",
+    });
+  });
+
   it("extracts message text and assistant content kind", () => {
     expect(textFromMessage({ content: [{ type: "text", text: "answer" }] })).toBe("answer");
     expect(assistantMessageContentKind({ type: "assistant", message: { content: [{ type: "thinking", thinking: "x" }] } })).toBe("thinking");

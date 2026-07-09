@@ -24,6 +24,9 @@ export function classifyRecordedRunEvent(event: unknown): RecordedRunEventCatego
     return "runtime";
   }
   const type = stringField(event, "type")?.toLowerCase() ?? "";
+  if (type === "file_change") {
+    return fileChangeFailed(event) ? "error" : "runtime";
+  }
   if (
     type.includes("error") ||
     type.includes("failure") ||
@@ -67,6 +70,9 @@ export function classifyRecordedRunEvent(event: unknown): RecordedRunEventCatego
 }
 
 export function eventLabel(record: Record<string, unknown>, category: RecordedRunEventCategory, type: string | undefined): string {
+  if (type === "file_change") {
+    return category === "error" ? "file change failed" : "file change";
+  }
   if (category === "tool") {
     const toolUseBlock = firstToolUseBlock(record);
     if (toolUseBlock !== undefined) {
@@ -100,6 +106,14 @@ export function eventLabel(record: Record<string, unknown>, category: RecordedRu
     return "Turn context";
   }
   return type ?? "Runtime event";
+}
+
+function fileChangeFailed(record: Record<string, unknown>): boolean {
+  if (record.is_error === true || record.error !== undefined) {
+    return true;
+  }
+  const status = stringField(record, "status")?.toLowerCase();
+  return status === "failed" || status === "failure" || status === "error" || status === "errored";
 }
 
 export function eventSummary(
