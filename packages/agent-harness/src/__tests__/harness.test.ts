@@ -32,6 +32,7 @@ class FakeRecorder implements RunRecorder {
   readonly events: RuntimeEventLike[] = [];
   startCount = 0;
   summaryStatus?: string;
+  systemPrompt?: string;
 
   constructor(private readonly runId: string, private readonly conversationId: string) {}
 
@@ -52,6 +53,9 @@ class FakeRecorder implements RunRecorder {
   }
 
   async finish(result: RuntimeResultLike): Promise<RunSummary> {
+    if (result.systemPrompt !== undefined) {
+      this.systemPrompt = result.systemPrompt;
+    }
     const status = result.cancelled === true ? "cancelled" : result.failureKind !== undefined || result.error !== undefined ? "failed" : "succeeded";
     this.summaryStatus = status;
     return {
@@ -64,6 +68,7 @@ class FakeRecorder implements RunRecorder {
       eventCount: this.events.length,
       artifactPaths: [],
       ...(result.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: result.capabilitiesUsed }),
+      ...(result.systemPrompt === undefined ? {} : { systemPrompt: result.systemPrompt }),
     };
   }
 
@@ -95,6 +100,31 @@ function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => 
 }
 
 describe("AgentHarness", () => {
+  it("keeps the compiled system prompt in recorded summaries but never returns it to channel callers", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const recorder = new FakeRecorder("run-private-prompt", "webhook:1");
+    const fake = createFakeRuntime(async () => ({ text: "ready" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      recorderFactory: () => recorder,
+      createRunId: () => "run-private-prompt",
+    });
+
+    const response = await harness.run({
+      conversationId: "webhook:1",
+      userMessage: "Check readiness.",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(recorder.systemPrompt).toContain("You are Mono.");
+    expect(response.metadata.summary).not.toHaveProperty("systemPrompt");
+  });
+
   it("assembles context, memory, history, selected skills, tool policy, and runtime metadata", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

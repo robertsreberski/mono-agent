@@ -48,6 +48,28 @@ describe("Webhook adapter", () => {
     }
   });
 
+  it("does not expose a harness-recorded system prompt in a webhook response", async () => {
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.append("safe response");
+        // Mirrors the sanitized metadata emitted by the harness at the channel
+        // boundary: recorded prompts never appear in webhook JSON.
+        return { metadata: { summary: { status: "succeeded", runId: "run-1" } } };
+      },
+    };
+    const server = await startWebhookAdapter({ host: "127.0.0.1", port: 0, responder });
+
+    try {
+      const response = await fetch(`${server.invokeUrl}`, postJson({ text: "hello", mode: "sync" }));
+      expect(response.status).toBe(200);
+      const body = await response.json() as { metadata?: { summary?: Record<string, unknown> } };
+      expect(body.metadata?.summary).toEqual({ status: "succeeded", runId: "run-1" });
+      expect(body.metadata?.summary).not.toHaveProperty("systemPrompt");
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("includes native notify metadata and reports completed runs", async () => {
     const seen: unknown[] = [];
     const results: unknown[] = [];

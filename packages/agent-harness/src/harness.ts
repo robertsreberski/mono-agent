@@ -1232,8 +1232,18 @@ function responseMetadata(
     contextSources: context?.metadata.sources ?? [],
     contextSectionIds: context?.sections.map((section) => section.id) ?? [],
     ...(runtimeResult === undefined ? {} : { runtime: runtimeMetadata(runtimeResult) }),
-    ...(summary === undefined ? {} : { summary }),
+    ...(summary === undefined ? {} : { summary: externalResponseSummary(summary) }),
   };
+}
+
+/**
+ * Recorder summaries stay complete for local artifacts and session-web, but a
+ * harness response crosses a channel boundary. The compiled system prompt can
+ * contain identity and context, so it is never returned to channel callers.
+ */
+function externalResponseSummary(summary: RunSummary): RunSummary {
+  const { systemPrompt: _systemPrompt, ...externalSummary } = summary;
+  return externalSummary;
 }
 
 /**
