@@ -12,6 +12,7 @@ import {
   type SlackMessageStreamLogger,
   type SlackMessageStreamOptions,
 } from "./message-stream.js";
+import { normalizeSlackMarkdownToMarkdown } from "./slack-markdown.js";
 import type {
   SlackBlockActionsPayload,
   SlackChannelId,
@@ -1331,7 +1332,7 @@ export class SlackAdapter {
 
   private prepareText(text: string): string {
     if (!this.stripMentionText) {
-      return text.trim();
+      return normalizeSlackMarkdownToMarkdown(text);
     }
 
     let stripped = text;
@@ -1344,7 +1345,7 @@ export class SlackAdapter {
         stripped = stripped.replaceAll(normalizedAlias, " ");
       }
     }
-    return stripped.replace(/\s+/gu, " ").trim();
+    return normalizeSlackMarkdownToMarkdown(stripped);
   }
 
   private isAuthorized(channelId: SlackChannelId): boolean {
