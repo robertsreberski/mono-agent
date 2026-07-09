@@ -649,12 +649,12 @@ const HELP_NOTES = `Background mode runs the agent under launchd, keeping it ali
 .env file in the working directory, the same as foreground mode. The background
 commands require macOS; elsewhere use start --foreground.
 
-Init model references look like claude:claude-sonnet-4-6, codex:gpt-5.5,
-or pi:<provider>:<model> (e.g. pi:openai-codex:gpt-5.5,
-pi:opencode-go:kimi-k2.6, or pi:ollama:gemma4:31b). The init wizard prefers
-Pi OpenAI-Codex when that auth is configured, while direct codex:gpt-5.5
-remains selectable as a Codex CLI fallback path. Direct opencode:<provider>:<model>
-refs are for hand-authored runtime backend config.
+Init model references look like pi:<provider>:<model>, claude:claude-sonnet-4-6,
+codex:gpt-5.5, or opencode:<provider>:<model>. The init wizard defaults to
+pi:openai-codex:gpt-5.5, keeps it selectable when Pi auth setup is needed, and
+can save OPENCODE_API_KEY for pi:opencode-go:* refs. Direct codex:gpt-5.5 and
+Claude remain selectable; direct opencode:<provider>:<model> refs are for
+hand-authored runtime backend config.
 
 A .env file in the current folder is loaded automatically when present;
 already-exported shell variables take precedence.
@@ -834,6 +834,7 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
         auth: true,
         dryRun: false,
         ...(typeof previewPlan.configJson.providers?.piAuthPath === "string" ? { piAuthPath: previewPlan.configJson.providers.piAuthPath } : {}),
+        apiKeys: outcome.providerSetupSecrets,
       });
       if (setup === "failed") {
         return 1;
@@ -902,6 +903,7 @@ export interface RunProviderSetupBeforeInitOptions {
   readonly auth: boolean;
   readonly dryRun: boolean;
   readonly piAuthPath?: string;
+  readonly apiKeys?: Readonly<Record<string, string | undefined>>;
   readonly execute?: (plan: ProviderSetupPlan) => Promise<readonly ProviderSetupResult[]>;
 }
 
@@ -924,9 +926,15 @@ export async function runProviderSetupBeforeInit(
 
   process.stdout.write("\n" + ui.heading("Provider setup"));
   printProviderSetupPlan(plan);
-  const results = await (options.execute ?? executeProviderSetupPlan)(plan);
+  const results = await (options.execute ?? ((setupPlan) => executeProviderSetupPlan(setupPlan, {
+    ...(options.apiKeys === undefined ? {} : { apiKeys: options.apiKeys }),
+  })))(plan);
   for (const result of results) {
-    const badge = result.status === "ok" ? ui.badge("ok") : ui.badge("error");
+    const badge = result.status === "ok"
+      ? ui.badge("ok")
+      : result.status === "skipped"
+        ? ui.style.dim("- ")
+        : ui.badge("error");
     process.stdout.write(`${badge}${result.action.label}: ${result.detail}\n`);
   }
   if (results.some((result) => result.status === "failed")) {

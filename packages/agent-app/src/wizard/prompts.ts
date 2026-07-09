@@ -1,6 +1,8 @@
 import * as p from "@clack/prompts";
 import { EFFORT_LEVELS } from "@mono-agent/config";
 
+import type { EffortLevel } from "@mono-agent/config";
+
 import { findModule, modulesByKind } from "../modules/catalog.js";
 import { ADAPTER_SEND_TOOL_NAMES, BUILTIN_TOOL_NAMES } from "../modules/known-tools.js";
 import { STATIC_MODEL_CANDIDATES, type WizardModelCandidate } from "./model-discovery.js";
@@ -103,8 +105,8 @@ export function memorySelectOptions(): WizardSelectOption[] {
 }
 
 /**
- * A discovered/ranked model menu plus an `__other__` escape hatch that prompts
- * for a free-form `provider:model` reference.
+ * A discovered/ranked model menu plus explicit escape hatches for Pi provider
+ * refs and generic full model refs.
  */
 export function modelSelectOptions(candidates: readonly WizardModelCandidate[] = STATIC_MODEL_CANDIDATES): WizardSelectOption[] {
   return [
@@ -113,15 +115,16 @@ export function modelSelectOptions(candidates: readonly WizardModelCandidate[] =
       label: candidate.label,
       ...(candidate.hint === undefined ? {} : { hint: candidate.hint }),
     })),
-    { value: "__other__", label: "Other…", hint: "type a provider:model reference" },
+    { value: "__pi_other__", label: "Other Pi model…", hint: "choose provider and model id" },
+    { value: "__other__", label: "Other model ref…", hint: "type a full sdk:model reference" },
   ];
 }
 
 /**
  * Fallback model choices use the same labels/hints as the primary model picker,
- * but hide the chosen primary and fallbacks already added to the chain. `Other…`
- * remains as the explicit custom-reference escape hatch; `Done` finishes the
- * ordered fallback chain.
+ * but hide the chosen primary and fallbacks already added to the chain. The Pi
+ * and generic custom-reference escape hatches remain available; `Done` finishes
+ * the ordered fallback chain.
  */
 export function fallbackModelSelectOptions(
   candidates: readonly WizardModelCandidate[] = STATIC_MODEL_CANDIDATES,
@@ -136,10 +139,14 @@ export function fallbackModelSelectOptions(
 }
 
 /** Reasoning-effort choices. Empty value means no `runtime.effort` is written. */
-export function effortSelectOptions(): WizardSelectOption[] {
+export function effortSelectOptions(derivedEffort?: EffortLevel): WizardSelectOption[] {
   return [
     { value: "", label: "Default", hint: "leave runtime.effort unset" },
-    ...EFFORT_LEVELS.map((level) => ({ value: level, label: level })),
+    ...EFFORT_LEVELS.map((level) => ({
+      value: level,
+      label: level === derivedEffort ? `${level} (derived)` : level,
+      ...(level === derivedEffort ? { hint: "derived from selected model" } : {}),
+    })),
   ];
 }
 

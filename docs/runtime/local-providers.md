@@ -4,7 +4,7 @@ sidebar:
   order: 4
 ---
 
-This page covers running mono-agent against local and self-hosted model servers — Ollama, LM Studio, and any OpenAI-compatible gateway — through the Pi backend, plus the credential path used for built-in Pi OAuth providers. You configure them under `providers` and reference each model as `pi:<id>:<model>` from `runtime.model` or `runtime.fallbackModels`.
+This page covers running mono-agent against local and self-hosted model servers — Ollama, LM Studio, and any OpenAI-compatible gateway — through the Pi backend, plus the credential path used for built-in Pi providers. You configure them under `providers` and reference each model as `pi:<id>:<model>` from `runtime.model` or `runtime.fallbackModels`.
 
 For an end-to-end walkthrough, see the playbook [Local-only Ollama agent](/playbooks/local-only-ollama-agent/).
 
@@ -33,7 +33,7 @@ Coverage: `config` — `providers.local[]` (`MONO_AGENT_LOCAL_PROVIDERS_JSON`, o
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6",
+    "model": "pi:openai-codex:gpt-5.5",
     "fallbackModels": ["pi:ollama:gemma4:31b"]
   },
   "providers": {
@@ -146,9 +146,9 @@ MONO_AGENT_LOCAL_PROVIDERS_JSON='[{"id":"ollama","type":"ollama","baseUrl":"http
 
 For a single provider there are scalar equivalents: `MONO_AGENT_LOCAL_PROVIDER_ID`, `MONO_AGENT_LOCAL_PROVIDER_TYPE`, `MONO_AGENT_LOCAL_PROVIDER_BASE_URL`, `MONO_AGENT_LOCAL_PROVIDER_ENABLED`, `MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL`, and `MONO_AGENT_LOCAL_PROVIDER_API_KEY`. See [Environment variables](/config/env-vars/) for precedence rules.
 
-## Pi OAuth credentials (built-in providers)
+## Pi credentials (built-in providers)
 
-Some Pi providers — for example `pi:openai-codex` — authenticate via OAuth rather than a static key. Their credentials are read from a Pi auth file, configured with `providers.piAuthPath` (default `~/.pi/agent/auth.json`).
+Built-in Pi providers use the Pi auth file configured by `providers.piAuthPath` (default `~/.pi/agent/auth.json`) rather than `providers.local[]`. Some providers, such as `pi:openai-codex`, authenticate through OAuth/account flows; others, such as `pi:opencode-go`, use API-key credentials stored in the same auth file.
 
 ```json
 {
@@ -158,9 +158,11 @@ Some Pi providers — for example `pi:openai-codex` — authenticate via OAuth r
 }
 ```
 
-Override the path with `MONO_AGENT_PI_AUTH_PATH`. This is separate from `providers.local[]`: OAuth providers are built into the Pi backend, while `local[]` registers your own servers.
+Override the path with `MONO_AGENT_PI_AUTH_PATH`. This is separate from `providers.local[]`: built-in Pi providers are registered by the Pi backend, while `local[]` registers your own servers.
 
-Run `npx @earendil-works/pi-ai login <provider>` from the directory containing `providers.piAuthPath` when a built-in Pi OAuth provider needs setup or re-auth. `mono-agent validate` only reports missing or expired credentials; it is read-only and never runs the login command.
+Run `npx @earendil-works/pi-ai login <provider>` from the directory containing `providers.piAuthPath` when a built-in Pi OAuth provider needs setup or re-auth. Subscription/account-backed providers include `openai-codex`, `anthropic`, `github-copilot`, and `opencode-go`; OpenCode-Go is API-key based and uses `OPENCODE_API_KEY`.
+
+The interactive `mono-agent init` wizard treats a missing Pi auth store as setup-required rather than as a skipped model: it keeps the default `pi:openai-codex:gpt-5.5` selectable, shows the Pi auth status in model discovery, and can run `npx @earendil-works/pi-ai login openai-codex` before writing files. When `pi:opencode-go:*` is selected, the wizard asks for an API key and saves `{ "type": "api_key", "key": "..." }` under `opencode-go` in the Pi auth store. The wizard creates the `providers.piAuthPath` directory first, because the Pi auth file often does not exist on a new machine. `mono-agent validate` only reports missing or expired credentials; it is read-only and never runs login commands or writes API keys.
 
 Coverage: `config` — `providers.piAuthPath` (`MONO_AGENT_PI_AUTH_PATH`).
 
@@ -171,7 +173,7 @@ Local providers compose with the rest of the runtime. A common pattern is a host
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6",
+    "model": "pi:openai-codex:gpt-5.5",
     "fallbackModels": ["pi:ollama:gemma4:31b"]
   }
 }

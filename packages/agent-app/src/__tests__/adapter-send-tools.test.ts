@@ -634,6 +634,63 @@ describe("adapter send tool posted-message indexing", () => {
     expect(await lookupProducingConversation(indexPath, "C1", "170.000100")).toBe("scheduled-scan");
   });
 
+  it("splits SlackSendMessage at Slack's 40,000-char limit and indexes every posted chunk", async () => {
+    const indexPath = resolvePostedMessageIndexPath(dir);
+    const postCalls: SlackChatPostMessageParams[] = [];
+    let nextTs = 170;
+    const server = await createAdapterSendToolsServer(
+      bothAdaptersSettings(),
+      {
+        slack: {
+          async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
+            postCalls.push(params);
+            return { ok: true, channel: params.channel, ts: `${nextTs++}.000100` };
+          },
+        },
+      },
+      { conversationId: "scheduled-scan#2026-06-22", indexPath },
+    );
+    const text = `${"x".repeat(40_000)}tail`;
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "SlackSendMessage",
+        arguments: {
+          channel: "C1",
+          text,
+          thread_ts: "169.000100",
+          mrkdwn: false,
+          unfurl_links: false,
+          unfurl_media: false,
+        },
+      });
+      expect(result.structuredContent).toMatchObject({
+        ok: true,
+        channel: "C1",
+        ts: "170.000100",
+        chunkCount: 2,
+        chunks: [
+          { channel: "C1", ts: "170.000100" },
+          { channel: "C1", ts: "171.000100" },
+        ],
+      });
+    });
+
+    expect(postCalls.map((call) => call.text.length)).toEqual([40_000, 4]);
+    expect(
+      postCalls.every(
+        (call) =>
+          call.channel === "C1" &&
+          call.thread_ts === "169.000100" &&
+          call.mrkdwn === false &&
+          call.unfurl_links === false &&
+          call.unfurl_media === false,
+      ),
+    ).toBe(true);
+    expect(await lookupProducingConversation(indexPath, "C1", "170.000100")).toBe("scheduled-scan");
+    expect(await lookupProducingConversation(indexPath, "C1", "171.000100")).toBe("scheduled-scan");
+  });
+
   it("end-to-end: a scan's SlackSendMessage post lets a later in-thread reply resume the scan conversation", async () => {
     const indexPath = resolvePostedMessageIndexPath(dir);
 

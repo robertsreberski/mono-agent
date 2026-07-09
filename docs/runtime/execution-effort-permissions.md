@@ -13,7 +13,7 @@ A representative runtime block:
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6",
+    "model": "pi:openai-codex:gpt-5.5",
     "executionMode": "sdk",
     "effort": "medium",
     "permissionMode": "default",
@@ -42,7 +42,7 @@ Several other features key off the backend implied by execution mode — most no
 | `runtime.effort` | `none` \| `low` \| `medium` \| `high` \| `xhigh` \| `max` | `medium` | `MONO_AGENT_EFFORT` |
 
 ```json
-{ "runtime": { "model": "claude:claude-sonnet-4-6", "effort": "high" } }
+{ "runtime": { "model": "pi:openai-codex:gpt-5.5", "effort": "high" } }
 ```
 
 ## Permission mode

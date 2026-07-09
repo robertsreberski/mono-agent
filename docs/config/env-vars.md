@@ -28,7 +28,7 @@ Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-na
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_MODEL` | `runtime.model` | Backend-prefixed model, e.g. `claude:claude-sonnet-4-6`, `codex:gpt-5.5`, `pi:openai:gpt-5.5`. Required. |
+| `MONO_AGENT_MODEL` | `runtime.model` | Backend-prefixed model, e.g. `pi:openai-codex:gpt-5.5`, `pi:opencode-go:kimi-k2.6`, `codex:gpt-5.5`. Required. |
 | `MONO_AGENT_EXECUTION_MODE` | `runtime.executionMode` | `sdk` vs `cli`; default inferred from model. |
 | `MONO_AGENT_FALLBACK_MODELS` | `runtime.fallbackModels` | Ordered backup models on fallback-eligible provider failure, including provider auth failures. See [../runtime/fallback.md](/runtime/fallback/). |
 | `MONO_AGENT_EFFORT` | `runtime.effort` | `none` / `low` / `medium` / `high` / `xhigh` / `max`. See [../runtime/execution-effort-permissions.md](/runtime/execution-effort-permissions/). |
@@ -47,9 +47,9 @@ Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-na
 ```json
 {
   "runtime": {
-    "model": "pi:openai:gpt-5.5",
+    "model": "pi:openai-codex:gpt-5.5",
     "effort": "high",
-    "fallbackModels": ["claude:claude-sonnet-4-6"],
+    "fallbackModels": ["pi:opencode-go:kimi-k2.6"],
     "session": { "mode": "continuous", "idleTimeoutMs": 600000, "rollover": "daily", "rolloverTimezone": "UTC", "rolloverNotice": false }
   },
   "concurrency": { "maxConcurrentRuns": 4, "maxPendingRuns": 8 }
@@ -57,9 +57,9 @@ Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-na
 ```
 
 ```bash
-MONO_AGENT_MODEL=pi:openai:gpt-5.5
+MONO_AGENT_MODEL=pi:openai-codex:gpt-5.5
 MONO_AGENT_EFFORT=high
-MONO_AGENT_FALLBACK_MODELS=claude:claude-sonnet-4-6
+MONO_AGENT_FALLBACK_MODELS=pi:opencode-go:kimi-k2.6
 MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS=4
 ```
 
@@ -69,7 +69,7 @@ MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS=4
 | --- | --- | --- |
 | `MONO_AGENT_LOCAL_PROVIDERS_JSON` | `providers.local[]` | Full JSON array of local providers (id, type, baseUrl, apiKey/apiKeyEnv, models). |
 | `MONO_AGENT_LOCAL_PROVIDER_*` | `providers.local[]` | Single-provider field overrides. |
-| `MONO_AGENT_PI_AUTH_PATH` | `providers.piAuthPath` | Pi OAuth credential file; default `~/.pi/agent/auth.json`. |
+| `MONO_AGENT_PI_AUTH_PATH` | `providers.piAuthPath` | Pi credential file; default `~/.pi/agent/auth.json`. |
 | `MONO_AGENT_PI_MAX_RETRIES` | `providers.piNative.piMaxRetries` | Pi-native transport retries, 0-8, default 2. |
 | `MONO_AGENT_MAX_RETRY_DELAY_MS` | `providers.piNative.maxRetryDelayMs` | Default 60000. |
 | `MONO_AGENT_PI_SESSIONS_ROOT` | `providers.piNative.piSessionsRoot` | Durable JSONL session storage (e.g. `.mono-agent/sessions`); unset = in-memory. |

@@ -1,6 +1,5 @@
 import {
   ChannelDeliveryError,
-  DEFAULT_MAX_MESSAGE_CHARS,
   ResilientMessageStream,
 } from "@mono-agent/agent-contracts";
 import type {
@@ -103,6 +102,7 @@ export type SlackSendOutcome =
 
 const DEFAULT_INITIAL_STATUS_TEXT = "Thinking...";
 const DEFAULT_ASSISTANT_STATUS_TEXT = "is thinking…";
+export const SLACK_MAX_MESSAGE_CHARS = 40_000;
 
 /**
  * Adapts a {@link SlackWebApi} to the transport-agnostic {@link ChannelTransport}
@@ -225,7 +225,7 @@ export class SlackMessageStream implements AgentMessageStream {
   private readonly inner: ResilientMessageStream;
 
   constructor(options: SlackMessageStreamOptions) {
-    const maxMessageChars = options.maxMessageChars ?? DEFAULT_MAX_MESSAGE_CHARS;
+    const maxMessageChars = options.maxMessageChars ?? SLACK_MAX_MESSAGE_CHARS;
     const transport = new SlackChannelTransport({
       api: options.api,
       channelId: options.channelId,

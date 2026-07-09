@@ -250,6 +250,10 @@ interface PiAuthEntry {
   readonly refresh?: string;
 }
 
+const PI_API_KEY_ENV_BY_PROVIDER: Readonly<Record<string, string>> = {
+  "opencode-go": "OPENCODE_API_KEY",
+};
+
 /** Parses the Pi OAuth auth store (provider -> credentials) at `path`, best-effort. */
 async function readPiAuthProviders(path: string): Promise<Record<string, PiAuthEntry> | undefined> {
   try {
@@ -473,9 +477,10 @@ async function appendPiCredentialDetails(
     const entry = authProviders?.[provider];
     if (entry === undefined) {
       status = "waiting";
-      details.push(
-        `[WARN] ${label} ${refStr}: no Pi credentials found for provider \`${provider}\` (absent from the auth store and models.json). Authenticate it with \`${loginCommand}\` from ${loginCwd}, or set providers.piAuthPath.`,
-      );
+      const apiKeyEnv = PI_API_KEY_ENV_BY_PROVIDER[provider];
+      details.push(apiKeyEnv === undefined
+        ? `[WARN] ${label} ${refStr}: no Pi credentials found for provider \`${provider}\` (absent from the auth store and models.json). Authenticate it with \`${loginCommand}\` from ${loginCwd}, or set providers.piAuthPath.`
+        : `[WARN] ${label} ${refStr}: no Pi API key credentials found for provider \`${provider}\` (absent from the auth store and models.json). Save an API key entry in providers.piAuthPath, or set ${apiKeyEnv}.`);
       continue;
     }
     const isOAuth = entry.type === "oauth" || typeof entry.expires === "number";
@@ -491,7 +496,7 @@ async function appendPiCredentialDetails(
     details.push(
       isOAuth
         ? `${label} ${refStr}: OAuth credentials for \`${provider}\` present (token valid${whenNote}).`
-        : `${label} ${refStr}: credentials for \`${provider}\` present.`,
+        : `${label} ${refStr}: API key credentials for \`${provider}\` present.`,
     );
   }
 

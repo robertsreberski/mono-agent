@@ -1,3 +1,7 @@
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 // `@clack/core`'s cancel sentinel is a private, unexported symbol, so we stub
@@ -23,6 +27,7 @@ import {
   WizardCancelled,
 } from "../wizard/prompts.js";
 import {
+  defaultEffortForModelRef,
   discoverWizardModelCandidates,
   rankWizardModelCandidates,
   type WizardModelCandidate,
@@ -58,11 +63,13 @@ describe("wizard prompt builders", () => {
     }
   });
 
-  it("modelSelectOptions offers the curated set plus an __other__ escape hatch", () => {
+  it("modelSelectOptions offers the curated set plus Pi and generic escape hatches", () => {
     const options = modelSelectOptions();
     const values = options.map((option) => option.value);
     expect(values).toContain("claude:claude-sonnet-4-6");
+    expect(values).toContain("__pi_other__");
     expect(values).toContain("__other__");
+    expect(values[values.length - 2]).toBe("__pi_other__");
     expect(values[values.length - 1]).toBe("__other__");
   });
 
@@ -98,13 +105,36 @@ describe("wizard prompt builders", () => {
 
     expect(options).toEqual([
       { value: "pi:ollama:llama3.1:8b", label: "Ollama llama3.1:8b", hint: "fully local" },
-      { value: "__other__", label: "Other…", hint: "type a provider:model reference" },
+      { value: "__pi_other__", label: "Other Pi model…", hint: "choose provider and model id" },
+      { value: "__other__", label: "Other model ref…", hint: "type a full sdk:model reference" },
       { value: "__done__", label: "Done", hint: "finish fallback chain" },
     ]);
   });
 
+  it("modelSelectOptions ranks setup-required Pi OpenAI-Codex above direct Codex while keeping direct selectable", () => {
+    const ranked = rankWizardModelCandidates([
+      { value: "codex:gpt-5.5", label: "Codex GPT-5.5", source: "codex" },
+      {
+        value: "pi:openai-codex:gpt-5.5",
+        label: "Pi OpenAI-Codex GPT-5.5",
+        source: "pi",
+        setupRequired: true,
+        defaultEffort: "medium",
+      },
+    ]);
+
+    const values = modelSelectOptions(ranked).map((option) => option.value);
+    expect(values.indexOf("pi:openai-codex:gpt-5.5")).toBeLessThan(values.indexOf("codex:gpt-5.5"));
+    expect(values).toContain("pi:openai-codex:gpt-5.5");
+  });
+
   it("effortSelectOptions offers default plus the runtime effort enum", () => {
     expect(effortSelectOptions().map((option) => option.value)).toEqual(["", "none", "low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it("effortSelectOptions marks the model-derived effort", () => {
+    const medium = effortSelectOptions("medium").find((option) => option.value === "medium");
+    expect(medium).toMatchObject({ label: "medium (derived)", hint: "derived from selected model" });
   });
 
   it("toolMultiselectOptions appends a channel's send tools then AskUser after the built-ins", () => {
@@ -147,6 +177,7 @@ describe("provider setup planner", () => {
         "claude:claude-sonnet-4-6",
         "codex:gpt-5.5",
         "pi:openai-codex:gpt-5.5",
+        "pi:openai:gpt-5.5",
         "pi:opencode-go:kimi-k2.6",
         "pi:ollama:gemma4:31b",
         "pi:lmstudio:qwen/qwen3-8b",
@@ -157,7 +188,7 @@ describe("provider setup planner", () => {
       "claude-login",
       "codex-login",
       "pi-login:openai-codex",
-      "opencode-models",
+      "pi-api-key:opencode-go",
       "ollama-list",
       "lmstudio-models",
     ]);
@@ -173,6 +204,77 @@ describe("provider setup planner", () => {
       url: "http://localhost:1234/v1/models",
       cwd: "/agent",
     });
+    expect(plan.actions.find((action) => action.id === "pi-api-key:opencode-go")).toMatchObject({
+      provider: "opencode-go",
+      envVar: "OPENCODE_API_KEY",
+      piAuthPath: "/agent/.pi/auth.json",
+    });
+  });
+
+  it("creates the Pi auth working directory before running pi login", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "mono-agent-provider-setup-"));
+    try {
+      const authDir = join(tmp, "nested", ".pi");
+      const plan = planProviderSetup({
+        cwd: tmp,
+        piAuthPath: "nested/.pi/auth.json",
+        modelRefs: ["pi:openai-codex:gpt-5.5"],
+      });
+      const fakeSpawn = vi.fn((_file: string, _args: readonly string[], _opts: { cwd?: string }) => {
+        const listeners = new Map<string, (value: unknown, signal?: unknown) => void>();
+        queueMicrotask(() => listeners.get("close")?.(0, null));
+        return {
+          once: (event: string, listener: (value: unknown, signal?: unknown) => void) => {
+            listeners.set(event, listener);
+          },
+        };
+      });
+
+      const results = await executeProviderSetupPlan(plan, { spawn: fakeSpawn as never });
+
+      expect((await stat(authDir)).isDirectory()).toBe(true);
+      expect(fakeSpawn).toHaveBeenCalledWith("npx", ["@earendil-works/pi-ai", "login", "openai-codex"], expect.objectContaining({ cwd: authDir }));
+      expect(results).toHaveLength(1);
+      expect(results[0]?.status).toBe("ok");
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("stores OpenCode-Go API keys in the Pi auth store", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "mono-agent-provider-setup-"));
+    try {
+      const authPath = join(tmp, "nested", ".pi", "auth.json");
+      const plan = planProviderSetup({
+        cwd: tmp,
+        piAuthPath: "nested/.pi/auth.json",
+        modelRefs: ["pi:opencode-go:kimi-k2.6"],
+      });
+
+      const results = await executeProviderSetupPlan(plan, { apiKeys: { "pi-api-key:opencode-go": "sk-opencode" } });
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.status).toBe("ok");
+      expect(JSON.parse(await readFile(authPath, "utf8"))).toEqual({
+        "opencode-go": { type: "api_key", key: "sk-opencode" },
+      });
+      expect((await stat(authPath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("skips OpenCode-Go API-key setup when no key is provided", async () => {
+    const plan = planProviderSetup({
+      cwd: "/agent",
+      modelRefs: ["pi:opencode-go:kimi-k2.6"],
+    });
+
+    const results = await executeProviderSetupPlan(plan, { apiKeys: {} });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.status).toBe("skipped");
+    expect(results[0]?.detail).toContain("OPENCODE_API_KEY");
   });
 
   it("stops execution on the first failed provider setup action", async () => {
@@ -201,6 +303,17 @@ describe("provider setup planner", () => {
 });
 
 describe("wizard model discovery", () => {
+  it("derives default effort from cloud, Pi OpenAI-Codex, local reasoning, and unknown manual refs", () => {
+    expect(defaultEffortForModelRef("claude:claude-sonnet-4-6")).toBe("medium");
+    expect(defaultEffortForModelRef("codex:gpt-5.5")).toBe("medium");
+    expect(defaultEffortForModelRef("pi:openai-codex:gpt-5.5")).toBe("medium");
+    expect(defaultEffortForModelRef("pi:ollama:llama3.1:8b")).toBe("none");
+    expect(defaultEffortForModelRef("pi:lmstudio:qwen/qwen3-8b")).toBe("medium");
+    expect(defaultEffortForModelRef("pi:opencode-go:some-model", true)).toBe("medium");
+    expect(defaultEffortForModelRef("pi:opencode-go:some-model", false)).toBe("none");
+    expect(defaultEffortForModelRef("pi:openai:gpt-5.5")).toBeUndefined();
+  });
+
   it("discovers Pi, OpenCode, Ollama, and LM Studio candidates without dropping static options", async () => {
     const exec = vi.fn(async (file: string) => {
       if (file === "opencode") {
@@ -227,6 +340,9 @@ describe("wizard model discovery", () => {
     expect(values).toContain("pi:opencode-go:kimi-k2.6");
     expect(values).toContain("pi:ollama:llama3.1:8b");
     expect(values).toContain("pi:lmstudio:qwen/qwen3-8b");
+    expect(result.candidates.find((candidate) => candidate.value === "pi:openai-codex:gpt-5.5")?.defaultEffort).toBe("medium");
+    expect(result.candidates.find((candidate) => candidate.value === "pi:ollama:llama3.1:8b")?.defaultEffort).toBe("none");
+    expect(result.candidates.find((candidate) => candidate.value === "pi:lmstudio:qwen/qwen3-8b")?.defaultEffort).toBe("medium");
     expect(result.statuses.every((status) => status.status === "detected")).toBe(true);
   });
 
@@ -259,12 +375,16 @@ describe("wizard model discovery", () => {
       execFile: exec,
       fetch: fetchImpl,
       readFile: async () => {
-        throw new Error("missing");
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
       },
     });
 
+    const pi = result.candidates.find((candidate: WizardModelCandidate) => candidate.value === "pi:openai-codex:gpt-5.5");
     expect(result.candidates.map((candidate: WizardModelCandidate) => candidate.value)).toContain("codex:gpt-5.5");
-    expect(result.statuses.map((status) => status.status)).toEqual(["unavailable", "unavailable", "unavailable", "unavailable"]);
+    expect(pi).toMatchObject({ setupRequired: true, defaultEffort: "medium" });
+    expect(result.candidates.map((candidate) => candidate.value).indexOf("pi:openai-codex:gpt-5.5"))
+      .toBeLessThan(result.candidates.map((candidate) => candidate.value).indexOf("codex:gpt-5.5"));
+    expect(result.statuses.map((status) => status.status)).toEqual(["setup_available", "unavailable", "unavailable", "unavailable"]);
   });
 });
 

@@ -1,36 +1,54 @@
 import { spawn } from "node:child_process";
+import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { createPiOAuthApiKeyResolver, modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 export type ProviderSetupKind = "auth" | "preflight";
 
+export interface ProviderSetupCommandAction {
+  readonly id: string;
+  readonly kind: ProviderSetupKind;
+  readonly label: string;
+  readonly modelRefs: readonly string[];
+  readonly command: readonly [string, ...string[]];
+  readonly cwd: string;
+  readonly detail: string;
+}
+
+export interface ProviderSetupHttpAction {
+  readonly id: string;
+  readonly kind: ProviderSetupKind;
+  readonly label: string;
+  readonly modelRefs: readonly string[];
+  readonly url: string;
+  readonly cwd: string;
+  readonly detail: string;
+}
+
+export interface ProviderSetupPiApiKeyAction {
+  readonly id: string;
+  readonly kind: "auth";
+  readonly label: string;
+  readonly modelRefs: readonly string[];
+  readonly provider: string;
+  readonly envVar: string;
+  readonly piAuthPath: string;
+  readonly cwd: string;
+  readonly detail: string;
+}
+
 export type ProviderSetupAction =
-  | {
-      readonly id: string;
-      readonly kind: ProviderSetupKind;
-      readonly label: string;
-      readonly modelRefs: readonly string[];
-      readonly command: readonly [string, ...string[]];
-      readonly cwd: string;
-      readonly detail: string;
-    }
-  | {
-      readonly id: string;
-      readonly kind: ProviderSetupKind;
-      readonly label: string;
-      readonly modelRefs: readonly string[];
-      readonly url: string;
-      readonly cwd: string;
-      readonly detail: string;
-    };
+  | ProviderSetupCommandAction
+  | ProviderSetupHttpAction
+  | ProviderSetupPiApiKeyAction;
 
 export interface ProviderSetupPlan {
   readonly actions: readonly ProviderSetupAction[];
 }
 
-export type ProviderSetupStatus = "ok" | "failed";
+export type ProviderSetupStatus = "ok" | "failed" | "skipped";
 
 export interface ProviderSetupResult {
   readonly action: ProviderSetupAction;
@@ -47,9 +65,14 @@ export interface PlanProviderSetupOptions {
 export interface ExecuteProviderSetupOptions {
   readonly spawn?: typeof spawn;
   readonly fetch?: typeof fetch;
+  readonly apiKeys?: Readonly<Record<string, string | undefined>>;
 }
 
 const DEFAULT_PI_AUTH_PATH = join(homedir(), ".pi", "agent", "auth.json");
+const PI_OAUTH_LOGIN_PROVIDERS = new Set(["anthropic", "github-copilot", "openai-codex"]);
+const PI_API_KEY_PROVIDERS: Readonly<Record<string, string>> = {
+  "opencode-go": "OPENCODE_API_KEY",
+};
 
 export function piLoginCommand(provider: string): readonly [string, ...string[]] {
   return ["npx", "@earendil-works/pi-ai", "login", provider];
@@ -61,6 +84,10 @@ export function piLoginCommandLine(provider: string): string {
 
 export function piAuthWorkingDirectory(piAuthPath: string | undefined, cwd = process.cwd()): string {
   return dirname(piAuthPath === undefined ? DEFAULT_PI_AUTH_PATH : resolve(cwd, piAuthPath));
+}
+
+export function piAuthPathForSetup(piAuthPath: string | undefined, cwd = process.cwd()): string {
+  return piAuthPath === undefined ? DEFAULT_PI_AUTH_PATH : resolve(cwd, piAuthPath);
 }
 
 export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSetupPlan {
@@ -146,14 +173,20 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
 
     if (ref.provider === "opencode-go") {
       add({
-        id: "opencode-models",
-        kind: "preflight",
-        label: "OpenCode model preflight",
+        id: "pi-api-key:opencode-go",
+        kind: "auth",
+        label: "OpenCode-Go API key",
         modelRefs: [refKey],
-        command: ["opencode", "models", "--json"],
-        cwd: options.cwd,
-        detail: "Checks that OpenCode can list configured models.",
+        provider: ref.provider,
+        envVar: PI_API_KEY_PROVIDERS[ref.provider] ?? "OPENCODE_API_KEY",
+        piAuthPath: piAuthPathForSetup(piAuthPath, options.cwd),
+        cwd: piAuthWorkingDirectory(piAuthPath, options.cwd),
+        detail: "Stores the OpenCode-Go API key in the Pi auth store used by providers.piAuthPath.",
       });
+      continue;
+    }
+
+    if (!PI_OAUTH_LOGIN_PROVIDERS.has(ref.provider)) {
       continue;
     }
 
@@ -175,7 +208,14 @@ export function providerSetupActionCommandLine(action: ProviderSetupAction): str
   if ("command" in action) {
     return action.command.join(" ");
   }
+  if (isProviderSetupPiApiKeyAction(action)) {
+    return `${action.envVar} -> ${action.piAuthPath}`;
+  }
   return `GET ${action.url}`;
+}
+
+export function isProviderSetupPiApiKeyAction(action: ProviderSetupAction): action is ProviderSetupPiApiKeyAction {
+  return "provider" in action && "piAuthPath" in action && "envVar" in action;
 }
 
 export async function executeProviderSetupPlan(
@@ -184,7 +224,9 @@ export async function executeProviderSetupPlan(
 ): Promise<ProviderSetupResult[]> {
   const results: ProviderSetupResult[] = [];
   for (const action of plan.actions) {
-    const result = "command" in action
+    const result = isProviderSetupPiApiKeyAction(action)
+      ? await runPiApiKeyAction(action, options.apiKeys ?? {})
+      : "command" in action
       ? await runCommandAction(action, options.spawn ?? spawn)
       : await runHttpAction(action, options.fetch ?? fetch);
     results.push(result);
@@ -195,11 +237,56 @@ export async function executeProviderSetupPlan(
   return results;
 }
 
+async function runPiApiKeyAction(
+  action: ProviderSetupPiApiKeyAction,
+  apiKeys: Readonly<Record<string, string | undefined>>,
+): Promise<ProviderSetupResult> {
+  const raw = apiKeys[action.id] ?? apiKeys[action.provider] ?? process.env[action.envVar];
+  const key = raw?.trim();
+  if (key === undefined || key.length === 0) {
+    return {
+      action,
+      status: "skipped",
+      detail: `${action.envVar} was not provided; skipped saving credentials for ${action.provider}.`,
+    };
+  }
+
+  try {
+    const resolver = createPiOAuthApiKeyResolver({ path: action.piAuthPath });
+    if (resolver.modifyCredential === undefined) {
+      throw new Error("Pi auth resolver does not support credential writes.");
+    }
+    await resolver.modifyCredential(action.provider, async () => ({ type: "api_key", key }));
+    return {
+      action,
+      status: "ok",
+      detail: `Saved API key credentials for ${action.provider} to the Pi auth store.`,
+    };
+  } catch (error) {
+    return {
+      action,
+      status: "failed",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 async function runCommandAction(
   action: Extract<ProviderSetupAction, { readonly command: readonly [string, ...string[]] }>,
   spawnImpl: typeof spawn,
 ): Promise<ProviderSetupResult> {
   const [file, ...args] = action.command;
+  if (action.id.startsWith("pi-login:")) {
+    try {
+      await mkdir(action.cwd, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      return {
+        action,
+        status: "failed",
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
   return new Promise((resolve) => {
     const child = spawnImpl(file, args, {
       cwd: action.cwd,
