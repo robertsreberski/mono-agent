@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -89,7 +89,7 @@ describe("wizard prompt builders", () => {
     expect(values).toContain("codex:gpt-5.5");
   });
 
-  it("modelSelectOptions ranks setup-required Pi OpenAI-Codex below direct Codex while keeping it selectable", () => {
+  it("modelSelectOptions ranks setup-required Pi OpenAI-Codex above direct Codex while keeping direct selectable", () => {
     const ranked = rankWizardModelCandidates([
       { value: "codex:gpt-5.5", label: "Codex GPT-5.5", source: "codex" },
       {
@@ -102,7 +102,7 @@ describe("wizard prompt builders", () => {
     ]);
 
     const values = modelSelectOptions(ranked).map((option) => option.value);
-    expect(values.indexOf("codex:gpt-5.5")).toBeLessThan(values.indexOf("pi:openai-codex:gpt-5.5"));
+    expect(values.indexOf("pi:openai-codex:gpt-5.5")).toBeLessThan(values.indexOf("codex:gpt-5.5"));
     expect(values).toContain("pi:openai-codex:gpt-5.5");
   });
 
@@ -166,7 +166,7 @@ describe("provider setup planner", () => {
       "claude-login",
       "codex-login",
       "pi-login:openai-codex",
-      "opencode-models",
+      "pi-api-key:opencode-go",
       "ollama-list",
       "lmstudio-models",
     ]);
@@ -181,6 +181,11 @@ describe("provider setup planner", () => {
     expect(plan.actions.find((action) => action.id === "lmstudio-models")).toMatchObject({
       url: "http://localhost:1234/v1/models",
       cwd: "/agent",
+    });
+    expect(plan.actions.find((action) => action.id === "pi-api-key:opencode-go")).toMatchObject({
+      provider: "opencode-go",
+      envVar: "OPENCODE_API_KEY",
+      piAuthPath: "/agent/.pi/auth.json",
     });
   });
 
@@ -212,6 +217,42 @@ describe("provider setup planner", () => {
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
+  });
+
+  it("stores OpenCode-Go API keys in the Pi auth store", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "mono-agent-provider-setup-"));
+    try {
+      const authPath = join(tmp, "nested", ".pi", "auth.json");
+      const plan = planProviderSetup({
+        cwd: tmp,
+        piAuthPath: "nested/.pi/auth.json",
+        modelRefs: ["pi:opencode-go:kimi-k2.6"],
+      });
+
+      const results = await executeProviderSetupPlan(plan, { apiKeys: { "pi-api-key:opencode-go": "sk-opencode" } });
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.status).toBe("ok");
+      expect(JSON.parse(await readFile(authPath, "utf8"))).toEqual({
+        "opencode-go": { type: "api_key", key: "sk-opencode" },
+      });
+      expect((await stat(authPath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("skips OpenCode-Go API-key setup when no key is provided", async () => {
+    const plan = planProviderSetup({
+      cwd: "/agent",
+      modelRefs: ["pi:opencode-go:kimi-k2.6"],
+    });
+
+    const results = await executeProviderSetupPlan(plan, { apiKeys: {} });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.status).toBe("skipped");
+    expect(results[0]?.detail).toContain("OPENCODE_API_KEY");
   });
 
   it("stops execution on the first failed provider setup action", async () => {
@@ -319,8 +360,8 @@ describe("wizard model discovery", () => {
     const pi = result.candidates.find((candidate: WizardModelCandidate) => candidate.value === "pi:openai-codex:gpt-5.5");
     expect(result.candidates.map((candidate: WizardModelCandidate) => candidate.value)).toContain("codex:gpt-5.5");
     expect(pi).toMatchObject({ setupRequired: true, defaultEffort: "medium" });
-    expect(result.candidates.map((candidate) => candidate.value).indexOf("codex:gpt-5.5"))
-      .toBeLessThan(result.candidates.map((candidate) => candidate.value).indexOf("pi:openai-codex:gpt-5.5"));
+    expect(result.candidates.map((candidate) => candidate.value).indexOf("pi:openai-codex:gpt-5.5"))
+      .toBeLessThan(result.candidates.map((candidate) => candidate.value).indexOf("codex:gpt-5.5"));
     expect(result.statuses.map((status) => status.status)).toEqual(["setup_available", "unavailable", "unavailable", "unavailable"]);
   });
 });

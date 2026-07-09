@@ -39,8 +39,8 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // Runtime: primary model plus ordered backups tried on retryable provider
   // failures (failover is reported in run results, never silent).
   "runtime": {
-    "model": "claude:claude-sonnet-4-6",   // claude:* | codex:* | pi:<provider>:<model>
-    "fallbackModels": ["pi:ollama:gemma4:31b"],
+    "model": "pi:openai-codex:gpt-5.5",    // pi:<provider>:<model> | claude:* | codex:* | opencode:*
+    "fallbackModels": ["pi:opencode-go:kimi-k2.6", "pi:ollama:gemma4:31b"],
     "executionMode": "sdk",                // sdk | cli (default inferred from model)
     "effort": "medium",                    // none|low|medium|high|xhigh|max
     "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
@@ -57,7 +57,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
 
   // Local/self-hosted providers for pi:<provider>:<model> references.
   "providers": {
-    "piAuthPath": "~/.pi/agent/auth.json", // Pi OAuth credentials (openai-codex, ...)
+    "piAuthPath": "~/.pi/agent/auth.json", // Pi credentials (OAuth/account + API-key providers)
     // Pi-native bridge tuning (all optional).
     "piNative": {
       "piMaxRetries": 2,                   // 0-8; transient provider-transport retries
@@ -310,7 +310,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
 ## Lifecycle
 
 ```bash
-mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b [--memory lite|journal|bujo]
+mono-agent init --model pi:openai-codex:gpt-5.5 --fallback-models pi:opencode-go:kimi-k2.6,pi:ollama:gemma4:31b [--memory lite|journal|bujo]
 mono-agent validate     # per-section report incl. sandbox, observability, every channel; exit 0 means ready
 mono-agent validate --consumer ../local-agent-alpha  # read-only report for a downstream folder
 mono-agent start        # traceability + every configured channel

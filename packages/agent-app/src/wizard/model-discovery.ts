@@ -54,8 +54,16 @@ const PI_OPENAI_CODEX = "pi:openai-codex:gpt-5.5";
 const DIRECT_CODEX = "codex:gpt-5.5";
 
 export const STATIC_MODEL_CANDIDATES: readonly WizardModelCandidate[] = [
-  { value: "claude:claude-sonnet-4-6", label: "Claude Sonnet 4.6", hint: "default", source: "claude", defaultEffort: "medium" },
+  {
+    value: PI_OPENAI_CODEX,
+    label: "Pi OpenAI-Codex GPT-5.5",
+    hint: "default; auth setup available",
+    source: "pi",
+    setupRequired: true,
+    defaultEffort: "medium",
+  },
   { value: DIRECT_CODEX, label: "Codex GPT-5.5", source: "codex", defaultEffort: "medium" },
+  { value: "claude:claude-sonnet-4-6", label: "Claude Sonnet 4.6", source: "claude", defaultEffort: "medium" },
   { value: "pi:ollama:llama3.1:8b", label: "Ollama llama3.1:8b", hint: "fully local", source: "ollama", defaultEffort: "none" },
 ];
 
@@ -266,13 +274,13 @@ function mergeCandidate(left: WizardModelCandidate, right: WizardModelCandidate)
 }
 
 function rank(candidate: WizardModelCandidate): number {
-  if (candidate.value === "claude:claude-sonnet-4-6") {
+  if (candidate.value === PI_OPENAI_CODEX) {
     return 0;
   }
-  if (candidate.value === PI_OPENAI_CODEX) {
-    return candidate.setupRequired === true ? 25 : 10;
-  }
   if (candidate.value === DIRECT_CODEX) {
+    return 10;
+  }
+  if (candidate.value === "claude:claude-sonnet-4-6") {
     return 20;
   }
   if (candidate.source === "opencode") {
