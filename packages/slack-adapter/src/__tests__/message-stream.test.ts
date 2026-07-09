@@ -122,6 +122,38 @@ describe("SlackMessageStream", () => {
     expect(posted[0]?.ts).toBe("100.000001");
   });
 
+  it("keeps a default final-only Slack reply above the shared 3,800-char default in one message", async () => {
+    const api = new FakeSlackApi();
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C1",
+      finalOnly: true,
+    });
+    const finalText = "a".repeat(3_901);
+
+    await stream.finish(finalText);
+
+    expect(api.updateCalls).toHaveLength(0);
+    expect(api.postMessageCalls.map((call) => call.text)).toEqual([finalText]);
+  });
+
+  it("splits default final-only Slack replies only at Slack's 40,000-char platform limit", async () => {
+    const api = new FakeSlackApi();
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C1",
+      threadTs: "172.000001",
+      finalOnly: true,
+    });
+    const finalText = `${"a".repeat(40_000)}tail`;
+
+    await stream.finish(finalText);
+
+    expect(api.updateCalls).toHaveLength(0);
+    expect(api.postMessageCalls.map((call) => call.text.length)).toEqual([40_000, 4]);
+    expect(api.postMessageCalls.every((call) => call.thread_ts === "172.000001")).toBe(true);
+  });
+
   it("flushes final output and sends overflow chunks as thread replies (no labels)", async () => {
     const api = new FakeSlackApi();
     const stream = new SlackMessageStream({

@@ -46,6 +46,8 @@ Status text, edit debounce, max message characters, and the welcome/help/error t
 
 Because these are code-only, they live in your driver wiring rather than `mono-agent.config.json`. See [Write your own channel adapter](/programmatic/custom-channels/).
 
+Slack's built-in driver uses Slack's 40,000-character platform limit for final replies by default, so a final answer above the shared 3,800-character default but below Slack's limit is still delivered as one Slack message. Slack final replies and `SlackSendMessage` split into continuation posts only when text exceeds that platform limit. Telegram and custom channel streams keep their own defaults unless their driver overrides `stream.maxMessageChars`.
+
 ## App-owned send tools
 
 mono-agent derives MCP **send tools** from already-enabled chat adapters so the agent can push a message back into a chat from inside a turn:
@@ -69,6 +71,8 @@ Coverage: `config`. Two conditions must both hold for a send tool to work:
 - **`TelegramSendFile`** uploads and sends a file (`kind:"document"`) or an inline image (`kind:"photo"`) to an allowed chat. It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path` (filename derived from the path), plus an optional `caption`. Uploads are bounded by the adapter's attachment size cap (~20 MB).
 
 The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels`, `telegram.allowedChatIds` / `telegram.allowAllChats`) **remains the destination boundary**: allowing the tool does not widen where the agent may send. A send to a destination outside the adapter allowlist is refused.
+
+`SlackSendMessage` preserves Slack thread and formatting options on every chunk. Text below Slack's 40,000-character platform limit is one post; text above the limit is split and each posted chunk is indexed so replies in those threads can resume the producing conversation.
 
 ### `AskUser` — blocking free-text ask (interaction bridge)
 

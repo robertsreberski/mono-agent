@@ -34,6 +34,7 @@ export type {
 export {
   SlackDeliveryError,
   SlackMessageStream,
+  SLACK_MAX_MESSAGE_CHARS,
   classifySlackError,
 } from "./message-stream.js";
 export type {
