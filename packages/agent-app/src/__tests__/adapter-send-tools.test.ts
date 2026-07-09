@@ -351,7 +351,12 @@ describe("adapter send MCP tools", () => {
 
       const slackResult = await client.callTool({
         name: "SlackSendMessage",
-        arguments: { channel: " C1 ", text: "hello", thread_ts: "171.1", unfurl_links: false },
+        arguments: {
+          channel: " C1 ",
+          text: "**hello** [details](https://example.com/report)",
+          thread_ts: "171.1",
+          unfurl_links: false,
+        },
       });
       expect(slackResult.structuredContent).toEqual({ ok: true, channel: "C1", ts: "171.123" });
 
@@ -362,8 +367,47 @@ describe("adapter send MCP tools", () => {
       expect(telegramResult.structuredContent).toEqual({ ok: true, chat_id: -100, message_id: 77 });
     });
 
-    expect(slackCalls).toEqual([{ channel: "C1", text: "hello", thread_ts: "171.1", unfurl_links: false }]);
+    expect(slackCalls).toEqual([
+      {
+        channel: "C1",
+        text: "*hello* <https://example.com/report|details>",
+        thread_ts: "171.1",
+        mrkdwn: true,
+        unfurl_links: false,
+      },
+    ]);
     expect(telegramCalls).toEqual([{ chat_id: -100, text: "hi", disable_web_page_preview: true }]);
+  });
+
+  it("sends SlackSendMessage text unchanged when mrkdwn is explicitly disabled", async () => {
+    const slackCalls: SlackChatPostMessageParams[] = [];
+    const server = await createAdapterSendToolsServer(bothAdaptersSettings(), {
+      slack: {
+        async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
+          slackCalls.push(params);
+          return { ok: true, channel: params.channel, ts: "171.123" };
+        },
+      },
+    });
+
+    await withMcpClient(server, async (client) => {
+      await client.callTool({
+        name: "SlackSendMessage",
+        arguments: {
+          channel: "C1",
+          text: "**literal** [details](https://example.com/report)",
+          mrkdwn: false,
+        },
+      });
+    });
+
+    expect(slackCalls).toEqual([
+      {
+        channel: "C1",
+        text: "**literal** [details](https://example.com/report)",
+        mrkdwn: false,
+      },
+    ]);
   });
 
   it("TelegramAskButtons posts the question with an inline keyboard and waits for the tapped label", async () => {

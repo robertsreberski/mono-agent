@@ -483,6 +483,42 @@ describe("SlackAdapter", () => {
     expect(api.updateCalls).toEqual([]);
   });
 
+  it("normalizes Slack mrkdwn input to multiline Markdown after stripping mentions", async () => {
+    let capturedRequest: AgentRequest | undefined;
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      botUserIds: ["Ubot"],
+      mentionTextAliases: ["@mono"],
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        capturedRequest = request;
+        return { text: request.text };
+      }),
+    });
+    const slackText = [
+      "<@Ubot> @mono",
+      "\u2022 Release tooling",
+      "\u00a0\u00a0\u25e6 Merged <https://github.example/pr/8|PR 8> and _noted follow-up_.",
+    ].join("\n");
+
+    await expect(adapter.handleEventCallback(appMention(slackText))).resolves.toMatchObject({
+      kind: "handled",
+      action: "responded",
+    });
+
+    expect(capturedRequest?.text).toBe(
+      "- Release tooling\n  - Merged [PR 8](https://github.example/pr/8) and *noted follow-up*.",
+    );
+    expect(api.postMessageCalls.at(-1)).toMatchObject({
+      channel: "C123",
+      text: "- Release tooling\n  - Merged <https://github.example/pr/8|PR 8> and _noted follow-up_.",
+      thread_ts: "172.000001",
+      mrkdwn: true,
+    });
+  });
+
   it("ignores bot/self/subtyped and unsupported events without sending", async () => {
     const api = new FakeSlackApi();
     const responder = { respond: vi.fn() } satisfies AgentResponder;
