@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { createPiOAuthApiKeyResolver, modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
@@ -74,12 +75,16 @@ const PI_API_KEY_PROVIDERS: Readonly<Record<string, string>> = {
   "opencode-go": "OPENCODE_API_KEY",
 };
 
+function resolvePiCliPath(): string {
+  return fileURLToPath(new URL("../node_modules/@earendil-works/pi-ai/dist/cli.js", import.meta.url));
+}
+
 export function piLoginCommand(provider: string): readonly [string, ...string[]] {
-  return ["npx", "@earendil-works/pi-ai", "login", provider];
+  return [process.execPath, resolvePiCliPath(), "login", provider];
 }
 
 export function piLoginCommandLine(provider: string): string {
-  return piLoginCommand(provider).join(" ");
+  return `pi-ai login ${provider}`;
 }
 
 export function piAuthWorkingDirectory(piAuthPath: string | undefined, cwd = process.cwd()): string {

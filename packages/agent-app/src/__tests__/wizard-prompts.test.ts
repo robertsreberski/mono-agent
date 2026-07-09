@@ -192,10 +192,14 @@ describe("provider setup planner", () => {
       "ollama-list",
       "lmstudio-models",
     ]);
-    expect(plan.actions.find((action) => action.id === "pi-login:openai-codex")).toMatchObject({
-      command: ["npx", "@earendil-works/pi-ai", "login", "openai-codex"],
-      cwd: "/agent/.pi",
-    });
+    const piLogin = plan.actions.find((action) => action.id === "pi-login:openai-codex");
+    expect(piLogin).toMatchObject({ cwd: "/agent/.pi" });
+    expect("command" in piLogin! ? piLogin.command : []).toEqual([
+      process.execPath,
+      expect.stringMatching(/@earendil-works[\/+]pi-ai.*dist[\/+]cli\.js$/u),
+      "login",
+      "openai-codex",
+    ]);
     expect(plan.actions.find((action) => action.id === "ollama-list")).toMatchObject({
       command: ["ollama", "list"],
       cwd: "/agent",
@@ -233,7 +237,11 @@ describe("provider setup planner", () => {
       const results = await executeProviderSetupPlan(plan, { spawn: fakeSpawn as never });
 
       expect((await stat(authDir)).isDirectory()).toBe(true);
-      expect(fakeSpawn).toHaveBeenCalledWith("npx", ["@earendil-works/pi-ai", "login", "openai-codex"], expect.objectContaining({ cwd: authDir }));
+      expect(fakeSpawn).toHaveBeenCalledWith(
+        process.execPath,
+        [expect.stringMatching(/@earendil-works[\/+]pi-ai.*dist[\/+]cli\.js$/u), "login", "openai-codex"],
+        expect.objectContaining({ cwd: authDir }),
+      );
       expect(results).toHaveLength(1);
       expect(results[0]?.status).toBe("ok");
     } finally {
