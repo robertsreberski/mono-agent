@@ -14,7 +14,7 @@
 // The native bridge must return the SAME unified result shape and emit the
 // SAME normalized runtime events as the legacy pi-sdk bridge.
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -353,6 +353,40 @@ describe("pi-native AgentHarness bridge", () => {
       expect(toolTiming.name).toBe("Read");
       expect(typeof toolTiming.execution_ms).toBe("number");
       expect(toolTiming.execution_ms).toBeGreaterThanOrEqual(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("records a pi-native Write call without synthetic file_edit tool events", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-native-write-"));
+    try {
+      const model = setup();
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("Write", { file_path: "notes.txt", content: "written\n" }, { id: "write-1" })]),
+        fauxAssistantMessage([fauxText("done")]),
+      ]);
+      const onEvent = vi.fn();
+
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        cwd: root,
+        allowedTools: ["Write"],
+        messages: [{ role: "user", content: "write the notes" }],
+        onEvent,
+      }));
+
+      expect(result.error).toBeNull();
+      expect(readFileSync(join(root, "notes.txt"), "utf8")).toBe("written\n");
+
+      const events = onEvent.mock.calls.map(([event]) => event);
+      const contentBlocks = events.flatMap((event) => event?.message?.content || []);
+      const toolUses = contentBlocks.filter((block) => block?.type === "tool_use");
+      const syntheticFileEditBlocks = contentBlocks.filter((block) =>
+        (block?.type === "tool_use" && block.name === "file_edit")
+        || (block?.type === "tool_result" && String(block.tool_use_id || "").startsWith("file_edit:")));
+
+      expect(toolUses.map((block) => block.name)).toEqual(["Write"]);
+      expect(syntheticFileEditBlocks).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

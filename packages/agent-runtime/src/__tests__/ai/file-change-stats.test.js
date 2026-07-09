@@ -1,5 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { statsForCompletedChange } from "../../ai/file-change-stats.js";
+import { generateClaudeResponse } from "../../ai/providers/claude-sdk.js";
+
+const queryMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+  query: queryMock,
+}));
 
 function snapshot(content) {
   return { exists: true, content, line_count: content.split("\n").length };
@@ -117,5 +124,48 @@ describe("statsForCompletedChange", () => {
     const stats = statsForCompletedChange({ kind: "update" }, before, after);
     expect(stats.unavailable_reason).toBe("too_large");
     expect(stats.hunks).toBeUndefined();
+  });
+});
+
+describe("Claude SDK file write hooks", () => {
+  it("does not install synthetic file_edit hooks around Write/Edit/NotebookEdit", async () => {
+    let capturedOptions;
+    const emitted = [];
+    queryMock.mockImplementation(({ options }) => {
+      capturedOptions = options;
+      return (async function* stream() {
+        yield { type: "result", result: "done", usage: {}, duration_ms: 1, num_turns: 1 };
+      })();
+    });
+
+    const result = await generateClaudeResponse("system", {
+      model: { model: "claude-test", reference: "claude:claude-test" },
+      messages: [{ role: "user", content: "write a file" }],
+      effort: "low",
+      cwd: "/tmp",
+      allowedTools: ["Write", "Edit", "NotebookEdit"],
+      onEvent: (event) => emitted.push(event),
+    });
+
+    expect(result.error).toBeNull();
+    expect(capturedOptions).toBeDefined();
+    const hookGroups = Object.values(capturedOptions.hooks).flat();
+    expect(hookGroups.map((group) => group.matcher)).not.toContain("Edit|Write|NotebookEdit");
+
+    for (const name of ["PreToolUse", "PostToolUse", "PostToolUseFailure"]) {
+      for (const group of capturedOptions.hooks[name] || []) {
+        for (const hook of group.hooks || []) {
+          await hook({
+            tool_name: "Write",
+            tool_input: { file_path: "notes.txt", content: "hello" },
+            tool_response: "ok",
+          }, "write-1");
+        }
+      }
+    }
+
+    const contentBlocks = emitted.flatMap((event) => event?.message?.content || []);
+    expect(contentBlocks.some((block) => block?.type === "tool_use" && block.name === "file_edit")).toBe(false);
+    expect(contentBlocks.some((block) => block?.type === "tool_result" && String(block.tool_use_id || "").startsWith("file_edit:"))).toBe(false);
   });
 });

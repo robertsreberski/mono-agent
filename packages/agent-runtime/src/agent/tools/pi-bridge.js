@@ -17,13 +17,6 @@ import {
   webSearchToolImpl,
   writeToolImpl,
 } from "./index.js";
-import {
-  createFileEditToolResultEvent,
-  createFileEditToolUseEvent,
-  fileChangeSummary,
-  readFileChangeSnapshot,
-  statsForCompletedChange,
-} from "../../ai/file-change-stats.js";
 import { formatSkillBodyWithPathNote } from "../prompt/skill-index.js";
 import { MAX_TOOL_RESULT_BYTES, summarisePayload, wrapToolsWithBloatGuard } from "../tool-bloat.js";
 import { wrapToolsWithApprovalGate } from "../approval.js";
@@ -165,22 +158,6 @@ function compactRawMcpResult(out) {
   };
 }
 
-/**
- * @param {any} change
- * @param {{status?: any, before?: any, after?: any, error?: any}} [options]
- */
-function fileEditPayload(change, { status, before, after, error } = {}) {
-  const lineStats = statsForCompletedChange(change, before, after);
-  const completedChange = lineStats ? { ...change, line_stats: lineStats } : change;
-  const summary = fileChangeSummary([completedChange]);
-  return {
-    changes: [completedChange],
-    status,
-    ...(summary ? { summary } : {}),
-    ...(error ? { error } : {}),
-  };
-}
-
 function limitedNumber(value, fallback) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return fallback;
@@ -262,24 +239,6 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
       if (name === "Bash" && toolPolicy?.bashReadOnly && !isReadOnlyShellCommand(normalized.command)) {
         throw new Error("Error: Planning shell policy allows only read-only inspection commands.");
       }
-      const isFileEdit = name === "Write" || name === "Edit";
-      let editState = null;
-      if (isFileEdit && normalized.file_path) {
-        const before = readFileChangeSnapshot(normalized.file_path);
-        editState = {
-          path: normalized.file_path,
-          before,
-          change: {
-            path: normalized.file_path,
-            kind: name === "Write" && before && !before.exists ? "add" : "update",
-          },
-        };
-        onEvent?.(createFileEditToolUseEvent(`file_edit:${toolCallId}`, {
-          changes: [editState.change],
-          status: "in_progress",
-        }));
-      }
-
       const raw = await execute(normalized, { signal, sandboxPolicy, sandboxEngine, ctx });
       // Image reads (e.g. Read on a .png) come back as a structured image
       // result so vision models see pixels; emit an image content block and let
@@ -288,20 +247,6 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
         return imageResult(raw.data, raw.mimeType, { tool: name, params: normalized });
       }
       const text = toolText(raw);
-      if (isFileEdit && editState) {
-        const failed = isErrorText(text);
-        const after = readFileChangeSnapshot(editState.path);
-        onEvent?.(createFileEditToolResultEvent(
-          `file_edit:${toolCallId}`,
-          fileEditPayload(editState.change, {
-            status: failed ? "failed" : "completed",
-            before: editState.before,
-            after,
-            error: failed ? text : null,
-          }),
-          { isError: failed },
-        ));
-      }
       if (isErrorText(text)) throw new Error(text);
       return textResult(text, { tool: name, params: normalized });
     },

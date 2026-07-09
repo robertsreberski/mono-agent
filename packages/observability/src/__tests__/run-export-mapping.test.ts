@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildEventSpans,
   buildEventSpanAttributes,
   buildRootSpanAttributes,
   composeFailureDetail,
@@ -10,7 +11,7 @@ import {
   spanKindHint,
   spanStatusFor,
 } from "../run-export-mapping.js";
-import type { RunExportContext, RunSummary } from "../types.js";
+import type { RunExportContext, RunSummary, RuntimeEventLike } from "../types.js";
 
 function makeSummary(overrides: Partial<RunSummary> = {}): RunSummary {
   return {
@@ -159,6 +160,29 @@ describe("buildEventSpanAttributes", () => {
     );
     expect(result.category).toBe("tool");
     expect(result.attributes["mono.agent.event.label"]).toBe("Tool result");
+  });
+
+  it("folds Write tool_use and tool_result into a real Write TOOL span", () => {
+    const events: RuntimeEventLike[] = [
+      {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "write-1", name: "Write", input: { file_path: "notes.txt" } }] },
+      },
+      {
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: "write-1", content: "Successfully wrote notes.txt" }] },
+      },
+    ];
+
+    const spans = buildEventSpans(events, makeContext({ includeSensitiveData: true }));
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.category).toBe("tool");
+    expect(spans[0]?.attributes["openinference.span.kind"]).toBe("TOOL");
+    expect(spans[0]?.attributes["mono.agent.tool.name"]).toBe("Write");
+    expect(spans[0]?.attributes["tool.name"]).toBe("Write");
+    expect(spans[0]?.attributes["mono.agent.tool.use_id"]).toBe("write-1");
+    expect(spans[0]?.attributes["mono.agent.tool.name"]).not.toBe("file_edit");
   });
 
   it("classifies an assistant text event as message", () => {

@@ -91,6 +91,37 @@ describe("mapRunToSession", () => {
     expect(result.tcid).toBe("call_tw067vx18AOnjQ9yBu4K8WQ4");
   });
 
+  it("counts real Write tool events without synthetic file_edit entries", () => {
+    const summary: RunSummary = {
+      runId: "run-write-tool",
+      conversationId: "chat:write",
+      status: "succeeded",
+      startedAt: "2026-07-09T10:00:00.000Z",
+      durationMs: 1000,
+      eventCount: 2,
+      artifactPaths: [],
+    };
+    const events: RuntimeEventLike[] = [
+      {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "write-1", name: "Write", input: { file_path: "notes.txt" } }] },
+        timestamp: "2026-07-09T10:00:00.100Z",
+      },
+      {
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: "write-1", content: "Successfully wrote notes.txt" }] },
+        timestamp: "2026-07-09T10:00:00.200Z",
+      },
+    ];
+
+    const session = mapRunToSession(summary, events, OPTS);
+
+    expect(session.toolCounts).toEqual({ Write: 1 });
+    expect(session.toolCounts).not.toHaveProperty("file_edit");
+    expect(assistantSteps(session.steps).flatMap((step) => step.calls).map((call) => call.name)).toEqual(["Write"]);
+    expect(resultSteps(session.steps).map((step) => step.tool)).toEqual(["Write"]);
+  });
+
   it("splits recalled memory, treats the NOTHING_TO_REPORT sentinel as silent, and marks a failed tool ok:false", () => {
     const { summary, events } = loadFixture("silent-recall");
     const session = mapRunToSession(summary, events, OPTS);
