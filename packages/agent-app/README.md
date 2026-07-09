@@ -49,13 +49,19 @@ node <workspace>/packages/agent-app/dist/cli.js start
 On an interactive terminal, bare `mono-agent init` (no flags) runs a colourful,
 step-by-step wizard — powered by `@clack/prompts` — that composes the capability
 selection before writing anything and can opt in to provider auth/preflight
-commands before the scaffold is created. The default model is
+commands before the scaffold is created. Presets seed the same model, channel,
+tool, and sandbox decisions as the custom path; they do not silently bypass
+safety choices. The default model is
 `codex:gpt-5.6-terra`; `pi:openai-codex:gpt-5.6-terra` remains a concrete selectable
 Pi candidate, and OpenCode-Go Pi refs can save `OPENCODE_API_KEY` into
 the Pi auth store, and optional fallback models are selected from the same
 discovered choices one at a time before manual entry. Any flag (or a piped/non-TTY
 invocation) takes the silent default/preset scaffold path instead; add `--auth`
-to run supported provider setup in that non-interactive path.
+to run supported provider setup in that non-interactive path. Required selected
+channel secrets are masked, merged into `.env` with mode `0600`, and never enter
+config JSON. Before the interactive wizard reports success it makes one disposable,
+no-tool assistant turn using the selected model and environment; on failure it
+offers provider setup, model change, incomplete save, or cancellation.
 
 Programmatic:
 

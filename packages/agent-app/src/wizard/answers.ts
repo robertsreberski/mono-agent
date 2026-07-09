@@ -53,6 +53,7 @@ export interface SecretChecklistItem {
   readonly label: string;
   readonly envVar: string;
   readonly description: string;
+  readonly required: boolean;
 }
 
 /**
@@ -277,12 +278,13 @@ export function composeWizardPlan(answers: WizardAnswers, ctx: ComposeContext): 
       files.push(file);
     }
     for (const input of module.inputs) {
-      if (input.secret === true && input.envVar !== undefined) {
+      if (input.secret === true) {
         secrets.push({
           moduleId: module.id,
           label: input.label,
           envVar: input.envVar,
           description: input.description,
+          required: input.required === true,
         });
       }
     }

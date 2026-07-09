@@ -1,11 +1,11 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
-import { initMonoAgentFolder } from "../init.js";
+import { initMonoAgentFolder, mergeSecretEnvFile } from "../init.js";
 import { defaultAnswers } from "../wizard/answers.js";
 import { findPreset, presetAnswers } from "../wizard/presets.js";
 
@@ -118,5 +118,19 @@ describe("initMonoAgentFolder", () => {
     const config = JSON.parse(await readFile(configPath, "utf8"));
     expect(config.runtime.model).toBe("codex:gpt-5.6-terra");
     expect(await readFile(result.identityPath, "utf8")).toBe("# Mine\n");
+  });
+
+  it("merges required secrets into a private env file without replacing existing values or comments", async () => {
+    const envPath = join(dir, ".env");
+    await writeFile(envPath, "# retain me\nMONO_AGENT_TELEGRAM_TOKEN=already-set\nMONO_AGENT_SLACK_BOT_TOKEN=\n");
+    await mergeSecretEnvFile(envPath, {
+      MONO_AGENT_TELEGRAM_TOKEN: "replacement-must-not-win",
+      MONO_AGENT_SLACK_BOT_TOKEN: "new-value",
+    });
+    const env = await readFile(envPath, "utf8");
+    expect(env).toContain("# retain me");
+    expect(env).toContain("MONO_AGENT_TELEGRAM_TOKEN=already-set");
+    expect(env).toContain('MONO_AGENT_SLACK_BOT_TOKEN="new-value"');
+    expect((await stat(envPath)).mode & 0o777).toBe(0o600);
   });
 });

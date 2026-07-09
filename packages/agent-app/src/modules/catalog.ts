@@ -74,6 +74,7 @@ const channelTelegram: CapabilityModule = {
       description: "BotFather token. Externalized to .env.example; never written into JSON.",
       secret: true,
       envVar: "MONO_AGENT_TELEGRAM_TOKEN",
+      required: true,
     },
   ],
   configFragment: (values) => {
@@ -110,6 +111,7 @@ const channelSlack: CapabilityModule = {
       description: "xoxb-… token. Externalized to .env.example.",
       secret: true,
       envVar: "MONO_AGENT_SLACK_BOT_TOKEN",
+      required: true,
     },
     {
       id: "appToken",
@@ -117,6 +119,7 @@ const channelSlack: CapabilityModule = {
       description: "xapp-… connections:write token for Socket Mode.",
       secret: true,
       envVar: "MONO_AGENT_SLACK_APP_TOKEN",
+      required: true,
     },
   ],
   configFragment: (values) => {
@@ -156,6 +159,7 @@ const channelOpenaiApi: CapabilityModule = {
       description: "Optional bearer clients must present (sk-…). Externalized to .env.example.",
       secret: true,
       envVar: "MONO_AGENT_OPENAI_API_KEY",
+      required: false,
     },
   ],
   configFragment: () => ({ openaiApi: { enabled: true } }),
@@ -205,6 +209,7 @@ const channelA2a: CapabilityModule = {
   title: "A2A provider",
   summary: "Expose the agent over A2A (Agent Card + provider endpoint).",
   riskLevel: "medium",
+  wizardSelectable: false,
   inputs: [
     {
       id: "bearerToken",
@@ -212,6 +217,7 @@ const channelA2a: CapabilityModule = {
       description: "Bearer required from A2A consumers when requireBearer is set. Externalized to .env.example.",
       secret: true,
       envVar: "MONO_AGENT_A2A_BEARER_TOKEN",
+      required: false,
     },
   ],
   configFragment: () => a2aProviderPluginSection(),
@@ -306,6 +312,7 @@ const memorySupermemory: CapabilityModule = {
       description: "Bearer key printed by supermemory-server on first boot. Externalized to .env.example.",
       secret: true,
       envVar: "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY",
+      required: true,
     },
   ],
   configFragment: (values) => ({

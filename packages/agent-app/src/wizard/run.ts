@@ -42,6 +42,8 @@ export type WizardOutcome =
       readonly answers: WizardAnswers;
       readonly runProviderSetup: boolean;
       readonly providerSetupSecrets: Readonly<Record<string, string>>;
+      /** Required selected module secrets, kept in memory until secure init persists them. */
+      readonly moduleSecrets: Readonly<Record<string, string>>;
     }
   | { readonly status: "cancelled" };
 
@@ -75,6 +77,7 @@ interface CollectedAnswers {
   readonly answers: WizardAnswers;
   readonly runProviderSetup: boolean;
   readonly providerSetupSecrets: Readonly<Record<string, string>>;
+  readonly moduleSecrets: Readonly<Record<string, string>>;
 }
 
 /**
@@ -92,6 +95,7 @@ export async function runInitWizard(ctx: { cwd: string }): Promise<WizardOutcome
       answers: result.answers,
       runProviderSetup: result.runProviderSetup,
       providerSetupSecrets: result.providerSetupSecrets,
+      moduleSecrets: result.moduleSecrets,
     };
   } catch (error) {
     if (error instanceof WizardCancelled) {
@@ -124,90 +128,7 @@ async function collectAnswers(ctx: { cwd: string }): Promise<CollectedAnswers> {
  * → tools → sandbox (only if code tools were chosen) → observability → summary.
  */
 async function collectCustom(ctx: { cwd: string }): Promise<CollectedAnswers> {
-  const draft = draftFrom(defaultAnswers());
-
-  // 1. Model.
-  const discovery = await discoverWizardModelCandidates();
-  const discoveredByValue = new Map(discovery.candidates.map((candidate) => [candidate.value, candidate]));
-  p.note(formatModelDiscoveryStatus(discovery.statuses), "Model discovery");
-  const model = guard(
-    await p.select({
-      message: "Which model?",
-      options: modelSelectOptions(discovery.candidates),
-      initialValue: draft.model,
-    }),
-  );
-  draft.model = await resolveModelSelection(model, {
-    candidates: discovery.candidates,
-    context: "primary",
-  });
-
-  // Optional fallback chain.
-  if (guard(await p.confirm({ message: "Add fallback models?", initialValue: false }))) {
-    await promptFallbackModels(draft, discovery.candidates);
-  }
-
-  const derivedEffort = discoveredByValue.get(draft.model)?.defaultEffort ?? defaultEffortForModelRef(draft.model);
-  const effort = guard(
-    await p.select({
-      message: derivedEffort === undefined
-        ? "Reasoning effort?"
-        : `Reasoning effort? (derived from selected model: ${derivedEffort})`,
-      options: effortSelectOptions(derivedEffort),
-      initialValue: derivedEffort ?? "",
-    }),
-  );
-  draft.effort = effort.length === 0 ? undefined : effort;
-
-  // 2. Channels.
-  const channels = guard(
-    await p.multiselect({
-      message: "How will you talk to this agent?",
-      options: channelSelectOptions(),
-      initialValues: ["channel:webhook"],
-      required: false,
-    }),
-  );
-  draft.channels = [...channels];
-
-  // 3. Memory (before per-module inputs so a memory module's inputs are prompted).
-  const memory = guard(
-    await p.select({
-      message: "Should the agent remember across conversations?",
-      options: memorySelectOptions(),
-      initialValue: "",
-    }),
-  );
-  draft.memory = memory === "" ? undefined : memory;
-
-  // 4. Per-module (non-secret) inputs for the chosen channels + memory.
-  await promptModuleInputs(draft);
-
-  // 5. Tools.
-  await promptTools(draft);
-
-  // 6. Sandbox — only meaningful once shell/file tools are in play. Allow-all
-  // includes Bash/Write/Edit, so the sandbox question must still appear under it.
-  if (isAllowAllTools(draft.allowedTools) || draft.allowedTools.some((tool) => SANDBOXABLE_TOOLS.has(tool))) {
-    draft.sandbox = guard(
-      await p.confirm({
-        message: "Sandbox shell/file tools? (native srt, localhost-only network, fails closed if srt is missing)",
-        initialValue: true,
-      }),
-    );
-  }
-
-  // 7. Observability.
-  draft.observability = guard(
-    await p.confirm({
-      message: "Export traces to Phoenix (best-effort OTLP, sensitive data excluded)?",
-      initialValue: false,
-    }),
-  );
-
-  // 8. Summary + final confirm.
-  const providerSetup = await confirmSummary(draft, ctx);
-  return { answers: toWizardAnswers(draft), ...providerSetup };
+  return await collectInteractiveFromSeed(ctx, defaultAnswers());
 }
 
 async function resolveModelSelection(model: string, opts: ModelResolutionOptions): Promise<string> {
@@ -324,9 +245,8 @@ async function promptFallbackModels(
 }
 
 /**
- * The preset flow: the preset fixes model/channels/memory/sandbox/observability,
- * so we only prompt its per-module inputs, let the operator adjust tools, and
- * confirm the summary.
+ * Presets seed every choice, but do not silently freeze them. A first run must
+ * still choose its model, channels, tool policy, and sandbox safety posture.
  */
 async function collectFromPreset(ctx: { cwd: string }, presetId: string): Promise<CollectedAnswers> {
   const preset = findPreset(presetId);
@@ -336,17 +256,67 @@ async function collectFromPreset(ctx: { cwd: string }, presetId: string): Promis
   }
   p.log.step(`Preset: ${preset.title}`);
 
-  const draft = draftFrom(presetAnswers(preset));
+  return await collectInteractiveFromSeed(ctx, presetAnswers(preset));
+}
+
+/** Shared custom/preset first-run chooser; seed answers only set sensible defaults. */
+async function collectInteractiveFromSeed(ctx: { cwd: string }, seed: WizardAnswers): Promise<CollectedAnswers> {
+  const draft = draftFrom(seed);
+  const discovery = await discoverWizardModelCandidates();
+  const discoveredByValue = new Map(discovery.candidates.map((candidate) => [candidate.value, candidate]));
+  p.note(formatModelDiscoveryStatus(discovery.statuses), "Model discovery");
+  const model = guard(await p.select({
+    message: "Which model?",
+    options: modelSelectOptions(discovery.candidates),
+    initialValue: draft.model,
+  }));
+  draft.model = await resolveModelSelection(model, { candidates: discovery.candidates, context: "primary" });
+  draft.fallbackModels = [];
+  if (guard(await p.confirm({ message: "Add fallback models?", initialValue: false }))) {
+    await promptFallbackModels(draft, discovery.candidates);
+  }
+  const derivedEffort = discoveredByValue.get(draft.model)?.defaultEffort ?? defaultEffortForModelRef(draft.model);
+  const effort = guard(await p.select({
+    message: derivedEffort === undefined ? "Reasoning effort?" : `Reasoning effort? (derived from selected model: ${derivedEffort})`,
+    options: effortSelectOptions(derivedEffort),
+    initialValue: draft.effort ?? derivedEffort ?? "",
+  }));
+  draft.effort = effort.length === 0 ? undefined : effort;
+  draft.channels = [...guard(await p.multiselect({
+    message: "How will you talk to this agent?",
+    options: channelSelectOptions({ readyOnly: true }),
+    initialValues: draft.channels,
+    required: false,
+  }))];
+  const memory = guard(await p.select({
+    message: "Should the agent remember across conversations?",
+    options: memorySelectOptions(),
+    initialValue: draft.memory ?? "",
+  }));
+  draft.memory = memory === "" ? undefined : memory;
   await promptModuleInputs(draft);
   await promptTools(draft);
+  if (isAllowAllTools(draft.allowedTools) || draft.allowedTools.some((tool) => SANDBOXABLE_TOOLS.has(tool))) {
+    draft.sandbox = guard(await p.confirm({
+      message: "Sandbox shell/file tools? (native srt, localhost-only network, fails closed if srt is missing)",
+      initialValue: true,
+    }));
+  } else {
+    draft.sandbox = false;
+  }
+  draft.observability = guard(await p.confirm({
+    message: "Export traces to Phoenix (best-effort OTLP, sensitive data excluded)?",
+    initialValue: draft.observability,
+  }));
   const providerSetup = await confirmSummary(draft, ctx);
-  return { answers: toWizardAnswers(draft), ...providerSetup };
+  const answers = toWizardAnswers(draft);
+  return { answers, ...providerSetup, moduleSecrets: await promptRequiredModuleSecrets(answers) };
 }
 
 /**
  * Prompt every non-secret input of the selected channel + memory modules and store
- * the answers into `draft.moduleInputs`. Secret inputs are never prompted — they
- * only ever surface as `.env.example` placeholders.
+ * the answers into `draft.moduleInputs`. Required secrets are collected only after
+ * the write confirmation so they can never appear in the plan summary.
  */
 async function promptModuleInputs(draft: DraftAnswers): Promise<void> {
   const moduleIds = [...draft.channels, ...(draft.memory === undefined ? [] : [draft.memory])];
@@ -372,6 +342,21 @@ async function promptModuleInputs(draft: DraftAnswers): Promise<void> {
       }
     }
   }
+}
+
+/** Collect only typed required secrets, masked and retained solely for this run. */
+async function promptRequiredModuleSecrets(answers: WizardAnswers): Promise<Readonly<Record<string, string>>> {
+  const plan = composeWizardPlan(answers, { dirBasename: "agent", skillsRootExists: false });
+  const secrets: Record<string, string> = {};
+  for (const secret of plan.secrets) {
+    if (!secret.required) continue;
+    secrets[secret.envVar] = guard(await p.password({
+      message: `${secret.label} (${secret.envVar})`,
+      validate: (value) => (value ?? "").trim().length === 0 ? "This secret is required for the selected capability." : undefined,
+      clearOnError: true,
+    }));
+  }
+  return secrets;
 }
 
 /** Short reasons annotating each always-on tool in the framing note. */

@@ -8,7 +8,7 @@ sidebar:
 
 `mono-agent init` builds an agent by composing **capability modules** — a channel here, a memory tier there, an optional sandbox — and walking you through the settings that matter. Tools default to **allow-all** (`["*"]`), so a fresh agent can actually _do_ things out of the box; the wizard still offers to narrow the surface, and you can subtract individual tools later via `tools.disallowedTools`. On a terminal with no flags, `init` is a step-by-step wizard; with `--yes` or any flag (or when stdin is not a TTY) it writes a scaffold non-interactively. Existing files are never overwritten.
 
-**Presets** are saved answer-sets for common shapes. A preset seeds the model, channels, memory, sandbox, and observability choices; the composer fills the rest and defaults `tools.allowedTools` to allow-all (`["*"]`), so a preset is just a faster starting point on the same single config-generation path.
+**Presets** are saved answer-sets for common shapes. In the interactive wizard they seed, rather than lock, the model, channels, memory, tools, sandbox, and observability choices; the same questions still run before a write. The composer fills the rest and defaults `tools.allowedTools` to allow-all (`["*"]`), so a preset is just a faster starting point on the same single config-generation path. Webhook is the functional local default; external plugin modules remain explicit configuration, not ready-to-select first-run choices.
 
 ## Commands
 

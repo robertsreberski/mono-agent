@@ -90,8 +90,8 @@ const ASK_USER_OPTION: WizardSelectOption = {
  * Channel options for the "how will you talk to this agent?" multiselect: every
  * channel module in catalog order (webhook first), value = module id.
  */
-export function channelSelectOptions(): WizardSelectOption[] {
-  return modulesByKind("channel").map((module) => ({
+export function channelSelectOptions(options: { readonly readyOnly?: boolean } = {}): WizardSelectOption[] {
+  return modulesByKind("channel").filter((module) => options.readyOnly !== true || module.wizardSelectable !== false).map((module) => ({
     value: module.id,
     label: module.title,
     hint: module.summary,

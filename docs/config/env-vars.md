@@ -15,7 +15,7 @@ The resolution order is **env > JSON > built-in defaults**. An environment varia
 A `.env` file in the agent folder is loaded automatically by the CLI. Variables already exported in your shell take precedence over values in `.env` (exported shell vars win). Pass `--env-file <path>` to load an alternate file instead of `./.env`. For `mono-agent validate --consumer <path>`, the consumer folder's `.env` loads by default, and relative `--env-file` paths resolve inside that consumer folder.
 
 :::caution
-Secrets belong in `.env` (or exported shell vars), never in `mono-agent.config.json`, which is meant to be committed. Keep `.env` untracked.
+Secrets belong in `.env` (or exported shell vars), never in `mono-agent.config.json`, which is meant to be committed. Keep `.env` untracked. During interactive `mono-agent init`, required selected-capability secrets are entered masked and merged into `.env` with mode `0600`; existing comments and non-empty values are retained. They are not echoed in the wizard summary, logs, or generated config.
 
 `mono-agent config` and `mono-agent validate` warn when a secret-marked field is resolved from committed JSON and name the matching `MONO_AGENT_*` variable to move it to. The warning is advisory and non-fatal.
 :::

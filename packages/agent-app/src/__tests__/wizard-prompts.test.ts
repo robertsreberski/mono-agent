@@ -56,6 +56,10 @@ describe("wizard prompt builders", () => {
     }
   });
 
+  it("hides optional plugin channels from the live first-run picker", () => {
+    expect(channelSelectOptions({ readyOnly: true }).map((option) => option.value)).not.toContain("channel:a2a");
+  });
+
   it("memorySelectOptions leads with an empty-value 'None' option", () => {
     const options = memorySelectOptions();
     expect(options[0]?.value).toBe("");

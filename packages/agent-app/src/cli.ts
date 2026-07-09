@@ -64,6 +64,8 @@ import type { WizardPreset } from "./wizard/presets.js";
 import { runInitWizard } from "./wizard/run.js";
 import { executeProviderSetupPlan, planProviderSetup, providerSetupActionCommandLine } from "./provider-setup.js";
 import type { ProviderSetupPlan, ProviderSetupResult } from "./provider-setup.js";
+import { runReadinessProbe } from "./readiness-probe.js";
+import * as p from "@clack/prompts";
 import * as ui from "./ui.js";
 
 const DEFAULT_LOG_LINES = 200;
@@ -835,28 +837,63 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
       process.stdout.write(ui.hint("Found an existing mono-agent.config.json — `mono-agent init` never overwrites. Run `mono-agent validate`, or start in an empty folder.\n"));
       return 0;
     }
-    const outcome = await runInitWizard({ cwd: process.cwd() });
-    if (outcome.status === "cancelled") {
-      return 1;
-    }
-    if (outcome.runProviderSetup) {
-      const previewPlan = composeWizardPlan(outcome.answers, {
+    let outcome = await runInitWizard({ cwd: process.cwd() });
+    if (outcome.status === "cancelled") return 1;
+    let providerSetupAttempted = false;
+    let providerSetupFailed = false;
+    for (;;) {
+      const plan = composeWizardPlan(outcome.answers, {
         dirBasename: basename(process.cwd()),
         skillsRootExists: await pathExists(resolve(process.cwd(), "skills")),
       });
-      const setup = await runProviderSetupBeforeInit({
-        modelRefs: [outcome.answers.model, ...outcome.answers.fallbackModels],
-        cwd: process.cwd(),
-        auth: true,
-        dryRun: false,
-        ...(typeof previewPlan.configJson.providers?.piAuthPath === "string" ? { piAuthPath: previewPlan.configJson.providers.piAuthPath } : {}),
-        apiKeys: outcome.providerSetupSecrets,
+      if (outcome.runProviderSetup && !providerSetupAttempted) {
+        providerSetupAttempted = true;
+        providerSetupFailed = (await runProviderSetupBeforeInit({
+          modelRefs: [outcome.answers.model, ...outcome.answers.fallbackModels],
+          cwd: process.cwd(), auth: true, dryRun: false,
+          ...(typeof plan.configJson.providers?.piAuthPath === "string" ? { piAuthPath: plan.configJson.providers.piAuthPath } : {}),
+          apiKeys: outcome.providerSetupSecrets,
+        })) === "failed";
+      }
+      const probe = providerSetupFailed
+        ? { ok: false as const, message: "Provider setup did not complete." }
+        : await runReadinessProbe({ plan, secretValues: outcome.moduleSecrets });
+      if (probe.ok) break;
+      p.log.error("Provider setup or the readiness probe did not receive a first assistant response. No agent files were written.");
+      const recovery = await p.select({
+        message: "How would you like to recover?",
+        options: [
+          { value: "retry", label: "Retry provider setup and probe" },
+          { value: "model", label: "Change model" },
+          { value: "save", label: "Save as incomplete (do not call setup ready)" },
+          { value: "cancel", label: "Cancel without writing" },
+        ],
       });
-      if (setup === "failed") {
+      if (p.isCancel(recovery) || recovery === "cancel") return 1;
+      if (recovery === "model") {
+        outcome = await runInitWizard({ cwd: process.cwd() });
+        if (outcome.status === "cancelled") return 1;
+        providerSetupAttempted = false;
+        providerSetupFailed = false;
+        continue;
+      }
+      if (recovery === "save") {
+        const saved = await initMonoAgentFolder({ dir: process.cwd(), answers: outcome.answers, secretValues: outcome.moduleSecrets });
+        printInitResult(saved);
+        process.stderr.write(ui.hint("INCOMPLETE SETUP: no readiness claim was made. Fix provider setup or choose another model, then run `mono-agent validate` and retry the first turn.\n"));
         return 1;
       }
+      // Retry includes the provider preflight even when the original summary did
+      // not opt into it; no fallback model is silently substituted.
+      providerSetupAttempted = true;
+      providerSetupFailed = (await runProviderSetupBeforeInit({
+        modelRefs: [outcome.answers.model, ...outcome.answers.fallbackModels],
+        cwd: process.cwd(), auth: true, dryRun: false,
+        ...(typeof plan.configJson.providers?.piAuthPath === "string" ? { piAuthPath: plan.configJson.providers.piAuthPath } : {}),
+        apiKeys: outcome.providerSetupSecrets,
+      })) === "failed";
     }
-    const result = await initMonoAgentFolder({ dir: process.cwd(), answers: outcome.answers });
+    const result = await initMonoAgentFolder({ dir: process.cwd(), answers: outcome.answers, secretValues: outcome.moduleSecrets });
     printInitResult(result);
     const report = await validateMonoAgentFolder({ env: process.env, cwd: process.cwd(), configPath: result.configPath });
     process.stdout.write("\n" + ui.heading("Validation"));
@@ -865,6 +902,16 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
     }
     process.stdout.write(renderPlanCompleteness(result.plan.validateExpectations, "Selected capabilities", report));
     printSecretsChecklist(result.plan.secrets);
+    process.stdout.write(ui.badge("ok") + ui.style.green("readiness probe passed — a real no-tool first response succeeded.\n"));
+    const startNow = await p.confirm({
+      message: process.platform === "darwin"
+        ? "Start this ready agent now as a background service?"
+        : "Start this ready agent now in the foreground? (it will remain attached to this terminal)",
+      initialValue: true,
+    });
+    if (!p.isCancel(startNow) && startNow) {
+      return await runStart({ ...args, foreground: process.platform !== "darwin" });
+    }
     printNextSteps(result.configPath);
     return report.ok ? 0 : 1;
   }
@@ -1089,7 +1136,9 @@ function printInitResult(result: InitMonoAgentFolderResult): void {
       process.stdout.write(`  ${ui.style.cyan(module.title)} ${ui.style.dim(`(risk: ${riskColor(module.riskLevel)})`)}\n`);
     }
   }
-  if (result.plan.envExample !== undefined) {
+  if (result.secretsPersisted) {
+    process.stdout.write("\n" + ui.style.dim("Required secrets were securely merged into .env (mode 0600).\n"));
+  } else if (result.plan.envExample !== undefined) {
     process.stdout.write("\n" + ui.style.dim("Fill the secret placeholders in .env.example, then copy it to .env.\n"));
   }
 }
@@ -1107,12 +1156,13 @@ function printSecretsChecklist(secrets: readonly SecretChecklistItem[]): void {
 }
 
 function printNextSteps(configPath: string): void {
+  const start = process.platform === "darwin" ? "mono-agent start" : "mono-agent start --foreground";
   process.stdout.write(
     "\n" +
       ui.heading("Next steps") +
       `  ${ui.style.bold("1.")} Edit ${configPath} ${ui.style.dim("(model, channels, skills, memory, sandbox)")}\n` +
       `  ${ui.style.bold("2.")} mono-agent validate\n` +
-      `  ${ui.style.bold("3.")} mono-agent start\n`,
+      `  ${ui.style.bold("3.")} ${start}\n`,
   );
 }
 
