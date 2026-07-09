@@ -13,14 +13,14 @@ A mono-agent is declared by a single `mono-agent.config.json` in the agent folde
 Everything about an agent — its model, channels, memory, tools, sandbox, and observability — is declared in one JSON file. Paths inside it are resolved relative to the folder that contains it. Scaffold one with the CLI:
 
 ```bash
-mono-agent init --model pi:openai-codex:gpt-5.5
+mono-agent init --model codex:gpt-5.6-terra
 ```
 
 A minimal valid config has exactly two fields:
 
 ```json
 {
-  "runtime": { "model": "pi:openai-codex:gpt-5.5" },
+  "runtime": { "model": "codex:gpt-5.6-terra" },
   "context": { "identityPath": "./IDENTITY.md" }
 }
 ```
@@ -38,7 +38,7 @@ Resolution order is fixed everywhere:
 Every config key has a matching `MONO_AGENT_*` override. For example `runtime.model` is overridden by `MONO_AGENT_MODEL`, and `runtime.effort` by `MONO_AGENT_EFFORT`:
 
 ```json
-{ "runtime": { "model": "pi:openai-codex:gpt-5.5", "effort": "medium" } }
+{ "runtime": { "model": "codex:gpt-5.6-terra", "effort": "medium" } }
 ```
 
 ```bash

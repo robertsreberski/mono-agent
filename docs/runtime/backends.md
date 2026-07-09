@@ -17,8 +17,8 @@ A model reference is a `:`-delimited string. The leading segment is the runtime 
 | SDK id | Reference shape | Example |
 | --- | --- | --- |
 | `claude` | `claude:<model>` | `claude:claude-sonnet-4-6` |
-| `codex` | `codex:<model>` | `codex:gpt-5.5` |
-| `pi` | `pi:<provider>:<model>` | `pi:openai:gpt-5.5` |
+| `codex` | `codex:<model>` | `codex:gpt-5.6-terra` |
+| `pi` | `pi:<provider>:<model>` | `pi:openai-codex:gpt-5.6-terra` |
 | `opencode` | `opencode:<provider>:<model>` | `opencode:github-copilot:gpt-4.1` |
 
 Only four SDK ids are active: `claude`, `pi`, `codex`, `opencode` (`ACTIVE_RUNTIME_IDS` in [`packages/agent-runtime/src/ai/runtime/model-refs.js`](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/src/ai/runtime/model-refs.js)). The ids `openai`, `vercel`, `claude-code`, and `codex-cli` are *reserved legacy spellings* — they are canonicalized (`openai:x` → `pi:openai:x`, `claude-code:x` → `claude:x`, `vercel:p:m` → `pi:p:m`) or rejected. Tier aliases (`haiku`, `sonnet`, `opus`) are rejected; use an exact model id.
@@ -31,7 +31,7 @@ For `pi:` and `opencode:` only the **first** colon separates provider from model
 | --- | --- | --- | --- | --- |
 | Claude SDK | `claude:<model>` | `sdk` | `@anthropic-ai/claude-agent-sdk` | `claude:claude-sonnet-4-6` |
 | Claude Code CLI | `claude:<model>` | `cli` | `claude` CLI binary (resumes via `--resume`) | `claude:claude-sonnet-4-6` |
-| Codex CLI | `codex:<model>` | `cli` (only) | Codex app-server subprocess | `codex:gpt-5.5` |
+| Codex CLI | `codex:<model>` | `cli` (only) | Codex app-server subprocess | `codex:gpt-5.6-terra` |
 | Pi SDK | `pi:<provider>:<model>` | `sdk` (only) | Pi SDK provider gateway (15+ providers) | `pi:github-copilot:gpt-4.1` |
 | OpenCode | `opencode:<provider>:<model>` | `cli` (only) | `@opencode-ai/sdk` against OpenCode `auth.json` (75+ providers) | `opencode:github-copilot:gpt-4.1` |
 
@@ -55,7 +55,7 @@ For `pi:` and `opencode:` only the **first** colon separates provider from model
 ```json
 {
   "runtime": {
-    "model": "codex:gpt-5.5",
+    "model": "codex:gpt-5.6-terra",
     "executionMode": "cli"
   }
 }
@@ -63,7 +63,7 @@ For `pi:` and `opencode:` only the **first** colon separates provider from model
 
 The default execution mode for a `codex:` model is already `cli`, so `executionMode` can be omitted.
 
-The init wizard defaults to `pi:openai-codex:gpt-5.5` because it runs through the Pi SDK. If the Pi auth store is missing, the same model stays selectable as setup-required and the wizard can offer auth setup; direct `codex:gpt-5.5` remains selectable for users who want the Codex CLI bridge.
+The init wizard defaults to direct `codex:gpt-5.6-terra`. It also presents `pi:openai-codex:gpt-5.6-terra` as a selectable Pi candidate; if its Pi auth store is missing, the wizard can offer `mono-agent auth login openai-codex` setup.
 
 ### Pi SDK
 

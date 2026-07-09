@@ -64,7 +64,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `memory.embeddings.timeoutMs` | `integer` | `MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS` | 10000 | `10000` | Configures embeddings.timeoutMs for the memory section. |
 | `memory.llm.endpoint` | `string` | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | unset | `example` | Configures llm.endpoint for the memory section. |
 | `memory.llm.executionMode` | `string` | `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` | unset | `example` | Configures llm.executionMode for the memory section. |
-| `memory.llm.model` | `string` | `MONO_AGENT_MEMORY_LLM_MODEL` | unset | `pi:openai-codex:gpt-5.5` | Configures llm.model for the memory section. |
+| `memory.llm.model` | `string` | `MONO_AGENT_MEMORY_LLM_MODEL` | unset | `pi:openai-codex:gpt-5.6-terra` | Configures llm.model for the memory section. |
 | `memory.llm.provider` | `string` | `MONO_AGENT_MEMORY_LLM_PROVIDER` | unset | `agent-host` | Configures llm.provider for the memory section. |
 | `memory.llm.timeoutMs` | `integer` | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | 60000 | `60000` | Configures llm.timeoutMs for the memory section. |
 | `memory.llm.trace` | `boolean` | `MONO_AGENT_MEMORY_LLM_TRACE` | true | `true` | Configures llm.trace for the memory section. |
@@ -96,7 +96,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `runtime.executionMode` | `string` | `MONO_AGENT_EXECUTION_MODE` | inferred | `inferred` | Configures executionMode for the runtime section. |
 | `runtime.fallbackModels` | `string[]` | `MONO_AGENT_FALLBACK_MODELS` | unset | `["pi:ollama:gemma4:31b"]` | Configures fallbackModels for the runtime section. |
 | `runtime.maxTurns` | `integer` | `MONO_AGENT_MAX_TURNS` | unset | `1` | Configures maxTurns for the runtime section. |
-| `runtime.model` | `string` | `MONO_AGENT_MODEL` | required | `pi:openai-codex:gpt-5.5` | Configures model for the runtime section. |
+| `runtime.model` | `string` | `MONO_AGENT_MODEL` | required | `codex:gpt-5.6-terra` | Configures model for the runtime section. |
 | `runtime.permissionMode` | `string` | `MONO_AGENT_PERMISSION_MODE` | unset | `default` | Configures permissionMode for the runtime section. |
 | `runtime.session.idleTimeoutMs` | `integer` | `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS` | 1800000 | `1800000` | Configures session.idleTimeoutMs for the runtime section. |
 | `runtime.session.isolateProactive` | `boolean` | `MONO_AGENT_SESSION_ISOLATE_PROACTIVE` | false | `true` | Configures session.isolateProactive for the runtime section. |

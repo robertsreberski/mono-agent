@@ -15,7 +15,7 @@ A mono-agent is fully described by a single `mono-agent.config.json` in the agen
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5"
+    "model": "codex:gpt-5.6-terra"
   }
 }
 ```

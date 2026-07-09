@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -35,7 +35,7 @@ import {
   rankWizardModelCandidates,
   type WizardModelCandidate,
 } from "../wizard/model-discovery.js";
-import { executeProviderSetupPlan, planProviderSetup, providerSetupActionCommandLine } from "../provider-setup.js";
+import { executeProviderSetupPlan, planProviderSetup, providerSetupActionCommandLine, resolvePiCliPath } from "../provider-setup.js";
 
 describe("wizard prompt builders", () => {
   it("channelSelectOptions lists all six channels, webhook first", () => {
@@ -290,6 +290,45 @@ describe("provider setup planner", () => {
       });
       expect((await stat(authPath)).mode & 0o777).toBe(0o600);
       expect(await readdir(authDir)).toEqual(["credentials.json"]);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("runs a supported Pi login from a hoisted packed-install layout and stages a custom auth path", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "mono-agent-provider-setup-"));
+    try {
+      const nodeModulesPath = join(tmp, "global", "lib", "node_modules");
+      const bundledPiCliPath = join(nodeModulesPath, "@earendil-works", "pi-ai", "dist", "cli.js");
+      await mkdir(dirname(bundledPiCliPath), { recursive: true });
+      await writeFile(bundledPiCliPath, "// bundled Pi CLI fixture\n", "utf8");
+      const authPath = join(tmp, "nested", ".pi", "credentials.json");
+      const plan = planProviderSetup({
+        cwd: tmp,
+        piAuthPath: "nested/.pi/credentials.json",
+        piCliPath: resolvePiCliPath([nodeModulesPath]),
+        modelRefs: ["pi:openai-codex:gpt-5.6-terra"],
+      });
+      const fakeSpawn = vi.fn((_file: string, _args: readonly string[], opts: { cwd?: string }) => {
+        const listeners = new Map<string, (value: unknown, signal?: unknown) => void>();
+        void (async () => {
+          await writeFile(join(opts.cwd!, "auth.json"), JSON.stringify({ "openai-codex": { type: "oauth", refresh: "new" } }));
+          listeners.get("close")?.(0, null);
+        })();
+        return { once: (event: string, listener: (value: unknown, signal?: unknown) => void) => listeners.set(event, listener) };
+      });
+
+      const results = await executeProviderSetupPlan(plan, { spawn: fakeSpawn as never });
+
+      expect(fakeSpawn).toHaveBeenCalledWith(
+        process.execPath,
+        [bundledPiCliPath, "login", "openai-codex"],
+        expect.objectContaining({ cwd: expect.stringMatching(/\.mono-agent-pi-auth-/u) }),
+      );
+      expect(results[0]?.status).toBe("ok");
+      expect(JSON.parse(await readFile(authPath, "utf8"))).toEqual({ "openai-codex": { type: "oauth", refresh: "new" } });
+      expect((await stat(authPath)).mode & 0o777).toBe(0o600);
+      expect(await readdir(dirname(authPath))).toEqual(["credentials.json"]);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

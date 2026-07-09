@@ -10,15 +10,15 @@ Question:
 Which model should drive the agent, and should any backups take over when the provider fails?
 
 1. `claude:<model>` through SDK or CLI mode
-2. `pi:openai-codex:<model>` through SDK mode (preferred over direct Codex when Pi auth is configured)
-3. `codex:<model>` through CLI mode (direct Codex fallback path)
+2. `codex:<model>` through CLI mode (the default direct Codex path)
+3. `pi:openai-codex:<model>` through SDK mode (a selectable Pi alternative when Pi auth is configured)
 4. `pi:<provider>:<model>` through SDK mode (OpenAI, Copilot, OpenRouter, OpenCode-through-Pi, local Ollama, LM Studio, ...)
 5. A custom MonoRuntimeLike supplied programmatically (escape hatch)
 ```
 
 Fills: `runtime.model`, `runtime.fallbackModels` (ordered backup references tried on retryable provider failures), `runtime.executionMode` (usually inferred), `runtime.effort`, `runtime.maxTurns`.
 
-The interactive `mono-agent init` wizard discovers Pi OpenAI-Codex auth, OpenCode models, Ollama models, and LM Studio's local server best-effort. It ranks discovered `pi:openai-codex:gpt-5.5` above direct `codex:gpt-5.5`, maps discovered OpenCode options to `pi:opencode-go:<model>` for setup/preflight, and auto-adds local provider modules when a primary or fallback model uses `pi:ollama:*` or `pi:lmstudio:*`. Direct `opencode:<provider>:<model>` refs are supported only as hand-authored runtime backend config; do not present them as a first-class composer or init wizard selection. For local models also fill `providers.local` (e.g. an Ollama or LM Studio base URL plus model capabilities). Follow-up only if needed: continuous provider session per conversation (`runtime.session.mode: "continuous"`, default) versus stateless per-message.
+The interactive `mono-agent init` wizard discovers Pi OpenAI-Codex auth, OpenCode models, Ollama models, and LM Studio's local server best-effort. It defaults to direct `codex:gpt-5.6-terra` and presents `pi:openai-codex:gpt-5.6-terra` as a concrete selectable candidate, maps discovered OpenCode options to `pi:opencode-go:<model>` for setup/preflight, and auto-adds local provider modules when a primary or fallback model uses `pi:ollama:*` or `pi:lmstudio:*`. Recover missing Pi OAuth with `mono-agent auth login <provider>` (and `--pi-auth-path` when required). Direct `opencode:<provider>:<model>` refs are supported only as hand-authored runtime backend config; do not present them as a first-class composer or init wizard selection. For local models also fill `providers.local` (e.g. an Ollama or LM Studio base URL plus model capabilities). Follow-up only if needed: continuous provider session per conversation (`runtime.session.mode: "continuous"`, default) versus stateless per-message.
 
 ## 2. Channels Of Communication
 
@@ -148,8 +148,8 @@ is **auto-scheduled in-app** — no external cron or launchd setup needed.
 - Ask: which chat LLM provider/model for LLM pipelines?
   - Ollama: local model string such as `qwen3.6:latest`; pull it first with
     `ollama pull qwen3.6:latest`.
-  - agent-host: SDK runtime model reference such as `pi:openai-codex:gpt-5.5` with
-    `executionMode: "sdk"`. Do not use CLI-backed refs such as `codex:gpt-5.5`; they are
+  - agent-host: SDK runtime model reference such as `pi:openai-codex:gpt-5.6-terra` with
+    `executionMode: "sdk"`. Do not use CLI-backed refs such as `codex:gpt-5.6-terra`; they are
     rejected for memory LLMs until runtimes can enforce no external actions.
 - Ask: should per-turn intelligent capture be enabled (`writeMode: "capture"`), or only
   deterministic rapid-log summaries (`append-host-summary`) plus scheduled consolidation?
@@ -180,7 +180,7 @@ For an agent-host memory LLM, write the `llm` block as:
 ```jsonc
 "llm": {
   "provider": "agent-host",
-  "model": "pi:openai-codex:gpt-5.5",
+  "model": "pi:openai-codex:gpt-5.6-terra",
   "executionMode": "sdk"
 }
 ```

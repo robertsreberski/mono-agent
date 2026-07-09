@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, rename, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { createPiOAuthApiKeyResolver, modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
@@ -67,6 +68,8 @@ export interface PlanProviderSetupOptions {
   readonly modelRefs: readonly string[];
   readonly cwd: string;
   readonly piAuthPath?: string;
+  /** Internal test seam for verifying bundled Pi CLI resolution in packed layouts. */
+  readonly piCliPath?: string;
 }
 
 export interface ExecuteProviderSetupOptions {
@@ -80,13 +83,22 @@ const PI_OAUTH_LOGIN_PROVIDERS = new Set(["anthropic", "github-copilot", "openai
 const PI_API_KEY_PROVIDERS: Readonly<Record<string, string>> = {
   "opencode-go": "OPENCODE_API_KEY",
 };
+const PI_AI_PACKAGE = "@earendil-works/pi-ai";
+const PI_AI_CLI_PARTS = ["@earendil-works", "pi-ai", "dist", "cli.js"] as const;
+const PI_AI_NODE_MODULE_PATHS = createRequire(import.meta.url).resolve.paths(PI_AI_PACKAGE) ?? [];
 
-function resolvePiCliPath(): string {
-  return fileURLToPath(new URL("../node_modules/@earendil-works/pi-ai/dist/cli.js", import.meta.url));
+export function resolvePiCliPath(nodeModulePaths: readonly string[] = PI_AI_NODE_MODULE_PATHS): string {
+  for (const nodeModulesPath of nodeModulePaths) {
+    const cliPath = join(nodeModulesPath, ...PI_AI_CLI_PARTS);
+    if (existsSync(cliPath)) {
+      return cliPath;
+    }
+  }
+  throw new Error(`Cannot find the bundled Pi CLI for ${PI_AI_PACKAGE}. Reinstall @mono-agent/agent-app.`);
 }
 
-export function piLoginCommand(provider: string): readonly [string, ...string[]] {
-  return [process.execPath, resolvePiCliPath(), "login", provider];
+export function piLoginCommand(provider: string, piCliPath = resolvePiCliPath()): readonly [string, ...string[]] {
+  return [process.execPath, piCliPath, "login", provider];
 }
 
 export function piLoginCommandLine(provider: string): string {
@@ -212,7 +224,7 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
       kind: "auth",
       label: `Pi login for ${ref.provider}`,
       modelRefs: [refKey],
-      command: piLoginCommand(ref.provider),
+      command: piLoginCommand(ref.provider, options.piCliPath),
       piAuthPath: piAuthPathForSetup(piAuthPath, options.cwd),
       cwd: piAuthWorkingDirectory(piAuthPath, options.cwd),
       detail: `Runs bundled Pi auth for provider \`${ref.provider}\` and securely replaces providers.piAuthPath.`,

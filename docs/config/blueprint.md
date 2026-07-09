@@ -39,9 +39,9 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // Runtime: primary model plus ordered backups tried on retryable provider
   // failures (failover is reported in run results, never silent).
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",    // pi:<provider>:<model> | claude:* | codex:* | opencode:*
+    "model": "codex:gpt-5.6-terra",        // pi:<provider>:<model> | claude:* | codex:* | opencode:*
     "fallbackModels": ["pi:opencode-go:kimi-k2.6", "pi:ollama:gemma4:31b"],
-    "executionMode": "sdk",                // sdk | cli (default inferred from model)
+    "executionMode": "cli",                // sdk | cli (default inferred from model)
     "effort": "medium",                    // none|low|medium|high|xhigh|max
     "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
@@ -107,10 +107,10 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "llm": {                               // enables bujo capture and the effective bujo tier; omit for lite/journal
       // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _EXECUTION_MODE / _ENDPOINT / _TIMEOUT_MS.
       "provider": "ollama",                // ollama | agent-host
-      "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. pi:openai-codex:gpt-5.5
+      "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. pi:openai-codex:gpt-5.6-terra
       "endpoint": "http://localhost:11434", // ollama only; invalid for agent-host
       "timeoutMs": 60000                   // in-app per-call timeout; 1000-600000, default 60000. Raise for slow local models.
-      // For agent-host, use: "model": "pi:openai-codex:gpt-5.5", "executionMode": "sdk"; omit endpoint.
+      // For agent-host, use: "model": "pi:openai-codex:gpt-5.6-terra", "executionMode": "sdk"; omit endpoint.
     },
     // Bujo auto-scheduler — override the default or disable it.
     // Consolidation runs in-app; no external cron or launchd needed.
@@ -310,8 +310,8 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
 ## Lifecycle
 
 ```bash
-mono-agent init --model pi:openai-codex:gpt-5.5 --fallback-models pi:opencode-go:kimi-k2.6,pi:ollama:gemma4:31b [--memory lite|journal|bujo]
-mono-agent validate     # per-section report incl. sandbox, observability, every channel; exit 0 means ready
+mono-agent init --model codex:gpt-5.6-terra --fallback-models pi:opencode-go:kimi-k2.6,pi:ollama:gemma4:31b [--memory lite|journal|bujo]
+mono-agent validate     # per-section report incl. sandbox, observability, every channel; exit 0 means structurally valid
 mono-agent validate --consumer ../local-agent-alpha  # read-only report for a downstream folder
 mono-agent start        # traceability + every configured channel
 mono-agent restart      # apply config edits (config is JSON-first; restart to re-apply)
@@ -324,7 +324,7 @@ A `.env` file in the folder is loaded automatically (exported shell variables wi
 
 :::caution
 :::
-For `memory.llm`, CLI-backed refs such as `codex:gpt-5.5` are rejected; use `provider: "ollama"` with a local model string, or `provider: "agent-host"` with an SDK runtime ref like `pi:openai-codex:gpt-5.5` and `executionMode: "sdk"` (omit `endpoint`). See [Capture & recall](/memory/capture-and-recall/).
+For `memory.llm`, CLI-backed refs such as `codex:gpt-5.6-terra` are rejected; use `provider: "ollama"` with a local model string, or `provider: "agent-host"` with an SDK runtime ref like `pi:openai-codex:gpt-5.6-terra` and `executionMode: "sdk"` (omit `endpoint`). See [Capture & recall](/memory/capture-and-recall/).
 
 ## Section reference
 

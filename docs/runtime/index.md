@@ -15,9 +15,9 @@ A minimal runtime block selects a backend model and (optionally) backup models:
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",
+    "model": "codex:gpt-5.6-terra",
     "fallbackModels": ["pi:opencode-go:kimi-k2.6", "pi:ollama:gemma4:31b"],
-    "executionMode": "sdk",
+    "executionMode": "cli",
     "effort": "medium",
     "permissionMode": "default",
     "maxTurns": 0,
@@ -30,7 +30,7 @@ The `runtime.model` string is always `<backend>:<...>` — `pi:<provider>:<model
 
 | Key | Env var | Default | Notes |
 | --- | --- | --- | --- |
-| `runtime.model` | `MONO_AGENT_MODEL` | `pi:openai-codex:gpt-5.5` from `init` | `pi:<provider>:<model>`, `claude:…`, `codex:…`, `opencode:…` |
+| `runtime.model` | `MONO_AGENT_MODEL` | `codex:gpt-5.6-terra` from `init`; Pi Terra is selectable | `pi:<provider>:<model>`, `claude:…`, `codex:…`, `opencode:…` |
 | `runtime.executionMode` | `MONO_AGENT_EXECUTION_MODE` | inferred from model | `sdk` or `cli` |
 | `runtime.effort` | `MONO_AGENT_EFFORT` | `medium` | `none`/`low`/`medium`/`high`/`xhigh`/`max` |
 | `runtime.permissionMode` | `MONO_AGENT_PERMISSION_MODE` | `default` | CLI backends; `default`/`plan`/`acceptEdits`/`bypassPermissions` |
