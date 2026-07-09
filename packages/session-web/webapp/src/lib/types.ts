@@ -21,6 +21,28 @@ export interface ToolCall {
   tr?: boolean;
   ok?: boolean;
   durMs?: number;
+  fileChange?: ToolFileChange;
+}
+
+export interface ToolFileChange {
+  status: string;
+  files: number;
+  addedLines?: number;
+  removedLines?: number;
+  changedLines?: number;
+  unavailableCount?: number;
+  changes: {
+    path?: string;
+    kind?: string;
+    lineStats?: {
+      beforeLines?: number;
+      afterLines?: number;
+      addedLines?: number;
+      removedLines?: number;
+      changedLines?: number;
+      unavailableReason?: string;
+    };
+  }[];
 }
 
 export interface Usage {

@@ -183,6 +183,63 @@ describe("buildEventSpanAttributes", () => {
     expect(spans[0]?.attributes["tool.name"]).toBe("Write");
     expect(spans[0]?.attributes["mono.agent.tool.use_id"]).toBe("write-1");
     expect(spans[0]?.attributes["mono.agent.tool.name"]).not.toBe("file_edit");
+    expect(spans[0]?.attributes["mono.agent.tool.file_change.available"]).toBe(false);
+
+    const withFileChange = buildEventSpans([
+      {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "write-2", name: "Write", input: { file_path: "notes.txt" } }] },
+      },
+      {
+        type: "user",
+        message: {
+          content: [{
+            type: "tool_result",
+            tool_use_id: "write-2",
+            content: "Successfully wrote notes.txt",
+            file_change: {
+              status: "completed",
+              summary: { files: 1, added_lines: 2, removed_lines: 1, changed_lines: 3, unavailable_count: 0 },
+              changes: [{ path: "notes.txt", kind: "update" }],
+            },
+          }],
+        },
+      },
+    ], makeContext());
+
+    expect(withFileChange).toHaveLength(1);
+    expect(withFileChange[0]?.attributes["mono.agent.tool.name"]).toBe("Write");
+    expect(withFileChange[0]?.attributes["mono.agent.tool.file_change.available"]).toBe(true);
+    expect(withFileChange[0]?.attributes["mono.agent.tool.file_change.status"]).toBe("completed");
+    expect(withFileChange[0]?.attributes["mono.agent.tool.file_change.files"]).toBe(1);
+    expect(withFileChange[0]?.attributes["mono.agent.tool.file_change.added_lines"]).toBe(2);
+    expect(withFileChange[0]?.attributes["mono.agent.tool.file_change.removed_lines"]).toBe(1);
+    expect(withFileChange[0]?.attributes["mono.agent.tool.file_change.changed_lines"]).toBe(3);
+    expect(withFileChange[0]?.attributes["mono.agent.tool.file_change.unavailable_count"]).toBe(0);
+    expect(withFileChange[0]?.attributes).not.toHaveProperty("mono.agent.tool.file_change.paths");
+
+    const sensitive = buildEventSpans([
+      {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "write-3", name: "Write", input: { file_path: "notes.txt" } }] },
+      },
+      {
+        type: "user",
+        message: {
+          content: [{
+            type: "tool_result",
+            tool_use_id: "write-3",
+            content: "Successfully wrote notes.txt",
+            file_change: {
+              status: "completed",
+              summary: { files: 1 },
+              changes: [{ path: "notes.txt", kind: "update" }],
+            },
+          }],
+        },
+      },
+    ], makeContext({ includeSensitiveData: true }));
+    expect(sensitive[0]?.attributes["mono.agent.tool.file_change.paths"]).toBe("notes.txt");
   });
 
   it("exports provider-native file changes as runtime spans with failed status preserved", () => {

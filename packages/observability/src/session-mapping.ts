@@ -73,6 +73,31 @@ export interface SessionThink {
   readonly tr?: boolean;
 }
 
+export interface SessionToolFileChangeLineStats {
+  readonly beforeLines?: number;
+  readonly afterLines?: number;
+  readonly addedLines?: number;
+  readonly removedLines?: number;
+  readonly changedLines?: number;
+  readonly unavailableReason?: string;
+}
+
+export interface SessionToolFileChangeChange {
+  readonly path?: string;
+  readonly kind?: string;
+  readonly lineStats?: SessionToolFileChangeLineStats;
+}
+
+export interface SessionToolFileChange {
+  readonly status: string;
+  readonly files: number;
+  readonly addedLines?: number;
+  readonly removedLines?: number;
+  readonly changedLines?: number;
+  readonly unavailableCount?: number;
+  readonly changes: readonly SessionToolFileChangeChange[];
+}
+
 /** A single tool invocation issued within an assistant step. */
 export interface SessionToolCall {
   readonly id: string;
@@ -87,6 +112,8 @@ export interface SessionToolCall {
   readonly ok?: boolean;
   /** Execution latency (ms) folded from a `tool_timing` event, when present. */
   readonly durMs?: number;
+  /** File-change stats attached by Pi Write; absent means unavailable/n/a. */
+  readonly fileChange?: SessionToolFileChange;
 }
 
 /** Per-assistant-step token/cost usage. Best-effort; omitted when not readily associable. */
@@ -375,6 +402,7 @@ interface MutableToolCall {
   input: unknown;
   ok?: boolean;
   durMs?: number;
+  fileChange?: SessionToolFileChange;
 }
 
 interface AssistantWork {
@@ -538,6 +566,8 @@ function walkEvents(summary: RunSummary, events: readonly RuntimeEventLike[]): W
         const linked = tcid.length === 0 ? undefined : callsById.get(tcid);
         const isError = block.is_error === true;
         if (linked !== undefined && linked.ok === undefined) linked.ok = !isError;
+        const fileChange = toolFileChangeFromResultBlock(block);
+        if (linked !== undefined && fileChange !== undefined) linked.fileChange = fileChange;
         const contentText = toolResultText(block.content);
         const clamp = clampText(contentText, TEXT_MAX_CHARS);
         pending.push({
@@ -591,6 +621,73 @@ function finalizeCall(call: MutableToolCall): SessionToolCall {
     ...(truncated ? { tr: true } : {}),
     ...(call.ok === undefined ? {} : { ok: call.ok }),
     ...(call.durMs === undefined ? {} : { durMs: call.durMs }),
+    ...(call.fileChange === undefined ? {} : { fileChange: call.fileChange }),
+  };
+}
+
+function toolFileChangeFromResultBlock(block: Record<string, unknown>): SessionToolFileChange | undefined {
+  const source = isRecord(block.file_change) ? block.file_change : rawResultFileChange(block.raw_result);
+  if (source === undefined) return undefined;
+  const rawChanges = Array.isArray(source.changes) ? source.changes.filter(isRecord) : [];
+  const changes = rawChanges.map(normalizeToolFileChangeChange);
+  const summary = isRecord(source.summary) ? source.summary : undefined;
+  const addedLines = finiteNumber(summary?.added_lines);
+  const removedLines = finiteNumber(summary?.removed_lines);
+  const changedLines = finiteNumber(summary?.changed_lines);
+  const unavailableCount = finiteNumber(summary?.unavailable_count);
+  return {
+    status: readString(source.status) ?? "completed",
+    files: finiteNumber(summary?.files) ?? changes.length,
+    ...(addedLines === undefined ? {} : { addedLines }),
+    ...(removedLines === undefined ? {} : { removedLines }),
+    ...(changedLines === undefined ? {} : { changedLines }),
+    ...(unavailableCount === undefined ? {} : { unavailableCount }),
+    changes,
+  };
+}
+
+function rawResultFileChange(rawResult: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(rawResult)) return undefined;
+  const details = isRecord(rawResult.details) ? rawResult.details : undefined;
+  return isRecord(details?.file_change) ? details.file_change : undefined;
+}
+
+function normalizeToolFileChangeChange(change: Record<string, unknown>): SessionToolFileChangeChange {
+  const path = readString(change.path);
+  const kind = readString(change.kind);
+  const lineStats = normalizeToolFileChangeLineStats(change.line_stats);
+  return {
+    ...(path === undefined ? {} : { path }),
+    ...(kind === undefined ? {} : { kind }),
+    ...(lineStats === undefined ? {} : { lineStats }),
+  };
+}
+
+function normalizeToolFileChangeLineStats(value: unknown): SessionToolFileChangeLineStats | undefined {
+  if (!isRecord(value)) return undefined;
+  const beforeLines = finiteNumber(value.before_lines);
+  const afterLines = finiteNumber(value.after_lines);
+  const addedLines = finiteNumber(value.added_lines);
+  const removedLines = finiteNumber(value.removed_lines);
+  const changedLines = finiteNumber(value.changed_lines);
+  const unavailableReason = readString(value.unavailable_reason);
+  if (
+    beforeLines === undefined &&
+    afterLines === undefined &&
+    addedLines === undefined &&
+    removedLines === undefined &&
+    changedLines === undefined &&
+    unavailableReason === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    ...(beforeLines === undefined ? {} : { beforeLines }),
+    ...(afterLines === undefined ? {} : { afterLines }),
+    ...(addedLines === undefined ? {} : { addedLines }),
+    ...(removedLines === undefined ? {} : { removedLines }),
+    ...(changedLines === undefined ? {} : { changedLines }),
+    ...(unavailableReason === undefined ? {} : { unavailableReason }),
   };
 }
 

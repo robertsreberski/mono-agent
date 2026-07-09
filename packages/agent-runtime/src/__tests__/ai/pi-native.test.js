@@ -381,11 +381,22 @@ describe("pi-native AgentHarness bridge", () => {
       const events = onEvent.mock.calls.map(([event]) => event);
       const contentBlocks = events.flatMap((event) => event?.message?.content || []);
       const toolUses = contentBlocks.filter((block) => block?.type === "tool_use");
+      const writeResult = contentBlocks.find((block) =>
+        block?.type === "tool_result" && block.tool_use_id === "write-1");
       const syntheticFileEditBlocks = contentBlocks.filter((block) =>
         (block?.type === "tool_use" && block.name === "file_edit")
         || (block?.type === "tool_result" && String(block.tool_use_id || "").startsWith("file_edit:")));
 
       expect(toolUses.map((block) => block.name)).toEqual(["Write"]);
+      expect(writeResult?.file_change).toMatchObject({
+        status: "completed",
+        summary: { files: 1, added_lines: 1, removed_lines: 0, changed_lines: 1, unavailable_count: 0 },
+        changes: [{
+          path: join(root, "notes.txt"),
+          kind: "add",
+          line_stats: { before_lines: 0, after_lines: 1, added_lines: 1, removed_lines: 0, changed_lines: 1 },
+        }],
+      });
       expect(syntheticFileEditBlocks).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });

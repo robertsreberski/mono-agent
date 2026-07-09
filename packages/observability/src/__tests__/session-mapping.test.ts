@@ -109,7 +109,22 @@ describe("mapRunToSession", () => {
       },
       {
         type: "user",
-        message: { content: [{ type: "tool_result", tool_use_id: "write-1", content: "Successfully wrote notes.txt" }] },
+        message: {
+          content: [{
+            type: "tool_result",
+            tool_use_id: "write-1",
+            content: "Successfully wrote notes.txt",
+            file_change: {
+              status: "completed",
+              summary: { files: 1, added_lines: 2, removed_lines: 1, changed_lines: 3, unavailable_count: 0 },
+              changes: [{
+                path: "/repo/notes.txt",
+                kind: "update",
+                line_stats: { before_lines: 4, after_lines: 5, added_lines: 2, removed_lines: 1, changed_lines: 3 },
+              }],
+            },
+          }],
+        },
         timestamp: "2026-07-09T10:00:00.200Z",
       },
     ];
@@ -118,7 +133,21 @@ describe("mapRunToSession", () => {
 
     expect(session.toolCounts).toEqual({ Write: 1 });
     expect(session.toolCounts).not.toHaveProperty("file_edit");
-    expect(assistantSteps(session.steps).flatMap((step) => step.calls).map((call) => call.name)).toEqual(["Write"]);
+    const calls = assistantSteps(session.steps).flatMap((step) => step.calls);
+    expect(calls.map((call) => call.name)).toEqual(["Write"]);
+    expect(calls[0]?.fileChange).toEqual({
+      status: "completed",
+      files: 1,
+      addedLines: 2,
+      removedLines: 1,
+      changedLines: 3,
+      unavailableCount: 0,
+      changes: [{
+        path: "/repo/notes.txt",
+        kind: "update",
+        lineStats: { beforeLines: 4, afterLines: 5, addedLines: 2, removedLines: 1, changedLines: 3 },
+      }],
+    });
     expect(resultSteps(session.steps).map((step) => step.tool)).toEqual(["Write"]);
   });
 

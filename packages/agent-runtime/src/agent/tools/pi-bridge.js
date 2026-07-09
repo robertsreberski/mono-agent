@@ -17,6 +17,11 @@ import {
   webSearchToolImpl,
   writeToolImpl,
 } from "./index.js";
+import {
+  fileChangeSummary,
+  readFileChangeSnapshot,
+  statsForCompletedChange,
+} from "../../ai/file-change-stats.js";
 import { formatSkillBodyWithPathNote } from "../prompt/skill-index.js";
 import { MAX_TOOL_RESULT_BYTES, summarisePayload, wrapToolsWithBloatGuard } from "../tool-bloat.js";
 import { wrapToolsWithApprovalGate } from "../approval.js";
@@ -158,6 +163,21 @@ function compactRawMcpResult(out) {
   };
 }
 
+function writeFileChangeDetails(path, before, after) {
+  const change = {
+    path,
+    kind: before && before.exists ? "update" : "add",
+  };
+  const lineStats = statsForCompletedChange(change, before, after);
+  const completedChange = lineStats ? { ...change, line_stats: lineStats } : change;
+  const summary = fileChangeSummary([completedChange]);
+  return {
+    status: "completed",
+    changes: [completedChange],
+    ...(summary ? { summary } : {}),
+  };
+}
+
 function limitedNumber(value, fallback) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return fallback;
@@ -239,6 +259,8 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
       if (name === "Bash" && toolPolicy?.bashReadOnly && !isReadOnlyShellCommand(normalized.command)) {
         throw new Error("Error: Planning shell policy allows only read-only inspection commands.");
       }
+      const shouldTrackWrite = name === "Write" && typeof normalized.file_path === "string" && normalized.file_path.length > 0;
+      const beforeWrite = shouldTrackWrite ? readFileChangeSnapshot(normalized.file_path) : null;
       const raw = await execute(normalized, { signal, sandboxPolicy, sandboxEngine, ctx });
       // Image reads (e.g. Read on a .png) come back as a structured image
       // result so vision models see pixels; emit an image content block and let
@@ -248,7 +270,11 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
       }
       const text = toolText(raw);
       if (isErrorText(text)) throw new Error(text);
-      return textResult(text, { tool: name, params: normalized });
+      const details = { tool: name, params: normalized };
+      if (shouldTrackWrite) {
+        details.file_change = writeFileChangeDetails(normalized.file_path, beforeWrite, readFileChangeSnapshot(normalized.file_path));
+      }
+      return textResult(text, details);
     },
   };
 }

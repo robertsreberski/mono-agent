@@ -1,6 +1,15 @@
 import { describe, expect, test } from "vitest";
 
-import { boundaryStepLabel, boundaryStepMeta, ctxSummaryLine, runtimeStepLabel, runtimeStepMeta, showTriggerRecall, timelineEmptyMessage } from "./DetailView";
+import {
+  boundaryStepLabel,
+  boundaryStepMeta,
+  ctxSummaryLine,
+  runtimeStepLabel,
+  runtimeStepMeta,
+  showTriggerRecall,
+  timelineEmptyMessage,
+  toolFileChangeMeta,
+} from "./DetailView";
 
 describe("timelineEmptyMessage", () => {
   test("shows a live waiting state for running runs with no timeline items", () => {
@@ -111,5 +120,33 @@ describe("runtime timeline helpers", () => {
 
     expect(runtimeStepLabel(step)).toBe("failover started");
     expect(runtimeStepMeta(step)).toBe("from gpt-5.5 | to kimi | attempt 2 | 1.5s");
+  });
+});
+
+describe("toolFileChangeMeta", () => {
+  test("formats Pi Write file-change line counts", () => {
+    expect(toolFileChangeMeta("Write", {
+      status: "completed",
+      files: 1,
+      addedLines: 12,
+      removedLines: 3,
+      changedLines: 15,
+      unavailableCount: 0,
+      changes: [],
+    })).toBe("file change +12 -3 · 15 changed");
+  });
+
+  test("returns n/a for Write calls without usable stats", () => {
+    expect(toolFileChangeMeta("Write", undefined)).toBe("file change n/a");
+    expect(toolFileChangeMeta("Write", {
+      status: "completed",
+      files: 1,
+      unavailableCount: 1,
+      changes: [],
+    })).toBe("file change n/a");
+  });
+
+  test("omits the row for non-Write tools", () => {
+    expect(toolFileChangeMeta("Read", undefined)).toBeUndefined();
   });
 });

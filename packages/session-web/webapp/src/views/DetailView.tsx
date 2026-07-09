@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { sessionStoreKey, useRecorder } from "../lib/store";
-import type { Session, SessionStep, TurnContext } from "../lib/types";
+import type { Session, SessionStep, ToolFileChange, TurnContext } from "../lib/types";
 import { Markdown } from "../lib/markdown";
 import {
   timeStr,
@@ -37,6 +37,7 @@ interface CallVM {
   durStr: string;
   statusColor: string;
   statusWord: string;
+  fileChangeMeta?: string;
 }
 type StepVM =
   | { kind: "prompt"; key: string; color: string; glow: string; timeStr: string; text: string }
@@ -189,6 +190,21 @@ export function runtimeStepMeta(step: Extract<SessionStep, { k: "runtime" }>): s
   return step.type;
 }
 
+export function toolFileChangeMeta(toolName: string, fileChange: ToolFileChange | undefined): string | undefined {
+  if (toolName !== "Write") return undefined;
+  if (
+    fileChange === undefined ||
+    fileChange.status !== "completed" ||
+    (fileChange.unavailableCount ?? 0) > 0 ||
+    fileChange.addedLines === undefined ||
+    fileChange.removedLines === undefined ||
+    fileChange.changedLines === undefined
+  ) {
+    return "file change n/a";
+  }
+  return `file change +${fileChange.addedLines} -${fileChange.removedLines} · ${fileChange.changedLines} changed`;
+}
+
 export function DetailView({ id, onBack }: Props) {
   const { sessions, instances, detailStatus, retryDetail } = useRecorder();
   const isMobile = useIsMobile();
@@ -315,6 +331,7 @@ export function DetailView({ id, onBack }: Props) {
         const thinkText = (x.think || []).map((tk) => tk.t + (tk.tr ? "…" : "")).join("\n\n");
         const calls = (x.calls || []).map((c, ci) => {
           const r = resultMap[c.id];
+          const fileChangeMeta = r ? toolFileChangeMeta(c.name, c.fileChange) : undefined;
           let durStr = "";
           if (r) {
             const dm = +new Date(r.ts) - +new Date(x.ts);
@@ -331,6 +348,7 @@ export function DetailView({ id, onBack }: Props) {
             durStr,
             statusColor: r ? (r.ok ? OK : ERROR) : DIMMER,
             statusWord: r ? (r.ok ? "· ok" : "· error") : "",
+            ...(fileChangeMeta === undefined ? {} : { fileChangeMeta }),
           } as CallVM;
         });
         const hasText = !!(x.text && x.text.trim());
@@ -963,14 +981,22 @@ export function DetailView({ id, onBack }: Props) {
                                   <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: DIMMER }}>{isOpen ? "▾" : "▸"}</span>
                                 </div>
                                 {c.hasResult && !isOpen && (
-                                  <div style={{ padding: "0 11px 9px 27px", fontSize: 12, color: "#8b8d94", lineHeight: 1.4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                    {c.resultDig}
+                                  <div style={{ padding: "0 11px 9px 27px", fontSize: 12, lineHeight: 1.4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                    {c.fileChangeMeta !== undefined && (
+                                      <div style={{ color: TEAL, fontFamily: FONT_MONO, fontSize: 10, marginBottom: 2 }}>{c.fileChangeMeta}</div>
+                                    )}
+                                    <div style={{ color: "#8b8d94", overflow: "hidden", textOverflow: "ellipsis" }}>{c.resultDig}</div>
                                   </div>
                                 )}
                                 {isOpen && (
                                   <div style={{ padding: "2px 11px 11px" }}>
                                     <div style={{ fontFamily: FONT_MONO, fontSize: 9, letterSpacing: ".14em", textTransform: "uppercase", color: TEAL, margin: "4px 0 5px" }}>Input</div>
                                     <pre style={preStyle}>{c.argRaw}</pre>
+                                    {c.fileChangeMeta !== undefined && (
+                                      <div style={{ marginTop: 10, fontFamily: FONT_MONO, fontSize: 10, color: TEAL }}>
+                                        {c.fileChangeMeta}
+                                      </div>
+                                    )}
                                     {c.hasResult && (
                                       <>
                                         <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "11px 0 5px" }}>

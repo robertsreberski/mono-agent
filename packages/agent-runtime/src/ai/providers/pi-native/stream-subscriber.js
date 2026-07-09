@@ -25,6 +25,13 @@ export function toolStartProgressText(toolName) {
   return `Running ${toolName}...`;
 }
 
+function toolResultFileChange(result) {
+  const fileChange = result?.details?.file_change;
+  return fileChange && typeof fileChange === "object" && !Array.isArray(fileChange)
+    ? jsonSerializable(fileChange, null)
+    : null;
+}
+
 /**
  * The slice of run state the stream subscriber reads and mutates. A structural
  * subset of the orchestrator's runState.
@@ -96,6 +103,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       });
     } else if (event.type === "tool_execution_end") {
       const resultContent = toolResultContent(event.result);
+      const fileChange = toolResultFileChange(event.result);
       if (!event.isError) runState.toolResultsSeen += 1;
       const startedAt = runState.toolStartTimes.get(event.toolCallId);
       if (startedAt !== undefined) {
@@ -116,6 +124,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
             tool_use_id: event.toolCallId,
             content: resultContent,
             raw_result: compactToolRawResult(jsonSerializable(event.result, resultContent), resultContent),
+            ...(fileChange === null ? {} : { file_change: fileChange }),
             is_error: !!event.isError,
           }],
         },
