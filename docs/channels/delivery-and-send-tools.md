@@ -72,7 +72,7 @@ Coverage: `config`. Two conditions must both hold for a send tool to work:
 
 The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels`, `telegram.allowedChatIds` / `telegram.allowAllChats`) **remains the destination boundary**: allowing the tool does not widen where the agent may send. A send to a destination outside the adapter allowlist is refused.
 
-`SlackSendMessage` preserves Slack thread and formatting options on every chunk. Text below Slack's 40,000-character platform limit is one post; text above the limit is split and each posted chunk is indexed so replies in those threads can resume the producing conversation.
+`SlackSendMessage` accepts standard Markdown by default, renders it to Slack `mrkdwn`, and preserves Slack thread/formatting options on every chunk. Set its `mrkdwn` argument to `false` only when you need plain text sent unchanged. Text below Slack's 40,000-character platform limit is one post; text above the limit is split and each posted chunk is indexed so replies in those threads can resume the producing conversation.
 
 ### `AskUser` — blocking free-text ask (interaction bridge)
 

@@ -80,6 +80,10 @@ export type {
   SlackWebSocketLike,
 } from "./socket-mode-runner.js";
 export {
+  formatMarkdownForSlack,
+  normalizeSlackMarkdownToMarkdown,
+} from "./slack-markdown.js";
+export {
   startSlackAdapter,
 } from "./start.js";
 export type {

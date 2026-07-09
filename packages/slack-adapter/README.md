@@ -37,7 +37,7 @@ the reaction instead — no configuration needed for the fallback.
 - `loadSlackAdapterConfig`
 - `redactSlackAdapterConfig`
 - Slack config, event, Web API, and Socket Mode types
-- Message stream and Slack client helpers
+- Message stream, Slack client, and Slack/Markdown formatting helpers
 
 ## Dependency Boundary
 
