@@ -30,7 +30,7 @@ describe("initMonoAgentFolder", () => {
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
     expect(config.$schema).toBe(MONO_AGENT_CONFIG_SCHEMA_URL);
-    expect(config.runtime.model).toBe("pi:openai-codex:gpt-5.5");
+    expect(config.runtime.model).toBe("codex:gpt-5.6-terra");
     expect(config.runtime.maxTurns).toBeUndefined();
     expect(config.context.identityPath).toBe("./IDENTITY.md");
     expect(config.webhook.enabled).toBe(true);
@@ -108,7 +108,7 @@ describe("initMonoAgentFolder", () => {
 
   it("never overwrites existing files", async () => {
     const configPath = join(dir, "mono-agent.config.json");
-    await writeFile(configPath, JSON.stringify({ runtime: { model: "codex:gpt-5.5" } }));
+    await writeFile(configPath, JSON.stringify({ runtime: { model: "codex:gpt-5.6-terra" } }));
     await writeFile(join(dir, "IDENTITY.md"), "# Mine\n");
 
     const result = await initMonoAgentFolder({ dir });
@@ -116,7 +116,7 @@ describe("initMonoAgentFolder", () => {
     expect(result.skipped).toContain(configPath);
     expect(result.skipped).toContain(result.identityPath);
     const config = JSON.parse(await readFile(configPath, "utf8"));
-    expect(config.runtime.model).toBe("codex:gpt-5.5");
+    expect(config.runtime.model).toBe("codex:gpt-5.6-terra");
     expect(await readFile(result.identityPath, "utf8")).toBe("# Mine\n");
   });
 });

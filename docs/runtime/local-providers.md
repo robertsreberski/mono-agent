@@ -33,7 +33,7 @@ Coverage: `config` — `providers.local[]` (`MONO_AGENT_LOCAL_PROVIDERS_JSON`, o
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",
+    "model": "pi:openai-codex:gpt-5.6-terra",
     "fallbackModels": ["pi:ollama:gemma4:31b"]
   },
   "providers": {
@@ -160,9 +160,9 @@ Built-in Pi providers use the Pi auth file configured by `providers.piAuthPath` 
 
 Override the path with `MONO_AGENT_PI_AUTH_PATH`. This is separate from `providers.local[]`: built-in Pi providers are registered by the Pi backend, while `local[]` registers your own servers.
 
-Run `pi-ai login <provider>` from the directory containing `providers.piAuthPath` when a built-in Pi OAuth provider needs setup or re-auth. Subscription/account-backed providers include `openai-codex`, `anthropic`, and `github-copilot`; OpenCode-Go is API-key based and uses `OPENCODE_API_KEY`.
+Run `mono-agent auth login <provider>` when a built-in Pi OAuth provider needs setup or re-auth. It honors `--pi-auth-path` first, then `providers.piAuthPath`, stages the bundled Pi CLI's fixed `auth.json`, and writes the configured target with mode `0600`. Subscription/account-backed providers include `openai-codex`, `anthropic`, and `github-copilot`; OpenCode-Go is API-key based and uses `OPENCODE_API_KEY`.
 
-The interactive `mono-agent init` wizard treats a missing Pi auth store as setup-required rather than as a skipped model: it keeps the default `pi:openai-codex:gpt-5.5` selectable, shows the Pi auth status in model discovery, and can run bundled `pi-ai login openai-codex` before writing files. When `pi:opencode-go:*` is selected, the wizard asks for an API key and saves `{ "type": "api_key", "key": "..." }` under `opencode-go` in the Pi auth store. The wizard creates the `providers.piAuthPath` directory first, because the Pi auth file often does not exist on a new machine. `mono-agent validate` only reports missing or expired credentials; it is read-only and never runs login commands or writes API keys.
+The interactive `mono-agent init` wizard treats a missing Pi auth store as setup-required rather than as a skipped model: it keeps `pi:openai-codex:gpt-5.6-terra` selectable, shows the Pi auth status in model discovery, and can run secure bundled Pi OAuth setup before writing files. When `pi:opencode-go:*` is selected, the wizard asks for an API key and saves `{ "type": "api_key", "key": "..." }` under `opencode-go` in the Pi auth store. The wizard creates the `providers.piAuthPath` directory first, because the Pi auth file often does not exist on a new machine. `mono-agent validate` only reports missing or expired credentials; it is read-only and never runs login commands or writes API keys.
 
 Coverage: `config` — `providers.piAuthPath` (`MONO_AGENT_PI_AUTH_PATH`).
 
@@ -173,7 +173,7 @@ Local providers compose with the rest of the runtime. A common pattern is a host
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",
+    "model": "pi:openai-codex:gpt-5.6-terra",
     "fallbackModels": ["pi:ollama:gemma4:31b"]
   }
 }

@@ -1456,9 +1456,10 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const text = creds.details.join("\n");
     expect(text).toMatch(/WARN/u);
     expect(text).toMatch(/expired/u);
-    expect(text).toMatch(/pi-ai login openai-codex/u);
+    expect(text).toMatch(/mono-agent auth login openai-codex --pi-auth-path/u);
+    expect(text).not.toMatch(/pi-ai login openai-codex/u);
     expect(text).not.toMatch(/npx @earendil-works\/pi-ai/u);
-    expect(text).not.toMatch(/pi auth login/u);
+    expect(text).toMatch(/not ready until a request succeeds/u);
     // waiting is non-fatal — the report still passes, but the degradation is now visible.
     expect(report.ok).toBe(true);
   });

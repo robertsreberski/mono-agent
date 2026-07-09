@@ -72,7 +72,7 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "config", "recipes", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "audit-runs", "metrics", "memory"] as const;
+const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "config", "recipes", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "audit-runs", "metrics", "memory"] as const;
 
 // `doctor`/`setup`/`recipes` never reach routing: parseCliArgs normalizes them to
 // `validate`/`init`/`presets`. `help`/`version` are synthetic commands (not in
@@ -97,6 +97,8 @@ interface ParsedCliArgs {
   readonly yes?: boolean;
   /** init: opt in to running provider auth/preflight commands before writing files. */
   readonly auth?: boolean;
+  /** auth: explicit destination for the Pi auth store. */
+  readonly piAuthPath?: string;
   /** Non-flag arguments (e.g. `presets show <id>`). */
   readonly positionals: readonly string[];
   readonly envFile?: string;
@@ -183,6 +185,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let withChannels: readonly string[] | undefined;
   let yes = false;
   let auth = false;
+  let piAuthPath: string | undefined;
   const positionals: string[] = [];
   let envFile: string | undefined;
   let target: InstallSkillTarget | undefined;
@@ -342,6 +345,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--auth":
         auth = true;
         break;
+      case "--pi-auth-path":
+        piAuthPath = requireValue(rest, ++i, flag);
+        break;
       case "--with":
         withChannels = requireValue(rest, ++i, flag)
           .split(",")
@@ -417,6 +423,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (auth && cmd !== "init") {
     throw new Error("--auth is only supported for `mono-agent init`.");
   }
+  if (piAuthPath !== undefined && cmd !== "auth") {
+    throw new Error("--pi-auth-path is only supported for `mono-agent auth`.");
+  }
 
   return {
     command: cmd,
@@ -430,6 +439,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(withChannels === undefined ? {} : { withChannels }),
     ...(yes ? { yes } : {}),
     ...(auth ? { auth } : {}),
+    ...(piAuthPath === undefined ? {} : { piAuthPath }),
     positionals,
     ...(envFile === undefined ? {} : { envFile }),
     ...(target === undefined ? {} : { target }),
@@ -534,6 +544,13 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "--consumer validates another agent folder read-only, including its .env.",
       "With --preset, also report whether the preset's capabilities are live.",
       "`mono-agent doctor` is an alias for this command.",
+    ],
+  },
+  {
+    signature: "mono-agent auth login <provider> [--pi-auth-path <path>] [--config <path>]",
+    lines: [
+      "Run bundled Pi OAuth login and atomically store credentials at the selected Pi auth path.",
+      "Uses --pi-auth-path first, then providers.piAuthPath from the config, then Pi's default.",
     ],
   },
   {
@@ -650,10 +667,10 @@ const HELP_NOTES = `Background mode runs the agent under launchd, keeping it ali
 commands require macOS; elsewhere use start --foreground.
 
 Init model references look like pi:<provider>:<model>, claude:claude-sonnet-4-6,
-codex:gpt-5.5, or opencode:<provider>:<model>. The init wizard defaults to
-pi:openai-codex:gpt-5.5, keeps it selectable when Pi auth setup is needed, and
-can save OPENCODE_API_KEY for pi:opencode-go:* refs. Direct codex:gpt-5.5 and
-Claude remain selectable; direct opencode:<provider>:<model> refs are for
+codex:gpt-5.6-terra, or opencode:<provider>:<model>. The init wizard defaults to
+direct codex:gpt-5.6-terra; pi:openai-codex:gpt-5.6-terra remains selectable when
+Pi auth setup is needed, and the wizard can save OPENCODE_API_KEY for
+pi:opencode-go:* refs. Claude remains selectable; direct opencode:<provider>:<model> refs are for
 hand-authored runtime backend config.
 
 A .env file in the current folder is loaded automatically when present;
@@ -723,6 +740,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return await runInit(args);
     case "validate":
       return await runValidate(args);
+    case "auth":
+      return await runAuth(args);
     case "config":
       return await runConfig(args);
     case "presets":
@@ -809,10 +828,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
 async function runInit(args: ParsedCliArgs): Promise<number> {
   // On an interactive TTY with no overriding flags, walk the step-by-step wizard;
   // any flag (or a piped/non-TTY invocation) takes the silent default/preset path.
-  const wantsWizard = process.stdin.isTTY === true && process.stdout.isTTY === true
-    && args.yes !== true && args.preset === undefined && args.recipe === undefined
-    && args.model === undefined && args.fallbackModels === undefined
-    && args.effort === undefined && args.memory === undefined && args.withChannels === undefined && args.dryRun !== true;
+  const wantsWizard = shouldRunInitWizard(args, process.stdin.isTTY === true, process.stdout.isTTY === true);
   if (wantsWizard) {
     // Existing-config pre-check — don't walk the wizard into a guaranteed no-op.
     if (await pathExists(resolve(process.cwd(), "mono-agent.config.json"))) {
@@ -895,6 +911,14 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
   return 0;
 }
 
+export function shouldRunInitWizard(args: ParsedCliArgs, stdinIsTty: boolean, stdoutIsTty: boolean): boolean {
+  return stdinIsTty && stdoutIsTty
+    && args.yes !== true && args.preset === undefined && args.recipe === undefined
+    && args.model === undefined && args.fallbackModels === undefined
+    && args.effort === undefined && args.memory === undefined && args.withChannels === undefined
+    && args.auth !== true && args.dryRun !== true;
+}
+
 export type InitProviderSetupStatus = "ok" | "failed" | "skipped";
 
 export interface RunProviderSetupBeforeInitOptions {
@@ -942,6 +966,53 @@ export async function runProviderSetupBeforeInit(
     return "failed";
   }
   return "ok";
+}
+
+async function runAuth(args: ParsedCliArgs): Promise<number> {
+  const [subcommand, provider, ...extra] = args.positionals;
+  if (subcommand !== "login" || provider === undefined || extra.length > 0) {
+    process.stderr.write(ui.errorLine("Usage: mono-agent auth login <provider> [--pi-auth-path <path>] [--config <path>]."));
+    return 2;
+  }
+
+  const cwd = process.cwd();
+  const configPath = resolve(cwd, args.configPath ?? "mono-agent.config.json");
+  const configuredPiAuthPath = await resolvePiAuthPathForLogin({
+    configPath,
+    ...(args.piAuthPath === undefined ? {} : { piAuthPath: args.piAuthPath }),
+  });
+  const plan = planProviderSetup({
+    modelRefs: [`pi:${provider}:gpt-5.6-terra`],
+    cwd,
+    ...(configuredPiAuthPath === undefined ? {} : { piAuthPath: configuredPiAuthPath }),
+  });
+  if (!plan.actions.some((action) => action.id === `pi-login:${provider}`)) {
+    process.stderr.write(ui.errorLine(`Unsupported Pi OAuth provider \`${provider}\`. Use a Pi OAuth provider such as openai-codex, anthropic, or github-copilot.`));
+    return 2;
+  }
+
+  process.stdout.write("\n" + ui.heading("Pi authentication"));
+  printProviderSetupPlan(plan);
+  const results = await executeProviderSetupPlan(plan);
+  for (const result of results) {
+    const badge = result.status === "ok" ? ui.badge("ok") : ui.badge("error");
+    process.stdout.write(`${badge}${result.action.label}: ${result.detail}\n`);
+  }
+  return results.every((result) => result.status === "ok") ? 0 : 1;
+}
+
+export async function resolvePiAuthPathForLogin(options: { readonly piAuthPath?: string; readonly configPath: string }): Promise<string | undefined> {
+  if (options.piAuthPath !== undefined) {
+    return options.piAuthPath;
+  }
+  try {
+    const { json } = await readMonoAgentConfigJson(options.configPath);
+    const value = json.providers?.piAuthPath;
+    return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+  } catch {
+    // `mono-agent auth` must also work from a global install before an agent config exists.
+    return undefined;
+  }
 }
 
 function printProviderSetupPlan(plan: ProviderSetupPlan): void {

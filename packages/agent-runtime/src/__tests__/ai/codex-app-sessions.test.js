@@ -77,6 +77,19 @@ afterEach(async () => {
 });
 
 describe("codex-app persistent sessions", () => {
+  it("forwards the direct Terra model unchanged to the Codex app-server", async () => {
+    const factory = stubClientFactory({ threadId: "thread-terra" });
+    const terra = { sdk: "codex", model: "gpt-5.6-terra", reference: "codex:gpt-5.6-terra" };
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, { model: terra }));
+
+    expect(result.error).toBeNull();
+    const client = factory.clients[0];
+    expect(client.requests.find((request) => request.method === "thread/start")?.params.model).toBe("gpt-5.6-terra");
+    expect(client.requests.find((request) => request.method === "turn/start")?.params.model).toBe("gpt-5.6-terra");
+    expect(result.model).toBe("codex:gpt-5.6-terra");
+  });
+
   it.each([
     ["default (unset)", undefined, "on-request", "workspace-write", null],
     ["default", "default", "on-request", "workspace-write", null],

@@ -188,7 +188,7 @@ describe("wizard composer — per-preset invariants", () => {
     const plan = composeWizardPlan(presetAnswers(PRESET_CATALOG.find((p) => p.id === "telegram-assistant")!), CTX);
     expect(plan.configJson.tools?.allowedTools).toEqual(["*"]);
     expect(plan.configJson.memory?.mode).toBe("bujo");
-    expect(plan.configJson.memory?.llm?.model).toBe("pi:openai-codex:gpt-5.5");
+    expect(plan.configJson.memory?.llm?.model).toBe("pi:openai-codex:gpt-5.6-terra");
   });
 
   it("local-private: ollama provider block, embeddings endpoint, provider module selected", () => {
@@ -218,10 +218,10 @@ describe("wizard composer — per-preset invariants", () => {
   it("preserves fallback model order in the runtime config", () => {
     const plan = composeWizardPlan(defaultAnswers({
       model: "claude:claude-sonnet-4-6",
-      fallbackModels: ["codex:gpt-5.5", "pi:ollama:gemma4:31b"],
+      fallbackModels: ["codex:gpt-5.6-terra", "pi:ollama:gemma4:31b"],
     }), CTX);
 
-    expect(plan.configJson.runtime?.fallbackModels).toEqual(["codex:gpt-5.5", "pi:ollama:gemma4:31b"]);
+    expect(plan.configJson.runtime?.fallbackModels).toEqual(["codex:gpt-5.6-terra", "pi:ollama:gemma4:31b"]);
   });
 
   it("writes runtime.effort when wizard answers specify one", () => {
@@ -235,7 +235,7 @@ describe("wizard composer — default parity with today's scaffold", () => {
     const plan = composeWizardPlan(defaultAnswers(), { dirBasename: "acme", skillsRootExists: false });
     const config = plan.configJson;
 
-    expect(config.runtime?.model).toBe("pi:openai-codex:gpt-5.5");
+    expect(config.runtime?.model).toBe("codex:gpt-5.6-terra");
     expect(config.runtime?.workspace).toBe(".");
     expect(config.context?.identityPath).toBe("./IDENTITY.md");
     expect(config.context?.selectedSkills).toEqual([]);

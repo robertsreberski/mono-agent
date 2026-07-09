@@ -26,7 +26,7 @@ npm i -g @mono-agent/agent-app      # the scoped host that owns the CLI
 
 `create-mono-agent` is a thin installer whose `create-mono-agent` and `mono-agent` bins forward every command to `@mono-agent/agent-app`; behaviour is identical either way. (The bare `mono-agent` npm name isn't ours — npm blocks it as too similar to an unrelated `monoagent` package — so the installer follows the `create-*` convention instead.)
 
-The easiest path on a terminal is the interactive wizard — `mono-agent init` with no flags walks you through a preset (or custom) build: model, reasoning effort, channels, memory, and, importantly, the **tools** your agent may call (pre-checked with a safe default plus your channels' send tools, so it isn't left tool-less). The default model is `pi:openai-codex:gpt-5.5`: the model picker discovers Pi/OpenAI-Codex auth, OpenCode-Go models recorded as `pi:opencode-go:*`, Ollama models, and LM Studio's local server best-effort, while keeping direct `codex:gpt-5.5` and Claude selectable. If you add fallbacks, the wizard reuses the discovered model list one fallback at a time and hides the primary plus previously selected backups. If the Pi auth store is missing, the Pi model stays selectable and the wizard can run setup instead of silently skipping it. The final review includes provider auth/preflight actions for selected Claude, Codex, Pi OAuth, OpenCode-Go API-key, Ollama, and LM Studio refs before it scaffolds, validates, and prints a secrets checklist:
+The easiest path on a terminal is the interactive wizard — `mono-agent init` with no flags walks you through a preset (or custom) build: model, reasoning effort, channels, memory, and, importantly, the **tools** your agent may call (pre-checked with a safe default plus your channels' send tools, so it isn't left tool-less). The default model is direct `codex:gpt-5.6-terra`; the model picker also discovers `pi:openai-codex:gpt-5.6-terra`, OpenCode-Go models recorded as `pi:opencode-go:*`, Ollama models, and LM Studio's local server best-effort. If you add fallbacks, the wizard reuses the discovered model list one fallback at a time and hides the primary plus previously selected backups. If the Pi auth store is missing, the Pi model stays selectable and the wizard can run setup instead of silently skipping it. The final review includes provider auth/preflight actions for selected Claude, Codex, Pi OAuth, OpenCode-Go API-key, Ollama, and LM Studio refs before it scaffolds, validates, and prints a secrets checklist:
 
 ```bash
 mkdir my-agent
@@ -37,7 +37,7 @@ mono-agent init                   # step-by-step wizard on a TTY (`mono-agent se
 Or drive it with flags (`init` writes the scaffold non-interactively when given any flag, or when stdin is not a TTY). Use `--effort` to write `runtime.effort`. Add `--auth` when you want supported provider auth/preflight commands to run before files are written; `--dry-run` never launches them:
 
 ```bash
-mono-agent init --model pi:openai-codex:gpt-5.5 --fallback-models pi:opencode-go:kimi-k2.6,pi:ollama:gemma4:31b --effort high --auth
+mono-agent init --model pi:openai-codex:gpt-5.6-terra --fallback-models pi:opencode-go:kimi-k2.6,pi:ollama:gemma4:31b --effort high --auth
 mono-agent validate               # per-section report; `mono-agent doctor` is an alias
 ```
 
@@ -47,7 +47,7 @@ For unreleased source testing, use the built CLI entry directly instead of the p
 repo=/absolute/path/to/mono-agent
 mkdir my-agent
 cd my-agent
-node "$repo/packages/agent-app/dist/cli.js" init --model pi:openai-codex:gpt-5.5
+node "$repo/packages/agent-app/dist/cli.js" init --model pi:openai-codex:gpt-5.6-terra
 node "$repo/packages/agent-app/dist/cli.js" validate
 ```
 
@@ -234,7 +234,9 @@ credentials elsewhere. Subscription/account-backed providers include
 `pi:openai-codex:*`, `pi:anthropic:*`, `pi:github-copilot:*`, and
 `pi:opencode-go:*`. OpenAI-Codex, Anthropic, and GitHub Copilot use Pi
 OAuth/account flows where supported; OpenCode-Go uses an API key (`OPENCODE_API_KEY`)
-that `mono-agent init --auth` can save into the Pi auth store.
+that `mono-agent init --auth` can save into the Pi auth store. Recover a Pi OAuth
+provider with `mono-agent auth login <provider>`; it uses the configured auth path
+and securely stages the bundled Pi CLI output before replacing that file.
 
 ## Development Verification
 

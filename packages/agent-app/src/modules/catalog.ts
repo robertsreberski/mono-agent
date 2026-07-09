@@ -1,6 +1,6 @@
 import type { MonoAgentConfigJson } from "@mono-agent/config";
 
-import { DEFAULT_MODEL, memoryBlock } from "./base.js";
+import { DEFAULT_MODEL, DEFAULT_PI_MEMORY_MODEL, memoryBlock } from "./base.js";
 import type { CapabilityModule, ModuleKind } from "./types.js";
 
 /** Split a comma-separated input value into trimmed, non-empty entries. */
@@ -271,7 +271,10 @@ const memoryBujo: CapabilityModule = {
     memory: {
       ...memoryBlock("bujo"),
       embeddings: { provider: "ollama", model: "nomic-embed-text" },
-      llm: { provider: "agent-host", model: values.model ?? DEFAULT_MODEL },
+      // The primary default is direct Codex CLI, but the memory LLM has an
+      // SDK-only safety contract. Keep the first-run scaffold valid by using
+      // the equivalent Pi Terra model for that internal call.
+      llm: { provider: "agent-host", model: values.model === DEFAULT_MODEL ? DEFAULT_PI_MEMORY_MODEL : values.model ?? DEFAULT_PI_MEMORY_MODEL },
       recallTool: { enabled: true },
     },
   }),

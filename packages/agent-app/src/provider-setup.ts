@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,11 @@ export interface ProviderSetupCommandAction {
   readonly command: readonly [string, ...string[]];
   readonly cwd: string;
   readonly detail: string;
+}
+
+export interface ProviderSetupPiLoginAction extends ProviderSetupCommandAction {
+  readonly id: `pi-login:${string}`;
+  readonly piAuthPath: string;
 }
 
 export interface ProviderSetupHttpAction {
@@ -41,6 +46,7 @@ export interface ProviderSetupPiApiKeyAction {
 }
 
 export type ProviderSetupAction =
+  | ProviderSetupPiLoginAction
   | ProviderSetupCommandAction
   | ProviderSetupHttpAction
   | ProviderSetupPiApiKeyAction;
@@ -84,7 +90,13 @@ export function piLoginCommand(provider: string): readonly [string, ...string[]]
 }
 
 export function piLoginCommandLine(provider: string): string {
-  return `pi-ai login ${provider}`;
+  return piAuthRecoveryCommand(provider);
+}
+
+export function piAuthRecoveryCommand(provider: string, piAuthPath?: string): string {
+  return piAuthPath === undefined
+    ? `mono-agent auth login ${provider}`
+    : `mono-agent auth login ${provider} --pi-auth-path ${piAuthPath}`;
 }
 
 export function piAuthWorkingDirectory(piAuthPath: string | undefined, cwd = process.cwd()): string {
@@ -201,8 +213,9 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
       label: `Pi login for ${ref.provider}`,
       modelRefs: [refKey],
       command: piLoginCommand(ref.provider),
+      piAuthPath: piAuthPathForSetup(piAuthPath, options.cwd),
       cwd: piAuthWorkingDirectory(piAuthPath, options.cwd),
-      detail: `Runs Pi auth for provider \`${ref.provider}\` from the providers.piAuthPath directory.`,
+      detail: `Runs bundled Pi auth for provider \`${ref.provider}\` and securely replaces providers.piAuthPath.`,
     });
   }
 
@@ -211,8 +224,8 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
 
 export function providerSetupActionCommandLine(action: ProviderSetupAction): string {
   if ("command" in action) {
-    if (action.id.startsWith("pi-login:")) {
-      return piLoginCommandLine(action.id.slice("pi-login:".length));
+    if (isProviderSetupPiLoginAction(action)) {
+      return piAuthRecoveryCommand(action.id.slice("pi-login:".length), action.piAuthPath);
     }
     return action.command.join(" ");
   }
@@ -224,6 +237,10 @@ export function providerSetupActionCommandLine(action: ProviderSetupAction): str
 
 export function isProviderSetupPiApiKeyAction(action: ProviderSetupAction): action is ProviderSetupPiApiKeyAction {
   return "provider" in action && "piAuthPath" in action && "envVar" in action;
+}
+
+export function isProviderSetupPiLoginAction(action: ProviderSetupAction): action is ProviderSetupPiLoginAction {
+  return action.id.startsWith("pi-login:") && "piAuthPath" in action && "command" in action;
 }
 
 export async function executeProviderSetupPlan(
@@ -283,21 +300,68 @@ async function runCommandAction(
   action: Extract<ProviderSetupAction, { readonly command: readonly [string, ...string[]] }>,
   spawnImpl: typeof spawn,
 ): Promise<ProviderSetupResult> {
+  if (isProviderSetupPiLoginAction(action)) {
+    return await runPiLoginAction(action, spawnImpl);
+  }
   const [file, ...args] = action.command;
-  if (action.id.startsWith("pi-login:")) {
+  return await runSpawnedCommand(action, spawnImpl, action.cwd);
+}
+
+async function runPiLoginAction(
+  action: ProviderSetupPiLoginAction,
+  spawnImpl: typeof spawn,
+): Promise<ProviderSetupResult> {
+  let stagingDir: string | undefined;
+  try {
+    await mkdir(dirname(action.piAuthPath), { recursive: true, mode: 0o700 });
+    stagingDir = await mkdtemp(join(dirname(action.piAuthPath), ".mono-agent-pi-auth-"));
+    const stagedAuthPath = join(stagingDir, "auth.json");
     try {
-      await mkdir(action.cwd, { recursive: true, mode: 0o700 });
+      await copyFile(action.piAuthPath, stagedAuthPath);
+      await chmod(stagedAuthPath, 0o600);
     } catch (error) {
-      return {
-        action,
-        status: "failed",
-        detail: error instanceof Error ? error.message : String(error),
-      };
+      if (!isMissingFileError(error)) {
+        throw error;
+      }
+    }
+    const result = await runSpawnedCommand(action, spawnImpl, stagingDir);
+    if (result.status !== "ok") {
+      return result;
+    }
+    await chmod(stagedAuthPath, 0o600);
+    await rename(stagedAuthPath, action.piAuthPath);
+    await chmod(action.piAuthPath, 0o600);
+    return {
+      action,
+      status: "ok",
+      detail: `${providerSetupActionCommandLine(action)} saved credentials to ${action.piAuthPath}.`,
+    };
+  } catch (error) {
+    return {
+      action,
+      status: "failed",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    if (stagingDir !== undefined) {
+      await rm(stagingDir, { recursive: true, force: true });
     }
   }
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+async function runSpawnedCommand(
+  action: Extract<ProviderSetupAction, { readonly command: readonly [string, ...string[]] }>,
+  spawnImpl: typeof spawn,
+  cwd: string,
+): Promise<ProviderSetupResult> {
+  const [file, ...args] = action.command;
   return new Promise((resolve) => {
     const child = spawnImpl(file, args, {
-      cwd: action.cwd,
+      cwd,
       env: process.env,
       stdio: "inherit",
     });

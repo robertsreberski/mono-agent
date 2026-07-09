@@ -31,7 +31,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.7.0",
-    "@earendil-works/pi-ai": "^0.80.3",
+    "@earendil-works/pi-ai": "^0.80.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@mono-agent/agent-contracts": "workspace:0.6.2",
     "@mono-agent/agent-harness": "workspace:0.6.2",

@@ -26,7 +26,7 @@ describe("parseCliArgs", () => {
         "--model",
         "claude:claude-sonnet-4-6",
         "--fallback-models",
-        "pi:ollama:gemma4:31b, codex:gpt-5.5",
+        "pi:ollama:gemma4:31b, codex:gpt-5.6-terra",
         "--auth",
         "--effort",
         "high",
@@ -36,7 +36,7 @@ describe("parseCliArgs", () => {
     ).toEqual({
       command: "init",
       model: "claude:claude-sonnet-4-6",
-      fallbackModels: ["pi:ollama:gemma4:31b", "codex:gpt-5.5"],
+      fallbackModels: ["pi:ollama:gemma4:31b", "codex:gpt-5.6-terra"],
       auth: true,
       effort: "high",
       memory: "journal",

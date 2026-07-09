@@ -50,19 +50,19 @@ interface DiscoveredModelEntry {
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 1200;
 const PI_OPENAI_CODEX_PROVIDER = "openai-codex";
-const PI_OPENAI_CODEX = "pi:openai-codex:gpt-5.5";
-const DIRECT_CODEX = "codex:gpt-5.5";
+const PI_OPENAI_CODEX = "pi:openai-codex:gpt-5.6-terra";
+const DIRECT_CODEX = "codex:gpt-5.6-terra";
 
 export const STATIC_MODEL_CANDIDATES: readonly WizardModelCandidate[] = [
   {
     value: PI_OPENAI_CODEX,
-    label: "Pi OpenAI-Codex GPT-5.5",
-    hint: "default; auth setup available",
+    label: "Pi OpenAI-Codex GPT-5.6 Terra",
+    hint: "auth setup available",
     source: "pi",
     setupRequired: true,
     defaultEffort: "medium",
   },
-  { value: DIRECT_CODEX, label: "Codex GPT-5.5", source: "codex", defaultEffort: "medium" },
+  { value: DIRECT_CODEX, label: "Codex GPT-5.6 Terra", source: "codex", defaultEffort: "medium" },
   { value: "claude:claude-sonnet-4-6", label: "Claude Sonnet 4.6", source: "claude", defaultEffort: "medium" },
   { value: "pi:ollama:llama3.1:8b", label: "Ollama llama3.1:8b", hint: "fully local", source: "ollama", defaultEffort: "none" },
 ];
@@ -274,10 +274,10 @@ function mergeCandidate(left: WizardModelCandidate, right: WizardModelCandidate)
 }
 
 function rank(candidate: WizardModelCandidate): number {
-  if (candidate.value === PI_OPENAI_CODEX) {
+  if (candidate.value === DIRECT_CODEX) {
     return 0;
   }
-  if (candidate.value === DIRECT_CODEX) {
+  if (candidate.value === PI_OPENAI_CODEX) {
     return 10;
   }
   if (candidate.value === "claude:claude-sonnet-4-6") {
@@ -298,7 +298,7 @@ function rank(candidate: WizardModelCandidate): number {
 function piOpenAiCodexCandidate(state: "authenticated" | "setup-required"): WizardModelCandidate {
   return {
     value: PI_OPENAI_CODEX,
-    label: "Pi OpenAI-Codex GPT-5.5",
+    label: "Pi OpenAI-Codex GPT-5.6 Terra",
     hint: state === "authenticated"
       ? "recommended when Pi auth is configured"
       : "auth setup available",

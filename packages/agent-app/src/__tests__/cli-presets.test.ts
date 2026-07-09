@@ -1,11 +1,11 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { parseCliArgs, renderPresetList, renderPresetShow, runProviderSetupBeforeInit } from "../cli.js";
+import { parseCliArgs, renderPresetList, renderPresetShow, resolvePiAuthPathForLogin, runProviderSetupBeforeInit, shouldRunInitWizard } from "../cli.js";
 import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
 import { initMonoAgentFolder } from "../init.js";
 import { answersFromCli } from "../wizard/from-flags.js";
@@ -36,6 +36,25 @@ describe("parseCliArgs preset flags & alias normalization", () => {
 
   it("parses init --auth", () => {
     expect(parseCliArgs(["init", "--auth"])).toMatchObject({ command: "init", auth: true });
+    expect(shouldRunInitWizard(parseCliArgs(["init"]), true, true)).toBe(true);
+    expect(shouldRunInitWizard(parseCliArgs(["init", "--auth"]), true, true)).toBe(false);
+  });
+
+  it("parses app-owned Pi auth login and gives --pi-auth-path precedence over config", async () => {
+    expect(parseCliArgs(["auth", "login", "openai-codex", "--pi-auth-path", "custom/auth.json"])).toMatchObject({
+      command: "auth",
+      positionals: ["login", "openai-codex"],
+      piAuthPath: "custom/auth.json",
+    });
+    const dir = await mkdtemp(join(tmpdir(), "cli-pi-auth-path-"));
+    try {
+      const configPath = join(dir, "mono-agent.config.json");
+      await writeFile(configPath, JSON.stringify({ providers: { piAuthPath: "configured/auth.json" } }));
+      await expect(resolvePiAuthPathForLogin({ configPath })).resolves.toBe("configured/auth.json");
+      await expect(resolvePiAuthPathForLogin({ configPath, piAuthPath: "flag/auth.json" })).resolves.toBe("flag/auth.json");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("parses validate --preset", () => {
@@ -68,7 +87,7 @@ describe("init provider setup gate", () => {
   it("does not execute provider setup during dry-run even with --auth", async () => {
     const execute = vi.fn(async () => []);
     const status = await runProviderSetupBeforeInit({
-      modelRefs: ["codex:gpt-5.5"],
+      modelRefs: ["codex:gpt-5.6-terra"],
       cwd: "/agent",
       auth: true,
       dryRun: true,
@@ -80,7 +99,7 @@ describe("init provider setup gate", () => {
 
   it("reports provider setup failures as failed", async () => {
     const status = await runProviderSetupBeforeInit({
-      modelRefs: ["codex:gpt-5.5"],
+      modelRefs: ["codex:gpt-5.6-terra"],
       cwd: "/agent",
       auth: true,
       dryRun: false,
@@ -123,8 +142,8 @@ describe("answersFromCli", () => {
   });
 
   it("maps --memory to a module id and lets --model/--effort override the preset runtime", () => {
-    const answers = answersFromCli({ presetId: "local-private", model: "codex:gpt-5.5", effort: "high", memory: "lite" });
-    expect(answers.model).toBe("codex:gpt-5.5");
+    const answers = answersFromCli({ presetId: "local-private", model: "codex:gpt-5.6-terra", effort: "high", memory: "lite" });
+    expect(answers.model).toBe("codex:gpt-5.6-terra");
     expect(answers.effort).toBe("high");
     expect(answers.memory).toBe("memory:lite");
   });
@@ -132,11 +151,11 @@ describe("answersFromCli", () => {
   it("preserves exact --model and --fallback-models refs from non-interactive flags", () => {
     const answers = answersFromCli({
       model: "pi:ollama:gemma4:31b",
-      fallbackModels: ["codex:gpt-5.5", "pi:lmstudio:qwen/qwen3-8b"],
+      fallbackModels: ["codex:gpt-5.6-terra", "pi:lmstudio:qwen/qwen3-8b"],
     });
 
     expect(answers.model).toBe("pi:ollama:gemma4:31b");
-    expect(answers.fallbackModels).toEqual(["codex:gpt-5.5", "pi:lmstudio:qwen/qwen3-8b"]);
+    expect(answers.fallbackModels).toEqual(["codex:gpt-5.6-terra", "pi:lmstudio:qwen/qwen3-8b"]);
   });
 
   it("rejects wizard sentinel values from non-interactive model flags", () => {
