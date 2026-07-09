@@ -162,6 +162,8 @@ Override the path with `MONO_AGENT_PI_AUTH_PATH`. This is separate from `provide
 
 Run `npx @earendil-works/pi-ai login <provider>` from the directory containing `providers.piAuthPath` when a built-in Pi OAuth provider needs setup or re-auth. `mono-agent validate` only reports missing or expired credentials; it is read-only and never runs the login command.
 
+The interactive `mono-agent init` wizard treats a missing Pi auth store as setup-required rather than as a skipped model: it keeps `pi:openai-codex:gpt-5.5` selectable, shows the Pi auth status in model discovery, and can run `npx @earendil-works/pi-ai login openai-codex` before writing files. The wizard creates the `providers.piAuthPath` directory first, because the Pi auth file often does not exist on a new machine.
+
 Coverage: `config` — `providers.piAuthPath` (`MONO_AGENT_PI_AUTH_PATH`).
 
 ## Using a local model as a fallback

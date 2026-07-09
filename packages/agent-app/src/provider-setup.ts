@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -50,6 +51,7 @@ export interface ExecuteProviderSetupOptions {
 }
 
 const DEFAULT_PI_AUTH_PATH = join(homedir(), ".pi", "agent", "auth.json");
+const PI_OAUTH_LOGIN_PROVIDERS = new Set(["anthropic", "github-copilot", "openai-codex"]);
 
 export function piLoginCommand(provider: string): readonly [string, ...string[]] {
   return ["npx", "@earendil-works/pi-ai", "login", provider];
@@ -157,6 +159,10 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
       continue;
     }
 
+    if (!PI_OAUTH_LOGIN_PROVIDERS.has(ref.provider)) {
+      continue;
+    }
+
     add({
       id: `pi-login:${ref.provider}`,
       kind: "auth",
@@ -200,6 +206,17 @@ async function runCommandAction(
   spawnImpl: typeof spawn,
 ): Promise<ProviderSetupResult> {
   const [file, ...args] = action.command;
+  if (action.id.startsWith("pi-login:")) {
+    try {
+      await mkdir(action.cwd, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      return {
+        action,
+        status: "failed",
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
   return new Promise((resolve) => {
     const child = spawnImpl(file, args, {
       cwd: action.cwd,

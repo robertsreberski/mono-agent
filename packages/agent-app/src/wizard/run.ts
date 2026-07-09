@@ -24,7 +24,7 @@ import {
   toolMultiselectOptions,
   WizardCancelled,
 } from "./prompts.js";
-import { discoverWizardModelCandidates, formatModelDiscoveryStatus } from "./model-discovery.js";
+import { defaultEffortForModelRef, discoverWizardModelCandidates, formatModelDiscoveryStatus } from "./model-discovery.js";
 
 /** The outcome of a wizard run: collected answers, or a clean cancellation. */
 export type WizardOutcome =
@@ -102,6 +102,7 @@ async function collectCustom(ctx: { cwd: string }): Promise<CollectedAnswers> {
 
   // 1. Model.
   const discovery = await discoverWizardModelCandidates();
+  const discoveredByValue = new Map(discovery.candidates.map((candidate) => [candidate.value, candidate]));
   p.note(formatModelDiscoveryStatus(discovery.statuses), "Model discovery");
   const model = guard(
     await p.select({
@@ -110,18 +111,7 @@ async function collectCustom(ctx: { cwd: string }): Promise<CollectedAnswers> {
       initialValue: "claude:claude-sonnet-4-6",
     }),
   );
-  draft.model = model === "__other__"
-    ? guard(
-        await p.text({
-          message: "Model reference",
-          placeholder: "pi:ollama:llama3.1:8b",
-          validate: (v) =>
-            (v ?? "").trim().length === 0
-              ? "Enter a provider:model reference (e.g. pi:ollama:llama3.1:8b)"
-              : undefined,
-        }),
-      )
-    : model;
+  draft.model = await resolveModelSelection(model);
 
   // Optional fallback chain.
   if (guard(await p.confirm({ message: "Add fallback models?", initialValue: false }))) {
@@ -134,11 +124,14 @@ async function collectCustom(ctx: { cwd: string }): Promise<CollectedAnswers> {
     draft.fallbackModels = splitCsv(raw);
   }
 
+  const derivedEffort = discoveredByValue.get(draft.model)?.defaultEffort ?? defaultEffortForModelRef(draft.model);
   const effort = guard(
     await p.select({
-      message: "Reasoning effort?",
-      options: effortSelectOptions(),
-      initialValue: "",
+      message: derivedEffort === undefined
+        ? "Reasoning effort?"
+        : `Reasoning effort? (derived from selected model: ${derivedEffort})`,
+      options: effortSelectOptions(derivedEffort),
+      initialValue: derivedEffort ?? "",
     }),
   );
   draft.effort = effort.length === 0 ? undefined : effort;
@@ -192,6 +185,50 @@ async function collectCustom(ctx: { cwd: string }): Promise<CollectedAnswers> {
   // 8. Summary + final confirm.
   const runProviderSetup = await confirmSummary(draft, ctx);
   return { answers: toWizardAnswers(draft), runProviderSetup };
+}
+
+async function resolveModelSelection(model: string): Promise<string> {
+  if (model === "__pi_other__") {
+    const provider = guard(
+      await p.text({
+        message: "Pi provider id",
+        placeholder: "openai-codex",
+        validate: (v) => {
+          const value = (v ?? "").trim();
+          if (value.length === 0) {
+            return "Enter a Pi provider id (e.g. openai-codex, opencode-go, ollama, lmstudio)";
+          }
+          return value.includes(":") ? "Provider id cannot contain ':'." : undefined;
+        },
+      }),
+    ).trim();
+    const modelId = guard(
+      await p.text({
+        message: "Pi model id",
+        placeholder: provider === "openai-codex" ? "gpt-5.5" : "llama3.1:8b",
+        validate: (v) =>
+          (v ?? "").trim().length === 0
+            ? "Enter the provider-specific model id (e.g. gpt-5.5, kimi-k2.6, llama3.1:8b)"
+            : undefined,
+      }),
+    ).trim();
+    return `pi:${provider}:${modelId}`;
+  }
+
+  if (model === "__other__") {
+    return guard(
+      await p.text({
+        message: "Model reference",
+        placeholder: "pi:ollama:llama3.1:8b",
+        validate: (v) =>
+          (v ?? "").trim().length === 0
+            ? "Enter a provider:model reference (e.g. pi:ollama:llama3.1:8b)"
+            : undefined,
+      }),
+    ).trim();
+  }
+
+  return model;
 }
 
 /**
@@ -422,7 +459,9 @@ async function confirmSummary(draft: DraftAnswers, ctx: { cwd: string }): Promis
     );
     runProviderSetup = guard(
       await p.confirm({
-        message: "Run provider auth/preflight before writing files?",
+        message: setupPlan.actions.some((action) => action.id.startsWith("pi-login:"))
+          ? "Run provider auth/preflight before writing files? (Pi OAuth setup can create/update the auth store)"
+          : "Run provider auth/preflight before writing files?",
         initialValue: false,
       }),
     );

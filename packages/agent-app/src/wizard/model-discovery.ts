@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 
+import type { EffortLevel } from "@mono-agent/config";
+
 const execFile = promisify(execFileCallback);
 
 export type WizardModelSource = "claude" | "pi" | "codex" | "opencode" | "ollama" | "lmstudio" | "custom";
@@ -14,11 +16,13 @@ export interface WizardModelCandidate {
   readonly hint?: string;
   readonly source: WizardModelSource;
   readonly discovered?: boolean;
+  readonly setupRequired?: boolean;
+  readonly defaultEffort?: EffortLevel;
 }
 
 export interface ModelDiscoveryStatus {
   readonly provider: "Pi" | "OpenCode" | "Ollama" | "LM Studio";
-  readonly status: "detected" | "unavailable";
+  readonly status: "detected" | "setup_available" | "unavailable";
   readonly detail: string;
 }
 
@@ -39,14 +43,20 @@ export interface DiscoverWizardModelsOptions {
   readonly timeoutMs?: number;
 }
 
+interface DiscoveredModelEntry {
+  readonly id: string;
+  readonly reasoning?: boolean;
+}
+
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 1200;
+const PI_OPENAI_CODEX_PROVIDER = "openai-codex";
 const PI_OPENAI_CODEX = "pi:openai-codex:gpt-5.5";
 const DIRECT_CODEX = "codex:gpt-5.5";
 
 export const STATIC_MODEL_CANDIDATES: readonly WizardModelCandidate[] = [
-  { value: "claude:claude-sonnet-4-6", label: "Claude Sonnet 4.6", hint: "default", source: "claude" },
-  { value: DIRECT_CODEX, label: "Codex GPT-5.5", source: "codex" },
-  { value: "pi:ollama:llama3.1:8b", label: "Ollama llama3.1:8b", hint: "fully local", source: "ollama" },
+  { value: "claude:claude-sonnet-4-6", label: "Claude Sonnet 4.6", hint: "default", source: "claude", defaultEffort: "medium" },
+  { value: DIRECT_CODEX, label: "Codex GPT-5.5", source: "codex", defaultEffort: "medium" },
+  { value: "pi:ollama:llama3.1:8b", label: "Ollama llama3.1:8b", hint: "fully local", source: "ollama", defaultEffort: "none" },
 ];
 
 export async function discoverWizardModelCandidates(
@@ -87,6 +97,31 @@ export function formatModelDiscoveryStatus(statuses: readonly ModelDiscoveryStat
   return statuses.map((status) => `${status.provider}: ${status.detail}`).join("\n");
 }
 
+export function defaultEffortForModelRef(modelRef: string, reasoning?: boolean): EffortLevel | undefined {
+  if (reasoning === true) {
+    return "medium";
+  }
+  if (reasoning === false) {
+    return "none";
+  }
+
+  if (modelRef.startsWith("claude:") || modelRef.startsWith("codex:") || modelRef.startsWith("pi:openai-codex:")) {
+    return "medium";
+  }
+
+  if (!modelRef.startsWith("pi:")) {
+    return undefined;
+  }
+
+  const [, provider, ...modelParts] = modelRef.split(":");
+  const model = modelParts.join(":");
+  if (provider === "opencode-go" || provider === "ollama" || provider === "lmstudio") {
+    return localModelDefaultEffort(model);
+  }
+
+  return undefined;
+}
+
 async function discoverPiOpenAiCodex(
   opts: Required<Pick<DiscoverWizardModelsOptions, "timeoutMs">> & DiscoverWizardModelsOptions,
 ): Promise<{ candidates: WizardModelCandidate[]; status: ModelDiscoveryStatus }> {
@@ -95,23 +130,24 @@ async function discoverPiOpenAiCodex(
   try {
     const auth = parseJsonObject(await read(authPath, "utf8"));
     const providers = readPiAuthProviderMap(auth);
-    if (providers["openai-codex"] !== undefined) {
+    if (providers[PI_OPENAI_CODEX_PROVIDER] !== undefined) {
       return {
-        candidates: [
-          {
-            value: PI_OPENAI_CODEX,
-            label: "Pi OpenAI-Codex GPT-5.5",
-            hint: "recommended when Pi auth is configured",
-            source: "pi",
-            discovered: true,
-          },
-        ],
+        candidates: [piOpenAiCodexCandidate("authenticated")],
         status: { provider: "Pi", status: "detected", detail: "OpenAI-Codex credentials found" },
       };
     }
-    return { candidates: [], status: { provider: "Pi", status: "unavailable", detail: "OpenAI-Codex credentials not found" } };
-  } catch {
-    return { candidates: [], status: { provider: "Pi", status: "unavailable", detail: "auth store not found" } };
+    return {
+      candidates: [piOpenAiCodexCandidate("setup-required")],
+      status: { provider: "Pi", status: "setup_available", detail: "OpenAI-Codex credentials not found; auth setup available" },
+    };
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return {
+        candidates: [piOpenAiCodexCandidate("setup-required")],
+        status: { provider: "Pi", status: "setup_available", detail: "auth store not found; OpenAI-Codex auth setup available" },
+      };
+    }
+    return { candidates: [], status: { provider: "Pi", status: "unavailable", detail: "auth store unreadable" } };
   }
 }
 
@@ -126,15 +162,20 @@ async function discoverOpenCodeModels(
   const run = opts.execFile ?? execFile;
   try {
     const { stdout } = await run("opencode", ["models", "--json"], { timeout: opts.timeoutMs });
-    const models = parseModelNames(stdout);
+    const models = parseModelEntries(stdout);
     return {
-      candidates: models.map((model) => ({
-        value: model.startsWith("pi:") ? model : `pi:opencode-go:${model}`,
-        label: `OpenCode ${displayModelName(model)}`,
-        hint: "discovered from opencode",
-        source: "opencode",
-        discovered: true,
-      })),
+      candidates: models.map((model) => {
+        const value = model.id.startsWith("pi:") ? model.id : `pi:opencode-go:${model.id}`;
+        const defaultEffort = defaultEffortForModelRef(value, model.reasoning);
+        return {
+          value,
+          label: `OpenCode ${displayModelName(model.id)}`,
+          hint: "discovered from opencode",
+          source: "opencode",
+          discovered: true,
+          ...(defaultEffort === undefined ? {} : { defaultEffort }),
+        };
+      }),
       status: models.length > 0
         ? { provider: "OpenCode", status: "detected", detail: `${models.length} model(s) found` }
         : { provider: "OpenCode", status: "unavailable", detail: "no models returned" },
@@ -152,13 +193,17 @@ async function discoverOllamaModels(
     const { stdout } = await run("ollama", ["list"], { timeout: opts.timeoutMs });
     const models = parseOllamaList(stdout);
     return {
-      candidates: models.map((model) => ({
-        value: `pi:ollama:${model}`,
-        label: `Ollama ${model}`,
-        hint: "discovered locally",
-        source: "ollama",
-        discovered: true,
-      })),
+      candidates: models.map((model) => {
+        const value = `pi:ollama:${model}`;
+        return {
+          value,
+          label: `Ollama ${model}`,
+          hint: "discovered locally",
+          source: "ollama",
+          discovered: true,
+          defaultEffort: defaultEffortForModelRef(value) ?? "none",
+        };
+      }),
       status: models.length > 0
         ? { provider: "Ollama", status: "detected", detail: `${models.length} model(s) found` }
         : { provider: "Ollama", status: "unavailable", detail: "no local models returned" },
@@ -180,15 +225,19 @@ async function discoverLmStudioModels(
       return { candidates: [], status: { provider: "LM Studio", status: "unavailable", detail: "server did not return models" } };
     }
     const body: unknown = await response.json();
-    const models = parseOpenAiModelsBody(body);
+    const models = parseOpenAiModelEntriesBody(body);
     return {
-      candidates: models.map((model) => ({
-        value: `pi:lmstudio:${model}`,
-        label: `LM Studio ${model}`,
-        hint: "discovered locally",
-        source: "lmstudio",
-        discovered: true,
-      })),
+      candidates: models.map((model) => {
+        const value = `pi:lmstudio:${model.id}`;
+        return {
+          value,
+          label: `LM Studio ${model.id}`,
+          hint: "discovered locally",
+          source: "lmstudio",
+          discovered: true,
+          defaultEffort: defaultEffortForModelRef(value, model.reasoning) ?? "none",
+        };
+      }),
       status: models.length > 0
         ? { provider: "LM Studio", status: "detected", detail: `${models.length} model(s) found` }
         : { provider: "LM Studio", status: "unavailable", detail: "no models returned" },
@@ -201,12 +250,18 @@ async function discoverLmStudioModels(
 }
 
 function mergeCandidate(left: WizardModelCandidate, right: WizardModelCandidate): WizardModelCandidate {
+  const { setupRequired: leftSetupRequired, defaultEffort: leftDefaultEffort, ...leftRest } = left;
+  const { setupRequired: rightSetupRequired, defaultEffort: rightDefaultEffort, ...rightRest } = right;
   const hint = right.discovered === true ? right.hint ?? left.hint : left.hint ?? right.hint;
+  const discovered = left.discovered === true || right.discovered === true;
+  const defaultEffort = rightDefaultEffort ?? leftDefaultEffort;
   return {
-    ...left,
-    ...right,
+    ...leftRest,
+    ...rightRest,
     ...(hint === undefined ? {} : { hint }),
-    discovered: left.discovered === true || right.discovered === true,
+    ...(defaultEffort === undefined ? {} : { defaultEffort }),
+    discovered,
+    ...(discovered || !(leftSetupRequired === true || rightSetupRequired === true) ? {} : { setupRequired: true }),
   };
 }
 
@@ -215,7 +270,7 @@ function rank(candidate: WizardModelCandidate): number {
     return 0;
   }
   if (candidate.value === PI_OPENAI_CODEX) {
-    return 10;
+    return candidate.setupRequired === true ? 25 : 10;
   }
   if (candidate.value === DIRECT_CODEX) {
     return 20;
@@ -232,6 +287,19 @@ function rank(candidate: WizardModelCandidate): number {
   return 90;
 }
 
+function piOpenAiCodexCandidate(state: "authenticated" | "setup-required"): WizardModelCandidate {
+  return {
+    value: PI_OPENAI_CODEX,
+    label: "Pi OpenAI-Codex GPT-5.5",
+    hint: state === "authenticated"
+      ? "recommended when Pi auth is configured"
+      : "auth setup available",
+    source: "pi",
+    defaultEffort: "medium",
+    ...(state === "authenticated" ? { discovered: true } : { setupRequired: true }),
+  };
+}
+
 function parseOllamaList(stdout: string): string[] {
   const lines = stdout.trim().split(/\r?\n/u).filter(Boolean);
   if (lines.length === 0) {
@@ -243,42 +311,53 @@ function parseOllamaList(stdout: string): string[] {
     .filter((name): name is string => name !== undefined && name.length > 0);
 }
 
-function parseModelNames(stdout: string): string[] {
+function parseModelEntries(stdout: string): DiscoveredModelEntry[] {
   try {
     const parsed: unknown = JSON.parse(stdout);
     if (Array.isArray(parsed)) {
-      return parsed.map(modelNameFromUnknown).filter(isNonEmptyString);
+      return parsed.map(modelEntryFromUnknown).filter(isModelEntry);
     }
     if (isRecord(parsed)) {
       for (const key of ["models", "data"]) {
         const value = parsed[key];
         if (Array.isArray(value)) {
-          return value.map(modelNameFromUnknown).filter(isNonEmptyString);
+          return value.map(modelEntryFromUnknown).filter(isModelEntry);
         }
       }
     }
   } catch {
     // Fall through to tolerant line parsing.
   }
-  return stdout.split(/\r?\n/u).map((line) => line.trim().split(/\s+/u)[0]).filter(isNonEmptyString);
+  return stdout
+    .split(/\r?\n/u)
+    .map((line) => line.trim().split(/\s+/u)[0])
+    .filter(isNonEmptyString)
+    .map((id) => ({ id }));
 }
 
-function parseOpenAiModelsBody(body: unknown): string[] {
+function parseOpenAiModelEntriesBody(body: unknown): DiscoveredModelEntry[] {
   if (!isRecord(body) || !Array.isArray(body.data)) {
     return [];
   }
-  return body.data.map(modelNameFromUnknown).filter(isNonEmptyString);
+  return body.data.map(modelEntryFromUnknown).filter(isModelEntry);
 }
 
-function modelNameFromUnknown(value: unknown): string | undefined {
+function modelEntryFromUnknown(value: unknown): DiscoveredModelEntry | undefined {
   if (typeof value === "string") {
-    return value;
+    return { id: value };
   }
   if (!isRecord(value)) {
     return undefined;
   }
   const raw = value.id ?? value.name ?? value.model;
-  return typeof raw === "string" ? raw : undefined;
+  if (typeof raw !== "string" || raw.length === 0) {
+    return undefined;
+  }
+  const reasoning = readReasoningCapability(value);
+  return {
+    id: raw,
+    ...(reasoning === undefined ? {} : { reasoning }),
+  };
 }
 
 function displayModelName(model: string): string {
@@ -290,10 +369,51 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
   return isRecord(parsed) ? parsed : {};
 }
 
+function readReasoningCapability(value: Record<string, unknown>): boolean | undefined {
+  for (const field of ["reasoning", "supportsReasoning", "supports_reasoning", "thinking", "supportsThinking", "supports_thinking"]) {
+    const result = booleanCapability(value[field]);
+    if (result !== undefined) {
+      return result;
+    }
+  }
+  for (const field of ["capabilities", "features"]) {
+    const nested = value[field];
+    const result = Array.isArray(nested) ? arrayCapability(nested) : isRecord(nested) ? readReasoningCapability(nested) : undefined;
+    if (result !== undefined) {
+      return result;
+    }
+  }
+  return undefined;
+}
+
+function booleanCapability(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function arrayCapability(value: readonly unknown[]): boolean | undefined {
+  return value.some((entry) => typeof entry === "string" && /^(reasoning|thinking)$/iu.test(entry)) ? true : undefined;
+}
+
+function localModelDefaultEffort(model: string): EffortLevel {
+  const normalized = model.toLowerCase();
+  return ["gpt-oss", "qwen3", "qwq", "deepseek-r1", "reasoning", "thinking"].some((token) => normalized.includes(token))
+    || /(?:^|[-_:/.\s])o[1345](?:$|[-_:/.\s])/u.test(normalized)
+    ? "medium"
+    : "none";
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return isRecord(error) && (error.code === "ENOENT" || error.code === "ENOTDIR");
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isNonEmptyString(value: string | undefined): value is string {
   return value !== undefined && value.length > 0;
+}
+
+function isModelEntry(value: DiscoveredModelEntry | undefined): value is DiscoveredModelEntry {
+  return value !== undefined;
 }
