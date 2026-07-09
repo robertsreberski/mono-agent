@@ -51,9 +51,10 @@ step-by-step wizard — powered by `@clack/prompts` — that composes the capabi
 selection before writing anything and can opt in to provider auth/preflight
 commands before the scaffold is created. The default model is
 `pi:openai-codex:gpt-5.5`; OpenCode-Go Pi refs can save `OPENCODE_API_KEY` into
-the Pi auth store. Any flag (or a piped/non-TTY invocation) takes the silent
-default/preset scaffold path instead; add `--auth` to run supported provider
-setup in that non-interactive path.
+the Pi auth store, and optional fallback models are selected from the same
+discovered choices one at a time before manual entry. Any flag (or a piped/non-TTY
+invocation) takes the silent default/preset scaffold path instead; add `--auth`
+to run supported provider setup in that non-interactive path.
 
 Programmatic:
 

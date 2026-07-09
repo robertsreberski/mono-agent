@@ -16,12 +16,15 @@ vi.mock("@clack/prompts", async (importOriginal) => {
 
 import { BUILTIN_TOOL_NAMES } from "../modules/known-tools.js";
 import {
+  assertConcreteWizardModelRef,
   channelSelectOptions,
+  CUSTOM_PI_MODEL_OPTION,
   effortSelectOptions,
   fallbackModelSelectOptions,
   guard,
   memorySelectOptions,
   modelSelectOptions,
+  piModelSelectOptions,
   presetSelectOptions,
   toolMultiselectOptions,
   WizardCancelled,
@@ -94,21 +97,50 @@ describe("wizard prompt builders", () => {
     const candidates: WizardModelCandidate[] = [
       { value: "claude:claude-sonnet-4-6", label: "Claude Sonnet 4.6", hint: "default", source: "claude" },
       { value: "codex:gpt-5.5", label: "Codex GPT-5.5", source: "codex" },
+      { value: "pi:opencode-go:kimi-k2.6", label: "OpenCode kimi-k2.6", hint: "discovered from opencode", source: "opencode" },
       { value: "pi:ollama:llama3.1:8b", label: "Ollama llama3.1:8b", hint: "fully local", source: "ollama" },
+      { value: "pi:lmstudio:qwen/qwen3-8b", label: "LM Studio qwen/qwen3-8b", hint: "discovered locally", source: "lmstudio" },
     ];
 
     const options = fallbackModelSelectOptions(
       candidates,
       "claude:claude-sonnet-4-6",
-      ["codex:gpt-5.5"],
+      ["codex:gpt-5.5", "pi:opencode-go:kimi-k2.6"],
     );
 
     expect(options).toEqual([
       { value: "pi:ollama:llama3.1:8b", label: "Ollama llama3.1:8b", hint: "fully local" },
+      { value: "pi:lmstudio:qwen/qwen3-8b", label: "LM Studio qwen/qwen3-8b", hint: "discovered locally" },
       { value: "__pi_other__", label: "Other Pi model…", hint: "choose provider and model id" },
       { value: "__other__", label: "Other model ref…", hint: "type a full sdk:model reference" },
       { value: "__done__", label: "Done", hint: "finish fallback chain" },
     ]);
+  });
+
+  it("piModelSelectOptions offers discovered Pi candidates before the manual escape hatch", () => {
+    const candidates: WizardModelCandidate[] = [
+      { value: "pi:openai-codex:gpt-5.5", label: "Pi OpenAI-Codex GPT-5.5", hint: "auth setup available", source: "pi" },
+      { value: "codex:gpt-5.5", label: "Codex GPT-5.5", source: "codex" },
+      { value: "pi:opencode-go:kimi-k2.6", label: "OpenCode kimi-k2.6", hint: "discovered from opencode", source: "opencode" },
+      { value: "pi:ollama:llama3.1:8b", label: "Ollama llama3.1:8b", hint: "fully local", source: "ollama" },
+      { value: "pi:lmstudio:qwen/qwen3-8b", label: "LM Studio qwen/qwen3-8b", hint: "discovered locally", source: "lmstudio" },
+    ];
+
+    const options = piModelSelectOptions(candidates, ["pi:ollama:llama3.1:8b"]);
+
+    expect(options).toEqual([
+      { value: "pi:openai-codex:gpt-5.5", label: "Pi OpenAI-Codex GPT-5.5", hint: "auth setup available" },
+      { value: "pi:opencode-go:kimi-k2.6", label: "OpenCode kimi-k2.6", hint: "discovered from opencode" },
+      { value: "pi:lmstudio:qwen/qwen3-8b", label: "LM Studio qwen/qwen3-8b", hint: "discovered locally" },
+      { value: CUSTOM_PI_MODEL_OPTION, label: "Custom Pi provider/model id…", hint: "type provider id and model id" },
+    ]);
+  });
+
+  it("assertConcreteWizardModelRef rejects wizard sentinel values", () => {
+    for (const sentinel of ["__pi_other__", "__other__", "__done__", CUSTOM_PI_MODEL_OPTION]) {
+      expect(() => assertConcreteWizardModelRef(sentinel)).toThrow("Wizard model sentinel");
+    }
+    expect(() => assertConcreteWizardModelRef("pi:ollama:llama3.1:8b")).not.toThrow();
   });
 
   it("modelSelectOptions ranks setup-required Pi OpenAI-Codex above direct Codex while keeping direct selectable", () => {

@@ -18,6 +18,15 @@ export interface WizardSelectOption {
   readonly hint?: string;
 }
 
+export const CUSTOM_PI_MODEL_OPTION = "__pi_manual__";
+
+const WIZARD_MODEL_SENTINELS = new Set([
+  "__pi_other__",
+  "__other__",
+  "__done__",
+  CUSTOM_PI_MODEL_OPTION,
+]);
+
 /**
  * Thrown when a clack prompt returns its cancel symbol (Ctrl-C / Esc). The wizard
  * catches it once at the top and turns it into a clean `p.cancel` — nothing is
@@ -118,6 +127,34 @@ export function modelSelectOptions(candidates: readonly WizardModelCandidate[] =
     { value: "__pi_other__", label: "Other Pi model…", hint: "choose provider and model id" },
     { value: "__other__", label: "Other model ref…", hint: "type a full sdk:model reference" },
   ];
+}
+
+/**
+ * The Pi-specific "Other Pi model" submenu. Discovered Pi candidates are offered
+ * first when available; the final option is the explicit manual provider/model
+ * escape hatch.
+ */
+export function piModelSelectOptions(
+  candidates: readonly WizardModelCandidate[] = STATIC_MODEL_CANDIDATES,
+  excludedModels: readonly string[] = [],
+): WizardSelectOption[] {
+  const excluded = new Set(excludedModels);
+  return [
+    ...candidates
+      .filter((candidate) => candidate.value.startsWith("pi:") && !excluded.has(candidate.value))
+      .map((candidate) => ({
+        value: candidate.value,
+        label: candidate.label,
+        ...(candidate.hint === undefined ? {} : { hint: candidate.hint }),
+      })),
+    { value: CUSTOM_PI_MODEL_OPTION, label: "Custom Pi provider/model id…", hint: "type provider id and model id" },
+  ];
+}
+
+export function assertConcreteWizardModelRef(value: string): void {
+  if (WIZARD_MODEL_SENTINELS.has(value)) {
+    throw new Error(`Wizard model sentinel cannot be used as a model reference: ${value}`);
+  }
 }
 
 /**

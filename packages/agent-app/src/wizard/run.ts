@@ -15,12 +15,15 @@ import {
 } from "./answers.js";
 import { findPreset, presetAnswers } from "./presets.js";
 import {
+  assertConcreteWizardModelRef,
   channelSelectOptions,
+  CUSTOM_PI_MODEL_OPTION,
   effortSelectOptions,
   fallbackModelSelectOptions,
   guard,
   memorySelectOptions,
   modelSelectOptions,
+  piModelSelectOptions,
   presetSelectOptions,
   toolMultiselectOptions,
   WizardCancelled,
@@ -61,6 +64,12 @@ interface DraftAnswers {
 
 const LOCAL_PROVIDER_MODEL = /^pi:(?:ollama|lmstudio):/u;
 const SANDBOXABLE_TOOLS = new Set(["Bash", "Write", "Edit"]);
+
+interface ModelResolutionOptions {
+  readonly candidates: readonly WizardModelCandidate[];
+  readonly excludedModels?: readonly string[];
+  readonly context: "primary" | "fallback";
+}
 
 interface CollectedAnswers {
   readonly answers: WizardAnswers;
@@ -128,7 +137,10 @@ async function collectCustom(ctx: { cwd: string }): Promise<CollectedAnswers> {
       initialValue: draft.model,
     }),
   );
-  draft.model = await resolveModelSelection(model);
+  draft.model = await resolveModelSelection(model, {
+    candidates: discovery.candidates,
+    context: "primary",
+  });
 
   // Optional fallback chain.
   if (guard(await p.confirm({ message: "Add fallback models?", initialValue: false }))) {
@@ -198,48 +210,86 @@ async function collectCustom(ctx: { cwd: string }): Promise<CollectedAnswers> {
   return { answers: toWizardAnswers(draft), ...providerSetup };
 }
 
-async function resolveModelSelection(model: string): Promise<string> {
+async function resolveModelSelection(model: string, opts: ModelResolutionOptions): Promise<string> {
   if (model === "__pi_other__") {
-    const provider = guard(
-      await p.text({
-        message: "Pi provider id",
-        placeholder: "openai-codex",
-        validate: (v) => {
-          const value = (v ?? "").trim();
-          if (value.length === 0) {
-            return "Enter a Pi provider id (e.g. openai-codex, opencode-go, ollama, lmstudio)";
-          }
-          return value.includes(":") ? "Provider id cannot contain ':'." : undefined;
-        },
-      }),
-    ).trim();
-    const modelId = guard(
-      await p.text({
-        message: "Pi model id",
-        placeholder: provider === "openai-codex" ? "gpt-5.5" : "llama3.1:8b",
-        validate: (v) =>
-          (v ?? "").trim().length === 0
-            ? "Enter the provider-specific model id (e.g. gpt-5.5, kimi-k2.6, llama3.1:8b)"
-            : undefined,
-      }),
-    ).trim();
-    return `pi:${provider}:${modelId}`;
+    return await promptPiModelSelection(opts);
   }
 
   if (model === "__other__") {
-    return guard(
+    const resolved = guard(
       await p.text({
-        message: "Model reference",
+        message: opts.context === "primary" ? "Model reference" : "Fallback model reference",
         placeholder: "pi:ollama:llama3.1:8b",
-        validate: (v) =>
-          (v ?? "").trim().length === 0
-            ? "Enter a provider:model reference (e.g. pi:ollama:llama3.1:8b)"
-            : undefined,
+        validate: validateFullModelReference,
       }),
     ).trim();
+    assertConcreteWizardModelRef(resolved);
+    return resolved;
   }
 
+  assertConcreteWizardModelRef(model);
   return model;
+}
+
+async function promptPiModelSelection(opts: ModelResolutionOptions): Promise<string> {
+  const options = piModelSelectOptions(opts.candidates, opts.excludedModels ?? []);
+  const choice = guard(
+    await p.select({
+      message: opts.context === "primary" ? "Other Pi model" : "Other Pi fallback model",
+      options,
+      initialValue: options[0]?.value ?? CUSTOM_PI_MODEL_OPTION,
+    }),
+  );
+
+  if (choice !== CUSTOM_PI_MODEL_OPTION) {
+    assertConcreteWizardModelRef(choice);
+    return choice;
+  }
+
+  return await promptManualPiModelRef();
+}
+
+async function promptManualPiModelRef(): Promise<string> {
+  const provider = guard(
+    await p.text({
+      message: "Pi provider id",
+      placeholder: "openai-codex",
+      validate: (v) => {
+        const value = (v ?? "").trim();
+        if (value.length === 0) {
+          return "Enter a Pi provider id (e.g. openai-codex, opencode-go, ollama, lmstudio)";
+        }
+        return value.includes(":") ? "Provider id cannot contain ':'." : undefined;
+      },
+    }),
+  ).trim();
+  const modelId = guard(
+    await p.text({
+      message: "Pi model id",
+      placeholder: provider === "openai-codex" ? "gpt-5.5" : "llama3.1:8b",
+      validate: (v) =>
+        (v ?? "").trim().length === 0
+          ? "Enter the provider-specific model id (e.g. gpt-5.5, kimi-k2.6, llama3.1:8b)"
+          : undefined,
+    }),
+  ).trim();
+  return `pi:${provider}:${modelId}`;
+}
+
+function validateFullModelReference(value: string | undefined): string | undefined {
+  const trimmed = (value ?? "").trim();
+  if (trimmed.length === 0) {
+    return "Enter a provider:model reference (e.g. pi:ollama:llama3.1:8b)";
+  }
+  if (trimmed.includes(",")) {
+    return "Enter one model reference. Add more fallbacks one at a time.";
+  }
+  try {
+    assertConcreteWizardModelRef(trimmed);
+  } catch (error) {
+    return error instanceof Error ? error.message : "Enter a concrete model reference.";
+  }
+  return undefined;
 }
 
 /**
@@ -262,21 +312,14 @@ async function promptFallbackModels(
     if (choice === "__done__") {
       return;
     }
-    if (choice === "__other__") {
-      const raw = guard(
-        await p.text({
-          message: "Custom fallback model reference(s)",
-          placeholder: "codex:gpt-5.5, pi:ollama:llama3.1:8b",
-          validate: (v) =>
-            splitCsv(v ?? "").length === 0
-              ? "Enter at least one provider:model reference"
-              : undefined,
-        }),
-      );
-      draft.fallbackModels.push(...splitCsv(raw));
-      continue;
+    const resolved = await resolveModelSelection(choice, {
+      candidates,
+      excludedModels: [draft.model, ...draft.fallbackModels],
+      context: "fallback",
+    });
+    if (resolved !== draft.model && !draft.fallbackModels.includes(resolved)) {
+      draft.fallbackModels.push(resolved);
     }
-    draft.fallbackModels.push(choice);
   }
 }
 
@@ -571,6 +614,9 @@ function draftFrom(answers: WizardAnswers): DraftAnswers {
  * `undefined`).
  */
 function toWizardAnswers(draft: DraftAnswers): WizardAnswers {
+  for (const modelRef of [draft.model, ...draft.fallbackModels]) {
+    assertConcreteWizardModelRef(modelRef);
+  }
   return {
     model: draft.model,
     fallbackModels: [...draft.fallbackModels],
@@ -582,11 +628,6 @@ function toWizardAnswers(draft: DraftAnswers): WizardAnswers {
     allowedTools: [...draft.allowedTools],
     moduleInputs: draft.moduleInputs,
   };
-}
-
-/** Split a comma-separated string into trimmed, non-empty entries. */
-function splitCsv(value: string): string[] {
-  return value.split(",").map((entry) => entry.trim()).filter(Boolean);
 }
 
 /** True when `path` exists (a local mirror of the CLI's private helper). */
