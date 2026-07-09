@@ -211,24 +211,3 @@ export function createFileChangePayload(raw, { cwd = process.cwd(), snapshots = 
     ...(summary ? { summary } : {}),
   };
 }
-
-export function createFileEditToolUseEvent(id, payload) {
-  return {
-    type: "assistant",
-    message: { content: [{ type: "tool_use", id, name: "file_edit", input: payload }] },
-  };
-}
-
-export function createFileEditToolResultEvent(id, payload, { isError = false } = {}) {
-  return {
-    type: "user",
-    message: {
-      content: [{
-        type: "tool_result",
-        tool_use_id: id,
-        content: payload,
-        is_error: isError,
-      }],
-    },
-  };
-}

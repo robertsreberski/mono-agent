@@ -70,22 +70,14 @@ export function normalizeCodexItemEvent(raw, context = {}) {
   if (type === "file_change") {
     const id = itemId(item, "file_change");
     const payload = fileChangePayload(raw, item, context);
-    if (!isCompleted(raw)) {
-      return {
-        type: "assistant",
-        message: { content: [{ type: "tool_use", id, name: "file_edit", input: payload }] },
-      };
-    }
     return {
-      type: "user",
-      message: {
-        content: [{
-          type: "tool_result",
-          tool_use_id: id,
-          content: item.error || payload,
-          is_error: itemFailed(item),
-        }],
-      },
+      type: "file_change",
+      id,
+      status: payload.status,
+      changes: payload.changes,
+      ...(payload.summary ? { summary: payload.summary } : {}),
+      ...(item.error ? { error: item.error } : {}),
+      is_error: itemFailed(item),
     };
   }
 

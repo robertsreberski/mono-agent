@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { statsForCompletedChange } from "../../ai/file-change-stats.js";
 import { generateClaudeResponse } from "../../ai/providers/claude-sdk.js";
+import { normalizeCodexItemEvent } from "../../ai/streaming/codex-events.js";
 
 const queryMock = vi.hoisted(() => vi.fn());
 
@@ -167,5 +168,34 @@ describe("Claude SDK file write hooks", () => {
     const contentBlocks = emitted.flatMap((event) => event?.message?.content || []);
     expect(contentBlocks.some((block) => block?.type === "tool_use" && block.name === "file_edit")).toBe(false);
     expect(contentBlocks.some((block) => block?.type === "tool_result" && String(block.tool_use_id || "").startsWith("file_edit:"))).toBe(false);
+  });
+});
+
+describe("Codex file change event normalization", () => {
+  it("keeps provider-native file changes out of the tool timeline", () => {
+    const raw = {
+      type: "item.completed",
+      item: {
+        id: "change-1",
+        type: "fileChange",
+        status: "completed",
+        changes: [{ path: "notes.txt", kind: "update" }],
+        summary: { files: 1, added_lines: 1, removed_lines: 0, changed_lines: 1, unavailable_count: 0 },
+      },
+    };
+
+    const event = normalizeCodexItemEvent(raw);
+
+    expect(event).toMatchObject({
+      type: "file_change",
+      id: "change-1",
+      status: "completed",
+      changes: [{ path: "notes.txt", kind: "update" }],
+      summary: { files: 1, added_lines: 1, removed_lines: 0, changed_lines: 1, unavailable_count: 0 },
+      is_error: false,
+    });
+    expect(event.message).toBeUndefined();
+    expect(event.name).toBeUndefined();
+    expect(event.tool_use_id).toBeUndefined();
   });
 });
