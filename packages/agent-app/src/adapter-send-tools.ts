@@ -4,6 +4,7 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { splitTextByCodePoints } from "@mono-agent/agent-contracts";
 import { ALLOW_ALL_TOOLS } from "@mono-agent/config";
 import type {
   SlackChatPostMessageResult,
@@ -30,6 +31,7 @@ const loadSlackModule = async (): Promise<SlackAdapterModule> =>
   (slackModule ??= await import("@mono-agent/slack-adapter"));
 const loadTelegramModule = async (): Promise<TelegramAdapterModule> =>
   (telegramModule ??= await import("@mono-agent/telegram-adapter"));
+const SLACK_SEND_MESSAGE_MAX_CHARS = 40_000;
 
 /**
  * Model-visible send tools for explicitly allowed, already-enabled communication adapters.
@@ -512,27 +514,50 @@ function registerSlackSendTool(
     },
     async (args) => {
       assertSlackChannelAllowed(settings, args.channel);
-      const result: SlackChatPostMessageResult = await client.chatPostMessage({
-        channel: args.channel.trim(),
-        text: args.text,
-        ...(args.thread_ts === undefined ? {} : { thread_ts: args.thread_ts }),
-        ...(args.mrkdwn === undefined ? {} : { mrkdwn: args.mrkdwn }),
-        ...(args.unfurl_links === undefined ? {} : { unfurl_links: args.unfurl_links }),
-        ...(args.unfurl_media === undefined ? {} : { unfurl_media: args.unfurl_media }),
-      });
-      // Link the posted message back to this conversation so an in-thread reply can
-      // resume it. Best-effort: appendPostedMessage never throws, so a failed index
-      // write can never fail the send.
-      if (indexing !== undefined) {
-        await appendPostedMessage(indexing.indexPath, {
-          channelId: result.channel,
-          ts: result.ts,
-          conversationId: indexing.conversationId,
+      const chunks = splitTextByCodePoints(args.text, SLACK_SEND_MESSAGE_MAX_CHARS);
+      const results: SlackChatPostMessageResult[] = [];
+      for (const chunk of chunks) {
+        const result: SlackChatPostMessageResult = await client.chatPostMessage({
+          channel: args.channel.trim(),
+          text: chunk,
+          ...(args.thread_ts === undefined ? {} : { thread_ts: args.thread_ts }),
+          ...(args.mrkdwn === undefined ? {} : { mrkdwn: args.mrkdwn }),
+          ...(args.unfurl_links === undefined ? {} : { unfurl_links: args.unfurl_links }),
+          ...(args.unfurl_media === undefined ? {} : { unfurl_media: args.unfurl_media }),
         });
+        results.push(result);
+        // Link every posted chunk back to this conversation so an in-thread reply can
+        // resume it. Best-effort: appendPostedMessage never throws, so a failed index
+        // write can never fail the send.
+        if (indexing !== undefined) {
+          await appendPostedMessage(indexing.indexPath, {
+            channelId: result.channel,
+            ts: result.ts,
+            conversationId: indexing.conversationId,
+          });
+        }
       }
+      const [firstResult] = results;
+      if (firstResult === undefined) {
+        throw new Error("SlackSendMessage: no message chunks were produced.");
+      }
+      const chunkRefs = results.map((result) => ({ channel: result.channel, ts: result.ts }));
+      const message =
+        results.length === 1
+          ? `Sent Slack message to ${firstResult.channel} at ${firstResult.ts}.`
+          : `Sent ${String(results.length)} Slack messages to ${firstResult.channel} starting at ${firstResult.ts}.`;
       return {
-        content: [{ type: "text", text: `Sent Slack message to ${result.channel} at ${result.ts}.` }],
-        structuredContent: { ok: true, channel: result.channel, ts: result.ts },
+        content: [{ type: "text", text: message }],
+        structuredContent:
+          results.length === 1
+            ? { ok: true, channel: firstResult.channel, ts: firstResult.ts }
+            : {
+                ok: true,
+                channel: firstResult.channel,
+                ts: firstResult.ts,
+                chunkCount: results.length,
+                chunks: chunkRefs,
+              },
       };
     },
   );
