@@ -63,7 +63,7 @@ const ADAPTER_SEND_TOOL_SET: ReadonlySet<string> = new Set(ADAPTER_SEND_TOOL_NAM
 const ADAPTER_SEND_TOOL_ACTIONS: Readonly<Record<string, string>> = {
   SlackSendMessage: "proactive send",
   TelegramSendMessage: "proactive send",
-  TelegramAskButtons: "ask via tappable buttons, non-blocking",
+  TelegramAskButtons: "ask via tappable buttons, blocking",
   TelegramSendFile: "send a document or photo",
 };
 
@@ -117,6 +117,24 @@ export function modelSelectOptions(candidates: readonly WizardModelCandidate[] =
     })),
     { value: "__pi_other__", label: "Other Pi model…", hint: "choose provider and model id" },
     { value: "__other__", label: "Other model ref…", hint: "type a full sdk:model reference" },
+  ];
+}
+
+/**
+ * Fallback model choices use the same labels/hints as the primary model picker,
+ * but hide the chosen primary and fallbacks already added to the chain. The Pi
+ * and generic custom-reference escape hatches remain available; `Done` finishes
+ * the ordered fallback chain.
+ */
+export function fallbackModelSelectOptions(
+  candidates: readonly WizardModelCandidate[] = STATIC_MODEL_CANDIDATES,
+  primaryModel: string,
+  selectedFallbacks: readonly string[] = [],
+): WizardSelectOption[] {
+  const excluded = new Set([primaryModel, ...selectedFallbacks]);
+  return [
+    ...modelSelectOptions(candidates).filter((option) => option.value === "__other__" || !excluded.has(option.value)),
+    { value: "__done__", label: "Done", hint: "finish fallback chain" },
   ];
 }
 

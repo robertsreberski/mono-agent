@@ -513,8 +513,34 @@ describe("createTelegramBot", () => {
     expect(reactionEmojis(calls)).toEqual(["👍"]);
   });
 
-  it("re-runs the chosen inline-keyboard option as a turn when callbacks are enabled", async () => {
+  it("resolves a pending ask from an inline-keyboard tap instead of running a turn", async () => {
     const requests: AgentRequest[] = [];
+    const tryResolve = vi.fn(
+      async (_conversationId: string, _answer: string, _answerKind?: "text" | "callback") => true,
+    );
+    const { bot, calls } = buildTestBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "Proceeding" };
+      }),
+      callbacksEnabled: true,
+      pendingAsks: { tryResolve, cancel: vi.fn() },
+      stream: { editDebounceMs: 0 },
+    });
+
+    await bot.handleUpdate(callbackUpdate({ data: "ask:0", questionText: "Proceed?" }));
+
+    expect(tryResolve).toHaveBeenCalledWith("telegram:42", "Approve", "callback");
+    expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(true);
+    expect(calls.some((call) => call.method === "editMessageReplyMarkup")).toBe(true);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("re-runs the chosen inline-keyboard option as a turn when no pending ask exists", async () => {
+    const requests: AgentRequest[] = [];
+    const tryResolve = vi.fn(
+      async (_conversationId: string, _answer: string, _answerKind?: "text" | "callback") => false,
+    );
     const responder: AgentResponder = {
       async respond(request) {
         requests.push(request as AgentRequest);
@@ -524,17 +550,52 @@ describe("createTelegramBot", () => {
     const { bot, calls } = buildTestBot({
       responder,
       callbacksEnabled: true,
+      pendingAsks: { tryResolve, cancel: vi.fn() },
       stream: { editDebounceMs: 0 },
     });
 
     await bot.handleUpdate(callbackUpdate({ data: "ask:0", questionText: "Proceed?" }));
 
+    expect(tryResolve).toHaveBeenCalledWith("telegram:42", "Approve", "callback");
     expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(true);
     expect(calls.some((call) => call.method === "editMessageReplyMarkup")).toBe(true);
     expect(requests).toHaveLength(1);
     expect(requests[0]?.conversationId).toBe("telegram:42");
     expect(requests[0]?.text).toContain("Approve");
     expect(requests[0]?.text).toContain("Proceed?");
+  });
+
+  it("replies busy instead of re-running a callback tap while another ask is pending", async () => {
+    const requests: AgentRequest[] = [];
+    const tryResolve = vi.fn(
+      async (_conversationId: string, _answer: string, _answerKind?: "text" | "callback") => false,
+    );
+    const hasPending = vi.fn(async () => true);
+    const responder: AgentResponder = {
+      async respond(request) {
+        requests.push(request as AgentRequest);
+        return { text: "Proceeding" };
+      },
+    };
+    const { bot, calls } = buildTestBot({
+      responder,
+      callbacksEnabled: true,
+      pendingAsks: { tryResolve, hasPending, cancel: vi.fn() },
+      stream: { editDebounceMs: 0 },
+    });
+
+    await bot.handleUpdate(callbackUpdate({ data: "ask:0", questionText: "Proceed?" }));
+
+    expect(tryResolve).toHaveBeenCalledWith("telegram:42", "Approve", "callback");
+    expect(hasPending).toHaveBeenCalledWith("telegram:42");
+    expect(requests).toHaveLength(0);
+    expect(
+      calls.some(
+        (call) =>
+          call.method === "sendMessage" &&
+          call.payload.text === "I am still working on your previous message. Use /cancel to stop it.",
+      ),
+    ).toBe(true);
   });
 
   it("de-dupes a second tap on the same question", async () => {
@@ -1784,7 +1845,9 @@ describe("SerialQueue", () => {
 describe("createTelegramBot pending asks and status posts", () => {
   it("consumes a plain text reply as the pending ask's answer instead of running a turn", async () => {
     const requests: AgentRequest[] = [];
-    const tryResolve = vi.fn(async (_conversationId: string, _answer: string) => true);
+    const tryResolve = vi.fn(
+      async (_conversationId: string, _answer: string, _answerKind?: "text" | "callback") => true,
+    );
     const { bot, calls } = buildTestBot({
       responder: responderFrom(async (request) => {
         requests.push(request);
@@ -1795,10 +1858,36 @@ describe("createTelegramBot pending asks and status posts", () => {
 
     await bot.handleUpdate(textUpdate("Alice and Bob, in Polish"));
 
-    expect(tryResolve).toHaveBeenCalledWith("telegram:42", "Alice and Bob, in Polish");
+    expect(tryResolve).toHaveBeenCalledWith("telegram:42", "Alice and Bob, in Polish", "text");
     expect(requests).toHaveLength(0);
     // Best-effort acknowledgment so the user sees their answer was consumed.
     expect(reactionEmojis(calls)).toContain("👍");
+  });
+
+  it("does not resolve a callback-only pending ask from plain text or run a deadlocking turn", async () => {
+    const requests: AgentRequest[] = [];
+    const tryResolve = vi.fn(async () => false);
+    const hasPending = vi.fn(async () => true);
+    const { bot, calls } = buildTestBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "turn" };
+      }),
+      pendingAsks: { tryResolve, hasPending, cancel: vi.fn() },
+    });
+
+    await bot.handleUpdate(textUpdate("please approve this way"));
+
+    expect(tryResolve).toHaveBeenCalledWith("telegram:42", "please approve this way", "text");
+    expect(hasPending).toHaveBeenCalledWith("telegram:42");
+    expect(requests).toHaveLength(0);
+    expect(
+      calls.some(
+        (call) =>
+          call.method === "sendMessage" &&
+          call.payload.text === "I am still working on your previous message. Use /cancel to stop it.",
+      ),
+    ).toBe(true);
   });
 
   it("runs a normal turn when the interceptor reports no pending ask", async () => {

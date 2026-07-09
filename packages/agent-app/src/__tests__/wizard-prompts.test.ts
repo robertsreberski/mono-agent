@@ -18,6 +18,7 @@ import { BUILTIN_TOOL_NAMES } from "../modules/known-tools.js";
 import {
   channelSelectOptions,
   effortSelectOptions,
+  fallbackModelSelectOptions,
   guard,
   memorySelectOptions,
   modelSelectOptions,
@@ -87,6 +88,27 @@ describe("wizard prompt builders", () => {
     const values = options.map((option) => option.value);
     expect(values.indexOf("pi:openai-codex:gpt-5.5")).toBeLessThan(values.indexOf("codex:gpt-5.5"));
     expect(values).toContain("codex:gpt-5.5");
+  });
+
+  it("fallbackModelSelectOptions reuses model labels while excluding the primary and prior fallbacks", () => {
+    const candidates: WizardModelCandidate[] = [
+      { value: "claude:claude-sonnet-4-6", label: "Claude Sonnet 4.6", hint: "default", source: "claude" },
+      { value: "codex:gpt-5.5", label: "Codex GPT-5.5", source: "codex" },
+      { value: "pi:ollama:llama3.1:8b", label: "Ollama llama3.1:8b", hint: "fully local", source: "ollama" },
+    ];
+
+    const options = fallbackModelSelectOptions(
+      candidates,
+      "claude:claude-sonnet-4-6",
+      ["codex:gpt-5.5"],
+    );
+
+    expect(options).toEqual([
+      { value: "pi:ollama:llama3.1:8b", label: "Ollama llama3.1:8b", hint: "fully local" },
+      { value: "__pi_other__", label: "Other Pi model…", hint: "choose provider and model id" },
+      { value: "__other__", label: "Other model ref…", hint: "type a full sdk:model reference" },
+      { value: "__done__", label: "Done", hint: "finish fallback chain" },
+    ]);
   });
 
   it("modelSelectOptions ranks setup-required Pi OpenAI-Codex above direct Codex while keeping direct selectable", () => {

@@ -721,6 +721,36 @@ describe("startMonoAgentApp", () => {
     expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
   });
 
+  it("starts the interaction bridge when TelegramAskButtons is allowed", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      tools: { allowedTools: ["TelegramAskButtons"], disallowedTools: [] },
+      telegram: { enabled: true, botToken: "test-token", allowedChatIds: ["42"] },
+    });
+    let captured: TelegramAdapterStartOptions | undefined;
+    const driver = createTelegramChannelDriver({
+      startAdapter: async (options) => {
+        captured = options;
+        return {
+          stop: async () => undefined,
+          notify: async () => ({ delivered: true }),
+          post: async () => undefined,
+          postStatus: async () => undefined,
+        };
+      },
+    });
+    const env: Record<string, string | undefined> = {};
+
+    const app = await startMonoAgentApp({ cwd: dir, env, drivers: [driver] });
+    try {
+      expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+      expect(captured?.pendingAsks).toBeDefined();
+      expect(captured?.callbacksEnabled).toBe(true);
+    } finally {
+      await app.stop();
+    }
+  });
+
   it("does not start the interaction bridge when neither AskUser nor an interaction block is configured", async () => {
     await writeConfig({
       ...baseConfig(),
@@ -801,10 +831,12 @@ describe("startMonoAgentApp", () => {
     });
     const sinks = new Map<string, ChannelInteractionSink>();
     const tryResolveAsk = vi.fn(() => true);
+    const hasPendingAsk = vi.fn(() => true);
     const cancelAsks = vi.fn();
     const hub: ChannelInteractionHub = {
       registerSink: (channelId, sink) => sinks.set(channelId, sink),
       tryResolveAsk,
+      hasPendingAsk,
       cancelAsks,
     };
 
@@ -819,8 +851,10 @@ describe("startMonoAgentApp", () => {
 
     // The bot receives the pending-ask interceptor bound to the hub…
     expect(captured?.pendingAsks).toBeDefined();
-    await captured?.pendingAsks?.tryResolve("telegram:42", "the answer");
-    expect(tryResolveAsk).toHaveBeenCalledWith("telegram:42", "the answer");
+    await captured?.pendingAsks?.tryResolve("telegram:42", "the answer", "callback");
+    expect(tryResolveAsk).toHaveBeenCalledWith("telegram:42", "the answer", "callback");
+    expect(await captured?.pendingAsks?.hasPending?.("telegram:42")).toBe(true);
+    expect(hasPendingAsk).toHaveBeenCalledWith("telegram:42");
     captured?.pendingAsks?.cancel("telegram:42");
     expect(cancelAsks).toHaveBeenCalledWith("telegram:42");
 
@@ -834,6 +868,38 @@ describe("startMonoAgentApp", () => {
     // Destination boundary: a chat outside the adapter allowlist is refused.
     await expect(sink?.postQuestion("telegram:999", "nope")).rejects.toThrow(/allowlist/iu);
 
+    await running.stop();
+  });
+
+  it("treats an interaction hub without pending-ask introspection as no pending ask", async () => {
+    let captured: TelegramAdapterStartOptions | undefined;
+    const driver = createTelegramChannelDriver({
+      startAdapter: async (options) => {
+        captured = options;
+        return {
+          stop: async () => undefined,
+          notify: async () => ({ delivered: true }),
+          post: async () => undefined,
+          postStatus: async () => undefined,
+        };
+      },
+    });
+    const hub: ChannelInteractionHub = {
+      registerSink: vi.fn(),
+      tryResolveAsk: vi.fn(() => false),
+      cancelAsks: vi.fn(),
+    };
+
+    const running = await driver.start({
+      config: { enabled: true, botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
+      coreConfig: baseConfig() as never,
+      responder: { respond: async () => ({ text: "" }) },
+      cwd: dir,
+      onFailure: vi.fn(),
+      interaction: hub,
+    });
+
+    expect(await captured?.pendingAsks?.hasPending?.("telegram:42")).toBe(false);
     await running.stop();
   });
 
