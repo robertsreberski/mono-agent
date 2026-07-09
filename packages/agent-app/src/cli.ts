@@ -1158,9 +1158,12 @@ async function runValidate(args: ParsedCliArgs): Promise<number> {
     process.stdout.write(renderPlanCompleteness(plan.validateExpectations, `Preset: ${preset.id}`, report));
   }
 
+  const hasWaitingSections = report.sections.some((section) => section.status === "waiting");
   process.stdout.write(
     report.ok
-      ? `\n${ui.style.green("✓ Config is ready to start.")}\n${ui.style.dim("Run `mono-agent config` for the full field-by-field view.")}\n`
+      ? hasWaitingSections
+        ? `\n${ui.style.yellow("⚠ Config is structurally valid, but needs attention before start.")}\n${ui.style.dim("Review the waiting sections above, then re-run mono-agent validate.")}\n`
+        : `\n${ui.style.green("✓ Config is ready to start.")}\n${ui.style.dim("Run `mono-agent config` for the full field-by-field view.")}\n`
       : `\n${ui.hint("Fix the errors above, then re-run mono-agent validate.")}`,
   );
   process.stdout.write(

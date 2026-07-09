@@ -99,7 +99,7 @@ A handful of capabilities are `code`-only — for example structured output sche
 
 ## Validate before you run
 
-`mono-agent validate` prints a per-section report — **secret placement**, runtime, **provider credentials** (Pi auth-store/API-key presence and OAuth token expiry for every referenced model), context, memory, tools, sandbox, observability, and every channel — and exits 0 only when the config is ready to start. The provider-credentials check is static and read-only, flagging a keyless or expired-OAuth provider as `waiting` with a provider-specific hint (`pi-ai login` for OAuth providers, `OPENCODE_API_KEY` for OpenCode-Go); see [CLI reference → Provider credentials](/observability/cli-reference/#provider-credentials):
+`mono-agent validate` prints a per-section report — **secret placement**, runtime, **provider credentials** (Pi auth-store/API-key presence and OAuth token expiry for every referenced model), context, memory, tools, sandbox, observability, and every channel. It exits 0 when the config is structurally valid, but `waiting` credentials are reported as needing attention before start rather than ready. The provider-credentials check is static and read-only, flagging a keyless or expired-OAuth provider as `waiting` with a provider-specific hint (`mono-agent auth login <provider>` for OAuth providers, `OPENCODE_API_KEY` for OpenCode-Go); see [CLI reference → Provider credentials](/observability/cli-reference/#provider-credentials):
 
 ```bash
 mono-agent validate
