@@ -630,8 +630,13 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           error: errorMessage(error),
         });
       }
-      const consumed = await options.pendingAsks?.tryResolve(`telegram:${String(chatId)}`, label, "callback");
+      const conversationId = `telegram:${String(chatId)}`;
+      const consumed = await options.pendingAsks?.tryResolve(conversationId, label, "callback");
       if (consumed === true) {
+        return;
+      }
+      if (await options.pendingAsks?.hasPending?.(conversationId)) {
+        await ctx.reply(messages.busyText);
         return;
       }
       const question = ctx.callbackQuery.message?.text;

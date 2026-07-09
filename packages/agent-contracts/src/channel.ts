@@ -146,7 +146,7 @@ export interface ChannelInteractionHub {
     answerKind?: ChannelInteractionAnswerKind,
   ): boolean | Promise<boolean>;
   /** True when the conversation currently has an unresolved ask. */
-  hasPendingAsk(conversationId: string): boolean | Promise<boolean>;
+  hasPendingAsk?(conversationId: string): boolean | Promise<boolean>;
   /** Fail the conversation's pending ask (user cancelled). */
   cancelAsks(conversationId: string): void;
 }

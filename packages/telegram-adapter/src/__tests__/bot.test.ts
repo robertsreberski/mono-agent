@@ -565,6 +565,39 @@ describe("createTelegramBot", () => {
     expect(requests[0]?.text).toContain("Proceed?");
   });
 
+  it("replies busy instead of re-running a callback tap while another ask is pending", async () => {
+    const requests: AgentRequest[] = [];
+    const tryResolve = vi.fn(
+      async (_conversationId: string, _answer: string, _answerKind?: "text" | "callback") => false,
+    );
+    const hasPending = vi.fn(async () => true);
+    const responder: AgentResponder = {
+      async respond(request) {
+        requests.push(request as AgentRequest);
+        return { text: "Proceeding" };
+      },
+    };
+    const { bot, calls } = buildTestBot({
+      responder,
+      callbacksEnabled: true,
+      pendingAsks: { tryResolve, hasPending, cancel: vi.fn() },
+      stream: { editDebounceMs: 0 },
+    });
+
+    await bot.handleUpdate(callbackUpdate({ data: "ask:0", questionText: "Proceed?" }));
+
+    expect(tryResolve).toHaveBeenCalledWith("telegram:42", "Approve", "callback");
+    expect(hasPending).toHaveBeenCalledWith("telegram:42");
+    expect(requests).toHaveLength(0);
+    expect(
+      calls.some(
+        (call) =>
+          call.method === "sendMessage" &&
+          call.payload.text === "I am still working on your previous message. Use /cancel to stop it.",
+      ),
+    ).toBe(true);
+  });
+
   it("de-dupes a second tap on the same question", async () => {
     let runCount = 0;
     const responder = responderFrom(async () => {

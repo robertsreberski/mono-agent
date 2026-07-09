@@ -871,6 +871,38 @@ describe("startMonoAgentApp", () => {
     await running.stop();
   });
 
+  it("treats an interaction hub without pending-ask introspection as no pending ask", async () => {
+    let captured: TelegramAdapterStartOptions | undefined;
+    const driver = createTelegramChannelDriver({
+      startAdapter: async (options) => {
+        captured = options;
+        return {
+          stop: async () => undefined,
+          notify: async () => ({ delivered: true }),
+          post: async () => undefined,
+          postStatus: async () => undefined,
+        };
+      },
+    });
+    const hub: ChannelInteractionHub = {
+      registerSink: vi.fn(),
+      tryResolveAsk: vi.fn(() => false),
+      cancelAsks: vi.fn(),
+    };
+
+    const running = await driver.start({
+      config: { enabled: true, botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
+      coreConfig: baseConfig() as never,
+      responder: { respond: async () => ({ text: "" }) },
+      cwd: dir,
+      onFailure: vi.fn(),
+      interaction: hub,
+    });
+
+    expect(await captured?.pendingAsks?.hasPending?.("telegram:42")).toBe(false);
+    await running.stop();
+  });
+
   it("routes a Telegram poll crash to onDegraded (not the fatal onFailure) and recovery to onRecovered", async () => {
     const onFailure = vi.fn();
     const onDegraded = vi.fn();

@@ -1311,7 +1311,7 @@ function telegramStartOptions(
               answer: string,
               answerKind?: ChannelInteractionAnswerKind,
             ) => input.interaction!.tryResolveAsk(conversationId, answer, answerKind),
-            hasPending: (conversationId: string) => input.interaction!.hasPendingAsk(conversationId),
+            hasPending: (conversationId: string) => input.interaction!.hasPendingAsk?.(conversationId) ?? false,
             cancel: (conversationId: string) => {
               input.interaction!.cancelAsks(conversationId);
             },
