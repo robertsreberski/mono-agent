@@ -1,6 +1,5 @@
 const INLINE_CODE_PATTERN = /`[^`\n]+`/gu;
 const FENCED_CODE_PATTERN = /```[\s\S]*?```/gu;
-const MARKDOWN_LINK_PATTERN = /(?<!!)\[([^\]\n]+)\]\(([^)\s]+)\)/gu;
 const SLACK_LINK_PATTERN = /<((?:https?:\/\/|mailto:)[^>|]+)(?:\|([^>\n]+))?>/gu;
 const TOKEN_PREFIX = "\uE000";
 const TOKEN_SUFFIX = "\uE001";
@@ -13,7 +12,7 @@ export function formatMarkdownForSlack(text: string): string {
 
 export function normalizeSlackMarkdownToMarkdown(text: string): string {
   return replaceProtectedSegments(
-    text.replace(/\u00a0/gu, " "),
+    text,
     FENCED_CODE_PATTERN,
     normalizeSlackMarkdownChunk,
   ).trim();
@@ -62,9 +61,9 @@ function normalizeSlackMarkdownInline(text: string): string {
 
 function formatMarkdownPlainInline(text: string): string {
   const tokenStore = createTokenStore();
-  const withLinkTokens = text.replace(
-    MARKDOWN_LINK_PATTERN,
-    (_match, rawLabel: string, rawUrl: string) => tokenStore.tokenFor(slackLink(rawUrl, rawLabel)),
+  const withLinkTokens = replaceMarkdownLinks(
+    text,
+    (rawUrl, rawLabel) => tokenStore.tokenFor(slackLink(rawUrl, rawLabel)),
   );
 
   const formatted = withLinkTokens
@@ -78,7 +77,7 @@ function formatMarkdownPlainInline(text: string): string {
 
 function normalizeSlackPlainInline(text: string): string {
   const tokenStore = createTokenStore();
-  const withLinkTokens = text.replace(
+  const withLinkTokens = text.replace(/\u00a0/gu, " ").replace(
     SLACK_LINK_PATTERN,
     (_match, rawUrl: string, rawLabel: string | undefined) => {
       const url = decodeSlackText(rawUrl);
@@ -97,6 +96,92 @@ function normalizeSlackPlainInline(text: string): string {
   return tokenStore.restore(decodeSlackText(formatted));
 }
 
+function replaceMarkdownLinks(
+  text: string,
+  replaceLink: (rawUrl: string, rawLabel: string) => string,
+): string {
+  let formatted = "";
+  let cursor = 0;
+
+  while (cursor < text.length) {
+    const linkStart = text.indexOf("[", cursor);
+    if (linkStart === -1) {
+      return `${formatted}${text.slice(cursor)}`;
+    }
+
+    const link = parseMarkdownLink(text, linkStart);
+    if (link === undefined) {
+      formatted += text.slice(cursor, linkStart + 1);
+      cursor = linkStart + 1;
+      continue;
+    }
+
+    formatted += `${text.slice(cursor, linkStart)}${replaceLink(link.url, link.label)}`;
+    cursor = link.end;
+  }
+
+  return formatted;
+}
+
+function parseMarkdownLink(
+  text: string,
+  linkStart: number,
+): { readonly label: string; readonly url: string; readonly end: number } | undefined {
+  if (text[linkStart - 1] === "!") {
+    return undefined;
+  }
+
+  const labelEnd = text.indexOf("]", linkStart + 1);
+  if (labelEnd === -1 || labelEnd === linkStart + 1 || text[labelEnd + 1] !== "(") {
+    return undefined;
+  }
+
+  const label = text.slice(linkStart + 1, labelEnd);
+  if (label.includes("\n")) {
+    return undefined;
+  }
+
+  const urlStart = labelEnd + 2;
+  let parenthesisDepth = 0;
+  let url = "";
+  for (let index = urlStart; index < text.length; index += 1) {
+    const character = text[index] ?? "";
+    if (/\s/u.test(character)) {
+      return undefined;
+    }
+    if (character === "\\") {
+      const escapedCharacter = text[index + 1];
+      if (escapedCharacter === "(" || escapedCharacter === ")" || escapedCharacter === "\\") {
+        url += escapedCharacter;
+        index += 1;
+        continue;
+      }
+      url += character;
+      continue;
+    }
+    if (character === "(") {
+      parenthesisDepth += 1;
+      url += character;
+      continue;
+    }
+    if (character !== ")") {
+      url += character;
+      continue;
+    }
+    if (parenthesisDepth > 0) {
+      parenthesisDepth -= 1;
+      url += character;
+      continue;
+    }
+    if (index === urlStart) {
+      return undefined;
+    }
+    return { label, url, end: index + 1 };
+  }
+
+  return undefined;
+}
+
 function replaceProtectedSegments(
   text: string,
   pattern: RegExp,
@@ -113,7 +198,7 @@ function slackLink(rawUrl: string, rawLabel: string): string {
 
 function markdownLink(rawUrl: string, rawLabel: string): string {
   const label = rawLabel.replace(/\\/gu, "\\\\").replace(/\]/gu, "\\]");
-  const url = rawUrl.replace(/\)/gu, "%29");
+  const url = rawUrl.replace(/\(/gu, "%28").replace(/\)/gu, "%29");
   return `[${label}](${url})`;
 }
 
@@ -166,9 +251,9 @@ function trimSlackBoldDelimiters(text: string): string {
 }
 
 function normalizeSlackBulletLine(line: string): string {
-  const bullet = /^([ \t]*)([\u2022\u25e6])\s*(.*)$/u.exec(line);
+  const bullet = /^([ \t\u00a0]*)([\u2022\u25e6])\s*(.*)$/u.exec(line);
   if (bullet === null) {
     return line;
   }
-  return `${bullet[1] ?? ""}- ${bullet[3] ?? ""}`;
+  return `${(bullet[1] ?? "").replace(/\u00a0/gu, " ")}- ${bullet[3] ?? ""}`;
 }

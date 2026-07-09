@@ -410,6 +410,36 @@ describe("adapter send MCP tools", () => {
     ]);
   });
 
+  it("preserves parenthesized Markdown link destinations in SlackSendMessage", async () => {
+    const slackCalls: SlackChatPostMessageParams[] = [];
+    const server = await createAdapterSendToolsServer(bothAdaptersSettings(), {
+      slack: {
+        async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
+          slackCalls.push(params);
+          return { ok: true, channel: params.channel, ts: "171.123" };
+        },
+      },
+    });
+
+    await withMcpClient(server, async (client) => {
+      await client.callTool({
+        name: "SlackSendMessage",
+        arguments: {
+          channel: "C1",
+          text: "[Wikipedia](https://en.wikipedia.org/wiki/Parenthesis_(rhetoric))",
+        },
+      });
+    });
+
+    expect(slackCalls).toEqual([
+      {
+        channel: "C1",
+        text: "<https://en.wikipedia.org/wiki/Parenthesis_(rhetoric)|Wikipedia>",
+        mrkdwn: true,
+      },
+    ]);
+  });
+
   it("TelegramAskButtons posts the question with an inline keyboard and waits for the tapped label", async () => {
     const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, askTimeoutMs: 5_000 });
     bridge.registerSink("telegram", { postQuestion: async () => {}, postStatus: async () => {} });

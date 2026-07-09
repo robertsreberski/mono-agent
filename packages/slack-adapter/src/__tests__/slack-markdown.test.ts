@@ -20,6 +20,24 @@ describe("formatMarkdownForSlack", () => {
     );
   });
 
+  it("preserves balanced parentheses in Markdown link destinations", () => {
+    expect(
+      formatMarkdownForSlack("Read [Wikipedia](https://en.wikipedia.org/wiki/Parenthesis_(rhetoric))"),
+    ).toBe("Read <https://en.wikipedia.org/wiki/Parenthesis_(rhetoric)|Wikipedia>");
+    expect(
+      formatMarkdownForSlack("Read [nested](https://example.com/a_(b_(c)))"),
+    ).toBe("Read <https://example.com/a_(b_(c))|nested>");
+    expect(
+      formatMarkdownForSlack("Read [escaped](https://example.com/a\\))"),
+    ).toBe("Read <https://example.com/a)|escaped>");
+    expect(
+      formatMarkdownForSlack("Read [escaped](https://example.com/a\\(b)"),
+    ).toBe("Read <https://example.com/a(b|escaped>");
+    expect(
+      formatMarkdownForSlack(String.raw`Read [escaped](https://example.com/a\\\(b)`),
+    ).toBe(String.raw`Read <https://example.com/a\(b|escaped>`);
+  });
+
   it("formats headings while preserving list and quote shape", () => {
     expect(
       formatMarkdownForSlack("## Summary\n- first item\n> quoted **text**"),
@@ -75,6 +93,23 @@ describe("normalizeSlackMarkdownToMarkdown", () => {
 
     expect(normalizeSlackMarkdownToMarkdown(slack)).toBe(
       "Use `<https://example.com|literal>`\n```txt\n*literal* <raw>\n```\n**outside**",
+    );
+  });
+
+  it("emits valid Markdown destinations for Slack links with parentheses", () => {
+    expect(
+      normalizeSlackMarkdownToMarkdown(
+        "<https://en.wikipedia.org/wiki/Parenthesis_(rhetoric)|Wikipedia>",
+      ),
+    ).toBe("[Wikipedia](https://en.wikipedia.org/wiki/Parenthesis_%28rhetoric%29)");
+  });
+
+  it("normalizes nonbreaking spaces outside, but not inside, protected code", () => {
+    const nonbreakingSpace = "\u00a0";
+    const slack = `outside${nonbreakingSpace}text \`inline${nonbreakingSpace}code\`\n\`\`\`txt\nfenced${nonbreakingSpace}code\n\`\`\``;
+
+    expect(normalizeSlackMarkdownToMarkdown(slack)).toBe(
+      `outside text \`inline${nonbreakingSpace}code\`\n\`\`\`txt\nfenced${nonbreakingSpace}code\n\`\`\``,
     );
   });
 });
