@@ -21,6 +21,28 @@ export interface ToolCall {
   tr?: boolean;
   ok?: boolean;
   durMs?: number;
+  fileChange?: ToolFileChange;
+}
+
+export interface ToolFileChange {
+  status: string;
+  files: number;
+  addedLines?: number;
+  removedLines?: number;
+  changedLines?: number;
+  unavailableCount?: number;
+  changes: {
+    path?: string;
+    kind?: string;
+    lineStats?: {
+      beforeLines?: number;
+      afterLines?: number;
+      addedLines?: number;
+      removedLines?: number;
+      changedLines?: number;
+      unavailableReason?: string;
+    };
+  }[];
 }
 
 export interface Usage {
@@ -104,6 +126,21 @@ export type SessionStep =
       ts: string;
       type: "runtime_telemetry";
       kind: string;
+    }
+  | {
+      k: "runtime";
+      ts: string;
+      type: "file_change";
+      kind: "file_change";
+      status: string;
+      ok: boolean;
+      paths: string[];
+      files: number;
+      addedLines?: number;
+      removedLines?: number;
+      changedLines?: number;
+      unavailableCount?: number;
+      error?: string;
     }
   | {
       k: "result";

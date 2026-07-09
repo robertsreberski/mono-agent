@@ -1,6 +1,16 @@
 import { describe, expect, test } from "vitest";
 
-import { boundaryStepLabel, boundaryStepMeta, ctxSummaryLine, runtimeStepLabel, runtimeStepMeta, showTriggerRecall, timelineEmptyMessage } from "./DetailView";
+import {
+  boundaryStepLabel,
+  boundaryStepMeta,
+  ctxSummaryLine,
+  fileChangePathsMeta,
+  runtimeStepLabel,
+  runtimeStepMeta,
+  showTriggerRecall,
+  timelineEmptyMessage,
+  toolFileChangeMeta,
+} from "./DetailView";
 
 describe("timelineEmptyMessage", () => {
   test("shows a live waiting state for running runs with no timeline items", () => {
@@ -111,5 +121,69 @@ describe("runtime timeline helpers", () => {
 
     expect(runtimeStepLabel(step)).toBe("failover started");
     expect(runtimeStepMeta(step)).toBe("from gpt-5.5 | to kimi | attempt 2 | 1.5s");
+  });
+
+  test("marks failed file changes and keeps their metadata compact", () => {
+    const step = {
+      k: "runtime",
+      ts: "2026-07-06T10:00:00.000Z",
+      type: "file_change",
+      kind: "file_change",
+      status: "failed",
+      ok: false,
+      paths: ["notes.txt"] as string[],
+      files: 1,
+      unavailableCount: 1,
+    } as const;
+
+    expect(runtimeStepLabel(step)).toBe("file change failed");
+    expect(runtimeStepMeta(step)).toBe("failed | 1 file | 1 unavailable | notes.txt");
+  });
+
+  test("limits rendered file-change paths", () => {
+    const paths = [
+      `src/${"very-long-path-segment-".repeat(20)}notes.ts`,
+      "src/two.ts",
+      "src/three.ts",
+      "src/four.ts",
+      "src/five.ts",
+      "src/six.ts",
+      "src/seven.ts",
+    ];
+
+    const meta = fileChangePathsMeta(paths);
+
+    expect(meta).toBeDefined();
+    expect(meta!.length).toBeLessThanOrEqual(240);
+    expect(meta).toContain("+2 more");
+    expect(meta).not.toContain("src/six.ts");
+  });
+});
+
+describe("toolFileChangeMeta", () => {
+  test("formats Pi Write file-change line counts", () => {
+    expect(toolFileChangeMeta("Write", {
+      status: "completed",
+      files: 1,
+      addedLines: 12,
+      removedLines: 3,
+      changedLines: 15,
+      unavailableCount: 0,
+      changes: [],
+    })).toBe("file change +12 -3 · 15 changed");
+  });
+
+  test("returns n/a for Write calls without usable stats", () => {
+    expect(toolFileChangeMeta("Write", undefined)).toBe("file change n/a");
+    expect(toolFileChangeMeta("Write", {
+      status: "completed",
+      files: 1,
+      unavailableCount: 1,
+      changes: [],
+    })).toBe("file change n/a");
+  });
+
+  test("omits the row for non-Write tools", () => {
+    expect(toolFileChangeMeta("Read", undefined)).toBeUndefined();
   });
 });

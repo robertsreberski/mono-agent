@@ -1,13 +1,5 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
-import {
-  createFileEditToolResultEvent,
-  createFileEditToolUseEvent,
-  fileChangeSummary,
-  readFileChangeSnapshot,
-  statsForCompletedChange,
-} from "../file-change-stats.js";
 import { formatLiveInputGuidance } from "../live-input-prompt.js";
 import { estimateCost } from "../cost.js";
 import { modelWithContextWindow } from "../runtime/context-windows.js";
@@ -209,8 +201,6 @@ function structuredOutputRejectionFromEvent(event) {
   return /structured output|required schema|did not match schema|schema violation/i.test(result) ? result : null;
 }
 
-const CLAUDE_FILE_EDIT_MATCHER = "Edit|Write|NotebookEdit";
-
 function mergeHookMatchers(existing = {}, additions = {}) {
   const merged = {};
   for (const [name, groups] of Object.entries(existing || {})) {
@@ -291,122 +281,7 @@ export function toolPayloadLimit(options) {
   return { bytes: MAX_TOOL_RESULT_BYTES, usedSettings: false };
 }
 
-function claudeEditPath(toolName, toolInput) {
-  const input = objectInput(toolInput);
-  if (toolName === "NotebookEdit") return input.notebook_path || input.file_path || "";
-  return input.file_path || "";
-}
-
-function claudeEditKind(toolName, before) {
-  if (toolName === "Write" && before && !before.exists) return "add";
-  return "update";
-}
-
-function fileEditStateKey(input, toolUseID, path) {
-  return toolUseID || input?.tool_use_id || input?.toolUseID || `${input?.tool_name || "file_edit"}:${path}`;
-}
-
-/**
- * @param {any} change
- * @param {{status?: any, before?: any, after?: any, error?: any}} [options]
- */
-function fileEditPayload(change, { status, before, after, error } = {}) {
-  const lineStats = statsForCompletedChange(change, before, after);
-  const completedChange = lineStats ? { ...change, line_stats: lineStats } : change;
-  const summary = fileChangeSummary([completedChange]);
-  return {
-    changes: [completedChange],
-    status,
-    ...(summary ? { summary } : {}),
-    ...(error ? { error } : {}),
-  };
-}
-
-function createClaudeFileEditHooks({ cwd, emitEvent }) {
-  const edits = new Map();
-  const runCwd = cwd || process.cwd();
-
-  function createState(input, toolUseID, { readBefore = true } = {}) {
-    const toolName = input?.tool_name;
-    const path = claudeEditPath(toolName, input?.tool_input);
-    if (!path) return null;
-    const resolvedPath = resolve(runCwd, path);
-    const key = fileEditStateKey(input, toolUseID, resolvedPath);
-    const before = readBefore ? readFileChangeSnapshot(resolvedPath) : null;
-    return {
-      key,
-      id: `file_edit:${key}`,
-      path: resolvedPath,
-      change: { path: resolvedPath, kind: claudeEditKind(toolName, before) },
-      before,
-      started: false,
-    };
-  }
-
-  function emitStart(state) {
-    if (!state || state.started) return;
-    emitEvent(createFileEditToolUseEvent(state.id, {
-      changes: [state.change],
-      status: "in_progress",
-    }));
-    state.started = true;
-  }
-
-  /**
-   * @param {any} input
-   * @param {any} toolUseID
-   * @param {{status?: any, error?: any}} [options]
-   */
-  function complete(input, toolUseID, { status, error } = {}) {
-    const directKey = toolUseID || input?.tool_use_id || input?.toolUseID;
-    const fallback = createState(input, toolUseID, { readBefore: false });
-    const state = (directKey && edits.get(directKey)) || (fallback?.key && edits.get(fallback.key)) || fallback;
-    if (!state) return;
-    emitStart(state);
-    const after = readFileChangeSnapshot(state.path);
-    const payload = fileEditPayload(state.change, {
-      status,
-      before: state.before,
-      after,
-      error,
-    });
-    emitEvent(createFileEditToolResultEvent(state.id, payload, { isError: status === "failed" }));
-    edits.delete(state.key);
-  }
-
-  return {
-    PreToolUse: [{
-      matcher: CLAUDE_FILE_EDIT_MATCHER,
-      hooks: [async (input, toolUseID) => {
-        const state = createState(input, toolUseID);
-        if (!state) return {};
-        edits.set(state.key, state);
-        emitStart(state);
-        return {};
-      }],
-    }],
-    PostToolUse: [{
-      matcher: CLAUDE_FILE_EDIT_MATCHER,
-      hooks: [async (input, toolUseID) => {
-        complete(input, toolUseID, { status: "completed" });
-        return {};
-      }],
-    }],
-    PostToolUseFailure: [{
-      matcher: CLAUDE_FILE_EDIT_MATCHER,
-      hooks: [async (input, toolUseID) => {
-        complete(input, toolUseID, {
-          status: "failed",
-          error: stringifyError(input?.error) || "tool failed",
-        });
-        return {};
-      }],
-    }],
-  };
-}
-
 function createClaudeRuntimeHooks({
-  cwd,
   emitEvent,
   persistArtifact,
   qaOutputDir,
@@ -414,7 +289,7 @@ function createClaudeRuntimeHooks({
   onToolUse,
   onToolResult,
 }) {
-  return mergeHookMatchers(createClaudeFileEditHooks({ cwd, emitEvent }), {
+  return {
     PreToolUse: [{
       matcher: "*",
       hooks: [async (input) => {
@@ -469,7 +344,7 @@ function createClaudeRuntimeHooks({
         return {};
       }],
     }],
-  });
+  };
 }
 
 function promptStringFromMessages(messages) {
@@ -607,7 +482,6 @@ export async function generateClaudeResponse(systemPrompt, options) {
     ...(approvalManager ? { canUseTool: createClaudeCanUseTool(approvalManager, model.model) } : {}),
     ...(nativeAgents ? { agents: nativeAgents } : {}),
     hooks: mergeHookMatchers(hooks, createClaudeRuntimeHooks({
-      cwd,
       emitEvent,
       persistArtifact,
       qaOutputDir,

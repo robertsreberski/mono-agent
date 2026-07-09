@@ -234,6 +234,30 @@ function costAttributes(cost: unknown, usage: unknown): SpanAttributes {
   return usd === undefined ? {} : { "mono.agent.cost_usd": usd };
 }
 
+function fileChangeExportAttributes(event: RuntimeEventLike, ctx: RunExportContext): SpanAttributes {
+  if (event.type !== "file_change") {
+    return {};
+  }
+  const summary = isRecord(event.summary) ? event.summary : undefined;
+  const changes = Array.isArray(event.changes) ? event.changes.filter(isRecord) : [];
+  const paths = changes.map((change) => stringField(change, "path")).filter((path): path is string => path !== undefined);
+  const status = stringField(event, "status") ?? (event.is_error === true || event.error !== undefined ? "failed" : undefined);
+  const files = finiteNumber(summary?.files) ?? (changes.length > 0 ? changes.length : undefined);
+  const addedLines = finiteNumber(summary?.added_lines);
+  const removedLines = finiteNumber(summary?.removed_lines);
+  const changedLines = finiteNumber(summary?.changed_lines);
+  const unavailableCount = finiteNumber(summary?.unavailable_count);
+  return {
+    ...(status === undefined ? {} : { "mono.agent.file_change.status": status }),
+    ...(files === undefined ? {} : { "mono.agent.file_change.files": files }),
+    ...(addedLines === undefined ? {} : { "mono.agent.file_change.added_lines": addedLines }),
+    ...(removedLines === undefined ? {} : { "mono.agent.file_change.removed_lines": removedLines }),
+    ...(changedLines === undefined ? {} : { "mono.agent.file_change.changed_lines": changedLines }),
+    ...(unavailableCount === undefined ? {} : { "mono.agent.file_change.unavailable_count": unavailableCount }),
+    ...(ctx.includeSensitiveData && paths.length > 0 ? { "mono.agent.file_change.paths": paths.join(", ") } : {}),
+  };
+}
+
 /**
  * Build a per-event child span mapping. Category/label/summary are derived via
  * {@link buildEventDescriptors} (the single source of truth shared with the
@@ -265,6 +289,7 @@ export function buildEventSpanAttributes(
     ...(ctx.includeSensitiveData ? { "mono.agent.event.summary": summary } : {}),
     "mono.agent.run_id": ctx.runId,
     ...(ctx.sourceId === undefined ? {} : { "mono.agent.source_id": ctx.sourceId }),
+    ...fileChangeExportAttributes(event, ctx),
   };
   return {
     name: label,
@@ -306,6 +331,44 @@ function blockText(block: Record<string, unknown>): string {
   return asString(block.text) ?? asString(block.thinking) ?? asString(block.content) ?? "";
 }
 
+function toolResultFileChange(block: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (isRecord(block.file_change)) {
+    return block.file_change;
+  }
+  const rawResult = isRecord(block.raw_result) ? block.raw_result : undefined;
+  const details = isRecord(rawResult?.details) ? rawResult.details : undefined;
+  return isRecord(details?.file_change) ? details.file_change : undefined;
+}
+
+function toolFileChangeAttributes(tool: ToolDraft, ctx: RunExportContext): SpanAttributes {
+  if (tool.name !== "Write") {
+    return {};
+  }
+  const fileChange = tool.fileChange;
+  if (fileChange === undefined) {
+    return { "mono.agent.tool.file_change.available": false };
+  }
+  const summary = isRecord(fileChange.summary) ? fileChange.summary : undefined;
+  const changes = Array.isArray(fileChange.changes) ? fileChange.changes.filter(isRecord) : [];
+  const paths = changes.map((change) => stringField(change, "path")).filter((path): path is string => path !== undefined);
+  const status = stringField(fileChange, "status") ?? "completed";
+  const files = finiteNumber(summary?.files) ?? changes.length;
+  const addedLines = finiteNumber(summary?.added_lines);
+  const removedLines = finiteNumber(summary?.removed_lines);
+  const changedLines = finiteNumber(summary?.changed_lines);
+  const unavailableCount = finiteNumber(summary?.unavailable_count);
+  return {
+    "mono.agent.tool.file_change.available": true,
+    "mono.agent.tool.file_change.status": status,
+    "mono.agent.tool.file_change.files": files,
+    ...(addedLines === undefined ? {} : { "mono.agent.tool.file_change.added_lines": addedLines }),
+    ...(removedLines === undefined ? {} : { "mono.agent.tool.file_change.removed_lines": removedLines }),
+    ...(changedLines === undefined ? {} : { "mono.agent.tool.file_change.changed_lines": changedLines }),
+    ...(unavailableCount === undefined ? {} : { "mono.agent.tool.file_change.unavailable_count": unavailableCount }),
+    ...(ctx.includeSensitiveData && paths.length > 0 ? { "mono.agent.tool.file_change.paths": paths.join(", ") } : {}),
+  };
+}
+
 interface SpanDraft {
   readonly orderIndex: number;
   readonly mapping: EventSpanMapping;
@@ -319,6 +382,7 @@ interface ToolDraft {
   executionMs?: number;
   isError?: boolean;
   toolUseId: string;
+  fileChange?: Record<string, unknown>;
 }
 
 /**
@@ -399,6 +463,7 @@ export function buildEventSpans(
           "mono.agent.tool.use_id": tool.toolUseId,
           ...(tool.executionMs === undefined ? {} : { "mono.agent.tool.execution_ms": tool.executionMs }),
           ...(tool.isError === undefined ? {} : { "mono.agent.tool.is_error": tool.isError }),
+          ...toolFileChangeAttributes(tool, ctx),
           "tool.name": tool.name,
           ...openInferenceAttrs("tool", inputValue, outputValue, ctx.includeSensitiveData ? MIME_JSON : MIME_TEXT),
         },
@@ -454,6 +519,10 @@ export function buildEventSpans(
           const tool = id === undefined ? undefined : tools.get(id);
           if (tool !== undefined) {
             tool.output = block.content;
+            const fileChange = toolResultFileChange(block);
+            if (fileChange !== undefined) {
+              tool.fileChange = fileChange;
+            }
             emitTool(tool);
             tools.delete(id!);
             handled = true;
@@ -475,6 +544,7 @@ export function buildEventSpans(
         category,
         attributes: {
           ...baseAttrs(ctx, index, type, category, label),
+          ...fileChangeExportAttributes(event, ctx),
           ...openInferenceAttrs(category, label, ctx.includeSensitiveData ? summary : label, MIME_TEXT),
           ...(ctx.includeSensitiveData ? { "mono.agent.event.summary": summary } : {}),
         },
