@@ -41,9 +41,13 @@ describe("event-classify exported helpers", () => {
       category: "runtime",
       label: "file change",
     });
-    expect(buildEventDescriptors({ type: "file_change", status: "failed", is_error: true })).toMatchObject({
+    expect(buildEventDescriptors({ type: "File_Change", status: "failed" })).toMatchObject({
       category: "error",
       label: "file change failed",
+    });
+    expect(buildEventDescriptors({ type: "fileChange", status: "completed" })).toMatchObject({
+      category: "runtime",
+      label: "file change",
     });
   });
 

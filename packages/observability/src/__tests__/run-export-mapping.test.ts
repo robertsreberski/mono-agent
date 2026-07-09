@@ -269,7 +269,6 @@ describe("buildEventSpanAttributes", () => {
       {
         type: "file_change",
         status: "failed",
-        is_error: true,
         changes: [{ path: "notes.txt", kind: "update" }],
         summary: { files: 1, added_lines: 0, removed_lines: 0, changed_lines: 0, unavailable_count: 1 },
       },

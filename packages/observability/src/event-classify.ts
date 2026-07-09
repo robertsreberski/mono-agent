@@ -23,8 +23,9 @@ export function classifyRecordedRunEvent(event: unknown): RecordedRunEventCatego
   if (!isRecord(event)) {
     return "runtime";
   }
-  const type = stringField(event, "type")?.toLowerCase() ?? "";
-  if (type === "file_change") {
+  const rawType = stringField(event, "type");
+  const type = rawType?.toLowerCase() ?? "";
+  if (isFileChangeType(rawType)) {
     return fileChangeFailed(event) ? "error" : "runtime";
   }
   if (
@@ -70,7 +71,7 @@ export function classifyRecordedRunEvent(event: unknown): RecordedRunEventCatego
 }
 
 export function eventLabel(record: Record<string, unknown>, category: RecordedRunEventCategory, type: string | undefined): string {
-  if (type === "file_change") {
+  if (isFileChangeType(type)) {
     return category === "error" ? "file change failed" : "file change";
   }
   if (category === "tool") {
@@ -106,6 +107,10 @@ export function eventLabel(record: Record<string, unknown>, category: RecordedRu
     return "Turn context";
   }
   return type ?? "Runtime event";
+}
+
+function isFileChangeType(type: string | undefined): boolean {
+  return type?.replace(/[-_\s]/gu, "").toLowerCase() === "filechange";
 }
 
 function fileChangeFailed(record: Record<string, unknown>): boolean {

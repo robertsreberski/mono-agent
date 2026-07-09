@@ -193,6 +193,44 @@ describe("mapRunToSession", () => {
     });
   });
 
+  it("marks provider-native file changes failed when status is failed without an error field", () => {
+    const summary: RunSummary = {
+      runId: "run-file-change-failed",
+      conversationId: "chat:file-change",
+      status: "succeeded",
+      startedAt: "2026-07-09T10:00:00.000Z",
+      durationMs: 1000,
+      eventCount: 1,
+      artifactPaths: [],
+    };
+    const events: RuntimeEventLike[] = [
+      {
+        type: "file_change",
+        id: "change-1",
+        status: "failed",
+        changes: [{ path: "notes.txt", kind: "update" }],
+        summary: { files: 1, unavailable_count: 1 },
+        timestamp: "2026-07-09T10:00:00.100Z",
+      },
+    ];
+
+    const session = mapRunToSession(summary, events, OPTS);
+
+    expect(session.toolCounts).toEqual({});
+    expect(session.totals.tcalls).toBe(0);
+    expect(runtimeSteps(session.steps)).toContainEqual({
+      k: "runtime",
+      ts: "2026-07-09T10:00:00.100Z",
+      type: "file_change",
+      kind: "file_change",
+      status: "failed",
+      ok: false,
+      paths: ["notes.txt"],
+      files: 1,
+      unavailableCount: 1,
+    });
+  });
+
   it("splits recalled memory, treats the NOTHING_TO_REPORT sentinel as silent, and marks a failed tool ok:false", () => {
     const { summary, events } = loadFixture("silent-recall");
     const session = mapRunToSession(summary, events, OPTS);

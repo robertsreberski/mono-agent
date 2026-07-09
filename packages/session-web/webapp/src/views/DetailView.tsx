@@ -25,6 +25,8 @@ interface Props {
 }
 
 const TOOL_PALETTE = ["#4FB6A6", "#6FA8DC", "#B18AE0", "#E8A24A", "#6FBF8E", "#E0955A", "#D98BB0"];
+const FILE_CHANGE_PATH_DISPLAY_LIMIT = 5;
+const FILE_CHANGE_PATH_META_MAX_CHARS = 240;
 
 interface CallVM {
   key: string;
@@ -177,7 +179,7 @@ export function runtimeStepMeta(step: Extract<SessionStep, { k: "runtime" }>): s
       step.changedLines === undefined ? undefined : `${step.changedLines} changed`,
       step.unavailableCount === undefined || step.unavailableCount === 0 ? undefined : `${step.unavailableCount} unavailable`,
     ].filter((part): part is string => part !== undefined && part.length > 0);
-    const paths = step.paths.length === 0 ? undefined : step.paths.join(", ");
+    const paths = fileChangePathsMeta(step.paths);
     const parts = [
       step.status,
       `${step.files} file${step.files === 1 ? "" : "s"}`,
@@ -188,6 +190,21 @@ export function runtimeStepMeta(step: Extract<SessionStep, { k: "runtime" }>): s
     return parts.join(" | ");
   }
   return step.type;
+}
+
+export function fileChangePathsMeta(paths: readonly string[]): string | undefined {
+  if (paths.length === 0) return undefined;
+  const visiblePaths = paths.slice(0, FILE_CHANGE_PATH_DISPLAY_LIMIT).join(", ");
+  const omitted = paths.length - FILE_CHANGE_PATH_DISPLAY_LIMIT;
+  const suffix = omitted > 0 ? `, +${omitted} more` : "";
+  const full = `${visiblePaths}${suffix}`;
+  if (full.length <= FILE_CHANGE_PATH_META_MAX_CHARS) return full;
+  const ellipsis = "...";
+  if (suffix.length > 0 && suffix.length + ellipsis.length < FILE_CHANGE_PATH_META_MAX_CHARS) {
+    const headMax = FILE_CHANGE_PATH_META_MAX_CHARS - suffix.length - ellipsis.length;
+    return `${visiblePaths.slice(0, headMax).trimEnd()}${ellipsis}${suffix}`;
+  }
+  return `${full.slice(0, FILE_CHANGE_PATH_META_MAX_CHARS - ellipsis.length).trimEnd()}${ellipsis}`;
 }
 
 export function toolFileChangeMeta(toolName: string, fileChange: ToolFileChange | undefined): string | undefined {

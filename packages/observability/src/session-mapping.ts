@@ -770,7 +770,8 @@ function runtimeStep(event: RuntimeEventLike, ts: string): Extract<SessionStep, 
     const paths = changes.map((change) => readString(change.path)).filter((path): path is string => path !== undefined);
     const summary = isRecord(event.summary) ? event.summary : undefined;
     const files = finiteNumber(summary?.files) ?? paths.length;
-    const isError = event.is_error === true || event.error !== undefined;
+    const status = readString(event.status);
+    const isError = fileChangeFailed(event, status);
     const error = readString(event.error);
     const addedLines = finiteNumber(summary?.added_lines);
     const removedLines = finiteNumber(summary?.removed_lines);
@@ -781,7 +782,7 @@ function runtimeStep(event: RuntimeEventLike, ts: string): Extract<SessionStep, 
       ts,
       type,
       kind: "file_change",
-      status: readString(event.status) ?? (isError ? "failed" : "completed"),
+      status: status ?? (isError ? "failed" : "completed"),
       ok: !isError,
       paths,
       files,
@@ -793,6 +794,14 @@ function runtimeStep(event: RuntimeEventLike, ts: string): Extract<SessionStep, 
     };
   }
   return undefined;
+}
+
+function fileChangeFailed(event: RuntimeEventLike, status: string | undefined): boolean {
+  if (event.is_error === true || event.error !== undefined) {
+    return true;
+  }
+  const normalized = status?.toLowerCase();
+  return normalized === "failed" || normalized === "failure" || normalized === "error" || normalized === "errored";
 }
 
 /** Split userInput into the trigger prompt (`instr`) and the recalled-memory tail. */
