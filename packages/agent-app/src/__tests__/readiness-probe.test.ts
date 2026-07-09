@@ -50,7 +50,6 @@ describe("runReadinessProbe", () => {
       PATH: "/usr/bin:/bin",
       PROVIDER_SECRET: "selected-in-memory-secret",
     });
-
     await expect(runReadinessProbe({
       plan,
       hostEnv,
@@ -60,7 +59,7 @@ describe("runReadinessProbe", () => {
         expect(config.runtime.fallbackModels).toBeUndefined();
         expect(config.memory).toBeUndefined();
         expect(config.runtime.session).toMatchObject({ mode: "continuous" });
-        expect(config.providers.piNative?.piSessionsRoot).toBeUndefined();
+        expect(config.providers?.piNative?.piSessionsRoot).toBeUndefined();
         expect(options.sessionKeepAlive).toBe(false);
         return { text: "ready" };
       },
