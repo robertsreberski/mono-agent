@@ -584,7 +584,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
 
 function exampleFor(id: string): SettingsJsonValue {
   const examples: Record<string, SettingsJsonValue> = {
-    "runtime.model": "claude:claude-sonnet-4-6",
+    "runtime.model": "pi:openai-codex:gpt-5.5",
     "runtime.fallbackModels": ["pi:ollama:gemma4:31b"],
     "runtime.effort": "medium",
     "runtime.permissionMode": "default",
@@ -594,7 +594,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "memory.embeddings.provider": "ollama",
     "memory.embeddings.model": "nomic-embed-text",
     "memory.llm.provider": "agent-host",
-    "memory.llm.model": "claude:claude-sonnet-4-6",
+    "memory.llm.model": "pi:openai-codex:gpt-5.5",
     "sandbox.mode": "native",
     "traceability.sourceId": "my-agent",
     "traceability.sourceLabel": "My Agent",

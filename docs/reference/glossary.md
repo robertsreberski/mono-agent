@@ -55,8 +55,8 @@ The retry layer that, on a fallback-eligible provider failure (including provide
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6",
-    "fallbackModels": ["pi:openai:gpt-5.5", "codex:gpt-5.5"]
+    "model": "pi:openai-codex:gpt-5.5",
+    "fallbackModels": ["pi:opencode-go:kimi-k2.6", "codex:gpt-5.5"]
   }
 }
 ```
@@ -69,7 +69,7 @@ The execution engine (`@mono-agent/agent-harness`) that runs a single turn again
 
 ## Model reference
 
-The string that names a backend and model together, in the form `backend:model` (or `backend:provider:model` for pi). Examples: `claude:claude-sonnet-4-6`, `codex:gpt-5.5`, `pi:openai:gpt-5.5`. Set via `runtime.model` (`MONO_AGENT_MODEL`). See [Backends](/runtime/backends/).
+The string that names a backend and model together, in the form `backend:model` (or `backend:provider:model` for pi). Examples: `pi:openai-codex:gpt-5.5`, `pi:opencode-go:kimi-k2.6`, `codex:gpt-5.5`. Set via `runtime.model` (`MONO_AGENT_MODEL`). See [Backends](/runtime/backends/).
 
 ## OpenInference
 

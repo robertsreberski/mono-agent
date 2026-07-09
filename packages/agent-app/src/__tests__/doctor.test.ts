@@ -1408,6 +1408,39 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(report.ok).toBe(true);
   });
 
+  it("passes when OpenCode-Go API key credentials are present in the Pi auth store", async () => {
+    const authPath = await writeAuthStore({ "opencode-go": { type: "api_key", key: "sk-opencode" } });
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:kimi-k2.6" },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("ok");
+    expect(creds.details.join("\n")).toMatch(/Primary pi:opencode-go:kimi-k2\.6: API key credentials for `opencode-go` present/u);
+    expect(report.ok).toBe(true);
+  });
+
+  it("flags missing OpenCode-Go API key credentials with an API-key hint", async () => {
+    const authPath = await writeAuthStore({});
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:kimi-k2.6" },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    const text = creds.details.join("\n");
+    expect(text).toMatch(/no Pi API key credentials found for provider `opencode-go`/u);
+    expect(text).toMatch(/OPENCODE_API_KEY/u);
+    expect(text).not.toMatch(/pi-ai login opencode-go/u);
+    expect(report.ok).toBe(true);
+  });
+
   it("flags an expired OAuth token as waiting with a re-auth hint (the 10-day silent-degradation case)", async () => {
     const authPath = await writeAuthStore({ "openai-codex": { type: "oauth", expires: PAST, refresh: "r" } });
     await writeModelsStore(["opencode-go"]);

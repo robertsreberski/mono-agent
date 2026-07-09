@@ -2,13 +2,13 @@ import type { MonoAgentConfigJson } from "@mono-agent/config";
 
 import type { ModuleInput } from "./types.js";
 
-export const DEFAULT_MODEL = "claude:claude-sonnet-4-6";
+export const DEFAULT_MODEL = "pi:openai-codex:gpt-5.5";
 
 /** The model input every composed agent shares; overridable from the wizard/CLI. */
 export const MODEL_INPUT: ModuleInput = {
   id: "model",
   label: "Model",
-  description: "Primary runtime model reference, e.g. claude:claude-sonnet-4-6, codex:gpt-5.5, pi:ollama:llama3.1:8b.",
+  description: "Primary runtime model reference, e.g. pi:openai-codex:gpt-5.5, pi:opencode-go:kimi-k2.6, codex:gpt-5.5, claude:claude-sonnet-4-6.",
   default: DEFAULT_MODEL,
 };
 

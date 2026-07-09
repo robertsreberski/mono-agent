@@ -57,27 +57,27 @@ Background commands (`start`, `restart`, `stop`, `status`, `logs`) require macOS
 
 Scaffolds a new agent in the current folder. Existing `mono-agent.config.json`, `IDENTITY.md`, and `.mono-agent/` files are kept, not overwritten — re-running is safe.
 
-On an interactive terminal with **no flags**, `init` launches the **step-by-step wizard**: pick a preset or "custom", then answer model, effort, channels (multiselect), memory, **tools** (a multiselect pre-checked with a safe read-only default plus your channels' send tools — it warns loudly if you deselect everything), sandbox (only when shell/file tools are chosen), and observability, ending on a review-and-confirm. The model step discovers Pi OpenAI-Codex, OpenCode, Ollama, and LM Studio candidates best-effort with short timeouts; discovered `pi:openai-codex:gpt-5.5` is ranked above direct `codex:gpt-5.5`, direct Codex remains available as the Codex CLI fallback, and discovered OpenCode choices are recorded as `pi:opencode-go:*` for provider setup/preflight. The review shows the supported provider setup plan and can run auth/preflight commands before files are written. It then scaffolds and immediately runs `validate`. With `--yes` or **any** flag (`--preset`, `--model`, `--with`, `--memory`, `--fallback-models`, `--effort`, `--auth`, `--dry-run`), or when stdin is not a TTY, `init` skips the wizard and writes the default/preset scaffold non-interactively. `mono-agent setup` is an alias of `init`.
+On an interactive terminal with **no flags**, `init` launches the **step-by-step wizard**: pick a preset or "custom", then answer model, effort, channels (multiselect), memory, **tools** (a multiselect pre-checked with a safe read-only default plus your channels' send tools — it warns loudly if you deselect everything), sandbox (only when shell/file tools are chosen), and observability, ending on a review-and-confirm. The model step defaults to `pi:openai-codex:gpt-5.5` and discovers Pi OpenAI-Codex, OpenCode-Go, Ollama, and LM Studio candidates best-effort with short timeouts. Missing Pi auth leaves `pi:openai-codex:gpt-5.5` selectable as setup-required instead of skipping it; direct `codex:gpt-5.5` and Claude remain selectable fallbacks. Discovered OpenCode choices are recorded as `pi:opencode-go:*` so they run through the Pi SDK path. The effort step starts from the selected primary model's derived default (`medium` for Claude/Codex/Pi OpenAI-Codex and reasoning-capable discovered local models, `none` for non-reasoning local models); choosing "Default" still leaves `runtime.effort` unset. The review shows the supported provider setup plan and can run auth/preflight commands before files are written, including creating the Pi auth directory and running `npx @earendil-works/pi-ai login openai-codex` for OAuth providers or saving an OpenCode-Go API key into the Pi auth store. It then scaffolds and immediately runs `validate`. With `--yes` or **any** flag (`--preset`, `--model`, `--with`, `--memory`, `--fallback-models`, `--effort`, `--auth`, `--dry-run`), or when stdin is not a TTY, `init` skips the wizard and writes the default/preset scaffold non-interactively. `mono-agent setup` is an alias of `init`.
 
 | Flag | Effect |
 | --- | --- |
 | `--preset <id>` | Seed a blueprint from a saved preset (see [Presets & capability modules](/reference/recipes/)). Skips the wizard. |
 | `--with <csv>` | Add channels on top of the preset/default config. Valid values: `telegram`, `slack`, `webhook`, `openaiApi`, `cron`. |
 | `--yes` | Write the default/preset scaffold without prompting. |
-| `--auth` | Opt in to supported provider setup before writing files in non-interactive init: Claude/Codex login commands, Pi OAuth login from the `providers.piAuthPath` directory, and local/OpenCode preflight checks. Ignored by `--dry-run`, which never launches commands. |
+| `--auth` | Opt in to supported provider setup before writing files in non-interactive init: Claude/Codex login commands, Pi OAuth login from the `providers.piAuthPath` directory, OpenCode-Go API-key save from `OPENCODE_API_KEY`, and local provider preflight checks. Ignored by `--dry-run`, which never launches commands. |
 | `--dry-run` | Preview the files that would be created without writing or validating. |
-| `--model <ref>` | Seed the primary model reference (e.g. `claude:claude-sonnet-4-6`). |
+| `--model <ref>` | Seed the primary model reference (default `pi:openai-codex:gpt-5.5`). |
 | `--fallback-models <csv>` | Comma-separated ordered fallback chain. |
 | `--effort <level>` | Write `runtime.effort`. Valid values: `none`, `low`, `medium`, `high`, `xhigh`, `max`. |
 | `--memory lite\|journal\|bujo` | Pick the memory tier to scaffold. Any other value errors. |
 
-Init model references look like `claude:claude-sonnet-4-6`, `codex:gpt-5.5`, or `pi:<provider>:<model>` (e.g. `pi:openai-codex:gpt-5.5`, `pi:opencode-go:kimi-k2.6`, `pi:ollama:gemma4:31b`, or `pi:lmstudio:<model>`). The wizard discovers OpenCode models through `opencode models --json` and records them as `pi:opencode-go:<model>` for provider setup/preflight; direct `opencode:<provider>:<model>` refs remain a runtime backend for hand-authored config, not a first-class init wizard selection.
+Init model references look like `claude:claude-sonnet-4-6`, `codex:gpt-5.5`, or `pi:<provider>:<model>` (e.g. `pi:openai-codex:gpt-5.5`, `pi:opencode-go:kimi-k2.6`, `pi:ollama:gemma4:31b`, or `pi:lmstudio:<model>`). The wizard's manual Pi path asks separately for provider id and model id, with `openai-codex`, `opencode-go`, `ollama`, and `lmstudio` as the expected built-in/local provider ids. It does not create a generic `pi:openai:*` shortcut. The wizard discovers OpenCode models through `opencode models --json` and records them as `pi:opencode-go:<model>` for Pi SDK setup; direct `opencode:<provider>:<model>` refs remain a runtime backend for hand-authored config, not a first-class init wizard selection.
 
 ```bash
 mono-agent init                              # interactive wizard on a TTY
 mono-agent init --preset telegram-assistant --yes
-mono-agent init --model claude:claude-sonnet-4-6 \
-  --fallback-models "codex:gpt-5.5,pi:ollama:gemma4:31b" \
+mono-agent init --model pi:openai-codex:gpt-5.5 \
+  --fallback-models "pi:opencode-go:kimi-k2.6,pi:ollama:gemma4:31b" \
   --effort high \
   --memory bujo
 ```

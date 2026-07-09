@@ -188,7 +188,7 @@ describe("wizard composer — per-preset invariants", () => {
     const plan = composeWizardPlan(presetAnswers(PRESET_CATALOG.find((p) => p.id === "telegram-assistant")!), CTX);
     expect(plan.configJson.tools?.allowedTools).toEqual(["*"]);
     expect(plan.configJson.memory?.mode).toBe("bujo");
-    expect(plan.configJson.memory?.llm?.model).toBe("claude:claude-sonnet-4-6");
+    expect(plan.configJson.memory?.llm?.model).toBe("pi:openai-codex:gpt-5.5");
   });
 
   it("local-private: ollama provider block, embeddings endpoint, provider module selected", () => {
@@ -226,7 +226,7 @@ describe("wizard composer — default parity with today's scaffold", () => {
     const plan = composeWizardPlan(defaultAnswers(), { dirBasename: "acme", skillsRootExists: false });
     const config = plan.configJson;
 
-    expect(config.runtime?.model).toBe("claude:claude-sonnet-4-6");
+    expect(config.runtime?.model).toBe("pi:openai-codex:gpt-5.5");
     expect(config.runtime?.workspace).toBe(".");
     expect(config.context?.identityPath).toBe("./IDENTITY.md");
     expect(config.context?.selectedSkills).toEqual([]);

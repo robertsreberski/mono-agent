@@ -15,7 +15,7 @@ A mono-agent is fully described by a single `mono-agent.config.json` in the agen
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6"
+    "model": "pi:openai-codex:gpt-5.5"
   }
 }
 ```
@@ -108,7 +108,7 @@ Every config key has a matching `MONO_AGENT_*` environment variable. Resolution 
 2. **`mono-agent.config.json`** — the JSON value.
 3. **Built-in default** — used when neither is set.
 
-So `MONO_AGENT_MODEL=pi:openai:gpt-5.5` overrides `runtime.model` in the JSON for that process. A `.env` file in the agent folder is loaded automatically (exported shell variables still win); use `--env-file <path>` for an alternate file.
+So `MONO_AGENT_MODEL=pi:opencode-go:kimi-k2.6` overrides `runtime.model` in the JSON for that process. A `.env` file in the agent folder is loaded automatically (exported shell variables still win); use `--env-file <path>` for an alternate file.
 
 | Config key | Env var |
 | --- | --- |

@@ -10,7 +10,7 @@ This page walks the happy path: scaffold a config-first agent with `mono-agent i
 
 ## Prerequisites
 
-You need Node.js installed, the `mono-agent` CLI available, and credentials for whatever model you point at before you ask for a model response. The quickest path is the `npm create mono-agent@latest` installer (equivalently `npx create-mono-agent`) with no global install, or `npm i -g create-mono-agent` for the persistent `mono-agent` command. The CLI itself ships inside `@mono-agent/agent-app` (the installer just delegates to it), so `npm i -g @mono-agent/agent-app` or `npm exec --package @mono-agent/agent-app -- mono-agent ...` are equivalent. The default model is `claude:claude-sonnet-4-6`, which reads `ANTHROPIC_API_KEY` from the environment when a request reaches the provider. See [Install](/getting-started/install/) for the full setup and [Environment Variables](/config/env-vars/) for the keys each backend expects.
+You need Node.js installed, the `mono-agent` CLI available, and credentials for whatever model you point at before you ask for a model response. The quickest path is the `npm create mono-agent@latest` installer (equivalently `npx create-mono-agent`) with no global install, or `npm i -g create-mono-agent` for the persistent `mono-agent` command. The CLI itself ships inside `@mono-agent/agent-app` (the installer just delegates to it), so `npm i -g @mono-agent/agent-app` or `npm exec --package @mono-agent/agent-app -- mono-agent ...` are equivalent. The default model is `pi:openai-codex:gpt-5.5`, backed by the Pi SDK and the Pi auth store; the wizard can offer setup when the store is missing. See [Install](/getting-started/install/) for the full setup and [Environment Variables](/config/env-vars/) for the keys each backend expects.
 
 If you are testing unreleased source from a clone, replace `mono-agent` in the commands below with the built CLI entry:
 
@@ -25,7 +25,7 @@ Run `init` inside an empty folder (or an existing project — it never overwrite
 ```bash
 mkdir my-agent
 cd my-agent
-mono-agent init --model claude:claude-sonnet-4-6
+mono-agent init --model pi:openai-codex:gpt-5.5
 ```
 
 :::tip
@@ -38,7 +38,7 @@ Optional flags:
 
 | Flag | Purpose |
 | --- | --- |
-| `--model <ref>` | Primary runtime model. Format: `claude:*`, `codex:*`, or `pi:<provider>:<model>`. Defaults to `claude:claude-sonnet-4-6`. |
+| `--model <ref>` | Primary runtime model. Format: `pi:<provider>:<model>`, `claude:*`, `codex:*`, or `opencode:*`. Defaults to `pi:openai-codex:gpt-5.5`. |
 | `--fallback-models <csv>` | Ordered backup models tried on retryable provider failure. Written to `runtime.fallbackModels`. See [Fallback Chain](/runtime/fallback/). |
 | `--memory lite\|journal\|bujo` | Adds a `memory` section with the chosen tier. Omit it and no memory is configured. See [Capture and Recall](/memory/capture-and-recall/). |
 
@@ -46,8 +46,8 @@ A fuller example:
 
 ```bash
 mono-agent init \
-  --model claude:claude-sonnet-4-6 \
-  --fallback-models "pi:ollama:gemma4:31b,codex:gpt-5.5" \
+  --model pi:openai-codex:gpt-5.5 \
+  --fallback-models "pi:opencode-go:kimi-k2.6,pi:ollama:gemma4:31b" \
   --memory bujo
 ```
 
@@ -64,8 +64,8 @@ The generated config (with `--fallback-models` and `--memory bujo`) looks like t
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6",
-    "fallbackModels": ["pi:ollama:gemma4:31b", "codex:gpt-5.5"],
+    "model": "pi:openai-codex:gpt-5.5",
+    "fallbackModels": ["pi:opencode-go:kimi-k2.6", "pi:ollama:gemma4:31b"],
     "workspace": "."
   },
   "context": {
@@ -91,7 +91,7 @@ The generated config (with `--fallback-models` and `--memory bujo`) looks like t
     "path": "./.mono-agent/memory",
     "writeMode": "capture",
     "embeddings": { "provider": "ollama", "model": "nomic-embed-text" },
-    "llm": { "provider": "agent-host", "model": "claude:claude-sonnet-4-6" },
+    "llm": { "provider": "agent-host", "model": "pi:openai-codex:gpt-5.5" },
     "recallTool": { "enabled": true }
   }
 }
@@ -131,7 +131,7 @@ Source-build validation from a separate clean folder should use the worktree CLI
 repo=/absolute/path/to/mono-agent
 agent_dir=$(mktemp -d)
 cd "$agent_dir"
-node "$repo/packages/agent-app/dist/cli.js" init --model claude:claude-sonnet-4-6
+node "$repo/packages/agent-app/dist/cli.js" init --model pi:openai-codex:gpt-5.5
 node "$repo/packages/agent-app/dist/cli.js" validate
 ```
 :::

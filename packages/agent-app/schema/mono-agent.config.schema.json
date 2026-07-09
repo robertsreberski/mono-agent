@@ -19,7 +19,7 @@
         "model": {
           "description": "Configures model for the runtime section.",
           "examples": [
-            "claude:claude-sonnet-4-6"
+            "pi:openai-codex:gpt-5.5"
           ],
           "type": "string"
         },
@@ -393,7 +393,7 @@
             "model": {
               "description": "Configures llm.model for the memory section.",
               "examples": [
-                "claude:claude-sonnet-4-6"
+                "pi:openai-codex:gpt-5.5"
               ],
               "type": "string"
             },

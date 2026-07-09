@@ -153,7 +153,7 @@ pnpm run build
 repo=/absolute/path/to/mono-agent
 agent_dir=$(mktemp -d)
 cd "$agent_dir"
-node "$repo/packages/agent-app/dist/cli.js" init --model claude:claude-sonnet-4-6
+node "$repo/packages/agent-app/dist/cli.js" init --model pi:openai-codex:gpt-5.5
 node "$repo/packages/agent-app/dist/cli.js" validate
 ```
 

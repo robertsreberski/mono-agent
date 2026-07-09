@@ -13,14 +13,14 @@ A mono-agent is declared by a single `mono-agent.config.json` in the agent folde
 Everything about an agent — its model, channels, memory, tools, sandbox, and observability — is declared in one JSON file. Paths inside it are resolved relative to the folder that contains it. Scaffold one with the CLI:
 
 ```bash
-mono-agent init --model claude:claude-sonnet-4-6
+mono-agent init --model pi:openai-codex:gpt-5.5
 ```
 
 A minimal valid config has exactly two fields:
 
 ```json
 {
-  "runtime": { "model": "claude:claude-sonnet-4-6" },
+  "runtime": { "model": "pi:openai-codex:gpt-5.5" },
   "context": { "identityPath": "./IDENTITY.md" }
 }
 ```
@@ -38,12 +38,12 @@ Resolution order is fixed everywhere:
 Every config key has a matching `MONO_AGENT_*` override. For example `runtime.model` is overridden by `MONO_AGENT_MODEL`, and `runtime.effort` by `MONO_AGENT_EFFORT`:
 
 ```json
-{ "runtime": { "model": "claude:claude-sonnet-4-6", "effort": "medium" } }
+{ "runtime": { "model": "pi:openai-codex:gpt-5.5", "effort": "medium" } }
 ```
 
 ```bash
 # Overrides both fields above without editing the file
-export MONO_AGENT_MODEL="pi:openai:gpt-5.5"
+export MONO_AGENT_MODEL="pi:opencode-go:kimi-k2.6"
 export MONO_AGENT_EFFORT="high"
 ```
 
@@ -60,7 +60,7 @@ Each top-level key maps to one capability area. All are optional except the two 
 | Section | Purpose | Page |
 | --- | --- | --- |
 | `runtime` | Model, execution mode, effort, sessions, concurrency | [Runtime](/runtime/) |
-| `providers` | Local/self-hosted providers, Pi OAuth, pi-native tuning | [Local Providers](/runtime/local-providers/) |
+| `providers` | Local/self-hosted providers, Pi credentials, pi-native tuning | [Local Providers](/runtime/local-providers/) |
 | `context` | Identity, soul, selected skills | [Context Assembly](/context/assembly/) |
 | `memory` | Tiered memory (lite/journal/bujo), embeddings, consolidation | [Capture & Recall](/memory/capture-and-recall/) |
 | `tools` | Fail-closed allow/deny policy, MCP servers | [Tool Policy](/tools/policy/), [MCP](/tools/mcp/) |
@@ -99,7 +99,7 @@ A handful of capabilities are `code`-only — for example structured output sche
 
 ## Validate before you run
 
-`mono-agent validate` prints a per-section report — **secret placement**, runtime, **provider credentials** (Pi OAuth token presence/expiry for every referenced model), context, memory, tools, sandbox, observability, and every channel — and exits 0 only when the config is ready to start. The provider-credentials check is static and read-only, flagging a keyless or expired-OAuth provider as `waiting` with a `npx @earendil-works/pi-ai login <provider>` hint to run from the directory containing `providers.piAuthPath`; see [CLI reference → Provider credentials](/observability/cli-reference/#provider-credentials):
+`mono-agent validate` prints a per-section report — **secret placement**, runtime, **provider credentials** (Pi auth-store/API-key presence and OAuth token expiry for every referenced model), context, memory, tools, sandbox, observability, and every channel — and exits 0 only when the config is ready to start. The provider-credentials check is static and read-only, flagging a keyless or expired-OAuth provider as `waiting` with a provider-specific hint (`pi-ai login` for OAuth providers, `OPENCODE_API_KEY` for OpenCode-Go); see [CLI reference → Provider credentials](/observability/cli-reference/#provider-credentials):
 
 ```bash
 mono-agent validate

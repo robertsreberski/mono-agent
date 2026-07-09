@@ -251,9 +251,10 @@ describe("parseCliArgs", () => {
     expect(renderHelp()).toContain("mono-agent presets");
     expect(renderHelp()).toContain("mono-agent init [--preset");
     expect(renderHelp()).toContain("--effort writes runtime.effort, --auth runs supported provider auth/preflight");
-    expect(renderHelp()).toContain("pi:opencode-go:kimi-k2.6");
-    expect(renderHelp()).toContain("Direct opencode:<provider>:<model>");
-    expect(renderHelp()).toContain("refs are for hand-authored runtime backend config");
+    expect(renderHelp()).toContain("pi:opencode-go:*");
+    expect(renderHelp()).toContain("save OPENCODE_API_KEY");
+    expect(renderHelp()).toContain("direct opencode:<provider>:<model>");
+    expect(renderHelp()).toContain("hand-authored runtime backend config");
     expect(renderHelp()).toContain("mono-agent web");
     expect(renderHelp()).toContain("--allow-non-loopback");
     expect(renderHelp()).toContain("--include-memory");

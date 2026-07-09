@@ -94,6 +94,23 @@ describe("init provider setup gate", () => {
     });
     expect(status).toBe("failed");
   });
+
+  it("does not fail non-interactive setup when an API-key action is skipped", async () => {
+    const status = await runProviderSetupBeforeInit({
+      modelRefs: ["pi:opencode-go:kimi-k2.6"],
+      cwd: "/agent",
+      auth: true,
+      dryRun: false,
+      execute: async (plan) => [
+        {
+          action: plan.actions[0]!,
+          status: "skipped",
+          detail: "OPENCODE_API_KEY was not provided.",
+        },
+      ],
+    });
+    expect(status).toBe("ok");
+  });
 });
 
 describe("answersFromCli", () => {

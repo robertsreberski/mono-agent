@@ -30,14 +30,14 @@ Set it three ways:
 
 ## Configure it
 
-`fallbackModels` is an ordered array of model references in the same `claude:* | codex:* | pi:<provider>:<model>` form as `runtime.model`. The first entry is tried first.
+`fallbackModels` is an ordered array of model references in the same `pi:<provider>:<model> | claude:* | codex:* | opencode:*` form as `runtime.model`. The first entry is tried first.
 
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6",
+    "model": "pi:openai-codex:gpt-5.5",
     "fallbackModels": [
-      "claude:claude-haiku-4-6",
+      "pi:opencode-go:kimi-k2.6",
       "pi:ollama:gemma4:31b"
     ]
   }
@@ -60,8 +60,8 @@ export MONO_AGENT_FALLBACK_MODELS="claude:claude-haiku-4-6,pi:ollama:gemma4:31b"
 
 ```bash
 mono-agent init \
-  --model claude:claude-sonnet-4-6 \
-  --fallback-models claude:claude-haiku-4-6,pi:ollama:gemma4:31b
+  --model pi:openai-codex:gpt-5.5 \
+  --fallback-models pi:opencode-go:kimi-k2.6,pi:ollama:gemma4:31b
 ```
 
 ## Execution mode of fallback entries

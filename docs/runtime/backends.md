@@ -63,11 +63,11 @@ For `pi:` and `opencode:` only the **first** colon separates provider from model
 
 The default execution mode for a `codex:` model is already `cli`, so `executionMode` can be omitted.
 
-The init wizard treats direct `codex:gpt-5.5` as the Codex CLI fallback path. When Pi auth for `openai-codex` is present, the wizard ranks `pi:openai-codex:gpt-5.5` above direct Codex because it runs through the Pi SDK; direct Codex remains selectable for users who want the Codex CLI bridge.
+The init wizard defaults to `pi:openai-codex:gpt-5.5` because it runs through the Pi SDK. If the Pi auth store is missing, the same model stays selectable as setup-required and the wizard can offer auth setup; direct `codex:gpt-5.5` remains selectable for users who want the Codex CLI bridge.
 
 ### Pi SDK
 
-`pi:<provider>:<model>` is SDK-only and is the broadest backend — the Pi SDK fronts 15+ providers, including `openai`, `openai-codex`, `github-copilot`, `openrouter`, `ollama`, and `lmstudio`. Copilot-class providers are reachable here (e.g. `pi:github-copilot:gpt-4.1`). Self-hosted and local providers used via `pi:<provider>:<model>` are declared under `providers.local[]` — see [Local providers](/runtime/local-providers/).
+`pi:<provider>:<model>` is SDK-only and is the broadest backend — the Pi SDK fronts 15+ providers, including `openai`, `openai-codex`, `anthropic`, `github-copilot`, `opencode-go`, `openrouter`, `ollama`, and `lmstudio`. Subscription/account-backed providers are reachable here, including OpenAI-Codex, Anthropic, GitHub Copilot, and OpenCode-Go. Self-hosted and local providers used via `pi:<provider>:<model>` are declared under `providers.local[]` — see [Local providers](/runtime/local-providers/).
 
 ```json
 {
@@ -96,9 +96,9 @@ A `pi:` provider that only runs under SDK mode (which is all of them) is rejecte
 }
 ```
 
-Copilot-class models are therefore reachable two ways: through `pi:github-copilot:<model>` (SDK) and through `opencode:github-copilot:<model>` (CLI). Pick the backend whose execution mode and auth source you want.
+Copilot-class models are therefore reachable two ways: through `pi:github-copilot:<model>` (SDK) and through `opencode:github-copilot:<model>` (CLI). OpenCode-Go models are also reachable through `pi:opencode-go:<model>` with API-key credentials stored in the Pi auth store. Pick the backend whose execution mode and auth source you want.
 
-The init wizard's OpenCode discovery uses `opencode models --json`, but the scaffolded wizard references those discovered models as `pi:opencode-go:<model>` so provider setup can preflight OpenCode through the Pi provider path. Hand-authored `opencode:<provider>:<model>` config remains supported by the runtime backend above.
+The init wizard's OpenCode discovery uses `opencode models --json`, but the scaffolded wizard references those discovered models as `pi:opencode-go:<model>` so setup can save `OPENCODE_API_KEY` into the Pi auth store and run OpenCode-Go through the Pi SDK path. Hand-authored `opencode:<provider>:<model>` config remains supported by the runtime backend above.
 
 :::note
 :::
