@@ -211,6 +211,9 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
 
 export function providerSetupActionCommandLine(action: ProviderSetupAction): string {
   if ("command" in action) {
+    if (action.id.startsWith("pi-login:")) {
+      return piLoginCommandLine(action.id.slice("pi-login:".length));
+    }
     return action.command.join(" ");
   }
   if (isProviderSetupPiApiKeyAction(action)) {

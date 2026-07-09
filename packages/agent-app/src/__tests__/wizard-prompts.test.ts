@@ -35,7 +35,7 @@ import {
   rankWizardModelCandidates,
   type WizardModelCandidate,
 } from "../wizard/model-discovery.js";
-import { executeProviderSetupPlan, planProviderSetup } from "../provider-setup.js";
+import { executeProviderSetupPlan, planProviderSetup, providerSetupActionCommandLine } from "../provider-setup.js";
 
 describe("wizard prompt builders", () => {
   it("channelSelectOptions lists all six channels, webhook first", () => {
@@ -232,6 +232,7 @@ describe("provider setup planner", () => {
       "login",
       "openai-codex",
     ]);
+    expect(providerSetupActionCommandLine(piLogin!)).toBe("pi-ai login openai-codex");
     expect(plan.actions.find((action) => action.id === "ollama-list")).toMatchObject({
       command: ["ollama", "list"],
       cwd: "/agent",
