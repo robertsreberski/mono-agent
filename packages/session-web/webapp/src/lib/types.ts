@@ -106,6 +106,21 @@ export type SessionStep =
       kind: string;
     }
   | {
+      k: "runtime";
+      ts: string;
+      type: "file_change";
+      kind: "file_change";
+      status: string;
+      ok: boolean;
+      paths: string[];
+      files: number;
+      addedLines?: number;
+      removedLines?: number;
+      changedLines?: number;
+      unavailableCount?: number;
+      error?: string;
+    }
+  | {
       k: "result";
       ts: string;
       tcid: string;

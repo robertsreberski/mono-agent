@@ -122,6 +122,48 @@ describe("mapRunToSession", () => {
     expect(resultSteps(session.steps).map((step) => step.tool)).toEqual(["Write"]);
   });
 
+  it("keeps provider-native file changes visible without counting them as tools", () => {
+    const summary: RunSummary = {
+      runId: "run-file-change",
+      conversationId: "chat:file-change",
+      status: "succeeded",
+      startedAt: "2026-07-09T10:00:00.000Z",
+      durationMs: 1000,
+      eventCount: 1,
+      artifactPaths: [],
+    };
+    const events: RuntimeEventLike[] = [
+      {
+        type: "file_change",
+        id: "change-1",
+        status: "completed",
+        changes: [{ path: "notes.txt", kind: "update" }],
+        summary: { files: 1, added_lines: 2, removed_lines: 1, changed_lines: 3, unavailable_count: 0 },
+        is_error: false,
+        timestamp: "2026-07-09T10:00:00.100Z",
+      },
+    ];
+
+    const session = mapRunToSession(summary, events, OPTS);
+
+    expect(session.toolCounts).toEqual({});
+    expect(session.totals.tcalls).toBe(0);
+    expect(runtimeSteps(session.steps)).toContainEqual({
+      k: "runtime",
+      ts: "2026-07-09T10:00:00.100Z",
+      type: "file_change",
+      kind: "file_change",
+      status: "completed",
+      ok: true,
+      paths: ["notes.txt"],
+      files: 1,
+      addedLines: 2,
+      removedLines: 1,
+      changedLines: 3,
+      unavailableCount: 0,
+    });
+  });
+
   it("splits recalled memory, treats the NOTHING_TO_REPORT sentinel as silent, and marks a failed tool ok:false", () => {
     const { summary, events } = loadFixture("silent-recall");
     const session = mapRunToSession(summary, events, OPTS);

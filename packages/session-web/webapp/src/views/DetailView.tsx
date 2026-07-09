@@ -150,6 +150,7 @@ export function boundaryStepMeta(step: Extract<SessionStep, { k: "boundary" }>):
 export function runtimeStepLabel(step: Extract<SessionStep, { k: "runtime" }>): string {
   if (step.type === "runtime_warning") return step.kind ?? "Runtime warning";
   if (step.type === "provider_status") return step.kind.replace(/_/gu, " ");
+  if (step.type === "file_change") return step.ok ? "file change" : "file change failed";
   return step.kind.replace(/_/gu, " ");
 }
 
@@ -165,6 +166,23 @@ export function runtimeStepMeta(step: Extract<SessionStep, { k: "runtime" }>): s
       step.attemptIndex === undefined ? undefined : `attempt ${step.attemptIndex}`,
       step.durationMs === undefined ? undefined : fmtDur(step.durationMs),
       step.cancelled === true ? "cancelled" : undefined,
+    ].filter((part): part is string => part !== undefined && part.length > 0);
+    return parts.join(" | ");
+  }
+  if (step.type === "file_change") {
+    const counts = [
+      step.addedLines === undefined ? undefined : `+${step.addedLines}`,
+      step.removedLines === undefined ? undefined : `-${step.removedLines}`,
+      step.changedLines === undefined ? undefined : `${step.changedLines} changed`,
+      step.unavailableCount === undefined || step.unavailableCount === 0 ? undefined : `${step.unavailableCount} unavailable`,
+    ].filter((part): part is string => part !== undefined && part.length > 0);
+    const paths = step.paths.length === 0 ? undefined : step.paths.join(", ");
+    const parts = [
+      step.status,
+      `${step.files} file${step.files === 1 ? "" : "s"}`,
+      counts.length === 0 ? undefined : counts.join(" "),
+      paths,
+      step.error,
     ].filter((part): part is string => part !== undefined && part.length > 0);
     return parts.join(" | ");
   }

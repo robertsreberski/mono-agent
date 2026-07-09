@@ -166,6 +166,21 @@ export type SessionStep =
       readonly kind: string;
     }
   | {
+      readonly k: "runtime";
+      readonly ts: string;
+      readonly type: "file_change";
+      readonly kind: "file_change";
+      readonly status: string;
+      readonly ok: boolean;
+      readonly paths: readonly string[];
+      readonly files: number;
+      readonly addedLines?: number;
+      readonly removedLines?: number;
+      readonly changedLines?: number;
+      readonly unavailableCount?: number;
+      readonly error?: string;
+    }
+  | {
       readonly k: "result";
       readonly ts: string;
       readonly tcid: string;
@@ -652,6 +667,33 @@ function runtimeStep(event: RuntimeEventLike, ts: string): Extract<SessionStep, 
     const kind = readString(event.kind);
     if (kind === undefined) return undefined;
     return { k: "runtime", ts, type, kind };
+  }
+  if (type === "file_change") {
+    const changes = Array.isArray(event.changes) ? event.changes.filter(isRecord) : [];
+    const paths = changes.map((change) => readString(change.path)).filter((path): path is string => path !== undefined);
+    const summary = isRecord(event.summary) ? event.summary : undefined;
+    const files = finiteNumber(summary?.files) ?? paths.length;
+    const isError = event.is_error === true || event.error !== undefined;
+    const error = readString(event.error);
+    const addedLines = finiteNumber(summary?.added_lines);
+    const removedLines = finiteNumber(summary?.removed_lines);
+    const changedLines = finiteNumber(summary?.changed_lines);
+    const unavailableCount = finiteNumber(summary?.unavailable_count);
+    return {
+      k: "runtime",
+      ts,
+      type,
+      kind: "file_change",
+      status: readString(event.status) ?? (isError ? "failed" : "completed"),
+      ok: !isError,
+      paths,
+      files,
+      ...(addedLines === undefined ? {} : { addedLines }),
+      ...(removedLines === undefined ? {} : { removedLines }),
+      ...(changedLines === undefined ? {} : { changedLines }),
+      ...(unavailableCount === undefined ? {} : { unavailableCount }),
+      ...(error === undefined ? {} : { error }),
+    };
   }
   return undefined;
 }
