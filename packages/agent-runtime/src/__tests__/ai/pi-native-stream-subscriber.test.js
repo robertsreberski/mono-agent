@@ -100,6 +100,31 @@ describe("createStreamSubscriber — tool lifecycle + timing", () => {
     expect(emitted.find((e) => e.type === "user").message.content[0].is_error).toBe(true);
   });
 
+  it("copies structured file-change details onto the normalized tool_result block", () => {
+    const { emitted, handler } = driver();
+    const fileChange = {
+      status: "completed",
+      summary: { files: 1, added_lines: 2, removed_lines: 1, changed_lines: 3, unavailable_count: 0 },
+      changes: [{ path: "/repo/notes.txt", kind: "update" }],
+    };
+    handler({ type: "tool_execution_start", toolName: "Write", toolCallId: "write-1", args: {} });
+    handler({
+      type: "tool_execution_end",
+      toolName: "Write",
+      toolCallId: "write-1",
+      result: { content: [{ type: "text", text: "Successfully wrote notes.txt" }], details: { file_change: fileChange } },
+      isError: false,
+    });
+
+    const result = emitted.find((e) => e.type === "user");
+    expect(result.message.content[0]).toMatchObject({
+      type: "tool_result",
+      tool_use_id: "write-1",
+      file_change: fileChange,
+      is_error: false,
+    });
+  });
+
   it("emits no tool_timing when the end has no recorded start", () => {
     const { emitted, handler } = driver();
     handler({ type: "tool_execution_end", toolName: "t", toolCallId: "unseen", result: "x", isError: false });

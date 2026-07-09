@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { sessionStoreKey, useRecorder } from "../lib/store";
-import type { Session, SessionStep, TurnContext } from "../lib/types";
+import type { Session, SessionStep, ToolFileChange, TurnContext } from "../lib/types";
 import { Markdown } from "../lib/markdown";
 import {
   timeStr,
@@ -25,6 +25,8 @@ interface Props {
 }
 
 const TOOL_PALETTE = ["#4FB6A6", "#6FA8DC", "#B18AE0", "#E8A24A", "#6FBF8E", "#E0955A", "#D98BB0"];
+const FILE_CHANGE_PATH_DISPLAY_LIMIT = 5;
+const FILE_CHANGE_PATH_META_MAX_CHARS = 240;
 
 interface CallVM {
   key: string;
@@ -37,6 +39,7 @@ interface CallVM {
   durStr: string;
   statusColor: string;
   statusWord: string;
+  fileChangeMeta?: string;
 }
 type StepVM =
   | { kind: "prompt"; key: string; color: string; glow: string; timeStr: string; text: string }
@@ -150,6 +153,7 @@ export function boundaryStepMeta(step: Extract<SessionStep, { k: "boundary" }>):
 export function runtimeStepLabel(step: Extract<SessionStep, { k: "runtime" }>): string {
   if (step.type === "runtime_warning") return step.kind ?? "Runtime warning";
   if (step.type === "provider_status") return step.kind.replace(/_/gu, " ");
+  if (step.type === "file_change") return step.ok ? "file change" : "file change failed";
   return step.kind.replace(/_/gu, " ");
 }
 
@@ -168,7 +172,54 @@ export function runtimeStepMeta(step: Extract<SessionStep, { k: "runtime" }>): s
     ].filter((part): part is string => part !== undefined && part.length > 0);
     return parts.join(" | ");
   }
+  if (step.type === "file_change") {
+    const counts = [
+      step.addedLines === undefined ? undefined : `+${step.addedLines}`,
+      step.removedLines === undefined ? undefined : `-${step.removedLines}`,
+      step.changedLines === undefined ? undefined : `${step.changedLines} changed`,
+      step.unavailableCount === undefined || step.unavailableCount === 0 ? undefined : `${step.unavailableCount} unavailable`,
+    ].filter((part): part is string => part !== undefined && part.length > 0);
+    const paths = fileChangePathsMeta(step.paths);
+    const parts = [
+      step.status,
+      `${step.files} file${step.files === 1 ? "" : "s"}`,
+      counts.length === 0 ? undefined : counts.join(" "),
+      paths,
+      step.error,
+    ].filter((part): part is string => part !== undefined && part.length > 0);
+    return parts.join(" | ");
+  }
   return step.type;
+}
+
+export function fileChangePathsMeta(paths: readonly string[]): string | undefined {
+  if (paths.length === 0) return undefined;
+  const visiblePaths = paths.slice(0, FILE_CHANGE_PATH_DISPLAY_LIMIT).join(", ");
+  const omitted = paths.length - FILE_CHANGE_PATH_DISPLAY_LIMIT;
+  const suffix = omitted > 0 ? `, +${omitted} more` : "";
+  const full = `${visiblePaths}${suffix}`;
+  if (full.length <= FILE_CHANGE_PATH_META_MAX_CHARS) return full;
+  const ellipsis = "...";
+  if (suffix.length > 0 && suffix.length + ellipsis.length < FILE_CHANGE_PATH_META_MAX_CHARS) {
+    const headMax = FILE_CHANGE_PATH_META_MAX_CHARS - suffix.length - ellipsis.length;
+    return `${visiblePaths.slice(0, headMax).trimEnd()}${ellipsis}${suffix}`;
+  }
+  return `${full.slice(0, FILE_CHANGE_PATH_META_MAX_CHARS - ellipsis.length).trimEnd()}${ellipsis}`;
+}
+
+export function toolFileChangeMeta(toolName: string, fileChange: ToolFileChange | undefined): string | undefined {
+  if (toolName !== "Write") return undefined;
+  if (
+    fileChange === undefined ||
+    fileChange.status !== "completed" ||
+    (fileChange.unavailableCount ?? 0) > 0 ||
+    fileChange.addedLines === undefined ||
+    fileChange.removedLines === undefined ||
+    fileChange.changedLines === undefined
+  ) {
+    return "file change n/a";
+  }
+  return `file change +${fileChange.addedLines} -${fileChange.removedLines} · ${fileChange.changedLines} changed`;
 }
 
 export function DetailView({ id, onBack }: Props) {
@@ -297,6 +348,7 @@ export function DetailView({ id, onBack }: Props) {
         const thinkText = (x.think || []).map((tk) => tk.t + (tk.tr ? "…" : "")).join("\n\n");
         const calls = (x.calls || []).map((c, ci) => {
           const r = resultMap[c.id];
+          const fileChangeMeta = r ? toolFileChangeMeta(c.name, c.fileChange) : undefined;
           let durStr = "";
           if (r) {
             const dm = +new Date(r.ts) - +new Date(x.ts);
@@ -313,6 +365,7 @@ export function DetailView({ id, onBack }: Props) {
             durStr,
             statusColor: r ? (r.ok ? OK : ERROR) : DIMMER,
             statusWord: r ? (r.ok ? "· ok" : "· error") : "",
+            ...(fileChangeMeta === undefined ? {} : { fileChangeMeta }),
           } as CallVM;
         });
         const hasText = !!(x.text && x.text.trim());
@@ -945,14 +998,22 @@ export function DetailView({ id, onBack }: Props) {
                                   <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: DIMMER }}>{isOpen ? "▾" : "▸"}</span>
                                 </div>
                                 {c.hasResult && !isOpen && (
-                                  <div style={{ padding: "0 11px 9px 27px", fontSize: 12, color: "#8b8d94", lineHeight: 1.4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                    {c.resultDig}
+                                  <div style={{ padding: "0 11px 9px 27px", fontSize: 12, lineHeight: 1.4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                    {c.fileChangeMeta !== undefined && (
+                                      <div style={{ color: TEAL, fontFamily: FONT_MONO, fontSize: 10, marginBottom: 2 }}>{c.fileChangeMeta}</div>
+                                    )}
+                                    <div style={{ color: "#8b8d94", overflow: "hidden", textOverflow: "ellipsis" }}>{c.resultDig}</div>
                                   </div>
                                 )}
                                 {isOpen && (
                                   <div style={{ padding: "2px 11px 11px" }}>
                                     <div style={{ fontFamily: FONT_MONO, fontSize: 9, letterSpacing: ".14em", textTransform: "uppercase", color: TEAL, margin: "4px 0 5px" }}>Input</div>
                                     <pre style={preStyle}>{c.argRaw}</pre>
+                                    {c.fileChangeMeta !== undefined && (
+                                      <div style={{ marginTop: 10, fontFamily: FONT_MONO, fontSize: 10, color: TEAL }}>
+                                        {c.fileChangeMeta}
+                                      </div>
+                                    )}
                                     {c.hasResult && (
                                       <>
                                         <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "11px 0 5px" }}>
