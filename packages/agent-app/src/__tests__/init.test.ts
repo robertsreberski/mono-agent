@@ -30,7 +30,7 @@ describe("initMonoAgentFolder", () => {
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
     expect(config.$schema).toBe(MONO_AGENT_CONFIG_SCHEMA_URL);
-    expect(config.runtime.model).toBe("claude:claude-sonnet-4-6");
+    expect(config.runtime.model).toBe("pi:openai-codex:gpt-5.5");
     expect(config.runtime.maxTurns).toBeUndefined();
     expect(config.context.identityPath).toBe("./IDENTITY.md");
     expect(config.webhook.enabled).toBe(true);

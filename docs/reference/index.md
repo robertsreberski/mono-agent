@@ -42,7 +42,7 @@ Reference examples use real keys from the [config blueprint](/config/blueprint/)
 
 ```json
 {
-  "runtime": { "model": "claude:claude-sonnet-4-6" }
+  "runtime": { "model": "pi:openai-codex:gpt-5.5" }
 }
 ```
 

@@ -15,8 +15,8 @@ A minimal runtime block selects a backend model and (optionally) backup models:
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6",
-    "fallbackModels": ["pi:openai:gpt-5.5", "pi:ollama:gemma4:31b"],
+    "model": "pi:openai-codex:gpt-5.5",
+    "fallbackModels": ["pi:opencode-go:kimi-k2.6", "pi:ollama:gemma4:31b"],
     "executionMode": "sdk",
     "effort": "medium",
     "permissionMode": "default",
@@ -26,11 +26,11 @@ A minimal runtime block selects a backend model and (optionally) backup models:
 }
 ```
 
-The `runtime.model` string is always `<backend>:<...>` — `claude:*`, `codex:*`, or `pi:<provider>:<model>`. Override it without touching config via `MONO_AGENT_MODEL`.
+The `runtime.model` string is always `<backend>:<...>` — `pi:<provider>:<model>`, `claude:*`, `codex:*`, or `opencode:*`. Override it without touching config via `MONO_AGENT_MODEL`.
 
 | Key | Env var | Default | Notes |
 | --- | --- | --- | --- |
-| `runtime.model` | `MONO_AGENT_MODEL` | — | `claude:…`, `codex:…`, `pi:<provider>:<model>` |
+| `runtime.model` | `MONO_AGENT_MODEL` | `pi:openai-codex:gpt-5.5` from `init` | `pi:<provider>:<model>`, `claude:…`, `codex:…`, `opencode:…` |
 | `runtime.executionMode` | `MONO_AGENT_EXECUTION_MODE` | inferred from model | `sdk` or `cli` |
 | `runtime.effort` | `MONO_AGENT_EFFORT` | `medium` | `none`/`low`/`medium`/`high`/`xhigh`/`max` |
 | `runtime.permissionMode` | `MONO_AGENT_PERMISSION_MODE` | `default` | CLI backends; `default`/`plan`/`acceptEdits`/`bypassPermissions` |
@@ -42,7 +42,7 @@ The `runtime.model` string is always `<backend>:<...>` — `claude:*`, `codex:*`
 - [Model backends](/runtime/backends/) — the four backends (claude sdk/cli, codex cli, pi sdk with 15+ providers, opencode cli), the `<backend>:<model>` syntax, and `sdk` vs `cli` execution modes.
 - [Execution effort & permissions](/runtime/execution-effort-permissions/) — tune reasoning depth with `runtime.effort` and the tool-permission posture for CLI backends with `runtime.permissionMode`.
 - [Fallback chains](/runtime/fallback/) — `runtime.fallbackModels`: an ordered list of backup models the fallback router tries on fallback-eligible provider failures, including provider auth failures, with transcript-tail resume; failover is reported in run results, never silent.
-- [Local providers](/runtime/local-providers/) — wire Ollama, LM Studio, or any OpenAI-compatible endpoint via `providers.local[]` for `pi:<provider>:<model>` references, plus pi-native transport tuning and OAuth credential resolution.
+- [Local providers](/runtime/local-providers/) — wire Ollama, LM Studio, or any OpenAI-compatible endpoint via `providers.local[]` for `pi:<provider>:<model>` references, plus pi-native transport tuning and Pi credential resolution.
 - [Sessions & concurrency](/runtime/sessions-concurrency/) — continuous provider sessions with idle eviction (`runtime.session`) and per-channel admission/execution bounds (`concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns`).
 - [Built-in tools & auto-guards](/runtime/tools-and-guards/) — the bundled Read/Write/Edit/Glob/Grep/Bash/WebFetch/WebSearch tools and the automatic guards (tool-output bloat truncation, WebFetch retry, cost tracking, context compaction).
 
