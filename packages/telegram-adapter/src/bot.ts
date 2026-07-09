@@ -186,7 +186,12 @@ export class SerialQueue {
  * `/cancel` fails it.
  */
 export interface TelegramPendingAsks {
-  tryResolve(conversationId: string, answer: string): boolean | Promise<boolean>;
+  tryResolve(
+    conversationId: string,
+    answer: string,
+    answerKind?: "text" | "callback",
+  ): boolean | Promise<boolean>;
+  hasPending?(conversationId: string): boolean | Promise<boolean>;
   cancel(conversationId: string): void;
 }
 
@@ -214,9 +219,10 @@ export interface CreateTelegramBotOptions {
   readonly reactions?: TelegramReactionsConfig;
   /**
    * Handle inline-keyboard taps (`callback_query`) produced by the `TelegramAskButtons`
-   * tool: re-run the user's choice as a turn on the same conversation. When set,
-   * `callback_query` is added to the default `allowedUpdates`. Default off — with
-   * it unset the bot never subscribes to callbacks and the handler is not wired.
+   * tool. When a pending ask exists, the tap resolves the in-flight tool call;
+   * otherwise the existing synthetic-turn fallback runs on the same conversation.
+   * When set, `callback_query` is added to the default `allowedUpdates`. Default
+   * off — with it unset the bot never subscribes to callbacks and the handler is not wired.
    */
   readonly callbacksEnabled?: boolean;
   /**
@@ -569,8 +575,8 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // above already blocks unauthorized chats; we re-check defensively. On a tap we
   // resolve the chosen LABEL from the tapped message's own keyboard (so no
   // cross-process state is needed), answer the callback promptly, strip the
-  // buttons, and re-run the choice as a turn on the same conversation — exactly
-  // like a typed reply, on the warm session.
+  // buttons, and prefer resolving a pending bridge ask. If no pending ask exists,
+  // preserve the historical synthetic-turn fallback.
   const callbacksEnabled = options.callbacksEnabled === true;
   const answeredCallbacks = new Set<string>();
   const rememberAnswered = (key: string): void => {
@@ -623,6 +629,15 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         logger?.debug?.("Telegram editMessageReplyMarkup failed after callback (best-effort).", {
           error: errorMessage(error),
         });
+      }
+      const conversationId = `telegram:${String(chatId)}`;
+      const consumed = await options.pendingAsks?.tryResolve(conversationId, label, "callback");
+      if (consumed === true) {
+        return;
+      }
+      if (await options.pendingAsks?.hasPending?.(conversationId)) {
+        await ctx.reply(messages.busyText);
+        return;
       }
       const question = ctx.callbackQuery.message?.text;
       const syntheticText =
@@ -722,12 +737,14 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       telegramMessage.text.trim().length > 0 &&
       !telegramMessage.text.trimStart().startsWith("/")
     ) {
-      const consumed = await options.pendingAsks.tryResolve(
-        `telegram:${String(chatId)}`,
-        telegramMessage.text,
-      );
+      const conversationId = `telegram:${String(chatId)}`;
+      const consumed = await options.pendingAsks.tryResolve(conversationId, telegramMessage.text, "text");
       if (consumed) {
         await applyReaction(chatId, telegramMessage.message_id, "👍");
+        return;
+      }
+      if (await options.pendingAsks.hasPending?.(conversationId)) {
+        await ctx.reply(messages.busyText);
         return;
       }
     }

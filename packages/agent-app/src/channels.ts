@@ -3,6 +3,7 @@ import type {
   ChannelConfigViewSection,
   ChannelDriver as ContractChannelDriver,
   ChannelId as ContractChannelId,
+  ChannelInteractionAnswerKind,
   ChannelLogger,
   ChannelStartInput as ContractChannelStartInput,
   RunningChannel,
@@ -1305,8 +1306,12 @@ function telegramStartOptions(
       ? {}
       : {
           pendingAsks: {
-            tryResolve: (conversationId: string, answer: string) =>
-              input.interaction!.tryResolveAsk(conversationId, answer),
+            tryResolve: (
+              conversationId: string,
+              answer: string,
+              answerKind?: ChannelInteractionAnswerKind,
+            ) => input.interaction!.tryResolveAsk(conversationId, answer, answerKind),
+            hasPending: (conversationId: string) => input.interaction!.hasPendingAsk?.(conversationId) ?? false,
             cancel: (conversationId: string) => {
               input.interaction!.cancelAsks(conversationId);
             },

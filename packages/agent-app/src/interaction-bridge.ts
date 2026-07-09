@@ -11,6 +11,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
  * - Blocking `AskUser`: POST /v1/asks registers a pending ask (question posted
  *   through the channel's sink); the tool long-polls GET /v1/asks/:id until the
  *   channel intercepts the user's next message and resolves it.
+ * - Blocking channel-owned asks (e.g. Telegram buttons): POST /v1/asks with
+ *   `postQuestion:false` registers the same pending ask without duplicating
+ *   channel-specific UI already posted by the tool.
  * - Tool progress: POST /v1/progress fans out to the channel sink's postStatus
  *   (e.g. a Telegram status message edited in place).
  *
@@ -47,7 +50,9 @@ export interface InteractionBridgeHandle {
   readonly token: string;
   registerSink(channelId: string, sink: ChannelInteractionSink): void;
   /** Resolve the conversation's pending ask with the user's reply; true when consumed. */
-  tryResolveAsk(conversationId: string, answer: string): boolean;
+  tryResolveAsk(conversationId: string, answer: string, answerKind?: AskAnswerKind): boolean;
+  /** True when this conversation currently has any pending ask. */
+  hasPendingAsk(conversationId: string): boolean;
   /** Fail every pending ask on the conversation (user cancelled the run). */
   cancelAsks(conversationId: string): void;
   /** Environment consumed by tool child processes (AskUser, project MCP servers). */
@@ -131,6 +136,7 @@ const MAX_LONG_POLL_WAIT_MS = 25_000;
 const MAX_BODY_BYTES = 64 * 1024;
 
 type AskStatus = "pending" | "answered" | "expired" | "cancelled";
+export type AskAnswerKind = "text" | "callback";
 
 interface AskSnapshot {
   readonly status: AskStatus;
@@ -140,6 +146,7 @@ interface AskSnapshot {
 interface PendingAsk {
   readonly askId: string;
   readonly conversationId: string;
+  readonly answerKind: AskAnswerKind;
   status: AskStatus;
   answer?: string;
   expiryTimer: ReturnType<typeof setTimeout>;
@@ -191,12 +198,18 @@ export async function startInteractionBridge(
       : { status: ask.status };
   }
 
-  function registerAsk(conversationId: string, question: string, timeoutMs: number): PendingAsk {
+  function registerAsk(
+    conversationId: string,
+    question: string,
+    timeoutMs: number,
+    answerKind: AskAnswerKind,
+  ): PendingAsk {
     askCounter += 1;
     const askId = `ask-${String(askCounter)}-${randomBytes(6).toString("base64url")}`;
     const ask: PendingAsk = {
       askId,
       conversationId,
+      answerKind,
       status: "pending",
       waiters: new Set(),
       expiryTimer: setTimeout(() => settleAsk(ask, "expired"), timeoutMs),
@@ -228,21 +241,25 @@ export async function startInteractionBridge(
       return;
     }
     const requested = numberField(body, "timeoutMs");
+    const postQuestion = booleanField(body, "postQuestion") ?? true;
+    const answerKind = answerKindField(body, "answerKind") ?? "text";
     // The config value is both the default and the ceiling: tools may wait less,
     // never more, than the operator allowed.
     const timeoutMs = Math.min(requested ?? askTimeoutMs, askTimeoutMs);
-    const ask = registerAsk(conversationId, question, timeoutMs);
-    try {
-      await sink.postQuestion(conversationId, question);
-    } catch (error) {
-      settleAsk(ask, "cancelled");
-      asksById.delete(ask.askId);
-      options.logger?.warn?.("interaction bridge: posting the ask question failed.", {
-        conversationId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      sendJson(response, 502, { error: "posting the question to the channel failed." });
-      return;
+    const ask = registerAsk(conversationId, question, timeoutMs, answerKind);
+    if (postQuestion) {
+      try {
+        await sink.postQuestion(conversationId, question);
+      } catch (error) {
+        settleAsk(ask, "cancelled");
+        asksById.delete(ask.askId);
+        options.logger?.warn?.("interaction bridge: posting the ask question failed.", {
+          conversationId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        sendJson(response, 502, { error: "posting the question to the channel failed." });
+        return;
+      }
     }
     sendJson(response, 201, { askId: ask.askId, timeoutMs });
   }
@@ -374,13 +391,19 @@ export async function startInteractionBridge(
     registerSink(channelId, sink) {
       sinks.set(channelId, sink);
     },
-    tryResolveAsk(conversationId, answer) {
+    tryResolveAsk(conversationId, answer, answerKind = "text") {
       const ask = asksByConversation.get(normalizeConversationId(conversationId));
       if (ask === undefined) {
         return false;
       }
+      if (ask.answerKind !== answerKind) {
+        return false;
+      }
       settleAsk(ask, "answered", answer);
       return true;
+    },
+    hasPendingAsk(conversationId) {
+      return asksByConversation.has(normalizeConversationId(conversationId));
     },
     cancelAsks(conversationId) {
       const ask = asksByConversation.get(normalizeConversationId(conversationId));
@@ -447,6 +470,16 @@ function stringField(body: Record<string, unknown>, key: string): string | undef
 function numberField(body: Record<string, unknown>, key: string): number | undefined {
   const value = body[key];
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function booleanField(body: Record<string, unknown>, key: string): boolean | undefined {
+  const value = body[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function answerKindField(body: Record<string, unknown>, key: string): AskAnswerKind | undefined {
+  const value = body[key];
+  return value === "text" || value === "callback" ? value : undefined;
 }
 
 function sendJson(response: ServerResponse, statusCode: number, body: unknown): void {

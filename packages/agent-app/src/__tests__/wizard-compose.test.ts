@@ -215,6 +215,15 @@ describe("wizard composer — per-preset invariants", () => {
     expect(plan.configJson.providers?.local?.map((provider) => provider.type).sort()).toEqual(["lmstudio", "ollama"]);
   });
 
+  it("preserves fallback model order in the runtime config", () => {
+    const plan = composeWizardPlan(defaultAnswers({
+      model: "claude:claude-sonnet-4-6",
+      fallbackModels: ["codex:gpt-5.5", "pi:ollama:gemma4:31b"],
+    }), CTX);
+
+    expect(plan.configJson.runtime?.fallbackModels).toEqual(["codex:gpt-5.5", "pi:ollama:gemma4:31b"]);
+  });
+
   it("writes runtime.effort when wizard answers specify one", () => {
     const plan = composeWizardPlan(defaultAnswers({ effort: "high" }), CTX);
     expect(plan.configJson.runtime?.effort).toBe("high");

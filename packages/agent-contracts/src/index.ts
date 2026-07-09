@@ -236,6 +236,7 @@ export type {
   ChannelConfigViewSection,
   ChannelDriver,
   ChannelId,
+  ChannelInteractionAnswerKind,
   ChannelInteractionHub,
   ChannelInteractionSink,
   ChannelLogger,

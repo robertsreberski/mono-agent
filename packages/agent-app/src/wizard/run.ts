@@ -17,6 +17,7 @@ import { findPreset, presetAnswers } from "./presets.js";
 import {
   channelSelectOptions,
   effortSelectOptions,
+  fallbackModelSelectOptions,
   guard,
   memorySelectOptions,
   modelSelectOptions,
@@ -24,7 +25,12 @@ import {
   toolMultiselectOptions,
   WizardCancelled,
 } from "./prompts.js";
-import { defaultEffortForModelRef, discoverWizardModelCandidates, formatModelDiscoveryStatus } from "./model-discovery.js";
+import {
+  defaultEffortForModelRef,
+  discoverWizardModelCandidates,
+  formatModelDiscoveryStatus,
+  type WizardModelCandidate,
+} from "./model-discovery.js";
 
 /** The outcome of a wizard run: collected answers, or a clean cancellation. */
 export type WizardOutcome =
@@ -126,13 +132,7 @@ async function collectCustom(ctx: { cwd: string }): Promise<CollectedAnswers> {
 
   // Optional fallback chain.
   if (guard(await p.confirm({ message: "Add fallback models?", initialValue: false }))) {
-    const raw = guard(
-      await p.text({
-        message: "Fallback models (comma-separated)",
-        placeholder: "codex:gpt-5.5, pi:ollama:llama3.1:8b",
-      }),
-    );
-    draft.fallbackModels = splitCsv(raw);
+    await promptFallbackModels(draft, discovery.candidates);
   }
 
   const derivedEffort = discoveredByValue.get(draft.model)?.defaultEffort ?? defaultEffortForModelRef(draft.model);
@@ -240,6 +240,44 @@ async function resolveModelSelection(model: string): Promise<string> {
   }
 
   return model;
+}
+
+/**
+ * Build an ordered fallback chain one model at a time. Each step reuses the same
+ * discovered model labels as the primary picker while hiding the selected primary
+ * and any fallback already chosen. `Other…` is the explicit path for custom refs.
+ */
+async function promptFallbackModels(
+  draft: DraftAnswers,
+  candidates: readonly WizardModelCandidate[],
+): Promise<void> {
+  for (;;) {
+    const choice = guard(
+      await p.select({
+        message: `Fallback model #${draft.fallbackModels.length + 1}`,
+        options: fallbackModelSelectOptions(candidates, draft.model, draft.fallbackModels),
+        initialValue: "__done__",
+      }),
+    );
+    if (choice === "__done__") {
+      return;
+    }
+    if (choice === "__other__") {
+      const raw = guard(
+        await p.text({
+          message: "Custom fallback model reference(s)",
+          placeholder: "codex:gpt-5.5, pi:ollama:llama3.1:8b",
+          validate: (v) =>
+            splitCsv(v ?? "").length === 0
+              ? "Enter at least one provider:model reference"
+              : undefined,
+        }),
+      );
+      draft.fallbackModels.push(...splitCsv(raw));
+      continue;
+    }
+    draft.fallbackModels.push(choice);
+  }
 }
 
 /**

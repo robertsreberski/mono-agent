@@ -130,6 +130,8 @@ export interface ChannelInteractionSink {
   ): Promise<void>;
 }
 
+export type ChannelInteractionAnswerKind = "text" | "callback";
+
 /**
  * Host-owned hub connecting channels to blocking ask-the-user round-trips and
  * tool progress. A driver registers its sink and routes the user's replies /
@@ -138,7 +140,13 @@ export interface ChannelInteractionSink {
 export interface ChannelInteractionHub {
   registerSink(channelId: string, sink: ChannelInteractionSink): void;
   /** Resolve the conversation's pending ask with the user's reply; true when consumed. */
-  tryResolveAsk(conversationId: string, answer: string): boolean | Promise<boolean>;
+  tryResolveAsk(
+    conversationId: string,
+    answer: string,
+    answerKind?: ChannelInteractionAnswerKind,
+  ): boolean | Promise<boolean>;
+  /** True when the conversation currently has an unresolved ask. */
+  hasPendingAsk?(conversationId: string): boolean | Promise<boolean>;
   /** Fail the conversation's pending ask (user cancelled). */
   cancelAsks(conversationId: string): void;
 }
