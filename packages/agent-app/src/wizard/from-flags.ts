@@ -1,5 +1,6 @@
 import { defaultAnswers, type WizardAnswers } from "./answers.js";
 import { findPreset } from "./presets.js";
+import { assertConcreteWizardModelRef } from "./prompts.js";
 
 /** Channels `mono-agent init --with <csv>` can switch on, by their short flag name. */
 export const WITH_CHANNELS = ["telegram", "slack", "webhook", "openaiApi", "cron"] as const;
@@ -43,6 +44,10 @@ export function answersFromCli(args: AnswersFromCliArgs): WizardAnswers {
   const basePartial: Partial<WizardAnswers> = args.presetId === undefined
     ? {}
     : findPreset(args.presetId)?.answers ?? {};
+  const model = args.model === undefined ? undefined : concreteCliModelRef(args.model);
+  const fallbackModels = args.fallbackModels === undefined
+    ? undefined
+    : args.fallbackModels.map((fallbackModel) => concreteCliModelRef(fallbackModel));
 
   const channels = new Set<string>(basePartial.channels ?? defaultAnswers().channels);
   for (const channel of args.withChannels ?? []) {
@@ -55,10 +60,15 @@ export function answersFromCli(args: AnswersFromCliArgs): WizardAnswers {
 
   return defaultAnswers({
     ...basePartial,
-    ...(args.model === undefined ? {} : { model: args.model }),
-    ...(args.fallbackModels === undefined ? {} : { fallbackModels: args.fallbackModels }),
+    ...(model === undefined ? {} : { model }),
+    ...(fallbackModels === undefined ? {} : { fallbackModels }),
     ...(args.effort === undefined ? {} : { effort: args.effort }),
     channels: [...channels],
     ...(memory === undefined ? {} : { memory }),
   });
+}
+
+function concreteCliModelRef(value: string): string {
+  assertConcreteWizardModelRef(value);
+  return value;
 }

@@ -129,6 +129,21 @@ describe("answersFromCli", () => {
     expect(answers.memory).toBe("memory:lite");
   });
 
+  it("preserves exact --model and --fallback-models refs from non-interactive flags", () => {
+    const answers = answersFromCli({
+      model: "pi:ollama:gemma4:31b",
+      fallbackModels: ["codex:gpt-5.5", "pi:lmstudio:qwen/qwen3-8b"],
+    });
+
+    expect(answers.model).toBe("pi:ollama:gemma4:31b");
+    expect(answers.fallbackModels).toEqual(["codex:gpt-5.5", "pi:lmstudio:qwen/qwen3-8b"]);
+  });
+
+  it("rejects wizard sentinel values from non-interactive model flags", () => {
+    expect(() => answersFromCli({ model: "__other__" })).toThrow("Wizard model sentinel");
+    expect(() => answersFromCli({ fallbackModels: ["__done__", "pi:ollama:gemma4:31b"] })).toThrow("Wizard model sentinel");
+  });
+
   it("defaults to the webhook channel with no preset and no flags", () => {
     expect(answersFromCli({}).channels).toEqual(["channel:webhook"]);
   });
