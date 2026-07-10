@@ -26,6 +26,7 @@ describe("verify-all", () => {
 
     expect(result.exitCode).toBe(0);
     expect(labels).toEqual([
+      "check:node",
       "check:secrets",
       "check:oss-hygiene",
       "check:codex-discoverability",

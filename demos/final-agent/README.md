@@ -25,7 +25,7 @@ const responder = createConfiguredAgentResponder({ config: coreConfig, runtime }
 
 ## Run it
 
-Prerequisites: Node.js 20 or newer and an existing pnpm 10 or newer install.
+Prerequisites: Node.js 22.19.0 or newer and an existing pnpm 10 or newer install.
 
 ```bash
 pnpm install --frozen-lockfile

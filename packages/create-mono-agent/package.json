@@ -5,6 +5,9 @@
   "type": "module",
   "license": "UNLICENSED",
   "private": false,
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "bin": {
     "create-mono-agent": "./dist/bin/mono-agent.js",
     "mono-agent": "./dist/bin/mono-agent.js"
