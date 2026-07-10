@@ -358,7 +358,8 @@ export async function createAdapterSendToolsServer(
   const server = new McpServer({ name: "agent-adapter-send-tools", version: "0.3.0" });
 
   if (settings.slack !== undefined && clients.slack !== undefined) {
-    registerSlackSendTool(server, settings.slack, clients.slack, indexing);
+    const adapter = await loadSlackModule();
+    registerSlackSendTool(server, settings.slack, clients.slack, adapter.formatMarkdownForSlack, indexing);
   }
   if (settings.telegram !== undefined && clients.telegram !== undefined) {
     // Loaded once here (not per-register-call) because registerTelegramAskTool
@@ -535,6 +536,7 @@ function registerSlackSendTool(
   server: McpServer,
   settings: SlackSendToolSettings,
   client: Pick<SlackWebApi, "chatPostMessage">,
+  formatMarkdownForSlack: (text: string) => string,
   indexing?: AdapterSendToolsIndexing,
 ): void {
   server.registerTool(
@@ -544,23 +546,25 @@ function registerSlackSendTool(
       description: "Send a message to an allowed Slack channel or DM ID using the configured Slack adapter bot token.",
       inputSchema: {
         channel: z.string().min(1).describe("Slack channel or DM ID, e.g. C123456 or D123456."),
-        text: z.string().min(1).describe("Message text to send."),
+        text: z.string().min(1).describe("Message text to send. Defaults to standard Markdown converted to Slack mrkdwn."),
         thread_ts: z.string().min(1).optional().describe("Optional Slack thread timestamp to reply in."),
-        mrkdwn: z.boolean().optional().describe("Whether Slack mrkdwn formatting is enabled."),
+        mrkdwn: z.boolean().optional().describe("Whether Slack mrkdwn formatting is enabled. Defaults to true; set false to send plain text unchanged."),
         unfurl_links: z.boolean().optional().describe("Whether Slack should unfurl links."),
         unfurl_media: z.boolean().optional().describe("Whether Slack should unfurl media."),
       },
     },
     async (args) => {
       assertSlackChannelAllowed(settings, args.channel);
-      const chunks = splitTextByCodePoints(args.text, SLACK_SEND_MESSAGE_MAX_CHARS);
+      const mrkdwn = args.mrkdwn ?? true;
+      const text = mrkdwn ? formatMarkdownForSlack(args.text) : args.text;
+      const chunks = splitTextByCodePoints(text, SLACK_SEND_MESSAGE_MAX_CHARS);
       const results: SlackChatPostMessageResult[] = [];
       for (const chunk of chunks) {
         const result: SlackChatPostMessageResult = await client.chatPostMessage({
           channel: args.channel.trim(),
           text: chunk,
           ...(args.thread_ts === undefined ? {} : { thread_ts: args.thread_ts }),
-          ...(args.mrkdwn === undefined ? {} : { mrkdwn: args.mrkdwn }),
+          mrkdwn,
           ...(args.unfurl_links === undefined ? {} : { unfurl_links: args.unfurl_links }),
           ...(args.unfurl_media === undefined ? {} : { unfurl_media: args.unfurl_media }),
         });
