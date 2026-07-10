@@ -151,6 +151,7 @@ export async function sandboxRuntimeStatus(options: SandboxManagerOptions = {}):
   const platform = options.platform ?? process.platform;
   if (platform === "darwin" && await pathExists(installRoot)) {
     try {
+      await assertTrustedNodeExecutable(resolveNodePath(options));
       const cliPath = await verifyManagedInstall(installRoot, options);
       return {
         state: "ready",
@@ -324,21 +325,26 @@ export async function checkSandboxRuntime(options: SandboxManagerOptions = {}): 
     );
   }
   throwIfAborted(options.signal);
-  if (status.source === "managed" && (status.nodePath === undefined || status.cliPath === undefined)) {
-    throw new SandboxManagerError(
-      "managed_srt_corrupt",
-      "Managed SRT status omitted its absolute Node or CLI path.",
-      { status },
-    );
-  }
-  const engine = status.source === "managed"
-    ? createSrtSandboxEngine({
+  let engine: SandboxEngine;
+  if (status.source === "managed") {
+    const { nodePath, cliPath } = status;
+    if (nodePath === undefined || cliPath === undefined) {
+      throw new SandboxManagerError(
+        "managed_srt_corrupt",
+        "Managed SRT status omitted its absolute Node or CLI path.",
+        { status },
+      );
+    }
+    engine = createSrtSandboxEngine({
       platform: options.platform ?? process.platform,
       ...(options.cacheRoot === undefined ? {} : { cacheRoot: options.cacheRoot }),
       ...(options.env === undefined ? {} : { env: options.env }),
       ...(options.homeDir === undefined ? {} : { homeDir: options.homeDir }),
-    })
-    : createSrtSandboxEngine({ command: options.externalCommand === undefined ? "srt" : options.externalCommand || "srt" });
+      managedNodePath: nodePath,
+    });
+  } else {
+    engine = createSrtSandboxEngine({ command: options.externalCommand === undefined ? "srt" : options.externalCommand || "srt" });
+  }
   const checks: SandboxFunctionalCheck[] = [];
   if (!(await engine.isAvailable())) {
     throw new SandboxManagerError(
@@ -611,14 +617,17 @@ async function resolveNpmCliPath(options: SandboxManagerOptions): Promise<string
 
 async function assertTrustedNodeExecutable(nodePath: string): Promise<void> {
   const nodeStat = await lstat(nodePath);
-  if (
-    nodeStat.isSymbolicLink()
-    || !nodeStat.isFile()
-    || nodeStat.nlink !== 1
-    || (nodeStat.mode & 0o022) !== 0
-    || (process.getuid !== undefined && nodeStat.uid !== process.getuid() && nodeStat.uid !== 0)
-  ) {
-    throw new Error(`Node executable is not a trusted single-link file: ${nodePath}`);
+  if (nodeStat.isSymbolicLink() || !nodeStat.isFile()) {
+    throw new Error(`Node executable is not a regular non-symbolic file: ${nodePath}`);
+  }
+  if (nodeStat.nlink !== 1) {
+    throw new Error(`Node executable has ${nodeStat.nlink} hard links instead of one: ${nodePath}`);
+  }
+  if ((nodeStat.mode & 0o022) !== 0) {
+    throw new Error(`Node executable is writable by group or other users: ${nodePath}`);
+  }
+  if (process.getuid !== undefined && nodeStat.uid !== process.getuid() && nodeStat.uid !== 0) {
+    throw new Error(`Node executable is not owned by the current user or root: ${nodePath}`);
   }
 }
 

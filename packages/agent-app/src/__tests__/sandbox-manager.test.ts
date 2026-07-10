@@ -17,13 +17,24 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const runtimeAdapterMocks = vi.hoisted(() => ({
+  createSrtSandboxEngine: vi.fn(),
+}));
+
+vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@mono-agent/runtime-adapter")>();
+  runtimeAdapterMocks.createSrtSandboxEngine.mockImplementation(actual.createSrtSandboxEngine);
+  return { ...actual, createSrtSandboxEngine: runtimeAdapterMocks.createSrtSandboxEngine };
+});
 
 import {
   MANAGED_SRT_LOCK_SHA256,
   MANAGED_SRT_MARKER,
   MANAGED_SRT_PACKAGE,
   MANAGED_SRT_VERSION,
+  checkSandboxRuntime,
   managedSrtInstallRoot,
   sandboxRuntimeStatus,
   setupManagedSrt,
@@ -33,12 +44,23 @@ import {
 
 const resourceRoot = fileURLToPath(new URL("../../resources/srt", import.meta.url));
 const tempDirs: string[] = [];
+let trustedNodePath = "";
 
 async function tempDir(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "managed-srt-test-"));
   tempDirs.push(directory);
   return directory;
 }
+
+beforeEach(async () => {
+  runtimeAdapterMocks.createSrtSandboxEngine.mockClear();
+  const launchRoot = await tempDir();
+  trustedNodePath = resolve(launchRoot, "node");
+  // process.execPath permissions and hard-link count belong to the host (for
+  // example, CI toolcaches), so setup tests use a test-owned trusted launcher.
+  await writeFile(trustedNodePath, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  await chmod(trustedNodePath, 0o700);
+});
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map(async (directory) => rm(directory, { recursive: true, force: true })));
@@ -90,6 +112,7 @@ function options(cacheRoot: string, hooks: ManagedSrtHooks = {}): SandboxManager
   return {
     cacheRoot,
     platform: "darwin",
+    nodePath: trustedNodePath,
     externalCommand: false,
     hooks: {
       installDependencies: fakeInstall,
@@ -109,6 +132,24 @@ describe("managed SRT setup", () => {
     expect(result.status.installRoot).toBe(managedSrtInstallRoot({ cacheRoot, platform: "darwin" }));
     expect(await readFile(resolve(result.status.installRoot, "package-lock.json"), "utf8"))
       .toBe(await readFile(resolve(resourceRoot, "package-lock.json"), "utf8"));
+  });
+
+  it("rejects a group-writable Node executable before creating managed cache state", async () => {
+    const cacheRoot = await tempDir();
+    const unsafeRoot = await tempDir();
+    const unsafeNodePath = resolve(unsafeRoot, "node");
+    await writeFile(unsafeNodePath, "#!/bin/sh\nexit 0\n", { mode: 0o770 });
+    await chmod(unsafeNodePath, 0o770);
+
+    await expect(setupManagedSrt({
+      ...options(cacheRoot),
+      nodePath: unsafeNodePath,
+      verify: false,
+    })).rejects.toMatchObject({
+      code: "managed_srt_corrupt",
+      details: { cause: expect.stringContaining("writable by group or other users") },
+    });
+    expect(existsSync(resolve(cacheRoot, "mono-agent"))).toBe(false);
   });
 
   it("serializes concurrent installers and performs one dependency installation", async () => {
@@ -232,8 +273,42 @@ describe("managed SRT setup", () => {
       externalCommand: false,
     });
 
-    expect(status).toMatchObject({ state: "ready", source: "managed", nodePath: process.execPath });
+    expect(status).toMatchObject({ state: "ready", source: "managed", nodePath: trustedNodePath });
     expect(status.cliPath).toMatch(/node_modules\/@anthropic-ai\/sandbox-runtime\/dist\/cli\.js$/u);
+  });
+
+  it("reports managed status as corrupt if its selected Node launcher loses trust", async () => {
+    const cacheRoot = await tempDir();
+    await setupManagedSrt({ ...options(cacheRoot), verify: false });
+    await chmod(trustedNodePath, 0o770);
+
+    await expect(sandboxRuntimeStatus(options(cacheRoot))).resolves.toMatchObject({
+      state: "corrupt",
+      source: "managed",
+      message: expect.stringContaining("writable by group or other users"),
+    });
+  });
+
+  it("functionally checks the same trusted Node path reported by managed status", async () => {
+    const cacheRoot = await tempDir();
+    await setupManagedSrt({ ...options(cacheRoot), verify: false });
+    runtimeAdapterMocks.createSrtSandboxEngine.mockReturnValueOnce({
+      id: "srt",
+      async isAvailable() {
+        return false;
+      },
+      async prepareCommand() {
+        throw new Error("unavailable engine must not prepare a command");
+      },
+    });
+
+    await expect(checkSandboxRuntime(options(cacheRoot)))
+      .rejects.toMatchObject({ code: "sandbox_check_failed" });
+    expect(runtimeAdapterMocks.createSrtSandboxEngine).toHaveBeenCalledWith(expect.objectContaining({
+      cacheRoot,
+      managedNodePath: trustedNodePath,
+      platform: "darwin",
+    }));
   });
 
   it("removes only a proven-dead secure install lock before retrying", async () => {

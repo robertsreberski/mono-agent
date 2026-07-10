@@ -40,6 +40,8 @@ export interface ResolveSrtLaunchOptions {
   readonly command?: string;
   readonly nodePath?: string;
   readonly cliPath?: string;
+  /** Node executable used to launch an integrity-verified managed SRT tree. */
+  readonly managedNodePath?: string;
   readonly cacheRoot?: string;
   readonly platform?: NodeJS.Platform;
   readonly env?: NodeJS.ProcessEnv;
@@ -98,9 +100,10 @@ export async function resolveSrtLaunch(options: ResolveSrtLaunchOptions = {}): P
     const present = await pathExists(installRoot);
     if (present) {
       const cliPath = await verifyManagedSrtInstall(installRoot);
-      assertAbsolutePath(process.execPath, "process.execPath");
+      const managedNodePath = options.managedNodePath ?? process.execPath;
+      assertAbsolutePath(managedNodePath, "managedNodePath");
       assertSupportedNodeVersion(process.versions.node);
-      const node = await resolveTrustedFile(process.execPath, false, "Node executable", installRoot);
+      const node = await resolveTrustedFile(managedNodePath, false, "Node executable", installRoot);
       const cli = await resolveTrustedFile(cliPath, true, "SRT CLI", installRoot);
       return {
         command: node.path,
