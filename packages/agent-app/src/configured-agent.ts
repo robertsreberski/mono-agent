@@ -47,6 +47,7 @@ import type {
   RuntimeRunOptions,
 } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
+import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
 type StaticRuntimeOptions = NonNullable<AgentHarnessOptions["runtimeOptions"]>;
 
@@ -85,6 +86,8 @@ type AgentHarnessSessionOptionsWithEvents = NonNullable<AgentHarnessOptions["ses
 
 export interface ConfiguredAgentHarnessOptions {
   readonly config: MonoAgentConfig;
+  /** Agent config folder used to resolve explicitly installed optional plugins. */
+  readonly cwd?: string;
   readonly runtime?: MonoRuntimeLike;
   readonly model?: RuntimeModelReference;
   readonly executionMode?: string;
@@ -363,7 +366,9 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
   // execute memory capture on `config.runtime.model` instead of
   // `config.memory.llm.model`. createConfiguredMemory builds the memory LLM its own
   // fallback-free runtime when no `memoryRuntime` is injected.
-  const memory = options.memory ?? (await createConfiguredMemory(config, {}));
+  const memory = options.memory ?? (await createConfiguredMemory(config, {
+    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+  }));
   const runtimeOptions = mergeStaticRuntimeOptions(
     runtimeOptionsForLocalProvider(model, config.providers?.local),
     configRuntimeFlags(config),
@@ -477,6 +482,8 @@ const DEFAULT_EMBEDDINGS_TIMEOUT_MS = 10_000;
 export async function createConfiguredMemory(
   config: MonoAgentConfig,
   deps: {
+    /** Agent config folder used to resolve explicitly installed optional plugins. */
+    cwd?: string;
     logger?: { warn(message: string): void };
     /**
      * Injection seam for the bujo memory LLM's runtime (tests). This runtime MUST
@@ -510,7 +517,9 @@ export async function createConfiguredMemory(
       // Defensive: the loader already rejects this combination.
       throw new Error("memory.backend 'supermemory' requires a memory.supermemory block.");
     }
-    const { createSupermemoryStore } = await import("@mono-agent/memory-supermemory");
+    const { createSupermemoryStore } = await loadSupermemoryPlugin({
+      ...(deps.cwd === undefined ? {} : { cwd: deps.cwd }),
+    });
     // External backend: `mode`/`embeddings`/`llm` are bujo-only and intentionally ignored. Recall +
     // capture both go over the REST client; Supermemory extracts/consolidates server-side.
     return createSupermemoryStore({

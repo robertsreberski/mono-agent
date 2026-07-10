@@ -86,6 +86,18 @@ describe("wizard prompt builders", () => {
     for (const option of options.slice(1)) {
       expect(option.value.startsWith("memory:")).toBe(true);
     }
+    expect(options.map((option) => option.value)).toEqual([
+      "",
+      "memory:lite",
+      "memory:journal",
+      "memory:bujo",
+    ]);
+  });
+
+  it("offers the Supermemory plugin only when setup confirms it is available", () => {
+    expect(memorySelectOptions().map((option) => option.value)).not.toContain("memory:supermemory");
+    expect(memorySelectOptions({ includeOptionalPlugins: true }).map((option) => option.value))
+      .toContain("memory:supermemory");
   });
 
   it("modelSelectOptions offers the curated set plus Pi and generic escape hatches", () => {

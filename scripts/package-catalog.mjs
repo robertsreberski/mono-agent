@@ -12,8 +12,9 @@ export const PACKAGE_CATEGORIES = [
 
 // `publishable: true` packages release in lockstep on the npm-release tag path.
 // Within that set, `tier` splits them three ways:
-//   - `tier: "plugin"` — optional plugin-tier extras (loaded via `channels.plugins[]`
-//     or as request-scoped runtime extensions, living under `extras/`);
+//   - `tier: "plugin"` — optional plugin-tier extras (loaded via `channels.plugins[]`,
+//     as request-scoped runtime extensions, or through an explicitly selected
+//     plugin backend, living under `extras/`);
 //   - `tier: "alias"` — the unscoped `create-mono-agent` npm-init installer whose
 //     `create-mono-agent`/`mono-agent` bins delegate to `@mono-agent/agent-app`;
 //     carries no responsibility of its own and is exempt from the `@mono-agent/`
@@ -109,10 +110,12 @@ export const packageCatalog = [
   {
     dir: "memory-supermemory",
     name: "@mono-agent/memory-supermemory",
+    path: "extras/memory-supermemory",
     category: "context",
     responsibility: "Provides a MemoryStore over an external Supermemory instance (local OSS binary or hosted cloud) via its REST API: server-side extraction, hybrid recall, and best-effort writes.",
-    allowedDependencyCategories: ["core", "context"],
+    allowedDependencyCategories: ["core"],
     publishable: true,
+    tier: "plugin",
   },
   {
     dir: "create-mono-agent",

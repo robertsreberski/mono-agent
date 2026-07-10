@@ -163,10 +163,15 @@ export function channelSelectOptions(options: { readonly readyOnly?: boolean } =
  * Memory options: a leading "None (stateless)" whose empty-string value maps to
  * `memory: undefined`, then every memory module in catalog order.
  */
-export function memorySelectOptions(): WizardSelectOption[] {
+export function memorySelectOptions(
+  options: { readonly includeOptionalPlugins?: boolean } = {},
+): WizardSelectOption[] {
   return [
     { value: "", label: "None (stateless)", hint: "no cross-conversation memory" },
-    ...modulesByKind("memory").map((module) => ({
+    ...modulesByKind("memory").filter((module) =>
+      module.wizardSelectable !== false
+      || (options.includeOptionalPlugins === true && module.id === "memory:supermemory")
+    ).map((module) => ({
       value: module.id,
       label: module.title,
       hint: module.summary,
