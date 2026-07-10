@@ -17,6 +17,7 @@ export const MEMORY_BENCHMARK_GATES = Object.freeze({
   staleRecallRate: 0.05,
   falseRecallRate: 0.05,
 });
+const SHARED_RETRIEVAL_SUPERSET = 50;
 
 const FAST_RECORDS = [
   record("fact-cobalt", "Morgan selected cobalt as the deployment color."),
@@ -84,7 +85,10 @@ export async function runMemoryBenchmark(options = {}) {
 
     for (const item of fixture.cases) {
       const started = performance.now();
-      const hits = await db.recall(item.query, { topK: 8 });
+      // Match the app-owned service: automatic recall fetches one bounded
+      // superset that can also satisfy the explicit tool limit without a
+      // second backend lookup for the same normalized query.
+      const hits = await db.recall(item.query, { topK: SHARED_RETRIEVAL_SUPERSET });
       searchLatencies.push(performance.now() - started);
       const automatic = hits
         .filter((hit) => hit.score >= AUTO_RECALL_MIN_SCORE)

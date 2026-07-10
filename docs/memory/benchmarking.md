@@ -18,7 +18,7 @@ The fast suite covers direct facts, paraphrases, updates/contradictions, tempora
 - stale recall at most 5%
 - false recall at most 5%
 
-The report also includes Recall@1/8, nDCG@8, context bytes, indexing/search latency, storage bytes, embedding calls/texts/input tokens/cost, LLM calls/tokens/cost, duplicate ratio, vector coverage, and the benchmark-owned serialized indexing queue's drain time. Zero LLM cost in the fast suite is literal: the suite never invokes a chat model.
+The report also includes Recall@1/8, nDCG@8, context bytes, indexing/search latency, storage bytes, embedding calls/texts/input tokens/cost, LLM calls/tokens/cost, duplicate ratio, vector coverage, and the benchmark-owned serialized indexing queue's drain time. Search latency uses the same bounded 50-hit backend superset as the shared app retrieval service, then measures automatic recall from its confidence-gated five-hit slice. Zero LLM cost in the fast suite is literal: the suite never invokes a chat model.
 
 Real providers and larger external suites are explicit opt-ins and are not part of normal CI:
 
