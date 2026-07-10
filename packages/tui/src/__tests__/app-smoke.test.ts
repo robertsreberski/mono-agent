@@ -16,6 +16,9 @@ async function frame(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 80));
 }
 
+const ESC = String.fromCharCode(27);
+const UP = `${ESC}[A`;
+
 function echoResponder(): AgentResponder {
   return {
     respond: async (request, stream) => {
@@ -29,6 +32,80 @@ function echoResponder(): AgentResponder {
 }
 
 describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
+  it("runs the hidden configuration invitation, marks one operator response, and confirms out of band", async () => {
+    const requests: Array<{ text: string; metadata?: Record<string, unknown> }> = [];
+    let takeCount = 0;
+    let approved = 0;
+    const terminal = new TestTerminal(110, 34);
+    const responder: AgentResponder = {
+      respond: async (request) => {
+        requests.push({ text: request.text, ...(request.metadata === undefined ? {} : { metadata: request.metadata }) });
+        return { text: requests.length === 1 ? "How would you like to configure me further?" : "I prepared a safe proposal." };
+      },
+    };
+    const handle = startMonoAgentTui({
+      terminal,
+      responder,
+      flushIntervalMs: 0,
+      configuration: {
+        initialPrompt: "begin configuration",
+        prompt: "begin configuration",
+        takeProposal: async () => {
+          takeCount += 1;
+          return takeCount === 2
+            ? { id: "p1", title: "Agent configuration proposal", rationale: "Be concise", details: ["replace /agent/name = \"Concise\""] }
+            : undefined;
+        },
+        approve: async () => {
+          approved += 1;
+          return { message: "Applied configuration change c1. A fresh provider conversation is now active." };
+        },
+        reject: async () => ({ message: "Rejected" }),
+      },
+    });
+    try {
+      await frame();
+      await frame();
+      expect(requests[0]?.text).toBe("begin configuration");
+      expect(requests[0]?.metadata).toMatchObject({
+        source: "tui",
+        tui: { local: true, configuration: true },
+      });
+      const firstOutput = stripAnsi(terminal.output());
+      expect(firstOutput).toContain("How would you like to configure me further?");
+      expect(firstOutput).not.toContain("you begin configuration");
+
+      for (const char of "make the name concise") terminal.feed(char);
+      terminal.feed("\r");
+      await frame();
+      await frame();
+      expect(requests[1]?.metadata).toMatchObject({ tui: { local: true, configuration: true } });
+      expect(stripAnsi(terminal.output())).toContain("Agent configuration proposal");
+      expect(stripAnsi(terminal.output())).toContain("Approve and reload");
+
+      terminal.feed(UP); // Default selection is Reject; approval is deliberately one key away.
+      terminal.feed("\r");
+      await frame();
+      expect(approved).toBe(1);
+      expect(stripAnsi(terminal.output())).toContain("fresh provider conversation");
+
+      for (const char of "do an ordinary task") terminal.feed(char);
+      terminal.feed("\r");
+      await frame();
+      expect(requests[2]?.metadata).toMatchObject({ tui: { local: true } });
+      expect((requests[2]?.metadata?.tui as Record<string, unknown>).configuration).toBeUndefined();
+      expect(takeCount).toBe(2);
+
+      for (const char of "/configure") terminal.feed(char);
+      terminal.feed("\r");
+      await frame();
+      expect(requests[3]).toMatchObject({ text: "begin configuration" });
+      expect(requests[3]?.metadata).toMatchObject({ tui: { local: true, configuration: true } });
+    } finally {
+      await handle.stop();
+    }
+  });
+
   it("boots, runs a full turn from keyboard input, and renders insight cells", async () => {
     const terminal = new TestTerminal(100, 30);
     const history = createInMemoryTuiHistory();

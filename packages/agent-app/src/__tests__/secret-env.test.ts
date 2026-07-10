@@ -580,6 +580,9 @@ describe("mergeSecretEnvFile", () => {
   it("tightens an existing env to mode 0600 even when operator values win", async () => {
     const envPath = join(dir, ".env");
     await writeFile(envPath, "TOKEN=operator-value\n", { mode: 0o644 });
+    // The host may run Codex under umask 077; force the precondition this test
+    // is specifically exercising instead of assuming writeFile can widen it.
+    await chmod(envPath, 0o644);
 
     const result = await mergeSecretEnvFile(envPath, { TOKEN: "must-not-win" });
 

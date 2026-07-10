@@ -115,7 +115,7 @@ cd my-agent
 mono-agent init
 ```
 
-On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: name the agent, search the Pi/Codex/Claude catalogs, configure any number of fallbacks and their exact efforts, then choose capabilities and route safety. Escape goes back. A concrete creation review precedes provider/SRT mutations. It proves every selected route sequentially and offers immediate start only when every selected expectation is ready; interrupted preflight can resume fingerprint-matching successes or restart all checks. Pass `--yes` or any flag (or run in a non-TTY) for scaffold-only automation; that path never makes a readiness claim:
+On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: name and purpose the agent, search the Pi/Codex/Claude catalogs, configure any number of fallbacks and their exact efforts, then choose capabilities and route safety. Escape goes back. A concrete creation review precedes provider/SRT mutations. It proves every selected route sequentially and opens `mono-agent tui --local --configure` only when every selected expectation is ready; interrupted preflight can resume fingerprint-matching successes or restart all checks. Pass `--yes` or any flag (or run in a non-TTY) for scaffold-only automation; that path never makes a readiness claim and prints the exact local-TUI continuation command:
 
 ```bash
 mono-agent init --preset telegram-assistant --yes   # scaffold from a preset

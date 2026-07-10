@@ -31,6 +31,7 @@ import {
   presetSelectOptions,
   toolMultiselectOptions,
   validateWizardAgentName,
+  validateWizardAgentPurpose,
   wizardCancelIntentForKey,
   WizardCancelled,
 } from "../wizard/prompts.js";
@@ -226,6 +227,9 @@ describe("wizard prompt builders", () => {
     expect(validateWizardAgentName(" Research Companion ")).toBeUndefined();
     expect(validateWizardAgentName("line one\nline two")).toContain("single-line");
     expect(validateWizardAgentName("x".repeat(81))).toContain("80");
+    expect(validateWizardAgentPurpose("Coordinate project research.")).toBeUndefined();
+    expect(validateWizardAgentPurpose("line one\nline two")).toContain("one line");
+    expect(validateWizardAgentPurpose("x".repeat(241))).toContain("240");
     expect(wizardCancelIntentForKey({ name: "escape" })).toBe("back");
     expect(wizardCancelIntentForKey({ name: "c", ctrl: true })).toBe("exit");
     expect(previousWizardStep(0)).toBeUndefined();
@@ -314,8 +318,7 @@ describe("provider setup planner", () => {
     expect(piLogin).toMatchObject({ cwd: "/agent/.pi" });
     expect("command" in piLogin! ? piLogin.command : []).toEqual([
       process.execPath,
-      expect.stringMatching(/@earendil-works[\/+]pi-ai.*dist[\/+]cli\.js$/u),
-      "login",
+      expect.stringMatching(/pi-oauth-login-main\.js$/u),
       "openai-codex",
     ]);
     expect(providerSetupActionCommandLine(piLogin!)).toBe("mono-agent auth login openai-codex --pi-auth-path /agent/.pi/auth.json");
@@ -365,7 +368,7 @@ describe("provider setup planner", () => {
 
       expect(fakeSpawn).toHaveBeenCalledWith(
         process.execPath,
-        [expect.stringMatching(/@earendil-works[\/+]pi-ai.*dist[\/+]cli\.js$/u), "login", "openai-codex"],
+        [expect.stringMatching(/pi-oauth-login-main\.js$/u), "openai-codex"],
         expect.objectContaining({ cwd: expect.stringMatching(/\.mono-agent-pi-auth-/u) }),
       );
       expect(results).toHaveLength(1);
@@ -381,18 +384,17 @@ describe("provider setup planner", () => {
     }
   });
 
-  it("runs a supported Pi login from a hoisted packed-install layout and stages a custom auth path", async () => {
+  it("runs the app-owned Pi OAuth wrapper from a packed layout and stages a custom auth path", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "mono-agent-provider-setup-"));
     try {
-      const nodeModulesPath = join(tmp, "global", "lib", "node_modules");
-      const bundledPiCliPath = join(nodeModulesPath, "@earendil-works", "pi-ai", "dist", "cli.js");
-      await mkdir(dirname(bundledPiCliPath), { recursive: true });
-      await writeFile(bundledPiCliPath, "// bundled Pi CLI fixture\n", "utf8");
+      const bundledLoginCliPath = join(tmp, "global", "lib", "node_modules", "@mono-agent", "agent-app", "dist", "pi-oauth-login-main.js");
+      await mkdir(dirname(bundledLoginCliPath), { recursive: true });
+      await writeFile(bundledLoginCliPath, "// app-owned Pi OAuth wrapper fixture\n", "utf8");
       const authPath = join(tmp, "nested", ".pi", "credentials.json");
       const plan = planProviderSetup({
         cwd: tmp,
         piAuthPath: "nested/.pi/credentials.json",
-        piCliPath: resolvePiCliPath([nodeModulesPath]),
+        piCliPath: bundledLoginCliPath,
         modelRefs: ["pi:openai-codex:gpt-5.6-terra"],
       });
       const fakeSpawn = vi.fn((_file: string, _args: readonly string[], opts: { cwd?: string }) => {
@@ -408,12 +410,13 @@ describe("provider setup planner", () => {
 
       expect(fakeSpawn).toHaveBeenCalledWith(
         process.execPath,
-        [bundledPiCliPath, "login", "openai-codex"],
+        [bundledLoginCliPath, "openai-codex"],
         expect.objectContaining({ cwd: expect.stringMatching(/\.mono-agent-pi-auth-/u) }),
       );
       expect(results[0]?.status).toBe("ok");
       expect(JSON.parse(await readFile(authPath, "utf8"))).toEqual({ "openai-codex": { type: "oauth", refresh: "new" } });
       expect((await stat(authPath)).mode & 0o777).toBe(0o600);
+      expect(resolvePiCliPath()).toMatch(/(?:src|dist)\/pi-oauth-login-main\.js$/u);
       expect(await readdir(dirname(authPath))).toEqual(["credentials.json"]);
     } finally {
       await rm(tmp, { recursive: true, force: true });

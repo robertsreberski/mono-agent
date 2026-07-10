@@ -28,7 +28,7 @@ npm i -g @mono-agent/agent-app      # the scoped host that owns the CLI
 
 The production first-run path is the interactive wizard: bare `mono-agent init` on a TTY asks for the agent's public display name, then walks through a preset (or custom) build using the same model, reasoning effort, channel, memory, tool, and sandbox decisions either way. The primary and fallback pickers are searchable and combine every model for the guided Pi providers (Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go), Codex's live account catalog when available, the Claude SDK catalog, and discovered OpenCode-Go/Ollama/LM Studio models. Other hand-authored Pi refs and `providers.local[]` remain runtime-compatible but are not advertised as guided cloud-provider integrations. A live Codex provider default leads the list; the offline curated fallback is `codex:gpt-5.6-terra`. Offline metadata never guesses supported effort levels, so that entry offers **Provider default** until live `model/list` data is available. GPT-5.6 Sol remains explicitly selectable as `codex:gpt-5.6-sol` or `pi:openai-codex:gpt-5.6-sol`. If Codex is missing, install it only from the [official Codex CLI instructions](https://developers.openai.com/codex/cli/); mono-agent never auto-installs Codex.
 
-The wizard distinguishes credential detection from verified readiness. It makes one disposable no-tool call for **every selected runtime route**, in order, using a 90-second cloud or 240-second local deadline per route. A detected Codex/Claude login or Pi auth-store entry skips redundant authentication, but only that exact successful model call becomes verified. Escape or Ctrl-C interrupts the current preflight safely; the recovery menu can resume the still-matching plan, restart every route check, edit choices, or cancel without writing. Authentication repair invalidates every prior route proof because credential bytes may have changed. Provider failure, timeout, empty output, or any tool action fails that route. The wizard atomically creates the config only after the explicit `Create “<name>”?` review, validates that exact snapshot, and rechecks it before the **Agent ready** label or immediate start. Any flag or non-TTY invocation is intentionally scaffold-only and makes no readiness claim.
+The wizard distinguishes credential detection from verified readiness. It makes one disposable no-tool call for **every selected runtime route**, in order, using a 90-second cloud or 240-second local deadline per route. A detected Codex/Claude login or Pi auth-store entry skips redundant authentication, but only that exact successful model call becomes verified. Escape or Ctrl-C interrupts the current preflight safely; the recovery menu can resume the still-matching plan, restart every route check, edit choices, or cancel without writing. Authentication repair invalidates every prior route proof because credential bytes may have changed. Provider failure, timeout, empty output, or any tool action fails that route. The wizard atomically creates the config only after the explicit `Create “<name>”?` review, validates that exact snapshot, and rechecks it before the **Agent ready** label and local-TUI handoff. Any flag or non-TTY invocation is intentionally scaffold-only and makes no readiness claim.
 
 That proof uses the environment a later worker can reproduce: `.env` values, securely entered selected secrets, the resolved Pi store, and only operational host values such as `PATH` and `HOME`. Shell-only provider credentials and `MONO_AGENT_*` config overrides cannot make setup pass and then disappear under launchd; persisted non-secret config overrides are named and rejected so the generated JSON is the configuration that is actually validated and started.
 
@@ -63,7 +63,7 @@ node "$repo/packages/agent-app/dist/cli.js" init --model pi:openai-codex:gpt-5.6
 node "$repo/packages/agent-app/dist/cli.js" validate
 ```
 
-`validate` reports structural errors and `waiting` dependencies; by itself it does not make a model call or an **Agent ready** claim. Bare interactive `init` is the path that proves every selected runtime route and gates immediate start on the full report. For a direct Codex route, install and sign in to the Codex CLI first:
+`validate` reports structural errors and `waiting` dependencies; by itself it does not make a model call or an **Agent ready** claim. Bare interactive `init` is the path that proves every selected runtime route and gates the in-process local TUI on the full report. For a direct Codex route, install and sign in to the Codex CLI first:
 
 ```bash
 codex login                       # or run `codex` and follow its sign-in prompt
@@ -79,7 +79,7 @@ curl -s http://127.0.0.1:<PORT>/webhook/invoke \
 
 `<PORT>` comes from the `start` output. A reply means runtime, model, identity, and channel wiring all work. On a local build with packages already installed and built, `init` plus `validate` should take well under a minute; first reply time depends on provider authentication, network latency, and model availability.
 
-`init` scaffolds `mono-agent.config.json` (webhook enabled as the credential-free smoke channel), an `IDENTITY.md` that references the folder's existing knowledge, and `.mono-agent/` working dirs without overwriting existing scaffold/config files. Guided secret setup is the explicit exception: after review it may securely update `.env` and `.gitignore`. The config declares the public `agent.name`, primary model, canonical ordered `runtime.fallbacks`, per-route effort and safety mode, channels, skills, MCP servers, memory, sandbox, and observability. `agent.name` is display metadata (including default trace/A2A labels), never an input to filesystem paths, service ids, sessions, or provider identity. Legacy `runtime.fallbackModels` configs continue to load and retain their historical global-effort inheritance.
+`init` scaffolds `mono-agent.config.json` (webhook enabled as the credential-free smoke channel), a purpose-derived `IDENTITY.md` that references the folder's existing knowledge, two versioned project-local configuration skills, and `.mono-agent/` working dirs without overwriting existing scaffold/config files. Guided secret setup is the explicit exception: after review it may securely update `.env` and `.gitignore`. A successful interactive readiness run continues directly into `mono-agent tui --local --configure`; it does not create background service state. The config declares the public `agent.name`, primary model, canonical ordered `runtime.fallbacks`, per-route effort and safety mode, channels, skills, MCP servers, memory, sandbox, and observability. `agent.name` is display metadata (including default trace/A2A labels), never an input to filesystem paths, service ids, sessions, or provider identity. Legacy `runtime.fallbackModels` configs continue to load and retain their historical global-effort inheritance.
 
 ### Presets & the setup wizard
 
@@ -107,6 +107,8 @@ The skill asks discovery questions (runtime + backup models, channels incl. cron
 ```bash
 mono-agent install-skill   # copies into ~/.claude/skills and ~/.agents/skills
 ```
+
+This authoring-oriented composer is not auto-selected inside generated agents. New agents instead select the narrower `mono-agent-configure` and `mono-agent-memory` project skills with index disclosure. Check or safely refresh their managed copies with `mono-agent install-skill --project --check` / `--update`; modified copies are never overwritten.
 
 To use it as a selected mono-agent skill instead, point `context.skillsRoot` at `./packages/agent-app/skills` and add `mono-agent-composer` to `context.selectedSkills`.
 
@@ -248,7 +250,9 @@ credentials elsewhere. Subscription/account-backed providers include
 `pi:opencode-go:*`. OpenAI-Codex, Anthropic, and GitHub Copilot use Pi
 OAuth/account flows where supported; OpenCode-Go uses an API key (`OPENCODE_API_KEY`)
 that guided setup can save into the Pi auth store. Recover a Pi OAuth provider
-with `mono-agent auth login <provider>`. Standalone OpenCode-Go login prompts for
+with `mono-agent auth login <provider>`. Anthropic keeps the localhost callback
+active while accepting a pasted final redirect URL; Pi validates its code and
+OAuth state before exchange. Standalone OpenCode-Go login prompts for
 the key with masked TTY input; on a headless host, opt in to redirected input:
 
 ```bash
@@ -257,8 +261,8 @@ printf '%s\n' "$OPENCODE_API_KEY" | mono-agent auth login opencode-go --api-key-
 
 The command never copies an ambient key implicitly. It uses the configured auth path
 (`--pi-auth-path` → `MONO_AGENT_PI_AUTH_PATH` → `providers.piAuthPath` → default),
-validates the requested credential and unchanged siblings in the bundled Pi CLI's
-staged output, then promotes it under a durable lock with owner-only, pathname
+validates the requested credential and unchanged siblings in the app-owned
+terminal wrapper's staged Pi OAuth output, then promotes it under a durable lock with owner-only, pathname
 no-clobber semantics. The canonical parent must be current-user-owned and not
 group/world-writable; source, staged, and recovery credential inodes must also be
 current-user-owned with exactly the expected link identity. An owned existing

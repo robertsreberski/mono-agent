@@ -642,7 +642,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "memory.mode": "journal",
     "memory.path": "./.mono-agent/memory",
     "memory.embeddings.provider": "ollama",
-    "memory.embeddings.model": "nomic-embed-text",
+    "memory.embeddings.model": "nomic-embed-text:v1.5",
     "memory.llm.provider": "agent-host",
     "memory.llm.model": "pi:openai-codex:gpt-5.6-terra",
     "sandbox.mode": "native",

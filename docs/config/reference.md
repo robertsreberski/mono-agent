@@ -60,7 +60,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `memory.embeddings.circuitBreaker.failureThreshold` | `integer` | `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | 3 | `3` | Configures embeddings.circuitBreaker.failureThreshold for the memory section. |
 | `memory.embeddings.dim` | `integer` | `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | unset | `1` | Configures embeddings.dim for the memory section. |
 | `memory.embeddings.endpoint` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT` | unset | `example` | Configures embeddings.endpoint for the memory section. |
-| `memory.embeddings.model` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | unset | `nomic-embed-text` | Configures embeddings.model for the memory section. |
+| `memory.embeddings.model` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | unset | `nomic-embed-text:v1.5` | Configures embeddings.model for the memory section. |
 | `memory.embeddings.provider` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | unset | `ollama` | Configures embeddings.provider for the memory section. |
 | `memory.embeddings.timeoutMs` | `integer` | `MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS` | 10000 | `10000` | Configures embeddings.timeoutMs for the memory section. |
 | `memory.llm.endpoint` | `string` | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | unset | `example` | Configures llm.endpoint for the memory section. |
