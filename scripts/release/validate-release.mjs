@@ -1,6 +1,9 @@
 #!/usr/bin/env node
+import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+
+import { MINIMUM_NODE_VERSION, SUPPORTED_NODE_ENGINE } from "../node-version.mjs";
 
 import {
   DEPENDENCY_SECTIONS,
@@ -33,6 +36,8 @@ export function releaseVersionFromTag(tag) {
 export function validateRelease({
   tag = process.env.GITHUB_REF_NAME,
   packages = discoverPackages(),
+  rootPackageJson = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8")),
+  nodeVersionFile = fs.readFileSync(path.join(REPO_ROOT, ".nvmrc"), "utf8").trim(),
   silent = false,
 } = {}) {
   const version = releaseVersionFromTag(tag);
@@ -42,6 +47,13 @@ export function validateRelease({
 
   if (!publishable.length) {
     issues.push("no publishable packages found");
+  }
+
+  if (rootPackageJson.engines?.node !== SUPPORTED_NODE_ENGINE) {
+    issues.push(`root package.json engines.node must be ${SUPPORTED_NODE_ENGINE}; found ${rootPackageJson.engines?.node ?? "(missing)"}`);
+  }
+  if (nodeVersionFile !== MINIMUM_NODE_VERSION) {
+    issues.push(`.nvmrc must be ${MINIMUM_NODE_VERSION}; found ${nodeVersionFile || "(empty)"}`);
   }
 
   for (const pkg of publishable) {
@@ -55,6 +67,9 @@ export function validateRelease({
     }
     if (pkg.publishConfig?.access !== "public") {
       issues.push(`${pkg.name} publishConfig.access must be public`);
+    }
+    if (pkg.packageJson.engines?.node !== SUPPORTED_NODE_ENGINE) {
+      issues.push(`${pkg.name} engines.node must be ${SUPPORTED_NODE_ENGINE}; found ${pkg.packageJson.engines?.node ?? "(missing)"}`);
     }
   }
 
