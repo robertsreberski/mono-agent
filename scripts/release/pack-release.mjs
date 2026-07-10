@@ -70,29 +70,34 @@ export function assertPackResult(pkg, packed, packDestination) {
   };
 }
 
+export function packReleasePackage(pkg, packDestination, options = {}) {
+  const spawn = options.spawn ?? spawnSync;
+  const log = options.log ?? console.log;
+  const args = ["--dir", pkg.relativeDir, "pack", "--pack-destination", packDestination, "--json"];
+  log(`$ pnpm ${args.join(" ")}`);
+  const result = spawn("pnpm", args, {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+
+  if (result.status !== 0) {
+    process.stderr.write(result.stdout || "");
+    process.stderr.write(result.stderr || "");
+    const error = new Error(`${pkg.name} pnpm pack failed`);
+    error.exitCode = result.status || 1;
+    throw error;
+  }
+
+  const packed = parsePnpmPackOutput(result.stdout);
+  const details = assertPackResult(pkg, packed, packDestination);
+  log(`${packed.name}@${packed.version}: ${details.fileCount} files, ${path.basename(details.tarballPath)} (${details.tarballSize} bytes)`);
+  return { ...details, name: packed.name, version: packed.version };
+}
+
 function runPnpmPack(pkg) {
   const packDestination = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-release-pack-"));
-
   try {
-    const args = ["--dir", pkg.relativeDir, "pack", "--pack-destination", packDestination, "--json"];
-    console.log(`$ pnpm ${args.join(" ")}`);
-    const result = spawnSync("pnpm", args, {
-      cwd: REPO_ROOT,
-      encoding: "utf8",
-    });
-
-    if (result.status !== 0) {
-      process.stderr.write(result.stdout || "");
-      process.stderr.write(result.stderr || "");
-      const error = new Error(`${pkg.name} pnpm pack failed`);
-      error.exitCode = result.status || 1;
-      throw error;
-    }
-
-    const packed = parsePnpmPackOutput(result.stdout);
-    const { fileCount, tarballPath, tarballSize } = assertPackResult(pkg, packed, packDestination);
-
-    console.log(`${packed.name}@${packed.version}: ${fileCount} files, ${path.basename(tarballPath)} (${tarballSize} bytes)`);
+    packReleasePackage(pkg, packDestination);
   } finally {
     fs.rmSync(packDestination, { recursive: true, force: true });
   }
