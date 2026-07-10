@@ -12,7 +12,7 @@ mono-agent's memory engine is pluggable. `memory.backend` selects it:
   (`@mono-agent/memory/store` + `@mono-agent/memory/bujo`) across its three tiers
   (`lite` / `journal` / `bujo`). Fully local: SQLite + markdown notes, optional Ollama
   embeddings, optional local chat model.
-- **Supermemory** (`backend: "supermemory"`) — an external memory service
+- **Supermemory** (`backend: "supermemory"`) — an explicitly installed plugin backed by an external memory service
   ([supermemory.ai](https://supermemory.ai)) reached over REST. Runs locally as a single
   OSS binary or against the hosted cloud. It extracts and consolidates memories
   server-side.
@@ -20,6 +20,14 @@ mono-agent's memory engine is pluggable. `memory.backend` selects it:
 Both implement the same internal `MemoryStore` contract and surface through the same
 `MemoryRecall` tool, so the agent's behavior is identical from the model's point of
 view — what differs is where memory lives, how it's built, and what it costs to run.
+
+Supermemory is not in the default app install. Before selecting it, install the
+exact lockstep package version printed by `mono-agent --version`:
+
+```bash
+APP_VERSION="$(mono-agent --version | sed 's/^mono-agent //')"
+npm install "@mono-agent/memory-supermemory@${APP_VERSION}"
+```
 
 > Terminology: "BuJo" names the whole built-in engine here. Its top `bujo` tier (LLM
 > capture + entity graph + consolidation) is the fairest like-for-like comparison with
@@ -39,7 +47,7 @@ view — what differs is where memory lives, how it's built, and what it costs t
 | Maintenance | `bujo`: lightweight consolidation every two hours by default (in-app scheduler) | Consolidation happens server-side; BuJo scheduled consolidation is a no-op |
 | Cost model | Your tokens for `bujo` capture; embeddings local | Extraction runs on Supermemory's configured LLM endpoint |
 | Privacy / ownership | Fully local, plain-text markdown you can read and `grep` | Local binary keeps data on-machine; the hosted cloud sends it out |
-| Setup effort | Pull Ollama models (for `journal`/`bujo`); zero extra services for `lite` | Install + run `supermemory-server` (and point it at an LLM) |
+| Setup effort | Pull Ollama models (for `journal`/`bujo`); zero extra services for `lite` | Install the optional mono-agent plugin plus `supermemory-server` (and point it at an LLM) |
 | Lock-in / portability | Open SQLite + markdown; no service | Data lives in Supermemory; no shared index with BuJo |
 | `MemoryRecall` tool | Same tool, same shape | Same tool (proxies Supermemory search behind the same name) |
 
@@ -50,8 +58,9 @@ BuJo is a single embedded SQLite database plus living markdown notes under
 `memory.path` — everything is on disk, human-readable, and yours. Supermemory is a
 separate service: the OSS binary `supermemory-server` (default
 `http://127.0.0.1:6767`) with an embedded graph engine, or the hosted cloud. With
-Supermemory there is no local mono-agent store — memory lives in the instance, and
-`memory.path`/`mode`/`embeddings`/`llm` are ignored.
+Supermemory there is no local mono-agent store — memory lives in the instance. The
+resolved config retains compatibility defaults for `memory.path`/`mode`, but operators
+do not need to set them and the plugin ignores them; `embeddings`/`llm` are also ignored.
 
 ### Memory extraction
 This is the biggest conceptual difference. BuJo's `bujo` tier runs an **in-app** LLM
@@ -104,7 +113,7 @@ BuJo (`bujo` tier — full capture + consolidation):
 }
 ```
 
-Supermemory (server-side extraction — no `mode`/`path`/`embeddings`/`llm`):
+Supermemory (server-side extraction — no local path, embeddings, or memory LLM required):
 
 ```json
 {
