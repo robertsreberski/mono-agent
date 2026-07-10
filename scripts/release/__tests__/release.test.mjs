@@ -314,6 +314,23 @@ describe("current launch manifest", () => {
     expect(publishableNames).toContain("@mono-agent/observability");
   });
 
+  test("keeps Supermemory publishable but outside the default app dependency closure", () => {
+    const plugin = packageCatalog.find((entry) => entry.name === "@mono-agent/memory-supermemory");
+    expect(plugin).toMatchObject({
+      path: "extras/memory-supermemory",
+      publishable: true,
+      tier: "plugin",
+    });
+
+    const app = JSON.parse(fs.readFileSync(
+      new URL("../../../packages/agent-app/package.json", import.meta.url),
+      "utf8",
+    ));
+    for (const section of ["dependencies", "optionalDependencies", "peerDependencies"]) {
+      expect(app[section]?.["@mono-agent/memory-supermemory"]).toBeUndefined();
+    }
+  });
+
   test("validates the repository for its current release tag", async () => {
     // Derive the version from a workspace manifest so this test keeps
     // validating the real repository state across version bumps.

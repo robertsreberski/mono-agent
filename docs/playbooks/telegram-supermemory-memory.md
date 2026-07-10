@@ -27,7 +27,14 @@ A Telegram bot that answers via long-polling, captures every turn into a local S
 
 ## Prerequisites
 
-1. **Install and run Supermemory** (one binary, no Docker):
+1. **Install the optional mono-agent plugin at the exact app version:**
+
+   ```bash
+   APP_VERSION="$(mono-agent --version | sed 's/^mono-agent //')"
+   npm install "@mono-agent/memory-supermemory@${APP_VERSION}"
+   ```
+
+2. **Install and run Supermemory** (one binary, no Docker):
 
    ```bash
    curl -fsSL https://supermemory.ai/install | bash
@@ -38,7 +45,7 @@ A Telegram bot that answers via long-polling, captures every turn into a local S
 
    It serves on `http://127.0.0.1:6767` and **requires the bearer key it prints** — save it.
 
-2. Pull the runtime model you reference (and Ollama, if you use it for both the agent and Supermemory's extractor).
+3. Pull the runtime model you reference (and Ollama, if you use it for both the agent and Supermemory's extractor).
 
 ## Configuration
 
@@ -55,8 +62,6 @@ Select the backend with `memory.backend` and point it at your instance. `mode` a
   },
   "memory": {
     "backend": "supermemory",
-    "mode": "lite",
-    "path": "./.mono-agent/memory",
     "writeMode": "capture",
     "supermemory": {
       "baseUrl": "http://127.0.0.1:6767",
@@ -85,11 +90,11 @@ If you omit `supermemory.container`, it defaults to the agent's trace `sourceId`
 ## Validate and run
 
 ```bash
-mono-agent validate --preset telegram-supermemory
+mono-agent validate
 mono-agent start
 ```
 
-`validate` reports the memory section as `ok` once the config is well-formed (it does not ping the server — start `supermemory-server` first so captures and recall actually land).
+`validate` fails with the exact matching plugin install command when the optional package is absent. Once the package and config are present it reports the memory section as `ok` (it does not ping the server — start `supermemory-server` first so captures and recall actually land).
 
 ## Notes and limits
 

@@ -8,6 +8,7 @@ import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
 import { validateMonoAgentFolder } from "../doctor.js";
 import type { SdkAuthStatusExecFile } from "../doctor.js";
+import { agentAppPackageVersion } from "../package-version.js";
 
 let dir: string;
 
@@ -1678,6 +1679,54 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(text).toContain("agent-alpha");
     // bujo-only "Mode:" line is not used for external backends.
     expect(text).not.toMatch(/^Mode:/mu);
+  });
+
+  it("resolves the Supermemory validator from the explicit agent folder", async () => {
+    const packageRoot = join(
+      dir,
+      "node_modules",
+      "@mono-agent",
+      "memory-supermemory",
+    );
+    await mkdir(join(packageRoot, "dist"), { recursive: true });
+    await writeFile(
+      join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "@mono-agent/memory-supermemory",
+        version: agentAppPackageVersion(),
+        type: "module",
+        exports: {
+          ".": { import: "./dist/index.js" },
+          "./package.json": "./package.json",
+        },
+      }),
+      "utf8",
+    );
+    await writeFile(
+      join(packageRoot, "dist", "index.js"),
+      [
+        "export const createSupermemoryStore = () => ({});",
+        "export const validateSupermemoryConfig = () => ({",
+        "  valid: false, errors: ['agent-local-validator'],",
+        "});",
+      ].join("\n"),
+      "utf8",
+    );
+    const configPath = await writeMinimalConfig({
+      memory: {
+        backend: "supermemory",
+        mode: "lite",
+        path: dir,
+        writeMode: "capture",
+        supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("error");
+    expect(memory.details.join("\n")).toContain("agent-local-validator");
   });
 
   it("warns (status=waiting, no throw) when Ollama is unreachable", async () => {

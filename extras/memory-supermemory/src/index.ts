@@ -33,8 +33,55 @@ export interface CreateSupermemoryStoreConfig {
   readonly logger?: { warn(message: string): void };
 }
 
+export interface SupermemoryConfigValidation {
+  readonly valid: boolean;
+  readonly errors: readonly string[];
+}
+
+/**
+ * Validate plugin-owned service settings without making a network request.
+ * Connectivity remains the explicit live smoke because installation must not
+ * send agent data to an external service implicitly.
+ */
+export function validateSupermemoryConfig(
+  config: CreateSupermemoryStoreConfig,
+): SupermemoryConfigValidation {
+  const errors: string[] = [];
+  try {
+    const url = new URL(config.baseUrl);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      errors.push("baseUrl must use http or https.");
+    }
+    if (url.username.length > 0 || url.password.length > 0) {
+      errors.push("baseUrl must not contain credentials; use apiKey instead.");
+    }
+  } catch {
+    errors.push("baseUrl must be a valid absolute URL.");
+  }
+  if (config.container.trim().length === 0) {
+    errors.push("container must not be empty.");
+  }
+  if (config.apiKey !== undefined && config.apiKey.trim().length === 0) {
+    errors.push("apiKey must be omitted rather than set to an empty value.");
+  }
+  positiveNumberError(errors, "timeoutMs", config.timeoutMs);
+  positiveNumberError(errors, "maxBytes", config.maxBytes);
+  positiveIntegerError(errors, "searchLimit", config.searchLimit);
+  if (
+    config.threshold !== undefined
+    && (!Number.isFinite(config.threshold) || config.threshold < 0 || config.threshold > 1)
+  ) {
+    errors.push("threshold must be between 0 and 1.");
+  }
+  return { valid: errors.length === 0, errors };
+}
+
 /** Build a {@link SupermemoryMemoryStore} over the REST client. The single entry point hosts use. */
 export function createSupermemoryStore(config: CreateSupermemoryStoreConfig): SupermemoryMemoryStore {
+  const validation = validateSupermemoryConfig(config);
+  if (!validation.valid) {
+    throw new Error(`Invalid Supermemory configuration: ${validation.errors.join(" ")}`);
+  }
   const client = createSupermemoryHttpClient({
     baseUrl: config.baseUrl,
     containerTag: config.container,
@@ -50,4 +97,16 @@ export function createSupermemoryStore(config: CreateSupermemoryStoreConfig): Su
     ...(config.searchLimit === undefined ? {} : { recallLimit: config.searchLimit }),
     ...(config.logger === undefined ? {} : { logger: config.logger }),
   });
+}
+
+function positiveNumberError(errors: string[], field: string, value: number | undefined): void {
+  if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
+    errors.push(`${field} must be greater than zero.`);
+  }
+}
+
+function positiveIntegerError(errors: string[], field: string, value: number | undefined): void {
+  if (value !== undefined && (!Number.isInteger(value) || value <= 0)) {
+    errors.push(`${field} must be a positive integer.`);
+  }
 }

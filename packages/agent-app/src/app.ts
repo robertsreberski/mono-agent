@@ -1040,6 +1040,7 @@ class MonoAgentAppController implements MonoAgentApp {
     const observabilityContext = await this.observabilityContext();
     const responder = await createConfiguredAgentResponder({
       config: coreConfig,
+      cwd: this.cwd,
       runtime,
       ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
       ...(this.sandboxEngine === undefined ? {} : { sandboxEngine: this.sandboxEngine }),
@@ -1261,6 +1262,7 @@ class MonoAgentAppController implements MonoAgentApp {
         runEventSink: this.liveEventBus,
       };
       this.sharedMemory = await createConfiguredMemory(coreConfig, {
+        cwd: this.cwd,
         ...(logger === undefined ? {} : { logger }),
         observability,
       });

@@ -7,6 +7,8 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import type { CircuitBreakerEmbeddingOptions, EmbeddingProviderConfig } from "@mono-agent/memory/search";
 import * as z from "zod/v4";
 
+import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
+
 /**
  * Read-only memory recall, wired from the SINGLE `config.memory` block.
  *
@@ -350,7 +352,7 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
   // stack or the Supermemory client into the main process — only the spawned
   // recall child pays for the backend it actually serves.
   if (isSupermemorySettings(settings)) {
-    const { createSupermemoryStore } = await import("@mono-agent/memory-supermemory");
+    const { createSupermemoryStore } = await loadSupermemoryPlugin();
     const sm = settings.supermemory;
     return createSupermemoryStore({
       baseUrl: sm.baseUrl,

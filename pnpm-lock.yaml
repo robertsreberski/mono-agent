@@ -35,6 +35,9 @@ importers:
       '@mono-agent/memory':
         specifier: workspace:0.6.2
         version: link:packages/memory
+      '@mono-agent/memory-supermemory':
+        specifier: workspace:0.6.2
+        version: link:extras/memory-supermemory
       '@mono-agent/observability':
         specifier: workspace:0.6.2
         version: link:packages/observability
@@ -103,6 +106,12 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
 
+  extras/memory-supermemory:
+    dependencies:
+      '@mono-agent/agent-contracts':
+        specifier: workspace:0.6.2
+        version: link:../../packages/agent-contracts
+
   extras/whatsapp-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
@@ -138,9 +147,6 @@ importers:
       '@mono-agent/memory':
         specifier: workspace:0.6.2
         version: link:../memory
-      '@mono-agent/memory-supermemory':
-        specifier: workspace:0.6.2
-        version: link:../memory-supermemory
       '@mono-agent/observability':
         specifier: workspace:0.6.2
         version: link:../observability
@@ -255,12 +261,6 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
-
-  packages/memory-supermemory:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.6.2
-        version: link:../agent-contracts
 
   packages/observability:
     dependencies:

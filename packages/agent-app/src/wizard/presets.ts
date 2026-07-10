@@ -22,7 +22,7 @@ export interface WizardPreset {
 }
 
 /**
- * The six starter presets, in wizard-presentation order. Each maps to an existing
+ * The five built-in starter presets, in wizard-presentation order. Each maps to an existing
  * playbook and records the recipes it replaces so the Task 4 cutover stays honest.
  */
 export const PRESET_CATALOG: readonly WizardPreset[] = [
@@ -43,15 +43,6 @@ export const PRESET_CATALOG: readonly WizardPreset[] = [
     playbook: "telegram-personal-assistant-bujo.md",
     answers: { channels: ["channel:telegram"], memory: "memory:bujo" },
     replacesRecipes: ["personal-telegram-bujo"],
-  },
-  {
-    id: "telegram-supermemory",
-    title: "Telegram assistant (Supermemory)",
-    description: "A Telegram bot backed by an external Supermemory server.",
-    riskLevel: "medium",
-    playbook: "telegram-supermemory-memory.md",
-    answers: { channels: ["channel:telegram"], memory: "memory:supermemory" },
-    replacesRecipes: ["personal-telegram-supermemory"],
   },
   {
     id: "slack-bot",
