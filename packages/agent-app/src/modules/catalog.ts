@@ -331,8 +331,8 @@ const memorySupermemory: CapabilityModule = {
     },
     {
       id: "supermemoryApiKey",
-      label: "Supermemory API key",
-      description: "Bearer key printed by supermemory-server on first boot. Saved to .env; .env.example contains only a placeholder.",
+      label: "Supermemory API key (optional)",
+      description: "Bearer key for hosted or authenticated instances. Omit it for a keyless local service. Saved to .env; .env.example contains only a placeholder.",
       secret: true,
       envVar: "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY",
       required: false,
