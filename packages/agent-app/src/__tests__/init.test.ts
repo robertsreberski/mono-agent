@@ -1,11 +1,12 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseEnv } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
-import { initMonoAgentFolder } from "../init.js";
+import { initMonoAgentFolder, mergeSecretEnvFile } from "../init.js";
 import { defaultAnswers } from "../wizard/answers.js";
 import { findPreset, presetAnswers } from "../wizard/presets.js";
 
@@ -30,7 +31,7 @@ describe("initMonoAgentFolder", () => {
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
     expect(config.$schema).toBe(MONO_AGENT_CONFIG_SCHEMA_URL);
-    expect(config.runtime.model).toBe("pi:openai-codex:gpt-5.5");
+    expect(config.runtime.model).toBe("codex:gpt-5.6-terra");
     expect(config.runtime.maxTurns).toBeUndefined();
     expect(config.context.identityPath).toBe("./IDENTITY.md");
     expect(config.webhook.enabled).toBe(true);
@@ -40,12 +41,14 @@ describe("initMonoAgentFolder", () => {
 
     const identity = await readFile(result.identityPath, "utf8");
     expect(identity).toContain("# Identity");
+    expect(identity).toContain("You are Agent App Init");
   });
 
   it("composes the supplied answers (model + extra channels)", async () => {
     const result = await initMonoAgentFolder({
       dir,
       answers: defaultAnswers({
+        name: "Atlas",
         model: "pi:ollama:gemma4:31b",
         channels: ["channel:webhook", "channel:slack", "channel:cron"],
       }),
@@ -53,8 +56,10 @@ describe("initMonoAgentFolder", () => {
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
     expect(config.runtime.model).toBe("pi:ollama:gemma4:31b");
+    expect(config.agent).toEqual({ name: "Atlas" });
     expect(config.slack).toEqual({ enabled: true });
-    expect(config.cron).toEqual({ enabled: true });
+    expect(config.cron).toEqual({ dir: "cron" });
+    expect(await readFile(result.identityPath, "utf8")).toContain("You are Atlas, a mono agent");
   });
 
   it("writes fallback models, effort, and memory when the answers request them", async () => {
@@ -69,7 +74,11 @@ describe("initMonoAgentFolder", () => {
     });
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
-    expect(config.runtime.fallbackModels).toEqual(["pi:ollama:gemma4:31b"]);
+    expect(config.runtime.fallbacks).toEqual([{
+      model: "pi:ollama:gemma4:31b",
+      effort: "medium",
+    }]);
+    expect(config.runtime.fallbackModels).toBeUndefined();
     expect(config.runtime.effort).toBe("medium");
     expect(config.memory).toMatchObject({ mode: "journal", path: "./.mono-agent/memory" });
   });
@@ -99,16 +108,16 @@ describe("initMonoAgentFolder", () => {
       answers: presetAnswers(findPreset("telegram-assistant")!),
     });
 
-    expect(result.plan.envExample).toContain("MONO_AGENT_TELEGRAM_TOKEN");
+    expect(result.plan.envExample).toContain("MONO_AGENT_TELEGRAM_BOT_TOKEN");
     const envExample = await readFile(join(dir, ".env.example"), "utf8");
-    expect(envExample).toContain("MONO_AGENT_TELEGRAM_TOKEN=");
+    expect(envExample).toContain("MONO_AGENT_TELEGRAM_BOT_TOKEN=");
     const configText = await readFile(result.configPath, "utf8");
     expect(configText).not.toContain("telegramToken");
   });
 
   it("never overwrites existing files", async () => {
     const configPath = join(dir, "mono-agent.config.json");
-    await writeFile(configPath, JSON.stringify({ runtime: { model: "codex:gpt-5.5" } }));
+    await writeFile(configPath, JSON.stringify({ runtime: { model: "codex:gpt-5.6-terra" } }));
     await writeFile(join(dir, "IDENTITY.md"), "# Mine\n");
 
     const result = await initMonoAgentFolder({ dir });
@@ -116,7 +125,69 @@ describe("initMonoAgentFolder", () => {
     expect(result.skipped).toContain(configPath);
     expect(result.skipped).toContain(result.identityPath);
     const config = JSON.parse(await readFile(configPath, "utf8"));
-    expect(config.runtime.model).toBe("codex:gpt-5.5");
+    expect(config.runtime.model).toBe("codex:gpt-5.6-terra");
     expect(await readFile(result.identityPath, "utf8")).toBe("# Mine\n");
+  });
+
+  it("refuses to write generated capability files through a symlinked parent", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "agent-app-init-outside-"));
+    try {
+      await symlink(outside, join(dir, "cron"));
+      const answers = defaultAnswers({
+        channels: ["channel:cron"],
+        moduleInputs: { "channel:cron": { cronExpression: "0 8 * * *" } },
+      });
+
+      await expect(initMonoAgentFolder({ dir, answers })).rejects.toThrow(
+        /Refusing to create scaffold artifact through symbolic-link parent/u,
+      );
+      await expect(access(join(outside, "digest.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to create working directories through a symlinked scaffold parent", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "agent-app-workspace-outside-"));
+    try {
+      await symlink(outside, join(dir, ".mono-agent"));
+
+      await expect(initMonoAgentFolder({ dir })).rejects.toThrow(
+        /Refusing to create scaffold artifact through symbolic-link parent/u,
+      );
+      await expect(access(join(outside, "artifacts"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(join(outside, "workspace"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("merges required secrets into a private env file without replacing existing values or comments", async () => {
+    const envPath = join(dir, ".env");
+    await writeFile(envPath, "# retain me\nMONO_AGENT_TELEGRAM_BOT_TOKEN=already-set\nMONO_AGENT_SLACK_BOT_TOKEN=\n");
+    await mergeSecretEnvFile(envPath, {
+      MONO_AGENT_TELEGRAM_BOT_TOKEN: "replacement-must-not-win",
+      MONO_AGENT_SLACK_BOT_TOKEN: "new-value",
+    });
+    const env = await readFile(envPath, "utf8");
+    expect(env).toContain("# retain me");
+    expect(env).toContain("MONO_AGENT_TELEGRAM_BOT_TOKEN=already-set");
+    expect(parseEnv(env).MONO_AGENT_SLACK_BOT_TOKEN).toBe("new-value");
+    expect(await readFile(join(dir, ".gitignore"), "utf8")).toContain("/.env\n");
+    expect((await stat(envPath)).mode & 0o777).toBe(0o600);
+  });
+
+  it("reports secret persistence precisely without claiming a dry-run write", async () => {
+    const result = await initMonoAgentFolder({
+      dir,
+      dryRun: true,
+      secretValues: { MONO_AGENT_SLACK_BOT_TOKEN: "not-written" },
+    });
+
+    expect(result.secretsPersisted).toBe(false);
+    expect(result.secretPersistence).toMatchObject({ status: "planned", changed: true });
+    expect(result.changes).toContainEqual({ path: join(dir, ".env"), kind: "planned-create", sensitive: true });
+    await expect(readFile(join(dir, ".env"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(dir, ".gitignore"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

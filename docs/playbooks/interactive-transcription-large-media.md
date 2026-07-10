@@ -43,7 +43,7 @@ A Telegram agent that: asks the user for context before it acts (blocking), runs
 ```jsonc
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",
+    "model": "pi:openai-codex:gpt-5.6-terra",
     "fallbackModels": ["pi:opencode-go:kimi-k2.6"],
     "executionMode": "sdk",
     "session": { "mode": "continuous", "idleTimeoutMs": 1800000 }

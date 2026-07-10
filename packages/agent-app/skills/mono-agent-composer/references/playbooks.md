@@ -18,7 +18,7 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 
 ```json
 {
-  "runtime": { "model": "claude:claude-sonnet-4-6" },
+  "runtime": { "model": "pi:openai-codex:gpt-5.6-terra" },
   "telegram": { "enabled": true, "botToken": "...", "allowedChatIds": ["123456789"] },
   "memory": {
     "mode": "bujo", "path": "./.mono-agent/memory", "writeMode": "capture",
@@ -38,7 +38,7 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 
 ```json
 {
-  "runtime": { "model": "claude:claude-sonnet-4-6" },
+  "runtime": { "model": "pi:openai-codex:gpt-5.6-terra" },
   "slack": { "enabled": true, "botToken": "xoxb-...", "appToken": "xapp-...", "allowedChannelIds": ["C012345"], "botUserIds": ["U012345"], "mentionTextAliases": ["@agent"] },
   "tools": { "allowedTools": ["Read", "Grep", "SlackSendMessage", "deployTool"], "mcpConfigPath": "./mcp.json" },
   "concurrency": { "maxConcurrentRuns": 4, "maxPendingRuns": 8 }
@@ -164,13 +164,13 @@ const ext = createCollaboratorToolRuntimeExtension({
 
 ```json
 {
-  "runtime": { "model": "claude:claude-sonnet-4-6" },
+  "runtime": { "model": "pi:openai-codex:gpt-5.6-terra" },
   "tools": { "allowedTools": ["*"] },
   "sandbox": { "mode": "native", "network": { "mode": "localhost" }, "readableRoots": ["."], "writableRoots": ["."], "denyWrite": [".env", ".env.*", ".git/config", ".git/hooks/**"], "fallback": "fail-closed" }
 }
 ```
 **Steps:** `mono-agent init --memory journal` → leave tools at the allow-all default (`["*"]`); the **sandbox**, not an allowlist, is what constrains the code tools → `sandbox.mode native` + `network localhost` + deny-write defaults → keep `fallback: fail-closed` (do NOT set `unsafe-host-process`) → `validate` → `start`.
-**Smoke:** ask it to read a file + run Bash (works), then fetch an external URL or write `.env` (both blocked in the artifact). Note: provider CLI bridges run their own tool loops and may not be srt-wrapped — pair with provider sandboxing.
+**Smoke:** ask it to read a file + run Bash (works), then fetch an external URL or write `.env` (both blocked in the artifact). Keep every primary/fallback/trigger model on Pi; direct Codex, Claude, and direct OpenCode reject this mono-agent sandbox policy.
 
 ## 10. Phoenix-observed agent with the TUI
 **For:** an agent builder evaluating runs in a tracing dashboard.
@@ -212,6 +212,7 @@ const ext = createCollaboratorToolRuntimeExtension({
 }
 ```
 **Steps:** `ollama pull gemma4:31b` → `mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:openai-codex:gpt-5.5,pi:ollama:gemma4:31b` → add `providers.local` + `piNative.piSessionsRoot` → `validate` → `start`.
+**Boundary:** this mixed Pi/Claude chain intentionally omits the native mono-agent sandbox. Keep direct Codex chains all-direct; keep every route on Pi (including `pi:opencode-go:*`, not direct `opencode:*`) when `sandbox.mode` is `native`.
 **Smoke:** force a retryable primary failure; confirm the run result reports failover to the next model (not silent) and the conversation resumes from the transcript tail.
 
 ## 13. Personal Telegram assistant with Supermemory

@@ -6,12 +6,12 @@ sidebar:
 
 # Getting Started
 
-This section takes you from an empty folder to a validated agent folder, then to a real model reply once you provide provider credentials. mono-agent is config-first: you describe one agent in a `mono-agent.config.json`, then drive it with the `mono-agent` CLI. Work through the three pages below in order.
+This section takes you from an empty folder to a readiness-proven agent. Bare `mono-agent init` on a TTY names the agent, searches the provider catalogs, and runs a real no-tool check for every selected route before the strict full **Agent ready** gate; flag/non-TTY init creates a scaffold only. mono-agent remains config-first: one `mono-agent.config.json`, driven by the CLI.
 
 ## The path
 
 1. **Install** — get the published CLI or build the source CLI.
-2. **Quickstart** — scaffold a clean folder, run `mono-agent validate`, then start and smoke-test it when model auth is available.
+2. **Quickstart** — run guided init, understand catalog/auth/route verification and the full-agent gate, then smoke-test the ready webhook agent.
 3. **Concepts** — understand the moving parts so the rest of the docs make sense.
 
 ## Pages

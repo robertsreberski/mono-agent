@@ -11,6 +11,14 @@ export {
 export { createMetricsObserver, createObserverHub } from "./observer.js";
 export { generatePiNativeResponse, piNativeRuntimeBridge } from "./providers/pi-native.js";
 export {
+  CLAUDE_SDK_CATALOG_VERSION,
+  createClaudeSdkDiscoveryIsolation,
+  curatedClaudeSdkModels,
+  discoverClaudeSdkModels,
+  normalizeClaudeSdkCatalog,
+  normalizeClaudeSdkModelId,
+} from "./providers/claude-sdk-discovery.js";
+export {
   buildCapabilitiesUsed,
   toolCompactionAppliedFromWarnings,
   UNKNOWN_CAPABILITY,

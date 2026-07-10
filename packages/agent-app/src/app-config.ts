@@ -371,15 +371,23 @@ export async function resolveAppTraceSourceLabel(
     return envLabel;
   }
 
+  let jsonAgentName = "";
   try {
     const { json } = await readMonoAgentConfigJson(input.configPath);
     const label = typeof json.traceability?.sourceLabel === "string" ? json.traceability.sourceLabel.trim() : "";
     if (label.length > 0) {
       return label;
     }
+    jsonAgentName = typeof json.agent?.name === "string" ? json.agent.name.trim() : "";
   } catch {
     // Keep the default label below.
   }
+
+  const envAgentName = input.env.MONO_AGENT_NAME?.trim();
+  if (envAgentName !== undefined && envAgentName.length > 0) {
+    return envAgentName;
+  }
+  if (jsonAgentName.length > 0) return jsonAgentName;
 
   return defaults?.sourceLabel ?? DEFAULT_TRACE_SOURCE_LABEL;
 }

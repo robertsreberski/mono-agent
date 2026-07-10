@@ -82,8 +82,18 @@ describe("loadMonoAgentConfig", () => {
   it("uses finite artifact retention defaults", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
 
+    expect(config.runtime.routeSafety).toBe("uniform");
     expect(config.artifacts.retention).toEqual({ maxAgeDays: 365, maxCount: 50000, dryRun: false });
     expect(config.artifacts.memoryRetention).toEqual({ maxAgeDays: 7, maxCount: 5000, dryRun: false });
+  });
+
+  it("expands a home-relative Pi auth path instead of treating tilde as a directory", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_PI_AUTH_PATH: "~/.pi/custom/auth.json" },
+    });
+
+    expect(config.providers?.piAuthPath).toBe(join(homedir(), ".pi", "custom", "auth.json"));
   });
 
   it("defaults memory artifact retention dry-run to the agent retention dry-run", () => {
@@ -214,6 +224,117 @@ describe("loadMonoAgentConfig", () => {
       expect.objectContaining({ sdk: "claude", model: "claude-sonnet-4-6" }),
       expect.objectContaining({ sdk: "pi", provider: "ollama", model: "gemma4:31b" }),
     ]);
+  });
+
+  it("loads a trimmed public agent name and uses it as the default trace label", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_NAME: "  Research Partner  " },
+    });
+
+    expect(config.agent).toEqual({ name: "Research Partner" });
+    expect(config.traceability.sourceLabel).toBe("Research Partner");
+    expect(config.traceability.sourceId).toBeUndefined();
+  });
+
+  it("keeps an explicit trace label ahead of the public agent name", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_NAME: "Research Partner",
+        MONO_AGENT_TRACE_SOURCE_LABEL: "Operations Trace",
+      },
+    });
+
+    expect(config.agent?.name).toBe("Research Partner");
+    expect(config.traceability.sourceLabel).toBe("Operations Trace");
+  });
+
+  it.each(["", "line one\nline two", "x".repeat(81)])("rejects an invalid public agent name %j", (name) => {
+    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_NAME: name } }))
+      .toThrow(/MONO_AGENT_NAME/u);
+  });
+
+  it("loads canonical fallback routes with independent effort and route safety", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_EFFORT: "high",
+        MONO_AGENT_ROUTE_SAFETY: "per-route-native",
+        MONO_AGENT_FALLBACKS_JSON: JSON.stringify([
+          { model: "codex:gpt-5.6-sol" },
+          { model: "claude:claude-sonnet-4-6", effort: "minimal" },
+          { model: "pi:ollama:gemma4:31b", effort: "ultra" },
+        ]),
+      },
+    });
+
+    expect(config.runtime.routeSafety).toBe("per-route-native");
+    expect(config.runtime.fallbackModels).toBeUndefined();
+    expect(config.runtime.fallbacks).toEqual([
+      { model: expect.objectContaining({ sdk: "codex", model: "gpt-5.6-sol" }) },
+      { model: expect.objectContaining({ sdk: "claude", model: "claude-sonnet-4-6" }), effort: "minimal" },
+      { model: expect.objectContaining({ sdk: "pi", provider: "ollama", model: "gemma4:31b" }), effort: "ultra" },
+    ]);
+  });
+
+  it.each(["minimal", "ultra"])("accepts the %s effort level", (effort) => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_EFFORT: effort } });
+    expect(config.runtime.effort).toBe(effort);
+  });
+
+  it("rejects duplicate primary and fallback routes deterministically", () => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "pi:openai-codex:gpt-5.5" }]),
+      },
+    })).toThrow(/Duplicate runtime route/u);
+
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_FALLBACK_MODELS: "claude:claude-sonnet-4-6,claude:claude-sonnet-4-6",
+      },
+    })).toThrow(/Duplicate runtime route/u);
+  });
+
+  it("rejects ambiguous canonical and legacy fallback inputs", () => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_FALLBACK_MODELS: "claude:claude-sonnet-4-6",
+        MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "codex:gpt-5.6-sol" }]),
+      },
+    })).toThrow(/cannot both be set/u);
+  });
+
+  it("rejects malformed canonical fallback entries and route safety", () => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ effort: "high" }]) },
+    })).toThrow(/non-empty model/u);
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "codex:gpt-5.6-sol", effort: "extreme" }]) },
+    })).toThrow(/must be one of/u);
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "codex:gpt-5.6-sol", effort: "" }]) },
+    })).toThrow(/must be one of/u);
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "codex:gpt-5.6-sol", efffort: "max" }]) },
+    })).toThrow(/unknown field: efffort/u);
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_ROUTE_SAFETY: "unsafe" },
+    })).toThrow(/MONO_AGENT_ROUTE_SAFETY/u);
   });
 
   it("omits fallbackModels when the env is unset", () => {

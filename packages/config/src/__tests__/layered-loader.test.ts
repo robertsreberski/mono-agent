@@ -25,9 +25,14 @@ describe("layerJsonOntoEnv", () => {
   it("translates JSON sections to env keys", () => {
     const layered = layerJsonOntoEnv(
       {
+        agent: { name: "Research Partner" },
         runtime: {
           model: "pi:openai-codex:gpt-5.5",
-          fallbackModels: ["claude:claude-sonnet-4-6", "pi:ollama:gemma4:31b"],
+          fallbacks: [
+            { model: "claude:claude-sonnet-4-6", effort: "low" },
+            { model: "pi:ollama:gemma4:31b" },
+          ],
+          routeSafety: "per-route-native",
           maxTurns: 12,
         },
         context: { identityPath: "IDENTITY.md", selectedSkills: ["a", "b"] },
@@ -61,8 +66,13 @@ describe("layerJsonOntoEnv", () => {
       },
       {},
     );
+    expect(layered.MONO_AGENT_NAME).toBe("Research Partner");
     expect(layered.MONO_AGENT_MODEL).toBe("pi:openai-codex:gpt-5.5");
-    expect(layered.MONO_AGENT_FALLBACK_MODELS).toBe("claude:claude-sonnet-4-6,pi:ollama:gemma4:31b");
+    expect(JSON.parse(layered.MONO_AGENT_FALLBACKS_JSON ?? "[]")).toEqual([
+      { model: "claude:claude-sonnet-4-6", effort: "low" },
+      { model: "pi:ollama:gemma4:31b" },
+    ]);
+    expect(layered.MONO_AGENT_ROUTE_SAFETY).toBe("per-route-native");
     expect(layered.MONO_AGENT_MAX_TURNS).toBe("12");
     expect(layered.MONO_AGENT_IDENTITY_PATH).toBe("IDENTITY.md");
     expect(layered.MONO_AGENT_SELECTED_SKILLS).toBe("a,b");
@@ -91,6 +101,45 @@ describe("layerJsonOntoEnv", () => {
         enabled: true,
       },
     ]);
+  });
+
+  it("lets either fallback env form override JSON without cross-form ambiguity", () => {
+    const json = {
+      runtime: { fallbacks: [{ model: "claude:claude-sonnet-4-6" }] },
+    } as const;
+    const legacy = layerJsonOntoEnv(json, { MONO_AGENT_FALLBACK_MODELS: "codex:gpt-5.6-sol" });
+    expect(legacy.MONO_AGENT_FALLBACK_MODELS).toBe("codex:gpt-5.6-sol");
+    expect(legacy.MONO_AGENT_FALLBACKS_JSON).toBeUndefined();
+
+    const canonical = layerJsonOntoEnv(
+      { runtime: { fallbackModels: ["claude:claude-sonnet-4-6"] } },
+      { MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "codex:gpt-5.6-sol" }]) },
+    );
+    expect(canonical.MONO_AGENT_FALLBACKS_JSON).toContain("gpt-5.6-sol");
+    expect(canonical.MONO_AGENT_FALLBACK_MODELS).toBeUndefined();
+  });
+
+  it("treats an explicitly empty legacy fallback env as a JSON-clearing override", async () => {
+    const json = {
+      runtime: {
+        model: "codex:gpt-5.6-terra",
+        fallbackModels: ["claude:claude-sonnet-4-6"],
+      },
+      context: { identityPath: "IDENTITY.md" },
+    } as const;
+    const layered = layerJsonOntoEnv(json, { MONO_AGENT_FALLBACK_MODELS: "" });
+    expect(layered.MONO_AGENT_FALLBACK_MODELS).toBe("");
+    expect(layered.MONO_AGENT_FALLBACKS_JSON).toBeUndefined();
+
+    const configPath = join(dir, "mono-agent.config.json");
+    await writeFile(configPath, JSON.stringify(json));
+    const loaded = await loadMonoAgentConfigWithSources({
+      cwd: "/repo",
+      env: { MONO_AGENT_FALLBACK_MODELS: "" },
+      jsonPath: configPath,
+    });
+    expect(loaded.runtime.fallbackModels).toBeUndefined();
+    expect(loaded.runtime.fallbacks).toBeUndefined();
   });
 
   it("translates JSON providers.piNative knobs to env keys", () => {

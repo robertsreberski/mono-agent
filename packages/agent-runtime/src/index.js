@@ -18,6 +18,12 @@ export {
   DEFAULT_RUNTIME_BRAND,
   resolveRuntimeBrand,
 } from "./runtime-brand.js";
+export {
+  CLAUDE_SDK_CATALOG_VERSION,
+  discoverClaudeSdkModels,
+  normalizeClaudeSdkCatalog,
+  normalizeClaudeSdkModelId,
+} from "./ai/providers/claude-sdk-discovery.js";
 
 export * from "./ai/index.js";
 export * from "./agent/index.js";

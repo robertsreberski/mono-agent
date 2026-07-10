@@ -69,14 +69,15 @@ Keep tokens as placeholders in committed files; prefer `env` references or a non
 :::
 You can also inline servers directly in config via `tools.mcpServers` (an object keyed by server name) instead of a separate file. The file (`mcpConfigPath`) and the inline form (`mcpServers`) carry the same per-server schema.
 
-## SDK runtimes vs CLI runtimes
+## Runtime support
 
 How the servers reach the underlying runtime depends on the backend:
 
 - **SDK runtimes** — the servers are **inlined** into the runtime options the agent passes to the provider session. The `mcp.json` is read and its `mcpServers` are merged into the request.
-- **CLI runtimes** — the `mcpConfigPath` is **forwarded** as a path; the CLI process reads the file itself.
+- **Supported CLI runtimes** — mono-agent translates or forwards the server config into the provider-native shape.
+- **Direct OpenCode** — MCP is intentionally unsupported because provider-owned shell tools inherit the server environment. Any configured server, `MemoryRecall`, hosted Supermemory MCP, or real adapter send-tool injection fails validation and the bridge before startup. The host's implicit bridge-backed `AskUser` / `TelegramAskButtons` tools are omitted for a direct OpenCode primary/fallback and for an accepted per-trigger direct OpenCode turn; they do not make an otherwise minimal exact-allow-all config unusable. A rejected per-trigger override stays on its base runtime and keeps those interaction tools. Use a Pi runtime, including `pi:opencode-go:*`, when MCP or host-mediated questions are required.
 
-Either way you author one `mcp.json` and mono-agent does the right thing for the configured backend. See [Runtime backends](/runtime/backends/) for which backends are SDK vs CLI.
+For supported backends, you author one `mcp.json` and mono-agent does the translation. See [Runtime backends](/runtime/backends/) for the exact capability boundary.
 
 ## MCP tools are NOT gated by `tools.allowedTools`
 
@@ -86,13 +87,13 @@ Consequences:
 
 - Under allow-all (the default) MCP tools are available because their server is declared, not because of the wildcard. Setting `tools.allowedTools: []` ("no built-in tools") still leaves every MCP tool available.
 - An MCP tool's availability is governed by whether its server is **declared** in `mcp.json` / `tools.mcpServers`, not by the allowlist. To withhold an MCP tool, remove or don't declare its server.
-- On the **pi-native runtime**, `disallowedTools` does **not** filter external MCP-server tools either — declaring the server is the only lever. (The Claude/Codex CLI runtimes do pass `--disallowedTools` down to the CLI.) So to hard-restrict an external MCP tool on pi, don't declare its server.
+- On the **pi-native runtime**, `disallowedTools` does **not** filter external MCP-server tools either — declaring the server is the only lever. Claude Code receives `--disallowedTools`; direct Codex has no native name-policy projection and therefore rejects any normal-run restrictive policy instead of partially enforcing it. To hard-restrict an external MCP tool on pi, don't declare its server.
 - This same model covers app-injected MCP tools such as `MemoryRecall` and the `AskCollaborator` orchestration tool — they are gated by their own enable switches, not by the allowlist.
 
 The `MemoryRecall` description is written to direct **proactive** recall: the agent is told to call it whenever context is missing or uncertain, before assuming or asking. This is behavioral guidance, not a gate — `MemoryRecall`'s availability is still governed by `config.memory.recallTool.enabled`. See [Capture & recall](/memory/capture-and-recall/).
 
 :::note
-The **app-owned adapter send tools** (`SlackSendMessage`, `TelegramSendMessage`, `TelegramAskButtons`, `TelegramSendFile`, `AskUser`) are delivered as MCP tools but, unlike external MCP tools, they **are** governed by the tool policy. Under allow-all (the default) they become available automatically once the matching channel is enabled — no allowlist entry needed. They only need an explicit `tools.allowedTools` entry when you switch to a hand-picked allowlist, and a `disallowedTools` entry removes them on any runtime. Valid `slack.*` / `telegram.*` adapter config is required either way. See [Delivery & send tools](/channels/delivery-and-send-tools/).
+The **app-owned adapter send tools** (`SlackSendMessage`, `TelegramSendMessage`, `TelegramAskButtons`, `TelegramSendFile`, `AskUser`) are delivered as MCP tools but, unlike external MCP tools, they **are** governed by the tool policy. Under allow-all they become available automatically once the matching channel is enabled. On runtimes that enforce specific lists, name them explicitly or deny them normally; direct Codex rejects the restrictive configuration before a run. Valid `slack.*` / `telegram.*` adapter config is required either way. See [Delivery & send tools](/channels/delivery-and-send-tools/).
 :::
 
 For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/policy/). For how `Bash` is confined, see [Sandbox](/tools/sandbox/).

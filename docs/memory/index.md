@@ -63,7 +63,7 @@ confirm whether automatic consolidation will run.
 
 Requires embeddings and a chat model for the LLM pipelines. The app-level chat model can
 be a direct Ollama model or an `agent-host` runtime model reference such as
-`pi:openai-codex:gpt-5.5`.
+`pi:openai-codex:gpt-5.6-terra`.
 
 ## Config
 
@@ -145,7 +145,7 @@ For Pi SDK memory capture through the host runtime, use:
     },
     "llm": {
       "provider": "agent-host",
-      "model": "pi:openai-codex:gpt-5.5",
+      "model": "pi:openai-codex:gpt-5.6-terra",
       "executionMode": "sdk"
     }
   }
@@ -153,7 +153,7 @@ For Pi SDK memory capture through the host runtime, use:
 ```
 
 `agent-host` memory LLMs are SDK-only for now. CLI-backed refs such as
-`codex:gpt-5.5`, or explicit `executionMode: "cli"`, are rejected because those
+`codex:gpt-5.6-terra`, or explicit `executionMode: "cli"`, are rejected because those
 runtimes cannot yet guarantee a no-tools/no-external-actions memory turn.
 
 ### Per-turn write mode (`memory.writeMode`)
@@ -205,7 +205,7 @@ ollama pull qwen3.6:latest   # or any local chat model you prefer
 Set `MONO_AGENT_MEMORY_LLM_MODEL` to the model name when running the legacy standalone
 CLI `reflect`/`migrate` commands manually. The standalone CLI remains Ollama-only. For the app
 runtime, `memory.llm.provider: "agent-host"` may instead point at a SDK runtime model
-reference such as `pi:openai-codex:gpt-5.5`.
+reference such as `pi:openai-codex:gpt-5.6-terra`.
 
 ## Auto-Scheduler (bujo tier)
 

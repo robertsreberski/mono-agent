@@ -19,6 +19,7 @@ export type MonoRuntimeBackendId =
   | "claude-sdk"
   | "claude-code-cli"
   | "codex-app-cli"
+  | "opencode-app-cli"
   | "pi-sdk";
 
 /**

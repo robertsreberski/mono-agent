@@ -1026,6 +1026,25 @@ describe("AskUser tool", () => {
     expect(settings).toBeUndefined();
   });
 
+  it("suppresses bridge-backed interaction tools for an MCP-incompatible route", async () => {
+    const configPath = await writeConfig(baseConfig());
+
+    const settings = await resolveAdapterSendToolsSettings(
+      {
+        env: {
+          MONO_AGENT_INTERACTION_BRIDGE_URL: "http://127.0.0.1:9999",
+          MONO_AGENT_INTERACTION_BRIDGE_TOKEN: "bridge-token",
+        },
+        cwd: dir,
+        configPath,
+      },
+      { allowedTools: ["*"], suppressInteractionTools: true },
+    );
+
+    expect(settings?.askUser).toBeUndefined();
+    expect(settings).toBeUndefined();
+  });
+
   it("is not registered without a producing conversation id (parent-process shape)", async () => {
     const server = await createAdapterSendToolsServer(
       {

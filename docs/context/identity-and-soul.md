@@ -6,7 +6,7 @@ sidebar:
 
 # Identity & soul
 
-Two markdown documents shape who your agent is on every turn: a **required identity** that declares role and boundaries, and an **optional soul** that carries voice and guardrails. This page covers how to point at them, how they render into the prompt, and the env vars that override them.
+Three separate surfaces describe an agent: the optional public `agent.name`, a **required identity** markdown document that declares role and boundaries, and an optional **soul** document that carries voice and guardrails. The public name is display metadata; the markdown files are what shape prompt behavior.
 
 Both are part of the assembled context block. For how they sit alongside memory and skills, see [Context assembly](/context/assembly/).
 
@@ -14,10 +14,28 @@ Both are part of the assembled context block. For how they sit alongside memory 
 
 | Field | Required | Env var | Renders as | Coverage |
 | --- | --- | --- | --- | --- |
+| `agent.name` | No | `MONO_AGENT_NAME` | Human-facing label only | `config` |
 | `context.identityPath` | Yes | `MONO_AGENT_IDENTITY_PATH` | `## Identity` section | `config` |
 | `context.soulPath` | No | `MONO_AGENT_SOUL_PATH` | `## Core Guardrails` section | `config` |
 
 `context.identityPath` is one of only two fields that are never optional (the other is `runtime.model`). Omit `context.soulPath` and the framework substitutes a built-in default soul — see [Default soul fallback](#default-soul-fallback).
+
+## Public agent name
+
+`agent.name` is chosen during guided init and shown in creation review, traces,
+and other human-facing labels. The A2A adapter also uses it as the default Agent
+Card name when its plugin-specific name is omitted. It never alters filesystem
+paths, service/source ids, provider identity, or session keys. The config field is
+not injected into prompts at runtime. Guided init does copy the chosen name into
+the newly scaffolded, editable `IDENTITY.md`; later `agent.name` changes do not
+rewrite that file.
+
+```json
+{
+  "agent": { "name": "Research Companion" },
+  "context": { "identityPath": "./IDENTITY.md" }
+}
+```
 
 ## Identity (required)
 

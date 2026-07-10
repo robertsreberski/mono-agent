@@ -92,7 +92,7 @@ const responder = await createConfiguredAgentResponder({ config });
 
 ## Injecting a custom runtime (`MonoRuntimeLike`)
 
-Both `startMonoAgentApp` and the configured responder factories accept a `runtime?: MonoRuntimeLike` from `@mono-agent/runtime-adapter`. Pass one to share a single runtime across hosts, point at an unsupported backend, or stub the provider in tests. When omitted, the runtime is built from `config.runtime.model` (plus any `runtime.fallbackModels`).
+Both `startMonoAgentApp` and the configured responder factories accept a `runtime?: MonoRuntimeLike` from `@mono-agent/runtime-adapter`. Pass one to share a single runtime across hosts, point at an unsupported backend, or stub the provider in tests. When omitted, the runtime is built from `config.runtime.model` plus canonical `runtime.fallbacks` (or legacy `runtime.fallbackModels`).
 
 ```ts
 import { startMonoAgentApp } from "@mono-agent/agent-app";
@@ -104,7 +104,7 @@ const app = await startMonoAgentApp({ cwd: process.cwd(), runtime: myRuntime });
 ```
 
 :::caution
-A custom runtime fully replaces model selection, so config keys like `runtime.model`, `runtime.executionMode`, and `runtime.fallbackModels` no longer drive provider behavior — your runtime owns that. For the built-in runtime's model refs, execution modes, and fallback chain, see [backends](/runtime/backends/) and [fallback](/runtime/fallback/).
+A custom runtime fully replaces model selection, so config keys like `runtime.model`, `runtime.executionMode`, `runtime.fallbacks`, and `runtime.routeSafety` no longer drive provider behavior — your runtime owns that. For the built-in runtime's model refs, execution modes, and fallback chain, see [backends](/runtime/backends/) and [fallback](/runtime/fallback/).
 :::
 
 Notes:

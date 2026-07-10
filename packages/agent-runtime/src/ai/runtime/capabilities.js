@@ -8,6 +8,7 @@ export const COMMON_CAPABILITIES = {
   supports_builtin_tools: true,
   supports_live_input: true,
   supports_native_subagents: true,
+  supports_fast_mode: false,
 };
 
 export const RUNTIME_CAPABILITIES = {
@@ -34,6 +35,17 @@ export const RUNTIME_CAPABILITIES = {
     // The codex-app bridge keeps the app-server subprocess + thread alive
     // when options.sessionKeepAlive is set; resumed turns reuse the thread.
     supports_session_resume: true,
+    supports_fast_mode: true,
+  },
+  opencode: {
+    runtime: "cli",
+    ...COMMON_CAPABILITIES,
+    structured_output: false,
+    supports_session_resume: false,
+    supports_mcp: false,
+    supports_skills: false,
+    supports_live_input: false,
+    supports_native_subagents: false,
   },
 };
 

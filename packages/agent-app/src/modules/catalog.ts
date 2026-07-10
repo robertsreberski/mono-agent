@@ -1,6 +1,7 @@
 import type { MonoAgentConfigJson } from "@mono-agent/config";
+import { validateCronExpression } from "@mono-agent/cron-adapter";
 
-import { DEFAULT_MODEL, memoryBlock } from "./base.js";
+import { DEFAULT_PI_MEMORY_MODEL, memoryBlock } from "./base.js";
 import type { CapabilityModule, ModuleKind } from "./types.js";
 
 /** Split a comma-separated input value into trimmed, non-empty entries. */
@@ -71,9 +72,10 @@ const channelTelegram: CapabilityModule = {
     {
       id: "telegramToken",
       label: "Telegram bot token",
-      description: "BotFather token. Externalized to .env.example; never written into JSON.",
+      description: "BotFather token. Saved to .env; .env.example contains only a placeholder. Never written into JSON.",
       secret: true,
-      envVar: "MONO_AGENT_TELEGRAM_TOKEN",
+      envVar: "MONO_AGENT_TELEGRAM_BOT_TOKEN",
+      required: true,
     },
   ],
   configFragment: (values) => {
@@ -85,10 +87,10 @@ const channelTelegram: CapabilityModule = {
       },
     };
   },
-  envExampleLines: () => ["# Telegram bot token from @BotFather", "MONO_AGENT_TELEGRAM_TOKEN="],
+  envExampleLines: () => ["# Telegram bot token from @BotFather", "MONO_AGENT_TELEGRAM_BOT_TOKEN="],
   recommendedTools: ["TelegramSendMessage", "TelegramAskButtons"],
   validateExpectations: [
-    { sectionId: "channel:telegram", mustBe: "ok", note: "Set MONO_AGENT_TELEGRAM_TOKEN in .env." },
+    { sectionId: "channel:telegram", mustBe: "ok", note: "Set MONO_AGENT_TELEGRAM_BOT_TOKEN in .env." },
   ],
 };
 
@@ -107,16 +109,18 @@ const channelSlack: CapabilityModule = {
     {
       id: "botToken",
       label: "Slack bot token",
-      description: "xoxb-… token. Externalized to .env.example.",
+      description: "xoxb-… token. Saved to .env; .env.example contains only a placeholder.",
       secret: true,
       envVar: "MONO_AGENT_SLACK_BOT_TOKEN",
+      required: true,
     },
     {
       id: "appToken",
       label: "Slack app token",
-      description: "xapp-… connections:write token for Socket Mode.",
+      description: "xapp-… connections:write token for Socket Mode. Saved to .env only.",
       secret: true,
       envVar: "MONO_AGENT_SLACK_APP_TOKEN",
+      required: true,
     },
   ],
   configFragment: (values) => {
@@ -153,9 +157,10 @@ const channelOpenaiApi: CapabilityModule = {
     {
       id: "apiKey",
       label: "Client bearer key",
-      description: "Optional bearer clients must present (sk-…). Externalized to .env.example.",
+      description: "Optional bearer clients must present (sk-…). Saved to .env; .env.example contains only a placeholder.",
       secret: true,
       envVar: "MONO_AGENT_OPENAI_API_KEY",
+      required: false,
     },
   ],
   configFragment: () => ({ openaiApi: { enabled: true } }),
@@ -173,11 +178,25 @@ const channelCron: CapabilityModule = {
     {
       id: "cronExpression",
       label: "Cron expression",
-      description: "When the digest runs (default 08:00 daily).",
+      description: "Five-field UTC schedule for the digest (default 08:00 UTC daily).",
       default: "0 8 * * *",
+      validate: (value) => {
+        const result = validateCronExpression(value);
+        if (result.ok) return undefined;
+        if (result.code === "required") {
+          return "Enter a cron expression using five fields: minute hour day-of-month month day-of-week.";
+        }
+        if (result.code === "field_count") {
+          return "Use exactly five fields: minute hour day-of-month month day-of-week (for example, 0 8 * * *).";
+        }
+        return `Invalid cron expression: ${result.reason}`;
+      },
     },
   ],
-  configFragment: () => ({ cron: { enabled: true } }),
+  // Directory-backed jobs are active by being present and enabled in cron/*.md.
+  // Setting cron.enabled would select the legacy single-job form, which also
+  // requires inline expression/prompt fields and prevents folder jobs loading.
+  configFragment: () => ({ cron: { dir: "cron" } }),
   files: (values) => [
     {
       path: "cron/digest.md",
@@ -195,7 +214,7 @@ const channelCron: CapabilityModule = {
     },
   ],
   validateExpectations: [
-    { sectionId: "channel:cron", mustBe: "ok", note: "Author at least one cron/*.md job." },
+    { sectionId: "channel:cron", mustBe: "ok", note: "Use at least one valid enabled cron/*.md job." },
   ],
 };
 
@@ -205,13 +224,15 @@ const channelA2a: CapabilityModule = {
   title: "A2A provider",
   summary: "Expose the agent over A2A (Agent Card + provider endpoint).",
   riskLevel: "medium",
+  wizardSelectable: false,
   inputs: [
     {
       id: "bearerToken",
       label: "A2A bearer token",
-      description: "Bearer required from A2A consumers when requireBearer is set. Externalized to .env.example.",
+      description: "Bearer required from A2A consumers when requireBearer is set. Saved to .env; never written into JSON.",
       secret: true,
       envVar: "MONO_AGENT_A2A_BEARER_TOKEN",
+      required: false,
     },
   ],
   configFragment: () => a2aProviderPluginSection(),
@@ -271,7 +292,13 @@ const memoryBujo: CapabilityModule = {
     memory: {
       ...memoryBlock("bujo"),
       embeddings: { provider: "ollama", model: "nomic-embed-text" },
-      llm: { provider: "agent-host", model: values.model ?? DEFAULT_MODEL },
+      // Direct Codex is CLI-only, while the memory LLM has an SDK-only safety
+      // contract. Route every direct Codex primary through the equivalent Pi
+      // Terra model for this internal call, not only the default candidate.
+      llm: {
+        provider: "agent-host",
+        model: values.model?.startsWith("codex:") ? DEFAULT_PI_MEMORY_MODEL : values.model ?? DEFAULT_PI_MEMORY_MODEL,
+      },
       recallTool: { enabled: true },
     },
   }),
@@ -300,9 +327,10 @@ const memorySupermemory: CapabilityModule = {
     {
       id: "supermemoryApiKey",
       label: "Supermemory API key",
-      description: "Bearer key printed by supermemory-server on first boot. Externalized to .env.example.",
+      description: "Bearer key printed by supermemory-server on first boot. Saved to .env; .env.example contains only a placeholder.",
       secret: true,
       envVar: "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY",
+      required: true,
     },
   ],
   configFragment: (values) => ({

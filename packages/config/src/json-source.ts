@@ -8,6 +8,12 @@ import type { SettingsJson, SettingsJsonValue } from "@mono-agent/agent-contract
 import { MonoAgentConfigError } from "./config.js";
 import type { MemoryBackend, MemoryEmbeddingsProvider, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";
 
+/** JSON form of one canonical runtime fallback route. */
+export type MonoAgentRuntimeFallbackJson = {
+  readonly model?: string;
+  readonly effort?: string;
+};
+
 /** JSON-serialisable shape for run-artifact retention. */
 export type MonoAgentArtifactRetentionJson = {
   readonly maxAgeDays?: number;
@@ -107,9 +113,14 @@ export type MonoAgentObservabilityExporterJson = {
  * the loader's `cwd`); they are resolved by the loader, not at write time.
  */
 export interface MonoAgentConfigJson extends SettingsJson {
+  readonly agent?: {
+    readonly name?: string;
+  };
   readonly runtime?: {
     readonly model?: string;
     readonly fallbackModels?: readonly string[];
+    readonly fallbacks?: readonly MonoAgentRuntimeFallbackJson[];
+    readonly routeSafety?: string;
     readonly executionMode?: string;
     readonly effort?: string;
     readonly permissionMode?: string;

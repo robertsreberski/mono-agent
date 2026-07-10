@@ -5,6 +5,7 @@ import {
   assertExecutionModeCompatible,
   defaultExecutionModeForModel,
   isRuntimeExecutionMode,
+  modelReferenceKey,
   parseMonoRuntimeModelReference,
   RuntimeAdapterError,
   validateLocalProviderDefinition,
@@ -28,8 +29,8 @@ import {
 } from "@mono-agent/agent-contracts";
 import type { ConfigErrorFactory } from "@mono-agent/agent-contracts";
 
-import { ALLOW_ALL_TOOLS, EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
-import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, SessionMode, SessionRollover, SkillDisclosureMode } from "./types.js";
+import { ALLOW_ALL_TOOLS, EFFORT_LEVELS, PERMISSION_MODES, ROUTE_SAFETY_MODES } from "./enums.js";
+import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, RouteSafetyMode, RuntimeFallbackConfig, SessionMode, SessionRollover, SkillDisclosureMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -86,11 +87,15 @@ const OBSERVABILITY_EXPORTER_TYPES = ["phoenix"] as const;
 const DEFAULT_PHOENIX_ENDPOINT = "http://127.0.0.1:6006/v1/traces";
 const DEFAULT_PHOENIX_TIMEOUT_MS = 5_000;
 const DEFAULT_PI_AUTH_PATH = resolve(homedir(), ".pi", "agent", "auth.json");
+export const MAX_AGENT_NAME_LENGTH = 80;
 
 export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentConfig {
   const cwd = normalizeCwd(input.cwd);
+  const agentName = readAgentName(input.env.MONO_AGENT_NAME);
   const model = parseModel(readRequired(input.env, "MONO_AGENT_MODEL"));
   const fallbackModels = readFallbackModels(input.env);
+  const fallbacks = readFallbacks(input.env);
+  assertUniqueFallbackRoutes(model, fallbackModels, fallbacks);
   const executionMode = parseExecutionMode(input.env.MONO_AGENT_EXECUTION_MODE, model);
   const maxTurns = readMaxTurns(input.env.MONO_AGENT_MAX_TURNS);
   const workspace = readPath(input.env.MONO_AGENT_WORKSPACE, cwd, cwd);
@@ -112,20 +117,32 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const artifactDir = readPath(input.env.MONO_AGENT_ARTIFACT_DIR, cwd, resolve(cwd, ".mono-agent", "artifacts"));
   const artifactRetention = readArtifactRetentionConfig(input.env);
   const memoryArtifactRetention = readMemoryArtifactRetentionConfig(input.env, artifactRetention);
-  const traceability = readTraceabilityConfig(input.env, cwd);
+  const traceability = readTraceabilityConfig(input.env, cwd, agentName);
   const observability = readObservabilityConfig(input.env);
-  const piAuthPath = readPath(input.env.MONO_AGENT_PI_AUTH_PATH, cwd, DEFAULT_PI_AUTH_PATH);
+  // Pi's auth path is routinely documented with a home-relative `~` prefix.
+  // `path.resolve()` treats that prefix as a literal directory, so keep the
+  // expansion explicit and limited to this user-owned credential path.
+  const piAuthPath = readUserPath(input.env.MONO_AGENT_PI_AUTH_PATH, cwd, DEFAULT_PI_AUTH_PATH);
   const localProviders = readLocalProviders(input.env);
   const piNative = readPiNativeProviderConfig(input.env, cwd);
 
   assertModeCompatibility(model, executionMode);
 
   const effort = readEffort(input.env.MONO_AGENT_EFFORT);
+  const routeSafety = readChoice<RouteSafetyMode>(
+    input.env.MONO_AGENT_ROUTE_SAFETY,
+    "MONO_AGENT_ROUTE_SAFETY",
+    ROUTE_SAFETY_MODES,
+    "uniform",
+    invalidEnv,
+  );
   const permissionMode = readPermissionMode(input.env.MONO_AGENT_PERMISSION_MODE);
   const concurrency = readConcurrencyConfig(input.env);
   const runtime: MonoAgentConfig["runtime"] = {
     model,
     ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
+    ...(fallbacks.length === 0 ? {} : { fallbacks }),
+    routeSafety,
     executionMode,
     ...(maxTurns === undefined ? {} : { maxTurns }),
     workspace,
@@ -162,6 +179,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   };
 
   const config: MonoAgentConfig = {
+    ...(agentName === undefined ? {} : { agent: { name: agentName } }),
     runtime,
     ...(concurrency === undefined ? {} : { concurrency }),
     context,
@@ -189,6 +207,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
 
 export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgentConfig {
   const redacted: RedactedMonoAgentConfig = {
+    ...(config.agent === undefined ? {} : { agent: { ...config.agent } }),
     runtime: { ...config.runtime },
     ...(config.concurrency === undefined ? {} : { concurrency: { ...config.concurrency } }),
     context: { ...config.context, selectedSkills: [...config.context.selectedSkills] },
@@ -255,7 +274,7 @@ function parseModel(raw: string): MonoAgentConfig["runtime"]["model"] {
 }
 
 function readFallbackModels(env: Record<string, string | undefined>): readonly MonoAgentConfig["runtime"]["model"][] {
-  return readCsv(env.MONO_AGENT_FALLBACK_MODELS).map((raw) => {
+  const models = readCsv(env.MONO_AGENT_FALLBACK_MODELS).map((raw) => {
     try {
       return parseMonoRuntimeModelReference(raw);
     } catch (error) {
@@ -267,6 +286,139 @@ function readFallbackModels(env: Record<string, string | undefined>): readonly M
       );
     }
   });
+  return models;
+}
+
+function readFallbacks(env: Record<string, string | undefined>): readonly RuntimeFallbackConfig[] {
+  const raw = normalizeOptionalString(env.MONO_AGENT_FALLBACKS_JSON);
+  if (raw === undefined) {
+    return [];
+  }
+  if (normalizeOptionalString(env.MONO_AGENT_FALLBACK_MODELS) !== undefined) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_FALLBACKS_JSON and legacy MONO_AGENT_FALLBACK_MODELS cannot both be set.",
+      { env: "MONO_AGENT_FALLBACKS_JSON", conflictsWith: "MONO_AGENT_FALLBACK_MODELS" },
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new MonoAgentConfigError("invalid_json", "MONO_AGENT_FALLBACKS_JSON must be a JSON array.", {
+      env: "MONO_AGENT_FALLBACKS_JSON",
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
+  if (!Array.isArray(parsed)) {
+    throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_FALLBACKS_JSON must be a JSON array.", {
+      env: "MONO_AGENT_FALLBACKS_JSON",
+    });
+  }
+  return parsed.map((entry, index) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new MonoAgentConfigError(
+        "invalid_env",
+        `MONO_AGENT_FALLBACKS_JSON entry ${index + 1} must be an object with a model.`,
+        { env: "MONO_AGENT_FALLBACKS_JSON", index },
+      );
+    }
+    const record = entry as Record<string, unknown>;
+    const unknownKeys = Object.keys(record).filter((key) => key !== "model" && key !== "effort");
+    if (unknownKeys.length > 0) {
+      throw new MonoAgentConfigError(
+        "invalid_env",
+        `MONO_AGENT_FALLBACKS_JSON entry ${index + 1} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.sort().join(", ")}. Only model and effort are supported.`,
+        { env: "MONO_AGENT_FALLBACKS_JSON", index, unknownKeys: unknownKeys.sort() },
+      );
+    }
+    if (typeof record.model !== "string" || record.model.trim().length === 0) {
+      throw new MonoAgentConfigError(
+        "invalid_model_reference",
+        `MONO_AGENT_FALLBACKS_JSON entry ${index + 1} must contain a non-empty model reference.`,
+        { env: "MONO_AGENT_FALLBACKS_JSON", index },
+      );
+    }
+    const model = parseFallbackModel(record.model, "MONO_AGENT_FALLBACKS_JSON", index);
+    if (record.effort === undefined) {
+      return { model };
+    }
+    if (typeof record.effort !== "string") {
+      throw new MonoAgentConfigError(
+        "invalid_env",
+        `MONO_AGENT_FALLBACKS_JSON entry ${index + 1} effort must be one of: ${EFFORT_LEVELS.join(", ")}.`,
+        { env: "MONO_AGENT_FALLBACKS_JSON", index },
+      );
+    }
+    const normalizedEffort = normalizeOptionalString(record.effort);
+    if (normalizedEffort === undefined) {
+      throw new MonoAgentConfigError(
+        "invalid_env",
+        `MONO_AGENT_FALLBACKS_JSON entry ${index + 1} effort must be one of: ${EFFORT_LEVELS.join(", ")}.`,
+        { env: "MONO_AGENT_FALLBACKS_JSON", index },
+      );
+    }
+    const effort = readChoice<EffortLevel>(
+      normalizedEffort,
+      `MONO_AGENT_FALLBACKS_JSON[${index}].effort`,
+      EFFORT_LEVELS,
+      "medium",
+      invalidEnv,
+    );
+    return { model, effort };
+  });
+}
+
+function parseFallbackModel(raw: string, env: string, index: number): MonoAgentConfig["runtime"]["model"] {
+  try {
+    return parseMonoRuntimeModelReference(raw.trim());
+  } catch (error) {
+    throw new MonoAgentConfigError(
+      "invalid_model_reference",
+      `${env} entry ${index + 1} model \`${raw}\` is not a valid runtime model reference.`,
+      { env, index, reason: error instanceof Error ? error.message : String(error) },
+    );
+  }
+}
+
+function assertUniqueFallbackRoutes(
+  primary: MonoAgentConfig["runtime"]["model"],
+  legacy: readonly MonoAgentConfig["runtime"]["model"][],
+  canonical: readonly RuntimeFallbackConfig[],
+): void {
+  const seen = new Map<string, string>([[modelReferenceKey(primary), "runtime.model"]]);
+  const routes = [
+    ...legacy.map((model, index) => ({ model, path: `runtime.fallbackModels[${index}]` })),
+    ...canonical.map((entry, index) => ({ model: entry.model, path: `runtime.fallbacks[${index}]` })),
+  ];
+  for (const route of routes) {
+    const key = modelReferenceKey(route.model);
+    const first = seen.get(key);
+    if (first !== undefined) {
+      throw new MonoAgentConfigError(
+        "invalid_env",
+        `Duplicate runtime route \`${key}\` at ${route.path}; it is already selected at ${first}.`,
+        { route: key, path: route.path, duplicateOf: first },
+      );
+    }
+    seen.set(key, route.path);
+  }
+}
+
+function readAgentName(raw: string | undefined): string | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  const name = raw.trim();
+  const length = Array.from(name).length;
+  if (length === 0 || length > MAX_AGENT_NAME_LENGTH || /[\u0000-\u001f\u007f]/u.test(name)) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `MONO_AGENT_NAME must be a single-line name between 1 and ${MAX_AGENT_NAME_LENGTH} characters.`,
+      { env: "MONO_AGENT_NAME", maxLength: MAX_AGENT_NAME_LENGTH },
+    );
+  }
+  return name;
 }
 
 /** Optional per-MCP-call timeout override; unset defers to the runtime defaults (120s inactivity / 45 min total). */
@@ -897,14 +1049,20 @@ function readMemoryConsolidationConfig(
   };
 }
 
-function readTraceabilityConfig(env: Record<string, string | undefined>, cwd: string): MonoAgentConfig["traceability"] {
+function readTraceabilityConfig(
+  env: Record<string, string | undefined>,
+  cwd: string,
+  agentName: string | undefined,
+): MonoAgentConfig["traceability"] {
   const registryDir = readPath(
     env.MONO_AGENT_TRACE_REGISTRY_DIR,
     cwd,
     resolve(homedir(), ".mono-agent", "trace-sources"),
   );
   const sourceId = normalizeOptionalString(env.MONO_AGENT_TRACE_SOURCE_ID);
-  const sourceLabel = normalizeOptionalString(env.MONO_AGENT_TRACE_SOURCE_LABEL);
+  // An explicit trace label remains authoritative. Otherwise the public agent
+  // name becomes the display label without changing the stable source id.
+  const sourceLabel = normalizeOptionalString(env.MONO_AGENT_TRACE_SOURCE_LABEL) ?? agentName;
   const heartbeatMs = readInteger(env.MONO_AGENT_TRACE_HEARTBEAT_MS, "MONO_AGENT_TRACE_HEARTBEAT_MS", DEFAULT_TRACE_HEARTBEAT_MS, invalidEnv, {
     min: 250,
     max: 86_400_000,
@@ -1354,6 +1512,23 @@ function readPath(raw: string | undefined, cwd: string, defaultPath?: string): s
       return defaultPath;
     }
     throw new MonoAgentConfigError("invalid_env", "Path value is required.");
+  }
+  return resolve(cwd, normalized);
+}
+
+function readUserPath(raw: string | undefined, cwd: string, defaultPath?: string): string {
+  const normalized = normalizeOptionalString(raw);
+  if (normalized === undefined) {
+    if (defaultPath !== undefined) {
+      return defaultPath;
+    }
+    throw new MonoAgentConfigError("invalid_env", "Path value is required.");
+  }
+  if (normalized === "~") {
+    return homedir();
+  }
+  if (normalized.startsWith("~/") || normalized.startsWith("~\\")) {
+    return resolve(homedir(), normalized.slice(2));
   }
   return resolve(cwd, normalized);
 }

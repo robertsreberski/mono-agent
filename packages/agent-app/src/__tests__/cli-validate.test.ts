@@ -76,6 +76,56 @@ async function captureRunCli(argv: readonly string[]): Promise<{ readonly code: 
 }
 
 describe("runCli validate --consumer", () => {
+  it.each([
+    ["missing", undefined, "no Pi credentials found"],
+    ["expired", { "openai-codex": { type: "oauth", expires: 1_000_000_000_000, refresh: "r" } }, "OAuth token for `openai-codex` expired"],
+  ] as const)("keeps %s Pi credentials non-fatal but does not describe the config as ready", async (_credentialState, authStore, expectedDetail) => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
+    const authPath = join(dir, "auth.json");
+    if (authStore !== undefined) {
+      await writeFile(authPath, JSON.stringify(authStore), { encoding: "utf8", mode: 0o600 });
+    }
+    await writeConsumerConfig(dir, "mono-agent.config.json", {
+      runtime: { model: "pi:openai-codex:gpt-5.6-terra" },
+      context: { identityPath: "./IDENTITY.md" },
+      providers: { piAuthPath: authPath },
+    });
+    process.chdir(dir);
+
+    const result = await captureRunCli(["validate"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Provider credentials");
+    expect(result.stdout).toContain(expectedDetail);
+    expect(result.stdout).toContain("Config is structurally valid, but needs attention before start.");
+    expect(result.stdout).not.toContain("Config is ready to start.");
+  });
+
+  it("does not describe a generic waiting section as ready", async () => {
+    const memoryDir = join(dir, ".mono-agent", "memory");
+    await mkdir(memoryDir, { recursive: true });
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
+    await writeConsumerConfig(dir, "mono-agent.config.json", {
+      runtime: { model: "codex:gpt-5.6-terra" },
+      context: { identityPath: "./IDENTITY.md" },
+      memory: {
+        mode: "lite",
+        path: ".mono-agent/memory",
+        writeMode: "append-host-summary",
+        embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-json-secret" },
+      },
+    });
+    process.chdir(dir);
+
+    const result = await captureRunCli(["validate"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Config warnings");
+    expect(result.stdout).toContain("memory.embeddings.apiKey is a secret read from mono-agent.config.json");
+    expect(result.stdout).toContain("Config is structurally valid, but needs attention before start.");
+    expect(result.stdout).not.toContain("Config is ready to start.");
+  });
+
   it("loads the consumer .env and config without changing the current directory", async () => {
     const invocationDir = join(dir, "invocation");
     const consumerDir = join(dir, "consumer");

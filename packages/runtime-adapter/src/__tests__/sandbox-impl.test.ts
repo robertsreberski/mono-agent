@@ -35,8 +35,20 @@ describe("monoSandboxImpl (real sandbox implementation injected into createMonoR
   it("prepareCommand fails closed under a native policy with no engine available, matching prepareSandboxedCommand directly", async () => {
     const policy = failClosedSandboxPolicy({ root: "/repo/workspace" });
     const command = { command: "/bin/echo", args: [] };
+    const engine = {
+      id: "synthetic-unavailable-srt",
+      async isAvailable() {
+        return false;
+      },
+      async prepareCommand() {
+        throw new Error("unavailable engine must not prepare commands");
+      },
+    };
 
-    await expect(monoSandboxImpl.prepareCommand({ policy, command })).rejects.toMatchObject({
+    await expect(prepareSandboxedCommand({ policy, command, engine })).rejects.toMatchObject({
+      code: "sandbox_unavailable",
+    });
+    await expect(monoSandboxImpl.prepareCommand({ policy, command, engine })).rejects.toMatchObject({
       code: "sandbox_unavailable",
     });
   });

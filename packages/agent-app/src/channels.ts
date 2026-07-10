@@ -74,6 +74,7 @@ import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import { appendPostedMessage, lookupProducingConversation } from "./posted-message-index.js";
+import { configuredRuntimeModels } from "./runtime-routes.js";
 
 /**
  * The channel contract now lives in @mono-agent/agent-contracts (neutral,
@@ -689,7 +690,7 @@ export function createTuiChannelDriver(
       // each configured fallback, as canonical `modelReferenceKey` strings,
       // de-duplicated (a fallback redundantly naming the primary collapses away).
       const configModelKeys: string[] = [];
-      for (const ref of [input.coreConfig.runtime.model, ...(input.coreConfig.runtime.fallbackModels ?? [])]) {
+      for (const ref of configuredRuntimeModels(input.coreConfig.runtime)) {
         const key = modelReferenceKey(ref);
         if (!configModelKeys.includes(key)) {
           configModelKeys.push(key);

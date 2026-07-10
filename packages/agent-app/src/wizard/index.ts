@@ -2,9 +2,18 @@ export type {
   ComposeContext,
   SecretChecklistItem,
   WizardAnswers,
+  WizardFallback,
   WizardPlan,
 } from "./answers.js";
-export { alwaysOnTools, composeWizardPlan, defaultAnswers, recommendedToolSelection } from "./answers.js";
+export {
+  alwaysOnTools,
+  composeWizardPlan,
+  defaultAnswers,
+  effectiveFallbacks,
+  humanizeAgentName,
+  recommendedToolSelection,
+  referencedSetupModelRefs,
+} from "./answers.js";
 
 export type { WizardPreset } from "./presets.js";
 export { findPreset, PRESET_CATALOG, presetAnswers, presetIds, RECIPE_TO_PRESET } from "./presets.js";
@@ -23,5 +32,5 @@ export {
   WizardCancelled,
 } from "./prompts.js";
 
-export type { WizardOutcome } from "./run.js";
-export { runInitWizard } from "./run.js";
+export type { ModelRepairOutcome, WizardOutcome, WizardRunContext } from "./run.js";
+export { runInitWizard, runModelRepairWizard } from "./run.js";

@@ -2,6 +2,7 @@ export const DEFAULT_CONTEXT_WINDOW = "default";
 export const ONE_MILLION_CONTEXT_WINDOW = "1m";
 
 export const CLAUDE_ONE_MILLION_CONTEXT_MODELS = new Set([
+  "claude-opus-4-8",
   "claude-opus-4-7",
   "claude-opus-4-6",
 ]);
@@ -16,6 +17,10 @@ export function stripContextWindowSuffix(model) {
   return String(model || "").replace(/\[1m\]$/i, "");
 }
 
+export function hasExplicitOneMillionContextWindow(model) {
+  return /\[1m\]$/i.test(String(model || ""));
+}
+
 export function claudeModelSupportsOneMillionContext(model) {
   return CLAUDE_ONE_MILLION_CONTEXT_MODELS.has(stripContextWindowSuffix(model));
 }
@@ -27,6 +32,9 @@ export function claudeModelSupportsContextWindow(model, contextWindow) {
 }
 
 export function modelWithContextWindow(model, contextWindow) {
+  if (hasExplicitOneMillionContextWindow(model)) {
+    return String(model);
+  }
   const base = stripContextWindowSuffix(model);
   if (
     normalizeContextWindow(contextWindow) === ONE_MILLION_CONTEXT_WINDOW

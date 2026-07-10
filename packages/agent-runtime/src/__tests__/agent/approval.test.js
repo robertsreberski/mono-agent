@@ -59,17 +59,37 @@ describe("createApprovalManager — host responses", () => {
 
   it("session-allowlists a tool after 'always' decision", async () => {
     let calls = 0;
+    const { events, onEvent } = captureEvents();
     const mgr = createApprovalManager({
       onToolApprovalRequest: async () => {
         calls += 1;
         return { decision: "always" };
       },
       defaultRiskTier: "medium",
+      onEvent,
     });
     await mgr.request({ toolName: "Bash", input: {} });
     await mgr.request({ toolName: "Bash", input: {} });
     expect(calls).toBe(1);
     expect(mgr.isAlwaysAllowed("Bash")).toBe(true);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "tool_approval_granted",
+      reason: "session_allowed",
+    }));
+  });
+
+  it("can require a host answer for low-risk tools", async () => {
+    const host = vi.fn().mockResolvedValue({ decision: "deny" });
+    const mgr = createApprovalManager({
+      onToolApprovalRequest: host,
+      riskTiersByTool: { Read: "low" },
+      autoApproveLowRisk: false,
+    });
+
+    const result = await mgr.request({ toolName: "Read", input: {} });
+
+    expect(host).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ decision: "deny", riskTier: "low" });
   });
 
   it("alwaysAllowTools at construction skips the host", async () => {

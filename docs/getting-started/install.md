@@ -20,6 +20,15 @@ The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to a
 | --- | --- | --- |
 | Node.js | `>=20` | Runtime for the CLI, host, and TUI. |
 | pnpm | `>=10` | Only needed to build the workspace from source (the published packages install with plain `npm`/`npm exec`). |
+| Codex CLI | Supported version; `>=0.144.0` for GPT-5.6 | Required for every direct `codex:*` route. |
+
+The default `codex:gpt-5.6-terra` runtime also needs Codex CLI 0.144.0 or newer installed and signed in. The init wizard checks version and sign-in state but never installs software or starts an unrequested login flow. Follow only the [official Codex CLI instructions](https://developers.openai.com/codex/cli/): on macOS/Linux the standalone installer is:
+
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+codex                    # first run prompts for sign-in
+codex login status
+```
 
 :::note
 You do **not** need pnpm to use the published packages — `npm i -g` and `npm exec` are enough. pnpm is only required for the "run an unreleased build" path below, which builds the workspace from source.
@@ -106,7 +115,7 @@ cd my-agent
 mono-agent init
 ```
 
-On a terminal with no flags, `mono-agent init` is a **step-by-step wizard**: start from a [preset](/reference/recipes/) or go fully custom, then answer model, channels, memory, **tools** (a single "Allow all tools? [Yes]" — the default — or decline to hand-pick a specific list), sandbox, and observability, before it scaffolds and immediately runs `validate`. Pass `--yes` or any flag (or run in a non-TTY) to write the scaffold non-interactively instead:
+On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: name the agent, search the Pi/Codex/Claude catalogs, configure any number of fallbacks and their exact efforts, then choose capabilities and route safety. Escape goes back. A concrete creation review precedes provider/SRT mutations. It proves every selected route sequentially and offers immediate start only when every selected expectation is ready; interrupted preflight can resume fingerprint-matching successes or restart all checks. Pass `--yes` or any flag (or run in a non-TTY) for scaffold-only automation; that path never makes a readiness claim:
 
 ```bash
 mono-agent init --preset telegram-assistant --yes   # scaffold from a preset
@@ -153,7 +162,7 @@ pnpm run build
 repo=/absolute/path/to/mono-agent
 agent_dir=$(mktemp -d)
 cd "$agent_dir"
-node "$repo/packages/agent-app/dist/cli.js" init --model pi:openai-codex:gpt-5.5
+node "$repo/packages/agent-app/dist/cli.js" init --model pi:openai-codex:gpt-5.6-terra
 node "$repo/packages/agent-app/dist/cli.js" validate
 ```
 

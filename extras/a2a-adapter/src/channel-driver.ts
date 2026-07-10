@@ -53,7 +53,7 @@ export function createA2AChannelDriver(
     id,
     label,
     async configView(input) {
-      const section = await readA2AConfigViewSection(options, input);
+      const view = await readA2AConfigViewSection(options, input);
       let status: ChannelConfigViewSection["status"] = "active";
       try {
         const config = await loadA2AChannelConfig(options, input);
@@ -69,7 +69,12 @@ export function createA2AChannelDriver(
         id,
         label,
         status,
-        fields: A2A_CONFIG_FIELDS.map((field) => toChannelConfigViewField(field, section, input.env)),
+        fields: A2A_CONFIG_FIELDS.map((field) => toChannelConfigViewField(
+          field,
+          view.section,
+          input.env,
+          view.publicAgentName,
+        )),
       };
     },
     async loadConfig(input) {
@@ -140,7 +145,11 @@ async function loadA2AChannelConfig(
     validateA2AAdapterRawConfig(options.config);
     return await loadA2AAdapterConfig({
       env: input.env,
-      json: { a2a: options.config } satisfies SettingsJson,
+      // A config-loaded plugin receives only channels.plugins[].config in its
+      // factory options. Rehydrate the public root agent identity from the
+      // actual config file so the A2A Agent Card inherits agent.name unless an
+      // A2A-specific name (or environment override) was provided.
+      json: await pluginScopedA2ASettings(options.config, input.configPath),
     });
   }
   return await loadA2AAdapterConfig({ env: input.env, jsonPath: input.configPath });
@@ -149,12 +158,51 @@ async function loadA2AChannelConfig(
 async function readA2AConfigViewSection(
   options: A2AChannelDriverOptions,
   input: ChannelConfigInput,
-): Promise<Record<string, unknown>> {
+): Promise<{ readonly section: Record<string, unknown>; readonly publicAgentName?: string }> {
   if (options.config !== undefined) {
-    return options.config as Record<string, unknown>;
+    const settings = await pluginScopedA2ASettings(options.config, input.configPath);
+    const publicName = publicAgentNameFromSettings(settings);
+    return {
+      section: readJsonSection(settings, DEFAULT_CHANNEL_ID),
+      ...(publicName === undefined ? {} : { publicAgentName: publicName }),
+    };
   }
   const { json } = await readSettingsJson(input.configPath);
-  return readJsonSection(json, DEFAULT_CHANNEL_ID);
+  const publicName = publicAgentNameFromSettings(json);
+  return {
+    section: readJsonSection(json, DEFAULT_CHANNEL_ID),
+    ...(publicName === undefined ? {} : { publicAgentName: publicName }),
+  };
+}
+
+async function pluginScopedA2ASettings(
+  config: A2AAdapterRawConfig,
+  configPath: string,
+): Promise<SettingsJson> {
+  let publicAgentName: string | undefined;
+  try {
+    const { json } = await readSettingsJson(configPath);
+    publicAgentName = publicAgentNameFromSettings(json);
+  } catch {
+    // Programmatic consumers may supply plugin config without a backing file.
+  }
+  return {
+    ...(publicAgentName === undefined ? {} : { agent: { name: publicAgentName } }),
+    a2a: config,
+  } satisfies SettingsJson;
+}
+
+function publicAgentNameFromSettings(settings: SettingsJson): string | undefined {
+  const agent = isSettingsRecord(settings.agent) ? settings.agent : {};
+  return normalizeSettingsString(agent.name);
+}
+
+function normalizeSettingsString(value: SettingsJsonValue | undefined): string | undefined {
+  return normalizeOptionalString(typeof value === "string" ? value : undefined);
+}
+
+function isSettingsRecord(value: unknown): value is Record<string, SettingsJsonValue> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isA2AConfigError(error: unknown): boolean {
@@ -165,18 +213,39 @@ function toChannelConfigViewField(
   field: JsonEnvFieldSpec,
   section: Record<string, unknown>,
   env: Record<string, string | undefined>,
+  publicJsonAgentName?: string,
 ): ChannelConfigViewField {
-  const envValue = normalizeOptionalString(env[field.env]);
+  const inheritedPublicName = field.id === "a2a.agent.name"
+    ? normalizeOptionalString(env.MONO_AGENT_NAME)
+    : undefined;
+  const explicitEnvValue = normalizeOptionalString(env[field.env]);
   const jsonValue = encodeJsonEnvValue(field.fromJson(section), field.kind ?? "string");
-  const resolved = envValue ?? jsonValue;
-  const source = envValue !== undefined ? "env" : jsonValue !== undefined ? "json" : "default";
+  const inheritedEnvSelected = field.id === "a2a.agent.name"
+    && explicitEnvValue === undefined
+    && jsonValue === undefined
+    && inheritedPublicName !== undefined;
+  const inheritedJsonSelected = field.id === "a2a.agent.name"
+    && explicitEnvValue === undefined
+    && jsonValue === undefined
+    && inheritedPublicName === undefined
+    && publicJsonAgentName !== undefined;
+  const resolved = explicitEnvValue
+    ?? jsonValue
+    ?? inheritedPublicName
+    ?? (field.id === "a2a.agent.name" ? publicJsonAgentName : undefined);
+  const source = explicitEnvValue !== undefined || inheritedEnvSelected
+    ? "env"
+    : jsonValue !== undefined || inheritedJsonSelected
+      ? "json"
+      : "default";
+  const envKey = inheritedEnvSelected || inheritedJsonSelected ? "MONO_AGENT_NAME" : field.env;
   return {
     id: field.id,
     label: labelForFieldId(field.id),
     value: field.secret === true ? (resolved === undefined ? "unset" : "set") : resolved ?? CONFIG_VIEW_PLACEHOLDER,
     source,
     ...(field.secret === true ? { redacted: true } : {}),
-    envKey: field.env,
+    envKey,
   };
 }
 

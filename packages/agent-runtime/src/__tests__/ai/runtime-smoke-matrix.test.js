@@ -24,6 +24,11 @@ describe("runtime smoke matrix", () => {
     expect(runtimeCapabilities("claude").runtime).toBe("sdk");
     expect(runtimeCapabilities("pi").runtime).toBe("pi-agent");
     expect(runtimeCapabilities("codex").runtime).toBe("cli");
+    expect(runtimeCapabilities("opencode")).toMatchObject({
+      runtime: "cli",
+      supports_session_resume: false,
+      supports_mcp: false,
+    });
   });
 
   it.each([

@@ -52,6 +52,7 @@ describe("buildMonoAgentConfigView", () => {
   it("covers every core section exactly once", () => {
     const sections = buildView(baseEnv);
     expect(sections.map((entry) => entry.id)).toEqual([
+      "agent",
       "runtime",
       "concurrency",
       "context",
@@ -63,6 +64,47 @@ describe("buildMonoAgentConfigView", () => {
       "observability",
       "providers",
     ]);
+  });
+
+  it("surfaces public identity and canonical fallback effort semantics", () => {
+    const sections = buildView(baseEnv, {
+      agent: { name: "Research Partner" },
+      runtime: {
+        fallbacks: [
+          { model: "codex:gpt-5.6-sol" },
+          { model: "claude:claude-sonnet-4-6", effort: "high" },
+        ],
+        routeSafety: "per-route-native",
+      },
+    });
+
+    expect(section(sections, "agent").status).toBe("active");
+    expect(field(sections, "agent.name")).toMatchObject({ value: "Research Partner", source: "json" });
+    expect(field(sections, "runtime.fallbacks").value).toContain("provider default");
+    expect(field(sections, "runtime.fallbacks").value).toContain("high");
+    expect(field(sections, "runtime.routeSafety")).toMatchObject({ value: "per-route-native", source: "json" });
+  });
+
+  it("does not present a JSON fallback encoding as active when the alternate env encoding wins", () => {
+    const sections = buildView(
+      { ...baseEnv, MONO_AGENT_FALLBACK_MODELS: "claude:claude-sonnet-4-6" },
+      { runtime: { fallbacks: [{ model: "codex:gpt-5.6-sol" }] } },
+    );
+
+    expect(field(sections, "runtime.fallbackModels")).toMatchObject({
+      value: "claude:claude-sonnet-4-6",
+      source: "env",
+    });
+    expect(field(sections, "runtime.fallbacks")).toMatchObject({ value: "—", source: "default" });
+  });
+
+  it("reports an empty legacy fallback clear as env-sourced", () => {
+    const sections = buildView(
+      { ...baseEnv, MONO_AGENT_FALLBACK_MODELS: "" },
+      { runtime: { fallbackModels: ["claude:claude-sonnet-4-6"] } },
+    );
+
+    expect(field(sections, "runtime.fallbackModels")).toMatchObject({ value: "—", source: "env" });
   });
 
   it("marks an env-sourced field as env", () => {

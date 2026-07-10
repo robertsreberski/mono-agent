@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
 import { validateMonoAgentFolder } from "../doctor.js";
+import type { SdkAuthStatusExecFile } from "../doctor.js";
 
 let dir: string;
 
@@ -76,7 +77,12 @@ describe("validateMonoAgentFolder", () => {
       webhook: { enabled: true },
     });
 
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      sdkAuthStatusExecFile: async () => ({ stdout: "" }),
+    });
 
     expect(report.ok).toBe(true);
     expect(sectionById(report, "core").status).toBe("ok");
@@ -346,6 +352,138 @@ describe("validateMonoAgentFolder", () => {
     expect(webhook.details.join("\n")).toContain('invalid effort override "extreme"');
   });
 
+  it("rejects unknown exact Pi models in static webhook and cron overrides", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      webhook: {
+        enabled: true,
+        endpoints: [{
+          name: "unknown-model",
+          path: "/unknown-model",
+          mode: "sync",
+          model: "pi:opencode-go:not-in-the-catalog",
+        }],
+      },
+      cron: {
+        jobs: [{
+          id: "unknown-model",
+          enabled: true,
+          expression: "0 7 * * *",
+          prompt: "Summarize.",
+          model: "pi:opencode-go:not-in-the-catalog",
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    expect(sectionById(report, "channel:webhook").status).toBe("ok");
+    expect(sectionById(report, "channel:cron").status).toBe("ok");
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.status).toBe("error");
+    const text = runtime.details.join("\n");
+    expect(text).toContain("Per-trigger Pi model overrides must resolve");
+    expect(text).toContain(
+      "webhook.endpoints[0].model=pi:opencode-go:not-in-the-catalog: pi model not found: opencode-go:not-in-the-catalog",
+    );
+    expect(text).toContain(
+      "cron.jobs[0].model=pi:opencode-go:not-in-the-catalog: pi model not found: opencode-go:not-in-the-catalog",
+    );
+  });
+
+  it.each(["webhook", "cron"] as const)(
+    "ignores unknown Pi model overrides on disabled %s entries",
+    async (channel) => {
+      await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+      const disabledEntry = channel === "webhook"
+        ? {
+            endpoints: [{
+              name: "disabled",
+              path: "/disabled",
+              mode: "sync",
+              enabled: false,
+              model: "pi:opencode-go:not-in-the-catalog",
+            }],
+          }
+        : {
+            jobs: [{
+              id: "disabled",
+              enabled: false,
+              expression: "0 7 * * *",
+              prompt: "Summarize.",
+              model: "pi:opencode-go:not-in-the-catalog",
+            }],
+          };
+      const configPath = await writeConfig({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "./IDENTITY.md" },
+        [channel]: { enabled: true, ...disabledEntry },
+      });
+
+      const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+      expect(report.ok).toBe(true);
+      expect(sectionById(report, "runtime").status).toBe("ok");
+      expect(sectionById(report, `channel:${channel}`).status).not.toBe("error");
+      expect(sectionById(report, "runtime").details.join("\n")).not.toContain("not-in-the-catalog");
+    },
+  );
+
+  it("accepts inferred and aliased models from providers.local on every Pi validation surface", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: {
+        model: "pi:local-compat:inferred-primary",
+        fallbackModels: ["pi:local-compat:friendly"],
+      },
+      context: { identityPath: "./IDENTITY.md" },
+      providers: {
+        local: [{
+          id: "local-compat",
+          type: "openai_compat",
+          baseUrl: "http://127.0.0.1:11434",
+          models: [{ name: "canonical", alias: "friendly" }],
+        }],
+      },
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "test-only" },
+        llm: { provider: "agent-host", model: "pi:local-compat:inferred-memory" },
+      },
+      webhook: {
+        enabled: true,
+        endpoints: [{
+          name: "alias",
+          path: "/alias",
+          mode: "sync",
+          model: "pi:local-compat:friendly",
+        }],
+      },
+      cron: {
+        jobs: [{
+          id: "inferred",
+          enabled: true,
+          expression: "0 7 * * *",
+          prompt: "Summarize.",
+          model: "pi:local-compat:inferred-cron",
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(true);
+    expect(sectionById(report, "runtime").status).toBe("ok");
+    expect(sectionById(report, "memory").status).toBe("ok");
+    expect(sectionById(report, "channel:webhook").status).toBe("ok");
+    expect(sectionById(report, "channel:cron").status).toBe("ok");
+  });
+
   it("accepts valid per-trigger model/effort overrides", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
@@ -370,6 +508,326 @@ describe("validateMonoAgentFolder", () => {
     expect(sectionById(report, "channel:cron").status).toBe("ok");
   });
 
+  it("rejects a static Claude trigger override while the mono-agent sandbox is active", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      sandbox: { mode: "native", fallback: "fail-closed" },
+      cron: {
+        jobs: [{
+          id: "claude-turn",
+          enabled: true,
+          expression: "0 7 * * *",
+          prompt: "Summarize.",
+          model: "claude:claude-sonnet-4-6",
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: availableSandboxEngine,
+    });
+
+    expect(report.ok).toBe(false);
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.status).toBe("error");
+    expect(runtime.details.join("\n")).toContain("Claude or direct OpenCode model overrides cannot run");
+    expect(runtime.details.join("\n")).toContain("cron.jobs[0].model=claude:claude-sonnet-4-6");
+  });
+
+  it("allows a static Pi-to-Claude trigger override when the configured sandbox is off", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      sandbox: { mode: "off" },
+      webhook: {
+        enabled: true,
+        endpoints: [{
+          name: "claude-turn",
+          path: "/claude",
+          mode: "sync",
+          model: "claude:claude-sonnet-4-6",
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(true);
+    expect(sectionById(report, "runtime").status).toBe("ok");
+    expect(sectionById(report, "channel:webhook").status).toBe("ok");
+  });
+
+  it("rejects a static direct OpenCode trigger override while the mono-agent sandbox is active", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      sandbox: { mode: "native", fallback: "fail-closed" },
+      webhook: {
+        enabled: true,
+        endpoints: [{
+          name: "opencode-turn",
+          path: "/opencode",
+          mode: "sync",
+          model: "opencode:github-copilot:gpt-5.1",
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: availableSandboxEngine,
+    });
+
+    expect(report.ok).toBe(false);
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.status).toBe("error");
+    expect(runtime.details.join("\n")).toContain("Claude or direct OpenCode model overrides cannot run");
+    expect(runtime.details.join("\n")).toContain("webhook.endpoints[0].model=opencode:github-copilot:gpt-5.1");
+  });
+
+  it("rejects a static direct OpenCode trigger override under a restrictive tool policy", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["Read", "Grep"] },
+      cron: {
+        jobs: [{
+          id: "opencode-turn",
+          enabled: true,
+          expression: "0 7 * * *",
+          prompt: "Summarize.",
+          model: "opencode:github-copilot:gpt-5.1",
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.status).toBe("error");
+    expect(runtime.details.join("\n")).toContain("direct OpenCode model overrides require exact allow-all");
+    expect(runtime.details.join("\n")).toContain("cron.jobs[0].model=opencode:github-copilot:gpt-5.1");
+  });
+
+  it("allows a static direct OpenCode trigger override by suppressing implicit AskUser for that turn", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["*"] },
+      webhook: {
+        enabled: true,
+        endpoints: [{
+          name: "opencode-turn",
+          path: "/opencode",
+          mode: "sync",
+          model: "opencode:github-copilot:gpt-5.1",
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(true);
+    expect(sectionById(report, "runtime")).toMatchObject({ status: "ok" });
+    expect(sectionById(report, "channel:webhook")).toMatchObject({ status: "ok" });
+  });
+
+  it("rejects a static direct OpenCode override when auto-MCP or index skills would be injected", async () => {
+    const skillsRoot = join(dir, "skills");
+    await mkdir(join(skillsRoot, "deploy"), { recursive: true });
+    await writeFile(join(skillsRoot, "deploy", "SKILL.md"), "# Deploy\n");
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: {
+        identityPath: "./IDENTITY.md",
+        skillsRoot,
+        selectedSkills: ["deploy"],
+        skillDisclosure: "index",
+      },
+      memory: { mode: "lite", path: join(dir, "memory"), recallTool: { enabled: true } },
+      tools: { allowedTools: ["*"] },
+      webhook: {
+        enabled: true,
+        endpoints: [{
+          name: "opencode-turn",
+          path: "/opencode",
+          mode: "sync",
+          model: "opencode:github-copilot:gpt-5.1",
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.details.join("\n")).toContain("cannot receive configured or auto-provisioned MCP runtime options");
+    expect(runtime.details.join("\n")).toContain("memory.recallTool");
+    expect(runtime.details.join("\n")).toContain("cannot use index skill disclosure");
+  });
+
+  it("rejects a model-only direct OpenCode trigger override that would inherit host effort", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5", effort: "high" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["*"] },
+      cron: {
+        jobs: [{
+          id: "opencode-turn",
+          enabled: true,
+          expression: "0 7 * * *",
+          prompt: "Summarize.",
+          model: "opencode:github-copilot:gpt-5.1",
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.details.join("\n")).toContain("direct OpenCode routes cannot receive runtime effort");
+    expect(runtime.details.join("\n")).toContain(
+      "cron.jobs[0].model=opencode:github-copilot:gpt-5.1 (effective effort=high)",
+    );
+  });
+
+  it("rejects a direct OpenCode trigger model paired with endpoint effort", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["*"] },
+      webhook: {
+        enabled: true,
+        endpoints: [{
+          name: "opencode-turn",
+          path: "/opencode",
+          mode: "sync",
+          model: "opencode:github-copilot:gpt-5.1",
+          effort: "low",
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.details.join("\n")).toContain("direct OpenCode routes cannot receive runtime effort");
+    expect(runtime.details.join("\n")).toContain("effective effort=low");
+  });
+
+  it("rejects endpoint effort when the retained fallback chain contains direct OpenCode", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: {
+        model: "pi:openai-codex:gpt-5.5",
+        fallbackModels: ["opencode:github-copilot:gpt-5.1"],
+      },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["*"] },
+      cron: {
+        jobs: [{
+          id: "deep-turn",
+          enabled: true,
+          expression: "0 7 * * *",
+          prompt: "Summarize.",
+          effort: "high",
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.status).toBe("error");
+    expect(runtime.details.join("\n")).toContain("direct OpenCode routes cannot receive runtime effort");
+    expect(runtime.details.join("\n")).toContain("cron.jobs[0].effort=high");
+    expect(runtime.details.join("\n")).toContain("direct OpenCode route=opencode:github-copilot:gpt-5.1");
+  });
+
+  it("rejects a direct OpenCode trigger route that would inherit runtime.maxTurns", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5", maxTurns: 3 },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["*"] },
+      webhook: {
+        enabled: true,
+        endpoints: [{
+          name: "opencode-turn",
+          path: "/opencode",
+          mode: "sync",
+          model: "opencode:github-copilot:gpt-5.1",
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.details.join("\n")).toContain("cannot enforce runtime.maxTurns");
+    expect(runtime.details.join("\n")).toContain("webhook.endpoints[0].model=opencode:github-copilot:gpt-5.1");
+  });
+
+  it("rejects a webhook override from a direct-Codex host to Pi", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "codex:gpt-5.6-terra" },
+      context: { identityPath: "./IDENTITY.md" },
+      webhook: {
+        enabled: true,
+        endpoints: [{ name: "pi-turn", path: "/pi", mode: "sync", model: "pi:ollama:qwen3:8b" }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    expect(sectionById(report, "runtime").details.join("\n")).toContain("webhook.endpoints[0].model=pi:ollama:qwen3:8b");
+  });
+
+  it("rejects a cron override from a Pi host to direct Codex", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      cron: {
+        jobs: [{
+          id: "codex-turn",
+          enabled: true,
+          expression: "0 7 * * *",
+          prompt: "Summarize.",
+          model: "codex:gpt-5.6-terra",
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    expect(sectionById(report, "runtime").details.join("\n")).toContain("cron.jobs[0].model=codex:gpt-5.6-terra");
+  });
+
   it("reports an effective native sandbox when the engine is available", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
@@ -392,6 +850,356 @@ describe("validateMonoAgentFolder", () => {
     const text = sandbox.details.join("\n");
     expect(text).toContain('Sandbox is effective with native engine "fake-srt"');
     expect(text).toContain("commands run sandboxed");
+  });
+
+  it("rejects native srt policy when a direct Codex primary or fallback would bypass it", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: {
+        model: "pi:openai-codex:gpt-5.5",
+        fallbackModels: ["codex:gpt-5.6-terra"],
+      },
+      context: { identityPath: "./IDENTITY.md" },
+      sandbox: { mode: "native", fallback: "fail-closed" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: availableSandboxEngine,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(sectionById(report, "runtime").details.join("\n")).toContain("Route safety: uniform");
+    expect(sectionById(report, "runtime").details.join("\n")).toContain("Fallback model codex:gpt-5.6-terra");
+    const sandbox = sectionById(report, "sandbox");
+    expect(sandbox.status).toBe("error");
+    expect(sandbox.details.join("\n")).toContain("codex:gpt-5.6-terra");
+    expect(sandbox.details.join("\n")).toContain("cannot govern direct Codex");
+  });
+
+  it("reports canonical mixed-route efforts and explicit per-route-native safety contracts", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: {
+        model: "pi:openai-codex:gpt-5.5",
+        effort: "medium",
+        fallbacks: [
+          { model: "claude:claude-sonnet-4-6" },
+          { model: "codex:gpt-5.6-sol", effort: "high" },
+        ],
+        routeSafety: "per-route-native",
+      },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["*"] },
+      sandbox: { mode: "native", fallback: "fail-closed" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: availableSandboxEngine,
+    });
+
+    expect(report.ok).toBe(true);
+    const runtimeText = sectionById(report, "runtime").details.join("\n");
+    expect(runtimeText).toContain("Route safety: per-route-native");
+    expect(runtimeText).toContain("claude:claude-sonnet-4-6 runs on Claude SDK (effort: provider default)");
+    expect(runtimeText).toContain("codex:gpt-5.6-sol runs on Codex app CLI (effort: high)");
+    const sandbox = sectionById(report, "sandbox");
+    expect(sandbox.status).toBe("waiting");
+    expect(sandbox.details.join("\n")).toContain("Pi-owned tools use the configured mono-agent SRT policy");
+    expect(sandbox.details.join("\n")).toContain("fail closed when it is unavailable");
+    expect(sandbox.details.join("\n")).toContain("Claude provider-owned permissions apply");
+    expect(sandbox.details.join("\n")).toContain("Codex default/acceptEdits mode uses its native workspace-write sandbox");
+  });
+
+  it.each([
+    ["absent", undefined],
+    ["explicitly off", { mode: "off" }],
+  ])("reports per-route-native Pi SRT as disabled when the sandbox is %s", async (_label, sandbox) => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: {
+        model: "pi:openai-codex:gpt-5.5",
+        routeSafety: "per-route-native",
+      },
+      context: { identityPath: "./IDENTITY.md" },
+      ...(sandbox === undefined ? {} : { sandbox }),
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const sandboxSection = sectionById(report, "sandbox");
+    const text = sandboxSection.details.join("\n");
+    expect(sandboxSection.status).toBe("disabled");
+    expect(text).toContain("SRT is disabled");
+    expect(text).toContain("Bash and stdio MCP subprocesses run unsandboxed");
+    expect(text).not.toContain("use the configured mono-agent SRT policy and fail closed");
+  });
+
+  it("rejects native srt policy for a Claude primary", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "claude:claude-sonnet-4-6" },
+      context: { identityPath: "./IDENTITY.md" },
+      sandbox: { mode: "native", fallback: "fail-closed" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: availableSandboxEngine,
+    });
+
+    expect(report.ok).toBe(false);
+    const sandbox = sectionById(report, "sandbox");
+    expect(sandbox.status).toBe("error");
+    expect(sandbox.details.join("\n")).toContain("cannot govern Claude runtime");
+    expect(sandbox.details.join("\n")).toContain("claude:claude-sonnet-4-6");
+  });
+
+  it("rejects native srt policy for a Claude fallback", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: {
+        model: "pi:openai-codex:gpt-5.5",
+        fallbackModels: ["claude:claude-sonnet-4-6"],
+      },
+      context: { identityPath: "./IDENTITY.md" },
+      sandbox: { mode: "native", fallback: "fail-closed" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: availableSandboxEngine,
+    });
+
+    expect(report.ok).toBe(false);
+    const sandbox = sectionById(report, "sandbox");
+    expect(sandbox.status).toBe("error");
+    expect(sandbox.details.join("\n")).toContain("cannot govern Claude runtime");
+    expect(sandbox.details.join("\n")).toContain("claude:claude-sonnet-4-6");
+  });
+
+  it("rejects native srt policy for a direct OpenCode primary", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "opencode:github-copilot:gpt-5.1", executionMode: "cli" },
+      context: { identityPath: "./IDENTITY.md" },
+      sandbox: { mode: "native", fallback: "fail-closed" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: availableSandboxEngine,
+    });
+
+    expect(report.ok).toBe(false);
+    const sandbox = sectionById(report, "sandbox");
+    expect(sandbox.status).toBe("error");
+    expect(sandbox.details.join("\n")).toContain("cannot govern direct OpenCode runtime");
+    expect(sandbox.details.join("\n")).toContain("opencode:github-copilot:gpt-5.1");
+  });
+
+  it("rejects native srt policy for a direct OpenCode fallback", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: {
+        model: "pi:openai-codex:gpt-5.5",
+        fallbackModels: ["opencode:github-copilot:gpt-5.1"],
+      },
+      context: { identityPath: "./IDENTITY.md" },
+      sandbox: { mode: "native", fallback: "fail-closed" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: availableSandboxEngine,
+    });
+
+    expect(report.ok).toBe(false);
+    const sandbox = sectionById(report, "sandbox");
+    expect(sandbox.status).toBe("error");
+    expect(sandbox.details.join("\n")).toContain("cannot govern direct OpenCode runtime");
+    expect(sandbox.details.join("\n")).toContain("opencode:github-copilot:gpt-5.1");
+  });
+
+  it("keeps pi:opencode-go under the native mono-agent sandbox", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:opencode-go:kimi-k2.6", routeSafety: "per-route-native" },
+      context: { identityPath: "./IDENTITY.md" },
+      sandbox: { mode: "native", fallback: "fail-closed" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: availableSandboxEngine,
+    });
+
+    expect(report.ok).toBe(true);
+    const sandbox = sectionById(report, "sandbox");
+    expect(sandbox).toMatchObject({ status: "ok" });
+    expect(sandbox.details.join("\n")).toContain("configured mono-agent SRT policy and fail closed");
+    expect(sandbox.details.join("\n")).not.toContain("SRT is disabled");
+  });
+
+  it("rejects runtime effort when a direct OpenCode fallback would inherit it", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: {
+        model: "pi:openai-codex:gpt-5.5",
+        fallbackModels: ["opencode:github-copilot:gpt-5.1"],
+        effort: "high",
+      },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["*"] },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.status).toBe("error");
+    expect(runtime.details.join("\n")).toContain(
+      "Direct OpenCode model opencode:github-copilot:gpt-5.1 cannot receive runtime.effort=high",
+    );
+  });
+
+  it("rejects runtime.maxTurns when a direct OpenCode fallback cannot enforce the cap", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: {
+        model: "pi:openai-codex:gpt-5.5",
+        fallbackModels: ["opencode:github-copilot:gpt-5.1"],
+        maxTurns: 2,
+      },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["*"] },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    expect(sectionById(report, "runtime").details.join("\n")).toContain(
+      "cannot enforce runtime.maxTurns=2",
+    );
+  });
+
+  it("rejects index skill disclosure for a direct OpenCode route", async () => {
+    const skillsRoot = join(dir, "skills");
+    await mkdir(join(skillsRoot, "deploy"), { recursive: true });
+    await writeFile(join(skillsRoot, "deploy", "SKILL.md"), "# Deploy\n");
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "opencode:github-copilot:gpt-5.1", executionMode: "cli" },
+      context: {
+        identityPath: "./IDENTITY.md",
+        skillsRoot,
+        selectedSkills: ["deploy"],
+        skillDisclosure: "index",
+      },
+      tools: { allowedTools: ["*"] },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    expect(sectionById(report, "runtime").details.join("\n")).toContain(
+      "cannot use context.skillDisclosure=index",
+    );
+  });
+
+  it("reports the native direct-Codex sandbox when no incompatible srt policy is configured", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "codex:gpt-5.6-terra" },
+      context: { identityPath: "./IDENTITY.md" },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(report, "sandbox")).toMatchObject({ status: "ok" });
+    expect(sectionById(report, "sandbox").details.join("\n")).toContain("workspace-write sandbox with network disabled");
+  });
+
+  it("reports the Codex-native posture even when the mono-agent sandbox is explicitly off", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "codex:gpt-5.6-terra" },
+      context: { identityPath: "./IDENTITY.md" },
+      sandbox: { mode: "off" },
+      tools: { allowedTools: ["*"] },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(report, "sandbox").status).toBe("ok");
+    expect(sectionById(report, "sandbox").details.join("\n")).toContain("workspace-write sandbox with network disabled");
+    expect(sectionById(report, "sandbox").details.join("\n")).toContain("explicitly off");
+    expect(sectionById(report, "sandbox").details.join("\n")).not.toContain("cannot govern direct Codex");
+  });
+
+  it("reports direct Codex plan as native read-only with network disabled", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "codex:gpt-5.6-terra", permissionMode: "plan" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["*"] },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(report, "sandbox")).toMatchObject({ status: "ok" });
+    expect(sectionById(report, "sandbox").details.join("\n")).toContain("read-only sandbox with network disabled");
+  });
+
+  it("warns explicitly when direct Codex bypasses its native sandbox", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "codex:gpt-5.6-terra", permissionMode: "bypassPermissions" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["*"] },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(report, "sandbox")).toMatchObject({ status: "waiting" });
+    expect(sectionById(report, "sandbox").details.join("\n")).toContain("danger-full-access");
+    expect(sectionById(report, "sandbox").details.join("\n")).toContain("no filesystem or network sandbox");
+  });
+
+  it("rejects restrictive mono-agent tool policy for direct Codex", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "codex:gpt-5.6-terra" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["Read"], disallowedTools: [] },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    expect(sectionById(report, "tools")).toMatchObject({ status: "error" });
+    expect(sectionById(report, "tools").details.join("\n")).toContain("cannot enforce tools.allowedTools");
   });
 
   it("warns non-fatally when unsafe sandbox fallback is active", async () => {
@@ -1372,7 +2180,7 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
 
   async function writeAuthStore(providers: Record<string, unknown>): Promise<string> {
     const authPath = join(dir, "auth.json");
-    await writeFile(authPath, JSON.stringify(providers, null, 2));
+    await writeFile(authPath, JSON.stringify(providers, null, 2), { mode: 0o600 });
     return authPath;
   }
 
@@ -1389,27 +2197,149 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     });
   }
 
-  it("passes when the custom primary is in models.json and the OAuth fallback token is valid", async () => {
+  async function writeDirectOpenCodeState(
+    providers: Record<string, unknown>,
+    options: { readonly marker?: boolean } = {},
+  ): Promise<Record<string, string>> {
+    const home = join(dir, "opencode-home");
+    const data = join(home, ".local", "share", "opencode");
+    await mkdir(data, { recursive: true });
+    if (options.marker !== false) await writeFile(join(data, "opencode.db"), "");
+    await writeFile(join(data, "auth.json"), JSON.stringify(providers));
+    return { HOME: home };
+  }
+
+  it("rejects a models.json-only custom primary even when its exact model row exists", async () => {
     const authPath = await writeAuthStore({ "openai-codex": { type: "oauth", expires: FUTURE, refresh: "r" } });
-    await writeModelsStore(["opencode-go", "ollama"]);
+    await writeFile(join(dir, "models.json"), JSON.stringify({
+      providers: {
+        ollama: {
+          baseUrl: "http://127.0.0.1:11434/v1",
+          api: "openai-completions",
+          models: [{ id: "qwen3.6" }],
+        },
+      },
+    }));
     const configPath = await writeCredConfig({
-      runtime: { model: "pi:opencode-go:kimi-k2.6", fallbackModels: ["pi:openai-codex:gpt-5.5"] },
+      runtime: { model: "pi:ollama:qwen3.6", fallbackModels: ["pi:openai-codex:gpt-5.5"] },
       providers: { piAuthPath: authPath },
     });
 
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
 
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.status).toBe("error");
+    expect(runtime.details.join("\n")).toContain("pi model not found: ollama:qwen3.6");
+    expect(runtime.details.join("\n")).toContain("models.json is not a mono-agent runtime source");
+    expect(runtime.details.join("\n")).toContain("add providers.local");
+
     const creds = sectionById(report, "credentials");
-    expect(creds.status).toBe("ok");
+    expect(creds.status).toBe("waiting");
     const text = creds.details.join("\n");
-    expect(text).toMatch(/Primary pi:opencode-go:kimi-k2\.6: provider `opencode-go` configured via pi models\.json/u);
+    expect(text).toMatch(/Primary pi:ollama:qwen3\.6: no Pi credentials found for provider `ollama` in the auth store/u);
     expect(text).toMatch(/Fallback pi:openai-codex:gpt-5\.5: OAuth credentials for `openai-codex` present \(token valid/u);
-    expect(text).not.toMatch(/WARN/u);
-    expect(report.ok).toBe(true);
+    expect(report.ok).toBe(false);
+  });
+
+  it("rejects an unknown exact model under an authenticated built-in Pi provider", async () => {
+    const authPath = await writeAuthStore({ "opencode-go": { type: "api_key", key: "sk-opencode" } });
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:not-in-the-catalog" },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.status).toBe("error");
+    expect(runtime.details.join("\n")).toContain("pi model not found: opencode-go:not-in-the-catalog");
+    expect(sectionById(report, "credentials").status).toBe("ok");
+    expect(report.ok).toBe(false);
+  });
+
+  it("rejects an unknown exact Pi fallback before execution", async () => {
+    const authPath = await writeAuthStore({
+      "openai-codex": { type: "oauth", expires: FUTURE, refresh: "r" },
+      "opencode-go": { type: "api_key", key: "sk-opencode" },
+    });
+    const configPath = await writeCredConfig({
+      runtime: {
+        model: "pi:openai-codex:gpt-5.5",
+        fallbackModels: ["pi:opencode-go:not-in-the-catalog"],
+      },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const runtime = sectionById(report, "runtime");
+    expect(runtime.status).toBe("error");
+    expect(runtime.details.join("\n")).toContain(
+      "Fallback model pi:opencode-go:not-in-the-catalog: pi model not found: opencode-go:not-in-the-catalog",
+    );
+    expect(sectionById(report, "credentials").status).toBe("ok");
+    expect(report.ok).toBe(false);
+  });
+
+  it("rejects an unknown exact Pi agent-host memory LLM before execution", async () => {
+    const authPath = await writeAuthStore({ "opencode-go": { type: "api_key", key: "sk-opencode" } });
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:kimi-k2.6" },
+      providers: { piAuthPath: authPath },
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "test-only" },
+        llm: { provider: "agent-host", model: "pi:opencode-go:not-in-the-catalog" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(report, "runtime").status).toBe("ok");
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("error");
+    expect(memory.details.join("\n")).toContain(
+      "Agent-host memory LLM pi:opencode-go:not-in-the-catalog: pi model not found: opencode-go:not-in-the-catalog",
+    );
+    expect(sectionById(report, "credentials").status).toBe("ok");
+    expect(report.ok).toBe(false);
+  });
+
+  it("rejects a disabled providers.local model row on an agent-host memory LLM", async () => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      providers: {
+        local: [{
+          id: "local-compat",
+          type: "openai_compat",
+          baseUrl: "http://127.0.0.1:11434",
+          models: [{ name: "blocked", enabled: false }],
+        }],
+      },
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "test-only" },
+        llm: { provider: "agent-host", model: "pi:local-compat:blocked" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("error");
+    expect(memory.details.join("\n")).toContain(
+      "model `blocked` is disabled in providers.local for provider `local-compat`",
+    );
+    expect(report.ok).toBe(false);
   });
 
   it("passes when OpenCode-Go API key credentials are present in the Pi auth store", async () => {
     const authPath = await writeAuthStore({ "opencode-go": { type: "api_key", key: "sk-opencode" } });
+    expect((await stat(authPath)).mode & 0o777).toBe(0o600);
     const configPath = await writeCredConfig({
       runtime: { model: "pi:opencode-go:kimi-k2.6" },
       providers: { piAuthPath: authPath },
@@ -1421,6 +2351,102 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(creds.status).toBe("ok");
     expect(creds.details.join("\n")).toMatch(/Primary pi:opencode-go:kimi-k2\.6: API key credentials for `opencode-go` present/u);
     expect(report.ok).toBe(true);
+  });
+
+  it("fails closed on a group-readable Pi auth store and recommends explicit hardening", async () => {
+    const authPath = await writeAuthStore({
+      "opencode-go": { type: "api_key", key: "group-readable-secret-sentinel" },
+    });
+    await chmod(authPath, 0o644);
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:kimi-k2.6" },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    const text = creds.details.join("\n");
+    expect(text).toContain("permissions are not owner-only");
+    expect(text).toContain("intentionally never trusted for credential detection");
+    expect(text).toContain("mono-agent auth login opencode-go --pi-auth-path");
+    expect(text).not.toContain("group-readable-secret-sentinel");
+    expect(report.ok).toBe(true);
+  });
+
+  it("fails closed on a symbolic-link Pi auth store without exposing its contents", async () => {
+    const targetPath = join(dir, "real-auth.json");
+    const authPath = join(dir, "auth.json");
+    await writeFile(targetPath, JSON.stringify({
+      "opencode-go": { type: "api_key", key: "symlink-secret-sentinel" },
+    }), { mode: 0o600 });
+    await symlink(targetPath, authPath);
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:kimi-k2.6" },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    const text = creds.details.join("\n");
+    expect(text).toContain("configured entry is a symbolic link");
+    expect(text).not.toContain("symlink-secret-sentinel");
+  });
+
+  it("fails closed on a hard-linked Pi auth store without exposing its contents", async () => {
+    const targetPath = join(dir, "linked-auth.json");
+    const authPath = join(dir, "auth.json");
+    await writeFile(targetPath, JSON.stringify({
+      "opencode-go": { type: "api_key", key: "hardlink-secret-sentinel" },
+    }), { mode: 0o600 });
+    await link(targetPath, authPath);
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:kimi-k2.6" },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    const text = creds.details.join("\n");
+    expect(text).toContain("file has multiple hard links");
+    expect(text).not.toContain("hardlink-secret-sentinel");
+  });
+
+  it("fails closed before parsing an oversized Pi auth store", async () => {
+    const authPath = join(dir, "auth.json");
+    await writeFile(authPath, Buffer.alloc(1_048_577, 0x78), { mode: 0o600 });
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:kimi-k2.6" },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    expect(creds.details.join("\n")).toContain("exceeds the 1 MiB inspection limit");
+  });
+
+  it("fails closed on a malformed owner-only Pi auth store", async () => {
+    const authPath = join(dir, "auth.json");
+    await writeFile(authPath, "{malformed-secret-sentinel", { mode: 0o600 });
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:kimi-k2.6" },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    const text = creds.details.join("\n");
+    expect(text).toContain("not a valid JSON object");
+    expect(text).not.toContain("malformed-secret-sentinel");
   });
 
   it("flags missing OpenCode-Go API key credentials with an API-key hint", async () => {
@@ -1441,6 +2467,228 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(report.ok).toBe(true);
   });
 
+  it("recognizes an OpenCode-Go key in the resolved environment without exposing it", async () => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:kimi-k2.6" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: { OPENCODE_API_KEY: "hidden-opencode-key" },
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    const credentials = sectionById(report, "credentials");
+    expect(credentials.status).toBe("ok");
+    expect(credentials.details.join("\n")).toContain("resolved environment (OPENCODE_API_KEY)");
+    expect(credentials.details.join("\n")).not.toContain("hidden-opencode-key");
+  });
+
+  it("does not treat an empty Pi auth object as an authenticated API-key provider", async () => {
+    const authPath = await writeAuthStore({ "opencode-go": {} });
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:kimi-k2.6" },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const credentials = sectionById(report, "credentials");
+    expect(credentials.status).toBe("waiting");
+    expect(credentials.details.join("\n")).toContain("unsupported or missing type");
+  });
+
+  it("verifies exact direct OpenCode provider IDs and a safe minimum CLI version", async () => {
+    const configPath = await writeCredConfig({
+      runtime: {
+        model: "opencode:github-copilot:gpt-5.1",
+        executionMode: "cli",
+        fallbackModels: ["opencode:openai:gpt-5.1"],
+      },
+      tools: { allowedTools: ["*"] },
+    });
+    const env = await writeDirectOpenCodeState({
+      "github-copilot": { type: "oauth", refresh: "secret", access: "secret", expires: FUTURE },
+      openai: { type: "api", key: "secret" },
+    });
+    const statusExec = vi.fn(async () => ({ stdout: "1.15.13\n" }));
+
+    const report = await validateMonoAgentFolder({
+      env: { ...env, PATH: "/test/bin" },
+      cwd: dir,
+      configPath,
+      liveness: true,
+      sdkAuthStatusExecFile: statusExec,
+    });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("ok");
+    expect(creds.details).toContain(
+      "Primary opencode:github-copilot:gpt-5.1: provider `github-copilot` credential present in the standard OpenCode auth store; stable OpenCode CLI >=1.15.0 detected without a model turn. Credential detected; live model verification is still pending.",
+    );
+    expect(creds.details).toContain(
+      "Fallback opencode:openai:gpt-5.1: provider `openai` credential present in the standard OpenCode auth store; stable OpenCode CLI >=1.15.0 detected without a model turn. Credential detected; live model verification is still pending.",
+    );
+    expect(creds.details.join("\n")).not.toContain("secret");
+    expect(statusExec).toHaveBeenCalledOnce();
+    expect(statusExec).toHaveBeenCalledWith(
+      "opencode",
+      ["--version"],
+      expect.objectContaining({
+        timeout: 5_000,
+        maxBuffer: 65_536,
+        encoding: "utf8",
+        env: { PATH: "/test/bin" },
+      }),
+    );
+  });
+
+  it("keeps static direct OpenCode validation waiting until the minimum CLI version can be verified", async () => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "opencode:github-copilot:gpt-5.1", executionMode: "cli" },
+      tools: { allowedTools: ["*"] },
+    });
+    const env = await writeDirectOpenCodeState({
+      "github-copilot": { type: "oauth", refresh: "r", access: "a", expires: FUTURE },
+    });
+    const statusExec = vi.fn(async () => ({ stdout: "must not run" }));
+
+    const report = await validateMonoAgentFolder({
+      env,
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sdkAuthStatusExecFile: statusExec,
+    });
+
+    const credentials = sectionById(report, "credentials");
+    expect(credentials.status).toBe("waiting");
+    expect(credentials.details.join("\n")).toContain(
+      "required stable OpenCode CLI >=1.15.0 is unverified during static validation",
+    );
+    expect(credentials.details.join("\n")).toContain("No OpenCode process was launched");
+    expect(statusExec).not.toHaveBeenCalled();
+  });
+
+  it.each(["1.14.9", "1.15.0-beta.1", "not-a-version"])(
+    "keeps direct OpenCode waiting when CLI version %s is unsupported",
+    async (version) => {
+      const configPath = await writeCredConfig({
+        runtime: { model: "opencode:github-copilot:gpt-5.1", executionMode: "cli" },
+        tools: { allowedTools: ["*"] },
+      });
+      const env = await writeDirectOpenCodeState({
+        "github-copilot": { type: "oauth", refresh: "r", access: "a", expires: FUTURE },
+      });
+      const statusExec = vi.fn(async () => ({ stdout: `${version}\n` }));
+
+      const report = await validateMonoAgentFolder({
+        env,
+        cwd: dir,
+        configPath,
+        liveness: true,
+        sdkAuthStatusExecFile: statusExec,
+      });
+
+      const credentials = sectionById(report, "credentials");
+      expect(credentials.status).toBe("waiting");
+      expect(credentials.details.join("\n")).toContain(
+        "stable OpenCode CLI >=1.15.0 could not be verified",
+      );
+      expect(credentials.details.join("\n")).toContain(
+        "No model turn or mutation-capable OpenCode command was run",
+      );
+      expect(statusExec).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    ["OAuth without access", { type: "oauth", refresh: "r", expires: FUTURE }],
+    ["OAuth with no usable token", { type: "oauth", refresh: " ", access: "", expires: FUTURE }],
+    ["OAuth with fractional expiry", { type: "oauth", refresh: "r", access: "a", expires: 1.5 }],
+    ["API with an empty key", { type: "api", key: "" }],
+    ["API with a whitespace key", { type: "api", key: "  " }],
+    ["API with non-string metadata", { type: "api", key: "secret", metadata: { tenant: 42 } }],
+    ["well-known without token", { type: "wellknown", key: "secret" }],
+    ["well-known with whitespace token", { type: "wellknown", key: "secret", token: "  " }],
+    ["unknown credential type", { type: "cookie", value: "secret" }],
+  ])("rejects malformed direct OpenCode auth entry: %s", async (_label, credential) => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "opencode:github-copilot:gpt-5.1", executionMode: "cli" },
+      tools: { allowedTools: ["*"] },
+    });
+    const env = await writeDirectOpenCodeState({ "github-copilot": credential });
+    const statusExec = vi.fn(async () => ({ stdout: "must not run" }));
+
+    const report = await validateMonoAgentFolder({
+      env,
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sdkAuthStatusExecFile: statusExec,
+    });
+
+    const credentials = sectionById(report, "credentials");
+    expect(credentials.status).toBe("waiting");
+    expect(credentials.details.join("\n")).toContain(
+      "auth.json is malformed or contains an unsupported credential entry",
+    );
+    expect(credentials.details.join("\n")).not.toContain("secret");
+    expect(statusExec).not.toHaveBeenCalled();
+  });
+
+  it("warns when direct OpenCode does not report the referenced provider credential", async () => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "opencode:openrouter:anthropic/claude-3.5-sonnet", executionMode: "cli" },
+      tools: { allowedTools: ["*"] },
+    });
+
+    const env = await writeDirectOpenCodeState({
+      "github-copilot": { type: "oauth", refresh: "r", access: "a", expires: FUTURE },
+    });
+    const statusExec = vi.fn(async () => ({ stdout: "1.15.13\n" }));
+    const report = await validateMonoAgentFolder({
+      env,
+      cwd: dir,
+      configPath,
+      liveness: true,
+      sdkAuthStatusExecFile: statusExec,
+    });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    expect(creds.details.join("\n")).toContain(
+      "no exact credential entry exists for provider `openrouter`",
+    );
+    expect(statusExec).toHaveBeenCalledOnce();
+  });
+
+  it("surfaces a missing OpenCode migration marker without launching a process", async () => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "opencode:github-copilot:gpt-5.1", executionMode: "cli" },
+      tools: { allowedTools: ["*"] },
+    });
+    const env = await writeDirectOpenCodeState({
+      "github-copilot": { type: "oauth", refresh: "r", access: "a", expires: FUTURE },
+    }, { marker: false });
+    const statusExec = vi.fn(async () => ({ stdout: "must not run" }));
+
+    const report = await validateMonoAgentFolder({
+      env,
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sdkAuthStatusExecFile: statusExec,
+    });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    expect(creds.details.join("\n")).toContain("opencode db migrate --pure");
+    expect(creds.details.join("\n")).toContain("No OpenCode process was launched");
+    expect(statusExec).not.toHaveBeenCalled();
+  });
+
   it("flags an expired OAuth token as waiting with a re-auth hint (the 10-day silent-degradation case)", async () => {
     const authPath = await writeAuthStore({ "openai-codex": { type: "oauth", expires: PAST, refresh: "r" } });
     await writeModelsStore(["opencode-go"]);
@@ -1456,13 +2704,15 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const text = creds.details.join("\n");
     expect(text).toMatch(/WARN/u);
     expect(text).toMatch(/expired/u);
-    expect(text).toMatch(/npx @earendil-works\/pi-ai login openai-codex/u);
-    expect(text).not.toMatch(/pi auth login/u);
+    expect(text).toMatch(/mono-agent auth login openai-codex --pi-auth-path/u);
+    expect(text).not.toMatch(/pi-ai login openai-codex/u);
+    expect(text).not.toMatch(/npx @earendil-works\/pi-ai/u);
+    expect(text).toMatch(/not ready until a request succeeds/u);
     // waiting is non-fatal — the report still passes, but the degradation is now visible.
     expect(report.ok).toBe(true);
   });
 
-  it("flags a referenced OAuth provider that is absent from the auth store and models.json", async () => {
+  it("flags a referenced OAuth provider that is absent from the auth store", async () => {
     const authPath = await writeAuthStore({ anthropic: { type: "oauth", expires: FUTURE } });
     await writeModelsStore(["opencode-go"]);
     const configPath = await writeCredConfig({
@@ -1498,7 +2748,125 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
 
     const creds = sectionById(report, "credentials");
     expect(creds.status).toBe("waiting");
-    expect(creds.details.join("\n")).toMatch(/Memory LLM pi:openai-codex:gpt-5\.5: OAuth token for `openai-codex` expired/u);
+    expect(creds.details.join("\n")).toMatch(/Memory LLM pi:openai-codex:gpt-5\.5: stored OAuth credential for `openai-codex` has no usable access or refresh token/u);
+  });
+
+  it("checks credentials for enabled static Pi, direct OpenCode, and SDK trigger models", async () => {
+    const authPath = await writeAuthStore({});
+    const openCodeEnv = await writeDirectOpenCodeState({
+      openrouter: { type: "api", key: "opencode-secret-sentinel" },
+    });
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:local-base:primary" },
+      providers: {
+        piAuthPath: authPath,
+        local: [
+          { id: "local-base", type: "openai_compat", baseUrl: "http://127.0.0.1:11434" },
+          {
+            id: "local-secure",
+            type: "openai_compat",
+            baseUrl: "http://127.0.0.1:11434",
+            apiKeyEnv: "LOCAL_TRIGGER_API_KEY",
+          },
+        ],
+      },
+      tools: { allowedTools: ["*"] },
+      webhook: {
+        enabled: true,
+        endpoints: [
+          {
+            name: "local",
+            path: "/local",
+            mode: "sync",
+            model: "pi:local-secure:private-model",
+          },
+          {
+            name: "opencode",
+            path: "/opencode",
+            mode: "sync",
+            model: "opencode:openrouter:provider-model",
+          },
+        ],
+      },
+      cron: {
+        jobs: [
+          {
+            id: "claude",
+            enabled: true,
+            expression: "0 7 * * *",
+            prompt: "Summarize.",
+            model: "claude:claude-sonnet-4-6",
+          },
+          {
+            id: "pi-built-in",
+            enabled: true,
+            expression: "0 8 * * *",
+            prompt: "Summarize.",
+            model: "pi:opencode-go:kimi-k2.6",
+          },
+        ],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: openCodeEnv,
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    const text = creds.details.join("\n");
+    expect(text).toContain(
+      "webhook.endpoints[0] pi:local-secure:private-model: provider `local-secure` declares apiKeyEnv `LOCAL_TRIGGER_API_KEY`",
+    );
+    expect(text).toContain(
+      "webhook.endpoints[1] opencode:openrouter:provider-model: credentials and migration marker are present",
+    );
+    expect(text).toContain(
+      "cron.jobs[0] claude:claude-sonnet-4-6: no SDK credential in the resolved env",
+    );
+    expect(text).toContain(
+      "cron.jobs[1] pi:opencode-go:kimi-k2.6: no Pi API key credentials found for provider `opencode-go`",
+    );
+    expect(text).not.toContain("opencode-secret-sentinel");
+    expect(report.ok).toBe(true);
+  });
+
+  it("ignores credentials and model resolution for a globally disabled webhook", async () => {
+    const authPath = await writeAuthStore({});
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      providers: { piAuthPath: authPath },
+      webhook: {
+        enabled: false,
+        endpoints: [
+          {
+            name: "unknown-pi",
+            path: "/unknown-pi",
+            mode: "sync",
+            model: "pi:opencode-go:not-in-the-catalog",
+          },
+          {
+            name: "missing-claude-auth",
+            path: "/missing-claude-auth",
+            mode: "sync",
+            model: "claude:claude-sonnet-4-6",
+          },
+        ],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(report, "runtime").status).toBe("ok");
+    expect(sectionById(report, "channel:webhook").status).toBe("disabled");
+    const credentialText = sectionById(report, "credentials").details.join("\n");
+    expect(credentialText).not.toContain("webhook.endpoints");
+    expect(credentialText).not.toContain("not-in-the-catalog");
+    expect(credentialText).not.toContain("claude-sonnet-4-6");
+    expect(report.ok).toBe(true);
   });
 
   // E1 (headline): a `claude:*` model with no discoverable env credential must WARN
@@ -1562,21 +2930,31 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
   it("warns (waiting) when a codex:* model has no OPENAI_API_KEY, naming the codex login path", async () => {
     const configPath = await writeCredConfig({
       runtime: { model: "codex:gpt-5.5" },
+      tools: { allowedTools: ["*"] },
     });
+    const statusExec = vi.fn(async () => ({ stdout: "logged in" }));
 
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sdkAuthStatusExecFile: statusExec,
+    });
 
     const creds = sectionById(report, "credentials");
     expect(creds.status).toBe("waiting");
     const text = creds.details.join("\n");
     expect(text).toMatch(/\[WARN\] Primary codex:gpt-5\.5: no SDK credential in the resolved env \(checked OPENAI_API_KEY\)/u);
     expect(text).toMatch(/codex login/u);
+    expect(statusExec).not.toHaveBeenCalled();
     expect(report.ok).toBe(true);
   });
 
   it("does not warn when a codex:* model has OPENAI_API_KEY set", async () => {
     const configPath = await writeCredConfig({
       runtime: { model: "codex:gpt-5.5" },
+      tools: { allowedTools: ["*"] },
     });
 
     const report = await validateMonoAgentFolder({
@@ -1591,8 +2969,151 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(creds.details.join("\n")).not.toMatch(/WARN/u);
   });
 
-  // E2: a fully-valid `providers.local` ollama provider is keyless — with an empty
-  // pi store it must NOT get the "no Pi credentials found" warning (the wrong advice).
+  it("verifies Codex and Claude external logins live once per SDK across fallback, memory, and trigger refs", async () => {
+    const configPath = await writeCredConfig({
+      runtime: {
+        model: "codex:gpt-5.6-terra",
+        fallbackModels: ["claude:claude-sonnet-4-6"],
+      },
+      tools: { allowedTools: ["*"] },
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-test" },
+        llm: { provider: "agent-host", model: "claude:claude-sonnet-4-6" },
+      },
+      webhook: {
+        enabled: true,
+        endpoints: [{
+          name: "claude",
+          path: "/claude",
+          mode: "sync",
+          model: "claude:claude-sonnet-4-6",
+        }],
+      },
+    });
+    const validationEnv = { PATH: "/test/bin", HOME: join(dir, "test-home") };
+    const calls: Array<{
+      readonly file: string;
+      readonly args: readonly string[];
+      readonly options: Parameters<SdkAuthStatusExecFile>[2];
+    }> = [];
+    const statusExec: SdkAuthStatusExecFile = async (file, args, options) => {
+      calls.push({ file, args, options });
+      return file === "claude"
+        ? { stdout: JSON.stringify({ loggedIn: true }) }
+        : { stdout: "Logged in using ChatGPT" };
+    };
+
+    const report = await validateMonoAgentFolder({
+      env: validationEnv,
+      cwd: dir,
+      configPath,
+      liveness: true,
+      sdkAuthStatusExecFile: statusExec,
+    });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("ok");
+    expect(creds.details).toContain(
+      "Primary codex:gpt-5.6-terra: external sign-in detected by read-only `codex login status`; credentials are not verified until a live model turn succeeds.",
+    );
+    expect(creds.details).toContain(
+      "Fallback claude:claude-sonnet-4-6: external sign-in detected by read-only `claude auth status --json`; credentials are not verified until a live model turn succeeds.",
+    );
+    expect(creds.details).toContain(
+      "Memory LLM claude:claude-sonnet-4-6: external sign-in detected by read-only `claude auth status --json`; credentials are not verified until a live model turn succeeds.",
+    );
+    expect(creds.details).toContain(
+      "webhook.endpoints[0] claude:claude-sonnet-4-6: external sign-in detected by read-only `claude auth status --json`; credentials are not verified until a live model turn succeeds.",
+    );
+    expect(calls).toHaveLength(2);
+    expect(calls.map(({ file }) => file).sort()).toEqual(["claude", "codex"]);
+    expect(calls.find(({ file }) => file === "codex")?.args).toEqual(["login", "status"]);
+    expect(calls.find(({ file }) => file === "claude")?.args).toEqual(["auth", "status", "--json"]);
+    for (const call of calls) {
+      expect(call.options).toMatchObject({
+        cwd: dir,
+        env: validationEnv,
+        timeout: 5_000,
+        maxBuffer: 65_536,
+        encoding: "utf8",
+      });
+    }
+  });
+
+  it("keeps failed SDK status checks waiting and requires Claude loggedIn to be boolean true", async () => {
+    const configPath = await writeCredConfig({
+      runtime: {
+        model: "codex:gpt-5.6-terra",
+        fallbackModels: ["claude:claude-sonnet-4-6"],
+      },
+      tools: { allowedTools: ["*"] },
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-test" },
+        llm: { provider: "agent-host", model: "claude:claude-sonnet-4-6" },
+      },
+    });
+    const calls: string[] = [];
+    const statusExec: SdkAuthStatusExecFile = async (file) => {
+      calls.push(file);
+      if (file === "codex") {
+        throw new Error("not logged in");
+      }
+      return { stdout: JSON.stringify({ loggedIn: "true" }) };
+    };
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: true,
+      sdkAuthStatusExecFile: statusExec,
+    });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    const text = creds.details.join("\n");
+    expect(text).toContain("External login was not verified by `codex login status`");
+    expect(text).toContain("External login was not verified by `claude auth status --json`");
+    expect(text).not.toContain("external login verified by read-only");
+    expect(calls.sort()).toEqual(["claude", "codex"]);
+  });
+
+  it("accepts a successful live model check as proof of an external Codex login", async () => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "codex:gpt-5.6-terra" },
+      tools: { allowedTools: ["*"] },
+    });
+
+    const statusExec = vi.fn(async () => {
+      throw new Error("verified refs must not need an external-login status check");
+    });
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: true,
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      sdkAuthStatusExecFile: statusExec,
+    });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("ok");
+    expect(creds.details).toContain(
+      "Primary codex:gpt-5.6-terra: credentials verified by a successful live model check.",
+    );
+    expect(creds.details.join("\n")).not.toContain("codex login");
+    expect(statusExec).not.toHaveBeenCalled();
+    expect(report.ok).toBe(true);
+  });
+
+  // E2: a fully-valid `providers.local` ollama provider with no key declaration is
+  // keyless — with an empty Pi store it must not get unrelated auth-store advice.
   it("does not warn for a pi:ollama model configured via providers.local with an empty pi store", async () => {
     const configPath = await writeCredConfig({
       runtime: { model: "pi:ollama:gemma4:31b" },
@@ -1610,7 +3131,91 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     const text = creds.details.join("\n");
     expect(text).not.toMatch(/WARN/u);
     expect(text).not.toMatch(/no Pi credentials found/u);
-    expect(text).toMatch(/Primary pi:ollama:gemma4:31b: provider `ollama` configured via config providers\.local \(keyless local provider\)/u);
+    expect(text).toMatch(/Primary pi:ollama:gemma4:31b: provider `ollama` configured via config providers\.local \(keyless local provider; no API key declared\)/u);
+    expect(report.ok).toBe(true);
+  });
+
+  it("reports a declared but unresolved local-provider apiKeyEnv as waiting", async () => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:local-secure:private-model" },
+      providers: {
+        local: [{
+          id: "local-secure",
+          type: "openai_compat",
+          baseUrl: "http://127.0.0.1:11434",
+          apiKeyEnv: "LOCAL_PROVIDER_API_KEY",
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    const text = creds.details.join("\n");
+    expect(text).toContain("declares apiKeyEnv `LOCAL_PROVIDER_API_KEY`");
+    expect(text).toContain("Set LOCAL_PROVIDER_API_KEY before starting");
+    expect(text).not.toContain("keyless local provider");
+    expect(report.ok).toBe(true);
+  });
+
+  it.each([
+    {
+      name: "a resolved apiKeyEnv",
+      provider: { apiKeyEnv: "LOCAL_PROVIDER_API_KEY" },
+      env: { LOCAL_PROVIDER_API_KEY: "env-secret-sentinel" },
+      secret: "env-secret-sentinel",
+    },
+    {
+      name: "an inline fallback when apiKeyEnv is absent",
+      provider: { apiKeyEnv: "LOCAL_PROVIDER_API_KEY", apiKey: "inline-secret-sentinel" },
+      env: {},
+      secret: "inline-secret-sentinel",
+    },
+  ])("reports $name generically without exposing the key", async ({ provider, env, secret }) => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:local-secure:private-model" },
+      providers: {
+        local: [{
+          id: "local-secure",
+          type: "openai_compat",
+          baseUrl: "http://127.0.0.1:11434",
+          ...provider,
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("ok");
+    const text = creds.details.join("\n");
+    expect(text).toContain("provider `local-secure` configured via config providers.local (API key configured)");
+    expect(text).not.toContain(secret);
+    expect(text).not.toContain("keyless local provider");
+    expect(report.ok).toBe(true);
+  });
+
+  it("gives providers.local precedence over a same-ID built-in provider for credential reporting", async () => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:private-model" },
+      providers: {
+        local: [{
+          id: "opencode-go",
+          type: "openai_compat",
+          baseUrl: "http://127.0.0.1:11434",
+        }],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(report, "runtime").status).toBe("ok");
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("ok");
+    const text = creds.details.join("\n");
+    expect(text).toContain("provider `opencode-go` configured via config providers.local (keyless local provider");
+    expect(text).not.toContain("no Pi API key credentials");
     expect(report.ok).toBe(true);
   });
 
@@ -1622,12 +3227,23 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
       runtime: { model: "pi:ollama:gemma4:31b" },
       providers: {
         local: [
-          { id: "ollama", type: "ollama", baseUrl: "http://localhost:11434", enabled: false },
+          {
+            id: "ollama",
+            type: "ollama",
+            baseUrl: "http://localhost:11434",
+            enabled: false,
+            apiKeyEnv: "DISABLED_PROVIDER_KEY",
+          },
         ],
       },
     });
 
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const report = await validateMonoAgentFolder({
+      env: { DISABLED_PROVIDER_KEY: "disabled-secret-sentinel" },
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
 
     const creds = sectionById(report, "credentials");
     expect(creds.status).not.toBe("ok");
@@ -1637,6 +3253,10 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(text).toMatch(/provider disabled: ollama/u);
     // It must NOT claim the keyless-provider success path for a disabled provider.
     expect(text).not.toMatch(/keyless local provider/u);
+    expect(text).not.toMatch(/API key configured/u);
+    expect(text).not.toContain("disabled-secret-sentinel");
+    expect(sectionById(report, "runtime").status).toBe("error");
+    expect(report.ok).toBe(false);
   });
 });
 
@@ -1691,6 +3311,189 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     // The disallow list is folded into the allow-all line; it must not ALSO print separately.
     expect(tools.details.join("\n")).not.toMatch(/Disallowed tools:/u);
     expect(report.ok).toBe(true);
+  });
+
+  it("fails closed when a direct Codex model is configured with a restrictive tool policy", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "codex:gpt-5.6-terra" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["Read", "Glob", "Grep"] },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("error");
+    expect(tools.details.join("\n")).toContain("Direct Codex model codex:gpt-5.6-terra cannot enforce");
+    expect(tools.details.join("\n")).toContain('allowedTools: ["*"] with no disallowedTools');
+  });
+
+  it("accepts direct Codex only with exact allow-all and no disallowed tools", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "codex:gpt-5.6-terra" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["*"] },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(true);
+    expect(sectionById(report, "tools")).toMatchObject({ status: "ok" });
+  });
+
+  it("fails closed when direct OpenCode is configured with a restrictive tool policy", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "opencode:github-copilot:gpt-5.1", executionMode: "cli" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["Read", "Glob", "Grep"] },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("error");
+    expect(tools.details.join("\n")).toContain("Direct OpenCode model opencode:github-copilot:gpt-5.1 cannot enforce");
+    expect(tools.details.join("\n")).toContain('allowedTools: ["*"] with no disallowedTools');
+  });
+
+  it("accepts a minimal direct OpenCode host and does not treat implicit AskUser as MCP", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "opencode:github-copilot:gpt-5.1", executionMode: "cli" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["*"] },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(true);
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("ok");
+    expect(tools.details.join("\n")).not.toContain("MCP runtime options");
+    expect(tools.details.join("\n")).not.toContain("AskUser");
+  });
+
+  it("fails closed when direct OpenCode would receive configured MCP servers", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const mcpConfigPath = join(dir, "mcp.json");
+    await writeFile(mcpConfigPath, JSON.stringify({
+      mcpServers: { filesystem: { command: "mcp-filesystem" } },
+    }));
+    const configPath = await writeConfig({
+      runtime: { model: "opencode:github-copilot:gpt-5.1", executionMode: "cli" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["*"], mcpConfigPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("error");
+    expect(tools.details.join("\n")).toContain("cannot safely consume MCP runtime options from tools.mcpConfigPath (filesystem)");
+  });
+
+  it.each([
+    ["memory recall", {
+      memory: { mode: "lite", path: ".mono-agent/memory", recallTool: { enabled: true } },
+    }, "memory.recallTool"],
+    ["hosted Supermemory MCP", {
+      memory: {
+        backend: "supermemory",
+        mode: "lite",
+        writeMode: "capture",
+        supermemory: {
+          baseUrl: "https://api.supermemory.ai",
+          apiKey: "test-only-secret",
+          exposeMcpServer: true,
+        },
+      },
+    }, "memory.supermemory.exposeMcpServer"],
+  ])("fails closed when direct OpenCode would receive %s", async (_label, extra, source) => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "opencode:github-copilot:gpt-5.1", executionMode: "cli" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["*"] },
+      ...extra,
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    expect(sectionById(report, "tools").details.join("\n")).toContain(source);
+  });
+
+  it("fails closed when direct OpenCode would receive adapter send-tool MCP", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "opencode:github-copilot:gpt-5.1", executionMode: "cli" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["*"] },
+      telegram: { enabled: true, allowAllChats: true },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "123:test-token" },
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(sectionById(report, "tools").details.join("\n")).toContain("adapter send tools (TelegramSendMessage");
+  });
+
+  it("rejects an explicit empty tool list for Claude CLI", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "claude:claude-sonnet-4-6", executionMode: "cli" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: [] },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("error");
+    expect(tools.details.join("\n")).toContain("Claude CLI model claude:claude-sonnet-4-6 cannot enforce an empty");
+    expect(tools.details.join("\n")).toContain("omitting --tools enables Claude Code's default tool set");
+  });
+
+  it("keeps an explicit empty tool list valid for Claude SDK and a Claude SDK fallback", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const sdkConfigPath = await writeConfig({
+      runtime: { model: "claude:claude-sonnet-4-6", executionMode: "sdk" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: [] },
+    });
+
+    const sdkReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath: sdkConfigPath, liveness: false });
+    expect(sdkReport.ok).toBe(true);
+    expect(sectionById(sdkReport, "tools")).toMatchObject({ status: "waiting" });
+
+    const fallbackConfigPath = await writeConfig({
+      runtime: {
+        model: "pi:openai-codex:gpt-5.5",
+        fallbackModels: ["claude:claude-sonnet-4-6"],
+      },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: [] },
+    });
+    const fallbackReport = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath: fallbackConfigPath,
+      liveness: false,
+    });
+    expect(fallbackReport.ok).toBe(true);
+    expect(sectionById(fallbackReport, "tools")).toMatchObject({ status: "waiting" });
   });
 
   it("does not fire Direction B under allow-all (send tools are allowed by '*')", async () => {

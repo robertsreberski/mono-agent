@@ -30,3 +30,35 @@ describe("retryableProviderFailureInfo — 'pi model not found' classifies as no
     })).toMatchObject({ retryable: false, subkind: "non_retryable" });
   });
 });
+
+describe("resolvePiRuntimeModel — OpenAI Codex GPT-5.6 Sol", () => {
+  it("resolves the pinned Pi catalog identity and runtime capabilities", () => {
+    const resolved = resolvePiRuntimeModel({
+      sdk: "pi",
+      provider: "openai-codex",
+      model: "gpt-5.6-sol",
+    }, {});
+
+    expect(resolved.model).toMatchObject({
+      id: "gpt-5.6-sol",
+      name: "GPT-5.6 Sol",
+      api: "openai-codex-responses",
+      provider: "openai-codex",
+      reasoning: true,
+      contextWindow: 272_000,
+      maxTokens: 128_000,
+      cost: {
+        input: 5,
+        output: 30,
+        cacheRead: 0.5,
+        cacheWrite: 0,
+      },
+    });
+    expect(resolved.capabilities).toMatchObject({
+      reasoning: true,
+      reasoning_mode: "effort",
+      reasoning_levels: ["none", "low", "medium", "high", "xhigh"],
+      vision: true,
+    });
+  });
+});

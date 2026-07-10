@@ -77,6 +77,22 @@ function pickDefined(source, keys) {
   return out;
 }
 
+/**
+ * Select recognized keys that are present even when their value is undefined.
+ * `configureTools` uses this variant so callers can explicitly clear state
+ * held by the long-lived per-instance ToolContext.
+ * @param {Object<string, *>} source
+ * @param {Array<string>} keys
+ * @returns {Object<string, *>}
+ */
+function pickPresent(source, keys) {
+  const out = {};
+  for (const key of keys) {
+    if (source && key in source) out[key] = source[key];
+  }
+  return out;
+}
+
 const PROMPT_OVERRIDE_KEYS = ["structuredOutputInstruction", "structuredOutputFinalization", "liveInputGuidance"];
 
 /**
@@ -157,7 +173,7 @@ export function createRuntime(host = {}) {
       return result;
     },
     configureTools(next = {}) {
-      updateToolContext(toolContext, pickDefined(next, TOOL_RUNTIME_KEYS));
+      updateToolContext(toolContext, pickPresent(next, TOOL_RUNTIME_KEYS));
     },
     async disposeSession(providerSessionId) {
       return disposeProviderSession(providerSessionId);

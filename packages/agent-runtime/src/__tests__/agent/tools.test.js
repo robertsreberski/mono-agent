@@ -82,6 +82,19 @@ describe("ai tool helpers", () => {
     expect(result).toContain("[truncated Glob result: showing 2 of 5 lines");
   });
 
+  it("uses the packaged ripgrep binary when PATH does not provide rg", async () => {
+    const root = tempWorkspace();
+    writeFile(join(root, "src", "packaged.ts"), "packaged needle");
+    process.env.PATH = "";
+    resolveRgPath({ refresh: true });
+
+    const globResult = await globToolImpl({ path: root, pattern: "src/*.ts" });
+    const grepResult = await grepToolImpl({ path: root, pattern: "packaged needle" });
+
+    expect(globResult).toContain("src/packaged.ts");
+    expect(grepResult).toContain("src/packaged.ts");
+  });
+
   it("grep excludes generated and vendor paths and caps output", async () => {
     const root = tempWorkspace();
     writeFile(join(root, "src", "one.ts"), "needle one");

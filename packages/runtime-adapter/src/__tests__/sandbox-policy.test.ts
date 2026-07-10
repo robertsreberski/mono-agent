@@ -1,6 +1,6 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, chmod, lstat, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -26,6 +26,31 @@ async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "sandbox-test-"));
   tempDirs.push(dir);
   return dir;
+}
+
+async function fakeSrtExecutable(content = "#!/bin/sh\nexit 0\n"): Promise<string> {
+  const root = await tempDir();
+  const path = join(root, "srt");
+  await writeFile(path, content, { mode: 0o700 });
+  return path;
+}
+
+async function fakeProofSrtExecutable(suffix: string): Promise<{ root: string; path: string }> {
+  const root = await tempDir();
+  const path = join(root, "srt");
+  const script = [
+    "#!/usr/bin/env node",
+    "const fs = require('node:fs');",
+    "const argv = process.argv.slice(2);",
+    "const scriptIndex = argv.indexOf('-e');",
+    "if (scriptIndex < 0) process.exit(91);",
+    "const [allowedInput,,allowedOutput] = argv.slice(scriptIndex + 2);",
+    "if (fs.readFileSync(allowedInput, 'utf8').trim() !== 'allowed') process.exit(92);",
+    "fs.writeFileSync(allowedOutput, 'ok');",
+    `// ${suffix}`,
+  ].join("\n");
+  await writeFile(path, `${script}\n`, { mode: 0o700 });
+  return { root, path };
 }
 
 afterEach(async () => {
@@ -230,7 +255,7 @@ describe("policy merging", () => {
     const request = createSandboxPolicy({
       mode: "off",
       root: "/repo",
-      network: { mode: "all" },
+      network: { mode: "none" },
       fallback: "unsafe-host-process",
       unsafeAllowHostProcess: true,
     });
@@ -258,14 +283,15 @@ describe("policy merging", () => {
     });
   });
 
-  it("keeps the configured allowlist when the request mode is broader", () => {
+  it("keeps the configured allowlist when the request turns sandboxing off", () => {
     const configured = createSandboxPolicy({
       root: "/repo",
       network: { mode: "allowlist", allowlist: ["github.com"] },
     });
     const request = createSandboxPolicy({
+      mode: "off",
       root: "/repo",
-      network: { mode: "all" },
+      network: { mode: "none" },
     });
 
     expect(mergeSandboxPolicies(configured, request)?.network).toEqual({
@@ -322,6 +348,12 @@ describe("policy merging", () => {
 });
 
 describe("network policy URL checks", () => {
+  it("rejects network all and SRT-invalid allowlist patterns at policy creation", () => {
+    expect(() => createSandboxPolicy({ root: "/repo", network: { mode: "all" } })).toThrow(/cannot be enforced|not a valid enforced/u);
+    expect(() => createSandboxPolicy({ root: "/repo", network: { mode: "allowlist", allowlist: ["*"] } })).toThrow(/domain pattern/u);
+    expect(() => createSandboxPolicy({ root: "/repo", network: { mode: "allowlist", allowlist: ["::1"] } })).toThrow(/domain pattern/u);
+  });
+
   it("matches bracketed IPv6 loopback hosts under localhost mode", () => {
     const policy = createSandboxPolicy({ root: "/repo", network: { mode: "localhost" } });
 
@@ -349,30 +381,90 @@ describe("srt integration contract", () => {
     expect(srtSettingsForPolicy(policy)).toMatchObject({
       network: {
         allowedDomains: [],
-        deniedDomains: [],
+        deniedDomains: ["*"],
+        strictAllowlist: true,
         allowLocalBinding: false,
         allowAllUnixSockets: false,
       },
       filesystem: {
-        // The policy also denies the real home directory, which varies by platform.
-        denyRead: expect.arrayContaining(["/Users"]),
-        allowRead: ["/Users/example/project"],
+        denyRead: ["/"],
+        allowRead: expect.arrayContaining(["/Users/example/project", "/bin", "/usr/bin"]),
         allowWrite: ["/Users/example/project"],
-        denyWrite: [".env", ".env.*", ".git/config", ".git/hooks/**"],
+        denyWrite: [
+          "/Users/example/project/.env",
+          "/Users/example/project/.env.*",
+          "/Users/example/project/.git/config",
+          "/Users/example/project/.git/hooks/**",
+        ],
       },
     });
   });
 
-  it("denies the home directory even when the workspace lives elsewhere", () => {
+  it("denies the entire host filesystem before re-allowing reviewed roots", () => {
     const policy = failClosedSandboxPolicy({ root: "/workspace" });
+    const filesystem = srtSettingsForPolicy(policy).filesystem;
 
-    expect(srtSettingsForPolicy(policy).filesystem.denyRead).toContain(homedir());
+    expect(filesystem.denyRead).toEqual(["/"]);
+    expect(filesystem.allowRead).toContain("/workspace");
+    expect(filesystem.allowRead).not.toContain(homedir());
+  });
+
+  it("allows an explicit all-network posture only when the sandbox is off", () => {
+    expect(createSandboxPolicy({ mode: "off", network: { mode: "all" } }).network)
+      .toEqual({ mode: "all", allowlist: [] });
+    expect(() => createSandboxPolicy({ mode: "native", network: { mode: "all" } }))
+      .toThrow(/sandbox mode "off"/u);
+  });
+
+  it("canonicalizes policy roots so macOS /tmp and /var aliases remain usable", async () => {
+    const root = await tempDir();
+    const canonicalRoot = await realpath(root);
+    const filesystem = srtSettingsForPolicy(failClosedSandboxPolicy({ root })).filesystem;
+
+    expect(filesystem.allowRead).toContain(canonicalRoot);
+    expect(filesystem.allowWrite).toEqual([canonicalRoot]);
+    expect(filesystem.denyWrite).toContain(join(canonicalRoot, ".env"));
+    if (canonicalRoot !== root) {
+      expect(filesystem.allowRead).not.toContain(root);
+      expect(filesystem.allowWrite).not.toContain(root);
+    }
   });
 
   it("honors a custom denyWrite list", () => {
     const policy = failClosedSandboxPolicy({ root: "/repo", denyWrite: ["credentials.json"] });
 
-    expect(srtSettingsForPolicy(policy).filesystem.denyWrite).toEqual(["credentials.json"]);
+    expect(srtSettingsForPolicy(policy).filesystem.denyWrite).toEqual(["/repo/credentials.json"]);
+  });
+
+  it("anchors relative denyWrite globs to policy.root from nested command cwd", async () => {
+    const policy = failClosedSandboxPolicy({
+      root: "/repo",
+      denyWrite: ["secrets/**", "/shared/immutable.json"],
+    });
+    const prepared = await createSrtSandboxEngine({ command: await fakeSrtExecutable() }).prepareCommand({
+      command: "/bin/echo",
+      cwd: "/repo/packages/nested",
+    }, policy);
+    const settings = JSON.parse(await readFile(prepared.sandboxSettingsPath as string, "utf8"));
+
+    expect(settings.filesystem.denyWrite).toEqual([
+      "/repo/secrets/**",
+      "/shared/immutable.json",
+      prepared.sandboxSettingsPath,
+    ]);
+    await prepared.cleanup?.();
+  });
+
+  it("emits only SRT 0.0.64-valid localhost domains with a strict allowlist", () => {
+    const policy = failClosedSandboxPolicy({ root: "/repo", network: { mode: "localhost" } });
+
+    expect(srtSettingsForPolicy(policy).network).toEqual({
+      allowedDomains: ["localhost", "127.0.0.1"],
+      deniedDomains: [],
+      strictAllowlist: true,
+      allowLocalBinding: true,
+      allowAllUnixSockets: false,
+    });
   });
 
   it("fails closed before process execution when the native engine is unavailable", async () => {
@@ -447,27 +539,38 @@ describe("srt integration contract", () => {
     expect(prepared.sandboxed).toBe(false);
   });
 
-  it("reuses one content-addressed settings file across commands under the same policy", async () => {
+  it("creates owner-only one-use settings outside writable roots and cleans each copy", async () => {
     const tempRoot = await tempDir();
     const policy = failClosedSandboxPolicy({ root: "/repo", tempRoot });
-    const engine = createSrtSandboxEngine();
+    const engine = createSrtSandboxEngine({ command: await fakeSrtExecutable() });
 
     const first = await engine.prepareCommand({ command: "node", args: ["a.js"] }, policy);
     const second = await engine.prepareCommand({ command: "node", args: ["b.js"] }, policy);
 
-    expect(first.sandboxSettingsPath).toBe(second.sandboxSettingsPath);
+    expect(first.sandboxSettingsPath).not.toBe(second.sandboxSettingsPath);
+    expect(first.sandboxSettingsPath?.startsWith(tempRoot)).toBe(false);
     const settings = JSON.parse(await readFile(first.sandboxSettingsPath as string, "utf8"));
-    expect(settings).toEqual(srtSettingsForPolicy(policy));
+    expect(settings.network).toEqual(srtSettingsForPolicy(policy).network);
+    expect(settings.filesystem).toMatchObject({
+      denyRead: ["/"],
+      allowWrite: ["/repo"],
+    });
+    expect(settings.filesystem.allowRead).toContain(dirname(await realpath(process.execPath)));
+    expect(settings.filesystem.denyWrite).toContain(first.sandboxSettingsPath);
+    expect((await lstat(first.sandboxSettingsPath as string)).mode & 0o077).toBe(0);
     expect(first.args.slice(0, 2)).toEqual(["--settings", first.sandboxSettingsPath]);
+    await first.cleanup?.();
+    await second.cleanup?.();
+    await expect(access(first.sandboxSettingsPath as string)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("prepares shared srt settings for concurrent commands without staging collisions", async () => {
+  it("prepares distinct one-use settings for concurrent commands without staging collisions", async () => {
     const root = await tempDir();
     const policy = failClosedSandboxPolicy({
       root,
       tempRoot: join(root, "tmp"),
     });
-    const engine = createSrtSandboxEngine();
+    const engine = createSrtSandboxEngine({ command: await fakeSrtExecutable() });
 
     const settled = await Promise.allSettled(
       Array.from({ length: 64 }, (_, index) =>
@@ -481,10 +584,82 @@ describe("srt integration contract", () => {
         : [],
     );
     expect(rejected).toEqual([]);
-    expect(new Set(
-      settled
-        .filter((result) => result.status === "fulfilled")
-        .map((result) => result.value.sandboxSettingsPath),
-    ).size).toBe(1);
+    const prepared = settled.filter((result) => result.status === "fulfilled").map((result) => result.value);
+    expect(new Set(prepared.map((result) => result.sandboxSettingsPath)).size).toBe(64);
+    await Promise.all(prepared.map(async (result) => result.cleanup?.()));
+  });
+
+  it("does not follow a settings-file symlink during cleanup", async () => {
+    const root = await tempDir();
+    const protectedFile = join(root, "keep.txt");
+    await writeFile(protectedFile, "keep", "utf8");
+    const policy = failClosedSandboxPolicy({ root });
+    const prepared = await createSrtSandboxEngine({ command: await fakeSrtExecutable() })
+      .prepareCommand({ command: "node" }, policy);
+
+    await rm(prepared.sandboxSettingsPath as string);
+    await symlink(protectedFile, prepared.sandboxSettingsPath as string);
+    await prepared.cleanup?.();
+
+    expect(await readFile(protectedFile, "utf8")).toBe("keep");
+  });
+
+  it("uses an absolute Node plus CLI launch when explicitly configured", async () => {
+    const root = await tempDir();
+    const launchRoot = await tempDir();
+    const nodePath = join(launchRoot, "node");
+    const cliPath = join(launchRoot, "cli.js");
+    // process.execPath permissions belong to the host (for example, CI toolcaches
+    // can be group-writable), so use a test-owned trusted launch pair here.
+    await writeFile(nodePath, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    await writeFile(cliPath, "// fixture\n", { mode: 0o600 });
+    await chmod(nodePath, 0o700);
+    await chmod(cliPath, 0o600);
+    const policy = failClosedSandboxPolicy({ root });
+    const prepared = await createSrtSandboxEngine({
+      nodePath,
+      cliPath,
+    }).prepareCommand({ command: "/bin/echo", args: ["ok"] }, policy);
+
+    expect(prepared.command).toBe(await realpath(nodePath));
+    expect(prepared.args.slice(0, 3)).toEqual([await realpath(cliPath), "--settings", prepared.sandboxSettingsPath]);
+    await prepared.cleanup?.();
+  });
+
+  it("rejects an explicit SRT executable inside a writable root", async () => {
+    const root = await tempDir();
+    const command = join(root, "srt");
+    await writeFile(command, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const policy = failClosedSandboxPolicy({ root });
+
+    await expect(createSrtSandboxEngine({ command }).prepareCommand({ command: "/bin/echo" }, policy))
+      .rejects.toThrow(/inside writable root/u);
+  });
+
+  it("rejects external SRT content replaced after its first preparation", async () => {
+    const command = await fakeSrtExecutable();
+    const engine = createSrtSandboxEngine({ command });
+    const policy = failClosedSandboxPolicy({ root: "/repo" });
+    const first = await engine.prepareCommand({ command: "/bin/echo" }, policy);
+    await first.cleanup?.();
+    await writeFile(command, "#!/bin/sh\nexit 9\n", { mode: 0o700 });
+
+    await expect(engine.prepareCommand({ command: "/bin/echo" }, policy))
+      .rejects.toThrow(/identity or content changed/u);
+  });
+
+  it("rejects a PATH shadow introduced after the external SRT proof", async () => {
+    const first = await fakeProofSrtExecutable("first");
+    const shadow = await fakeProofSrtExecutable("shadow");
+    const env: NodeJS.ProcessEnv = { PATH: first.root };
+    const engine = createSrtSandboxEngine({ command: "srt", env });
+
+    await expect(engine.isAvailable()).resolves.toBe(true);
+    env.PATH = shadow.root;
+    await expect(engine.isAvailable()).resolves.toBe(false);
+    await expect(engine.prepareCommand(
+      { command: "/bin/echo", args: ["ok"] },
+      failClosedSandboxPolicy({ root: "/repo" }),
+    )).rejects.toThrow(/identity or content changed/u);
   });
 });

@@ -83,6 +83,39 @@ describe("channel plugins", () => {
     await app.stop();
   });
 
+  it("passes the root public agent name through the real config-loaded A2A plugin path", async () => {
+    const configPath = await writeConfig({
+      ...baseConfig(),
+      agent: { name: "Research Companion" },
+      channels: {
+        plugins: [
+          {
+            package: "@mono-agent/a2a-adapter",
+            config: {
+              enabled: true,
+              provider: { host: "127.0.0.1", port: 0 },
+              agent: { description: "Public research agent", version: "1.0.0" },
+              skill: { id: "research", name: "Research", description: "Research skill", tags: [] },
+            },
+          },
+        ],
+      },
+    });
+
+    const drivers = await resolveChannelDrivers({ env: {}, cwd: dir, configPath });
+    const driver = drivers.find((candidate) => candidate.id === "a2a");
+    expect(driver).toBeDefined();
+    const loaded = await driver!.loadConfig({ env: {}, cwd: dir, configPath }) as {
+      readonly agent?: { readonly name?: string };
+    };
+    expect(loaded.agent?.name).toBe("Research Companion");
+
+    const views = await collectChannelConfigViews(drivers, { env: {}, cwd: dir, configPath });
+    const name = views.find((section) => section.id === "a2a")?.fields
+      .find((field) => field.id === "a2a.agent.name");
+    expect(name).toMatchObject({ value: "Research Companion", source: "json" });
+  });
+
   it("reports a missing plugin package as waiting instead of crashing validate or start", async () => {
     const configPath = await writeConfig({
       ...baseConfig(),

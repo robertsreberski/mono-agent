@@ -15,6 +15,62 @@ import {
   claudeNativeAgentDefinitions,
   resolveClaudeAllowedTools,
 } from "./claude-subagents.js";
+import {
+  claudeCapabilityMismatchResult,
+  claudeSandboxCapabilityMismatchResult,
+  claudeSandboxPolicyProblem,
+} from "./claude-sandbox.js";
+import { resolveSandboxPolicy } from "../../agent/tools/shared/tool-context.js";
+
+const CODEX_CLI_SANDBOX_POLICY_UNSUPPORTED =
+  "Direct Codex CLI cannot enforce mono-agent's native srt sandbox scopes. Remove the mono-agent sandbox policy or use a Pi runtime for exact readableRoots, writableRoots, denyWrite, and network rules.";
+const CLAUDE_CLI_EMPTY_TOOL_POLICY_UNSUPPORTED =
+  "Claude Code CLI cannot enforce an explicit empty allowedTools list: omitting --tools would restore Claude Code's default toolset. Use a specific non-empty allowlist, a denylist, or the Claude SDK for a no-tools run.";
+
+function codexCliToolPolicyProblem(options) {
+  const allowedTools = Array.isArray(options.allowedTools) ? options.allowedTools : null;
+  const disallowedTools = Array.isArray(options.disallowedTools) ? options.disallowedTools : [];
+  const exactAllowAll = allowedTools === null
+    || (allowedTools.length === 1 && allowedTools[0] === "*");
+  return exactAllowAll && disallowedTools.length === 0
+    ? null
+    : "Direct Codex CLI cannot enforce allowedTools/disallowedTools. Use exact allow-all ([\"*\"] with no disallowedTools) or another runtime.";
+}
+
+function codexCliCapabilityMismatchResult(options, error, codexErrorCode, start) {
+  const resolved = options.model;
+  const providerSessionId = (typeof options.sessionId === "string" && options.sessionId.trim())
+    || (typeof options.providerSessionId === "string" && options.providerSessionId.trim())
+    || null;
+  return {
+    text: null,
+    structuredResult: undefined,
+    structuredResultSource: null,
+    events: [],
+    usage: {},
+    durationMs: Date.now() - start,
+    numTurns: 0,
+    model: resolved?.reference || `codex:${resolved?.model || ""}`,
+    effort: options.effort || null,
+    sdk: "codex",
+    providerSessionId,
+    provider_session_id: providerSessionId,
+    cancelled: false,
+    error,
+    failureKind: "skipped_capability_mismatch",
+    diagnostics: { codex_error_code: codexErrorCode },
+    capabilitiesUsed: buildCapabilitiesUsed({
+      promptCacheActive: null,
+      thinkingEnabled: null,
+      structuredOutputEnforced: !!options.outputSchema,
+      subagentInvoked: null,
+      mcpServersUsed: [],
+      nativeSubagentsUsed: [],
+      toolCompactionApplied: false,
+      contextCompactionApplied: null,
+    }),
+  };
+}
 
 const DORMANT_CLI_CAPABILITIES = {
   streaming: true,
@@ -445,6 +501,53 @@ export function buildCliCommand({
 export async function generateCliResponse(systemPrompt, options = {}) {
   const start = Date.now();
   const resolved = options.model;
+  if (resolved?.sdk === "claude-code" && claudeSandboxPolicyProblem(options)) {
+    const providerSessionId = (typeof options.sessionId === "string" && options.sessionId.trim())
+      || (typeof options.providerSessionId === "string" && options.providerSessionId.trim())
+      || null;
+    return claudeSandboxCapabilityMismatchResult({
+      model: resolved.reference || `claude:${resolved.model}`,
+      effort: options.effort,
+      sdk: "claude-code",
+      providerSessionId,
+      durationMs: Date.now() - start,
+      outputSchema: options.outputSchema,
+    });
+  }
+  if (resolved?.sdk === "claude-code" && Array.isArray(options.allowedTools) && options.allowedTools.length === 0) {
+    const providerSessionId = (typeof options.sessionId === "string" && options.sessionId.trim())
+      || (typeof options.providerSessionId === "string" && options.providerSessionId.trim())
+      || null;
+    return claudeCapabilityMismatchResult({
+      model: resolved.reference || `claude:${resolved.model}`,
+      effort: options.effort,
+      sdk: "claude-code",
+      providerSessionId,
+      durationMs: Date.now() - start,
+      outputSchema: options.outputSchema,
+      error: CLAUDE_CLI_EMPTY_TOOL_POLICY_UNSUPPORTED,
+      errorCode: "claude_cli_empty_tool_policy_unsupported",
+    });
+  }
+  if (resolved?.sdk !== "claude-code") {
+    if (resolveSandboxPolicy(options.toolContext, options.sandboxPolicy) !== undefined) {
+      return codexCliCapabilityMismatchResult(
+        options,
+        CODEX_CLI_SANDBOX_POLICY_UNSUPPORTED,
+        "codex_sandbox_policy_unsupported",
+        start,
+      );
+    }
+    const toolPolicyProblem = codexCliToolPolicyProblem(options);
+    if (toolPolicyProblem !== null) {
+      return codexCliCapabilityMismatchResult(
+        options,
+        toolPolicyProblem,
+        "codex_tool_policy_unsupported",
+        start,
+      );
+    }
+  }
   const prompt = promptFromMessages(options.messages);
   const dir = mkdtempSync(join(tmpdir(), (options.toolContext?.runtimeBrand ?? readRuntimeBrand()).tempdirPrefix));
   const schemaPath = options.outputSchema ? join(dir, "output-schema.json") : null;

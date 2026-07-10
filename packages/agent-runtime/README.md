@@ -6,13 +6,15 @@ Category: `runtime`
 
 ## Responsibility
 
-Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, Pi SDK) with provider session support. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind runtime contracts, and it enforces an optional sandbox policy for runtime-owned tools through an injectable `RuntimeSandbox` seam (a fail-closed passthrough by default; `@mono-agent/runtime-adapter` injects the real sandbox implementation for mono-agent hosts).
+Provides five runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, OpenCode app-server, Pi SDK), with capabilities declared per bridge. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind runtime contracts. Pi enforces optional mono-agent sandbox policy for runtime-owned tools through an injectable `RuntimeSandbox` seam (a fail-closed passthrough by default; `@mono-agent/runtime-adapter` injects the real implementation). The router supports a compatibility-preserving uniform contract or explicit isolated per-route-native contracts; no provider route silently drops required capabilities.
 
 ## Public API
 
 - `createRuntime` — runtime factory dispatching to the backend bridges
 - `ai/runtime/model-refs.js` — `parseRuntimeModelReference`, `executionModeIncompatibilityReason`
 - `ai/runtime/registry.js` — `listRuntimeBridges`
+- `ai/providers/claude-sdk-discovery.js` — isolated Claude SDK model discovery without importing ambient auth/config
+- `createRouterRuntime({ chain, routeSafety, resolveAttempt })` — ordered fallback routing with exact route effort and bounded safety/failover telemetry
 - Provider bridges for `claude` (SDK + CLI), `codex` (app-server), `pi` (Pi SDK), and `opencode`
 - Provider session support: bridges accept `sessionId` in run options and report `provider_session_id`; the runtime exposes `disposeSession` / `disposeAllSessions`
 - Sandbox-aware built-in tools and stdio MCP startup through an injectable `RuntimeSandbox` seam (`agent/sandbox-seam.js`) — no direct dependency on `@mono-agent/runtime-adapter`
@@ -35,12 +37,13 @@ pnpm --filter @mono-agent/agent-runtime run test
 
 ## Overview
 
-Generic agent runtime that supports four backends out of the box:
+Generic agent runtime that supports five bridges out of the box:
 
-- **Claude SDK** (`@anthropic-ai/claude-agent-sdk`)
+- **Claude SDK** (`@anthropic-ai/claude-agent-sdk` 0.3.206)
 - **Claude Code CLI** (the `claude` binary)
 - **Pi SDK** (`@earendil-works/pi-agent-core`, used for OpenAI / Codex / Gemini / OpenRouter / Ollama / etc. via Pi providers)
 - **Codex CLI** (the `codex` app-server)
+- **OpenCode CLI** (an isolated `opencode` app-server driven through `@opencode-ai/sdk/v2`)
 
 Hosts wire in their own pricing, persistence, and credential callbacks (plus an `onCompactionRecorded` hook that fires on every automatic compaction — proactive or reactive — the pi bridge drives; see "Context compaction"). The runtime returns raw text + raw structured output; hosts that want a domain-specific contract parse it on their end.
 
@@ -60,7 +63,8 @@ Peer requirements:
 - Node.js ≥ 20
 - `claude` CLI on PATH (only for `executionMode: "cli"` with `claude` SDK)
 - `codex` CLI on PATH (only for `executionMode: "cli"` with `codex` SDK; override via the `codexAppServerCommand` option)
-- `ripgrep` on PATH (or supplied via `ripgrepPath`) — required for the `Glob` and `Grep` built-in tools
+- stable `opencode` CLI >= 1.15.0 on PATH (only for direct `opencode:<provider>:<model>` refs)
+- `Glob` and `Grep` use the packaged `@vscode/ripgrep` binary on supported platforms. An explicit `ripgrepPath` is authoritative and PATH remains a fallback; provide one of those when optional dependencies are omitted or the platform is unsupported.
 
 ## Quick start
 
@@ -91,7 +95,7 @@ console.log(result.text);
 `@mono-agent/agent-runtime` is purpose-built for **autonomous, long-running agent work** with provider portability and operational resilience as first-class concerns. It is *not* a streaming-chat UI kit. Where each peer fits:
 
 - **Vercel AI SDK** — best when you're building a chat / generative-UI experience inside a React or Next.js app. `useChat`, `useCompletion`, streaming server components, and edge-runtime compatibility are their strengths. Their provider list is curated (Anthropic, OpenAI, Google, etc., via `@ai-sdk/*` packages); there's no Pi gateway, no Claude Code CLI, no Codex CLI app-server, and no per-call provider fallback. If you're rendering a streaming chat into a browser, use them. If you're orchestrating multi-turn autonomous work that must survive a rate-limited primary provider, use us.
-- **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) — first-party Anthropic SDK. Tight integration with Claude features (canUseTool, sub-agents, hooks, MCP). We *wrap* it as one of our four backends and add transcript-resume across provider drops, a 22-kind failure taxonomy, a tool-bloat guard with artifact persistence, and a provider fallback router. Context/window handling stays with the provider — the runtime does not run its own in-loop summarization pass. Reach for the bare Anthropic SDK when you only ever talk to Claude and don't need cross-provider portability or resume.
+- **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) — first-party Anthropic SDK. Tight integration with Claude features (canUseTool, sub-agents, hooks, MCP). We *wrap* it as one of our five bridges and add transcript-resume across provider drops, a 22-kind failure taxonomy, a tool-bloat guard with artifact persistence, and a provider fallback router. Context/window handling stays with the provider — the runtime does not run its own in-loop summarization pass. Reach for the bare Anthropic SDK when you only ever talk to Claude and don't need cross-provider portability or resume.
 - **Mastra** — a workflow engine + memory + RAG stack. Different category: it's the layer *above* a runtime. You can layer Mastra workflows on top of `@mono-agent/agent-runtime` if you want both.
 - **OpenAI Agents SDK** — first-party OpenAI SDK. Same trade-off as the Claude Agent SDK: tight integration with OpenAI, no other providers. Pi providers in our runtime cover OpenAI plus a dozen others through a single API.
 - **LangChain.js** — kitchen sink with deep abstraction stacks. We're deliberately lean; if you want chains, agents, vector stores, and parsers under one umbrella, LangChain is built for that. If you want a focused runtime kernel, use us.
@@ -101,6 +105,7 @@ console.log(result.text);
 - Anthropic Claude via the Claude Agent SDK (`claude` SDK).
 - Anthropic Claude via the `claude` Code CLI binary.
 - OpenAI's Codex via the `codex` app-server CLI.
+- OpenCode providers via an isolated, password-authenticated `opencode` app-server.
 - OpenAI, Google Gemini, AWS Bedrock, OpenRouter, xAI, Groq, Mistral, Perplexity, DeepSeek, Ollama, LlamaCPP, GLM, Vercel AI Gateway, GitHub Copilot, Gemini CLI — all through the Pi (`@earendil-works/pi-ai`) provider gateway, which our SDK adapter speaks directly.
 
 **At-a-glance:**
@@ -108,8 +113,8 @@ console.log(result.text);
 | Need | Use this | Use Vercel AI SDK | Use Claude Agent SDK |
 |---|---|---|---|
 | Streaming chat UI in React/Next | ✗ | ✓ | ✗ |
-| Multi-provider portability | ✓ (4 backends, 15+ providers) | partial | ✗ |
-| CLI providers (claude/codex binaries) | ✓ | ✗ | ✗ |
+| Multi-provider portability | ✓ (5 bridges, 15+ providers) | partial | ✗ |
+| CLI providers (claude/codex/opencode binaries) | ✓ | ✗ | ✗ |
 | Provider fallback on rate limit / overload | ✓ (`createRouterRuntime`) | ✗ | ✗ |
 | Context handling delegated to the provider (no host auto-summarization) | ✓ | ✓ | ✓ |
 | Transcript-tail resume after provider drops | ✓ | ✗ | ✗ |
@@ -131,6 +136,7 @@ The runtime picks a backend from `options.model` + `options.executionMode`:
 | `"claude"` | `"cli"` | `claude` CLI |
 | `"pi"` | any | Pi SDK |
 | `"codex"` | `"cli"` | Codex app-server CLI |
+| `"opencode"` | `"cli"` | Isolated OpenCode app-server CLI |
 
 A `model` reference can be the parsed shape `{ sdk, model, provider? }` or a string (`"pi:openai:gpt-5.5"`, `"claude:claude-sonnet-4-6"`, etc.) that you parse with the package's `parseRuntimeModelReference` helper.
 
@@ -151,7 +157,7 @@ createRuntime({
   // -- tool runtime context (process-level config for the tool kernel) --
   workspace,               // primary allowed root for path-based tools
   repoRoot,                // secondary allowed root
-  ripgrepPath,             // explicit path to `rg`; falls back to vendored binary, then PATH
+  ripgrepPath,             // explicit path to `rg`; falls back to packaged binary, then PATH
   qaOutputDir,             // fallback dir for Playwright MCP filename routing
   sandboxPolicy,           // optional SandboxPolicy for tools and stdio MCP (enforced
                            // through the injectable RuntimeSandbox seam, not a bundled dep)
@@ -297,23 +303,23 @@ The package does **not** validate `structuredResult` against your schema — it 
 
 ## Provider fallback router
 
-`createRouterRuntime({ host, chain })` wraps the standard runtime with an ordered chain of model references. On a retryable provider failure (rate limit, overload, network blip — classified via the same taxonomy as `retryableProviderFailureInfo`), it retries the same logical run against the next chain entry, replaying the transcript-tail snapshot of the previous attempt so the next provider continues rather than starts over.
+`createRouterRuntime({ host, chain, routeSafety, resolveAttempt })` wraps the standard runtime with an ordered chain of model references. On a retryable provider/auth failure it retries the logical run against the next entry with one bounded transcript-tail snapshot. A chain is stateless across provider sessions. Entry `effort` is tri-state: a string fixes that route, `null` asks for provider default, and omission inherits the legacy per-run effort.
 
 ```js
 import { createRouterRuntime } from "@mono-agent/agent-runtime";
 
 const router = createRouterRuntime({
   host: { /* same shape as createRuntime */ },
+  routeSafety: "per-route-native",
   chain: [
-    { sdk: "claude", model: "claude-opus-4-7" },
-    { sdk: "claude", model: "claude-sonnet-4-6" },
-    { model: { sdk: "pi", provider: "openai", model: "gpt-5.5" }, requires: { structured_output: true } },
+    { model: { sdk: "claude", model: "claude-sonnet-5" }, effort: "high" },
+    { model: { sdk: "codex", model: "gpt-5.6-sol" }, effort: "xhigh" },
+    { model: { sdk: "pi", provider: "ollama", model: "gemma4:31b" }, effort: null },
   ],
 });
 
 const result = await router.run("...", { /* same shape as runtime.run */ });
-console.log(result.failoverHistory);
-// [{ model, failureKind, requestId, retryableSubkind }, ...]  one entry per attempt that didn't succeed.
+console.log(result.failoverHistory, result.routeSafetyHistory);
 ```
 
 Behaviour:
@@ -324,6 +330,18 @@ Behaviour:
 - Malformed request/config/billing-type non-retryable failure → returns immediately with `failoverHistory` containing the one attempt.
 - Cancellation → returns immediately.
 - Chain exhausted → `failureKind: "provider_unavailable_exhausted"`, `failoverHistory` lists every attempt.
+- `uniform` safety keeps the shared monotonic runtime; `per-route-native` isolates
+  route runtimes and records each bounded safety contract/status.
+- Pi route telemetry distinguishes `disabled`, fail-closed `mono-agent-srt`,
+  and `mono-agent-srt-unsafe-host-fallback`; the last describes a configured
+  policy that prefers SRT but permits host execution, not which branch ran.
+- A resolver-supplied Pi runtime may own provider credentials and lifecycle,
+  but must expose `configureTools()`: before every attempt the router replaces
+  its mutable tool context with the router's effective host/configured safety
+  inputs, while request-scoped overrides remain on that exact run. A runtime
+  that cannot accept this projection fails closed as `safety_unavailable`.
+- Attempt-resolver failures are sanitized to `safety_unavailable`; resolver
+  credentials/options never enter result telemetry.
 
 Chain entries can require backend capabilities via `requires: { structured_output: true, supports_mcp: true, ... }`; entries that don't satisfy the requirements are skipped (logged in `failoverHistory` as `failureKind: "skipped_capability_mismatch"`).
 
@@ -393,7 +411,9 @@ Responses:
 - `{ decision: "deny", reason? }` — block; the agent receives a tool error.
 - `{ decision: "always" }` — allow + session-allowlist for the run.
 
-Backend coverage: Claude SDK (via `canUseTool`) and Pi SDK (via tool dispatch wrapping). Claude CLI and Codex CLI bridge into their backend's own approval models (`permissionMode` / `approvalPolicy`) — per-call runtime gates aren't available there.
+Backend coverage: Claude SDK (via `canUseTool`) and Pi SDK (via tool dispatch wrapping). Direct OpenCode projects `permissionMode` into its SDK rules and forwards native permission events through the callback; `default`/`acceptEdits` ask for reads, dynamic/custom permission names require explicit host approval in attended modes, and unsupported live-question/subagent permissions are always denied. OpenCode `plan` is read-only but not a secret boundary because path rules follow symlinks; use Pi plus native `srt` for filesystem confinement. Claude CLI and Codex app-server use their backend-native `permissionMode` / `approvalPolicy` instead of the per-call gate.
+
+Direct OpenCode uses a password-authenticated ephemeral loopback server and a unique private database for every run; that database is deleted after the server closes, so user sessions and saved approvals are never imported. Session resume and MCP injection are intentionally unsupported. Repo/global config and external plugins/skills are disabled, and the provider shell inherits only a narrow non-secret environment; built-in providers use the normal OpenCode auth store so token rotation persists. `OPENCODE_AUTH_CONTENT` is rejected, stable OpenCode CLI >=1.15.0 is required, and the user's native DB migration marker must pre-exist. Provider replies are always one-shot—even a host `always` decision stays only in the current mono-agent run. Positive `maxTurns`, explicit effort, structured output, live input, fast mode, native subagents, and runtime skill metadata fail with typed capability mismatches before startup rather than being silently ignored.
 
 Approval lifecycle is observable via `onEvent`:
 

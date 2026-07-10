@@ -49,7 +49,7 @@ These are the inputs you write by hand (or let an agent edit). They are the sour
 For what goes inside each, see [Identity & soul](/context/identity-and-soul/), [Skills](/context/skills/), [Cron](/channels/cron/), [Webhook](/channels/webhook/), and [MCP](/tools/mcp/).
 
 :::caution
-The `.env` file in the folder is loaded automatically on `start`; exported shell variables win over it, and `--env-file <path>` selects an alternate file. Keep tokens as placeholders here (`xoxb-...`, `sk-...`) and never commit real secrets.
+The `.env` file in the folder is loaded automatically; exported shell variables win over it, and `--env-file <path>` selects an alternate file. Never commit it: guided init installs exact ignore rules for `.env` and transaction artifacts. It can fill missing values on POSIX only when the canonical folder is current-user-owned and not group/world-writable, and existing `.env`/`.gitignore` files are current-user-owned, single-link, regular paths. The env must also be untracked, non-symlinked, valid dotenv text, and promotable under an owner-only external lock with mode `0600` and pathname no-clobber checks; existing non-empty values/comments remain intact, while group/world write access is removed from the ignore guard. Detected claimed-inode races are retained at a reported recovery path. Unsafe, conflicting, malformed, or Windows cases fail closed to manual setup. Never copy `.env.example` over an existing `.env`.
 :::
 
 ## Consumer docs consistency

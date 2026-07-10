@@ -74,6 +74,9 @@ Config can be loaded from a `channels.plugins[]` entry or explicit environment v
 
 ```json
 {
+  "agent": {
+    "name": "Agent A"
+  },
   "channels": {
     "plugins": [
       {
@@ -88,7 +91,6 @@ Config can be loaded from a `channels.plugins[]` entry or explicit environment v
             "bearerToken": "redacted-value"
           },
           "agent": {
-            "name": "Agent A",
             "description": "Local A2A provider.",
             "version": "0.1.0"
           },
@@ -109,6 +111,12 @@ Config can be loaded from a `channels.plugins[]` entry or explicit environment v
 }
 ```
 
+Root `agent.name` is the default Agent Card name when the plugin's
+`config.agent.name` is omitted. An A2A-specific `config.agent.name` or
+`MONO_AGENT_A2A_AGENT_NAME` overrides that public default without changing the
+root agent identity; `MONO_AGENT_NAME` is the environment override for the root
+name.
+
 Important env names:
 
 - `MONO_AGENT_A2A_ENABLED`
@@ -119,6 +127,7 @@ Important env names:
 - `MONO_AGENT_A2A_ALLOW_NON_LOOPBACK`
 - `MONO_AGENT_A2A_REQUIRE_BEARER`
 - `MONO_AGENT_A2A_BEARER_TOKEN`
+- `MONO_AGENT_NAME`
 - `MONO_AGENT_A2A_AGENT_NAME`
 - `MONO_AGENT_A2A_AGENT_DESCRIPTION`
 - `MONO_AGENT_A2A_AGENT_VERSION`

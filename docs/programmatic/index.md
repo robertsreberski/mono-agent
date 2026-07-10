@@ -39,7 +39,7 @@ The options that make this an escape hatch:
 | `cwd` | `string` | Root for resolving `configPath` and relative config paths. Defaults to `process.cwd()`. |
 | `configPath` | `string` | Path to the config file; defaults to `<cwd>/mono-agent.config.json`. |
 | `drivers` | `readonly ChannelDriver[]` | The channel drivers to run. Defaults to core built-ins plus configured `channels.plugins[]` packages. Pass a subset to run, say, only Telegram and Cron. |
-| `runtime` | `MonoRuntimeLike` | A shared runtime override (testing or advanced composition). When omitted the host builds the runtime from `runtime.model` / `runtime.fallbackModels`. |
+| `runtime` | `MonoRuntimeLike` | A shared runtime override (testing or advanced composition). When omitted the host builds the runtime from `runtime.model` plus canonical `runtime.fallbacks` (or legacy `fallbackModels`). |
 | `env` | `Record<string, string \| undefined>` | Environment used for `MONO_AGENT_*` resolution; defaults to `process.env`. |
 | `logger` | `MonoAgentAppLogger` | Structured logger for channel/trace lifecycle. |
 

@@ -64,8 +64,11 @@ export interface BuildMonoAgentConfigViewInput {
  * input form is an alternate encoding the parity test allowlists.
  */
 export const CONFIG_ENV_KEYS = {
+  "agent.name": "MONO_AGENT_NAME",
   "runtime.model": "MONO_AGENT_MODEL",
   "runtime.fallbackModels": "MONO_AGENT_FALLBACK_MODELS",
+  "runtime.fallbacks": "MONO_AGENT_FALLBACKS_JSON",
+  "runtime.routeSafety": "MONO_AGENT_ROUTE_SAFETY",
   "runtime.executionMode": "MONO_AGENT_EXECUTION_MODE",
   "runtime.effort": "MONO_AGENT_EFFORT",
   "runtime.permissionMode": "MONO_AGENT_PERMISSION_MODE",
@@ -155,6 +158,10 @@ const PLACEHOLDER = "—";
 function envHas(env: Record<string, string | undefined>, key: string): boolean {
   const value = env[key];
   return value !== undefined && value.trim().length > 0;
+}
+
+function legacyFallbackEnvPresent(env: Record<string, string | undefined>): boolean {
+  return env.MONO_AGENT_FALLBACK_MODELS !== undefined;
 }
 
 function resolveSource(
@@ -250,6 +257,34 @@ function formatFallbackModels(
   return models.map(formatModelReference).join(", ");
 }
 
+function formatFallbacks(
+  fallbacks: RedactedMonoAgentConfig["runtime"]["fallbacks"],
+): string {
+  if (fallbacks === undefined || fallbacks.length === 0) {
+    return PLACEHOLDER;
+  }
+  return fallbacks
+    .map((entry) => `${formatModelReference(entry.model)} (${entry.effort ?? "provider default"})`)
+    .join(", ");
+}
+
+function buildAgentSection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
+  const { redacted, json, env } = input;
+  return {
+    id: "agent",
+    label: "Agent",
+    status: redacted.agent === undefined ? "disabled" : "active",
+    fields: [
+      toField(env, {
+        id: "agent.name",
+        label: "Display name",
+        value: redacted.agent?.name ?? PLACEHOLDER,
+        jsonPresent: json.agent?.name !== undefined,
+      }),
+    ],
+  };
+}
+
 function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
   const { redacted, json, env } = input;
   const runtime = redacted.runtime;
@@ -267,9 +302,32 @@ function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
       }),
       toField(env, {
         id: "runtime.fallbackModels",
-        label: "Fallback models",
+        label: "Legacy fallback models",
         value: formatFallbackModels(runtime.fallbackModels),
-        jsonPresent: json.runtime?.fallbackModels !== undefined,
+        // The two fallback env encodings are aliases at the precedence layer:
+        // either real env value suppresses the other JSON form.
+        jsonPresent: json.runtime?.fallbackModels !== undefined
+          && !envHas(env, CONFIG_ENV_KEYS["runtime.fallbacks"]),
+        source: legacyFallbackEnvPresent(env)
+          ? "env"
+          : json.runtime?.fallbackModels !== undefined && !envHas(env, CONFIG_ENV_KEYS["runtime.fallbacks"])
+            ? "json"
+            : "default",
+      }),
+      toField(env, {
+        id: "runtime.fallbacks",
+        label: "Fallback routes",
+        value: formatFallbacks(runtime.fallbacks),
+        jsonPresent: json.runtime?.fallbacks !== undefined
+          && !legacyFallbackEnvPresent(env),
+      }),
+      toField(env, {
+        id: "runtime.routeSafety",
+        label: "Route safety",
+        value: runtime.routeSafety ?? "uniform",
+        jsonPresent: json.runtime?.routeSafety !== undefined,
+        jsonValue: json.runtime?.routeSafety,
+        defaultValue: "uniform",
       }),
       toField(env, {
         id: "runtime.executionMode",
@@ -967,6 +1025,7 @@ export function buildMonoAgentConfigView(
   input: BuildMonoAgentConfigViewInput,
 ): readonly ConfigViewSection[] {
   return [
+    buildAgentSection(input),
     buildRuntimeSection(input),
     buildConcurrencySection(input),
     buildContextSection(input),

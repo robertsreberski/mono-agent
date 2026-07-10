@@ -4,7 +4,7 @@ sidebar:
   order: 4
 ---
 
-This page covers running mono-agent against local and self-hosted model servers — Ollama, LM Studio, and any OpenAI-compatible gateway — through the Pi backend, plus the credential path used for built-in Pi providers. You configure them under `providers` and reference each model as `pi:<id>:<model>` from `runtime.model` or `runtime.fallbackModels`.
+This page covers running mono-agent against local and self-hosted model servers — Ollama, LM Studio, and any OpenAI-compatible gateway — through the Pi backend, plus the credential path used for built-in Pi providers. You configure them under `providers` and reference each model as `pi:<id>:<model>` from `runtime.model` or canonical `runtime.fallbacks` (legacy `fallbackModels` still loads).
 
 For an end-to-end walkthrough, see the playbook [Local-only Ollama agent](/playbooks/local-only-ollama-agent/).
 
@@ -33,8 +33,8 @@ Coverage: `config` — `providers.local[]` (`MONO_AGENT_LOCAL_PROVIDERS_JSON`, o
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",
-    "fallbackModels": ["pi:ollama:gemma4:31b"]
+    "model": "pi:openai-codex:gpt-5.6-terra",
+    "fallbacks": [{ "model": "pi:ollama:gemma4:31b" }]
   },
   "providers": {
     "local": [
@@ -83,13 +83,11 @@ ollama pull gemma4:31b
 
 The model `name` must match the exact tag you pulled (including any `:tag` suffix). If a ref resolves to a model Ollama has not pulled, the call fails — run `mono-agent validate` to surface reachability and model checks before starting. See [Validation & CLI](/memory/validation-and-cli/).
 
-:::tip
-:::
 Ollama also powers memory embeddings and BuJo capture independently of the chat runtime — those live under `memory.embeddings` / `memory.llm`, not `providers.local`. See [Embeddings](/memory/embeddings/).
 
 ## LM Studio and OpenAI-compatible gateways
 
-LM Studio and any OpenAI-compatible server (vLLM, Together, a self-hosted proxy, etc.) use the same entry shape with `type: "lmstudio"` or `type: "openai_compat"`. Point `baseUrl` at the server and supply a key via `apiKeyEnv` (or inline `apiKey` in an untracked file) when the gateway requires one.
+LM Studio and any OpenAI-compatible server (vLLM, Together, a self-hosted proxy, etc.) use the same entry shape with `type: "lmstudio"` or `type: "openai_compat"`. Point `baseUrl` at the server and supply a key via `apiKeyEnv` (or inline `apiKey` in an untracked file) when the gateway requires one. If `apiKeyEnv` is declared but does not resolve to a non-empty value, `mono-agent validate` reports the route as `waiting`; omitting both key fields is treated as an intentional keyless provider.
 
 ```json
 {
@@ -158,11 +156,13 @@ Built-in Pi providers use the Pi auth file configured by `providers.piAuthPath` 
 }
 ```
 
-Override the path with `MONO_AGENT_PI_AUTH_PATH`. This is separate from `providers.local[]`: built-in Pi providers are registered by the Pi backend, while `local[]` registers your own servers.
+Override the path with `MONO_AGENT_PI_AUTH_PATH`. The single path precedence used by discovery, setup, `auth login`, readiness, validation, and runtime is `--pi-auth-path` (auth command only) → non-empty `MONO_AGENT_PI_AUTH_PATH` → non-empty `providers.piAuthPath` → `~/.pi/agent/auth.json`. A leading `~` expands to the current user's home; relative values resolve from the agent/invocation working directory. A malformed or unreadable config is an error; only a missing config falls through. This is separate from `providers.local[]`: built-in Pi providers are registered by the Pi backend, while `local[]` registers your own servers.
 
-Run `npx @earendil-works/pi-ai login <provider>` from the directory containing `providers.piAuthPath` when a built-in Pi OAuth provider needs setup or re-auth. Subscription/account-backed providers include `openai-codex`, `anthropic`, `github-copilot`, and `opencode-go`; OpenCode-Go is API-key based and uses `OPENCODE_API_KEY`.
+Run `mono-agent auth login <provider>` for the supported built-in Pi targets: Anthropic, GitHub Copilot, and OpenAI Codex use their bundled OAuth flows; OpenCode-Go uses `OPENCODE_API_KEY`. Standalone OpenCode-Go login collects the key through a masked TTY prompt. For an explicitly headless flow, pipe exactly one line with `--api-key-stdin`, for example `printf '%s\n' "$OPENCODE_API_KEY" | mono-agent auth login opencode-go --api-key-stdin`; without that flag mono-agent never copies the ambient key implicitly. Its key can be stored in the same owner-only auth file or left in the durable provider environment, and the wizard never copies an ambient key into `auth.json` unless secure-store persistence was selected explicitly. Other Pi provider refs remain compatible as hand-authored runtime configuration but do not gain an implied guided login flow.
 
-The interactive `mono-agent init` wizard treats a missing Pi auth store as setup-required rather than as a skipped model: it keeps the default `pi:openai-codex:gpt-5.5` selectable, shows the Pi auth status in model discovery, and can run `npx @earendil-works/pi-ai login openai-codex` before writing files. When `pi:opencode-go:*` is selected, the wizard asks for an API key and saves `{ "type": "api_key", "key": "..." }` under `opencode-go` in the Pi auth store. The wizard creates the `providers.piAuthPath` directory first, because the Pi auth file often does not exist on a new machine. `mono-agent validate` only reports missing or expired credentials; it is read-only and never runs login commands or writes API keys.
+mono-agent invokes the bundled Pi CLI against a private staged `auth.json`; it never trusts process exit alone. Before promotion it requires a JSON-object store, a valid credential for the requested provider, and unchanged sibling-provider data. Promotion runs under a durable identity-bound owner-only lock and installs a `0600` file with exclusive-link no-clobber semantics on supported POSIX systems. If that lock already exists, mono-agent removes it only when the secure record is identity-stable and `kill(pid, 0)` proves the process is gone with `ESRCH`; active, `EPERM`, malformed, or racing locks remain untouched. The canonical credential parent must be owned by the current user and not group/world-writable, while existing, staged, and recovery credential inodes must be current-user-owned, not group/world-writable, and have exactly the expected link count. Automatic Pi credential persistence refuses Windows and auth paths inside Git worktrees.
+
+The interactive `mono-agent init` wizard keeps every bundled model for its supported Pi integrations—Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go—searchable even when authentication is missing, alongside discovered Ollama/LM Studio models. Hand-authored Pi refs and `providers.local[]` remain valid runtime configuration without becoming implied guided integrations. The wizard reports `catalog available`, `credential detected`, and `verified by live readiness` separately; an auth-store entry skips redundant login but does not claim the model works. On repair, the chosen upstream OAuth or OpenCode-Go API-key flow reruns and the exact route is checked again. `mono-agent validate` remains read-only and never runs login or writes keys.
 
 Coverage: `config` — `providers.piAuthPath` (`MONO_AGENT_PI_AUTH_PATH`).
 
@@ -173,8 +173,8 @@ Local providers compose with the rest of the runtime. A common pattern is a host
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",
-    "fallbackModels": ["pi:ollama:gemma4:31b"]
+    "model": "pi:openai-codex:gpt-5.6-terra",
+    "fallbacks": [{ "model": "pi:ollama:gemma4:31b" }]
   }
 }
 ```
@@ -184,6 +184,6 @@ Failover is reported in run results, never silent. See [Fallback chains](/runtim
 ## Related
 
 - [Backends & model refs](/runtime/backends/) — the `pi:<provider>:<model>` ref taxonomy.
-- [Fallback chains](/runtime/fallback/) — composing local models into `fallbackModels`.
+- [Fallback chains](/runtime/fallback/) — composing local models into canonical `fallbacks`.
 - [Embeddings](/memory/embeddings/) — Ollama for memory recall.
 - [Local-only Ollama agent](/playbooks/local-only-ollama-agent/) — full walkthrough.

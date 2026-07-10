@@ -269,7 +269,17 @@ function layerA2AJsonOntoEnv(
   json: SettingsJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  return layerJsonOntoEnv(env, fieldSpecMappings(readJsonSection(json, "a2a"), A2A_CONFIG_FIELDS));
+  const a2a = readJsonSection(json, "a2a");
+  const layered = layerJsonOntoEnv(env, fieldSpecMappings(a2a, A2A_CONFIG_FIELDS));
+  if (normalizeOptionalString(layered.MONO_AGENT_A2A_AGENT_NAME) === undefined) {
+    const jsonPublicName = readRecord(readRecord(json).agent).name;
+    const publicAgentName = normalizeOptionalString(layered.MONO_AGENT_NAME)
+      ?? normalizeOptionalString(typeof jsonPublicName === "string" ? jsonPublicName : undefined);
+    if (publicAgentName !== undefined) {
+      layered.MONO_AGENT_A2A_AGENT_NAME = publicAgentName;
+    }
+  }
+  return layered;
 }
 
 function withoutBearer(

@@ -38,9 +38,9 @@ On a **failed / cancelled / interrupted** run, the root span also carries always
 
 - `mono.agent.error.message` — the underlying provider/runtime error text (e.g. `503 Service Unavailable`), redacted and capped at 500 chars.
 - `mono.agent.failover.count` — the number of failover attempts the router made.
-- `mono.agent.failover.detail` — the per-attempt chain rendered as `model → reason (req id)`, e.g. `pi:openai-codex:gpt-5.5 → timeout, pi:opencode-go:kimi-k2.6 → server_error (req abc123)`. `reason` prefers the retryable subkind, falling back to the raw failure kind.
+- `mono.agent.failover.detail` — the per-attempt chain rendered as `model → reason (req id)`, e.g. `pi:openai-codex:gpt-5.6-terra → timeout, pi:opencode-go:kimi-k2.6 → server_error (req abc123)`. `reason` prefers the retryable subkind, falling back to the raw failure kind.
 
-These three attributes are **operational metadata, not gated content** — they are emitted regardless of `includeSensitiveData`, but only on non-success runs (succeeded runs omit them entirely). The failed-run root span's status **message** is also the composed failure detail (e.g. `provider_unavailable_exhausted: pi:openai-codex:gpt-5.5 → timeout, pi:opencode-go:kimi-k2.6 → server_error (req …); last error: 503 Service Unavailable …`) instead of the bare failure kind, so operators can read the cause straight from the span status.
+These three attributes are **operational metadata, not gated content** — they are emitted regardless of `includeSensitiveData`, but only on non-success runs (succeeded runs omit them entirely). The failed-run root span's status **message** is also the composed failure detail (e.g. `provider_unavailable_exhausted: pi:openai-codex:gpt-5.6-terra → timeout, pi:opencode-go:kimi-k2.6 → server_error (req …); last error: 503 Service Unavailable …`) instead of the bare failure kind, so operators can read the cause straight from the span status.
 
 :::note
 The secret-redaction pass that runs before export no longer clobbers numeric token *counts*: fields like `input_tokens` match the `/token/` secret pattern but are numbers, so usage now survives into spans and summaries. (Secrets are strings; numeric values are skipped.)

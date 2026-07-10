@@ -6,7 +6,8 @@ import {
 } from "../../ai/runtime/context-windows.js";
 
 describe("Claude context window helpers", () => {
-  it("allows 1M context only for Opus 4.7 and Opus 4.6", () => {
+  it("allows 1M context for the supported Opus 4.8, 4.7, and 4.6 models", () => {
+    expect(claudeModelSupportsContextWindow("claude-opus-4-8", "1m")).toBe(true);
     expect(claudeModelSupportsContextWindow("claude-opus-4-7", "1m")).toBe(true);
     expect(claudeModelSupportsContextWindow("claude-opus-4-6", "1m")).toBe(true);
 
@@ -23,8 +24,14 @@ describe("Claude context window helpers", () => {
   });
 
   it("adds the Claude Code 1M suffix idempotently only when enabled", () => {
+    expect(modelWithContextWindow("claude-opus-4-8", "1m")).toBe("claude-opus-4-8[1m]");
     expect(modelWithContextWindow("claude-opus-4-7", "1m")).toBe("claude-opus-4-7[1m]");
     expect(modelWithContextWindow("claude-opus-4-7[1m]", "1m")).toBe("claude-opus-4-7[1m]");
     expect(modelWithContextWindow("claude-opus-4-7", "default")).toBe("claude-opus-4-7");
+  });
+
+  it("preserves an explicitly authored 1M model reference", () => {
+    expect(modelWithContextWindow("claude-opus-4-8[1m]", undefined)).toBe("claude-opus-4-8[1m]");
+    expect(modelWithContextWindow("claude-opus-4-8[1m]", "default")).toBe("claude-opus-4-8[1m]");
   });
 });

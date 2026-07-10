@@ -40,6 +40,14 @@ export interface AgentHarnessFailure {
   readonly details?: unknown;
 }
 
+/**
+ * Recorder summaries may retain the compiled system prompt in private run
+ * artifacts. Harness responses cross a channel boundary, so their public
+ * summary projection excludes that sensitive field in both the exported type
+ * and the runtime payload.
+ */
+export type ExternalRunSummary = Omit<RunSummary, "systemPrompt">;
+
 export interface AgentHarnessResponse {
   readonly text?: string;
   readonly metadata: {
@@ -48,7 +56,7 @@ export interface AgentHarnessResponse {
     readonly contextSources: readonly string[];
     readonly contextSectionIds: readonly string[];
     readonly runtime?: Record<string, unknown>;
-    readonly summary?: RunSummary;
+    readonly summary?: ExternalRunSummary;
   };
   readonly failure?: AgentHarnessFailure;
 }

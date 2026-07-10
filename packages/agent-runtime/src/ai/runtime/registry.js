@@ -37,13 +37,19 @@ const builtinBridgeSpecs = {
     supports: (ref, options) => ref?.sdk === "codex" && options?.executionMode === "cli",
     // The codex-app bridge keeps the app-server subprocess + thread alive
     // across turns when options.sessionKeepAlive is set.
-    capabilities: () => ({ kind: "codex-app", runtime: "cli", ...COMMON_CAPABILITIES, supports_session_resume: true }),
+    capabilities: () => {
+      const { kind: _sdkKind, ...capabilities } = runtimeCapabilities("codex");
+      return { kind: "codex-app", ...capabilities };
+    },
     load: async () => (await import("../providers/codex-app.js")).codexAppRuntimeBridge,
   },
   "opencode-app": {
     id: "opencode-app",
     supports: (ref, options) => ref?.sdk === "opencode" && options?.executionMode === "cli",
-    capabilities: () => ({ kind: "opencode-app", runtime: "cli", ...COMMON_CAPABILITIES }),
+    capabilities: () => {
+      const { kind: _sdkKind, ...capabilities } = runtimeCapabilities("opencode");
+      return { kind: "opencode-app", ...capabilities };
+    },
     load: async () => (await import("../providers/opencode-app.js")).opencodeAppRuntimeBridge,
   },
   claude: {

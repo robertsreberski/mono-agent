@@ -1,38 +1,40 @@
 ---
-title: "Multi-Model Fallback Chain with Transcript Resume"
+title: "Multi-Model Fallback Chain"
 sidebar:
   order: 13
 ---
 
-# Multi-Model Fallback Chain with Transcript Resume
+# Multi-Model Fallback Chain
 
-This playbook configures a primary cloud model with an ordered list of backup models. The pi-native failover router tries each backup on a retryable provider failure, resuming the same conversation from the transcript tail. Failover is always reported in the run result — never a silent substitution.
+This playbook builds an ordered cloud-to-local fallback chain with exact effort
+and explicit provider safety. Failover is visible in results and traces; no model
+substitution or safety projection happens silently.
 
 ## Who this is for
 
-Reliability-minded builders who cannot afford a single-provider outage and want a deterministic, ordered fallback chain (cloud primary → cloud backup → local last resort) with durable resume across restarts.
-
-## Goal
-
-A primary cloud model with ordered backups that the native failover router tries on retryable provider failures, resuming from the transcript tail — failover is reported in run results, never a silent substitution.
+Reliability-minded builders who want multiple provider families without giving
+up an auditable safety contract.
 
 ## Features used
 
-- [runtime.multi-backend](/runtime/backends/) — mix `claude:*`, `codex:*`, and `pi:<provider>:<model>` references in one chain
-- [runtime.fallback-models](/runtime/fallback/) — ordered backups tried on retryable failures
-- [runtime.pi-native-tuning](/runtime/local-providers/) — `piNative` retry and durable-sessions knobs
-- [runtime.provider-sessions](/runtime/sessions-concurrency/) — continuous sessions with transcript-tail resume
+- [runtime.multi-backend](/runtime/backends/)
+- [runtime.fallback-models](/runtime/fallback/)
+- [runtime.effort](/runtime/execution-effort-permissions/)
+- [runtime.local-providers](/runtime/local-providers/)
 
 ## Configuration
 
-Every key below is from the annotated config blueprint. `runtime.model` is the primary; `fallbackModels` is tried in order on retryable provider failures. The `pi:<provider>:<model>` backups resolve against `providers.local` (Ollama) and pi-native credentials.
-
 ```json
 {
+  "agent": { "name": "Resilient Research Agent" },
   "runtime": {
-    "model": "claude:claude-sonnet-4-6",
-    "fallbackModels": ["pi:openai-codex:gpt-5.5", "pi:ollama:gemma4:31b"],
-    "session": { "mode": "continuous" }
+    "model": "claude:claude-sonnet-5",
+    "effort": "high",
+    "fallbacks": [
+      { "model": "codex:gpt-5.6-sol", "effort": "xhigh" },
+      { "model": "pi:ollama:gemma4:31b" }
+    ],
+    "routeSafety": "per-route-native"
   },
   "providers": {
     "local": [
@@ -40,38 +42,59 @@ Every key below is from the annotated config blueprint. `runtime.model` is the p
         "id": "ollama",
         "type": "ollama",
         "baseUrl": "http://localhost:11434",
-        "enabled": true
+        "enabled": true,
+        "models": [{ "name": "gemma4:31b" }]
       }
     ],
     "piNative": {
       "piMaxRetries": 2,
-      "maxRetryDelayMs": 60000,
-      "piSessionsRoot": ".mono-agent/sessions"
+      "maxRetryDelayMs": 60000
     }
   }
 }
 ```
 
-Coverage: config. The primary and chain can also be set via env vars `MONO_AGENT_MODEL` and `MONO_AGENT_FALLBACK_MODELS` (env > JSON > defaults). `piNative.piMaxRetries` accepts `0`–`8` transient provider-transport retries; `maxRetryDelayMs` caps the backoff between them. Setting `piSessionsRoot` writes durable JSONL sessions so resume survives a restart — leave it unset for in-memory sessions only.
+The primary uses `runtime.effort`. The first fallback explicitly uses `xhigh`;
+the local route omits effort and therefore uses its provider default. The fallback
+list is ordered and has no product-imposed count limit.
+
+`per-route-native` is required here because the chain crosses Claude, Codex, and
+Pi contracts. Doctor and guided setup show the matrix before use:
+
+- Claude: provider-native sandbox plus representable tool restrictions.
+- Codex: Codex-native sandbox plus exact mono-agent allow-all.
+- Pi: mono-agent tool policy and SRT when configured.
+
+If you require one identical mono-agent policy on every attempt, keep the default
+`uniform` mode and use only routes that can represent it. Validation fails closed
+for an incompatible route.
 
 :::caution
-The chain only advances on *retryable* provider failures (transport/credential/transient). Non-retryable application errors are not masked by failover.
+Any configured fallback chain is stateless across provider sessions. The harness
+replays logical conversation history and the router uses a bounded transcript-tail
+snapshot between attempts, but it never reuses a provider session id across routes.
+`providers.piNative.piSessionsRoot` does not turn a mixed fallback chain into a
+shared durable provider session.
 :::
 
 ## Steps
 
-1. `ollama pull gemma4:31b` (the last-resort local backup).
-2. `mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:openai-codex:gpt-5.5,pi:ollama:gemma4:31b`
-3. Add `providers.local` for ollama and `providers.piNative.piSessionsRoot` for durable resume across restarts.
-4. `mono-agent validate` then `mono-agent start`.
-5. Force a retryable primary failure (e.g. an invalid primary credential) and confirm the run result reports failover to the next model in the chain.
-6. Confirm transcript-tail resume continues the same conversation on the backup model.
+1. Pull the local last resort: `ollama pull gemma4:31b`.
+2. Run guided `mono-agent init`, search for each route, and choose the exact
+   supported effort per model.
+3. Review the default-No per-route-native safety confirmation.
+4. Read the **Creation review**: it lists all routes, efforts, provider actions,
+   route contracts, and the number of real/potentially billed readiness calls.
+5. Let readiness verify each route sequentially. If interrupted, choose resume to
+   reuse only successful checks under the unchanged plan fingerprint.
+6. Run `mono-agent validate`, then start the agent.
+7. Force a retryable provider/auth failure. Confirm the run summary's
+   `failoverHistory` identifies failed routes and the events JSONL contains the
+   bounded `provider_route_safety` records. Programmatic runtime callers also
+   receive `routeSafetyHistory` on the result.
 
-## Smoke test
-
-:::tip
-Trigger a retryable failure on the primary; confirm the run result shows the fallback model served the turn (reported, not silent), and the conversation resumed from the transcript tail.
-:::
+Non-retryable application errors and mid-turn safety failures are not masked by
+failover.
 
 ## Related
 
@@ -80,4 +103,3 @@ Trigger a retryable failure on the primary; confirm the run result shows the fal
 - [Local providers](/runtime/local-providers/)
 - [Sessions and concurrency](/runtime/sessions-concurrency/)
 - [Config blueprint](/config/blueprint/)
-- [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)

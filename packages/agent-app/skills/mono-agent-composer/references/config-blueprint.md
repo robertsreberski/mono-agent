@@ -35,7 +35,7 @@ my-agent/
     "model": "claude:claude-sonnet-4-6",   // claude:* | codex:* | pi:<provider>:<model>
     "fallbackModels": ["pi:ollama:gemma4:31b"],
     "executionMode": "sdk",                // sdk | cli (default inferred from model)
-    "effort": "medium",                    // none|low|medium|high|xhigh|max
+    "effort": "medium",                    // none|low|medium|high|xhigh|max; omit for direct opencode:*
     "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "workspace": ".",
@@ -110,7 +110,9 @@ my-agent/
     "mcpConfigPath": "./mcp.json"          // stdio/sse/http servers; inlined for SDK runtimes
   },
 
-  // Sandbox for runtime commands. Omit for no sandboxing.
+  // Sandbox for Pi-owned runtime commands. Direct Codex uses its own sandbox;
+  // Claude/direct OpenCode cannot enforce these exact srt scopes. All reject
+  // this block (pi:opencode-go:* remains a Pi route).
   "sandbox": {
     "mode": "native",                      // native (srt-wrapped) | off
     "network": { "mode": "none", "allowlist": [] }, // none|localhost|allowlist|all; *.suffix wildcards
