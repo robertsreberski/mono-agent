@@ -14,7 +14,8 @@ import { openMemoryDb } from "../packages/memory/dist/store/index.js";
 export const MEMORY_BENCHMARK_GATES = Object.freeze({
   recallAt5: 0.9,
   mrr: 0.8,
-  automaticAnswerCoverage: 0.9,
+  directFactAutomaticCoverage: 0.9,
+  ambiguousBindingAbstentionRate: 1,
   abstentionRate: 0.9,
   missingAttributeAbstentionRate: 1,
   outOfDomainAbstentionRate: 1,
@@ -75,6 +76,8 @@ const FAST_POLICY_CASES = [{
     "high-similarity-adjacent",
     "What deployment color did Morgan select?",
     ["probe-answer"],
+    [],
+    "direct-fact",
   ),
   hits: [
     scoredHit("probe-answer", "Morgan selected cobalt as the deployment color.", 1.005),
@@ -82,7 +85,70 @@ const FAST_POLICY_CASES = [{
     scoredHit("probe-other", "Database rollouts use a blue-green deployment strategy.", 0.751),
     scoredHit("probe-weak", "Project Atlas is led by Morgan.", 0.708),
   ],
-}];
+}, ...[
+  {
+    query: "What is Morgan's phone number?",
+    id: "direct-phone",
+    text: "Morgan's phone number is 555-0100.",
+  },
+  {
+    query: "What color is Morgan's car?",
+    id: "direct-car-color",
+    text: "Morgan's car color is red.",
+  },
+  {
+    query: "When does the release train leave?",
+    id: "direct-release-time",
+    text: "The release train leaves on Thursday.",
+  },
+  {
+    query: "When is the API launch date?",
+    id: "direct-api-date",
+    text: "The API launch date is 2026-08-14.",
+  },
+  {
+    query: "Where does Morgan work?",
+    id: "direct-location",
+    text: "Morgan works in Amsterdam.",
+  },
+].map(({ query, id, text }) => ({
+  item: testCase("direct-fact", query, [id], [], "direct-fact"),
+  hits: [scoredHit(id, text, 0.95)],
+})), ...[
+  {
+    query: "What color is Morgans car?",
+    id: "ambiguous-coordination",
+    text: "Morgan selected cobalt as the deployment color and drives a hatchback car.",
+  },
+  {
+    query: "What is Morgans phone number?",
+    id: "ambiguous-ditransitive",
+    text: "Morgan gave Taylor the phone number 555-0100.",
+  },
+  {
+    query: "What is Morgans phone number?",
+    id: "ambiguous-reported",
+    text: "Morgan said Taylor's phone number is 555-0100.",
+  },
+  {
+    query: "Who approved the blue-green deployment strategy?",
+    id: "ambiguous-subordinate",
+    text: "The database uses a blue-green deployment strategy that Taylor discussed after approving the travel policy.",
+  },
+  {
+    query: "Where is Morgans manager based?",
+    id: "ambiguous-inverse",
+    text: "Morgan manages Taylor and Taylor is based in Paris.",
+  },
+  {
+    query: "What is Morgans phone number?",
+    id: "ambiguous-unknown",
+    text: "Morgan's phone number is unknown.",
+  },
+].map(({ query, id, text }) => ({
+  item: testCase("ambiguous-binding", query, [], [], "ambiguous-binding"),
+  hits: [scoredHit(id, text, 0.95)],
+}))];
 
 export async function runMemoryBenchmark(options = {}) {
   const suite = options.suite ?? "fast";
@@ -132,7 +198,8 @@ export async function runMemoryBenchmark(options = {}) {
       hits,
       automatic: selectAutomaticRecallHits(hits, { query: item.query }),
     }));
-    const quality = qualityMetrics(queryResults, fixture.staleIds);
+    const automaticContract = automaticContractMetrics(policyResults);
+    const quality = { ...qualityMetrics(queryResults, fixture.staleIds), ...automaticContract };
     const policyCalibration = policyCalibrationMetrics(policyResults);
     const audit = db.audit();
     const storageBytes = await directoryBytes(root);
@@ -239,6 +306,7 @@ function policyCalibrationMetrics(results) {
   const checks = results.map(({ item, automatic }) => {
     const expected = new Set(item.relevantIds);
     const selected = new Set(automatic.map((hit) => hit.record.id));
+    if (item.automaticClass === "ambiguous-binding") return selected.size === 0;
     return expected.size > 0
       && [...expected].every((id) => selected.has(id))
       && [...selected].every((id) => expected.has(id));
@@ -246,12 +314,28 @@ function policyCalibrationMetrics(results) {
   return { cases: results.length, passed: checks.every(Boolean), checks };
 }
 
+function automaticContractMetrics(results) {
+  const directFacts = results.filter(({ item }) => item.automaticClass === "direct-fact");
+  const ambiguousBindings = results.filter(({ item }) => item.automaticClass === "ambiguous-binding");
+  return {
+    directFactAutomaticCoverage: directFacts.length === 0 ? 1 : mean(directFacts.map(({ item, automatic }) => {
+      const relevant = new Set(item.relevantIds);
+      return automatic.some((hit) => relevant.has(hit.record.id)) ? 1 : 0;
+    })),
+    ambiguousBindingAbstentionRate: ambiguousBindings.length === 0
+      ? 1
+      : mean(ambiguousBindings.map(({ automatic }) => automatic.length === 0 ? 1 : 0)),
+  };
+}
+
 export function memoryBenchmarkGateResults(quality, policyCalibration = { passed: true }) {
   const checks = {
     recallAt5: quality.recallAt5 >= MEMORY_BENCHMARK_GATES.recallAt5,
     mrr: quality.mrr >= MEMORY_BENCHMARK_GATES.mrr,
-    automaticAnswerCoverage:
-      quality.automaticAnswerCoverage >= MEMORY_BENCHMARK_GATES.automaticAnswerCoverage,
+    directFactAutomaticCoverage:
+      quality.directFactAutomaticCoverage >= MEMORY_BENCHMARK_GATES.directFactAutomaticCoverage,
+    ambiguousBindingAbstentionRate:
+      quality.ambiguousBindingAbstentionRate >= MEMORY_BENCHMARK_GATES.ambiguousBindingAbstentionRate,
     abstentionRate: quality.abstentionRate >= MEMORY_BENCHMARK_GATES.abstentionRate,
     missingAttributeAbstentionRate:
       quality.missingAttributeAbstentionRate >= MEMORY_BENCHMARK_GATES.missingAttributeAbstentionRate,
@@ -464,8 +548,8 @@ function scoredHit(id, text, score) {
   return { score, record: record(id, text) };
 }
 
-function testCase(category, query, relevantIds, staleIds = []) {
-  return { category, query, relevantIds, staleIds };
+function testCase(category, query, relevantIds, staleIds = [], automaticClass) {
+  return { category, query, relevantIds, staleIds, automaticClass };
 }
 
 function ndcgAt(relevance, relevantCount, k) {
@@ -517,7 +601,8 @@ function render(report) {
     `memory benchmark (${report.suite}, ${report.provider}, disposable store)`,
     `Recall@1/5/8 ${(q.recallAt1 * 100).toFixed(1)}% / ${(q.recallAt5 * 100).toFixed(1)}% / ${(q.recallAt8 * 100).toFixed(1)}%`,
     `MRR ${q.mrr.toFixed(3)}  nDCG@8 ${q.ndcgAt8.toFixed(3)}`,
-    `automatic Recall@5 ${(q.automaticRecallAt5 * 100).toFixed(1)}%  answer coverage ${(q.automaticAnswerCoverage * 100).toFixed(1)}%`,
+    `automatic Recall@5 ${(q.automaticRecallAt5 * 100).toFixed(1)}%  overall answer coverage ${(q.automaticAnswerCoverage * 100).toFixed(1)}%`,
+    `direct-fact auto coverage ${(q.directFactAutomaticCoverage * 100).toFixed(1)}%  ambiguous-binding abstention ${(q.ambiguousBindingAbstentionRate * 100).toFixed(1)}%`,
     `stale ${(q.staleRecallRate * 100).toFixed(2)}%  false ${(q.falseRecallRate * 100).toFixed(2)}%  abstention ${(q.abstentionRate * 100).toFixed(1)}%`,
     `missing-attribute abstention ${(q.missingAttributeAbstentionRate * 100).toFixed(1)}%  out-of-domain abstention ${(q.outOfDomainAbstentionRate * 100).toFixed(1)}%`,
     `synthetic policy calibration ${report.policyCalibration.passed ? "PASS" : "FAIL"} (${report.policyCalibration.cases} separate case(s))`,

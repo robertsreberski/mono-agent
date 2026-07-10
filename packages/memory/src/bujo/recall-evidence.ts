@@ -1,11 +1,10 @@
 /**
- * Precision-first answer-evidence gate for automatic prompt injection.
+ * Precision-first evidence gate for automatic prompt injection.
  *
- * Embedding similarity answers "is this about the same topic?", not "does this
- * record contain the attribute the question asks for?". This deterministic
- * pass therefore checks the bounded candidate texts for the query subject and
- * requested answer concepts. It performs no model/embedding calls and works on
- * local and plugin-backed hits alike.
+ * This is intentionally not a general natural-language parser. Automatic
+ * context accepts only the finite, canonical direct-fact shapes below. A
+ * semantically relevant record that does not match one of those shapes remains
+ * available through the default-on MemoryRecall tool.
  */
 
 export interface RecallEvidenceHit {
@@ -31,11 +30,17 @@ const ENTITY_EXCLUSIONS = new Set([
 const DAY_OR_MONTH = /\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b/iu;
 const DATE_VALUE = /\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b/u;
 const TIME_VALUE = /\b(?:[01]?\d|2[0-3]):[0-5]\d\b|\b\d{1,2}(?::[0-5]\d)?\s*(?:a\.?m\.?|p\.?m\.?)\b|\b(?:noon|midnight)\b/iu;
+const PHONE_VALUE = /\b(?:\+?\d[\d .()-]{5,}\d|\d{3}[- .]\d{3,})\b/u;
 const CONVERSATION_RELATIVE = /\b(?:last|previous|immediately preceding)\s+(?:message|reply|response)\b|\bwhat did you (?:send|say)\b/iu;
-const CLAUSE_BOUNDARY = /(?:[!?;]+(?:\s+|$)|\.(?:\s+|$)|\n+|,\s+(?=(?:[A-Z][A-Za-z0-9]*|he|she|they|it|we|I)\b)|\s+(?:and|but|while|whereas)\s+(?=(?:[A-Z][A-Za-z0-9]*|he|she|they|it|we|I)\b)|\s+(?=(?:User|Assistant):\s))/u;
+
+// Ambiguous roles and relations are explicit-tool territory. In particular,
+// automatic context never tries to resolve who/manager/lead/approval queries.
+const ACTOR_OR_RELATION_QUERY = /\b(?:who|whose|manager|manages?|managed|lead|leads|leading|led|approve|approves|approved|approving|approval)\b/iu;
+const UNSAFE_FACT_LANGUAGE = /\b(?:and|but|or|while|whereas|although|because|if|unless|since|that|which|who|after|before)\b|[,:;\n\r]/iu;
+const REPORTED_OR_DITRANSITIVE = /\b(?:gave|give|gives|told|tell|tells|asked|ask|asks|said|say|says|reported|reports|discussed|discusses|mentioned|mentions|informed|informs|showed|shows|sent|sends)\b/iu;
+const NEGATION_OR_UNKNOWN = /\b(?:no|not|never|neither|unknown|unset|tbd|none)\b/iu;
 
 const ALIASES: Readonly<Record<string, string>> = {
-  approved: "approve", approving: "approve", approval: "approve",
   based: "location", city: "location", located: "location", location: "location",
   office: "location", venue: "location", where: "location", held: "location",
   car: "vehicle", cars: "vehicle", automobile: "vehicle", vehicle: "vehicle",
@@ -45,81 +50,234 @@ const ALIASES: Readonly<Record<string, string>> = {
   chose: "choose", chosen: "choose", chooses: "choose", picked: "choose",
   selecting: "choose", selected: "choose", select: "choose",
   colour: "color", shade: "color",
-  currently: "current", now: "current",
-  decided: "decide", decision: "decide", decisions: "decide",
   departed: "depart", departure: "depart", departs: "depart", leave: "depart", leaves: "depart",
   date: "temporal", day: "temporal", when: "temporal",
   favourite: "preference", favorite: "preference", preferred: "preference", prefers: "preference",
-  breakfast: "food", dinner: "food", lunch: "food", meal: "food", soup: "food",
-  hosted: "hosting", hosts: "hosting", host: "hosting", cloud: "hosting", provider: "hosting",
-  leading: "lead", leads: "lead", led: "lead",
   phone: "phone", telephone: "phone",
-  remotely: "remote", hybrid: "remote",
-  required: "require", requires: "require",
   time: "time_of_day",
-  vendor: "vendor", supplier: "vendor",
-  working: "work", works: "work",
 };
 
-/** Return score-ordered records containing one independently answer-bearing clause. */
+type AnswerKind = "generic" | "location" | "temporal" | "time";
+
+type DirectFactQuery =
+  | { readonly kind: "named-property"; readonly subject: string; readonly property: string; readonly answerKind: AnswerKind }
+  | { readonly kind: "choice"; readonly subject: string; readonly property: string }
+  | { readonly kind: "event-time"; readonly subject: string; readonly predicate: string; readonly answerKind: "temporal" | "time" }
+  | { readonly kind: "copular-time"; readonly subject: string; readonly answerKind: "temporal" | "time" }
+  | { readonly kind: "location"; readonly subject: string; readonly predicate: string };
+
+/** Return score-ordered records that independently match a canonical direct fact. */
 export function selectAnswerBearingRecallHits<T extends RecallEvidenceHit>(
   query: string,
   hits: readonly T[],
 ): readonly T[] {
   if (hits.length === 0 || CONVERSATION_RELATIVE.test(query)) return [];
-
-  const queryProfile = queryEvidenceProfile(query);
-  if (queryProfile.required.size === 0) return [];
-  return hits.filter((hit) => answerBearingClauses(hit.record.text)
-    .some((clause) => coversProfile(queryProfile, clause)));
+  const directFact = parseDirectFactQuery(query);
+  if (directFact === undefined) return [];
+  return hits.filter((hit) => matchesDirectFact(directFact, hit.record.text));
 }
 
-/** True only when the selected texts collectively carry the requested answer evidence. */
 export function hasAutomaticRecallEvidence(query: string, hits: readonly RecallEvidenceHit[]): boolean {
   return selectAnswerBearingRecallHits(query, hits).length > 0;
 }
 
-interface QueryEvidenceProfile {
-  readonly anchors: Set<string>;
-  readonly required: Set<string>;
+function parseDirectFactQuery(rawQuery: string): DirectFactQuery | undefined {
+  const query = normalizeQuestion(rawQuery);
+  if (query === undefined || ACTOR_OR_RELATION_QUERY.test(query)) return undefined;
+
+  const namedProperty = parseNamedPropertyQuery(query);
+  if (namedProperty !== undefined) return namedProperty;
+
+  const choice = /^(?:what|which)\s+(.+?)\s+did\s+([A-Z][A-Za-z0-9-]*)\s+(select|choose|pick)$/iu.exec(query);
+  if (choice !== null) {
+    return {
+      kind: "choice",
+      subject: canonicalName(choice[2]!.toLowerCase()),
+      property: canonicalPhrase(choice[1]!),
+    };
+  }
+
+  const eventTime = /^(when|what\s+day|which\s+day|what\s+time)\s+does\s+(?:the\s+)?(.+?)\s+(?:now\s+)?(leave|depart|start|launch)(?:\s+now)?$/iu.exec(query);
+  if (eventTime !== null) {
+    return {
+      kind: "event-time",
+      subject: canonicalPhrase(eventTime[2]!),
+      predicate: canonicalPredicate(eventTime[3]!),
+      answerKind: /time/iu.test(eventTime[1]!) ? "time" : "temporal",
+    };
+  }
+
+  const copularTime = /^(when\s+is|what\s+(?:date|day|time)\s+is)\s+(?:the\s+)?(.+)$/iu.exec(query);
+  if (copularTime !== null) {
+    return {
+      kind: "copular-time",
+      subject: canonicalTemporalSubject(copularTime[2]!),
+      answerKind: /time/iu.test(copularTime[1]!) ? "time" : "temporal",
+    };
+  }
+
+  const location = /^where\s+does\s+([A-Z][A-Za-z0-9-]*)\s+(work|live)$/iu.exec(query);
+  if (location !== null) {
+    return {
+      kind: "location",
+      subject: canonicalName(location[1]!.toLowerCase()),
+      predicate: canonicalPredicate(location[2]!),
+    };
+  }
+
+  return undefined;
 }
 
-function coversProfile(
-  queryProfile: QueryEvidenceProfile,
-  clause: string,
-): boolean {
-  const documentConcepts = documentEvidenceConcepts(clause);
-  return isSubset(queryProfile.anchors, documentConcepts)
-    && isSubset(queryProfile.required, documentConcepts);
+function parseNamedPropertyQuery(query: string): DirectFactQuery | undefined {
+  const anchor = singleNamedAnchor(query);
+  if (anchor === undefined) return undefined;
+
+  const simple = /^(what|where|when)\s+(?:is|was)\s+([A-Z][A-Za-z0-9-]*(?:['’]s)?)\s+(.+)$/iu.exec(query);
+  if (simple !== null && possessiveSubject(simple[2]!) === anchor) {
+    const questionWord = simple[1]!.toLowerCase();
+    const property = canonicalPhrase(simple[3]!);
+    return {
+      kind: "named-property",
+      subject: anchor,
+      property,
+      answerKind: questionWord === "where"
+        ? "location"
+        : questionWord === "when"
+          ? "temporal"
+          : answerKindForProperty(property),
+    };
+  }
+
+  const aspect = /^(?:what|which)\s+(.+?)\s+(?:is|was)\s+([A-Z][A-Za-z0-9-]*(?:['’]s)?)\s+(.+)$/iu.exec(query);
+  if (aspect !== null && possessiveSubject(aspect[2]!) === anchor) {
+    const property = canonicalPhrase(`${aspect[3]!} ${aspect[1]!}`);
+    return {
+      kind: "named-property",
+      subject: anchor,
+      property,
+      answerKind: answerKindForProperty(property),
+    };
+  }
+  return undefined;
 }
 
-/**
- * Automatic injection is deliberately narrower than explicit MemoryRecall:
- * every subject and requested aspect must occur in one sentence/clause. This
- * prevents a compound host summary from fabricating bindings by pooling an
- * unrelated subject clause with an attribute clause. Multi-hop exploration is
- * left to the explicit tool, where the model can inspect provenance.
- */
-function answerBearingClauses(text: string): readonly string[] {
-  return text.split(CLAUSE_BOUNDARY).map((clause) => clause.trim()).filter(Boolean);
+function matchesDirectFact(query: DirectFactQuery, rawText: string): boolean {
+  const text = normalizeFactText(rawText);
+  if (text === undefined) return false;
+
+  if (query.kind === "named-property") {
+    const match = /^([A-Z][A-Za-z0-9-]*)['’]s\s+(.+?)\s+(?:is|was)\s+(.+)$/iu.exec(text);
+    if (match === null) return false;
+    if (canonicalName(match[1]!.toLowerCase()) !== query.subject) return false;
+    if (canonicalPhrase(match[2]!) !== query.property) return false;
+    if (query.answerKind !== "location" && properNameConcepts(text, true).size > 1) return false;
+    return hasAnswerValue(query.answerKind, query.property, match[3]!);
+  }
+
+  if (query.kind === "choice") {
+    const match = /^([A-Z][A-Za-z0-9-]*)\s+(selected|chose|picked)\s+(.+?)\s+as\s+(?:the\s+)?(.+)$/iu.exec(text);
+    return match !== null
+      && canonicalName(match[1]!.toLowerCase()) === query.subject
+      && canonicalPhrase(match[4]!) === query.property
+      && properNameConcepts(text, true).size <= 1
+      && hasAnswerValue("generic", query.property, match[3]!);
+  }
+
+  if (query.kind === "event-time") {
+    const match = /^(?:the\s+)?(.+?)\s+(?:now\s+)?(leaves|departs|starts|launches)\s+(?:on|at)\s+(.+)$/iu.exec(text);
+    return match !== null
+      && canonicalPhrase(match[1]!) === query.subject
+      && canonicalPredicate(match[2]!) === query.predicate
+      && hasAnswerValue(query.answerKind, "temporal", match[3]!);
+  }
+
+  if (query.kind === "copular-time") {
+    const match = /^(?:the\s+)?(.+?)\s+(?:is|was)\s+(.+)$/iu.exec(text);
+    return match !== null
+      && canonicalTemporalSubject(match[1]!) === query.subject
+      && hasAnswerValue(query.answerKind, "temporal", match[2]!);
+  }
+
+  const match = /^([A-Z][A-Za-z0-9-]*)\s+(works|lives)\s+(in|at)\s+(.+)$/iu.exec(text);
+  return match !== null
+    && canonicalName(match[1]!.toLowerCase()) === query.subject
+    && canonicalPredicate(match[2]!) === query.predicate
+    && hasAnswerValue("location", "location", `${match[3]!} ${match[4]!}`);
+}
+
+function normalizeQuestion(value: string): string | undefined {
+  const normalized = value.trim().replace(/[?!.]+$/u, "").replace(/\s+/gu, " ");
+  return normalized.length === 0 ? undefined : normalized;
+}
+
+function normalizeFactText(value: string): string | undefined {
+  const normalized = value.trim()
+    .replace(/\b([ap])\.m\./giu, "$1m")
+    .replace(/[?!.]+$/u, "")
+    .replace(/\s+/gu, " ");
+  if (normalized.length === 0
+    || /[?!.]/u.test(normalized)
+    || UNSAFE_FACT_LANGUAGE.test(normalized)
+    || REPORTED_OR_DITRANSITIVE.test(normalized)
+    || NEGATION_OR_UNKNOWN.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function hasAnswerValue(kind: AnswerKind, property: string, rawValue: string): boolean {
+  const value = rawValue.trim();
+  if (value.length === 0 || REPORTED_OR_DITRANSITIVE.test(value) || NEGATION_OR_UNKNOWN.test(value)) return false;
+  if (property.split(" ").includes("phone")) return PHONE_VALUE.test(value);
+  if (kind === "location") return /^(?:in|at)\s+\S+/iu.test(value);
+  if (kind === "time") return TIME_VALUE.test(value);
+  if (kind === "temporal") return TIME_VALUE.test(value) || DATE_VALUE.test(value) || DAY_OR_MONTH.test(value);
+  return /[A-Za-z0-9]/u.test(value);
+}
+
+function answerKindForProperty(property: string): AnswerKind {
+  const words = new Set(property.split(" "));
+  if (words.has("time_of_day")) return "time";
+  if (words.has("temporal")) return "temporal";
+  if (words.has("location")) return "location";
+  return "generic";
+}
+
+function possessiveSubject(token: string): string {
+  const lower = token.toLowerCase().replace(/[’']/gu, "");
+  return canonicalName(lower);
+}
+
+function singleNamedAnchor(text: string): string | undefined {
+  const anchors = [...properNameConcepts(text)];
+  return anchors.length === 1 ? anchors[0] : undefined;
+}
+
+function canonicalTemporalSubject(text: string): string {
+  return canonicalPhrase(text).replace(/(?:^|\s)(?:temporal|time_of_day)$/u, "").trim();
+}
+
+function canonicalPredicate(value: string): string {
+  const word = canonicalConcept(value.toLowerCase());
+  if (word === "depart") return "depart";
+  if (/^(?:start|starts)$/u.test(word)) return "start";
+  if (/^(?:launch|launches)$/u.test(word)) return "launch";
+  if (/^(?:work|works)$/u.test(word)) return "work";
+  if (/^(?:live|lives)$/u.test(word)) return "live";
+  return word;
+}
+
+function canonicalPhrase(text: string): string {
+  return [...concepts(text)].join(" ");
 }
 
 export function automaticRecallEvidenceProfile(query: string): {
   readonly anchors: readonly string[];
   readonly required: readonly string[];
 } {
-  const profile = queryEvidenceProfile(query);
-  return {
-    anchors: [...profile.anchors].sort(),
-    required: [...profile.required].sort(),
-  };
-}
-
-function queryEvidenceProfile(query: string): QueryEvidenceProfile {
   const anchors = properNameConcepts(query);
   const required = concepts(query);
   for (const anchor of anchors) required.delete(anchor);
-
   if (/\bwho\b/iu.test(query)) required.add("actor");
   if (/\bwhere\b|\bcity\b|\bvenue\b|\bheld\b/iu.test(query)) required.add("location");
   if (/\bwhen\b|\bwhat\s+day\b/iu.test(query)) required.add("temporal");
@@ -128,24 +286,7 @@ function queryEvidenceProfile(query: string): QueryEvidenceProfile {
     required.add("time_of_day");
   }
   if (/\bphone\s+number\b/iu.test(query)) required.delete("number");
-  return { anchors, required };
-}
-
-function documentEvidenceConcepts(text: string): Set<string> {
-  const out = concepts(text);
-  const entities = documentEntityConcepts(text);
-  for (const anchor of entities) out.add(anchor);
-  if (entities.size > 0) out.add("actor");
-  if (DAY_OR_MONTH.test(text) || DATE_VALUE.test(text)) out.add("temporal");
-  if (TIME_VALUE.test(text)) {
-    out.add("temporal");
-    out.add("time_of_day");
-  }
-  return out;
-}
-
-function documentEntityConcepts(text: string): Set<string> {
-  return properNameConcepts(text, true);
+  return { anchors: [...anchors].sort(), required: [...required].sort() };
 }
 
 function concepts(text: string): Set<string> {
@@ -166,11 +307,7 @@ function properNameConcepts(text: string, document = false): Set<string> {
     if (ENTITY_EXCLUSIONS.has(lower)) continue;
     const proper = /^[A-Z]/u.test(raw) || /^[A-Z0-9]{2,}$/u.test(raw);
     if (!proper) continue;
-    // Sentence-initial domain nouns are not actors/entities. Named people and
-    // acronyms remain useful even at index zero.
-    if (document && index === 0 && ["database", "nightly", "release", "project", "the"].includes(lower)) {
-      continue;
-    }
+    if (document && index === 0 && ["database", "nightly", "release", "project", "the"].includes(lower)) continue;
     out.add(canonicalName(lower));
   }
   return out;
@@ -187,9 +324,4 @@ function canonicalConcept(token: string): string {
 function canonicalName(token: string): string {
   if (token.endsWith("s") && token.length > 5 && token !== "atlas") return token.slice(0, -1);
   return token;
-}
-
-function isSubset(expected: ReadonlySet<string>, actual: ReadonlySet<string>): boolean {
-  for (const value of expected) if (!actual.has(value)) return false;
-  return true;
 }

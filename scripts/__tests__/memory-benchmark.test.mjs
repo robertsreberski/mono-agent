@@ -24,11 +24,14 @@ describe("memory benchmark", () => {
       "entity-hop",
     ]));
     expect(report.policyCategories).toContain("high-similarity-adjacent");
+    expect(report.policyCategories).toContain("ambiguous-binding");
+    expect(report.policyCategories).toContain("direct-fact");
     expect(report.policyCalibration.passed).toBe(true);
     expect(report.gates.passed).toBe(true);
     expect(report.quality.recallAt5).toBeGreaterThanOrEqual(0.9);
     expect(report.quality.mrr).toBeGreaterThanOrEqual(0.8);
-    expect(report.quality.automaticAnswerCoverage).toBeGreaterThanOrEqual(0.9);
+    expect(report.quality.directFactAutomaticCoverage).toBeGreaterThanOrEqual(0.9);
+    expect(report.quality.ambiguousBindingAbstentionRate).toBe(1);
     expect(report.quality.abstentionRate).toBeGreaterThanOrEqual(0.9);
     expect(report.quality.missingAttributeAbstentionRate).toBe(1);
     expect(report.quality.outOfDomainAbstentionRate).toBe(1);
@@ -106,6 +109,8 @@ describe("memory benchmark", () => {
       recallAt5: 1,
       mrr: 1,
       automaticAnswerCoverage: 1,
+      directFactAutomaticCoverage: 1,
+      ambiguousBindingAbstentionRate: 1,
       abstentionRate: 1,
       missingAttributeAbstentionRate: 1,
       outOfDomainAbstentionRate: 1,
@@ -113,10 +118,15 @@ describe("memory benchmark", () => {
       falseRecallRate: 0,
     };
 
-    expect(memoryBenchmarkGateResults({ ...base, automaticAnswerCoverage: 0 })).toMatchObject({
+    expect(memoryBenchmarkGateResults({ ...base, directFactAutomaticCoverage: 0 })).toMatchObject({
       passed: false,
-      checks: { automaticAnswerCoverage: false },
+      checks: { directFactAutomaticCoverage: false },
     });
+    expect(memoryBenchmarkGateResults({ ...base, ambiguousBindingAbstentionRate: 0 })).toMatchObject({
+      passed: false,
+      checks: { ambiguousBindingAbstentionRate: false },
+    });
+    expect(memoryBenchmarkGateResults({ ...base, automaticAnswerCoverage: 0 }).passed).toBe(true);
     expect(memoryBenchmarkGateResults({ ...base, abstentionRate: 0 })).toMatchObject({
       passed: false,
       checks: { abstentionRate: false },

@@ -19,10 +19,10 @@ describe("BujoMemoryStore — tier derivation", () => {
 
     expect(store.tier()).toBe("lite");
 
-    await store.appendHostSummary("s1", "Morgan prefers opt-in memory.");
-    const block = await store.load("opt-in");
+    await store.appendHostSummary("s1", "Morgan's memory preference is opt-in.");
+    const block = await store.load("What is Morgan's memory preference?");
     // FTS recall: keyword must appear in the block
-    expect(block?.content).toContain("opt-in memory");
+    expect(block?.content).toContain("memory preference is opt-in");
 
     expect(await store.capture("s1", "some text")).toBeUndefined();
 
@@ -36,9 +36,9 @@ describe("BujoMemoryStore — tier derivation", () => {
 
     expect(store.tier()).toBe("journal");
 
-    await store.appendHostSummary("s1", "Weekly review complete.");
-    const block = await store.load("review");
-    expect(block?.content).toContain("Weekly review");
+    await store.appendHostSummary("s1", "Morgan's weekly review status is complete.");
+    const block = await store.load("What is Morgan's weekly review status?");
+    expect(block?.content).toContain("weekly review");
 
     const decayResult = await store.decay();
     expect(decayResult).toHaveProperty("decayed");
@@ -126,16 +126,16 @@ describe("BujoMemoryStore", () => {
     const now = new Date("2026-06-15T09:00:00.000Z");
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });
 
-    const result = await store.appendHostSummary("global", "Morgan prefers opt-in memory, never silent fallback.");
+    const result = await store.appendHostSummary("global", "Morgan's memory preference is opt-in.");
     expect(result.bytesWritten).toBeGreaterThan(0);
 
     const file = readFileSync(dailyFilePath(root, now), "utf8");
     const parsed = parseDailyFile(file);
     expect(parsed.bullets).toHaveLength(1);
-    expect(parsed.bullets[0]?.text).toContain("opt-in memory");
+    expect(parsed.bullets[0]?.text).toContain("memory preference is opt-in");
 
-    const block = await store.load("global", "Morgan opt-in memory");
-    expect(block?.content).toContain("opt-in memory");
+    const block = await store.load("global", "What is Morgan's memory preference?");
+    expect(block?.content).toContain("memory preference is opt-in");
     await store.close();
   });
 
@@ -145,10 +145,10 @@ describe("BujoMemoryStore", () => {
     // No hits → no block (a header-only block carries no signal).
     expect(await store.load("global")).toBeUndefined();
     // With a hit, load returns a markdown block.
-    await store.appendHostSummary("s1", "decided to adopt opt-in memory");
-    const block = await store.load("memory decision");
+    await store.appendHostSummary("s1", "Morgan's memory preference is opt-in.");
+    const block = await store.load("What is Morgan's memory preference?");
     expect(block?.kind).toBe("markdown");
-    expect(block?.content).toContain("opt-in memory");
+    expect(block?.content).toContain("memory preference is opt-in");
     await store.close();
   });
 
@@ -157,7 +157,7 @@ describe("BujoMemoryStore", () => {
     const now = new Date("2026-06-15T09:00:00.000Z");
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });
 
-    const summary = "decided to adopt opt-in memory";
+    const summary = "Morgan's memory preference is opt-in.";
     const r1 = await store.appendHostSummary("s1", summary);
     await store.appendHostSummary("s2", "lunch was pizza on tuesday");
 
@@ -168,8 +168,8 @@ describe("BujoMemoryStore", () => {
     expect(parseDailyFile(file).bullets).toHaveLength(2);
     expect((file.match(/^# 2026-06-15$/gmu) ?? []).length).toBe(1);
 
-    const block = await store.load("memory decision");
-    expect(block?.content).toContain("opt-in memory");
+    const block = await store.load("What is Morgan's memory preference?");
+    expect(block?.content).toContain("memory preference is opt-in");
     await store.close();
   });
 
@@ -202,7 +202,7 @@ describe("BujoMemoryStore", () => {
       ],
       [
         "TEXT:",
-        JSON.stringify([{ type: "note", text: "Morgan prefers opt-in memory", salience: 0.8, isInsight: false }]),
+        JSON.stringify([{ type: "note", text: "Morgan's memory preference is opt-in", salience: 0.8, isInsight: false }]),
       ],
     ]);
 
@@ -214,8 +214,8 @@ describe("BujoMemoryStore", () => {
     expect(result?.entities).toBe(1);
 
     // Captured memory must be recallable via load()
-    const block = await store.load("s1", "Morgan opt-in memory");
-    expect(block?.content).toContain("opt-in memory");
+    const block = await store.load("s1", "What is Morgan's memory preference?");
+    expect(block?.content).toContain("memory preference is opt-in");
 
     await store.close();
   });
@@ -369,7 +369,7 @@ describe("BujoMemoryStore — recall query (load 2nd arg)", () => {
     await store.appendHostSummary("c1", "Team lunch was pizza on Tuesday.");
 
     // The query drives recall even when the conversation id shares nothing with the memories.
-    const block = await store.load("unrelated-conversation-id", "launch date");
+    const block = await store.load("unrelated-conversation-id", "When is the launch date?");
     expect(block?.content).toContain("launch");
     expect(block?.content).not.toContain("pizza");
 
@@ -386,7 +386,7 @@ describe("BujoMemoryStore — recall query (load 2nd arg)", () => {
   it("falls back to the conversation id as a coarse seed when no query is supplied (back-compat)", async () => {
     const store = createBujoMemoryStore({ root: mkdtempSync(join(tmpdir(), "bujo-recall-seed-")) });
     await store.appendHostSummary("c1", "The launch date is March 3rd.");
-    const block = await store.load("launch");
+    const block = await store.load("When is the launch date?");
     expect(block?.content).toContain("launch");
     await store.close();
   });
