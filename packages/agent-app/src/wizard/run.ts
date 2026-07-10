@@ -17,6 +17,7 @@ import {
   providerSetupActionCommandLine,
   type ProviderCredentialState,
 } from "../provider-setup.js";
+import { isSupermemoryPluginInstalled } from "../supermemory-plugin.js";
 import {
   alwaysOnTools,
   composeWizardPlan,
@@ -730,7 +731,11 @@ async function collectInteractiveFromSeed(
           const previousMemory = draft.memory;
           const memory = await select({
             message: "Should the agent remember across conversations?",
-            options: memorySelectOptions(),
+            options: memorySelectOptions({
+              includeOptionalPlugins:
+                draft.memory === "memory:supermemory"
+                || isSupermemoryPluginInstalled(),
+            }),
             initialValue: draft.memory ?? "",
           });
           draft.memory = memory === "" ? undefined : memory;

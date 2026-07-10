@@ -4,6 +4,9 @@
 
 Category: `context`
 
+Plugin tier: this package is released in the mono-agent lockstep, but is not
+installed with `@mono-agent/agent-app`; the operator installs and selects it explicitly.
+
 ## Responsibility
 
 Provides a `MemoryStore` (from `@mono-agent/agent-contracts`) backed by an external
@@ -16,8 +19,13 @@ embeddings model and no memory chat LLM — the adapter just posts turns and sea
 ## Install / Usage
 
 ```bash
-pnpm --filter @mono-agent/memory-supermemory run build
+npm install @mono-agent/memory-supermemory@<matching-mono-agent-version>
 ```
+
+The package also ships `skills/mono-agent-supermemory/SKILL.md`, which guides a
+local configuration agent through service selection, privacy disclosure,
+validation, and a real recall smoke test. Installing the package never enables
+the backend by itself; `memory.backend: "supermemory"` remains the explicit opt-in.
 
 ```ts
 import { createSupermemoryStore } from "@mono-agent/memory-supermemory";
@@ -42,6 +50,7 @@ const block = await store.load("conv-1", "preferences");
 ## Public API
 
 - `createSupermemoryStore`, `SupermemoryMemoryStore`
+- `validateSupermemoryConfig`, `SupermemoryConfigValidation`
 - `createSupermemoryHttpClient`
 - `formatHitsAsBlock`, `SUPERMEMORY_SOURCE`
 - `CreateSupermemoryStoreConfig`, `SupermemoryStoreOptions`, `SupermemoryRecallHit`
@@ -71,4 +80,10 @@ pnpm --filter @mono-agent/memory-supermemory run test
 ```
 
 A gated real-instance round-trip runs when `MONO_AGENT_TEST_SUPERMEMORY_BASE_URL` points
-at a running Supermemory instance (skipped otherwise).
+at a running Supermemory instance (skipped otherwise). To require and run the
+package-owned, data-writing smoke explicitly:
+
+```bash
+MONO_AGENT_TEST_SUPERMEMORY_BASE_URL=http://127.0.0.1:6767 \
+  pnpm --filter @mono-agent/memory-supermemory run smoke
+```

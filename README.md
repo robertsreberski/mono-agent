@@ -83,7 +83,7 @@ curl -s http://127.0.0.1:<PORT>/webhook/invoke \
 
 ### Presets & the setup wizard
 
-`mono-agent init` composes an agent from **capability modules** (channels, memory tiers, sandbox, observability) and walks you through the tool allowlist so the agent can actually do something. **Presets** are saved answer-sets for six common shapes — `starter` (webhook smoke agent), `telegram-assistant` (BuJo memory), `telegram-supermemory`, `slack-bot`, `local-private` (Ollama), and `code-sandbox`. Each preset prints its generated config with secrets externalized to `.env.example`, and mirrors a copy-paste playbook in [`docs/playbooks/`](./docs/playbooks/):
+`mono-agent init` composes an agent from **capability modules** (channels, built-in memory tiers, sandbox, observability) and walks you through the tool allowlist so the agent can actually do something. **Presets** are saved answer-sets for five built-in shapes — `starter` (webhook smoke agent), `telegram-assistant` (BuJo memory), `slack-bot`, `local-private` (Ollama), and `code-sandbox`. Optional packages such as Supermemory ship their own setup skill/preset instead of making an unavailable service look built in. Each core preset prints its generated config with secrets externalized to `.env.example`, and mirrors a copy-paste playbook in [`docs/playbooks/`](./docs/playbooks/):
 
 ```bash
 mono-agent presets list
@@ -118,13 +118,13 @@ See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 
 Before adding new capability surface area, use the [`Capability ladder`](./docs/reference/capability-ladder.md) to decide whether the work belongs in an existing package, config/skills, a new package, an MCP tool boundary, or a shared core contract.
 
-Current catalog count: 17 core publishable packages plus 3 plugin-tier extras plus 1 unscoped alias (`create-mono-agent`, the `npm create mono-agent` installer that ships `create-mono-agent`/`mono-agent` bins delegating to `@mono-agent/agent-app`).
+Current catalog count: 16 core publishable packages plus 4 plugin-tier extras plus 1 unscoped alias (`create-mono-agent`, the `npm create mono-agent` installer that ships `create-mono-agent`/`mono-agent` bins delegating to `@mono-agent/agent-app`).
 
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, and fail-closed sandbox policy/process wrapping. |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config` | Package-specific `core` plus `runtime` only for config | Shared responder contracts and settings JSON/env helpers with adapter-neutral core config. |
-| `context` | `@mono-agent/memory`, `@mono-agent/memory-supermemory` | `core`, `context` | Tiered memory (lite/journal/bujo via `@mono-agent/memory` subpaths plus optional Supermemory backend). The agent's `MemoryRecall` tool is auto-provisioned in-app from the single `memory` config block. |
+| `context` | `@mono-agent/memory`, `@mono-agent/memory-supermemory` (extra) | `core`, `context` | Built-in lite/journal/bujo memory plus the explicitly installed Supermemory plugin. The agent's `MemoryRecall` tool is auto-provisioned in-app from the single `memory` config block. |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-orchestrator` (extra) | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, prompt assembly, selected-skill loading, tool/MCP policy normalization (with a fail-closed no-policy safety net), and bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@mono-agent/observability` (`./otel` subpath for Phoenix export) | `core` | JSONL run recorder, local artifact reader, file-backed trace source registry, and subpath-only OTLP trace export. |
 | `communication` | `@mono-agent/a2a-adapter` (extra), `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` (extra) | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. Built-in channel sections cover Telegram, Slack, webhook, OpenAI API, cron, TUI stream, and live relay; A2A and WhatsApp are config-loaded channel plugins. Operator exposes the TUI NDJSON and live SSE loopback endpoints. |
@@ -148,7 +148,7 @@ demos/final-agent (not a workspace package)
   ├─ agent-harness ── agent-contracts, observability, runtime-adapter (owns context assembly, selected skills, tool policy)
   ├─ runtime-adapter ── agent-contracts, @mono-agent/agent-runtime, sandbox policy/types
   ├─ memory (./store, ./search, ./bujo)
-  ├─ memory-supermemory
+  ├─ memory-supermemory ── optional plugin, lazily resolved only for backend=supermemory
   ├─ config ── agent-contracts, runtime-adapter
   ├─ observability
   ├─ session-web ── agent-contracts, observability
@@ -357,7 +357,7 @@ flowchart TB
 
   subgraph PromptContext["Context layer"]
     Memory["`@mono-agent/memory`\n./store SQLite, ./search embeddings, ./bujo engine"]
-    MemorySupermemory["`@mono-agent/memory-supermemory`\nSupermemory-backed store"]
+    MemorySupermemory["`@mono-agent/memory-supermemory`\nextra plugin: Supermemory-backed store"]
   end
 
   subgraph AppLayer["App layer"]

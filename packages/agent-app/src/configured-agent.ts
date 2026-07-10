@@ -47,6 +47,7 @@ import type {
   RuntimeRunOptions,
 } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
+import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
 type StaticRuntimeOptions = NonNullable<AgentHarnessOptions["runtimeOptions"]>;
 
@@ -510,7 +511,7 @@ export async function createConfiguredMemory(
       // Defensive: the loader already rejects this combination.
       throw new Error("memory.backend 'supermemory' requires a memory.supermemory block.");
     }
-    const { createSupermemoryStore } = await import("@mono-agent/memory-supermemory");
+    const { createSupermemoryStore } = await loadSupermemoryPlugin();
     // External backend: `mode`/`embeddings`/`llm` are bujo-only and intentionally ignored. Recall +
     // capture both go over the REST client; Supermemory extracts/consolidates server-side.
     return createSupermemoryStore({
