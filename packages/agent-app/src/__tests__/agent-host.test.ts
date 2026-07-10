@@ -173,6 +173,32 @@ describe("agent host composition helpers", () => {
     expect(frames.at(-1)).toMatchObject({ sourceId: "src-1", runId: "run-live-broadcast", status: "succeeded" });
   });
 
+  it("uses the public agent name as the default run source label", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const frames: RunEventFrame[] = [];
+    const base = monoConfig({ dir, identityPath, artifactDir });
+    const responder = await createConfiguredAgentResponder({
+      config: { ...base, agent: { name: "Research Partner" } },
+      runtime: createFakeRuntime(async () => ({ text: "Named answer" })).runtime,
+      createRunId: () => "run-named-agent",
+      observabilityContext: { sourceId: "stable-source-id" },
+      runEventSink: { publish: (frame) => { frames.push(frame); } },
+    });
+
+    await responder.respond(
+      { conversationId: "conversation-named", text: "Hello", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(frames[0]).toMatchObject({
+      sourceId: "stable-source-id",
+      sourceLabel: "Research Partner",
+    });
+  });
+
   it("forwards the request-derived source/sourceDetail into the recorded run summary", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -786,6 +812,47 @@ describe("agent host composition helpers", () => {
     }
     expect(fake.calls[1]?.prompt).toContain("Conversation History");
     expect(fake.calls[1]?.prompt).toContain("first question");
+    expect(fake.calls[1]?.prompt).toContain("answer-1");
+  });
+
+  it("keeps canonical fallback routes stateless even when every route supports resume", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let turn = 0;
+    const fake = createFakeRuntime(async () => ({
+      text: `answer-${++turn}`,
+      providerSessionId: "resumable-provider-session",
+    }));
+    const base = monoConfig({ dir, identityPath, artifactDir });
+    const harness = await createConfiguredAgentHarness({
+      config: {
+        ...base,
+        runtime: {
+          ...base.runtime,
+          fallbacks: [{
+            model: {
+              sdk: "claude",
+              model: "claude-sonnet-4-6",
+              reference: "claude:claude-sonnet-4-6",
+            },
+          }],
+          session: { mode: "continuous", idleTimeoutMs: 60_000 },
+        },
+      },
+      runtime: fake.runtime,
+    });
+
+    await harness.run({ conversationId: "conv-canonical", userMessage: "first", abortSignal: new AbortController().signal });
+    await harness.run({ conversationId: "conv-canonical", userMessage: "second", abortSignal: new AbortController().signal });
+
+    for (const call of fake.calls) {
+      expect(call.options.sessionId).toBeUndefined();
+      expect(call.options.providerSessionId).toBeUndefined();
+      expect(call.options.sessionKeepAlive).toBeUndefined();
+    }
+    expect(fake.calls[1]?.prompt).toContain("first");
     expect(fake.calls[1]?.prompt).toContain("answer-1");
   });
 

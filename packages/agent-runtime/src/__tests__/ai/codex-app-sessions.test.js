@@ -24,7 +24,7 @@ function stubClientFactory({ threadId = "thread-1", turnText = "hello" } = {}) {
       serverRequest: (method, params = {}, id = 9_001) => onServerRequest({ id, method, params }),
       finishTurn: null,
       resolveClosed: (err) => resolveClosed(err || new Error("codex app-server exited 1")),
-      close: vi.fn(() => { resolveClosed(new Error("codex app-server closed")); }),
+      close: vi.fn(async () => { resolveClosed(new Error("codex app-server closed")); }),
       request: vi.fn(async (method, params) => {
         requests.push({ method, params });
         if (method === "thread/start") return { thread: { id: threadId } };
@@ -217,8 +217,452 @@ describe("codex-app persistent sessions", () => {
         serverResult: { decision: "decline" },
       });
     } finally {
-      client.close();
+      await client.close();
     }
+  });
+
+  it("bounds and redacts JSON-RPC errors including the retained responseError", async () => {
+    const secret = "fixture-rpc-sensitive-value-1234567890";
+    const childSource = `
+      const readline = require("node:readline");
+      const rl = readline.createInterface({ input: process.stdin });
+      rl.once("line", (line) => {
+        const message = JSON.parse(line);
+        process.stdout.write(JSON.stringify({
+          id: message.id,
+          error: {
+            code: -32000,
+            message: "RPC rejected credential " + process.env.MCP_OPAQUE,
+            data: { echo: process.env.MCP_OPAQUE, detail: "x".repeat(32 * 1024) },
+          },
+        }) + "\\n");
+      });
+    `;
+    const client = createCodexAppServerClient({
+      command: process.execPath,
+      args: ["-e", childSource],
+      env: { MCP_OPAQUE: secret },
+      // The server echoes only the payload, not the complete configured header.
+      redactionValues: [`Bearer ${secret}`],
+    });
+    try {
+      const error = await client.request("probe", {}).then(
+        () => null,
+        (reason) => reason,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain("RPC rejected credential [REDACTED]");
+      expect(error.message).not.toContain(secret);
+      expect(error.responseError).toMatchObject({ code: -32000, diagnostic_truncated: true });
+      expect(JSON.stringify(error.responseError)).not.toContain(secret);
+      expect(Buffer.byteLength(JSON.stringify(error.responseError))).toBeLessThanOrEqual(8 * 1024);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("redacts unknown values under sensitive JSON-RPC payload field names", async () => {
+    const fieldSecret = "fixture-field-only-sensitive-value-1234567890";
+    const privateKeySecret = "fixture-private-key-sensitive-value-0987654321";
+    const apiKeySecret = "fixture-apikey-sensitive-value-1029384756";
+    const childSource = `
+      const readline = require("node:readline");
+      const rl = readline.createInterface({ input: process.stdin });
+      rl.once("line", (line) => {
+        const message = JSON.parse(line);
+        process.stdout.write(JSON.stringify({
+          id: message.id,
+          error: {
+            code: -32001,
+            message: "RPC field validation failed",
+            data: {
+              nested: {
+                accessToken: ${JSON.stringify(fieldSecret)},
+                privateKey: ${JSON.stringify(privateKeySecret)},
+                APIKEY: ${JSON.stringify(apiKeySecret)},
+              },
+            },
+          },
+        }) + "\\n");
+      });
+    `;
+    const client = createCodexAppServerClient({ command: process.execPath, args: ["-e", childSource] });
+    try {
+      const error = await client.request("probe", {}).then(
+        () => null,
+        (reason) => reason,
+      );
+      expect(error.message).toBe("RPC field validation failed");
+      expect(JSON.stringify(error.responseError)).not.toContain(fieldSecret);
+      expect(JSON.stringify(error.responseError)).not.toContain(privateKeySecret);
+      expect(JSON.stringify(error.responseError)).not.toContain(apiKeySecret);
+      expect(error.responseError.data.nested.accessToken).toBe("[REDACTED]");
+      expect(error.responseError.data.nested.privateKey).toBe("[REDACTED]");
+      expect(error.responseError.data.nested.APIKEY).toBe("[REDACTED]");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("bounds and redacts malformed app-server stdout before warning delivery", async () => {
+    const secret = "fixture-stdout-sensitive-value-1234567890";
+    const segmentedEnvSecret = "fixture-segmented-env-sensitive-value-1234567890";
+    const compactApiKeySecret = "fixture-compact-apikey-sensitive-value-1234567890";
+    const rawPrivateKeySecret = "fixture-raw-private-key-value-1234567890";
+    const notifications = [];
+    const childSource = `
+      const readline = require("node:readline");
+      const rl = readline.createInterface({ input: process.stdin });
+      rl.once("line", (line) => {
+        const message = JSON.parse(line);
+        process.stdout.write(
+          "not-json " + process.env.MCP_OPAQUE +
+          " " + process.env.MY_SECRET_VALUE +
+          " " + process.env.OPENAI_APIKEY +
+          " privateKey=${rawPrivateKeySecret} " + "x".repeat(32 * 1024) + "\\n"
+        );
+        process.stdout.write(JSON.stringify({ id: message.id, result: { ok: true } }) + "\\n");
+      });
+    `;
+    const client = createCodexAppServerClient({
+      command: process.execPath,
+      args: ["-e", childSource],
+      env: {
+        MCP_OPAQUE: secret,
+        MY_SECRET_VALUE: segmentedEnvSecret,
+        OPENAI_APIKEY: compactApiKeySecret,
+      },
+      redactionValues: [secret],
+      onNotification: (notification) => notifications.push(notification),
+    });
+    try {
+      await expect(client.request("probe", {})).resolves.toEqual({ ok: true });
+      expect(notifications).toHaveLength(1);
+      const message = notifications[0].params.message;
+      expect(message).toContain("Malformed Codex app-server output: not-json [REDACTED]");
+      expect(message).toContain("[truncated");
+      expect(message).not.toContain(secret);
+      expect(message).not.toContain(segmentedEnvSecret);
+      expect(message).not.toContain(compactApiKeySecret);
+      expect(message).not.toContain(rawPrivateKeySecret);
+      expect(message).toContain("privateKey=[REDACTED]");
+      expect(Buffer.byteLength(message)).toBeLessThanOrEqual(8 * 1024);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("redacts opaque MCP env and header values from events, warnings, and failed turns", async () => {
+    const envSecret = "fixture-mcp-env-sensitive-value-1234567890";
+    const headerSecret = "fixture-mcp-header-sensitive-value-0987654321";
+    const fieldSecret = "fixture-mcp-field-sensitive-value-1122334455";
+    const factory = stubClientFactory({ threadId: "thread-mcp-redaction" });
+    factory.turnPlan.push("manual");
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, {
+      mcpServers: {
+        custom: {
+          command: "custom-mcp",
+          env: { CUSTOM_CONTEXT: envSecret },
+          headers: { Authorization: `Bearer ${headerSecret}` },
+        },
+      },
+    }));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+    client.notify("item/completed", {
+      item: {
+        id: "mcp-call-1",
+        type: "mcpToolCall",
+        server: "custom",
+        tool: "echo",
+        arguments: { input: "safe" },
+        result: { content: `echo ${envSecret}` },
+        error: `header echo ${headerSecret}`,
+        status: "failed",
+      },
+    });
+    client.notify("warning", {
+      message: `MCP warning ${envSecret} ${headerSecret} ${"x".repeat(32 * 1024)}`,
+    });
+    client.notify("item/completed", {
+      item: {
+        id: "mcp-call-2",
+        type: "mcpToolCall",
+        server: "custom",
+        tool: "field-echo",
+        arguments: {},
+        result: { content: { accessToken: fieldSecret } },
+        status: "completed",
+      },
+    });
+    client.notify("turn/completed", {
+      turn: {
+        id: "turn-1",
+        status: "failed",
+        error: { message: `MCP turn failed with ${envSecret} and ${headerSecret}` },
+      },
+    });
+
+    const result = await pending;
+    const serialized = JSON.stringify(result);
+    expect(factory.mock.calls[0][0].redactionValues).toEqual(expect.arrayContaining([
+      envSecret,
+      headerSecret,
+    ]));
+    expect(serialized).not.toContain(envSecret);
+    expect(serialized).not.toContain(headerSecret);
+    expect(serialized).not.toContain(fieldSecret);
+    expect(result.error).toBe("MCP turn failed with [REDACTED] and [REDACTED]");
+    const warning = result.events.find((event) => event.warning_kind === "warning");
+    expect(warning.message).toContain("MCP warning [REDACTED] [REDACTED]");
+    expect(warning.message).toContain("[truncated");
+    expect(Buffer.byteLength(warning.message)).toBeLessThanOrEqual(8 * 1024);
+    const mcpEvent = result.events.find((event) => JSON.stringify(event).includes("mcp-call-1"));
+    expect(JSON.stringify(mcpEvent)).toContain("[REDACTED]");
+    const fieldEvent = result.events.find((event) => JSON.stringify(event).includes("mcp-call-2"));
+    expect(JSON.stringify(fieldEvent)).toContain('"accessToken":"[REDACTED]"');
+  });
+
+  it("redacts and bounds MCP credentials in final provider catch results", async () => {
+    const secret = "fixture-final-catch-sensitive-value-1234567890";
+    const urlPassword = "fixture-url-password/1234567890";
+    const querySecret = "fixture-query-sensitive-value/1234567890";
+    const mcpCliSecret = "fixture-mcp-cli-sensitive-value-1234567890";
+    const codexCliSecret = "fixture-codex-cli-sensitive-value-1234567890";
+    const inlineUrlPassword = "fixture-inline-url-password-1234567890";
+    const inlineQuerySecret = "fixture-inline-query-sensitive-value-1234567890";
+    const inlineHeaderSecret = "fixture-inline-header-sensitive-value-1234567890";
+    const basicPassword = "fixture-basic-password-sensitive-value-1234567890";
+    const basicPayload = Buffer.from(`fixture-basic-user:${basicPassword}`, "utf8").toString("base64");
+    const rawPrivateKeySecret = "fixture-unregistered-private-key-value-1234567890";
+    const factory = vi.fn(({ redactionValues }) => {
+      let resolveClosed;
+      const closed = new Promise((resolve) => { resolveClosed = resolve; });
+      return {
+        closed,
+        request: vi.fn(async () => {
+          throw Object.assign(
+            new Error(
+              `Initialization failed with ${secret} ${urlPassword} ${querySecret} ` +
+              `${mcpCliSecret} ${codexCliSecret} ${inlineUrlPassword} ${inlineQuerySecret} ` +
+              `${inlineHeaderSecret} ${basicPassword} privateKey=${rawPrivateKeySecret} ${"x".repeat(32 * 1024)}`,
+            ),
+            { code: `PROVIDER_${secret}` },
+          );
+        }),
+        close: vi.fn(async () => resolveClosed(new Error("codex app-server closed"))),
+        redactionValues,
+      };
+    });
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, {
+      codexAppServerArgs: ["app-server", "--api-key", codexCliSecret],
+      mcpServers: {
+        custom: { command: "custom-mcp", env: { CUSTOM_CONTEXT: secret } },
+        remote: {
+          url: `https://fixture-user:${encodeURIComponent(urlPassword)}@mcp.invalid/rpc?access_token=${encodeURIComponent(querySecret)}`,
+          headers: { "Proxy-Authorization": `Basic ${basicPayload}` },
+        },
+        local: {
+          command: "local-mcp",
+          args: [
+            `--token=${mcpCliSecret}`,
+            `--endpoint=https://inline-user:${encodeURIComponent(inlineUrlPassword)}@mcp.invalid/rpc?sig=${encodeURIComponent(inlineQuerySecret)}`,
+            `--header=Authorization: Bearer ${inlineHeaderSecret}`,
+          ],
+        },
+      },
+    }));
+
+    expect(factory.mock.calls[0][0].redactionValues).toEqual(expect.arrayContaining([
+      secret,
+      urlPassword,
+      querySecret,
+      mcpCliSecret,
+      codexCliSecret,
+      inlineUrlPassword,
+      inlineQuerySecret,
+      inlineHeaderSecret,
+      basicPassword,
+    ]));
+    for (const sensitiveValue of [
+      secret,
+      urlPassword,
+      querySecret,
+      mcpCliSecret,
+      codexCliSecret,
+      inlineUrlPassword,
+      inlineQuerySecret,
+      inlineHeaderSecret,
+      basicPassword,
+    ]) {
+      expect(JSON.stringify(result)).not.toContain(sensitiveValue);
+    }
+    expect(JSON.stringify(result)).not.toContain(rawPrivateKeySecret);
+    expect(result.error).toContain("privateKey=[REDACTED]");
+    expect(result.error).toContain("Initialization failed with [REDACTED]");
+    expect(result.error).toContain("[truncated");
+    expect(Buffer.byteLength(result.error)).toBeLessThanOrEqual(8 * 1024);
+    expect(result.diagnostics.codex_error_code).toBe("PROVIDER_[REDACTED]");
+  });
+
+  it("bounds and redacts app-server stderr before it reaches errors", async () => {
+    const secret = "fixture-sensitive-value-1234567890";
+    const basicCredential = Buffer.from(["fixture-user", "fixture-password"].join(":"), "utf8").toString("base64");
+    const plainJsonCredential = "remaining-plain-json-secret-24680";
+    const escapedJsonCredential = "remaining-escaped-json-secret-13579";
+    const plainJson = `{"token":"prefix\\"${plainJsonCredential}"}`;
+    const escapedJson = `{"token":"prefix\\"${escapedJsonCredential}"}`
+      .replaceAll("\\", "\\\\")
+      .replaceAll('"', '\\"');
+    const boundarySuffix = secret.slice(-12);
+    const diagnosticSuffix =
+      `\nOPENAI_API_KEY=${secret}\n` +
+      `Authorization: Basic ${basicCredential}\n` +
+      `${plainJson}\n` +
+      `${escapedJson}\n`;
+    const paddingBytes = (8 * 1024) - Buffer.byteLength(boundarySuffix) - Buffer.byteLength(diagnosticSuffix);
+    const childSource = `
+      const readline = require("node:readline");
+      const rl = readline.createInterface({ input: process.stdin });
+      rl.once("line", () => {
+        process.stderr.write("x".repeat(64 * 1024));
+        process.stderr.write(process.env.OPENAI_API_KEY);
+        process.stderr.write("z".repeat(${paddingBytes}));
+        process.stderr.write(${JSON.stringify(diagnosticSuffix)}, () => process.exit(7));
+      });
+    `;
+    const client = createCodexAppServerClient({
+      command: process.execPath,
+      args: ["-e", childSource],
+      env: { OPENAI_API_KEY: secret },
+      shutdownGraceMs: 25,
+      killGraceMs: 250,
+    });
+    try {
+      const error = await client.request("probe", {}).then(
+        () => null,
+        (reason) => reason,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain("[REDACTED]");
+      expect(error.message).not.toContain(secret);
+      expect(error.message).not.toContain(boundarySuffix);
+      expect(error.message).not.toContain(basicCredential);
+      expect(error.message).not.toContain(plainJsonCredential);
+      expect(error.message).not.toContain(escapedJsonCredential);
+      expect(Buffer.byteLength(error.message)).toBeLessThanOrEqual((8 * 1024) + 128);
+
+      const closedError = await client.closed;
+      expect(closedError.message).not.toContain(secret);
+      expect(Buffer.byteLength(closedError.message)).toBeLessThanOrEqual((8 * 1024) + 128);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("escalates to SIGKILL and fully settles one idempotent close promise", async () => {
+    const childSource = `
+      const readline = require("node:readline");
+      process.on("SIGTERM", () => {});
+      setInterval(() => {}, 1_000);
+      const rl = readline.createInterface({ input: process.stdin });
+      rl.on("line", (line) => {
+        const message = JSON.parse(line);
+        process.stdout.write(JSON.stringify({ id: message.id, result: { ready: true } }) + "\\n");
+      });
+    `;
+    const client = createCodexAppServerClient({
+      command: process.execPath,
+      args: ["-e", childSource],
+      shutdownGraceMs: 25,
+      killGraceMs: 500,
+    });
+    const pid = client.child.pid;
+    if (typeof pid !== "number") throw new Error("fixture child did not start");
+    try {
+      await expect(client.request("ready", {})).resolves.toEqual({ ready: true });
+      const firstClose = client.close();
+      const secondClose = client.close();
+      expect(secondClose).toBe(firstClose);
+      await firstClose;
+
+      expect(client.child.signalCode).toBe("SIGKILL");
+      expect(client.child.listenerCount("error")).toBe(0);
+      expect(client.child.listenerCount("close")).toBe(0);
+      expect(client.child.stderr.listenerCount("data")).toBe(0);
+      expect(() => process.kill(pid, 0)).toThrow();
+      await expect(client.closed).resolves.toMatchObject({ message: "codex app-server closed" });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("does not treat a failed SIGTERM as process exit", async () => {
+    const childSource = `
+      const readline = require("node:readline");
+      setInterval(() => {}, 1_000);
+      const rl = readline.createInterface({ input: process.stdin });
+      rl.on("line", (line) => {
+        const message = JSON.parse(line);
+        process.stdout.write(JSON.stringify({ id: message.id, result: { ready: true } }) + "\\n");
+      });
+    `;
+    const client = createCodexAppServerClient({
+      command: process.execPath,
+      args: ["-e", childSource],
+      shutdownGraceMs: 25,
+      killGraceMs: 500,
+    });
+    const originalKill = client.child.kill.bind(client.child);
+    const signals = [];
+    client.child.kill = vi.fn((signal) => {
+      signals.push(signal);
+      if (signal === "SIGTERM") {
+        queueMicrotask(() => client.child.emit(
+          "error",
+          Object.assign(new Error("kill EPERM"), { code: "EPERM" }),
+        ));
+        return false;
+      }
+      return originalKill(signal);
+    });
+    try {
+      await expect(client.request("ready", {})).resolves.toEqual({ ready: true });
+      await client.close();
+
+      expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+      expect(client.child.signalCode).toBe("SIGKILL");
+      expect(client.child.listenerCount("error")).toBe(0);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("awaits asynchronous client teardown before returning a disposable run", async () => {
+    const factory = stubClientFactory({ threadId: "thread-async-close" });
+    factory.turnPlan.push("manual");
+    let releaseClose = () => {};
+    const closeGate = new Promise((resolve) => { releaseClose = resolve; });
+    const pending = generateCodexAppResponse("SYS", runOptions(factory));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+    client.close = vi.fn(async () => {
+      await closeGate;
+      client.resolveClosed(new Error("codex app-server closed"));
+    });
+
+    client.finishTurn();
+    await vi.waitFor(() => expect(client.close).toHaveBeenCalledTimes(1));
+    let returned = false;
+    void pending.then(() => { returned = true; });
+    await Promise.resolve();
+    expect(returned).toBe(false);
+
+    releaseClose();
+    const result = await pending;
+    expect(result.error).toBeNull();
+    expect(returned).toBe(true);
   });
 
   it("runs the dedicated no-tool probe read-only and interrupts the first tool action", async () => {
@@ -471,9 +915,25 @@ describe("codex-app persistent sessions", () => {
     const factory = stubClientFactory({ threadId: "thread-dispose" });
     await generateCodexAppResponse("SYS", runOptions(factory, { sessionKeepAlive: true }));
 
-    const disposed = await disposeProviderSession("thread-dispose");
+    const client = factory.clients[0];
+    const originalClose = client.close;
+    let releaseClose = () => {};
+    const closeGate = new Promise((resolve) => { releaseClose = resolve; });
+    client.close = vi.fn(async () => {
+      await closeGate;
+      await originalClose();
+    });
+    const pendingDispose = disposeProviderSession("thread-dispose");
+    await vi.waitFor(() => expect(client.close).toHaveBeenCalledTimes(1));
+    let disposeReturned = false;
+    void pendingDispose.then(() => { disposeReturned = true; });
+    await Promise.resolve();
+    expect(disposeReturned).toBe(false);
+
+    releaseClose();
+    const disposed = await pendingDispose;
     expect(disposed).toBe(true);
-    expect(factory.clients[0].close).toHaveBeenCalled();
+    expect(disposeReturned).toBe(true);
 
     const resumed = await generateCodexAppResponse("SYS", runOptions(factory, { sessionId: "thread-dispose" }));
     expect(resumed.failureKind).toBe("session_not_found");

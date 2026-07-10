@@ -46,6 +46,27 @@
  * context_compaction_applied, ...) adds its own extra fields.
  */
 
+/** @typedef {"uniform"|"per-route-native"} RuntimeRouteSafetyMode */
+
+/**
+ * @typedef {"mono-agent-monotonic"|"disabled"|"mono-agent-srt"|"mono-agent-srt-unsafe-host-fallback"|"provider-native"|"codex-native"|"unsupported"} RuntimeRouteSandboxContract
+ * Fixed telemetry vocabulary for a route's sandbox posture. The
+ * `mono-agent-srt-unsafe-host-fallback` describes a policy that prefers SRT but
+ * explicitly permits host execution if unavailable; it does not claim which
+ * branch ran for a particular command.
+ */
+
+/** @typedef {"mono-agent-monotonic"|"mono-agent-policy"|"provider-representable"|"exact-allow-all"|"unsupported"} RuntimeRouteToolsContract */
+
+/**
+ * @typedef {Object} RuntimeRouteSafetyContract
+ * Bounded, credential-free description of the sandbox/tool contract applied
+ * to one fallback route.
+ * @property {RuntimeRouteSafetyMode} mode
+ * @property {RuntimeRouteSandboxContract} sandbox
+ * @property {RuntimeRouteToolsContract} tools
+ */
+
 /**
  * @typedef {Object} RuntimeObserver
  * Per-call or host-level observer merged by createObserverHub (ai/observer.js).
@@ -178,7 +199,8 @@
  * @property {Array<Object>} [runtimeWarnings]
  * @property {Object} [diagnostics]
  * @property {Object} [capabilitiesUsed]
- * @property {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null), retryableSubkind?: (string|null), requirements?: Object}>} [failoverHistory] Set by createRouterRuntime (ai/runtime/router.js) on every attempt after the first.
+ * @property {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null), retryableSubkind?: (string|null), requirements?: Object, routeSafety?: RuntimeRouteSafetyMode, safetyContract?: RuntimeRouteSafetyContract}>} [failoverHistory] Set by createRouterRuntime (ai/runtime/router.js) on every failed/skipped attempt.
+ * @property {Array<{attemptIndex: number, model: RuntimeModelRef, routeSafety: RuntimeRouteSafetyMode, safetyContract: RuntimeRouteSafetyContract, status: string}>} [routeSafetyHistory] Bounded route-safety audit emitted by createRouterRuntime.
  */
 
 /**

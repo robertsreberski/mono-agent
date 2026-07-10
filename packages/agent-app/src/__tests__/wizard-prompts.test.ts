@@ -18,15 +18,20 @@ import { BUILTIN_TOOL_NAMES } from "../modules/known-tools.js";
 import {
   assertConcreteWizardModelRef,
   channelSelectOptions,
+  creationReviewOptions,
   CUSTOM_PI_MODEL_OPTION,
   effortSelectOptions,
   fallbackModelSelectOptions,
+  formatRouteSafetyMatrix,
   guard,
   memorySelectOptions,
   modelSelectOptions,
   piModelSelectOptions,
+  previousWizardStep,
   presetSelectOptions,
   toolMultiselectOptions,
+  validateWizardAgentName,
+  wizardCancelIntentForKey,
   WizardCancelled,
 } from "../wizard/prompts.js";
 import {
@@ -36,6 +41,18 @@ import {
   type WizardModelCandidate,
 } from "../wizard/model-discovery.js";
 import { executeProviderSetupPlan, planProviderSetup, providerSetupActionCommandLine, resolvePiCliPath } from "../provider-setup.js";
+
+function modelCandidate(
+  candidate: Pick<WizardModelCandidate, "value" | "label" | "source">
+    & Partial<Omit<WizardModelCandidate, "value" | "label" | "source">>,
+): WizardModelCandidate {
+  return {
+    availability: "catalog_available",
+    authState: candidate.source === "ollama" || candidate.source === "lmstudio" ? "not_required" : "auth_required",
+    supportedEfforts: [],
+    ...candidate,
+  };
+}
 
 describe("wizard prompt builders", () => {
   it("channelSelectOptions lists all six channels, webhook first", () => {
@@ -73,13 +90,11 @@ describe("wizard prompt builders", () => {
   it("modelSelectOptions offers the curated set plus Pi and generic escape hatches", () => {
     const options = modelSelectOptions();
     const values = options.map((option) => option.value);
-    expect(values.slice(0, 4)).toEqual([
+    expect(values.slice(0, 2)).toEqual([
       "codex:gpt-5.6-terra",
       "codex:gpt-5.6-sol",
-      "pi:openai-codex:gpt-5.6-terra",
-      "pi:openai-codex:gpt-5.6-sol",
     ]);
-    expect(values).toContain("claude:claude-sonnet-4-6");
+    expect(values).toContain("claude:claude-sonnet-5");
     expect(values).toContain("__pi_other__");
     expect(values).toContain("__other__");
     expect(values[values.length - 2]).toBe("__pi_other__");
@@ -101,7 +116,7 @@ describe("wizard prompt builders", () => {
       },
       { value: "codex:gpt-5.6-sol", label: "Codex GPT-5.6 Sol", source: "codex" },
       { value: "codex:gpt-5.6-terra", label: "Codex GPT-5.6 Terra", source: "codex" },
-    ]);
+    ].map((candidate) => modelCandidate(candidate as Parameters<typeof modelCandidate>[0])));
 
     const options = modelSelectOptions(ranked);
     const values = options.map((option) => option.value);
@@ -120,7 +135,7 @@ describe("wizard prompt builders", () => {
       { value: "pi:opencode-go:kimi-k2.6", label: "OpenCode kimi-k2.6", hint: "discovered from opencode", source: "opencode" },
       { value: "pi:ollama:llama3.1:8b", label: "Ollama llama3.1:8b", hint: "fully local", source: "ollama" },
       { value: "pi:lmstudio:qwen/qwen3-8b", label: "LM Studio qwen/qwen3-8b", hint: "discovered locally", source: "lmstudio" },
-    ];
+    ].map((candidate) => modelCandidate(candidate as Parameters<typeof modelCandidate>[0]));
 
     const options = fallbackModelSelectOptions(
       candidates,
@@ -145,7 +160,7 @@ describe("wizard prompt builders", () => {
       { value: "pi:opencode-go:kimi-k2.6", label: "OpenCode kimi-k2.6", hint: "discovered from opencode", source: "opencode" },
       { value: "pi:ollama:llama3.1:8b", label: "Ollama llama3.1:8b", hint: "fully local", source: "ollama" },
       { value: "pi:lmstudio:qwen/qwen3-8b", label: "LM Studio qwen/qwen3-8b", hint: "discovered locally", source: "lmstudio" },
-    ];
+    ].map((candidate) => modelCandidate(candidate as Parameters<typeof modelCandidate>[0]));
 
     const options = piModelSelectOptions(candidates, ["pi:ollama:llama3.1:8b"]);
 
@@ -154,7 +169,11 @@ describe("wizard prompt builders", () => {
       { value: "pi:openai-codex:gpt-5.6-sol", label: "Pi OpenAI-Codex GPT-5.6 Sol", hint: "auth setup available" },
       { value: "pi:opencode-go:kimi-k2.6", label: "OpenCode kimi-k2.6", hint: "discovered from opencode" },
       { value: "pi:lmstudio:qwen/qwen3-8b", label: "LM Studio qwen/qwen3-8b", hint: "discovered locally" },
-      { value: CUSTOM_PI_MODEL_OPTION, label: "Custom Pi provider/model id…", hint: "type provider id and model id" },
+      {
+        value: CUSTOM_PI_MODEL_OPTION,
+        label: "Supported Pi provider/model id…",
+        hint: "Anthropic, GitHub Copilot, OpenAI Codex, OpenCode-Go, Ollama, or LM Studio",
+      },
     ]);
   });
 
@@ -175,20 +194,65 @@ describe("wizard prompt builders", () => {
         setupRequired: true,
         defaultEffort: "medium",
       },
-    ]);
+    ].map((candidate) => modelCandidate(candidate as Parameters<typeof modelCandidate>[0])));
 
     const values = modelSelectOptions(ranked).map((option) => option.value);
     expect(values.indexOf("codex:gpt-5.6-terra")).toBeLessThan(values.indexOf("pi:openai-codex:gpt-5.6-terra"));
     expect(values).toContain("pi:openai-codex:gpt-5.6-terra");
   });
 
-  it("effortSelectOptions offers default plus the runtime effort enum", () => {
-    expect(effortSelectOptions().map((option) => option.value)).toEqual(["", "none", "low", "medium", "high", "xhigh", "max"]);
+  it("preserves an authored unknown model with provider-default effort guidance", () => {
+    expect(modelSelectOptions([], "pi:private-provider:future-model")[0]).toEqual({
+      value: "pi:private-provider:future-model",
+      label: "pi:private-provider:future-model",
+      hint: "current authored model; provider-default effort",
+    });
   });
 
-  it("effortSelectOptions marks the model-derived effort", () => {
-    const medium = effortSelectOptions("medium").find((option) => option.value === "medium");
-    expect(medium).toMatchObject({ label: "medium (derived)", hint: "derived from selected model" });
+  it("effortSelectOptions offers only provider-advertised exact values", () => {
+    expect(effortSelectOptions(["minimal", "low", "max", "ultra"], "low").map((option) => option.value))
+      .toEqual(["", "minimal", "low", "max", "ultra"]);
+  });
+
+  it("represents provider default as an omitted route effort", () => {
+    expect(effortSelectOptions(["low", "medium"], "medium")[0]).toEqual({
+      value: "",
+      label: "Provider default",
+      hint: "currently medium; omit effort for this route",
+    });
+  });
+
+  it("validates names, cancel intent, and back transitions deterministically", () => {
+    expect(validateWizardAgentName(" Research Companion ")).toBeUndefined();
+    expect(validateWizardAgentName("line one\nline two")).toContain("single-line");
+    expect(validateWizardAgentName("x".repeat(81))).toContain("80");
+    expect(wizardCancelIntentForKey({ name: "escape" })).toBe("back");
+    expect(wizardCancelIntentForKey({ name: "c", ctrl: true })).toBe("exit");
+    expect(previousWizardStep(0)).toBeUndefined();
+    expect(previousWizardStep(4)).toBe(3);
+  });
+
+  it("renders explicit per-route contracts and unambiguous creation actions", () => {
+    const matrix = formatRouteSafetyMatrix(
+      { model: "pi:openai-codex:gpt-5.6-terra", effort: "minimal" },
+      [
+        { model: "codex:gpt-5.6-sol", effort: "high" },
+        { model: "claude:claude-sonnet-5" },
+        { model: "opencode:github-copilot:gpt-5.1" },
+      ],
+      true,
+    );
+    expect(matrix).toContain("Pi: mono-agent managed SRT");
+    expect(matrix).toContain("Codex-native sandbox + exact allow-all");
+    expect(matrix).toContain("representable tool restrictions only");
+    expect(matrix).toContain("unsupported capabilities skip this route");
+    expect(creationReviewOptions({ setupRequired: true }).map((option) => option.label)).toEqual([
+      "Run setup and readiness checks, then create agent",
+      "Edit choices",
+      "Cancel without writing",
+    ]);
+    expect(creationReviewOptions({ setupRequired: false })[0]?.label)
+      .toBe("Run readiness checks, then create agent");
   });
 
   it("toolMultiselectOptions appends a channel's send tools then AskUser after the built-ins", () => {
@@ -420,7 +484,7 @@ describe("provider setup planner", () => {
     expect(results[0]?.detail).toContain("OPENCODE_API_KEY");
   });
 
-  it("stops execution on the first failed provider setup action", async () => {
+  it("finishes every provider setup action so recovery can summarize all failures", async () => {
     const plan = planProviderSetup({
       cwd: "/agent",
       modelRefs: ["codex:gpt-5.6-terra", "claude:claude-sonnet-4-6"],
@@ -439,19 +503,19 @@ describe("provider setup planner", () => {
 
     const results = await executeProviderSetupPlan(plan, { spawn: fakeSpawn as never });
 
-    expect(results).toHaveLength(1);
-    expect(results[0]?.status).toBe("failed");
-    expect(spawnCalls).toEqual(["codex login"]);
+    expect(results).toHaveLength(2);
+    expect(results.every((result) => result.status === "failed")).toBe(true);
+    expect(spawnCalls).toEqual(["codex login", "claude /login"]);
   });
 });
 
 describe("wizard model discovery", () => {
-  it("derives default effort from cloud, Pi OpenAI-Codex, local reasoning, and unknown manual refs", () => {
-    expect(defaultEffortForModelRef("claude:claude-sonnet-4-6")).toBe("medium");
-    expect(defaultEffortForModelRef("codex:gpt-5.6-terra")).toBe("medium");
-    expect(defaultEffortForModelRef("codex:gpt-5.6-sol")).toBe("medium");
-    expect(defaultEffortForModelRef("pi:openai-codex:gpt-5.6-terra")).toBe("medium");
-    expect(defaultEffortForModelRef("pi:openai-codex:gpt-5.6-sol")).toBe("medium");
+  it("derives only local/reasoning defaults and never fabricates cloud effort metadata", () => {
+    expect(defaultEffortForModelRef("claude:claude-sonnet-5")).toBeUndefined();
+    expect(defaultEffortForModelRef("codex:gpt-5.6-terra")).toBeUndefined();
+    expect(defaultEffortForModelRef("codex:gpt-5.6-sol")).toBeUndefined();
+    expect(defaultEffortForModelRef("pi:openai-codex:gpt-5.6-terra")).toBeUndefined();
+    expect(defaultEffortForModelRef("pi:openai-codex:gpt-5.6-sol")).toBeUndefined();
     expect(defaultEffortForModelRef("pi:ollama:llama3.1:8b")).toBe("none");
     expect(defaultEffortForModelRef("pi:lmstudio:qwen/qwen3-8b")).toBe("medium");
     expect(defaultEffortForModelRef("pi:opencode-go:some-model", true)).toBe("medium");
@@ -485,21 +549,20 @@ describe("wizard model discovery", () => {
     const result = await discoverWizardModelCandidates({
       execFile: exec,
       fetch: fetchImpl,
-      readFile: async () => JSON.stringify({ "openai-codex": { type: "oauth" } }),
+      inspectPiAuthStore: async () => ({
+        status: "ok",
+        auth: { "openai-codex": { type: "oauth", access: "fixture-access" } },
+      }),
     });
 
     const values = result.candidates.map((candidate) => candidate.value);
-    expect(values).toContain("claude:claude-sonnet-4-6");
+    expect(values).toContain("claude:claude-sonnet-5");
     expect(values).toContain("pi:openai-codex:gpt-5.6-terra");
     expect(values).toContain("pi:openai-codex:gpt-5.6-sol");
     expect(values).toContain("codex:gpt-5.6-terra");
     expect(values).toContain("codex:gpt-5.6-sol");
-    expect(values.slice(0, 4)).toEqual([
-      "codex:gpt-5.6-terra",
-      "codex:gpt-5.6-sol",
-      "pi:openai-codex:gpt-5.6-terra",
-      "pi:openai-codex:gpt-5.6-sol",
-    ]);
+    expect(values.indexOf("codex:gpt-5.6-terra"))
+      .toBeLessThan(values.indexOf("pi:openai-codex:gpt-5.6-terra"));
     expect(values).toContain("pi:opencode-go:kimi-k2.6");
     expect(values).toContain("pi:opencode-go:deepseek-v4-pro");
     expect(values).not.toContain("pi:opencode-go:openai/gpt-5.1");
@@ -520,17 +583,24 @@ describe("wizard model discovery", () => {
     await expect(stat(dirname(opencodeEnv.XDG_DATA_HOME as string))).rejects.toMatchObject({ code: "ENOENT" });
     expect(values).toContain("pi:ollama:llama3.1:8b");
     expect(values).toContain("pi:lmstudio:qwen/qwen3-8b");
-    expect(result.candidates.find((candidate) => candidate.value === "pi:openai-codex:gpt-5.6-terra")?.defaultEffort).toBe("medium");
-    expect(result.candidates.find((candidate) => candidate.value === "pi:ollama:llama3.1:8b")?.defaultEffort).toBe("none");
-    expect(result.candidates.find((candidate) => candidate.value === "pi:lmstudio:qwen/qwen3-8b")?.defaultEffort).toBe("medium");
-    expect(result.statuses.every((status) => status.status === "detected")).toBe(true);
+    expect(result.candidates.find((candidate) => candidate.value === "pi:openai-codex:gpt-5.6-terra")?.defaultEffort).toBeUndefined();
+    expect(result.candidates.find((candidate) => candidate.value === "pi:ollama:llama3.1:8b")?.defaultEffort).toBeUndefined();
+    expect(result.candidates.find((candidate) => candidate.value === "pi:lmstudio:qwen/qwen3-8b")?.defaultEffort).toBeUndefined();
+    expect(result.statuses.map((status) => status.status)).toEqual([
+      "detected",
+      "detected",
+      "setup_available",
+      "detected",
+      "detected",
+      "detected",
+    ]);
     expect(result.statuses[0]).toMatchObject({ provider: "Codex", status: "detected" });
     const codex = result.candidates.find((candidate) => candidate.value === "codex:gpt-5.6-terra");
     expect(codex).toMatchObject({ discovered: true });
     expect(codex?.setupRequired).toBeUndefined();
     const sol = result.candidates.find((candidate) => candidate.value === "codex:gpt-5.6-sol");
-    expect(sol).toMatchObject({ discovered: true, defaultEffort: "medium" });
-    expect(sol?.hint).toContain("codex-cli 1.2.3; signed in");
+    expect(sol).toMatchObject({ discovered: true });
+    expect(sol?.hint).toContain("codex-cli 1.2.3; sign-in detected; live readiness pending");
   });
 
   it("reads Pi auth providers from the top-level auth store shape", async () => {
@@ -541,18 +611,17 @@ describe("wizard model discovery", () => {
       fetch: async () => {
         throw new Error("down");
       },
-      readFile: async () => JSON.stringify({ "openai-codex": { type: "oauth" } }),
+      inspectPiAuthStore: async () => ({
+        status: "ok",
+        auth: { "openai-codex": { type: "oauth", access: "fixture-access" } },
+      }),
     });
 
     const values = result.candidates.map((candidate) => candidate.value);
     expect(values).toContain("pi:openai-codex:gpt-5.6-terra");
     expect(values).toContain("pi:openai-codex:gpt-5.6-sol");
-    expect(values.slice(0, 4)).toEqual([
-      "codex:gpt-5.6-terra",
-      "codex:gpt-5.6-sol",
-      "pi:openai-codex:gpt-5.6-terra",
-      "pi:openai-codex:gpt-5.6-sol",
-    ]);
+    expect(values.indexOf("pi:openai-codex:gpt-5.6-terra"))
+      .toBeLessThan(values.indexOf("pi:openai-codex:gpt-5.3-codex-spark"));
     expect(result.statuses[1]).toMatchObject({ provider: "Pi", status: "detected" });
   });
 
@@ -564,9 +633,7 @@ describe("wizard model discovery", () => {
       fetch: async () => {
         throw new Error("down");
       },
-      readFile: async () => {
-        throw Object.assign(new Error("missing"), { code: "ENOENT" });
-      },
+      inspectPiAuthStore: async () => ({ status: "missing" }),
     });
 
     expect(result.statuses[0]).toMatchObject({ provider: "Codex", status: "setup_available" });
@@ -580,7 +647,11 @@ describe("wizard model discovery", () => {
   });
 
   it("distinguishes an installed but signed-out Codex CLI", async () => {
-    const exec = vi.fn(async (file: string, args: readonly string[]) => {
+    const exec = vi.fn(async (
+      file: string,
+      args: readonly string[],
+      _options?: { readonly timeout?: number; readonly env?: Readonly<Record<string, string | undefined>> },
+    ) => {
       if (file === "codex" && args[0] === "--version") {
         return { stdout: "codex-cli 1.2.3\n" };
       }
@@ -592,12 +663,14 @@ describe("wizard model discovery", () => {
       fetch: async () => {
         throw new Error("down");
       },
-      readFile: async () => {
-        throw Object.assign(new Error("missing"), { code: "ENOENT" });
-      },
+      inspectPiAuthStore: async () => ({ status: "missing" }),
     });
 
-    expect(exec).toHaveBeenCalledWith("codex", ["login", "status"], { timeout: 1200 });
+    const statusOptions = exec.mock.calls.find(
+      ([file, args]) => file === "codex" && args.join(" ") === "login status",
+    )?.[2];
+    expect(statusOptions?.timeout).toBe(1200);
+    expect(statusOptions?.env?.OPENAI_API_KEY).toBeUndefined();
     expect(result.statuses[0]).toMatchObject({ provider: "Codex", status: "setup_available" });
     expect(result.statuses[0]?.detail).toContain("sign-in required");
     expect(result.candidates.find((candidate) => candidate.value === "codex:gpt-5.6-terra"))
@@ -617,7 +690,7 @@ describe("wizard model discovery", () => {
     {
       version: "codex-cli 0.144.0",
       setupRequired: false,
-      hint: "codex-cli 0.144.0; signed in",
+      hint: "codex-cli 0.144.0; sign-in detected; live readiness pending",
     },
     {
       version: "codex-cli development-build",
@@ -635,9 +708,7 @@ describe("wizard model discovery", () => {
       fetch: async () => {
         throw new Error("down");
       },
-      readFile: async () => {
-        throw Object.assign(new Error("missing"), { code: "ENOENT" });
-      },
+      inspectPiAuthStore: async () => ({ status: "missing" }),
     });
 
     const terra = result.candidates.find((candidate) => candidate.value === "codex:gpt-5.6-terra");
@@ -647,7 +718,7 @@ describe("wizard model discovery", () => {
       expect(terra).toMatchObject({ setupRequired: true });
       expect(terra?.hint).toBe(hint);
       expect(sol).toMatchObject({ setupRequired: true });
-      expect(sol?.discovered).toBe(false);
+      expect(sol?.discovered).not.toBe(true);
       expect(result.statuses[0]?.status).toBe("setup_available");
       expect(result.statuses[0]?.detail).toContain(hint);
     } else {
@@ -661,7 +732,7 @@ describe("wizard model discovery", () => {
   });
 
   it("uses the supplied Pi auth path and treats malformed stores as unavailable", async () => {
-    const read = vi.fn(async () => "[]");
+    const inspect = vi.fn(async () => ({ status: "unsafe" as const, reason: "malformed-json" as const }));
     const result = await discoverWizardModelCandidates({
       piAuthPath: "/agent/custom/pi-auth.json",
       execFile: async () => {
@@ -670,10 +741,10 @@ describe("wizard model discovery", () => {
       fetch: async () => {
         throw new Error("down");
       },
-      readFile: read,
+      inspectPiAuthStore: inspect,
     });
 
-    expect(read).toHaveBeenCalledWith("/agent/custom/pi-auth.json", "utf8");
+    expect(inspect).toHaveBeenCalledWith("/agent/custom/pi-auth.json");
     expect(result.statuses[1]).toMatchObject({ provider: "Pi", status: "unavailable" });
   });
 
@@ -688,21 +759,22 @@ describe("wizard model discovery", () => {
     const result = await discoverWizardModelCandidates({
       execFile: exec,
       fetch: fetchImpl,
-      readFile: async () => {
-        throw Object.assign(new Error("missing"), { code: "ENOENT" });
-      },
+      inspectPiAuthStore: async () => ({ status: "missing" }),
     });
 
     const pi = result.candidates.find((candidate: WizardModelCandidate) => candidate.value === "pi:openai-codex:gpt-5.6-terra");
     const piSol = result.candidates.find((candidate: WizardModelCandidate) => candidate.value === "pi:openai-codex:gpt-5.6-sol");
     expect(result.candidates.map((candidate: WizardModelCandidate) => candidate.value)).toContain("codex:gpt-5.6-terra");
     expect(result.candidates.map((candidate: WizardModelCandidate) => candidate.value)).toContain("codex:gpt-5.6-sol");
-    expect(pi).toMatchObject({ setupRequired: true, defaultEffort: "medium" });
-    expect(piSol).toMatchObject({ setupRequired: true, defaultEffort: "medium" });
-    expect(piSol?.hint).toBe("auth setup available");
+    expect(pi).toMatchObject({ setupRequired: true });
+    expect(pi?.defaultEffort).toBeUndefined();
+    expect(piSol).toMatchObject({ setupRequired: true });
+    expect(piSol?.defaultEffort).toBeUndefined();
+    expect(piSol?.hint).toBe("OAuth setup available");
     expect(result.candidates.map((candidate) => candidate.value).indexOf("codex:gpt-5.6-terra"))
       .toBeLessThan(result.candidates.map((candidate) => candidate.value).indexOf("pi:openai-codex:gpt-5.6-terra"));
     expect(result.statuses.map((status) => status.status)).toEqual([
+      "setup_available",
       "setup_available",
       "setup_available",
       "unavailable",

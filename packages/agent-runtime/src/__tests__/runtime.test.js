@@ -137,6 +137,20 @@ describe("createRuntime", () => {
     });
   });
 
+  it("configureTools() can explicitly clear previously configured tool state", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
+    const sandboxPolicy = { mode: "native", marker: "configured" };
+    const sandboxEngine = { name: "srt" };
+    const runtime = createRuntime({ sandboxPolicy, sandboxEngine });
+    runtime.configureTools({ sandboxPolicy: undefined, sandboxEngine: undefined });
+
+    await runtime.run("sys", { model: { sdk: "claude", model: "x" }, messages: [] });
+
+    const options = executeMock.mock.calls.at(-1)[1];
+    expect(options.toolContext.sandboxPolicy).toBeUndefined();
+    expect(options.toolContext.sandboxEngine).toBeUndefined();
+  });
+
   it("configureTools() ignores unknown keys", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime();

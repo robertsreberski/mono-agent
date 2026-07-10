@@ -79,7 +79,7 @@ export const PRESET_CATALOG: readonly WizardPreset[] = [
   {
     id: "code-sandbox",
     title: "Sandboxed code agent",
-    description: "Native srt sandbox with workspace-only FS and code tools; fails closed without srt.",
+    description: "Managed SRT sandbox with workspace-only FS and code tools; installs and preflights fail-closed enforcement.",
     riskLevel: "medium",
     playbook: "sandboxed-code-agent.md",
     answers: {

@@ -41,12 +41,14 @@ describe("initMonoAgentFolder", () => {
 
     const identity = await readFile(result.identityPath, "utf8");
     expect(identity).toContain("# Identity");
+    expect(identity).toContain("You are Agent App Init");
   });
 
   it("composes the supplied answers (model + extra channels)", async () => {
     const result = await initMonoAgentFolder({
       dir,
       answers: defaultAnswers({
+        name: "Atlas",
         model: "pi:ollama:gemma4:31b",
         channels: ["channel:webhook", "channel:slack", "channel:cron"],
       }),
@@ -54,8 +56,10 @@ describe("initMonoAgentFolder", () => {
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
     expect(config.runtime.model).toBe("pi:ollama:gemma4:31b");
+    expect(config.agent).toEqual({ name: "Atlas" });
     expect(config.slack).toEqual({ enabled: true });
     expect(config.cron).toEqual({ enabled: true });
+    expect(await readFile(result.identityPath, "utf8")).toContain("You are Atlas, a mono agent");
   });
 
   it("writes fallback models, effort, and memory when the answers request them", async () => {
@@ -70,7 +74,11 @@ describe("initMonoAgentFolder", () => {
     });
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
-    expect(config.runtime.fallbackModels).toEqual(["pi:ollama:gemma4:31b"]);
+    expect(config.runtime.fallbacks).toEqual([{
+      model: "pi:ollama:gemma4:31b",
+      effort: "medium",
+    }]);
+    expect(config.runtime.fallbackModels).toBeUndefined();
     expect(config.runtime.effort).toBe("medium");
     expect(config.memory).toMatchObject({ mode: "journal", path: "./.mono-agent/memory" });
   });

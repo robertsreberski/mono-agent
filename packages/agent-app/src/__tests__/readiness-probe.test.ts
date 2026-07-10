@@ -11,6 +11,7 @@ import {
   readinessProbeTimeoutMs,
   runReadinessProbe,
 } from "../readiness-probe.js";
+import { trackPiCredentialResolverSecrets } from "../readiness-probe-worker.js";
 
 async function syntheticReadinessWorker(): Promise<{ readonly url: URL; readonly cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(join(tmpdir(), "mono-agent-readiness-worker-test-"));
@@ -441,5 +442,156 @@ describe("runReadinessProbe", () => {
     expect(result.message).not.toContain(secret);
     expect(result.message).toContain("[REDACTED]");
     expect(result.message.length).toBeLessThanOrEqual(400);
+  });
+
+  it("checks every canonical route sequentially with exact independent effort and continues after failures", async () => {
+    const configJson = structuredClone(plan.configJson) as Record<string, unknown>;
+    configJson.runtime = {
+      ...(configJson.runtime as Record<string, unknown>),
+      effort: "high",
+      routeSafety: "per-route-native",
+      fallbacks: [
+        { model: "claude:claude-sonnet-5", effort: "low" },
+        { model: "pi:openai:gpt-5.5" },
+      ],
+    };
+    const allRoutesPlan = { ...plan, configJson: configJson as never };
+    const seen: Array<{ model: string; effort?: string }> = [];
+    const starts: string[] = [];
+    const completions: string[] = [];
+    const result = await runReadinessProbe({
+      plan: allRoutesPlan,
+      onRouteStart: (route) => { starts.push(`${route.index + 1}/${route.total}:${route.model}`); },
+      onRouteComplete: (route) => { completions.push(`${route.index}:${route.status}`); },
+      run: async ({ config, options }) => {
+        const reference = config.runtime.model.reference ?? "";
+        seen.push({
+          model: reference,
+          ...(options.effort === undefined ? {} : { effort: options.effort }),
+        });
+        return reference.startsWith("claude:")
+          ? { text: "", failureKind: "provider_unavailable", error: "Claude unavailable" }
+          : { text: "ready" };
+      },
+    });
+
+    expect(seen).toEqual([
+      { model: "codex:gpt-5.6-terra", effort: "high" },
+      { model: "claude:claude-sonnet-5", effort: "low" },
+      { model: "pi:openai:gpt-5.5" },
+    ]);
+    expect(starts).toEqual([
+      "1/3:codex:gpt-5.6-terra",
+      "2/3:claude:claude-sonnet-5",
+      "3/3:pi:openai:gpt-5.5",
+    ]);
+    expect(completions).toEqual(["0:verified", "1:failed", "2:verified"]);
+    expect(result).toMatchObject({
+      ok: false,
+      routes: [
+        { status: "verified" },
+        { status: "failed", kind: "provider_failed" },
+        { status: "verified" },
+      ],
+    });
+  });
+
+  it("resumes only successful route keys under the exact same plan fingerprint", async () => {
+    const configJson = structuredClone(plan.configJson) as Record<string, unknown>;
+    configJson.runtime = {
+      ...(configJson.runtime as Record<string, unknown>),
+      fallbackModels: ["pi:openai-codex:gpt-5.6-sol"],
+      effort: "xhigh",
+    };
+    const resumePlan = { ...plan, configJson: configJson as never };
+    const first = await runReadinessProbe({ plan: resumePlan, run: async () => ({ text: "ready" }) });
+    expect(first.ok).toBe(true);
+    if (!first.ok || first.routes === undefined || first.planFingerprint === undefined) throw new Error("route summary missing");
+    const run = vi.fn(async () => ({ text: "ready" }));
+    const resumed = await runReadinessProbe({
+      plan: resumePlan,
+      run,
+      resume: {
+        planFingerprint: first.planFingerprint,
+        successfulRouteKeys: first.routes.map((route) => route.key),
+      },
+    });
+    expect(run).not.toHaveBeenCalled();
+    expect(resumed).toMatchObject({
+      ok: true,
+      routes: [{ status: "skipped_verified" }, { status: "skipped_verified" }],
+    });
+  });
+
+  it("invalidates resume keys when non-secret provider execution config changes", async () => {
+    const firstConfig = structuredClone(plan.configJson) as Record<string, unknown>;
+    firstConfig.runtime = {
+      ...(firstConfig.runtime as Record<string, unknown>),
+      fallbackModels: ["pi:openai-codex:gpt-5.6-sol"],
+    };
+    firstConfig.providers = { piAuthPath: "/tmp/readiness-auth-a.json" };
+    const firstPlan = { ...plan, configJson: firstConfig as never };
+    const first = await runReadinessProbe({ plan: firstPlan, run: async () => ({ text: "ready" }) });
+    if (!first.ok || first.routes === undefined || first.planFingerprint === undefined) throw new Error("route summary missing");
+
+    const changedConfig = structuredClone(firstConfig);
+    changedConfig.providers = { piAuthPath: "/tmp/readiness-auth-b.json" };
+    const run = vi.fn(async () => ({ text: "ready" }));
+    const changed = await runReadinessProbe({
+      plan: { ...plan, configJson: changedConfig as never },
+      run,
+      resume: {
+        planFingerprint: first.planFingerprint,
+        successfulRouteKeys: first.routes.map((route) => route.key),
+      },
+    });
+    expect(changed.ok).toBe(true);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(changed.planFingerprint).not.toBe(first.planFingerprint);
+  });
+
+  it("returns resumable interruption state when caller aborts the current route", async () => {
+    const configJson = structuredClone(plan.configJson) as Record<string, unknown>;
+    configJson.runtime = {
+      ...(configJson.runtime as Record<string, unknown>),
+      fallbackModels: ["pi:openai-codex:gpt-5.6-sol"],
+    };
+    const controller = new AbortController();
+    const result = await runReadinessProbe({
+      plan: { ...plan, configJson: configJson as never },
+      abortSignal: controller.signal,
+      run: async () => {
+        controller.abort();
+        return await new Promise<never>(() => {});
+      },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      kind: "cancelled",
+      interrupted: true,
+      routes: [{ status: "interrupted" }],
+    });
+  });
+
+  it("preserves Pi credential-store methods while tracking only resolver secrets", async () => {
+    const readCredential = vi.fn(async () => ({ type: "oauth", access: "oauth-access", expires: 1 }));
+    const modifyCredential = vi.fn(async (_provider: string, fn: (value: never) => Promise<never>) => fn(undefined as never));
+    const deleteCredential = vi.fn(async () => {});
+    const resolver = Object.assign(vi.fn(async () => "resolved-secret"), {
+      readCredential,
+      modifyCredential,
+      deleteCredential,
+    });
+    const secrets = new Set<string>();
+    const tracked = trackPiCredentialResolverSecrets(resolver as never, secrets);
+
+    await expect(tracked("openai-codex")).resolves.toBe("resolved-secret");
+    await expect(tracked.readCredential?.("openai-codex")).resolves.toMatchObject({ type: "oauth" });
+    await tracked.modifyCredential?.("openai-codex", async (current) => current);
+    await tracked.deleteCredential?.("openai-codex");
+    expect(secrets).toEqual(new Set(["resolved-secret"]));
+    expect(readCredential).toHaveBeenCalledOnce();
+    expect(modifyCredential).toHaveBeenCalledOnce();
+    expect(deleteCredential).toHaveBeenCalledOnce();
   });
 });

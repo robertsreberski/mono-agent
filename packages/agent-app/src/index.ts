@@ -84,8 +84,38 @@ export type {
   ConsumerContractName,
   ConsumerContractSectionStatus,
 } from "./consumer-contract.js";
-export { ensureStartable, loadCliEnvFile, parseCliArgs, printAppStatus, renderHelp, runCli } from "./cli.js";
-export type { PreflightResult } from "./cli.js";
+export {
+  ensureStartable,
+  loadCliEnvFile,
+  parseCliArgs,
+  printAppStatus,
+  renderHelp,
+  runCli,
+  runSandboxCommand,
+} from "./cli.js";
+export type { PreflightResult, SandboxCommandDependencies } from "./cli.js";
+export {
+  checkSandboxRuntime,
+  managedSrtInstallRoot,
+  MANAGED_SRT_LOCK_SHA256,
+  MANAGED_SRT_PACKAGE,
+  MANAGED_SRT_VERSION,
+  sandboxRuntimeStatus,
+  setupManagedSrt,
+} from "./sandbox-manager.js";
+export type {
+  ManagedSrtSetupOptions,
+  ManagedSrtSetupResult,
+  SandboxCheckResult,
+  SandboxFunctionalCheck,
+  SandboxManagerOptions,
+  SandboxRuntimeStatus,
+} from "./sandbox-manager.js";
+export {
+  configuredRuntimeFallbackModels,
+  configuredRuntimeModels,
+  hasConfiguredRuntimeFallbacks,
+} from "./runtime-routes.js";
 export { badge, channelBadge, computeColorEnabled, healthBadge, isColorEnabled, keyValue, rule, style } from "./ui.js";
 export { COMPOSER_SKILL_NAME, installComposerSkill } from "./install-skill.js";
 export type { InstallSkillOptions, InstallSkillResult, InstallSkillTarget } from "./install-skill.js";

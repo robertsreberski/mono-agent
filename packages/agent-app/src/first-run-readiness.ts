@@ -346,6 +346,8 @@ export function evaluateFirstRunReadiness(options: {
   readonly plan: WizardPlan;
   readonly report: ValidationReport;
   readonly secretPersistence: SecretPersistenceOutcome;
+  /** Exact persistent runtime routes proven by successful live no-tool turns. */
+  readonly verifiedCredentialModelRefs?: readonly string[];
 }): FirstRunReadinessGate {
   const reasons: string[] = [];
   if (!options.report.ok) {
@@ -367,7 +369,31 @@ export function evaluateFirstRunReadiness(options: {
         (options.secretPersistence.detail === undefined ? "" : ` ${options.secretPersistence.detail}`),
     );
   }
+  const verified = new Set(options.verifiedCredentialModelRefs ?? []);
+  for (const modelRef of selectedPersistentRuntimeModelRefs(options.plan)) {
+    if (!verified.has(modelRef)) {
+      reasons.push(`Runtime route ${modelRef} has not completed its exact live readiness check.`);
+    }
+  }
   return { ready: reasons.length === 0, reasons };
+}
+
+function selectedPersistentRuntimeModelRefs(plan: WizardPlan): readonly string[] {
+  const runtime = (plan.configJson.runtime ?? {}) as Record<string, unknown>;
+  const refs: string[] = [];
+  if (typeof runtime.model === "string" && runtime.model.length > 0) refs.push(runtime.model);
+  if (Array.isArray(runtime.fallbacks)) {
+    for (const raw of runtime.fallbacks) {
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+      const model = (raw as Record<string, unknown>).model;
+      if (typeof model === "string" && model.length > 0) refs.push(model);
+    }
+  } else if (Array.isArray(runtime.fallbackModels)) {
+    for (const model of runtime.fallbackModels) {
+      if (typeof model === "string" && model.length > 0) refs.push(model);
+    }
+  }
+  return [...new Set(refs)];
 }
 
 export interface ValidateWizardPlanInStagingOptions {

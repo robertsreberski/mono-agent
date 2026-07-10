@@ -8,7 +8,7 @@ import { parseEnv } from "node:util";
 
 import { writeMonoAgentConfigJson } from "@mono-agent/config";
 
-import { composeWizardPlan, defaultAnswers } from "./wizard/answers.js";
+import { composeWizardPlan, defaultAnswers, humanizeAgentName } from "./wizard/answers.js";
 import type { ComposeContext, WizardAnswers, WizardPlan } from "./wizard/answers.js";
 
 export interface InitMonoAgentFolderOptions {
@@ -162,6 +162,7 @@ export async function initMonoAgentFolder(
 ): Promise<InitMonoAgentFolderResult> {
   const dir = resolve(options.dir ?? process.cwd());
   const dryRun = options.dryRun === true;
+  const answers = options.answers ?? defaultAnswers();
   const created: string[] = [];
   const skipped: string[] = [];
   const changes: InitFileChange[] = [];
@@ -187,7 +188,15 @@ export async function initMonoAgentFolder(
   }
 
   const identityPath = join(dir, "IDENTITY.md");
-  await planFile(identityPath, () => writeFile(identityPath, identityTemplate(dir, knowledgeFiles), { flag: "wx" }));
+  await planFile(identityPath, () => writeFile(
+    identityPath,
+    identityTemplate(
+      dir,
+      answers.name?.trim() || humanizeAgentName(basename(dir)),
+      knowledgeFiles,
+    ),
+    { flag: "wx" },
+  ));
 
   for (const subdir of [join(dir, ".mono-agent", "artifacts"), join(dir, ".mono-agent", "workspace")]) {
     await planFile(subdir, () => mkdir(subdir, { recursive: true }));
@@ -197,7 +206,6 @@ export async function initMonoAgentFolder(
     dirBasename: basename(dir),
     skillsRootExists: await pathExists(join(dir, "skills")),
   };
-  const answers = options.answers ?? defaultAnswers();
   const plan = composeWizardPlan(answers, ctx);
 
   const configPath = join(dir, "mono-agent.config.json");
@@ -1523,7 +1531,7 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-function identityTemplate(dir: string, knowledgeFiles: readonly string[]): string {
+function identityTemplate(dir: string, agentName: string, knowledgeFiles: readonly string[]): string {
   const knowledgeSection = knowledgeFiles.length === 0
     ? "This folder starts empty; describe the agent's purpose and boundaries here."
     : [
@@ -1534,7 +1542,7 @@ function identityTemplate(dir: string, knowledgeFiles: readonly string[]): strin
 
   return `# Identity
 
-You are the mono agent constructed in \`${basename(dir)}\`.
+You are ${agentName}, a mono agent constructed in \`${basename(dir)}\`.
 
 ## Role
 

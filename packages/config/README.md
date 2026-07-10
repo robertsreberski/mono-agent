@@ -29,10 +29,41 @@ const config = await loadMonoAgentConfigWithSources({
 
 Environment variables win over JSON values. Missing or empty JSON is treated as an empty layer.
 
-## Pi OAuth Auth
+## Agent Identity and Runtime Routes
 
-Built-in Pi OAuth providers such as `pi:openai-codex:gpt-5.5` read credentials
-through the configured Pi auth file. The default path is
+`agent.name` is public display metadata. It can seed human-facing trace and A2A
+labels, but it never changes paths, service ids, session keys, or provider
+identity. `MONO_AGENT_NAME` overrides the JSON value.
+
+Use `runtime.fallbacks` for new fallback chains. It is an ordered, uncapped array
+of `{ model, effort? }` entries; omitted route effort means the provider default.
+`runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain compatibility
+surfaces and retain their historical inheritance from `runtime.effort`.
+
+```json
+{
+  "agent": { "name": "Research Companion" },
+  "runtime": {
+    "model": "pi:openai-codex:gpt-5.6-terra",
+    "effort": "high",
+    "fallbacks": [
+      { "model": "claude:claude-sonnet-5", "effort": "xhigh" },
+      { "model": "pi:ollama:gemma4:31b" }
+    ],
+    "routeSafety": "per-route-native"
+  }
+}
+```
+
+`routeSafety` defaults to `uniform`; `per-route-native` is the explicit opt-in
+for isolated provider-native contracts in a mixed chain. Effort values are
+`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`, subject
+to the selected model's supported subset.
+
+## Pi Credentials
+
+Built-in Pi OAuth and API-key providers read credentials through the configured
+Pi auth file. The default path is
 `~/.pi/agent/auth.json`; override it with JSON or env:
 
 ```json
@@ -115,7 +146,7 @@ MONO_AGENT_SANDBOX_NETWORK=none
 MONO_AGENT_SANDBOX_FALLBACK=fail-closed
 ```
 
-Supported network modes are `none`, `localhost`, `allowlist`, and `all`. `allowlist` reads comma-separated domains from `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST`. Unsafe host-process fallback requires both `MONO_AGENT_SANDBOX_FALLBACK=unsafe-host-process` and `MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS=true`.
+Enforced network modes are `none`, `localhost`, and `allowlist`. `allowlist` reads comma-separated domains from `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST`. `all`, bare `*`, and IPv6 literals are rejected because pinned SRT 0.0.64 cannot enforce them exactly. Migrate an existing native `network.mode: "all"` config to `none`, `localhost`, or an explicit allowlist; if unrestricted shell networking is intentional, set `sandbox.mode: "off"` and remove the network policy. Unsafe host-process fallback requires both `MONO_AGENT_SANDBOX_FALLBACK=unsafe-host-process` and `MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS=true`.
 
 ## Public API
 
@@ -123,7 +154,7 @@ Supported network modes are `none`, `localhost`, `allowlist`, and `all`. `allowl
 - `redactMonoAgentConfig`
 - `readMonoAgentConfigJson`, `writeMonoAgentConfigJson`
 - `buildMonoAgentConfigView`, `CONFIG_ENV_KEYS` — the single source-annotated view of a resolved config (env/json/default per field), used by the TUI config pane and `mono-agent config`
-- `EFFORT_LEVELS`, `PERMISSION_MODES`
+- `EFFORT_LEVELS`, `ROUTE_SAFETY_MODES`, `PERMISSION_MODES`
 - `MonoAgentConfig`, `MonoAgentConfigJson`, `RedactedMonoAgentConfig`, `MonoAgentConfigError`
 
 ## Dependency Boundary

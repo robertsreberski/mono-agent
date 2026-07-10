@@ -6,11 +6,11 @@ sidebar:
 
 # Presets & capability modules
 
-`mono-agent init` builds an agent by composing **capability modules** — a channel here, a memory tier there, an optional sandbox — and walking you through the settings that matter. On a TTY, bare `init` is the readiness-proven path: it proves the primary model and calls the agent ready only after every selected expectation is live. With `--yes` or any flag (or without a TTY) it writes a scaffold only and never makes a readiness claim. Existing config, identity, and scaffold files are never overwritten; masked secret setup is the deliberate exception that can transactionally merge `.env` and ensure `.gitignore` protects it.
+`mono-agent init` builds an agent by composing **capability modules** — a channel here, a memory tier there, an optional sandbox — and walking you through the settings that matter. On a TTY, bare `init` asks for the public agent name, provides searchable Pi/Codex/Claude primary and fallback catalogs, and proves every selected route before it calls the agent ready. Escape goes back; Ctrl-C asks before exiting. With `--yes` or any flag (or without a TTY) it writes a scaffold only and never makes a readiness claim.
 
 Tools default to **allow-all** (`["*"]`), so a fresh agent can act out of the box. For Pi and Claude, the wizard discloses that this includes shell/file/web and enabled channel-send tools and requires an additional confirmation when no enforceable sandbox will constrain them. Direct Codex fixes the policy to exact allow-all and reports its own network-off workspace sandbox instead of asking the mono-agent tool/sandbox questions. Other runtimes can narrow the surface where they enforce allowlists, and `disallowedTools` subtracts individual tools where supported.
 
-**Presets** are saved answer-sets for common shapes. In the interactive wizard they seed, rather than lock, the model, channels, memory, tools, sandbox, and observability choices; the same questions still run before a write. The composer fills the rest and defaults `tools.allowedTools` to allow-all (`["*"]`), so a preset is just a faster starting point on the same single config-generation path. Webhook is the functional local default; external plugin modules remain explicit configuration, not ready-to-select first-run choices.
+**Presets** are saved answer-sets for common shapes. In the interactive wizard they seed, rather than lock, the model, channels, memory, tools, sandbox, and observability choices; the same questions still run before a write. Final **Creation review** lists the named agent, exact routes/efforts, safety contracts, provider/SRT actions, files, secret destinations, and real/potentially billed call counts. `Create “<name>”?` then offers setup-and-create, edit, or cancel without writing.
 
 ## Commands
 
@@ -22,7 +22,7 @@ mono-agent presets show <id>                 # generated config + .env.example +
 mono-agent validate --preset <id>            # completeness report against the preset's promises
 ```
 
-The wizard first asks whether to start from a preset or go fully custom, then prompts for model/fallback/effort, channels, memory, runtime-appropriate tools/safety, observability, and a final review. It runs a strict no-tool primary-model check (90 seconds cloud, 240 seconds local) and a complete selected-capability gate before offering start. Cancellation, provider failure, timeout, empty output, or a tool action fails the model check; any selected `waiting` expectation keeps the scaffold explicitly incomplete. `--dry-run` is scaffold-only and previews files without writing them.
+The wizard first asks whether to start from a preset or go fully custom, then prompts for public name, searchable model/fallback routes and per-model effort, channels, memory, tools, route safety/SRT, observability, and a concrete creation review. It runs one strict no-tool call per selected route (90 seconds cloud, 240 seconds local each) and a complete selected-capability gate before offering start. Escape/Ctrl-C interrupts safely; recovery can resume unchanged verified routes or restart all checks. Any selected `waiting` expectation keeps the scaffold explicitly incomplete. `--dry-run` is scaffold-only and previews files without writing them.
 
 ## Presets
 
@@ -84,15 +84,16 @@ For a **specific** allowlist, `validate`/`doctor` also flag an **unknown tool na
 
 ## Sandbox
 
-The `sandbox` module (and the Pi-backed `code-sandbox` preset) generate `"sandbox": { "mode": "native" }`, which requires `srt` on `PATH`. Direct Codex rejects this block and uses its own native sandbox. Claude and direct `opencode:*` also reject it because their provider-owned tools cannot enforce mono-agent `srt` scopes; `pi:opencode-go:*` remains a Pi route. Check the engine before trusting the sandbox:
+The `sandbox` module (and the Pi-backed `code-sandbox` preset) generate `"sandbox": { "mode": "native" }`. On macOS, mono-agent installs the pinned SRT dependency tree into a private per-user cache; no global `srt` is required. Under uniform route safety, routes that cannot enforce the common SRT contract fail closed. Explicit per-route-native chains may include provider-owned routes only after reviewing that SRT remains Pi-only. Check the engine before trusting the sandbox:
 
 ```bash
-command -v srt
-srt --version
+mono-agent sandbox status
+mono-agent sandbox setup
+mono-agent sandbox check
 mono-agent validate --preset code-sandbox
 ```
 
-The composed sandbox sets `fallback: "fail-closed"`. If `srt` is unavailable, sandboxed commands stop with `sandbox_unavailable`; they do not quietly run as normal host processes. `mono-agent validate --preset code-sandbox` checks the preset's sandbox promise against the doctor report — a missing `srt` engine shows the `Sandbox` section as `waiting` and the preset block as incomplete.
+The composed sandbox sets `fallback: "fail-closed"`. Setup/check proves filesystem and localhost/domain enforcement, not just a version command. If SRT is absent, corrupt, or fails the proof, sandboxed commands stop with `sandbox_unavailable`; a corrupt managed install never falls back to `PATH`.
 
 `mono-agent start` and `mono-agent status` surface the effective sandbox state (`native`, `blocked`, `unsafe-host-process`, or `off`), the engine availability, the fallback, and whether the fallback is active. The intentionally-unsafe `unsafe-host-process` fallback (roots/denyWrite inert, commands run unsandboxed when `srt` is missing) is not a wizard choice — set `sandbox.fallback` explicitly in the JSON if you accept that consequence for a trusted local operator profile. Existing configs are never rewritten.
 

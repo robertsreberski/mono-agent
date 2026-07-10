@@ -61,8 +61,8 @@ Notifying **multiple** or **other** conversations from one trigger is not a buil
 | `jobs[].notify` | boolean | no | `false` | Deliver the successful final answer via native cron notification. |
 | `jobs[].notifyConversationId` | string | no | inferred if exactly one destination | Destination conversation id for native notification. |
 | `jobs[].notifyFailureCooldownHours` | number | no | `6` | Per-job cooldown, in hours, for all-models-failed error notices on `notify: true` jobs. |
-| `jobs[].model` | string | no | `runtime.model` | Per-job model override (e.g. `claude:claude-opus-4-8`). Becomes this turn's primary, keeping `runtime.fallbackModels` as backups. See [Per-trigger model & effort](#per-trigger-model--effort). |
-| `jobs[].effort` | string | no | `runtime.effort` | Per-job reasoning effort (`none`/`low`/`medium`/`high`/`xhigh`/`max`). |
+| `jobs[].model` | string | no | `runtime.model` | Per-job model override. Becomes this turn's primary, keeping canonical `runtime.fallbacks` (or legacy backups). See [Per-trigger model & effort](#per-trigger-model--effort). |
+| `jobs[].effort` | string | no | `runtime.effort` | Per-job reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. |
 
 ## Per-trigger model & effort
 
@@ -72,7 +72,7 @@ A job can run on a different model or reasoning effort than the agent's default 
 { "id": "deep-research", "expression": "0 3 * * *", "prompt": "…", "model": "claude:claude-opus-4-8", "effort": "high" }
 ```
 
-The override becomes that turn's **primary** model; any configured `runtime.fallbackModels` stay as backups, so failover is preserved only when the resulting route has one enforceable safety contract. Direct Codex hosts accept only direct Codex overrides. With a native mono-agent sandbox configured, Claude or direct `opencode:*` overrides are invalid because their provider-owned tools cannot enforce the `srt` policy (`pi:opencode-go:*` remains compatible). Direct OpenCode additionally requires exact allow-all, no real MCP/index-skill injection, no positive inherited `maxTurns`, and no effective effort anywhere in the resulting chain. An accepted direct OpenCode tick omits the implicit MCP-backed `AskUser` / `TelegramAskButtons` tools; a rejected override stays on the base model and retains them. Static cross-boundary/capability violations fail `mono-agent validate` (the cron channel section reports `error`) and are warn-logged and ignored at start/run time, so the job falls back to its default rather than bypassing policy. A typo'd model/effort value follows the same safe behavior. Only the overridden turn is affected — interactive turns keep using `runtime.model`.
+The override becomes that turn's **primary** model; configured canonical/legacy fallbacks remain. Under `runtime.routeSafety: "uniform"`, crossing into an incompatible safety family is rejected. Explicit `per-route-native` allows the override only with the route's documented native contract; unsupported capabilities still reject/skip rather than being silently removed. Static violations fail `mono-agent validate`; dynamic invalid values are warned and ignored, so the job stays on its safe default. Only the overridden turn is affected.
 
 A model-override tick runs **ephemerally**: it does not resume or persist a shared continuous session (so a different model never mixes into the conversation's session lineage), though it still sees the job's run history. Overrides to configured local providers are supported: mono-agent recomputes the target provider's endpoint and capabilities. An unconfigured or invalid local target clears the inherited endpoint block and is rejected rather than accidentally using the host provider. An `effort`-only override keeps the same model chain and therefore must still be compatible with every retained fallback.
 

@@ -3,6 +3,7 @@ export {
   DEFAULT_ARTIFACT_RETENTION_MAX_COUNT,
   DEFAULT_MEMORY_ARTIFACT_RETENTION_MAX_AGE_DAYS,
   DEFAULT_MEMORY_ARTIFACT_RETENTION_MAX_COUNT,
+  MAX_AGENT_NAME_LENGTH,
   loadMonoAgentConfig,
   MonoAgentConfigError,
   redactMonoAgentConfig,
@@ -31,6 +32,8 @@ export type {
   MonoAgentConfig,
   ObservabilityExporterConfig,
   PermissionMode,
+  RouteSafetyMode,
+  RuntimeFallbackConfig,
   PhoenixExporterConfig,
   RedactedMemoryConfig,
   RedactedMemoryEmbeddingsConfig,
@@ -60,10 +63,11 @@ export type {
   MonoAgentMemoryLlmJson,
   MonoAgentObservabilityExporterJson,
   MonoAgentProvidersJson,
+  MonoAgentRuntimeFallbackJson,
   MonoAgentConfigJson,
   ReadMonoAgentConfigJsonResult,
 } from "./json-source.js";
-export { ALLOW_ALL_TOOLS, EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
+export { ALLOW_ALL_TOOLS, EFFORT_LEVELS, PERMISSION_MODES, ROUTE_SAFETY_MODES } from "./enums.js";
 export { buildMonoAgentConfigView, CONFIG_ENV_KEYS, findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "./config-view.js";
 export type {
   BuildMonoAgentConfigViewInput,

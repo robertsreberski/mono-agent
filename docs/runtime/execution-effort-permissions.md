@@ -35,14 +35,27 @@ Several other features key off the backend implied by execution mode — most no
 
 ## Effort
 
-`runtime.effort` is a single reasoning-effort hint that normalizes across providers that expose a compatible control. Higher effort trades latency and token cost for deeper reasoning; for pi-native backends, reasoning depth is **derived from this field**. The direct OpenCode bridge exposes no reasoning-effort input, so an explicit effort with any direct `opencode:*` primary/fallback is rejected during validation and again before provider startup; omit it to use the provider default. Static cron/webhook effort overrides are likewise invalid when their resulting route retains a direct OpenCode fallback, while dynamic request-body/TUI effort is warned and ignored. `pi:opencode-go:*` remains a normal Pi effort path.
+`runtime.effort` is the primary route's reasoning-effort hint. Canonical `runtime.fallbacks[]` entries have independent optional effort; omission means that route's provider default rather than inheritance from the primary. Higher effort trades latency and token cost for deeper reasoning. The wizard offers only the effort values advertised for the selected model plus **Provider default**. The direct OpenCode bridge exposes no reasoning-effort input, so any explicit effort on that route is rejected before provider startup; `pi:opencode-go:*` remains a normal Pi effort path.
 
 | Key | Values | Default | Env var |
 |-----|--------|---------|---------|
-| `runtime.effort` | `none` \| `low` \| `medium` \| `high` \| `xhigh` \| `max` | provider/model default when omitted; guided init derives a selection | `MONO_AGENT_EFFORT` |
+| `runtime.effort` | `none` \| `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `max` \| `ultra` | provider/model default when omitted | `MONO_AGENT_EFFORT` |
 
 ```json
 { "runtime": { "model": "pi:openai-codex:gpt-5.6-terra", "effort": "high" } }
+```
+
+```json
+{
+  "runtime": {
+    "model": "pi:openai-codex:gpt-5.6-terra",
+    "effort": "high",
+    "fallbacks": [
+      { "model": "codex:gpt-5.6-sol", "effort": "xhigh" },
+      { "model": "pi:ollama:gemma4:31b" }
+    ]
+  }
+}
 ```
 
 ## Permission mode
@@ -62,7 +75,7 @@ Several other features key off the backend implied by execution mode — most no
 
 `permissionMode` is the *config-level* posture. Programmatic human-in-the-loop approval gates (risk tiers, timeout, always-allow lists) are a separate, **code-only** mechanism on `createMonoRuntime({ onToolApprovalRequest, toolRiskTiers, approvalDefaultRiskTier, approvalTimeoutMs, approvalAlwaysAllowTools })` that requires a host UI to answer prompts — see [programmatic approval & structured output](/programmatic/approval-and-structured-output/). For limiting *which* tools exist at all, use the tool policy in [Tools & guards](/runtime/tools-and-guards/) and [Tool policy](/tools/policy/).
 
-Direct `codex:*` normal runs currently support only exact allow-all at the mono-agent tool-policy layer (`tools.allowedTools: ["*"]` with no `disallowedTools`, or an omitted allowlist). Unattended direct-Codex turns always use approval policy `never`: `plan` is read-only, `default`/`acceptEdits` use Codex's network-off workspace-write sandbox, and `bypassPermissions` explicitly selects danger-full-access. A configured mono-agent native `srt` policy is rejected because Codex cannot enforce its exact roots, deny-write globs, and network rules. Choose Pi when those controls are required. The guided primary-model check is a dedicated read-only/no-approval/no-tool probe and is not a reusable normal-run policy.
+Direct `codex:*` normal runs currently support only exact allow-all at the mono-agent tool-policy layer (`tools.allowedTools: ["*"]` with no `disallowedTools`, or an omitted allowlist). Unattended direct-Codex turns always use approval policy `never`: `plan` is read-only, `default`/`acceptEdits` use Codex's native workspace-write sandbox, and `bypassPermissions` explicitly selects danger-full-access. Uniform route safety rejects a mono-agent SRT policy that Codex cannot represent; explicit per-route-native routing records that the Codex attempt uses its native contract instead. Choose Pi when exact SRT controls must apply to every route. The guided route check is a dedicated read-only/no-approval/no-tool probe and is not a reusable normal-run policy.
 
 Direct `opencode:*` also requires exact allow-all, but projects `permissionMode`
 into OpenCode's native permission rules and replies rather than pretending the

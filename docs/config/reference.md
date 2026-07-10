@@ -12,6 +12,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 
 | JSON key | Type | Env override | Default | Example | Notes |
 | --- | --- | --- | --- | --- | --- |
+| `agent.name` | `string` | `MONO_AGENT_NAME` | unset | `Research Partner` | Public display identity used for trace labels and default A2A metadata; never used in paths or service ids. |
 | `artifacts.dir` | `string` | `MONO_AGENT_ARTIFACT_DIR` | .mono-agent/artifacts | `.mono-agent/artifacts` | Configures dir for the artifacts section. |
 | `artifacts.memoryRetention.dryRun` | `boolean` | `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_DRY_RUN` | false | `true` | Configures memoryRetention.dryRun for the artifacts section. |
 | `artifacts.memoryRetention.maxAgeDays` | `integer` | `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_AGE_DAYS` | 7 | `7` | Configures memoryRetention.maxAgeDays for the artifacts section. |
@@ -94,10 +95,12 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `providers.piNative.piSessionsRoot` | `string` | `MONO_AGENT_PI_SESSIONS_ROOT` | unset | `example` | Configures piNative.piSessionsRoot for the providers section. |
 | `runtime.effort` | `string` | `MONO_AGENT_EFFORT` | unset | `medium` | Configures effort for the runtime section. |
 | `runtime.executionMode` | `string` | `MONO_AGENT_EXECUTION_MODE` | inferred | `inferred` | Configures executionMode for the runtime section. |
-| `runtime.fallbackModels` | `string[]` | `MONO_AGENT_FALLBACK_MODELS` | unset | `["pi:ollama:gemma4:31b"]` | Configures fallbackModels for the runtime section. |
+| `runtime.fallbackModels` | `string[]` | `MONO_AGENT_FALLBACK_MODELS` | [] | `["pi:ollama:gemma4:31b"]` | Legacy fallback list whose routes inherit runtime.effort. Prefer runtime.fallbacks for new configs. |
+| `runtime.fallbacks` | `array` | `MONO_AGENT_FALLBACKS_JSON` | [] | `[{"model":"codex:gpt-5.6-sol"},{"model":"pi:openai-codex:gpt-5.6-terra","effort":"high"}]` | Canonical ordered fallback routes. Omitted per-route effort means that provider's default. |
 | `runtime.maxTurns` | `integer` | `MONO_AGENT_MAX_TURNS` | unset | `1` | Configures maxTurns for the runtime section. |
 | `runtime.model` | `string` | `MONO_AGENT_MODEL` | required | `codex:gpt-5.6-terra` | Configures model for the runtime section. |
 | `runtime.permissionMode` | `string` | `MONO_AGENT_PERMISSION_MODE` | unset | `default` | Configures permissionMode for the runtime section. |
+| `runtime.routeSafety` | `string` | `MONO_AGENT_ROUTE_SAFETY` | uniform | `per-route-native` | Uniform preserves one shared safety contract; per-route-native uses and reports each provider's explicit contract. |
 | `runtime.session.idleTimeoutMs` | `integer` | `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS` | 1800000 | `1800000` | Configures session.idleTimeoutMs for the runtime section. |
 | `runtime.session.isolateProactive` | `boolean` | `MONO_AGENT_SESSION_ISOLATE_PROACTIVE` | false | `true` | Configures session.isolateProactive for the runtime section. |
 | `runtime.session.mode` | `string` | `MONO_AGENT_SESSION_MODE` | continuous | `continuous` | Configures session.mode for the runtime section. |

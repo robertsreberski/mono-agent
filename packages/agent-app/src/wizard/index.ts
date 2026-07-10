@@ -2,12 +2,15 @@ export type {
   ComposeContext,
   SecretChecklistItem,
   WizardAnswers,
+  WizardFallback,
   WizardPlan,
 } from "./answers.js";
 export {
   alwaysOnTools,
   composeWizardPlan,
   defaultAnswers,
+  effectiveFallbacks,
+  humanizeAgentName,
   recommendedToolSelection,
   referencedSetupModelRefs,
 } from "./answers.js";

@@ -20,6 +20,7 @@
   },
   "files": [
     "dist",
+    "resources",
     "schema",
     "skills",
     "README.md"

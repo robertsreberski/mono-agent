@@ -83,7 +83,7 @@ describe("runCli validate --consumer", () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
     const authPath = join(dir, "auth.json");
     if (authStore !== undefined) {
-      await writeFile(authPath, JSON.stringify(authStore), "utf8");
+      await writeFile(authPath, JSON.stringify(authStore), { encoding: "utf8", mode: 0o600 });
     }
     await writeConsumerConfig(dir, "mono-agent.config.json", {
       runtime: { model: "pi:openai-codex:gpt-5.6-terra" },

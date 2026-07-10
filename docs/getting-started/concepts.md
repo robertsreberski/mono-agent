@@ -77,7 +77,7 @@ There is no "off but configured" trap: a channel with `enabled: false` reports `
 
 ## Explicit side-effect boundaries
 
-mono-agent ships with an open tool surface. Memory, channel admission, HTTP bind, and sandbox controls are separate; do not mistake one for another. Guided init names the shell/file/web/channel effects of allow-all and requires a second confirmation when no enforceable sandbox will constrain them. Native mono-agent `srt` policy applies to Pi-owned tools; direct Codex uses its own sandbox, while Claude and direct OpenCode reject the mono-agent sandbox block.
+mono-agent ships with an open tool surface. Memory, channel admission, HTTP bind, and sandbox controls are separate; do not mistake one for another. Guided init names the shell/file/web/channel effects of allow-all and requires a second confirmation when no enforceable sandbox will constrain them. Native mono-agent SRT applies to Pi-owned tools. Uniform route safety rejects providers that cannot represent the common contract; explicit per-route-native routing displays and applies their provider-native contract instead.
 
 - **Allow-all tools, runtime-specific narrowing.** Omit `tools.allowedTools` (or set `["*"]`) and the agent can call every built-in (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `WebFetch`, `WebSearch`) and every enabled channel's send tools. Pi and supported CLI runtimes can narrow that surface; direct `codex:*` normal runs accept exact allow-all only and reject restrictive policies instead of widening them.
 

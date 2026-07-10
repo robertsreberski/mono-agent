@@ -49,7 +49,7 @@ The actual bound host/port (when `port: 0`) is printed in the start log. In **sy
 | `notify` | boolean | `false` | Deliver the successful final answer via native notification. |
 | `notifyConversationId` | string | inferred if exactly one destination | Destination conversation id for native notification. |
 | `model` | string | `runtime.model` | Per-endpoint model override (e.g. `claude:claude-opus-4-8`). A request body `model` wins. See [Per-trigger model & effort](#per-trigger-model--effort). |
-| `effort` | string | `runtime.effort` | Per-endpoint reasoning effort (`none`/`low`/`medium`/`high`/`xhigh`/`max`). A request body `effort` wins. |
+| `effort` | string | `runtime.effort` | Per-endpoint reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. A request body `effort` wins. |
 | `endpoints` | array | — | Multiple named endpoints — see [Multiple endpoints](#multiple-endpoints). |
 | `dir` | string | `webhook` | Folder of `*.md` endpoint files, resolved against the app working directory. |
 
@@ -67,7 +67,7 @@ The request body is a JSON object. `text` is required; everything else is option
 | `mode` | no | `sync` or `async`, overriding the endpoint's mode for this request. |
 | `conversationId` | no | Reuse to continue a thread. Defaults to a per-request id (`webhook:<requestId>`). |
 | `model` | no | Per-request model override (`sdk:model` / `sdk:provider:model`). Wins over the endpoint's `model`. See [Per-trigger model & effort](#per-trigger-model--effort). |
-| `effort` | no | Per-request reasoning effort (`none`/`low`/`medium`/`high`/`xhigh`/`max`). Wins over the endpoint's `effort`. |
+| `effort` | no | Per-request reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. Wins over the endpoint's `effort`. |
 | `metadata` | no | Arbitrary JSON passed through to the turn. |
 
 ### Sync mode
@@ -119,7 +119,7 @@ curl -X POST "$URL/delegate" -H 'content-type: application/json' \
   -d '{"text": "Deep-research X and write a brief.", "model": "claude:claude-opus-4-8", "effort": "high"}'
 ```
 
-Precedence is **request body > endpoint config > agent default** (`runtime.model` / `runtime.effort`). The override becomes that turn's **primary** model; any configured `runtime.fallbackModels` stay as backups only when the resulting route has one enforceable safety contract. Direct Codex hosts accept only direct Codex overrides. With a native mono-agent sandbox configured, Claude or direct `opencode:*` overrides are invalid because their provider-owned tools cannot enforce the `srt` policy (`pi:opencode-go:*` remains compatible). Direct OpenCode additionally requires exact allow-all, no real MCP/index-skill injection, no positive inherited `maxTurns`, and no effective effort anywhere in the resulting chain. An accepted direct OpenCode turn omits the implicit MCP-backed `AskUser` / `TelegramAskButtons` tools; a rejected override stays on the base model and retains them. An invalid or cross-boundary endpoint value fails `mono-agent validate` (the webhook channel section reports `error`) and is warn-logged at `start`; a dynamic request-body value is warned and ignored at run time, so the request still runs on the safe default model. A dynamic effort is also warned and ignored whenever a retained fallback is direct OpenCode. A typo'd model/effort value follows the same behavior. Model strings use the standard `sdk:model` / `sdk:provider:model` form; effort is one of `none`/`low`/`medium`/`high`/`xhigh`/`max` on supporting providers.
+Precedence is **request body > endpoint config > agent default** (`runtime.model` / `runtime.effort`). The override becomes that turn's **primary** model; configured canonical `runtime.fallbacks` (or legacy backups) remain. Under `runtime.routeSafety: "uniform"`, an incompatible safety-family override is rejected. Explicit `per-route-native` allows it only with the route's documented native contract; required capabilities are never silently removed. Static invalid values fail `mono-agent validate`; dynamic invalid values are warned and ignored, so the request still runs on the safe default model. Effort must be one of `none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra` and supported by the selected model.
 
 The request body may always *request* an override, but the host applies it only
 when it preserves the configured runtime/sandbox boundary; an incompatible value

@@ -58,6 +58,8 @@ describe("first-run environment", () => {
         HOME: "/shell/home",
         OPENAI_API_KEY: "shell-openai",
         ANTHROPIC_API_KEY: "shell-anthropic",
+        CODEX_HOME: "/tmp/shell-only-codex",
+        CLAUDE_CONFIG_DIR: "/tmp/shell-only-claude",
         MONO_AGENT_ALLOWED_TOOLS: "shell,tools",
         MONO_AGENT_MODEL: "pi:shell:model",
         MONO_AGENT_OPENAI_API_KEY: "shell-mono-openai",
@@ -66,6 +68,8 @@ describe("first-run environment", () => {
         PATH: "/dotenv/bin",
         HOME: "/dotenv/home",
         OPENAI_API_KEY: "persisted-openai",
+        CODEX_HOME: "/Users/example/.codex",
+        CLAUDE_CONFIG_DIR: "/Users/example/.claude",
         DOTENV_ONLY: "yes",
         MONO_AGENT_TELEGRAM_BOT_TOKEN: "old",
       },
@@ -76,6 +80,8 @@ describe("first-run environment", () => {
       PATH: "/shell/bin",
       HOME: "/shell/home",
       OPENAI_API_KEY: "persisted-openai",
+      CODEX_HOME: "/Users/example/.codex",
+      CLAUDE_CONFIG_DIR: "/Users/example/.claude",
       DOTENV_ONLY: "yes",
       MONO_AGENT_TELEGRAM_BOT_TOKEN: "new",
       MONO_AGENT_PI_AUTH_PATH: "/auth/pi.json",
@@ -310,12 +316,14 @@ describe("complete readiness gate", () => {
       plan,
       report: readyReport,
       secretPersistence: { status: "persisted", changed: true },
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
     })).toEqual({ ready: true, reasons: [] });
 
     const waiting = evaluateFirstRunReadiness({
       plan,
       report: report({ runtime: "ok", credentials: "ok", "channel:telegram": "waiting" }),
       secretPersistence: { status: "persisted", changed: true },
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
     });
     expect(waiting.ready).toBe(false);
     expect(waiting.reasons.join(" ")).toContain("channel:telegram must be ok, but is waiting");
@@ -329,10 +337,44 @@ describe("complete readiness gate", () => {
         reason: "owner-only-permissions-unsupported",
         detail: "Use the owner-only manual setup path /safe/recovery before retrying.",
       },
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
     });
     expect(refused.ready).toBe(false);
     expect(refused.reasons.join(" ")).toContain("owner-only-permissions-unsupported");
     expect(refused.reasons.join(" ")).toContain("/safe/recovery");
+  });
+
+  it("requires a successful live check for every persistent primary and fallback route", () => {
+    const base = telegramPlan();
+    const configJson = structuredClone(base.configJson) as Record<string, unknown>;
+    configJson.runtime = {
+      ...(configJson.runtime as Record<string, unknown>),
+      fallbacks: [
+        { model: "claude:claude-sonnet-5", effort: "low" },
+        { model: "pi:openai:gpt-5.5" },
+      ],
+    };
+    const plan = { ...base, configJson: configJson as never };
+    const reportReady = report({ runtime: "ok", credentials: "ok", "channel:telegram": "ok" });
+    const incomplete = evaluateFirstRunReadiness({
+      plan,
+      report: reportReady,
+      secretPersistence: { status: "persisted", changed: true },
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra", "claude:claude-sonnet-5"],
+    });
+    expect(incomplete.ready).toBe(false);
+    expect(incomplete.reasons).toContain("Runtime route pi:openai:gpt-5.5 has not completed its exact live readiness check.");
+
+    expect(evaluateFirstRunReadiness({
+      plan,
+      report: reportReady,
+      secretPersistence: { status: "persisted", changed: true },
+      verifiedCredentialModelRefs: [
+        "codex:gpt-5.6-terra",
+        "claude:claude-sonnet-5",
+        "pi:openai:gpt-5.5",
+      ],
+    })).toEqual({ ready: true, reasons: [] });
   });
 
   it("stages the complete plan, passes exact readiness options, and cleans up", async () => {

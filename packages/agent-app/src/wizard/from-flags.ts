@@ -1,6 +1,8 @@
-import { defaultAnswers, type WizardAnswers } from "./answers.js";
+import type { EffortLevel, RouteSafetyMode } from "@mono-agent/config";
+
+import { defaultAnswers, type WizardAnswers, type WizardFallback } from "./answers.js";
 import { findPreset } from "./presets.js";
-import { assertConcreteWizardModelRef } from "./prompts.js";
+import { assertConcreteWizardModelRef, validateWizardAgentName } from "./prompts.js";
 
 /** Channels `mono-agent init --with <csv>` can switch on, by their short flag name. */
 export const WITH_CHANNELS = ["telegram", "slack", "webhook", "openaiApi", "cron"] as const;
@@ -22,8 +24,11 @@ const WITH_CHANNEL_MODULE_ID: Record<WithChannel, string> = {
 
 /** The non-interactive `init`/preset flags, before they are mapped onto answers. */
 export interface AnswersFromCliArgs {
+  readonly name?: string;
   readonly model?: string;
   readonly fallbackModels?: readonly string[];
+  readonly fallbacks?: readonly { readonly model: string; readonly effort?: EffortLevel }[];
+  readonly routeSafety?: RouteSafetyMode;
   readonly effort?: string;
   readonly memory?: "lite" | "journal" | "bujo";
   /** Validated `--with` channel flag names (see {@link WithChannel}). */
@@ -41,6 +46,9 @@ export interface AnswersFromCliArgs {
  * The caller resolves an unknown `presetId` and errors before calling this.
  */
 export function answersFromCli(args: AnswersFromCliArgs): WizardAnswers {
+  if (args.fallbacks !== undefined && args.fallbackModels !== undefined) {
+    throw new Error("Use either canonical --fallback entries or legacy --fallback-models, not both.");
+  }
   const basePartial: Partial<WizardAnswers> = args.presetId === undefined
     ? {}
     : findPreset(args.presetId)?.answers ?? {};
@@ -48,6 +56,25 @@ export function answersFromCli(args: AnswersFromCliArgs): WizardAnswers {
   const fallbackModels = args.fallbackModels === undefined
     ? undefined
     : args.fallbackModels.map((fallbackModel) => concreteCliModelRef(fallbackModel));
+  const fallbacks: readonly WizardFallback[] | undefined = args.fallbacks?.map((fallback) => ({
+    model: concreteCliModelRef(fallback.model),
+    ...(fallback.effort === undefined ? {} : { effort: fallback.effort }),
+  }));
+  const name = args.name?.trim();
+  if (args.name !== undefined) {
+    const problem = validateWizardAgentName(args.name);
+    if (problem !== undefined) throw new Error(problem);
+  }
+
+  const primaryModel = model ?? basePartial.model ?? defaultAnswers().model;
+  const selectedFallbacks = fallbacks ?? fallbackModels?.map((fallbackModel) => ({ model: fallbackModel })) ?? [];
+  const seen = new Set([primaryModel]);
+  for (const fallback of selectedFallbacks) {
+    if (seen.has(fallback.model)) {
+      throw new Error(`Duplicate model route in init flags: ${fallback.model}`);
+    }
+    seen.add(fallback.model);
+  }
 
   const channels = new Set<string>(basePartial.channels ?? defaultAnswers().channels);
   for (const channel of args.withChannels ?? []) {
@@ -60,9 +87,12 @@ export function answersFromCli(args: AnswersFromCliArgs): WizardAnswers {
 
   return defaultAnswers({
     ...basePartial,
+    ...(name === undefined ? {} : { name }),
     ...(model === undefined ? {} : { model }),
+    ...(fallbacks === undefined ? {} : { fallbacks }),
     ...(fallbackModels === undefined ? {} : { fallbackModels }),
     ...(args.effort === undefined ? {} : { effort: args.effort }),
+    ...(args.routeSafety === undefined ? {} : { routeSafety: args.routeSafety }),
     channels: [...channels],
     ...(memory === undefined ? {} : { memory }),
   });

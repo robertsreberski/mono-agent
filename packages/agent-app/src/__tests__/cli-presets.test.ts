@@ -129,6 +129,24 @@ describe("init provider setup gate", () => {
     expect(status).toBe("failed");
   });
 
+  it("skips direct provider login when durable dotenv credentials are detected", async () => {
+    const execute = vi.fn(async () => []);
+    const status = await runProviderSetupBeforeInit({
+      modelRefs: ["codex:gpt-5.6-sol", "claude:claude-sonnet-5"],
+      cwd: "/agent",
+      auth: true,
+      dryRun: false,
+      persistedEnv: {
+        OPENAI_API_KEY: "durable-openai-key",
+        CLAUDE_CODE_OAUTH_TOKEN: "durable-claude-token",
+      },
+      execute,
+    });
+
+    expect(status).toBe("skipped");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("does not fail non-interactive setup when an API-key action is skipped", async () => {
     const status = await runProviderSetupBeforeInit({
       modelRefs: ["pi:opencode-go:kimi-k2.6"],
@@ -144,6 +162,26 @@ describe("init provider setup gate", () => {
       ],
     });
     expect(status).toBe("ok");
+  });
+
+  it("returns an explicit interrupted status when scoped provider setup is cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const execute = vi.fn(async () => []);
+
+    const status = await runProviderSetupBeforeInit({
+      modelRefs: ["codex:gpt-5.6-terra"],
+      cwd: "/agent",
+      auth: true,
+      dryRun: false,
+      forceAuthentication: true,
+      credentialStates: { codex: "auth_required" },
+      abortSignal: controller.signal,
+      execute,
+    });
+
+    expect(status).toBe("interrupted");
+    expect(execute).toHaveBeenCalledOnce();
   });
 });
 
@@ -171,6 +209,38 @@ describe("answersFromCli", () => {
 
     expect(answers.model).toBe("pi:ollama:gemma4:31b");
     expect(answers.fallbackModels).toEqual(["codex:gpt-5.6-terra", "pi:lmstudio:qwen/qwen3-8b"]);
+    expect(answers.fallbacks).toEqual([
+      { model: "codex:gpt-5.6-terra" },
+      { model: "pi:lmstudio:qwen/qwen3-8b" },
+    ]);
+  });
+
+  it("preserves the public --name compatibility input", () => {
+    expect(answersFromCli({ name: "  Research Companion  " }).name).toBe("Research Companion");
+  });
+
+  it("forwards canonical per-route fallbacks and route safety", () => {
+    const answers = answersFromCli({
+      model: "pi:ollama:qwen3:8b",
+      fallbacks: [
+        { model: "codex:gpt-5.6-sol", effort: "minimal" },
+        { model: "claude:claude-sonnet-5", effort: "max" },
+      ],
+      routeSafety: "per-route-native",
+    });
+    expect(answers.fallbacks).toEqual([
+      { model: "codex:gpt-5.6-sol", effort: "minimal" },
+      { model: "claude:claude-sonnet-5", effort: "max" },
+    ]);
+    expect(answers.routeSafety).toBe("per-route-native");
+  });
+
+  it("rejects duplicate canonical routes and invalid public names", () => {
+    expect(() => answersFromCli({
+      model: "codex:gpt-5.6-sol",
+      fallbacks: [{ model: "codex:gpt-5.6-sol" }],
+    })).toThrow("Duplicate model route");
+    expect(() => answersFromCli({ name: "line one\nline two" })).toThrow("single-line");
   });
 
   it("rejects wizard sentinel values from non-interactive model flags", () => {

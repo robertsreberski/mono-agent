@@ -19,7 +19,11 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
+import { getOAuthProviders } from "@earendil-works/pi-ai/oauth";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+
+import { inspectPiAuthStore } from "./pi-auth-store-inspection.js";
 
 export type ProviderSetupKind = "auth" | "preflight";
 
@@ -36,6 +40,13 @@ export interface ProviderSetupCommandAction {
 export interface ProviderSetupPiLoginAction extends ProviderSetupCommandAction {
   readonly id: `pi-login:${string}`;
   readonly piAuthPath: string;
+}
+
+export type CodexLoginMode = "browser" | "device";
+
+export interface ProviderSetupCodexLoginAction extends ProviderSetupCommandAction {
+  readonly id: "codex-login";
+  readonly authMode: CodexLoginMode;
 }
 
 export interface ProviderSetupHttpAction {
@@ -55,6 +66,7 @@ export interface ProviderSetupPiApiKeyAction {
   readonly modelRefs: readonly string[];
   readonly provider: string;
   readonly envVar: string;
+  readonly persistence: "secure-store" | "environment";
   readonly piAuthPath: string;
   readonly cwd: string;
   readonly detail: string;
@@ -62,20 +74,47 @@ export interface ProviderSetupPiApiKeyAction {
 
 export type ProviderSetupAction =
   | ProviderSetupPiLoginAction
+  | ProviderSetupCodexLoginAction
   | ProviderSetupCommandAction
   | ProviderSetupHttpAction
   | ProviderSetupPiApiKeyAction;
 
 export interface ProviderSetupPlan {
   readonly actions: readonly ProviderSetupAction[];
+  /** Auth actions omitted because a credential/sign-in was detected. */
+  readonly detectedModelRefs: readonly string[];
+}
+
+export type ProviderCredentialState = "auth_required" | "credential_detected" | "verified";
+
+export interface DetectProviderCredentialStatesOptions {
+  readonly modelRefs: readonly string[];
+  readonly cwd: string;
+  readonly piAuthPath?: string;
+  /** Values parsed from the destination `.env`; ambient shell credentials are intentionally excluded. */
+  readonly persistedEnv?: Readonly<Record<string, string | undefined>>;
+  readonly abortSignal?: AbortSignal;
+  readonly timeoutMs?: number;
+  readonly execFile?: (
+    file: string,
+    args: readonly string[],
+    options: {
+      readonly cwd: string;
+      readonly timeout: number;
+      readonly env?: Readonly<Record<string, string | undefined>>;
+      readonly abortSignal?: AbortSignal;
+    },
+  ) => Promise<unknown>;
 }
 
 export type ProviderSetupStatus = "ok" | "failed" | "skipped";
+export type ProviderSetupFailureKind = "child_exit_unconfirmed" | "cleanup_failed";
 
 export interface ProviderSetupResult {
   readonly action: ProviderSetupAction;
   readonly status: ProviderSetupStatus;
   readonly detail: string;
+  readonly failureKind?: ProviderSetupFailureKind;
 }
 
 export interface PlanProviderSetupOptions {
@@ -84,6 +123,18 @@ export interface PlanProviderSetupOptions {
   readonly piAuthPath?: string;
   /** Internal test seam for verifying bundled Pi CLI resolution in packed layouts. */
   readonly piCliPath?: string;
+  /** Credential/status observations keyed by `claude`, `codex`, `pi:<provider>`, or provider id. */
+  readonly credentialStates?: Readonly<Record<string, ProviderCredentialState | undefined>>;
+  /** Explicit repair path: rerun authentication even when a credential was detected. */
+  readonly forceAuthentication?: boolean;
+  /** Direct Codex never guesses headless mode; callers select this explicitly. */
+  readonly codexAuthMode?: CodexLoginMode;
+  /** Select OAuth or API-key setup for Pi providers that support both. */
+  readonly piAuthMethods?: Readonly<Record<string, "oauth" | "api-key" | undefined>>;
+  /** API keys can be used from env without being copied into Pi's secure store. */
+  readonly piApiKeyPersistence?: "secure-store" | "environment";
+  /** Per-provider wizard selections override the global API-key persistence mode. */
+  readonly piApiKeyPersistenceByProvider?: Readonly<Record<string, "secure-store" | "environment" | undefined>>;
 }
 
 export interface ExecuteProviderSetupOptions {
@@ -98,22 +149,96 @@ export interface ExecuteProviderSetupOptions {
   readonly beforePiAuthPromotion?: (targetPath: string, stagedPath: string) => void | Promise<void>;
   /** Test seam after exclusive link installation and before immutable-byte verification. */
   readonly afterPiAuthLink?: (targetPath: string, stagedPath: string) => void | Promise<void>;
+  /** Test seam immediately before stale-lock identity/liveness is rechecked. */
+  readonly beforeStalePiAuthLockRemoval?: (lockPath: string) => void | Promise<void>;
+  /** Test seam after a stale lock is unlinked but before directory sync. */
+  readonly afterStalePiAuthLockRemoval?: (lockPath: string) => void | Promise<void>;
+  /** Test seam immediately before a staged Pi OAuth directory is removed. */
+  readonly beforePiAuthCleanup?: (stagingDir: string) => void | Promise<void>;
+  /** Test seam after a new lock is durable but before setup begins. */
+  readonly afterPiAuthLockCreated?: (lockPath: string) => void | Promise<void>;
+  /** Test seam before confirming an already-absent owned lock is durable. */
+  readonly beforePiAuthMissingLockSync?: (lockPath: string) => void | Promise<void>;
+  /** Test seam immediately before an API-key transaction directory is removed. */
+  readonly beforePiAuthTempCleanup?: (tempDir: string) => void | Promise<void>;
+  /** Test seam immediately before an old credential backup is removed. */
+  readonly beforePiAuthBackupCleanup?: (backupPath: string) => void | Promise<void>;
+  /** Test seam after credentials are installed but before parent-directory sync. */
+  readonly beforePiAuthPostMutationSync?: (authPath: string) => void | Promise<void>;
+  /** Stop before launching the next independent action after user interruption. */
+  readonly abortSignal?: AbortSignal;
 }
 
 type PiAuthPromotionHooks = Pick<
   ExecuteProviderSetupOptions,
-  "beforePiAuthPromotion" | "afterPiAuthLink"
+  | "beforePiAuthPromotion"
+  | "afterPiAuthLink"
+  | "beforeStalePiAuthLockRemoval"
+  | "afterStalePiAuthLockRemoval"
+  | "beforePiAuthCleanup"
+  | "afterPiAuthLockCreated"
+  | "beforePiAuthMissingLockSync"
+  | "beforePiAuthTempCleanup"
+  | "beforePiAuthBackupCleanup"
+  | "beforePiAuthPostMutationSync"
 >;
 
 const DEFAULT_PI_AUTH_PATH = join(homedir(), ".pi", "agent", "auth.json");
-const PI_OAUTH_LOGIN_PROVIDERS = new Set(["anthropic", "github-copilot", "openai-codex"]);
 const PI_API_KEY_PROVIDERS: Readonly<Record<string, string>> = {
   "opencode-go": "OPENCODE_API_KEY",
 };
+const DIRECT_PROVIDER_CREDENTIAL_ENV_KEYS = {
+  codex: ["OPENAI_API_KEY"],
+  claude: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
+} as const;
+const PROVIDER_STATUS_SECRET_ENV_KEYS = [
+  ...DIRECT_PROVIDER_CREDENTIAL_ENV_KEYS.codex,
+  ...DIRECT_PROVIDER_CREDENTIAL_ENV_KEYS.claude,
+  ...Object.values(PI_API_KEY_PROVIDERS),
+] as const;
+const PROVIDER_STATUS_ENV_ALLOWLIST = new Set([
+  "APPDATA",
+  "COLORTERM",
+  "COMSPEC",
+  "HOMEDRIVE",
+  "HOME",
+  "HOMEPATH",
+  "LANG",
+  "LANGUAGE",
+  "LOCALAPPDATA",
+  "LOGNAME",
+  "NO_COLOR",
+  "PATH",
+  "PATHEXT",
+  "SHELL",
+  "SYSTEMROOT",
+  "TEMP",
+  "TERM",
+  "TMP",
+  "TMPDIR",
+  "USER",
+  "USERPROFILE",
+  "USERNAME",
+  "WINDIR",
+  "XDG_CACHE_HOME",
+  "XDG_CONFIG_DIRS",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_DIRS",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+]);
 const PI_AI_PACKAGE = "@earendil-works/pi-ai";
 const PI_AI_CLI_PARTS = ["@earendil-works", "pi-ai", "dist", "cli.js"] as const;
 const PI_AI_NODE_MODULE_PATHS = createRequire(import.meta.url).resolve.paths(PI_AI_PACKAGE) ?? [];
 const DEFAULT_PROVIDER_PREFLIGHT_TIMEOUT_MS = 5_000;
+const PROVIDER_AUTH_TERM_GRACE_MS = 1_000;
+const PROVIDER_AUTH_KILL_SETTLE_MS = 1_000;
+const PROVIDER_PREFLIGHT_TERM_GRACE_MS = 250;
+const PROVIDER_PREFLIGHT_KILL_SETTLE_MS = 250;
+const PROVIDER_DISCOVERY_TERM_GRACE_MS = 250;
+const PROVIDER_DISCOVERY_KILL_SETTLE_MS = 250;
+const MAX_PROVIDER_DISCOVERY_STDOUT_BYTES = 4 * 1024 * 1024;
+const MAX_API_KEY_CREDENTIAL_STRING_LENGTH = 65_536;
 
 export function resolvePiCliPath(nodeModulePaths: readonly string[] = PI_AI_NODE_MODULE_PATHS): string {
   for (const nodeModulesPath of nodeModulePaths) {
@@ -157,9 +282,287 @@ export function piAuthPathForSetup(piAuthPath: string | undefined, cwd = process
   return resolve(cwd, normalized);
 }
 
+/**
+ * Detect credential/sign-in postconditions without authenticating or claiming
+ * provider readiness. Only an exact live route probe may promote these states
+ * to `verified`.
+ */
+export async function detectProviderCredentialStates(
+  options: DetectProviderCredentialStatesOptions,
+): Promise<Readonly<Record<string, ProviderCredentialState>>> {
+  const states: Record<string, ProviderCredentialState> = {};
+  const refs = options.modelRefs.flatMap((raw) => {
+    try {
+      return [parseMonoRuntimeModelReference(raw)];
+    } catch {
+      return [];
+    }
+  });
+  const timeout = typeof options.timeoutMs === "number" && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+    ? Math.trunc(options.timeoutMs)
+    : 2_000;
+  const run = options.execFile ?? runProviderStatusCommand;
+  const persistedEnv = options.persistedEnv ?? {};
+  const statusEnv = credentialNeutralProviderStatusEnvironment(process.env, persistedEnv);
+  const checks: Promise<void>[] = [];
+  if (refs.some((ref) => ref.sdk === "codex")) {
+    if (hasAnyNonEmptyPersistedValue(persistedEnv, DIRECT_PROVIDER_CREDENTIAL_ENV_KEYS.codex)) {
+      states.codex = "credential_detected";
+    } else {
+      checks.push(run("codex", ["login", "status"], {
+        cwd: options.cwd,
+        timeout,
+        env: statusEnv,
+        ...(options.abortSignal === undefined ? {} : { abortSignal: options.abortSignal }),
+      }).then(
+        () => { states.codex = "credential_detected"; },
+        () => { states.codex = "auth_required"; },
+      ));
+    }
+  }
+  if (refs.some((ref) => ref.sdk === "claude")) {
+    if (hasAnyNonEmptyPersistedValue(persistedEnv, DIRECT_PROVIDER_CREDENTIAL_ENV_KEYS.claude)) {
+      states.claude = "credential_detected";
+    } else {
+      checks.push(run("claude", ["auth", "status", "--json"], {
+        cwd: options.cwd,
+        timeout,
+        env: statusEnv,
+        ...(options.abortSignal === undefined ? {} : { abortSignal: options.abortSignal }),
+      }).then(
+        () => { states.claude = "credential_detected"; },
+        () => { states.claude = "auth_required"; },
+      ));
+    }
+  }
+
+  const piProviders = new Set(
+    refs.filter((ref) => ref.sdk === "pi" && typeof ref.provider === "string")
+      .map((ref) => ref.provider as string),
+  );
+  if (piProviders.size > 0) {
+    const detected = await safelyDetectedPiCredentialProviders(
+      piAuthPathForSetup(options.piAuthPath, options.cwd),
+    );
+    for (const provider of piProviders) {
+      const apiKeyEnv = PI_API_KEY_PROVIDERS[provider];
+      states[`pi:${provider}`] = detected.has(provider)
+        || (apiKeyEnv !== undefined && hasNonEmptyPersistedValue(persistedEnv[apiKeyEnv]))
+        ? "credential_detected"
+        : "auth_required";
+    }
+  }
+  await Promise.all(checks);
+  return states;
+}
+
+/** Whether a selected route has a credential in the destination agent's durable environment. */
+export function hasDurableProviderEnvironmentCredential(
+  rawModelRef: string,
+  persistedEnv: Readonly<Record<string, string | undefined>>,
+): boolean {
+  let ref;
+  try {
+    ref = parseMonoRuntimeModelReference(rawModelRef);
+  } catch {
+    return false;
+  }
+  if (ref.sdk === "codex") {
+    return hasAnyNonEmptyPersistedValue(persistedEnv, DIRECT_PROVIDER_CREDENTIAL_ENV_KEYS.codex);
+  }
+  if (ref.sdk === "claude") {
+    return hasAnyNonEmptyPersistedValue(persistedEnv, DIRECT_PROVIDER_CREDENTIAL_ENV_KEYS.claude);
+  }
+  if (ref.sdk !== "pi" || typeof ref.provider !== "string") return false;
+  const apiKeyEnv = PI_API_KEY_PROVIDERS[ref.provider];
+  return apiKeyEnv !== undefined && hasNonEmptyPersistedValue(persistedEnv[apiKeyEnv]);
+}
+
+function hasAnyNonEmptyPersistedValue(
+  persistedEnv: Readonly<Record<string, string | undefined>>,
+  names: readonly string[],
+): boolean {
+  return names.some((name) => hasNonEmptyPersistedValue(persistedEnv[name]));
+}
+
+function hasNonEmptyPersistedValue(value: string | undefined): boolean {
+  return value !== undefined && value.trim().length > 0;
+}
+
+/**
+ * Build the minimal operational environment needed to inspect durable CLI login
+ * state. A positive allowlist prevents unrelated shell credentials from being
+ * inherited by Codex or Claude while retaining their standard config roots.
+ */
+export function credentialNeutralProviderStatusEnvironment(
+  source: Readonly<Record<string, string | undefined>> = process.env,
+  durableEnvironment: Readonly<Record<string, string | undefined>> = {},
+): Record<string, string | undefined> {
+  const sanitized: Record<string, string | undefined> = {};
+  for (const [name, value] of Object.entries(source)) {
+    const normalizedName = name.toUpperCase();
+    if (
+      PROVIDER_STATUS_ENV_ALLOWLIST.has(normalizedName)
+      || normalizedName.startsWith("LC_")
+    ) {
+      sanitized[name] = value;
+    }
+  }
+  for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME"] as const) {
+    const value = durableEnvironment[name];
+    if (hasNonEmptyPersistedValue(value)) sanitized[name] = value;
+  }
+  for (const name of PROVIDER_STATUS_SECRET_ENV_KEYS) delete sanitized[name];
+  return sanitized;
+}
+
+function runProviderStatusCommand(
+  file: string,
+  args: readonly string[],
+  options: {
+    readonly cwd: string;
+    readonly timeout: number;
+    readonly env?: Readonly<Record<string, string | undefined>>;
+    readonly abortSignal?: AbortSignal;
+  },
+): Promise<void> {
+  return runBoundedProviderCommand(file, args, options).then(() => undefined);
+}
+
+export interface BoundedProviderCommandResult {
+  readonly stdout: string;
+}
+
+/**
+ * Run a non-interactive provider probe with a hard process-lifecycle bound.
+ * Node's execFile timeout sends only SIGTERM and can wait forever when a CLI
+ * traps it, so discovery uses explicit TERM-to-KILL escalation and detaches a
+ * process whose exit still cannot be confirmed.
+ */
+export function runBoundedProviderCommand(
+  file: string,
+  args: readonly string[],
+  options: {
+    readonly cwd?: string;
+    readonly timeout: number;
+    readonly env?: Readonly<Record<string, string | undefined>>;
+    readonly abortSignal?: AbortSignal;
+    readonly spawn?: typeof spawn;
+  },
+): Promise<BoundedProviderCommandResult> {
+  const timeout = Number.isFinite(options.timeout) && options.timeout > 0
+    ? Math.max(1, Math.trunc(options.timeout))
+    : 1;
+  return new Promise((resolveCommand, rejectCommand) => {
+    const spawnImpl = options.spawn ?? spawn;
+    const child = spawnImpl(file, [...args], {
+      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+      ...(options.env === undefined ? {} : { env: { ...options.env } }),
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const chunks: Buffer[] = [];
+    let stdoutBytes = 0;
+    let settled = false;
+    let terminationReason: Error | undefined;
+    let childError: Error | undefined;
+    let timeoutTimer: NodeJS.Timeout | undefined;
+    let forceKillTimer: NodeJS.Timeout | undefined;
+    let killSettlementTimer: NodeJS.Timeout | undefined;
+
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
+      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
+      if (killSettlementTimer !== undefined) clearTimeout(killSettlementTimer);
+      options.abortSignal?.removeEventListener("abort", abort);
+      child.stdout?.off("data", onStdout);
+      if (error === undefined) resolveCommand({ stdout: Buffer.concat(chunks).toString("utf8") });
+      else rejectCommand(error);
+    };
+    const terminate = (reason: Error): void => {
+      if (settled || terminationReason !== undefined) return;
+      terminationReason = reason;
+      try { child.kill("SIGTERM"); } catch { /* escalation remains authoritative */ }
+      forceKillTimer = setTimeout(() => {
+        if (settled) return;
+        try { child.kill("SIGKILL"); } catch { /* settlement deadline remains authoritative */ }
+        killSettlementTimer = setTimeout(() => {
+          child.stdout?.destroy();
+          child.unref?.();
+          finish(reason);
+        }, PROVIDER_DISCOVERY_KILL_SETTLE_MS);
+        killSettlementTimer.unref?.();
+      }, PROVIDER_DISCOVERY_TERM_GRACE_MS);
+      forceKillTimer.unref?.();
+    };
+    const abort = (): void => {
+      const error = new Error(`${file} provider probe was interrupted.`);
+      error.name = "AbortError";
+      terminate(error);
+    };
+    const onStdout = (chunk: Buffer | string): void => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      stdoutBytes += bytes.byteLength;
+      if (stdoutBytes > MAX_PROVIDER_DISCOVERY_STDOUT_BYTES) {
+        terminate(new Error(`${file} provider probe exceeded the ${MAX_PROVIDER_DISCOVERY_STDOUT_BYTES}-byte output limit.`));
+        return;
+      }
+      chunks.push(bytes);
+    };
+
+    child.stdout?.on("data", onStdout);
+    child.once("error", (error) => {
+      childError = error;
+      if (child.pid === undefined && terminationReason === undefined) finish(error);
+    });
+    child.once("close", (code, signal) => {
+      if (terminationReason !== undefined) {
+        finish(terminationReason);
+      } else if (code === 0) {
+        finish();
+      } else {
+        finish(childError ?? new Error(
+          signal === null
+            ? `${file} provider probe exited ${code ?? "unknown"}.`
+            : `${file} provider probe terminated by ${signal}.`,
+        ));
+      }
+    });
+    timeoutTimer = setTimeout(
+      () => terminate(new Error(`${file} provider probe timed out after ${timeout}ms.`)),
+      timeout,
+    );
+    timeoutTimer.unref?.();
+    options.abortSignal?.addEventListener("abort", abort, { once: true });
+    if (options.abortSignal?.aborted === true) abort();
+  });
+}
+
+async function safelyDetectedPiCredentialProviders(path: string): Promise<Set<string>> {
+  const inspection = await inspectPiAuthStore(path);
+  if (inspection.status !== "ok") return new Set();
+  const nested = isRecord(inspection.auth.providers) ? inspection.auth.providers : {};
+  const entries = Object.entries({
+    ...nested,
+    ...Object.fromEntries(Object.entries(inspection.auth).filter(([key]) => key !== "providers")),
+  });
+  return new Set(entries
+    .filter(([provider, credential]) => isUsableStoredPiCredential(provider, credential))
+    .map(([provider]) => provider));
+}
+
 export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSetupPlan {
   const piAuthPath = options.piAuthPath ?? DEFAULT_PI_AUTH_PATH;
   const actionsById = new Map<string, ProviderSetupAction>();
+  const detectedModelRefs = new Set<string>();
+  const piOAuthProviders = new Set(getOAuthProviders().map((provider) => provider.id));
+  const piProviders = builtinModels();
+  const authAlreadyDetected = (keys: readonly string[]): boolean =>
+    options.forceAuthentication !== true && keys.some((key) => {
+      const state = options.credentialStates?.[key];
+      return state === "credential_detected" || state === "verified";
+    });
 
   for (const raw of options.modelRefs) {
     let ref;
@@ -183,6 +586,10 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
     };
 
     if (ref.sdk === "claude") {
+      if (authAlreadyDetected(["claude", refKey])) {
+        detectedModelRefs.add(refKey);
+        continue;
+      }
       add({
         id: "claude-login",
         kind: "auth",
@@ -196,19 +603,32 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
     }
 
     if (ref.sdk === "codex") {
+      if (authAlreadyDetected(["codex", refKey])) {
+        detectedModelRefs.add(refKey);
+        continue;
+      }
+      const authMode = options.codexAuthMode ?? "browser";
       add({
         id: "codex-login",
         kind: "auth",
         label: "Codex login",
         modelRefs: [refKey],
-        command: ["codex", "login"],
+        command: authMode === "device" ? ["codex", "login", "--device-auth"] : ["codex", "login"],
+        authMode,
         cwd: options.cwd,
-        detail: "Runs the Codex login flow for direct Codex model references.",
+        detail: authMode === "device"
+          ? "Runs Codex device-code login for a remote or headless machine."
+          : "Runs Codex browser login with a localhost callback server.",
       });
       continue;
     }
 
     if (ref.sdk !== "pi" || typeof ref.provider !== "string") {
+      continue;
+    }
+
+    if (authAlreadyDetected([`pi:${ref.provider}`, ref.provider, refKey])) {
+      detectedModelRefs.add(refKey);
       continue;
     }
 
@@ -238,22 +658,39 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
       continue;
     }
 
-    if (ref.provider === "opencode-go") {
+    const provider = piProviders.getProvider(ref.provider);
+    const supportsOAuth = piOAuthProviders.has(ref.provider);
+    const supportsApiKeyLogin = typeof provider?.auth.apiKey?.login === "function";
+    const selectedMethod = options.piAuthMethods?.[ref.provider]
+      ?? (supportsOAuth ? "oauth" : supportsApiKeyLogin ? "api-key" : undefined);
+
+    if (selectedMethod === "api-key" && supportsApiKeyLogin) {
+      const envVar = PI_API_KEY_PROVIDERS[ref.provider];
+      // Complex or ambient providers may require multiple values. Never invent
+      // an environment name or persist an incomplete credential; their normal
+      // provider environment remains available as the explicit manual path.
+      if (envVar === undefined) continue;
+      const persistence = options.piApiKeyPersistenceByProvider?.[ref.provider]
+        ?? options.piApiKeyPersistence
+        ?? "secure-store";
       add({
-        id: "pi-api-key:opencode-go",
+        id: `pi-api-key:${ref.provider}`,
         kind: "auth",
-        label: "OpenCode-Go API key",
+        label: `${provider?.auth.apiKey?.name ?? ref.provider} (${persistence === "secure-store" ? "secure store" : "environment"})`,
         modelRefs: [refKey],
         provider: ref.provider,
-        envVar: PI_API_KEY_PROVIDERS[ref.provider] ?? "OPENCODE_API_KEY",
+        envVar,
+        persistence,
         piAuthPath: piAuthPathForSetup(piAuthPath, options.cwd),
         cwd: piAuthWorkingDirectory(piAuthPath, options.cwd),
-        detail: "Stores the OpenCode-Go API key in the Pi auth store used by providers.piAuthPath.",
+        detail: persistence === "secure-store"
+          ? `Stores ${envVar} in the owner-only Pi auth store used by providers.piAuthPath.`
+          : `Uses ${envVar} from the durable agent environment without copying it into Pi auth.json.`,
       });
       continue;
     }
 
-    if (!PI_OAUTH_LOGIN_PROVIDERS.has(ref.provider)) {
+    if (selectedMethod !== "oauth" || !supportsOAuth) {
       continue;
     }
 
@@ -269,7 +706,7 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
     });
   }
 
-  return { actions: [...actionsById.values()] };
+  return { actions: [...actionsById.values()], detectedModelRefs: [...detectedModelRefs] };
 }
 
 export function providerSetupActionCommandLine(action: ProviderSetupAction): string {
@@ -300,15 +737,21 @@ export async function executeProviderSetupPlan(
   const preflightTimeoutMs = positivePreflightTimeout(options.preflightTimeoutMs);
   const results: ProviderSetupResult[] = [];
   for (const action of plan.actions) {
+    if (options.abortSignal?.aborted === true) break;
     const result = isProviderSetupPiApiKeyAction(action)
       ? await runPiApiKeyAction(action, options.apiKeys ?? {}, options.platform ?? process.platform, options)
       : "command" in action
-      ? await runCommandAction(action, options.spawn ?? spawn, options.platform ?? process.platform, options, preflightTimeoutMs)
-      : await runHttpAction(action, options.fetch ?? fetch, preflightTimeoutMs);
+      ? await runCommandAction(
+          action,
+          options.spawn ?? spawn,
+          options.platform ?? process.platform,
+          options,
+          preflightTimeoutMs,
+          options.abortSignal,
+        )
+      : await runHttpAction(action, options.fetch ?? fetch, preflightTimeoutMs, options.abortSignal);
     results.push(result);
-    if (result.status === "failed") {
-      break;
-    }
+    if (result.failureKind !== undefined) break;
   }
   return results;
 }
@@ -319,13 +762,26 @@ async function runPiApiKeyAction(
   platform: NodeJS.Platform,
   hooks: PiAuthPromotionHooks,
 ): Promise<ProviderSetupResult> {
-  const raw = apiKeys[action.id] ?? apiKeys[action.provider] ?? process.env[action.envVar];
+  // Secure-store is an explicit mutation and therefore consumes only a value
+  // intentionally handed to this action. Merely exporting an environment
+  // variable must never cause mono-agent to copy it into auth.json.
+  const raw = apiKeys[action.id]
+    ?? apiKeys[action.provider]
+    ?? (action.persistence === "environment" ? process.env[action.envVar] : undefined);
   const key = raw?.trim();
   if (key === undefined || key.length === 0) {
     return {
       action,
       status: "skipped",
       detail: `${action.envVar} was not provided; skipped saving credentials for ${action.provider}.`,
+    };
+  }
+
+  if (action.persistence === "environment") {
+    return {
+      action,
+      status: "ok",
+      detail: `${action.envVar} is available in the durable environment; the value was not copied into Pi auth.json.`,
     };
   }
 
@@ -338,7 +794,7 @@ async function runPiApiKeyAction(
         [action.provider]: { type: "api_key", key },
       };
       await writePiAuthStoreAtomically(authPath, next, original, ownerUid, assertLockHeld, hooks);
-    });
+    }, hooks);
     return {
       action,
       status: "ok",
@@ -348,9 +804,25 @@ async function runPiApiKeyAction(
     return {
       action,
       status: "failed",
+      ...(error instanceof PiAuthCleanupError ? { failureKind: "cleanup_failed" as const } : {}),
       detail: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function isBoundedCredentialString(value: unknown): value is string {
+  return typeof value === "string"
+    && value.trim().length > 0
+    && value.length <= MAX_API_KEY_CREDENTIAL_STRING_LENGTH
+    && !value.includes("\0");
+}
+
+function isUsableStoredPiCredential(_provider: string, value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.type === "oauth") {
+    return isBoundedCredentialString(value.access) || isBoundedCredentialString(value.refresh);
+  }
+  return value.type === "api_key" && isBoundedCredentialString(value.key);
 }
 
 async function runCommandAction(
@@ -359,12 +831,12 @@ async function runCommandAction(
   platform: NodeJS.Platform,
   hooks: PiAuthPromotionHooks,
   preflightTimeoutMs: number,
+  abortSignal?: AbortSignal,
 ): Promise<ProviderSetupResult> {
   if (isProviderSetupPiLoginAction(action)) {
-    return await runPiLoginAction(action, spawnImpl, platform, hooks);
+    return await runPiLoginAction(action, spawnImpl, platform, hooks, abortSignal);
   }
-  const [file, ...args] = action.command;
-  return await runSpawnedCommand(action, spawnImpl, action.cwd, preflightTimeoutMs);
+  return await runSpawnedCommand(action, spawnImpl, action.cwd, preflightTimeoutMs, abortSignal);
 }
 
 async function runPiLoginAction(
@@ -372,20 +844,36 @@ async function runPiLoginAction(
   spawnImpl: typeof spawn,
   platform: NodeJS.Platform,
   hooks: PiAuthPromotionHooks,
+  abortSignal?: AbortSignal,
 ): Promise<ProviderSetupResult> {
+  let dominantFailure: ProviderSetupResult | undefined;
+  let cleanupError: unknown;
+  let stagingPath: string | undefined;
+  let stagingCleanupCompleted = false;
+  let piTaskCompleted = false;
   try {
     assertOwnerOnlyPersistenceSupported(platform);
     return await withPiAuthFileLock(action.piAuthPath, async (authPath, ownerUid, assertLockHeld) => {
       let stagingDir: string | undefined;
+      let operationError: unknown;
       try {
         const original = await readPiAuthStore(authPath, piAuthSingleLinkPolicy(ownerUid));
         stagingDir = await mkdtemp(join(dirname(authPath), ".mono-agent-pi-auth-"));
+        stagingPath = stagingDir;
         const stagedAuthPath = join(stagingDir, "auth.json");
         if (original.exists) {
           await writeFile(stagedAuthPath, original.contents, { encoding: "utf8", flag: "wx", mode: 0o600 });
         }
-        const result = await runSpawnedCommand(action, spawnImpl, stagingDir);
+        const result = await runSpawnedCommand(
+          action,
+          spawnImpl,
+          stagingDir,
+          DEFAULT_PROVIDER_PREFLIGHT_TIMEOUT_MS,
+          abortSignal,
+        );
         if (result.status !== "ok") {
+          dominantFailure = result;
+          piTaskCompleted = true;
           return result;
         }
 
@@ -418,19 +906,64 @@ async function runPiLoginAction(
           hardenedStaged,
           hooks,
         );
-        await syncDirectory(dirname(authPath));
+        piTaskCompleted = true;
+        try {
+          await hooks.beforePiAuthPostMutationSync?.(authPath);
+          await syncDirectory(dirname(authPath));
+        } catch (error) {
+          throw new PiAuthCleanupError(
+            authPath,
+            `credentials were installed but parent-directory durability could not be confirmed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
         return {
           action,
           status: "ok",
           detail: `${providerSetupActionCommandLine(action)} saved credentials to ${action.piAuthPath}.`,
         };
+      } catch (error) {
+        operationError = error;
+        throw error;
       } finally {
         if (stagingDir !== undefined) {
-          await rm(stagingDir, { recursive: true, force: true });
+          try {
+            await hooks.beforePiAuthCleanup?.(stagingDir);
+            await rm(stagingDir, { recursive: true, force: true });
+            stagingCleanupCompleted = true;
+          } catch (error) {
+            const stagingCleanupError = new PiAuthCleanupError(
+              stagingDir,
+              `the credential-bearing OAuth staging directory could not be removed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            cleanupError = stagingCleanupError;
+            throw combinePiAuthCleanupError(operationError, stagingCleanupError);
+          }
         }
       }
-    });
+    }, hooks);
   } catch (error) {
+    if (dominantFailure?.failureKind === "child_exit_unconfirmed") {
+      return {
+        ...dominantFailure,
+        detail: `${dominantFailure.detail} Cleanup also failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    if (cleanupError !== undefined || piTaskCompleted || error instanceof PiAuthCleanupError) {
+      const cleanupPath = error instanceof PiAuthCleanupError
+        ? error.path
+        : !stagingCleanupCompleted && stagingPath !== undefined
+          ? stagingPath
+          : `${action.piAuthPath}.mono-agent.lock`;
+      return {
+        action,
+        status: "failed",
+        failureKind: "cleanup_failed",
+        detail:
+          `${dominantFailure?.detail === undefined ? "Provider authentication stopped." : dominantFailure.detail} ` +
+          `Temporary credential cleanup for ${cleanupPath} failed: ${error instanceof Error ? error.message : String(error)} ` +
+          "Inspect and remove the residue manually before retrying authentication.",
+      };
+    }
     return {
       action,
       status: "failed",
@@ -466,6 +999,39 @@ interface PiAuthLock {
   readonly contents: Buffer;
 }
 
+class PiAuthCleanupError extends Error {
+  readonly paths: readonly string[];
+  readonly path: string;
+  readonly detail: string;
+
+  constructor(path: string | readonly string[], detail: string) {
+    const paths = [...new Set(typeof path === "string" ? [path] : path)];
+    const primaryPath = paths[0] ?? "unknown credential artifact";
+    super(`Pi credential${paths.length === 1 && primaryPath.endsWith(".mono-agent.lock") ? " lock" : ""} cleanup for ${paths.join(", ")} is uncertain: ${detail}`);
+    this.name = "PiAuthCleanupError";
+    this.paths = paths;
+    this.path = primaryPath;
+    this.detail = detail;
+  }
+}
+
+function combinePiAuthCleanupError(
+  earlier: unknown,
+  cleanup: PiAuthCleanupError,
+): PiAuthCleanupError {
+  if (earlier instanceof PiAuthCleanupError) {
+    return new PiAuthCleanupError(
+      [...earlier.paths, ...cleanup.paths],
+      `${earlier.detail}; additionally, ${cleanup.detail}`,
+    );
+  }
+  if (earlier === undefined) return cleanup;
+  return new PiAuthCleanupError(
+    cleanup.paths,
+    `${cleanup.detail}; the preceding provider operation also failed: ${earlier instanceof Error ? earlier.message : String(earlier)}`,
+  );
+}
+
 type AssertPiAuthLockHeld = () => Promise<void>;
 
 function assertOwnerOnlyPersistenceSupported(platform: NodeJS.Platform): void {
@@ -483,6 +1049,8 @@ async function withPiAuthFileLock<T>(
     ownerUid: number,
     assertLockHeld: AssertPiAuthLockHeld,
   ) => Promise<T>,
+  hooks: PiAuthPromotionHooks = {},
+  staleRepairAttempted = false,
 ): Promise<T> {
   await mkdir(dirname(authPath), { recursive: true, mode: 0o700 });
   const canonicalParent = await realpath(dirname(authPath));
@@ -508,8 +1076,8 @@ async function withPiAuthFileLock<T>(
       0o600,
     );
     const initialStat = await handle.stat();
-    assertPiAuthLockStat(lockPath, initialStat, ownerUid);
     identity = { dev: initialStat.dev, ino: initialStat.ino, ownerUid };
+    assertPiAuthLockStat(lockPath, initialStat, ownerUid);
     await handle.writeFile(contents);
     await handle.sync();
     const writtenStat = await handle.stat();
@@ -522,16 +1090,58 @@ async function withPiAuthFileLock<T>(
       throw new Error(`Pi credential lock ${lockPath} changed while its owner record was written.`);
     }
     await syncDirectory(canonicalParent);
+    await hooks.afterPiAuthLockCreated?.(lockPath);
   } catch (error) {
+    let rollbackError: unknown;
     if (handle !== undefined) {
-      await handle.close().catch(() => undefined);
+      try {
+        await handle.close();
+      } catch (closeError) {
+        rollbackError = new PiAuthCleanupError(
+          lockPath,
+          `the failed lock-creation handle could not be confirmed closed: ${closeError instanceof Error ? closeError.message : String(closeError)}`,
+        );
+      }
       if (identity !== undefined) {
-        await removePiAuthLockIfIdentity(lockPath, identity).catch(() => undefined);
+        try {
+          await removePiAuthLockIfIdentity(lockPath, identity, hooks);
+        } catch (removeError) {
+          rollbackError ??= removeError;
+        }
+      } else {
+        rollbackError ??= new PiAuthCleanupError(
+          lockPath,
+          "the failed lock-creation artifact could not be identified for safe removal",
+        );
       }
     }
+    if (rollbackError !== undefined) {
+      throw combinePiAuthCleanupError(
+        error,
+        rollbackError instanceof PiAuthCleanupError
+          ? rollbackError
+          : new PiAuthCleanupError(lockPath, String(rollbackError)),
+      );
+    }
     if (isAlreadyExistsError(error)) {
+      if (!staleRepairAttempted) {
+        const repair = await repairStalePiAuthLock(lockPath, ownerUid, {
+          ...(hooks.beforeStalePiAuthLockRemoval === undefined
+            ? {}
+            : { beforeRemoval: hooks.beforeStalePiAuthLockRemoval }),
+          ...(hooks.afterStalePiAuthLockRemoval === undefined
+            ? {}
+            : { afterRemoval: hooks.afterStalePiAuthLockRemoval }),
+        });
+        if (repair === "removed") {
+          return await withPiAuthFileLock(authPath, task, hooks, true);
+        }
+        if (repair === "active") {
+          throw new Error(`Pi credential lock ${lockPath} already exists and belongs to an active authentication process. Wait for it to finish, then retry.`);
+        }
+      }
       throw new Error(
-        `Pi credential lock ${lockPath} already exists. If no mono-agent authentication is running, remove the stale lock manually and retry.`,
+        `Pi credential lock ${lockPath} already exists and could not be proven stale. It was left untouched; inspect its owner and retry after the active authentication exits.`,
       );
     }
     throw error;
@@ -548,13 +1158,32 @@ async function withPiAuthFileLock<T>(
     token,
     contents,
   };
+  let taskError: unknown;
   try {
     return await task(canonicalAuthPath, ownerUid, () => assertPiAuthLockHeld(lock));
+  } catch (error) {
+    taskError = error;
+    throw error;
   } finally {
+    let lifecycleError: PiAuthCleanupError | undefined;
     try {
       await lock.handle.close();
-    } finally {
-      await releasePiAuthLock(lock);
+    } catch (error) {
+      lifecycleError = new PiAuthCleanupError(
+        lock.path,
+        `the lock handle could not be confirmed closed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    try {
+      await releasePiAuthLock(lock, hooks);
+    } catch (error) {
+      const releaseError = error instanceof PiAuthCleanupError
+        ? error
+        : new PiAuthCleanupError(lock.path, error instanceof Error ? error.message : String(error));
+      lifecycleError = combinePiAuthCleanupError(lifecycleError, releaseError);
+    }
+    if (lifecycleError !== undefined) {
+      throw combinePiAuthCleanupError(taskError, lifecycleError);
     }
   }
 }
@@ -623,12 +1252,141 @@ async function readPiAuthLockPath(
     handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
     const handleStat = await handle.stat();
     assertPiAuthLockStat(path, handleStat, ownerUid);
-    if (pathStat.dev !== handleStat.dev || pathStat.ino !== handleStat.ino) return undefined;
+    if (pathStat.dev !== handleStat.dev || pathStat.ino !== handleStat.ino) {
+      throw new Error(`Pi credential lock ${path} changed identity while it was opened.`);
+    }
     const contents = await handle.readFile();
-    if (contents.length !== handleStat.size || contents.length > 4096) return undefined;
+    if (contents.length !== handleStat.size) {
+      throw new Error(`Pi credential lock ${path} changed while its contents were read.`);
+    }
+    if (contents.length > 4096) {
+      throw new Error(`Pi credential lock ${path} exceeds the 4096-byte safety limit.`);
+    }
     return { dev: handleStat.dev, ino: handleStat.ino, contents };
   } finally {
     await handle?.close();
+  }
+}
+
+interface StalePiAuthLockRecord {
+  readonly version: 1;
+  readonly pid: number;
+  readonly ownerUid: number;
+  readonly token: string;
+}
+
+export type StalePiAuthLockRepairResult = "removed" | "active" | "unverifiable";
+
+/**
+ * Remove only a secure, identity-stable lock whose recorded process is proven
+ * gone with ESRCH. Active, EPERM, malformed and racing locks are untouched.
+ *
+ * @internal Exported as a narrow deterministic test seam.
+ */
+export async function repairStalePiAuthLock(
+  path: string,
+  ownerUid: number,
+  options: {
+    readonly kill?: (pid: number, signal: 0) => true;
+    readonly beforeRemoval?: (lockPath: string) => void | Promise<void>;
+    readonly afterRemoval?: (lockPath: string) => void | Promise<void>;
+  } = {},
+): Promise<StalePiAuthLockRepairResult> {
+  const kill = options.kill ?? ((pid: number, signal: 0) => process.kill(pid, signal));
+  let initial;
+  try {
+    initial = await readPiAuthLockPath(path, ownerUid);
+  } catch {
+    return "unverifiable";
+  }
+  if (initial === undefined) return "unverifiable";
+  const record = parseStalePiAuthLockRecord(initial.contents, ownerUid);
+  if (record === undefined) return "unverifiable";
+  const liveness = piLockProcessLiveness(record.pid, kill);
+  if (liveness !== "stale") return liveness;
+
+  await options.beforeRemoval?.(path);
+
+  let current;
+  try {
+    current = await readPiAuthLockPath(path, ownerUid);
+  } catch {
+    return "unverifiable";
+  }
+  if (
+    current === undefined
+    || current.dev !== initial.dev
+    || current.ino !== initial.ino
+    || !current.contents.equals(initial.contents)
+  ) {
+    return "unverifiable";
+  }
+  const currentRecord = parseStalePiAuthLockRecord(current.contents, ownerUid);
+  if (
+    currentRecord === undefined
+    || currentRecord.pid !== record.pid
+    || currentRecord.token !== record.token
+    || piLockProcessLiveness(currentRecord.pid, kill) !== "stale"
+  ) {
+    return "unverifiable";
+  }
+  try {
+    await rm(path);
+  } catch {
+    return "unverifiable";
+  }
+  try {
+    await options.afterRemoval?.(path);
+    await syncDirectory(dirname(path));
+  } catch (error) {
+    throw new PiAuthCleanupError(
+      path,
+      `the proven-stale lock was removed but directory durability could not be confirmed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return "removed";
+}
+
+function parseStalePiAuthLockRecord(contents: Buffer, ownerUid: number): StalePiAuthLockRecord | undefined {
+  if (contents.length === 0 || contents.length > 4096) return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(contents.toString("utf8"));
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(value)) return undefined;
+  if (
+    value.version !== 1
+    || !Number.isSafeInteger(value.pid)
+    || (value.pid as number) <= 0
+    || value.ownerUid !== ownerUid
+    || typeof value.token !== "string"
+    || value.token.length < 8
+    || value.token.length > 200
+  ) {
+    return undefined;
+  }
+  return {
+    version: 1,
+    pid: value.pid as number,
+    ownerUid,
+    token: value.token,
+  };
+}
+
+function piLockProcessLiveness(
+  pid: number,
+  kill: (pid: number, signal: 0) => true,
+): "active" | "stale" | "unverifiable" {
+  try {
+    kill(pid, 0);
+    return "active";
+  } catch (error) {
+    const code = isRecord(error) && typeof error.code === "string" ? error.code : "";
+    if (code === "ESRCH") return "stale";
+    if (code === "EPERM") return "active";
+    return "unverifiable";
   }
 }
 
@@ -650,39 +1408,67 @@ async function assertPiAuthLockHeld(lock: PiAuthLock): Promise<void> {
   }
 }
 
-async function releasePiAuthLock(lock: PiAuthLock): Promise<void> {
+async function releasePiAuthLock(lock: PiAuthLock, hooks: PiAuthPromotionHooks): Promise<void> {
   let current;
   try {
     current = await readPiAuthLockPath(lock.path, lock.ownerUid);
-  } catch {
+  } catch (error) {
+    throw new PiAuthCleanupError(
+      lock.path,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  if (current === undefined) {
+    await confirmMissingPiAuthLockDurable(lock.path, hooks);
     return;
   }
   if (
-    current === undefined ||
     current.dev !== lock.dev ||
     current.ino !== lock.ino ||
     !current.contents.equals(lock.contents)
   ) {
-    return;
+    throw new PiAuthCleanupError(
+      lock.path,
+      "the lock identity changed; its replacement was left untouched",
+    );
   }
   try {
     await rm(lock.path);
   } catch (error) {
-    if (!isMissingFileError(error)) throw error;
+    if (!isMissingFileError(error)) {
+      throw new PiAuthCleanupError(
+        lock.path,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
-  await syncDirectory(dirname(lock.path));
+  try {
+    await syncDirectory(dirname(lock.path));
+  } catch (error) {
+    throw new PiAuthCleanupError(
+      lock.path,
+      `the lock was removed but directory durability could not be confirmed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 async function removePiAuthLockIfIdentity(
   path: string,
   expected: Pick<PiAuthLock, "dev" | "ino" | "ownerUid">,
+  hooks: PiAuthPromotionHooks,
 ): Promise<void> {
   let current: Stats;
   try {
     current = await lstat(path);
   } catch (error) {
-    if (isMissingFileError(error)) return;
-    throw error;
+    if (isMissingFileError(error)) {
+      await confirmMissingPiAuthLockDurable(path, hooks);
+      return;
+    }
+    throw new PiAuthCleanupError(
+      path,
+      error instanceof Error ? error.message : String(error),
+    );
   }
   if (
     !current.isFile() ||
@@ -692,10 +1478,44 @@ async function removePiAuthLockIfIdentity(
     current.nlink !== 1 ||
     (current.mode & 0o777) !== 0o600
   ) {
-    return;
+    throw new PiAuthCleanupError(
+      path,
+      "the failed lock-creation artifact changed identity; its replacement was left untouched",
+    );
   }
-  await rm(path);
-  await syncDirectory(dirname(path));
+  try {
+    await rm(path);
+  } catch (error) {
+    if (!isMissingFileError(error)) {
+      throw new PiAuthCleanupError(
+        path,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+  try {
+    await syncDirectory(dirname(path));
+  } catch (error) {
+    throw new PiAuthCleanupError(
+      path,
+      `the failed lock-creation artifact was removed but directory durability could not be confirmed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function confirmMissingPiAuthLockDurable(
+  path: string,
+  hooks: PiAuthPromotionHooks,
+): Promise<void> {
+  try {
+    await hooks.beforePiAuthMissingLockSync?.(path);
+    await syncDirectory(dirname(path));
+  } catch (error) {
+    throw new PiAuthCleanupError(
+      path,
+      `the lock path is absent but parent-directory durability could not be confirmed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 async function readPiAuthStore(
@@ -783,6 +1603,8 @@ async function writePiAuthStoreAtomically(
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const tempDir = await mkdtemp(join(dir, ".mono-agent-pi-auth-write-"));
   const tempPath = join(tempDir, "auth.json");
+  let promotionInstalled = false;
+  let operationError: unknown;
   try {
     await writeFile(tempPath, `${JSON.stringify(auth, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
     await syncFile(tempPath);
@@ -796,9 +1618,29 @@ async function writePiAuthStoreAtomically(
       undefined,
       hooks,
     );
-    await syncDirectory(dir);
+    promotionInstalled = true;
+    try {
+      await hooks.beforePiAuthPostMutationSync?.(path);
+      await syncDirectory(dir);
+    } catch (error) {
+      throw new PiAuthCleanupError(
+        path,
+        `credentials were installed but parent-directory durability could not be confirmed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  } catch (error) {
+    operationError = error;
+    throw error;
   } finally {
-    await rm(tempDir, { recursive: true, force: true });
+    try {
+      await hooks.beforePiAuthTempCleanup?.(tempDir);
+      await rm(tempDir, { recursive: true, force: true });
+    } catch (error) {
+      throw combinePiAuthCleanupError(operationError, new PiAuthCleanupError(
+        tempDir,
+        `${promotionInstalled ? "credentials were installed, and " : ""}the credential-bearing transaction directory could not be removed: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+    }
   }
 }
 
@@ -839,23 +1681,40 @@ async function promotePiAuthStoreWithoutClobber(
     throw new Error(`Pi auth staging file ${stagedPath} disappeared before promotion.`);
   }
   if (!expected.exists) {
-    await hooks.beforePiAuthPromotion?.(targetPath, stagedPath);
-    await assertLockHeld();
-    if (!await linkPiFileIfAbsent(stagedPath, targetPath)) {
-      throw new Error(`Pi auth file ${targetPath} changed during credential setup; the newer file was preserved.`);
+    let installed = false;
+    try {
+      await hooks.beforePiAuthPromotion?.(targetPath, stagedPath);
+      await assertLockHeld();
+      installed = await linkPiFileIfAbsent(stagedPath, targetPath);
+      if (!installed) {
+        throw new Error(`Pi auth file ${targetPath} changed during credential setup; the newer file was preserved.`);
+      }
+      await hooks.afterPiAuthLink?.(targetPath, stagedPath);
+      await assertPromotedPiAuthStore(intended, stagedPath, targetPath, ownerUid);
+      return;
+    } catch (error) {
+      if (installed && !(error instanceof PiAuthCleanupError)) {
+        throw new PiAuthCleanupError(
+          targetPath,
+          `new credentials were linked but their final state could not be confirmed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      throw error;
     }
-    await hooks.afterPiAuthLink?.(targetPath, stagedPath);
-    await assertPromotedPiAuthStore(intended, stagedPath, targetPath, ownerUid);
-    return;
   }
 
   const backupPath = join(dirname(targetPath), `.${basename(targetPath)}.mono-agent-${randomUUID()}.backup`);
   let preserveConcurrentBackup = true;
+  let backupCreated = false;
+  let targetMutationStarted = false;
+  let promotionError: unknown;
   try {
     await hooks.beforePiAuthPromotion?.(targetPath, stagedPath);
     await assertLockHeld();
     try {
       await rename(targetPath, backupPath);
+      backupCreated = true;
+      targetMutationStarted = true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         throw new Error(`Pi auth file ${targetPath} changed during credential setup; the newer file was preserved.`);
@@ -937,9 +1796,37 @@ async function promotePiAuthStoreWithoutClobber(
       throw new Error(`Pi auth promotion failed; concurrent credentials were retained at ${backupPath}.`);
     }
     preserveConcurrentBackup = false;
+  } catch (error) {
+    promotionError = targetMutationStarted && !(error instanceof PiAuthCleanupError)
+      ? new PiAuthCleanupError(
+        preserveConcurrentBackup ? backupPath : targetPath,
+        `credential promotion changed filesystem state but did not complete cleanly: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      : error;
+    throw promotionError;
   } finally {
-    if (!preserveConcurrentBackup) await rm(backupPath, { force: true });
-    else await tightenPiFileOwnerOnlyBestEffort(backupPath);
+    if (backupCreated && preserveConcurrentBackup) {
+      try {
+        await tightenPiFileOwnerOnlyBestEffort(backupPath);
+      } catch {
+        // The fatal result below remains authoritative and names the residue.
+      }
+      throw combinePiAuthCleanupError(promotionError, new PiAuthCleanupError(
+        backupPath,
+        `concurrent credentials were retained at ${backupPath} for manual recovery`,
+      ));
+    }
+    if (backupCreated) {
+      try {
+        await hooks.beforePiAuthBackupCleanup?.(backupPath);
+        await rm(backupPath, { force: true });
+      } catch (error) {
+        throw combinePiAuthCleanupError(promotionError, new PiAuthCleanupError(
+          backupPath,
+          `credential backup could not be removed: ${error instanceof Error ? error.message : String(error)}`,
+        ));
+      }
+    }
   }
 }
 
@@ -1120,6 +2007,10 @@ function isSymlinkOpenError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && (error.code === "ELOOP" || error.code === "EMLINK");
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function shellQuote(value: string): string {
   if (/^[A-Za-z0-9_./:@%+=,-]+$/u.test(value)) {
     return value;
@@ -1132,6 +2023,7 @@ async function runSpawnedCommand(
   spawnImpl: typeof spawn,
   cwd: string,
   preflightTimeoutMs = DEFAULT_PROVIDER_PREFLIGHT_TIMEOUT_MS,
+  abortSignal?: AbortSignal,
 ): Promise<ProviderSetupResult> {
   const [file, ...args] = action.command;
   return new Promise((resolve) => {
@@ -1142,16 +2034,58 @@ async function runSpawnedCommand(
     });
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
+    let forceKillTimer: NodeJS.Timeout | undefined;
+    let killSettlementTimer: NodeJS.Timeout | undefined;
+    let childError: Error | undefined;
+    let terminationResult: ProviderSetupResult | undefined;
+    const interruptedDetail = `${providerSetupActionCommandLine(action)} was interrupted.`;
     const finish = (result: ProviderSetupResult) => {
       if (settled) return;
       settled = true;
       if (timer !== undefined) clearTimeout(timer);
+      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
+      if (killSettlementTimer !== undefined) clearTimeout(killSettlementTimer);
+      abortSignal?.removeEventListener("abort", abort);
       resolve(result);
     };
+    const terminate = (result: ProviderSetupResult) => {
+      if (settled || terminationResult !== undefined) return;
+      terminationResult = result;
+      try { child.kill("SIGTERM"); } catch { /* close/error remains authoritative */ }
+      forceKillTimer = setTimeout(() => {
+        if (settled) return;
+        try { child.kill("SIGKILL"); } catch { /* close/error remains authoritative */ }
+        killSettlementTimer = setTimeout(() => {
+          child.unref?.();
+          finish({
+            action,
+            status: "failed",
+            failureKind: "child_exit_unconfirmed",
+            detail:
+              `${result.detail.replace(/[.]$/u, "")}; child exit could not be confirmed after SIGKILL. ` +
+              "Stop the provider process manually before retrying provider setup.",
+          });
+        }, action.kind === "preflight" ? PROVIDER_PREFLIGHT_KILL_SETTLE_MS : PROVIDER_AUTH_KILL_SETTLE_MS);
+        killSettlementTimer.unref?.();
+      }, action.kind === "preflight" ? PROVIDER_PREFLIGHT_TERM_GRACE_MS : PROVIDER_AUTH_TERM_GRACE_MS);
+      forceKillTimer.unref?.();
+    };
+    const abort = () => terminate({ action, status: "failed", detail: interruptedDetail });
     child.once("error", (error) => {
-      finish({ action, status: "failed", detail: error.message });
+      childError = error;
+      // A ChildProcess can emit `error` because signaling an already-running
+      // process failed (for example EPERM). That is not proof of exit: retain
+      // the TERM→KILL escalation and wait for `close`. A true spawn failure has
+      // no pid and can settle immediately when no cancellation is in flight.
+      if (terminationResult === undefined && child.pid === undefined) {
+        finish({ action, status: "failed", detail: error.message });
+      }
     });
     child.once("close", (code, signal) => {
+      if (terminationResult !== undefined) {
+        finish(terminationResult);
+        return;
+      }
       if (code === 0) {
         finish({ action, status: "ok", detail: `${providerSetupActionCommandLine(action)} exited 0.` });
         return;
@@ -1159,19 +2093,20 @@ async function runSpawnedCommand(
       finish({
         action,
         status: "failed",
-        detail: signal === null
+        detail: childError?.message ?? (signal === null
           ? `${providerSetupActionCommandLine(action)} exited ${code ?? "unknown"}.`
-          : `${providerSetupActionCommandLine(action)} terminated by ${signal}.`,
+          : `${providerSetupActionCommandLine(action)} terminated by ${signal}.`),
       });
     });
     if (action.kind === "preflight") {
       timer = setTimeout(() => {
         const detail = `${providerSetupActionCommandLine(action)} timed out after ${preflightTimeoutMs}ms.`;
-        finish({ action, status: "failed", detail });
-        try { child.kill("SIGKILL"); } catch { /* timeout result remains authoritative */ }
+        terminate({ action, status: "failed", detail });
       }, preflightTimeoutMs);
       timer.unref?.();
     }
+    abortSignal?.addEventListener("abort", abort, { once: true });
+    if (abortSignal?.aborted === true) abort();
   });
 }
 
@@ -1179,10 +2114,22 @@ async function runHttpAction(
   action: Extract<ProviderSetupAction, { readonly url: string }>,
   fetchImpl: typeof fetch,
   preflightTimeoutMs: number,
+  abortSignal?: AbortSignal,
 ): Promise<ProviderSetupResult> {
   const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
+  const interrupted = Symbol("provider-preflight-interrupted");
+  let resolveInterrupted: ((value: typeof interrupted) => void) | undefined;
+  const interruptedPromise = new Promise<typeof interrupted>((resolve) => {
+    resolveInterrupted = resolve;
+  });
+  const onAbort = () => {
+    resolveInterrupted?.(interrupted);
+    controller.abort();
+  };
+  abortSignal?.addEventListener("abort", onAbort, { once: true });
   try {
+    if (abortSignal?.aborted === true) onAbort();
     const request = Promise.resolve(fetchImpl(action.url, { signal: controller.signal }));
     // An injected/custom fetch may ignore AbortSignal, so the race itself is the
     // bounded contract. Observe the original promise to avoid late rejections.
@@ -1191,6 +2138,7 @@ async function runHttpAction(
     const response = action.kind === "preflight"
       ? await Promise.race([
           request,
+          interruptedPromise,
           new Promise<typeof timedOut>((resolveTimeout) => {
             timer = setTimeout(() => {
               resolveTimeout(timedOut);
@@ -1199,7 +2147,14 @@ async function runHttpAction(
             timer.unref?.();
           }),
         ])
-      : await request;
+      : await Promise.race([request, interruptedPromise]);
+    if (response === interrupted) {
+      return {
+        action,
+        status: "failed",
+        detail: `${providerSetupActionCommandLine(action)} was interrupted.`,
+      };
+    }
     if (response === timedOut) {
       return {
         action,
@@ -1219,6 +2174,7 @@ async function runHttpAction(
     };
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    abortSignal?.removeEventListener("abort", onAbort);
   }
 }
 

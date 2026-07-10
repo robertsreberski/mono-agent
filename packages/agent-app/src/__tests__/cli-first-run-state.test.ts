@@ -8,11 +8,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   beforeCommit: undefined as (() => Promise<void>) | undefined,
   confirmAnswers: [] as unknown[],
+  detectProviderCredentialStatesOverride: undefined as undefined | ((...args: unknown[]) => unknown),
   executeProviderSetupPlan: vi.fn(),
+  logError: vi.fn(),
   passwordAnswers: [] as unknown[],
   runInitWizard: vi.fn(),
   runModelRepairWizard: vi.fn(),
-  runReadinessProbe: vi.fn(),
+  runAllRouteReadinessProbe: vi.fn(),
+  sandboxRuntimeStatus: vi.fn(),
+  setupManagedSrt: vi.fn(),
+  checkSandboxRuntime: vi.fn(),
   selectAnswers: [] as unknown[],
   validateMonoAgentFolder: vi.fn(),
 }));
@@ -28,7 +33,7 @@ vi.mock("@clack/prompts", () => ({
   intro: vi.fn(),
   isCancel: () => false,
   log: {
-    error: vi.fn(),
+    error: mocks.logError,
     info: vi.fn(),
     step: vi.fn(),
     warn: vi.fn(),
@@ -58,12 +63,29 @@ vi.mock("../wizard/run.js", async (importOriginal) => {
 
 vi.mock("../readiness-probe.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../readiness-probe.js")>();
-  return { ...actual, runReadinessProbe: mocks.runReadinessProbe };
+  return { ...actual, runAllRouteReadinessProbe: mocks.runAllRouteReadinessProbe };
 });
 
 vi.mock("../provider-setup.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../provider-setup.js")>();
-  return { ...actual, executeProviderSetupPlan: mocks.executeProviderSetupPlan };
+  return {
+    ...actual,
+    detectProviderCredentialStates: (...args: unknown[]) =>
+      mocks.detectProviderCredentialStatesOverride?.(...args) ?? actual.detectProviderCredentialStates(
+        args[0] as Parameters<typeof actual.detectProviderCredentialStates>[0],
+      ),
+    executeProviderSetupPlan: mocks.executeProviderSetupPlan,
+  };
+});
+
+vi.mock("../sandbox-manager.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../sandbox-manager.js")>();
+  return {
+    ...actual,
+    sandboxRuntimeStatus: mocks.sandboxRuntimeStatus,
+    setupManagedSrt: mocks.setupManagedSrt,
+    checkSandboxRuntime: mocks.checkSandboxRuntime,
+  };
 });
 
 vi.mock("../doctor.js", async (importOriginal) => {
@@ -87,6 +109,7 @@ import { defaultAnswers } from "../wizard/answers.js";
 
 const originalCwd = process.cwd();
 const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+const originalPiAuthPath = process.env.MONO_AGENT_PI_AUTH_PATH;
 const originalTelegramToken = process.env.MONO_AGENT_TELEGRAM_BOT_TOKEN;
 const stdinTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
@@ -100,6 +123,7 @@ function readyReport() {
       { id: "credentials", label: "Credentials", status: "ok" as const, details: [] },
       { id: "context", label: "Context", status: "ok" as const, details: [] },
       { id: "tools", label: "Tools", status: "ok" as const, details: [] },
+      { id: "sandbox", label: "Sandbox", status: "ok" as const, details: [] },
       { id: "channel:telegram", label: "Telegram", status: "ok" as const, details: [] },
       { id: "channel:webhook", label: "Webhook", status: "ok" as const, details: [] },
     ],
@@ -107,18 +131,42 @@ function readyReport() {
 }
 
 beforeEach(async () => {
+  mocks.detectProviderCredentialStatesOverride = undefined;
   delete process.env.MONO_AGENT_TELEGRAM_BOT_TOKEN;
   delete process.env.OPENAI_API_KEY;
+  delete process.env.MONO_AGENT_PI_AUTH_PATH;
   mocks.confirmAnswers.length = 0;
   mocks.passwordAnswers.length = 0;
   mocks.selectAnswers.length = 0;
   mocks.beforeCommit = undefined;
   mocks.executeProviderSetupPlan.mockReset();
+  mocks.logError.mockReset();
   mocks.runInitWizard.mockReset();
   mocks.runModelRepairWizard.mockReset();
-  mocks.runReadinessProbe.mockReset();
+  mocks.runAllRouteReadinessProbe.mockReset();
+  mocks.sandboxRuntimeStatus.mockReset();
+  mocks.setupManagedSrt.mockReset();
+  mocks.checkSandboxRuntime.mockReset();
   mocks.validateMonoAgentFolder.mockReset();
-  mocks.runReadinessProbe.mockResolvedValue({ ok: true });
+  mocks.runAllRouteReadinessProbe.mockResolvedValue({ ok: true });
+  const managedStatus = {
+    state: "ready" as const,
+    source: "managed" as const,
+    version: "0.0.64" as const,
+    installRoot: "/cache/managed-srt",
+    message: "managed ready",
+  };
+  const check = {
+    status: managedStatus,
+    checks: [{ id: "engine" as const, ok: true, detail: "enforced" }],
+  };
+  mocks.setupManagedSrt.mockResolvedValue({ installed: true, repaired: false, status: managedStatus, check });
+  mocks.sandboxRuntimeStatus.mockResolvedValue({
+    ...managedStatus,
+    source: "external" as const,
+    message: "external ready",
+  });
+  mocks.checkSandboxRuntime.mockResolvedValue(check);
   mocks.validateMonoAgentFolder.mockResolvedValue(readyReport());
   Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
   Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
@@ -140,6 +188,8 @@ afterEach(async () => {
   else process.env.MONO_AGENT_TELEGRAM_BOT_TOKEN = originalTelegramToken;
   if (originalOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
   else process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+  if (originalPiAuthPath === undefined) delete process.env.MONO_AGENT_PI_AUTH_PATH;
+  else process.env.MONO_AGENT_PI_AUTH_PATH = originalPiAuthPath;
   await Promise.all(temporaryDirectories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -165,7 +215,7 @@ describe("guided init state transitions", () => {
 
     expect(await readFile(envPath, "utf8")).toBe("MONO_AGENT_TELEGRAM_BOT_TOKEN=operator-value\n");
     expect((await stat(envPath)).mode & 0o777).toBe(0o600);
-    expect(mocks.runReadinessProbe).toHaveBeenCalledOnce();
+    expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledOnce();
   });
 
   it("hardens an existing provider key even when the selected plan has no module secrets", async () => {
@@ -186,6 +236,86 @@ describe("guided init state transitions", () => {
     expect(await readFile(envPath, "utf8")).toBe("OPENAI_API_KEY=operator-provider-key\n");
     expect((await stat(envPath)).mode & 0o777).toBe(0o600);
     expect(await readFile(join(process.cwd(), ".gitignore"), "utf8")).toContain("/.env");
+  });
+
+  it("installs the pinned managed SRT even when an external SRT is already valid", async () => {
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers({ sandbox: true }),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      providerEnvironmentSecrets: {},
+      piApiKeyPersistenceByProvider: {},
+      credentialStates: { codex: "credential_detected" },
+      runProviderSetup: false,
+    });
+    mocks.confirmAnswers.push(false);
+
+    await expect(runCli(["init"])).resolves.toBe(0);
+
+    expect(mocks.setupManagedSrt).toHaveBeenCalledWith(expect.objectContaining({
+      verify: true,
+      signal: expect.any(AbortSignal),
+    }));
+    expect(mocks.sandboxRuntimeStatus).not.toHaveBeenCalled();
+    expect(mocks.checkSandboxRuntime).not.toHaveBeenCalled();
+  });
+
+  it("routes an interrupted managed-SRT setup through resume without writing early", async () => {
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers({ sandbox: true }),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      providerEnvironmentSecrets: {},
+      piApiKeyPersistenceByProvider: {},
+      credentialStates: { codex: "credential_detected" },
+      runProviderSetup: false,
+    });
+    const successfulSetup = mocks.setupManagedSrt.getMockImplementation();
+    mocks.setupManagedSrt.mockImplementationOnce(async (options: { readonly signal?: AbortSignal }) => {
+      process.emit("SIGINT");
+      expect(options.signal?.aborted).toBe(true);
+      throw Object.assign(new Error("sandbox setup aborted"), { name: "AbortError" });
+    });
+    if (successfulSetup === undefined) throw new Error("expected default managed-SRT setup mock");
+    mocks.setupManagedSrt.mockImplementationOnce(successfulSetup);
+    mocks.selectAnswers.push("resume");
+    mocks.confirmAnswers.push(false);
+
+    await expect(runCli(["init"])).resolves.toBe(0);
+
+    expect(mocks.setupManagedSrt).toHaveBeenCalledTimes(2);
+    expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledOnce();
+    const rendered = [
+      ...vi.mocked(process.stdout.write).mock.calls.flat(),
+      ...vi.mocked(process.stderr.write).mock.calls.flat(),
+    ].join("");
+    expect(rendered).toContain("Preflight was interrupted");
+  });
+
+  it("offers an explicit sandbox retry after managed-SRT setup fails", async () => {
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers({ sandbox: true }),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      providerEnvironmentSecrets: {},
+      piApiKeyPersistenceByProvider: {},
+      credentialStates: { codex: "credential_detected" },
+      runProviderSetup: false,
+    });
+    const successfulSetup = mocks.setupManagedSrt.getMockImplementation();
+    mocks.setupManagedSrt.mockRejectedValueOnce(new Error("managed SRT integrity mismatch"));
+    if (successfulSetup === undefined) throw new Error("expected default managed-SRT setup mock");
+    mocks.setupManagedSrt.mockImplementationOnce(successfulSetup);
+    mocks.selectAnswers.push("retry");
+    mocks.confirmAnswers.push(false);
+
+    await expect(runCli(["init"])).resolves.toBe(0);
+
+    expect(mocks.setupManagedSrt).toHaveBeenCalledTimes(2);
+    expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledOnce();
   });
 
   it("refuses readiness when a provider key comes from a tracked dotenv", async () => {
@@ -216,18 +346,18 @@ describe("guided init state transitions", () => {
       providerSetupSecrets: {},
       runProviderSetup: false,
     });
-    mocks.runReadinessProbe.mockResolvedValue({
+    mocks.runAllRouteReadinessProbe.mockResolvedValue({
       ok: false,
       kind: "provider_failed",
       message: "Authentication failed.",
     });
-    mocks.selectAnswers.push("auth", "cancel");
+    mocks.selectAnswers.push("auth", "browser", "cancel");
     mocks.executeProviderSetupPlan.mockImplementation(async (plan: { actions: readonly Record<string, unknown>[] }) =>
       plan.actions.map((action) => ({ action, status: "failed", detail: "login failed" })));
 
     await expect(runCli(["init"])).resolves.toBe(1);
 
-    expect(mocks.runReadinessProbe).toHaveBeenCalledOnce();
+    expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledOnce();
     expect(mocks.executeProviderSetupPlan).toHaveBeenCalledOnce();
     await expect(access(join(process.cwd(), "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -242,7 +372,7 @@ describe("guided init state transitions", () => {
       providerSetupSecrets: {},
       runProviderSetup: false,
     });
-    mocks.runReadinessProbe.mockImplementation(async () => {
+    mocks.runAllRouteReadinessProbe.mockImplementation(async () => {
       await writeFile(envPath, "OPENAI_API_KEY=durable-after\n", { mode: 0o600 });
       return { ok: true };
     });
@@ -250,7 +380,7 @@ describe("guided init state transitions", () => {
 
     await expect(runCli(["init"])).resolves.toBe(1);
 
-    expect(mocks.runReadinessProbe).toHaveBeenCalledOnce();
+    expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledOnce();
     await expect(access(join(process.cwd(), "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -270,7 +400,7 @@ describe("guided init state transitions", () => {
 
     await expect(runCli(["init"])).resolves.toBe(1);
 
-    expect(mocks.runReadinessProbe).toHaveBeenCalledOnce();
+    expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledOnce();
     await expect(access(join(process.cwd(), "mono-agent.config.json"))).resolves.toBeUndefined();
     expect(mocks.confirmAnswers).toEqual([]);
   });
@@ -348,9 +478,12 @@ describe("guided init state transitions", () => {
       answers: defaultAnswers({ model: "pi:opencode-go:kimi-k2.6" }),
       moduleSecrets: {},
       providerSetupSecrets: { "pi-api-key:opencode-go": "rejected-key-one" },
+      providerEnvironmentSecrets: {},
+      piApiKeyPersistenceByProvider: { "opencode-go": "secure-store" },
+      credentialStates: { "pi:opencode-go": "credential_detected" },
       runProviderSetup: false,
     });
-    mocks.runReadinessProbe
+    mocks.runAllRouteReadinessProbe
       .mockResolvedValueOnce({ ok: false, kind: "provider_failed", message: "Authentication failed." })
       .mockResolvedValueOnce({ ok: true });
     mocks.selectAnswers.push("auth");
@@ -368,7 +501,52 @@ describe("guided init state transitions", () => {
     await expect(runCli(["init"])).resolves.toBe(0);
 
     expect(setupApiKeys?.["pi-api-key:opencode-go"]).toBe("replacement-key-two");
-    expect(mocks.runReadinessProbe).toHaveBeenCalledTimes(2);
+    expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledTimes(2);
+    await expect(access(join(process.cwd(), ".env"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("persists an environment-selected Pi key owner-only without copying it to auth.json", async () => {
+    const authPath = join(process.cwd(), "pi-credentials", "auth.json");
+    const envPath = join(process.cwd(), ".env");
+    await writeFile(envPath, `MONO_AGENT_PI_AUTH_PATH=${authPath}\n`, { mode: 0o600 });
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers({ model: "pi:opencode-go:kimi-k2.6" }),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      providerEnvironmentSecrets: { OPENCODE_API_KEY: "environment-only-secret" },
+      piApiKeyPersistenceByProvider: { "opencode-go": "environment" },
+      credentialStates: { "pi:opencode-go": "auth_required" },
+      runProviderSetup: true,
+    });
+    let setupAction: Record<string, unknown> | undefined;
+    let setupApiKeys: Readonly<Record<string, string | undefined>> | undefined;
+    mocks.executeProviderSetupPlan.mockImplementation(async (
+      plan: { readonly actions: readonly Record<string, unknown>[] },
+      options: { readonly apiKeys?: Readonly<Record<string, string | undefined>> },
+    ) => {
+      setupAction = plan.actions[0];
+      setupApiKeys = options.apiKeys;
+      return plan.actions.map((action) => ({ action, status: "ok", detail: "environment verified" }));
+    });
+    mocks.confirmAnswers.push(false);
+
+    await expect(runCli(["init"])).resolves.toBe(0);
+
+    expect(setupAction).toMatchObject({
+      id: "pi-api-key:opencode-go",
+      persistence: "environment",
+    });
+    expect(setupApiKeys?.["pi-api-key:opencode-go"]).toBe("environment-only-secret");
+    const persisted = await readFile(envPath, "utf8");
+    expect(persisted).toContain("OPENCODE_API_KEY='environment-only-secret'");
+    expect((await stat(envPath)).mode & 0o777).toBe(0o600);
+    await expect(access(authPath)).rejects.toMatchObject({ code: "ENOENT" });
+    const rendered = [
+      ...vi.mocked(process.stdout.write).mock.calls.flat(),
+      ...vi.mocked(process.stderr.write).mock.calls.flat(),
+    ].join("");
+    expect(rendered).not.toContain("environment-only-secret");
   });
 
   it("marks an in-memory module secret missing when save-incomplete persistence was refused", async () => {
@@ -386,7 +564,7 @@ describe("guided init state transitions", () => {
       providerSetupSecrets: {},
       runProviderSetup: false,
     });
-    mocks.runReadinessProbe.mockResolvedValue({
+    mocks.runAllRouteReadinessProbe.mockResolvedValue({
       ok: false,
       kind: "provider_failed",
       message: "Save for later.",
@@ -402,6 +580,216 @@ describe("guided init state transitions", () => {
     expect(output).not.toContain("in-memory-only");
     expect(errorOutput).toContain(`Automatic secret persistence refused because ${envPath} is tracked by git.`);
     expect(errorOutput).not.toContain("in-memory-only");
+  });
+
+  it("resumes an interrupted multi-route preflight without rerunning a verified route", async () => {
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers({
+        model: "codex:gpt-5.6-terra",
+        fallbacks: [{ model: "claude:claude-sonnet-5", effort: "high" }],
+        routeSafety: "per-route-native",
+      }),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      credentialStates: { codex: "credential_detected", claude: "credential_detected" },
+      piApiKeyPersistenceByProvider: {},
+      runProviderSetup: false,
+    });
+    mocks.runAllRouteReadinessProbe
+      .mockResolvedValueOnce({
+        ok: false,
+        kind: "cancelled",
+        message: "interrupted",
+        interrupted: true,
+        planFingerprint: "route-plan",
+        routes: [
+          { key: "primary-key", index: 0, model: "codex:gpt-5.6-terra", status: "verified" },
+          { key: "fallback-key", index: 1, model: "claude:claude-sonnet-5", effort: "high", status: "interrupted" },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        planFingerprint: "route-plan",
+        routes: [
+          { key: "primary-key", index: 0, model: "codex:gpt-5.6-terra", status: "skipped_verified" },
+          { key: "fallback-key", index: 1, model: "claude:claude-sonnet-5", effort: "high", status: "verified" },
+        ],
+      });
+    mocks.selectAnswers.push("resume");
+    mocks.confirmAnswers.push(false);
+
+    await expect(runCli(["init"])).resolves.toBe(0);
+
+    expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledTimes(2);
+    expect(mocks.runAllRouteReadinessProbe.mock.calls[1]?.[0]).toMatchObject({
+      resume: { planFingerprint: "route-plan", successfulRouteKeys: ["primary-key"] },
+    });
+    const rendered = vi.mocked(process.stdout.write).mock.calls.flat().join("");
+    expect(rendered).toContain("Route 1/2: codex:gpt-5.6-terra");
+    expect(rendered).toContain("Route 2/2: claude:claude-sonnet-5");
+    expect(rendered).toContain("effort: high");
+  });
+
+  it("interrupts provider authentication safely and resumes through the shared preflight recovery menu", async () => {
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers({ model: "pi:opencode-go:kimi-k2.6" }),
+      moduleSecrets: {},
+      providerSetupSecrets: { "pi-api-key:opencode-go": "entered-key" },
+      providerEnvironmentSecrets: {},
+      piApiKeyPersistenceByProvider: { "opencode-go": "secure-store" },
+      credentialStates: { "pi:opencode-go": "auth_required" },
+      runProviderSetup: true,
+    });
+    let setupAttempt = 0;
+    const sigintListenersBefore = process.listenerCount("SIGINT");
+    mocks.executeProviderSetupPlan.mockImplementation(async (
+      plan: { readonly actions: readonly Record<string, unknown>[] },
+      options: { readonly abortSignal?: AbortSignal },
+    ) => {
+      setupAttempt += 1;
+      if (setupAttempt === 1) {
+        process.emit("SIGINT");
+        expect(options.abortSignal?.aborted).toBe(true);
+        return plan.actions.map((action) => ({ action, status: "failed", detail: "interrupted" }));
+      }
+      expect(options.abortSignal?.aborted).toBe(false);
+      return plan.actions.map((action) => ({ action, status: "ok", detail: "stored" }));
+    });
+    mocks.selectAnswers.push("resume");
+    mocks.confirmAnswers.push(false);
+
+    await expect(runCli(["init"])).resolves.toBe(0);
+
+    expect(mocks.executeProviderSetupPlan).toHaveBeenCalledTimes(2);
+    expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledOnce();
+    expect(process.listenerCount("SIGINT")).toBe(sigintListenersBefore);
+    const rendered = [
+      ...vi.mocked(process.stdout.write).mock.calls.flat(),
+      ...vi.mocked(process.stderr.write).mock.calls.flat(),
+    ].join("");
+    expect(rendered).toContain("Provider setup was interrupted");
+  });
+
+  it.each(["resume", "restart"] as const)(
+    "%s reruns interrupted provider status detection and authentication before readiness",
+    async (recovery) => {
+      mocks.runInitWizard.mockResolvedValue({
+        status: "answers",
+        answers: defaultAnswers({ model: "pi:opencode-go:kimi-k2.6" }),
+        moduleSecrets: {},
+        providerSetupSecrets: { "pi-api-key:opencode-go": "entered-key" },
+        providerEnvironmentSecrets: {},
+        piApiKeyPersistenceByProvider: { "opencode-go": "secure-store" },
+        credentialStates: { "pi:opencode-go": "auth_required" },
+        runProviderSetup: true,
+      });
+      const order: string[] = [];
+      let detectionAttempt = 0;
+      mocks.detectProviderCredentialStatesOverride = async (...args: unknown[]) => {
+        detectionAttempt += 1;
+        order.push(`detect-${detectionAttempt}`);
+        const options = args[0] as { readonly abortSignal?: AbortSignal };
+        if (detectionAttempt === 1) {
+          process.stdin.emit("keypress", "", { name: "escape" });
+          expect(options.abortSignal?.aborted).toBe(true);
+        }
+        return { "pi:opencode-go": "auth_required" };
+      };
+      mocks.executeProviderSetupPlan.mockImplementation(async (plan) => {
+        order.push("setup");
+        return plan.actions.map((action: object) => ({ action, status: "ok", detail: "stored" }));
+      });
+      mocks.runAllRouteReadinessProbe.mockImplementation(async () => {
+        order.push("readiness");
+        return { ok: true };
+      });
+      mocks.selectAnswers.push(recovery);
+      mocks.confirmAnswers.push(false);
+
+      await expect(runCli(["init"])).resolves.toBe(0);
+
+      expect(order).toEqual(["detect-1", "detect-2", "setup", "readiness"]);
+    },
+  );
+
+  it("restarts all model checks after an interrupted preflight when requested", async () => {
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers(),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      credentialStates: { codex: "credential_detected" },
+      piApiKeyPersistenceByProvider: {},
+      runProviderSetup: false,
+    });
+    mocks.runAllRouteReadinessProbe
+      .mockResolvedValueOnce({
+        ok: false,
+        kind: "cancelled",
+        message: "interrupted",
+        interrupted: true,
+        planFingerprint: "route-plan",
+        routes: [{ key: "primary-key", index: 0, model: "codex:gpt-5.6-terra", status: "verified" }],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        planFingerprint: "route-plan",
+        routes: [{ key: "primary-key", index: 0, model: "codex:gpt-5.6-terra", status: "verified" }],
+      });
+    mocks.selectAnswers.push("restart");
+    mocks.confirmAnswers.push(false);
+
+    await expect(runCli(["init"])).resolves.toBe(0);
+
+    expect(mocks.runAllRouteReadinessProbe.mock.calls[1]?.[0]).not.toHaveProperty("resume");
+  });
+
+  it("reruns previously verified routes after forced authentication repair", async () => {
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers({
+        model: "codex:gpt-5.6-terra",
+        fallbacks: [{ model: "claude:claude-sonnet-5" }],
+        routeSafety: "per-route-native",
+      }),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      providerEnvironmentSecrets: {},
+      credentialStates: { codex: "credential_detected", claude: "credential_detected" },
+      piApiKeyPersistenceByProvider: {},
+      runProviderSetup: false,
+    });
+    mocks.runAllRouteReadinessProbe
+      .mockResolvedValueOnce({
+        ok: false,
+        kind: "provider_failed",
+        message: "fallback auth failed",
+        planFingerprint: "route-plan",
+        routes: [
+          { key: "primary-key", index: 0, model: "codex:gpt-5.6-terra", status: "verified" },
+          { key: "fallback-key", index: 1, model: "claude:claude-sonnet-5", status: "failed", kind: "provider_failed" },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        planFingerprint: "route-plan-after-auth",
+        routes: [
+          { key: "primary-key", index: 0, model: "codex:gpt-5.6-terra", status: "verified" },
+          { key: "fallback-key", index: 1, model: "claude:claude-sonnet-5", status: "verified" },
+        ],
+      });
+    mocks.selectAnswers.push("auth", "browser");
+    mocks.executeProviderSetupPlan.mockImplementation(async (plan: { actions: readonly Record<string, unknown>[] }) =>
+      plan.actions.map((action) => ({ action, status: "ok", detail: "repaired" })));
+    mocks.confirmAnswers.push(false);
+
+    await expect(runCli(["init"])).resolves.toBe(0);
+
+    expect(mocks.executeProviderSetupPlan).toHaveBeenCalledOnce();
+    expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledTimes(2);
+    expect(mocks.runAllRouteReadinessProbe.mock.calls[1]?.[0]).not.toHaveProperty("resume");
   });
 });
 

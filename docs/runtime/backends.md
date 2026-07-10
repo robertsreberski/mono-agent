@@ -37,7 +37,7 @@ For `pi:` and `opencode:` only the **first** colon separates provider from model
 
 ### Claude (SDK and CLI)
 
-`claude:<model>` references run under either execution mode. With `executionMode: "sdk"` (the default for `claude:`) the turn goes through the Anthropic `@anthropic-ai/claude-agent-sdk`. With `executionMode: "cli"` it runs through the local `claude` CLI binary, which supports session resume across turns.
+`claude:<model>` references run under either execution mode. With `executionMode: "sdk"` (the default for `claude:`) the turn goes through the pinned Anthropic `@anthropic-ai/claude-agent-sdk` 0.3.206 bridge. Its model catalog is discovered in an isolated, authentication-independent process and preserves exact provider ids. With `executionMode: "cli"` it runs through the local `claude` CLI binary, which supports session resume across turns.
 
 ```json
 {
@@ -63,9 +63,9 @@ For `pi:` and `opencode:` only the **first** colon separates provider from model
 
 The default execution mode for a `codex:` model is already `cli`, so `executionMode` can be omitted.
 
-The init wizard defaults to direct `codex:gpt-5.6-terra`. It runs bounded `codex --version` and `codex login status` discovery, then proves the selected primary with a real disposable turn before it can call the agent ready. Missing installation or sign-in remains visible and recoverable; mono-agent never auto-installs Codex. Use only the [official Codex CLI instructions](https://developers.openai.com/codex/cli/) (`curl -fsSL https://chatgpt.com/codex/install.sh | sh` on macOS/Linux, then run `codex` or `codex login`).
+The init wizard runs bounded `codex --version`, `codex login status`, and app-server `model/list` discovery. Catalog availability, a detected login, and a route verified by a live no-tool turn are distinct states. The provider-declared live default leads when available; curated Terra is the offline fallback. The offline entry carries no guessed supported-effort/default-effort metadata and therefore offers only **Provider default** until live discovery succeeds. Missing installation or sign-in remains visible and recoverable; mono-agent never auto-installs Codex. Browser login uses `codex login`; headless/remote setup uses `codex login --device-auth` (`mono-agent auth login codex --codex-auth device`).
 
-GPT-5.6 Sol is an explicit alternative through `codex:gpt-5.6-sol` or the separate Pi route `pi:openai-codex:gpt-5.6-sol`. OpenAI documents Codex CLI 0.144.0 as the minimum direct client in its [current GPT-5.6 availability guide](https://help.openai.com/en/articles/20001354); discovery keeps both direct GPT-5.6 choices selectable but shows an upgrade requirement for older or unverified CLI versions. The disposable selected-model readiness probe exercises the exact chosen primary before it can produce an **Agent ready** result. Terra remains the first-run default.
+GPT-5.6 Sol is available through `codex:gpt-5.6-sol` or the separate Pi route `pi:openai-codex:gpt-5.6-sol`. Guided readiness makes one exact no-tool call per selected primary/fallback route before it can produce an **Agent ready** result.
 
 The Codex app-server does not currently project arbitrary mono-agent allow/deny lists. Normal direct `codex:*` runs therefore require exact allow-all (`tools.allowedTools: ["*"]` and no `disallowedTools`, or the equivalent omitted allowlist); restrictive policies fail validation rather than being silently widened. The guided readiness probe is a separate internal contract: read-only sandbox, approval policy `never`, no MCP/dynamic tools, disposable session, and failure on the first command/file/MCP/tool event.
 
@@ -158,18 +158,23 @@ metadata breaks inference and validation before the turn reaches that registry.
 
 ## Fallback chains
 
-`runtime.fallbackModels` takes an ordered list of additional model references tried on retryable provider failures, fronted by the fallback router. Pi, Claude, and direct OpenCode entries can mix only when the mono-agent native sandbox is omitted/off. A chain containing direct `codex:*` must be all-direct. With native mono-agent sandboxing active, every route must stay on Pi; validation and runtime reject Claude/direct-OpenCode because their provider-owned tools cannot enforce `srt` scopes. `pi:opencode-go:*` remains a Pi route.
+`runtime.fallbacks` takes an ordered, uncapped list of `{ model, effort? }` routes tried on retryable provider/auth failures. Omitted effort means the route's provider default. `runtime.routeSafety` controls mixed-family safety: `uniform` (default) requires one compatible monotonic contract; explicit `per-route-native` isolates each provider and records its route-local safety contract. Pi keeps mono-agent tool policy and records the configured guarantee: `disabled` for no sandbox policy, `mono-agent-srt` for fail-closed SRT, or `mono-agent-srt-unsafe-host-fallback` when policy prefers SRT but explicitly permits unsandboxed host execution if the engine is unavailable. This telemetry does not claim which branch ran. Claude uses representable provider-native controls, and direct Codex/OpenCode use provider-native safety plus exact allow-all. Unsupported capabilities skip a route rather than being silently removed. Any fallback chain disables cross-turn provider-session reuse and relies on history/snapshot replay.
 
 ```json
 {
   "runtime": {
-    "model": "claude:claude-sonnet-4-6",
-    "fallbackModels": ["pi:openrouter:anthropic/claude-3.5-sonnet", "pi:ollama:gemma4:31b"]
+    "model": "claude:claude-sonnet-5",
+    "effort": "high",
+    "fallbacks": [
+      { "model": "codex:gpt-5.6-sol", "effort": "xhigh" },
+      { "model": "pi:ollama:gemma4:31b" }
+    ],
+    "routeSafety": "per-route-native"
   }
 }
 ```
 
-Env: `MONO_AGENT_FALLBACK_MODELS`. CLI: `mono-agent init --fallback-models ...`. See [Fallback & failover](/runtime/fallback/) for router behavior and the failover report.
+Env: `MONO_AGENT_FALLBACKS_JSON`. CLI: repeat `--fallback <ref>` and optionally follow each with `--fallback-effort <provider-default|level>`. Legacy `runtime.fallbackModels`, `MONO_AGENT_FALLBACK_MODELS`, and `--fallback-models` remain supported. See [Fallback & failover](/runtime/fallback/) for router behavior and the failover report.
 
 ## Related
 

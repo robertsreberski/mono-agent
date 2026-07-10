@@ -6,12 +6,12 @@ sidebar:
 
 # Getting Started
 
-This section takes you from an empty folder to a readiness-proven agent. Bare `mono-agent init` on a TTY runs the real primary-model check and the strict full **Agent ready** gate; flag/non-TTY init creates a scaffold only. mono-agent remains config-first: one `mono-agent.config.json`, driven by the CLI. Work through the three pages below in order.
+This section takes you from an empty folder to a readiness-proven agent. Bare `mono-agent init` on a TTY names the agent, searches the provider catalogs, and runs a real no-tool check for every selected route before the strict full **Agent ready** gate; flag/non-TTY init creates a scaffold only. mono-agent remains config-first: one `mono-agent.config.json`, driven by the CLI.
 
 ## The path
 
 1. **Install** — get the published CLI or build the source CLI.
-2. **Quickstart** — run guided init, understand the separate primary-model and full-agent gates, then smoke-test the ready webhook agent.
+2. **Quickstart** — run guided init, understand catalog/auth/route verification and the full-agent gate, then smoke-test the ready webhook agent.
 3. **Concepts** — understand the moving parts so the rest of the docs make sense.
 
 ## Pages

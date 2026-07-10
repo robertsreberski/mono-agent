@@ -18,6 +18,7 @@ import {
   describeMonoRuntimeSupport,
   modelReferenceKey,
   parseMonoRuntimeModelReference,
+  resolveModelEffortLevels,
 } from "@mono-agent/runtime-adapter";
 import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import {
@@ -53,6 +54,8 @@ import type { ChannelDriver } from "./channels.js";
 import { findUnknownAppConfigWarnings } from "./config-reference.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { piAuthRecoveryCommand } from "./provider-setup.js";
+import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "./pi-auth-store-inspection.js";
+import { configuredRuntimeFallbackModels, configuredRuntimeModels } from "./runtime-routes.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -270,6 +273,7 @@ async function applyRequestModelOverrideCompatibilityChecks(
   input: MonoAgentAppConfigInput,
 ): Promise<void> {
   const baseIsDirectCodex = config.runtime.model.sdk === "codex";
+  const routeSafety = config.runtime.routeSafety ?? "uniform";
   const directBoundaryConflicts: string[] = [];
   const sandboxBypasses: string[] = [];
   const toolPolicyBypasses: string[] = [];
@@ -327,17 +331,20 @@ async function applyRequestModelOverrideCompatibilityChecks(
             piModelResolutionFailures.push(`${location}: ${resolutionIssue}.`);
           }
         }
-        if (hasModelOverride && (model.sdk === "codex") !== baseIsDirectCodex) {
+        if (routeSafety === "uniform" && hasModelOverride && (model.sdk === "codex") !== baseIsDirectCodex) {
           directBoundaryConflicts.push(location);
         }
-        if (hasModelOverride && monoSandboxActive && (model.sdk === "claude" || model.sdk === "opencode")) {
+        if (routeSafety === "uniform" && hasModelOverride && monoSandboxActive && (model.sdk === "claude" || model.sdk === "opencode" || model.sdk === "codex")) {
           sandboxBypasses.push(location);
         }
         if (hasModelOverride && restrictiveToolPolicy && model.sdk === "opencode") {
           toolPolicyBypasses.push(location);
         }
         const effectiveEffort = hasEffortOverride ? entry.effort as string : config.runtime.effort;
-        const directOpenCodeModels = [model, ...(config.runtime.fallbackModels ?? [])]
+        const legacyFallbacks = (config.runtime.fallbacks?.length ?? 0) > 0
+          ? []
+          : config.runtime.fallbackModels ?? [];
+        const directOpenCodeModels = [model, ...legacyFallbacks]
           .filter((candidate) => candidate.sdk === "opencode");
         if (directOpenCodeModels.length > 0 && effectiveEffort !== undefined) {
           effortBypasses.push(
@@ -387,13 +394,13 @@ async function applyRequestModelOverrideCompatibilityChecks(
       ...(directBoundaryConflicts.length === 0
         ? []
         : [
-            "Per-trigger model overrides cannot cross the direct-Codex runtime boundary because tool and sandbox contracts would change mid-agent.",
+            "Uniform route safety cannot cross the direct-Codex runtime boundary because tool and sandbox contracts would change mid-agent. Choose per-route-native to opt into explicit route-local contracts.",
             ...directBoundaryConflicts,
           ]),
       ...(sandboxBypasses.length === 0
         ? []
         : [
-            "Per-trigger Claude or direct OpenCode model overrides cannot run while the mono-agent sandbox is active because their provider-owned tool loops do not consume that policy.",
+            "Claude or direct OpenCode model overrides cannot run under uniform route safety while mono-agent SRT is active; direct Codex is also provider-owned. Choose per-route-native only after reviewing the explicit route-local contracts.",
             ...sandboxBypasses,
           ]),
       ...(toolPolicyBypasses.length === 0
@@ -523,26 +530,21 @@ function applyToolChannelCrossChecks(
 function runtimeSection(config: MonoAgentConfig): ValidationSection {
   const details: string[] = [];
   let status: ValidationStatus = "ok";
-  const runtimeModels = [config.runtime.model, ...(config.runtime.fallbackModels ?? [])];
-  const directCodexModels = runtimeModels.filter((model) => model.sdk === "codex");
-
-  if (directCodexModels.length > 0 && directCodexModels.length !== runtimeModels.length) {
-    status = "error";
+  const routes = configuredRuntimeRouteChecks(config);
+  const routeSafety = config.runtime.routeSafety ?? "uniform";
+  details.push(`Route safety: ${routeSafety}.`);
+  if (routes.length > 1) {
     details.push(
-      "Direct Codex cannot share one fallback chain with non-Codex runtimes because their tool and sandbox contracts differ. Keep every model in the chain in the same runtime family.",
+      routeSafety === "per-route-native"
+        ? "Mixed runtime families are allowed; every attempt uses its explicit route-native safety contract."
+        : "Fallback routes use the uniform compatibility contract; validation fails closed when any route cannot represent a required capability.",
     );
   }
-  const directOpenCodeModels = runtimeModels.filter((model) => model.sdk === "opencode");
-  if (config.runtime.effort !== undefined && directOpenCodeModels.length > 0) {
-    status = "error";
-    details.push(
-      `Direct OpenCode model${directOpenCodeModels.length === 1 ? "" : "s"} ${directOpenCodeModels.map(referenceOf).join(", ")} cannot receive runtime.effort=${config.runtime.effort}; the OpenCode SDK does not expose effort control. Remove runtime.effort or use a Pi runtime.`,
-    );
-  }
+  const directOpenCodeModels = routes.filter((route) => route.model.sdk === "opencode");
   if (Number(config.runtime.maxTurns) > 0 && directOpenCodeModels.length > 0) {
     status = "error";
     details.push(
-      `Direct OpenCode model${directOpenCodeModels.length === 1 ? "" : "s"} ${directOpenCodeModels.map(referenceOf).join(", ")} cannot enforce runtime.maxTurns=${config.runtime.maxTurns}; omit it, set it to 0, or use a runtime with a hard turn cap.`,
+      `Direct OpenCode model${directOpenCodeModels.length === 1 ? "" : "s"} ${directOpenCodeModels.map((route) => referenceOf(route.model)).join(", ")} cannot enforce runtime.maxTurns=${config.runtime.maxTurns}; omit it, set it to 0, or use a runtime with a hard turn cap.`,
     );
   }
   if (
@@ -552,44 +554,93 @@ function runtimeSection(config: MonoAgentConfig): ValidationSection {
   ) {
     status = "error";
     details.push(
-      `Direct OpenCode model${directOpenCodeModels.length === 1 ? "" : "s"} ${directOpenCodeModels.map(referenceOf).join(", ")} cannot use context.skillDisclosure=index because runtime skills are disabled; use full disclosure or a Pi runtime.`,
+      `Direct OpenCode model${directOpenCodeModels.length === 1 ? "" : "s"} ${directOpenCodeModels.map((route) => referenceOf(route.model)).join(", ")} cannot use context.skillDisclosure=index because runtime skills are disabled; use full disclosure or a Pi runtime.`,
     );
   }
-  try {
-    const primary = describeMonoRuntimeSupport(config.runtime.model, config.runtime.executionMode);
-    const resolutionIssue = piModelResolutionIssue(config, config.runtime.model);
-    if (primary.compatible && resolutionIssue === undefined) {
-      details.push(`Primary model ${referenceOf(config.runtime.model)} runs on ${primary.backend?.label ?? "unknown backend"} (${config.runtime.executionMode}).`);
-    } else {
-      status = "error";
-      details.push(
-        `Primary model ${referenceOf(config.runtime.model)}: ${resolutionIssue ?? primary.incompatibilityReason ?? "unsupported"}.`,
-      );
-    }
-  } catch (error) {
-    status = "error";
-    details.push(
-      `Primary model ${referenceOf(config.runtime.model)}: ${error instanceof Error ? error.message : String(error)}.`,
-    );
-  }
-
-  for (const fallback of config.runtime.fallbackModels ?? []) {
+  for (const route of routes) {
     try {
-      const support = describeMonoRuntimeSupport(fallback);
-      const resolutionIssue = piModelResolutionIssue(config, fallback);
+      const support = describeMonoRuntimeSupport(route.model, route.executionMode);
+      const resolutionIssue = piModelResolutionIssue(config, route.model);
+      const effortIssue = runtimeRouteEffortIssue(config, route);
       if (support.compatible && resolutionIssue === undefined) {
-        details.push(`Fallback model ${referenceOf(fallback)} runs on ${support.backend?.label ?? "unknown backend"}.`);
+        details.push(
+          `${route.label} ${referenceOf(route.model)} runs on ${support.backend?.label ?? "unknown backend"} ` +
+          `(effort: ${route.effort ?? "provider default"}).`,
+        );
       } else {
         status = "error";
-        details.push(`Fallback model ${referenceOf(fallback)}: ${resolutionIssue ?? support.incompatibilityReason ?? "unsupported"}.`);
+        details.push(`${route.label} ${referenceOf(route.model)}: ${resolutionIssue ?? support.incompatibilityReason ?? "unsupported"}.`);
+      }
+      if (effortIssue !== undefined) {
+        status = "error";
+        details.push(`${route.label} ${referenceOf(route.model)}: ${effortIssue}`);
       }
     } catch (error) {
       status = "error";
-      details.push(`Fallback model ${referenceOf(fallback)}: ${error instanceof Error ? error.message : String(error)}.`);
+      details.push(`${route.label} ${referenceOf(route.model)}: ${error instanceof Error ? error.message : String(error)}.`);
     }
   }
 
   return { id: "runtime", label: "Runtime", status, details };
+}
+
+interface ConfiguredRuntimeRouteCheck {
+  readonly label: string;
+  readonly model: RuntimeModelReference;
+  readonly effort?: string;
+  readonly executionMode?: MonoAgentConfig["runtime"]["executionMode"];
+}
+
+function configuredRuntimeRouteChecks(config: MonoAgentConfig): readonly ConfiguredRuntimeRouteCheck[] {
+  const primary: ConfiguredRuntimeRouteCheck = {
+    label: "Primary model",
+    model: config.runtime.model,
+    ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
+    executionMode: config.runtime.executionMode,
+  };
+  if ((config.runtime.fallbacks?.length ?? 0) > 0) {
+    return [
+      primary,
+      ...(config.runtime.fallbacks ?? []).map((fallback) => ({
+        label: "Fallback model",
+        model: fallback.model,
+        ...(fallback.effort === undefined ? {} : { effort: fallback.effort }),
+      })),
+    ];
+  }
+  return [
+    primary,
+    ...(config.runtime.fallbackModels ?? []).map((model) => ({
+      label: "Fallback model",
+      model,
+      ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
+    })),
+  ];
+}
+
+function runtimeRouteEffortIssue(
+  config: MonoAgentConfig,
+  route: ConfiguredRuntimeRouteCheck,
+): string | undefined {
+  if (route.effort === undefined) return undefined;
+  if (route.model.sdk === "opencode") {
+    return `Direct OpenCode model ${referenceOf(route.model)} cannot receive runtime.effort=${route.effort}; the OpenCode SDK exposes no reasoning-effort input. Omit the route effort.`;
+  }
+  const metadata = resolveModelEffortLevels(route.model, config.providers?.local);
+  if (metadata.effortLevels !== undefined && !metadata.effortLevels.includes(route.effort)) {
+    return `effort=${route.effort} is unsupported by known model metadata; choose ${metadata.effortLevels.join(", ")}, or omit it for provider default.`;
+  }
+  if (metadata.reasoning === false && route.effort !== "none") {
+    return `effort=${route.effort} is unsupported because known model metadata marks this route as non-reasoning; use none or provider default.`;
+  }
+  if (
+    route.model.sdk === "claude"
+    && (route.executionMode ?? defaultExecutionModeForModel(route.model)) === "sdk"
+    && !["low", "medium", "high", "xhigh", "max"].includes(route.effort)
+  ) {
+    return `effort=${route.effort} is unsupported by the Claude Agent SDK; choose low, medium, high, xhigh, max, or provider default.`;
+  }
+  return undefined;
 }
 
 /**
@@ -639,6 +690,8 @@ function isPiBuiltinProvider(provider: string): provider is PiBuiltinProvider {
 
 interface PiAuthEntry {
   readonly type?: string;
+  readonly key?: string;
+  readonly access?: string;
   readonly expires?: number;
   readonly refresh?: string;
 }
@@ -647,17 +700,14 @@ const PI_API_KEY_ENV_BY_PROVIDER: Readonly<Record<string, string>> = {
   "opencode-go": "OPENCODE_API_KEY",
 };
 
-/** Parses the Pi OAuth auth store (provider -> credentials) at `path`, best-effort. */
-async function readPiAuthProviders(path: string): Promise<Record<string, PiAuthEntry> | undefined> {
-  try {
-    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, PiAuthEntry>;
-    }
-  } catch {
-    // Missing/invalid auth file is reported per-provider below, not thrown here.
-  }
-  return undefined;
+/** Inspects Pi credentials without following aliases or reading unbounded input. */
+async function readPiAuthProviders(path: string): Promise<
+  | { readonly status: "ok"; readonly providers: Readonly<Record<string, PiAuthEntry>> }
+  | Exclude<PiAuthStoreInspection, { readonly status: "ok" }>
+> {
+  const inspection = await inspectPiAuthStore(path);
+  if (inspection.status !== "ok") return inspection;
+  return { status: "ok", providers: inspection.auth as Readonly<Record<string, PiAuthEntry>> };
 }
 
 /**
@@ -928,7 +978,10 @@ async function credentialsSection(
 ): Promise<ValidationSection> {
   const refs: { label: string; ref: RuntimeModelReference }[] = [
     { label: "Primary", ref: config.runtime.model },
-    ...(config.runtime.fallbackModels ?? []).map((ref) => ({ label: "Fallback", ref })),
+    ...configuredRuntimeRouteChecks(config).slice(1).map((route) => ({
+      label: "Fallback",
+      ref: route.model,
+    })),
     ...staticTriggerRefs,
   ];
   if (config.memory?.llm !== undefined && config.memory.llm.provider !== "ollama") {
@@ -970,7 +1023,7 @@ async function credentialsSection(
   );
 
   if (piRefs.length > 0) {
-    const piStatus = await appendPiCredentialDetails(config, piRefs, details);
+    const piStatus = await appendPiCredentialDetails(config, piRefs, details, env);
     if (piStatus === "waiting") {
       status = "waiting";
     }
@@ -1013,13 +1066,13 @@ async function credentialsSection(
     }
     const present = firstPresentEnvKey(env, scheme.envKeys);
     if (present !== undefined) {
-      details.push(`${label} ${refStr}: SDK credential present in the resolved env (${present}).`);
+      details.push(`${label} ${refStr}: SDK credential present in the resolved env (${present}); credential detected, live model verification is still pending.`);
       continue;
     }
     if (liveness && await externalLoginStatus(ref.sdk)) {
       details.push(
-        `${label} ${refStr}: external login verified by read-only \`${scheme.statusCommand}\` status check; ` +
-          "no live model turn was run.",
+        `${label} ${refStr}: external sign-in detected by read-only \`${scheme.statusCommand}\`; ` +
+          "credentials are not verified until a live model turn succeeds.",
       );
       continue;
     }
@@ -1043,7 +1096,7 @@ async function credentialsSection(
       const credentialPresent = inspection?.status === "ok" && inspection.providers.has(provider);
       if (credentialPresent && liveness && supportedVersion) {
         details.push(
-          `${label} ${refStr}: provider \`${provider}\` credential present in the standard OpenCode auth store; stable OpenCode CLI >=1.15.0 verified without a model turn.`,
+          `${label} ${refStr}: provider \`${provider}\` credential present in the standard OpenCode auth store; stable OpenCode CLI >=1.15.0 detected without a model turn. Credential detected; live model verification is still pending.`,
         );
       } else {
         status = "waiting";
@@ -1080,9 +1133,11 @@ async function appendPiCredentialDetails(
   config: MonoAgentConfig,
   piRefs: readonly { label: string; ref: RuntimeModelReference }[],
   details: string[],
+  env: Readonly<Record<string, string | undefined>>,
 ): Promise<ValidationStatus> {
   const authPath = config.providers?.piAuthPath;
-  const authProviders = authPath === undefined ? undefined : await readPiAuthProviders(authPath);
+  const authInspection = authPath === undefined ? undefined : await readPiAuthProviders(authPath);
+  const authProviders = authInspection?.status === "ok" ? authInspection.providers : undefined;
   // A matching `providers.local` entry owns the runtime route, even when its ID
   // collides with a Pi built-in provider. Report the local entry's declared auth
   // contract instead of consulting the unrelated Pi auth store. A disabled entry
@@ -1109,13 +1164,19 @@ async function appendPiCredentialDetails(
         );
       } else if (localProvider.apiKey !== undefined) {
         details.push(
-          `${label} ${refStr}: provider \`${provider}\` configured via config providers.local (API key configured).`,
+          `${label} ${refStr}: provider \`${provider}\` configured via config providers.local (API key configured); credential detected, live model verification is still pending.`,
         );
       } else if (localProvider.apiKeyEnv !== undefined) {
-        status = "waiting";
-        details.push(
-          `[WARN] ${label} ${refStr}: provider \`${provider}\` declares apiKeyEnv \`${localProvider.apiKeyEnv}\`, but the resolved environment has no non-empty value and no inline apiKey fallback. Set ${localProvider.apiKeyEnv} before starting.`,
-        );
+        if (hasNonEmptyCredentialValue(env[localProvider.apiKeyEnv])) {
+          details.push(
+            `${label} ${refStr}: provider \`${provider}\` configured via config providers.local with ${localProvider.apiKeyEnv} present in the resolved environment; credential detected, live model verification is still pending.`,
+          );
+        } else {
+          status = "waiting";
+          details.push(
+            `[WARN] ${label} ${refStr}: provider \`${provider}\` declares apiKeyEnv \`${localProvider.apiKeyEnv}\`, but the resolved environment has no non-empty value and no inline apiKey fallback. Set ${localProvider.apiKeyEnv} before starting.`,
+          );
+        }
       } else {
         details.push(
           `${label} ${refStr}: provider \`${provider}\` configured via config providers.local (keyless local provider; no API key declared).`,
@@ -1123,16 +1184,54 @@ async function appendPiCredentialDetails(
       }
       continue;
     }
+    const apiKeyEnv = PI_API_KEY_ENV_BY_PROVIDER[provider];
+    if (apiKeyEnv !== undefined && hasNonEmptyCredentialValue(env[apiKeyEnv])) {
+      details.push(
+        `${label} ${refStr}: Pi API-key credential for \`${provider}\` present in the resolved environment (${apiKeyEnv}); credential detected, live model verification is still pending.`,
+      );
+      continue;
+    }
+    if (authInspection?.status === "unsafe") {
+      status = "waiting";
+      details.push(
+        `[WARN] ${label} ${refStr}: Pi auth store was not trusted because ${describePiAuthStoreUnsafeReason(authInspection.reason)}. ` +
+          `Move the unsafe entry aside if needed, then run \`${loginCommand}\` to create or atomically harden a current-user 0600 store. ` +
+          "A current-user, non-writable legacy store can be replaced during this explicit repair, but is intentionally never trusted for credential detection. " +
+          "No credential values or file contents were displayed.",
+      );
+      continue;
+    }
     const entry = authProviders?.[provider];
     if (entry === undefined) {
       status = "waiting";
-      const apiKeyEnv = PI_API_KEY_ENV_BY_PROVIDER[provider];
       details.push(apiKeyEnv === undefined
         ? `[WARN] ${label} ${refStr}: no Pi credentials found for provider \`${provider}\` in the auth store. Authenticate it with \`${loginCommand}\`, or set providers.piAuthPath.`
-        : `[WARN] ${label} ${refStr}: no Pi API key credentials found for provider \`${provider}\` in the auth store. Save an API key entry in providers.piAuthPath, or set ${apiKeyEnv}.`);
+        : `[WARN] ${label} ${refStr}: no Pi API key credentials found for provider \`${provider}\` in the auth store or resolved environment. Run \`${loginCommand}\`, or set ${apiKeyEnv}.`);
       continue;
     }
-    const isOAuth = entry.type === "oauth" || typeof entry.expires === "number";
+    const isOAuth = entry.type === "oauth";
+    const isApiKey = entry.type === "api_key";
+    if (isApiKey && !hasNonEmptyCredentialValue(entry.key)) {
+      status = "waiting";
+      details.push(
+        `[WARN] ${label} ${refStr}: stored API-key credential for \`${provider}\` has no usable key. Run \`${loginCommand}\`; no secret value was displayed.`,
+      );
+      continue;
+    }
+    if (isOAuth && !hasNonEmptyCredentialValue(entry.access) && !hasNonEmptyCredentialValue(entry.refresh)) {
+      status = "waiting";
+      details.push(
+        `[WARN] ${label} ${refStr}: stored OAuth credential for \`${provider}\` has no usable access or refresh token. Re-authenticate with \`${loginCommand}\`; no secret value was displayed.`,
+      );
+      continue;
+    }
+    if (!isOAuth && !isApiKey) {
+      status = "waiting";
+      details.push(
+        `[WARN] ${label} ${refStr}: stored credential for \`${provider}\` has an unsupported or missing type. Re-authenticate with \`${loginCommand}\`; no secret value was displayed.`,
+      );
+      continue;
+    }
     const expired = typeof entry.expires === "number" && entry.expires < now;
     const whenNote = typeof entry.expires === "number" ? ` ${new Date(entry.expires).toISOString()}` : "";
     if (isOAuth && expired) {
@@ -1144,12 +1243,31 @@ async function appendPiCredentialDetails(
     }
     details.push(
       isOAuth
-        ? `${label} ${refStr}: OAuth credentials for \`${provider}\` present (token valid${whenNote}).`
-        : `${label} ${refStr}: API key credentials for \`${provider}\` present.`,
+        ? `${label} ${refStr}: OAuth credentials for \`${provider}\` present (token valid${whenNote}); credential detected, live model verification is still pending.`
+        : `${label} ${refStr}: API key credentials for \`${provider}\` present; credential detected, live model verification is still pending.`,
     );
   }
 
   return status;
+}
+
+function describePiAuthStoreUnsafeReason(reason: PiAuthStoreUnsafeReason): string {
+  switch (reason) {
+    case "owner-check-unavailable": return "the current file owner could not be verified";
+    case "symbolic-link": return "the configured entry is a symbolic link";
+    case "not-regular-file": return "the configured entry is not a regular file";
+    case "multiple-hard-links": return "the file has multiple hard links";
+    case "oversized": return "the file exceeds the 1 MiB inspection limit";
+    case "foreign-owner": return "the file is not owned by the current user";
+    case "not-owner-only": return "its permissions are not owner-only";
+    case "changed-during-read": return "its identity or metadata changed during inspection";
+    case "malformed-json": return "it is not a valid JSON object";
+    case "unreadable": return "it could not be opened and inspected safely";
+  }
+}
+
+function hasNonEmptyCredentialValue(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= 65_536 && !value.includes("\0");
 }
 
 async function contextSection(config: MonoAgentConfig): Promise<ValidationSection> {
@@ -1498,15 +1616,15 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     // Under allow-all the disallow list is already folded into the "except" clause above.
     details.push(`Disallowed tools: ${config.tools.disallowedTools.join(", ")}.`);
   }
-  const directCodexModels = [config.runtime.model, ...(config.runtime.fallbackModels ?? [])]
+  const directCodexModels = configuredRuntimeModels(config.runtime)
     .filter((model) => model.sdk === "codex")
     .map(referenceOf);
-  const directOpenCodeModels = [config.runtime.model, ...(config.runtime.fallbackModels ?? [])]
+  const directOpenCodeModels = configuredRuntimeModels(config.runtime)
     .filter((model) => model.sdk === "opencode")
     .map(referenceOf);
   const claudeCliModels = [
     { model: config.runtime.model, executionMode: config.runtime.executionMode },
-    ...(config.runtime.fallbackModels ?? []).map((model) => ({
+    ...configuredRuntimeFallbackModels(config.runtime).map((model) => ({
       model,
       executionMode: defaultExecutionModeForModel(model),
     })),
@@ -1612,7 +1730,7 @@ function effectiveMcpRuntimeSources(
 }
 
 async function sandboxSection(config: MonoAgentConfig, engine?: SandboxEngine): Promise<ValidationSection> {
-  const runtimeModels = [config.runtime.model, ...(config.runtime.fallbackModels ?? [])];
+  const runtimeModels = configuredRuntimeModels(config.runtime);
   const directCodexRefs = runtimeModels
     .filter((model) => model.sdk === "codex")
     .map((model) => model.reference ?? `codex:${model.model}`);
@@ -1622,6 +1740,45 @@ async function sandboxSection(config: MonoAgentConfig, engine?: SandboxEngine): 
   const directOpenCodeRefs = runtimeModels
     .filter((model) => model.sdk === "opencode")
     .map((model) => model.reference ?? `opencode:${model.provider ?? "unknown"}:${model.model}`);
+  const routeSafety = config.runtime.routeSafety ?? "uniform";
+  if (routeSafety === "per-route-native") {
+    const monoSandboxActive = config.sandbox !== undefined && config.sandbox.mode !== "off";
+    const piRoutes = runtimeModels.filter((model) => model.sdk === "pi");
+    const details = runtimeModels.map((model, index) => routeNativeSafetyDetail(model, index, config));
+    let status: ValidationStatus = !monoSandboxActive && piRoutes.length > 0 ? "disabled" : "ok";
+    if (monoSandboxActive && piRoutes.length > 0) {
+      const state = await resolveSandboxEffectiveState({
+        policy: config.sandbox!,
+        ...(engine === undefined ? {} : { engine }),
+      });
+      const warning = sandboxEffectiveStateWarning(state);
+      details.push(
+        `Pi route SRT policy: mode ${config.sandbox!.mode}, network ${config.sandbox!.network.mode}, fallback ${config.sandbox!.fallback}.`,
+        describeSandboxEffectiveState(state),
+        ...(warning === undefined ? [] : [warning]),
+      );
+      if (warning !== undefined || state.effective === "blocked") status = "waiting";
+    } else if (piRoutes.length > 0) {
+      details.push(
+        "Pi route SRT policy: disabled; Bash and stdio MCP subprocesses run unsandboxed.",
+      );
+    } else if (monoSandboxActive) {
+      details.push(
+        "The configured mono-agent SRT policy has no Pi route to enforce it; provider-owned route contracts below apply instead.",
+      );
+      status = "waiting";
+    }
+    if (monoSandboxActive && runtimeModels.some((model) => model.sdk !== "pi")) {
+      details.push(
+        "[WARN] Per-route-native explicitly does not project mono-agent readableRoots, writableRoots, denyWrite, or network rules onto non-Pi routes; review each route contract before start.",
+      );
+      status = "waiting";
+    }
+    if (runtimeModels.some((model) => model.sdk === "codex") && config.runtime.permissionMode === "bypassPermissions") {
+      status = "waiting";
+    }
+    return { id: "sandbox", label: "Sandbox", status, details };
+  }
   const incompatibleDetails: string[] = [];
   if (config.sandbox !== undefined && config.sandbox.mode !== "off" && directCodexRefs.length > 0) {
     const codexPosture = directCodexSandboxPosture(config.runtime.permissionMode);
@@ -1690,6 +1847,31 @@ async function sandboxSection(config: MonoAgentConfig, engine?: SandboxEngine): 
     status,
     details,
   };
+}
+
+function routeNativeSafetyDetail(
+  model: RuntimeModelReference,
+  index: number,
+  config: MonoAgentConfig,
+): string {
+  const label = index === 0 ? "Primary" : `Fallback ${index}`;
+  const ref = referenceOf(model);
+  if (model.sdk === "pi") {
+    if (config.sandbox === undefined || config.sandbox.mode === "off") {
+      return `${label} ${ref}: Pi-owned tools use mono-agent tool policy; SRT is disabled, so Bash and stdio MCP subprocesses run unsandboxed.`;
+    }
+    if (config.sandbox.fallback === "unsafe-host-process") {
+      return `${label} ${ref}: Pi-owned tools use the configured mono-agent SRT policy; its explicit unsafe-host-process fallback can run subprocesses unsandboxed when SRT is unavailable.`;
+    }
+    return `${label} ${ref}: Pi-owned tools use the configured mono-agent SRT policy and fail closed when it is unavailable.`;
+  }
+  if (model.sdk === "claude") {
+    return `${label} ${ref}: Claude provider-owned permissions apply; mono-agent SRT filesystem/network rules are not projected.`;
+  }
+  if (model.sdk === "codex") {
+    return `${label} ${ref}: ${directCodexSandboxPosture(config.runtime.permissionMode).detail}`;
+  }
+  return `${label} ${ref}: OpenCode provider-owned execution with exact allow-all tool policy applies; mono-agent SRT rules are not projected.`;
 }
 
 function directCodexSandboxPosture(permissionMode: MonoAgentConfig["runtime"]["permissionMode"]): {

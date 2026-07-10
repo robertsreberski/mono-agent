@@ -243,12 +243,19 @@ function recorderCompositionDeps(
     "observabilityContext" | "exporterWarn" | "exporterFactory" | "runEventSink"
   >,
 ): RecorderCompositionDeps {
+  const sourceLabel = options.observabilityContext?.sourceLabel ?? config.agent?.name;
+  const observabilityContext = options.observabilityContext === undefined && sourceLabel === undefined
+    ? undefined
+    : {
+        ...options.observabilityContext,
+        ...(sourceLabel === undefined ? {} : { sourceLabel }),
+      };
   return {
     artifactDir: config.artifacts.dir,
     exporters: config.observability?.exporters ?? [],
-    ...(options.observabilityContext === undefined
+    ...(observabilityContext === undefined
       ? {}
-      : { observabilityContext: options.observabilityContext }),
+      : { observabilityContext }),
     ...(options.exporterWarn === undefined ? {} : { exporterWarn: options.exporterWarn }),
     ...(options.exporterFactory === undefined ? {} : { exporterFactory: options.exporterFactory }),
     ...(options.runEventSink === undefined ? {} : { runEventSink: options.runEventSink }),
@@ -262,11 +269,24 @@ export function createConfiguredAgentRuntime(
 ): MonoRuntimeLike {
   const config = isRuntimeOptions(input) ? input.config : input;
   const options = isRuntimeOptions(input) ? input : undefined;
-  return createMonoRuntime({
+  const fallback = fallbackChainForConfig(config, options);
+  const runtimeOptions: Parameters<typeof createMonoRuntime>[0] = {
     ...runtimeHostOptionsForConfig(config),
     ...(options?.sandboxEngine === undefined ? {} : { sandboxEngine: options.sandboxEngine }),
-    ...(fallbackChainForConfig(config, options)),
-  });
+    ...fallback,
+    ...(fallback.fallbackChain === undefined
+      ? {}
+      : {
+          routeSafety: config.runtime.routeSafety ?? "uniform",
+          // Resolve custom/local Pi options from the ACTUAL route selected by
+          // the fallback router. Secrets stay inside this private return value
+          // and are never copied into route metadata or events.
+          resolveAttempt: ({ model }) => ({
+            options: runtimeOptionsForLocalProvider(model, config.providers?.local),
+          }),
+        }),
+  };
+  return createMonoRuntime(runtimeOptions);
 }
 
 /**
@@ -278,8 +298,9 @@ function fallbackChainForConfig(
   config: MonoAgentConfig,
   options: ConfiguredAgentRuntimeOptions | undefined,
 ): { fallbackChain?: readonly MonoRuntimeFallbackChainEntry[] } {
-  const fallbackModels = config.runtime.fallbackModels;
-  if (fallbackModels === undefined || fallbackModels.length === 0) {
+  const canonicalFallbacks = config.runtime.fallbacks;
+  const legacyFallbackModels = config.runtime.fallbackModels;
+  if ((canonicalFallbacks?.length ?? 0) === 0 && (legacyFallbackModels?.length ?? 0) === 0) {
     return {};
   }
   const primaryModel = options?.model ?? config.runtime.model;
@@ -287,10 +308,23 @@ function fallbackChainForConfig(
   // Drop any fallback equal to the primary so a per-trigger override that happens
   // to match a configured backup is not retried against itself before advancing.
   const primaryKey = modelReferenceKey(primaryModel);
+  const canonicalFallbackEntries = canonicalFallbacks ?? [];
+  const fallbackEntries: readonly MonoRuntimeFallbackChainEntry[] = canonicalFallbackEntries.length > 0
+    ? canonicalFallbackEntries
+        .filter((entry) => modelReferenceKey(entry.model) !== primaryKey)
+        .map((entry) => ({
+          model: entry.model,
+          // Canonical omission means provider default. Legacy fallbackModels
+          // omit this field and therefore continue inheriting runtime.effort.
+          effort: entry.effort ?? null,
+        }))
+    : (legacyFallbackModels ?? [])
+        .filter((model) => modelReferenceKey(model) !== primaryKey)
+        .map((model) => ({ model }));
   return {
     fallbackChain: [
       { model: primaryModel, executionMode: primaryExecutionMode as RuntimeExecutionMode },
-      ...fallbackModels.filter((model) => modelReferenceKey(model) !== primaryKey).map((model) => ({ model })),
+      ...fallbackEntries,
     ],
   };
 }
@@ -339,20 +373,12 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
   const sessionOptions: AgentHarnessSessionOptionsWithEvents = {
     mode: config.runtime.session.mode,
     idleTimeoutMs: config.runtime.session.idleTimeoutMs,
-    // A fallback can execute after the primary has already failed. If any
-    // configured route is non-resumable, keep the whole harness stateless so
-    // every attempt receives replayable history instead of relying on a warm
-    // provider transcript that the fallback cannot access.
-    supportsResume: [model, ...(config.runtime.fallbackModels ?? [])].every((routeModel, index) => {
-      try {
-        return monoRuntimeSupportsSessionResume(
-          routeModel,
-          index === 0 ? executionMode as RuntimeExecutionMode : undefined,
-        );
-      } catch {
-        return false;
-      }
-    }),
+    // Any fallback makes the logical run stateless. A provider-owned session
+    // cannot safely cross the route boundary, even when both bridges happen to
+    // expose resume support. History replay remains available to every attempt.
+    supportsResume: hasConfiguredFallback(config)
+      ? false
+      : supportsSessionResume(model, executionMode),
     ...(config.runtime.session.isolateProactive === undefined
       ? {}
       : { isolateProactive: config.runtime.session.isolateProactive }),
@@ -429,6 +455,19 @@ export async function createConfiguredAgentResponder(options: ConfiguredAgentRes
 
 function historyMaxMessages(maxTurns: number | undefined): number {
   return maxTurns === undefined || maxTurns <= 0 ? 0 : maxTurns * 2;
+}
+
+function hasConfiguredFallback(config: MonoAgentConfig): boolean {
+  return (config.runtime.fallbacks?.length ?? 0) > 0
+    || (config.runtime.fallbackModels?.length ?? 0) > 0;
+}
+
+function supportsSessionResume(model: RuntimeModelReference, executionMode: string): boolean {
+  try {
+    return monoRuntimeSupportsSessionResume(model, executionMode as RuntimeExecutionMode);
+  } catch {
+    return false;
+  }
 }
 
 // Bound embeddings calls so a slow/cold backend cannot stall a turn for the

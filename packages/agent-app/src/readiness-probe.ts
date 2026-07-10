@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +20,7 @@ const MAX_SAFE_MESSAGE_CHARS = 400;
 const WORKER_SHUTDOWN_GRACE_MS = 1_000;
 const LOCAL_PI_PROVIDERS = new Set(["ollama", "lmstudio", "llamacpp"]);
 const SENSITIVE_ENV_NAME = /(api.?key|credential|password|secret|token)/iu;
+const SENSITIVE_FINGERPRINT_KEY = /(api.?key|authorization|cookie|credential|password|secret|token)/iu;
 
 type ReadinessRuntimeRunOptions = RuntimeRunOptions & {
   /** Exact provider environment supplied to the injected test seam. */
@@ -49,6 +51,17 @@ export interface ReadinessProbeOptions {
   readonly dispose?: () => Promise<void> | void;
   /** Test seam for exercising the isolated-worker transport without a real provider. */
   readonly workerUrl?: URL;
+  /**
+   * Resume only routes that already completed successfully under the exact
+   * immutable route plan. A mismatched fingerprint is ignored fail-closed.
+   */
+  readonly resume?: Readonly<{
+    planFingerprint: string;
+    successfulRouteKeys: readonly string[];
+  }>;
+  /** Non-secret progress hooks for app-owned preflight rendering. */
+  readonly onRouteStart?: (route: ReadinessRouteStart) => void | Promise<void>;
+  readonly onRouteComplete?: (result: ReadinessRouteResult) => void | Promise<void>;
 }
 
 export type ReadinessProbeFailureKind =
@@ -61,13 +74,46 @@ export type ReadinessProbeFailureKind =
   | "empty_response"
   | "probe_failed";
 
+export interface ReadinessRouteResult {
+  readonly key: string;
+  readonly index: number;
+  readonly model: string;
+  /** Omitted means the provider's own default; legacy fallbacks inherit. */
+  readonly effort?: string;
+  readonly status: "verified" | "failed" | "skipped_verified" | "interrupted";
+  readonly kind?: ReadinessProbeFailureKind;
+  readonly message?: string;
+}
+
+export interface ReadinessRouteStart {
+  readonly key: string;
+  readonly index: number;
+  readonly total: number;
+  readonly model: string;
+  readonly effort?: string;
+}
+
 export type ReadinessProbeResult =
-  | { readonly ok: true }
+  | {
+      readonly ok: true;
+      readonly planFingerprint?: string;
+      readonly routes?: readonly ReadinessRouteResult[];
+    }
   | {
       readonly ok: false;
       readonly kind: ReadinessProbeFailureKind;
       readonly message: string;
+      readonly planFingerprint?: string;
+      readonly routes?: readonly ReadinessRouteResult[];
+      readonly interrupted?: boolean;
     };
+
+interface ReadinessRoutePlan {
+  readonly index: number;
+  readonly model: string;
+  readonly effort?: string;
+  readonly key: string;
+}
 
 /** Provider-aware hard deadline for the one-turn primary-model probe. */
 export function readinessProbeTimeoutMs(model: RuntimeModelReference): number {
@@ -402,12 +448,255 @@ function startReadinessWorker(input: {
   };
 }
 
+function selectedReadinessRoutes(
+  plan: WizardPlan,
+  options: Pick<
+    ReadinessProbeOptions,
+    "hostEnv" | "resolvedPiAuthPath" | "secretValues" | "timeoutMs"
+  > = {},
+): {
+  readonly routes: readonly ReadinessRoutePlan[];
+  readonly fingerprint: string;
+} {
+  const runtime = (plan.configJson.runtime ?? {}) as Record<string, unknown>;
+  const primary = typeof runtime.model === "string" ? runtime.model : "";
+  const inheritedEffort = typeof runtime.effort === "string" ? runtime.effort : undefined;
+  const authored: Array<{ model: string; effort?: string }> = [];
+  if (primary.length > 0) {
+    authored.push({ model: primary, ...(inheritedEffort === undefined ? {} : { effort: inheritedEffort }) });
+  }
+
+  // Canonical fallbacks have independent effort semantics: omission means the
+  // provider default, not inheritance from the primary route.
+  if (Array.isArray(runtime.fallbacks)) {
+    for (const raw of runtime.fallbacks) {
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+      const entry = raw as Record<string, unknown>;
+      if (typeof entry.model !== "string" || entry.model.length === 0) continue;
+      authored.push({
+        model: entry.model,
+        ...(typeof entry.effort === "string" ? { effort: entry.effort } : {}),
+      });
+    }
+  } else if (Array.isArray(runtime.fallbackModels)) {
+    // Legacy fallbackModels intentionally retain their historical inheritance.
+    for (const model of runtime.fallbackModels) {
+      if (typeof model !== "string" || model.length === 0) continue;
+      authored.push({ model, ...(inheritedEffort === undefined ? {} : { effort: inheritedEffort }) });
+    }
+  }
+
+  const immutableRoutes = authored.map((route, index) => ({ index, model: route.model, effort: route.effort ?? null }));
+  const executionRuntime = { ...runtime };
+  delete executionRuntime.model;
+  delete executionRuntime.effort;
+  delete executionRuntime.fallbacks;
+  delete executionRuntime.fallbackModels;
+  delete executionRuntime.session;
+  delete executionRuntime.workspace;
+  const nonSecretEnvironment = Object.fromEntries(
+    Object.entries(options.hostEnv ?? process.env)
+      .filter((entry): entry is [string, string] =>
+        typeof entry[1] === "string"
+        && !SENSITIVE_ENV_NAME.test(entry[0])
+        && !entry[0].startsWith("MONO_AGENT_")
+      )
+      .sort(([left], [right]) => left.localeCompare(right)),
+  );
+  const immutable = canonicalFingerprintValue({
+    version: 2,
+    routes: immutableRoutes,
+    runtime: executionRuntime,
+    providers: (plan.configJson as Record<string, unknown>).providers ?? null,
+    resolvedPiAuthPath: options.resolvedPiAuthPath ?? null,
+    nonSecretEnvironment,
+    selectedSecretNames: Object.keys(options.secretValues ?? {}).sort(),
+    timeoutMs: options.timeoutMs ?? null,
+  });
+  const fingerprint = createHash("sha256")
+    .update(JSON.stringify(immutable))
+    .digest("hex");
+  return {
+    fingerprint,
+    routes: authored.map((route, index) => ({
+      index,
+      ...route,
+      key: createHash("sha256")
+        .update(JSON.stringify({ version: 1, index, model: route.model, effort: route.effort ?? null }))
+        .digest("hex"),
+    })),
+  };
+}
+
+function canonicalFingerprintValue(value: unknown, key = ""): unknown {
+  if (SENSITIVE_FINGERPRINT_KEY.test(key)) return "[secret-redacted]";
+  if (Array.isArray(value)) return value.map((entry) => canonicalFingerprintValue(entry));
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([entryKey, entryValue]) => [entryKey, canonicalFingerprintValue(entryValue, entryKey)]),
+  );
+}
+
+function singleRouteWizardPlan(plan: WizardPlan, route: ReadinessRoutePlan): WizardPlan {
+  const configJson = structuredClone(plan.configJson) as Record<string, unknown>;
+  const runtime: Record<string, unknown> = {
+    ...((configJson.runtime ?? {}) as Record<string, unknown>),
+    model: route.model,
+  };
+  delete runtime.fallbacks;
+  delete runtime.fallbackModels;
+  delete runtime.session;
+  if (route.effort === undefined) delete runtime.effort;
+  else runtime.effort = route.effort;
+  configJson.runtime = runtime;
+  return { ...plan, configJson: configJson as WizardPlan["configJson"] };
+}
+
 /**
- * Make one real assistant turn in a disposable directory before init writes the
- * selected target. This deliberately never starts an app/channel/harness and
- * tests only the selected primary model (never its fallback chain).
+ * Make one real, sequential no-tool turn for every selected persistent runtime
+ * route. A route is never allowed to invoke its configured fallback chain.
+ * Ordinary failures are collected so the operator gets one complete summary;
+ * caller cancellation stops the current route and records interruption state.
  */
 export async function runReadinessProbe(options: ReadinessProbeOptions): Promise<ReadinessProbeResult> {
+  const selected = selectedReadinessRoutes(options.plan, options);
+  if (selected.routes.length <= 1 && options.resume === undefined) {
+    return runSingleReadinessProbe(options);
+  }
+  return runSelectedReadinessRoutes(options, selected);
+}
+
+/**
+ * Always return the ordered route ledger, including for a primary-only plan.
+ * Guided setup uses this surface so a successful call can be resumed by its
+ * stable key; legacy callers may keep using runReadinessProbe's compact result.
+ */
+export async function runAllRouteReadinessProbe(
+  options: ReadinessProbeOptions,
+): Promise<ReadinessProbeResult> {
+  return runSelectedReadinessRoutes(options, selectedReadinessRoutes(options.plan, options));
+}
+
+async function runSelectedReadinessRoutes(
+  options: ReadinessProbeOptions,
+  selected: ReturnType<typeof selectedReadinessRoutes>,
+): Promise<ReadinessProbeResult> {
+  if (selected.routes.length === 0) {
+    return {
+      ok: false,
+      kind: "invalid_plan",
+      message: "The readiness plan does not contain a selected runtime model.",
+      planFingerprint: selected.fingerprint,
+      routes: [],
+    };
+  }
+
+  const mayResume = options.resume?.planFingerprint === selected.fingerprint;
+  const successful = mayResume
+    ? new Set(options.resume?.successfulRouteKeys ?? [])
+    : new Set<string>();
+  const results: ReadinessRouteResult[] = [];
+  for (const route of selected.routes) {
+    const displayRoute = {
+      ...route,
+      model: boundedRouteField(route.model, 200),
+      ...(route.effort === undefined ? {} : { effort: boundedRouteField(route.effort, 32) }),
+    };
+    await notifyReadinessProgress(options.onRouteStart, {
+      ...displayRoute,
+      total: selected.routes.length,
+    });
+    if (successful.has(route.key)) {
+      const completed: ReadinessRouteResult = { ...displayRoute, status: "skipped_verified" };
+      results.push(completed);
+      await notifyReadinessProgress(options.onRouteComplete, completed);
+      continue;
+    }
+    if (options.abortSignal?.aborted === true) {
+      const completed: ReadinessRouteResult = {
+        ...displayRoute,
+        status: "interrupted",
+        kind: "cancelled",
+        message: "The route check was interrupted before it started.",
+      };
+      results.push(completed);
+      await notifyReadinessProgress(options.onRouteComplete, completed);
+      return {
+        ok: false,
+        kind: "cancelled",
+        message: `Readiness was interrupted after ${results.filter((entry) => entry.status === "verified" || entry.status === "skipped_verified").length} of ${selected.routes.length} routes were verified.`,
+        planFingerprint: selected.fingerprint,
+        routes: results,
+        interrupted: true,
+      };
+    }
+
+    const { resume: _resume, ...singleOptions } = options;
+    const result = await runSingleReadinessProbe({
+      ...singleOptions,
+      plan: singleRouteWizardPlan(options.plan, route),
+    });
+    if (result.ok) {
+      const completed: ReadinessRouteResult = { ...displayRoute, status: "verified" };
+      results.push(completed);
+      await notifyReadinessProgress(options.onRouteComplete, completed);
+      continue;
+    }
+    const interrupted = result.kind === "cancelled";
+    const completed: ReadinessRouteResult = {
+      ...displayRoute,
+      status: interrupted ? "interrupted" : "failed",
+      kind: result.kind,
+      message: result.message,
+    };
+    results.push(completed);
+    await notifyReadinessProgress(options.onRouteComplete, completed);
+    if (interrupted) {
+      return {
+        ok: false,
+        kind: "cancelled",
+        message: `Readiness was interrupted while checking route ${route.index + 1} of ${selected.routes.length}.`,
+        planFingerprint: selected.fingerprint,
+        routes: results,
+        interrupted: true,
+      };
+    }
+  }
+
+  const failures = results.filter((entry) => entry.status === "failed");
+  if (failures.length > 0) {
+    const first = failures[0];
+    return {
+      ok: false,
+      kind: first?.kind ?? "provider_failed",
+      message: `${failures.length} of ${selected.routes.length} runtime route checks failed. ${first?.model ?? "Selected route"}: ${first?.message ?? "provider failure"}`,
+      planFingerprint: selected.fingerprint,
+      routes: results,
+    };
+  }
+  return { ok: true, planFingerprint: selected.fingerprint, routes: results };
+}
+
+async function notifyReadinessProgress<T>(
+  callback: ((value: T) => void | Promise<void>) | undefined,
+  value: T,
+): Promise<void> {
+  try {
+    await callback?.(value);
+  } catch {
+    // Rendering/progress observers never alter readiness semantics.
+  }
+}
+
+function boundedRouteField(value: string, limit: number): string {
+  const normalized = value.replace(/[\u0000-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim();
+  return normalized.length <= limit ? normalized : `${normalized.slice(0, Math.max(0, limit - 1))}…`;
+}
+
+/** Run exactly one route with no fallback chain. */
+async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<ReadinessProbeResult> {
   const selectedModel = options.plan.configJson.runtime?.model;
   if (typeof selectedModel === "string" && selectedModel.startsWith("opencode:")) {
     return {
@@ -427,6 +716,7 @@ export async function runReadinessProbe(options: ReadinessProbeOptions): Promise
     const runtime = config.runtime as Record<string, unknown>;
     config.runtime = { ...runtime, workspace: ".mono-agent/workspace" };
     delete (config.runtime as Record<string, unknown>).fallbackModels;
+    delete (config.runtime as Record<string, unknown>).fallbacks;
     delete (config.runtime as Record<string, unknown>).session;
     delete config.memory;
     delete config.artifacts;

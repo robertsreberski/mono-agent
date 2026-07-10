@@ -1,5 +1,5 @@
 import * as p from "@clack/prompts";
-import { EFFORT_LEVELS } from "@mono-agent/config";
+import { MAX_AGENT_NAME_LENGTH } from "@mono-agent/config";
 
 import type { EffortLevel } from "@mono-agent/config";
 
@@ -17,6 +17,9 @@ export interface WizardSelectOption {
   readonly label: string;
   readonly hint?: string;
 }
+
+/** Keep large catalogs navigable without hiding any searchable row. */
+export const MODEL_AUTOCOMPLETE_MAX_ITEMS = 10;
 
 export const CUSTOM_PI_MODEL_OPTION = "__pi_manual__";
 
@@ -39,6 +42,38 @@ export class WizardCancelled extends Error {
   }
 }
 
+/** Escape requests one logical step back; Ctrl-C requests an exit confirmation. */
+export class WizardBack extends Error {
+  constructor() {
+    super("Go back one wizard step.");
+    this.name = "WizardBack";
+  }
+}
+
+export class WizardExitRequested extends Error {
+  constructor() {
+    super("Confirm wizard exit.");
+    this.name = "WizardExitRequested";
+  }
+}
+
+export interface WizardKey {
+  readonly name?: string;
+  readonly ctrl?: boolean;
+}
+
+/** Pure key classifier used by the scoped production observer and tests. */
+export function wizardCancelIntentForKey(key: WizardKey): "back" | "exit" | undefined {
+  if (key.name === "escape") return "back";
+  if (key.ctrl === true && key.name === "c") return "exit";
+  return undefined;
+}
+
+/** Pure back transition: `undefined` means the user is already at the first step. */
+export function previousWizardStep(step: number): number | undefined {
+  return step > 0 ? step - 1 : undefined;
+}
+
 /**
  * Unwrap a clack prompt result: return the value, or throw {@link WizardCancelled}
  * when the user cancelled (clack signals cancel with a sentinel symbol). Every
@@ -49,6 +84,16 @@ export function guard<T>(value: T | symbol): T {
     throw new WizardCancelled();
   }
   return value;
+}
+
+/** Folder/public-name validation mirrors the config loader's 80-code-point contract. */
+export function validateWizardAgentName(value: string | undefined): string | undefined {
+  const name = (value ?? "").trim();
+  const length = Array.from(name).length;
+  if (length === 0 || length > MAX_AGENT_NAME_LENGTH || /[\u0000-\u001f\u007f]/u.test(name)) {
+    return `Enter a single-line name between 1 and ${MAX_AGENT_NAME_LENGTH} characters.`;
+  }
+  return undefined;
 }
 
 /** Human hints for the built-in tools, shown beside each tool in the multiselect. */
@@ -117,8 +162,17 @@ export function memorySelectOptions(): WizardSelectOption[] {
  * A discovered/ranked model menu plus explicit escape hatches for Pi provider
  * refs and generic full model refs.
  */
-export function modelSelectOptions(candidates: readonly WizardModelCandidate[] = STATIC_MODEL_CANDIDATES): WizardSelectOption[] {
+export function modelSelectOptions(
+  candidates: readonly WizardModelCandidate[] = STATIC_MODEL_CANDIDATES,
+  authoredModel?: string,
+): WizardSelectOption[] {
+  const authored = authoredModel !== undefined
+    && !WIZARD_MODEL_SENTINELS.has(authoredModel)
+    && !candidates.some((candidate) => candidate.value === authoredModel)
+      ? [{ value: authoredModel, label: authoredModel, hint: "current authored model; provider-default effort" }]
+      : [];
   return [
+    ...authored,
     ...candidates.map((candidate) => ({
       value: candidate.value,
       label: candidate.label,
@@ -147,7 +201,11 @@ export function piModelSelectOptions(
         label: candidate.label,
         ...(candidate.hint === undefined ? {} : { hint: candidate.hint }),
       })),
-    { value: CUSTOM_PI_MODEL_OPTION, label: "Custom Pi provider/model id…", hint: "type provider id and model id" },
+    {
+      value: CUSTOM_PI_MODEL_OPTION,
+      label: "Supported Pi provider/model id…",
+      hint: "Anthropic, GitHub Copilot, OpenAI Codex, OpenCode-Go, Ollama, or LM Studio",
+    },
   ];
 }
 
@@ -176,14 +234,88 @@ export function fallbackModelSelectOptions(
 }
 
 /** Reasoning-effort choices. Empty value means no `runtime.effort` is written. */
-export function effortSelectOptions(derivedEffort?: EffortLevel): WizardSelectOption[] {
+export function effortSelectOptions(
+  supportedEfforts: readonly EffortLevel[] = [],
+  defaultEffort?: EffortLevel,
+): WizardSelectOption[] {
   return [
-    { value: "", label: "Default", hint: "leave runtime.effort unset" },
-    ...EFFORT_LEVELS.map((level) => ({
-      value: level,
-      label: level === derivedEffort ? `${level} (derived)` : level,
-      ...(level === derivedEffort ? { hint: "derived from selected model" } : {}),
-    })),
+    {
+      value: "",
+      label: "Provider default",
+      hint: defaultEffort === undefined
+        ? "omit effort for this route"
+        : `currently ${defaultEffort}; omit effort for this route`,
+    },
+    ...supportedEfforts.map((level) => ({ value: level, label: level })),
+  ];
+}
+
+export const ROUTE_SAFETY_OPTIONS: readonly WizardSelectOption[] = [
+  {
+    value: "uniform",
+    label: "Uniform safety contract",
+    hint: "compatibility default; every route must satisfy one common policy",
+  },
+  {
+    value: "per-route-native",
+    label: "Per-route native safety",
+    hint: "each provider keeps its explicit native tool and sandbox contract",
+  },
+];
+
+/** Exact per-route contract shown before accepting a mixed/provider-native chain. */
+export function routeSafetyContract(model: string, managedSrt: boolean): string {
+  if (model.startsWith("pi:")) {
+    return managedSrt
+      ? "Pi: mono-agent managed SRT + mono-agent tool policy"
+      : "Pi: mono-agent tool policy; managed SRT disabled";
+  }
+  if (model.startsWith("claude:")) {
+    return "Claude: provider-native sandbox; representable tool restrictions only; mono-agent SRT is not applied";
+  }
+  if (model.startsWith("codex:")) {
+    return "Codex: Codex-native sandbox + exact allow-all; mono-agent SRT/tool allowlist is not applied";
+  }
+  if (model.startsWith("opencode:")) {
+    return "OpenCode: provider-native sandbox + exact allow-all; unsupported capabilities skip this route";
+  }
+  return "Custom runtime: provider-native policy; unsupported capabilities skip this route";
+}
+
+export function formatRouteSafetyMatrix(
+  primary: { readonly model: string; readonly effort?: string },
+  fallbacks: readonly { readonly model: string; readonly effort?: string }[],
+  managedSrt: boolean,
+): string {
+  return [primary, ...fallbacks].map((route, index) =>
+    `${index === 0 ? "Primary" : `Fallback ${index}`}: ${route.model} [${route.effort ?? "provider default"}]\n  ${routeSafetyContract(route.model, managedSrt)}`,
+  ).join("\n");
+}
+
+export function routeFamilies(models: readonly string[]): readonly string[] {
+  return [...new Set(models.map((model) =>
+    model.startsWith("pi:") ? "pi"
+      : model.startsWith("claude:") ? "claude"
+        : model.startsWith("codex:") ? "codex"
+          : model.startsWith("opencode:") ? "opencode"
+            : "custom",
+  ))];
+}
+
+export function isMixedRouteChain(models: readonly string[]): boolean {
+  return routeFamilies(models).length > 1;
+}
+
+export function creationReviewOptions(options: { readonly setupRequired: boolean }): WizardSelectOption[] {
+  return [
+    {
+      value: "create",
+      label: options.setupRequired
+        ? "Run setup and readiness checks, then create agent"
+        : "Run readiness checks, then create agent",
+    },
+    { value: "edit", label: "Edit choices" },
+    { value: "cancel", label: "Cancel without writing" },
   ];
 }
 

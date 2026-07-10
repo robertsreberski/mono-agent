@@ -115,7 +115,7 @@ cd my-agent
 mono-agent init
 ```
 
-On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: start from a [preset](/reference/recipes/) or go fully custom, then answer model, channels, memory, runtime-appropriate tools/safety, and observability. **Allow all tools** is the default. Pi/Claude flows disclose shell/file/web/channel effects and require a second confirmation if that surface will run without an enforceable sandbox; direct Codex fixes exact allow-all and reports its own network-off workspace sandbox instead of offering mono-agent tool/srt choices. It proves the primary model, validates the complete plan, and offers immediate start only when every selected expectation is ready. Pass `--yes` or any flag (or run in a non-TTY) for scaffold-only automation; that path never makes a readiness claim:
+On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: name the agent, search the Pi/Codex/Claude catalogs, configure any number of fallbacks and their exact efforts, then choose capabilities and route safety. Escape goes back. A concrete creation review precedes provider/SRT mutations. It proves every selected route sequentially and offers immediate start only when every selected expectation is ready; interrupted preflight can resume fingerprint-matching successes or restart all checks. Pass `--yes` or any flag (or run in a non-TTY) for scaffold-only automation; that path never makes a readiness claim:
 
 ```bash
 mono-agent init --preset telegram-assistant --yes   # scaffold from a preset

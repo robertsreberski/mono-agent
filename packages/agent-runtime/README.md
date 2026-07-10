@@ -6,13 +6,15 @@ Category: `runtime`
 
 ## Responsibility
 
-Provides five runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, OpenCode app-server, Pi SDK), with capabilities declared per bridge. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind runtime contracts. Pi enforces optional mono-agent sandbox policy for runtime-owned tools through an injectable `RuntimeSandbox` seam (a fail-closed passthrough by default; `@mono-agent/runtime-adapter` injects the real implementation). Direct Codex projects its own native sandbox and rejects mono-agent `srt` scopes; Claude and direct OpenCode fail with a typed capability mismatch before query/spawn when those scopes are supplied.
+Provides five runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, OpenCode app-server, Pi SDK), with capabilities declared per bridge. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind runtime contracts. Pi enforces optional mono-agent sandbox policy for runtime-owned tools through an injectable `RuntimeSandbox` seam (a fail-closed passthrough by default; `@mono-agent/runtime-adapter` injects the real implementation). The router supports a compatibility-preserving uniform contract or explicit isolated per-route-native contracts; no provider route silently drops required capabilities.
 
 ## Public API
 
 - `createRuntime` — runtime factory dispatching to the backend bridges
 - `ai/runtime/model-refs.js` — `parseRuntimeModelReference`, `executionModeIncompatibilityReason`
 - `ai/runtime/registry.js` — `listRuntimeBridges`
+- `ai/providers/claude-sdk-discovery.js` — isolated Claude SDK model discovery without importing ambient auth/config
+- `createRouterRuntime({ chain, routeSafety, resolveAttempt })` — ordered fallback routing with exact route effort and bounded safety/failover telemetry
 - Provider bridges for `claude` (SDK + CLI), `codex` (app-server), `pi` (Pi SDK), and `opencode`
 - Provider session support: bridges accept `sessionId` in run options and report `provider_session_id`; the runtime exposes `disposeSession` / `disposeAllSessions`
 - Sandbox-aware built-in tools and stdio MCP startup through an injectable `RuntimeSandbox` seam (`agent/sandbox-seam.js`) — no direct dependency on `@mono-agent/runtime-adapter`
@@ -37,7 +39,7 @@ pnpm --filter @mono-agent/agent-runtime run test
 
 Generic agent runtime that supports five bridges out of the box:
 
-- **Claude SDK** (`@anthropic-ai/claude-agent-sdk`)
+- **Claude SDK** (`@anthropic-ai/claude-agent-sdk` 0.3.206)
 - **Claude Code CLI** (the `claude` binary)
 - **Pi SDK** (`@earendil-works/pi-agent-core`, used for OpenAI / Codex / Gemini / OpenRouter / Ollama / etc. via Pi providers)
 - **Codex CLI** (the `codex` app-server)
@@ -301,23 +303,23 @@ The package does **not** validate `structuredResult` against your schema — it 
 
 ## Provider fallback router
 
-`createRouterRuntime({ host, chain })` wraps the standard runtime with an ordered chain of model references. On a retryable provider failure (rate limit, overload, network blip — classified via the same taxonomy as `retryableProviderFailureInfo`), it retries the same logical run against the next chain entry, replaying the transcript-tail snapshot of the previous attempt so the next provider continues rather than starts over.
+`createRouterRuntime({ host, chain, routeSafety, resolveAttempt })` wraps the standard runtime with an ordered chain of model references. On a retryable provider/auth failure it retries the logical run against the next entry with one bounded transcript-tail snapshot. A chain is stateless across provider sessions. Entry `effort` is tri-state: a string fixes that route, `null` asks for provider default, and omission inherits the legacy per-run effort.
 
 ```js
 import { createRouterRuntime } from "@mono-agent/agent-runtime";
 
 const router = createRouterRuntime({
   host: { /* same shape as createRuntime */ },
+  routeSafety: "per-route-native",
   chain: [
-    { sdk: "claude", model: "claude-opus-4-7" },
-    { sdk: "claude", model: "claude-sonnet-4-6" },
-    { model: { sdk: "pi", provider: "openai", model: "gpt-5.5" }, requires: { structured_output: true } },
+    { model: { sdk: "claude", model: "claude-sonnet-5" }, effort: "high" },
+    { model: { sdk: "codex", model: "gpt-5.6-sol" }, effort: "xhigh" },
+    { model: { sdk: "pi", provider: "ollama", model: "gemma4:31b" }, effort: null },
   ],
 });
 
 const result = await router.run("...", { /* same shape as runtime.run */ });
-console.log(result.failoverHistory);
-// [{ model, failureKind, requestId, retryableSubkind }, ...]  one entry per attempt that didn't succeed.
+console.log(result.failoverHistory, result.routeSafetyHistory);
 ```
 
 Behaviour:
@@ -328,6 +330,18 @@ Behaviour:
 - Malformed request/config/billing-type non-retryable failure → returns immediately with `failoverHistory` containing the one attempt.
 - Cancellation → returns immediately.
 - Chain exhausted → `failureKind: "provider_unavailable_exhausted"`, `failoverHistory` lists every attempt.
+- `uniform` safety keeps the shared monotonic runtime; `per-route-native` isolates
+  route runtimes and records each bounded safety contract/status.
+- Pi route telemetry distinguishes `disabled`, fail-closed `mono-agent-srt`,
+  and `mono-agent-srt-unsafe-host-fallback`; the last describes a configured
+  policy that prefers SRT but permits host execution, not which branch ran.
+- A resolver-supplied Pi runtime may own provider credentials and lifecycle,
+  but must expose `configureTools()`: before every attempt the router replaces
+  its mutable tool context with the router's effective host/configured safety
+  inputs, while request-scoped overrides remain on that exact run. A runtime
+  that cannot accept this projection fails closed as `safety_unavailable`.
+- Attempt-resolver failures are sanitized to `safety_unavailable`; resolver
+  credentials/options never enter result telemetry.
 
 Chain entries can require backend capabilities via `requires: { structured_output: true, supports_mcp: true, ... }`; entries that don't satisfy the requirements are skipped (logged in `failoverHistory` as `failureKind: "skipped_capability_mismatch"`).
 

@@ -4,88 +4,154 @@ sidebar:
   order: 3
 ---
 
-This page covers `runtime.fallbackModels` — an ordered list of backup model references that the native failover router tries when the primary model hits a fallback-eligible provider failure. Failover is always reported in run results; the framework never silently swaps models behind your back.
+# Fallback models & failover
 
-## What failover does
+`runtime.fallbacks` is the canonical ordered list of backup routes. Each entry
+selects a model and, optionally, its exact reasoning effort. The list is not
+artificially capped: the router walks it in authored order until one route
+succeeds or every eligible route is exhausted. Failover and route-safety history
+are reported in results and traces; mono-agent never silently swaps providers.
 
-When a turn fails against the primary `runtime.model` with a fallback-eligible provider error (transport errors, rate limits, transient 5xx, and provider authentication or credential failures), the router advances to the next entry in `runtime.fallbackModels` and retries the same turn there. It walks the list in order until one succeeds or the list is exhausted. Because mono-agent runs continuous provider sessions, the backup continues the existing conversation via transcript-tail resume — the prior turns are replayed onto the backup model so context is preserved across the switch.
-
-The chosen model and the fact that failover occurred are surfaced in the run result, so callers (and observability traces) can see exactly which model produced the answer. When a chain is exhausted, the run no longer surfaces as a bare `provider_unavailable_exhausted` with no detail: the per-attempt failover history (each attempted model plus its failure subkind) and the underlying provider error are persisted to the run summary (`failoverHistory` + `error`) and surfaced in Phoenix traces as the `mono.agent.failover.count` / `mono.agent.failover.detail` / `mono.agent.error.message` attributes and the composed root-span status message (e.g. `failed (provider_unavailable_exhausted: pi:openai-codex:gpt-5.6-terra → timeout, pi:opencode-go:kimi-k2.6 → server_error; last error: 503 Service Unavailable …)`). See [Sessions & concurrency](/runtime/sessions-concurrency/) for how continuous sessions work, [Artifacts & traces](/observability/artifacts-and-traces/) for where run results land, and [Phoenix per-run attributes](/observability/phoenix-and-backfill/#per-run-attributes) for the trace fields.
-
-:::note
-Failover is for fallback-eligible *provider* failures, not for application-level disagreement with the answer. A successful-but-wrong response is not a failover trigger.
-:::
-
-## Coverage
-
-| Capability | Coverage | Key |
-| --- | --- | --- |
-| Backup models on fallback-eligible provider failure | config | `runtime.fallbackModels` |
-
-Set it three ways:
-
-- Config: `runtime.fallbackModels`
-- Env (CSV): `MONO_AGENT_FALLBACK_MODELS`
-- Scaffold: `mono-agent init --fallback-models <csv>`
-
-## Configure it
-
-`fallbackModels` is an ordered array of model references in the same `pi:<provider>:<model> | claude:* | codex:* | opencode:*` form as `runtime.model`. The first entry is tried first.
+## Configure canonical routes
 
 ```json
 {
   "runtime": {
     "model": "pi:openai-codex:gpt-5.6-terra",
-    "fallbackModels": [
-      "pi:opencode-go:kimi-k2.6",
-      "pi:ollama:gemma4:31b"
-    ]
+    "effort": "high",
+    "fallbacks": [
+      { "model": "claude:claude-sonnet-5", "effort": "xhigh" },
+      { "model": "codex:gpt-5.6-sol", "effort": "high" },
+      { "model": "pi:ollama:gemma4:31b" }
+    ],
+    "routeSafety": "per-route-native"
   }
 }
 ```
 
-The example above degrades from a primary cloud model to a cheaper cloud model, then to a local Ollama model as a last resort. Any `pi:<provider>:<model>` entry must reference a provider you have declared under `providers` — see [Local & self-hosted providers](/runtime/local-providers/).
+The primary uses `runtime.effort`. Every canonical fallback owns its effort:
 
-### Env override (CSV)
+- An explicit `effort` is forwarded only to that route and must be supported by
+  its known model metadata.
+- Omitted `effort` means the provider/model default. It does **not** inherit the
+  primary's `runtime.effort`.
+- Each fallback infers its own execution mode from its model reference; it does
+  not inherit `runtime.executionMode` from the primary.
 
-`MONO_AGENT_FALLBACK_MODELS` takes a comma-separated list and overrides the JSON value (env > JSON > defaults):
+The canonical environment form is JSON:
 
 ```bash
-export MONO_AGENT_FALLBACK_MODELS="claude:claude-haiku-4-6,pi:ollama:gemma4:31b"
+export MONO_AGENT_FALLBACKS_JSON='[
+  {"model":"claude:claude-sonnet-5","effort":"xhigh"},
+  {"model":"pi:ollama:gemma4:31b"}
+]'
 ```
 
-### Scaffold from the CLI
-
-`mono-agent init` accepts the same CSV when generating `mono-agent.config.json`:
+For non-interactive scaffolding, repeat `--fallback` and put an optional
+`--fallback-effort` immediately after the route it configures:
 
 ```bash
 mono-agent init \
-  --model pi:openai-codex:gpt-5.6-terra \
-  --fallback-models pi:opencode-go:kimi-k2.6,pi:ollama:gemma4:31b
+  --model pi:openai-codex:gpt-5.6-terra --effort high \
+  --fallback claude:claude-sonnet-5 --fallback-effort xhigh \
+  --fallback pi:ollama:gemma4:31b --fallback-effort provider-default \
+  --route-safety per-route-native
 ```
 
-## Execution mode of fallback entries
+## Legacy compatibility
 
-Fallback entries do **not** inherit the primary's `runtime.executionMode`. Each entry uses the execution mode *inferred from its own model reference* (the same default inference that applies when you omit `executionMode` for the primary). Pi, Claude, and direct OpenCode can mix when no mono-agent native sandbox is configured. Any chain containing direct `opencode:*` also requires exact allow-all tool policy, no effective MCP sources, no positive `maxTurns`, and no effort at runtime or static trigger scope. Direct OpenCode is per-run and non-resumable, so a configured mixed chain stays stateless end to end: the harness replays full conversation history on later turns, and the router strips any foreign session ids before an OpenCode attempt. Dynamic request effort is warned and ignored when such a fallback is retained. A chain containing direct `codex:*` must be all-direct because direct Codex has a distinct tool and sandbox contract. See [Backends & execution modes](/runtime/backends/) for how a model reference maps to an SDK or CLI backend.
+Existing `runtime.fallbackModels`, `MONO_AGENT_FALLBACK_MODELS`, and
+`--fallback-models <csv>` remain supported. Legacy entries retain their historic
+behavior: they inherit the global `runtime.effort`. Do not configure canonical
+and legacy forms together; choose `runtime.fallbacks` for new agents.
 
-:::caution
-A configured mono-agent native sandbox rejects every chain containing Claude or
-direct OpenCode: their provider-owned tool loops cannot enforce the configured
-`srt` roots, deny-write globs, or network policy. (`pi:opencode-go:*` remains a
-Pi route.) Direct Codex also rejects mono-agent native sandbox config and instead
-runs under its own Codex-native sandbox. These checks fail closed during
-validation and again at runtime.
-:::
+```json
+{
+  "runtime": {
+    "model": "pi:openai-codex:gpt-5.6-terra",
+    "effort": "high",
+    "fallbackModels": ["pi:ollama:gemma4:31b"]
+  }
+}
+```
 
-A CLI-backed fallback entry runs under that backend's own `permissionMode` semantics. If your primary is an SDK backend with strict tool policy, confirm the fallback backend's policy matches your expectations — see [Tool policy](/tools/policy/).
+## Route safety
 
-## Ordering and cost strategy
+`runtime.routeSafety` controls whether every provider must represent one common
+safety contract or whether the operator accepts explicit route-local contracts.
 
-Order the list by preference, not just availability — the router stops at the first entry that succeeds, so put your best acceptable backup first. A common pattern is capability-then-cost-then-local: a strong cloud model, then a cheaper cloud model, then a self-hosted local model so the agent stays up even during a provider outage. Provider-transport retry tuning (how many times each model is retried before the router gives up on it) lives under `providers.piNative.piMaxRetries` for `pi:*` backends.
+| Mode | Contract |
+| --- | --- |
+| `uniform` (default) | Reuses one monotonic mono-agent tool/sandbox contract. A route that cannot represent a required capability is rejected or skipped before execution. |
+| `per-route-native` | Isolates provider runtimes and applies the documented native contract for each attempt. Mixed Pi, Claude, Codex, and OpenCode chains are allowed after explicit review. |
+
+The per-route-native matrix is deliberately concrete:
+
+- **Pi:** mono-agent tool policy, plus managed SRT when configured.
+- **Claude:** provider-native sandbox with the tool restrictions the Claude
+  bridge can represent; mono-agent SRT is not projected onto the route.
+- **Direct Codex:** Codex-native sandbox and exact allow-all at the mono-agent
+  tool-policy layer.
+- **Direct OpenCode:** provider-native permissions and exact allow-all;
+  unsupported capabilities cause the route to be skipped.
+
+Capability-bearing inputs such as MCP, skills, structured output, live input,
+or native subagents are never silently removed to make a route pass. Doctor and
+runtime checks fail closed or skip that route with `safety_unavailable` /
+`skipped_capability_mismatch` and credential-free safety telemetry.
+
+## What failover does
+
+The router advances after retryable provider errors (transport failures, rate
+limits, transient server failures) and provider-auth failures. Successful but
+undesired output does not trigger failover. Mid-turn sandbox/safety failures are
+terminal because retrying them on another provider could weaken the established
+contract.
+
+Any configured fallback chain is stateless across provider sessions. The harness
+keeps the logical conversation replayable, strips route-owned session ids, and
+uses a bounded transcript-tail snapshot when moving between attempts. This avoids
+attaching one provider's session token to another provider or accumulating nested
+resume blocks across a long chain.
+
+The runtime result includes `failoverHistory` and `routeSafetyHistory`. An
+exhausted chain reports `provider_unavailable_exhausted` with per-attempt models,
+failure kinds/subkinds, and route safety. Run summaries and Phoenix failover
+attributes preserve normalized failover details; the events JSONL preserves the
+separate bounded `provider_route_safety` records.
+
+## Guided readiness
+
+Bare interactive `mono-agent init` makes one real, sequential no-tool call for
+every selected route. Each route receives its exact configured effort (or provider
+default) and its own 90-second cloud / 240-second local deadline. Escape or
+Ctrl-C interrupts safely. The recovery menu can:
+
+- resume only routes already verified under the exact non-secret plan
+  fingerprint;
+- restart all route checks while retaining successful auth and managed SRT;
+- edit model choices; or
+- cancel without writing.
+
+Changing routes, effort, execution/safety settings, provider configuration,
+durable non-secret environment, secret names, Pi auth path, or timeout invalidates
+the resume fingerprint. Authentication repair also invalidates every route proof,
+even when the non-secret plan is unchanged, because credential bytes may have
+changed. A detected credential is not enough: a route becomes verified only
+after its exact live check succeeds.
+
+## Ordering and cost
+
+Order routes by preference because the first success wins. A common production
+shape is capable cloud primary, lower-cost cloud fallback, then local fallback.
+The creation review prints every selected route and effort, the route-safety
+matrix, the number of real readiness calls, and how many may be billed before it
+asks whether to create the agent.
 
 ## Related
 
-- [Multi-model fallback chain](/playbooks/multi-model-fallback-chain/) — end-to-end playbook building a tiered chain
+- [Multi-model fallback chain](/playbooks/multi-model-fallback-chain/)
 - [Backends & execution modes](/runtime/backends/)
-- [Local & self-hosted providers](/runtime/local-providers/)
+- [Execution, effort & permissions](/runtime/execution-effort-permissions/)
+- [Sandbox](/tools/sandbox/)
 - [Sessions & concurrency](/runtime/sessions-concurrency/)

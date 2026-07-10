@@ -7,7 +7,10 @@
  * Closed set of reasoning-effort hints, validated by the loader's
  * `MONO_AGENT_EFFORT` parsing and surfaced as the runtime effort options.
  */
-export const EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
+export const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+
+/** How a mixed-provider fallback chain applies tool and sandbox policy. */
+export const ROUTE_SAFETY_MODES = ["uniform", "per-route-native"] as const;
 
 /**
  * Closed set of runtime permission modes, validated by the loader's

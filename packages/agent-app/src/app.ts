@@ -64,6 +64,11 @@ import {
 import { resolveNotifyDestinations } from "./notify-destinations.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
+import {
+  configuredRuntimeFallbackModels,
+  configuredRuntimeModels,
+  hasConfiguredRuntimeFallbacks,
+} from "./runtime-routes.js";
 
 /**
  * Outcome of a live config re-apply (`applyConfigChange`). Consumed by callers
@@ -1029,7 +1034,7 @@ class MonoAgentAppController implements MonoAgentApp {
     // whose chain has it as primary. With no fallbacks the shared (plain) runtime
     // honors the per-run model directly, so building a separate runtime would be
     // redundant. Omit the factory there and the harness uses the shared runtime.
-    const runtimeForModel = (coreConfig.runtime.fallbackModels?.length ?? 0) > 0
+    const runtimeForModel = hasConfiguredRuntimeFallbacks(coreConfig.runtime)
       ? this.buildRuntimeForModel(coreConfig)
       : undefined;
     const observabilityContext = await this.observabilityContext();
@@ -1070,9 +1075,9 @@ class MonoAgentAppController implements MonoAgentApp {
     const options = {
       ...(this.logger === undefined ? {} : { logger: this.logger }),
       baseModel: coreConfig.runtime.model,
-      ...(coreConfig.runtime.fallbackModels === undefined
+      ...(configuredRuntimeFallbackModels(coreConfig.runtime).length === 0
         ? {}
-        : { fallbackModels: coreConfig.runtime.fallbackModels }),
+        : { fallbackModels: configuredRuntimeFallbackModels(coreConfig.runtime) }),
       ...(coreConfig.runtime.effort === undefined ? {} : { baseEffort: coreConfig.runtime.effort }),
       ...(coreConfig.runtime.maxTurns === undefined ? {} : { baseMaxTurns: coreConfig.runtime.maxTurns }),
       ...(compatibility.mcpSources.length === 0 ? {} : { mcpSources: compatibility.mcpSources }),
@@ -1554,7 +1559,7 @@ function reasonOf(error: unknown): string {
 }
 
 function runtimeRouteContainsDirectOpenCode(config: MonoAgentConfig): boolean {
-  return [config.runtime.model, ...(config.runtime.fallbackModels ?? [])]
+  return configuredRuntimeModels(config.runtime)
     .some((model) => model.sdk === "opencode");
 }
 

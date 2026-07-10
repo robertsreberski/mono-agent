@@ -44,7 +44,7 @@ Allow-all is the **config** default, not a programmatic one. For code-defined ag
 - **Codex** CLI — the app-server cannot enforce arbitrary mono-agent name lists. Normal direct `codex:*` runs are accepted only with exact allow-all (`["*"]` or omitted, with no `disallowedTools`). A specific list, `[]`, or any denylist fails validation and runtime startup with a capability mismatch; mono-agent never silently widens it. Choose another runtime for a restrictive policy.
 - **Direct OpenCode** — the app-server bridge likewise requires exact allow-all (`["*"]` or omitted, with no `disallowedTools`). Restrictive policies fail validation and runtime before the OpenCode server is created. `pi:opencode-go:*` is a Pi runtime and supports Pi's full policy instead.
 
-The guided direct-Codex primary-model check is not an exception operators can reuse: it is a dedicated internal contract with a read-only sandbox, approval policy `never`, no MCP/dynamic tools, a disposable session, and interruption/failure on the first tool-action event.
+The guided direct-Codex route check is not an exception operators can reuse: it is a dedicated internal contract with a read-only sandbox, approval policy `never`, no MCP/dynamic tools, a disposable session, and interruption/failure on the first tool-action event.
 :::
 
 ## allowedTools / disallowedTools

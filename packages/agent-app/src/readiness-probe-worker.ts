@@ -1,4 +1,4 @@
-import { parentPort, workerData } from "node:worker_threads";
+import { isMainThread, parentPort, workerData } from "node:worker_threads";
 
 import { createMonoRuntime, createPiOAuthApiKeyResolver } from "@mono-agent/runtime-adapter";
 import type {
@@ -49,6 +49,36 @@ type WorkerOutput =
   | { readonly type: "tool"; readonly action: string }
   | { readonly type: "error"; readonly message: string }
   | { readonly type: "disposed" };
+
+type PiCredentialResolver = ReturnType<typeof createPiOAuthApiKeyResolver>;
+
+/**
+ * Add readiness redaction tracking without erasing the credential-store
+ * methods Pi uses to distinguish OAuth credentials from API keys.
+ *
+ * @internal Exported as a narrow regression-test seam. Credentials remain in
+ * the worker and are never included in WorkerOutput.
+ */
+export function trackPiCredentialResolverSecrets(
+  resolver: PiCredentialResolver,
+  secrets: Set<string>,
+): PiCredentialResolver {
+  const tracked = (async (provider: string) => {
+    const secret = await resolver(provider);
+    if (typeof secret === "string" && secret.length > 0) secrets.add(secret);
+    return secret;
+  }) as PiCredentialResolver;
+  if (typeof resolver.readCredential === "function") {
+    tracked.readCredential = resolver.readCredential.bind(resolver);
+  }
+  if (typeof resolver.modifyCredential === "function") {
+    tracked.modifyCredential = resolver.modifyCredential.bind(resolver);
+  }
+  if (typeof resolver.deleteCredential === "function") {
+    tracked.deleteCredential = resolver.deleteCredential.bind(resolver);
+  }
+  return tracked;
+}
 
 function readWorkerData(value: unknown): ReadinessWorkerData | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -238,20 +268,15 @@ async function run(): Promise<void> {
     const piApiKeyResolver = data.runtime.piAuthPath === undefined
       ? undefined
       : createPiOAuthApiKeyResolver({ path: data.runtime.piAuthPath });
+    const trackedPiApiKeyResolver = piApiKeyResolver === undefined
+      ? undefined
+      : trackPiCredentialResolverSecrets(piApiKeyResolver, runtimeSecrets);
     runtime = createMonoRuntime({
       workspace: data.runtime.workspace,
       qaOutputDir: data.runtime.artifactDir,
-      ...(piApiKeyResolver === undefined
+      ...(trackedPiApiKeyResolver === undefined
         ? {}
-        : {
-            resolvePiApiKey: async (provider: string) => {
-              const secret = await piApiKeyResolver(provider);
-              if (typeof secret === "string" && secret.length > 0) {
-                runtimeSecrets.add(secret);
-              }
-              return secret;
-            },
-          }),
+        : { resolvePiApiKey: trackedPiApiKeyResolver }),
     });
     let firstToolAction: string | undefined;
     const runOptions: RuntimeRunOptions = {
@@ -310,4 +335,6 @@ async function run(): Promise<void> {
   }
 }
 
-await run();
+if (!isMainThread) {
+  await run();
+}

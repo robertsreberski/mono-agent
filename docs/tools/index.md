@@ -8,7 +8,7 @@ sidebar:
 
 This section covers how an agent's tool surface is controlled in mono-agent: the **tool policy** (`@mono-agent/agent-harness`) that allow/deny-lists built-in and adapter tools, the **MCP servers** you attach to extend that surface, and the **native sandbox** (`@mono-agent/runtime-adapter`) that confines what tools like `Bash`, `Write`, and `Edit` may touch on disk and over the network.
 
-All three are configured in `mono-agent.config.json`; enforcement depends on the selected runtime boundary and unsupported combinations fail validation rather than becoming advisory. The tool policy is **allow-all by default**. The native mono-agent sandbox applies to Pi-owned tools; direct `codex:*` rejects it and uses Codex's own network-off workspace sandbox, while Claude/direct-OpenCode reject it because their provider-owned tools cannot project the same `srt` scopes. Direct Codex and direct OpenCode accept exact allow-all only because their bridges cannot project a mono-agent name allow/deny list; use Pi for the hardened specific-list example below.
+All three are configured in `mono-agent.config.json`; enforcement depends on the selected runtime boundary and unsupported combinations fail closed. The tool policy is **allow-all by default**. In `uniform` route safety, every attempt must represent one common contract. Explicit `per-route-native` lets Pi keep mono-agent tool policy and an active SRT policy, while Claude/Codex/OpenCode use their documented native contract. When Pi has no active native sandbox, route telemetry says SRT is `disabled` and Bash/stdio MCP subprocesses are unsandboxed. The route matrix is visible and unsupported capabilities are never silently removed.
 
 ## The three pieces
 
@@ -70,10 +70,11 @@ Allow-all is the **config** default. Code-defined agents built directly on the h
 
 Channels and programmatic callers can supply per-request tool and sandbox policies. The harness merges supported policies monotonically: a request can narrow the configured policy, never widen it (coverage: `auto`). If the selected runtime cannot enforce that result—direct Codex/OpenCode with anything other than exact allow-all, or Claude Code CLI with explicit empty—the run fails with a capability mismatch rather than proceeding wider.
 
-Model routing is checked against the same boundary. A direct Codex host accepts
-only direct Codex fallbacks/overrides. With native mono-agent sandboxing enabled,
-Claude/direct-OpenCode primaries, fallbacks, and trigger overrides are rejected;
-a dynamic override to either is warned and ignored.
+Model routing is checked against the same boundary. `uniform` rejects an
+incompatible fallback/override. Explicit `per-route-native` isolates each route:
+Pi retains configured SRT/tool policy, while provider-owned routes receive only
+their declared native contract. Dynamic overrides that cannot satisfy the chosen
+mode are warned and ignored.
 
 ## Where to go next
 

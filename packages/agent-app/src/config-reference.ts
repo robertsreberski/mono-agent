@@ -1,6 +1,16 @@
 import type { JsonEnvFieldSpec, SettingsJsonValue } from "@mono-agent/agent-contracts";
-import { ALLOW_ALL_TOOLS, CONFIG_ENV_KEYS } from "@mono-agent/config";
+import {
+  ALLOW_ALL_TOOLS,
+  CONFIG_ENV_KEYS,
+  EFFORT_LEVELS,
+  ROUTE_SAFETY_MODES,
+} from "@mono-agent/config";
 import type { ConfigViewFieldId, MonoAgentConfigJson } from "@mono-agent/config";
+import {
+  SANDBOX_FALLBACKS,
+  SANDBOX_MODES,
+  SANDBOX_NETWORK_MODES,
+} from "@mono-agent/runtime-adapter";
 import { CRON_CONFIG_FIELDS } from "@mono-agent/cron-adapter";
 import { OPENAI_API_CONFIG_FIELDS } from "@mono-agent/openai-api-adapter";
 import { LIVE_CONFIG_FIELDS, TUI_CONFIG_FIELDS } from "@mono-agent/operator-adapter";
@@ -414,10 +424,38 @@ function schemaForField(field: ConfigReferenceField): JsonSchema {
   if (field.defaultValue !== undefined) {
     schema.default = field.defaultValue;
   }
+  if (field.jsonPath === "agent.name") {
+    schema.minLength = 1;
+    schema.maxLength = 80;
+    schema.pattern = "^[^\\u0000-\\u001f\\u007f]+$";
+  } else if (field.jsonPath === "runtime.effort") {
+    schema.enum = EFFORT_LEVELS;
+  } else if (field.jsonPath === "runtime.routeSafety") {
+    schema.enum = ROUTE_SAFETY_MODES;
+  } else if (field.jsonPath === "sandbox.mode") {
+    schema.enum = SANDBOX_MODES;
+  } else if (field.jsonPath === "sandbox.network.mode") {
+    // SRT 0.0.64 cannot enforce `all`; deliberate unrestricted execution is
+    // represented by sandbox.mode=off rather than a pretend sandbox policy.
+    schema.enum = SANDBOX_NETWORK_MODES.filter((mode) => mode !== "all");
+  } else if (field.jsonPath === "sandbox.fallback") {
+    schema.enum = SANDBOX_FALLBACKS;
+  }
   return schema;
 }
 
 function arrayItemSchemaForField(field: ConfigReferenceField): JsonSchema {
+  if (field.jsonPath === "runtime.fallbacks") {
+    return {
+      type: "object",
+      additionalProperties: false,
+      required: ["model"],
+      properties: {
+        model: { type: "string", minLength: 1 },
+        effort: { type: "string", enum: EFFORT_LEVELS },
+      },
+    };
+  }
   if (field.jsonPath === "cron.jobs") {
     return {
       type: "object",
@@ -474,6 +512,9 @@ function typeFromKind(kind: JsonEnvFieldSpec["kind"], id: string): ConfigReferen
 }
 
 function inferType(id: string): ConfigReferenceType {
+  if (id === "runtime.fallbacks") {
+    return "array";
+  }
   if (id.endsWith("Models") || id.endsWith("Tools") || id.endsWith("Roots") || id.endsWith("allowlist") || id.endsWith("denyWrite") || id.endsWith("selectedSkills") || id.endsWith("Ids") || id.endsWith("Aliases")) {
     return "string[]";
   }
@@ -502,6 +543,9 @@ function defaultLabelFor(id: string): string {
 
 function defaultValueFor(id: string): SettingsJsonValue | undefined {
   const defaults: Record<string, SettingsJsonValue> = {
+    "runtime.fallbackModels": [],
+    "runtime.fallbacks": [],
+    "runtime.routeSafety": "uniform",
     "runtime.executionMode": "inferred",
     "runtime.workspace": ".",
     "runtime.session.mode": "continuous",
@@ -584,8 +628,14 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
 
 function exampleFor(id: string): SettingsJsonValue {
   const examples: Record<string, SettingsJsonValue> = {
+    "agent.name": "Research Partner",
     "runtime.model": "codex:gpt-5.6-terra",
     "runtime.fallbackModels": ["pi:ollama:gemma4:31b"],
+    "runtime.fallbacks": [
+      { model: "codex:gpt-5.6-sol" },
+      { model: "pi:openai-codex:gpt-5.6-terra", effort: "high" },
+    ],
+    "runtime.routeSafety": "per-route-native",
     "runtime.effort": "medium",
     "runtime.permissionMode": "default",
     "context.identityPath": "./IDENTITY.md",
@@ -630,6 +680,18 @@ function descriptionFor(id: string): string {
   }
   if (id.endsWith("enabled")) {
     return `Enables the ${section} capability.`;
+  }
+  if (id === "agent.name") {
+    return "Public display identity used for trace labels and default A2A metadata; never used in paths or service ids.";
+  }
+  if (id === "runtime.fallbacks") {
+    return "Canonical ordered fallback routes. Omitted per-route effort means that provider's default.";
+  }
+  if (id === "runtime.fallbackModels") {
+    return "Legacy fallback list whose routes inherit runtime.effort. Prefer runtime.fallbacks for new configs.";
+  }
+  if (id === "runtime.routeSafety") {
+    return "Uniform preserves one shared safety contract; per-route-native uses and reports each provider's explicit contract.";
   }
   return `Configures ${name.length > 0 ? name : id} for the ${section} section.`;
 }

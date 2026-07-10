@@ -36,13 +36,21 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
 
 ```jsonc
 {
+  // Public display metadata only. This does not influence filesystem paths,
+  // service ids, sessions, or provider identity.
+  "agent": { "name": "Research Companion" },
+
   // Runtime: primary model plus ordered backups tried on retryable provider
   // failures (failover is reported in run results, never silent).
   "runtime": {
     "model": "pi:openai-codex:gpt-5.6-terra", // pi:<provider>:<model> | claude:* | codex:* | opencode:*
-    "fallbackModels": ["pi:opencode-go:kimi-k2.6", "pi:ollama:gemma4:31b"],
+    "fallbacks": [
+      { "model": "claude:claude-sonnet-5", "effort": "xhigh" },
+      { "model": "pi:ollama:gemma4:31b" } // omitted effort = provider default
+    ],
+    "routeSafety": "per-route-native",     // uniform (default) | per-route-native
     "executionMode": "sdk",                // sdk | cli (default inferred from model)
-    "effort": "medium",                    // none|low|medium|high|xhigh|max; omit for direct opencode:*
+    "effort": "medium",                    // none|minimal|low|medium|high|xhigh|max|ultra
     "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "workspace": ".",
@@ -136,12 +144,12 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "progress": { "enabled": true }
   },
 
-  // Sandbox for Pi-owned runtime commands. Direct codex:* uses its own native
-  // sandbox; Claude/direct opencode:* cannot enforce these srt scopes. All
-  // three provider-owned routes reject this block (pi:opencode-go:* is Pi).
+  // Sandbox for Pi-owned runtime commands. Under uniform route safety, a route
+  // that cannot enforce these scopes fails closed. Under per-route-native,
+  // non-Pi routes use the explicit provider-native contract instead.
   "sandbox": {
     "mode": "native",                      // native (srt-wrapped) | off
-    "network": { "mode": "none", "allowlist": [] }, // none|localhost|allowlist|all; *.suffix wildcards
+    "network": { "mode": "none", "allowlist": [] }, // none|localhost|allowlist; *.suffix wildcards
     "readableRoots": ["."],                // relative entries resolve against the workspace
     "writableRoots": ["."],
     "denyWrite": [".env", ".env.*", ".git/config", ".git/hooks/**"], // these are the defaults
@@ -313,8 +321,10 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
 ## Lifecycle
 
 ```bash
-mono-agent init         # bare TTY wizard: primary model check + strict full Agent ready gate
-mono-agent init --model pi:openai-codex:gpt-5.6-terra --fallback-models pi:opencode-go:kimi-k2.6,pi:ollama:gemma4:31b [--memory lite|journal|bujo]
+mono-agent init         # bare TTY wizard: every route checked + strict full Agent ready gate
+mono-agent init --name "Research Companion" --model pi:openai-codex:gpt-5.6-terra \
+  --fallback pi:opencode-go:kimi-k2.6 --fallback-effort medium \
+  --fallback pi:ollama:gemma4:31b --fallback-effort provider-default [--memory lite|journal|bujo]
                         # any flag/non-TTY is scaffold-only and makes no readiness claim
 mono-agent validate     # section report; exit 0 means structurally valid, not zero waiting dependencies
 mono-agent validate --consumer ../local-agent-alpha  # read-only report for a downstream folder
@@ -337,6 +347,7 @@ Every top-level section maps to a deep-dive page:
 
 | Section | What it controls | Deep dive |
 | --- | --- | --- |
+| `agent` | Public display name (never path/service/session identity) | [Identity & soul](/context/identity-and-soul/) |
 | `runtime` | Model, fallback chain, execution mode, effort, sessions | [Backends](/runtime/backends/), [Effort & permissions](/runtime/execution-effort-permissions/), [Fallback](/runtime/fallback/), [Sessions & concurrency](/runtime/sessions-concurrency/) |
 | `providers` | Pi auth, `piNative` bridge tuning, local/self-hosted providers | [Local providers](/runtime/local-providers/) |
 | `context` | Identity, soul, skills selection | [Identity & soul](/context/identity-and-soul/), [Skills](/context/skills/), [Assembly](/context/assembly/) |

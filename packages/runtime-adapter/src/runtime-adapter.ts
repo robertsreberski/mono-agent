@@ -20,6 +20,7 @@ import type {
 
 type KernelRuntimeInstance = ReturnType<typeof createRuntime>;
 type KernelHostOptions = NonNullable<Parameters<typeof createRuntime>[0]>;
+type KernelRouterOptions = NonNullable<Parameters<typeof createRouterRuntime>[0]>;
 type KernelRunOptions = Parameters<KernelRuntimeInstance["run"]>[1];
 type KernelToolOptions = Parameters<KernelRuntimeInstance["configureTools"]>[0];
 
@@ -158,7 +159,30 @@ export function assertExecutionModeCompatible(
 export interface MonoRuntimeFallbackChainEntry {
   readonly model: RuntimeModelReference;
   readonly executionMode?: RuntimeExecutionMode;
+  /** String pins this route, `null` selects the provider default, omitted inherits the run effort. */
+  readonly effort?: string | null;
 }
+
+export type MonoRuntimeRouteSafetyMode = "uniform" | "per-route-native";
+
+export interface MonoRuntimeAttemptContext {
+  readonly model: RuntimeModelReference;
+  readonly executionMode: string | null;
+  readonly attemptIndex: number;
+  readonly routeSafety: MonoRuntimeRouteSafetyMode;
+}
+
+export interface MonoRuntimeAttemptResolution {
+  /** Optional isolated runtime for this route. */
+  readonly runtime?: MonoRuntimeLike;
+  /** Private per-attempt provider options. These are never copied into router telemetry. */
+  readonly options?: Readonly<Record<string, unknown>>;
+  readonly cleanup?: () => void | Promise<void>;
+}
+
+export type MonoRuntimeAttemptResolver = (
+  context: MonoRuntimeAttemptContext,
+) => MonoRuntimeAttemptResolution | Promise<MonoRuntimeAttemptResolution>;
 
 export interface CreateMonoRuntimeOptions extends MonoRuntimeHostOptions {
   /**
@@ -170,10 +194,21 @@ export interface CreateMonoRuntimeOptions extends MonoRuntimeHostOptions {
    * on the result as `failoverHistory`.
    */
   readonly fallbackChain?: readonly MonoRuntimeFallbackChainEntry[];
+  /** Compatibility-preserving uniform safety, or explicit isolated provider-native route contracts. */
+  readonly routeSafety?: MonoRuntimeRouteSafetyMode;
+  /** Private host seam for actual-model provider options and route-owned runtimes. */
+  readonly resolveAttempt?: MonoRuntimeAttemptResolver;
 }
 
 export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoRuntimeLike {
-  const { fallbackChain, ...hostOptions } = options;
+  const { fallbackChain, routeSafety = "uniform", resolveAttempt, ...hostOptions } = options;
+  if (routeSafety !== "uniform" && routeSafety !== "per-route-native") {
+    throw new RuntimeAdapterError(
+      "invalid_runtime_options",
+      "Runtime route safety must be uniform or per-route-native.",
+      { routeSafety },
+    );
+  }
   const chain = normalizeFallbackChain(fallbackChain);
   // agent-runtime's kernel ships only a fail-closed passthrough sandbox (see
   // agent/sandbox-seam.js) — this is the ONE place the real sandbox
@@ -182,7 +217,16 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
   const hostWithSandbox = { sandbox: monoSandboxImpl, ...hostOptions } as unknown as KernelHostOptions;
   const runtime = chain === undefined
     ? createRuntime(hostWithSandbox)
-    : createRouterRuntime({ host: hostWithSandbox, chain });
+    : createRouterRuntime({
+        host: hostWithSandbox,
+        chain,
+        routeSafety,
+        ...(resolveAttempt === undefined
+          ? {}
+          : {
+              resolveAttempt: resolveAttempt as unknown as NonNullable<KernelRouterOptions["resolveAttempt"]>,
+            }),
+      });
 
   return {
     async run(systemPrompt: string, runOptions: RuntimeRunOptions): Promise<RuntimeResult> {
@@ -219,7 +263,11 @@ export { createPiOAuthApiKeyResolver };
 
 function normalizeFallbackChain(
   fallbackChain: readonly MonoRuntimeFallbackChainEntry[] | undefined,
-): readonly { model: RuntimeModelReference; executionMode: RuntimeExecutionMode }[] | undefined {
+): readonly {
+  model: RuntimeModelReference;
+  executionMode: RuntimeExecutionMode;
+  effort?: string | null;
+}[] | undefined {
   if (fallbackChain === undefined) {
     return undefined;
   }
@@ -236,16 +284,22 @@ function normalizeFallbackChain(
     assertParsedRuntimeModelReference(entry.model);
     const executionMode = entry.executionMode ?? defaultExecutionModeForModel(entry.model);
     assertExecutionModeCompatible(entry.model, executionMode);
-    return { model: entry.model, executionMode };
+    if (
+      entry.effort !== undefined
+      && entry.effort !== null
+      && (typeof entry.effort !== "string" || entry.effort.trim().length === 0 || entry.effort !== entry.effort.trim())
+    ) {
+      throw new RuntimeAdapterError(
+        "invalid_runtime_options",
+        "Runtime fallback effort must be a non-empty trimmed string, null, or omitted.",
+      );
+    }
+    return {
+      model: entry.model,
+      executionMode,
+      ...(entry.effort === undefined ? {} : { effort: entry.effort }),
+    };
   });
-  const directCodexCount = normalized.filter((entry) => entry.model.sdk === "codex").length;
-  if (directCodexCount > 0 && directCodexCount !== normalized.length) {
-    throw new RuntimeAdapterError(
-      "invalid_runtime_options",
-      "Direct Codex cannot share a fallback chain with non-Codex runtimes because their tool and sandbox contracts differ. Keep the chain all-direct-Codex or all-non-Codex.",
-      { invariant: "all_direct_codex_or_none" },
-    );
-  }
   return normalized;
 }
 

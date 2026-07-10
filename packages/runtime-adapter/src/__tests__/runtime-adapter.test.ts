@@ -215,15 +215,63 @@ describe("runtime adapter fallback chain", () => {
   it.each([
     ["direct Codex primary", ["codex:gpt-5.6-terra", "pi:openai-codex:gpt-5.5"]],
     ["direct Codex fallback", ["claude:claude-sonnet-4-6", "codex:gpt-5.6-terra"]],
-  ])("rejects a mixed runtime family with a %s", (_label, references) => {
-    expect(() => createMonoRuntime({
+  ])("accepts a mixed runtime family with a %s under an explicit route contract", async (_label, references) => {
+    const runtime = createMonoRuntime({
       fallbackChain: references.map((reference) => ({
         model: parseMonoRuntimeModelReference(reference),
       })),
-    })).toThrow(expect.objectContaining({
-      code: "invalid_runtime_options",
-      details: expect.objectContaining({ invariant: "all_direct_codex_or_none" }),
-    }));
+      routeSafety: "per-route-native",
+    });
+    expect(typeof runtime.run).toBe("function");
+    await expect(runtime.disposeAllSessions?.()).resolves.toBeUndefined();
+  });
+
+  it("forwards route safety, the actual attempted model, and exact effort tri-state", async () => {
+    const attempts: Array<{ model: string; effort: unknown }> = [];
+    const fakeRuntime = {
+      async run(_systemPrompt: string, options: { model: { model: string }; effort?: string }) {
+        attempts.push({
+          model: options.model.model,
+          effort: Object.hasOwn(options, "effort") ? options.effort : "provider-default",
+        });
+        return { text: "ok", events: [], cancelled: false, usage: {} };
+      },
+    };
+    const runtime = createMonoRuntime({
+      fallbackChain: [
+        { model: parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), effort: null },
+      ],
+      routeSafety: "per-route-native",
+      resolveAttempt: (context) => {
+        expect(context).toMatchObject({
+          attemptIndex: 0,
+          routeSafety: "per-route-native",
+          model: { model: "claude-sonnet-4-6" },
+        });
+        return { runtime: fakeRuntime as never, options: { privateSentinel: "not-telemetry" } };
+      },
+    });
+    const result = await runtime.run("SYSTEM", {
+      model: parseMonoRuntimeModelReference("claude:ignored-by-chain"),
+      effort: "high",
+      messages: [{ role: "user", content: "hi" }],
+      abortSignal: new AbortController().signal,
+    });
+    expect(attempts).toEqual([{
+      model: "claude-sonnet-4-6",
+      effort: "provider-default",
+    }]);
+    expect(JSON.stringify(result)).not.toContain("privateSentinel");
+  });
+
+  it("rejects invalid route safety and malformed effort values", () => {
+    expect(() => createMonoRuntime({ routeSafety: "unsafe" as never })).toThrow(RuntimeAdapterError);
+    expect(() => createMonoRuntime({
+      fallbackChain: [{
+        model: parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"),
+        effort: " high",
+      }],
+    })).toThrow(RuntimeAdapterError);
   });
 
   it("accepts an all-direct-Codex fallback chain", async () => {

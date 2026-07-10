@@ -4,7 +4,7 @@ sidebar:
   order: 4
 ---
 
-This page covers running mono-agent against local and self-hosted model servers — Ollama, LM Studio, and any OpenAI-compatible gateway — through the Pi backend, plus the credential path used for built-in Pi providers. You configure them under `providers` and reference each model as `pi:<id>:<model>` from `runtime.model` or `runtime.fallbackModels`.
+This page covers running mono-agent against local and self-hosted model servers — Ollama, LM Studio, and any OpenAI-compatible gateway — through the Pi backend, plus the credential path used for built-in Pi providers. You configure them under `providers` and reference each model as `pi:<id>:<model>` from `runtime.model` or canonical `runtime.fallbacks` (legacy `fallbackModels` still loads).
 
 For an end-to-end walkthrough, see the playbook [Local-only Ollama agent](/playbooks/local-only-ollama-agent/).
 
@@ -34,7 +34,7 @@ Coverage: `config` — `providers.local[]` (`MONO_AGENT_LOCAL_PROVIDERS_JSON`, o
 {
   "runtime": {
     "model": "pi:openai-codex:gpt-5.6-terra",
-    "fallbackModels": ["pi:ollama:gemma4:31b"]
+    "fallbacks": [{ "model": "pi:ollama:gemma4:31b" }]
   },
   "providers": {
     "local": [
@@ -158,11 +158,11 @@ Built-in Pi providers use the Pi auth file configured by `providers.piAuthPath` 
 
 Override the path with `MONO_AGENT_PI_AUTH_PATH`. The single path precedence used by discovery, setup, `auth login`, readiness, validation, and runtime is `--pi-auth-path` (auth command only) → non-empty `MONO_AGENT_PI_AUTH_PATH` → non-empty `providers.piAuthPath` → `~/.pi/agent/auth.json`. A leading `~` expands to the current user's home; relative values resolve from the agent/invocation working directory. A malformed or unreadable config is an error; only a missing config falls through. This is separate from `providers.local[]`: built-in Pi providers are registered by the Pi backend, while `local[]` registers your own servers.
 
-Run `mono-agent auth login <provider>` when a built-in Pi OAuth provider needs setup or re-auth. Supported login providers are `openai-codex`, `anthropic`, and `github-copilot`; OpenCode-Go is API-key based and uses `OPENCODE_API_KEY` during init.
+Run `mono-agent auth login <provider>` for the supported built-in Pi targets: Anthropic, GitHub Copilot, and OpenAI Codex use their bundled OAuth flows; OpenCode-Go uses `OPENCODE_API_KEY`. Standalone OpenCode-Go login collects the key through a masked TTY prompt. For an explicitly headless flow, pipe exactly one line with `--api-key-stdin`, for example `printf '%s\n' "$OPENCODE_API_KEY" | mono-agent auth login opencode-go --api-key-stdin`; without that flag mono-agent never copies the ambient key implicitly. Its key can be stored in the same owner-only auth file or left in the durable provider environment, and the wizard never copies an ambient key into `auth.json` unless secure-store persistence was selected explicitly. Other Pi provider refs remain compatible as hand-authored runtime configuration but do not gain an implied guided login flow.
 
-mono-agent invokes the bundled Pi CLI against a private staged `auth.json`; it never trusts process exit alone. Before promotion it requires a JSON-object store, a valid credential for the requested provider, and unchanged sibling-provider data. Promotion runs under a durable identity-bound owner-only lock and installs a `0600` file with exclusive-link no-clobber semantics on supported POSIX systems. The canonical credential parent must be owned by the current user and not group/world-writable, while existing, staged, and recovery credential inodes must be current-user-owned, not group/world-writable, and have exactly the expected link count. An owned existing store may be read-permissive (for example `0644`) and is tightened to `0600`, but permissions that let another user write, foreign ownership, or multiple links fail closed. A pathname competitor is never replaced. For an existing store, mono-agent claims the validated inode, rechecks it before and after installing the staged file, and keeps any detected write through an already-open descriptor at a reported owner-only recovery path. As with any non-cooperative POSIX writer, a write that starts after the final recheck cannot be guaranteed. Malformed, symlinked, missing-provider, sibling-changing, or unprovable concurrent states fail closed. Automatic Pi credential persistence refuses Windows and auth paths inside Git worktrees; keep the store outside repositories, normally at the default under `~/.pi`.
+mono-agent invokes the bundled Pi CLI against a private staged `auth.json`; it never trusts process exit alone. Before promotion it requires a JSON-object store, a valid credential for the requested provider, and unchanged sibling-provider data. Promotion runs under a durable identity-bound owner-only lock and installs a `0600` file with exclusive-link no-clobber semantics on supported POSIX systems. If that lock already exists, mono-agent removes it only when the secure record is identity-stable and `kill(pid, 0)` proves the process is gone with `ESRCH`; active, `EPERM`, malformed, or racing locks remain untouched. The canonical credential parent must be owned by the current user and not group/world-writable, while existing, staged, and recovery credential inodes must be current-user-owned, not group/world-writable, and have exactly the expected link count. Automatic Pi credential persistence refuses Windows and auth paths inside Git worktrees.
 
-The interactive `mono-agent init` wizard treats a missing Pi auth store as setup-required rather than as a skipped model: it keeps `pi:openai-codex:gpt-5.6-terra` and `pi:openai-codex:gpt-5.6-sol` selectable, shows the effective path and auth status, and can run the secure bundled login before writing the scaffold. Terra remains the default. When `pi:opencode-go:*` is selected, the wizard asks for an API key and stores it under `opencode-go` through the same locked, validated, no-clobber path. `mono-agent validate` reports missing or expired credentials read-only and never runs login or writes keys.
+The interactive `mono-agent init` wizard keeps every bundled model for its supported Pi integrations—Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go—searchable even when authentication is missing, alongside discovered Ollama/LM Studio models. Hand-authored Pi refs and `providers.local[]` remain valid runtime configuration without becoming implied guided integrations. The wizard reports `catalog available`, `credential detected`, and `verified by live readiness` separately; an auth-store entry skips redundant login but does not claim the model works. On repair, the chosen upstream OAuth or OpenCode-Go API-key flow reruns and the exact route is checked again. `mono-agent validate` remains read-only and never runs login or writes keys.
 
 Coverage: `config` — `providers.piAuthPath` (`MONO_AGENT_PI_AUTH_PATH`).
 
@@ -174,7 +174,7 @@ Local providers compose with the rest of the runtime. A common pattern is a host
 {
   "runtime": {
     "model": "pi:openai-codex:gpt-5.6-terra",
-    "fallbackModels": ["pi:ollama:gemma4:31b"]
+    "fallbacks": [{ "model": "pi:ollama:gemma4:31b" }]
   }
 }
 ```
@@ -184,6 +184,6 @@ Failover is reported in run results, never silent. See [Fallback chains](/runtim
 ## Related
 
 - [Backends & model refs](/runtime/backends/) — the `pi:<provider>:<model>` ref taxonomy.
-- [Fallback chains](/runtime/fallback/) — composing local models into `fallbackModels`.
+- [Fallback chains](/runtime/fallback/) — composing local models into canonical `fallbacks`.
 - [Embeddings](/memory/embeddings/) — Ollama for memory recall.
 - [Local-only Ollama agent](/playbooks/local-only-ollama-agent/) — full walkthrough.

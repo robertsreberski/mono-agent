@@ -8,7 +8,7 @@ sidebar:
 
 For Pi-native agents, the sandbox confines mono-agent-owned commands by wrapping them with `srt` (the native sandbox runtime) and a generated settings file: a filesystem scope (readable/writable roots, deny-write globs), a network policy, and a fallback for when the sandbox engine is unavailable. This page covers the `sandbox` config block, the matching `MONO_AGENT_SANDBOX_*` env vars, and the monotonic merge that lets request-scoped policies tighten — but never widen — the configured baseline.
 
-The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`. Direct `codex:*` rejects this block and uses Codex's own native sandbox. Claude and direct `opencode:*` reject it because their provider-owned tool loops cannot project these `srt` roots, deny-write globs, or network rules. Omit `sandbox` entirely when intentionally using one of those runtimes; use Pi (including `pi:opencode-go:*`) when this exact policy is required.
+The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`. Under the default `runtime.routeSafety: "uniform"`, a non-Pi route that cannot represent the configured SRT policy fails closed. Explicit `per-route-native` allows a mixed chain only with route-local contracts: Pi keeps this exact policy, while Claude/Codex/OpenCode use their documented provider-native safety and do not pretend the SRT roots/network rules apply. Use Pi (including `pi:opencode-go:*`) whenever every attempted route must enforce the mono-agent policy.
 
 ## Quick reference
 
@@ -29,7 +29,7 @@ The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`. 
 | Key | Type / values | Default | Env var |
 | --- | --- | --- | --- |
 | `sandbox.mode` | `native` (srt-wrapped) \| `off` | `native` | `MONO_AGENT_SANDBOX_MODE` |
-| `sandbox.network.mode` | `none` \| `localhost` \| `allowlist` \| `all` | `none` | `MONO_AGENT_SANDBOX_NETWORK` |
+| `sandbox.network.mode` | `none` \| `localhost` \| `allowlist` | `none` | `MONO_AGENT_SANDBOX_NETWORK` |
 | `sandbox.network.allowlist` | string[] of host suffixes (`*.suffix` wildcards) | `[]` | `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST` |
 | `sandbox.readableRoots` | string[] of paths | `["."]` (workspace) | `MONO_AGENT_SANDBOX_READABLE_ROOTS` |
 | `sandbox.writableRoots` | string[] of paths | `["."]` (workspace) | `MONO_AGENT_SANDBOX_WRITABLE_ROOTS` |
@@ -37,17 +37,25 @@ The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`. 
 | `sandbox.fallback` | `fail-closed` \| `unsafe-host-process` | `fail-closed` | `MONO_AGENT_SANDBOX_FALLBACK` |
 | `sandbox.unsafeAllowHostProcess` | boolean | `false` | `MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS` |
 
-The engine id is `srt` (the only built-in engine); `srt` must be on `PATH` for `mode: "native"` to take effect.
+The engine id is `srt` (the only built-in engine). On macOS, mono-agent can install and own the pinned runtime itself; a global `srt` is not required.
 
-Check the engine before trusting a sandboxed preset:
+Manage and prove it with:
 
 ```bash
-command -v srt
-srt --version
+mono-agent sandbox status
+mono-agent sandbox setup   # macOS: private per-user cache, then full check
+mono-agent sandbox check
 mono-agent validate --preset code-sandbox
 ```
 
-`validate` reports the `Sandbox` section as `ok` only when the native engine is available. If `srt` is missing, a fail-closed policy reports `waiting` with `sandbox_unavailable`; an unsafe fallback reports `waiting` with a warning. The overall config can still validate because `waiting` is not a syntax error, so read the sandbox section and the preset completeness block before starting.
+Managed setup installs exact `@anthropic-ai/sandbox-runtime` 0.0.64 dependencies from the checked-in lock into an owner-only version/hash directory under the user's cache. It does not modify `PATH`, global npm packages, system packages, or another user's files. Installation uses a private identity-bound lock, stages with scripts disabled, verifies the complete tree against an independently pinned digest, and atomically promotes it. The install marker records that trusted digest but cannot define it, so rewriting the tree and marker still fails closed. An unsafe/corrupt existing tree is quarantined and repaired only inside that managed cache.
+
+Selecting managed SRT during guided init always runs this idempotent managed
+setup and its functional postcondition, even when a compatible external `srt`
+already exists on `PATH`. External SRT remains a status/check and runtime
+compatibility path; it does not satisfy the guided managed-install choice.
+
+`status` distinguishes managed, compatible external, absent, corrupt, and unsupported states. `check` proves real enforcement rather than trusting `--version`: allowed workspace read/write, sibling-secret read denial, `.env` and out-of-root write denial, localhost access, and denial of a non-allowlisted hostname mapped to that same local server. `validate` reports the `Sandbox` section as `ok` only after the effective engine passes its functional proof. Missing or corrupt fail-closed SRT reports `waiting`/`sandbox_unavailable`, never host execution.
 
 ## Mode
 
@@ -63,9 +71,18 @@ mono-agent validate --preset code-sandbox
 | `none` | No network access (default). |
 | `localhost` | Loopback only. |
 | `allowlist` | Only hosts matching `network.allowlist`. |
-| `all` | Unrestricted egress. |
+| `all` | Rejected for native SRT because the pinned engine cannot represent it exactly; use `sandbox.mode: "off"` for an explicit unsandboxed posture. |
 
-Allowlist entries are matched as host suffixes. A leading `*.` is a wildcard suffix — `*.example.com` matches `api.example.com`. There is **no CIDR and no port syntax**; entries are hostnames/suffixes only.
+:::caution[Migration from `network.mode: "all"`]
+SRT 0.0.64 cannot enforce unrestricted networking as a sandbox policy. Existing
+native-sandbox configs that use `"all"` now fail validation instead of receiving
+weaker-than-declared behavior. Change the mode to `none`, `localhost`, or an
+explicit domain `allowlist`. If the real requirement is unrestricted shell
+networking, set `sandbox.mode: "off"` and remove the `network` policy so the
+unsandboxed posture is deliberate and visible.
+:::
+
+Allowlist entries are matched as host suffixes. A leading `*.` is a wildcard suffix — `*.example.com` matches `api.example.com`. There is **no CIDR and no port syntax**; entries are hostnames/suffixes only. Bare `*`, IPv6 literals (including `::1`), whitespace, paths, and port-bearing entries are rejected. Localhost policy uses the enforceable `localhost`/IPv4 loopback representation.
 
 ```json
 {
@@ -83,8 +100,8 @@ MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST=*.githubusercontent.com,registry.npmjs.org
 
 ## Filesystem scopes
 
-- **`readableRoots`** / **`writableRoots`** — directories the sandboxed process may read from / write to. Relative entries (like `"."`) resolve against the workspace root. Both default to the workspace.
-- **`denyWrite`** — write-deny globs applied on top of `writableRoots`. The defaults protect secrets and git internals:
+- **`readableRoots`** / **`writableRoots`** — directories the sandboxed process may read from / write to. Relative entries (like `"."`) resolve against the workspace root. Both default to the workspace. SRT starts from a global read denial, then reopens these roots plus a reviewed immutable OS/runtime set and narrowly derived executable dependencies; user-managed toolchain data outside those roots must be declared explicitly.
+- **`denyWrite`** — write-deny globs applied on top of `writableRoots`. Relative globs always resolve against the policy workspace root, even when a command runs from a nested `cwd`. The defaults protect secrets and git internals:
 
 ```json
 {
@@ -100,7 +117,7 @@ If you set `denyWrite` yourself, you replace the defaults — include the four e
 
 ## Fallback when the engine is unavailable
 
-If `mode: "native"` but no `srt` engine is available (not installed, or `srt --version` fails), the `fallback` decides what happens:
+If `mode: "native"` but no SRT engine passes its functional proof, the `fallback` decides what happens:
 
 - **`fail-closed`** (default) — the command is rejected with a `sandbox_unavailable` error. Nothing runs unsandboxed.
 - **`unsafe-host-process`** — the command runs **unwrapped on the host**. This requires **both** `fallback: "unsafe-host-process"` **and** `unsafeAllowHostProcess: true`. Setting `fallback` to `unsafe-host-process` without the explicit `unsafeAllowHostProcess: true` is a config error.
@@ -121,6 +138,17 @@ The `unsafe-host-process` fallback runs tool commands directly on the host with 
 
 `mono-agent start` does not silently relax a fail-closed policy. It records the effective sandbox state at startup; `mono-agent status` prints `effective`, `engine`, `fallback`, and whether the fallback is active. For a fail-closed missing engine, sandboxed commands fail with `sandbox_unavailable`. For an unsafe fallback, `start`/`status` include the unsafe warning above so the operator can see that filesystem roots and `denyWrite` entries are not protecting the host process.
 
+Runtime resolution prefers the managed macOS install and re-hashes its complete
+tree against the independent release digest before each command. A
+present-but-corrupt managed install fails closed and never downgrades to a
+`PATH` command. A compatible external `srt` is considered only when the managed
+path is absent: it is resolved to a trusted canonical absolute file, functionally
+proved, and pinned by path, filesystem identity, size, and SHA-256. Any later
+PATH shadow or same-path replacement fails closed. SRT executables and managed
+install roots may not overlap a configured writable root. Negative availability
+checks are retried, so `sandbox setup`/repair can take effect without restarting
+the agent.
+
 ## Monotonic merge
 
 When a request supplies its own sandbox policy, it is merged with the configured baseline so the result is **never more permissive** than the configured policy. A request-scoped policy can only tighten — it can never widen filesystem access or re-enable host execution:
@@ -136,13 +164,15 @@ This merge is **auto** (the harness performs it). Constructing request-scoped po
 ## Runtime boundary
 
 :::caution
-Provider-owned tool loops do not silently bypass this policy. Validation and
-runtime start reject a configured native mono-agent sandbox for direct Codex,
-Claude, or direct OpenCode. Direct Codex normal runs instead use Codex's
-network-off workspace sandbox and deny unattended escalations; Claude/OpenCode
-have no equivalent projection for the configured mono-agent roots and must be
-used without this block or replaced by Pi. Static fallback/trigger routes and
-dynamic model overrides are checked at the same boundary.
+Provider-owned tool loops do not silently bypass this policy. In `uniform` mode,
+validation/runtime reject a route that cannot represent the common contract. In
+explicit `per-route-native` mode, doctor prints every route contract and warns
+that mono-agent readable/writable roots, deny-write globs, and network rules do
+not project onto non-Pi routes. Pi retains SRT; Claude uses provider-native
+controls with representable tool restrictions; direct Codex/OpenCode use native
+safety plus exact allow-all. Unsupported capabilities skip the route instead of
+being removed silently. Static trigger routes and dynamic overrides are checked
+at the same boundary.
 :::
 
 ## Related

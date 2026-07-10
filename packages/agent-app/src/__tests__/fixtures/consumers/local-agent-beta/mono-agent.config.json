@@ -61,7 +61,7 @@
   "sandbox": {
     "mode": "native",
     "network": {
-      "mode": "all",
+      "mode": "localhost",
       "allowlist": []
     },
     "readableRoots": [

@@ -1,4 +1,8 @@
-import type { MonoAgentConfigJson } from "@mono-agent/config";
+import {
+  MAX_AGENT_NAME_LENGTH,
+  type MonoAgentConfigJson,
+  type RouteSafetyMode,
+} from "@mono-agent/config";
 
 import { monoAgentConfigWithSchema } from "../config-reference.js";
 import {
@@ -21,11 +25,25 @@ import {
  * input to {@link composeWizardPlan}: everything the composer needs to emit a full
  * `mono-agent.config.json`, `.env.example`, and follow-up files is derived from it.
  */
-export interface WizardAnswers {
+export interface WizardFallback {
   readonly model: string;
-  readonly fallbackModels: readonly string[];
-  /** Optional runtime reasoning effort (`runtime.effort`), omitted for default provider behavior. */
   readonly effort?: string;
+}
+
+export interface WizardAnswers {
+  /** Public display identity. Omitted only by legacy/programmatic callers. */
+  readonly name?: string;
+  readonly model: string;
+  /** Optional primary-route effort; omitted means provider default. */
+  readonly effort?: string;
+  /** Canonical ordered fallback routes; omitted effort means provider default. */
+  readonly fallbacks: readonly WizardFallback[];
+  /**
+   * Deprecated compatibility input. {@link defaultAnswers} converts these to
+   * canonical routes, inheriting the legacy global effort when it is present.
+   */
+  readonly fallbackModels?: readonly string[];
+  readonly routeSafety: RouteSafetyMode;
   /** Channel module ids, e.g. `["channel:webhook","channel:telegram"]`. */
   readonly channels: readonly string[];
   /** Memory module id, or `undefined` for no memory section. */
@@ -89,6 +107,11 @@ export function referencedSetupModelRefs(plan: WizardPlan): readonly string[] {
   };
 
   add(plan.configJson.runtime?.model);
+  for (const fallback of plan.configJson.runtime?.fallbacks ?? []) {
+    add(fallback.model);
+  }
+  // A hand-authored legacy plan can still enter this helper; generated plans
+  // always use the canonical structured form.
   for (const fallback of plan.configJson.runtime?.fallbackModels ?? []) {
     add(fallback);
   }
@@ -132,7 +155,7 @@ const ZERO_TOOLS_WARNING =
  */
 function selectedModuleIds(answers: WizardAnswers): readonly string[] {
   const ids: string[] = [];
-  const modelRefs = [answers.model, ...answers.fallbackModels];
+  const modelRefs = [answers.model, ...effectiveFallbacks(answers).map((fallback) => fallback.model)];
   if (modelRefs.some((model) => /^pi:ollama:/u.test(model))) {
     ids.push("provider:ollama");
   }
@@ -222,7 +245,8 @@ export function alwaysOnTools(answers: WizardAnswers): readonly string[] {
 
 const BASE_ANSWERS: WizardAnswers = {
   model: DEFAULT_MODEL,
-  fallbackModels: [],
+  fallbacks: [],
+  routeSafety: "uniform",
   channels: ["channel:webhook"],
   // `memory` is intentionally omitted (no memory section) — with
   // exactOptionalPropertyTypes an optional key must be absent, not `undefined`.
@@ -240,9 +264,59 @@ const BASE_ANSWERS: WizardAnswers = {
  * verbatim: `["*"]`, a specific list, or `[]` (the chat-only case).
  */
 export function defaultAnswers(overrides?: Partial<WizardAnswers>): WizardAnswers {
-  const merged: WizardAnswers = { ...BASE_ANSWERS, ...overrides };
+  const {
+    fallbacks: canonicalFallbacks,
+    fallbackModels: legacyFallbackModels,
+    ...otherOverrides
+  } = overrides ?? {};
+  const merged = { ...BASE_ANSWERS, ...otherOverrides };
+  const fallbacks = canonicalFallbacks !== undefined
+    ? canonicalFallbacks.map((fallback) => ({ ...fallback }))
+    : (legacyFallbackModels ?? []).map((model) => ({
+        model,
+        ...(merged.effort === undefined ? {} : { effort: merged.effort }),
+      }));
   const allowedTools = overrides?.allowedTools ?? [ALLOW_ALL_TOOLS];
-  return { ...merged, allowedTools };
+  return {
+    ...merged,
+    fallbacks,
+    // Keep a legacy input visible only when that compatibility surface was
+    // actually used. New wizard/canonical callers carry structured routes only.
+    ...(legacyFallbackModels === undefined
+      ? {}
+      : { fallbackModels: [...legacyFallbackModels] }),
+    allowedTools,
+  };
+}
+
+/** Canonicalize old answer objects at the single composition boundary. */
+export function effectiveFallbacks(answers: WizardAnswers): readonly WizardFallback[] {
+  const canonical = answers.fallbacks ?? [];
+  if (canonical.length > 0 || (answers.fallbackModels?.length ?? 0) === 0) {
+    return canonical;
+  }
+  return (answers.fallbackModels ?? []).map((model) => ({
+    model,
+    ...(answers.effort === undefined ? {} : { effort: answers.effort }),
+  }));
+}
+
+/** Folder basenames become readable public identities without affecting paths. */
+export function humanizeAgentName(dirBasename: string): string {
+  const words = dirBasename
+    .trim()
+    .replace(/[-_]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .split(" ")
+    .filter(Boolean);
+  const name = words
+    .map((word) => {
+      const [first = "", ...rest] = Array.from(word);
+      return `${first.toLocaleUpperCase()}${rest.join("")}`;
+    })
+    .join(" ");
+  const fallback = name.length > 0 ? name : "Mono Agent";
+  return Array.from(fallback).slice(0, MAX_AGENT_NAME_LENGTH).join("").trimEnd();
 }
 
 /** Overrides for one module: the shared model plus its non-secret input values. */
@@ -301,8 +375,10 @@ function applyFragment(config: Record<string, unknown>, fragment: Record<string,
  */
 export function composeWizardPlan(answers: WizardAnswers, ctx: ComposeContext): WizardPlan {
   const modules = selectedModules(answers);
+  const agentName = answers.name?.trim() || humanizeAgentName(ctx.dirBasename);
+  const fallbacks = effectiveFallbacks(answers);
   const config: Record<string, unknown> = {
-    ...baseConfig(ctx, answers.model, answers.fallbackModels, answers.effort),
+    ...baseConfig(ctx, agentName, answers.model, fallbacks, answers.routeSafety, answers.effort),
   };
 
   const files: GeneratedFile[] = [];
@@ -346,6 +422,8 @@ export function composeWizardPlan(answers: WizardAnswers, ctx: ComposeContext): 
     disallowedTools: [],
   };
 
+  applyDefaultA2AAgentName(config, agentName);
+
   // The local-ollama endpoint mirrors the old recipe: only when the ollama
   // provider is present AND memory embeddings actually target ollama.
   const memory = config.memory as (Record<string, unknown> & { embeddings?: Record<string, unknown> }) | undefined;
@@ -381,6 +459,21 @@ export function composeWizardPlan(answers: WizardAnswers, ctx: ComposeContext): 
     ...planWithoutExpectations,
     validateExpectations: dedupeExpectations(validateExpectations),
   };
+}
+
+/** Use the public identity for generated A2A metadata without changing explicit user config. */
+function applyDefaultA2AAgentName(config: Record<string, unknown>, agentName: string): void {
+  const channels = config.channels as { plugins?: unknown[] } | undefined;
+  for (const plugin of channels?.plugins ?? []) {
+    if (typeof plugin !== "object" || plugin === null) continue;
+    const entry = plugin as { package?: unknown; config?: unknown };
+    if (entry.package !== "@mono-agent/a2a-adapter" || typeof entry.config !== "object" || entry.config === null) continue;
+    const pluginConfig = entry.config as Record<string, unknown>;
+    const agent = typeof pluginConfig.agent === "object" && pluginConfig.agent !== null
+      ? pluginConfig.agent as Record<string, unknown>
+      : {};
+    pluginConfig.agent = { ...agent, name: agentName };
+  }
 }
 
 /** Dedupe validate expectations by `sectionId`, keeping the first occurrence. */

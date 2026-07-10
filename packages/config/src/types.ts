@@ -2,7 +2,7 @@ import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReferen
 import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
 import type { RedactedSecretValue } from "@mono-agent/agent-contracts";
 
-import type { EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
+import type { EFFORT_LEVELS, PERMISSION_MODES, ROUTE_SAFETY_MODES } from "./enums.js";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary" | "capture";
 export type MemoryMode = "lite" | "journal" | "bujo";
@@ -133,6 +133,13 @@ export type SessionRollover = "none" | "daily";
 export type SkillDisclosureMode = "index" | "full";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
+export type RouteSafetyMode = (typeof ROUTE_SAFETY_MODES)[number];
+
+/** One canonical fallback route. Omitted effort means provider default. */
+export interface RuntimeFallbackConfig {
+  readonly model: RuntimeModelReference;
+  readonly effort?: EffortLevel;
+}
 
 export interface ArtifactRetentionConfig {
   /** Delete terminal run artifacts older than this many days. */
@@ -144,6 +151,10 @@ export interface ArtifactRetentionConfig {
 }
 
 export interface MonoAgentConfig {
+  /** Public display identity. It never participates in paths or service ids. */
+  readonly agent?: {
+    readonly name: string;
+  };
   readonly runtime: {
     readonly model: RuntimeModelReference;
     /**
@@ -152,6 +163,14 @@ export interface MonoAgentConfig {
      * mode.
      */
     readonly fallbackModels?: readonly RuntimeModelReference[];
+    /**
+     * Canonical fallback routes. Unlike legacy `fallbackModels`, an omitted
+     * per-route effort selects that provider's default rather than inheriting
+     * `runtime.effort`.
+     */
+    readonly fallbacks?: readonly RuntimeFallbackConfig[];
+    /** Uniform is the compatibility-preserving default. */
+    readonly routeSafety?: RouteSafetyMode;
     readonly executionMode: RuntimeExecutionMode;
     readonly effort?: EffortLevel;
     /** Tool-permission posture forwarded to the runtime (CLI execution modes). */
@@ -326,6 +345,7 @@ export interface RedactedObservabilityConfig {
 }
 
 export interface RedactedMonoAgentConfig {
+  readonly agent?: MonoAgentConfig["agent"];
   readonly runtime: MonoAgentConfig["runtime"];
   readonly concurrency?: MonoAgentConfig["concurrency"];
   readonly context: MonoAgentConfig["context"];

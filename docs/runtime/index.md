@@ -16,7 +16,11 @@ A minimal runtime block selects a backend model and (optionally) backup models:
 {
   "runtime": {
     "model": "pi:openai-codex:gpt-5.6-terra",
-    "fallbackModels": ["pi:opencode-go:kimi-k2.6", "pi:ollama:gemma4:31b"],
+    "fallbacks": [
+      { "model": "pi:opencode-go:kimi-k2.6", "effort": "medium" },
+      { "model": "pi:ollama:gemma4:31b" }
+    ],
+    "routeSafety": "uniform",
     "executionMode": "sdk",
     "effort": "medium",
     "permissionMode": "default",
@@ -28,13 +32,15 @@ A minimal runtime block selects a backend model and (optionally) backup models:
 
 The `runtime.model` string is always `<backend>:<...>` — `pi:<provider>:<model>`, `claude:*`, `codex:*`, or `opencode:*`. Override it without touching config via `MONO_AGENT_MODEL`.
 
-Terra remains the first-run default. GPT-5.6 Sol can be selected explicitly as `codex:gpt-5.6-sol` or `pi:openai-codex:gpt-5.6-sol`; direct GPT-5.6 routes require Codex CLI 0.144.0 or newer.
+Guided init searches every bundled model for Pi Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go, plus Codex's live account catalog, the Claude SDK catalog, and discovered local models. Hand-authored Pi refs and `providers.local[]` remain compatible outside the guided cloud-provider set. A provider-declared live Codex default leads when available; curated direct Terra is the offline fallback. The offline entry does not fabricate effort metadata, so only provider-default effort is available until live discovery succeeds. GPT-5.6 Sol can be selected explicitly as `codex:gpt-5.6-sol` or `pi:openai-codex:gpt-5.6-sol`.
 
 | Key | Env var | Default | Notes |
 | --- | --- | --- | --- |
-| `runtime.model` | `MONO_AGENT_MODEL` | `codex:gpt-5.6-terra` from `init`; Pi Terra is selectable | `pi:<provider>:<model>`, `claude:…`, `codex:…`, `opencode:…` |
+| `runtime.model` | `MONO_AGENT_MODEL` | `codex:gpt-5.6-terra` | Guided init can initially select the live Codex provider default; refs use `pi:<provider>:<model>`, `claude:…`, `codex:…`, or `opencode:…`. |
+| `runtime.fallbacks` | `MONO_AGENT_FALLBACKS_JSON` | `[]` | ordered `{model, effort?}` routes; omitted effort = provider default |
+| `runtime.routeSafety` | `MONO_AGENT_ROUTE_SAFETY` | `uniform` | `uniform` or `per-route-native` |
 | `runtime.executionMode` | `MONO_AGENT_EXECUTION_MODE` | inferred from model | `sdk` or `cli` |
-| `runtime.effort` | `MONO_AGENT_EFFORT` | provider/model default when unset | `none`/`low`/`medium`/`high`/`xhigh`/`max`; guided init derives a selection; explicit value unsupported by direct OpenCode |
+| `runtime.effort` | `MONO_AGENT_EFFORT` | provider/model default when unset | `none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`; model support is narrower where advertised |
 | `runtime.permissionMode` | `MONO_AGENT_PERMISSION_MODE` | `default` | CLI backends; `default`/`plan`/`acceptEdits`/`bypassPermissions` |
 | `runtime.maxTurns` | `MONO_AGENT_MAX_TURNS` | `0` (unlimited) | `1`–`100` caps turns |
 | `runtime.workspace` | `MONO_AGENT_WORKSPACE` | `.` | working dir for runtime tools |
@@ -43,7 +49,7 @@ Terra remains the first-run default. GPT-5.6 Sol can be selected explicitly as `
 
 - [Model backends](/runtime/backends/) — the five bridges (Claude SDK, Claude CLI, Codex app-server, Pi SDK with 15+ providers, OpenCode app-server), the `<backend>:<model>` syntax, and `sdk` vs `cli` execution modes.
 - [Execution effort & permissions](/runtime/execution-effort-permissions/) — tune reasoning depth with `runtime.effort` and the tool-permission posture for CLI backends with `runtime.permissionMode`.
-- [Fallback chains](/runtime/fallback/) — `runtime.fallbackModels`: an ordered list of backup models the fallback router tries on fallback-eligible provider failures, including provider auth failures, with transcript-tail resume; failover is reported in run results, never silent.
+- [Fallback chains](/runtime/fallback/) — canonical `runtime.fallbacks`, exact route effort, mixed-provider safety contracts, legacy compatibility, and visible failover history.
 - [Local providers](/runtime/local-providers/) — wire Ollama, LM Studio, or any OpenAI-compatible endpoint via `providers.local[]` for `pi:<provider>:<model>` references, plus pi-native transport tuning and Pi credential resolution.
 - [Sessions & concurrency](/runtime/sessions-concurrency/) — continuous provider sessions with idle eviction (`runtime.session`) and per-channel admission/execution bounds (`concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns`).
 - [Built-in tools & auto-guards](/runtime/tools-and-guards/) — the bundled Read/Write/Edit/Glob/Grep/Bash/WebFetch/WebSearch tools and the automatic guards (tool-output bloat truncation, WebFetch retry, cost tracking, context compaction).

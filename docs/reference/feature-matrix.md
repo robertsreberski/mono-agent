@@ -28,16 +28,17 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | --- | --- | --- | --- | --- | --- |
 | `runtime.multi-backend` | config | `runtime.model` | `MONO_AGENT_MODEL` | [Backends](/runtime/backends/) | [Multi-model fallback](/playbooks/multi-model-fallback-chain/) |
 | `runtime.execution-modes` | config | `runtime.executionMode` | `MONO_AGENT_EXECUTION_MODE` | [Backends](/runtime/backends/) | — |
-| `runtime.fallback-models` | config | `runtime.fallbackModels` (fallback-eligible provider failures, including auth failures) | `MONO_AGENT_FALLBACK_MODELS` | [Fallback](/runtime/fallback/) | [Multi-model fallback](/playbooks/multi-model-fallback-chain/) |
-| `runtime.effort` | config | `runtime.effort` (supporting providers; direct OpenCode rejects explicit effort) | `MONO_AGENT_EFFORT` | [Execution, effort, permissions](/runtime/execution-effort-permissions/) | — |
-| `runtime.per-trigger-model` | config + code | `cron.jobs[].{model,effort}`; `webhook.endpoints[].{model,effort}` + request body `{model,effort}` (request wins; safety-compatible override becomes the turn's primary, keeping `runtime.fallbackModels`; configured local-provider endpoints/capabilities are recomputed; direct Codex stays direct, native-sandbox routes stay Pi) | `MONO_AGENT_CRON_MODEL` / `MONO_AGENT_CRON_EFFORT`, `MONO_AGENT_WEBHOOK_MODEL` / `MONO_AGENT_WEBHOOK_EFFORT` | [Cron](/channels/cron/#per-trigger-model--effort) · [Webhook](/channels/webhook/#per-trigger-model--effort) | — |
+| `runtime.fallback-models` | config | `runtime.fallbacks[].{model,effort?}`; legacy `runtime.fallbackModels` | `MONO_AGENT_FALLBACKS_JSON`; legacy `MONO_AGENT_FALLBACK_MODELS` | [Fallback](/runtime/fallback/) | [Multi-model fallback](/playbooks/multi-model-fallback-chain/) |
+| `runtime.route-safety` | config | `runtime.routeSafety` | `MONO_AGENT_ROUTE_SAFETY` | [Fallback](/runtime/fallback/#route-safety) | [Multi-model fallback](/playbooks/multi-model-fallback-chain/) |
+| `runtime.effort` | config | `runtime.effort`, `runtime.fallbacks[].effort` | `MONO_AGENT_EFFORT`, `MONO_AGENT_FALLBACKS_JSON` | [Execution, effort, permissions](/runtime/execution-effort-permissions/) | — |
+| `runtime.per-trigger-model` | config + code | `cron.jobs[].{model,effort}`; `webhook.endpoints[].{model,effort}` + request body `{model,effort}` (request wins; chosen `routeSafety` must admit the override and retained canonical/legacy fallbacks) | `MONO_AGENT_CRON_MODEL` / `MONO_AGENT_CRON_EFFORT`, `MONO_AGENT_WEBHOOK_MODEL` / `MONO_AGENT_WEBHOOK_EFFORT` | [Cron](/channels/cron/#per-trigger-model--effort) · [Webhook](/channels/webhook/#per-trigger-model--effort) | — |
 | `runtime.permission-mode` | config | `runtime.permissionMode` | `MONO_AGENT_PERMISSION_MODE` | [Execution, effort, permissions](/runtime/execution-effort-permissions/) | [Sandboxed code agent](/playbooks/sandboxed-code-agent/) |
 | `runtime.max-turns` | config | `runtime.maxTurns` (direct OpenCode rejects positive values because it has no enforceable hard cap) | `MONO_AGENT_MAX_TURNS` | [Backends](/runtime/backends/) | — |
 | `runtime.workspace` | config | `runtime.workspace` | `MONO_AGENT_WORKSPACE` | [Backends](/runtime/backends/) | — |
 | `runtime.provider-sessions` | config | `runtime.session.mode`, `runtime.session.idleTimeoutMs`, `runtime.session.rollover`, `runtime.session.rolloverTimezone`, `runtime.session.rolloverNotice` | `MONO_AGENT_SESSION_MODE`, `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS`, `MONO_AGENT_SESSION_ROLLOVER`, `MONO_AGENT_SESSION_ROLLOVER_TIMEZONE`, `MONO_AGENT_SESSION_ROLLOVER_NOTICE` | [Sessions & concurrency](/runtime/sessions-concurrency/) | — |
 | `runtime.concurrency` | config | `concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns` | `MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS`, `MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS` | [Sessions & concurrency](/runtime/sessions-concurrency/) | — |
 | `runtime.local-providers` | config | `providers.local[]` | `MONO_AGENT_LOCAL_PROVIDERS_JSON`, `MONO_AGENT_LOCAL_PROVIDER_*` | [Local providers](/runtime/local-providers/) | [Local-only Ollama agent](/playbooks/local-only-ollama-agent/) |
-| `runtime.pi-oauth` | config | `providers.piAuthPath` | `MONO_AGENT_PI_AUTH_PATH` | [Local providers](/runtime/local-providers/) | — |
+| `runtime.pi-credentials` | config | `providers.piAuthPath` (OAuth/account and API-key credentials such as OpenCode-Go) | `MONO_AGENT_PI_AUTH_PATH` | [Local providers](/runtime/local-providers/) | — |
 | `runtime.pi-native-tuning` | config | `providers.piNative.piMaxRetries`, `providers.piNative.maxRetryDelayMs`, `providers.piNative.piSessionsRoot` | `MONO_AGENT_PI_MAX_RETRIES`, `MONO_AGENT_MAX_RETRY_DELAY_MS`, `MONO_AGENT_PI_SESSIONS_ROOT` | [Sessions & concurrency](/runtime/sessions-concurrency/) | — |
 | `runtime.tool-parallelism` | code | `runtimeOptions.piToolParallelismMode` | — | [Tools & guards](/runtime/tools-and-guards/) | — |
 | `runtime.webfetch-retry` | auto | (built into WebFetch) | — | [Tools & guards](/runtime/tools-and-guards/) | — |
@@ -59,6 +60,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `sandbox.filesystem-scopes` | config | `sandbox.readableRoots`, `sandbox.writableRoots`, `sandbox.denyWrite` | `MONO_AGENT_SANDBOX_READABLE_ROOTS`, `MONO_AGENT_SANDBOX_WRITABLE_ROOTS`, `MONO_AGENT_SANDBOX_DENY_WRITE` | [Sandbox](/tools/sandbox/) | [Sandboxed code agent](/playbooks/sandboxed-code-agent/) |
 | `sandbox.fallback` | config | `sandbox.fallback`, `sandbox.unsafeAllowHostProcess` | `MONO_AGENT_SANDBOX_FALLBACK`, `MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS` | [Sandbox](/tools/sandbox/) | [Sandboxed code agent](/playbooks/sandboxed-code-agent/) |
 | `sandbox.monotonic-merge` | auto | (harness merges configured + request policies) | — | [Sandbox](/tools/sandbox/) | — |
+| `sandbox.managed-srt` | cli + auto | `mono-agent sandbox status\|setup\|check`; automatic managed runtime resolution | — | [Sandbox](/tools/sandbox/) | [Sandboxed code agent](/playbooks/sandboxed-code-agent/) |
 
 ## Memory
 
@@ -85,6 +87,7 @@ The entity graph that BuJo capture maintains is part of the BuJo capture pipelin
 
 | Feature id | Coverage | Config key(s) | Env var(s) | Prose page | Playbook(s) |
 | --- | --- | --- | --- | --- | --- |
+| `agent.public-name` | config | `agent.name` | `MONO_AGENT_NAME` | [Identity & soul](/context/identity-and-soul/#public-agent-name) | — |
 | `context.identity` | config | `context.identityPath` | `MONO_AGENT_IDENTITY_PATH` | [Identity & soul](/context/identity-and-soul/) | — |
 | `context.soul` | config | `context.soulPath` | `MONO_AGENT_SOUL_PATH` | [Identity & soul](/context/identity-and-soul/) | — |
 | `context.history` | auto | (sized from `runtime.maxTurns`; custom store via `code`) | `MONO_AGENT_MAX_TURNS` | [Assembly](/context/assembly/) | — |
@@ -144,10 +147,10 @@ Built-in channels are independent JSON sections: `telegram`, `slack`, `webhook`,
 
 | Feature id | Coverage | Config key(s) | Env var(s) | Prose page | Playbook(s) |
 | --- | --- | --- | --- | --- | --- |
-| `app.cli-init` | cli | any flag/non-TTY: scaffold-only, no readiness claim | — | [Quickstart](/getting-started/quickstart/) | — |
-| `app.cli-setup` | cli | bare TTY `mono-agent init`: primary-model proof + strict full Agent ready gate | — | [CLI reference](/observability/cli-reference/#init) | — |
+| `app.cli-init` | cli | `--name`, canonical repeated `--fallback`/`--fallback-effort`, `--route-safety`, `--codex-auth`; any flag/non-TTY remains scaffold-only | — | [Quickstart](/getting-started/quickstart/) | — |
+| `app.cli-setup` | cli | bare TTY `mono-agent init`: searchable catalogs, Escape-back, concrete review, all-route proof, interrupt resume/restart | — | [CLI reference](/observability/cli-reference/#init) | — |
 | `app.secure-secret-persistence` | cli | fail-closed owner-only `.env` merge + external lock + pathname no-clobber/recovery checks; Windows manual only | channel/provider-native secret vars | [Env vars](/config/env-vars/) | — |
-| `app.pi-auth-login` | cli | `mono-agent auth login <provider> [--pi-auth-path] [--config]` | `MONO_AGENT_PI_AUTH_PATH` | [CLI reference](/observability/cli-reference/#auth-login) | — |
+| `app.provider-auth` | cli | `mono-agent auth login <provider\|codex> [--pi-auth-path] [--api-key-stdin] [--codex-auth browser\|device]` | `MONO_AGENT_PI_AUTH_PATH` | [CLI reference](/observability/cli-reference/#auth-login) | — |
 | `app.cli-presets` | cli | `mono-agent presets list \| show <id>` (`recipes` alias) | — | [Presets & modules](/reference/recipes/) | — |
 | `app.cli-no-tools-guardrail` | cli | part of `mono-agent validate` / `doctor`; the tools step of `mono-agent init` | — | [Presets & modules](/reference/recipes/#the-tools-step-and-the-no-tools-guardrail) | — |
 | `app.cli-validate` | cli | `mono-agent validate [--consumer] [--config] [--env-file]` | — | [Blueprint](/config/blueprint/) | — |
