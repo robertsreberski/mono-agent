@@ -36,9 +36,9 @@ export function selectAutomaticRecallHits<T extends {
   if (scoreSupported.length > 0) return scoreSupported.slice(0, maxHits);
 
   // Raw backend scores are not calibrated across providers. A true paraphrase
-  // or complementary entity-hop record can sit just below the score floor, so
-  // inspect the bounded top-eight text window with the stricter answer-evidence
-  // gate before abstaining. This adds no retrieval/model call.
+  // can sit just below the score floor, so inspect the bounded top-eight text
+  // window with the stricter single-clause answer-evidence gate before
+  // abstaining. This adds no retrieval/model call.
   const evidenceWindow = hits.slice(0, Math.max(8, maxHits)).filter(
     (hit): hit is T & { readonly record: { readonly text: string } } => hit.record !== undefined,
   );

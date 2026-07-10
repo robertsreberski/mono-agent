@@ -11,7 +11,7 @@ pnpm run benchmark:memory
 node scripts/memory-benchmark.mjs --json
 ```
 
-The fast suite covers direct facts, paraphrases, updates/contradictions, temporal questions, recurring noise, alternating queries, exact duplicates, and entity-hop-shaped questions. Its unanswerable set separates out-of-domain questions from in-domain **missing-attribute** questions (for example, a person exists in memory but their phone number does not). Provider-independent high-similarity adjacent-hit probes run as a separate mandatory policy-calibration gate; their synthetic scores are never mixed into provider Recall/MRR, latency, context, or false-recall measurements. The gate is:
+The fast suite covers direct facts, paraphrases, updates/contradictions, temporal questions, recurring noise, alternating queries, exact duplicates, and entity-hop-shaped retrieval. Automatic injection is intentionally single-clause, so entity-hop results remain available to the explicit `MemoryRecall` tool without being synthesized into background context. The unanswerable set separates out-of-domain questions from in-domain **missing-attribute** questions (for example, a person exists in memory but their phone number does not). Provider-independent high-similarity adjacent-hit probes run as a separate mandatory policy-calibration gate; their synthetic scores are never mixed into provider Recall/MRR, latency, context, or false-recall measurements. The gate is:
 
 - Recall@5 at least 90%
 - MRR at least 0.8

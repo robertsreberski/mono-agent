@@ -66,22 +66,21 @@ const FAST_CASES = [
   testCase("alternating", "Remind me of Morgan's deployment color.", ["fact-cobalt"]),
 ];
 
-// Regression distribution captured from the default nomic provider: two
-// answer records form the relevant cluster while semantically adjacent records
-// still receive deceptively high absolute scores. This exercises the shared
-// automatic-selection policy in deterministic CI without pretending those
-// scores came from the deterministic embedding provider.
+// Regression distribution captured from the default nomic provider: a direct
+// answer is followed by semantically adjacent records with deceptively high
+// absolute scores. Synthetic scores exercise policy calibration separately
+// from provider quality/latency metrics.
 const FAST_POLICY_CASES = [{
   item: testCase(
     "high-similarity-adjacent",
-    "Which city is the person leading Atlas based in?",
-    ["probe-answer", "probe-support"],
+    "What deployment color did Morgan select?",
+    ["probe-answer"],
   ),
   hits: [
-    scoredHit("probe-answer", "Project Atlas is led by Morgan.", 1.005),
-    scoredHit("probe-support", "Morgan's office is in Amsterdam.", 0.798),
-    scoredHit("probe-adjacent", "Morgan selected cobalt as the deployment color.", 0.751),
-    scoredHit("probe-other", "Database rollouts use a blue-green deployment strategy.", 0.708),
+    scoredHit("probe-answer", "Morgan selected cobalt as the deployment color.", 1.005),
+    scoredHit("probe-adjacent", "Morgan's office is in Amsterdam.", 0.798),
+    scoredHit("probe-other", "Database rollouts use a blue-green deployment strategy.", 0.751),
+    scoredHit("probe-weak", "Project Atlas is led by Morgan.", 0.708),
   ],
 }];
 

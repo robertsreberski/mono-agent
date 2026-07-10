@@ -193,4 +193,66 @@ describe("shared MemoryRecall MCP", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("releases the shared turn cache before admitting another run after an abort-ignoring provider", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-memory-retrieval-abort-"));
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const releases: Array<() => void> = [];
+    let runtimeCalls = 0;
+    try {
+      const service = new MemoryRetrievalService(fakeStore());
+      const activeTurnCount = (): number => (service as unknown as { turns: Map<string, unknown> }).turns.size;
+      const harness = createAgentHarness({
+        identityPath,
+        model: {
+          sdk: "pi",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          reference: "pi:openai-codex:gpt-5.5",
+        },
+        runtime: {
+          async run() {
+            runtimeCalls += 1;
+            await new Promise<void>((resolve) => { releases.push(resolve); });
+            return { text: "late provider answer" };
+          },
+        },
+        memory: service,
+        concurrency: { maxConcurrentRuns: 1 },
+        runtimeOptionsForRequest: createSharedMemoryRecallRuntimeExtension(service),
+      });
+
+      const zombies: Array<Promise<unknown>> = [];
+      for (let index = 0; index < 3; index += 1) {
+        const abort = new AbortController();
+        zombies.push(harness.run({
+          conversationId: `zombie-${index}`,
+          userMessage: "deploy pipeline",
+          abortSignal: abort.signal,
+        }));
+        for (let attempt = 0; attempt < 40 && runtimeCalls <= index; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        expect(runtimeCalls).toBe(index + 1);
+        expect(activeTurnCount()).toBe(1);
+        abort.abort(new Error("cancelled"));
+        for (let attempt = 0; attempt < 40 && activeTurnCount() !== 0; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        expect(activeTurnCount()).toBe(0);
+      }
+
+      for (const release of releases) release();
+      await expect(Promise.all(zombies)).resolves.toEqual(
+        Array.from({ length: 3 }, () => expect.objectContaining({
+          failure: expect.objectContaining({ kind: "cancelled" }),
+        })),
+      );
+      expect(activeTurnCount()).toBe(0);
+    } finally {
+      for (const release of releases) release();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

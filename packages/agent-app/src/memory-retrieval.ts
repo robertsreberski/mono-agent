@@ -219,13 +219,22 @@ export function createSharedMemoryRecallRuntimeExtension(
         cleanup: async () => {
           if (closed) return;
           closed = true;
-          await mcp.close().catch(() => undefined);
-          await closeHttpServer(http);
+          try {
+            await mcp.close().catch(() => undefined);
+            await closeHttpServer(http);
+          } finally {
+            // An abort-ignoring provider may keep the outer logical turn alive
+            // after this endpoint releases its concurrency permit. No tool can
+            // use the cache once the endpoint is closed, so release it here as
+            // well as in the harness's eventual outer finally.
+            service.releaseTurn(runId);
+          }
         },
       };
     } catch (error) {
       await mcp.close().catch(() => undefined);
       await closeHttpServer(http);
+      service.releaseTurn(runId);
       try {
         options.onUnavailable?.(error);
       } catch {
@@ -234,7 +243,7 @@ export function createSharedMemoryRecallRuntimeExtension(
       // Automatic recall already ran through MemoryRetrievalService.load(). A
       // loopback startup failure therefore omits only the explicit tool and
       // must not prevent the provider turn from proceeding.
-      return { runtimeOptions: { mcpServers: {} }, cleanup: async () => {} };
+      return { runtimeOptions: { mcpServers: {} }, cleanup: async () => { service.releaseTurn(runId); } };
     }
   };
 }

@@ -61,6 +61,26 @@ describe("selectAutomaticRecallHits", () => {
       { score: 0.91, record: { text: "Morgan drives a hatchback car." } },
     ], { query: "What color is Morgans car?" })).toEqual([]);
   });
+
+  it.each([
+    [
+      "What color is Morgans car?",
+      "Morgan selected cobalt as the deployment color and Morgan drives a hatchback car.",
+    ],
+    [
+      "What is Morgans phone number?",
+      "Morgan works in Amsterdam; Taylors phone number is 555-0100.",
+    ],
+    [
+      "Who approved the blue-green deployment strategy?",
+      "Database rollouts use a blue-green deployment strategy; Taylor approved the travel policy.",
+    ],
+  ])("does not splice evidence across clauses: %s", (query, text) => {
+    expect(selectAutomaticRecallHits([
+      { score: 0.94, record: { text } },
+      { score: 0.9, record: { text: "Semantically adjacent archive entry." } },
+    ], { query })).toEqual([]);
+  });
 });
 
 describe("hasAutomaticRecallEvidence", () => {
@@ -77,7 +97,6 @@ describe("hasAutomaticRecallEvidence", () => {
   it.each([
     "Which shade was picked for deployments?",
     "How are database changes released?",
-    "Which city is the person leading Atlas based in?",
     "When does the release train depart now?",
     "What day is the API launch?",
   ])("keeps answer-bearing paraphrase: %s", (query) => {
@@ -107,7 +126,13 @@ describe("hasAutomaticRecallEvidence", () => {
     });
   });
 
-  it("requires multi-record evidence to share a named-entity path", () => {
+  it("does not split decimal or abbreviated time values as clause boundaries", () => {
+    expect(hasAutomaticRecallEvidence("What time does the release train leave?", [{ record: {
+      text: "The release train leaves at 8 a.m.",
+    } }])).toBe(true);
+  });
+
+  it("never synthesizes automatic evidence across records or clauses", () => {
     expect(hasAutomaticRecallEvidence("What is Morgans phone number?", [
       { record: { text: "Morgan's office is in Amsterdam." } },
       { record: { text: "Taylor's phone number is 555-0100." } },
@@ -122,6 +147,33 @@ describe("hasAutomaticRecallEvidence", () => {
       { record: { text: "Morgan selected cobalt as the deployment color." } },
       { record: { text: "Morgan drives a hatchback car." } },
     ])).toBe(false);
+
+    expect(hasAutomaticRecallEvidence("What color is Morgans car?", [{ record: {
+      text: "Morgan selected cobalt as the deployment color and Morgan drives a hatchback car.",
+    } }])).toBe(false);
+    expect(hasAutomaticRecallEvidence("What is Morgans phone number?", [{ record: {
+      text: "Morgan works in Amsterdam; Taylors phone number is 555-0100.",
+    } }])).toBe(false);
+    expect(hasAutomaticRecallEvidence("What is Morgans phone number?", [{ record: {
+      text: "Morgan works in Amsterdam, Taylor's phone number is 555-0100.",
+    } }])).toBe(false);
+    expect(hasAutomaticRecallEvidence("Who approved the blue-green deployment strategy?", [{ record: {
+      text: "Database rollouts use a blue-green deployment strategy; Taylor approved the travel policy.",
+    } }])).toBe(false);
+
+    // Even a plausible named-entity chain can have the inverse direction. The
+    // explicit MemoryRecall tool may expose both records for model reasoning;
+    // automatic context must not guess which side of the relation is requested.
+    expect(hasAutomaticRecallEvidence("Where is Morgans manager based?", [
+      { record: { text: "Morgan manages Taylor." } },
+      { record: { text: "Taylor is based in Paris." } },
+    ])).toBe(false);
+    expect(selectAutomaticRecallHits([
+      { score: 0.94, record: { text: "Morgan leads Taylor." } },
+      { score: 0.9, record: { text: "Taylor is based in Paris." } },
+    ], { query: "Where is the person who leads Morgan based?" })).toEqual([]);
+
+    expect(hasAutomaticRecallEvidence("Which city is the person leading Atlas based in?", records)).toBe(false);
   });
 });
 
