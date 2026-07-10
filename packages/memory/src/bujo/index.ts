@@ -1,5 +1,10 @@
 export { createBujoMemoryStore, BujoMemoryStore } from "./store.js";
-export { composeRecallBlock } from "./recall.js";
+export {
+  AUTO_RECALL_MAX_BYTES,
+  AUTO_RECALL_MAX_HITS,
+  AUTO_RECALL_MIN_SCORE,
+  composeRecallBlock,
+} from "./recall.js";
 export { rebuildFromMarkdown } from "./rebuild.js";
 export { parseBullet, serializeBullet, parseDailyFile, serializeDailyFile } from "./grammar.js";
 export { appendBullet, dailyFilePath } from "./daily.js";

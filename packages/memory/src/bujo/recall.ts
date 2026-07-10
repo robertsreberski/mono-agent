@@ -3,19 +3,28 @@ import type { MemoryDb } from "../store/index.js";
 
 import { MARKER_FOR } from "./grammar.js";
 
+/** Confidence floor for automatic prompt injection. Deliberate tool recall may inspect lower scores. */
+export const AUTO_RECALL_MIN_SCORE = 0.6;
+export const AUTO_RECALL_MAX_HITS = 5;
+export const AUTO_RECALL_MAX_BYTES = 8_000;
+
 export async function composeRecallBlock(
   db: MemoryDb,
   query: string,
   options: { topK?: number; maxBytes?: number } = {},
 ): Promise<MemoryBlock | undefined> {
-  const maxBytes = options.maxBytes ?? 8_000;
-  const hits = await db.recall(query, { topK: options.topK ?? 8 });
+  const maxBytes = Math.max(1, Math.min(options.maxBytes ?? AUTO_RECALL_MAX_BYTES, AUTO_RECALL_MAX_BYTES));
+  const topK = Math.max(1, Math.min(options.topK ?? AUTO_RECALL_MAX_HITS, AUTO_RECALL_MAX_HITS));
+  const hits = (await db.recall(query, { topK: Math.max(topK, 8), trackAccess: false }))
+    .filter((hit) => hit.score >= AUTO_RECALL_MIN_SCORE)
+    .slice(0, topK);
   // No hits → no block. A header-only block carries no signal and only adds
   // noise/tokens to whatever surface injects it; returning undefined lets
   // callers skip injection via their existing `block === undefined` guard.
   if (hits.length === 0) {
     return undefined;
   }
+  db.recordAccess(hits.map((hit) => hit.record.id));
   const lines = ["## Memory (recalled)", ""];
   for (const hit of hits) {
     const star = hit.record.isInsight ? " *" : "";

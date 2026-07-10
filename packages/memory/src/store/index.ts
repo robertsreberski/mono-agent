@@ -10,6 +10,7 @@ export type {
   MemorySource,
   MemoryStatus,
   MemoryStoreStats,
+  MemoryStoreAudit,
   MemoryStoreStatsOptions,
   MemoryType,
   RecallHit,
@@ -18,4 +19,4 @@ export type {
   SimilarHit,
 } from "./types.js";
 export { DEFAULT_VEC_DIM, MEMORY_STATUSES, MEMORY_TYPES } from "./types.js";
-export type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";
+export type { MemoryBlock, MemoryLoadOptions, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";

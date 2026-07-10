@@ -18,6 +18,7 @@ import {
   type EntityRelationRecord,
   type MemoryDbOptions,
   type MemoryStoreStats,
+  type MemoryStoreAudit,
   type MemoryStoreStatsOptions,
   type MemoryRecord,
   type RecallHit,
@@ -26,6 +27,13 @@ import {
   type SimilarHit,
 } from "./types.js";
 import type { EmbeddingProvider } from "../search/index.js";
+
+const MIN_SEMANTIC_SIMILARITY = 0.5;
+const RECALL_STOP_WORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does", "for", "from",
+  "how", "i", "in", "is", "it", "me", "my", "of", "on", "or", "our", "that", "the",
+  "this", "to", "was", "we", "were", "what", "when", "where", "which", "who", "why", "with",
+]);
 
 export class MemoryDb {
   protected readonly db: Database;
@@ -195,15 +203,83 @@ export class MemoryDb {
     };
   }
 
+  /** Aggregate-only health metrics for `mono-agent memory audit --json`. */
+  audit(): MemoryStoreAudit {
+    const counts = this.db.prepare(
+      `SELECT
+         COUNT(*) AS total,
+         SUM(CASE WHEN status NOT IN ('invalidated','dropped') THEN 1 ELSE 0 END) AS live,
+         SUM(CASE WHEN status NOT IN ('invalidated','dropped') THEN access_count ELSE 0 END) AS total_access,
+         SUM(CASE WHEN status NOT IN ('invalidated','dropped') AND access_count > 0 THEN 1 ELSE 0 END) AS accessed
+       FROM memories`,
+    ).get() as { total: number; live: number | null; total_access: number | null; accessed: number | null };
+    const duplicate = this.db.prepare(
+      `SELECT COUNT(*) AS groups, COALESCE(SUM(n - 1), 0) AS redundant
+       FROM (
+         SELECT COUNT(*) AS n
+         FROM memories
+         WHERE status NOT IN ('invalidated','dropped')
+         GROUP BY lower(trim(text))
+         HAVING COUNT(*) > 1
+       )`,
+    ).get() as { groups: number; redundant: number };
+    const vectors = this.db.prepare(
+      `SELECT
+         COUNT(*) AS indexed,
+         SUM(CASE WHEN m.status NOT IN ('invalidated','dropped') THEN 1 ELSE 0 END) AS live_indexed
+       FROM memories_vec v
+       JOIN memories m ON m.seq = v.rowid`,
+    ).get() as { indexed: number; live_indexed: number | null };
+    const entities = (this.db.prepare(`SELECT COUNT(*) AS n FROM entities`).get() as { n: number }).n;
+    const entityRelations = (
+      this.db.prepare(`SELECT COUNT(*) AS n FROM entity_relations`).get() as { n: number }
+    ).n;
+    const live = counts.live ?? 0;
+    const totalAccess = counts.total_access ?? 0;
+    const concentrationRows = this.db.prepare(
+      `SELECT access_count FROM memories
+       WHERE status NOT IN ('invalidated','dropped')
+       ORDER BY access_count DESC, id ASC LIMIT ?`,
+    ).all(Math.max(1, Math.ceil(live * 0.01))) as Array<{ access_count: number }>;
+    const concentrated = concentrationRows.reduce((sum, row) => sum + row.access_count, 0);
+    const liveIndexed = vectors.live_indexed ?? 0;
+    return {
+      counts: {
+        total: counts.total,
+        live,
+        entities,
+        entityRelations,
+      },
+      duplicates: {
+        groups: duplicate.groups,
+        redundantRecords: duplicate.redundant,
+        ratio: live === 0 ? 0 : duplicate.redundant / live,
+      },
+      vectors: {
+        indexed: vectors.indexed,
+        liveIndexed,
+        liveCoverage: live === 0 ? 1 : liveIndexed / live,
+      },
+      access: {
+        totalCount: totalAccess,
+        accessedMemories: counts.accessed ?? 0,
+        topOnePercentShare: totalAccess === 0 ? 0 : concentrated / totalAccess,
+      },
+    };
+  }
+
   async recall(query: string, options: RecallOptions = {}): Promise<RecallHit[]> {
     const topK = options.topK ?? 8;
     const candidates = options.candidates ?? Math.max(topK * 4, 20);
     const now = options.now ?? this.clock();
 
     const ftsIds = this.keywordCandidates(query, candidates);
-    const vecIds = this.embeddings !== undefined
+    const vecCandidates = this.embeddings !== undefined
       ? await this.vectorCandidates(query, candidates)
       : [];
+    const vecIds = vecCandidates.map((candidate) => candidate.id);
+    const vectorSimilarity = new Map(vecCandidates.map((candidate) => [candidate.id, candidate.similarity]));
+    const retrieverCount = Number(vecIds.length > 0) + Number(ftsIds.length > 0);
     // When embeddings are absent, fuse only the FTS list (RRF of one list still re-ranks correctly).
     const fused = rrfFuse([vecIds, ftsIds], this.k);
     if (fused.length === 0) return [];
@@ -215,16 +291,24 @@ export class MemoryDb {
       .all(...fused.map((f) => f.id)) as Record<string, unknown>[];
 
     const scored: RecallHit[] = [];
+    const queryTokens = relevanceTokens(query);
     for (const row of rows) {
       const record = this.fromRow(row);
       if (!options.includeInvalid && (record.status === "invalidated" || record.status === "dropped")) continue;
       if (!options.includeInvalid && record.validTo !== undefined && new Date(record.validTo) < now) continue;
+      const lexical = lexicalEvidence(queryTokens, record.text);
+      const semanticSimilarity = vectorSimilarity.get(record.id) ?? 0;
+      const semantic = semanticSimilarity >= MIN_SEMANTIC_SIMILARITY ? semanticSimilarity : 0;
+      const evidence = Math.min(1, Math.max(lexical, semantic) + (lexical > 0 && semantic > 0 ? 0.05 : 0));
+      // Normalize the small RRF value into a bounded rank hint. It may break ties,
+      // but cannot make a no-evidence vector neighbour look relevant.
+      const fusedRank = Math.min(1, ((byId.get(record.id) ?? 0) * (this.k + 1)) / retrieverCount);
+      const relevance = evidence === 0 ? fusedRank * 0.05 : evidence * 0.9 + fusedRank * 0.1;
       const score = reScore(
         {
-          rrfScore: byId.get(record.id) ?? 0,
+          rrfScore: relevance,
           salience: record.salience,
           isInsight: record.isInsight,
-          ...(record.lastAccessedAt !== undefined && { lastAccessedAt: record.lastAccessedAt }),
         },
         this.weights,
         this.decayGamma,
@@ -232,7 +316,7 @@ export class MemoryDb {
       );
       scored.push({ record, score });
     }
-    scored.sort((a, b) => b.score - a.score);
+    scored.sort((a, b) => b.score - a.score || a.record.id.localeCompare(b.record.id));
     const top = scored.slice(0, topK);
     if (options.trackAccess === false) {
       return top;
@@ -241,15 +325,15 @@ export class MemoryDb {
     return top.map((h) => ({ ...h, record: { ...h.record, accessCount: h.record.accessCount + 1, lastAccessedAt: now.toISOString() } }));
   }
 
-  protected async vectorCandidates(query: string, limit: number): Promise<string[]> {
+  protected async vectorCandidates(query: string, limit: number): Promise<Array<{ id: string; similarity: number }>> {
     if (this.embeddings === undefined) return [];
     const [vector] = await this.embeddings.embed([`search_query: ${query}`]);
     if (vector === undefined) return [];
     this.assertVectorDim(vector, "recall");
     const rows = this.db
-      .prepare(`SELECT m.id AS id FROM memories_vec v JOIN memories m ON m.seq = v.rowid WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance`)
-      .all(toBlob(vector), limit) as { id: string }[];
-    return rows.map((r) => r.id);
+      .prepare(`SELECT m.id AS id, v.distance AS distance FROM memories_vec v JOIN memories m ON m.seq = v.rowid WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance`)
+      .all(toBlob(vector), limit) as Array<{ id: string; distance: number }>;
+    return rows.map((row) => ({ id: row.id, similarity: Math.max(-1, Math.min(1, 1 - row.distance)) }));
   }
 
   protected keywordCandidates(query: string, limit: number): string[] {
@@ -384,6 +468,11 @@ export class MemoryDb {
       for (const id of ids) stmt.run(now.toISOString(), id);
     });
     tx();
+  }
+
+  /** Record served hits as telemetry. Access metadata never participates in ranking. */
+  recordAccess(ids: readonly string[], now = this.clock()): void {
+    this.bumpAccess(ids, now);
   }
 
   protected nextSeq(id: string): number {
@@ -535,13 +624,12 @@ export class MemoryDb {
     return rows.map((r) => this.fromRow(r));
   }
 
-  /** Decay salience toward `floor` by time since last access (half-life in days). Returns count adjusted.
-   *  Frequently-accessed memories (recent last_accessed_at) decay little; stale ones fade toward floor. */
+  /** Decay salience toward `floor` by age (half-life in days). Access telemetry is deliberately ignored. */
   applyDecay(now: Date, opts: { halfLifeDays?: number; floor?: number } = {}): { decayed: number } {
     const halfLife = opts.halfLifeDays ?? 30;
     const floor = opts.floor ?? 0.05;
     const rows = this.db.prepare(
-      `SELECT id, salience, COALESCE(last_accessed_at, created_at) AS ref FROM memories WHERE status NOT IN ('invalidated','dropped')`,
+      `SELECT id, salience, created_at AS ref FROM memories WHERE status NOT IN ('invalidated','dropped')`,
     ).all() as { id: string; salience: number; ref: string }[];
     const stmt = this.db.prepare(`UPDATE memories SET salience = ? WHERE id = ?`);
     let decayed = 0;
@@ -560,6 +648,31 @@ export class MemoryDb {
   close(): void {
     this.db.close();
   }
+}
+
+function relevanceTokens(text: string): ReadonlySet<string> {
+  const tokens = text.toLowerCase().match(/[a-z0-9]+/gu) ?? [];
+  return new Set(tokens
+    .filter((token) => token.length > 1 && !RECALL_STOP_WORDS.has(token))
+    .map(canonicalRelevanceToken));
+}
+
+function canonicalRelevanceToken(token: string): string {
+  if (token === "decision" || token === "decided" || token === "decides" || token === "deciding") return "decide";
+  if (token === "preferences" || token === "preferred" || token === "prefers") return "prefer";
+  return token.endsWith("s") && token.length > 4 ? token.slice(0, -1) : token;
+}
+
+function lexicalEvidence(queryTokens: ReadonlySet<string>, text: string): number {
+  if (queryTokens.size === 0) return 0;
+  const documentTokens = relevanceTokens(text);
+  let matches = 0;
+  for (const token of queryTokens) {
+    if (documentTokens.has(token)) matches += 1;
+  }
+  // Two distinct meaningful terms are enough for full lexical confidence; a
+  // one-term query still requires that exact term.
+  return Math.min(1, matches / Math.min(2, queryTokens.size));
 }
 
 export function openMemoryDb(options: MemoryDbOptions): MemoryDb {

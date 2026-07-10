@@ -75,7 +75,7 @@ A few specifics:
 - **Skipped when empty.** A recall that returns no hits injects nothing — no delimiter, no header.
 - **Still traced.** A lightweight `memory_recalled` diagnostic (source + byte size, not the content) keeps the fact that recall fired visible in the run record even though memory no longer appears in the prompt sections.
 
-For the `journal`/`bujo` tiers with embeddings, an auto-provisioned read-only `MemoryRecall` tool also lets the agent pull more context mid-turn via `config.memory.recallTool.enabled` (`MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`, default on). Recall combines keyword (FTS) and semantic search with no chat LLM. See [Capture and recall](/memory/capture-and-recall/) and [Embeddings](/memory/embeddings/).
+Every configured memory tier also exposes the read-only `MemoryRecall` tool by default (`config.memory.recallTool.enabled`; explicit false opts out). Lite uses FTS; Journal/BuJo combine keyword and semantic search. Automatic context recall is confidence-gated to five hits / 8 KB and shares a per-turn lookup cache with the tool. See [Capture and recall](/memory/capture-and-recall/) and [Embeddings](/memory/embeddings/).
 
 ## Conversation history
 

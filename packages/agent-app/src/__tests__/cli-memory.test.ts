@@ -26,6 +26,7 @@ describe("parseCliArgs memory", () => {
     });
     expect(() => parseCliArgs(["metrics", "--limit", "3"])).toThrow(/--limit/u);
     expect(renderHelp()).toContain("mono-agent memory");
+    expect(renderHelp()).toContain("audit");
   });
 });
 
@@ -66,6 +67,23 @@ describe("runCli memory", () => {
     expect(top.code).toBe(0);
     expect(top.stdout).toMatch(/Deploy pipeline uses blue green releases|Memory preview should show source metadata/u);
     expect(top.stdout).toContain("salience");
+
+    const audit = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "audit", "--json"]))));
+    expect(audit.code).toBe(0);
+    const auditJson = JSON.parse(audit.stdout) as Record<string, unknown>;
+    expect(auditJson).toMatchObject({
+      metadataOnly: true,
+      counts: { total: 2, live: 2 },
+      bytes: expect.any(Object),
+      duplicates: expect.any(Object),
+      vectorCoverage: expect.any(Object),
+      accessConcentration: expect.any(Object),
+      backlog: expect.any(Object),
+      latency: expect.any(Object),
+      cost: expect.any(Object),
+    });
+    expect(audit.stdout).not.toContain("Deploy pipeline uses blue green releases.");
+    expect(audit.stdout).not.toContain("mono-agent\"");
   });
 
   it("falls back to FTS-only when configured embeddings are down", async () => {

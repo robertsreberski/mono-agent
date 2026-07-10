@@ -110,6 +110,31 @@ export interface MemoryStoreStats {
   readonly topEntities: readonly EntityRecord[];
 }
 
+/** Aggregate-only store health. It intentionally carries no memory or entity content. */
+export interface MemoryStoreAudit {
+  readonly counts: {
+    readonly total: number;
+    readonly live: number;
+    readonly entities: number;
+    readonly entityRelations: number;
+  };
+  readonly duplicates: {
+    readonly groups: number;
+    readonly redundantRecords: number;
+    readonly ratio: number;
+  };
+  readonly vectors: {
+    readonly indexed: number;
+    readonly liveIndexed: number;
+    readonly liveCoverage: number;
+  };
+  readonly access: {
+    readonly totalCount: number;
+    readonly accessedMemories: number;
+    readonly topOnePercentShare: number;
+  };
+}
+
 export interface MemoryDbOptions {
   readonly path: string;
   readonly embeddings?: EmbeddingProvider;
@@ -129,10 +154,14 @@ export const DEFAULT_VEC_DIM = 768;
  */
 export const DEFAULT_WEIGHTS: RecallWeights = {
   rrf: 1.0,
-  recency: 0.3,
-  salience: 0.3,
-  insight: 0.2,
+  // Access time is telemetry, never relevance. Keep the field for config/API
+  // compatibility but make its effective default zero and do not feed it into
+  // the scorer.
+  recency: 0,
+  // Relevance must dominate these deterministic tie-breakers.
+  salience: 0.01,
+  insight: 0.01,
 };
 export const DEFAULT_RRF_K = 60;
-/** Exponential recency decay per day: score *= gamma^daysSinceLastAccess. 0.995 ≈ 16% weight after one year. */
+/** Retained for API compatibility and deterministic salience maintenance. */
 export const DEFAULT_DECAY_GAMMA = 0.995;

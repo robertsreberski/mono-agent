@@ -10,7 +10,7 @@ describe("composeRecallBlock", () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
     await db.upsert({ id: "a", type: "note", status: "open", text: "Morgan prefers opt-in memory.", salience: 0.9, isInsight: true, createdAt: "2026-06-15T09:00:00.000Z", accessCount: 0, tags: [], source: {} });
     await db.upsert({ id: "b", type: "task", status: "open", text: "Ship the substrate.", salience: 0.6, isInsight: false, createdAt: "2026-06-15T09:00:00.000Z", accessCount: 0, tags: [], source: {} });
-    const block = await composeRecallBlock(db, "memory preferences", { topK: 5 });
+    const block = await composeRecallBlock(db, "Morgan memory preferences", { topK: 5 });
     expect(block).toBeDefined();
     assert(block);
     expect(block.kind).toBe("markdown");
@@ -44,6 +44,17 @@ describe("composeRecallBlock", () => {
     assert(block);
     expect(Buffer.byteLength(block.content, "utf8")).toBeLessThanOrEqual(120);
     expect(block.truncated).toBe(true);
+    db.close();
+  });
+
+  it("abstains when vector neighbours have no relevant evidence", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    await db.upsert({ id: "garden", type: "note", status: "open", text: "roses need compost", salience: 1, isInsight: true, createdAt: "2026-06-15T09:00:00.000Z", accessCount: 99, lastAccessedAt: "2026-06-15T09:00:00.000Z", tags: [], source: {} });
+
+    const block = await composeRecallBlock(db, "quarterly finance forecast", { topK: 5 });
+
+    expect(block).toBeUndefined();
+    expect(db.audit().access.totalCount).toBe(99);
     db.close();
   });
 });

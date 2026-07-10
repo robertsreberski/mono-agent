@@ -217,8 +217,8 @@ describe("wizard composer — alwaysOnTools (auto-provisioned, not gated by allo
     expect(alwaysOnTools(defaultAnswers({ memory: "memory:supermemory" }))).toEqual(["MemoryRecall"]);
   });
 
-  it("is empty for lite memory and for no memory", () => {
-    expect(alwaysOnTools(defaultAnswers({ memory: "memory:lite" }))).toEqual([]);
+  it("includes recall for lite memory and stays empty with no memory", () => {
+    expect(alwaysOnTools(defaultAnswers({ memory: "memory:lite" }))).toEqual(["MemoryRecall"]);
     expect(alwaysOnTools(defaultAnswers())).toEqual([]);
   });
 });

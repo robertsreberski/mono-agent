@@ -821,7 +821,7 @@ describe("loadMonoAgentConfig", () => {
     }
   });
 
-  it("defaults memory.recallTool on for journal/bujo with embeddings and off for lite", () => {
+  it("defaults memory.recallTool on for every configured local tier", () => {
     const withEmbeddings = loadMonoAgentConfig({
       cwd: "/repo",
       env: {
@@ -833,19 +833,19 @@ describe("loadMonoAgentConfig", () => {
     });
     expect(withEmbeddings.memory?.recallTool).toEqual({ enabled: true });
 
-    // lite tier (no embeddings) → off by default.
+    // lite tier uses FTS-only recall and is on by default.
     const lite = loadMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "memory", MONO_AGENT_MEMORY_MODE: "lite" },
     });
-    expect(lite.memory?.recallTool).toEqual({ enabled: false });
+    expect(lite.memory?.recallTool).toEqual({ enabled: true });
 
-    // journal mode but no embeddings configured → off by default (recall can't rank semantically).
+    // A hand-authored journal without embeddings still has lexical recall.
     const journalNoEmbeddings = loadMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "memory", MONO_AGENT_MEMORY_MODE: "journal" },
     });
-    expect(journalNoEmbeddings.memory?.recallTool).toEqual({ enabled: false });
+    expect(journalNoEmbeddings.memory?.recallTool).toEqual({ enabled: true });
   });
 
   it("lets MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED override the recallTool default in both directions", () => {
@@ -862,7 +862,7 @@ describe("loadMonoAgentConfig", () => {
     });
     expect(forcedOff.memory?.recallTool).toEqual({ enabled: false });
 
-    // Explicit on for lite (FTS-only): the operator opts in despite no embeddings default.
+    // Explicit on for lite remains accepted.
     const forcedOn = loadMonoAgentConfig({
       cwd: "/repo",
       env: {

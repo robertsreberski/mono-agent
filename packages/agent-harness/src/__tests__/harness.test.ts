@@ -601,14 +601,18 @@ describe("AgentHarness", () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
-    const recalls: Array<{ conversationId: string; query: string | undefined }> = [];
+    const recalls: Array<{ conversationId: string; query: string | undefined; turnId?: string }> = [];
+    const releasedTurns: string[] = [];
     const memory = {
-      async load(conversationId: string, query?: string) {
-        recalls.push({ conversationId, query });
+      async load(conversationId: string, query?: string, options?: { readonly turnId?: string }) {
+        recalls.push({ conversationId, query, ...(options?.turnId === undefined ? {} : { turnId: options.turnId }) });
         return undefined;
       },
       async appendHostSummary() {
         return { conversationId: "telegram:1", source: "", bytesWritten: 0 };
+      },
+      releaseTurn(turnId: string) {
+        releasedTurns.push(turnId);
       },
     };
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
@@ -627,7 +631,12 @@ describe("AgentHarness", () => {
       abortSignal: new AbortController().signal,
     });
 
-    expect(recalls).toEqual([{ conversationId: "telegram:1", query: "What did we decide about pricing?" }]);
+    expect(recalls).toEqual([{
+      conversationId: "telegram:1",
+      query: "What did we decide about pricing?",
+      turnId: releasedTurns[0],
+    }]);
+    expect(releasedTurns).toHaveLength(1);
   });
 
   it("does not append a recalled-memory block when recall returns nothing", async () => {

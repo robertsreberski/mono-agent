@@ -134,7 +134,7 @@ describe("BujoMemoryStore", () => {
     expect(parsed.bullets).toHaveLength(1);
     expect(parsed.bullets[0]?.text).toContain("opt-in memory");
 
-    const block = await store.load("global");
+    const block = await store.load("global", "Morgan opt-in memory");
     expect(block?.content).toContain("opt-in memory");
     await store.close();
   });
@@ -214,7 +214,7 @@ describe("BujoMemoryStore", () => {
     expect(result?.entities).toBe(1);
 
     // Captured memory must be recallable via load()
-    const block = await store.load("s1");
+    const block = await store.load("s1", "Morgan opt-in memory");
     expect(block?.content).toContain("opt-in memory");
 
     await store.close();

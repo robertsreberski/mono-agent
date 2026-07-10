@@ -48,7 +48,7 @@ The full tier: everything in `journal` plus an LLM-augmented capture-and-reconci
 pipeline, entity graph, and lightweight consolidation. Capture writes agent observations
 and conversation summaries into daily markdown notes, reconciles them against existing
 memories (classifying each entry as ADD / UPDATE / SUPERSEDE / NOOP to avoid
-duplication), and maintains hybrid recall via BM25 full-text + vector RRF with recency
+duplication), and maintains hybrid recall via BM25 full-text + vector RRF with deterministic relevance
 and salience weighting.
 
 A **consolidation** pass keeps the store legible without writing an LLM essay: it applies
@@ -315,16 +315,17 @@ the full question flow and config blocks the composer writes.
 
 ## Recall Tool (`MemoryRecall`)
 
-The agent gets a single read-only `MemoryRecall` tool — hybrid (keyword + semantic) search over the same memory it writes to. It is **auto-provisioned by `agent-app`** from the single `config.memory` block when `config.memory.recallTool.enabled` is true (default **on** for the journal/bujo tiers with embeddings configured; set it to `false` to disable). There is no hand-wired `.mcp.json` entry and no separate local LLM to run.
+The agent gets a single read-only `MemoryRecall` tool — FTS search for Lite and hybrid keyword/semantic search for Journal/BuJo. It is **auto-provisioned by `agent-app`** from the single `config.memory` block and defaults on for every configured tier; set `recallTool.enabled` to `false` to opt out. There is no hand-wired `.mcp.json` entry and no separate local LLM to run.
 
 Recalled entries do **not** sit in the system prompt. The harness appends them to the **user message** each turn (when recall returns hits), so memory survives a session resume; a `memory_recalled` diagnostic keeps recall visible in run traces. The `MemoryRecall` tool described here is the *on-demand* path the agent can additionally call mid-turn to pull more. See [Context assembly → Memory recall](/context/assembly/#memory-recall).
 
-Under the hood `agent-app` spawns a bundled stdio MCP child named `mono-agent-memory` (bundled in `@mono-agent/agent-app`) that exposes only `MemoryRecall`. It is configured automatically from `config.memory` — it uses the **same memory root + embeddings** as the in-app memory, so there is no separate config to keep in sync. Recall needs no chat LLM; durable writes stay in-app on the agent-host LLM via per-turn capture (`writeMode: "capture"`). This replaces the retired standalone `@mono-agent/memory-mcp` package (which also shipped `memory_capture`/`memory_note` — both dropped, since in-app capture already covers durable writes).
+Under the hood `agent-app` exposes a request-scoped loopback MCP endpoint over its **same app-owned retrieval service and store**. Automatic recall and an identical normalized tool query share one per-turn lookup; a materially different query may search again. Recall needs no chat LLM; durable writes stay in-app via per-turn capture (`writeMode: "capture"`). This replaces the retired standalone `@mono-agent/memory-mcp` package (which also shipped `memory_capture`/`memory_note` — both dropped, since in-app capture already covers durable writes).
 
 **Migrating off `@mono-agent/memory-mcp` (external consumers):** the package is removed from this repo (the published `0.3.0` stays on npm but receives no further updates). If you depended on it directly: (1) **as an MCP server bin / `node .../memory-mcp/dist/main.js` in a `.mcp.json`** — drop that entry and instead set `config.memory.recallTool.enabled: true` so the host auto-provisions the bundled `mono-agent-memory` recall server (no hand-wired entry, no separate LLM); (2) **as a library import (`@mono-agent/memory-mcp`)** — build directly on `@mono-agent/memory/bujo` (`createBujoMemoryStore`) + `@mono-agent/memory/search` (`createEmbeddingProvider`), which is exactly what the recall server does; (3) **the `memory_capture` / `memory_note` write tools have no replacement tool** — durable writes are now host-driven per turn via `memory.writeMode: "capture"` (or `append-host-summary`), so the agent no longer needs an explicit write tool.
 
-**Tool-policy note:** `MemoryRecall` is an MCP tool, and like every MCP server tool (config `mcpServers`, `AskCollaborator`) it is **gated by its declaration, not by `tools.allowedTools`**. `tools.allowedTools` filters the built-in runtime tools (Read/Bash/…) and adapter send tools; it does **not** suppress app-injected MCP tools — so neither the allow-all default nor an explicit `tools.allowedTools: []` ("no built-in tools") changes whether `MemoryRecall` is available when it is enabled. To fully withhold memory reads from the agent, set `config.memory.recallTool.enabled: false` (or use a `lite` tier with no recall) — that is the switch that controls this tool, not the allowlist.
+**Tool-policy note:** `MemoryRecall` is an MCP tool, and like every MCP server tool (config `mcpServers`, `AskCollaborator`) it is **gated by its declaration, not by `tools.allowedTools`**. `tools.allowedTools` filters the built-in runtime tools (Read/Bash/…) and adapter send tools; it does **not** suppress app-injected MCP tools. Set `config.memory.recallTool.enabled: false` to remove the on-demand tool; automatic confidence-gated context recall remains part of configured memory.
 
 ## References
 
+- [Memory quality benchmark](/memory/benchmarking/) — disposable offline quality and efficiency gate
 - Feature registry rows: `docs/reference/feature-registry.md` — `memory.lite`, `memory.journal`, `memory.bujo`, `memory.write-mode`, `memory.per-turn-capture`, `memory.recall-tool`

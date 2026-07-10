@@ -55,6 +55,22 @@ describe("recall", () => {
     db.close();
   });
 
+  it("keeps alternating query rankings stable regardless of access history", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    await db.upsert(note("cats", "cats prefer quiet window seats", { accessCount: 900, lastAccessedAt: "2026-06-15T23:59:59.000Z" }));
+    await db.upsert(note("deploy", "deploy pipeline uses blue green releases"));
+
+    const before = (await db.recall("deploy pipeline", { topK: 1 })).at(0)?.record.id;
+    for (let index = 0; index < 20; index += 1) {
+      await db.recall(index % 2 === 0 ? "quiet window cats" : "deploy pipeline", { topK: 2 });
+    }
+    const after = (await db.recall("deploy pipeline", { topK: 1 })).at(0)?.record.id;
+
+    expect(before).toBe("deploy");
+    expect(after).toBe("deploy");
+    db.close();
+  });
+
   it("excludes memories whose validTo has passed, unless includeInvalid", async () => {
     const now = new Date("2026-06-15T00:00:00.000Z");
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });

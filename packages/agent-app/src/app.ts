@@ -54,9 +54,13 @@ import type { RunningRituals } from "./memory-rituals.js";
 import { startArtifactRetentionScheduler } from "./artifact-retention.js";
 import type { RunningArtifactRetentionScheduler } from "./artifact-retention.js";
 import {
-  createMemoryRecallRuntimeExtension,
   resolveMemoryRecallSettings,
 } from "./memory-recall.js";
+import {
+  createSharedMemoryRecallRuntimeExtension,
+  isSharedRecallStore,
+  MemoryRetrievalService,
+} from "./memory-retrieval.js";
 import {
   createRequestModelOverrideRuntimeExtension,
   requestModelOverrideTargetsDirectOpenCode,
@@ -253,6 +257,7 @@ class MonoAgentAppController implements MonoAgentApp {
   // One shared memory store across all channel responders + the ritual scheduler, so there is a single
   // memory.db handle (not one per channel plus one for rituals). Rebuilt on config reload, closed on stop.
   private sharedMemory: Awaited<ReturnType<typeof createConfiguredMemory>> = undefined;
+  private sharedMemoryRetrieval: MemoryRetrievalService | undefined;
   private sharedMemoryBuilt = false;
   private sharedMemoryBuild: Promise<Awaited<ReturnType<typeof createConfiguredMemory>>> | undefined;
   private configApplyTail: Promise<void> = Promise.resolve();
@@ -995,8 +1000,10 @@ class MonoAgentAppController implements MonoAgentApp {
     if (!this.activeRuntimes.includes(runtime)) {
       this.activeRuntimes.push(runtime);
     }
-    const memory = await this.memoryStore(coreConfig);
-    const memoryRecall = this.memoryRecallRuntimeOptions(coreConfig);
+    const memoryBackend = await this.memoryStore(coreConfig);
+    const memoryRetrieval = this.ensureSharedMemoryRetrieval(coreConfig, memoryBackend);
+    const memory = memoryRetrieval ?? memoryBackend;
+    const memoryRecall = this.memoryRecallRuntimeOptions(coreConfig, memoryRetrieval);
     const supermemoryMcp = this.supermemoryMcpRuntimeOptions(coreConfig);
     const adapterSendTools = await this.adapterSendToolsRuntimeOptions(coreConfig);
     // Always active: a no-op for interactive turns (which carry no cron/webhook
@@ -1142,15 +1149,22 @@ class MonoAgentAppController implements MonoAgentApp {
     return { sourceId, sourceLabel, configPath: this.configPath };
   }
 
-  private memoryRecallRuntimeOptions(coreConfig: MonoAgentConfig): RuntimeOptionsExtension | undefined {
+  private memoryRecallRuntimeOptions(
+    coreConfig: MonoAgentConfig,
+    service: MemoryRetrievalService | undefined,
+  ): RuntimeOptionsExtension | undefined {
     const settings = resolveMemoryRecallSettings(coreConfig);
     if (settings === undefined) {
+      return undefined;
+    }
+    if (service === undefined) {
+      this.logger?.warn?.("MemoryRecall could not be enabled because the configured store has no recall surface.");
       return undefined;
     }
     this.logger?.info?.("Read-only MemoryRecall tool enabled.", {
       provider: "supermemory" in settings ? "supermemory" : settings.embeddings?.provider ?? "fts-only",
     });
-    return createMemoryRecallRuntimeExtension(settings, this.cwd);
+    return createSharedMemoryRecallRuntimeExtension(service);
   }
 
   /**
@@ -1264,6 +1278,7 @@ class MonoAgentAppController implements MonoAgentApp {
         ...(logger === undefined ? {} : { logger }),
         observability,
       });
+      this.ensureSharedMemoryRetrieval(coreConfig, this.sharedMemory);
       this.sharedMemoryBuilt = true;
       return this.sharedMemory;
     })();
@@ -1280,6 +1295,8 @@ class MonoAgentAppController implements MonoAgentApp {
       | { flush?: () => Promise<void>; close?: () => Promise<void> | void }
       | undefined;
     this.sharedMemory = undefined;
+    this.sharedMemoryRetrieval?.releaseAllTurns();
+    this.sharedMemoryRetrieval = undefined;
     this.sharedMemoryBuilt = false;
     this.sharedMemoryBuild = undefined;
     if (mem?.flush !== undefined) {
@@ -1293,7 +1310,21 @@ class MonoAgentAppController implements MonoAgentApp {
   /** @internal Test-only seam: seed the shared memory store without going through config. */
   __setSharedMemoryForTest(store: Awaited<ReturnType<typeof createConfiguredMemory>>): void {
     this.sharedMemory = store;
+    this.sharedMemoryRetrieval = undefined;
     this.sharedMemoryBuilt = true;
+  }
+
+  private ensureSharedMemoryRetrieval(
+    coreConfig: MonoAgentConfig,
+    store: Awaited<ReturnType<typeof createConfiguredMemory>>,
+  ): MemoryRetrievalService | undefined {
+    if (this.sharedMemoryRetrieval !== undefined) return this.sharedMemoryRetrieval;
+    if (coreConfig.memory === undefined || !isSharedRecallStore(store)) return undefined;
+    this.sharedMemoryRetrieval = new MemoryRetrievalService(store, {
+      maxBytes: coreConfig.memory.maxBytes,
+      source: (coreConfig.memory.backend ?? "bujo") === "supermemory" ? "supermemory" : "memory-bujo",
+    });
+    return this.sharedMemoryRetrieval;
   }
 
   private setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus {

@@ -284,7 +284,7 @@ export class MonoAgentHarness implements AgentHarness {
       // pi-native ignores it when it successfully resumes the JSONL (the session
       // carries the transcript) and SEEDS it when it creates-on-miss — so a
       // create-on-miss on an existing conversation never loses prior context.
-      let prepared = await this.prepareContext(activeRequest, { omitHistory: sessionRecord !== undefined }, emit);
+      let prepared = await this.prepareContext(activeRequest, { omitHistory: sessionRecord !== undefined, turnId: runId }, emit);
       context = prepared.context;
 
       let runtimeResult: RuntimeResult | undefined;
@@ -316,7 +316,7 @@ export class MonoAgentHarness implements AgentHarness {
         });
         await this.sessionStore?.evict(request.conversationId, "stale", resumeSessionId);
         resumeSessionId = undefined;
-        prepared = await this.prepareContext(activeRequest, { omitHistory: false }, emit);
+        prepared = await this.prepareContext(activeRequest, { omitHistory: false, turnId: runId }, emit);
         context = prepared.context;
         runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, undefined, prepared.skillDisclosureNames, prepared.history, prepared.historyOmitted, leavePending);
       }
@@ -433,6 +433,14 @@ export class MonoAgentHarness implements AgentHarness {
         failure,
       };
     } finally {
+      // App-owned retrieval services use this to discard the normalized query
+      // cache after the whole logical turn (including any resume retry), not
+      // after one provider attempt.
+      try {
+        await this.options.memory?.releaseTurn?.(runId);
+      } catch {
+        // Cache cleanup is best-effort and must not change the turn outcome.
+      }
       // Release the admission-pending slot if the run never reached its provider
       // call (e.g. a throw in applyAttachments/prepareContext, or an aborted
       // admission). No-op when onProviderStart already released it.
@@ -555,7 +563,7 @@ export class MonoAgentHarness implements AgentHarness {
 
   private async prepareContext(
     request: AgentHarnessRequest,
-    options: { readonly omitHistory: boolean },
+    options: { readonly omitHistory: boolean; readonly turnId: string },
     emit?: (event: RuntimeEventLike) => void,
   ): Promise<{
     readonly context: BuiltAgentContext;
@@ -575,7 +583,7 @@ export class MonoAgentHarness implements AgentHarness {
     // turn (e.g. codex-app sends developerInstructions only on a fresh thread).
     // Keeping it out of the system prompt also leaves that prompt stable across a
     // session, which is better for provider prompt caching.
-    const memory = await this.loadMemory(request.conversationId, request.userMessage, emit);
+    const memory = await this.loadMemory(request.conversationId, request.userMessage, options.turnId, emit);
     const selectedSkills = await this.loadSkills();
     const context = await loadContextFromFiles({
       identityPath: this.options.identityPath,
@@ -689,11 +697,12 @@ export class MonoAgentHarness implements AgentHarness {
   private async loadMemory(
     conversationId: string,
     query: string,
+    turnId: string,
     emit?: (event: RuntimeEventLike) => void,
   ): Promise<ContextBlockInput | undefined> {
     let block;
     try {
-      block = await this.options.memory?.load(conversationId, query);
+      block = await this.options.memory?.load(conversationId, query, { turnId });
     } catch (error) {
       // A slow or failing memory backend (e.g. embeddings timeout / circuit
       // breaker open) must never block or fail the turn — degrade to empty

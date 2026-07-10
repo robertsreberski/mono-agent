@@ -22,26 +22,13 @@ export interface ReScoreInput {
   readonly rrfScore: number;
   readonly salience: number;
   readonly isInsight: boolean;
-  readonly lastAccessedAt?: string;
 }
 
-/** Final relevance: RRF + recency decay + salience + insight, weighted. */
-export function reScore(input: ReScoreInput, weights: RecallWeights, decayGamma: number, now: Date): number {
-  const recency = recencyDecay(input.lastAccessedAt, decayGamma, now);
+/** Final relevance: rank/evidence first, with small salience/insight tie-breakers. */
+export function reScore(input: ReScoreInput, weights: RecallWeights, _decayGamma: number, _now: Date): number {
   return (
     weights.rrf * input.rrfScore +
-    weights.recency * recency +
     weights.salience * input.salience +
     weights.insight * (input.isInsight ? 1 : 0)
   );
-}
-
-function recencyDecay(lastAccessedAt: string | undefined, gamma: number, now: Date): number {
-  if (lastAccessedAt === undefined) return 0;
-  const ts = new Date(lastAccessedAt).getTime();
-  // A malformed timestamp parses to NaN; left unguarded it would make reScore return NaN and
-  // destabilise sorting. Treat it as no recency contribution.
-  if (Number.isNaN(ts)) return 0;
-  const days = Math.max(0, (now.getTime() - ts) / 86_400_000);
-  return gamma ** days;
 }

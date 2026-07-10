@@ -756,12 +756,10 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
         ? embeddings
         : { ...embeddings, dim };
 
-  // Read-only MemoryRecall tool. For the bujo backend, recall needs embeddings + FTS (no chat
-  // LLM), so it defaults on whenever the resolved tier can rank semantically — mode !== "lite"
-  // AND embeddings are configured — and off for lite. External backends always have search, so
-  // recall defaults on whenever their block is present. An explicit env/JSON value always wins.
-  const recallToolDefault =
-    backend === "supermemory" ? supermemory !== undefined : mode !== "lite" && embeddingsWithDim !== undefined;
+  // Every configured memory tier has a read-only recall surface: lite uses FTS,
+  // journal/bujo add semantic ranking, and external backends provide search.
+  // Explicit false remains the privacy/availability opt-out.
+  const recallToolDefault = backend === "supermemory" ? supermemory !== undefined : true;
   const recallToolEnabled = readBoolean(
     env.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED,
     "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED",
