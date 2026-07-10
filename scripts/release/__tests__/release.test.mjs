@@ -18,6 +18,7 @@ import {
   validateRelease,
 } from "../validate-release.mjs";
 import { describePublishedExportsDrift } from "../publish-release.mjs";
+import { SUPPORTED_NODE_ENGINE } from "../../node-version.mjs";
 
 const expectedPublishablePackages = packageCatalog.filter((entry) => entry.publishable === true);
 const expectedPublishablePackageCount = expectedPublishablePackages.length;
@@ -32,6 +33,7 @@ function packageRecord({
   dependencies = {},
   optionalDependencies = {},
   peerDependencies = {},
+  nodeEngine = SUPPORTED_NODE_ENGINE,
 }) {
   return {
     name,
@@ -46,6 +48,7 @@ function packageRecord({
       version,
       private: privatePackage,
       publishConfig,
+      ...(nodeEngine === null ? {} : { engines: { node: nodeEngine } }),
       dependencies,
       optionalDependencies,
       peerDependencies,
@@ -109,6 +112,35 @@ describe("release graph validation", () => {
     ).toThrow(
       /@mono-agent\/agent-contracts publishConfig\.access must be public[\s\S]*@mono-agent\/agent-runtime version must be 1\.2\.3[\s\S]*@mono-agent\/slack-adapter dependencies\.@mono-agent\/agent-contracts must be workspace:1\.2\.3/,
     );
+  });
+
+  test("rejects root or publishable manifests outside the supported Node floor", () => {
+    const missing = packageRecord({
+      name: "@mono-agent/agent-contracts",
+      nodeEngine: null,
+    });
+    const stale = packageRecord({
+      name: "@mono-agent/agent-runtime",
+      nodeEngine: ">=20",
+    });
+
+    try {
+      validateRelease({
+        tag: "v1.2.3",
+        packages: [missing, stale],
+        rootPackageJson: { engines: { node: ">=20" } },
+        nodeVersionFile: "22.18.0",
+        silent: true,
+      });
+      throw new Error("validateRelease did not reject stale Node engine metadata");
+    } catch (error) {
+      expect(error.issues).toEqual([
+        "root package.json engines.node must be >=22.19.0; found >=20",
+        ".nvmrc must be 22.19.0; found 22.18.0",
+        "@mono-agent/agent-contracts engines.node must be >=22.19.0; found (missing)",
+        "@mono-agent/agent-runtime engines.node must be >=22.19.0; found >=20",
+      ]);
+    }
   });
 
   test("rejects publishable packages that depend on nonpublishable workspace packages", () => {
@@ -178,6 +210,17 @@ describe("release pack validation", () => {
 
   test("parses pnpm pack JSON output", () => {
     expect(parsePnpmPackOutput(JSON.stringify({ name: pkg.name, filename: "example.tgz", files: [] }))).toEqual({
+      name: pkg.name,
+      filename: "example.tgz",
+      files: [],
+    });
+  });
+
+  test("parses pnpm 10 output with prepack lifecycle logs before the JSON document", () => {
+    const json = JSON.stringify({ name: pkg.name, filename: "example.tgz", files: [] }, null, 2);
+    const stdout = `\n> ${pkg.name}@1.2.3 prepack /tmp/example\n> pnpm run build\n\n${json}\n`;
+
+    expect(parsePnpmPackOutput(stdout)).toEqual({
       name: pkg.name,
       filename: "example.tgz",
       files: [],

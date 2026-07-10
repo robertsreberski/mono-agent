@@ -18,7 +18,7 @@ The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to a
 
 | Requirement | Version | Why |
 | --- | --- | --- |
-| Node.js | `>=20` | Runtime for the CLI, host, and TUI. |
+| Node.js | `>=22.19.0` | Runtime for the CLI, host, and TUI. This matches the minimum required by the bundled Pi runtime. |
 | pnpm | `>=10` | Only needed to build the workspace from source (the published packages install with plain `npm`/`npm exec`). |
 | Codex CLI | Supported version; `>=0.144.0` for GPT-5.6 | Required for every direct `codex:*` route. |
 
@@ -32,6 +32,8 @@ codex login status
 
 :::note
 You do **not** need pnpm to use the published packages — `npm i -g` and `npm exec` are enough. pnpm is only required for the "run an unreleased build" path below, which builds the workspace from source.
+
+The repository includes `.nvmrc`, so source contributors using nvm can run `nvm use` to select the exact minimum version exercised in CI. Newer Node releases remain supported by the `>=22.19.0` package engine range.
 :::
 
 ## Install the CLI

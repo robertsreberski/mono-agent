@@ -5,6 +5,9 @@
   "type": "module",
   "license": "UNLICENSED",
   "private": false,
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
