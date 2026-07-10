@@ -19,6 +19,7 @@ import {
   type ModuleValidateExpectation,
   resolveModuleInputs,
 } from "../modules/index.js";
+import { managedProjectSkillFiles } from "../project-skills.js";
 
 /**
  * The complete set of choices the wizard (or a preset) makes. This is the single
@@ -33,6 +34,8 @@ export interface WizardFallback {
 export interface WizardAnswers {
   /** Public display identity. Omitted only by legacy/programmatic callers. */
   readonly name?: string;
+  /** Concise role statement used to generate the initial Identity. */
+  readonly purpose?: string;
   readonly model: string;
   /** Optional primary-route effort; omitted means provider default. */
   readonly effort?: string;
@@ -236,7 +239,7 @@ function memoryProvisionsRecall(memoryId: string | undefined): boolean {
  * never appear here.
  */
 export function alwaysOnTools(answers: WizardAnswers): readonly string[] {
-  const tools: string[] = [];
+  const tools: string[] = ["ReadSkill"];
   if (memoryProvisionsRecall(answers.memory)) {
     tools.push(MEMORY_RECALL_TOOL);
   }
@@ -381,7 +384,7 @@ export function composeWizardPlan(answers: WizardAnswers, ctx: ComposeContext): 
     ...baseConfig(ctx, agentName, answers.model, fallbacks, answers.routeSafety, answers.effort),
   };
 
-  const files: GeneratedFile[] = [];
+  const files: GeneratedFile[] = [...managedProjectSkillFiles()];
   const secrets: SecretChecklistItem[] = [];
   const envLines: string[] = [];
   const validateExpectations: ModuleValidateExpectation[] = [{ sectionId: "runtime", mustBe: "ok" }];

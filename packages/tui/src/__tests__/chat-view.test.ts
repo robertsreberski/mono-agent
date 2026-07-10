@@ -4,10 +4,13 @@ import { describe, expect, it } from "vitest";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 
 import { StatusBar } from "../ui/components/status-bar.js";
-import { ChatView } from "../ui/views/chat.js";
+import { ChatView, type ChatTurnSettledEvent } from "../ui/views/chat.js";
 import { stripAnsi, TestTerminal } from "./test-terminal.js";
 
-function setup(): { chat: ChatView; status: () => string } {
+function setup(onTurnSettled?: (event: ChatTurnSettledEvent) => void | Promise<void>): {
+  chat: ChatView;
+  status: () => string;
+} {
   const tui = new TUI(new TestTerminal(100, 30));
   const statusBar = new StatusBar();
   const chat = new ChatView({
@@ -17,6 +20,7 @@ function setup(): { chat: ChatView; status: () => string } {
     slashCommands: [],
     onSlashCommand: () => false,
     flushIntervalMs: 0,
+    ...(onTurnSettled === undefined ? {} : { onTurnSettled }),
   });
   return { chat, status: () => stripAnsi(statusBar.render(80).join("\n")) };
 }
@@ -108,5 +112,42 @@ describe("ChatView finish metadata (C3)", () => {
     await waitForSettle(chat);
 
     expect(status()).not.toContain("effort:");
+  });
+
+  it("does not dispatch a fast follow-up until the settled hook completes", async () => {
+    let releaseHook: (() => void) | undefined;
+    let markHookStarted: (() => void) | undefined;
+    const hookStarted = new Promise<void>((resolve) => {
+      markHookStarted = resolve;
+    });
+    const hookGate = new Promise<void>((resolve) => {
+      releaseHook = resolve;
+    });
+    let hooks = 0;
+    const { chat } = setup(async () => {
+      hooks += 1;
+      if (hooks === 1) {
+        markHookStarted?.();
+        await hookGate;
+      }
+    });
+    const calls: string[] = [];
+    chat.setResponder({
+      respond: async (request) => {
+        calls.push(request.text);
+        return { text: `echo: ${request.text}` };
+      },
+    });
+
+    chat.editor.onSubmit?.("invitation");
+    await hookStarted;
+    chat.editor.onSubmit?.("fast configuration answer");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(chat.hasActiveTurn()).toBe(true);
+    expect(calls).toEqual(["invitation"]);
+
+    releaseHook?.();
+    await waitForSettle(chat);
+    expect(calls).toEqual(["invitation", "fast configuration answer"]);
   });
 });

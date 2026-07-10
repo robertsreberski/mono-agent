@@ -268,7 +268,7 @@ const memoryJournal: CapabilityModule = {
   configFragment: () => ({
     memory: {
       ...memoryBlock("journal"),
-      embeddings: { provider: "ollama", model: "nomic-embed-text" },
+      embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
       recallTool: { enabled: true },
     },
   }),
@@ -276,7 +276,8 @@ const memoryJournal: CapabilityModule = {
     {
       sectionId: "memory",
       mustBe: "ok",
-      note: "Start ollama (or configure embeddings) so memory leaves `waiting`.",
+      note:
+        "Ollama must be reachable and contain nomic-embed-text:v1.5; if the model is missing, run `ollama pull nomic-embed-text:v1.5`.",
     },
   ],
 };
@@ -291,7 +292,7 @@ const memoryBujo: CapabilityModule = {
   configFragment: (values) => ({
     memory: {
       ...memoryBlock("bujo"),
-      embeddings: { provider: "ollama", model: "nomic-embed-text" },
+      embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
       // Direct Codex is CLI-only, while the memory LLM has an SDK-only safety
       // contract. Route every direct Codex primary through the equivalent Pi
       // Terra model for this internal call, not only the default candidate.
@@ -306,7 +307,8 @@ const memoryBujo: CapabilityModule = {
     {
       sectionId: "memory",
       mustBe: "ok",
-      note: "Start ollama (or configure embeddings) so memory leaves `waiting`.",
+      note:
+        "Ollama must be reachable and contain nomic-embed-text:v1.5; if the model is missing, run `ollama pull nomic-embed-text:v1.5`.",
     },
   ],
 };

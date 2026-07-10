@@ -149,8 +149,9 @@ describe("wizard composer — complete setup dependencies", () => {
       "codex:gpt-5.6-terra",
       "claude:claude-sonnet-4-6",
       "pi:openai-codex:gpt-5.6-terra",
-      "pi:ollama:nomic-embed-text",
+      "pi:ollama:nomic-embed-text:v1.5",
     ]);
+    expect(plan.configJson.memory?.embeddings?.model).toBe("nomic-embed-text:v1.5");
     expect(plan.validateExpectations).toContainEqual(expect.objectContaining({ sectionId: "credentials", mustBe: "ok" }));
   });
 
@@ -162,7 +163,7 @@ describe("wizard composer — complete setup dependencies", () => {
 
     expect(referencedSetupModelRefs(plan)).toEqual([
       "pi:ollama:qwen3:8b",
-      "pi:ollama:nomic-embed-text",
+      "pi:ollama:nomic-embed-text:v1.5",
     ]);
     expect(plan.validateExpectations.map((expectation) => expectation.sectionId)).not.toContain("credentials");
   });
@@ -177,7 +178,7 @@ describe("wizard composer — complete setup dependencies", () => {
     expect(referencedSetupModelRefs(plan)).toEqual([
       "codex:gpt-5.5",
       "pi:openai-codex:gpt-5.6-terra",
-      "pi:ollama:nomic-embed-text",
+      "pi:ollama:nomic-embed-text:v1.5",
     ]);
   });
 });
@@ -209,17 +210,17 @@ describe("wizard composer — tool selection", () => {
 
 describe("wizard composer — alwaysOnTools (auto-provisioned, not gated by allowedTools)", () => {
   it("includes MemoryRecall for a recall-provisioning memory tier (bujo)", () => {
-    expect(alwaysOnTools(defaultAnswers({ memory: "memory:bujo" }))).toEqual(["MemoryRecall"]);
+    expect(alwaysOnTools(defaultAnswers({ memory: "memory:bujo" }))).toEqual(["ReadSkill", "MemoryRecall"]);
   });
 
   it("includes MemoryRecall for journal and supermemory too", () => {
-    expect(alwaysOnTools(defaultAnswers({ memory: "memory:journal" }))).toEqual(["MemoryRecall"]);
-    expect(alwaysOnTools(defaultAnswers({ memory: "memory:supermemory" }))).toEqual(["MemoryRecall"]);
+    expect(alwaysOnTools(defaultAnswers({ memory: "memory:journal" }))).toEqual(["ReadSkill", "MemoryRecall"]);
+    expect(alwaysOnTools(defaultAnswers({ memory: "memory:supermemory" }))).toEqual(["ReadSkill", "MemoryRecall"]);
   });
 
-  it("is empty for lite memory and for no memory", () => {
-    expect(alwaysOnTools(defaultAnswers({ memory: "memory:lite" }))).toEqual([]);
-    expect(alwaysOnTools(defaultAnswers())).toEqual([]);
+  it("keeps ReadSkill separate for lite memory and for no memory", () => {
+    expect(alwaysOnTools(defaultAnswers({ memory: "memory:lite" }))).toEqual(["ReadSkill"]);
+    expect(alwaysOnTools(defaultAnswers())).toEqual(["ReadSkill"]);
   });
 });
 
@@ -303,8 +304,9 @@ describe("wizard composer — default parity with today's scaffold", () => {
     expect(config.runtime?.model).toBe("codex:gpt-5.6-terra");
     expect(config.runtime?.workspace).toBe(".");
     expect(config.context?.identityPath).toBe("./IDENTITY.md");
-    expect(config.context?.selectedSkills).toEqual([]);
-    expect(config.context).not.toHaveProperty("skillsRoot");
+    expect(config.context?.selectedSkills).toEqual(["mono-agent-configure", "mono-agent-memory"]);
+    expect(config.context?.skillsRoot).toBe("./skills");
+    expect(config.context?.skillDisclosure).toBe("index");
     expect((config as Record<string, { enabled?: boolean }>).webhook?.enabled).toBe(true);
     expect(config.artifacts?.retention?.maxCount).toBe(50000);
     expect(config.agent?.name).toBe("Acme");

@@ -57,7 +57,14 @@ export { TurnPresenter } from "./ui/turn-presenter.js";
 export type { TurnPresenterOptions } from "./ui/turn-presenter.js";
 
 export { MonoAgentTuiApp } from "./ui/app.js";
-export type { MonoAgentTuiAppOptions, TuiAppLogger, TuiViewId } from "./ui/app.js";
+export type {
+  ConfigurationProposalCard,
+  ConfigurationProposalResult,
+  MonoAgentTuiAppOptions,
+  TuiAppLogger,
+  TuiConfigurationController,
+  TuiViewId,
+} from "./ui/app.js";
 
 export type {
   StartMonoAgentTuiHandle,

@@ -6,11 +6,11 @@ sidebar:
 
 # Terminal UI (mono-agent tui)
 
-`mono-agent tui` is the operator console for running agents: a live chat with **full insight into the agent's thinking process** — streamed reasoning, tool calls with arguments/progress/results/timing, token usage, cost, provider lifecycle and failover — plus a recorded-run replay browser and a read-only, source-annotated view of the resolved config. It ships in `@mono-agent/tui`, built on pi-tui differential rendering. Coverage: `cli` (+ the `tui` config section for the endpoint it connects to).
+`mono-agent tui` is the operator console: a live chat with **full insight into the agent's thinking process** — streamed reasoning, tool calls with arguments/progress/results/timing, token usage, cost, provider lifecycle and failover — plus a recorded-run replay browser and a read-only, source-annotated view of the resolved config. It can connect to a running agent or build the current folder's responder in-process. It ships in `@mono-agent/tui`, built on pi-tui differential rendering. Coverage: `cli` (+ the `tui` config section for remote endpoints).
 
 ## How it connects
 
-The TUI is a **separate process** from the agent. `mono-agent start` runs the agent in the background as usual; every running agent serves a loopback NDJSON stream endpoint (the [`tui` channel](/channels/tui/), on by default) and registers itself in the machine-wide trace-source registry (`~/.mono-agent/trace-sources`). `mono-agent tui` reads that registry from **any directory**:
+Remote mode is a **separate process** from the agent. `mono-agent start` runs the agent in the background as usual; every running agent serves a loopback NDJSON stream endpoint (the [`tui` channel](/channels/tui/), on by default) and registers itself in the machine-wide trace-source registry (`~/.mono-agent/trace-sources`). `mono-agent tui` reads that registry from **any directory**:
 
 - **No agents running** — prints a hint to `mono-agent start` and exits.
 - **One agent running** — connects directly.
@@ -21,6 +21,8 @@ The TUI is a **separate process** from the agent. `mono-agent start` runs the ag
 mono-agent tui                        # discover + connect from anywhere
 mono-agent tui --agent personal-agent # pick a specific instance
 mono-agent tui --conversation ops     # chat under a stable conversation id
+mono-agent tui --local                # current folder, no daemon
+mono-agent tui --local --configure    # open with the configuration invitation
 ```
 
 :::note
@@ -63,11 +65,17 @@ Oversized tool payloads are truncated on the wire (marked in the panel); the ful
 | `enter` | Submit message · open selection. |
 | `ctrl+c` twice | Quit. |
 
-The input editor autocompletes slash commands: `/help`, `/agents`, `/replay`, `/config`, `/cancel`, `/thinking`, `/quit`.
+The input editor autocompletes slash commands: `/help`, `/agents`, `/replay`, `/config`, `/configure`, `/cancel`, `/thinking`, `/quit`. `/configure` applies only to the OS-owner-local mode; remote sessions can explain configuration but cannot apply it.
+
+## Local conversational configuration
+
+`mono-agent tui --local` loads the current `mono-agent.config.json` and builds its responder in-process without starting channels or creating launchd state. Add `--configure` to begin with a real recorded agent turn asking how it should be configured; `/configure` re-enters later. The next operator response is the one configuration turn. If it is an ordinary task, the mode ends and the task proceeds normally.
+
+The request-scoped `ProposeAgentConfiguration` tool exists only in that marked local turn. The host replaces ordinary action tools and configured MCP servers with `ReadSkill`, `MemoryRecall`, and the inert proposal server; direct providers that cannot project that finite list run in native read-only plan mode. The proposal records one RFC 6902 config patch and optional replacement for the existing `## Role` body; the model cannot write files. After the response settles, the host accepts only public name, effort/turn/session UX, selected project skills/disclosure, memory size/MemoryRecall enablement, and semantic tool-policy tightening. It rejects stale, secret-bearing, environment-shadowed (including JSON Patch source paths), path-bearing, authority/network/provider, and unknown-field candidates before validation and a separate approve/reject card. Approval uses canonical owner-local paths and an owner-only transaction lock; it stages and fsyncs each replacement before a final exact source comparison plus rename with no JavaScript yield, compensates a restored Role if config rollback races, retains local rollback evidence, then replaces the responder and begins a fresh provider conversation. The TUI holds fast follow-up submissions until this settled hook and rotation finish. Memory tiers/capture, secrets, runtime/model/provider posture, external MCP/plugins, channels or proactive jobs, exporters/endpoints, and sandbox/network policy are handed to explicit guided flows.
 
 ## Embedded mode (custom hosts)
 
-The remote mode above is the primary surface, but the TUI still runs **in-process** against any `AgentResponder` — the same rendering drives both, because the wire protocol replays the exact stream callbacks. Custom hosts can embed it programmatically:
+The remote and app-owned local modes use the same TUI, which also runs **in-process** against any `AgentResponder` — the same rendering drives both, because the wire protocol replays the exact stream callbacks. Custom hosts can embed it programmatically:
 
 ```ts
 import { startMonoAgentTui } from "@mono-agent/tui";

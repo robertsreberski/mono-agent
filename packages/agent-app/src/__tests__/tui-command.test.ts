@@ -35,6 +35,15 @@ describe("parseCliArgs tui", () => {
   it("keeps tui flag-free invocation valid", () => {
     expect(parseCliArgs(["tui"]).command).toBe("tui");
   });
+
+  it("parses current-folder local configuration and rejects configure without local", () => {
+    expect(parseCliArgs(["tui", "--local", "--configure"])).toMatchObject({
+      command: "tui",
+      local: true,
+      configure: true,
+    });
+    expect(() => parseCliArgs(["tui", "--configure"])).toThrow(/requires.*--local/u);
+  });
 });
 
 describe("resolveTuiLaunch", () => {
@@ -105,6 +114,39 @@ describe("runTui", () => {
     cwd: "/nowhere",
     env: {},
   };
+
+  it("builds the current-folder responder in-process without registry discovery", async () => {
+    const started: Record<string, unknown>[] = [];
+    let disposed = 0;
+    let listed = 0;
+    const code = await runTui({ ...baseOptions, local: true, configure: true }, {
+      isTty: true,
+      listSources: async () => {
+        listed += 1;
+        return { registryDir: "/reg", sources: [], warnings: [] };
+      },
+      createLocalSession: async (options) => ({
+        responder: { respond: async () => ({ text: "ok" }) },
+        title: "Local Agent",
+        configuration: { marker: "controller", configure: options.configure },
+        dispose: async () => { disposed += 1; },
+      }),
+      startTui: async (options) => {
+        started.push(options);
+        return { waitUntilExit: async () => {} };
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(listed).toBe(0);
+    expect(disposed).toBe(1);
+    expect(started[0]).toMatchObject({
+      title: "Local Agent",
+      conversationId: "tui-local",
+      configuration: { marker: "controller", configure: true },
+      config: { path: baseOptions.configPath, cwd: baseOptions.cwd },
+    });
+  });
 
   it("connects with connection + instance for a single running agent", async () => {
     const started: Record<string, unknown>[] = [];

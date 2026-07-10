@@ -606,13 +606,16 @@ const FIRST_RUN_DOCTOR_DETAIL_MAX_LENGTH = 300;
 function firstActionableDoctorDetail(
   section: ValidationReport["sections"][number] | undefined,
 ): string | undefined {
-  for (const rawDetail of section?.details ?? []) {
-    const detail = rawDetail.replace(/\s+/gu, " ").trim();
-    if (detail.length === 0) continue;
-    if (detail.length <= FIRST_RUN_DOCTOR_DETAIL_MAX_LENGTH) return detail;
-    return `${detail.slice(0, FIRST_RUN_DOCTOR_DETAIL_MAX_LENGTH - 1).trimEnd()}…`;
-  }
-  return undefined;
+  const details = (section?.details ?? [])
+    .map((rawDetail) => rawDetail.replace(/\s+/gu, " ").trim())
+    .filter((detail) => detail.length > 0);
+  // Section summaries usually lead with neutral context (for example the
+  // memory mode/path), while the real recovery action is a later [WARN]/[ERROR]
+  // line. Preserve that doctor distinction in the wizard's one-line failure.
+  const detail = details.find((candidate) => /^\[(?:WARN|ERROR)\]/u.test(candidate)) ?? details[0];
+  if (detail === undefined) return undefined;
+  if (detail.length <= FIRST_RUN_DOCTOR_DETAIL_MAX_LENGTH) return detail;
+  return `${detail.slice(0, FIRST_RUN_DOCTOR_DETAIL_MAX_LENGTH - 1).trimEnd()}…`;
 }
 
 function expectationMismatchReason(
@@ -794,16 +797,20 @@ export async function validateWizardPlanInStaging(
     await mkdir(join(dir, ".mono-agent", "artifacts"), { recursive: true });
     const skillsRoot = options.plan.configJson.context?.skillsRoot;
     if (skillsRoot !== undefined) {
-      if (canonicalSourceCwd === undefined) {
-        throw new Error("Staging a generated skills root requires the source agent folder.");
-      }
-      const sourceSkillsRoot = resolve(canonicalSourceCwd, skillsRoot);
-      if (!(await stat(sourceSkillsRoot)).isDirectory()) {
-        throw new Error(`Configured skills root is not a directory: ${sourceSkillsRoot}`);
-      }
-      const canonicalSourceSkillsRoot = await realpath(sourceSkillsRoot);
-      if (escapesRoot(relative(canonicalSourceCwd, canonicalSourceSkillsRoot))) {
-        throw new Error(`Refusing to stage skills root outside the source agent folder: ${skillsRoot}`);
+      const sourceSkillsRoot = canonicalSourceCwd === undefined ? undefined : resolve(canonicalSourceCwd, skillsRoot);
+      let canonicalSourceSkillsRoot: string | undefined;
+      if (sourceSkillsRoot !== undefined && canonicalSourceCwd !== undefined) {
+        try {
+          if (!(await stat(sourceSkillsRoot)).isDirectory()) {
+            throw new Error(`Configured skills root is not a directory: ${sourceSkillsRoot}`);
+          }
+          canonicalSourceSkillsRoot = await realpath(sourceSkillsRoot);
+          if (escapesRoot(relative(canonicalSourceCwd, canonicalSourceSkillsRoot))) {
+            throw new Error(`Refusing to stage skills root outside the source agent folder: ${skillsRoot}`);
+          }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
       }
       const stagedSkillsRoot = resolve(dir, skillsRoot);
       const stagedRelative = relative(dir, stagedSkillsRoot);
@@ -813,16 +820,35 @@ export async function validateWizardPlanInStaging(
       await mkdir(stagedSkillsRoot, { recursive: true });
       for (const skill of options.plan.configJson.context?.selectedSkills ?? []) {
         throwIfStagingAborted(options.abortSignal);
-        const sourceSkillPath = resolve(sourceSkillsRoot, skill, "SKILL.md");
-        const sourceRelative = relative(sourceSkillsRoot, sourceSkillPath);
+        const sourceSkillPath = sourceSkillsRoot === undefined ? undefined : resolve(sourceSkillsRoot, skill, "SKILL.md");
+        const sourceRelative = sourceSkillsRoot === undefined || sourceSkillPath === undefined
+          ? undefined
+          : relative(sourceSkillsRoot, sourceSkillPath);
         const stagedSkillPath = resolve(stagedSkillsRoot, skill, "SKILL.md");
         const stagedSkillRelative = relative(stagedSkillsRoot, stagedSkillPath);
         if (
-          escapesRoot(sourceRelative) || escapesRoot(stagedSkillRelative)
+          (sourceRelative !== undefined && escapesRoot(sourceRelative)) || escapesRoot(stagedSkillRelative)
         ) {
           throw new Error(`Refusing to stage a skill outside its configured root: ${skill}`);
         }
-        const contents = await readSelectedSkillManifest(sourceSkillPath, canonicalSourceSkillsRoot);
+        let contents: Buffer | undefined;
+        if (canonicalSourceSkillsRoot !== undefined && sourceSkillPath !== undefined) {
+          try {
+            contents = await readSelectedSkillManifest(sourceSkillPath, canonicalSourceSkillsRoot);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+        }
+        if (contents === undefined) {
+          const stagedSkillRelativeFromRoot = relative(dir, stagedSkillPath);
+          const generated = options.plan.files.find((file) =>
+            relative(dir, resolve(dir, file.path)) === stagedSkillRelativeFromRoot
+          );
+          if (generated === undefined) {
+            throw new Error(`Configured skill is neither present nor generated by the approved plan: ${skill}`);
+          }
+          contents = Buffer.from(generated.contents, "utf8");
+        }
         await mkdir(dirname(stagedSkillPath), { recursive: true });
         // Materialize a fresh regular file. Copying a symlink here would let a
         // later generated-file write follow it outside the disposable tree.

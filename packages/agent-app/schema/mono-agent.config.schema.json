@@ -396,7 +396,7 @@
             "model": {
               "description": "Configures embeddings.model for the memory section.",
               "examples": [
-                "nomic-embed-text"
+                "nomic-embed-text:v1.5"
               ],
               "type": "string"
             },

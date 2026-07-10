@@ -895,7 +895,7 @@ describe("loadMonoAgentConfigWithSources", () => {
 
     const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
     expect(config.memory).not.toHaveProperty("graphPath");
-    expect(config.memory?.embeddings).toEqual({ provider: "ollama", model: "nomic-embed-text" });
+    expect(config.memory?.embeddings).toEqual({ provider: "ollama", model: "nomic-embed-text:v1.5" });
   });
 
   it("works without a jsonPath (pure env loader behavior)", async () => {

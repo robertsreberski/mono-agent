@@ -748,7 +748,7 @@ describe("loadMonoAgentConfig", () => {
 
     expect(config.memory?.embeddings).toEqual({
       provider: "ollama",
-      model: "nomic-embed-text",
+      model: "nomic-embed-text:v1.5",
       endpoint: "http://localhost:11434",
     });
   });

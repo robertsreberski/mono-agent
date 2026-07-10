@@ -74,7 +74,7 @@ export interface LoadMonoAgentConfigInput {
 const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MEMORY_MAX_BYTES = 64_000;
 const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
-  ollama: "nomic-embed-text",
+  ollama: "nomic-embed-text:v1.5",
   openai: "text-embedding-3-small",
 };
 export const DEFAULT_ARTIFACT_RETENTION_MAX_AGE_DAYS = 365;

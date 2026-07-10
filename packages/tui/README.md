@@ -23,6 +23,11 @@ It connects to agents two ways:
   `startMonoAgentTui({ responder, … })`, or
   run the `mono-agent-tui` bin with `--responder <module>`.
 
+An embedded host may also pass a local configuration controller. It starts a
+hidden-host-prompt/real-agent-response invitation, adds `/configure`, and shows
+an out-of-band approve/reject card after the response settles. The TUI never
+validates or writes the proposal; those authority decisions stay with the host.
+
 ## Install / Usage
 
 ```bash
@@ -59,11 +64,12 @@ carries the paths).
 
 Keys: `f2..f5` switch views (`tab` cycles outside chat) · `esc` cancels the
 in-flight turn / goes back · `ctrl+t` thinking · `ctrl+c ×2` quits. Slash
-commands: `/help /agents /replay /config /cancel /thinking /quit`.
+commands: `/help /agents /replay /config /configure /cancel /thinking /quit`.
 
 ## Public API
 
 - `startMonoAgentTui`, `MonoAgentTuiApp`
+- `TuiConfigurationController`, `ConfigurationProposalCard` (host-owned local approval lifecycle)
 - `RemoteAgentResponder` (AgentResponder over the operator-adapter TUI NDJSON wire)
 - `discoverInstances` / `resolveInstanceApiKey` / `defaultTraceRegistryDir`
 - `listReplayRuns` / `readReplayRun`
@@ -83,9 +89,9 @@ for wire round-trip tests — the runtime client speaks the shared
 
 It does not boot a harness, run models, persist conversations (its history
 store is display-only), serve the stream endpoint (that is
-`@mono-agent/operator-adapter`), write run artifacts, or register agents in the
-trace-source registry. Editing config is out of scope — the config view is
-read-only.
+`@mono-agent/operator-adapter`), write run artifacts/config, validate proposals,
+or register agents in the trace-source registry. The config view remains
+read-only; a supplied controller owns any separate approval action.
 
 ## Verification
 

@@ -77,6 +77,7 @@ import {
 import type { InitMonoAgentFolderResult } from "./init.js";
 import { installComposerSkill } from "./install-skill.js";
 import type { InstallSkillTarget } from "./install-skill.js";
+import { checkManagedProjectSkills, updateManagedProjectSkills } from "./project-skills.js";
 import { runMetrics } from "./metrics.js";
 import type { ModuleValidateExpectation } from "./modules/index.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
@@ -191,6 +192,16 @@ interface ParsedCliArgs {
   readonly agent?: string;
   /** tui: conversation id to chat under. */
   readonly conversation?: string;
+  /** tui: build the current-folder responder in-process. */
+  readonly local?: boolean;
+  /** tui: start with the conversational configuration invitation. */
+  readonly configure?: boolean;
+  /** install-skill: operate on the current agent's managed project skills. */
+  readonly project?: boolean;
+  /** install-skill --project: report drift without writing. */
+  readonly check?: boolean;
+  /** install-skill --project: safely update unchanged managed copies. */
+  readonly update?: boolean;
   /** audit-runs: override the stale-running cutoff interval. */
   readonly staleAfterMs?: number;
   /** audit-runs: print the full machine-readable report. */
@@ -274,6 +285,11 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let consumerPath: string | undefined;
   let agent: string | undefined;
   let conversation: string | undefined;
+  let local = false;
+  let configure = false;
+  let project = false;
+  let check = false;
+  let update = false;
   let staleAfterMs: number | undefined;
   let json = false;
   let limit: number | undefined;
@@ -330,6 +346,21 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--conversation":
         conversation = requireValue(rest, ++i, flag);
+        break;
+      case "--local":
+        local = true;
+        break;
+      case "--configure":
+        configure = true;
+        break;
+      case "--project":
+        project = true;
+        break;
+      case "--check":
+        check = true;
+        break;
+      case "--update":
+        update = true;
         break;
       case "--stale-after-ms": {
         const raw = requireValue(rest, ++i, flag);
@@ -534,6 +565,21 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (consumerPath !== undefined && cmd !== "validate" && cmd !== "audit-runs") {
     throw new Error("--consumer is only supported for `mono-agent validate` and `mono-agent audit-runs`.");
   }
+  if ((local || configure) && cmd !== "tui") {
+    throw new Error("--local and --configure are only supported for `mono-agent tui`.");
+  }
+  if (configure && !local) {
+    throw new Error("--configure requires `mono-agent tui --local`.");
+  }
+  if ((project || check || update) && cmd !== "install-skill") {
+    throw new Error("--project, --check, and --update are only supported for `mono-agent install-skill`.");
+  }
+  if ((check || update) && !project) {
+    throw new Error("--check and --update require `mono-agent install-skill --project`.");
+  }
+  if (check && update) {
+    throw new Error("Choose either --check or --update for project skills.");
+  }
 
   if (
     (host !== undefined || port !== undefined || open !== undefined || allowNonLoopback !== undefined || maxRunsPerInstance !== undefined) &&
@@ -609,6 +655,11 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(limit === undefined ? {} : { limit }),
     ...(agent === undefined ? {} : { agent }),
     ...(conversation === undefined ? {} : { conversation }),
+    ...(local ? { local } : {}),
+    ...(configure ? { configure } : {}),
+    ...(project ? { project } : {}),
+    ...(check ? { check } : {}),
+    ...(update ? { update } : {}),
     ...(host === undefined ? {} : { host }),
     ...(port === undefined ? {} : { port }),
     ...(open === undefined ? {} : { open }),
@@ -754,12 +805,15 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     lines: ["Print (and optionally follow) the background instance's log files."],
   },
   {
-    signature: "mono-agent tui [--agent <label|sourceId>] [--conversation <id>]",
+    signature: "mono-agent tui [--agent <label|sourceId>] [--conversation <id>]\n" +
+      "               [--local [--configure]]",
     lines: [
       "Open the operator console from any directory: live chat with full",
       "thinking/tool/telemetry insight, recorded-run replay, and config view.",
       "Discovers running agents via the trace-source registry; one running",
       "agent connects directly, several open a picker.",
+      "--local builds the current folder's responder in-process without a",
+      "daemon; --configure starts the recorded local configuration invitation.",
     ],
   },
   {
@@ -775,10 +829,13 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    signature: "mono-agent install-skill [--target claude|codex|both] [--force]",
+    signature: "mono-agent install-skill [--target claude|codex|both] [--force]\n" +
+      "                         --project (--check|--update)",
     lines: [
       "Copy the bundled mono-agent-composer skill into ~/.claude/skills and",
       "~/.agents/skills (default: both). Refuses to overwrite without --force.",
+      "Project mode checks or safely updates the two managed skills generated",
+      "by init; modified copies are never overwritten and updates retain backups.",
     ],
   },
   {
@@ -959,6 +1016,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         env: process.env,
         ...(args.agent === undefined ? {} : { agent: args.agent }),
         ...(args.conversation === undefined ? {} : { conversationId: args.conversation }),
+        ...(args.local === true ? { local: true } : {}),
+        ...(args.configure === true ? { configure: true } : {}),
       });
     }
     case "web": {
@@ -1583,47 +1642,39 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
             ui.badge("ok") + ui.style.green("All runtime route checks passed — every selected model produced a real no-tool response.\n") +
             ui.badge("ok") + ui.style.green("Agent ready — every selected capability passed full validation.\n"),
           );
-          const startNow = await p.confirm({
-            message: process.platform === "darwin"
-              ? "Start this ready agent now as a background service?"
-              : "Start this ready agent now in the foreground? (it will remain attached to this terminal)",
-            initialValue: true,
-          });
-          if (!p.isCancel(startNow) && startNow) {
-            const preStartConfigDrift = await firstRunConfigDrift(
-              result.configPath,
-              committedConfigSnapshot,
-            );
-            if (preStartConfigDrift !== undefined) {
-              printIncompleteSetup([preStartConfigDrift.message], result.configPath);
-              return 1;
-            }
-            const preStartDrift = await firstRunDotenvDrift(
-              environment.dotenvPath,
-              committedDotenvSnapshot,
-            );
-            if (preStartDrift !== undefined) {
-              printIncompleteSetup([preStartDrift.message], result.configPath);
-              return 1;
-            }
-            const preStartSecretGuard = await firstRunSecretEnvGuardFailure(
-              environment.dotenvPath,
-              result.secretPersistence.status === "persisted",
-            );
-            if (preStartSecretGuard !== undefined) {
-              printIncompleteSetup([preStartSecretGuard.message], result.configPath);
-              return 1;
-            }
-            return await withExactProcessEnvironment(
-              postWriteEnv,
-              () => runStart(
-                { ...args, foreground: process.platform !== "darwin" },
-                postWriteEnv,
-              ),
-            );
+          const preTuiConfigDrift = await firstRunConfigDrift(
+            result.configPath,
+            committedConfigSnapshot,
+          );
+          if (preTuiConfigDrift !== undefined) {
+            printIncompleteSetup([preTuiConfigDrift.message], result.configPath);
+            return 1;
           }
-          printNextSteps(result.configPath);
-          return 0;
+          const preTuiDotenvDrift = await firstRunDotenvDrift(
+            environment.dotenvPath,
+            committedDotenvSnapshot,
+          );
+          if (preTuiDotenvDrift !== undefined) {
+            printIncompleteSetup([preTuiDotenvDrift.message], result.configPath);
+            return 1;
+          }
+          const preTuiSecretGuard = await firstRunSecretEnvGuardFailure(
+            environment.dotenvPath,
+            result.secretPersistence.status === "persisted",
+          );
+          if (preTuiSecretGuard !== undefined) {
+            printIncompleteSetup([preTuiSecretGuard.message], result.configPath);
+            return 1;
+          }
+          process.stdout.write(ui.badge("ok") + ui.style.green("Opening the ready agent in the local configuration TUI.\n"));
+          const { runTui } = await import("./tui-command.js");
+          return await withExactProcessEnvironment(postWriteEnv, () => runTui({
+            configPath: result.configPath,
+            cwd,
+            env: postWriteEnv,
+            local: true,
+            configure: true,
+          }));
         }
         configurationRecoveryStep = focusedConfigurationRepairStep(stagedGate.failedSectionIds);
         invalidPlanStage = "final_readiness";
@@ -3190,17 +3241,44 @@ function printSecretsChecklist(
 }
 
 function printNextSteps(configPath: string): void {
-  const start = process.platform === "darwin" ? "mono-agent start" : "mono-agent start --foreground";
   process.stdout.write(
     "\n" +
       ui.heading("Next steps") +
       `  ${ui.style.bold("1.")} Edit ${configPath} ${ui.style.dim("(model, channels, skills, memory, sandbox)")}\n` +
       `  ${ui.style.bold("2.")} mono-agent validate\n` +
-      `  ${ui.style.bold("3.")} ${start}\n`,
+      `  ${ui.style.bold("3.")} mono-agent tui --local --configure\n` +
+      `  ${ui.style.bold("4.")} ${process.platform === "darwin" ? "mono-agent start" : "mono-agent start --foreground"} ${ui.style.dim("(optional background/long-running service)")}\n`,
   );
 }
 
 async function runInstallSkill(args: ParsedCliArgs): Promise<number> {
+  if (args.project === true) {
+    try {
+      if (args.update === true) {
+        const result = await updateManagedProjectSkills(process.cwd());
+        for (const path of result.updated) {
+          process.stdout.write(`${ui.badge("ok")}${ui.style.green("updated")}  ${path}\n`);
+        }
+        if (result.backupDir !== undefined) {
+          process.stdout.write(`${ui.badge("ok")}backup    ${result.backupDir}\n`);
+        }
+        if (result.updated.length === 0) process.stdout.write(`${ui.badge("ok")}project skills are current\n`);
+        return 0;
+      }
+      const result = await checkManagedProjectSkills(process.cwd());
+      for (const status of result.statuses) {
+        const badge = status.status === "ready" ? ui.badge("ok") : ui.badge("error");
+        process.stdout.write(`${badge}${status.name}: ${status.status} (${status.path})\n`);
+      }
+      if (!result.ok && args.check !== true) {
+        process.stderr.write(ui.errorLine("Project skills need attention. Run `mono-agent install-skill --project --update`; modified copies require manual reconciliation."));
+      }
+      return result.ok ? 0 : 1;
+    } catch (error) {
+      process.stderr.write(ui.errorLine(error instanceof Error ? error.message : String(error)));
+      return 1;
+    }
+  }
   let result;
   try {
     result = await installComposerSkill({

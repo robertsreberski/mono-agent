@@ -1244,6 +1244,52 @@ describe("AgentHarness", () => {
     });
   });
 
+  it("lets an authenticated request replace host/static tool and MCP authority", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      toolPolicy: {
+        allowedTools: ["*"],
+        disallowedTools: [],
+        mcpServers: { configuredMutator: { command: "mutate" } },
+        mcpConfigPath: "/configured/mcp.json",
+      },
+      runtimeOptions: {
+        allowedTools: ["Write"],
+        mcpServers: { staticMutator: { command: "mutate-static" } },
+      },
+      runtimeOptionsForRequest: () => ({
+        toolPolicyOverride: {
+          allowedTools: ["ReadSkill", "ProposeAgentConfiguration"],
+          disallowedTools: [],
+          mcpServers: { agent_configuration: { command: "proposal-only" } },
+        },
+        runtimeOptions: {
+          permissionMode: "plan",
+          // Tool-shaped fields in the same extension cannot escape the
+          // authoritative request boundary.
+          allowedTools: ["Bash"],
+          mcpServers: { requestMutator: { command: "mutate-request" } },
+        },
+      }),
+    }).run({ conversationId: "c", userMessage: "configure", abortSignal: new AbortController().signal });
+
+    expect(fake.calls[0]?.options).toMatchObject({
+      allowedTools: ["ReadSkill", "ProposeAgentConfiguration"],
+      disallowedTools: [],
+      permissionMode: "plan",
+      mcpServers: { agent_configuration: { command: "proposal-only" } },
+    });
+    expect(fake.calls[0]?.options.mcpConfigPath).toBeUndefined();
+  });
+
   it("handles cancellation before runtime execution", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

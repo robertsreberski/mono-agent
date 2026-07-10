@@ -34,6 +34,11 @@ describe("initMonoAgentFolder", () => {
     expect(config.runtime.model).toBe("codex:gpt-5.6-terra");
     expect(config.runtime.maxTurns).toBeUndefined();
     expect(config.context.identityPath).toBe("./IDENTITY.md");
+    expect(config.context).toMatchObject({
+      skillsRoot: "./skills",
+      selectedSkills: ["mono-agent-configure", "mono-agent-memory"],
+      skillDisclosure: "index",
+    });
     expect(config.webhook.enabled).toBe(true);
     expect(config.memory).toBeUndefined();
     // Deliberate behavior change: the default scaffold now allows all tools (`["*"]`).
@@ -42,6 +47,7 @@ describe("initMonoAgentFolder", () => {
     const identity = await readFile(result.identityPath, "utf8");
     expect(identity).toContain("# Identity");
     expect(identity).toContain("You are Agent App Init");
+    expect(identity).toContain("Help the operator work effectively in this folder.");
   });
 
   it("composes the supplied answers (model + extra channels)", async () => {
@@ -49,6 +55,7 @@ describe("initMonoAgentFolder", () => {
       dir,
       answers: defaultAnswers({
         name: "Atlas",
+        purpose: "Coordinate research for this project.",
         model: "pi:ollama:gemma4:31b",
         channels: ["channel:webhook", "channel:slack", "channel:cron"],
       }),
@@ -60,6 +67,7 @@ describe("initMonoAgentFolder", () => {
     expect(config.slack).toEqual({ enabled: true });
     expect(config.cron).toEqual({ dir: "cron" });
     expect(await readFile(result.identityPath, "utf8")).toContain("You are Atlas, a mono agent");
+    expect(await readFile(result.identityPath, "utf8")).toContain("Coordinate research for this project.");
   });
 
   it("writes fallback models, effort, and memory when the answers request them", async () => {

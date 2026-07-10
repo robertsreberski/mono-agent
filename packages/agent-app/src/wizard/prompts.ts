@@ -96,6 +96,22 @@ export function validateWizardAgentName(value: string | undefined): string | und
   return undefined;
 }
 
+export const MAX_AGENT_PURPOSE_LENGTH = 240;
+
+/** One short, printable role statement for the generated Identity. */
+export function validateWizardAgentPurpose(value: string | undefined): string | undefined {
+  const purpose = (value ?? "").trim();
+  const length = Array.from(purpose).length;
+  if (
+    length === 0
+    || length > MAX_AGENT_PURPOSE_LENGTH
+    || /[\u0000-\u001f\u007f]/u.test(purpose)
+  ) {
+    return `Enter one line between 1 and ${MAX_AGENT_PURPOSE_LENGTH} characters.`;
+  }
+  return undefined;
+}
+
 /** Human hints for the built-in tools, shown beside each tool in the multiselect. */
 const BUILTIN_TOOL_HINTS: Readonly<Record<string, string>> = {
   Read: "read files",

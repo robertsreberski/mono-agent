@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { constants as fsConstants, existsSync, type Stats } from "node:fs";
+import { constants as fsConstants, type Stats } from "node:fs";
 import {
   chmod,
   link,
@@ -14,10 +14,10 @@ import {
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { fileURLToPath } from "node:url";
 
 import { getOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
@@ -227,9 +227,6 @@ const PROVIDER_STATUS_ENV_ALLOWLIST = new Set([
   "XDG_DATA_HOME",
   "XDG_STATE_HOME",
 ]);
-const PI_AI_PACKAGE = "@earendil-works/pi-ai";
-const PI_AI_CLI_PARTS = ["@earendil-works", "pi-ai", "dist", "cli.js"] as const;
-const PI_AI_NODE_MODULE_PATHS = createRequire(import.meta.url).resolve.paths(PI_AI_PACKAGE) ?? [];
 const DEFAULT_PROVIDER_PREFLIGHT_TIMEOUT_MS = 5_000;
 const PROVIDER_AUTH_TERM_GRACE_MS = 1_000;
 const PROVIDER_AUTH_KILL_SETTLE_MS = 1_000;
@@ -240,18 +237,15 @@ const PROVIDER_DISCOVERY_KILL_SETTLE_MS = 250;
 const MAX_PROVIDER_DISCOVERY_STDOUT_BYTES = 4 * 1024 * 1024;
 const MAX_API_KEY_CREDENTIAL_STRING_LENGTH = 65_536;
 
-export function resolvePiCliPath(nodeModulePaths: readonly string[] = PI_AI_NODE_MODULE_PATHS): string {
-  for (const nodeModulesPath of nodeModulePaths) {
-    const cliPath = join(nodeModulesPath, ...PI_AI_CLI_PARTS);
-    if (existsSync(cliPath)) {
-      return cliPath;
-    }
-  }
-  throw new Error(`Cannot find the bundled Pi CLI for ${PI_AI_PACKAGE}. Reinstall @mono-agent/agent-app.`);
+export function resolvePiCliPath(): string {
+  // App-owned wrapper, provider-owned OAuth: unlike Pi's generic CLI this
+  // supplies onManualCodeInput, so a full redirect URL pasted into the terminal
+  // reaches Anthropic's state-validating parser.
+  return fileURLToPath(new URL("./pi-oauth-login-main.js", import.meta.url));
 }
 
 export function piLoginCommand(provider: string, piCliPath = resolvePiCliPath()): readonly [string, ...string[]] {
-  return [process.execPath, piCliPath, "login", provider];
+  return [process.execPath, piCliPath, provider];
 }
 
 export function piLoginCommandLine(provider: string): string {

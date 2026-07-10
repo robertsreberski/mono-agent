@@ -55,13 +55,14 @@ describe("baseConfig", () => {
     expect(config.runtime?.workspace).toBe(".");
   });
 
-  it("includes context.skillsRoot only when skillsRootExists", () => {
+  it("always selects the two bundled project skills with index disclosure", () => {
     const withSkills = baseConfig({ dirBasename: "a", skillsRootExists: true }, "A", DEFAULT_MODEL, [], "uniform");
     expect(withSkills.context?.skillsRoot).toBe("./skills");
 
     const withoutSkills = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [], "uniform");
-    expect(withoutSkills.context).not.toHaveProperty("skillsRoot");
-    expect(withoutSkills.context?.selectedSkills).toEqual([]);
+    expect(withoutSkills.context?.skillsRoot).toBe("./skills");
+    expect(withoutSkills.context?.selectedSkills).toEqual(["mono-agent-configure", "mono-agent-memory"]);
+    expect(withoutSkills.context?.skillDisclosure).toBe("index");
   });
 
   it("sets public identity and traceability.sourceLabel from the agent name", () => {

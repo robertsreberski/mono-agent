@@ -47,6 +47,7 @@ import {
   ROUTE_SAFETY_OPTIONS,
   toolMultiselectOptions,
   validateWizardAgentName,
+  validateWizardAgentPurpose,
   wizardCancelIntentForKey,
   WizardBack,
   WizardCancelled,
@@ -116,6 +117,7 @@ export type ModelRepairOutcome =
  */
 interface DraftAnswers {
   name: string;
+  purpose: string;
   model: string;
   fallbacks: Array<{ model: string; effort?: string }>;
   effort: string | undefined;
@@ -687,6 +689,12 @@ async function collectInteractiveFromSeed(
             placeholder: humanizeAgentName(basename(ctx.cwd)),
             validate: validateWizardAgentName,
           })).trim();
+          draft.purpose = (await textPrompt({
+            message: "What should this agent help with?",
+            initialValue: draft.purpose,
+            placeholder: "Help with work in this folder",
+            validate: validateWizardAgentPurpose,
+          })).trim();
           advanceAfter(0);
           break;
         case 1: {
@@ -1120,6 +1128,7 @@ function hasNonEmptyValue(value: string | undefined): boolean {
 /** Short reasons annotating each always-on tool in the framing note. */
 const ALWAYS_ON_TOOL_REASONS: Readonly<Record<string, string>> = {
   MemoryRecall: "memory recall is on",
+  ReadSkill: "configuration skills load on demand",
 };
 
 /** The always-on tool names annotated with their reason, e.g. `MemoryRecall (memory recall is on)`. */
@@ -1349,6 +1358,7 @@ async function confirmSummary(
   ];
   const lines = [
     `Agent:        ${draft.name}`,
+    `Purpose:      ${draft.purpose}`,
     "Routes:",
     ...runtimeRoutes.map((route, index) =>
       `  ${index === 0 ? "Primary" : `Fallback ${index}`}: ${route.model} [${route.effort ?? "provider default"}]`,
@@ -1405,7 +1415,7 @@ async function confirmSummary(
       const step = await select({
         message: "What would you like to edit?",
         options: [
-          { value: "0", label: "Agent name" },
+          { value: "0", label: "Agent name and purpose" },
           { value: "1", label: "Models and efforts" },
           { value: "2", label: "Channels" },
           { value: "3", label: "Memory" },
@@ -1657,6 +1667,7 @@ function draftFrom(answers: WizardAnswers): DraftAnswers {
   }
   return {
     name: answers.name?.trim() || "Mono Agent",
+    purpose: answers.purpose?.trim() || "Help the operator work effectively in this folder.",
     model: answers.model,
     fallbacks: effectiveFallbacks(answers).map((fallback) => ({ ...fallback })),
     effort: answers.effort,
@@ -1682,6 +1693,7 @@ function toWizardAnswers(draft: DraftAnswers): WizardAnswers {
   }
   return {
     name: draft.name,
+    purpose: draft.purpose,
     model: draft.model,
     fallbacks: draft.fallbacks.map((fallback) => ({ ...fallback })),
     ...(draft.effort === undefined ? {} : { effort: draft.effort }),
