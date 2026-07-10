@@ -25,11 +25,14 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "22.19.0"
           registry-url: "https://registry.npmjs.org"
 
       - name: Enable Corepack
         run: corepack enable
+
+      - name: Check Node support floor
+        run: pnpm run check:node
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -51,6 +54,9 @@ jobs:
 
       - name: Validate package contents
         run: pnpm run release:pack -- --tag "$GITHUB_REF_NAME"
+
+      - name: Install packed consumer at the minimum Node version
+        run: pnpm run release:consumer -- --tag "$GITHUB_REF_NAME" --require-minimum
 
       - name: Check whitespace
         run: git diff --check

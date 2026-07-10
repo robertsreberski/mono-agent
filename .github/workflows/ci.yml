@@ -15,9 +15,13 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify
+    name: Verify (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22.19.0", "24"]
 
     steps:
       - name: Checkout
@@ -26,10 +30,13 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "${{ matrix.node-version }}"
 
       - name: Enable Corepack
         run: corepack enable
+
+      - name: Check Node support floor
+        run: pnpm run check:node
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -65,6 +72,10 @@ jobs:
 
       - name: Validate package tarballs
         run: pnpm run release:pack -- --tag "${{ steps.release-smoke.outputs.tag }}"
+
+      - name: Install packed consumer at the minimum Node version
+        if: ${{ matrix.node-version == '22.19.0' }}
+        run: pnpm run release:consumer -- --tag "${{ steps.release-smoke.outputs.tag }}" --require-minimum
 
       - name: Typecheck packages and demos
         run: pnpm run typecheck

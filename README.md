@@ -8,7 +8,7 @@ Full documentation and end-to-end playbooks: **<https://mono-agent-docs.vercel.a
 
 ## Quickstart: An Agent Folder From One Config File
 
-Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — becomes a validated agent folder with the `mono-agent` CLI. Use Node.js 20 or newer. Scaffold with no install:
+Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — becomes a validated agent folder with the `mono-agent` CLI. Use Node.js 22.19.0 or newer. Scaffold with no install:
 
 ```bash
 npm create mono-agent@latest init      # npm-init convention → resolves create-mono-agent
