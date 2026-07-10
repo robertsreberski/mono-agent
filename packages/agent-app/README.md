@@ -107,13 +107,17 @@ explicitly incomplete and never auto-starts.
 Every scaffold selects versioned `mono-agent-configure` and `mono-agent-memory`
 skills from `./skills` with index disclosure. `ReadSkill` remains separate from
 action-tool policy. `mono-agent install-skill --project --check|--update` reports
-version/hash drift and refreshes only unchanged managed copies with backups.
+version/hash drift and refreshes only unchanged managed copies with backups; a
+partial activation restores every prior file so the next update remains safe.
 
 In a marked local configuration turn only, the app injects proposal-only
 `ProposeAgentConfiguration`. The host rejects stale, secret-bearing,
-environment-shadowed, or authority-expanding RFC 6902/Role proposals, validates
-and renders the candidate, requires a separate TUI confirmation, then writes
-atomically with rollback evidence and replaces the responder after the active
+environment-shadowed, or authority-expanding RFC 6902/Role proposals, including
+runtime/provider posture, channel/proactive/plugin, exporter, external-memory,
+and sandbox expansion. It canonicalizes config/Identity/state paths without
+following symlink parents, rechecks both source files under an owner-only
+transaction lock at the commit boundary, renders the candidate, requires a
+separate TUI confirmation, then writes atomically with rollback evidence and replaces the responder after the active
 turn settles. Remote/proactive channels never receive this tool.
 
 Guided readiness uses a worker-reproducible environment rather than the launching

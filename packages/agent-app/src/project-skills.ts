@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { chmod, cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import type { GeneratedFile } from "./modules/types.js";
@@ -34,7 +34,7 @@ Use this skill when the operator asks to configure, tune, or change this agent.
 3. Never ask for API keys, OAuth tokens, passwords, bot tokens, or other secrets in chat. Explain the exact masked mono-agent auth or owner-only .env flow instead.
 4. For a safe local change, call ProposeAgentConfiguration with a short rationale, an RFC 6902 JSON Patch against mono-agent.config.json, and optionally a replacement body for the existing ## Role section in IDENTITY.md.
 5. Do not claim the proposal was applied. The host validates it, shows an out-of-band diff, and requires the operator to approve it.
-6. Do not propose new external MCP servers, plugins, channels, broader tool authority, weaker sandboxing, or network exposure. Those changes require the explicit guided flow named by the host.
+6. Do not propose new external MCP servers, plugins, channels or cron/proactive jobs, broader tool/runtime permissions, model-route or provider posture changes, exporters, external memory backends, weaker sandboxing, or network exposure. Those changes require the explicit guided flow named by the host.
 
 Keep proposals minimal. Preserve unrelated config, existing knowledge references, and every identity section except the optional Role body.
 `;
@@ -92,6 +92,17 @@ export interface CheckProjectSkillsResult {
 export interface UpdateProjectSkillsResult extends CheckProjectSkillsResult {
   readonly updated: readonly string[];
   readonly backupDir?: string;
+}
+
+export interface UpdateManagedProjectSkillsOptions {
+  /** Fault-injection seam; rollback always uses the built-in atomic writer. */
+  readonly writeFile?: (path: string, contents: string) => Promise<void>;
+}
+
+interface ManagedFileSnapshot {
+  readonly path: string;
+  readonly contents?: string;
+  readonly mode?: number;
 }
 
 function sha256(contents: string | Buffer): string {
@@ -170,7 +181,10 @@ export async function assertManagedProjectSkillInitSafe(cwd: string): Promise<vo
   );
 }
 
-export async function updateManagedProjectSkills(cwd: string): Promise<UpdateProjectSkillsResult> {
+export async function updateManagedProjectSkills(
+  cwd: string,
+  options: UpdateManagedProjectSkillsOptions = {},
+): Promise<UpdateProjectSkillsResult> {
   const before = await checkManagedProjectSkills(cwd);
   const unsafe = before.statuses.filter((entry) => entry.status === "modified" || entry.status === "collision");
   if (unsafe.length > 0) {
@@ -186,9 +200,20 @@ export async function updateManagedProjectSkills(cwd: string): Promise<UpdatePro
   }
 
   const root = resolve(cwd);
-  const changeId = new Date().toISOString().replace(/[:.]/gu, "-");
+  const changeId = `${new Date().toISOString().replace(/[:.]/gu, "-")}-${randomUUID().slice(0, 8)}`;
   const backupDir = join(root, "skills", ".mono-agent-backups", changeId);
   await mkdir(backupDir, { recursive: true, mode: 0o700 });
+
+  const skillTargets = BUNDLED_PROJECT_SKILLS.flatMap((skill) => {
+    const status = needsUpdate.find((entry) => entry.name === skill.name);
+    return status === undefined ? [] : [{ path: status.path, contents: skill.contents, name: skill.name }];
+  });
+  const manifestPath = join(root, PROJECT_SKILL_MANIFEST_PATH);
+  const manifestContents = `${JSON.stringify(desiredManifest(), null, 2)}\n`;
+  const snapshots = new Map<string, ManagedFileSnapshot>();
+  for (const target of [...skillTargets, { path: manifestPath, contents: manifestContents, name: "manifest" }]) {
+    snapshots.set(target.path, await snapshotManagedFile(target.path));
+  }
 
   for (const status of needsUpdate) {
     const existing = await readOptional(status.path);
@@ -198,22 +223,49 @@ export async function updateManagedProjectSkills(cwd: string): Promise<UpdatePro
       await cp(status.path, backup, { force: false });
     }
   }
+  if ((await readOptional(manifestPath)) !== undefined) {
+    await cp(manifestPath, join(backupDir, ".mono-agent-managed.json"), { force: false });
+  }
 
   const updated: string[] = [];
-  for (const skill of BUNDLED_PROJECT_SKILLS) {
-    const status = needsUpdate.find((entry) => entry.name === skill.name);
-    if (status === undefined) continue;
-    await mkdir(dirname(status.path), { recursive: true });
-    await atomicWrite(status.path, skill.contents);
-    updated.push(status.path);
-  }
-  await atomicWrite(join(root, PROJECT_SKILL_MANIFEST_PATH), `${JSON.stringify(desiredManifest(), null, 2)}\n`);
+  const activated: string[] = [];
+  const activate = options.writeFile ?? ((path: string, contents: string) => atomicWrite(path, contents));
+  try {
+    for (const target of skillTargets) {
+      await mkdir(dirname(target.path), { recursive: true });
+      await activate(target.path, target.contents);
+      activated.push(target.path);
+      updated.push(target.path);
+    }
+    await activate(manifestPath, manifestContents);
+    activated.push(manifestPath);
 
-  const after = await checkManagedProjectSkills(root);
-  if (!after.ok) {
-    throw new Error(`Managed project skill update did not verify; backups are retained at ${backupDir}.`);
+    const after = await checkManagedProjectSkills(root);
+    if (!after.ok) {
+      throw new Error("Managed project skill update did not verify.");
+    }
+    return { ...after, updated, backupDir };
+  } catch (error) {
+    const rollbackFailures: string[] = [];
+    for (const path of [...activated].reverse()) {
+      const snapshot = snapshots.get(path)!;
+      try {
+        await restoreManagedFile(snapshot);
+      } catch (rollbackError) {
+        rollbackFailures.push(`${path}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+      }
+    }
+    if (rollbackFailures.length > 0) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)} Managed skill rollback was incomplete: ` +
+        `${rollbackFailures.join("; ")}. Recover from ${backupDir}.`,
+      );
+    }
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)} Previous managed skill files were restored; ` +
+      `the update remains retryable. Backups: ${backupDir}.`,
+    );
   }
-  return { ...after, updated, backupDir };
 }
 
 async function readManifest(path: string): Promise<ManagedSkillManifest | undefined> {
@@ -240,11 +292,27 @@ async function readOptional(path: string): Promise<string | undefined> {
   }
 }
 
-async function atomicWrite(path: string, contents: string): Promise<void> {
+async function snapshotManagedFile(path: string): Promise<ManagedFileSnapshot> {
+  const contents = await readOptional(path);
+  if (contents === undefined) return { path };
+  const info = await stat(path);
+  return { path, contents, mode: info.mode & 0o777 };
+}
+
+async function restoreManagedFile(snapshot: ManagedFileSnapshot): Promise<void> {
+  if (snapshot.contents === undefined) {
+    await rm(snapshot.path, { force: true });
+    return;
+  }
+  await atomicWrite(snapshot.path, snapshot.contents, snapshot.mode ?? 0o600);
+}
+
+async function atomicWrite(path: string, contents: string, mode = 0o600): Promise<void> {
   const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
   await mkdir(dirname(path), { recursive: true });
   try {
-    await writeFile(temporary, contents, { flag: "wx", mode: 0o600 });
+    await writeFile(temporary, contents, { flag: "wx", mode });
+    await chmod(temporary, mode);
     await rename(temporary, path);
   } finally {
     await rm(temporary, { force: true });

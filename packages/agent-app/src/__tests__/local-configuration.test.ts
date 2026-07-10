@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,7 +18,7 @@ import {
   isLocalConfigurationRequest,
   LocalConfigurationManager,
 } from "../local-configuration.js";
-import { readMonoAgentConfigJson } from "@mono-agent/config";
+import { readMonoAgentConfigJson, type MonoAgentConfigJson } from "@mono-agent/config";
 import { defaultAnswers } from "../wizard/answers.js";
 
 const dirs: string[] = [];
@@ -92,7 +92,66 @@ describe("local configuration transaction", () => {
 
     await chmod(dir, 0o777);
     await expect(createLocalConfigurationSession({ cwd: dir, configPath, env: {}, configure: true }))
-      .rejects.toThrow(/group\/world-writable/u);
+      .rejects.toThrow(/group\/world writable/u);
+  });
+
+  it("rejects config, Identity, and transaction paths that traverse symlinked parents", async () => {
+    const first = await scaffold();
+    const externalIdentityDir = await mkdtemp(join(tmpdir(), "mono-agent-external-identity-"));
+    dirs.push(externalIdentityDir);
+    const identityPath = join(first.dir, "IDENTITY.md");
+    const externalIdentityPath = join(externalIdentityDir, "IDENTITY.md");
+    const identityBefore = await readFile(identityPath, "utf8");
+    await writeFile(externalIdentityPath, identityBefore);
+    await symlink(externalIdentityDir, join(first.dir, "linked"), "dir");
+    const currentConfig = JSON.parse(await readFile(first.configPath, "utf8")) as MonoAgentConfigJson;
+    const config: MonoAgentConfigJson = {
+      ...currentConfig,
+      context: { ...currentConfig.context, identityPath: "./linked/IDENTITY.md" },
+    };
+    await writeFile(first.configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const manager = await LocalConfigurationManager.create({
+      cwd: first.dir,
+      configPath: first.configPath,
+      env: {},
+      configure: true,
+    });
+    try {
+      const version = (await readMonoAgentConfigJson(first.configPath)).version;
+      await expect(manager.prepareProposal(proposal(version, { role: "Do not escape the agent." })))
+        .rejects.toThrow(/symbolic link|real directory/u);
+      expect(await readFile(externalIdentityPath, "utf8")).toBe(identityBefore);
+    } finally {
+      await manager.dispose();
+    }
+
+    const second = await scaffold();
+    const externalConfigDir = await mkdtemp(join(tmpdir(), "mono-agent-external-config-"));
+    dirs.push(externalConfigDir);
+    await writeFile(
+      join(externalConfigDir, "mono-agent.config.json"),
+      await readFile(second.configPath, "utf8"),
+    );
+    await symlink(externalConfigDir, join(second.dir, "linked-config"), "dir");
+    await expect(LocalConfigurationManager.create({
+      cwd: second.dir,
+      configPath: join(second.dir, "linked-config", "mono-agent.config.json"),
+      env: {},
+      configure: true,
+    })).rejects.toThrow(/symbolic link|real directory/u);
+
+    const third = await scaffold();
+    const externalStateDir = await mkdtemp(join(tmpdir(), "mono-agent-external-state-"));
+    dirs.push(externalStateDir);
+    await rm(join(third.dir, ".mono-agent"), { recursive: true, force: true });
+    await symlink(externalStateDir, join(third.dir, ".mono-agent"), "dir");
+    await expect(LocalConfigurationManager.create({
+      cwd: third.dir,
+      configPath: third.configPath,
+      env: {},
+      configure: true,
+    })).rejects.toThrow(/real directory/u);
   });
 
   it("validates, applies, retains rollback evidence, and replaces only the Role body", async () => {
@@ -122,6 +181,12 @@ describe("local configuration transaction", () => {
 
   it("rejects stale, env-shadowed, secret-bearing, and authority-expanding proposals", async () => {
     const { dir, configPath } = await scaffold();
+    const scaffolded = JSON.parse(await readFile(configPath, "utf8")) as MonoAgentConfigJson;
+    await writeFile(configPath, `${JSON.stringify({
+      ...scaffolded,
+      runtime: { ...scaffolded.runtime, model: "pi:openai-codex:gpt-5.5" },
+      tools: { ...scaffolded.tools, allowedTools: ["ReadSkill"] },
+    }, null, 2)}\n`);
     const first = await readMonoAgentConfigJson(configPath);
 
     const envManager = await LocalConfigurationManager.create({
@@ -140,6 +205,36 @@ describe("local configuration transaction", () => {
         id: "authority-proposal",
         patch: [{ op: "add", path: "/tools/allowedTools/-", value: "Bash" }],
       }))).rejects.toThrow(/Broader tool authority/u);
+      await expect(envManager.prepareProposal(proposal(first.version, {
+        id: "permission-proposal",
+        patch: [{ op: "add", path: "/runtime/permissionMode", value: "bypassPermissions" }],
+      }))).rejects.toThrow(/permissionMode/u);
+      await expect(envManager.prepareProposal(proposal(first.version, {
+        id: "route-safety-proposal",
+        patch: [{ op: "replace", path: "/runtime/routeSafety", value: "per-route-native" }],
+      }))).rejects.toThrow(/route-native|runtime setup/u);
+      await expect(envManager.prepareProposal(proposal(first.version, {
+        id: "cron-proposal",
+        patch: [{
+          op: "add",
+          path: "/cron",
+          value: { jobs: [{ id: "unattended", expression: "* * * * *", prompt: "Run unattended." }] },
+        }],
+      }))).rejects.toThrow(/Channel and proactive-delivery/u);
+      await expect(envManager.prepareProposal(proposal(first.version, {
+        id: "telegram-proposal",
+        patch: [{ op: "add", path: "/telegram", value: { enabled: true, allowedUserIds: ["123"] } }],
+      }))).rejects.toThrow(/Channel and proactive-delivery/u);
+      await expect(envManager.prepareProposal(proposal(first.version, {
+        id: "plugin-proposal",
+        patch: [{ op: "add", path: "/channels", value: { plugins: [{ package: "example-channel" }] } }],
+      }))).rejects.toThrow(/Channel and proactive-delivery/u);
+
+      const tightening = await envManager.prepareProposal(proposal(first.version, {
+        id: "permission-tightening",
+        patch: [{ op: "add", path: "/runtime/permissionMode", value: "plan" }],
+      }));
+      await expect(envManager.reject(tightening.id)).resolves.toMatchObject({ message: expect.stringContaining("Rejected") });
     } finally {
       await envManager.dispose();
     }
@@ -153,6 +248,107 @@ describe("local configuration transaction", () => {
       await expect(staleManager.apply(card.id)).rejects.toThrow(/changed after the proposal/u);
     } finally {
       await staleManager.dispose();
+    }
+  });
+
+  it("preserves config and Role edits made during approval validation", async () => {
+    const configRace = await scaffold();
+    const configVersion = (await readMonoAgentConfigJson(configRace.configPath)).version;
+    const configManager = await LocalConfigurationManager.create({
+      cwd: configRace.dir,
+      configPath: configRace.configPath,
+      env: {},
+      configure: true,
+    });
+    try {
+      const card = await configManager.prepareProposal(proposal(configVersion));
+      const internals = configManager as unknown as {
+        validateCandidate(candidate: MonoAgentConfigJson, label: string): Promise<void>;
+      };
+      const validate = internals.validateCandidate.bind(configManager);
+      internals.validateCandidate = async (candidate, label) => {
+        await validate(candidate, label);
+        if (label.endsWith("-approval")) {
+          const current = JSON.parse(await readFile(configRace.configPath, "utf8")) as MonoAgentConfigJson;
+          const concurrent: MonoAgentConfigJson = { ...current, agent: { name: "CONCURRENT-EDIT" } };
+          await writeFile(configRace.configPath, `${JSON.stringify(concurrent, null, 2)}\n`);
+        }
+      };
+      await expect(configManager.apply(card.id)).rejects.toThrow(/changed while the approved change was being prepared/u);
+      expect((await readMonoAgentConfigJson(configRace.configPath)).json.agent?.name).toBe("CONCURRENT-EDIT");
+    } finally {
+      await configManager.dispose();
+    }
+
+    const roleRace = await scaffold();
+    const rolePath = join(roleRace.dir, "IDENTITY.md");
+    const roleVersion = (await readMonoAgentConfigJson(roleRace.configPath)).version;
+    const roleManager = await LocalConfigurationManager.create({
+      cwd: roleRace.dir,
+      configPath: roleRace.configPath,
+      env: {},
+      configure: true,
+    });
+    try {
+      const card = await roleManager.prepareProposal(proposal(roleVersion, {
+        role: "Apply only if the source Role is still current.",
+      }));
+      const internals = roleManager as unknown as {
+        validateCandidate(candidate: MonoAgentConfigJson, label: string): Promise<void>;
+      };
+      const validate = internals.validateCandidate.bind(roleManager);
+      internals.validateCandidate = async (candidate, label) => {
+        await validate(candidate, label);
+        if (label.endsWith("-approval")) await writeFile(rolePath, "# CONCURRENT ROLE EDIT\n");
+      };
+      await expect(roleManager.apply(card.id)).rejects.toThrow(/IDENTITY\.md changed while/u);
+      expect(await readFile(rolePath, "utf8")).toBe("# CONCURRENT ROLE EDIT\n");
+      expect((await readMonoAgentConfigJson(roleRace.configPath)).json.agent?.name).toBe("Local Test");
+    } finally {
+      await roleManager.dispose();
+    }
+  });
+
+  it("rejects an Identity parent replaced by an external symlink at the commit boundary", async () => {
+    const { dir, configPath } = await scaffold();
+    const originalIdentityPath = join(dir, "IDENTITY.md");
+    const identityBefore = await readFile(originalIdentityPath, "utf8");
+    const identityDir = join(dir, "identity");
+    await mkdir(identityDir);
+    await writeFile(join(identityDir, "IDENTITY.md"), identityBefore);
+    await rm(originalIdentityPath);
+    const current = JSON.parse(await readFile(configPath, "utf8")) as MonoAgentConfigJson;
+    await writeFile(configPath, `${JSON.stringify({
+      ...current,
+      context: { ...current.context, identityPath: "./identity/IDENTITY.md" },
+    }, null, 2)}\n`);
+
+    const externalParent = await mkdtemp(join(tmpdir(), "mono-agent-identity-race-"));
+    dirs.push(externalParent);
+    const movedIdentityDir = join(externalParent, "identity");
+    const version = (await readMonoAgentConfigJson(configPath)).version;
+    const manager = await LocalConfigurationManager.create({ cwd: dir, configPath, env: {}, configure: true });
+    try {
+      const card = await manager.prepareProposal(proposal(version, {
+        role: "This Role must never cross the project boundary.",
+      }));
+      const internals = manager as unknown as {
+        validateCandidate(candidate: MonoAgentConfigJson, label: string): Promise<void>;
+      };
+      const validate = internals.validateCandidate.bind(manager);
+      internals.validateCandidate = async (candidate, label) => {
+        await validate(candidate, label);
+        if (label.endsWith("-approval")) {
+          await rename(identityDir, movedIdentityDir);
+          await symlink(movedIdentityDir, identityDir, "dir");
+        }
+      };
+
+      await expect(manager.apply(card.id)).rejects.toThrow(/real directory|symbolic link/u);
+      expect(await readFile(join(movedIdentityDir, "IDENTITY.md"), "utf8")).toBe(identityBefore);
+      expect((await readMonoAgentConfigJson(configPath)).json.agent?.name).toBe("Local Test");
+    } finally {
+      await manager.dispose();
     }
   });
 });

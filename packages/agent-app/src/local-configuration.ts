@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import {
   chmod,
   lstat,
@@ -7,6 +7,7 @@ import {
   mkdtemp,
   open,
   readFile,
+  realpath,
   rename,
   rm,
   writeFile,
@@ -54,6 +55,12 @@ interface PreparedProposal {
   readonly card: ConfigurationProposalCard;
 }
 
+interface AppliedConfigurationChange {
+  readonly changeId: string;
+  readonly rollbackDir: string;
+  rollback(): Promise<void>;
+}
+
 export interface LocalConfigurationSession {
   readonly responder: AgentResponder;
   readonly title: string;
@@ -78,7 +85,6 @@ export interface CreateLocalConfigurationSessionOptions {
 export async function createLocalConfigurationSession(
   options: CreateLocalConfigurationSessionOptions,
 ): Promise<LocalConfigurationSession> {
-  await assertAuthenticatedLocalConfig(options.cwd, options.configPath);
   const manager = await LocalConfigurationManager.create(options);
   let active = await manager.buildResponder();
   const activateResponder = async (replacement: DisposableResponder): Promise<void> => {
@@ -166,16 +172,25 @@ export class LocalConfigurationManager {
   }
 
   static async create(options: CreateLocalConfigurationSessionOptions): Promise<LocalConfigurationManager> {
-    const parent = join(resolve(options.cwd), ".mono-agent", "configuration-proposals");
-    await mkdir(parent, { recursive: true, mode: 0o700 });
-    await chmod(parent, 0o700);
+    const authenticated = await authenticatedLocalConfig(options.cwd, options.configPath);
+    const secureOptions = {
+      ...options,
+      cwd: authenticated.cwd,
+      configPath: authenticated.configPath,
+    };
+    const parent = await ensureOwnedDirectoryInside(
+      secureOptions.cwd,
+      join(secureOptions.cwd, ".mono-agent", "configuration-proposals"),
+      "Configuration proposal directory",
+    );
     const sessionDir = await mkdtemp(join(parent, "session-"));
     await chmod(sessionDir, 0o700);
-    const currentConfig = await loadAppCoreConfig(options);
-    return new LocalConfigurationManager(options, sessionDir, currentConfig);
+    const currentConfig = await loadAppCoreConfig(secureOptions);
+    return new LocalConfigurationManager(secureOptions, sessionDir, currentConfig);
   }
 
   async buildResponder(): Promise<DisposableResponder> {
+    await resolveOwnedRegularFileInside(this.options.cwd, this.options.configPath, "Config file");
     const config = await loadAppCoreConfig(this.options);
     return await createConfiguredAgentResponder({
       config,
@@ -189,8 +204,14 @@ export class LocalConfigurationManager {
     if (!isLocalConfigurationRequest(input.request.metadata)) {
       return { runtimeOptions: {} };
     }
-    const snapshot = await readMonoAgentConfigJson(this.options.configPath);
-    const sinkPath = join(this.sessionDir, `${safeFilePart(input.runId)}.json`);
+    const secureConfig = await resolveOwnedRegularFileInside(this.options.cwd, this.options.configPath, "Config file");
+    const snapshot = await readMonoAgentConfigJson(secureConfig);
+    const sessionDir = await ensureOwnedDirectoryInside(
+      this.options.cwd,
+      this.sessionDir,
+      "Configuration proposal session",
+    );
+    const sinkPath = join(sessionDir, `${safeFilePart(input.runId)}.json`);
     this.pendingSinks.add(sinkPath);
     return {
       runtimeOptions: {
@@ -205,6 +226,7 @@ export class LocalConfigurationManager {
   }
 
   async takeProposal(): Promise<ConfigurationProposalCard | undefined> {
+    await ensureOwnedDirectoryInside(this.options.cwd, this.sessionDir, "Configuration proposal session");
     for (const sink of [...this.pendingSinks]) {
       this.pendingSinks.delete(sink);
       const contents = await readOptional(sink);
@@ -230,7 +252,8 @@ export class LocalConfigurationManager {
   }
 
   private async prepare(proposal: AgentConfigurationProposal): Promise<PreparedProposal> {
-    const current = await readMonoAgentConfigJson(this.options.configPath);
+    const secureConfig = await resolveOwnedRegularFileInside(this.options.cwd, this.options.configPath, "Config file");
+    const current = await readMonoAgentConfigJson(secureConfig);
     if (proposal.baseVersion !== current.version) {
       throw new Error("Configuration changed while the agent was preparing its proposal. Run /configure again from the current config.");
     }
@@ -238,7 +261,7 @@ export class LocalConfigurationManager {
     assertNoEnvironmentShadow(proposal.patch, this.options.env);
 
     const candidate = applyJsonPatch(current.json, proposal.patch);
-    assertNoAuthorityExpansion(current.json, candidate, proposal.patch, this.options.cwd);
+    assertNoAuthorityExpansion(current.json, candidate, this.options.cwd);
     const configBefore = `${JSON.stringify(current.json, null, 2)}\n`;
     await this.validateCandidate(candidate, proposal.id);
 
@@ -252,8 +275,7 @@ export class LocalConfigurationManager {
       }
       const effective = await loadAppCoreConfig(this.options);
       rolePath = effective.context.identityPath;
-      assertPathInside(this.options.cwd, rolePath, "Identity path");
-      await assertOwnedRegularFile(rolePath, "Identity file");
+      rolePath = await resolveOwnedRegularFileInside(this.options.cwd, rolePath, "Identity file");
       roleBefore = await readFile(rolePath, "utf8");
       expectedRoleHash = sha256(roleBefore);
       roleAfter = replaceRoleSection(roleBefore, proposal.role);
@@ -280,29 +302,29 @@ export class LocalConfigurationManager {
     };
   }
 
-  async apply(id: string): Promise<{
-    readonly changeId: string;
-    readonly rollbackDir: string;
-    rollback(): Promise<void>;
-  }> {
+  async apply(id: string): Promise<AppliedConfigurationChange> {
     const prepared = this.prepared.get(id);
     if (prepared === undefined) throw new Error(`Configuration proposal ${id} is no longer pending.`);
 
-    const current = await readMonoAgentConfigJson(this.options.configPath);
-    if (current.version !== prepared.expectedConfigVersion) {
-      throw new Error("Configuration changed after the proposal was shown. Nothing was written; run /configure again.");
-    }
-    if (prepared.rolePath !== undefined) {
-      const currentRole = await readFile(prepared.rolePath, "utf8");
-      if (sha256(currentRole) !== prepared.expectedRoleHash) {
-        throw new Error("IDENTITY.md changed after the proposal was shown. Nothing was written; run /configure again.");
-      }
-    }
+    return await withConfigurationTransactionLock(this.options.cwd, id, async () =>
+      await this.applyPrepared(id, prepared));
+  }
+
+  private async applyPrepared(id: string, prepared: PreparedProposal): Promise<AppliedConfigurationChange> {
+    await assertPreparedSourcesCurrent(this.options.cwd, this.options.configPath, prepared, "after the proposal was shown");
     await this.validateCandidate(prepared.candidate, `${id}-approval`);
 
     const changeId = `${new Date().toISOString().replace(/[:.]/gu, "-")}-${id.slice(0, 8)}`;
-    const rollbackDir = join(resolve(this.options.cwd), ".mono-agent", "config-changes", changeId);
-    await mkdir(rollbackDir, { recursive: true, mode: 0o700 });
+    const rollbackRoot = await ensureOwnedDirectoryInside(
+      this.options.cwd,
+      join(this.options.cwd, ".mono-agent", "config-changes"),
+      "Configuration rollback directory",
+    );
+    const rollbackDir = await ensureOwnedDirectoryInside(
+      this.options.cwd,
+      join(rollbackRoot, changeId),
+      "Configuration change directory",
+    );
     await writeFile(join(rollbackDir, "mono-agent.config.json.before"), prepared.configBefore, { flag: "wx", mode: 0o600 });
     if (prepared.roleBefore !== undefined) {
       await writeFile(join(rollbackDir, "IDENTITY.md.before"), prepared.roleBefore, { flag: "wx", mode: 0o600 });
@@ -310,16 +332,33 @@ export class LocalConfigurationManager {
 
     const configAfter = `${JSON.stringify(prepared.candidate, null, 2)}\n`;
     let configWritten = false;
+    let roleWritten = false;
     try {
-      await atomicReplaceExact(this.options.configPath, configAfter);
+      // Candidate validation and rollback-evidence staging both await I/O. A
+      // second comparison at the actual commit boundary prevents either step
+      // from opening a stale-snapshot overwrite window. The owner-only lock
+      // serializes every mono-agent writer; the comparison also catches an
+      // editor or other non-cooperating process.
+      await assertPreparedSourcesCurrent(this.options.cwd, this.options.configPath, prepared, "while the approved change was being prepared");
+      await atomicReplaceExact(this.options.cwd, this.options.configPath, configAfter);
       configWritten = true;
       if (prepared.rolePath !== undefined && prepared.roleAfter !== undefined) {
-        await atomicReplaceExact(prepared.rolePath, prepared.roleAfter);
+        // Config and Role are two files, so re-check both sides after the first
+        // rename and before the second. If either changed, the guarded catch
+        // restores only files that still equal our exact committed bytes.
+        await assertExactOwnedContents(this.options.cwd, this.options.configPath, configAfter, "Committed config changed before the Role update");
+        await assertExactOwnedContents(this.options.cwd, prepared.rolePath, prepared.roleBefore!, "IDENTITY.md changed at the Role commit boundary");
+        await atomicReplaceExact(this.options.cwd, prepared.rolePath, prepared.roleAfter);
+        roleWritten = true;
       }
       const verified = await readMonoAgentConfigJson(this.options.configPath);
       if (!isDeepStrictEqual(verified.json, prepared.candidate)) {
         throw new Error("The committed config did not verify byte-for-byte against the approved candidate.");
       }
+      if (prepared.rolePath !== undefined && prepared.roleAfter !== undefined) {
+        await assertExactOwnedContents(this.options.cwd, prepared.rolePath, prepared.roleAfter, "The committed Role did not verify");
+      }
+      await ensureOwnedDirectoryInside(this.options.cwd, rollbackDir, "Configuration change directory");
       await writeFile(join(rollbackDir, "change.json"), `${JSON.stringify({
         schema: "mono-agent.configuration-change.v1",
         changeId,
@@ -331,11 +370,28 @@ export class LocalConfigurationManager {
         roleChanged: prepared.roleAfter !== undefined,
       }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
     } catch (error) {
-      if (configWritten) {
-        await atomicReplaceExact(this.options.configPath, prepared.configBefore).catch(() => undefined);
+      const recoveryErrors: string[] = [];
+      if (roleWritten && prepared.rolePath !== undefined && prepared.roleAfter !== undefined && prepared.roleBefore !== undefined) {
+        try {
+          await restoreIfExact(this.options.cwd, prepared.rolePath, prepared.roleAfter, prepared.roleBefore);
+        } catch (restoreError) {
+          recoveryErrors.push(restoreError instanceof Error ? restoreError.message : String(restoreError));
+        }
       }
-      if (prepared.rolePath !== undefined && prepared.roleBefore !== undefined) {
-        await atomicReplaceExact(prepared.rolePath, prepared.roleBefore).catch(() => undefined);
+      if (configWritten) {
+        try {
+          await restoreIfExact(this.options.cwd, this.options.configPath, configAfter, prepared.configBefore);
+        } catch (restoreError) {
+          recoveryErrors.push(restoreError instanceof Error ? restoreError.message : String(restoreError));
+        }
+      } else if (!roleWritten) {
+        await rm(rollbackDir, { recursive: true, force: true });
+      }
+      if (recoveryErrors.length > 0) {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)} Manual recovery is required; concurrent edits were preserved. ` +
+          `${recoveryErrors.join(" ")} Rollback evidence: ${rollbackDir}`,
+        );
       }
       throw error;
     }
@@ -345,21 +401,31 @@ export class LocalConfigurationManager {
       changeId,
       rollbackDir,
       rollback: async () => {
-        await atomicReplaceExact(this.options.configPath, prepared.configBefore);
-        if (prepared.rolePath !== undefined && prepared.roleBefore !== undefined) {
-          await atomicReplaceExact(prepared.rolePath, prepared.roleBefore);
-        }
-        await writeFile(join(rollbackDir, "rollback.json"), `${JSON.stringify({
-          schema: "mono-agent.configuration-rollback.v1",
-          changeId,
-          rolledBackAt: new Date().toISOString(),
-        }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+        await withConfigurationTransactionLock(this.options.cwd, `${id}-rollback`, async () => {
+          await assertExactOwnedContents(this.options.cwd, this.options.configPath, configAfter, "Configuration changed before rollback");
+          if (prepared.rolePath !== undefined && prepared.roleAfter !== undefined) {
+            await assertExactOwnedContents(this.options.cwd, prepared.rolePath, prepared.roleAfter, "IDENTITY.md changed before rollback");
+            await atomicReplaceExact(this.options.cwd, prepared.rolePath, prepared.roleBefore!);
+          }
+          await atomicReplaceExact(this.options.cwd, this.options.configPath, prepared.configBefore);
+          await ensureOwnedDirectoryInside(this.options.cwd, rollbackDir, "Configuration change directory");
+          await writeFile(join(rollbackDir, "rollback.json"), `${JSON.stringify({
+            schema: "mono-agent.configuration-rollback.v1",
+            changeId,
+            rolledBackAt: new Date().toISOString(),
+          }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+        });
       },
     };
   }
 
   private async validateCandidate(candidate: MonoAgentConfigJson, label: string): Promise<void> {
-    const path = join(this.sessionDir, `${safeFilePart(label)}.candidate.json`);
+    const sessionDir = await ensureOwnedDirectoryInside(
+      this.options.cwd,
+      this.sessionDir,
+      "Configuration proposal session",
+    );
+    const path = join(sessionDir, `${safeFilePart(label)}.candidate.json`);
     await writeFile(path, `${JSON.stringify(candidate, null, 2)}\n`, { mode: 0o600 });
     try {
       const report = await validateMonoAgentFolder({
@@ -580,38 +646,152 @@ function assertNoEnvironmentShadow(
   }
 }
 
+const CHANNEL_AND_PROACTIVE_CONFIG_KEYS = [
+  "channels",
+  "telegram",
+  "slack",
+  "webhook",
+  "openaiApi",
+  "cron",
+  "tui",
+  "live",
+  // Legacy/external adapter-owned roots are blocked too; canonical plugins
+  // live under channels.plugins, which the first entry covers.
+  "a2a",
+  "whatsapp",
+] as const;
+
 function assertNoAuthorityExpansion(
   before: MonoAgentConfigJson,
   after: MonoAgentConfigJson,
-  patch: readonly JsonPatchOperation[],
   cwd: string,
 ): void {
-  const paths = patch.map((operation) => operation.path);
-  if (paths.some((path) => pathsOverlap(path, "/channels"))) {
+  const beforeRecord = before as Record<string, unknown>;
+  const afterRecord = after as Record<string, unknown>;
+  if (CHANNEL_AND_PROACTIVE_CONFIG_KEYS.some((key) =>
+    !isDeepStrictEqual(beforeRecord[key], afterRecord[key])
+  )) {
     throw new Error("Channel and proactive-delivery changes require the guided channel setup so credentials and destinations stay out of chat.");
   }
-  if (paths.some((path) => pathsOverlap(path, "/providers") || pathsOverlap(path, "/tools/mcpConfigPath"))) {
+  if (
+    !isDeepStrictEqual(before.providers, after.providers)
+    || !isDeepStrictEqual(before.tools?.mcpConfigPath, after.tools?.mcpConfigPath)
+  ) {
     throw new Error("Provider credentials and external MCP servers require the existing masked auth/configuration flow.");
   }
-  if (paths.some((path) => pathsOverlap(path, "/context/identityPath"))) {
+  if (!isDeepStrictEqual(before.context?.identityPath, after.context?.identityPath)) {
     throw new Error("Changing the identity file path is outside conversational configuration; edit the path explicitly and validate it first.");
   }
 
-  const beforeAllowed = new Set(before.tools?.allowedTools ?? []);
-  const afterAllowed = new Set(after.tools?.allowedTools ?? []);
+  const beforeRuntime = before.runtime ?? {};
+  const afterRuntime = after.runtime ?? {};
+  if (
+    !isDeepStrictEqual(beforeRuntime.model, afterRuntime.model)
+    || !isDeepStrictEqual(beforeRuntime.fallbackModels, afterRuntime.fallbackModels)
+    || !isDeepStrictEqual(beforeRuntime.fallbacks, afterRuntime.fallbacks)
+    || !isDeepStrictEqual(beforeRuntime.executionMode, afterRuntime.executionMode)
+  ) {
+    throw new Error("Model routes and direct-provider execution posture require the guided runtime setup.");
+  }
+  const permissionRank: Record<string, number> = {
+    plan: 0,
+    default: 1,
+    acceptEdits: 2,
+    bypassPermissions: 3,
+  };
+  const beforePermission = beforeRuntime.permissionMode ?? "default";
+  const afterPermission = afterRuntime.permissionMode ?? "default";
+  if ((permissionRank[afterPermission] ?? 99) > (permissionRank[beforePermission] ?? 99)) {
+    throw new Error("Broader runtime permissionMode requires explicit guided confirmation outside the model conversation.");
+  }
+  const routeSafetyRank: Record<string, number> = { uniform: 0, "per-route-native": 1 };
+  const beforeRouteSafety = beforeRuntime.routeSafety ?? "uniform";
+  const afterRouteSafety = afterRuntime.routeSafety ?? "uniform";
+  if ((routeSafetyRank[afterRouteSafety] ?? 99) > (routeSafetyRank[beforeRouteSafety] ?? 99)) {
+    throw new Error("Broader per-route-native safety posture requires the guided runtime setup.");
+  }
+
+  const beforeAllowedRaw = before.tools?.allowedTools;
+  const afterAllowedRaw = after.tools?.allowedTools;
+  const beforeAllowed = new Set(beforeAllowedRaw ?? []);
+  const afterAllowed = new Set(afterAllowedRaw ?? []);
   const beforeDenied = new Set(before.tools?.disallowedTools ?? []);
   const afterDenied = new Set(after.tools?.disallowedTools ?? []);
-  if ([...afterAllowed].some((tool) => !beforeAllowed.has(tool)) || [...beforeDenied].some((tool) => !afterDenied.has(tool))) {
+  const beforeAllowsAll = beforeAllowedRaw === undefined || beforeAllowed.has("*");
+  const afterAllowsAll = afterAllowedRaw === undefined || afterAllowed.has("*");
+  if (
+    (!beforeAllowsAll && (afterAllowsAll || [...afterAllowed].some((tool) => !beforeAllowed.has(tool))))
+    || [...beforeDenied].some((tool) => !afterDenied.has(tool))
+  ) {
     throw new Error("Broader tool authority requires explicit guided confirmation outside the model conversation.");
+  }
+
+  if (
+    (
+      before.memory?.backend !== after.memory?.backend
+      && (before.memory?.backend === "supermemory" || after.memory?.backend === "supermemory")
+    )
+    || !isDeepStrictEqual(before.memory?.supermemory, after.memory?.supermemory)
+  ) {
+    throw new Error("External memory backends and their MCP/network settings require explicit guided plugin configuration.");
+  }
+  if (!isDeepStrictEqual(before.memory?.llm, after.memory?.llm)) {
+    throw new Error("Memory LLM route changes require the guided runtime and credential flow.");
+  }
+  if (
+    before.memory?.embeddings?.provider !== after.memory?.embeddings?.provider
+    && after.memory?.embeddings?.provider === "openai"
+  ) {
+    throw new Error("Enabling remote embedding providers requires the guided credential flow.");
+  }
+  if (
+    before.memory?.embeddings?.endpoint !== after.memory?.embeddings?.endpoint
+    && after.memory?.embeddings?.endpoint !== undefined
+    && !isLoopbackUrl(after.memory.embeddings.endpoint)
+  ) {
+    throw new Error("A remote embeddings endpoint requires explicit guided network and credential configuration.");
+  }
+  if (!isDeepStrictEqual(before.observability, after.observability)) {
+    throw new Error("Observability exporter changes require explicit guided configuration because they can send run data externally.");
   }
 
   if (sandboxBroadened(before.sandbox, after.sandbox)) {
     throw new Error("Weaker sandbox or broader filesystem/network authority requires `mono-agent sandbox` and explicit operator confirmation.");
   }
 
-  const workspace = after.runtime?.workspace;
-  if (typeof workspace === "string") {
-    assertPathInside(cwd, resolve(cwd, workspace), "Runtime workspace");
+  const beforeWorkspace = resolve(cwd, beforeRuntime.workspace ?? ".");
+  const afterWorkspace = resolve(cwd, afterRuntime.workspace ?? ".");
+  assertLexicalPathInside(cwd, afterWorkspace, "Runtime workspace");
+  if (!isLexicallyInside(beforeWorkspace, afterWorkspace)) {
+    throw new Error("A broader runtime workspace requires explicit guided confirmation outside the model conversation.");
+  }
+
+  const changedPaths: Array<{
+    readonly before: string | undefined;
+    readonly after: string | undefined;
+    readonly label: string;
+  }> = [
+    { before: before.context?.soulPath, after: after.context?.soulPath, label: "Soul path" },
+    { before: before.context?.skillsRoot, after: after.context?.skillsRoot, label: "Skills root" },
+    { before: before.memory?.path, after: after.memory?.path, label: "Memory path" },
+    { before: before.artifacts?.dir, after: after.artifacts?.dir, label: "Artifacts directory" },
+    { before: before.traceability?.registryDir, after: after.traceability?.registryDir, label: "Trace registry directory" },
+  ];
+  for (const entry of changedPaths) {
+    if (entry.before !== entry.after && entry.after !== undefined) {
+      assertLexicalPathInside(cwd, resolve(cwd, entry.after), entry.label);
+    }
+  }
+}
+
+function isLoopbackUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    return (url.protocol === "http:" || url.protocol === "https:")
+      && (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "::1");
+  } catch {
+    return false;
   }
 }
 
@@ -621,14 +801,27 @@ function sandboxBroadened(
 ): boolean {
   if (before === undefined) return false;
   if (after === undefined || (before.mode !== "off" && after.mode === "off")) return true;
+  if (before.mode === "off") return false;
+  const beforeReadable = new Set(before.readableRoots ?? []);
+  const afterReadable = new Set(after.readableRoots ?? []);
   const beforeWritable = new Set(before.writableRoots ?? []);
   const afterWritable = new Set(after.writableRoots ?? []);
   const beforeDenied = new Set(before.denyWrite ?? []);
   const afterDenied = new Set(after.denyWrite ?? []);
+  if ([...afterReadable].some((path) => !beforeReadable.has(path))) return true;
   if ([...afterWritable].some((path) => !beforeWritable.has(path))) return true;
   if ([...beforeDenied].some((path) => !afterDenied.has(path))) return true;
+  if (before.fallback !== "unsafe-host-process" && after.fallback === "unsafe-host-process") return true;
+  if (before.unsafeAllowHostProcess !== true && after.unsafeAllowHostProcess === true) return true;
   const rank: Record<string, number> = { none: 0, localhost: 1, allowlist: 2, all: 3 };
-  return (rank[after.network?.mode ?? "none"] ?? 99) > (rank[before.network?.mode ?? "none"] ?? 99);
+  const beforeMode = before.network?.mode ?? "none";
+  const afterMode = after.network?.mode ?? "none";
+  if ((rank[afterMode] ?? 99) > (rank[beforeMode] ?? 99)) return true;
+  if (afterMode === "allowlist") {
+    const beforeAllowlist = new Set(before.network?.allowlist ?? []);
+    if ((after.network?.allowlist ?? []).some((host) => !beforeAllowlist.has(host))) return true;
+  }
+  return false;
 }
 
 function replaceRoleSection(identity: string, role: string): string {
@@ -658,47 +851,215 @@ function pathsOverlap(left: string, right: string): boolean {
   return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 }
 
-async function assertAuthenticatedLocalConfig(cwd: string, configPath: string): Promise<void> {
-  assertPathInside(cwd, configPath, "Config path");
-  await assertOwnedRegularFile(configPath, "Config file");
-  const directory = await lstat(resolve(cwd));
-  if (!directory.isDirectory()) throw new Error(`Current folder is not a directory: ${cwd}`);
-  const uid = process.getuid?.();
-  if (uid !== undefined && directory.uid !== uid) throw new Error("Local configuration requires a current-user-owned agent folder.");
-  if ((directory.mode & 0o022) !== 0) throw new Error("Local configuration refuses a group/world-writable agent folder.");
+async function authenticatedLocalConfig(
+  cwd: string,
+  configPath: string,
+): Promise<{ readonly cwd: string; readonly configPath: string }> {
+  const lexicalCwd = resolve(cwd);
+  const lexicalConfig = resolve(configPath);
+  assertLexicalPathInside(lexicalCwd, lexicalConfig, "Config path");
+  const canonicalCwd = await realpath(lexicalCwd);
+  await assertOwnedDirectory(canonicalCwd, "Current agent folder");
+  const relativeConfig = relative(lexicalCwd, lexicalConfig);
+  const canonicalConfig = await resolveOwnedRegularFileInside(
+    canonicalCwd,
+    resolve(canonicalCwd, relativeConfig),
+    "Config file",
+  );
+  return { cwd: canonicalCwd, configPath: canonicalConfig };
 }
 
-async function assertOwnedRegularFile(path: string, label: string): Promise<void> {
+async function resolveOwnedRegularFileInside(root: string, path: string, label: string): Promise<string> {
+  const canonicalRoot = await realpath(resolve(root));
+  const absolute = resolve(path);
+  assertLexicalPathInside(canonicalRoot, absolute, label);
+  const segments = relative(canonicalRoot, absolute).split(sep).filter((segment) => segment.length > 0);
+  if (segments.length === 0) throw new Error(`${label} must name a file inside the current agent folder.`);
+
+  let parent = canonicalRoot;
+  await assertOwnedDirectory(parent, "Current agent folder");
+  for (const segment of segments.slice(0, -1)) {
+    parent = join(parent, segment);
+    await assertOwnedDirectory(parent, `${label} parent`);
+  }
+  const target = join(parent, segments.at(-1)!);
+  const info = await lstat(target);
+  assertOwnedRegularFileInfo(info, target, label);
+  const canonicalTarget = await realpath(target);
+  assertLexicalPathInside(canonicalRoot, canonicalTarget, label);
+  if (canonicalTarget !== target) {
+    throw new Error(`${label} must not traverse a symbolic-link parent: ${path}`);
+  }
+  return target;
+}
+
+async function ensureOwnedDirectoryInside(root: string, path: string, label: string): Promise<string> {
+  const canonicalRoot = await realpath(resolve(root));
+  const absolute = resolve(path);
+  assertLexicalPathInside(canonicalRoot, absolute, label);
+  const segments = relative(canonicalRoot, absolute).split(sep).filter((segment) => segment.length > 0);
+  let current = canonicalRoot;
+  await assertOwnedDirectory(current, "Current agent folder");
+  for (const segment of segments) {
+    current = join(current, segment);
+    try {
+      await mkdir(current, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    await assertOwnedDirectory(current, label);
+  }
+  return current;
+}
+
+async function assertOwnedDirectory(path: string, label: string): Promise<void> {
   const info = await lstat(path);
+  if (!info.isDirectory()) throw new Error(`${label} must be a real directory, not a symbolic link: ${path}`);
+  const uid = process.getuid?.();
+  if (uid !== undefined && info.uid !== uid) throw new Error(`${label} must be owned by the current user: ${path}`);
+  if ((info.mode & 0o022) !== 0) throw new Error(`${label} must not be group/world writable: ${path}`);
+}
+
+function assertOwnedRegularFileInfo(
+  info: Stats,
+  path: string,
+  label: string,
+): void {
   if (!info.isFile() || info.nlink !== 1) throw new Error(`${label} must be one regular file with one link: ${path}`);
   const uid = process.getuid?.();
   if (uid !== undefined && info.uid !== uid) throw new Error(`${label} must be owned by the current user: ${path}`);
   if ((info.mode & 0o022) !== 0) throw new Error(`${label} must not be group/world writable: ${path}`);
 }
 
-function assertPathInside(root: string, path: string, label: string): void {
+function isLexicallyInside(root: string, path: string): boolean {
   const rel = relative(resolve(root), resolve(path));
-  if (rel === ".." || rel.startsWith(`..${sep}`) || rel === "") {
-    if (rel === "") return;
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`));
+}
+
+function assertLexicalPathInside(root: string, path: string, label: string): void {
+  if (!isLexicallyInside(root, path)) {
     throw new Error(`${label} must stay inside the current agent folder: ${path}`);
   }
 }
 
-async function atomicReplaceExact(path: string, contents: string): Promise<void> {
-  const info = await lstat(path);
-  const temporary = join(dirname(path), `.${randomUUID()}.mono-agent-tmp`);
+async function assertPreparedSourcesCurrent(
+  cwd: string,
+  configPath: string,
+  prepared: PreparedProposal,
+  phase: string,
+): Promise<void> {
+  const secureConfig = await resolveOwnedRegularFileInside(cwd, configPath, "Config file");
+  const current = await readMonoAgentConfigJson(secureConfig);
+  if (current.version !== prepared.expectedConfigVersion) {
+    throw new Error(`Configuration changed ${phase}. Nothing was written; run /configure again.`);
+  }
+  if (prepared.rolePath !== undefined) {
+    const secureRole = await resolveOwnedRegularFileInside(cwd, prepared.rolePath, "Identity file");
+    const currentRole = await readFile(secureRole, "utf8");
+    if (sha256(currentRole) !== prepared.expectedRoleHash) {
+      throw new Error(`IDENTITY.md changed ${phase}. Nothing was written; run /configure again.`);
+    }
+  }
+}
+
+async function assertExactOwnedContents(
+  cwd: string,
+  path: string,
+  expected: string,
+  label: string,
+): Promise<void> {
+  const securePath = await resolveOwnedRegularFileInside(cwd, path, label);
+  if (await readFile(securePath, "utf8") !== expected) {
+    throw new Error(`${label}; the concurrent edit was preserved.`);
+  }
+}
+
+async function restoreIfExact(cwd: string, path: string, expected: string, restore: string): Promise<void> {
+  await assertExactOwnedContents(cwd, path, expected, `Refusing to restore changed file ${path}`);
+  await atomicReplaceExact(cwd, path, restore);
+}
+
+async function atomicReplaceExact(root: string, path: string, contents: string): Promise<void> {
+  const securePath = await resolveOwnedRegularFileInside(root, path, "Configuration transaction file");
+  const info = await lstat(securePath);
+  const temporary = join(dirname(securePath), `.${randomUUID()}.mono-agent-tmp`);
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, info.mode & 0o777);
+    handle = await open(
+      temporary,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      info.mode & 0o777,
+    );
     await handle.writeFile(contents, "utf8");
     await handle.chmod(info.mode & 0o777);
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporary, path);
+    await rename(temporary, securePath);
   } finally {
     await handle?.close();
     await rm(temporary, { force: true });
+  }
+}
+
+async function withConfigurationTransactionLock<T>(
+  cwd: string,
+  label: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const monoAgentDir = await ensureOwnedDirectoryInside(cwd, join(cwd, ".mono-agent"), "Configuration state directory");
+  const lockPath = join(monoAgentDir, "configuration.lock");
+  const token = randomUUID();
+  const contents = `${JSON.stringify({
+    schema: "mono-agent.configuration-lock.v1",
+    pid: process.pid,
+    token,
+    label: safeFilePart(label),
+    createdAt: new Date().toISOString(),
+  })}\n`;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let identity: { readonly dev: number; readonly ino: number } | undefined;
+  try {
+    try {
+      handle = await open(
+        lockPath,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+        0o600,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new Error(
+          `Another local configuration transaction owns ${lockPath}. Wait for it to finish; inspect and remove the lock manually only if its owner crashed.`,
+        );
+      }
+      throw error;
+    }
+    await handle.chmod(0o600);
+    await handle.writeFile(contents, "utf8");
+    await handle.sync();
+    const info = await handle.stat();
+    assertOwnedRegularFileInfo(info, lockPath, "Configuration transaction lock");
+    identity = { dev: info.dev, ino: info.ino };
+    await handle.close();
+    handle = undefined;
+    return await operation();
+  } finally {
+    await handle?.close();
+    if (identity !== undefined) {
+      const current = await lstat(lockPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (
+        current === undefined
+        || current.dev !== identity.dev
+        || current.ino !== identity.ino
+        || await readFile(lockPath, "utf8") !== contents
+      ) {
+        throw new Error(`Configuration transaction lock changed unexpectedly and was left untouched: ${lockPath}`);
+      }
+      await rm(lockPath);
+    }
   }
 }
 
