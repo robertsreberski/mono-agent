@@ -135,7 +135,12 @@ vi.mock("../wizard/model-discovery.js", async (importOriginal) => {
 });
 
 import { defaultAnswers } from "../wizard/answers.js";
-import { guidedModelRefProblem, runInitWizard, runModelRepairWizard } from "../wizard/run.js";
+import {
+  guidedModelRefProblem,
+  runInitWizard,
+  runModelRepairWizard,
+  runSetupRepairWizard,
+} from "../wizard/run.js";
 
 beforeEach(() => {
   for (const queue of [
@@ -369,6 +374,37 @@ describe("wizard production flow", () => {
     expect((discoveryMock.calls[0]?.abortSignal as AbortSignal).aborted).toBe(true);
     const nameCalls = promptMock.textCalls.filter((call) => call.message === "What should this agent be called?");
     expect(nameCalls).toHaveLength(2);
+  });
+
+  it("skips non-interactive direct-Codex steps when Escape goes back from observability", async () => {
+    promptMock.selectAnswers.push("__custom__", "", "", "create");
+    promptMock.autocompleteAnswers.push("codex:gpt-5.6-terra");
+    promptMock.textAnswers.push(
+      "Scheduled Partner",
+      "30 7 * * 1-5",
+      "45 6 * * 1-5",
+    );
+    promptMock.multiselectAnswers.push(["channel:cron"]);
+    promptMock.confirmAnswers.push(
+      false, // no fallbacks
+      ESCAPE, // observability -> last prompt that actually accepted input
+      false, // observability after editing the preserved cron value
+    );
+
+    const result = await withTtyStdin(() => runInitWizard({ cwd: "/tmp/scheduled-partner" }));
+
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    expect(result.answers.moduleInputs["channel:cron"]?.cronExpression).toBe("45 6 * * 1-5");
+    const cronCalls = promptMock.textCalls.filter(
+      (call) => call.message === "Scheduled jobs (cron): Cron expression",
+    );
+    expect(cronCalls).toHaveLength(2);
+    expect(cronCalls[1]).toMatchObject({ initialValue: "30 7 * * 1-5" });
+    const observabilityCalls = promptMock.confirmCalls.filter(
+      (call) => String(call.message).startsWith("Export traces to Phoenix"),
+    );
+    expect(observabilityCalls).toHaveLength(2);
   });
 
   it("does not review or collect an optional-only channel secret that will not be written", async () => {
@@ -701,6 +737,156 @@ describe("wizard production flow", () => {
     promptMock.confirmAnswers.push(CANCEL);
 
     await expect(runInitWizard({ cwd: "/tmp/agent" })).resolves.toEqual({ status: "cancelled" });
+  });
+
+  it("forwards cron validation to Clack and trims the accepted value", async () => {
+    promptMock.selectAnswers.push("__custom__", "", "", "create");
+    promptMock.autocompleteAnswers.push("codex:gpt-5.6-terra");
+    promptMock.textAnswers.push("Cron Agent", "  15 9 * * 1-5  ");
+    promptMock.multiselectAnswers.push(["channel:cron"]);
+    promptMock.confirmAnswers.push(false, false);
+
+    const result = await runInitWizard({ cwd: "/tmp/cron-agent" });
+
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    expect(result.answers.moduleInputs["channel:cron"]?.cronExpression).toBe("15 9 * * 1-5");
+    const cronCall = promptMock.textCalls.find((call) => call.message === "Scheduled jobs (cron): Cron expression");
+    const validate = cronCall?.validate as ((value: string | undefined) => string | undefined) | undefined;
+    expect(validate?.("")).toBe(
+      "Enter a cron expression using five fields: minute hour day-of-month month day-of-week.",
+    );
+    expect(validate?.("0 8 * * * *")).toBe(
+      "Use exactly five fields: minute hour day-of-month month day-of-week (for example, 0 8 * * *).",
+    );
+  });
+
+  it("repairs capability details from Creation review without replaying unrelated prompts", async () => {
+    const answers = defaultAnswers({
+      name: "Scheduled Partner",
+      model: "codex:gpt-5.6-terra",
+      channels: ["channel:cron"],
+      moduleInputs: { "channel:cron": { cronExpression: "30 7 * * 1-5" } },
+    });
+    promptMock.selectAnswers.push("edit", "4", "create");
+    promptMock.textAnswers.push("  45 6 * * 1-5  ");
+
+    const result = await runSetupRepairWizard({
+      cwd: "/tmp/agent",
+      answers,
+      runProviderSetup: true,
+      providerSetupSecrets: { "pi-api-key:openai-codex": "provider-secret" },
+      providerEnvironmentSecrets: { OPENAI_API_KEY: "environment-secret" },
+      piApiKeyPersistenceByProvider: { "openai-codex": "secure-store" },
+      credentialStates: { codex: "auth_required" },
+      moduleSecrets: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "stale-deselected-secret" },
+    });
+
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    expect(result.answers.name).toBe("Scheduled Partner");
+    expect(result.answers.moduleInputs["channel:cron"]?.cronExpression).toBe("45 6 * * 1-5");
+    expect(result.runProviderSetup).toBe(true);
+    expect(result.providerSetupSecrets).toEqual({ "pi-api-key:openai-codex": "provider-secret" });
+    expect(result.providerEnvironmentSecrets).toEqual({ OPENAI_API_KEY: "environment-secret" });
+    expect(result.piApiKeyPersistenceByProvider).toEqual({ "openai-codex": "secure-store" });
+    expect(result.credentialStates).toEqual({ codex: "auth_required" });
+    expect(result.moduleSecrets).toEqual({});
+    const cronCall = promptMock.textCalls[0];
+    expect(cronCall).toMatchObject({ initialValue: "30 7 * * 1-5" });
+    expect(promptMock.textCalls).toHaveLength(1);
+    expect(promptMock.autocompleteCalls).toHaveLength(0);
+    expect(promptMock.multiselectAnswers).toHaveLength(0);
+    expect(promptMock.confirmCalls).toHaveLength(0);
+  });
+
+  it("returns Escape from seeded setup repair to recovery without changing state", async () => {
+    promptMock.selectAnswers.push(ESCAPE);
+    await withTtyStdin(async () => {
+      await expect(runSetupRepairWizard({
+        cwd: "/tmp/agent",
+        answers: defaultAnswers({ name: "Keep Me", model: "codex:gpt-5.6-terra" }),
+        runProviderSetup: false,
+        providerSetupSecrets: {},
+        providerEnvironmentSecrets: {},
+        piApiKeyPersistenceByProvider: {},
+        credentialStates: { codex: "credential_detected" },
+        moduleSecrets: {},
+      })).resolves.toEqual({ status: "cancelled" });
+    });
+    expect(promptMock.textCalls).toHaveLength(0);
+    expect(promptMock.confirmCalls).toHaveLength(0);
+  });
+
+  it("returns a focused name edit directly to Creation review", async () => {
+    promptMock.textAnswers.push("Renamed Partner");
+    promptMock.selectAnswers.push("create");
+
+    const result = await runSetupRepairWizard({
+      cwd: "/tmp/agent",
+      initialStep: 0,
+      answers: defaultAnswers({ name: "Original Partner", model: "codex:gpt-5.6-terra" }),
+      runProviderSetup: false,
+      providerSetupSecrets: {},
+      providerEnvironmentSecrets: {},
+      piApiKeyPersistenceByProvider: {},
+      credentialStates: { codex: "credential_detected" },
+      moduleSecrets: {},
+    });
+
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    expect(result.answers.name).toBe("Renamed Partner");
+    expect(promptMock.textCalls).toHaveLength(1);
+    expect(promptMock.autocompleteCalls).toHaveLength(0);
+    expect(promptMock.multiselectAnswers).toHaveLength(0);
+    expect(promptMock.confirmCalls).toHaveLength(0);
+  });
+
+  it("preserves ephemeral provider state during a focused unchanged-model edit", async () => {
+    promptMock.autocompleteAnswers.push("pi:opencode-go:kimi-k2.6");
+    promptMock.selectAnswers.push("medium", "create");
+    promptMock.confirmAnswers.push(false); // no fallbacks
+
+    const result = await runSetupRepairWizard({
+      cwd: "/tmp/agent",
+      initialStep: 1,
+      answers: defaultAnswers({ model: "pi:opencode-go:kimi-k2.6", effort: "medium" }),
+      runProviderSetup: false,
+      providerSetupSecrets: { "pi-api-key:opencode-go": "in-memory-key" },
+      providerEnvironmentSecrets: { OPENCODE_API_KEY: "environment-key" },
+      piApiKeyPersistenceByProvider: { "opencode-go": "environment" },
+      credentialStates: { "pi:opencode-go": "credential_detected" },
+      moduleSecrets: {},
+    });
+
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    expect(result.providerSetupSecrets).toEqual({ "pi-api-key:opencode-go": "in-memory-key" });
+    expect(result.providerEnvironmentSecrets).toEqual({ OPENCODE_API_KEY: "environment-key" });
+    expect(result.piApiKeyPersistenceByProvider).toEqual({ "opencode-go": "environment" });
+    expect(promptMock.textCalls).toHaveLength(0);
+    expect(promptMock.multiselectAnswers).toHaveLength(0);
+  });
+
+  it("recomputes provider setup when a memory edit changes hidden setup model refs", async () => {
+    promptMock.selectAnswers.push("edit", "3", "memory:bujo", "create");
+    promptMock.confirmAnswers.push(false); // observability while the existing review flow advances
+    const result = await runSetupRepairWizard({
+      cwd: "/tmp/agent",
+      answers: defaultAnswers({ model: "codex:gpt-5.6-terra" }),
+      runProviderSetup: false,
+      providerSetupSecrets: {},
+      providerEnvironmentSecrets: {},
+      piApiKeyPersistenceByProvider: {},
+      credentialStates: { codex: "credential_detected" },
+      moduleSecrets: {},
+    });
+
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    expect(result.answers.memory).toBe("memory:bujo");
+    expect(result.runProviderSetup).toBe(true);
   });
 
   it("repairs only model settings and preserves unrelated answers", async () => {

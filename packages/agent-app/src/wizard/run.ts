@@ -42,7 +42,6 @@ import {
   MODEL_AUTOCOMPLETE_MAX_ITEMS,
   modelSelectOptions,
   piModelSelectOptions,
-  previousWizardStep,
   presetSelectOptions,
   ROUTE_SAFETY_OPTIONS,
   toolMultiselectOptions,
@@ -81,6 +80,19 @@ export interface WizardRunContext {
   readonly piAuthPath?: string;
   /** Values parsed from the destination `.env`; shell-only values must not be supplied here. */
   readonly persistedEnv?: Readonly<Record<string, string | undefined>>;
+}
+
+/** Ephemeral setup state retained while the CLI repairs a pre-write plan. */
+export interface SetupRepairRunContext extends WizardRunContext {
+  /** Optional focused edit step; omitted starts at Creation review. */
+  readonly initialStep?: number;
+  readonly answers: WizardAnswers;
+  readonly runProviderSetup: boolean;
+  readonly providerSetupSecrets: Readonly<Record<string, string>>;
+  readonly providerEnvironmentSecrets: Readonly<Record<string, string>>;
+  readonly piApiKeyPersistenceByProvider: Readonly<Record<string, "secure-store" | "environment">>;
+  readonly credentialStates: Readonly<Record<string, ProviderCredentialState>>;
+  readonly moduleSecrets: Readonly<Record<string, string>>;
 }
 
 /** A focused model repair never re-prompts or returns channel/module secrets. */
@@ -232,6 +244,13 @@ interface CollectedAnswers {
   readonly moduleSecrets: Readonly<Record<string, string>>;
 }
 
+interface InteractiveCollectionOptions {
+  readonly initialStep?: number;
+  readonly initialReturnToReviewStep?: number;
+  readonly returnToCallerOnReviewBack?: boolean;
+  readonly repairState?: SetupRepairRunContext;
+}
+
 /**
  * The interactive `init` wizard: a colourful, step-by-step flow that COLLECTS a
  * {@link WizardAnswers} and hands it back — it never writes anything. The caller
@@ -255,6 +274,40 @@ export async function runInitWizard(ctx: WizardRunContext): Promise<WizardOutcom
   } catch (error) {
     if (error instanceof WizardCancelled) {
       p.cancel("Cancelled — nothing was written.");
+      return { status: "cancelled" };
+    }
+    throw error;
+  }
+}
+
+/**
+ * Re-open an already reviewed setup at the Creation review. The caller keeps
+ * ownership of the original state: Escape returns `cancelled`, and no mutable
+ * credential or answer state is exposed unless the operator confirms a repair.
+ */
+export async function runSetupRepairWizard(ctx: SetupRepairRunContext): Promise<WizardOutcome> {
+  try {
+    p.log.step("Repair setup choices");
+    const initialStep = ctx.initialStep ?? 8;
+    const result = await collectInteractiveFromSeed(ctx, ctx.answers, {
+      initialStep,
+      ...(initialStep === 8 ? {} : { initialReturnToReviewStep: initialStep }),
+      returnToCallerOnReviewBack: true,
+      repairState: ctx,
+    });
+    return {
+      status: "answers",
+      answers: result.answers,
+      runProviderSetup: result.runProviderSetup,
+      providerSetupSecrets: result.providerSetupSecrets,
+      providerEnvironmentSecrets: result.providerEnvironmentSecrets,
+      piApiKeyPersistenceByProvider: result.piApiKeyPersistenceByProvider,
+      credentialStates: result.credentialStates,
+      moduleSecrets: result.moduleSecrets,
+    };
+  } catch (error) {
+    if (error instanceof WizardBack || error instanceof WizardCancelled) {
+      p.log.info("Returning to the preflight recovery menu; previous setup choices were kept.");
       return { status: "cancelled" };
     }
     throw error;
@@ -544,12 +597,79 @@ async function collectFromPreset(ctx: WizardRunContext, presetId: string): Promi
   }));
 }
 
+/**
+ * Whether a logical wizard step will actually ask the operator anything for
+ * the current draft. Some runtime families make Tools and Safety informative
+ * only; treating those as back-navigation destinations traps Escape in a
+ * silent forward loop.
+ */
+function wizardStepHasInteractivePrompt(step: number, draft: DraftAnswers): boolean {
+  switch (step) {
+    case 0:
+    case 1:
+    case 2:
+    case 3:
+    case 7:
+    case 8:
+      return true;
+    case 4:
+      return [...draft.channels, ...(draft.memory === undefined ? [] : [draft.memory])]
+        .some((id) => findModule(id)?.inputs.some((input) => input.secret !== true) === true);
+    case 5:
+      return !selectedRuntimeModels(draft).every(hasFixedAllowAllToolPolicyRef);
+    case 6:
+      return safetyPolicyHasInteractivePrompt(draft);
+    default:
+      return false;
+  }
+}
+
+function safetyPolicyHasInteractivePrompt(draft: DraftAnswers): boolean {
+  const models = selectedRuntimeModels(draft);
+  const mixed = isMixedRouteChain(models);
+  if (mixed) return true;
+
+  const hasSandboxableTools = isAllowAllTools(draft.allowedTools)
+    || draft.allowedTools.some((tool) => SANDBOXABLE_TOOLS.has(tool));
+  const hasPiRoute = models.some((model) => model.startsWith("pi:"));
+  const providerNative = models.some((model) => !model.startsWith("pi:"));
+  if (hasSandboxableTools && hasPiRoute) return true;
+  if (draft.routeSafety === "per-route-native" && providerNative) return true;
+  return hasSandboxableTools
+    && providerNative
+    && !models.every(isDirectCodexRef)
+    && isAllowAllTools(draft.allowedTools);
+}
+
+function previousInteractiveWizardStep(step: number, draft: DraftAnswers): number | undefined {
+  for (let candidate = step - 1; candidate >= 0; candidate -= 1) {
+    if (wizardStepHasInteractivePrompt(candidate, draft)) return candidate;
+  }
+  return undefined;
+}
+
 /** Shared custom/preset first-run chooser; seed answers only set sensible defaults. */
-async function collectInteractiveFromSeed(ctx: WizardRunContext, seed: WizardAnswers): Promise<CollectedAnswers> {
+async function collectInteractiveFromSeed(
+  ctx: WizardRunContext,
+  seed: WizardAnswers,
+  options: InteractiveCollectionOptions = {},
+): Promise<CollectedAnswers> {
   const draft = draftFrom(seed);
+  if (options.repairState !== undefined) {
+    draft.credentialStates = { ...options.repairState.credentialStates };
+  }
   const modelDiscoveryCache: { result?: ModelDiscoveryResult } = {};
-  let step = 0;
+  let step = options.initialStep ?? 0;
+  let returnToReviewAfterStep = options.initialReturnToReviewStep;
   const finalStep = 8;
+  const advanceAfter = (completedStep: number): void => {
+    if (returnToReviewAfterStep === completedStep) {
+      returnToReviewAfterStep = undefined;
+      step = finalStep;
+    } else {
+      step = completedStep + 1;
+    }
+  };
   for (;;) {
     const snapshot = cloneDraft(draft);
     let finalizing = false;
@@ -566,59 +686,108 @@ async function collectInteractiveFromSeed(ctx: WizardRunContext, seed: WizardAns
             placeholder: humanizeAgentName(basename(ctx.cwd)),
             validate: validateWizardAgentName,
           })).trim();
-          step += 1;
+          advanceAfter(0);
           break;
-        case 1:
+        case 1: {
+          const previousFamilies = selectedRuntimeModels(draft).map(runtimeFamily).join(",");
           await promptModelSettings(draft, ctx, modelDiscoveryCache);
-          step += 1;
+          const nextFamilies = selectedRuntimeModels(draft).map(runtimeFamily).join(",");
+          if (
+            returnToReviewAfterStep === 1
+            && (
+              previousFamilies !== nextFamilies
+              || !hasExactAllowAllTools(draft)
+              || hasInvalidUniformManagedSrtChain(draft)
+            )
+          ) {
+            p.log.info("The runtime route changed, so tool and sandbox safety choices must be confirmed again.");
+            await promptTools(draft);
+            await promptSafetyPolicy(draft);
+          }
+          advanceAfter(1);
           break;
-        case 2:
+        }
+        case 2: {
+          const previousChannels = new Set(draft.channels);
           draft.channels = [...await multiselect({
             message: "How will you talk to this agent?",
             options: channelSelectOptions({ readyOnly: true }),
             initialValues: draft.channels,
             required: false,
           })];
-          step += 1;
+          if (returnToReviewAfterStep === 2) {
+            await promptModuleInputs(
+              draft,
+              draft.channels.filter((channel) => !previousChannels.has(channel)),
+            );
+            await promptTools(draft);
+            await promptSafetyPolicy(draft);
+          }
+          advanceAfter(2);
           break;
+        }
         case 3: {
+          const previousMemory = draft.memory;
           const memory = await select({
             message: "Should the agent remember across conversations?",
             options: memorySelectOptions(),
             initialValue: draft.memory ?? "",
           });
           draft.memory = memory === "" ? undefined : memory;
-          step += 1;
+          if (
+            returnToReviewAfterStep === 3
+            && draft.memory !== undefined
+            && draft.memory !== previousMemory
+          ) {
+            await promptModuleInputs(draft, [draft.memory]);
+          }
+          advanceAfter(3);
           break;
         }
         case 4:
           await promptModuleInputs(draft);
-          step += 1;
+          advanceAfter(4);
           break;
         case 5:
           await promptTools(draft);
-          step += 1;
+          if (returnToReviewAfterStep === 5) {
+            await promptSafetyPolicy(draft);
+          }
+          advanceAfter(5);
           break;
         case 6:
           await promptSafetyPolicy(draft);
-          step += 1;
+          advanceAfter(6);
           break;
         case 7:
           draft.observability = await confirm({
             message: "Export traces to Phoenix (best-effort OTLP, sensitive data excluded)?",
             initialValue: draft.observability,
           });
-          step += 1;
+          advanceAfter(7);
           break;
         case 8: {
-          const reviewed = await confirmSummary(draft, ctx);
+          const reviewed = await confirmSummary(
+            draft,
+            ctx,
+            options.repairState === undefined
+              ? undefined
+              : {
+                  existing: options.repairState,
+                },
+          );
           if (reviewed.status === "edit") {
             step = reviewed.step;
+            returnToReviewAfterStep = reviewed.step === finalStep ? undefined : reviewed.step;
             break;
           }
           finalizing = true;
           const answers = toWizardAnswers(draft);
-          const moduleSecrets = await promptRequiredModuleSecrets(answers, ctx.persistedEnv);
+          const moduleSecrets = await promptRequiredModuleSecrets(
+            answers,
+            ctx.persistedEnv,
+            options.repairState?.moduleSecrets,
+          );
           return {
             answers,
             ...reviewed.providerSetup,
@@ -632,7 +801,13 @@ async function collectInteractiveFromSeed(ctx: WizardRunContext, seed: WizardAns
     } catch (error) {
       restoreDraft(draft, snapshot);
       if (error instanceof WizardBack) {
-        const previous = previousWizardStep(step);
+        if (options.returnToCallerOnReviewBack === true) throw error;
+        if (returnToReviewAfterStep === step) {
+          returnToReviewAfterStep = undefined;
+          step = finalStep;
+          continue;
+        }
+        const previous = previousInteractiveWizardStep(step, draft);
         if (previous === undefined) throw error;
         // Secret/auth collection happens after the review choice. Escape there
         // returns to the review rather than discarding unrelated answers.
@@ -877,8 +1052,12 @@ async function promptEffortForModel(
  * the answers into `draft.moduleInputs`. Required secrets are collected only after
  * the write confirmation so they can never appear in the plan summary.
  */
-async function promptModuleInputs(draft: DraftAnswers): Promise<void> {
-  const moduleIds = [...draft.channels, ...(draft.memory === undefined ? [] : [draft.memory])];
+async function promptModuleInputs(
+  draft: DraftAnswers,
+  requestedModuleIds?: readonly string[],
+): Promise<void> {
+  const moduleIds = requestedModuleIds
+    ?? [...draft.channels, ...(draft.memory === undefined ? [] : [draft.memory])];
   for (const id of moduleIds) {
     const module = findModule(id);
     if (module === undefined) {
@@ -888,14 +1067,19 @@ async function promptModuleInputs(draft: DraftAnswers): Promise<void> {
       if (input.secret === true) {
         continue;
       }
+      const currentValue = draft.moduleInputs[module.id]?.[input.id];
       const answer = await textPrompt({
           message: `${module.title}: ${input.label}`,
           placeholder: input.description,
           ...(input.default === undefined ? {} : { defaultValue: input.default }),
+          ...(currentValue === undefined ? {} : { initialValue: currentValue }),
+          ...(input.validate === undefined ? {} : { validate: input.validate }),
         });
       const trimmed = answer.trim();
       if (trimmed.length > 0) {
         (draft.moduleInputs[module.id] ??= {})[input.id] = trimmed;
+      } else {
+        delete draft.moduleInputs[module.id]?.[input.id];
       }
     }
   }
@@ -905,11 +1089,16 @@ async function promptModuleInputs(draft: DraftAnswers): Promise<void> {
 async function promptRequiredModuleSecrets(
   answers: WizardAnswers,
   persistedEnv: Readonly<Record<string, string | undefined>> = {},
+  existing: Readonly<Record<string, string>> = {},
 ): Promise<Readonly<Record<string, string>>> {
   const plan = composeWizardPlan(answers, { dirBasename: "agent", skillsRootExists: false });
   const secrets: Record<string, string> = {};
   for (const secret of plan.secrets) {
     if (!secret.required || hasNonEmptyValue(persistedEnv[secret.envVar])) continue;
+    if (hasNonEmptyValue(existing[secret.envVar])) {
+      secrets[secret.envVar] = existing[secret.envVar]!;
+      continue;
+    }
     secrets[secret.envVar] = await passwordPrompt({
       message: `${secret.label} (${secret.envVar})`,
       validate: (value) => (value ?? "").trim().length === 0 ? "This secret is required for the selected capability." : undefined,
@@ -1054,17 +1243,33 @@ type CreationReviewResult =
     }
   | { readonly status: "edit"; readonly step: number };
 
+interface CreationReviewOptions {
+  readonly existing: SetupRepairRunContext;
+}
+
 async function confirmSummary(
   draft: DraftAnswers,
   ctx: WizardRunContext,
+  options?: CreationReviewOptions,
 ): Promise<CreationReviewResult> {
   const answers = toWizardAnswers(draft);
   const plan = await composePlanForCwd(answers, ctx.cwd);
   const setupModelRefs = referencedSetupModelRefs(plan);
+  const existingSetupModelRefs = options === undefined
+    ? undefined
+    : referencedSetupModelRefs(await composePlanForCwd(options.existing.answers, ctx.cwd));
+  const preserveProviderSetup = options !== undefined
+    && existingSetupModelRefs !== undefined
+    && sameOrderedValues(setupModelRefs, existingSetupModelRefs);
   const preliminarySetupPlan = providerSetupPlan(plan, ctx, draft.credentialStates);
   // Resolve destinations before the final review; collect masked values only
   // after the operator chooses Create.
-  const piApiKeyPersistenceByProvider = await selectPiApiKeyPersistence(preliminarySetupPlan);
+  const piApiKeyPersistenceByProvider = preserveProviderSetup
+    ? { ...options.existing.piApiKeyPersistenceByProvider }
+    : await selectPiApiKeyPersistence(
+        preliminarySetupPlan,
+        options?.existing.piApiKeyPersistenceByProvider,
+      );
   const setupPlan = providerSetupPlan(
     plan,
     ctx,
@@ -1179,7 +1384,12 @@ async function confirmSummary(
 
   const choice = await select({
     message: `Create “${draft.name}”?`,
-    options: creationReviewOptions({ setupRequired: setupPlan.actions.length > 0 || draft.sandbox }),
+    options: creationReviewOptions({
+      setupRequired:
+        (preserveProviderSetup
+          ? options.existing.runProviderSetup
+          : setupPlan.actions.length > 0) || draft.sandbox,
+    }),
     initialValue: "create",
   });
   if (choice === "cancel") {
@@ -1204,9 +1414,23 @@ async function confirmSummary(
       });
       return { status: "edit", step: Number(step) };
     } catch (error) {
-      if (error instanceof WizardBack) return { status: "edit", step: 8 };
+      if (error instanceof WizardBack) {
+        if (options !== undefined) throw error;
+        return { status: "edit", step: 8 };
+      }
       throw error;
     }
+  }
+  if (preserveProviderSetup) {
+    return {
+      status: "create",
+      providerSetup: {
+        runProviderSetup: options.existing.runProviderSetup,
+        providerSetupSecrets: { ...options.existing.providerSetupSecrets },
+        providerEnvironmentSecrets: { ...options.existing.providerEnvironmentSecrets },
+        piApiKeyPersistenceByProvider: { ...options.existing.piApiKeyPersistenceByProvider },
+      },
+    };
   }
   let providerSetup;
   try {
@@ -1214,9 +1438,14 @@ async function confirmSummary(
       setupPlan,
       setupPlan.actions.length > 0,
       piApiKeyPersistenceByProvider,
+      options?.existing.providerSetupSecrets,
+      options?.existing.providerEnvironmentSecrets,
     );
   } catch (error) {
-    if (error instanceof WizardBack) return { status: "edit", step: 8 };
+    if (error instanceof WizardBack) {
+      if (options !== undefined) throw error;
+      return { status: "edit", step: 8 };
+    }
     throw error;
   }
   return {
@@ -1227,6 +1456,10 @@ async function confirmSummary(
 
 function selectedRuntimeModels(draft: Pick<DraftAnswers, "model" | "fallbacks">): string[] {
   return [draft.model, ...draft.fallbacks.map((fallback) => fallback.model)];
+}
+
+function sameOrderedValues(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function hasFixedAllowAllToolPolicyRef(model: string): boolean {
@@ -1331,6 +1564,8 @@ async function collectProviderSetup(
   setupPlan: PlannedProviderSetup,
   runProviderSetup: boolean,
   selectedPersistence?: Readonly<Record<string, "secure-store" | "environment">>,
+  existingSetupSecrets: Readonly<Record<string, string>> = {},
+  existingEnvironmentSecrets: Readonly<Record<string, string>> = {},
 ): Promise<{
   readonly runProviderSetup: boolean;
   readonly providerSetupSecrets: Readonly<Record<string, string>>;
@@ -1351,11 +1586,19 @@ async function collectProviderSetup(
   for (const action of setupPlan.actions) {
     if (!isProviderSetupPiApiKeyAction(action)) continue;
     if (action.persistence === "environment") {
+      if (hasNonEmptyValue(existingEnvironmentSecrets[action.envVar])) {
+        providerEnvironmentSecrets[action.envVar] = existingEnvironmentSecrets[action.envVar]!;
+        continue;
+      }
       providerEnvironmentSecrets[action.envVar] = await passwordPrompt({
         message: `${action.label} (${action.envVar}, saved to owner-only .env)`,
         validate: (value) => (value ?? "").trim().length === 0 ? "API key is required." : undefined,
         clearOnError: true,
       });
+      continue;
+    }
+    if (hasNonEmptyValue(existingSetupSecrets[action.id])) {
+      providerSetupSecrets[action.id] = existingSetupSecrets[action.id]!;
       continue;
     }
     providerSetupSecrets[action.id] = await passwordPrompt({
@@ -1369,12 +1612,14 @@ async function collectProviderSetup(
 
 async function selectPiApiKeyPersistence(
   setupPlan: PlannedProviderSetup,
+  existing: Readonly<Record<string, "secure-store" | "environment">> = {},
 ): Promise<Record<string, "secure-store" | "environment">> {
   const selected: Record<string, "secure-store" | "environment"> = {};
   for (const action of setupPlan.actions) {
     if (!isProviderSetupPiApiKeyAction(action)) continue;
     const label = action.label.replace(/ \((?:secure store|environment)\)$/u, "");
-    selected[action.provider] = await select({
+    const existingSelection = existing[action.provider];
+    selected[action.provider] = existingSelection ?? await select({
       message: `Where should ${label} store ${action.envVar}?`,
       options: [
         { value: "secure-store", label: "Store securely in Pi auth.json", hint: "owner-only Pi credential store" },

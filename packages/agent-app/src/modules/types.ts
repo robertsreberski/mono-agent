@@ -22,6 +22,8 @@ interface ModuleInputBase {
 /** A non-secret module input, safe to store in the composed JSON fragment. */
 export interface PublicModuleInput extends ModuleInputBase {
   readonly secret?: false;
+  /** Return a user-facing validation error, or undefined when the value is valid. */
+  readonly validate?: (value: string | undefined) => string | undefined;
 }
 
 /** A secret module input, always externalized and never included in config JSON. */

@@ -1,4 +1,5 @@
 import type { MonoAgentConfigJson } from "@mono-agent/config";
+import { validateCronExpression } from "@mono-agent/cron-adapter";
 
 import { DEFAULT_PI_MEMORY_MODEL, memoryBlock } from "./base.js";
 import type { CapabilityModule, ModuleKind } from "./types.js";
@@ -177,11 +178,25 @@ const channelCron: CapabilityModule = {
     {
       id: "cronExpression",
       label: "Cron expression",
-      description: "When the digest runs (default 08:00 daily).",
+      description: "Five-field UTC schedule for the digest (default 08:00 UTC daily).",
       default: "0 8 * * *",
+      validate: (value) => {
+        const result = validateCronExpression(value);
+        if (result.ok) return undefined;
+        if (result.code === "required") {
+          return "Enter a cron expression using five fields: minute hour day-of-month month day-of-week.";
+        }
+        if (result.code === "field_count") {
+          return "Use exactly five fields: minute hour day-of-month month day-of-week (for example, 0 8 * * *).";
+        }
+        return `Invalid cron expression: ${result.reason}`;
+      },
     },
   ],
-  configFragment: () => ({ cron: { enabled: true } }),
+  // Directory-backed jobs are active by being present and enabled in cron/*.md.
+  // Setting cron.enabled would select the legacy single-job form, which also
+  // requires inline expression/prompt fields and prevents folder jobs loading.
+  configFragment: () => ({ cron: { dir: "cron" } }),
   files: (values) => [
     {
       path: "cron/digest.md",
@@ -199,7 +214,7 @@ const channelCron: CapabilityModule = {
     },
   ],
   validateExpectations: [
-    { sectionId: "channel:cron", mustBe: "ok", note: "Author at least one cron/*.md job." },
+    { sectionId: "channel:cron", mustBe: "ok", note: "Use at least one valid enabled cron/*.md job." },
   ],
 };
 

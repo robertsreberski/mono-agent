@@ -608,12 +608,6 @@ async function runSelectedReadinessRoutes(
       ...displayRoute,
       total: selected.routes.length,
     });
-    if (successful.has(route.key)) {
-      const completed: ReadinessRouteResult = { ...displayRoute, status: "skipped_verified" };
-      results.push(completed);
-      await notifyReadinessProgress(options.onRouteComplete, completed);
-      continue;
-    }
     if (options.abortSignal?.aborted === true) {
       const completed: ReadinessRouteResult = {
         ...displayRoute,
@@ -631,6 +625,12 @@ async function runSelectedReadinessRoutes(
         routes: results,
         interrupted: true,
       };
+    }
+    if (successful.has(route.key)) {
+      const completed: ReadinessRouteResult = { ...displayRoute, status: "skipped_verified" };
+      results.push(completed);
+      await notifyReadinessProgress(options.onRouteComplete, completed);
+      continue;
     }
 
     const { resume: _resume, ...singleOptions } = options;

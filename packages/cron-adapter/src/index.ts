@@ -15,6 +15,12 @@ export type {
   CronRequestMetadata,
 } from "./scheduler.js";
 
+export { validateCronExpression } from "./cron-expression.js";
+export type {
+  CronExpressionValidationOptions,
+  CronExpressionValidationResult,
+} from "./cron-expression.js";
+
 export {
   CRON_CONFIG_FIELDS,
   loadCronAdapterConfig,

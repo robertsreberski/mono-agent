@@ -24,6 +24,18 @@ Set `notify: true` on a job to deliver its successful, non-empty final answer to
 
 Notifying **multiple** or **other** conversations from one trigger is not a built-in: compose it from several cron jobs, each with its own `notifyConversationId`, or from a skill.
 
+## Expression format
+
+Cron expressions have exactly five positional fields:
+
+```text
+minute hour day-of-month month day-of-week
+```
+
+For example, `0 9 * * *` runs every day at 09:00. The default timezone is `UTC`; set an IANA timezone such as `Europe/Rome` when the schedule should follow local civil time. A seconds field and macros such as `@daily` are not supported.
+
+When you select **Scheduled jobs (cron)** in the guided `mono-agent init` wizard, the expression is validated at the prompt. Its default is `0 8 * * *` at 08:00 UTC. The wizard scaffolds `cron/digest.md` only after the expression is accepted, then validates the effective folder—including any existing jobs that init will preserve—before making runtime model calls.
+
 ## Configuration
 
 ```json
@@ -53,7 +65,7 @@ Notifying **multiple** or **other** conversations from one trigger is not a buil
 | `cron.jobs[]` | array | no | `[]` | Inline job definitions. Merges with `*.md` files in `cron.dir`. |
 | `jobs[].id` | string | yes | — | Unique job id. Duplicate ids (across config and folder) are an error. |
 | `jobs[].enabled` | boolean | no | `true` | Set `false` to keep a job defined but unscheduled. |
-| `jobs[].expression` | string | yes | — | Five-field cron expression (`min hour dom month dow`). |
+| `jobs[].expression` | string | yes | — | Five fields: `minute hour day-of-month month day-of-week`; no seconds field or macros. |
 | `jobs[].timezone` | string | no | `UTC` | IANA timezone (e.g. `Europe/Rome`) the expression is evaluated in. |
 | `jobs[].prompt` | string | yes | — | Text sent to the responder on each tick. |
 | `jobs[].conversationId` | string | no | per-tick | Share memory/history across ticks (see below). |

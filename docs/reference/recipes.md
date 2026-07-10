@@ -22,7 +22,7 @@ mono-agent presets show <id>                 # generated config + .env.example +
 mono-agent validate --preset <id>            # completeness report against the preset's promises
 ```
 
-The wizard first asks whether to start from a preset or go fully custom, then prompts for public name, searchable model/fallback routes and per-model effort, channels, memory, tools, route safety/SRT, observability, and a concrete creation review. It runs one strict no-tool call per selected route (90 seconds cloud, 240 seconds local each) and a complete selected-capability gate before offering start. Escape/Ctrl-C interrupts safely; recovery can resume unchanged verified routes or restart all checks. Any selected `waiting` expectation keeps the scaffold explicitly incomplete. `--dry-run` is scaffold-only and previews files without writing them.
+The wizard first asks whether to start from a preset or go fully custom, then prompts for public name, searchable model/fallback routes and per-model effort, channels, memory, tools, route safety/SRT, observability, and a concrete creation review. Before any real or potentially billed model call, it stages the complete selected-capability configuration against the effective files init will create or preserve; only a `waiting` credential that the live route can prove is deferred. Configuration failures name the capability and open the existing seeded answers at the implicated section when unambiguous, rather than offering unrelated authentication/model recovery. Once configuration passes, the wizard runs one strict no-tool call per selected route (90 seconds cloud, 240 seconds local each). Escape/Ctrl-C interrupts safely before the next route, then offers resume/restart/edit/cancel; unchanged verified routes can resume, while changing any route or effort invalidates the route-plan proofs and credential changes do the same. Any selected `waiting` expectation keeps the scaffold explicitly incomplete. `--dry-run` is scaffold-only and previews files without writing them.
 
 ## Presets
 
@@ -49,7 +49,7 @@ The wizard composes an agent from these modules. Selecting one auto-checks its r
 | `channel:telegram` | Chat with your agent via a Telegram bot (chat-id allowlist). | `TelegramSendMessage`, `TelegramAskButtons` |
 | `channel:slack` | Socket-Mode Slack bot scoped to a channel allowlist. | `SlackSendMessage` |
 | `channel:openai-api` | Expose the runtime as an OpenAI-compatible loopback endpoint. | — |
-| `channel:cron` | Run the agent on a schedule; scaffolds `cron/digest.md`. | — |
+| `channel:cron` | Run on a five-field schedule (`minute hour day-of-month month day-of-week`, UTC by default). Guided init validates it inline, then scaffolds `cron/digest.md`; seconds and macros such as `@daily` are unsupported. | — |
 | `channel:a2a` | Expose the agent over A2A (Agent Card + provider endpoint). | — |
 | `memory:lite` | SQLite full-text recall, zero external dependencies. | — |
 | `memory:journal` | Semantic recall via local Ollama embeddings. | — |

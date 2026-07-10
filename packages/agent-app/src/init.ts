@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { link, lstat, mkdir, open, realpath, rename, rm, stat, writeFile, type FileHandle } from "node:fs/promises";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { parseEnv } from "node:util";
 
@@ -188,6 +188,7 @@ export async function initMonoAgentFolder(
   }
 
   const identityPath = join(dir, "IDENTITY.md");
+  await assertSafeScaffoldTarget(identityPath, "identity");
   await planFile(identityPath, () => writeFile(
     identityPath,
     identityTemplate(
@@ -199,7 +200,12 @@ export async function initMonoAgentFolder(
   ));
 
   for (const subdir of [join(dir, ".mono-agent", "artifacts"), join(dir, ".mono-agent", "workspace")]) {
-    await planFile(subdir, () => mkdir(subdir, { recursive: true }));
+    await assertSafeScaffoldTarget(subdir, "working directory");
+    await ensureSafeScaffoldParent(dir, subdir, !dryRun);
+    await planFile(subdir, async () => {
+      await ensureSafeScaffoldParent(dir, subdir, true);
+      await createSafeScaffoldDirectory(subdir);
+    });
   }
 
   const ctx: ComposeContext = {
@@ -209,6 +215,7 @@ export async function initMonoAgentFolder(
   const plan = composeWizardPlan(answers, ctx);
 
   const configPath = join(dir, "mono-agent.config.json");
+  await assertSafeScaffoldTarget(configPath, "config");
   if (options.requireConfigCreation === true) {
     if (dryRun) {
       if (await pathExists(configPath)) {
@@ -226,6 +233,7 @@ export async function initMonoAgentFolder(
   const envExample = plan.envExample;
   if (typeof envExample === "string" && envExample.length > 0) {
     const envExamplePath = join(dir, ".env.example");
+    await assertSafeScaffoldTarget(envExamplePath, "environment example");
     await planFile(envExamplePath, () => writeFile(envExamplePath, envExample, { flag: "wx" }));
   }
 
@@ -262,9 +270,11 @@ export async function initMonoAgentFolder(
   }
 
   for (const file of plan.files) {
-    const filePath = join(dir, file.path);
+    const filePath = resolve(dir, file.path);
+    await ensureSafeScaffoldParent(dir, filePath, !dryRun);
+    await assertSafeScaffoldTarget(filePath, `generated capability file ${file.path}`);
     await planFile(filePath, async () => {
-      await mkdir(dirname(filePath), { recursive: true });
+      await ensureSafeScaffoldParent(dir, filePath, true);
       await writeFile(filePath, file.contents, { flag: "wx" });
     });
   }
@@ -1566,5 +1576,75 @@ async function pathExists(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+function scaffoldPathEscapesRoot(pathRelative: string): boolean {
+  return pathRelative === ".." || pathRelative.startsWith(`..${sep}`) || isAbsolute(pathRelative);
+}
+
+/**
+ * Refuse generated scaffold artifacts whose parent chain escapes through a
+ * symlink. This protects ordinary and save-incomplete init alike; staging is a
+ * validation boundary, not authorization to weaken the eventual write path.
+ */
+async function ensureSafeScaffoldParent(
+  root: string,
+  filePath: string,
+  createMissing: boolean,
+): Promise<void> {
+  const pathRelative = relative(root, filePath);
+  if (pathRelative.length === 0 || scaffoldPathEscapesRoot(pathRelative)) {
+    throw new Error(`Refusing to create scaffold artifact outside the agent directory: ${filePath}`);
+  }
+  const parentRelative = dirname(pathRelative);
+  if (parentRelative === ".") return;
+
+  let current = root;
+  for (const segment of parentRelative.split(sep).filter((part) => part.length > 0)) {
+    const next = join(current, segment);
+    let entry;
+    try {
+      entry = await lstat(next);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (!createMissing) return;
+      try {
+        await mkdir(next);
+      } catch (mkdirError) {
+        if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError;
+      }
+      entry = await lstat(next);
+    }
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Refusing to create scaffold artifact through symbolic-link parent: ${next}`);
+    }
+    if (!entry.isDirectory()) {
+      throw new Error(`Refusing to create scaffold artifact through non-directory parent: ${next}`);
+    }
+    current = next;
+  }
+}
+
+async function assertSafeScaffoldTarget(path: string, label: string): Promise<void> {
+  try {
+    const entry = await lstat(path);
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Refusing to use symbolic-link scaffold ${label}: ${path}`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+async function createSafeScaffoldDirectory(path: string): Promise<void> {
+  try {
+    await mkdir(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  const entry = await lstat(path);
+  if (entry.isSymbolicLink() || !entry.isDirectory()) {
+    throw new Error(`Refusing non-directory scaffold working path: ${path}`);
   }
 }

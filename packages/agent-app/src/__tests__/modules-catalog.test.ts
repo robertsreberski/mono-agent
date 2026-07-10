@@ -71,10 +71,28 @@ describe("capability-module catalog", () => {
     const module = findModule("channel:cron");
     expect(module).toBeDefined();
     const values = resolveModuleInputs(module!, { model: MODEL, cronExpression: "30 7 * * 1-5" });
+    expect(module!.configFragment(values).cron).toEqual({ dir: "cron" });
     const files = module!.files?.(values) ?? [];
     expect(files).toHaveLength(1);
     expect(files[0]?.path).toBe("cron/digest.md");
     expect(files[0]?.contents).toContain("30 7 * * 1-5");
+  });
+
+  it("validates cron input with actionable five-field messages", () => {
+    const input = findModule("channel:cron")?.inputs.find((candidate) => candidate.id === "cronExpression");
+    expect(input?.secret).not.toBe(true);
+    if (input === undefined || input.secret === true) return;
+    expect(input.validate?.("   ")).toBe(
+      "Enter a cron expression using five fields: minute hour day-of-month month day-of-week.",
+    );
+    expect(input.validate?.("0 8 * * * *")).toBe(
+      "Use exactly five fields: minute hour day-of-month month day-of-week (for example, 0 8 * * *).",
+    );
+    expect(input.validate?.("61 8 * * *")).toMatch(/^Invalid cron expression: /u);
+    expect(input.validate?.("30 7 * * 1-5")).toBeUndefined();
+    expect(input.description).toContain("UTC");
+    expect(findModule("channel:cron")?.validateExpectations[0]?.note)
+      .toBe("Use at least one valid enabled cron/*.md job.");
   });
 
   it("groups modules by kind: exactly 2 providers and 6 channels", () => {

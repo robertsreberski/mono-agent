@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseEnv } from "node:util";
@@ -58,7 +58,7 @@ describe("initMonoAgentFolder", () => {
     expect(config.runtime.model).toBe("pi:ollama:gemma4:31b");
     expect(config.agent).toEqual({ name: "Atlas" });
     expect(config.slack).toEqual({ enabled: true });
-    expect(config.cron).toEqual({ enabled: true });
+    expect(config.cron).toEqual({ dir: "cron" });
     expect(await readFile(result.identityPath, "utf8")).toContain("You are Atlas, a mono agent");
   });
 
@@ -127,6 +127,39 @@ describe("initMonoAgentFolder", () => {
     const config = JSON.parse(await readFile(configPath, "utf8"));
     expect(config.runtime.model).toBe("codex:gpt-5.6-terra");
     expect(await readFile(result.identityPath, "utf8")).toBe("# Mine\n");
+  });
+
+  it("refuses to write generated capability files through a symlinked parent", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "agent-app-init-outside-"));
+    try {
+      await symlink(outside, join(dir, "cron"));
+      const answers = defaultAnswers({
+        channels: ["channel:cron"],
+        moduleInputs: { "channel:cron": { cronExpression: "0 8 * * *" } },
+      });
+
+      await expect(initMonoAgentFolder({ dir, answers })).rejects.toThrow(
+        /Refusing to create scaffold artifact through symbolic-link parent/u,
+      );
+      await expect(access(join(outside, "digest.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to create working directories through a symlinked scaffold parent", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "agent-app-workspace-outside-"));
+    try {
+      await symlink(outside, join(dir, ".mono-agent"));
+
+      await expect(initMonoAgentFolder({ dir })).rejects.toThrow(
+        /Refusing to create scaffold artifact through symbolic-link parent/u,
+      );
+      await expect(access(join(outside, "artifacts"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(join(outside, "workspace"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
   it("merges required secrets into a private env file without replacing existing values or comments", async () => {

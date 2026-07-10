@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, opendir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseEnv } from "node:util";
@@ -41,6 +41,266 @@ function replaceProcessEnvironment(env: CliEnvironment): void {
 
 function escapesRoot(relativePath: string): boolean {
   return relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath);
+}
+
+const DEFAULT_CRON_DIRECTORY = "cron";
+const MAX_STAGED_FILES = 256;
+const MAX_STAGED_DIRECTORY_ENTRIES = 4_096;
+const MAX_STAGED_FILE_BYTES = 1_048_576;
+const MAX_STAGED_TOTAL_BYTES = 8 * 1_048_576;
+
+interface StagingFileBudget {
+  count: number;
+  bytes: number;
+}
+
+function throwIfStagingAborted(signal: AbortSignal | undefined): void {
+  signal?.throwIfAborted();
+}
+
+function stagingRelativePath(
+  root: string,
+  candidate: string,
+  label: string,
+  allowRoot = false,
+  rootDescription = "its source root",
+): string {
+  const pathRelative = relative(root, candidate);
+  if ((!allowRoot && pathRelative.length === 0) || escapesRoot(pathRelative)) {
+    throw new Error(`Refusing to stage ${label} outside ${rootDescription}.`);
+  }
+  return pathRelative;
+}
+
+function consumeStagingBudget(budget: StagingFileBudget, path: string, bytes: number): void {
+  if (bytes > MAX_STAGED_FILE_BYTES) {
+    throw new Error(`Refusing to stage ${path} because it exceeds ${MAX_STAGED_FILE_BYTES} bytes.`);
+  }
+  if (budget.count >= MAX_STAGED_FILES) {
+    throw new Error(`Refusing to stage more than ${MAX_STAGED_FILES} existing/generated files.`);
+  }
+  if (budget.bytes + bytes > MAX_STAGED_TOTAL_BYTES) {
+    throw new Error(`Refusing to stage more than ${MAX_STAGED_TOTAL_BYTES} total file bytes.`);
+  }
+  budget.count += 1;
+  budget.bytes += bytes;
+}
+
+function pathSegments(pathRelative: string): string[] {
+  return pathRelative.length === 0 ? [] : pathRelative.split(sep).filter((part) => part.length > 0);
+}
+
+async function existingDirectoryWithoutSymlinks(
+  canonicalRoot: string,
+  pathRelative: string,
+  label: string,
+  signal: AbortSignal | undefined,
+): Promise<string | undefined> {
+  let current = canonicalRoot;
+  for (const segment of pathSegments(pathRelative)) {
+    throwIfStagingAborted(signal);
+    const next = join(current, segment);
+    let pathStat;
+    try {
+      pathStat = await lstat(next);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    if (pathStat.isSymbolicLink()) {
+      throw new Error(`Refusing to stage symbolic-link ${label}: ${next}`);
+    }
+    if (!pathStat.isDirectory()) {
+      throw new Error(`Refusing to stage non-directory ${label}: ${next}`);
+    }
+    current = next;
+  }
+  const canonical = await realpath(current);
+  if (escapesRoot(relative(canonicalRoot, canonical))) {
+    throw new Error(`Refusing to stage ${label} outside its source root: ${current}`);
+  }
+  return canonical;
+}
+
+async function readExistingStagingFile(options: {
+  readonly canonicalRoot: string;
+  readonly pathRelative: string;
+  readonly label: string;
+  readonly signal?: AbortSignal;
+}): Promise<Buffer | undefined> {
+  const segments = pathSegments(options.pathRelative);
+  const fileName = segments.pop();
+  if (fileName === undefined) {
+    throw new Error(`Refusing to stage ${options.label} without a file name.`);
+  }
+  const parent = await existingDirectoryWithoutSymlinks(
+    options.canonicalRoot,
+    segments.join(sep),
+    `${options.label} parent`,
+    options.signal,
+  );
+  if (parent === undefined) return undefined;
+  throwIfStagingAborted(options.signal);
+  const path = join(parent, fileName);
+  let pathStat;
+  try {
+    pathStat = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  if (pathStat.isSymbolicLink()) {
+    throw new Error(`Refusing to stage symbolic-link ${options.label}: ${path}`);
+  }
+  if (!pathStat.isFile()) {
+    throw new Error(`Refusing to stage non-regular ${options.label}: ${path}`);
+  }
+
+  let handle;
+  try {
+    handle = await open(
+      path,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+    );
+  } catch (error) {
+    if (["ELOOP", "EMLINK"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+      throw new Error(`Refusing to stage symbolic-link ${options.label}: ${path}`);
+    }
+    throw error;
+  }
+  try {
+    const openedStat = await handle.stat();
+    if (!openedStat.isFile()) {
+      throw new Error(`Refusing to stage non-regular ${options.label}: ${path}`);
+    }
+    if (openedStat.size > MAX_STAGED_FILE_BYTES) {
+      throw new Error(`Refusing to stage ${options.label} because it exceeds ${MAX_STAGED_FILE_BYTES} bytes: ${path}`);
+    }
+    const contents = await handle.readFile();
+    throwIfStagingAborted(options.signal);
+    if (contents.length > MAX_STAGED_FILE_BYTES) {
+      throw new Error(`Refusing to stage ${options.label} because it exceeds ${MAX_STAGED_FILE_BYTES} bytes: ${path}`);
+    }
+    const currentStat = await lstat(path);
+    if (
+      currentStat.isSymbolicLink() ||
+      !currentStat.isFile() ||
+      currentStat.dev !== openedStat.dev ||
+      currentStat.ino !== openedStat.ino
+    ) {
+      throw new Error(`Refusing to stage ${options.label} because it changed during preflight: ${path}`);
+    }
+    return contents;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function writeStagedFile(options: {
+  readonly stagingRoot: string;
+  readonly pathRelative: string;
+  readonly contents: Buffer;
+  readonly budget: StagingFileBudget;
+  readonly stagedPaths: Set<string>;
+  readonly signal?: AbortSignal;
+}): Promise<void> {
+  if (options.stagedPaths.has(options.pathRelative)) return;
+  throwIfStagingAborted(options.signal);
+  consumeStagingBudget(options.budget, options.pathRelative, options.contents.length);
+  const path = resolve(options.stagingRoot, options.pathRelative);
+  stagingRelativePath(
+    options.stagingRoot,
+    path,
+    `file ${options.pathRelative}`,
+    false,
+    "the disposable agent folder",
+  );
+  await mkdir(dirname(path), { recursive: true });
+  throwIfStagingAborted(options.signal);
+  await writeFile(path, options.contents, { flag: "wx", mode: 0o600 });
+  options.stagedPaths.add(options.pathRelative);
+}
+
+function effectiveCronDirectory(plan: WizardPlan, env: Readonly<Record<string, string | undefined>>): string {
+  const envDirectory = env.MONO_AGENT_CRON_DIR?.trim();
+  if (envDirectory !== undefined && envDirectory.length > 0) return envDirectory;
+  const cron = (plan.configJson as Record<string, unknown>).cron;
+  if (typeof cron === "object" && cron !== null && !Array.isArray(cron)) {
+    const configured = (cron as Record<string, unknown>).dir;
+    if (typeof configured === "string" && configured.trim().length > 0) return configured.trim();
+  }
+  return DEFAULT_CRON_DIRECTORY;
+}
+
+async function stageExistingCronFiles(options: {
+  readonly sourceRoot: string;
+  readonly stagingRoot: string;
+  readonly plan: WizardPlan;
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly budget: StagingFileBudget;
+  readonly stagedPaths: Set<string>;
+  readonly signal?: AbortSignal;
+}): Promise<void> {
+  const configuredDirectory = effectiveCronDirectory(options.plan, options.env);
+  if (isAbsolute(configuredDirectory)) {
+    throw new Error(`Refusing to stage absolute cron directory ${configuredDirectory}.`);
+  }
+  const cronPath = resolve(options.sourceRoot, configuredDirectory);
+  const cronRelative = stagingRelativePath(
+    options.sourceRoot,
+    cronPath,
+    `cron directory ${configuredDirectory}`,
+    true,
+  );
+  const sourceCronDirectory = await existingDirectoryWithoutSymlinks(
+    options.sourceRoot,
+    cronRelative,
+    "cron directory",
+    options.signal,
+  );
+  if (sourceCronDirectory === undefined) return;
+
+  const names: string[] = [];
+  let scannedEntries = 0;
+  const directory = await opendir(sourceCronDirectory);
+  for await (const entry of directory) {
+    throwIfStagingAborted(options.signal);
+    scannedEntries += 1;
+    if (scannedEntries > MAX_STAGED_DIRECTORY_ENTRIES) {
+      throw new Error(`Refusing to scan more than ${MAX_STAGED_DIRECTORY_ENTRIES} cron directory entries.`);
+    }
+    if (!entry.name.toLowerCase().endsWith(".md")) continue;
+    if (!entry.isFile()) {
+      const kind = entry.isSymbolicLink() ? "symbolic-link" : "non-regular";
+      throw new Error(`Refusing to stage ${kind} cron job: ${join(sourceCronDirectory, entry.name)}`);
+    }
+    names.push(entry.name);
+    if (names.length > MAX_STAGED_FILES) {
+      throw new Error(`Refusing to stage more than ${MAX_STAGED_FILES} cron job files.`);
+    }
+  }
+
+  for (const name of names.sort()) {
+    throwIfStagingAborted(options.signal);
+    const pathRelative = cronRelative.length === 0 ? name : join(cronRelative, name);
+    const contents = await readExistingStagingFile({
+      canonicalRoot: options.sourceRoot,
+      pathRelative,
+      label: `cron job ${name}`,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+    if (contents === undefined) {
+      throw new Error(`Cron job disappeared during staging: ${join(options.sourceRoot, pathRelative)}`);
+    }
+    await writeStagedFile({
+      stagingRoot: options.stagingRoot,
+      pathRelative,
+      contents,
+      budget: options.budget,
+      stagedPaths: options.stagedPaths,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
 }
 
 /**
@@ -341,6 +601,104 @@ export interface FirstRunReadinessGate {
   readonly reasons: readonly string[];
 }
 
+const FIRST_RUN_DOCTOR_DETAIL_MAX_LENGTH = 300;
+
+function firstActionableDoctorDetail(
+  section: ValidationReport["sections"][number] | undefined,
+): string | undefined {
+  for (const rawDetail of section?.details ?? []) {
+    const detail = rawDetail.replace(/\s+/gu, " ").trim();
+    if (detail.length === 0) continue;
+    if (detail.length <= FIRST_RUN_DOCTOR_DETAIL_MAX_LENGTH) return detail;
+    return `${detail.slice(0, FIRST_RUN_DOCTOR_DETAIL_MAX_LENGTH - 1).trimEnd()}…`;
+  }
+  return undefined;
+}
+
+function expectationMismatchReason(
+  expectation: WizardPlan["validateExpectations"][number],
+  section: ValidationReport["sections"][number] | undefined,
+): string {
+  const actual = section?.status ?? "missing";
+  const label = section?.label.trim() || "Missing validation section";
+  const detail = firstActionableDoctorDetail(section);
+  return [
+    `${expectation.sectionId} must be ${expectation.mustBe}, but is ${actual} (${label} [${expectation.sectionId}]).`,
+    detail,
+    expectation.note?.trim(),
+  ].filter((part): part is string => part !== undefined && part.length > 0).join(" ");
+}
+
+function firstRunConfigurationReasons(options: {
+  readonly plan: WizardPlan;
+  readonly report: ValidationReport;
+  readonly secretPersistence: SecretPersistenceOutcome;
+  readonly deferWaitingCredentials: boolean;
+}): string[] {
+  const reasons: string[] = [];
+  const seenReasons = new Set<string>();
+  const mismatchedSectionIds = new Set<string>();
+  const addReason = (reason: string): void => {
+    if (seenReasons.has(reason)) return;
+    seenReasons.add(reason);
+    reasons.push(reason);
+  };
+
+  const byId = new Map(options.report.sections.map((section) => [section.id, section]));
+  for (const expectation of options.plan.validateExpectations) {
+    const section = byId.get(expectation.sectionId);
+    const actual = section?.status;
+    if (
+      actual === expectation.mustBe ||
+      (options.deferWaitingCredentials && expectation.sectionId === "credentials" && actual === "waiting")
+    ) {
+      continue;
+    }
+    mismatchedSectionIds.add(expectation.sectionId);
+    addReason(expectationMismatchReason(expectation, section));
+  }
+
+  if (!options.report.ok) {
+    const errorSections = options.report.sections.filter((section) => section.status === "error");
+    for (const section of errorSections) {
+      if (mismatchedSectionIds.has(section.id)) continue;
+      const detail = firstActionableDoctorDetail(section);
+      addReason(
+        `Validation error in ${section.label} [${section.id}].` +
+          (detail === undefined ? " Doctor reported an error." : ` ${detail}`),
+      );
+    }
+    if (errorSections.length === 0) {
+      addReason("The complete generated configuration has validation errors.");
+    }
+  }
+
+  if (options.secretPersistence.status === "refused") {
+    addReason(
+      `Secure secret persistence was refused${options.secretPersistence.reason === undefined ? "" : ` (${options.secretPersistence.reason})`}.` +
+        (options.secretPersistence.detail === undefined ? "" : ` ${options.secretPersistence.detail}`),
+    );
+  }
+  return reasons;
+}
+
+/**
+ * Gate the generated capability configuration before any paid or slow model
+ * checks. A waiting credential section is deliberately deferred to the exact
+ * live route proof; every other selected expectation must already be ready.
+ */
+export function evaluateFirstRunConfigurationReadiness(options: {
+  readonly plan: WizardPlan;
+  readonly report: ValidationReport;
+  readonly secretPersistence: SecretPersistenceOutcome;
+}): FirstRunReadinessGate {
+  const reasons = firstRunConfigurationReasons({
+    ...options,
+    deferWaitingCredentials: true,
+  });
+  return { ready: reasons.length === 0, reasons };
+}
+
 /** A readiness claim is stricter than ValidationReport.ok (which permits waiting). */
 export function evaluateFirstRunReadiness(options: {
   readonly plan: WizardPlan;
@@ -349,26 +707,12 @@ export function evaluateFirstRunReadiness(options: {
   /** Exact persistent runtime routes proven by successful live no-tool turns. */
   readonly verifiedCredentialModelRefs?: readonly string[];
 }): FirstRunReadinessGate {
-  const reasons: string[] = [];
-  if (!options.report.ok) {
-    reasons.push("The complete generated configuration has validation errors.");
-  }
-  const byId = new Map(options.report.sections.map((section) => [section.id, section]));
-  for (const expectation of options.plan.validateExpectations) {
-    const actual = byId.get(expectation.sectionId)?.status;
-    if (actual !== expectation.mustBe) {
-      reasons.push(
-        `${expectation.sectionId} must be ${expectation.mustBe}, but is ${actual ?? "missing"}.` +
-          (expectation.note === undefined ? "" : ` ${expectation.note}`),
-      );
-    }
-  }
-  if (options.secretPersistence.status === "refused") {
-    reasons.push(
-      `Secure secret persistence was refused${options.secretPersistence.reason === undefined ? "" : ` (${options.secretPersistence.reason})`}.` +
-        (options.secretPersistence.detail === undefined ? "" : ` ${options.secretPersistence.detail}`),
-    );
-  }
+  const reasons = firstRunConfigurationReasons({
+    plan: options.plan,
+    report: options.report,
+    secretPersistence: options.secretPersistence,
+    deferWaitingCredentials: false,
+  });
   const verified = new Set(options.verifiedCredentialModelRefs ?? []);
   for (const modelRef of selectedPersistentRuntimeModelRefs(options.plan)) {
     if (!verified.has(modelRef)) {
@@ -402,6 +746,8 @@ export interface ValidateWizardPlanInStagingOptions {
   readonly sourceCwd?: string;
   readonly env: Record<string, string | undefined>;
   readonly verifiedCredentialModelRefs: readonly string[];
+  /** Cooperative cancellation checked between every staging phase and before returning validation. */
+  readonly abortSignal?: AbortSignal;
   readonly validate?: typeof validateMonoAgentFolder;
 }
 
@@ -409,27 +755,52 @@ export interface ValidateWizardPlanInStagingOptions {
 export async function validateWizardPlanInStaging(
   options: ValidateWizardPlanInStagingOptions,
 ): Promise<ValidationReport> {
+  throwIfStagingAborted(options.abortSignal);
   const dir = await mkdtemp(join(tmpdir(), "mono-agent-first-run-"));
   const configPath = join(dir, "mono-agent.config.json");
+  const budget: StagingFileBudget = { count: 0, bytes: 0 };
+  const stagedPaths = new Set<string>();
   try {
+    throwIfStagingAborted(options.abortSignal);
+    const canonicalSourceCwd = options.sourceCwd === undefined
+      ? undefined
+      : await realpath(options.sourceCwd);
+    if (canonicalSourceCwd !== undefined && !(await stat(canonicalSourceCwd)).isDirectory()) {
+      throw new Error(`Staging source is not a directory: ${options.sourceCwd}`);
+    }
+    throwIfStagingAborted(options.abortSignal);
     await writeFile(configPath, `${JSON.stringify(options.plan.configJson, null, 2)}\n`, { mode: 0o600 });
-    await writeFile(
-      join(dir, "IDENTITY.md"),
-      "# First-run validation identity\n\nTemporary identity used only for setup validation.\n",
-      { mode: 0o600 },
-    );
+    const existingIdentity = canonicalSourceCwd === undefined
+      ? undefined
+      : await readExistingStagingFile({
+          canonicalRoot: canonicalSourceCwd,
+          pathRelative: "IDENTITY.md",
+          label: "existing identity",
+          ...(options.abortSignal === undefined ? {} : { signal: options.abortSignal }),
+        });
+    await writeStagedFile({
+      stagingRoot: dir,
+      pathRelative: "IDENTITY.md",
+      contents: existingIdentity ?? Buffer.from(
+        "# First-run validation identity\n\nTemporary identity used only for setup validation.\n",
+        "utf8",
+      ),
+      budget,
+      stagedPaths,
+      ...(options.abortSignal === undefined ? {} : { signal: options.abortSignal }),
+    });
+    throwIfStagingAborted(options.abortSignal);
     await mkdir(join(dir, ".mono-agent", "workspace"), { recursive: true });
     await mkdir(join(dir, ".mono-agent", "artifacts"), { recursive: true });
     const skillsRoot = options.plan.configJson.context?.skillsRoot;
     if (skillsRoot !== undefined) {
-      if (options.sourceCwd === undefined) {
+      if (canonicalSourceCwd === undefined) {
         throw new Error("Staging a generated skills root requires the source agent folder.");
       }
-      const sourceSkillsRoot = resolve(options.sourceCwd, skillsRoot);
+      const sourceSkillsRoot = resolve(canonicalSourceCwd, skillsRoot);
       if (!(await stat(sourceSkillsRoot)).isDirectory()) {
         throw new Error(`Configured skills root is not a directory: ${sourceSkillsRoot}`);
       }
-      const canonicalSourceCwd = await realpath(options.sourceCwd);
       const canonicalSourceSkillsRoot = await realpath(sourceSkillsRoot);
       if (escapesRoot(relative(canonicalSourceCwd, canonicalSourceSkillsRoot))) {
         throw new Error(`Refusing to stage skills root outside the source agent folder: ${skillsRoot}`);
@@ -441,6 +812,7 @@ export async function validateWizardPlanInStaging(
       }
       await mkdir(stagedSkillsRoot, { recursive: true });
       for (const skill of options.plan.configJson.context?.selectedSkills ?? []) {
+        throwIfStagingAborted(options.abortSignal);
         const sourceSkillPath = resolve(sourceSkillsRoot, skill, "SKILL.md");
         const sourceRelative = relative(sourceSkillsRoot, sourceSkillPath);
         const stagedSkillPath = resolve(stagedSkillsRoot, skill, "SKILL.md");
@@ -455,18 +827,55 @@ export async function validateWizardPlanInStaging(
         // Materialize a fresh regular file. Copying a symlink here would let a
         // later generated-file write follow it outside the disposable tree.
         await writeFile(stagedSkillPath, contents, { flag: "wx", mode: 0o600 });
+        stagedPaths.add(relative(dir, stagedSkillPath));
       }
     }
+
+    if (
+      canonicalSourceCwd !== undefined &&
+      options.plan.validateExpectations.some((expectation) => expectation.sectionId === "channel:cron")
+    ) {
+      await stageExistingCronFiles({
+        sourceRoot: canonicalSourceCwd,
+        stagingRoot: dir,
+        plan: options.plan,
+        env: options.env,
+        budget,
+        stagedPaths,
+        ...(options.abortSignal === undefined ? {} : { signal: options.abortSignal }),
+      });
+    }
+
     for (const file of options.plan.files) {
-      const path = resolve(dir, file.path);
-      const pathRelative = relative(dir, path);
-      if (pathRelative.length === 0 || escapesRoot(pathRelative)) {
-        throw new Error(`Refusing to stage a generated file outside the disposable agent folder: ${file.path}`);
-      }
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, file.contents, { mode: 0o600 });
+      throwIfStagingAborted(options.abortSignal);
+      const pathRelative = stagingRelativePath(
+        dir,
+        resolve(dir, file.path),
+        `generated file ${file.path}`,
+        false,
+        "the disposable agent folder",
+      );
+      if (stagedPaths.has(pathRelative)) continue;
+      const existingContents = canonicalSourceCwd === undefined
+        ? undefined
+        : await readExistingStagingFile({
+            canonicalRoot: canonicalSourceCwd,
+            pathRelative,
+            label: `existing plan file ${file.path}`,
+            ...(options.abortSignal === undefined ? {} : { signal: options.abortSignal }),
+          });
+      const contents = existingContents ?? Buffer.from(file.contents, "utf8");
+      await writeStagedFile({
+        stagingRoot: dir,
+        pathRelative,
+        contents,
+        budget,
+        stagedPaths,
+        ...(options.abortSignal === undefined ? {} : { signal: options.abortSignal }),
+      });
     }
-    return await (options.validate ?? validateMonoAgentFolder)({
+    throwIfStagingAborted(options.abortSignal);
+    const validation = await (options.validate ?? validateMonoAgentFolder)({
       cwd: dir,
       configPath,
       env: options.env,
@@ -476,6 +885,8 @@ export async function validateWizardPlanInStaging(
       liveness: true,
       verifiedCredentialModelRefs: options.verifiedCredentialModelRefs,
     });
+    throwIfStagingAborted(options.abortSignal);
+    return validation;
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

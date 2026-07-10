@@ -54,6 +54,7 @@ import { validateMonoAgentFolder } from "./doctor.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor.js";
 import {
   effectiveFirstRunEnvironment,
+  evaluateFirstRunConfigurationReadiness,
   evaluateFirstRunReadiness,
   hasSensitivePersistedEnvironmentValue,
   piAuthPathBackgroundConflict,
@@ -86,7 +87,7 @@ import { answersFromCli, isWithChannel } from "./wizard/from-flags.js";
 import type { WithChannel } from "./wizard/from-flags.js";
 import { findPreset, PRESET_CATALOG, presetAnswers, presetIds, RECIPE_TO_PRESET } from "./wizard/presets.js";
 import type { WizardPreset } from "./wizard/presets.js";
-import { runInitWizard, runModelRepairWizard } from "./wizard/run.js";
+import { runInitWizard, runSetupRepairWizard } from "./wizard/run.js";
 import {
   detectProviderCredentialStates,
   executeProviderSetupPlan,
@@ -1196,6 +1197,8 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
     firstRun: for (;;) {
       let dotenvSnapshot: CliDotenvSnapshot = { env: {}, fingerprint: "unreadable" };
       let failure: ReadinessProbeResult | undefined = deferredFailure;
+      let configurationRecoveryStep: number | undefined;
+      let invalidPlanStage: "configuration" | "final_readiness" | undefined;
       deferredFailure = undefined;
       try {
         dotenvSnapshot = await readCliDotenvSnapshot(environment.dotenvPath);
@@ -1353,6 +1356,9 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
             interrupted: true,
           };
         } else if (setup === "failed") {
+          // A plain retry must revisit provider setup rather than falling
+          // through to a guaranteed-failing model turn.
+          pendingProviderSetup = true;
           failure = {
             ok: false,
             kind: "provider_failed",
@@ -1366,6 +1372,33 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
           const sandboxPreflight = await runGuidedSandboxPreflight(sandboxMutationCompleted);
           sandboxMutationCompleted = sandboxMutationCompleted || sandboxPreflight.ok;
           if (!sandboxPreflight.ok) failure = sandboxPreflight;
+        }
+      }
+
+      if (failure === undefined) {
+        const configurationGate = await runConfigurationPreflightWithSpinner({
+          cwd,
+          answers,
+          plan,
+          env: effectiveEnv,
+          secretValues: selectedSecrets,
+          secureExistingDotenv,
+        });
+        if (configurationGate.interrupted === true) {
+          failure = {
+            ok: false,
+            kind: "cancelled",
+            message: "Configuration preflight was interrupted. No agent files were written.",
+            interrupted: true,
+          };
+        } else if (!configurationGate.ready) {
+          configurationRecoveryStep = focusedConfigurationRepairStep(configurationGate.failedSectionIds);
+          invalidPlanStage = "configuration";
+          failure = {
+            ok: false,
+            kind: "invalid_plan",
+            message: `Configuration preflight did not pass: ${configurationGate.reasons.join(" ")}`,
+          };
         }
       }
 
@@ -1386,7 +1419,7 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
       }
 
       readyAttempt: if (failure.ok) {
-        const stagedGate = await assessPrewriteFirstRunReadiness({
+        const stagedGate = await runFinalReadinessValidationWithSpinner({
           cwd,
           answers,
           plan,
@@ -1395,6 +1428,15 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
           secureExistingDotenv,
           verifiedCredentialModelRefs: readinessProgress?.verifiedModelRefs ?? [],
         });
+        if (stagedGate.interrupted === true) {
+          failure = {
+            ok: false,
+            kind: "cancelled",
+            message: "Final readiness validation was interrupted. No agent files were written.",
+            interrupted: true,
+          };
+          break readyAttempt;
+        }
         if (stagedGate.ready) {
           const drift = await firstRunDotenvDrift(environment.dotenvPath, dotenvSnapshot);
           if (drift !== undefined) {
@@ -1583,6 +1625,8 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
           printNextSteps(result.configPath);
           return 0;
         }
+        configurationRecoveryStep = focusedConfigurationRepairStep(stagedGate.failedSectionIds);
+        invalidPlanStage = "final_readiness";
         failure = {
           ok: false,
           kind: "invalid_plan",
@@ -1599,51 +1643,72 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
             readinessProgress = undefined;
             break interruptedRecoveryMenu;
           }
-          if (interruptedRecovery === "model") {
-            const repaired = await runModelRepairWizard({
+          if (interruptedRecovery === "edit") {
+            const repaired = await runSetupRepairWizard({
               cwd,
               answers,
               piAuthPath: resolvedPiAuthPath,
               persistedEnv: dotenvSnapshot.env,
+              moduleSecrets,
+              providerSetupSecrets,
+              providerEnvironmentSecrets,
+              piApiKeyPersistenceByProvider,
+              credentialStates,
+              runProviderSetup: pendingProviderSetup,
             });
             if (repaired.status === "cancelled") continue interruptedRecoveryMenu;
             answers = repaired.answers;
-            providerSetupSecrets = { ...providerSetupSecrets, ...repaired.providerSetupSecrets };
+            moduleSecrets = { ...repaired.moduleSecrets };
+            providerSetupSecrets = { ...repaired.providerSetupSecrets };
             providerEnvironmentSecrets = { ...repaired.providerEnvironmentSecrets };
             piApiKeyPersistenceByProvider = { ...repaired.piApiKeyPersistenceByProvider };
             credentialStates = { ...repaired.credentialStates };
             pendingProviderSetup = repaired.runProviderSetup;
-            readinessProgress = undefined;
+            if (pendingProviderSetup) readinessProgress = undefined;
           }
           break interruptedRecoveryMenu;
         }
         continue firstRun;
       }
       if (failure.message.startsWith("[sandbox_preflight_failed]")) {
-        const recovery = await selectSandboxPreflightRecovery();
-        if (recovery === "cancel") return 1;
-        if (recovery === "edit") {
-          const edited = await runInitWizard({
-            cwd,
-            piAuthPath: resolvedPiAuthPath,
-            persistedEnv: dotenvSnapshot.env,
-          });
-          if (edited.status === "cancelled") return 1;
-          answers = edited.answers;
-          moduleSecrets = { ...edited.moduleSecrets };
-          providerSetupSecrets = { ...edited.providerSetupSecrets };
-          providerEnvironmentSecrets = { ...edited.providerEnvironmentSecrets };
-          piApiKeyPersistenceByProvider = { ...edited.piApiKeyPersistenceByProvider };
-          credentialStates = { ...edited.credentialStates };
-          pendingProviderSetup = edited.runProviderSetup;
-          readinessProgress = undefined;
+        sandboxRecoveryMenu: for (;;) {
+          const recovery = await selectSandboxPreflightRecovery();
+          if (recovery === "cancel") return 1;
+          if (recovery === "edit") {
+            const edited = await runSetupRepairWizard({
+              cwd,
+              answers,
+              piAuthPath: resolvedPiAuthPath,
+              persistedEnv: dotenvSnapshot.env,
+              moduleSecrets,
+              providerSetupSecrets,
+              providerEnvironmentSecrets,
+              piApiKeyPersistenceByProvider,
+              credentialStates,
+              runProviderSetup: pendingProviderSetup,
+            });
+            if (edited.status === "cancelled") continue sandboxRecoveryMenu;
+            answers = edited.answers;
+            moduleSecrets = { ...edited.moduleSecrets };
+            providerSetupSecrets = { ...edited.providerSetupSecrets };
+            providerEnvironmentSecrets = { ...edited.providerEnvironmentSecrets };
+            piApiKeyPersistenceByProvider = { ...edited.piApiKeyPersistenceByProvider };
+            credentialStates = { ...edited.credentialStates };
+            pendingProviderSetup = edited.runProviderSetup;
+            if (pendingProviderSetup) readinessProgress = undefined;
+          }
+          break sandboxRecoveryMenu;
         }
         continue firstRun;
       }
       let recoveryFailure: ReadinessProbeFailure = failure;
       recoveryMenu: for (;;) {
         p.log.error(`[${recoveryFailure.kind}] ${recoveryFailure.message}`);
-        const recovery = await selectFirstRunRecovery();
+        const recovery = await selectFirstRunRecovery(
+          recoveryFailure,
+          configurationRecoveryStep,
+          invalidPlanStage,
+        );
         if (recovery === "cancel") return 1;
         if (recovery === "save") {
           let saved: InitMonoAgentFolderResult;
@@ -1678,21 +1743,54 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
           printIncompleteSetup([recoveryFailure.message], saved.configPath);
           return 1;
         }
-        if (recovery === "model") {
-          const repaired = await runModelRepairWizard({
+        if (recovery === "edit") {
+          const repaired = await runSetupRepairWizard({
             cwd,
             answers,
             piAuthPath: resolvedPiAuthPath,
             persistedEnv: dotenvSnapshot.env,
+            ...(configurationRecoveryStep === undefined ? {} : { initialStep: configurationRecoveryStep }),
+            moduleSecrets,
+            providerSetupSecrets,
+            providerEnvironmentSecrets,
+            piApiKeyPersistenceByProvider,
+            credentialStates,
+            runProviderSetup: pendingProviderSetup,
           });
           if (repaired.status === "cancelled") continue recoveryMenu;
           answers = repaired.answers;
-          providerSetupSecrets = { ...providerSetupSecrets, ...repaired.providerSetupSecrets };
+          moduleSecrets = { ...repaired.moduleSecrets };
+          providerSetupSecrets = { ...repaired.providerSetupSecrets };
           providerEnvironmentSecrets = { ...repaired.providerEnvironmentSecrets };
           piApiKeyPersistenceByProvider = { ...repaired.piApiKeyPersistenceByProvider };
           credentialStates = { ...repaired.credentialStates };
           pendingProviderSetup = repaired.runProviderSetup;
-          readinessProgress = undefined;
+          if (pendingProviderSetup) readinessProgress = undefined;
+          continue firstRun;
+        }
+        if (recovery === "model") {
+          const repaired = await runSetupRepairWizard({
+            cwd,
+            answers,
+            piAuthPath: resolvedPiAuthPath,
+            persistedEnv: dotenvSnapshot.env,
+            initialStep: 1,
+            moduleSecrets,
+            providerSetupSecrets,
+            providerEnvironmentSecrets,
+            piApiKeyPersistenceByProvider,
+            credentialStates,
+            runProviderSetup: pendingProviderSetup,
+          });
+          if (repaired.status === "cancelled") continue recoveryMenu;
+          answers = repaired.answers;
+          moduleSecrets = { ...repaired.moduleSecrets };
+          providerSetupSecrets = { ...repaired.providerSetupSecrets };
+          providerEnvironmentSecrets = { ...repaired.providerEnvironmentSecrets };
+          piApiKeyPersistenceByProvider = { ...repaired.piApiKeyPersistenceByProvider };
+          credentialStates = { ...repaired.credentialStates };
+          pendingProviderSetup = repaired.runProviderSetup;
+          if (pendingProviderSetup) readinessProgress = undefined;
           continue firstRun;
         }
         if (recovery === "auth") {
@@ -1772,6 +1870,7 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
             continue firstRun;
           }
           if (setup === "failed") {
+            pendingProviderSetup = true;
             recoveryFailure = {
               ok: false,
               kind: "provider_failed",
@@ -1779,6 +1878,7 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
             };
             continue recoveryMenu;
           }
+          pendingProviderSetup = false;
         }
         // "retry" deliberately reruns only the live checks. Provider setup is a
         // separate explicit recovery action and is never repeated automatically.
@@ -1856,6 +1956,186 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
   return 0;
 }
 
+type AssessedConfigurationReadiness = ReturnType<typeof evaluateFirstRunConfigurationReadiness> & {
+  readonly failedSectionIds: readonly string[];
+  readonly interrupted?: true;
+};
+
+type AssessedFinalReadiness = ReturnType<typeof evaluateFirstRunReadiness> & {
+  readonly failedSectionIds: readonly string[];
+  readonly interrupted?: true;
+};
+
+const FIRST_RUN_STAGING_FAILURE_MAX_LENGTH = 500;
+const FIRST_RUN_SENSITIVE_ENV_NAME = /(api.?key|credential|password|secret|token)/iu;
+
+function throwIfFirstRunPreflightAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted !== true) return;
+  const error = new Error("Preflight was interrupted.");
+  error.name = "AbortError";
+  throw error;
+}
+
+function firstRunStagingFailureDetail(
+  error: unknown,
+  sensitiveValues: Iterable<string> = [],
+): string {
+  let message = reasonOf(error);
+  for (const value of [...new Set(sensitiveValues)].filter((candidate) => candidate.length >= 4).sort(
+    (left, right) => right.length - left.length,
+  )) {
+    message = message.replaceAll(value, "[secret-redacted]");
+  }
+  const normalized = message
+    .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [secret-redacted]")
+    .replace(
+      /\b(api[ _-]?key|access[ _-]?token|auth[ _-]?token|password|secret)(\s*[=:]\s*)([^\s,;]+)/giu,
+      (_match, label: string, separator: string) => `${label}${separator}[secret-redacted]`,
+    )
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (normalized.length === 0) return "Unknown staging failure.";
+  return normalized.length <= FIRST_RUN_STAGING_FAILURE_MAX_LENGTH
+    ? normalized
+    : `${normalized.slice(0, FIRST_RUN_STAGING_FAILURE_MAX_LENGTH - 1).trimEnd()}…`;
+}
+
+function firstRunStagingSensitiveValues(
+  env: Readonly<Record<string, string | undefined>>,
+  explicit: Readonly<Record<string, string>>,
+): readonly string[] {
+  return [
+    ...Object.entries(env)
+      .filter((entry): entry is [string, string] =>
+        FIRST_RUN_SENSITIVE_ENV_NAME.test(entry[0])
+        && typeof entry[1] === "string"
+        && entry[1].length > 0
+      )
+      .map(([, value]) => value),
+    ...Object.values(explicit),
+  ];
+}
+
+async function runConfigurationPreflightWithSpinner(
+  options: Omit<Parameters<typeof assessPrewriteFirstRunConfigurationReadiness>[0], "abortSignal">,
+): Promise<AssessedConfigurationReadiness> {
+  process.stdout.write("\n" + ui.heading("Configuration preflight"));
+  const spinner = p.spinner();
+  try {
+    return await withScopedPreflightCancellation(async (abortSignal) => {
+      spinner.start("Validating generated files and selected capabilities before runtime calls");
+      const gate = await assessPrewriteFirstRunConfigurationReadiness({ ...options, abortSignal });
+      if (abortSignal.aborted || spinner.isCancelled) {
+        spinner.cancel("Configuration preflight interrupted");
+        return interruptedConfigurationAssessment();
+      }
+      if (gate.ready) {
+        spinner.stop("Selected capabilities are ready for runtime checks");
+      } else {
+        spinner.error("Configuration preflight needs attention");
+      }
+      return gate;
+    });
+  } catch (error) {
+    if (!isAbortLike(error)) throw error;
+    spinner.cancel("Configuration preflight interrupted");
+    return interruptedConfigurationAssessment();
+  }
+}
+
+function interruptedConfigurationAssessment(): AssessedConfigurationReadiness {
+  return {
+    ready: false,
+    reasons: ["Configuration preflight was interrupted."],
+    failedSectionIds: [],
+    interrupted: true,
+  };
+}
+
+async function runFinalReadinessValidationWithSpinner(
+  options: Omit<Parameters<typeof assessPrewriteFirstRunReadiness>[0], "abortSignal">,
+): Promise<AssessedFinalReadiness> {
+  process.stdout.write("\n" + ui.heading("Final readiness validation"));
+  const spinner = p.spinner();
+  try {
+    return await withScopedPreflightCancellation(async (abortSignal) => {
+      spinner.start("Revalidating the effective files after runtime route checks");
+      const gate = await assessPrewriteFirstRunReadiness({ ...options, abortSignal });
+      if (abortSignal.aborted || spinner.isCancelled) {
+        spinner.cancel("Final readiness validation interrupted");
+        return interruptedFinalReadinessAssessment();
+      }
+      if (gate.ready) spinner.stop("Effective files and runtime routes are ready");
+      else spinner.error("Final readiness validation needs attention");
+      return gate;
+    });
+  } catch (error) {
+    if (!isAbortLike(error)) throw error;
+    spinner.cancel("Final readiness validation interrupted");
+    return interruptedFinalReadinessAssessment();
+  }
+}
+
+function interruptedFinalReadinessAssessment(): AssessedFinalReadiness {
+  return {
+    ready: false,
+    reasons: ["Final readiness validation was interrupted."],
+    failedSectionIds: [],
+    interrupted: true,
+  };
+}
+
+async function assessPrewriteFirstRunConfigurationReadiness(options: {
+  readonly cwd: string;
+  readonly answers: WizardAnswers;
+  readonly plan: WizardPlan;
+  readonly env: Record<string, string | undefined>;
+  readonly secretValues: Readonly<Record<string, string>>;
+  readonly secureExistingDotenv: boolean;
+  readonly abortSignal?: AbortSignal;
+}): Promise<AssessedConfigurationReadiness> {
+  try {
+    throwIfFirstRunPreflightAborted(options.abortSignal);
+    const preview = await initMonoAgentFolder({
+      dir: options.cwd,
+      answers: options.answers,
+      secretValues: options.secretValues,
+      secureExistingDotenv: options.secureExistingDotenv,
+      dryRun: true,
+    });
+    throwIfFirstRunPreflightAborted(options.abortSignal);
+    const report = await validateWizardPlanInStaging({
+      plan: options.plan,
+      sourceCwd: options.cwd,
+      env: options.env,
+      verifiedCredentialModelRefs: [],
+      ...(options.abortSignal === undefined ? {} : { abortSignal: options.abortSignal }),
+    });
+    const gate = evaluateFirstRunConfigurationReadiness({
+      plan: options.plan,
+      report,
+      secretPersistence: preview.secretPersistence,
+    });
+    return {
+      ...gate,
+      failedSectionIds: configurationFailureSectionIds(options.plan, report, true),
+    };
+  } catch (error) {
+    throwIfFirstRunPreflightAborted(options.abortSignal);
+    if (error instanceof Error && error.name === "AbortError") throw error;
+    return {
+      ready: false,
+      reasons: [
+        `The complete generated configuration could not be validated safely in staging: ${firstRunStagingFailureDetail(
+          error,
+          firstRunStagingSensitiveValues(options.env, options.secretValues),
+        )}`,
+      ],
+      failedSectionIds: [],
+    };
+  }
+}
+
 async function assessPrewriteFirstRunReadiness(options: {
   readonly cwd: string;
   readonly answers: WizardAnswers;
@@ -1864,8 +2144,10 @@ async function assessPrewriteFirstRunReadiness(options: {
   readonly secretValues: Readonly<Record<string, string>>;
   readonly secureExistingDotenv: boolean;
   readonly verifiedCredentialModelRefs: readonly string[];
-}): Promise<ReturnType<typeof evaluateFirstRunReadiness>> {
+  readonly abortSignal?: AbortSignal;
+}): Promise<AssessedFinalReadiness> {
   try {
+    throwIfFirstRunPreflightAborted(options.abortSignal);
     const preview = await initMonoAgentFolder({
       dir: options.cwd,
       answers: options.answers,
@@ -1873,24 +2155,61 @@ async function assessPrewriteFirstRunReadiness(options: {
       secureExistingDotenv: options.secureExistingDotenv,
       dryRun: true,
     });
+    throwIfFirstRunPreflightAborted(options.abortSignal);
     const report = await validateWizardPlanInStaging({
       plan: options.plan,
       sourceCwd: options.cwd,
       env: options.env,
       verifiedCredentialModelRefs: options.verifiedCredentialModelRefs,
+      ...(options.abortSignal === undefined ? {} : { abortSignal: options.abortSignal }),
     });
-    return evaluateFirstRunReadiness({
+    const gate = evaluateFirstRunReadiness({
       plan: options.plan,
       report,
       secretPersistence: preview.secretPersistence,
       verifiedCredentialModelRefs: options.verifiedCredentialModelRefs,
     });
-  } catch {
+    return {
+      ...gate,
+      failedSectionIds: configurationFailureSectionIds(options.plan, report, false),
+    };
+  } catch (error) {
+    throwIfFirstRunPreflightAborted(options.abortSignal);
+    if (error instanceof Error && error.name === "AbortError") throw error;
     return {
       ready: false,
-      reasons: ["The complete generated plan could not be validated safely in staging."],
+      reasons: [
+        `The complete generated plan could not be validated safely in staging: ${firstRunStagingFailureDetail(
+          error,
+          firstRunStagingSensitiveValues(options.env, options.secretValues),
+        )}`,
+      ],
+      failedSectionIds: [],
     };
   }
+}
+
+function configurationFailureSectionIds(
+  plan: WizardPlan,
+  report: ValidationReport,
+  deferWaitingCredentials: boolean,
+): readonly string[] {
+  const byId = new Map(report.sections.map((section) => [section.id, section]));
+  const ids = new Set<string>();
+  for (const expectation of plan.validateExpectations) {
+    const actual = byId.get(expectation.sectionId)?.status;
+    if (
+      actual === expectation.mustBe
+      || (deferWaitingCredentials && expectation.sectionId === "credentials" && actual === "waiting")
+    ) continue;
+    ids.add(expectation.sectionId);
+  }
+  if (!report.ok) {
+    for (const section of report.sections) {
+      if (section.status === "error") ids.add(section.id);
+    }
+  }
+  return [...ids];
 }
 
 function nonEmptyEnv(value: unknown): value is string {
@@ -2212,10 +2531,37 @@ async function withScopedPreflightCancellation<T>(
   }
 }
 
-type FirstRunRecovery = "retry" | "auth" | "model" | "save" | "cancel";
+type FirstRunRecovery = "retry" | "auth" | "model" | "edit" | "save" | "cancel";
 
-type InterruptedFirstRunRecovery = "resume" | "restart" | "model" | "cancel";
+type InterruptedFirstRunRecovery = "resume" | "restart" | "edit" | "cancel";
 type SandboxPreflightRecovery = "retry" | "edit" | "cancel";
+
+function focusedConfigurationRepairStep(sectionIds: readonly string[]): number | undefined {
+  const mapped = new Set<number>();
+  for (const id of sectionIds) {
+    if (id === "agent") mapped.add(0);
+    else if (id === "runtime" || id === "credentials") mapped.add(1);
+    else if (id === "memory" || id.startsWith("memory:")) mapped.add(3);
+    else if (id === "context" || id.startsWith("channel:")) mapped.add(4);
+    else if (id === "tools") mapped.add(5);
+    else if (id === "sandbox") mapped.add(6);
+    else if (id === "observability") mapped.add(7);
+  }
+  return mapped.size === 1 ? [...mapped][0] : undefined;
+}
+
+function configurationRecoveryEditLabel(step: number | undefined): string {
+  switch (step) {
+    case 0: return "Edit agent name";
+    case 1: return "Edit model routes";
+    case 3: return "Edit memory";
+    case 4: return "Edit capability details";
+    case 5: return "Edit tools";
+    case 6: return "Edit route safety and sandbox";
+    case 7: return "Edit observability";
+    default: return "Edit setup choices";
+  }
+}
 
 async function selectSandboxPreflightRecovery(): Promise<SandboxPreflightRecovery> {
   const recovery = await p.select<SandboxPreflightRecovery>({
@@ -2237,23 +2583,71 @@ async function selectInterruptedFirstRunRecovery(): Promise<InterruptedFirstRunR
     options: [
       { value: "resume", label: "Resume preflight", hint: "keeps successful auth, SRT setup, and route checks" },
       { value: "restart", label: "Restart all checks", hint: "keeps successful auth and SRT installation" },
-      { value: "model", label: "Edit choices" },
+      { value: "edit", label: "Edit setup choices" },
       { value: "cancel", label: "Cancel without writing" },
     ],
   });
   return p.isCancel(recovery) ? "cancel" : recovery;
 }
 
-async function selectFirstRunRecovery(): Promise<FirstRunRecovery> {
-  const recovery = await p.select({
-    message: "How would you like to recover?",
-    options: [
-      { value: "retry", label: "Retry model check", hint: "does not rerun authentication" },
-      { value: "auth", label: "Repair authentication" },
-      { value: "model", label: "Change model", hint: "keeps your channels, tools, memory and secrets" },
-      { value: "save", label: "Save incomplete", hint: "does not call the agent ready or start it" },
-      { value: "cancel", label: "Cancel without writing" },
-    ],
+async function selectFirstRunRecovery(
+  failure: ReadinessProbeFailure,
+  configurationRepairStep?: number,
+  invalidPlanStage?: "configuration" | "final_readiness",
+): Promise<FirstRunRecovery> {
+  type RecoveryOption = { readonly value: FirstRunRecovery; readonly label: string; readonly hint?: string };
+  const sharedTail: readonly RecoveryOption[] = [
+    { value: "save", label: "Save incomplete", hint: "does not call the agent ready or start it" },
+    { value: "cancel", label: "Cancel without writing" },
+  ] as const;
+  const providerSetupFailed = failure.kind === "provider_failed"
+    && /^Provider setup (?:did not complete|still needs attention)\./u.test(failure.message);
+  const message = failure.kind === "invalid_plan"
+    ? invalidPlanStage === "final_readiness"
+      ? "Final readiness validation did not pass. What would you like to do?"
+      : "Configuration preflight did not pass. What would you like to do?"
+    : providerSetupFailed
+      ? "Provider setup did not pass. What would you like to do?"
+      : "Runtime readiness did not pass. What would you like to do?";
+  const options: readonly RecoveryOption[] = failure.kind === "invalid_plan"
+    ? [
+        { value: "edit", label: configurationRecoveryEditLabel(configurationRepairStep) },
+        {
+          value: "retry",
+          label: invalidPlanStage === "final_readiness"
+            ? "Retry final readiness validation"
+            : "Retry configuration preflight",
+        },
+        ...sharedTail,
+      ]
+    : providerSetupFailed
+      ? [
+          { value: "auth", label: "Repair authentication" },
+          { value: "retry", label: "Retry provider setup" },
+          { value: "model", label: "Edit model routes" },
+          ...sharedTail,
+        ]
+      : failure.kind === "provider_failed"
+      ? [
+          { value: "retry", label: "Retry failed route" },
+          { value: "auth", label: "Repair authentication" },
+          { value: "model", label: "Edit model routes" },
+          ...sharedTail,
+        ]
+      : failure.kind === "unsupported_guided_probe"
+        ? [
+            { value: "model", label: "Edit model routes" },
+            ...sharedTail,
+          ]
+        : [
+            { value: "retry", label: "Retry runtime checks" },
+            { value: "model", label: "Edit model routes" },
+            ...sharedTail,
+          ];
+  const recovery = await p.select<FirstRunRecovery>({
+    message,
+    initialValue: options[0]?.value ?? "cancel",
+    options: [...options],
   });
   return p.isCancel(recovery) ? "cancel" : recovery;
 }

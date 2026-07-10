@@ -523,6 +523,40 @@ describe("runReadinessProbe", () => {
     });
   });
 
+  it("honors an already-aborted signal before accepting fully cached route proofs", async () => {
+    const configJson = structuredClone(plan.configJson) as Record<string, unknown>;
+    configJson.runtime = {
+      ...(configJson.runtime as Record<string, unknown>),
+      fallbackModels: ["pi:openai-codex:gpt-5.6-sol"],
+    };
+    const resumePlan = { ...plan, configJson: configJson as never };
+    const first = await runReadinessProbe({ plan: resumePlan, run: async () => ({ text: "ready" }) });
+    if (!first.ok || first.routes === undefined || first.planFingerprint === undefined) {
+      throw new Error("route summary missing");
+    }
+    const controller = new AbortController();
+    controller.abort();
+    const run = vi.fn(async () => ({ text: "should not run" }));
+
+    const interrupted = await runReadinessProbe({
+      plan: resumePlan,
+      run,
+      abortSignal: controller.signal,
+      resume: {
+        planFingerprint: first.planFingerprint,
+        successfulRouteKeys: first.routes.map((route) => route.key),
+      },
+    });
+
+    expect(run).not.toHaveBeenCalled();
+    expect(interrupted).toMatchObject({
+      ok: false,
+      kind: "cancelled",
+      interrupted: true,
+      routes: [{ status: "interrupted" }],
+    });
+  });
+
   it("invalidates resume keys when non-secret provider execution config changes", async () => {
     const firstConfig = structuredClone(plan.configJson) as Record<string, unknown>;
     firstConfig.runtime = {

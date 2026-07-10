@@ -6,9 +6,10 @@ import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { ValidationReport } from "../doctor.js";
+import { validateMonoAgentFolder, type ValidationReport } from "../doctor.js";
 import {
   effectiveFirstRunEnvironment,
+  evaluateFirstRunConfigurationReadiness,
   evaluateFirstRunReadiness,
   hasSensitivePersistedEnvironmentValue,
   piAuthPathBackgroundConflict,
@@ -38,14 +39,25 @@ function telegramPlan() {
   }), { dirBasename: "test-agent", skillsRootExists: false });
 }
 
+function cronPlan(expression = "0 8 * * *") {
+  return composeWizardPlan(defaultAnswers({
+    channels: ["channel:cron"],
+    moduleInputs: { "channel:cron": { cronExpression: expression } },
+  }), { dirBasename: "test-agent", skillsRootExists: false });
+}
+
 function report(
   statuses: Readonly<Record<string, "ok" | "waiting" | "disabled" | "error">>,
+  annotations: Readonly<Record<string, {
+    readonly label?: string;
+    readonly details?: readonly string[];
+  }>> = {},
 ): ValidationReport {
   const sections = Object.entries(statuses).map(([id, status]) => ({
     id,
-    label: id,
+    label: annotations[id]?.label ?? id,
     status,
-    details: [],
+    details: annotations[id]?.details ?? [],
   }));
   return { sections, ok: sections.every((section) => section.status !== "error") };
 }
@@ -309,6 +321,196 @@ describe("Pi auth path", () => {
 });
 
 describe("complete readiness gate", () => {
+  it("defers only waiting credentials during configuration preflight", () => {
+    const plan = telegramPlan();
+    const waitingCredentials = report({
+      runtime: "ok",
+      credentials: "waiting",
+      "channel:telegram": "ok",
+    });
+
+    expect(evaluateFirstRunConfigurationReadiness({
+      plan,
+      report: waitingCredentials,
+      secretPersistence: { status: "planned", changed: true },
+    })).toEqual({ ready: true, reasons: [] });
+
+    const completeGate = evaluateFirstRunReadiness({
+      plan,
+      report: waitingCredentials,
+      secretPersistence: { status: "planned", changed: true },
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+    });
+    expect(completeGate.ready).toBe(false);
+    expect(completeGate.reasons).toHaveLength(1);
+    expect(completeGate.reasons[0]).toContain("credentials must be ok, but is waiting");
+  });
+
+  it("reports the cron doctor detail and blocks every non-credential waiting expectation", () => {
+    const plan = {
+      ...telegramPlan(),
+      validateExpectations: [
+        { sectionId: "runtime", mustBe: "ok" as const },
+        { sectionId: "credentials", mustBe: "ok" as const },
+        {
+          sectionId: "channel:cron",
+          mustBe: "ok" as const,
+          note: "Use at least one valid enabled cron/*.md job.",
+        },
+      ],
+    };
+    const gate = evaluateFirstRunConfigurationReadiness({
+      plan,
+      report: report(
+        { runtime: "ok", credentials: "waiting", "channel:cron": "waiting" },
+        {
+          "channel:cron": {
+            label: "Scheduled jobs (cron)",
+            details: ["  Cron job expression is invalid: minute must be between 0 and 59.\nRetry with five fields.  "],
+          },
+        },
+      ),
+      secretPersistence: { status: "not-requested", changed: false },
+    });
+
+    expect(gate.ready).toBe(false);
+    expect(gate.reasons).toHaveLength(1);
+    expect(gate.reasons[0]).toBe(
+      "channel:cron must be ok, but is waiting (Scheduled jobs (cron) [channel:cron]). " +
+      "Cron job expression is invalid: minute must be between 0 and 59. Retry with five fields. " +
+      "Use at least one valid enabled cron/*.md job.",
+    );
+  });
+
+  it.each(["error", "disabled"] as const)(
+    "does not defer a %s credential section during configuration preflight",
+    (credentialStatus) => {
+      const gate = evaluateFirstRunConfigurationReadiness({
+        plan: telegramPlan(),
+        report: report(
+          { runtime: "ok", credentials: credentialStatus, "channel:telegram": "ok" },
+          {
+            credentials: {
+              label: "Provider credentials",
+              details: ["No durable credentials were found."],
+            },
+          },
+        ),
+        secretPersistence: { status: "planned", changed: true },
+      });
+
+      expect(gate.ready).toBe(false);
+      expect(gate.reasons).toHaveLength(1);
+      expect(gate.reasons[0]).toContain(
+        `credentials must be ok, but is ${credentialStatus} (Provider credentials [credentials]).`,
+      );
+      expect(gate.reasons[0]).toContain("No durable credentials were found.");
+    },
+  );
+
+  it("blocks a missing credential section instead of treating it as deferred", () => {
+    const gate = evaluateFirstRunConfigurationReadiness({
+      plan: telegramPlan(),
+      report: report({ runtime: "ok", "channel:telegram": "ok" }),
+      secretPersistence: { status: "planned", changed: true },
+    });
+
+    expect(gate.ready).toBe(false);
+    expect(gate.reasons).toHaveLength(1);
+    expect(gate.reasons[0]).toContain("credentials must be ok, but is missing");
+    expect(gate.reasons[0]).toContain("Missing validation section [credentials]");
+  });
+
+  it("does not require live route proofs until the complete gate", () => {
+    const plan = telegramPlan();
+    const readyReport = report({ runtime: "ok", credentials: "ok", "channel:telegram": "ok" });
+    expect(evaluateFirstRunConfigurationReadiness({
+      plan,
+      report: readyReport,
+      secretPersistence: { status: "planned", changed: true },
+    })).toEqual({ ready: true, reasons: [] });
+
+    const completeGate = evaluateFirstRunReadiness({
+      plan,
+      report: readyReport,
+      secretPersistence: { status: "planned", changed: true },
+    });
+    expect(completeGate.ready).toBe(false);
+    expect(completeGate.reasons).toEqual([
+      "Runtime route codex:gpt-5.6-terra has not completed its exact live readiness check.",
+    ]);
+  });
+
+  it("blocks refused secret persistence in configuration preflight", () => {
+    const gate = evaluateFirstRunConfigurationReadiness({
+      plan: telegramPlan(),
+      report: report({ runtime: "ok", credentials: "waiting", "channel:telegram": "ok" }),
+      secretPersistence: {
+        status: "refused",
+        changed: false,
+        reason: "unsafe-env-path",
+        detail: "Repair /safe/.env before retrying.",
+      },
+    });
+    expect(gate.ready).toBe(false);
+    expect(gate.reasons).toEqual([
+      "Secure secret persistence was refused (unsafe-env-path). Repair /safe/.env before retrying.",
+    ]);
+  });
+
+  it("emits one bounded, unambiguous reason for an expected section error", () => {
+    const repeatedDetail = `Invalid cron expression. ${"x".repeat(400)}`;
+    const base = telegramPlan();
+    const plan = {
+      ...base,
+      validateExpectations: [
+        ...base.validateExpectations,
+        { sectionId: "channel:cron", mustBe: "ok" as const, note: "Fix the cron job." },
+        { sectionId: "channel:cron", mustBe: "ok" as const, note: "Fix the cron job." },
+      ],
+    };
+    const gate = evaluateFirstRunConfigurationReadiness({
+      plan,
+      report: report(
+        {
+          runtime: "ok",
+          credentials: "waiting",
+          "channel:telegram": "ok",
+          "channel:cron": "error",
+        },
+        { "channel:cron": { label: "Scheduled jobs (cron)", details: [repeatedDetail] } },
+      ),
+      secretPersistence: { status: "planned", changed: true },
+    });
+
+    expect(gate.ready).toBe(false);
+    expect(gate.reasons).toHaveLength(1);
+    expect(gate.reasons[0]).not.toContain("complete generated configuration has validation errors");
+    expect(gate.reasons[0]?.length).toBeLessThan(450);
+    expect(gate.reasons[0]).toContain("… Fix the cron job.");
+  });
+
+  it("reports unrelated doctor errors even when selected expectations are ready", () => {
+    const gate = evaluateFirstRunConfigurationReadiness({
+      plan: telegramPlan(),
+      report: report(
+        {
+          runtime: "ok",
+          credentials: "waiting",
+          "channel:telegram": "ok",
+          core: "error",
+        },
+        { core: { label: "Core config", details: ["Generated config is not loadable."] } },
+      ),
+      secretPersistence: { status: "planned", changed: true },
+    });
+
+    expect(gate).toEqual({
+      ready: false,
+      reasons: ["Validation error in Core config [core]. Generated config is not loadable."],
+    });
+  });
+
   it("requires every selected expectation and secure persistence", () => {
     const plan = telegramPlan();
     const readyReport = report({ runtime: "ok", credentials: "ok", "channel:telegram": "ok" });
@@ -395,6 +597,255 @@ describe("complete readiness gate", () => {
       },
     });
     expect(result.ok).toBe(true);
+    await expect(access(stagedCwd)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("preserves an existing source identity in staging", async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), "first-run-identity-source-"));
+    temporaryDirectories.push(sourceCwd);
+    const identity = "# Existing identity\n\nPreserve this exact operator-authored identity.\n";
+    await writeFile(join(sourceCwd, "IDENTITY.md"), identity);
+
+    await expect(validateWizardPlanInStaging({
+      plan: telegramPlan(),
+      sourceCwd,
+      env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "secret" },
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      validate: async (options) => {
+        expect(await readFile(join(options.cwd, "IDENTITY.md"), "utf8")).toBe(identity);
+        return report({ runtime: "ok", "channel:telegram": "ok" });
+      },
+    })).resolves.toMatchObject({ ok: true });
+  });
+
+  it.each([
+    { kind: "symbolic-link", make: async (sourceCwd: string) => {
+      const victim = join(sourceCwd, "identity-target.md");
+      await writeFile(victim, "# Outside identity\n");
+      await symlink(victim, join(sourceCwd, "IDENTITY.md"));
+    } },
+    { kind: "non-regular", make: async (sourceCwd: string) => {
+      await mkdir(join(sourceCwd, "IDENTITY.md"));
+    } },
+  ])("rejects a $kind existing identity before validation", async ({ kind, make }) => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), `first-run-identity-${kind}-source-`));
+    temporaryDirectories.push(sourceCwd);
+    await make(sourceCwd);
+    let validateCalled = false;
+
+    await expect(validateWizardPlanInStaging({
+      plan: telegramPlan(),
+      sourceCwd,
+      env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "secret" },
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      validate: async () => {
+        validateCalled = true;
+        return report({ runtime: "ok", "channel:telegram": "ok" });
+      },
+    })).rejects.toThrow(new RegExp(kind, "u"));
+    expect(validateCalled).toBe(false);
+  });
+
+  it("passes the real doctor for a generated directory-backed cron job", async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), "first-run-cron-generated-source-"));
+    temporaryDirectories.push(sourceCwd);
+    const result = await validateWizardPlanInStaging({
+      plan: cronPlan("15 9 * * MON-FRI"),
+      sourceCwd,
+      env: {},
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+    });
+
+    expect(result.sections.find((section) => section.id === "channel:cron")).toMatchObject({
+      status: "ok",
+    });
+  });
+
+  it("preserves an existing plan file instead of replacing it with generated contents", async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), "first-run-cron-preserved-source-"));
+    temporaryDirectories.push(sourceCwd);
+    const existing = [
+      "---",
+      'expression: "30 7 * * 1-5"',
+      "---",
+      "Preserve this operator-authored prompt.",
+      "",
+    ].join("\n");
+    await mkdir(join(sourceCwd, "cron"), { recursive: true });
+    await writeFile(join(sourceCwd, "cron", "digest.md"), existing);
+
+    const result = await validateWizardPlanInStaging({
+      plan: cronPlan("0 8 * * *"),
+      sourceCwd,
+      env: {},
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      validate: async (options) => {
+        expect(await readFile(join(options.cwd, "cron", "digest.md"), "utf8")).toBe(existing);
+        return await validateMonoAgentFolder(options);
+      },
+    });
+
+    expect(result.sections.find((section) => section.id === "channel:cron")).toMatchObject({
+      status: "ok",
+    });
+  });
+
+  it("preserves an invalid existing digest so the real doctor blocks readiness", async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), "first-run-cron-invalid-digest-source-"));
+    temporaryDirectories.push(sourceCwd);
+    const existing = "---\nconversationId: existing-digest\n---\nMissing expression.\n";
+    await mkdir(join(sourceCwd, "cron"), { recursive: true });
+    await writeFile(join(sourceCwd, "cron", "digest.md"), existing);
+
+    const result = await validateWizardPlanInStaging({
+      plan: cronPlan(),
+      sourceCwd,
+      env: {},
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      validate: async (options) => {
+        expect(await readFile(join(options.cwd, "cron", "digest.md"), "utf8")).toBe(existing);
+        return await validateMonoAgentFolder(options);
+      },
+    });
+
+    expect(result.sections.find((section) => section.id === "channel:cron")).toMatchObject({
+      status: "waiting",
+      details: [expect.stringMatching(/requires an `expression`/u)],
+    });
+  });
+
+  it("stages every existing cron markdown job so an extra invalid job blocks readiness", async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), "first-run-cron-extra-source-"));
+    temporaryDirectories.push(sourceCwd);
+    await mkdir(join(sourceCwd, "cron"), { recursive: true });
+    await writeFile(
+      join(sourceCwd, "cron", "extra.md"),
+      "---\nconversationId: extra\n---\nThis job is missing its expression.\n",
+    );
+
+    const result = await validateWizardPlanInStaging({
+      plan: cronPlan(),
+      sourceCwd,
+      env: {},
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+    });
+
+    expect(result.sections.find((section) => section.id === "channel:cron")).toMatchObject({
+      status: "waiting",
+      details: [expect.stringMatching(/requires an `expression`/u)],
+    });
+  });
+
+  it.each([
+    { kind: "symbolic-link", make: async (sourceCwd: string) => {
+      const victim = join(sourceCwd, "outside.md");
+      await writeFile(victim, "---\nexpression: \"0 8 * * *\"\n---\noutside\n");
+      await symlink(victim, join(sourceCwd, "cron", "unsafe.md"));
+    } },
+    { kind: "non-regular", make: async (sourceCwd: string) => {
+      await mkdir(join(sourceCwd, "cron", "unsafe.md"));
+    } },
+  ])("rejects a $kind cron markdown entry before validation", async ({ kind, make }) => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), `first-run-cron-${kind}-source-`));
+    temporaryDirectories.push(sourceCwd);
+    await mkdir(join(sourceCwd, "cron"), { recursive: true });
+    await make(sourceCwd);
+    let validateCalled = false;
+
+    await expect(validateWizardPlanInStaging({
+      plan: cronPlan(),
+      sourceCwd,
+      env: {},
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      validate: async () => {
+        validateCalled = true;
+        return report({ runtime: "ok", "channel:cron": "ok" });
+      },
+    })).rejects.toThrow(new RegExp(kind, "u"));
+    expect(validateCalled).toBe(false);
+  });
+
+  it("rejects a cron directory that escapes the source root", async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), "first-run-cron-escape-source-"));
+    temporaryDirectories.push(sourceCwd);
+    const base = cronPlan();
+    const plan = {
+      ...base,
+      configJson: { ...base.configJson, cron: { dir: "../outside" } },
+    };
+
+    await expect(validateWizardPlanInStaging({
+      plan,
+      sourceCwd,
+      env: {},
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+    })).rejects.toThrow(/cron directory .* outside its source root/u);
+  });
+
+  it("rejects an absolute cron directory instead of validating outside staging", async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), "first-run-cron-absolute-source-"));
+    temporaryDirectories.push(sourceCwd);
+    const base = cronPlan();
+    const plan = {
+      ...base,
+      configJson: { ...base.configJson, cron: { dir: join(sourceCwd, "cron") } },
+    };
+
+    await expect(validateWizardPlanInStaging({
+      plan,
+      sourceCwd,
+      env: {},
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+    })).rejects.toThrow(/absolute cron directory/u);
+  });
+
+  it("does not inspect an unrelated cron directory for a plan without cron", async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), "first-run-non-cron-source-"));
+    temporaryDirectories.push(sourceCwd);
+    const outside = await mkdtemp(join(tmpdir(), "first-run-non-cron-outside-"));
+    temporaryDirectories.push(outside);
+    await symlink(outside, join(sourceCwd, "cron"));
+
+    await expect(validateWizardPlanInStaging({
+      plan: telegramPlan(),
+      sourceCwd,
+      env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "secret" },
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      validate: async () => report({ runtime: "ok", "channel:telegram": "ok" }),
+    })).resolves.toMatchObject({ ok: true });
+  });
+
+  it("bounds existing cron job bytes before copying them", async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), "first-run-cron-large-source-"));
+    temporaryDirectories.push(sourceCwd);
+    await mkdir(join(sourceCwd, "cron"), { recursive: true });
+    await writeFile(
+      join(sourceCwd, "cron", "too-large.md"),
+      `---\nexpression: "0 8 * * *"\n---\n${"x".repeat(1_100_000)}`,
+    );
+
+    await expect(validateWizardPlanInStaging({
+      plan: cronPlan(),
+      sourceCwd,
+      env: {},
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+    })).rejects.toThrow(/exceeds 1048576 bytes/u);
+  });
+
+  it("checks cancellation after validation and removes the disposable directory", async () => {
+    const controller = new AbortController();
+    let stagedCwd = "";
+    await expect(validateWizardPlanInStaging({
+      plan: telegramPlan(),
+      env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "secret" },
+      verifiedCredentialModelRefs: ["codex:gpt-5.6-terra"],
+      abortSignal: controller.signal,
+      validate: async (options) => {
+        stagedCwd = options.cwd;
+        controller.abort();
+        return report({ runtime: "ok", "channel:telegram": "ok" });
+      },
+    })).rejects.toMatchObject({ name: "AbortError" });
     await expect(access(stagedCwd)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
