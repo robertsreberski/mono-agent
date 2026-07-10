@@ -216,6 +216,17 @@ describe("release pack validation", () => {
     });
   });
 
+  test("parses pnpm 10 output with prepack lifecycle logs before the JSON document", () => {
+    const json = JSON.stringify({ name: pkg.name, filename: "example.tgz", files: [] }, null, 2);
+    const stdout = `\n> ${pkg.name}@1.2.3 prepack /tmp/example\n> pnpm run build\n\n${json}\n`;
+
+    expect(parsePnpmPackOutput(stdout)).toEqual({
+      name: pkg.name,
+      filename: "example.tgz",
+      files: [],
+    });
+  });
+
   test("asserts required files and a non-empty tarball", () => {
     const packDestination = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-pack-test-"));
     try {

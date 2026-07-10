@@ -19,7 +19,14 @@ export function parsePnpmPackOutput(stdout) {
     throw new Error("pnpm pack did not return JSON output");
   }
 
-  const packed = JSON.parse(output);
+  // pnpm 10 writes prepack lifecycle output before the JSON document, whereas
+  // pnpm 11 emits only JSON for the same `pack --json` command. The JSON object
+  // or array begins at column zero; nested values are indented.
+  const jsonStart = output.search(/^(?:\{|\[)/mu);
+  if (jsonStart === -1) {
+    throw new Error("pnpm pack did not return JSON output");
+  }
+  const packed = JSON.parse(output.slice(jsonStart));
   if (Array.isArray(packed)) {
     if (packed.length !== 1) {
       throw new Error(`expected one pnpm pack result; received ${packed.length}`);
