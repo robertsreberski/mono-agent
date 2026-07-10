@@ -141,6 +141,7 @@
     "@earendil-works/pi-ai": "^0.80.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opencode-ai/sdk": "^1.15.13",
+    "@vscode/ripgrep": "1.18.0",
     "cross-spawn": "^7.0.6",
     "zod": "^4.3.6"
   }

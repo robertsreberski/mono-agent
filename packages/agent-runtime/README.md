@@ -64,7 +64,7 @@ Peer requirements:
 - `claude` CLI on PATH (only for `executionMode: "cli"` with `claude` SDK)
 - `codex` CLI on PATH (only for `executionMode: "cli"` with `codex` SDK; override via the `codexAppServerCommand` option)
 - stable `opencode` CLI >= 1.15.0 on PATH (only for direct `opencode:<provider>:<model>` refs)
-- `ripgrep` on PATH (or supplied via `ripgrepPath`) — required for the `Glob` and `Grep` built-in tools
+- `Glob` and `Grep` use the packaged `@vscode/ripgrep` binary on supported platforms. An explicit `ripgrepPath` is authoritative and PATH remains a fallback; provide one of those when optional dependencies are omitted or the platform is unsupported.
 
 ## Quick start
 
@@ -157,7 +157,7 @@ createRuntime({
   // -- tool runtime context (process-level config for the tool kernel) --
   workspace,               // primary allowed root for path-based tools
   repoRoot,                // secondary allowed root
-  ripgrepPath,             // explicit path to `rg`; falls back to vendored binary, then PATH
+  ripgrepPath,             // explicit path to `rg`; falls back to packaged binary, then PATH
   qaOutputDir,             // fallback dir for Playwright MCP filename routing
   sandboxPolicy,           // optional SandboxPolicy for tools and stdio MCP (enforced
                            // through the injectable RuntimeSandbox seam, not a bundled dep)

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, join } from "node:path";
 import {
   DEFAULT_EXCLUDED_DIRS,
   DEFAULT_EXCLUDED_FILES,
@@ -36,14 +36,18 @@ export function ripgrepMissingMessage(ctx) {
 // larger change with no real-world payoff today.
 export const cachedRgPath = { value: undefined };
 
-function vendoredRgPath() {
+function packagedRgPath() {
   try {
-    const sdkPkg = requireFromHere.resolve("@anthropic-ai/claude-agent-sdk/package.json");
-    const platform = process.platform === "win32" ? "win32" : process.platform;
-    const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : null;
-    if (!arch) return null;
+    // Resolve the platform package relative to @vscode/ripgrep itself. pnpm's
+    // strict layout does not expose this optional transitive dependency from
+    // agent-runtime, and importing the wrapper eagerly would throw when a
+    // consumer intentionally installs with optional dependencies omitted.
+    const wrapperEntry = requireFromHere.resolve("@vscode/ripgrep");
+    const requireFromRipgrep = createRequire(wrapperEntry);
+    const arch = process.env.npm_config_arch || process.arch;
     const binaryName = process.platform === "win32" ? "rg.exe" : "rg";
-    const candidate = join(dirname(sdkPkg), "vendor", "ripgrep", `${arch}-${platform}`, binaryName);
+    const platformPackage = `@vscode/ripgrep-${process.platform}-${arch}`;
+    const candidate = requireFromRipgrep.resolve(`${platformPackage}/bin/${binaryName}`);
     return existsSync(candidate) ? candidate : null;
   } catch {
     return null;
@@ -73,7 +77,7 @@ export function resolveRgPath({ refresh = false, ctx } = {}) {
   if (ripgrepPath) {
     cachedRgPath.value = existsSync(ripgrepPath) ? ripgrepPath : null;
   } else {
-    cachedRgPath.value = vendoredRgPath() || rgFromPath() || null;
+    cachedRgPath.value = packagedRgPath() || rgFromPath() || null;
   }
   return cachedRgPath.value;
 }
