@@ -606,17 +606,22 @@ describe("srt integration contract", () => {
 
   it("uses an absolute Node plus CLI launch when explicitly configured", async () => {
     const root = await tempDir();
-    const cliRoot = await tempDir();
-    const cliPath = join(cliRoot, "cli.js");
+    const launchRoot = await tempDir();
+    const nodePath = join(launchRoot, "node");
+    const cliPath = join(launchRoot, "cli.js");
+    // process.execPath permissions belong to the host (for example, CI toolcaches
+    // can be group-writable), so use a test-owned trusted launch pair here.
+    await writeFile(nodePath, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
     await writeFile(cliPath, "// fixture\n", { mode: 0o600 });
+    await chmod(nodePath, 0o700);
     await chmod(cliPath, 0o600);
     const policy = failClosedSandboxPolicy({ root });
     const prepared = await createSrtSandboxEngine({
-      nodePath: process.execPath,
+      nodePath,
       cliPath,
     }).prepareCommand({ command: "/bin/echo", args: ["ok"] }, policy);
 
-    expect(prepared.command).toBe(await realpath(process.execPath));
+    expect(prepared.command).toBe(await realpath(nodePath));
     expect(prepared.args.slice(0, 3)).toEqual([await realpath(cliPath), "--settings", prepared.sandboxSettingsPath]);
     await prepared.cleanup?.();
   });
