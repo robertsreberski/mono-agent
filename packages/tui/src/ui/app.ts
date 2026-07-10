@@ -23,6 +23,27 @@ export interface TuiAppLogger {
   error?(message: string, metadata?: Record<string, unknown>): void;
 }
 
+export interface ConfigurationProposalCard {
+  readonly id: string;
+  readonly title: string;
+  readonly rationale: string;
+  readonly details: readonly string[];
+}
+
+export interface ConfigurationProposalResult {
+  readonly message: string;
+}
+
+export interface TuiConfigurationController {
+  /** When present, boot immediately starts the recorded configuration invitation turn. */
+  readonly initialPrompt?: string;
+  /** Prompt used when the operator invokes /configure later. */
+  readonly prompt: string;
+  takeProposal(): Promise<ConfigurationProposalCard | undefined>;
+  approve(id: string): Promise<ConfigurationProposalResult>;
+  reject(id: string): Promise<ConfigurationProposalResult>;
+}
+
 export interface MonoAgentTuiAppOptions {
   readonly terminal: Terminal;
   /** In-process responder (embedded mode); mutually exclusive with connection/discovery. */
@@ -51,6 +72,8 @@ export interface MonoAgentTuiAppOptions {
   readonly env?: Record<string, string | undefined>;
   /** Test seam: coalescing window for streamed markdown; 0 = synchronous. */
   readonly flushIntervalMs?: number;
+  /** Local-only configuration lifecycle; absent for remote/discovery TUI sessions. */
+  readonly configuration?: TuiConfigurationController;
 }
 
 const VIEW_ORDER: readonly TuiViewId[] = ["chat", "replay", "config", "picker"];
@@ -114,6 +137,10 @@ export class MonoAgentTuiApp {
       onSlashCommand: (command, args) => this.handleSlashCommand(command, args),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
       ...(options.flushIntervalMs === undefined ? {} : { flushIntervalMs: options.flushIntervalMs }),
+      ...(options.configuration === undefined ? {} : {
+        localMode: true,
+        onTurnSettled: (event) => this.handleConfigurationTurnSettled(event.configuration),
+      }),
     });
     this.picker = new PickerView({
       onSelect: (instance) => void this.connectTo(instance),
@@ -134,6 +161,9 @@ export class MonoAgentTuiApp {
   start(): void {
     this.tui.start();
     this.showView(this.view);
+    if (this.options.configuration?.initialPrompt !== undefined) {
+      queueMicrotask(() => this.enterConfiguration());
+    }
   }
 
   async waitUntilExit(): Promise<void> {
@@ -434,6 +464,9 @@ export class MonoAgentTuiApp {
       case "config":
         this.showView("config");
         return true;
+      case "configure":
+        this.enterConfiguration();
+        return true;
       case "cancel":
         if (!this.chat.cancelActiveTurn()) {
           this.statusBar.setEphemeral("no turn in flight");
@@ -481,7 +514,7 @@ export class MonoAgentTuiApp {
         )} picker; ${styles.accent("/effort default")} clears it`,
         styles.dim("effort options are model-specific"),
         "",
-        `${styles.accent("/help /agents /replay /config /cancel /thinking /model /effort /quit")}`,
+        `${styles.accent("/help /agents /replay /config /configure /cancel /thinking /model /effort /quit")}`,
         "",
         styles.dim("any key closes this help"),
       ].join("\n"),
@@ -556,6 +589,81 @@ export class MonoAgentTuiApp {
         choice === undefined ? "model override cleared" : `model override → ${choice}`,
       );
     });
+  }
+
+  private enterConfiguration(): void {
+    const configuration = this.options.configuration;
+    if (configuration === undefined) {
+      this.chat.addNotice("Conversational configuration is available only in `mono-agent tui --local`.", "warning");
+      return;
+    }
+    this.showView("chat");
+    this.chat.beginConfiguration(configuration.prompt);
+  }
+
+  private async handleConfigurationTurnSettled(configurationTurn: boolean): Promise<void> {
+    if (!configurationTurn) return;
+    const configuration = this.options.configuration;
+    if (configuration === undefined) return;
+    try {
+      const proposal = await configuration.takeProposal();
+      if (proposal !== undefined) this.showConfigurationProposal(proposal);
+    } catch (error) {
+      this.chat.addNotice(error instanceof Error ? error.message : String(error), "error");
+    }
+  }
+
+  private showConfigurationProposal(proposal: ConfigurationProposalCard): void {
+    if (this.activePicker !== undefined) {
+      this.chat.addNotice("A configuration proposal is ready, but another picker is open. Close it and run /configure again.", "warning");
+      return;
+    }
+    const list = new SelectList([
+      { value: "approve", label: "Approve and reload" },
+      { value: "reject", label: "Reject; change nothing" },
+    ], 2, selectListTheme);
+    list.onSelect = (item: SelectItem) => {
+      this.closePicker();
+      void this.resolveConfigurationProposal(proposal, item.value === "approve");
+    };
+    list.onCancel = () => {
+      this.closePicker();
+      void this.resolveConfigurationProposal(proposal, false);
+    };
+    list.setSelectedIndex(1);
+
+    const overlay = new Container();
+    overlay.addChild(new Text(styles.bold(proposal.title), 1, 0));
+    overlay.addChild(new Text(proposal.rationale, 1, 0));
+    overlay.addChild(new Text(proposal.details.map((detail) => `• ${detail}`).join("\n"), 1, 0));
+    overlay.addChild(list);
+    overlay.addChild(new Text(styles.dim("host-validated · enter select · esc rejects"), 1, 0));
+    this.activePicker = {
+      handle: this.tui.showOverlay(overlay, { anchor: "center", width: 76, nonCapturing: true }),
+      list,
+    };
+    this.tui.requestRender();
+  }
+
+  private async resolveConfigurationProposal(
+    proposal: ConfigurationProposalCard,
+    approve: boolean,
+  ): Promise<void> {
+    const configuration = this.options.configuration;
+    if (configuration === undefined) return;
+    this.statusBar.setEphemeral(approve ? "validating and applying approved configuration…" : "rejecting proposal…");
+    this.tui.requestRender();
+    try {
+      const result = approve
+        ? await configuration.approve(proposal.id)
+        : await configuration.reject(proposal.id);
+      this.chat.addInfo(result.message);
+    } catch (error) {
+      this.chat.addNotice(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      this.statusBar.setEphemeral("");
+      this.tui.requestRender();
+    }
   }
 
   /**
@@ -689,6 +797,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "agents", description: "Pick another running agent" },
   { name: "replay", description: "Browse recorded runs (full event timeline)" },
   { name: "config", description: "Read-only resolved config" },
+  { name: "configure", description: "Re-enter local conversational configuration" },
   { name: "cancel", description: "Cancel the in-flight turn" },
   { name: "thinking", description: "Expand/collapse thinking blocks" },
   { name: "model", description: "Override this session's model (no arg opens a picker)" },

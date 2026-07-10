@@ -391,7 +391,12 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
   const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
     memoryRecall,
     options.runtimeOptionsForRequest,
-  ]);
+  ], {
+    // The app-owned, read-only MemoryRecall endpoint is part of every configured
+    // memory tier. Preserve only this exact extension under an authenticated
+    // request override; arbitrary caller/action MCP extensions remain excluded.
+    preserveMcpServersUnderOverride: memoryRecall === undefined ? [] : [memoryRecall],
+  });
   const runtimeOptions = mergeStaticRuntimeOptions(
     runtimeOptionsForLocalProvider(model, config.providers?.local),
     configRuntimeFlags(config),

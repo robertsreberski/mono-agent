@@ -14,7 +14,9 @@ import { openMemoryDb } from "../packages/memory/dist/store/index.js";
 export const MEMORY_BENCHMARK_GATES = Object.freeze({
   recallAt5: 0.9,
   mrr: 0.8,
+  directFactCaseCount: 6,
   directFactAutomaticCoverage: 0.9,
+  ambiguousBindingCaseCount: 6,
   ambiguousBindingAbstentionRate: 1,
   abstentionRate: 0.9,
   missingAttributeAbstentionRate: 1,
@@ -193,7 +195,7 @@ export async function runMemoryBenchmark(options = {}) {
       queryResults.push({ item, hits, automatic });
     }
 
-    const policyResults = (fixture.policyCases ?? []).map(({ item, hits }) => ({
+    const policyResults = (fixture.policyCases ?? FAST_POLICY_CASES).map(({ item, hits }) => ({
       item,
       hits,
       automatic: selectAutomaticRecallHits(hits, { query: item.query }),
@@ -318,13 +320,14 @@ function automaticContractMetrics(results) {
   const directFacts = results.filter(({ item }) => item.automaticClass === "direct-fact");
   const ambiguousBindings = results.filter(({ item }) => item.automaticClass === "ambiguous-binding");
   return {
-    directFactAutomaticCoverage: directFacts.length === 0 ? 1 : mean(directFacts.map(({ item, automatic }) => {
+    directFactCaseCount: directFacts.length,
+    directFactAutomaticCoverage: mean(directFacts.map(({ item, automatic }) => {
       const relevant = new Set(item.relevantIds);
       return automatic.some((hit) => relevant.has(hit.record.id)) ? 1 : 0;
     })),
-    ambiguousBindingAbstentionRate: ambiguousBindings.length === 0
-      ? 1
-      : mean(ambiguousBindings.map(({ automatic }) => automatic.length === 0 ? 1 : 0)),
+    ambiguousBindingCaseCount: ambiguousBindings.length,
+    ambiguousBindingAbstentionRate:
+      mean(ambiguousBindings.map(({ automatic }) => automatic.length === 0 ? 1 : 0)),
   };
 }
 
@@ -332,8 +335,12 @@ export function memoryBenchmarkGateResults(quality, policyCalibration = { passed
   const checks = {
     recallAt5: quality.recallAt5 >= MEMORY_BENCHMARK_GATES.recallAt5,
     mrr: quality.mrr >= MEMORY_BENCHMARK_GATES.mrr,
+    directFactCaseCount:
+      quality.directFactCaseCount >= MEMORY_BENCHMARK_GATES.directFactCaseCount,
     directFactAutomaticCoverage:
       quality.directFactAutomaticCoverage >= MEMORY_BENCHMARK_GATES.directFactAutomaticCoverage,
+    ambiguousBindingCaseCount:
+      quality.ambiguousBindingCaseCount >= MEMORY_BENCHMARK_GATES.ambiguousBindingCaseCount,
     ambiguousBindingAbstentionRate:
       quality.ambiguousBindingAbstentionRate >= MEMORY_BENCHMARK_GATES.ambiguousBindingAbstentionRate,
     abstentionRate: quality.abstentionRate >= MEMORY_BENCHMARK_GATES.abstentionRate,
@@ -602,7 +609,7 @@ function render(report) {
     `Recall@1/5/8 ${(q.recallAt1 * 100).toFixed(1)}% / ${(q.recallAt5 * 100).toFixed(1)}% / ${(q.recallAt8 * 100).toFixed(1)}%`,
     `MRR ${q.mrr.toFixed(3)}  nDCG@8 ${q.ndcgAt8.toFixed(3)}`,
     `automatic Recall@5 ${(q.automaticRecallAt5 * 100).toFixed(1)}%  overall answer coverage ${(q.automaticAnswerCoverage * 100).toFixed(1)}%`,
-    `direct-fact auto coverage ${(q.directFactAutomaticCoverage * 100).toFixed(1)}%  ambiguous-binding abstention ${(q.ambiguousBindingAbstentionRate * 100).toFixed(1)}%`,
+    `direct-fact auto coverage ${(q.directFactAutomaticCoverage * 100).toFixed(1)}% (${q.directFactCaseCount} cases)  ambiguous-binding abstention ${(q.ambiguousBindingAbstentionRate * 100).toFixed(1)}% (${q.ambiguousBindingCaseCount} cases)`,
     `stale ${(q.staleRecallRate * 100).toFixed(2)}%  false ${(q.falseRecallRate * 100).toFixed(2)}%  abstention ${(q.abstentionRate * 100).toFixed(1)}%`,
     `missing-attribute abstention ${(q.missingAttributeAbstentionRate * 100).toFixed(1)}%  out-of-domain abstention ${(q.outOfDomainAbstentionRate * 100).toFixed(1)}%`,
     `synthetic policy calibration ${report.policyCalibration.passed ? "PASS" : "FAIL"} (${report.policyCalibration.cases} separate case(s))`,

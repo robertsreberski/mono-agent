@@ -3,7 +3,7 @@
 Config-first mono-agent host. Reads one `mono-agent.config.json` in a folder,
 builds the configured responder, and starts every configured communication
 channel plus traceability. Ships the
-`mono-agent` CLI (`init`, `auth`, `sandbox`, `validate`, `memory`, `start`) so an agent folder works without
+`mono-agent` CLI (`init`, `auth`, `sandbox`, `validate`, `memory`, `tui`, `start`) so an agent folder works without
 hand-written composition code.
 
 ## Category
@@ -24,7 +24,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Drive each channel through a uniform driver contract with per-channel
   `disabled` / `waiting_for_config` / `running` / `failed` status.
 - Register the host as a traceability source. Config edits are made directly in
-  `mono-agent.config.json` and take effect on the next `mono-agent restart`.
+  `mono-agent.config.json`, or proposed through the OS-owner-local configuration
+  TUI; direct edits take effect on the next `mono-agent restart`.
 - Resolve and surface any configured `observability.exporters` (the Phoenix
   preset): `start`/`status` report the configured endpoint and a note that JSONL
   artifacts remain local; `validate` performs the live reachability probe. Export
@@ -47,7 +48,7 @@ node <workspace>/packages/agent-app/dist/cli.js init
 
 On an interactive terminal, bare `mono-agent init` (no flags) runs a colourful,
 step-by-step wizard — powered by `@clack/prompts` — that asks for the public
-agent name and composes the capability selection before writing anything. Escape
+agent name plus a concise purpose and composes the capability selection before writing anything. Escape
 moves back one logical step; Ctrl-C asks for exit confirmation. The final
 **Creation review** names the agent, routes/efforts, route safety, provider/SRT
 actions, exact files, secret destinations, and number of real model calls before
@@ -72,7 +73,9 @@ OpenCode-Go Pi refs can save `OPENCODE_API_KEY` into
 the Pi auth store or remain environment-provided, and any number of fallback
 models are selected from the same discovered choices one at a time. Each route
 offers only its advertised effort values plus **Provider default**. Standalone
-`mono-agent auth login opencode-go` uses a masked TTY prompt; headless callers
+`mono-agent auth login anthropic` keeps its localhost callback active while
+also reading a pasted final redirect URL through Pi's code/state-validating
+OAuth implementation. `mono-agent auth login opencode-go` uses a masked TTY prompt; headless callers
 must opt in to one-line redirected input with `--api-key-stdin`. Any flag (or a piped/non-TTY
 invocation) takes the silent default/preset scaffold path instead; add `--auth`
 to run supported provider setup in that non-interactive path. Required selected
@@ -88,7 +91,7 @@ protected; the claimed inode is rechecked and detected open-descriptor writes ar
 retained in a reported recovery copy (writes after the final POSIX check remain
 non-cooperative); unsafe/tracked/foreign-owned/multiply-linked
 paths, stale locks, invalid dotenv, conflicts, and Windows fail closed to manual setup. Before the
-interactive wizard offers immediate start it requires one disposable no-tool
+interactive wizard opens the local TUI it requires one disposable no-tool
 response from every selected runtime route and a complete validation report with
 every selected expectation ready. Cancellation, provider failure, timeout (90s
 cloud / 240s local per route), empty output, or any tool action fails the check.
@@ -97,7 +100,36 @@ the non-secret plan fingerprint still matches, restart all checks, edit choices,
 or cancel. Authentication repair clears every prior route proof because it can
 replace credential bytes. Guided commit atomically
 creates the config and rechecks its exact snapshot after validation and before
-start. Saving after failure is explicitly incomplete and never auto-starts.
+opening `mono-agent tui --local --configure`. This builds the current-folder
+responder in-process and never creates launchd state. Saving after failure is
+explicitly incomplete and never auto-starts.
+
+Every scaffold selects versioned `mono-agent-configure` and `mono-agent-memory`
+skills from `./skills` with index disclosure. `ReadSkill` remains separate from
+action-tool policy. `mono-agent install-skill --project --check|--update` reports
+version/hash drift and refreshes only unchanged managed copies with backups; a
+canonical owner-only non-symlink parent chain, per-project owner lock, and
+compare-and-swap activation prevent outside or concurrent
+operator edits from being overwritten, and a partial activation restores only
+files that still equal the managed bytes it wrote.
+
+In a marked local configuration turn only, the app injects proposal-only
+`ProposeAgentConfiguration`. The host accepts only a fail-closed low-risk
+allowlist: public name; effort, turn/session UX; selected project skills and
+disclosure; memory size or MemoryRecall enablement; semantic tool-policy
+tightening; and the separately validated Role body. Every path, memory-tier or
+capture-cost change, runtime/provider route, channel/proactive/plugin, MCP,
+exporter, embeddings/LLM endpoint, sandbox/network field, secret, and unknown
+future field is handed to the explicit guided flow. It canonicalizes
+config/Identity/state paths without following symlink parents, stages and
+fsyncs replacements, then performs the final source comparison and rename as
+one non-yielding commit step under an owner-only transaction lock. Separate TUI
+confirmation, failure-atomic config/Role rollback compensation, rollback
+evidence, and a fresh responder remain mandatory. Configuration turns replace
+the ordinary tool/MCP policy with `ReadSkill`, `MemoryRecall`, and the proposal
+tool only; direct providers that cannot project a finite list run in their
+native read-only plan posture. Fast follow-ups wait through responder rotation.
+Remote/proactive channels never receive this tool.
 
 Guided readiness uses a worker-reproducible environment rather than the launching
 shell: durable `.env` values, entered selected secrets, the resolved Pi auth path,
@@ -158,6 +190,8 @@ await app.stop();
 - `MONO_AGENT_APP_FIELD_GROUPS` and the `resolveApp*` traceability/artifact
   resolvers.
 - `runCli(argv)` / `parseCliArgs(argv)` backing the `mono-agent` bin.
+- Local configuration CLI lifecycle: `mono-agent tui --local [--configure]` and
+  managed project-skill drift/update through `install-skill --project`.
 - Managed SRT lifecycle: `sandboxRuntimeStatus`, `setupManagedSrt`, and
   `checkSandboxRuntime` (also exposed as `mono-agent sandbox status|setup|check`).
 

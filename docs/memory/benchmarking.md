@@ -17,8 +17,8 @@ Provider-independent contract probes run separately from provider retrieval. Pos
 
 - Recall@5 at least 90%
 - MRR at least 0.8
-- at least 90% of canonical direct-fact probes receive the relevant automatic-recall hit
-- 100% of ambiguous-binding probes abstain from automatic injection
+- at least six canonical direct-fact probes are present, and at least 90% receive the relevant automatic-recall hit
+- at least six ambiguous-binding probes are present, and 100% abstain from automatic injection
 - at least 90% of unanswerable cases abstain from automatic injection
 - 100% of missing-attribute and out-of-domain cases abstain in the fast suite
 - stale recall at most 5%

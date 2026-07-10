@@ -30,7 +30,9 @@ describe("memory benchmark", () => {
     expect(report.gates.passed).toBe(true);
     expect(report.quality.recallAt5).toBeGreaterThanOrEqual(0.9);
     expect(report.quality.mrr).toBeGreaterThanOrEqual(0.8);
+    expect(report.quality.directFactCaseCount).toBeGreaterThanOrEqual(6);
     expect(report.quality.directFactAutomaticCoverage).toBeGreaterThanOrEqual(0.9);
+    expect(report.quality.ambiguousBindingCaseCount).toBeGreaterThanOrEqual(6);
     expect(report.quality.ambiguousBindingAbstentionRate).toBe(1);
     expect(report.quality.abstentionRate).toBeGreaterThanOrEqual(0.9);
     expect(report.quality.missingAttributeAbstentionRate).toBe(1);
@@ -109,7 +111,9 @@ describe("memory benchmark", () => {
       recallAt5: 1,
       mrr: 1,
       automaticAnswerCoverage: 1,
+      directFactCaseCount: 6,
       directFactAutomaticCoverage: 1,
+      ambiguousBindingCaseCount: 6,
       ambiguousBindingAbstentionRate: 1,
       abstentionRate: 1,
       missingAttributeAbstentionRate: 1,
@@ -125,6 +129,14 @@ describe("memory benchmark", () => {
     expect(memoryBenchmarkGateResults({ ...base, ambiguousBindingAbstentionRate: 0 })).toMatchObject({
       passed: false,
       checks: { ambiguousBindingAbstentionRate: false },
+    });
+    expect(memoryBenchmarkGateResults({ ...base, directFactCaseCount: 0 })).toMatchObject({
+      passed: false,
+      checks: { directFactCaseCount: false },
+    });
+    expect(memoryBenchmarkGateResults({ ...base, ambiguousBindingCaseCount: 5 })).toMatchObject({
+      passed: false,
+      checks: { ambiguousBindingCaseCount: false },
     });
     expect(memoryBenchmarkGateResults({ ...base, automaticAnswerCoverage: 0 }).passed).toBe(true);
     expect(memoryBenchmarkGateResults({ ...base, abstentionRate: 0 })).toMatchObject({

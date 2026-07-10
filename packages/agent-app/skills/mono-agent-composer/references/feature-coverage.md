@@ -25,6 +25,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | --- | --- | --- |
 | Identity + optional soul documents | config | `context.identityPath`, `context.soulPath` |
 | Selected skills from a skills root | config | `context.skillsRoot`, `context.selectedSkills` |
+| Generated project configuration skills with progressive disclosure | config + cli | init selects `mono-agent-configure` + `mono-agent-memory` under `./skills` with `context.skillDisclosure: "index"`; drift: `mono-agent install-skill --project --check\|--update` |
 | Per-skill byte cap | config | `context.skillMaxBytes` |
 | Conversation history (bounded in-memory) | auto | 12 messages by default; twice a positive `runtime.maxTurns`; custom store via code |
 | Lite memory (FTS keyword recall + rapid-log capture; no external deps) | config | `memory.mode: "lite"`, `path`, `maxBytes`, `writeMode` |
@@ -77,6 +78,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Trace-source registry (heartbeat manifests `mono-agent status` reads) | config | `traceability.{registryDir,sourceId,sourceLabel,heartbeatMs,staleAfterMs,globalDiscovery}` |
 | Phoenix trace viewer (OTLP exporter; local JSONL artifacts are the fallback) | config | `observability.exporters` (phoenix entry) |
 | Operator console (live chat with thinking/tool/telemetry insight, run replay, config view) | cli | `mono-agent tui [--agent <label>]`; agents serve the `tui` stream endpoint by default (`tui.enabled`, loopback) |
+| Current-folder local conversation and proposal-only configuration | cli + tool | `mono-agent tui --local [--configure]`; `/configure`; host-gated `ProposeAgentConfiguration` exists only for one marked local configuration turn |
 | Session Recorder web PWA (read-only run browser) | cli | `mono-agent web [--host] [--port] [--no-open] [--allow-non-loopback] [--include-memory]`; consumes the default-on `live` relay and local artifacts; memory runs are opt-in |
 | Setup presets (saved answer-sets: generate config + `.env.example` + checklist) | cli | `mono-agent presets list\|show <id>`, `mono-agent init --preset <id> --yes` (`recipes`/`--recipe` deprecated aliases) |
 | Interactive setup wizard (preset/custom; walks model→channels→memory→tools→sandbox→observability) | cli | `mono-agent init` (no flags, on a TTY; `setup` alias) |

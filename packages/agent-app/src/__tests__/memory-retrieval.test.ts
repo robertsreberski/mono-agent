@@ -28,18 +28,18 @@ function fakeStore(options: { readonly fail?: boolean } = {}): SharedRecallStore
       if (query.includes("unrelated")) {
         return [{ score: 0.05, record: { id: "low", text: "low confidence neighbour" } }];
       }
-      if (query.includes("calibrated")) {
+      if (query.includes("launch color")) {
         return [
-          { score: 1.005, record: { id: "answer", text: "calibrated query direct answer" } },
-          { score: 0.751, record: { id: "adjacent", text: "calibrated query high-similarity adjacent noise" } },
-          { score: 0.708, record: { id: "other", text: "calibrated query other adjacent noise" } },
+          { score: 1.005, record: { id: "answer", text: "Morgan selected cobalt as the launch color." } },
+          { score: 0.751, record: { id: "adjacent", text: "Morgan's office is in Amsterdam." } },
+          { score: 0.708, record: { id: "other", text: "The launch date is 2026-08-14." } },
         ];
       }
       return Array.from({ length: 12 }, (_, index) => ({
         score: 0.95 - index * 0.01,
         record: {
           id: `hit-${index}`,
-          text: `Deploy pipeline: Relevant memory ${index}`,
+          text: `Morgan selected cobalt-${index} as the deployment color.`,
           type: "task" as const,
           status: index === 0 ? "done" as const : "open" as const,
           isInsight: index === 0,
@@ -59,16 +59,16 @@ describe("MemoryRetrievalService", () => {
     const store = fakeStore();
     const service = new MemoryRetrievalService(store);
 
-    const block = await service.load("conversation", "  DEPLOY\n pipeline  ", { turnId: "turn-1" });
-    const hits = await service.recallForTurn("turn-1", "deploy pipeline", { topK: 8 });
+    const block = await service.load("conversation", "  What deployment color\ndid Morgan select?  ", { turnId: "turn-1" });
+    const hits = await service.recallForTurn("turn-1", "what deployment color did morgan select?", { topK: 8 });
     await service.recallForTurn("turn-1", "different query", { topK: 8 });
 
     expect(block).toBeDefined();
-    expect(block?.content.match(/Relevant memory/gu)).toHaveLength(5);
-    expect(block?.content).toContain("- [x] Deploy pipeline: Relevant memory 0 *");
+    expect(block?.content.match(/deployment color/gu)).toHaveLength(5);
+    expect(block?.content).toContain("- [x] Morgan selected cobalt-0 as the deployment color. *");
     expect(Buffer.byteLength(block?.content ?? "", "utf8")).toBeLessThanOrEqual(8_000);
     expect(hits).toHaveLength(8);
-    expect(store.queries).toEqual(["deploy pipeline", "different query"]);
+    expect(store.queries).toEqual(["what deployment color did morgan select?", "different query"]);
     expect(store.accesses.flat()).toEqual([
       "hit-0", "hit-1", "hit-2", "hit-3", "hit-4", "hit-5", "hit-6", "hit-7",
     ]);
@@ -81,9 +81,9 @@ describe("MemoryRetrievalService", () => {
 
   it("drops high-similarity adjacent results outside the top-relative confidence band", async () => {
     const service = new MemoryRetrievalService(fakeStore());
-    const block = await service.load("conversation", "calibrated query", { turnId: "turn-calibrated" });
-    expect(block?.content).toContain("direct answer");
-    expect(block?.content).not.toContain("adjacent noise");
+    const block = await service.load("conversation", "What launch color did Morgan select?", { turnId: "turn-calibrated" });
+    expect(block?.content).toContain("selected cobalt as the launch color");
+    expect(block?.content).not.toContain("office");
   });
 
   it("normalizes Unicode, case, and whitespace deterministically", () => {

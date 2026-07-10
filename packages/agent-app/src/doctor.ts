@@ -55,6 +55,7 @@ import { findUnknownAppConfigWarnings } from "./config-reference.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { piAuthRecoveryCommand } from "./provider-setup.js";
 import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "./pi-auth-store-inspection.js";
+import { checkManagedProjectSkills, managedProjectSkillsExist } from "./project-skills.js";
 import { configuredRuntimeFallbackModels, configuredRuntimeModels } from "./runtime-routes.js";
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
@@ -178,7 +179,7 @@ export async function validateMonoAgentFolder(
       options.sdkAuthStatusExecFile,
       staticTriggerCredentialRefs,
     ));
-    sections.push(await contextSection(coreConfig));
+    sections.push(await contextSection(coreConfig, options.cwd));
     sections.push(await memorySection(coreConfig, options.cwd, liveness, allowFilesystemWrites));
     sections.push(await toolsSection(coreConfig, options));
     sections.push(await sandboxSection(coreConfig, options.sandboxEngine));
@@ -1271,7 +1272,7 @@ function hasNonEmptyCredentialValue(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.length <= 65_536 && !value.includes("\0");
 }
 
-async function contextSection(config: MonoAgentConfig): Promise<ValidationSection> {
+async function contextSection(config: MonoAgentConfig, cwd: string): Promise<ValidationSection> {
   const details: string[] = [];
   let status: ValidationStatus = "ok";
 
@@ -1306,6 +1307,20 @@ async function contextSection(config: MonoAgentConfig): Promise<ValidationSectio
   } else if (config.context.selectedSkills.length > 0) {
     status = "error";
     details.push("Skills are selected but context.skillsRoot is not set.");
+  }
+
+  if (await managedProjectSkillsExist(cwd)) {
+    const managed = await checkManagedProjectSkills(cwd);
+    const drift = managed.statuses.filter((entry) => entry.status !== "ready");
+    if (drift.length === 0) {
+      details.push(`Managed project skills: current (${managed.manifestVersion ?? "unknown version"}).`);
+    } else {
+      if (status === "ok") status = "waiting";
+      details.push(
+        `Managed project skill drift: ${drift.map((entry) => `${entry.name}=${entry.status}`).join(", ")}. ` +
+        "Run `mono-agent install-skill --project --check`; use --update only after reconciling modified copies.",
+      );
+    }
   }
 
   return { id: "context", label: "Context & skills", status, details };

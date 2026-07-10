@@ -10,6 +10,7 @@ import { writeMonoAgentConfigJson } from "@mono-agent/config";
 
 import { composeWizardPlan, defaultAnswers, humanizeAgentName } from "./wizard/answers.js";
 import type { ComposeContext, WizardAnswers, WizardPlan } from "./wizard/answers.js";
+import { assertManagedProjectSkillInitSafe } from "./project-skills.js";
 
 export interface InitMonoAgentFolderOptions {
   /** Folder the agent is constructed in. Defaults to process.cwd(). */
@@ -167,6 +168,8 @@ export async function initMonoAgentFolder(
   const skipped: string[] = [];
   const changes: InitFileChange[] = [];
 
+  await assertManagedProjectSkillInitSafe(dir);
+
   const knowledgeFiles: string[] = [];
   for (const candidate of KNOWLEDGE_FILE_CANDIDATES) {
     if (await pathExists(join(dir, candidate))) {
@@ -194,6 +197,7 @@ export async function initMonoAgentFolder(
     identityTemplate(
       dir,
       answers.name?.trim() || humanizeAgentName(basename(dir)),
+      answers.purpose?.trim() || "Help the operator work effectively in this folder.",
       knowledgeFiles,
     ),
     { flag: "wx" },
@@ -1541,7 +1545,12 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-function identityTemplate(dir: string, agentName: string, knowledgeFiles: readonly string[]): string {
+function identityTemplate(
+  dir: string,
+  agentName: string,
+  purpose: string,
+  knowledgeFiles: readonly string[],
+): string {
   const knowledgeSection = knowledgeFiles.length === 0
     ? "This folder starts empty; describe the agent's purpose and boundaries here."
     : [
@@ -1556,7 +1565,7 @@ You are ${agentName}, a mono agent constructed in \`${basename(dir)}\`.
 
 ## Role
 
-Describe what this agent is for in one or two sentences.
+${purpose}
 
 ## Knowledge
 

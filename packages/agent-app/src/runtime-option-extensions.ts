@@ -7,9 +7,20 @@ export type RuntimeOptionsExtension = (
   input: AgentHarnessRuntimeOptionsInput,
 ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
 
+export interface RuntimeOptionsCompositionOptions {
+  /**
+   * Internal extensions whose request-scoped MCP servers remain available
+   * inside a later authoritative tool-policy override. This is deliberately
+   * extension-identity based: an arbitrary caller cannot preserve a server by
+   * merely reusing a trusted server name.
+   */
+  readonly preserveMcpServersUnderOverride?: readonly RuntimeOptionsExtension[];
+}
+
 /** Compose request-scoped runtime extensions without dropping tools or cleanup hooks. */
 export function composeRuntimeOptionExtensions(
   extensions: ReadonlyArray<RuntimeOptionsExtension | undefined>,
+  options: RuntimeOptionsCompositionOptions = {},
 ): RuntimeOptionsExtension | undefined {
   const active = extensions.filter((extension): extension is RuntimeOptionsExtension => extension !== undefined);
   if (active.length === 0) return undefined;
@@ -30,8 +41,33 @@ export function composeRuntimeOptionExtensions(
     const results = settled.map((result) => (result as PromiseFulfilledResult<AgentHarnessRuntimeOptionsExtension>).value);
     const runtimeOptions: Record<string, unknown> = {};
     for (const result of results) mergeRuntimeOptions(runtimeOptions, result.runtimeOptions);
+    let toolPolicyOverride: AgentHarnessRuntimeOptionsExtension["toolPolicyOverride"];
+    for (const result of results) {
+      if (result.toolPolicyOverride !== undefined) toolPolicyOverride = result.toolPolicyOverride;
+    }
+    if (toolPolicyOverride !== undefined) {
+      const preservedServers: Record<string, unknown> = {};
+      const preservedExtensions = new Set(options.preserveMcpServersUnderOverride ?? []);
+      for (const [index, extension] of active.entries()) {
+        if (!preservedExtensions.has(extension)) continue;
+        const servers = results[index]?.runtimeOptions?.mcpServers;
+        if (isRecord(servers)) Object.assign(preservedServers, servers);
+      }
+      toolPolicyOverride = {
+        ...toolPolicyOverride,
+        ...(toolPolicyOverride.mcpServers === undefined && Object.keys(preservedServers).length === 0
+          ? {}
+          : {
+              mcpServers: {
+                ...(toolPolicyOverride.mcpServers ?? {}),
+                ...preservedServers,
+              },
+            }),
+      };
+    }
     return {
       runtimeOptions,
+      ...(toolPolicyOverride === undefined ? {} : { toolPolicyOverride }),
       cleanup: async () => {
         await Promise.all(results.map(async (result) => result.cleanup?.()));
       },

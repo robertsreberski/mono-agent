@@ -14,6 +14,10 @@ export interface RunTuiOptions {
   readonly agent?: string;
   /** --conversation: conversation id to chat under (default tui-<sourceId>). */
   readonly conversationId?: string;
+  /** Build the current folder's responder in this process instead of discovering a service. */
+  readonly local?: boolean;
+  /** Start with the recorded conversational-configuration invitation. Requires local mode. */
+  readonly configure?: boolean;
 }
 
 /** Test seams: discovery + TUI boot are injectable. */
@@ -23,6 +27,17 @@ export interface RunTuiDeps {
   readonly isTty?: boolean;
   readonly stdout?: { write(text: string): void };
   readonly stderr?: { write(text: string): void };
+  readonly createLocalSession?: (options: {
+    readonly cwd: string;
+    readonly configPath: string;
+    readonly env: Record<string, string | undefined>;
+    readonly configure: boolean;
+  }) => Promise<{
+    readonly responder: unknown;
+    readonly title: string;
+    readonly configuration: unknown;
+    dispose(): Promise<void>;
+  }>;
 }
 
 export type TuiLaunchPlan =
@@ -109,6 +124,53 @@ export async function runTui(options: RunTuiOptions, deps: RunTuiDeps = {}): Pro
     return 1;
   }
 
+  // Lazy: neither the runtime stack nor pi-tui loads for remote discovery.
+  const startTui =
+    deps.startTui ??
+    (async (tuiOptions: Record<string, unknown>) => {
+      const { startMonoAgentTui } = await import("@mono-agent/tui");
+      return startMonoAgentTui(tuiOptions as never);
+    });
+
+  if (options.local === true) {
+    const createSession = deps.createLocalSession ?? (async (input) => {
+      const { createLocalConfigurationSession } = await import("./local-configuration.js");
+      return await createLocalConfigurationSession(input);
+    });
+    let session;
+    try {
+      session = await createSession({
+        cwd: options.cwd,
+        configPath: options.configPath,
+        env: options.env,
+        configure: options.configure === true,
+      });
+    } catch (error) {
+      stderr.write(`Could not start local TUI: ${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
+    try {
+      const handle = await startTui({
+        responder: session.responder,
+        configuration: session.configuration,
+        title: session.title,
+        subtitle: options.cwd,
+        conversationId: options.conversationId ?? "tui-local",
+        env: options.env,
+        config: { path: options.configPath, cwd: options.cwd, env: options.env },
+        instance: {
+          label: session.title,
+          artifactDir: resolve(options.cwd, ".mono-agent", "artifacts"),
+          configPath: options.configPath,
+        },
+      });
+      await handle.waitUntilExit();
+      return 0;
+    } finally {
+      await session.dispose();
+    }
+  }
+
   const configuredRegistryDir = await resolveAppTraceRegistryDir({
     env: options.env,
     cwd: options.cwd,
@@ -147,14 +209,6 @@ export async function runTui(options: RunTuiOptions, deps: RunTuiDeps = {}): Pro
     stderr.write(`${plan.message}\n`);
     return 1;
   }
-
-  // Lazy: the TUI (and pi-tui) load only when this command actually runs.
-  const startTui =
-    deps.startTui ??
-    (async (tuiOptions: Record<string, unknown>) => {
-      const { startMonoAgentTui } = await import("@mono-agent/tui");
-      return startMonoAgentTui(tuiOptions as never);
-    });
 
   const common = {
     title: "mono-agent",

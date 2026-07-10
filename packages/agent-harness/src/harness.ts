@@ -790,10 +790,6 @@ export class MonoAgentHarness implements AgentHarness {
         await this.runLimiter.acquire(request.abortSignal);
         acquired = true;
       }
-      const policyOptions = toolPolicyToRuntimeOptions(this.options.toolPolicy ?? failClosedToolPolicy());
-      const sandboxOptions = this.options.sandboxPolicy === undefined
-        ? {}
-        : sandboxPolicyToRuntimeOptions(this.options.sandboxPolicy);
       requestExtension = await this.options.runtimeOptionsForRequest?.({ request, runId, context });
       request.abortSignal.addEventListener("abort", onAbortCleanupAndRelease, { once: true });
       if (request.abortSignal.aborted) {
@@ -801,11 +797,25 @@ export class MonoAgentHarness implements AgentHarness {
         await cleanupRequestExtension();
         throw request.abortSignal.reason ?? new Error("Agent request was cancelled before provider start.");
       }
+      const policyOptions = toolPolicyToRuntimeOptions(
+        requestExtension?.toolPolicyOverride
+        ?? this.options.toolPolicy
+        ?? failClosedToolPolicy(),
+      );
+      const sandboxOptions = this.options.sandboxPolicy === undefined
+        ? {}
+        : sandboxPolicyToRuntimeOptions(this.options.sandboxPolicy);
+      const staticRuntimeOptions = requestExtension?.toolPolicyOverride === undefined
+        ? this.options.runtimeOptions
+        : withoutToolPolicyOptions(this.options.runtimeOptions);
+      const requestRuntimeOptions = requestExtension?.toolPolicyOverride === undefined
+        ? requestExtension?.runtimeOptions
+        : withoutToolPolicyOptions(requestExtension.runtimeOptions);
       const merged = mergeRuntimeOptions(
         policyOptions,
         sandboxOptions,
-        this.options.runtimeOptions,
-        requestExtension?.runtimeOptions,
+        staticRuntimeOptions,
+        requestRuntimeOptions,
       );
       // Per-request overrides (cron job / webhook per-trigger model + effort) win
       // over the harness defaults. These are applied AFTER the `...merged` spread so
@@ -1066,6 +1076,22 @@ const ENDPOINT_CLEAR_KEYS: ReadonlySet<string> = new Set([
   "modelCapabilities",
   "isPrivateProvider",
 ]);
+
+const TOOL_POLICY_OPTION_KEYS: ReadonlySet<string> = new Set([
+  "allowedTools",
+  "disallowedTools",
+  "mcpServers",
+  "mcpConfigPath",
+]);
+
+function withoutToolPolicyOptions(
+  options: AgentHarnessRuntimeOptionsExtension["runtimeOptions"] | Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (options === undefined) return undefined;
+  return Object.fromEntries(
+    Object.entries(options).filter(([key]) => !TOOL_POLICY_OPTION_KEYS.has(key)),
+  );
+}
 
 function mergeRuntimeOptions(
   ...optionsList: readonly (AgentHarnessRuntimeOptionsExtension["runtimeOptions"] | Record<string, unknown> | undefined)[]

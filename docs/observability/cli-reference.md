@@ -14,7 +14,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 
 | Command | Purpose | Key flags |
 | --- | --- | --- |
-| `init` | On a TTY with no flags, run the guided readiness path: name the agent, search the Pi/Codex/Claude catalogs, configure exact route efforts/safety, review concrete mutations, then verify every selected route. Any flag or non-TTY invocation is scaffold-only. | `--name`, `--model`, repeated `--fallback`/`--fallback-effort`, `--route-safety`, legacy `--fallback-models`, `--auth`, `--codex-auth`, `--memory` |
+| `init` | On a TTY with no flags, run the guided readiness path: name and purpose the agent, search the Pi/Codex/Claude catalogs, configure exact route efforts/safety, verify every selected route, then enter the local configuration TUI. Any flag or non-TTY invocation is scaffold-only. | `--name`, `--model`, repeated `--fallback`/`--fallback-effort`, `--route-safety`, legacy `--fallback-models`, `--auth`, `--codex-auth`, `--memory` |
 | `setup` | Alias of `init`. | (same as `init`) |
 | `presets` | List the built-in setup presets or show a preset's generated config, `.env.example`, and checklist. Replaces `recipes` (still an alias). | `list`, `show <id>` |
 | `auth login` | Run direct Codex browser/device login, Pi OAuth for Anthropic/GitHub Copilot/OpenAI Codex, or the OpenCode-Go API-key flow. OpenCode-Go uses masked TTY input by default; `--api-key-stdin` is the explicit headless input mode. Pi credentials are promoted under an owner-only lock with stale-lock repair only when safely proven. | `<provider\|codex>`, `--pi-auth-path <path>`, `--api-key-stdin`, `--codex-auth browser\|device`, `--config <path>` |
@@ -28,7 +28,8 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `status` | Show this config's instance plus any other running instances. | `--config <path>` |
 | `logs` | Print (and optionally follow) the background instance's log files. | `--config <path>`, `--follow` / `-f`, `--lines <n>` |
 | `web` | Serve the read-only Session Recorder web PWA for every discovered running agent. | `--host <addr>`, `--port <n>`, `--no-open`, `--allow-non-loopback`, `--include-memory`, `--max-runs <n>`, `--config <path>` |
-| `install-skill` | Copy the bundled `mono-agent-composer` skill into the agent skill folders. | `--target claude\|codex\|both`, `--force` |
+| `tui` | Open remote discovery/chat or build the current-folder responder in-process for local configuration. | `--agent`, `--conversation`, `--local`, `--configure` |
+| `install-skill` | Copy the authoring composer to coding harnesses, or check/update managed project-local skills. | `--target claude\|codex\|both`, `--force`, `--project`, `--check`, `--update` |
 | `backfill` | Export already-recorded run artifacts to the Phoenix exporter with their historical timestamps. | `--run <id>`, `--all`, `--since <iso>`, `--until <iso>`, `--dry-run`, `--config <path>`, `--env-file <path>` |
 | `audit-runs` | Read local run summaries without rewriting them and report parse/status/failure-kind/stale-running totals. | `--artifact-dir <path>`, `--consumer <path>`, `--stale-after-ms <n>`, `--json`, `--config <path>`, `--env-file <path>` |
 | `metrics` | Aggregate local run summaries into status rates, failure-kind rates, duration percentiles, and cost totals. | `--artifacts <path>`, `--since <iso>`, `--until <iso>`, `--by model\|channel\|failureKind`, `--json`, `--config <path>`, `--env-file <path>` |
@@ -140,9 +141,9 @@ Supported Pi login targets are `anthropic`, `github-copilot`, and `openai-codex`
 3. `providers.piAuthPath`
 4. Pi default `~/.pi/agent/auth.json`
 
-`~` expands to the current user's home directory. Relative values from the flag, environment, or config resolve against the agent/invocation working directory before the bundled Pi CLI is staged, so discovery, login, validation, readiness, and runtime all address the same absolute store. A missing config falls through to env/default resolution; a malformed or unreadable config is an error and never silently falls through.
+`~` expands to the current user's home directory. Relative values from the flag, environment, or config resolve against the agent/invocation working directory before the Pi OAuth flow is staged, so discovery, login, validation, readiness, and runtime all address the same absolute store. A missing config falls through to env/default resolution; a malformed or unreadable config is an error and never silently falls through.
 
-Pi login never runs an unpinned global Pi command. mono-agent invokes its bundled Pi CLI against a private staged `auth.json`, validates the requested credential and unchanged siblings, then promotes under an owner-only identity-bound lock. OpenCode-Go uses a masked prompt on a TTY; `--api-key-stdin` accepts exactly one explicitly redirected, bounded line for a headless invocation and is rejected for OAuth providers. Ambient `OPENCODE_API_KEY` is never copied implicitly. A pre-existing lock is removed only when its secure record remains identity-stable and the recorded PID is proven absent with `ESRCH`; active, permission-denied, malformed, or racing locks are preserved. Automatic credential persistence refuses Windows and Pi auth paths inside Git worktrees.
+Pi login never runs an unpinned global Pi command. mono-agent launches an app-owned terminal wrapper around the bundled Pi provider OAuth implementation against a private staged `auth.json`, validates the requested credential and unchanged siblings, then promotes under an owner-only identity-bound lock. Anthropic races its localhost callback against an active terminal prompt: a pasted final redirect URL is passed intact to Pi, which requires its authorization code and validates OAuth state before exchange. OpenCode-Go uses a masked prompt on a TTY; `--api-key-stdin` accepts exactly one explicitly redirected, bounded line for a headless invocation and is rejected for OAuth providers. Ambient `OPENCODE_API_KEY` is never copied implicitly. A pre-existing lock is removed only when its secure record remains identity-stable and the recorded PID is proven absent with `ESRCH`; active, permission-denied, malformed, or racing locks are preserved. Automatic credential persistence refuses Windows and Pi auth paths inside Git worktrees.
 
 Exit codes are `0` for successful login/promotion, `1` for login/validation/persistence failure, `2` for invalid usage or an unavailable auth method, and `130` when masked input is cancelled.
 
@@ -352,6 +353,8 @@ Opens the [operator console](/observability/tui/) from **any directory**: live c
 mono-agent tui                          # discover + connect
 mono-agent tui --agent personal-agent   # connect by label or sourceId
 mono-agent tui --conversation ops       # chat under a stable conversation id
+mono-agent tui --local                  # current folder, no daemon
+mono-agent tui --local --configure      # ask how to configure this agent
 ```
 
 | Flag | Effect |
@@ -359,8 +362,10 @@ mono-agent tui --conversation ops       # chat under a stable conversation id
 | `--agent <label\|sourceId>` | Connect to a specific running instance; errors with the available list when there is no match. |
 | `--conversation <id>` | Conversation id for the chat (default `tui-<sourceId>`). |
 | `--config <path>` | Resolve a custom `traceability.registryDir` from this config (for agents registered outside the global registry). |
+| `--local` | Build the current folder's configured responder in-process. No channel service or launchd state is created. |
+| `--configure` | Start a real recorded configuration invitation turn. Requires `--local`; `/configure` re-enters later. |
 
-The live-chat connection uses the agent's [`tui` channel](/channels/tui/) (on by default); an agent with the channel disabled still gets replay and config views.
+The remote live-chat connection uses the agent's [`tui` channel](/channels/tui/) (on by default); an agent with the channel disabled still gets replay and config views. Local configuration is OS-owner scoped: the folder and single-link config must be current-user-owned and not group/world writable; config, Identity, and `.mono-agent` transaction paths cannot traverse symlink parents. `ProposeAgentConfiguration` exists only for the marked local configuration turn. It can propose an RFC 6902 config patch and optional `## Role` body, but cannot write. That turn replaces ordinary action tools and configured MCP servers with a request-scoped read-only/proposal policy. The host uses a positive allowlist for public name, effort/turn/session UX, selected project skills/disclosure, memory size/MemoryRecall enablement, and tool-policy tightening; all paths, authority/network/provider surfaces, secrets, and unknown fields require the guided flow. Approval requires a separate TUI confirmation and performs the final exact source comparison plus rename without yielding after the replacement is staged and fsynced; queued input waits through the settled hook and responder rotation.
 
 ## `web`
 
@@ -413,10 +418,15 @@ Copies the bundled `mono-agent-composer` skill into the agent skill folders (`~/
 | --- | --- |
 | `--target claude\|codex\|both` | Where to install (default `both`). Any other value errors. |
 | `--force` | Overwrite an existing installed skill. |
+| `--project` | Operate on `skills/mono-agent-configure` and `skills/mono-agent-memory` in the current agent folder. |
+| `--check` | Report version/hash drift without writing. Requires `--project`. |
+| `--update` | Back up and atomically update missing/stale unchanged managed copies. Refuses modified/colliding copies. Requires `--project`. |
 
 ```bash
 mono-agent install-skill                       # both targets
 mono-agent install-skill --target claude --force
+mono-agent install-skill --project --check
+mono-agent install-skill --project --update
 ```
 
 See [Skills](/context/skills/) for how skills are surfaced to the agent.
