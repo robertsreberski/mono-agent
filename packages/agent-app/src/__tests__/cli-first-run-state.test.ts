@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   runInitWizard: vi.fn(),
   runModelRepairWizard: vi.fn(),
   runSetupRepairWizard: vi.fn(),
+  runTui: vi.fn(),
   runAllRouteReadinessProbe: vi.fn(),
   sandboxRuntimeStatus: vi.fn(),
   setupManagedSrt: vi.fn(),
@@ -70,6 +71,11 @@ vi.mock("../wizard/run.js", async (importOriginal) => {
 vi.mock("../readiness-probe.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../readiness-probe.js")>();
   return { ...actual, runAllRouteReadinessProbe: mocks.runAllRouteReadinessProbe };
+});
+
+vi.mock("../tui-command.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../tui-command.js")>();
+  return { ...actual, runTui: mocks.runTui };
 });
 
 vi.mock("../provider-setup.js", async (importOriginal) => {
@@ -151,6 +157,8 @@ beforeEach(async () => {
   mocks.runInitWizard.mockReset();
   mocks.runModelRepairWizard.mockReset();
   mocks.runSetupRepairWizard.mockReset();
+  mocks.runTui.mockReset();
+  mocks.runTui.mockResolvedValue(0);
   mocks.runAllRouteReadinessProbe.mockReset();
   mocks.sandboxRuntimeStatus.mockReset();
   mocks.setupManagedSrt.mockReset();
@@ -224,6 +232,12 @@ describe("guided init state transitions", () => {
     expect(await readFile(envPath, "utf8")).toBe("MONO_AGENT_TELEGRAM_BOT_TOKEN=operator-value\n");
     expect((await stat(envPath)).mode & 0o777).toBe(0o600);
     expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledOnce();
+    expect(mocks.runTui).toHaveBeenCalledWith(expect.objectContaining({
+      configPath: join(process.cwd(), "mono-agent.config.json"),
+      cwd: process.cwd(),
+      local: true,
+      configure: true,
+    }));
   });
 
   it("hardens an existing provider key even when the selected plan has no module secrets", async () => {
