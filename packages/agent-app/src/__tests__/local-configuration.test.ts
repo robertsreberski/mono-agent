@@ -140,12 +140,20 @@ describe("local configuration transaction", () => {
         runId: "pi-config",
         context: {},
       });
-      expect(extension.toolPolicyOverride?.allowedTools).toEqual(expect.arrayContaining([
+      expect(extension.toolPolicyOverride?.allowedTools).toEqual([
+        "Read",
+        "Glob",
+        "Grep",
         "ReadSkill",
         "MemoryRecall",
         CONFIGURATION_PROPOSAL_TOOL_NAME,
+        "mcp__agent_configuration__ProposeAgentConfiguration",
+      ]);
+      expect(extension.toolPolicyOverride?.allowedTools).not.toEqual(expect.arrayContaining([
+        "Bash",
+        "Write",
+        "Edit",
       ]));
-      expect(extension.toolPolicyOverride?.allowedTools).not.toEqual(expect.arrayContaining(["Bash", "Write", "Edit"]));
       expect(Object.keys(extension.toolPolicyOverride?.mcpServers ?? {})).toEqual(["agent_configuration"]);
     } finally {
       await pi.manager.dispose();
