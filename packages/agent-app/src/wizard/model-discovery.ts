@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { chmod, mkdir, mkdtemp, open, readFile, rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -21,7 +21,7 @@ export interface WizardModelCandidate {
 }
 
 export interface ModelDiscoveryStatus {
-  readonly provider: "Pi" | "OpenCode" | "Ollama" | "LM Studio";
+  readonly provider: "Codex" | "Pi" | "OpenCode" | "Ollama" | "LM Studio";
   readonly status: "detected" | "setup_available" | "unavailable";
   readonly detail: string;
 }
@@ -36,7 +36,10 @@ interface ExecResult {
 }
 
 export interface DiscoverWizardModelsOptions {
-  readonly execFile?: (file: string, args: readonly string[], opts: { readonly timeout: number }) => Promise<ExecResult>;
+  readonly execFile?: (file: string, args: readonly string[], opts: {
+    readonly timeout: number;
+    readonly env?: Record<string, string | undefined>;
+  }) => Promise<ExecResult>;
   readonly fetch?: typeof fetch;
   readonly readFile?: (path: string, encoding: "utf8") => Promise<string>;
   readonly piAuthPath?: string;
@@ -49,6 +52,7 @@ interface DiscoveredModelEntry {
 }
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 1200;
+const DEFAULT_OPENCODE_DISCOVERY_TIMEOUT_MS = 5000;
 const PI_OPENAI_CODEX_PROVIDER = "openai-codex";
 const PI_OPENAI_CODEX = "pi:openai-codex:gpt-5.6-terra";
 const DIRECT_CODEX = "codex:gpt-5.6-terra";
@@ -71,9 +75,13 @@ export async function discoverWizardModelCandidates(
   opts: DiscoverWizardModelsOptions = {},
 ): Promise<ModelDiscoveryResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS;
-  const [pi, opencode, ollama, lmstudio] = await Promise.all([
+  const [codex, pi, opencode, ollama, lmstudio] = await Promise.all([
+    discoverDirectCodex({ ...opts, timeoutMs }),
     discoverPiOpenAiCodex({ ...opts, timeoutMs }),
-    discoverOpenCodeModels({ ...opts, timeoutMs }),
+    discoverOpenCodeModels({
+      ...opts,
+      timeoutMs: opts.timeoutMs ?? DEFAULT_OPENCODE_DISCOVERY_TIMEOUT_MS,
+    }),
     discoverOllamaModels({ ...opts, timeoutMs }),
     discoverLmStudioModels({ ...opts, timeoutMs }),
   ]);
@@ -81,12 +89,13 @@ export async function discoverWizardModelCandidates(
   return {
     candidates: rankWizardModelCandidates([
       ...STATIC_MODEL_CANDIDATES,
+      ...codex.candidates,
       ...pi.candidates,
       ...opencode.candidates,
       ...ollama.candidates,
       ...lmstudio.candidates,
     ]),
-    statuses: [pi.status, opencode.status, ollama.status, lmstudio.status],
+    statuses: [codex.status, pi.status, opencode.status, ollama.status, lmstudio.status],
   };
 }
 
@@ -130,6 +139,48 @@ export function defaultEffortForModelRef(modelRef: string, reasoning?: boolean):
   return undefined;
 }
 
+/** Detect the direct Codex CLI and verify that its login is usable. */
+async function discoverDirectCodex(
+  opts: Required<Pick<DiscoverWizardModelsOptions, "timeoutMs">> & DiscoverWizardModelsOptions,
+): Promise<{ candidates: WizardModelCandidate[]; status: ModelDiscoveryStatus }> {
+  const run = opts.execFile ?? execFile;
+  let version = "";
+  try {
+    const result = await run("codex", ["--version"], { timeout: opts.timeoutMs });
+    version = firstOutputLine(result.stdout);
+  } catch {
+    return {
+      candidates: [directCodexCandidate("install-required")],
+      status: {
+        provider: "Codex",
+        status: "setup_available",
+        detail: "CLI not found; install Codex and sign in before the readiness check",
+      },
+    };
+  }
+
+  try {
+    await run("codex", ["login", "status"], { timeout: opts.timeoutMs });
+    return {
+      candidates: [directCodexCandidate("ready", version)],
+      status: {
+        provider: "Codex",
+        status: "detected",
+        detail: `${version.length > 0 ? `${version}; ` : ""}signed in`,
+      },
+    };
+  } catch {
+    return {
+      candidates: [directCodexCandidate("login-required", version)],
+      status: {
+        provider: "Codex",
+        status: "setup_available",
+        detail: `${version.length > 0 ? `${version}; ` : "CLI installed; "}sign-in required`,
+      },
+    };
+  }
+}
+
 async function discoverPiOpenAiCodex(
   opts: Required<Pick<DiscoverWizardModelsOptions, "timeoutMs">> & DiscoverWizardModelsOptions,
 ): Promise<{ candidates: WizardModelCandidate[]; status: ModelDiscoveryStatus }> {
@@ -160,7 +211,7 @@ async function discoverPiOpenAiCodex(
 }
 
 function readPiAuthProviderMap(auth: Record<string, unknown>): Record<string, unknown> {
-  const nestedProviders = parseJsonObject(auth.providers);
+  const nestedProviders = auth.providers === undefined ? {} : parseJsonObject(auth.providers);
   return { ...nestedProviders, ...auth };
 }
 
@@ -168,16 +219,21 @@ async function discoverOpenCodeModels(
   opts: Required<Pick<DiscoverWizardModelsOptions, "timeoutMs">> & DiscoverWizardModelsOptions,
 ): Promise<{ candidates: WizardModelCandidate[]; status: ModelDiscoveryStatus }> {
   const run = opts.execFile ?? execFile;
+  let isolation: Awaited<ReturnType<typeof createOpenCodeDiscoveryIsolation>> | undefined;
   try {
-    const { stdout } = await run("opencode", ["models", "--json"], { timeout: opts.timeoutMs });
-    const models = parseModelEntries(stdout);
+    isolation = await createOpenCodeDiscoveryIsolation();
+    const { stdout } = await run("opencode", ["models", "opencode-go", "--pure"], {
+      timeout: opts.timeoutMs,
+      env: isolation.env,
+    });
+    const models = parseOpenCodeGoModels(stdout);
     return {
       candidates: models.map((model) => {
-        const value = model.id.startsWith("pi:") ? model.id : `pi:opencode-go:${model.id}`;
-        const defaultEffort = defaultEffortForModelRef(value, model.reasoning);
+        const value = `pi:opencode-go:${model}`;
+        const defaultEffort = defaultEffortForModelRef(value);
         return {
           value,
-          label: `OpenCode ${displayModelName(model.id)}`,
+          label: `OpenCode ${displayModelName(model)}`,
           hint: "discovered from opencode",
           source: "opencode",
           discovered: true,
@@ -189,8 +245,88 @@ async function discoverOpenCodeModels(
         : { provider: "OpenCode", status: "unavailable", detail: "no models returned" },
     };
   } catch {
-    return { candidates: [], status: { provider: "OpenCode", status: "unavailable", detail: "`opencode models --json` unavailable" } };
+    return { candidates: [], status: { provider: "OpenCode", status: "unavailable", detail: "`opencode models opencode-go --pure` unavailable" } };
+  } finally {
+    await isolation?.cleanup();
   }
+}
+
+async function createOpenCodeDiscoveryIsolation(): Promise<{
+  readonly env: Record<string, string | undefined>;
+  readonly cleanup: () => Promise<void>;
+}> {
+  const root = await mkdtemp(join(tmpdir(), "mono-agent-opencode-discovery-"));
+  try {
+    await chmod(root, 0o700);
+    const home = await createPrivateDirectory(root, "home");
+    const config = await createPrivateDirectory(root, "config");
+    const opencodeConfig = await createPrivateDirectory(config, "opencode");
+    if (process.platform !== "win32") await chmod(opencodeConfig, 0o500);
+    const data = await createPrivateDirectory(root, "data");
+    const state = await createPrivateDirectory(root, "state");
+    const cache = await createPrivateDirectory(root, "cache");
+    const opencodeData = await createPrivateDirectory(data, "opencode");
+    const database = join(opencodeData, "opencode.db");
+    const handle = await open(database, "wx", 0o600);
+    await handle.close();
+    await chmod(database, 0o600);
+    const env = safeDiscoveryProcessEnv();
+    Object.assign(env, {
+      OPENCODE_TEST_HOME: home,
+      XDG_CONFIG_HOME: config,
+      XDG_CONFIG_DIRS: config,
+      XDG_DATA_HOME: data,
+      XDG_DATA_DIRS: data,
+      XDG_STATE_HOME: state,
+      XDG_CACHE_HOME: cache,
+      OPENCODE_DB: database,
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({ share: "disabled", autoshare: false }),
+      OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+      OPENCODE_DISABLE_AUTOUPDATE: "true",
+      OPENCODE_DISABLE_SHARE: "true",
+      OPENCODE_AUTO_SHARE: "false",
+      OPENCODE_DISABLE_EXTERNAL_SKILLS: "true",
+      OPENCODE_DISABLE_LSP_DOWNLOAD: "true",
+    });
+    return {
+      env,
+      cleanup: async () => {
+        await rm(root, { recursive: true, force: true }).catch(() => undefined);
+      },
+    };
+  } catch (error) {
+    await rm(root, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+function safeDiscoveryProcessEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {};
+  for (const key of [
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "SHELL",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "SystemRoot",
+    "WINDIR",
+    "ComSpec",
+    "PATHEXT",
+  ]) {
+    const value = process.env[key];
+    if (typeof value === "string" && value.length > 0) env[key] = value;
+  }
+  return env;
+}
+
+async function createPrivateDirectory(parent: string, name: string): Promise<string> {
+  const path = join(parent, name);
+  await mkdir(path, { mode: 0o700 });
+  await chmod(path, 0o700);
+  return path;
 }
 
 async function discoverOllamaModels(
@@ -308,6 +444,30 @@ function piOpenAiCodexCandidate(state: "authenticated" | "setup-required"): Wiza
   };
 }
 
+function directCodexCandidate(
+  state: "ready" | "install-required" | "login-required",
+  version = "",
+): WizardModelCandidate {
+  if (state === "ready") {
+    return {
+      value: DIRECT_CODEX,
+      label: "Codex GPT-5.6 Terra",
+      hint: `${version.length > 0 ? `${version}; ` : ""}signed in`,
+      source: "codex",
+      discovered: true,
+      defaultEffort: "medium",
+    };
+  }
+  return {
+    value: DIRECT_CODEX,
+    label: "Codex GPT-5.6 Terra",
+    hint: state === "install-required" ? "install Codex CLI and sign in" : "Codex sign-in required",
+    source: "codex",
+    setupRequired: true,
+    defaultEffort: "medium",
+  };
+}
+
 function parseOllamaList(stdout: string): string[] {
   const lines = stdout.trim().split(/\r?\n/u).filter(Boolean);
   if (lines.length === 0) {
@@ -319,28 +479,13 @@ function parseOllamaList(stdout: string): string[] {
     .filter((name): name is string => name !== undefined && name.length > 0);
 }
 
-function parseModelEntries(stdout: string): DiscoveredModelEntry[] {
-  try {
-    const parsed: unknown = JSON.parse(stdout);
-    if (Array.isArray(parsed)) {
-      return parsed.map(modelEntryFromUnknown).filter(isModelEntry);
-    }
-    if (isRecord(parsed)) {
-      for (const key of ["models", "data"]) {
-        const value = parsed[key];
-        if (Array.isArray(value)) {
-          return value.map(modelEntryFromUnknown).filter(isModelEntry);
-        }
-      }
-    }
-  } catch {
-    // Fall through to tolerant line parsing.
-  }
+function parseOpenCodeGoModels(stdout: string): string[] {
+  const prefix = "opencode-go/";
   return stdout
     .split(/\r?\n/u)
-    .map((line) => line.trim().split(/\s+/u)[0])
-    .filter(isNonEmptyString)
-    .map((id) => ({ id }));
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith(prefix) && line.length > prefix.length)
+    .map((line) => line.slice(prefix.length));
 }
 
 function parseOpenAiModelEntriesBody(body: unknown): DiscoveredModelEntry[] {
@@ -374,7 +519,14 @@ function displayModelName(model: string): string {
 
 function parseJsonObject(value: unknown): Record<string, unknown> {
   const parsed = typeof value === "string" ? JSON.parse(value) as unknown : value;
-  return isRecord(parsed) ? parsed : {};
+  if (!isRecord(parsed)) {
+    throw new Error("Expected a JSON object.");
+  }
+  return parsed;
+}
+
+function firstOutputLine(value: string): string {
+  return value.split(/\r?\n/u).map((line) => line.trim()).find((line) => line.length > 0)?.slice(0, 120) ?? "";
 }
 
 function readReasoningCapability(value: Record<string, unknown>): boolean | undefined {
@@ -416,10 +568,6 @@ function isMissingFileError(error: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isNonEmptyString(value: string | undefined): value is string {
-  return value !== undefined && value.length > 0;
 }
 
 function isModelEntry(value: DiscoveredModelEntry | undefined): value is DiscoveredModelEntry {

@@ -21,6 +21,14 @@ The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to a
 | Node.js | `>=20` | Runtime for the CLI, host, and TUI. |
 | pnpm | `>=10` | Only needed to build the workspace from source (the published packages install with plain `npm`/`npm exec`). |
 
+The default `codex:gpt-5.6-terra` runtime also needs the Codex CLI installed and signed in. The init wizard checks both but never installs software or starts an unrequested login flow. Follow only the [official Codex CLI instructions](https://developers.openai.com/codex/cli/): on macOS/Linux the standalone installer is:
+
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+codex                    # first run prompts for sign-in
+codex login status
+```
+
 :::note
 You do **not** need pnpm to use the published packages — `npm i -g` and `npm exec` are enough. pnpm is only required for the "run an unreleased build" path below, which builds the workspace from source.
 :::
@@ -106,7 +114,7 @@ cd my-agent
 mono-agent init
 ```
 
-On a terminal with no flags, `mono-agent init` is a **step-by-step wizard**: start from a [preset](/reference/recipes/) or go fully custom, then answer model, channels, memory, **tools** (a single "Allow all tools? [Yes]" — the default — or decline to hand-pick a specific list), sandbox, and observability, before it scaffolds and immediately runs `validate`. Pass `--yes` or any flag (or run in a non-TTY) to write the scaffold non-interactively instead:
+On a terminal with no flags, `mono-agent init` is the **readiness-proven** step-by-step wizard: start from a [preset](/reference/recipes/) or go fully custom, then answer model, channels, memory, runtime-appropriate tools/safety, and observability. **Allow all tools** is the default. Pi/Claude flows disclose shell/file/web/channel effects and require a second confirmation if that surface will run without an enforceable sandbox; direct Codex fixes exact allow-all and reports its own network-off workspace sandbox instead of offering mono-agent tool/srt choices. It proves the primary model, validates the complete plan, and offers immediate start only when every selected expectation is ready. Pass `--yes` or any flag (or run in a non-TTY) for scaffold-only automation; that path never makes a readiness claim:
 
 ```bash
 mono-agent init --preset telegram-assistant --yes   # scaffold from a preset
@@ -153,7 +161,7 @@ pnpm run build
 repo=/absolute/path/to/mono-agent
 agent_dir=$(mktemp -d)
 cd "$agent_dir"
-node "$repo/packages/agent-app/dist/cli.js" init --model pi:openai-codex:gpt-5.5
+node "$repo/packages/agent-app/dist/cli.js" init --model pi:openai-codex:gpt-5.6-terra
 node "$repo/packages/agent-app/dist/cli.js" validate
 ```
 

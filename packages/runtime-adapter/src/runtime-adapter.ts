@@ -68,7 +68,7 @@ export function isRuntimeExecutionMode(value: unknown): value is RuntimeExecutio
 
 export function defaultExecutionModeForModel(model: RuntimeModelReference): RuntimeExecutionMode {
   assertParsedRuntimeModelReference(model);
-  return model.sdk === "codex" ? "cli" : "sdk";
+  return model.sdk === "codex" || model.sdk === "opencode" ? "cli" : "sdk";
 }
 
 /**
@@ -226,7 +226,7 @@ function normalizeFallbackChain(
   if (!Array.isArray(fallbackChain) || fallbackChain.length === 0) {
     throw new RuntimeAdapterError("invalid_runtime_options", "Runtime fallback chain must be a non-empty array.");
   }
-  return fallbackChain.map((entry) => {
+  const normalized = fallbackChain.map((entry) => {
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
       throw new RuntimeAdapterError(
         "invalid_runtime_options",
@@ -238,6 +238,15 @@ function normalizeFallbackChain(
     assertExecutionModeCompatible(entry.model, executionMode);
     return { model: entry.model, executionMode };
   });
+  const directCodexCount = normalized.filter((entry) => entry.model.sdk === "codex").length;
+  if (directCodexCount > 0 && directCodexCount !== normalized.length) {
+    throw new RuntimeAdapterError(
+      "invalid_runtime_options",
+      "Direct Codex cannot share a fallback chain with non-Codex runtimes because their tool and sandbox contracts differ. Keep the chain all-direct-Codex or all-non-Codex.",
+      { invariant: "all_direct_codex_or_none" },
+    );
+  }
+  return normalized;
 }
 
 export function assertParsedRuntimeModelReference(value: unknown): asserts value is RuntimeModelReference {
@@ -314,6 +323,17 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
     acceptsProviderIds: false,
   },
   {
+    id: "opencode-app-cli",
+    runtimeBridgeId: "opencode-app",
+    label: "OpenCode app CLI",
+    sdk: "opencode",
+    executionMode: "cli",
+    transport: "cli",
+    providerBoundary: "OpenCode app-server bridge via @mono-agent/agent-runtime",
+    modelReferenceExamples: ["opencode:github-copilot:gpt-4.1"],
+    acceptsProviderIds: true,
+  },
+  {
     id: "pi-sdk",
     runtimeBridgeId: "pi",
     label: "Pi SDK provider",
@@ -341,6 +361,7 @@ const RUNTIME_SELECTION_TABLE: readonly MonoRuntimeSelectionEntry[] = [
   { sdk: "claude", sdkAliases: ["claude"], executionMode: "sdk", backendId: "claude-sdk" },
   { sdk: "claude", sdkAliases: ["claude"], executionMode: "cli", backendId: "claude-code-cli" },
   { sdk: "codex", sdkAliases: ["codex"], executionMode: "cli", backendId: "codex-app-cli" },
+  { sdk: "opencode", sdkAliases: ["opencode"], executionMode: "cli", backendId: "opencode-app-cli" },
   { sdk: "pi", sdkAliases: ["pi"], executionMode: "sdk", backendId: "pi-sdk" },
 ];
 
@@ -418,6 +439,9 @@ function backendIdForModel(
   }
   if (model.sdk === "codex" && executionMode === "cli") {
     return "codex-app-cli";
+  }
+  if (model.sdk === "opencode" && executionMode === "cli") {
+    return "opencode-app-cli";
   }
   if (model.sdk === "pi" && executionMode === "sdk") {
     return "pi-sdk";

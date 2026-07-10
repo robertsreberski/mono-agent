@@ -82,7 +82,11 @@ export const PRESET_CATALOG: readonly WizardPreset[] = [
     description: "Native srt sandbox with workspace-only FS and code tools; fails closed without srt.",
     riskLevel: "medium",
     playbook: "sandboxed-code-agent.md",
-    answers: { channels: ["channel:webhook"], sandbox: true },
+    answers: {
+      model: "pi:openai-codex:gpt-5.6-terra",
+      channels: ["channel:webhook"],
+      sandbox: true,
+    },
     replacesRecipes: ["sandboxed-code-agent"],
   },
 ];

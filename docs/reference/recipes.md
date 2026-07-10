@@ -6,7 +6,9 @@ sidebar:
 
 # Presets & capability modules
 
-`mono-agent init` builds an agent by composing **capability modules** — a channel here, a memory tier there, an optional sandbox — and walking you through the settings that matter. Tools default to **allow-all** (`["*"]`), so a fresh agent can actually _do_ things out of the box; the wizard still offers to narrow the surface, and you can subtract individual tools later via `tools.disallowedTools`. On a terminal with no flags, `init` is a step-by-step wizard; with `--yes` or any flag (or when stdin is not a TTY) it writes a scaffold non-interactively. Existing files are never overwritten.
+`mono-agent init` builds an agent by composing **capability modules** — a channel here, a memory tier there, an optional sandbox — and walking you through the settings that matter. On a TTY, bare `init` is the readiness-proven path: it proves the primary model and calls the agent ready only after every selected expectation is live. With `--yes` or any flag (or without a TTY) it writes a scaffold only and never makes a readiness claim. Existing config, identity, and scaffold files are never overwritten; masked secret setup is the deliberate exception that can transactionally merge `.env` and ensure `.gitignore` protects it.
+
+Tools default to **allow-all** (`["*"]`), so a fresh agent can act out of the box. For Pi and Claude, the wizard discloses that this includes shell/file/web and enabled channel-send tools and requires an additional confirmation when no enforceable sandbox will constrain them. Direct Codex fixes the policy to exact allow-all and reports its own network-off workspace sandbox instead of asking the mono-agent tool/sandbox questions. Other runtimes can narrow the surface where they enforce allowlists, and `disallowedTools` subtracts individual tools where supported.
 
 **Presets** are saved answer-sets for common shapes. In the interactive wizard they seed, rather than lock, the model, channels, memory, tools, sandbox, and observability choices; the same questions still run before a write. The composer fills the rest and defaults `tools.allowedTools` to allow-all (`["*"]`), so a preset is just a faster starting point on the same single config-generation path. Webhook is the functional local default; external plugin modules remain explicit configuration, not ready-to-select first-run choices.
 
@@ -20,7 +22,7 @@ mono-agent presets show <id>                 # generated config + .env.example +
 mono-agent validate --preset <id>            # completeness report against the preset's promises
 ```
 
-The wizard first asks whether to start from a preset or go fully custom, then prompts for model, channels (multiselect), memory, **tools** (a single "Allow all tools? [Yes]" confirm — decline to hand-pick a specific list instead), sandbox (in play whenever code tools could run — i.e. under allow-all or an explicit code-tool selection), observability, and a final review before writing. `--dry-run` previews the files without writing them.
+The wizard first asks whether to start from a preset or go fully custom, then prompts for model/fallback/effort, channels, memory, runtime-appropriate tools/safety, observability, and a final review. It runs a strict no-tool primary-model check (90 seconds cloud, 240 seconds local) and a complete selected-capability gate before offering start. Cancellation, provider failure, timeout, empty output, or a tool action fails the model check; any selected `waiting` expectation keeps the scaffold explicitly incomplete. `--dry-run` is scaffold-only and previews files without writing them.
 
 ## Presets
 
@@ -64,11 +66,13 @@ The tools step first frames the three tool families so you know what the decisio
 - **Built-ins** — files (`Read`/`Write`/`Edit`/`Glob`/`Grep`), shell (`Bash`), web (`WebFetch`/`WebSearch`).
 - **Channel tools** — the send/ask tools that came with the channels you enabled (e.g. `TelegramSendMessage`, `TelegramAskButtons`, `SlackSendMessage`), plus `AskUser` (ask the human, any channel).
 
-Then it asks a single **"Allow all tools? [Yes]"** — the default. Accepting writes `tools.allowedTools: ["*"]` (every built-in and every enabled channel's send tools; the "Always on" family is unaffected). Declining drops into a specific-tool multiselect, pre-checked with a safe read-only default (`Read`, `Glob`, `Grep`) plus every selected module's recommended tools — for example a Telegram channel pre-checks `TelegramSendMessage`/`TelegramAskButtons`, and the sandbox pre-checks the code tools. Turning individual tools **off** is a config-level concern (`tools.disallowedTools`), not a wizard prompt.
+For Pi and Claude it then asks a single **"Allow all tools? [Yes]"** — the default. Accepting writes `tools.allowedTools: ["*"]` (every built-in and every enabled channel's send tools; the "Always on" family is unaffected). The wizard spells out that this includes shell, file, web, and channel-side effects. If no enforceable sandbox constrains that runtime, it requires a second explicit confirmation before accepting the unsandboxed allow-all surface. Direct `codex:*` skips these questions: normal runs require exact allow-all and use the Codex-native network-off workspace sandbox with unattended escalation denied. Guided readiness rejects manually entered direct `opencode:*` because it cannot prove that advanced backend's credential/permission posture; choose `pi:opencode-go:*`, or use a flagged/non-TTY scaffold and configure OpenCode's native `permissionMode` explicitly.
+
+Declining drops into a specific-tool multiselect, pre-checked with a safe read-only default (`Read`, `Glob`, `Grep`) plus every selected module's recommended tools. Direct Codex/OpenCode cannot enforce this narrower surface in normal runs; direct Codex never offers it, while direct OpenCode is outside guided readiness entirely. Validation rejects a hand-written restrictive combination instead of silently widening permissions. Turning individual tools **off** is otherwise a config-level concern (`tools.disallowedTools`), not a wizard prompt.
 
 The default scaffold therefore writes `"allowedTools": ["*"]`, and [`validate`/`doctor`](/observability/cli-reference/#validate) reports `All tools allowed.` (or `All tools allowed (except: …)` when a `disallowedTools` list is present).
 
-The no-tools guardrail still catches the deliberate chat-only case. Decline "Allow all" and then deselect everything and the wizard warns loudly — "⚠ Zero tools selected — the agent will be chat-only" — and makes you confirm before continuing. The same guardrail runs after the fact: an **explicit empty** `tools.allowedTools: []` reports `waiting` in `validate`/`doctor` (never a silent `ok`) with:
+The no-tools guardrail still catches the deliberate chat-only case on runtimes that can enforce it. Decline "Allow all" and then deselect everything and the wizard warns loudly — "⚠ Zero tools selected — the agent will be chat-only" — and makes you confirm before continuing. The same guardrail runs after the fact: an **explicit empty** `tools.allowedTools: []` reports `waiting` on Pi/Claude SDK (never a silent `ok`). Direct Codex/OpenCode and Claude Code CLI reject the unenforceable empty policy as an error before provider startup. The supported warning reads:
 
 ```text
 No tools allowed — the agent can chat but cannot read files, run commands, or send
@@ -80,7 +84,7 @@ For a **specific** allowlist, `validate`/`doctor` also flag an **unknown tool na
 
 ## Sandbox
 
-The `sandbox` module (and the `code-sandbox` preset) generate `"sandbox": { "mode": "native" }`, which requires `srt` on `PATH`. Check the engine before trusting the sandbox:
+The `sandbox` module (and the Pi-backed `code-sandbox` preset) generate `"sandbox": { "mode": "native" }`, which requires `srt` on `PATH`. Direct Codex rejects this block and uses its own native sandbox. Claude and direct `opencode:*` also reject it because their provider-owned tools cannot enforce mono-agent `srt` scopes; `pi:opencode-go:*` remains a Pi route. Check the engine before trusting the sandbox:
 
 ```bash
 command -v srt

@@ -7,6 +7,7 @@ import { estimateCost } from "../cost.js";
 import { codexModelSupportsFastMode, normalizeFastMode } from "../runtime/fast-mode.js";
 import { readRuntimeBrand } from "../../agent/tools/shared/runtime-context.js";
 import { buildCapabilitiesUsed } from "../runtime/capabilities-used.js";
+import { resolveSandboxPolicy } from "../../agent/tools/shared/tool-context.js";
 import { createSessionRegistry } from "../runtime/sessions.js";
 import { createSessionLiveness } from "../runtime/session-liveness.js";
 
@@ -108,16 +109,77 @@ function delay(ms, signal) {
   });
 }
 
-function sandboxForPermissionMode(permissionMode) {
-  if (permissionMode === "bypassPermissions") return "danger-full-access";
-  if (permissionMode === "plan") return "read-only";
+function sandboxForRun(options) {
+  if (options.codexNoToolsProbe === true) return "read-only";
+  if (options.permissionMode === "bypassPermissions") return "danger-full-access";
+  if (options.permissionMode === "plan") return "read-only";
   return "workspace-write";
 }
 
-function approvalPolicyForPermissionMode(permissionMode) {
-  if (permissionMode === "bypassPermissions") return "never";
-  return "on-request";
+function approvalPolicyForRun(options) {
+  // mono-agent channel turns are unattended: there is no interactive app-server
+  // approval UI on the other end of stdio. `never` lets Codex execute within the
+  // selected sandbox and deny escalations itself instead of waiting forever for
+  // a client response that cannot arrive.
+  return "never";
 }
+
+function sandboxPolicyForRun(options) {
+  if (options.codexNoToolsProbe === true) return { type: "readOnly", networkAccess: false };
+  if (options.permissionMode === "bypassPermissions") return { type: "dangerFullAccess" };
+  if (options.permissionMode === "plan") return { type: "readOnly", networkAccess: false };
+  return {
+    type: "workspaceWrite",
+    writableRoots: [options.cwd || process.cwd()],
+    networkAccess: false,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  };
+}
+
+function codexToolPolicyProblem(options) {
+  const allowedTools = Array.isArray(options.allowedTools) ? options.allowedTools : null;
+  const disallowedTools = Array.isArray(options.disallowedTools) ? options.disallowedTools : [];
+  if (options.codexNoToolsProbe === true) {
+    const mcpServerCount = Object.keys(options.mcpServers || {}).length;
+    if (allowedTools?.length === 0 && disallowedTools.length === 0 && mcpServerCount === 0 && options.sessionKeepAlive !== true) {
+      return null;
+    }
+    return "Codex no-tool probe mode requires an empty tool policy, no MCP servers, and a disposable session.";
+  }
+  // `undefined` retains the public runtime's documented allow-all default.
+  // Once a caller specifies a policy, require the exact wildcard contract.
+  // Extra entries can conceal a caller's mistaken belief that Codex enforces a
+  // mixed allowlist, which the app-server cannot project.
+  const effectiveAllowAll = allowedTools === null || (allowedTools.length === 1 && allowedTools[0] === "*");
+  return effectiveAllowAll && disallowedTools.length === 0
+    ? null
+    : "Direct Codex cannot enforce allowedTools/disallowedTools. Use exact allow-all ([\"*\"] with no disallowedTools) or another runtime.";
+}
+
+const CODEX_NO_TOOL_ACTION_ITEMS = new Set([
+  "commandExecution",
+  "fileChange",
+  "mcpToolCall",
+  "dynamicToolCall",
+  "collabAgentToolCall",
+  "subAgentActivity",
+  "webSearch",
+  "imageView",
+  "sleep",
+  "imageGeneration",
+]);
+
+const CODEX_NO_TOOL_REQUEST_METHODS = new Set([
+  "item/commandExecution/requestApproval",
+  "item/fileChange/requestApproval",
+  "item/tool/requestUserInput",
+  "item/permissions/requestApproval",
+  "item/tool/call",
+  "mcpServer/elicitation/request",
+  "applyPatchApproval",
+  "execCommandApproval",
+]);
 
 function codexMcpConfig(mcpServers = {}) {
   const servers = {};
@@ -224,7 +286,7 @@ function codexCollaborationModePayload(nativeSubagents, { model, effort, systemP
 }
 
 /**
- * @param {{command?: string, args?: string[], cwd?: any, env?: any, onNotification?: (msg: any) => void}} [options]
+ * @param {{command?: string, args?: string[], cwd?: any, env?: any, onNotification?: (msg: any) => void, onServerRequest?: (msg: any) => Promise<any> | any}} [options]
  */
 export function createCodexAppServerClient({
   command = "codex",
@@ -234,6 +296,9 @@ export function createCodexAppServerClient({
   cwd,
   env = {},
   onNotification = () => {},
+  onServerRequest = (message) => {
+    throw new Error(`Unsupported Codex app-server request: ${String(message?.method || "unknown")}`);
+  },
 } = {}) {
   const child = spawn(command, args, {
     cwd,
@@ -263,6 +328,27 @@ export function createCodexAppServerClient({
 
   child.stderr.on("data", (chunk) => stderr.push(chunk.toString()));
 
+  function writeProtocolMessage(payload) {
+    if (closed || child.stdin?.destroyed || child.stdin?.writableEnded) return;
+    child.stdin.write(`${JSON.stringify(payload)}\n`, () => {});
+  }
+
+  function respondToServerRequest(message) {
+    // Preserve request visibility for the normal event/fail-fast path, then
+    // always settle the JSON-RPC request. Never leave the app-server blocked on
+    // an inbound request that this unattended client cannot service.
+    onNotification(message);
+    Promise.resolve()
+      .then(() => onServerRequest(message))
+      .then(
+        (result) => writeProtocolMessage({ id: message.id, result: result ?? {} }),
+        () => writeProtocolMessage({
+          id: message.id,
+          error: { code: -32601, message: `Unsupported Codex app-server request: ${String(message.method || "unknown")}` },
+        }),
+      );
+  }
+
   const rl = createInterface({ input: child.stdout });
   rl.on("line", (line) => {
     if (!line.trim()) return;
@@ -280,6 +366,10 @@ export function createCodexAppServerClient({
       clearTimeout(entry.timer);
       if (message.error) entry.reject(Object.assign(new Error(codexErrorMessage(message.error)), { responseError: message.error }));
       else entry.resolve(message.result);
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(message, "id") && message.method) {
+      respondToServerRequest(message);
       return;
     }
     if (message.method) onNotification(message);
@@ -455,6 +545,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   // Test seam: lets tests drive the bridge with a stub app-server client.
   const makeClient = options.codexClientFactory || createCodexAppServerClient;
   const keepAlive = options.sessionKeepAlive === true;
+  const noToolsProbe = options.codexNoToolsProbe === true;
   // The bridge TTL is a backstop behind the host's session policy; the grace
   // keeps the host's lazy expiry firing first so eviction stays host-driven.
   const sessionTtlMs = Number.isFinite(Number(options.sessionIdleTimeoutMs))
@@ -479,6 +570,8 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   let failureKind = null;
   let usage = {};
   let codexDiagnostics = {};
+  let noToolsViolation = null;
+  let serverRequestViolation = null;
   let resolveTurn;
   let resolveTurnReady;
   let turnReadyResolved = false;
@@ -517,8 +610,66 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     emitEvent({ type: "assistant", message: { content: [{ type: "text", text }] } });
   }
 
+  function failNoToolsProbe(action) {
+    if (!noToolsProbe || noToolsViolation) return;
+    noToolsViolation = action;
+    errorMessage = `Codex attempted ${action} during a no-tool readiness probe`;
+    failureKind = "tool_policy_violation";
+    codexDiagnostics = { ...codexDiagnostics, codex_error_code: "codex_no_tools_violation", codex_tool_action: action };
+    emitEvent({
+      type: "runtime_warning",
+      warning_kind: "codex_no_tools_violation",
+      message: "Codex attempted a tool action during the no-tool readiness probe; the turn was interrupted.",
+    });
+    if (threadId && activeTurnId && !interruptSent) {
+      interruptSent = true;
+      client?.request("turn/interrupt", { threadId, turnId: activeTurnId }).catch(() => {});
+    }
+    turnCompleted = true;
+    resolveTurn({ id: activeTurnId, status: "interrupted" });
+  }
+
+  function failUnsupportedServerRequest(method) {
+    if (noToolsProbe) {
+      failNoToolsProbe(method);
+      return;
+    }
+    if (serverRequestViolation) return;
+    serverRequestViolation = method;
+    errorMessage = `Codex requested unsupported client interaction (${method}); the unattended turn was stopped.`;
+    failureKind = "skipped_capability_mismatch";
+    codexDiagnostics = {
+      ...codexDiagnostics,
+      codex_error_code: "codex_server_request_unsupported",
+      codex_server_request_method: method,
+    };
+    emitEvent({
+      type: "runtime_warning",
+      warning_kind: "codex_server_request_unsupported",
+      message: errorMessage,
+    });
+    turnCompleted = true;
+    resolveTurn({ id: activeTurnId, status: "interrupted" });
+  }
+
+  function assertNoUnsupportedServerRequest() {
+    if (serverRequestViolation) {
+      throw new Error(errorMessage || `Unsupported Codex app-server request: ${serverRequestViolation}`);
+    }
+  }
+
   function handleNotification(notification) {
     const { method, params = {} } = notification;
+    if (noToolsProbe) {
+      const itemType = params.item?.type;
+      if (
+        CODEX_NO_TOOL_REQUEST_METHODS.has(method)
+        || ((method === "item/started" || method === "item/completed") && CODEX_NO_TOOL_ACTION_ITEMS.has(itemType))
+      ) {
+        failNoToolsProbe(typeof itemType === "string" ? itemType : method);
+        return;
+      }
+    }
     if (method === "turn/started") {
       setActiveTurnId(params.turn?.id, { steerReady: true });
       emitEvent({ type: "cli_event", raw: { type: "turn_started", turn: params.turn } });
@@ -583,6 +734,11 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       cwd: options.cwd,
       env: options.codexAppServerEnv,
       onNotification: (notification) => notificationTarget.handler(notification),
+      onServerRequest: (request) => {
+        const method = typeof request?.method === "string" ? request.method : "unknown";
+        failUnsupportedServerRequest(method);
+        throw new Error(`Unsupported Codex app-server request: ${method}`);
+      },
     });
   }
 
@@ -592,6 +748,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       clientInfo: { name: brand.clientInfoName, title: brand.clientInfoTitle, version: "0" },
       capabilities: { experimentalApi: true },
     });
+    assertNoUnsupportedServerRequest();
   }
 
   async function requestThreadStart(params) {
@@ -605,6 +762,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       }
       try {
         const thread = await client.request("thread/start", params, { timeoutMs: policy.timeoutMs });
+        assertNoUnsupportedServerRequest();
         codexDiagnostics = {
           ...withoutCodexRequestErrorDiagnostics(codexDiagnostics),
           codex_thread_start_attempts: attempt,
@@ -737,6 +895,23 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     };
   }
 
+  if (resolveSandboxPolicy(options.toolContext, options.sandboxPolicy) !== undefined) {
+    return sessionUnavailableResult(
+      "skipped_capability_mismatch",
+      "Direct Codex cannot enforce mono-agent's native srt sandbox scopes. Remove the mono-agent sandbox policy or use a Pi runtime for exact readableRoots, writableRoots, denyWrite, and network rules.",
+      "codex_sandbox_policy_unsupported",
+    );
+  }
+
+  const toolPolicyProblem = codexToolPolicyProblem(options);
+  if (toolPolicyProblem) {
+    return sessionUnavailableResult(
+      "skipped_capability_mismatch",
+      toolPolicyProblem,
+      "codex_tool_policy_unsupported",
+    );
+  }
+
   if (resumeSessionId) {
     // Await-free busy claim (get -> busy check -> set-busy in one span). A miss
     // fails fast: the host sent no conversation history for a resume, so silently
@@ -776,11 +951,13 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       else options.abortSignal.addEventListener("abort", abortHandler, { once: true });
     }
     if (!resumeEntry) await initializeClient(client);
-    let collaborationMode = codexCollaborationModePayload(options.nativeSubagents, {
-      model: resolved.model,
-      effort: normalizedEffort,
-      systemPrompt,
-    });
+    let collaborationMode = noToolsProbe
+      ? null
+      : codexCollaborationModePayload(options.nativeSubagents, {
+        model: resolved.model,
+        effort: normalizedEffort,
+        systemPrompt,
+      });
     if (collaborationMode) {
       try {
         await client.request("collaborationMode/list", {}, { timeoutMs: 5_000 });
@@ -795,13 +972,17 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     }
     const fastMode = codexModelSupportsFastMode(resolved.model) && normalizeFastMode(options.fastMode, true);
     if (!resumeEntry) {
-      const mcpServers = codexMcpConfig(options.mcpServers);
+      const mcpServers = noToolsProbe ? {} : codexMcpConfig(options.mcpServers);
       // Incrementally assembled config handed across the codex app-server
       // boundary; the reasoning fields below are attached conditionally.
       const config = /** @type {any} */ ({
         ...(fastMode ? { service_tier: "fast" } : {}),
         features: { fast_mode: fastMode },
-        ...(Object.keys(mcpServers).length ? { mcp_servers: mcpServers } : {}),
+        ...(noToolsProbe
+          ? { mcp_servers: {} }
+          : Object.keys(mcpServers).length
+            ? { mcp_servers: mcpServers }
+            : {}),
       });
       if (normalizedEffort) {
         config.model_reasoning_effort = normalizedEffort;
@@ -816,13 +997,14 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         modelProvider: "openai",
         ...(fastMode ? { serviceTier: "fast" } : {}),
         cwd: options.cwd || process.cwd(),
-        approvalPolicy: approvalPolicyForPermissionMode(options.permissionMode),
-        sandbox: sandboxForPermissionMode(options.permissionMode),
+        approvalPolicy: approvalPolicyForRun(options),
+        sandbox: sandboxForRun(options),
         config,
         serviceName: (options.toolContext?.runtimeBrand ?? readRuntimeBrand()).serviceName,
         developerInstructions: systemPrompt,
         ephemeral: true,
         sessionStartSource: "startup",
+        ...(noToolsProbe ? { environments: [], dynamicTools: [], selectedCapabilityRoots: [] } : {}),
         experimentalRawEvents: false,
         persistExtendedHistory: false,
       });
@@ -842,8 +1024,8 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       threadId,
       input: userTextInput(prompt),
       cwd: options.cwd || process.cwd(),
-      approvalPolicy: approvalPolicyForPermissionMode(options.permissionMode),
-      sandboxPolicy: options.permissionMode === "bypassPermissions" ? { type: "dangerFullAccess" } : null,
+      approvalPolicy: approvalPolicyForRun(options),
+      sandboxPolicy: sandboxPolicyForRun(options),
       model: resolved.model,
       ...(fastMode ? { serviceTier: "fast" } : {}),
       effort: normalizedEffort,
@@ -854,6 +1036,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     let turn;
     try {
       turn = await client.request("turn/start", turnParams);
+      assertNoUnsupportedServerRequest();
     } catch (err) {
       if (!collaborationMode) throw err;
       emitEvent({
@@ -864,6 +1047,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       const fallbackParams = { ...turnParams };
       delete fallbackParams.collaborationMode;
       turn = await client.request("turn/start", fallbackParams);
+      assertNoUnsupportedServerRequest();
     }
     setActiveTurnId(turn?.turn?.id);
 

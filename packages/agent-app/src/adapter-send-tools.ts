@@ -123,6 +123,8 @@ export interface AdapterSendToolsResolveOptions {
   readonly logger?: {
     warn?: (message: string, metadata?: Record<string, unknown>) => void;
   } | undefined;
+  /** Suppress bridge-backed AskUser/TelegramAskButtons for MCP-incompatible routes. */
+  readonly suppressInteractionTools?: boolean | undefined;
 }
 
 export async function resolveAdapterSendToolsSettings(
@@ -130,7 +132,8 @@ export async function resolveAdapterSendToolsSettings(
   options: AdapterSendToolsResolveOptions = {},
 ): Promise<AdapterSendToolsSettings | undefined> {
   const telegramSendAllowed = isAdapterToolAllowed("TelegramSendMessage", options);
-  const telegramAskAllowed = isAdapterToolAllowed("TelegramAskButtons", options);
+  const telegramAskAllowed = options.suppressInteractionTools !== true
+    && isAdapterToolAllowed("TelegramAskButtons", options);
   const telegramFileAllowed = isAdapterToolAllowed("TelegramSendFile", options);
   const telegramAnyAllowed = telegramSendAllowed || telegramAskAllowed || telegramFileAllowed;
   const telegramAskBridge = telegramAskAllowed ? resolveAskUserToolSettings(input.env) : undefined;
@@ -146,7 +149,7 @@ export async function resolveAdapterSendToolsSettings(
         }, telegramAskBridge)
       : undefined,
   ]);
-  const askUser = isAdapterToolAllowed("AskUser", options)
+  const askUser = options.suppressInteractionTools !== true && isAdapterToolAllowed("AskUser", options)
     ? resolveAskUserToolSettings(input.env)
     : undefined;
   if (slack === undefined && telegram === undefined && askUser === undefined) {

@@ -63,7 +63,11 @@ For `pi:` and `opencode:` only the **first** colon separates provider from model
 
 The default execution mode for a `codex:` model is already `cli`, so `executionMode` can be omitted.
 
-The init wizard defaults to direct `codex:gpt-5.6-terra`. It also presents `pi:openai-codex:gpt-5.6-terra` as a selectable Pi candidate; if its Pi auth store is missing, the wizard can offer `mono-agent auth login openai-codex` setup.
+The init wizard defaults to direct `codex:gpt-5.6-terra`. It runs bounded `codex --version` and `codex login status` discovery, then proves the selected primary with a real disposable turn before it can call the agent ready. Missing installation or sign-in remains visible and recoverable; mono-agent never auto-installs Codex. Use only the [official Codex CLI instructions](https://developers.openai.com/codex/cli/) (`curl -fsSL https://chatgpt.com/codex/install.sh | sh` on macOS/Linux, then run `codex` or `codex login`).
+
+The Codex app-server does not currently project arbitrary mono-agent allow/deny lists. Normal direct `codex:*` runs therefore require exact allow-all (`tools.allowedTools: ["*"]` and no `disallowedTools`, or the equivalent omitted allowlist); restrictive policies fail validation rather than being silently widened. The guided readiness probe is a separate internal contract: read-only sandbox, approval policy `never`, no MCP/dynamic tools, disposable session, and failure on the first command/file/MCP/tool event.
+
+The wizard also presents `pi:openai-codex:gpt-5.6-terra` as a selectable Pi candidate; it is a separate SDK/auth boundary, and a missing Pi auth store can be repaired with `mono-agent auth login openai-codex`.
 
 ### Pi SDK
 
@@ -98,10 +102,32 @@ A `pi:` provider that only runs under SDK mode (which is all of them) is rejecte
 
 Copilot-class models are therefore reachable two ways: through `pi:github-copilot:<model>` (SDK) and through `opencode:github-copilot:<model>` (CLI). OpenCode-Go models are also reachable through `pi:opencode-go:<model>` with API-key credentials stored in the Pi auth store. Pick the backend whose execution mode and auth source you want.
 
-The init wizard's OpenCode discovery uses `opencode models --json`, but the scaffolded wizard references those discovered models as `pi:opencode-go:<model>` so setup can save `OPENCODE_API_KEY` into the Pi auth store and run OpenCode-Go through the Pi SDK path. Hand-authored `opencode:<provider>:<model>` config remains supported by the runtime backend above.
+The init wizard's OpenCode discovery uses `opencode models opencode-go --pure` inside disposable private XDG state, accepts only `opencode-go/` entries, and references those discovered models as `pi:opencode-go:<model>` so setup can save `OPENCODE_API_KEY` into the Pi auth store and run OpenCode-Go through the Pi SDK path. Guided primary/fallback/repair selection rejects direct OpenCode rather than making an unprovable readiness claim. Flagged/non-TTY scaffolds and hand-authored `opencode:<provider>:<model>` config remain supported. Validation reads the exact provider id from the standard OpenCode `auth.json` without invoking auth middleware; live validation additionally runs a bounded, minimal-environment `opencode --version` check.
 
-:::note
-:::
+Direct OpenCode cannot enforce mono-agent allow/deny names or native `srt`
+scopes, so it requires exact allow-all, rejects a mono-agent sandbox block, and
+uses OpenCode's own fail-closed permission rules for `permissionMode`. See
+[Tool policy](/tools/policy/) and [Execution, effort & permissions](/runtime/execution-effort-permissions/).
+
+The bridge requires stable OpenCode CLI >=1.15.0 and launches a
+password-authenticated ephemeral loopback server per run. Every run receives a
+new private database that is deleted on close. It does not load user/repo config,
+external plugins, saved approvals, or unrelated host environment secrets;
+built-in providers use the normal OpenCode auth store so OAuth refreshes persist.
+Direct OpenCode intentionally does not support provider-session resume or MCP
+injection, and rejects positive `runtime.maxTurns` and explicit `runtime.effort`
+instead of claiming unenforced controls. Structured output, live input, fast
+mode, native subagents, and runtime/index skill metadata likewise fail with a
+typed capability mismatch; full skill disclosure remains prompt-based and works.
+Because `AskUser` and `TelegramAskButtons` are normally host-provided through
+MCP, they are omitted when the configured route contains direct OpenCode. An
+accepted per-trigger direct OpenCode override suppresses only those interaction
+tools for that turn; if the override is rejected by sandbox, tool, MCP, effort,
+turn-cap, or skill constraints, the base model and its interaction tools remain
+unchanged.
+The user's native OpenCode DB must
+already have its migration marker (`opencode db migrate --pure`) before first use.
+
 OpenCode is registered as the `opencode-app` bridge in [`packages/agent-runtime/src/ai/runtime/registry.js`](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/src/ai/runtime/registry.js); it self-registers and matches `sdk === "opencode" && executionMode === "cli"`.
 
 ## Execution modes
@@ -117,18 +143,20 @@ OpenCode is registered as the `opencode-app` bridge in [`packages/agent-runtime/
 
 ## How routing actually works
 
-There are two backend tables in the codebase, and only one of them performs routing.
+The executable registry and the public descriptor table serve different purposes and are kept in parity.
 
 - **Routing (real):** the agent-runtime bridge registry in [`packages/agent-runtime/src/ai/runtime/registry.js`](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/src/ai/runtime/registry.js). `listRuntimeBridges()` / `resolveRuntimeBridge()` pick the first bridge whose `supports(ref, options)` matches. This registry includes `opencode-app`, so OpenCode is fully routable.
-- **Vocabulary metadata (descriptive only):** `RUNTIME_BACKEND_DEFINITIONS` in [`packages/runtime-adapter/src/runtime-adapter.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/runtime-adapter/src/runtime-adapter.ts) lists four entries (claude-sdk, claude-code-cli, codex-app-cli, pi-sdk). Its own docstring states it is **"NOT wired into agent-host routing; consumers read it to align vocabularies."** It is a declarative descriptor table, not the router — the absence of an OpenCode entry there does not mean OpenCode is unrouted.
+- **Public vocabulary and support metadata:** `RUNTIME_BACKEND_DEFINITIONS` in [`packages/runtime-adapter/src/runtime-adapter.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/runtime-adapter/src/runtime-adapter.ts) lists the same five seams (Claude SDK, Claude Code CLI, Codex app CLI, OpenCode app CLI, Pi SDK). It powers support descriptions, default execution-mode selection, and doctor-facing metadata; the registry still executes the turn.
 
 :::caution
+When adding a backend, update and test both surfaces. A registry-only bridge can
+execute only when callers already provide the exact mode, while missing adapter
+metadata breaks inference and validation before the turn reaches that registry.
 :::
-When auditing backends, read the bridge registry (`registry.js`), not the runtime-adapter descriptor table. The descriptor table is intentionally a vocabulary surface and is not authoritative for which backends can actually run.
 
 ## Fallback chains
 
-`runtime.fallbackModels` takes an ordered list of additional model references tried on retryable provider failures, fronted by the fallback router. Entries can mix backends.
+`runtime.fallbackModels` takes an ordered list of additional model references tried on retryable provider failures, fronted by the fallback router. Pi, Claude, and direct OpenCode entries can mix only when the mono-agent native sandbox is omitted/off. A chain containing direct `codex:*` must be all-direct. With native mono-agent sandboxing active, every route must stay on Pi; validation and runtime reject Claude/direct-OpenCode because their provider-owned tools cannot enforce `srt` scopes. `pi:opencode-go:*` remains a Pi route.
 
 ```json
 {

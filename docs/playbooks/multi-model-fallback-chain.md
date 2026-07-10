@@ -18,7 +18,7 @@ A primary cloud model with ordered backups that the native failover router tries
 
 ## Features used
 
-- [runtime.multi-backend](/runtime/backends/) — mix `claude:*`, `codex:*`, and `pi:<provider>:<model>` references in one chain
+- [runtime.multi-backend](/runtime/backends/) — mix Pi, Claude, and direct OpenCode references when no native mono-agent sandbox is configured; keep direct `codex:*` chains all-direct
 - [runtime.fallback-models](/runtime/fallback/) — ordered backups tried on retryable failures
 - [runtime.pi-native-tuning](/runtime/local-providers/) — `piNative` retry and durable-sessions knobs
 - [runtime.provider-sessions](/runtime/sessions-concurrency/) — continuous sessions with transcript-tail resume
@@ -31,7 +31,7 @@ Every key below is from the annotated config blueprint. `runtime.model` is the p
 {
   "runtime": {
     "model": "claude:claude-sonnet-4-6",
-    "fallbackModels": ["pi:openai-codex:gpt-5.5", "pi:ollama:gemma4:31b"],
+    "fallbackModels": ["pi:openai-codex:gpt-5.6-terra", "pi:ollama:gemma4:31b"],
     "session": { "mode": "continuous" }
   },
   "providers": {
@@ -54,6 +54,12 @@ Every key below is from the annotated config blueprint. `runtime.model` is the p
 
 Coverage: config. The primary and chain can also be set via env vars `MONO_AGENT_MODEL` and `MONO_AGENT_FALLBACK_MODELS` (env > JSON > defaults). `piNative.piMaxRetries` accepts `0`–`8` transient provider-transport retries; `maxRetryDelayMs` caps the backoff between them. Setting `piSessionsRoot` writes durable JSONL sessions so resume survives a restart — leave it unset for in-memory sessions only.
 
+This example intentionally omits the mono-agent `sandbox` block. Claude/direct-
+OpenCode provider-owned tool loops do not enforce mono-agent `srt` scopes, so
+validation rejects a native sandbox if any primary, fallback, or static trigger
+route uses one. Direct `codex:*` uses a different native safety contract and
+therefore may be chained only with other direct Codex references.
+
 :::caution
 The chain only advances on *retryable* provider failures (transport/credential/transient). Non-retryable application errors are not masked by failover.
 :::
@@ -61,7 +67,7 @@ The chain only advances on *retryable* provider failures (transport/credential/t
 ## Steps
 
 1. `ollama pull gemma4:31b` (the last-resort local backup).
-2. `mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:openai-codex:gpt-5.5,pi:ollama:gemma4:31b`
+2. `mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:openai-codex:gpt-5.6-terra,pi:ollama:gemma4:31b`
 3. Add `providers.local` for ollama and `providers.piNative.piSessionsRoot` for durable resume across restarts.
 4. `mono-agent validate` then `mono-agent start`.
 5. Force a retryable primary failure (e.g. an invalid primary credential) and confirm the run result reports failover to the next model in the chain.

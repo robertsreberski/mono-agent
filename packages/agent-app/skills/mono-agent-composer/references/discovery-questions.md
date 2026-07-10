@@ -16,7 +16,7 @@ Which model should drive the agent, and should any backups take over when the pr
 5. A custom MonoRuntimeLike supplied programmatically (escape hatch)
 ```
 
-Fills: `runtime.model`, `runtime.fallbackModels` (ordered backup references tried on retryable provider failures), `runtime.executionMode` (usually inferred), `runtime.effort`, `runtime.maxTurns`.
+Fills: `runtime.model`, `runtime.fallbackModels` (ordered backup references tried on retryable provider failures), `runtime.executionMode` (usually inferred), `runtime.effort`, `runtime.maxTurns`. Keep a direct `codex:*` chain all-direct. Pi, Claude, and direct OpenCode may mix only with `sandbox` omitted/off; if native mono-agent sandboxing is selected, every primary/fallback/trigger model must stay on Pi (`pi:opencode-go:*` is Pi). Direct `opencode:*` is advanced scaffold/config-only, requires exact allow-all plus an explicit native `permissionMode`, and must omit `runtime.effort` under SDK 1.x.
 
 The interactive `mono-agent init` wizard discovers Pi OpenAI-Codex auth, OpenCode models, Ollama models, and LM Studio's local server best-effort. It defaults to direct `codex:gpt-5.6-terra` and presents `pi:openai-codex:gpt-5.6-terra` as a concrete selectable candidate, maps discovered OpenCode options to `pi:opencode-go:<model>` for setup/preflight, and auto-adds local provider modules when a primary or fallback model uses `pi:ollama:*` or `pi:lmstudio:*`. Recover missing Pi OAuth with `mono-agent auth login <provider>` (and `--pi-auth-path` when required). Direct `opencode:<provider>:<model>` refs are supported only as hand-authored runtime backend config; do not present them as a first-class composer or init wizard selection. For local models also fill `providers.local` (e.g. an Ollama or LM Studio base URL plus model capabilities). Follow-up only if needed: continuous provider session per conversation (`runtime.session.mode: "continuous"`, default) versus stateless per-message.
 
@@ -209,7 +209,7 @@ See `docs/memory/index.md` for the full tier table, config shapes, and CLI subco
 Question:
 
 ```text
-Should runtime commands run inside a sandbox?
+Should Pi-owned runtime commands run inside the native mono-agent sandbox? Direct Codex uses its own native sandbox and rejects this block; Claude and direct OpenCode reject it because their provider-owned tools cannot enforce the exact `srt` scopes.
 
 1. No sandbox for the first pass
 2. Native sandbox, no network (fail closed)

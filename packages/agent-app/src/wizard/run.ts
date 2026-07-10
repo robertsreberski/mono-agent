@@ -11,7 +11,9 @@ import {
   composeWizardPlan,
   defaultAnswers,
   recommendedToolSelection,
+  referencedSetupModelRefs,
   type WizardAnswers,
+  type WizardPlan,
 } from "./answers.js";
 import { findPreset, presetAnswers } from "./presets.js";
 import {
@@ -47,6 +49,24 @@ export type WizardOutcome =
     }
   | { readonly status: "cancelled" };
 
+/** Context supplied by the CLI after it has resolved paths and parsed `.env`. */
+export interface WizardRunContext {
+  readonly cwd: string;
+  readonly piAuthPath?: string;
+  /** Values parsed from the destination `.env`; shell-only values must not be supplied here. */
+  readonly persistedEnv?: Readonly<Record<string, string | undefined>>;
+}
+
+/** A focused model repair never re-prompts or returns channel/module secrets. */
+export type ModelRepairOutcome =
+  | {
+      readonly status: "answers";
+      readonly answers: WizardAnswers;
+      readonly runProviderSetup: boolean;
+      readonly providerSetupSecrets: Readonly<Record<string, string>>;
+    }
+  | { readonly status: "cancelled" };
+
 /**
  * A mutable working copy of {@link WizardAnswers} the flow builds up prompt by
  * prompt. `memory` stays `string | undefined` here (unlike the exact-optional
@@ -64,8 +84,10 @@ interface DraftAnswers {
   moduleInputs: Record<string, Record<string, string>>;
 }
 
-const LOCAL_PROVIDER_MODEL = /^pi:(?:ollama|lmstudio):/u;
 const SANDBOXABLE_TOOLS = new Set(["Bash", "Write", "Edit"]);
+const DIRECT_OPENCODE_GUIDED_UNSUPPORTED =
+  "Direct opencode:* is an advanced config-only backend and is not supported by guided readiness. " +
+  "Choose pi:opencode-go:<model>, or scaffold non-interactively with --model opencode:<provider>:<model> and set runtime.permissionMode explicitly.";
 
 interface ModelResolutionOptions {
   readonly candidates: readonly WizardModelCandidate[];
@@ -87,7 +109,7 @@ interface CollectedAnswers {
  * through {@link WizardCancelled} to a single clean `p.cancel`, so a cancelled
  * wizard leaves the folder untouched.
  */
-export async function runInitWizard(ctx: { cwd: string }): Promise<WizardOutcome> {
+export async function runInitWizard(ctx: WizardRunContext): Promise<WizardOutcome> {
   try {
     const result = await collectAnswers(ctx);
     return {
@@ -106,8 +128,62 @@ export async function runInitWizard(ctx: { cwd: string }): Promise<WizardOutcome
   }
 }
 
+/**
+ * Re-select only primary/fallback models and effort after a failed model check.
+ * Capabilities, module inputs, and observability are copied from `ctx.answers`,
+ * and no module secret is requested again. Tool/sandbox choices are re-confirmed
+ * when the runtime family crosses the direct-Codex boundary or changes whether
+ * a provider-owned Claude/direct-OpenCode tool loop is present.
+ */
+export async function runModelRepairWizard(
+  ctx: { readonly cwd: string; readonly answers: WizardAnswers; readonly piAuthPath?: string },
+): Promise<ModelRepairOutcome> {
+  try {
+    p.log.step("Repair model configuration");
+    const draft = draftFrom(ctx.answers);
+    const previousDirectCodex = isDirectCodexRef(draft.model);
+    const previousHasProviderOwnedToolLoop = hasProviderOwnedSandboxBypassModel(draft);
+    const previousRequiresFixedAllowAll = hasFixedAllowAllToolPolicyModel(draft);
+    await promptModelSettings(draft, ctx);
+    if (isDirectCodexRef(draft.model) !== previousDirectCodex) {
+      p.log.info("The runtime family changed, so tool and sandbox safety choices must be confirmed again.");
+      await promptTools(draft);
+      await promptSafetyPolicy(draft);
+    } else {
+      const requiresFixedAllowAll = hasFixedAllowAllToolPolicyModel(draft);
+      if (
+        requiresFixedAllowAll !== previousRequiresFixedAllowAll
+        || (requiresFixedAllowAll && !hasExactAllowAllTools(draft))
+      ) {
+        p.log.info("The model selection changed its mono-agent tool-policy compatibility, so tool choices must be confirmed again.");
+        await promptTools(draft);
+      }
+      if (
+        hasProviderOwnedSandboxBypassModel(draft) !== previousHasProviderOwnedToolLoop
+        || (hasProviderOwnedSandboxBypassModel(draft) && draft.sandbox)
+      ) {
+        p.log.info("The model selection changed its mono-agent sandbox compatibility, so safety choices must be confirmed again.");
+        await promptSafetyPolicy(draft);
+      }
+    }
+    const answers = toWizardAnswers(draft);
+    const plan = await composePlanForCwd(answers, ctx.cwd);
+    const providerSetup = await promptProviderSetup(plan, ctx);
+    if (!guard(await p.confirm({ message: "Use this model configuration?", initialValue: true }))) {
+      throw new WizardCancelled();
+    }
+    return { status: "answers", answers, ...providerSetup };
+  } catch (error) {
+    if (error instanceof WizardCancelled) {
+      p.cancel("Model repair cancelled — previous choices were kept.");
+      return { status: "cancelled" };
+    }
+    throw error;
+  }
+}
+
 /** Walk the flow (preset or custom), returning the fully collected answers. */
-async function collectAnswers(ctx: { cwd: string }): Promise<CollectedAnswers> {
+async function collectAnswers(ctx: WizardRunContext): Promise<CollectedAnswers> {
   p.intro("mono-agent init — let's build your agent");
 
   const choice = guard(
@@ -127,7 +203,7 @@ async function collectAnswers(ctx: { cwd: string }): Promise<CollectedAnswers> {
  * The full custom flow: model → effort → channels → memory → per-module inputs
  * → tools → sandbox (only if code tools were chosen) → observability → summary.
  */
-async function collectCustom(ctx: { cwd: string }): Promise<CollectedAnswers> {
+async function collectCustom(ctx: WizardRunContext): Promise<CollectedAnswers> {
   return await collectInteractiveFromSeed(ctx, defaultAnswers());
 }
 
@@ -145,10 +221,12 @@ async function resolveModelSelection(model: string, opts: ModelResolutionOptions
       }),
     ).trim();
     assertConcreteWizardModelRef(resolved);
+    assertGuidedModelRef(resolved);
     return resolved;
   }
 
   assertConcreteWizardModelRef(model);
+  assertGuidedModelRef(model);
   return model;
 }
 
@@ -187,10 +265,10 @@ async function promptManualPiModelRef(): Promise<string> {
   const modelId = guard(
     await p.text({
       message: "Pi model id",
-      placeholder: provider === "openai-codex" ? "gpt-5.5" : "llama3.1:8b",
+      placeholder: provider === "openai-codex" ? "gpt-5.6-terra" : "llama3.1:8b",
       validate: (v) =>
         (v ?? "").trim().length === 0
-          ? "Enter the provider-specific model id (e.g. gpt-5.5, kimi-k2.6, llama3.1:8b)"
+          ? "Enter the provider-specific model id (e.g. gpt-5.6-terra, kimi-k2.6, llama3.1:8b)"
           : undefined,
     }),
   ).trim();
@@ -210,7 +288,18 @@ function validateFullModelReference(value: string | undefined): string | undefin
   } catch (error) {
     return error instanceof Error ? error.message : "Enter a concrete model reference.";
   }
-  return undefined;
+  return guidedModelRefProblem(trimmed);
+}
+
+function assertGuidedModelRef(model: string): void {
+  const problem = guidedModelRefProblem(model);
+  if (problem !== undefined) {
+    throw new Error(problem);
+  }
+}
+
+function guidedModelRefProblem(model: string): string | undefined {
+  return isDirectOpenCodeRef(model) ? DIRECT_OPENCODE_GUIDED_UNSUPPORTED : undefined;
 }
 
 /**
@@ -222,11 +311,15 @@ async function promptFallbackModels(
   draft: DraftAnswers,
   candidates: readonly WizardModelCandidate[],
 ): Promise<void> {
+  const primaryIsDirectCodex = isDirectCodexRef(draft.model);
+  const compatibleCandidates = candidates.filter(
+    (candidate) => isDirectCodexRef(candidate.value) === primaryIsDirectCodex,
+  );
   for (;;) {
     const choice = guard(
       await p.select({
         message: `Fallback model #${draft.fallbackModels.length + 1}`,
-        options: fallbackModelSelectOptions(candidates, draft.model, draft.fallbackModels),
+        options: fallbackModelSelectOptions(compatibleCandidates, draft.model, draft.fallbackModels),
         initialValue: "__done__",
       }),
     );
@@ -234,10 +327,16 @@ async function promptFallbackModels(
       return;
     }
     const resolved = await resolveModelSelection(choice, {
-      candidates,
+      candidates: compatibleCandidates,
       excludedModels: [draft.model, ...draft.fallbackModels],
       context: "fallback",
     });
+    if (isDirectCodexRef(resolved) !== primaryIsDirectCodex) {
+      p.log.warn(
+        "Direct Codex cannot share a fallback chain with non-Codex runtimes because their tool and sandbox contracts differ. Choose a fallback from the same runtime family.",
+      );
+      continue;
+    }
     if (resolved !== draft.model && !draft.fallbackModels.includes(resolved)) {
       draft.fallbackModels.push(resolved);
     }
@@ -248,7 +347,7 @@ async function promptFallbackModels(
  * Presets seed every choice, but do not silently freeze them. A first run must
  * still choose its model, channels, tool policy, and sandbox safety posture.
  */
-async function collectFromPreset(ctx: { cwd: string }, presetId: string): Promise<CollectedAnswers> {
+async function collectFromPreset(ctx: WizardRunContext, presetId: string): Promise<CollectedAnswers> {
   const preset = findPreset(presetId);
   // presetSelectOptions only offers known ids; guard defensively regardless.
   if (preset === undefined) {
@@ -260,9 +359,86 @@ async function collectFromPreset(ctx: { cwd: string }, presetId: string): Promis
 }
 
 /** Shared custom/preset first-run chooser; seed answers only set sensible defaults. */
-async function collectInteractiveFromSeed(ctx: { cwd: string }, seed: WizardAnswers): Promise<CollectedAnswers> {
+async function collectInteractiveFromSeed(ctx: WizardRunContext, seed: WizardAnswers): Promise<CollectedAnswers> {
   const draft = draftFrom(seed);
-  const discovery = await discoverWizardModelCandidates();
+  await promptModelSettings(draft, ctx);
+  draft.channels = [...guard(await p.multiselect({
+    message: "How will you talk to this agent?",
+    options: channelSelectOptions({ readyOnly: true }),
+    initialValues: draft.channels,
+    required: false,
+  }))];
+  const memory = guard(await p.select({
+    message: "Should the agent remember across conversations?",
+    options: memorySelectOptions(),
+    initialValue: draft.memory ?? "",
+  }));
+  draft.memory = memory === "" ? undefined : memory;
+  await promptModuleInputs(draft);
+  await promptTools(draft);
+  await promptSafetyPolicy(draft);
+  draft.observability = guard(await p.confirm({
+    message: "Export traces to Phoenix (best-effort OTLP, sensitive data excluded)?",
+    initialValue: draft.observability,
+  }));
+  const providerSetup = await confirmSummary(draft, ctx);
+  const answers = toWizardAnswers(draft);
+  return {
+    answers,
+    ...providerSetup,
+    moduleSecrets: await promptRequiredModuleSecrets(answers, ctx.persistedEnv),
+  };
+}
+
+async function promptSafetyPolicy(draft: DraftAnswers): Promise<void> {
+  const hasSandboxableTools = isAllowAllTools(draft.allowedTools)
+    || draft.allowedTools.some((tool) => SANDBOXABLE_TOOLS.has(tool));
+  if (hasSandboxableTools && hasDirectCodexModel(draft)) {
+    draft.sandbox = false;
+    p.log.info(
+      "Direct Codex uses its own workspace-write sandbox with network disabled and unattended approvals denied. Native srt scopes are not applied; choose a Pi runtime when exact mono-agent sandbox roots, deny-write rules, or network policy are required.",
+    );
+  } else if (hasSandboxableTools && hasProviderOwnedSandboxBypassModel(draft)) {
+    draft.sandbox = false;
+    p.log.info(
+      "Claude and direct OpenCode models use provider-owned tool loops that do not consume the mono-agent native srt policy. Choose a Pi runtime if mono-agent sandbox enforcement is required.",
+    );
+    if (isAllowAllTools(draft.allowedTools) && !await confirmHighRiskUnsandboxedAccess()) {
+      p.log.info("Provider-owned allow-all was not accepted. Choose a Pi runtime to use the mono-agent sandbox, or choose a restrictive tool policy.");
+      throw new WizardCancelled();
+    }
+  } else if (hasSandboxableTools) {
+    draft.sandbox = guard(await p.confirm({
+      message: "Sandbox shell/file tools? (native srt, localhost-only network, fails closed if srt is missing)",
+      initialValue: true,
+    }));
+    if (isAllowAllTools(draft.allowedTools) && !draft.sandbox) {
+      const accepted = await confirmHighRiskUnsandboxedAccess();
+      if (!accepted) {
+        draft.sandbox = true;
+        p.log.info("Sandbox enabled because unsandboxed allow-all access was not confirmed.");
+      }
+    }
+  } else {
+    draft.sandbox = false;
+  }
+}
+
+async function confirmHighRiskUnsandboxedAccess(): Promise<boolean> {
+  return guard(await p.confirm({
+    message: "Proceed with high-risk unsandboxed access? The model may run shell commands, change files, access the web, and send through enabled channels.",
+    initialValue: false,
+  }));
+}
+
+/** Select primary, fallbacks, and effort without touching any other answer. */
+async function promptModelSettings(
+  draft: DraftAnswers,
+  ctx: { readonly piAuthPath?: string },
+): Promise<void> {
+  const discovery = await discoverWizardModelCandidates({
+    ...(ctx.piAuthPath === undefined ? {} : { piAuthPath: ctx.piAuthPath }),
+  });
   const discoveredByValue = new Map(discovery.candidates.map((candidate) => [candidate.value, candidate]));
   p.note(formatModelDiscoveryStatus(discovery.statuses), "Model discovery");
   const model = guard(await p.select({
@@ -282,35 +458,6 @@ async function collectInteractiveFromSeed(ctx: { cwd: string }, seed: WizardAnsw
     initialValue: draft.effort ?? derivedEffort ?? "",
   }));
   draft.effort = effort.length === 0 ? undefined : effort;
-  draft.channels = [...guard(await p.multiselect({
-    message: "How will you talk to this agent?",
-    options: channelSelectOptions({ readyOnly: true }),
-    initialValues: draft.channels,
-    required: false,
-  }))];
-  const memory = guard(await p.select({
-    message: "Should the agent remember across conversations?",
-    options: memorySelectOptions(),
-    initialValue: draft.memory ?? "",
-  }));
-  draft.memory = memory === "" ? undefined : memory;
-  await promptModuleInputs(draft);
-  await promptTools(draft);
-  if (isAllowAllTools(draft.allowedTools) || draft.allowedTools.some((tool) => SANDBOXABLE_TOOLS.has(tool))) {
-    draft.sandbox = guard(await p.confirm({
-      message: "Sandbox shell/file tools? (native srt, localhost-only network, fails closed if srt is missing)",
-      initialValue: true,
-    }));
-  } else {
-    draft.sandbox = false;
-  }
-  draft.observability = guard(await p.confirm({
-    message: "Export traces to Phoenix (best-effort OTLP, sensitive data excluded)?",
-    initialValue: draft.observability,
-  }));
-  const providerSetup = await confirmSummary(draft, ctx);
-  const answers = toWizardAnswers(draft);
-  return { answers, ...providerSetup, moduleSecrets: await promptRequiredModuleSecrets(answers) };
 }
 
 /**
@@ -345,11 +492,14 @@ async function promptModuleInputs(draft: DraftAnswers): Promise<void> {
 }
 
 /** Collect only typed required secrets, masked and retained solely for this run. */
-async function promptRequiredModuleSecrets(answers: WizardAnswers): Promise<Readonly<Record<string, string>>> {
+async function promptRequiredModuleSecrets(
+  answers: WizardAnswers,
+  persistedEnv: Readonly<Record<string, string | undefined>> = {},
+): Promise<Readonly<Record<string, string>>> {
   const plan = composeWizardPlan(answers, { dirBasename: "agent", skillsRootExists: false });
   const secrets: Record<string, string> = {};
   for (const secret of plan.secrets) {
-    if (!secret.required) continue;
+    if (!secret.required || hasNonEmptyValue(persistedEnv[secret.envVar])) continue;
     secrets[secret.envVar] = guard(await p.password({
       message: `${secret.label} (${secret.envVar})`,
       validate: (value) => (value ?? "").trim().length === 0 ? "This secret is required for the selected capability." : undefined,
@@ -357,6 +507,10 @@ async function promptRequiredModuleSecrets(answers: WizardAnswers): Promise<Read
     }));
   }
   return secrets;
+}
+
+function hasNonEmptyValue(value: string | undefined): boolean {
+  return value !== undefined && value.trim().length > 0;
 }
 
 /** Short reasons annotating each always-on tool in the framing note. */
@@ -403,7 +557,7 @@ function toolSituationFraming(draft: DraftAnswers, alwaysOn: readonly string[]):
       : "Always on (auto-provisioned): none for this setup.",
     "Built-ins: files (Read/Write/Edit/Glob/Grep), shell (Bash), web (WebFetch/WebSearch).",
     channelLine,
-    '"Allow all" turns on every built-in and channel tool; you can turn specific tools off later via tools.disallowedTools.',
+    '"Allow all" lets the model run shell commands, read/change files, access the web, and send through enabled channels. These actions can modify data or contact people; you can turn specific tools off later via tools.disallowedTools.',
   ].join("\n");
 }
 
@@ -417,9 +571,16 @@ async function promptTools(draft: DraftAnswers): Promise<void> {
   const alwaysOn = alwaysOnTools(toWizardAnswers(draft));
   p.note(toolSituationFraming(draft, alwaysOn), "Tools");
 
+  if (hasDirectCodexModel(draft)) {
+    draft.allowedTools = [ALLOW_ALL_TOOLS];
+    p.log.info(
+      "Direct Codex uses its native app-server tool set and cannot enforce mono-agent per-tool allowlists. Tool policy is fixed to allow-all; use Pi or Claude for a restrictive tool list.",
+    );
+    return;
+  }
   const allowAll = guard(
     await p.confirm({
-      message: "Allow all tools? (recommended — the model can use every built-in and your channels' tools)",
+      message: "Allow all tools? (shell commands, file changes, web access, and enabled-channel sends)",
       initialValue: true,
     }),
   );
@@ -479,20 +640,18 @@ async function pickSpecificTools(draft: DraftAnswers): Promise<void> {
  */
 async function confirmSummary(
   draft: DraftAnswers,
-  ctx: { cwd: string },
+  ctx: WizardRunContext,
 ): Promise<{ readonly runProviderSetup: boolean; readonly providerSetupSecrets: Readonly<Record<string, string>> }> {
-  if ([draft.model, ...draft.fallbackModels].some((model) => LOCAL_PROVIDER_MODEL.test(model))) {
+  const answers = toWizardAnswers(draft);
+  const plan = await composePlanForCwd(answers, ctx.cwd);
+  const setupModelRefs = referencedSetupModelRefs(plan);
+
+  if (setupModelRefs.some((model) => /^pi:(?:ollama|lmstudio):/u.test(model))) {
     p.note(
-      "A matching local provider block is added automatically.\nThe first turn may be slow while the model loads.",
-      "Local model",
+      "Local runtime or memory services are checked before readiness. The first load may take longer while models start.",
+      "Local dependencies",
     );
   }
-
-  const answers = toWizardAnswers(draft);
-  const plan = composeWizardPlan(answers, {
-    dirBasename: basename(ctx.cwd),
-    skillsRootExists: await pathExists(join(ctx.cwd, "skills")),
-  });
 
   const capabilities = plan.selectedModules
     .filter((module) => module.kind !== "provider")
@@ -500,7 +659,7 @@ async function confirmSummary(
 
   const writes = ["mono-agent.config.json", "IDENTITY.md"];
   if (plan.envExample !== undefined) {
-    writes.push(".env.example");
+    writes.push(".env.example (placeholders only)");
   }
   for (const file of plan.files) {
     writes.push(file.path);
@@ -518,16 +677,89 @@ async function confirmSummary(
     `Effort:       ${draft.effort ?? "default"}`,
     `Capabilities: ${capabilities.length > 0 ? capabilities.join(", ") : "none"}`,
     `Tools:        ${toolsLine}`,
+    `Safety:       ${hasDirectCodexModel(draft)
+      ? "Codex-native workspace-write sandbox, network disabled, unattended escalations denied"
+      : draft.sandbox
+        ? "mono-agent native srt sandbox"
+        : "no configured sandbox"}`,
     ...(alwaysOn.length > 0 ? [`Always on:    ${alwaysOnDisplay(alwaysOn).join(", ")}`] : []),
+    `Setup refs:   ${setupModelRefs.join(", ")}`,
     `Writes:       ${writes.join(", ")}`,
-    `Secrets:      ${secrets.length > 0 ? `${secrets.join(", ")} → .env.example` : "none"}`,
+    `Secrets:      ${secrets.length > 0 ? `${secrets.join(", ")} (values hidden)` : "none"}`,
+    ...(secrets.length > 0
+      ? ["Secret files: .env (merge values), .gitignore (ensure /.env is ignored)"]
+      : []),
   ];
   p.note(lines.join("\n"), "Review");
 
+  const providerSetup = await promptProviderSetup(plan, ctx);
+
+  if (!guard(await p.confirm({ message: "Write these files?", initialValue: true }))) {
+    throw new WizardCancelled();
+  }
+  return providerSetup;
+}
+
+function hasDirectCodexModel(draft: Pick<DraftAnswers, "model" | "fallbackModels">): boolean {
+  return [draft.model, ...draft.fallbackModels].some(isDirectCodexRef);
+}
+
+function hasDirectOpenCodeModel(draft: Pick<DraftAnswers, "model" | "fallbackModels">): boolean {
+  return [draft.model, ...draft.fallbackModels].some(isDirectOpenCodeRef);
+}
+
+function hasFixedAllowAllToolPolicyModel(
+  draft: Pick<DraftAnswers, "model" | "fallbackModels">,
+): boolean {
+  return hasDirectCodexModel(draft) || hasDirectOpenCodeModel(draft);
+}
+
+function hasExactAllowAllTools(draft: Pick<DraftAnswers, "allowedTools">): boolean {
+  return draft.allowedTools.length === 1 && draft.allowedTools[0] === ALLOW_ALL_TOOLS;
+}
+
+function hasProviderOwnedSandboxBypassModel(
+  draft: Pick<DraftAnswers, "model" | "fallbackModels">,
+): boolean {
+  return [draft.model, ...draft.fallbackModels].some(isProviderOwnedSandboxBypassRef);
+}
+
+function isDirectCodexRef(model: string): boolean {
+  return model.startsWith("codex:");
+}
+
+function isDirectOpenCodeRef(model: string): boolean {
+  return model.startsWith("opencode:");
+}
+
+function isProviderOwnedSandboxBypassRef(model: string): boolean {
+  return model.startsWith("claude:") || isDirectOpenCodeRef(model);
+}
+
+/** Build a plan using the destination-derived context for honest review/setup. */
+async function composePlanForCwd(answers: WizardAnswers, cwd: string): Promise<WizardPlan> {
+  return composeWizardPlan(answers, {
+    dirBasename: basename(cwd),
+    skillsRootExists: await pathExists(join(cwd, "skills")),
+  });
+}
+
+/** Offer auth/preflight for every runtime and hidden memory model dependency. */
+async function promptProviderSetup(
+  plan: WizardPlan,
+  ctx: { readonly cwd: string; readonly piAuthPath?: string },
+): Promise<{ readonly runProviderSetup: boolean; readonly providerSetupSecrets: Readonly<Record<string, string>> }> {
+  const modelRefs = referencedSetupModelRefs(plan);
+  p.note(modelRefs.join("\n"), "Models and services to verify");
+
+  const configuredPiAuthPath = typeof plan.configJson.providers?.piAuthPath === "string"
+    ? plan.configJson.providers.piAuthPath
+    : undefined;
+  const piAuthPath = ctx.piAuthPath ?? configuredPiAuthPath;
   const setupPlan = planProviderSetup({
-    modelRefs: [answers.model, ...answers.fallbackModels],
+    modelRefs,
     cwd: ctx.cwd,
-    ...(typeof plan.configJson.providers?.piAuthPath === "string" ? { piAuthPath: plan.configJson.providers.piAuthPath } : {}),
+    ...(piAuthPath === undefined ? {} : { piAuthPath }),
   });
   let runProviderSetup = false;
   const providerSetupSecrets: Record<string, string> = {};
@@ -541,8 +773,8 @@ async function confirmSummary(
     runProviderSetup = guard(
       await p.confirm({
         message: setupPlan.actions.some((action) => action.id.startsWith("pi-login:"))
-          ? "Run provider auth/preflight before writing files? (Pi OAuth setup can create/update the auth store)"
-          : "Run provider auth/preflight before writing files?",
+          ? "Run provider auth/preflight now? (Pi OAuth setup can create/update the auth store)"
+          : "Run provider auth/preflight now?",
         initialValue: false,
       }),
     );
@@ -560,10 +792,6 @@ async function confirmSummary(
         );
       }
     }
-  }
-
-  if (!guard(await p.confirm({ message: "Write these files?", initialValue: true }))) {
-    throw new WizardCancelled();
   }
   return { runProviderSetup, providerSetupSecrets };
 }

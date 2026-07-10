@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { generateCodexAppResponse } from "../../ai/providers/codex-app.js";
+import { createCodexAppServerClient, generateCodexAppResponse } from "../../ai/providers/codex-app.js";
 import { disposeAllProviderSessions, disposeProviderSession } from "../../ai/runtime/sessions.js";
 
 // Fake app-server client driven through options.codexClientFactory: records
@@ -10,7 +10,7 @@ function stubClientFactory({ threadId = "thread-1", turnText = "hello" } = {}) {
   const clients = [];
   // Consumed (shift) per turn/start: "auto" (default), "manual", "fail".
   const turnPlan = [];
-  const factory = vi.fn(({ onNotification }) => {
+  const factory = vi.fn(({ onNotification, onServerRequest }) => {
     let resolveClosed;
     const closed = new Promise((resolve) => { resolveClosed = resolve; });
     const requests = [];
@@ -21,6 +21,7 @@ function stubClientFactory({ threadId = "thread-1", turnText = "hello" } = {}) {
       closed,
       requests,
       notify,
+      serverRequest: (method, params = {}, id = 9_001) => onServerRequest({ id, method, params }),
       finishTurn: null,
       resolveClosed: (err) => resolveClosed(err || new Error("codex app-server exited 1")),
       close: vi.fn(() => { resolveClosed(new Error("codex app-server closed")); }),
@@ -91,32 +92,187 @@ describe("codex-app persistent sessions", () => {
   });
 
   it.each([
-    ["default (unset)", undefined, "on-request", "workspace-write", null],
-    ["default", "default", "on-request", "workspace-write", null],
-    ["plan", "plan", "on-request", "read-only", null],
-    ["acceptEdits", "acceptEdits", "on-request", "workspace-write", null],
-    ["bypassPermissions", "bypassPermissions", "never", "danger-full-access", { type: "dangerFullAccess" }],
+    ["default (unset)", undefined, "workspace-write", "workspaceWrite"],
+    ["default", "default", "workspace-write", "workspaceWrite"],
+    ["plan", "plan", "read-only", "readOnly"],
+    ["acceptEdits", "acceptEdits", "workspace-write", "workspaceWrite"],
+    ["bypassPermissions", "bypassPermissions", "danger-full-access", "dangerFullAccess"],
   ])("maps %s permission mode into supported app-server payload policy", async (
     _label,
     permissionMode,
-    approvalPolicy,
     sandbox,
-    sandboxPolicy,
+    sandboxPolicyType,
   ) => {
     const factory = stubClientFactory({ threadId: `thread-${_label}` });
-    const result = await generateCodexAppResponse("SYS", runOptions(factory, { permissionMode }));
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, {
+      permissionMode,
+      cwd: "/workspace",
+    }));
     expect(result.error).toBeNull();
 
     const client = factory.clients[0];
     const threadStart = client.requests.find((r) => r.method === "thread/start");
     const turnStart = client.requests.find((r) => r.method === "turn/start");
 
-    expect(threadStart?.params.approvalPolicy).toBe(approvalPolicy);
+    expect(threadStart?.params.approvalPolicy).toBe("never");
     expect(threadStart?.params.sandbox).toBe(sandbox);
-    expect(turnStart?.params.approvalPolicy).toBe(approvalPolicy);
-    expect(turnStart?.params.sandboxPolicy).toEqual(sandboxPolicy);
+    expect(turnStart?.params.approvalPolicy).toBe("never");
+    expect(turnStart?.params.sandboxPolicy).toMatchObject({ type: sandboxPolicyType });
+    if (sandboxPolicyType === "workspaceWrite") {
+      expect(turnStart?.params.sandboxPolicy).toMatchObject({
+        writableRoots: ["/workspace"],
+        networkAccess: false,
+      });
+    }
     expect(threadStart?.params.approvalPolicy).not.toBe("on-failure");
     expect(turnStart?.params.approvalPolicy).not.toBe("on-failure");
+  });
+
+  it("fails closed before starting Codex when a restrictive tool policy cannot be enforced", async () => {
+    const factory = stubClientFactory();
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, {
+      allowedTools: ["Read", "Glob", "Grep"],
+      disallowedTools: [],
+    }));
+
+    expect(result).toMatchObject({
+      failureKind: "skipped_capability_mismatch",
+      diagnostics: { codex_error_code: "codex_tool_policy_unsupported" },
+    });
+    expect(result.error).toContain("cannot enforce allowedTools/disallowedTools");
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before starting Codex when a native mono-agent sandbox is supplied", async () => {
+    const factory = stubClientFactory();
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, {
+      sandboxPolicy: {
+        mode: "native",
+        readableRoots: ["/workspace"],
+        writableRoots: ["/workspace"],
+        denyWrite: [".env"],
+        network: { mode: "localhost" },
+      },
+    }));
+
+    expect(result).toMatchObject({
+      failureKind: "skipped_capability_mismatch",
+      diagnostics: { codex_error_code: "codex_sandbox_policy_unsupported" },
+    });
+    expect(result.error).toContain("cannot enforce mono-agent's native srt sandbox scopes");
+    expect(result.error).toContain("use a Pi runtime");
+    expect(result.error).not.toContain("Pi/Claude");
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("fails an unexpected app-server request immediately instead of hanging the turn", async () => {
+    const factory = stubClientFactory({ threadId: "thread-server-request" });
+    factory.turnPlan.push("manual");
+    const pending = generateCodexAppResponse("SYS", runOptions(factory));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+
+    expect(() => factory.clients[0].serverRequest("item/commandExecution/requestApproval", {
+      threadId: "thread-server-request",
+      turnId: "turn-1",
+      itemId: "command-1",
+    })).toThrow("Unsupported Codex app-server request");
+
+    await expect(pending).resolves.toMatchObject({
+      failureKind: "skipped_capability_mismatch",
+      diagnostics: {
+        codex_error_code: "codex_server_request_unsupported",
+        codex_server_request_method: "item/commandExecution/requestApproval",
+      },
+    });
+  });
+
+  it("writes a JSON-RPC response for inbound app-server requests", async () => {
+    const childSource = `
+      const readline = require("node:readline");
+      const rl = readline.createInterface({ input: process.stdin });
+      let originalId;
+      const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+      rl.on("line", (line) => {
+        const message = JSON.parse(line);
+        if (message.id === 9001 && (message.result !== undefined || message.error !== undefined)) {
+          send({ id: originalId, result: { serverResult: message.result, serverError: message.error } });
+          return;
+        }
+        originalId = message.id;
+        send({ id: 9001, method: "item/commandExecution/requestApproval", params: {} });
+      });
+    `;
+    const client = createCodexAppServerClient({
+      command: process.execPath,
+      args: ["-e", childSource],
+      onServerRequest: () => ({ decision: "decline" }),
+    });
+    try {
+      await expect(client.request("probe", {})).resolves.toEqual({
+        serverResult: { decision: "decline" },
+      });
+    } finally {
+      client.close();
+    }
+  });
+
+  it("runs the dedicated no-tool probe read-only and interrupts the first tool action", async () => {
+    const factory = stubClientFactory({ threadId: "thread-no-tools" });
+    factory.turnPlan.push("manual");
+    const emitted = [];
+
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, {
+      allowedTools: [],
+      disallowedTools: [],
+      mcpServers: {},
+      codexNoToolsProbe: true,
+      sessionKeepAlive: false,
+      nativeSubagents: { mode: "auto" },
+      onEvent: (event) => emitted.push(event),
+    }));
+    await vi.waitFor(() => {
+      expect(factory.clients[0]?.finishTurn).toBeTruthy();
+    });
+    const client = factory.clients[0];
+    client.notify("item/started", {
+      item: {
+        id: "cmd-1",
+        type: "commandExecution",
+        command: "pwd",
+        status: "inProgress",
+      },
+    });
+    const result = await pending;
+
+    expect(result.cancelled).toBe(false);
+    expect(result.failureKind).toBe("tool_policy_violation");
+    expect(result.diagnostics).toMatchObject({
+      codex_error_code: "codex_no_tools_violation",
+      codex_tool_action: "commandExecution",
+    });
+    expect(emitted).toContainEqual(expect.objectContaining({
+      type: "runtime_warning",
+      warning_kind: "codex_no_tools_violation",
+    }));
+    const threadStart = client.requests.find((request) => request.method === "thread/start");
+    expect(threadStart?.params).toMatchObject({
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      environments: [],
+      dynamicTools: [],
+      selectedCapabilityRoots: [],
+      config: { mcp_servers: {} },
+    });
+    const turnStart = client.requests.find((request) => request.method === "turn/start");
+    expect(turnStart?.params).toMatchObject({
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "readOnly", networkAccess: false },
+    });
+    expect(client.requests.some((request) => request.method === "collaborationMode/list")).toBe(false);
+    expect(client.requests.some((request) => request.method === "turn/interrupt")).toBe(true);
+    expect(client.close).toHaveBeenCalled();
   });
 
   it("keeps the client alive under sessionKeepAlive and resumes with only turn/start", async () => {

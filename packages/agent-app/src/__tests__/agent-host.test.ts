@@ -747,6 +747,48 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[1]?.options.sessionKeepAlive).toBe(true);
   });
 
+  it("keeps mixed Pi/OpenCode fallback chains stateless and replays later-turn history", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let turn = 0;
+    const fake = createFakeRuntime(async () => ({
+      text: `answer-${++turn}`,
+      providerSessionId: "pi-provider-session",
+    }));
+    const base = monoConfig({ dir, identityPath, artifactDir });
+    const harness = await createConfiguredAgentHarness({
+      config: {
+        ...base,
+        runtime: {
+          ...base.runtime,
+          fallbackModels: [{
+            sdk: "opencode",
+            provider: "github-copilot",
+            model: "gpt-5.1",
+            reference: "opencode:github-copilot:gpt-5.1",
+          }],
+          session: { mode: "continuous", idleTimeoutMs: 60_000 },
+        },
+        tools: { allowedTools: ["*"], disallowedTools: [] },
+      },
+      runtime: fake.runtime,
+    });
+
+    await harness.run({ conversationId: "conv-mixed", userMessage: "first question", abortSignal: new AbortController().signal });
+    await harness.run({ conversationId: "conv-mixed", userMessage: "second question", abortSignal: new AbortController().signal });
+
+    for (const call of fake.calls) {
+      expect(call.options.sessionId).toBeUndefined();
+      expect(call.options.providerSessionId).toBeUndefined();
+      expect(call.options.sessionKeepAlive).toBeUndefined();
+    }
+    expect(fake.calls[1]?.prompt).toContain("Conversation History");
+    expect(fake.calls[1]?.prompt).toContain("first question");
+    expect(fake.calls[1]?.prompt).toContain("answer-1");
+  });
+
   it("never passes session keys in per-message mode", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

@@ -6,9 +6,9 @@ sidebar:
 
 # Sandbox
 
-The sandbox confines the shell commands your agent runs (e.g. a code-exec tool) by wrapping them with `srt` (the native sandbox runtime) and a generated settings file: a filesystem scope (readable/writable roots, deny-write globs), a network policy, and a fallback for when the sandbox engine is unavailable. This page covers the `sandbox` config block, the matching `MONO_AGENT_SANDBOX_*` env vars, and the monotonic merge that lets request-scoped policies tighten — but never widen — the configured baseline.
+For Pi-native agents, the sandbox confines mono-agent-owned commands by wrapping them with `srt` (the native sandbox runtime) and a generated settings file: a filesystem scope (readable/writable roots, deny-write globs), a network policy, and a fallback for when the sandbox engine is unavailable. This page covers the `sandbox` config block, the matching `MONO_AGENT_SANDBOX_*` env vars, and the monotonic merge that lets request-scoped policies tighten — but never widen — the configured baseline.
 
-The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`. Omit `sandbox` entirely for no sandboxing.
+The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`. Direct `codex:*` rejects this block and uses Codex's own native sandbox. Claude and direct `opencode:*` reject it because their provider-owned tool loops cannot project these `srt` roots, deny-write globs, or network rules. Omit `sandbox` entirely when intentionally using one of those runtimes; use Pi (including `pi:opencode-go:*`) when this exact policy is required.
 
 ## Quick reference
 
@@ -133,10 +133,16 @@ When a request supplies its own sandbox policy, it is merged with the configured
 
 This merge is **auto** (the harness performs it). Constructing request-scoped policies is a **code** path — see [Programmatic](/programmatic/).
 
-## Gotcha: provider CLI bridges
+## Runtime boundary
 
 :::caution
-Some runtime backends are provider CLI bridges that run their own tool loops (their own shell, file, and exec tools) outside the mono-agent shell-command path. Commands those loops spawn are **not** `srt`-wrapped by this sandbox. To confine them, pair this config with the provider's own sandboxing controls. See [Runtime backends](/runtime/backends/) and [Tools and guards](/runtime/tools-and-guards/).
+Provider-owned tool loops do not silently bypass this policy. Validation and
+runtime start reject a configured native mono-agent sandbox for direct Codex,
+Claude, or direct OpenCode. Direct Codex normal runs instead use Codex's
+network-off workspace sandbox and deny unattended escalations; Claude/OpenCode
+have no equivalent projection for the configured mono-agent roots and must be
+used without this block or replaced by Pi. Static fallback/trigger routes and
+dynamic model overrides are checked at the same boundary.
 :::
 
 ## Related

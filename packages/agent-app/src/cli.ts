@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { stat } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { basename, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -17,6 +17,7 @@ import type { ConfigViewSection } from "@mono-agent/config";
 import { listRecordedRuns } from "@mono-agent/observability";
 import {
   describeSandboxEffectiveState,
+  parseMonoRuntimeModelReference,
   sandboxEffectiveStateWarning,
 } from "@mono-agent/runtime-adapter";
 
@@ -47,7 +48,27 @@ import type { ChannelStatus } from "./channels.js";
 import { findUnknownAppConfigWarnings } from "./config-reference.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor.js";
-import { initMonoAgentFolder } from "./init.js";
+import {
+  effectiveFirstRunEnvironment,
+  evaluateFirstRunReadiness,
+  hasSensitivePersistedEnvironmentValue,
+  piAuthPathBackgroundConflict,
+  readCliConfigSnapshot,
+  readCliDotenvFile,
+  readCliDotenvSnapshot,
+  resolveEffectivePiAuthPath,
+  selectedSecretEnvironmentConflicts,
+  selectedSecretValues,
+  unexpectedPersistedMonoAgentOverrides,
+  validateWizardPlanInStaging,
+  withExactProcessEnvironment,
+} from "./first-run-readiness.js";
+import type { CliConfigSnapshot, CliDotenvSnapshot, CliEnvironment } from "./first-run-readiness.js";
+import {
+  initMonoAgentFolder,
+  SecretEnvConcurrentModificationError,
+  verifySecretEnvPersistenceGuard,
+} from "./init.js";
 import type { InitMonoAgentFolderResult } from "./init.js";
 import { installComposerSkill } from "./install-skill.js";
 import type { InstallSkillTarget } from "./install-skill.js";
@@ -55,16 +76,22 @@ import { runMetrics } from "./metrics.js";
 import type { ModuleValidateExpectation } from "./modules/index.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { purgeSessions } from "./sessions.js";
-import { composeWizardPlan } from "./wizard/answers.js";
-import type { SecretChecklistItem } from "./wizard/answers.js";
+import { composeWizardPlan, referencedSetupModelRefs } from "./wizard/answers.js";
+import type { SecretChecklistItem, WizardAnswers, WizardPlan } from "./wizard/answers.js";
 import { answersFromCli, isWithChannel } from "./wizard/from-flags.js";
 import type { WithChannel } from "./wizard/from-flags.js";
 import { findPreset, PRESET_CATALOG, presetAnswers, presetIds, RECIPE_TO_PRESET } from "./wizard/presets.js";
 import type { WizardPreset } from "./wizard/presets.js";
-import { runInitWizard } from "./wizard/run.js";
-import { executeProviderSetupPlan, planProviderSetup, providerSetupActionCommandLine } from "./provider-setup.js";
+import { runInitWizard, runModelRepairWizard } from "./wizard/run.js";
+import {
+  executeProviderSetupPlan,
+  isProviderSetupPiApiKeyAction,
+  planProviderSetup,
+  providerSetupActionCommandLine,
+} from "./provider-setup.js";
 import type { ProviderSetupPlan, ProviderSetupResult } from "./provider-setup.js";
-import { runReadinessProbe } from "./readiness-probe.js";
+import { readinessProbeTimeoutMs, runReadinessProbe } from "./readiness-probe.js";
+import type { ReadinessProbeResult } from "./readiness-probe.js";
 import * as p from "@clack/prompts";
 import * as ui from "./ui.js";
 
@@ -75,6 +102,8 @@ const DEFAULT_LOG_LINES = 200;
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
 const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "config", "recipes", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "audit-runs", "metrics", "memory"] as const;
+
+type ReadinessProbeFailure = Extract<ReadinessProbeResult, { readonly ok: false }>;
 
 // `doctor`/`setup`/`recipes` never reach routing: parseCliArgs normalizes them to
 // `validate`/`init`/`presets`. `help`/`version` are synthetic commands (not in
@@ -525,7 +554,8 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "the step-by-step wizard; with --yes or any flag, writes the default/preset",
       "scaffold non-interactively. --preset seeds a blueprint, --with adds channels,",
       "--effort writes runtime.effort, --auth runs supported provider auth/preflight",
-      "commands before writing, and --dry-run previews only. Existing files are never overwritten.",
+      "commands before writing, and --dry-run previews only. Existing scaffold/config files are not overwritten;",
+      "guided secret setup may securely update .env and .gitignore after explicit review.",
     ],
   },
   {
@@ -551,8 +581,9 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
   {
     signature: "mono-agent auth login <provider> [--pi-auth-path <path>] [--config <path>]",
     lines: [
-      "Run bundled Pi OAuth login and atomically store credentials at the selected Pi auth path.",
-      "Uses --pi-auth-path first, then providers.piAuthPath from the config, then Pi's default.",
+      "Run bundled Pi OAuth login and promote validated credentials with owner-only no-clobber checks.",
+      "Path precedence: --pi-auth-path, MONO_AGENT_PI_AUTH_PATH, providers.piAuthPath, then Pi's default.",
+      "Supported OAuth providers: openai-codex, anthropic, and github-copilot.",
     ],
   },
   {
@@ -673,7 +704,22 @@ codex:gpt-5.6-terra, or opencode:<provider>:<model>. The init wizard defaults to
 direct codex:gpt-5.6-terra; pi:openai-codex:gpt-5.6-terra remains selectable when
 Pi auth setup is needed, and the wizard can save OPENCODE_API_KEY for
 pi:opencode-go:* refs. Claude remains selectable; direct opencode:<provider>:<model> refs are for
-hand-authored runtime backend config.
+hand-authored runtime backend config and are rejected by guided selection/readiness.
+
+Direct codex:* runs use Codex's network-off workspace sandbox, deny unattended
+escalations, and require exact allow-all tool policy. Direct Codex cannot share a
+fallback chain or per-turn override boundary with Pi/Claude runtimes; validate
+reports those combinations before start.
+
+Native mono-agent srt policy is enforced by Pi-owned tools. Claude's provider-owned
+tool loop and direct OpenCode cannot project those exact roots, deny-write globs,
+or network rules, so those primary/fallback/trigger routes are rejected while that
+sandbox is active. Direct OpenCode also requires exact allow-all tool policy.
+Its bridge cannot enforce an explicit runtime.effort; omit effort and
+configure runtime.permissionMode deliberately for hand-authored direct routes.
+It is per-run/non-resumable and rejects MCP (including auto-provisioned memory
+or send tools), positive maxTurns, index skill disclosure, structured output,
+live input, fast mode, and native subagents instead of silently dropping them.
 
 A .env file in the current folder is loaded automatically when present;
 already-exported shell variables take precedence.
@@ -725,11 +771,25 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   }
 
   const invocationCwd = process.cwd();
-  loadCliEnvFile(
-    args.command === "validate"
-      ? resolveValidateContext(args, invocationCwd).envFilePath
-      : resolve(invocationCwd, args.envFile ?? ".env"),
-  );
+  // Capture the exported shell before dotenv loading. Guided init retains only
+  // worker-operational values and reports shell/background credential drift;
+  // normal CLI commands still get the established shell-over-dotenv precedence.
+  const shellEnv = { ...process.env };
+  const envFilePath = args.command === "validate"
+    ? resolveValidateContext(args, invocationCwd).envFilePath
+    : resolve(invocationCwd, args.envFile ?? ".env");
+  let dotenvEnv: Record<string, string> = {};
+  if (args.command === "init") {
+    try {
+      dotenvEnv = await readCliDotenvFile(envFilePath);
+    } catch (error) {
+      process.stderr.write(ui.errorLine(
+        `Cannot read ${envFilePath}: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+      return 1;
+    }
+  }
+  loadCliEnvFile(envFilePath);
 
   switch (args.command) {
     case "help":
@@ -739,7 +799,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       process.stdout.write(`mono-agent ${monoAgentVersion()}\n`);
       return 0;
     case "init":
-      return await runInit(args);
+      return await runInit(args, { shellEnv, dotenvEnv, dotenvPath: envFilePath });
     case "validate":
       return await runValidate(args);
     case "auth":
@@ -827,93 +887,425 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   }
 }
 
-async function runInit(args: ParsedCliArgs): Promise<number> {
+interface RunInitEnvironmentContext {
+  readonly shellEnv: CliEnvironment;
+  readonly dotenvEnv: CliEnvironment;
+  readonly dotenvPath: string;
+}
+
+async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentContext): Promise<number> {
+  const cwd = process.cwd();
   // On an interactive TTY with no overriding flags, walk the step-by-step wizard;
   // any flag (or a piped/non-TTY invocation) takes the silent default/preset path.
   const wantsWizard = shouldRunInitWizard(args, process.stdin.isTTY === true, process.stdout.isTTY === true);
   if (wantsWizard) {
     // Existing-config pre-check — don't walk the wizard into a guaranteed no-op.
-    if (await pathExists(resolve(process.cwd(), "mono-agent.config.json"))) {
+    if (await pathExists(resolve(cwd, "mono-agent.config.json"))) {
       process.stdout.write(ui.hint("Found an existing mono-agent.config.json — `mono-agent init` never overwrites. Run `mono-agent validate`, or start in an empty folder.\n"));
       return 0;
     }
-    let outcome = await runInitWizard({ cwd: process.cwd() });
-    if (outcome.status === "cancelled") return 1;
-    let providerSetupAttempted = false;
-    let providerSetupFailed = false;
-    for (;;) {
-      const plan = composeWizardPlan(outcome.answers, {
-        dirBasename: basename(process.cwd()),
-        skillsRootExists: await pathExists(resolve(process.cwd(), "skills")),
-      });
-      if (outcome.runProviderSetup && !providerSetupAttempted) {
-        providerSetupAttempted = true;
-        providerSetupFailed = (await runProviderSetupBeforeInit({
-          modelRefs: [outcome.answers.model, ...outcome.answers.fallbackModels],
-          cwd: process.cwd(), auth: true, dryRun: false,
-          ...(typeof plan.configJson.providers?.piAuthPath === "string" ? { piAuthPath: plan.configJson.providers.piAuthPath } : {}),
-          apiKeys: outcome.providerSetupSecrets,
-        })) === "failed";
-      }
-      const probe = providerSetupFailed
-        ? { ok: false as const, message: "Provider setup did not complete." }
-        : await runReadinessProbe({ plan, secretValues: outcome.moduleSecrets });
-      if (probe.ok) break;
-      p.log.error("Provider setup or the readiness probe did not receive a first assistant response. No agent files were written.");
-      const recovery = await p.select({
-        message: "How would you like to recover?",
-        options: [
-          { value: "retry", label: "Retry provider setup and probe" },
-          { value: "model", label: "Change model" },
-          { value: "save", label: "Save as incomplete (do not call setup ready)" },
-          { value: "cancel", label: "Cancel without writing" },
-        ],
-      });
-      if (p.isCancel(recovery) || recovery === "cancel") return 1;
-      if (recovery === "model") {
-        outcome = await runInitWizard({ cwd: process.cwd() });
-        if (outcome.status === "cancelled") return 1;
-        providerSetupAttempted = false;
-        providerSetupFailed = false;
-        continue;
-      }
-      if (recovery === "save") {
-        const saved = await initMonoAgentFolder({ dir: process.cwd(), answers: outcome.answers, secretValues: outcome.moduleSecrets });
-        printInitResult(saved);
-        process.stderr.write(ui.hint("INCOMPLETE SETUP: no readiness claim was made. Fix provider setup or choose another model, then run `mono-agent validate` and retry the first turn.\n"));
-        return 1;
-      }
-      // Retry includes the provider preflight even when the original summary did
-      // not opt into it; no fallback model is silently substituted.
-      providerSetupAttempted = true;
-      providerSetupFailed = (await runProviderSetupBeforeInit({
-        modelRefs: [outcome.answers.model, ...outcome.answers.fallbackModels],
-        cwd: process.cwd(), auth: true, dryRun: false,
-        ...(typeof plan.configJson.providers?.piAuthPath === "string" ? { piAuthPath: plan.configJson.providers.piAuthPath } : {}),
-        apiKeys: outcome.providerSetupSecrets,
-      })) === "failed";
-    }
-    const result = await initMonoAgentFolder({ dir: process.cwd(), answers: outcome.answers, secretValues: outcome.moduleSecrets });
-    printInitResult(result);
-    const report = await validateMonoAgentFolder({ env: process.env, cwd: process.cwd(), configPath: result.configPath });
-    process.stdout.write("\n" + ui.heading("Validation"));
-    for (const section of report.sections) {
-      process.stdout.write(formatSection(section));
-    }
-    process.stdout.write(renderPlanCompleteness(result.plan.validateExpectations, "Selected capabilities", report));
-    printSecretsChecklist(result.plan.secrets);
-    process.stdout.write(ui.badge("ok") + ui.style.green("readiness probe passed — a real no-tool first response succeeded.\n"));
-    const startNow = await p.confirm({
-      message: process.platform === "darwin"
-        ? "Start this ready agent now as a background service?"
-        : "Start this ready agent now in the foreground? (it will remain attached to this terminal)",
-      initialValue: true,
+    let resolvedPiAuthPath = resolveEffectivePiAuthPath({
+      cwd,
+      ...(nonEmptyEnv(environment.dotenvEnv.MONO_AGENT_PI_AUTH_PATH)
+        ? { envPath: environment.dotenvEnv.MONO_AGENT_PI_AUTH_PATH }
+        : {}),
     });
-    if (!p.isCancel(startNow) && startNow) {
-      return await runStart({ ...args, foreground: process.platform !== "darwin" });
+    const initial = await runInitWizard({
+      cwd,
+      piAuthPath: resolvedPiAuthPath,
+      persistedEnv: environment.dotenvEnv,
+    });
+    if (initial.status === "cancelled") return 1;
+    let answers = initial.answers;
+    const moduleSecrets = { ...initial.moduleSecrets };
+    let providerSetupSecrets = { ...initial.providerSetupSecrets };
+    let pendingProviderSetup = initial.runProviderSetup;
+
+    firstRun: for (;;) {
+      let dotenvSnapshot: CliDotenvSnapshot = { env: {}, fingerprint: "unreadable" };
+      let failure: ReadinessProbeResult | undefined;
+      try {
+        dotenvSnapshot = await readCliDotenvSnapshot(environment.dotenvPath);
+      } catch {
+        failure = dotenvReadinessFailure("The persisted .env could not be read safely. Fix it before retrying setup.");
+      }
+      const plan = composeWizardPlan(answers, {
+        dirBasename: basename(cwd),
+        skillsRootExists: await pathExists(resolve(cwd, "skills")),
+      });
+      resolvedPiAuthPath = resolveEffectivePiAuthPath({
+        cwd,
+        ...(nonEmptyEnv(dotenvSnapshot.env.MONO_AGENT_PI_AUTH_PATH)
+          ? { envPath: dotenvSnapshot.env.MONO_AGENT_PI_AUTH_PATH }
+          : {}),
+        ...(nonEmptyEnv(plan.configJson.providers?.piAuthPath)
+          ? { configPath: plan.configJson.providers.piAuthPath }
+          : {}),
+      });
+      const effectiveEnv = effectiveFirstRunEnvironment({
+        shellEnv: environment.shellEnv,
+        dotenvEnv: dotenvSnapshot.env,
+        enteredSecrets: moduleSecrets,
+        resolvedPiAuthPath,
+      });
+      // Re-submit every selected durable value, not only values typed during this
+      // wizard session. That lets the secure merge tighten an existing .env to
+      // 0600 while preserving its non-empty operator-owned values verbatim.
+      const selectedSecrets = selectedSecretValues(plan, effectiveEnv);
+      const secureExistingDotenv = hasSensitivePersistedEnvironmentValue(dotenvSnapshot.env);
+      const conflicts = selectedSecretEnvironmentConflicts(
+        plan,
+        environment.shellEnv,
+        dotenvSnapshot.env,
+        moduleSecrets,
+      );
+      const persistedOverrides = unexpectedPersistedMonoAgentOverrides(plan, dotenvSnapshot.env);
+
+      if (failure === undefined && persistedOverrides.length > 0) {
+        failure = {
+          ok: false,
+          kind: "invalid_plan",
+          message:
+            `Persisted .env contains mono-agent config override${persistedOverrides.length === 1 ? "" : "s"}: ` +
+            `${persistedOverrides.join(", ")}. Remove ${persistedOverrides.length === 1 ? "it" : "them"} so the ` +
+            "generated config is the exact config validated and started.",
+        };
+      }
+      if (failure === undefined && conflicts.length > 0) {
+        failure = {
+          ok: false,
+          kind: "invalid_plan",
+          message:
+            `Selected secret${conflicts.length === 1 ? "" : "s"} ${conflicts.join(", ")} ` +
+            "differ between the exported shell, persisted .env, or newly entered value. " +
+            "Unset the shell value or make every source match, then retry.",
+        };
+      }
+      if (failure === undefined && piAuthPathBackgroundConflict({
+        cwd,
+        shellPath: environment.shellEnv.MONO_AGENT_PI_AUTH_PATH,
+        dotenvPath: dotenvSnapshot.env.MONO_AGENT_PI_AUTH_PATH,
+        ...(nonEmptyEnv(plan.configJson.providers?.piAuthPath)
+          ? { configPath: plan.configJson.providers.piAuthPath }
+          : {}),
+      })) {
+        failure = {
+          ok: false,
+          kind: "invalid_plan",
+          message:
+            "The exported MONO_AGENT_PI_AUTH_PATH selects a different credential store than a background start. " +
+            "Persist the same path in .env or providers.piAuthPath, or unset the shell override, then retry.",
+        };
+      }
+
+      if (failure === undefined && pendingProviderSetup) {
+        pendingProviderSetup = false;
+        const setup = await runProviderSetupBeforeInit({
+          modelRefs: referencedSetupModelRefs(plan),
+          cwd,
+          auth: true,
+          dryRun: false,
+          piAuthPath: resolvedPiAuthPath,
+          apiKeys: providerSetupSecrets,
+        });
+        if (setup === "failed") {
+          failure = {
+            ok: false,
+            kind: "provider_failed",
+            message: "Provider setup did not complete. No agent files were written.",
+          };
+        }
+      }
+
+      if (failure === undefined) {
+        failure = await runReadinessProbeWithSpinner({
+          plan,
+          effectiveEnv,
+          resolvedPiAuthPath,
+        });
+      }
+
+      readyAttempt: if (failure.ok) {
+        const stagedGate = await assessPrewriteFirstRunReadiness({
+          cwd,
+          answers,
+          plan,
+          env: effectiveEnv,
+          secretValues: selectedSecrets,
+          secureExistingDotenv,
+        });
+        if (stagedGate.ready) {
+          const drift = await firstRunDotenvDrift(environment.dotenvPath, dotenvSnapshot);
+          if (drift !== undefined) {
+            failure = drift;
+            break readyAttempt;
+          }
+          let result: InitMonoAgentFolderResult;
+          try {
+            result = await initMonoAgentFolder({
+              dir: cwd,
+              answers,
+              secretValues: selectedSecrets,
+              secureExistingDotenv,
+              requireConfigCreation: true,
+            });
+          } catch (error) {
+            const recovery = secretPersistenceRecoveryMessage(error);
+            process.stderr.write(ui.errorLine(
+              `The validated scaffold could not be committed safely. The agent was not started; inspect the destination before retrying.${recovery}`,
+            ));
+            return 1;
+          }
+          let committedConfigSnapshot: CliConfigSnapshot;
+          try {
+            committedConfigSnapshot = await readCliConfigSnapshot(result.configPath);
+          } catch {
+            printIncompleteSetup(
+              ["The committed config could not be read back as the regular file setup created."],
+              result.configPath,
+            );
+            return 1;
+          }
+          if (committedConfigSnapshot.contents !== `${JSON.stringify(result.plan.configJson, null, 2)}\n`) {
+            printIncompleteSetup(
+              ["The committed config does not match the exact plan setup validated."],
+              result.configPath,
+            );
+            return 1;
+          }
+          let committedDotenvSnapshot: CliDotenvSnapshot;
+          try {
+            committedDotenvSnapshot = await readCliDotenvSnapshot(environment.dotenvPath);
+          } catch {
+            printIncompleteSetup(
+              ["The committed .env could not be read back safely; no readiness claim is safe."],
+              result.configPath,
+            );
+            return 1;
+          }
+          const postWriteConflicts = selectedSecretEnvironmentConflicts(
+            result.plan,
+            environment.shellEnv,
+            committedDotenvSnapshot.env,
+            moduleSecrets,
+          );
+          const postWriteOverrides = unexpectedPersistedMonoAgentOverrides(
+            result.plan,
+            committedDotenvSnapshot.env,
+          );
+          const postWritePiAuthConflict = piAuthPathBackgroundConflict({
+            cwd,
+            shellPath: environment.shellEnv.MONO_AGENT_PI_AUTH_PATH,
+            dotenvPath: committedDotenvSnapshot.env.MONO_AGENT_PI_AUTH_PATH,
+            ...(nonEmptyEnv(result.plan.configJson.providers?.piAuthPath)
+              ? { configPath: result.plan.configJson.providers.piAuthPath }
+              : {}),
+          });
+          if (postWriteConflicts.length > 0 || postWriteOverrides.length > 0 || postWritePiAuthConflict) {
+            printIncompleteSetup(
+              ["The committed .env no longer matches the values and generated config that setup approved."],
+              result.configPath,
+            );
+            return 1;
+          }
+          const postWriteEnv = effectiveFirstRunEnvironment({
+            shellEnv: environment.shellEnv,
+            dotenvEnv: committedDotenvSnapshot.env,
+            resolvedPiAuthPath,
+          });
+          if (!sameConcreteEnvironment(effectiveEnv, postWriteEnv)) {
+            printIncompleteSetup(
+              ["The durable environment changed after the primary-model check. Retry setup before claiming readiness."],
+              result.configPath,
+            );
+            return 1;
+          }
+          printInitResult(result);
+          let report: ValidationReport;
+          try {
+            report = await validateMonoAgentFolder({
+              env: postWriteEnv,
+              cwd,
+              configPath: result.configPath,
+              liveness: true,
+              verifiedCredentialModelRefs: [answers.model],
+            });
+          } catch {
+            printIncompleteSetup(
+              ["Post-write validation could not complete; no readiness claim is safe."],
+              result.configPath,
+            );
+            return 1;
+          }
+          process.stdout.write("\n" + ui.heading("Validation"));
+          for (const section of report.sections) process.stdout.write(formatSection(section));
+          process.stdout.write(renderPlanCompleteness(result.plan.validateExpectations, "Selected capabilities", report));
+          const configuredSecrets = configuredSecretNames(result, postWriteEnv);
+          printSecretsChecklist(result.plan.secrets, configuredSecrets);
+          const finalGate = evaluateFirstRunReadiness({
+            plan: result.plan,
+            report,
+            secretPersistence: result.secretPersistence,
+          });
+          if (!finalGate.ready) {
+            printIncompleteSetup(finalGate.reasons, result.configPath);
+            return 1;
+          }
+          const postValidationConfigDrift = await firstRunConfigDrift(
+            result.configPath,
+            committedConfigSnapshot,
+          );
+          if (postValidationConfigDrift !== undefined) {
+            printIncompleteSetup([postValidationConfigDrift.message], result.configPath);
+            return 1;
+          }
+          const postValidationDrift = await firstRunDotenvDrift(
+            environment.dotenvPath,
+            committedDotenvSnapshot,
+          );
+          if (postValidationDrift !== undefined) {
+            printIncompleteSetup([postValidationDrift.message], result.configPath);
+            return 1;
+          }
+          const postValidationSecretGuard = await firstRunSecretEnvGuardFailure(
+            environment.dotenvPath,
+            result.secretPersistence.status === "persisted",
+          );
+          if (postValidationSecretGuard !== undefined) {
+            printIncompleteSetup([postValidationSecretGuard.message], result.configPath);
+            return 1;
+          }
+          process.stdout.write(
+            ui.badge("ok") + ui.style.green("Primary model check passed — a real no-tool response succeeded.\n") +
+            ui.badge("ok") + ui.style.green("Agent ready — every selected capability passed full validation.\n"),
+          );
+          const startNow = await p.confirm({
+            message: process.platform === "darwin"
+              ? "Start this ready agent now as a background service?"
+              : "Start this ready agent now in the foreground? (it will remain attached to this terminal)",
+            initialValue: true,
+          });
+          if (!p.isCancel(startNow) && startNow) {
+            const preStartConfigDrift = await firstRunConfigDrift(
+              result.configPath,
+              committedConfigSnapshot,
+            );
+            if (preStartConfigDrift !== undefined) {
+              printIncompleteSetup([preStartConfigDrift.message], result.configPath);
+              return 1;
+            }
+            const preStartDrift = await firstRunDotenvDrift(
+              environment.dotenvPath,
+              committedDotenvSnapshot,
+            );
+            if (preStartDrift !== undefined) {
+              printIncompleteSetup([preStartDrift.message], result.configPath);
+              return 1;
+            }
+            const preStartSecretGuard = await firstRunSecretEnvGuardFailure(
+              environment.dotenvPath,
+              result.secretPersistence.status === "persisted",
+            );
+            if (preStartSecretGuard !== undefined) {
+              printIncompleteSetup([preStartSecretGuard.message], result.configPath);
+              return 1;
+            }
+            return await withExactProcessEnvironment(
+              postWriteEnv,
+              () => runStart(
+                { ...args, foreground: process.platform !== "darwin" },
+                postWriteEnv,
+              ),
+            );
+          }
+          printNextSteps(result.configPath);
+          return 0;
+        }
+        failure = {
+          ok: false,
+          kind: "invalid_plan",
+          message: `Primary model check passed, but the complete agent is not ready: ${stagedGate.reasons.join(" ")}`,
+        };
+      }
+
+      if (failure.ok) throw new Error("First-run recovery reached without a failure.");
+      let recoveryFailure: ReadinessProbeFailure = failure;
+      recoveryMenu: for (;;) {
+        p.log.error(`[${recoveryFailure.kind}] ${recoveryFailure.message}`);
+        const recovery = await selectFirstRunRecovery();
+        if (recovery === "cancel") return 1;
+        if (recovery === "save") {
+          let saved: InitMonoAgentFolderResult;
+          try {
+            saved = await initMonoAgentFolder({
+              dir: cwd,
+              answers,
+              secretValues: selectedSecrets,
+              secureExistingDotenv,
+              requireConfigCreation: true,
+            });
+          } catch (error) {
+            const recovery = secretPersistenceRecoveryMessage(error);
+            process.stderr.write(ui.errorLine(
+              `The incomplete scaffold could not be committed safely; inspect the destination and retry.${recovery}`,
+            ));
+            return 1;
+          }
+          printInitResult(saved);
+          let durableSavedEnv: CliEnvironment = {};
+          if (saved.secretPersistence.status === "persisted") {
+            try {
+              durableSavedEnv = (await readCliDotenvSnapshot(environment.dotenvPath)).env;
+            } catch {
+              durableSavedEnv = {};
+            }
+          }
+          printSecretsChecklist(
+            saved.plan.secrets,
+            configuredSecretNames(saved, durableSavedEnv),
+          );
+          printIncompleteSetup([recoveryFailure.message], saved.configPath);
+          return 1;
+        }
+        if (recovery === "model") {
+          const repaired = await runModelRepairWizard({ cwd, answers, piAuthPath: resolvedPiAuthPath });
+          if (repaired.status === "cancelled") return 1;
+          answers = repaired.answers;
+          providerSetupSecrets = { ...providerSetupSecrets, ...repaired.providerSetupSecrets };
+          pendingProviderSetup = repaired.runProviderSetup;
+          continue firstRun;
+        }
+        if (recovery === "auth") {
+          const setupPlan = planProviderSetup({
+            modelRefs: referencedSetupModelRefs(plan),
+            cwd,
+            piAuthPath: resolvedPiAuthPath,
+          });
+          const prompted = await promptProviderSetupSecrets(setupPlan, providerSetupSecrets);
+          if (prompted === undefined) return 1;
+          providerSetupSecrets = prompted;
+          const setup = await runProviderSetupBeforeInit({
+            modelRefs: referencedSetupModelRefs(plan),
+            cwd,
+            auth: true,
+            dryRun: false,
+            piAuthPath: resolvedPiAuthPath,
+            apiKeys: providerSetupSecrets,
+          });
+          if (setup === "failed") {
+            recoveryFailure = {
+              ok: false,
+              kind: "provider_failed",
+              message: "Provider setup still needs attention. No agent files were written.",
+            };
+            continue recoveryMenu;
+          }
+        }
+        // "retry" deliberately reruns only the live checks. Provider setup is a
+        // separate explicit recovery action and is never repeated automatically.
+        continue firstRun;
+      }
     }
-    printNextSteps(result.configPath);
-    return report.ok ? 0 : 1;
   }
 
   const presetId = resolveInitPresetId(args);
@@ -940,30 +1332,269 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
     skillsRootExists: await pathExists(resolve(process.cwd(), "skills")),
   });
   const setup = await runProviderSetupBeforeInit({
-    modelRefs: [answers.model, ...answers.fallbackModels],
-    cwd: process.cwd(),
+    modelRefs: referencedSetupModelRefs(previewPlan),
+    cwd,
     auth: args.auth === true,
     dryRun: args.dryRun,
-    ...(typeof previewPlan.configJson.providers?.piAuthPath === "string" ? { piAuthPath: previewPlan.configJson.providers.piAuthPath } : {}),
+    piAuthPath: resolveEffectivePiAuthPath({
+      cwd,
+      ...(nonEmptyEnv(environment.shellEnv.MONO_AGENT_PI_AUTH_PATH)
+        ? { envPath: environment.shellEnv.MONO_AGENT_PI_AUTH_PATH }
+        : nonEmptyEnv(environment.dotenvEnv.MONO_AGENT_PI_AUTH_PATH)
+          ? { envPath: environment.dotenvEnv.MONO_AGENT_PI_AUTH_PATH }
+          : {}),
+      ...(nonEmptyEnv(previewPlan.configJson.providers?.piAuthPath)
+        ? { configPath: previewPlan.configJson.providers.piAuthPath }
+        : {}),
+    }),
   });
   if (setup === "failed") {
     return 1;
   }
 
-  const result = await initMonoAgentFolder({ dir: process.cwd(), answers, dryRun: args.dryRun });
+  const result = await initMonoAgentFolder({ dir: cwd, answers, dryRun: args.dryRun });
 
   printInitResult(result);
-  printSecretsChecklist(result.plan.secrets);
+  printSecretsChecklist(result.plan.secrets, new Set());
   printNextSteps(result.configPath);
   return 0;
 }
 
+async function assessPrewriteFirstRunReadiness(options: {
+  readonly cwd: string;
+  readonly answers: WizardAnswers;
+  readonly plan: WizardPlan;
+  readonly env: Record<string, string | undefined>;
+  readonly secretValues: Readonly<Record<string, string>>;
+  readonly secureExistingDotenv: boolean;
+}): Promise<ReturnType<typeof evaluateFirstRunReadiness>> {
+  try {
+    const preview = await initMonoAgentFolder({
+      dir: options.cwd,
+      answers: options.answers,
+      secretValues: options.secretValues,
+      secureExistingDotenv: options.secureExistingDotenv,
+      dryRun: true,
+    });
+    const report = await validateWizardPlanInStaging({
+      plan: options.plan,
+      sourceCwd: options.cwd,
+      env: options.env,
+      verifiedCredentialModelRefs: [options.answers.model],
+    });
+    return evaluateFirstRunReadiness({
+      plan: options.plan,
+      report,
+      secretPersistence: preview.secretPersistence,
+    });
+  } catch {
+    return {
+      ready: false,
+      reasons: ["The complete generated plan could not be validated safely in staging."],
+    };
+  }
+}
+
+function nonEmptyEnv(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function sameConcreteEnvironment(left: CliEnvironment, right: CliEnvironment): boolean {
+  const concreteEntries = (env: CliEnvironment): readonly (readonly [string, string])[] =>
+    Object.entries(env)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+      .sort(([leftName], [rightName]) => leftName.localeCompare(rightName));
+  const leftEntries = concreteEntries(left);
+  const rightEntries = concreteEntries(right);
+  return leftEntries.length === rightEntries.length && leftEntries.every(
+    ([name, value], index) => rightEntries[index]?.[0] === name && rightEntries[index]?.[1] === value,
+  );
+}
+
+function dotenvReadinessFailure(message: string): ReadinessProbeFailure {
+  return { ok: false, kind: "invalid_plan", message };
+}
+
+async function firstRunDotenvDrift(
+  path: string,
+  expected: CliDotenvSnapshot,
+): Promise<ReadinessProbeFailure | undefined> {
+  let current: CliDotenvSnapshot;
+  try {
+    current = await readCliDotenvSnapshot(path);
+  } catch {
+    return dotenvReadinessFailure("The persisted .env became unreadable during setup. Readiness cannot be claimed.");
+  }
+  if (current.fingerprint === expected.fingerprint) return undefined;
+  return dotenvReadinessFailure(
+    "The persisted .env changed while setup was validating the agent. Review the change, then retry so the exact durable values can be checked.",
+  );
+}
+
+async function firstRunConfigDrift(
+  path: string,
+  expected: CliConfigSnapshot,
+): Promise<ReadinessProbeFailure | undefined> {
+  let current: CliConfigSnapshot;
+  try {
+    current = await readCliConfigSnapshot(path);
+  } catch {
+    return dotenvReadinessFailure(
+      "The committed config became unreadable or unsafe during setup. Readiness cannot be claimed.",
+    );
+  }
+  if (current.fingerprint === expected.fingerprint) return undefined;
+  return dotenvReadinessFailure(
+    "The committed config changed while setup was validating the agent. Review the change, then retry so the exact plan can be checked.",
+  );
+}
+
+async function firstRunSecretEnvGuardFailure(
+  path: string,
+  required: boolean,
+): Promise<ReadinessProbeFailure | undefined> {
+  if (!required) return undefined;
+  try {
+    if (await verifySecretEnvPersistenceGuard(path)) return undefined;
+  } catch {
+    // Fall through to one stable, non-secret-bearing operator message.
+  }
+  return dotenvReadinessFailure(
+    "The committed .env is no longer owner-only, safely ignored, and untracked. Readiness cannot be claimed.",
+  );
+}
+
+function secretPersistenceRecoveryMessage(error: unknown): string {
+  if (!(error instanceof SecretEnvConcurrentModificationError)) {
+    return "";
+  }
+  return ` ${error.message}`;
+}
+
+async function runReadinessProbeWithSpinner(options: {
+  readonly plan: ReturnType<typeof composeWizardPlan>;
+  readonly effectiveEnv: Record<string, string | undefined>;
+  readonly resolvedPiAuthPath: string;
+}): Promise<ReadinessProbeResult> {
+  const model = parseMonoRuntimeModelReference(options.plan.configJson.runtime?.model ?? "");
+  const timeoutMs = readinessProbeTimeoutMs(model);
+  const seconds = Math.ceil(timeoutMs / 1_000);
+  const providerClass = timeoutMs > 90_000 ? "local model" : "cloud model";
+  const controller = new AbortController();
+  const spinner = p.spinner({
+    cancelMessage: "Primary model check cancelled.",
+    onCancel: () => controller.abort(),
+  });
+  spinner.start(`Checking the primary ${providerClass} with a real no-tool turn (up to ${seconds}s; Ctrl-C cancels)…`);
+  try {
+    const result = await runReadinessProbe({
+      plan: options.plan,
+      hostEnv: options.effectiveEnv,
+      secretValues: selectedSecretValues(options.plan, options.effectiveEnv),
+      resolvedPiAuthPath: options.resolvedPiAuthPath,
+      timeoutMs,
+      abortSignal: controller.signal,
+    });
+    if (!result.ok && result.kind === "cancelled") {
+      if (!spinner.isCancelled) spinner.cancel("Primary model check cancelled.");
+      return result;
+    }
+    if (result.ok) {
+      spinner.stop("Primary model check completed.");
+    } else {
+      spinner.error("Primary model check needs attention.");
+    }
+    return result;
+  } catch {
+    if (controller.signal.aborted) {
+      if (!spinner.isCancelled) spinner.cancel("Primary model check cancelled.");
+      return {
+        ok: false,
+        kind: "cancelled",
+        message: "The primary-model check was cancelled before completion.",
+      };
+    }
+    spinner.error("Primary model check failed.");
+    return {
+      ok: false,
+      kind: "probe_failed",
+      message: "The primary model check could not run. Review provider authentication and retry.",
+    };
+  }
+}
+
+type FirstRunRecovery = "retry" | "auth" | "model" | "save" | "cancel";
+
+async function selectFirstRunRecovery(): Promise<FirstRunRecovery> {
+  const recovery = await p.select({
+    message: "How would you like to recover?",
+    options: [
+      { value: "retry", label: "Retry model check", hint: "does not rerun authentication" },
+      { value: "auth", label: "Repair authentication" },
+      { value: "model", label: "Change model", hint: "keeps your channels, tools, memory and secrets" },
+      { value: "save", label: "Save incomplete", hint: "does not call the agent ready or start it" },
+      { value: "cancel", label: "Cancel without writing" },
+    ],
+  });
+  return p.isCancel(recovery) ? "cancel" : recovery;
+}
+
+async function promptProviderSetupSecrets(
+  plan: ProviderSetupPlan,
+  existing: Readonly<Record<string, string>>,
+): Promise<Record<string, string> | undefined> {
+  const values = { ...existing };
+  for (const action of plan.actions) {
+    if (!isProviderSetupPiApiKeyAction(action)) continue;
+    const answer = await p.password({
+      message: `Replace ${action.label} (${action.envVar})`,
+      validate: (value) => (value ?? "").trim().length === 0 ? "API key is required." : undefined,
+      clearOnError: true,
+    });
+    if (p.isCancel(answer)) return undefined;
+    values[action.id] = answer;
+  }
+  return values;
+}
+
+function configuredSecretNames(
+  result: InitMonoAgentFolderResult,
+  effectiveEnv: CliEnvironment,
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const secret of result.plan.secrets) {
+    if (nonEmptyEnv(effectiveEnv[secret.envVar])) names.add(secret.envVar);
+  }
+  return names;
+}
+
+function printIncompleteSetup(reasons: readonly string[], configPath: string): void {
+  process.stderr.write(ui.hint("INCOMPLETE SETUP: no readiness claim was made and the agent was not started.\n"));
+  for (const reason of reasons) process.stderr.write(ui.style.yellow(`  - ${reason}\n`));
+  process.stderr.write(ui.hint(`Review ${configPath}, run \`mono-agent validate\`, then retry the first turn.\n`));
+}
+
 export function shouldRunInitWizard(args: ParsedCliArgs, stdinIsTty: boolean, stdoutIsTty: boolean): boolean {
-  return stdinIsTty && stdoutIsTty
-    && args.yes !== true && args.preset === undefined && args.recipe === undefined
-    && args.model === undefined && args.fallbackModels === undefined
-    && args.effort === undefined && args.memory === undefined && args.withChannels === undefined
-    && args.auth !== true && args.dryRun !== true;
+  if (!stdinIsTty || !stdoutIsTty || args.command !== "init" || args.positionals.length > 0) {
+    return false;
+  }
+  if (args.force || args.foreground || args.follow || args.all || args.dryRun || args.includeMemory) {
+    return false;
+  }
+  // A bare parsed init has only these required/default keys. Treat every
+  // optional key—current or future—as an overriding flag so the documented
+  // "any flag is scaffold-only" contract cannot silently drift again.
+  const bareKeys = new Set([
+    "command",
+    "positionals",
+    "force",
+    "foreground",
+    "follow",
+    "all",
+    "dryRun",
+    "includeMemory",
+  ]);
+  return Object.keys(args).every((key) => bareKeys.has(key));
 }
 
 export type InitProviderSetupStatus = "ok" | "failed" | "skipped";
@@ -1024,14 +1655,26 @@ async function runAuth(args: ParsedCliArgs): Promise<number> {
 
   const cwd = process.cwd();
   const configPath = resolve(cwd, args.configPath ?? "mono-agent.config.json");
-  const configuredPiAuthPath = await resolvePiAuthPathForLogin({
-    configPath,
-    ...(args.piAuthPath === undefined ? {} : { piAuthPath: args.piAuthPath }),
-  });
+  let configuredPiAuthPath: string;
+  try {
+    configuredPiAuthPath = await resolvePiAuthPathForLogin({
+      configPath,
+      cwd,
+      ...(process.env.MONO_AGENT_PI_AUTH_PATH === undefined
+        ? {}
+        : { envPath: process.env.MONO_AGENT_PI_AUTH_PATH }),
+      ...(args.piAuthPath === undefined ? {} : { piAuthPath: args.piAuthPath }),
+    });
+  } catch (error) {
+    process.stderr.write(ui.errorLine(
+      `Cannot resolve the Pi auth path from ${configPath}: ${error instanceof Error ? error.message : String(error)}`,
+    ));
+    return 1;
+  }
   const plan = planProviderSetup({
     modelRefs: [`pi:${provider}:gpt-5.6-terra`],
     cwd,
-    ...(configuredPiAuthPath === undefined ? {} : { piAuthPath: configuredPiAuthPath }),
+    piAuthPath: configuredPiAuthPath,
   });
   if (!plan.actions.some((action) => action.id === `pi-login:${provider}`)) {
     process.stderr.write(ui.errorLine(`Unsupported Pi OAuth provider \`${provider}\`. Use a Pi OAuth provider such as openai-codex, anthropic, or github-copilot.`));
@@ -1048,18 +1691,22 @@ async function runAuth(args: ParsedCliArgs): Promise<number> {
   return results.every((result) => result.status === "ok") ? 0 : 1;
 }
 
-export async function resolvePiAuthPathForLogin(options: { readonly piAuthPath?: string; readonly configPath: string }): Promise<string | undefined> {
-  if (options.piAuthPath !== undefined) {
-    return options.piAuthPath;
-  }
-  try {
-    const { json } = await readMonoAgentConfigJson(options.configPath);
-    const value = json.providers?.piAuthPath;
-    return typeof value === "string" && value.trim().length > 0 ? value : undefined;
-  } catch {
-    // `mono-agent auth` must also work from a global install before an agent config exists.
-    return undefined;
-  }
+export async function resolvePiAuthPathForLogin(options: {
+  readonly piAuthPath?: string;
+  readonly envPath?: string;
+  readonly configPath: string;
+  readonly cwd?: string;
+}): Promise<string> {
+  // A missing config is represented by readMonoAgentConfigJson as `missing`; a
+  // malformed or unreadable config throws and must remain visible to operators.
+  const result = await readMonoAgentConfigJson(options.configPath);
+  const configured = result.missing ? undefined : result.json.providers?.piAuthPath;
+  return resolveEffectivePiAuthPath({
+    cwd: options.cwd ?? dirname(resolve(options.configPath)),
+    ...(nonEmptyEnv(options.piAuthPath) ? { explicitPath: options.piAuthPath } : {}),
+    ...(nonEmptyEnv(options.envPath) ? { envPath: options.envPath } : {}),
+    ...(nonEmptyEnv(configured) ? { configPath: configured } : {}),
+  });
 }
 
 function printProviderSetupPlan(plan: ProviderSetupPlan): void {
@@ -1113,16 +1760,59 @@ function resolveWithChannels(args: ParsedCliArgs): readonly WithChannel[] | unde
   return args.withChannels.filter(isWithChannel);
 }
 
+export interface InitChangeDisplayRow {
+  readonly label: "created" | "updated" | "kept" | "would create" | "would update";
+  readonly path: string;
+  readonly unchanged: boolean;
+}
+
+/** Safe reporting rows: paths and outcomes only, never secret contents. */
+export function initChangeDisplayRows(result: InitMonoAgentFolderResult): readonly InitChangeDisplayRow[] {
+  const labels = {
+    created: "created",
+    updated: "updated",
+    unchanged: "kept",
+    "planned-create": "would create",
+    "planned-update": "would update",
+  } as const;
+  return result.changes.map((change) => ({
+    label: labels[change.kind],
+    path: change.path,
+    unchanged: change.kind === "unchanged",
+  }));
+}
+
+export interface SecretChecklistDisplayRow {
+  readonly envVar: string;
+  readonly label: string;
+  readonly description: string;
+  readonly status: "configured" | "missing" | "optional";
+}
+
+export function secretChecklistDisplayRows(
+  secrets: readonly SecretChecklistItem[],
+  configured: ReadonlySet<string>,
+): readonly SecretChecklistDisplayRow[] {
+  return secrets.map((secret) => ({
+    envVar: secret.envVar,
+    label: secret.label,
+    description: secret.description,
+    status: configured.has(secret.envVar) ? "configured" : secret.required ? "missing" : "optional",
+  }));
+}
+
 function printInitResult(result: InitMonoAgentFolderResult): void {
   if (result.dryRun) {
     process.stdout.write(ui.style.dim("Dry run — nothing was written.\n"));
   }
-  const verb = result.dryRun ? "would create" : "created";
-  for (const path of result.created) {
-    process.stdout.write(`${ui.badge("ok")}${ui.style.green(verb.padEnd(12))}  ${path}\n`);
-  }
-  for (const path of result.skipped) {
-    process.stdout.write(ui.style.dim(`  kept          ${path}`) + "\n");
+  for (const row of initChangeDisplayRows(result)) {
+    const prefix = row.unchanged ? "  " : ui.badge("ok");
+    const rendered = row.unchanged
+      ? ui.style.dim(row.label.padEnd(12))
+      : ui.style.green(row.label.padEnd(12));
+    // Sensitive files are safe to identify by path; their contents are never
+    // included in this result or printed here.
+    process.stdout.write(`${prefix}${rendered}  ${row.path}\n`);
   }
   if (result.knowledgeFiles.length > 0) {
     process.stdout.write(`\nIdentity references existing knowledge: ${ui.style.cyan(result.knowledgeFiles.join(", "))}\n`);
@@ -1136,22 +1826,41 @@ function printInitResult(result: InitMonoAgentFolderResult): void {
       process.stdout.write(`  ${ui.style.cyan(module.title)} ${ui.style.dim(`(risk: ${riskColor(module.riskLevel)})`)}\n`);
     }
   }
-  if (result.secretsPersisted) {
-    process.stdout.write("\n" + ui.style.dim("Required secrets were securely merged into .env (mode 0600).\n"));
+  if (result.secretPersistence.status === "persisted") {
+    process.stdout.write("\n" + ui.style.dim(
+      result.secretPersistence.changed
+        ? "Required secrets were securely merged into .env (mode 0600).\n"
+        : "Required secrets were already securely configured in .env.\n",
+    ));
+  } else if (result.secretPersistence.status === "planned") {
+    process.stdout.write("\n" + ui.style.dim("Dry run: required secrets would be securely merged into .env.\n"));
+  } else if (result.secretPersistence.status === "refused") {
+    process.stderr.write(ui.hint(
+      `Automatic secret persistence was refused${result.secretPersistence.reason === undefined ? "" : ` (${result.secretPersistence.reason})`}. No secret value was written.\n` +
+      (result.secretPersistence.detail === undefined ? "" : `${result.secretPersistence.detail}\n`),
+    ));
   } else if (result.plan.envExample !== undefined) {
-    process.stdout.write("\n" + ui.style.dim("Fill the secret placeholders in .env.example, then copy it to .env.\n"));
+    process.stdout.write("\n" + ui.style.dim("Use .env.example as a reference and add missing values to .env; do not overwrite an existing .env.\n"));
   }
 }
 
-function printSecretsChecklist(secrets: readonly SecretChecklistItem[]): void {
+function printSecretsChecklist(
+  secrets: readonly SecretChecklistItem[],
+  configured: ReadonlySet<string> = new Set(),
+): void {
   process.stdout.write("\n" + ui.heading("Secrets checklist"));
   if (secrets.length === 0) {
     process.stdout.write(ui.style.dim("No secrets required by the selected capabilities.\n"));
     return;
   }
-  process.stdout.write(ui.style.dim("Copy .env.example to .env, then fill these variables. Secret values are never written to JSON.\n"));
-  for (const secret of secrets) {
-    process.stdout.write(`  ${ui.style.bold(secret.envVar)} ${ui.style.dim(`- ${secret.label}: ${secret.description}`)}\n`);
+  process.stdout.write(ui.style.dim("Secret values are never written to config JSON and are never printed.\n"));
+  for (const secret of secretChecklistDisplayRows(secrets, configured)) {
+    const status = secret.status === "configured"
+      ? ui.style.green(secret.status)
+      : ui.style.yellow(secret.status);
+    process.stdout.write(
+      `  ${ui.style.bold(secret.envVar)} ${ui.style.dim(`- ${secret.label}: ${secret.description}`)} ${status}\n`,
+    );
   }
 }
 
@@ -1498,13 +2207,16 @@ type PreflightFailure = Extract<PreflightResult, { ok: false }>;
  * refuse on any `error` section. `waiting` (e.g. Ollama/Phoenix not up yet) is
  * runtime-soft and never blocks.
  */
-export async function ensureStartable(args: ParsedCliArgs): Promise<PreflightResult> {
+export async function ensureStartable(
+  args: ParsedCliArgs,
+  env: Record<string, string | undefined> = process.env,
+): Promise<PreflightResult> {
   const cwd = process.cwd();
   const configPath = resolve(cwd, args.configPath ?? "mono-agent.config.json");
   if (!(await pathExists(configPath))) {
     return { ok: false, code: 2, kind: "missing-config", configPath };
   }
-  const report = await validateMonoAgentFolder({ env: process.env, cwd, configPath, liveness: false });
+  const report = await validateMonoAgentFolder({ env, cwd, configPath, liveness: false });
   if (!report.ok) {
     return { ok: false, code: 1, kind: "validation", report };
   }
@@ -1535,11 +2247,14 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function runStart(args: ParsedCliArgs): Promise<number> {
+async function runStart(
+  args: ParsedCliArgs,
+  env?: Record<string, string | undefined>,
+): Promise<number> {
   if (args.foreground) {
-    return await runForeground(args);
+    return await runForeground(args, env);
   }
-  return await runBackgroundCommand(args, "start");
+  return await runBackgroundCommand(args, "start", env);
 }
 
 /**
@@ -1547,8 +2262,11 @@ async function runStart(args: ParsedCliArgs): Promise<number> {
  * plus traceability, and stays alive until a signal. This is what launchd
  * invokes (via `start --foreground`) and what users get with `--foreground`/`-f`.
  */
-async function runForeground(args: ParsedCliArgs): Promise<number> {
-  const pre = await ensureStartable(args);
+async function runForeground(
+  args: ParsedCliArgs,
+  env: Record<string, string | undefined> = process.env,
+): Promise<number> {
+  const pre = await ensureStartable(args, env);
   if (!pre.ok) {
     printPreflightFailure(pre);
     return pre.code;
@@ -1556,6 +2274,7 @@ async function runForeground(args: ParsedCliArgs): Promise<number> {
 
   const app = await startMonoAgentApp({
     cwd: process.cwd(),
+    env,
     ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
     logger: consoleLogger(),
   });
@@ -1571,6 +2290,7 @@ async function runForeground(args: ParsedCliArgs): Promise<number> {
 async function runBackgroundCommand(
   args: ParsedCliArgs,
   command: (typeof BACKGROUND_COMMANDS)[number],
+  env: Record<string, string | undefined> = process.env,
 ): Promise<number> {
   const guard = requireDarwin(command);
   if (guard !== undefined) {
@@ -1582,7 +2302,7 @@ async function runBackgroundCommand(
   // launchd's KeepAlive would retry it forever. stop/status/logs stay ungated so
   // a broken instance can still be inspected and torn down.
   if (command === "start" || command === "restart") {
-    const pre = await ensureStartable(args);
+    const pre = await ensureStartable(args, env);
     if (!pre.ok) {
       printPreflightFailure(pre);
       return pre.code;
@@ -1594,7 +2314,7 @@ async function runBackgroundCommand(
       ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
       ...(args.envFile === undefined ? {} : { envFile: args.envFile }),
     },
-    env: process.env,
+    env,
     cwd: process.cwd(),
     cliPath: fileURLToPath(import.meta.url),
   });

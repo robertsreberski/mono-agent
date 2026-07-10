@@ -63,7 +63,7 @@ Each top-level key maps to one capability area. All are optional except the two 
 | `providers` | Local/self-hosted providers, Pi credentials, pi-native tuning | [Local Providers](/runtime/local-providers/) |
 | `context` | Identity, soul, selected skills | [Context Assembly](/context/assembly/) |
 | `memory` | Tiered memory (lite/journal/bujo), embeddings, consolidation | [Capture & Recall](/memory/capture-and-recall/) |
-| `tools` | Fail-closed allow/deny policy, MCP servers | [Tool Policy](/tools/policy/), [MCP](/tools/mcp/) |
+| `tools` | Allow-all-by-default, runtime-enforced allow/deny policy; MCP servers | [Tool Policy](/tools/policy/), [MCP](/tools/mcp/) |
 | `sandbox` | Filesystem/network sandboxing for runtime commands | [Sandbox](/tools/sandbox/) |
 | `artifacts`, `traceability`, `observability` | JSONL run artifacts, trace registry, Phoenix exporter | [Observability](/observability/) |
 | `telegram`, `slack` | Built-in chat channels (opt-in via `enabled`) | [Channels](/channels/) |
@@ -99,7 +99,7 @@ A handful of capabilities are `code`-only — for example structured output sche
 
 ## Validate before you run
 
-`mono-agent validate` prints a per-section report — **secret placement**, runtime, **provider credentials** (Pi auth-store/API-key presence and OAuth token expiry for every referenced model), context, memory, tools, sandbox, observability, and every channel. It exits 0 when the config is structurally valid, but `waiting` credentials are reported as needing attention before start rather than ready. The provider-credentials check is static and read-only, flagging a keyless or expired-OAuth provider as `waiting` with a provider-specific hint (`mono-agent auth login <provider>` for OAuth providers, `OPENCODE_API_KEY` for OpenCode-Go); see [CLI reference → Provider credentials](/observability/cli-reference/#provider-credentials):
+`mono-agent validate` prints a per-section report — **secret placement**, runtime, **provider credentials** for every referenced primary/fallback/agent-host memory model and enabled static webhook/cron override, context, memory, tools, sandbox, observability, and every channel. It exits 0 when the config is structurally valid, but `waiting` means a selected capability still needs attention and is not an **Agent ready** result. Provider validation never mints credentials or makes a model request: it checks Pi/env state and, with liveness enabled, can run bounded read-only Codex/Claude status commands. Direct OpenCode provider ids are read from the standard `auth.json` plus its migration marker without invoking auth middleware; live validation adds a bounded `opencode --version` check and requires stable CLI >=1.15.0. Static start preflight launches no process. Missing or expired Pi credentials include `mono-agent auth login <provider>` guidance (`OPENCODE_API_KEY` for OpenCode-Go), and a declared local-provider `apiKeyEnv` must resolve before that route is reported ready. Bare interactive `mono-agent init` adds the live **Primary model check** and requires every selected expectation to be `ok` before it offers immediate start; advanced direct OpenCode is scaffold/config-only, while flag/non-TTY init remains scaffold-only for every model. See [CLI reference → Provider credentials](/observability/cli-reference/#provider-credentials):
 
 ```bash
 mono-agent validate

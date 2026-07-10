@@ -114,7 +114,10 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const memoryArtifactRetention = readMemoryArtifactRetentionConfig(input.env, artifactRetention);
   const traceability = readTraceabilityConfig(input.env, cwd);
   const observability = readObservabilityConfig(input.env);
-  const piAuthPath = readPath(input.env.MONO_AGENT_PI_AUTH_PATH, cwd, DEFAULT_PI_AUTH_PATH);
+  // Pi's auth path is routinely documented with a home-relative `~` prefix.
+  // `path.resolve()` treats that prefix as a literal directory, so keep the
+  // expansion explicit and limited to this user-owned credential path.
+  const piAuthPath = readUserPath(input.env.MONO_AGENT_PI_AUTH_PATH, cwd, DEFAULT_PI_AUTH_PATH);
   const localProviders = readLocalProviders(input.env);
   const piNative = readPiNativeProviderConfig(input.env, cwd);
 
@@ -1354,6 +1357,23 @@ function readPath(raw: string | undefined, cwd: string, defaultPath?: string): s
       return defaultPath;
     }
     throw new MonoAgentConfigError("invalid_env", "Path value is required.");
+  }
+  return resolve(cwd, normalized);
+}
+
+function readUserPath(raw: string | undefined, cwd: string, defaultPath?: string): string {
+  const normalized = normalizeOptionalString(raw);
+  if (normalized === undefined) {
+    if (defaultPath !== undefined) {
+      return defaultPath;
+    }
+    throw new MonoAgentConfigError("invalid_env", "Path value is required.");
+  }
+  if (normalized === "~") {
+    return homedir();
+  }
+  if (normalized.startsWith("~/") || normalized.startsWith("~\\")) {
+    return resolve(homedir(), normalized.slice(2));
   }
   return resolve(cwd, normalized);
 }

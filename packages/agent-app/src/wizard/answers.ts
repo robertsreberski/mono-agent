@@ -72,6 +72,53 @@ export interface WizardPlan {
   readonly warnings: readonly string[];
 }
 
+/**
+ * Every model/service reference that provider setup must account for. Runtime
+ * refs come first, followed by memory-owned refs in execution order. Local
+ * memory services use synthetic Pi refs so the existing setup planner can run
+ * the matching Ollama/LM Studio preflight without learning a second shape.
+ */
+export function referencedSetupModelRefs(plan: WizardPlan): readonly string[] {
+  const refs: string[] = [];
+  const seen = new Set<string>();
+  const add = (value: unknown): void => {
+    if (typeof value === "string" && value.length > 0 && !seen.has(value)) {
+      seen.add(value);
+      refs.push(value);
+    }
+  };
+
+  add(plan.configJson.runtime?.model);
+  for (const fallback of plan.configJson.runtime?.fallbackModels ?? []) {
+    add(fallback);
+  }
+
+  const memory = plan.configJson.memory;
+  if (memory?.llm?.provider === "agent-host") {
+    add(memory.llm.model);
+  } else if (memory?.llm?.provider === "ollama" || memory?.llm?.provider === "lmstudio") {
+    add(localServiceModelRef(memory.llm.provider, memory.llm.model));
+  }
+  const embeddings = memory?.embeddings as { readonly provider?: unknown; readonly model?: unknown } | undefined;
+  if (embeddings?.provider === "ollama" || embeddings?.provider === "lmstudio") {
+    add(localServiceModelRef(embeddings.provider, embeddings.model));
+  }
+
+  return refs;
+}
+
+/** Convert a local memory service into the model-ref shape understood by setup. */
+function localServiceModelRef(provider: "ollama" | "lmstudio", model: unknown): string | undefined {
+  return typeof model === "string" && model.length > 0 ? `pi:${provider}:${model}` : undefined;
+}
+
+/** True when a referenced backend requires credentials rather than a local service. */
+function modelRefNeedsCredentials(modelRef: string): boolean {
+  return modelRef.startsWith("codex:")
+    || modelRef.startsWith("claude:")
+    || (modelRef.startsWith("pi:") && !/^pi:(?:ollama|lmstudio):/u.test(modelRef));
+}
+
 /** Tools ordered canonically: built-ins first, then adapter send tools. */
 const ORDERED_TOOL_NAMES: readonly string[] = [...BUILTIN_TOOL_NAMES, ...ADAPTER_SEND_TOOL_NAMES];
 
@@ -313,14 +360,26 @@ export function composeWizardPlan(answers: WizardAnswers, ctx: ComposeContext): 
   const envExample = envLines.length > 0 ? `${envLines.join("\n")}\n` : undefined;
   const warnings = answers.allowedTools.length === 0 ? [ZERO_TOOLS_WARNING] : [];
 
-  return {
+  const planWithoutExpectations: WizardPlan = {
     configJson,
     ...(envExample === undefined ? {} : { envExample }),
     files,
     secrets,
     selectedModules: modules,
-    validateExpectations: dedupeExpectations(validateExpectations),
+    validateExpectations: [],
     warnings,
+  };
+  if (referencedSetupModelRefs(planWithoutExpectations).some(modelRefNeedsCredentials)) {
+    validateExpectations.push({
+      sectionId: "credentials",
+      mustBe: "ok",
+      note: "Authenticate every configured cloud model before describing the agent as ready.",
+    });
+  }
+
+  return {
+    ...planWithoutExpectations,
+    validateExpectations: dedupeExpectations(validateExpectations),
   };
 }
 

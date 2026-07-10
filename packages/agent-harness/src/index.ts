@@ -33,6 +33,7 @@ export type {
   AgentHarnessSessionOptions,
   AgentSessionMode,
   ConversationHistoryStore,
+  ExternalRunSummary,
   InMemoryHistoryStoreOptions,
   MemoryWriteMode,
 } from "./types.js";

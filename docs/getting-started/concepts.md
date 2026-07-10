@@ -6,7 +6,7 @@ sidebar:
 
 # Core Concepts
 
-This page defines the mental model behind mono-agent: one config file, one responder, many channels, opt-in everything, and safe defaults (an open tool surface, but locked-down side effects). Read it once and the rest of the docs will line up.
+This page defines the mental model behind mono-agent: one config file, one responder, many channels, and explicit runtime boundaries. The config tool surface defaults open; sandboxing and channel allowlists are the separate controls that constrain side effects, and guided init reconfirms allow-all when no sandbox is selected. Read it once and the rest of the docs will line up.
 
 ## Config-first
 
@@ -75,17 +75,17 @@ An enabled-but-incomplete channel reports `waiting_for_config` rather than crash
 There is no "off but configured" trap: a channel with `enabled: false` reports `disabled` even if every other field is filled in.
 :::
 
-## Safe defaults
+## Explicit side-effect boundaries
 
-mono-agent ships with an open tool surface but locked-down side effects: the model can *use* tools, but it can't persist memory, reach the network, or message anyone until you opt in.
+mono-agent ships with an open tool surface. Memory, channel admission, HTTP bind, and sandbox controls are separate; do not mistake one for another. Guided init names the shell/file/web/channel effects of allow-all and requires a second confirmation when no enforceable sandbox will constrain them. Native mono-agent `srt` policy applies to Pi-owned tools; direct Codex uses its own sandbox, while Claude and direct OpenCode reject the mono-agent sandbox block.
 
-- **Allow-all tools, deny-wins.** Omit `tools.allowedTools` (or set `["*"]`) and the agent can call every built-in (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `WebFetch`, `WebSearch`) and every enabled channel's send tools. Narrow with a specific list, subtract a single tool with `disallowedTools` (deny wins), or go chat-only with an explicit `tools.allowedTools: []`.
+- **Allow-all tools, runtime-specific narrowing.** Omit `tools.allowedTools` (or set `["*"]`) and the agent can call every built-in (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `WebFetch`, `WebSearch`) and every enabled channel's send tools. Pi and supported CLI runtimes can narrow that surface; direct `codex:*` normal runs accept exact allow-all only and reject restrictive policies instead of widening them.
 
   ```json
   {
     "tools": {
       "allowedTools": ["*"],
-      "disallowedTools": ["Bash"]
+      "disallowedTools": []
     }
   }
   ```
@@ -94,7 +94,7 @@ mono-agent ships with an open tool surface but locked-down side effects: the mod
 
 - **No memory writes.** `memory.writeMode` defaults to `disabled` — the agent records nothing until you choose `append-host-summary` or (bujo only) `capture`. See [Memory → Capture and Recall](/memory/capture-and-recall/).
 
-- **Loopback-only network.** HTTP channels (`webhook`, `openaiApi`, and the A2A plugin) bind to localhost and refuse non-loopback callers until you set `allowNonLoopback: true`. The native sandbox likewise starts with network `mode: "none"` and a deny-by-default filesystem (`.env*`, `.git/config`, `.git/hooks/**` are denied even when you widen the roots). See [Tools → Sandbox](/tools/sandbox/).
+- **Loopback-only network.** HTTP channels (`webhook`, `openaiApi`, and the A2A plugin) bind to localhost and refuse non-loopback callers until you set `allowNonLoopback: true`. For Pi-owned tools, the native sandbox likewise starts with network `mode: "none"` and a deny-by-default filesystem (`.env*`, `.git/config`, `.git/hooks/**` are denied even when you widen the roots). See [Tools → Sandbox](/tools/sandbox/).
 
 :::caution
 :::

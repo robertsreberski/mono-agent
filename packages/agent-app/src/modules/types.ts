@@ -51,7 +51,7 @@ export interface GeneratedFile {
  * incomplete when a required section is not yet at the promised status.
  */
 export interface ModuleValidateExpectation {
-  /** Doctor section id: `runtime|memory|sandbox|tools|observability|channel:<driver>`. */
+  /** Doctor section id: `runtime|credentials|memory|sandbox|tools|observability|channel:<driver>`. */
   readonly sectionId: string;
   /** The status the section must reach for the module to be considered live. */
   readonly mustBe: ValidationStatus;

@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseEnv } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -99,9 +100,9 @@ describe("initMonoAgentFolder", () => {
       answers: presetAnswers(findPreset("telegram-assistant")!),
     });
 
-    expect(result.plan.envExample).toContain("MONO_AGENT_TELEGRAM_TOKEN");
+    expect(result.plan.envExample).toContain("MONO_AGENT_TELEGRAM_BOT_TOKEN");
     const envExample = await readFile(join(dir, ".env.example"), "utf8");
-    expect(envExample).toContain("MONO_AGENT_TELEGRAM_TOKEN=");
+    expect(envExample).toContain("MONO_AGENT_TELEGRAM_BOT_TOKEN=");
     const configText = await readFile(result.configPath, "utf8");
     expect(configText).not.toContain("telegramToken");
   });
@@ -122,15 +123,30 @@ describe("initMonoAgentFolder", () => {
 
   it("merges required secrets into a private env file without replacing existing values or comments", async () => {
     const envPath = join(dir, ".env");
-    await writeFile(envPath, "# retain me\nMONO_AGENT_TELEGRAM_TOKEN=already-set\nMONO_AGENT_SLACK_BOT_TOKEN=\n");
+    await writeFile(envPath, "# retain me\nMONO_AGENT_TELEGRAM_BOT_TOKEN=already-set\nMONO_AGENT_SLACK_BOT_TOKEN=\n");
     await mergeSecretEnvFile(envPath, {
-      MONO_AGENT_TELEGRAM_TOKEN: "replacement-must-not-win",
+      MONO_AGENT_TELEGRAM_BOT_TOKEN: "replacement-must-not-win",
       MONO_AGENT_SLACK_BOT_TOKEN: "new-value",
     });
     const env = await readFile(envPath, "utf8");
     expect(env).toContain("# retain me");
-    expect(env).toContain("MONO_AGENT_TELEGRAM_TOKEN=already-set");
-    expect(env).toContain('MONO_AGENT_SLACK_BOT_TOKEN="new-value"');
+    expect(env).toContain("MONO_AGENT_TELEGRAM_BOT_TOKEN=already-set");
+    expect(parseEnv(env).MONO_AGENT_SLACK_BOT_TOKEN).toBe("new-value");
+    expect(await readFile(join(dir, ".gitignore"), "utf8")).toContain("/.env\n");
     expect((await stat(envPath)).mode & 0o777).toBe(0o600);
+  });
+
+  it("reports secret persistence precisely without claiming a dry-run write", async () => {
+    const result = await initMonoAgentFolder({
+      dir,
+      dryRun: true,
+      secretValues: { MONO_AGENT_SLACK_BOT_TOKEN: "not-written" },
+    });
+
+    expect(result.secretsPersisted).toBe(false);
+    expect(result.secretPersistence).toMatchObject({ status: "planned", changed: true });
+    expect(result.changes).toContainEqual({ path: join(dir, ".env"), kind: "planned-create", sensitive: true });
+    await expect(readFile(join(dir, ".env"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(dir, ".gitignore"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

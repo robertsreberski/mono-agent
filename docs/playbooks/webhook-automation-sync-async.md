@@ -21,6 +21,7 @@ Accept fast sync HTTP calls and long-running async jobs (202 + status polling) a
 - [`webhook.http-invoke`](/channels/webhook/) — `POST` a JSON body, the agent runs a turn.
 - [`webhook.sync-async-modes`](/channels/webhook/) — `sync` returns the body inline; `async` returns `202` + a status URL to poll.
 - [`webhook.endpoints-dir`](/channels/webhook/) — multiple named endpoints inline (`webhook.endpoints[]`) or as `*.md` files under `webhook.dir`.
+- [`harness.external-summary-safety`](/observability/artifacts-and-traces/) — response/status metadata excludes the private compiled `systemPrompt`; local recorder artifacts retain it.
 - [`channel.native-notify`](/channels/delivery-and-send-tools/#native-proactive-notification-cronwebhook-turns) — an endpoint with `notify: true` delivers its final answer back into a chat verbatim (no agent-facing tool involved).
 
 The first three are **config** coverage (the `webhook` section plus `MONO_AGENT_WEBHOOK_*` env overrides); native notification is opt-in per endpoint via `notify: true`.
@@ -103,6 +104,7 @@ The destination is bounded by the owning channel's allowlist, so a payload-suppl
 4. `curl` the sync endpoint for an immediate response body; `curl` the async endpoint for a `202` plus a status URL.
 5. Poll the async status URL until the job reports complete.
 6. Confirm async retention behavior — the status entry vanishes after `retentionMs` (300000 ms / 5 minutes above).
+7. Inspect sync, async status, and any result callback metadata and confirm `metadata.summary.systemPrompt` is absent even when using a custom responder.
 
 ## Smoke test
 

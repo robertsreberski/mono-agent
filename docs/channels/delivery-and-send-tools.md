@@ -60,7 +60,7 @@ mono-agent derives MCP **send tools** from already-enabled chat adapters so the 
 
 Coverage: `config`. Two conditions must both hold for a send tool to work:
 
-1. The tool must be **permitted by the policy**. Under allow-all (the default) that is automatic once the channel is enabled — no allowlist entry needed. If you use a **specific** `tools.allowedTools`, the exact tool name must appear in it (e.g. `SlackSendMessage`, `TelegramSendMessage`, `TelegramAskButtons`, `TelegramSendFile`). A `disallowedTools` entry removes the tool on any runtime.
+1. The tool must be **permitted by the policy**. Under allow-all (the default) that is automatic once the channel is enabled — no allowlist entry needed. On runtimes that enforce specific lists, include the exact name or deny it normally. Direct `codex:*` rejects all restrictive normal-run policies before start; it never silently widens them.
 2. The corresponding adapter must have **valid config** — `slack.*` for `SlackSendMessage`, `telegram.*` for the Telegram tools — which supplies the credentials and the destination bounds.
 
 ### Telegram interactive send tools

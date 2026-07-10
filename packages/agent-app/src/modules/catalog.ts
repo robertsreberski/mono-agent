@@ -1,6 +1,6 @@
 import type { MonoAgentConfigJson } from "@mono-agent/config";
 
-import { DEFAULT_MODEL, DEFAULT_PI_MEMORY_MODEL, memoryBlock } from "./base.js";
+import { DEFAULT_PI_MEMORY_MODEL, memoryBlock } from "./base.js";
 import type { CapabilityModule, ModuleKind } from "./types.js";
 
 /** Split a comma-separated input value into trimmed, non-empty entries. */
@@ -71,9 +71,9 @@ const channelTelegram: CapabilityModule = {
     {
       id: "telegramToken",
       label: "Telegram bot token",
-      description: "BotFather token. Externalized to .env.example; never written into JSON.",
+      description: "BotFather token. Saved to .env; .env.example contains only a placeholder. Never written into JSON.",
       secret: true,
-      envVar: "MONO_AGENT_TELEGRAM_TOKEN",
+      envVar: "MONO_AGENT_TELEGRAM_BOT_TOKEN",
       required: true,
     },
   ],
@@ -86,10 +86,10 @@ const channelTelegram: CapabilityModule = {
       },
     };
   },
-  envExampleLines: () => ["# Telegram bot token from @BotFather", "MONO_AGENT_TELEGRAM_TOKEN="],
+  envExampleLines: () => ["# Telegram bot token from @BotFather", "MONO_AGENT_TELEGRAM_BOT_TOKEN="],
   recommendedTools: ["TelegramSendMessage", "TelegramAskButtons"],
   validateExpectations: [
-    { sectionId: "channel:telegram", mustBe: "ok", note: "Set MONO_AGENT_TELEGRAM_TOKEN in .env." },
+    { sectionId: "channel:telegram", mustBe: "ok", note: "Set MONO_AGENT_TELEGRAM_BOT_TOKEN in .env." },
   ],
 };
 
@@ -108,7 +108,7 @@ const channelSlack: CapabilityModule = {
     {
       id: "botToken",
       label: "Slack bot token",
-      description: "xoxb-… token. Externalized to .env.example.",
+      description: "xoxb-… token. Saved to .env; .env.example contains only a placeholder.",
       secret: true,
       envVar: "MONO_AGENT_SLACK_BOT_TOKEN",
       required: true,
@@ -116,7 +116,7 @@ const channelSlack: CapabilityModule = {
     {
       id: "appToken",
       label: "Slack app token",
-      description: "xapp-… connections:write token for Socket Mode.",
+      description: "xapp-… connections:write token for Socket Mode. Saved to .env only.",
       secret: true,
       envVar: "MONO_AGENT_SLACK_APP_TOKEN",
       required: true,
@@ -156,7 +156,7 @@ const channelOpenaiApi: CapabilityModule = {
     {
       id: "apiKey",
       label: "Client bearer key",
-      description: "Optional bearer clients must present (sk-…). Externalized to .env.example.",
+      description: "Optional bearer clients must present (sk-…). Saved to .env; .env.example contains only a placeholder.",
       secret: true,
       envVar: "MONO_AGENT_OPENAI_API_KEY",
       required: false,
@@ -214,7 +214,7 @@ const channelA2a: CapabilityModule = {
     {
       id: "bearerToken",
       label: "A2A bearer token",
-      description: "Bearer required from A2A consumers when requireBearer is set. Externalized to .env.example.",
+      description: "Bearer required from A2A consumers when requireBearer is set. Saved to .env; never written into JSON.",
       secret: true,
       envVar: "MONO_AGENT_A2A_BEARER_TOKEN",
       required: false,
@@ -277,10 +277,13 @@ const memoryBujo: CapabilityModule = {
     memory: {
       ...memoryBlock("bujo"),
       embeddings: { provider: "ollama", model: "nomic-embed-text" },
-      // The primary default is direct Codex CLI, but the memory LLM has an
-      // SDK-only safety contract. Keep the first-run scaffold valid by using
-      // the equivalent Pi Terra model for that internal call.
-      llm: { provider: "agent-host", model: values.model === DEFAULT_MODEL ? DEFAULT_PI_MEMORY_MODEL : values.model ?? DEFAULT_PI_MEMORY_MODEL },
+      // Direct Codex is CLI-only, while the memory LLM has an SDK-only safety
+      // contract. Route every direct Codex primary through the equivalent Pi
+      // Terra model for this internal call, not only the default candidate.
+      llm: {
+        provider: "agent-host",
+        model: values.model?.startsWith("codex:") ? DEFAULT_PI_MEMORY_MODEL : values.model ?? DEFAULT_PI_MEMORY_MODEL,
+      },
       recallTool: { enabled: true },
     },
   }),
@@ -309,7 +312,7 @@ const memorySupermemory: CapabilityModule = {
     {
       id: "supermemoryApiKey",
       label: "Supermemory API key",
-      description: "Bearer key printed by supermemory-server on first boot. Externalized to .env.example.",
+      description: "Bearer key printed by supermemory-server on first boot. Saved to .env; .env.example contains only a placeholder.",
       secret: true,
       envVar: "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY",
       required: true,

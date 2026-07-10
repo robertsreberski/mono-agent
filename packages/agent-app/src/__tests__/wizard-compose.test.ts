@@ -13,6 +13,7 @@ import {
   type ComposeContext,
   defaultAnswers,
   moduleOverrides,
+  referencedSetupModelRefs,
   type WizardAnswers,
 } from "../wizard/answers.js";
 import { PRESET_CATALOG, presetAnswers } from "../wizard/presets.js";
@@ -136,6 +137,50 @@ describe("wizard composer — env-example + secret checklist coverage", () => {
   }
 });
 
+describe("wizard composer — complete setup dependencies", () => {
+  it("includes runtime, fallback, hidden agent-host memory, and local memory services in stable order", () => {
+    const plan = composeWizardPlan(defaultAnswers({
+      fallbackModels: ["claude:claude-sonnet-4-6"],
+      memory: "memory:bujo",
+    }), CTX);
+
+    expect(referencedSetupModelRefs(plan)).toEqual([
+      "codex:gpt-5.6-terra",
+      "claude:claude-sonnet-4-6",
+      "pi:openai-codex:gpt-5.6-terra",
+      "pi:ollama:nomic-embed-text",
+    ]);
+    expect(plan.validateExpectations).toContainEqual(expect.objectContaining({ sectionId: "credentials", mustBe: "ok" }));
+  });
+
+  it("dedupes local-only runtime and memory refs without requiring credentials", () => {
+    const plan = composeWizardPlan(defaultAnswers({
+      model: "pi:ollama:qwen3:8b",
+      memory: "memory:bujo",
+    }), CTX);
+
+    expect(referencedSetupModelRefs(plan)).toEqual([
+      "pi:ollama:qwen3:8b",
+      "pi:ollama:nomic-embed-text",
+    ]);
+    expect(plan.validateExpectations.map((expectation) => expectation.sectionId)).not.toContain("credentials");
+  });
+
+  it("maps every CLI-only Codex primary to the SDK-capable Pi memory model", () => {
+    const plan = composeWizardPlan(defaultAnswers({
+      model: "codex:gpt-5.5",
+      memory: "memory:bujo",
+    }), CTX);
+
+    expect(plan.configJson.memory?.llm?.model).toBe("pi:openai-codex:gpt-5.6-terra");
+    expect(referencedSetupModelRefs(plan)).toEqual([
+      "codex:gpt-5.5",
+      "pi:openai-codex:gpt-5.6-terra",
+      "pi:ollama:nomic-embed-text",
+    ]);
+  });
+});
+
 describe("wizard composer — tool selection", () => {
   it("defaults allowedTools to allow-all (the single scaffold/preset/flag choke point)", () => {
     expect(defaultAnswers().allowedTools).toEqual(["*"]);
@@ -180,6 +225,7 @@ describe("wizard composer — alwaysOnTools (auto-provisioned, not gated by allo
 describe("wizard composer — per-preset invariants", () => {
   it("code-sandbox: allow-all tools + native fail-closed sandbox", () => {
     const plan = composeWizardPlan(presetAnswers(PRESET_CATALOG.find((p) => p.id === "code-sandbox")!), CTX);
+    expect(plan.configJson.runtime?.model).toBe("pi:openai-codex:gpt-5.6-terra");
     expect(plan.configJson.tools?.allowedTools).toEqual(["*"]);
     expect(plan.configJson.sandbox).toMatchObject({ mode: "native", fallback: "fail-closed" });
   });

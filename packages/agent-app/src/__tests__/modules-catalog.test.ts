@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { OPENAI_API_CONFIG_FIELDS } from "@mono-agent/openai-api-adapter";
+import { SLACK_CONFIG_FIELDS } from "@mono-agent/slack-adapter";
+import { TELEGRAM_CONFIG_FIELDS } from "@mono-agent/telegram-adapter";
 
 import {
   CAPABILITY_MODULES,
@@ -10,7 +13,7 @@ import {
 const MODEL = "claude:claude-sonnet-4-6";
 
 /** Section ids the doctor emits — a `channel:<driver>` id or one of the fixed sections. */
-const FIXED_SECTION_IDS = new Set(["runtime", "memory", "sandbox", "tools", "observability"]);
+const FIXED_SECTION_IDS = new Set(["runtime", "credentials", "memory", "sandbox", "tools", "observability"]);
 function isValidSectionId(id: string): boolean {
   return FIXED_SECTION_IDS.has(id) || id.startsWith("channel:");
 }
@@ -78,5 +81,24 @@ describe("capability-module catalog", () => {
     const providers = modulesByKind("provider");
     expect(providers.map((m) => m.id).sort()).toEqual(["provider:lmstudio", "provider:ollama"]);
     expect(modulesByKind("channel")).toHaveLength(6);
+  });
+
+  it("keeps required channel secret env vars identical to adapter registries", () => {
+    const adapterSecretEnv = new Map([
+      ["channel:telegram", new Set(TELEGRAM_CONFIG_FIELDS.filter((field) => field.secret === true).map((field) => field.env))],
+      ["channel:slack", new Set(SLACK_CONFIG_FIELDS.filter((field) => field.secret === true).map((field) => field.env))],
+      ["channel:openai-api", new Set(OPENAI_API_CONFIG_FIELDS.filter((field) => field.secret === true).map((field) => field.env))],
+    ]);
+
+    for (const [moduleId, registryEnv] of adapterSecretEnv) {
+      const module = findModule(moduleId);
+      expect(module, `${moduleId} module`).toBeDefined();
+      const declared = module!.inputs
+        .filter((input) => input.secret === true)
+        .map((input) => input.envVar);
+      expect(declared, moduleId).toEqual([...registryEnv]);
+    }
+    expect(findModule("channel:telegram")?.inputs.find((input) => input.secret === true)?.envVar)
+      .toBe("MONO_AGENT_TELEGRAM_BOT_TOKEN");
   });
 });

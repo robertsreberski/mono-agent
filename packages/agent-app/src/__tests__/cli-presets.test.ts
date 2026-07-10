@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -38,9 +38,13 @@ describe("parseCliArgs preset flags & alias normalization", () => {
     expect(parseCliArgs(["init", "--auth"])).toMatchObject({ command: "init", auth: true });
     expect(shouldRunInitWizard(parseCliArgs(["init"]), true, true)).toBe(true);
     expect(shouldRunInitWizard(parseCliArgs(["init", "--auth"]), true, true)).toBe(false);
+    expect(shouldRunInitWizard(parseCliArgs(["init", "--env-file", ".env.local"]), true, true)).toBe(false);
+    expect(shouldRunInitWizard(parseCliArgs(["init", "--config", "custom.json"]), true, true)).toBe(false);
+    expect(shouldRunInitWizard(parseCliArgs(["init", "--force"]), true, true)).toBe(false);
+    expect(shouldRunInitWizard(parseCliArgs(["init", "unexpected"]), true, true)).toBe(false);
   });
 
-  it("parses app-owned Pi auth login and gives --pi-auth-path precedence over config", async () => {
+  it("parses app-owned Pi auth login and resolves exact path precedence", async () => {
     expect(parseCliArgs(["auth", "login", "openai-codex", "--pi-auth-path", "custom/auth.json"])).toMatchObject({
       command: "auth",
       positionals: ["login", "openai-codex"],
@@ -50,8 +54,19 @@ describe("parseCliArgs preset flags & alias normalization", () => {
     try {
       const configPath = join(dir, "mono-agent.config.json");
       await writeFile(configPath, JSON.stringify({ providers: { piAuthPath: "configured/auth.json" } }));
-      await expect(resolvePiAuthPathForLogin({ configPath })).resolves.toBe("configured/auth.json");
-      await expect(resolvePiAuthPathForLogin({ configPath, piAuthPath: "flag/auth.json" })).resolves.toBe("flag/auth.json");
+      await expect(resolvePiAuthPathForLogin({ configPath, cwd: dir }))
+        .resolves.toBe(resolve(dir, "configured/auth.json"));
+      await expect(resolvePiAuthPathForLogin({ configPath, cwd: dir, envPath: "env/auth.json" }))
+        .resolves.toBe(resolve(dir, "env/auth.json"));
+      await expect(resolvePiAuthPathForLogin({
+        configPath,
+        cwd: dir,
+        envPath: "env/auth.json",
+        piAuthPath: "~/flag/auth.json",
+      })).resolves.toBe(resolve(homedir(), "flag/auth.json"));
+
+      await writeFile(configPath, "{ malformed");
+      await expect(resolvePiAuthPathForLogin({ configPath, cwd: dir })).rejects.toThrow();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -191,7 +206,7 @@ describe("renderPresetShow", () => {
   it("includes the .env.example and never inlines the secret token", () => {
     const out = renderPresetShow(findPreset("telegram-assistant")!);
     expect(out).toContain(".env.example");
-    expect(out).toContain("MONO_AGENT_TELEGRAM_TOKEN");
+    expect(out).toContain("MONO_AGENT_TELEGRAM_BOT_TOKEN");
     expect(out).not.toMatch(/"telegramToken"\s*:/u);
   });
 });

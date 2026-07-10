@@ -86,6 +86,15 @@ describe("loadMonoAgentConfig", () => {
     expect(config.artifacts.memoryRetention).toEqual({ maxAgeDays: 7, maxCount: 5000, dryRun: false });
   });
 
+  it("expands a home-relative Pi auth path instead of treating tilde as a directory", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_PI_AUTH_PATH: "~/.pi/custom/auth.json" },
+    });
+
+    expect(config.providers?.piAuthPath).toBe(join(homedir(), ".pi", "custom", "auth.json"));
+  });
+
   it("defaults memory artifact retention dry-run to the agent retention dry-run", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",

@@ -26,7 +26,15 @@ npm i -g @mono-agent/agent-app      # the scoped host that owns the CLI
 
 `create-mono-agent` is a thin installer whose `create-mono-agent` and `mono-agent` bins forward every command to `@mono-agent/agent-app`; behaviour is identical either way. (The bare `mono-agent` npm name isn't ours — npm blocks it as too similar to an unrelated `monoagent` package — so the installer follows the `create-*` convention instead.)
 
-The easiest path on a terminal is the interactive wizard — `mono-agent init` with no flags walks you through a preset (or custom) build using the same model, reasoning effort, channel, memory, tool, and sandbox decisions either way. The ready local webhook is selected by default; optional plugins are not offered as ready channels. The default model is direct `codex:gpt-5.6-terra`; the model picker also discovers `pi:openai-codex:gpt-5.6-terra`, OpenCode-Go models recorded as `pi:opencode-go:*`, Ollama models, and LM Studio's local server best-effort. If you add fallbacks, the wizard reuses the discovered model list one fallback at a time and hides the primary plus previously selected backups. If the Pi auth store is missing, the Pi model stays selectable and the wizard can run setup instead of silently skipping it. Required selected-channel secrets are collected masked and merged into `.env` mode `0600`, never JSON or the review. Before writing the target agent, the interactive wizard proves one disposable no-tool assistant response with the selected model/environment; a failed probe offers setup retry, model change, incomplete save, or cancellation rather than a false-ready result.
+The production first-run path is the interactive wizard: bare `mono-agent init` on a TTY walks through a preset (or custom) build using the same model, reasoning effort, channel, memory, tool, and sandbox decisions either way. It defaults to direct `codex:gpt-5.6-terra`, checks that the Codex CLI is installed and signed in, and also discovers Pi Terra, OpenCode-Go, Ollama, and LM Studio choices. If Codex is missing, install it only from the [official Codex CLI instructions](https://developers.openai.com/codex/cli/) and run `codex` or `codex login`; mono-agent never auto-installs it.
+
+The wizard distinguishes a **Primary model check** from **Agent ready**. It first requires one disposable no-tool response from the selected primary (90-second cloud or 240-second local deadline; cancellation, provider failure, timeout, empty output, or any tool action fails). It atomically creates the config, validates that exact snapshot, and rechecks it before the ready label or immediate start. It offers start only after every selected credential, channel, sandbox, memory, and observability expectation is also ready. Otherwise it can save an explicitly incomplete scaffold, but never labels it ready or auto-starts it. Any flag or non-TTY invocation is intentionally scaffold-only and makes no readiness claim.
+
+That proof uses the environment a later worker can reproduce: `.env` values, securely entered selected secrets, the resolved Pi store, and only operational host values such as `PATH` and `HOME`. Shell-only provider credentials and `MONO_AGENT_*` config overrides cannot make setup pass and then disappear under launchd; persisted non-secret config overrides are named and rejected so the generated JSON is the configuration that is actually validated and started.
+
+Selected secrets are entered masked and never shown in config, examples, review output, or logs. Durable provider credentials already present in `.env` receive the same protection. On POSIX the wizard preserves existing dotenv values/comments and uses an external owner-only lock plus `0600` no-clobber promotion, with exact Git ignore rules for `.env` and transaction artifacts. The canonical agent directory must be current-user-owned and not group/world-writable; existing `.env` and `.gitignore` files must be current-user-owned single-link regular files. An owned permissive `.env` is tightened, and group/world write access is removed from the `.gitignore` guard. Pathname-based competitors are never replaced; the claimed inode is rechecked before install and cleanup, and detected writes through an already-open descriptor are retained at a reported owner-only recovery path. As with any non-cooperative POSIX writer, a write that begins after the final check cannot be guaranteed. Tracked, symlinked, hard-linked, foreign-owned, malformed, conflicting, stale-lock, or unrepresentable files fail closed, as does Windows where owner-only permissions cannot be proven. Tools default to **Allow all**. Pi/Claude flows disclose shell, file, web, and channel-send effects and reconfirm an unsandboxed choice; direct Codex fixes policy to allow-all and instead reports its native network-off workspace sandbox and denied unattended escalations.
+
+Direct `codex:*` models can share a fallback chain and per-turn overrides only with other direct Codex models. Pi, Claude, and direct OpenCode may be combined only when no native mono-agent sandbox is configured; the provider-owned Claude/OpenCode tool loops cannot project the `srt` policy, so validation and runtime reject those primary, fallback, or trigger routes while that sandbox is active. Cross-boundary dynamic overrides are warned and ignored rather than silently changing the agent's safety posture. (`pi:opencode-go:*` is a Pi route and remains sandbox-compatible.)
 
 ```bash
 mkdir my-agent
@@ -34,7 +42,7 @@ cd my-agent
 mono-agent init                   # step-by-step wizard on a TTY (`mono-agent setup` is an alias)
 ```
 
-Or drive it with flags (`init` writes the scaffold non-interactively when given any flag, or when stdin is not a TTY). Use `--effort` to write `runtime.effort`. Add `--auth` when you want supported provider auth/preflight commands to run before files are written; `--dry-run` never launches them:
+Or drive it with flags when you only want a non-interactive scaffold. This path never runs the readiness proof or calls the result ready. Use `--effort` to write `runtime.effort`; `--auth` opts into supported provider setup, while `--dry-run` never launches commands:
 
 ```bash
 mono-agent init --model pi:openai-codex:gpt-5.6-terra --fallback-models pi:opencode-go:kimi-k2.6,pi:ollama:gemma4:31b --effort high --auth
@@ -51,10 +59,11 @@ node "$repo/packages/agent-app/dist/cli.js" init --model pi:openai-codex:gpt-5.6
 node "$repo/packages/agent-app/dist/cli.js" validate
 ```
 
-`validate` proves the folder and config are startable; it does not fake a provider call. To get a real first reply, export credentials for the model you chose, start the agent, then smoke-test over the webhook channel that `init` enables by default. The webhook needs no channel credentials; model auth is still required for a model response.
+`validate` reports structural errors and `waiting` dependencies; by itself it does not make a provider call or an **Agent ready** claim. Bare interactive `init` is the path that also proves the primary model and gates immediate start on the full report. For the direct Codex default, install and sign in to the Codex CLI first:
 
 ```bash
-export ANTHROPIC_API_KEY=...      # or the auth expected by your model/backend
+codex login                       # or run `codex` and follow its sign-in prompt
+codex login status
 mono-agent start                  # backgrounds on macOS (launchd); use `start --foreground` elsewhere
 ```
 
@@ -66,7 +75,7 @@ curl -s http://127.0.0.1:<PORT>/webhook/invoke \
 
 `<PORT>` comes from the `start` output. A reply means runtime, model, identity, and channel wiring all work. On a local build with packages already installed and built, `init` plus `validate` should take well under a minute; first reply time depends on provider authentication, network latency, and model availability.
 
-`init` scaffolds `mono-agent.config.json` (webhook enabled as the credential-free smoke channel), an `IDENTITY.md` that references the folder's existing knowledge, and `.mono-agent/` working dirs — never overwriting existing files. The config file declares everything: runtime model plus ordered backup models (`runtime.fallbackModels`, served by the native failover router), built-in channels (`telegram`, `slack`, `webhook`, `openaiApi`, `cron`, `tui`, `live`), external channel plugins under `channels.plugins[]` (`@mono-agent/a2a-adapter`, `@mono-agent/whatsapp-adapter`, or your own `ChannelDriver` package), skills, MCP servers, memory strategy, sandbox policy, and observability. `validate` reports every section before anything starts; `start` runs traceability and every configured channel, each with independent `running` / `waiting_for_config` / `disabled` / `failed` status. For unreleased or source-build testing, use the source build flow in [`docs/getting-started/install.md`](./docs/getting-started/install.md); pnpm 10 is only required for that path.
+`init` scaffolds `mono-agent.config.json` (webhook enabled as the credential-free smoke channel), an `IDENTITY.md` that references the folder's existing knowledge, and `.mono-agent/` working dirs without overwriting existing scaffold/config files. Guided secret setup is the explicit exception: after review it may securely update `.env` and `.gitignore`. The config file declares everything: runtime model plus ordered backup models (`runtime.fallbackModels`, served by the native failover router), built-in channels (`telegram`, `slack`, `webhook`, `openaiApi`, `cron`, `tui`, `live`), external channel plugins under `channels.plugins[]` (`@mono-agent/a2a-adapter`, `@mono-agent/whatsapp-adapter`, or your own `ChannelDriver` package), skills, MCP servers, memory strategy, sandbox policy, and observability. `validate` reports every section before anything starts; `start` runs traceability and every configured channel, each with independent `running` / `waiting_for_config` / `disabled` / `failed` status. For unreleased or source-build testing, use the source build flow in [`docs/getting-started/install.md`](./docs/getting-started/install.md); pnpm 10 is only required for that path.
 
 ### Presets & the setup wizard
 
@@ -78,7 +87,7 @@ mono-agent presets show telegram-assistant
 mono-agent init --preset telegram-assistant --yes
 ```
 
-The `code-sandbox` preset ships `sandbox.mode: "native"`, which requires `srt` on `PATH`; run `mono-agent validate --preset code-sandbox` and read the `Sandbox` section before starting. It uses `fallback: "fail-closed"`, so a missing `srt` produces `sandbox_unavailable` instead of host execution.
+The `code-sandbox` preset uses Pi plus `sandbox.mode: "native"`, which requires `srt` on `PATH`; run `mono-agent validate --preset code-sandbox` and read the `Sandbox` section before starting. It uses `fallback: "fail-closed"`, so a missing `srt` produces `sandbox_unavailable` instead of host execution. Direct Codex uses its own sandbox and is intentionally rejected with a mono-agent `sandbox` block; Claude and direct OpenCode are also rejected because their provider-owned tools cannot enforce those scopes.
 
 The old `mono-agent recipes …` / `--recipe <id>` surface still works as a deprecated alias — retired recipes map to the preset that replaced them. See [`docs/reference/recipes.md`](./docs/reference/recipes.md) for the presets, the capability modules, the tools/no-tools guardrail, and the full deprecation map.
 
@@ -236,7 +245,19 @@ credentials elsewhere. Subscription/account-backed providers include
 OAuth/account flows where supported; OpenCode-Go uses an API key (`OPENCODE_API_KEY`)
 that `mono-agent init --auth` can save into the Pi auth store. Recover a Pi OAuth
 provider with `mono-agent auth login <provider>`; it uses the configured auth path
-and securely stages the bundled Pi CLI output before replacing that file.
+(`--pi-auth-path` → `MONO_AGENT_PI_AUTH_PATH` → `providers.piAuthPath` → default),
+validates the requested credential and unchanged siblings in the bundled Pi CLI's
+staged output, then promotes it under a durable lock with owner-only, pathname
+no-clobber semantics. The canonical parent must be current-user-owned and not
+group/world-writable; source, staged, and recovery credential inodes must also be
+current-user-owned with exactly the expected link identity. An owned existing
+store may start read-permissive (for example `0644`) and is tightened to `0600`,
+but group/world-writable, foreign-owned, or multiply linked stores fail closed.
+Pathname races remain at the target. A claimed-inode write
+detected after install is retained at the reported recovery path; a
+non-cooperative open-descriptor write after the final check is outside the POSIX
+guarantee. Malformed/unsafe output, concurrent changes, Windows persistence, and
+auth paths inside Git worktrees fail closed without silently discarding detected bytes.
 
 ## Development Verification
 
@@ -290,10 +311,11 @@ pnpm --filter @mono-agent/<package> run test
 ## Safety Model
 
 - No secrets, `.env*`, OAuth files, provider keys, OpenAI API adapter keys, Telegram tokens, WhatsApp auth state, or transcripts are committed.
+- Interactive secret persistence fails closed unless the canonical agent directory is current-user-owned and not group/world-writable, `.env`/`.gitignore` are current-user single-link regular paths, `.env` is untracked valid dotenv text, exact ignore rules are protected from group/world writes, and promotion can prove owner-only permissions plus pathname no-clobber identity. Windows gets manual instructions instead of an automatic secret write.
 - Settings JSON is local, schema-validated, and written with restrictive file permissions where the settings helper writes it.
 - Secret fields are redacted in diagnostics and status output.
-- Tool policy is allow-all by default (omit `tools.allowedTools`, or set `["*"]`, for every tool); narrow with a specific list, subtract with `disallowedTools` (deny wins), or go chat-only with an explicit `[]`. The programmatic harness safety net with no policy is fail-closed (`failClosedToolPolicy()`).
-- Sandbox policy is explicit, fail-closed by default, and routes runtime-owned process execution through a native sandbox engine when configured.
+- Tool policy is allow-all by default (omit `tools.allowedTools`, or set `["*"]`, for every tool). Pi and Claude SDK flows may narrow with a list or go chat-only with `[]`; Claude Code CLI supports non-empty lists and deny-lists but rejects empty-list chat-only. Direct Codex and direct OpenCode require exact allow-all. Direct OpenCode also rejects real MCP sources; the host suppresses only its implicit MCP-backed `AskUser` / `TelegramAskButtons` tools on direct routes, while rejected per-trigger overrides keep the base runtime's interaction tools. Guided readiness deliberately rejects advanced direct OpenCode refs; use the Pi `pi:opencode-go:*` path or an explicit scaffold/config with OpenCode's native `permissionMode`. Unsupported policies fail before provider startup. See the [runtime enforcement table](./docs/tools/policy.md). The programmatic harness safety net with no policy is fail-closed (`failClosedToolPolicy()`).
+- Mono-agent sandbox policy is explicit and fail-closed for Pi-owned commands. Direct Codex uses its own network-off workspace sandbox; Claude and direct OpenCode have no projection for the configured `srt` scopes. Validation and runtime reject a native mono-agent sandbox for those backends rather than presenting unenforced roots, deny-write globs, or network policy as active.
 - Memory writes are host-owned and optional.
 - Fixtures and fake runtimes are for tests only, not product-runtime substitutes.
 

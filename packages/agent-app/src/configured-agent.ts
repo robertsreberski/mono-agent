@@ -34,6 +34,7 @@ import {
   createPiOAuthApiKeyResolver,
   defaultExecutionModeForModel,
   modelReferenceKey,
+  monoRuntimeSupportsSessionResume,
   parseMonoRuntimeModelReference,
   runtimeOptionsForLocalProvider,
 } from "@mono-agent/runtime-adapter";
@@ -338,6 +339,20 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
   const sessionOptions: AgentHarnessSessionOptionsWithEvents = {
     mode: config.runtime.session.mode,
     idleTimeoutMs: config.runtime.session.idleTimeoutMs,
+    // A fallback can execute after the primary has already failed. If any
+    // configured route is non-resumable, keep the whole harness stateless so
+    // every attempt receives replayable history instead of relying on a warm
+    // provider transcript that the fallback cannot access.
+    supportsResume: [model, ...(config.runtime.fallbackModels ?? [])].every((routeModel, index) => {
+      try {
+        return monoRuntimeSupportsSessionResume(
+          routeModel,
+          index === 0 ? executionMode as RuntimeExecutionMode : undefined,
+        );
+      } catch {
+        return false;
+      }
+    }),
     ...(config.runtime.session.isolateProactive === undefined
       ? {}
       : { isolateProactive: config.runtime.session.isolateProactive }),

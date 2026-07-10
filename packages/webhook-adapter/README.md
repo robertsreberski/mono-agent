@@ -48,7 +48,7 @@ curl -X POST "$WEBHOOK_URL/webhook/invoke" \
 
 Async mode returns `202` with `requestId` and `statusUrl`; status is process-local memory and is not durable across restarts.
 
-Webhook response metadata contains channel-safe run diagnostics such as the run id and status. Compiled system prompts are retained only in local run artifacts and are never returned by this external HTTP API.
+Webhook response metadata contains channel-safe run diagnostics such as the run id and status. Compiled system prompts are retained only in local run artifacts and are never returned by this external HTTP API. As defense in depth, the adapter removes `metadata.summary.systemPrompt` even when a custom responder supplies it; sibling summary fields and unrelated metadata are preserved.
 
 ## Per-webhook prompt
 

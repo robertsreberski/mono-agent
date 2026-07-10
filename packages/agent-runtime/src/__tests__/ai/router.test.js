@@ -182,6 +182,77 @@ describe("createRouterRuntime — fallback on retryable", () => {
     expect(executeMock).toHaveBeenCalledTimes(2);
   });
 
+  it("fails over from a direct OpenCode provider-auth result to the next route", async () => {
+    executeMock
+      .mockResolvedValueOnce({
+        text: null,
+        error: "Sign in to GitHub Copilot.",
+        failureKind: "provider_auth",
+        events: [],
+        cancelled: false,
+      })
+      .mockResolvedValueOnce({
+        text: "recovered through Pi",
+        events: [],
+        failureKind: null,
+      });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "opencode", provider: "github-copilot", model: "gpt-5.1" },
+        { sdk: "pi", provider: "opencode-go", model: "kimi-k2.6" },
+      ],
+    });
+
+    const result = await router.run("sys", { messages: [] });
+
+    expect(result.text).toBe("recovered through Pi");
+    expect(result.failoverHistory).toEqual([
+      expect.objectContaining({
+        model: expect.objectContaining({ sdk: "opencode", provider: "github-copilot" }),
+        failureKind: "provider_auth",
+      }),
+    ]);
+    expect(executeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("strips foreign session state before a non-resumable OpenCode fallback", async () => {
+    executeMock
+      .mockResolvedValueOnce({
+        text: null,
+        error: "Connection error.",
+        failureKind: "provider_unavailable",
+        events: [],
+        cancelled: false,
+      })
+      .mockResolvedValueOnce({ text: "recovered", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "pi", provider: "openai-codex", model: "gpt-5.5" },
+        { sdk: "opencode", provider: "github-copilot", model: "gpt-5.1" },
+      ],
+    });
+
+    const result = await router.run("sys", {
+      messages: [],
+      sessionId: "host-session",
+      providerSessionId: "pi-provider-session",
+      sessionKeepAlive: true,
+      sessionIdleTimeoutMs: 60_000,
+    });
+
+    expect(result.text).toBe("recovered");
+    expect(executeMock.mock.calls[0][1]).toMatchObject({
+      sessionId: "host-session",
+      providerSessionId: "pi-provider-session",
+      sessionKeepAlive: true,
+      sessionIdleTimeoutMs: 60_000,
+    });
+    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("sessionId");
+    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("providerSessionId");
+    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("sessionKeepAlive");
+    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("sessionIdleTimeoutMs");
+  });
+
   it("normalizes auth-shaped provider_unavailable failures before falling back", async () => {
     executeMock
       .mockResolvedValueOnce({
@@ -285,6 +356,47 @@ describe("createRouterRuntime — transcript replay on fallback", () => {
     expect(callPrompts[1]).toContain("first attempt");
     expect(callPrompts[1]).toContain("Original system prompt");
   });
+
+  it("does not duplicate a pending snapshot across a bridge mismatch", async () => {
+    const prompts = [];
+    executeMock.mockImplementationOnce(async (prompt) => {
+      prompts.push(prompt);
+      return {
+        text: null,
+        error: "Connection error.",
+        failureKind: "provider_unavailable",
+        events: [{ type: "assistant", message: { content: [{ type: "text", text: "first attempt" }] } }],
+        cancelled: false,
+      };
+    }).mockImplementationOnce(async (prompt) => {
+      prompts.push(prompt);
+      return {
+        text: null,
+        error: "unsupported option",
+        failureKind: "skipped_capability_mismatch",
+        events: [],
+        cancelled: false,
+      };
+    }).mockImplementationOnce(async (prompt) => {
+      prompts.push(prompt);
+      return { text: "ok", events: [], failureKind: null };
+    });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "claude", model: "first" },
+        { sdk: "claude", model: "mismatch" },
+        { sdk: "pi", provider: "openai", model: "success" },
+      ],
+    });
+
+    const result = await router.run("Original system prompt", { messages: [] });
+
+    expect(result.text).toBe("ok");
+    expect(prompts).toHaveLength(3);
+    expect(prompts[1].match(/<resume_context>/gu)).toHaveLength(1);
+    expect(prompts[2].match(/<resume_context>/gu)).toHaveLength(1);
+    expect(prompts[2]).toContain("first attempt");
+  });
 });
 
 describe("createRouterRuntime — capability filtering", () => {
@@ -314,6 +426,123 @@ describe("createRouterRuntime — capability filtering", () => {
     expect(executeMock).not.toHaveBeenCalled();
     expect(result.failureKind).toBe("skipped_capability_mismatch");
     expect(result.failoverHistory).toHaveLength(2);
+  });
+
+  it.each([
+    ["structured output", { outputSchema: {} }],
+    ["MCP", { mcpServers: { filesystem: { command: "server" } } }],
+    ["skills", { skills: [{ name: "deploy" }] }],
+    ["live input", { liveInput: true }],
+    ["fast mode", { fastMode: true }],
+    ["native subagents", { nativeSubagents: { teammates: [{ name: "researcher" }] } }],
+  ])("skips OpenCode and reaches a capable fallback for request-required %s", async (_label, required) => {
+    executeMock.mockResolvedValueOnce({ text: "capable", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "opencode", provider: "github-copilot", model: "gpt-5.1" },
+        { sdk: "codex", model: "gpt-5.5" },
+      ],
+    });
+
+    const result = await router.run("sys", { messages: [], ...required });
+
+    expect(result.text).toBe("capable");
+    expect(result.failoverHistory[0]).toMatchObject({
+      model: expect.objectContaining({ sdk: "opencode" }),
+      failureKind: "skipped_capability_mismatch",
+    });
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(executeMock.mock.calls[0][1].model.sdk).toBe("codex");
+  });
+
+  it("continues when a bridge itself returns a capability mismatch", async () => {
+    executeMock
+      .mockResolvedValueOnce({
+        text: null,
+        error: "unsupported option",
+        failureKind: "skipped_capability_mismatch",
+        events: [{ type: "assistant", message: { content: [{ type: "text", text: "must not snapshot" }] } }],
+        cancelled: false,
+      })
+      .mockResolvedValueOnce({ text: "recovered", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "claude", model: "first" },
+        { sdk: "pi", provider: "openai", model: "second" },
+      ],
+    });
+
+    const result = await router.run("sys", { messages: [] });
+
+    expect(result.text).toBe("recovered");
+    expect(result.failoverHistory[0].failureKind).toBe("skipped_capability_mismatch");
+    expect(executeMock.mock.calls[1][0]).toBe("sys");
+    expect(executeMock.mock.calls[1][1].diagnosticsSeed).toBeUndefined();
+  });
+
+  it("returns capability mismatch rather than availability exhaustion when every route skips", async () => {
+    const router = createRouterRuntime({
+      chain: [{ sdk: "opencode", provider: "github-copilot", model: "gpt-5.1" }],
+    });
+
+    const result = await router.run("sys", {
+      messages: [],
+      mcpServers: { filesystem: { command: "server" } },
+    });
+
+    expect(result.failureKind).toBe("skipped_capability_mismatch");
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+
+  it("request-implied capabilities override a contradictory requires=false pin", async () => {
+    executeMock.mockResolvedValueOnce({ text: "capable", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      chain: [
+        {
+          model: { sdk: "opencode", provider: "github-copilot", model: "gpt-5.1" },
+          requires: { supports_mcp: false },
+        },
+        { sdk: "codex", model: "gpt-5.5" },
+      ],
+    });
+
+    const result = await router.run("sys", {
+      messages: [],
+      mcpServers: { filesystem: { command: "server" } },
+    });
+
+    expect(result.text).toBe("capable");
+    expect(result.failoverHistory[0].failureKind).toBe("skipped_capability_mismatch");
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(executeMock.mock.calls[0][1].model.sdk).toBe("codex");
+  });
+
+  it("exhausts after a real provider failure when every remaining route skips", async () => {
+    executeMock.mockResolvedValueOnce({
+      text: null,
+      error: "Connection error.",
+      failureKind: "provider_unavailable",
+      events: [],
+      cancelled: false,
+    });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "claude", model: "first" },
+        { sdk: "opencode", provider: "github-copilot", model: "gpt-5.1" },
+      ],
+    });
+
+    const result = await router.run("sys", {
+      messages: [],
+      mcpServers: { filesystem: { command: "server" } },
+    });
+
+    expect(result.failureKind).toBe("provider_unavailable_exhausted");
+    expect(result.failoverHistory.map((entry) => entry.failureKind)).toEqual([
+      "provider_unavailable",
+      "skipped_capability_mismatch",
+    ]);
+    expect(executeMock).toHaveBeenCalledTimes(1);
   });
 
   it("skips a pi fallback when native-subagent teammates are required (F1)", async () => {

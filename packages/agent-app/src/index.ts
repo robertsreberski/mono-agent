@@ -56,7 +56,15 @@ export type {
   TraceabilityStatus,
 } from "./app.js";
 export { initMonoAgentFolder } from "./init.js";
-export type { InitMonoAgentFolderOptions, InitMonoAgentFolderResult } from "./init.js";
+export type {
+  InitFileChange,
+  InitFileChangeKind,
+  InitMonoAgentFolderOptions,
+  InitMonoAgentFolderResult,
+  SecretEnvRefusalCode,
+  SecretPersistenceOutcome,
+  SecretPersistenceStatus,
+} from "./init.js";
 export { validateMonoAgentFolder } from "./doctor.js";
 export type {
   ValidateMonoAgentFolderOptions,
@@ -76,7 +84,7 @@ export type {
   ConsumerContractName,
   ConsumerContractSectionStatus,
 } from "./consumer-contract.js";
-export { parseCliArgs, runCli, loadCliEnvFile, ensureStartable, renderHelp, printAppStatus } from "./cli.js";
+export { ensureStartable, loadCliEnvFile, parseCliArgs, printAppStatus, renderHelp, runCli } from "./cli.js";
 export type { PreflightResult } from "./cli.js";
 export { badge, channelBadge, computeColorEnabled, healthBadge, isColorEnabled, keyValue, rule, style } from "./ui.js";
 export { COMPOSER_SKILL_NAME, installComposerSkill } from "./install-skill.js";

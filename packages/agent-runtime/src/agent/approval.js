@@ -30,7 +30,7 @@ export const RISK_TIERS = Object.freeze(["low", "medium", "high"]);
 const DEFAULT_TIMEOUT_MS = 60_000;
 
 /**
- * @param {{onToolApprovalRequest?: any, defaultRiskTier?: string, timeoutMs?: number, onEvent?: (event: any) => void, riskTiersByTool?: any, alwaysAllowTools?: any}} [options]
+ * @param {{onToolApprovalRequest?: any, defaultRiskTier?: string, timeoutMs?: number, onEvent?: (event: any) => void, riskTiersByTool?: any, alwaysAllowTools?: any, autoApproveLowRisk?: boolean}} [options]
  */
 export function createApprovalManager({
   onToolApprovalRequest = null,
@@ -39,6 +39,7 @@ export function createApprovalManager({
   onEvent = () => {},
   riskTiersByTool = {},
   alwaysAllowTools = [],
+  autoApproveLowRisk = true,
 } = {}) {
   const sessionAllowlist = new Set(normaliseList(alwaysAllowTools));
   const normalisedTiersByTool = Object.fromEntries(
@@ -63,24 +64,34 @@ export function createApprovalManager({
     const toolName = String(toolCall.toolName || toolCall.name || "");
     const toolUseId = toolCall.toolUseId || toolCall.id || null;
     const tier = riskTierFor(toolName);
+    const requestId = toolCall.requestId || randomUUID();
 
-    if (tier === "low") {
-      return { decision: "approve", reason: "low_risk", riskTier: tier };
+    if (tier === "low" && autoApproveLowRisk !== false) {
+      emitGrant({ requestId, toolName, toolUseId, tier, decision: "approve", reason: "low_risk" });
+      return { decision: "approve", reason: "low_risk", requestId, riskTier: tier };
     }
 
     if (sessionAllowlist.has(toolName)) {
-      return { decision: "approve", reason: "session_allowed", riskTier: tier };
+      emitGrant({ requestId, toolName, toolUseId, tier, decision: "approve", reason: "session_allowed" });
+      return { decision: "approve", reason: "session_allowed", requestId, riskTier: tier };
     }
 
     if (typeof onToolApprovalRequest !== "function") {
       if (tier === "high") {
-        emitDenial({ toolName, toolUseId, tier, reason: "no_host_callback_for_high_risk" });
-        return { decision: "deny", reason: "no_host_callback_for_high_risk", riskTier: tier };
+        emitDenial({ requestId, toolName, toolUseId, tier, reason: "no_host_callback_for_high_risk" });
+        return { decision: "deny", reason: "no_host_callback_for_high_risk", requestId, riskTier: tier };
       }
-      return { decision: "approve", reason: "no_host_callback_medium_auto_approve", riskTier: tier };
+      emitGrant({
+        requestId,
+        toolName,
+        toolUseId,
+        tier,
+        decision: "approve",
+        reason: "no_host_callback_medium_auto_approve",
+      });
+      return { decision: "approve", reason: "no_host_callback_medium_auto_approve", requestId, riskTier: tier };
     }
 
-    const requestId = toolCall.requestId || randomUUID();
     const argumentsSummary = redactSecrets(stringifyShort(toolCall.input || toolCall.arguments || {}));
     const payload = {
       requestId,
@@ -95,18 +106,26 @@ export function createApprovalManager({
 
     let response;
     let timedOut = false;
+    let timer;
     try {
       response = await Promise.race([
         Promise.resolve().then(() => onToolApprovalRequest(payload)),
-        new Promise((_, reject) => setTimeout(() => {
-          timedOut = true;
-          reject(new Error("approval_timeout"));
-        }, timeout).unref?.()),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            reject(new Error("approval_timeout"));
+          }, timeout);
+          timer.unref?.();
+        }),
       ]);
     } catch (err) {
-      const reason = timedOut || err?.message === "approval_timeout" ? "approval_timeout" : `host_error:${err?.message || err}`;
+      const reason = timedOut || err?.message === "approval_timeout"
+        ? "approval_timeout"
+        : `host_error:${redactSecrets(stringifyShort(err?.message || err))}`;
       emitDenial({ requestId, toolName, toolUseId, tier, reason });
       return { decision: "deny", reason, requestId, riskTier: tier };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
 
     const normalised = normaliseResponse(response, tier);
@@ -116,14 +135,13 @@ export function createApprovalManager({
     if (normalised.decision === "deny") {
       emitDenial({ requestId, toolName, toolUseId, tier, reason: normalised.reason });
     } else {
-      emit({
-        type: "tool_approval_granted",
+      emitGrant({
         requestId,
         toolName,
         toolUseId,
+        tier,
         decision: normalised.decision,
         reason: normalised.reason,
-        riskTier: tier,
       });
     }
     return { ...normalised, requestId, riskTier: tier };
@@ -136,6 +154,18 @@ export function createApprovalManager({
       toolName,
       toolUseId,
       decision: "deny",
+      reason,
+      riskTier: tier,
+    });
+  }
+
+  function emitGrant({ requestId, toolName, toolUseId = null, tier, decision, reason }) {
+    emit({
+      type: "tool_approval_granted",
+      requestId,
+      toolName,
+      toolUseId,
+      decision,
       reason,
       riskTier: tier,
     });
@@ -157,7 +187,12 @@ function normaliseResponse(response, tier) {
   const decision = APPROVAL_DECISIONS.includes(response.decision)
     ? response.decision
     : (tier === "high" ? "deny" : "approve");
-  return { decision, reason: typeof response.reason === "string" ? response.reason : null };
+  return {
+    decision,
+    reason: typeof response.reason === "string"
+      ? redactSecrets(response.reason).slice(0, 2000)
+      : null,
+  };
 }
 
 function normaliseList(value) {

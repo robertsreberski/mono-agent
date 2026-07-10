@@ -39,10 +39,10 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // Runtime: primary model plus ordered backups tried on retryable provider
   // failures (failover is reported in run results, never silent).
   "runtime": {
-    "model": "codex:gpt-5.6-terra",        // pi:<provider>:<model> | claude:* | codex:* | opencode:*
+    "model": "pi:openai-codex:gpt-5.6-terra", // pi:<provider>:<model> | claude:* | codex:* | opencode:*
     "fallbackModels": ["pi:opencode-go:kimi-k2.6", "pi:ollama:gemma4:31b"],
-    "executionMode": "cli",                // sdk | cli (default inferred from model)
-    "effort": "medium",                    // none|low|medium|high|xhigh|max
+    "executionMode": "sdk",                // sdk | cli (default inferred from model)
+    "effort": "medium",                    // none|low|medium|high|xhigh|max; omit for direct opencode:*
     "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "workspace": ".",
@@ -117,10 +117,11 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "consolidation": { "enabled": true, "cron": "0 */2 * * *" } // default: every two hours
   },
 
-  // Tool policy (allow-all by default) + MCP servers. Deny wins; overlap is rejected.
+  // Tool policy (allow-all by default) + MCP servers. Direct codex:* normal runs
+  // require this exact allow-all shape; use an enforcing runtime for narrower lists.
   "tools": {
     "allowedTools": ["*"],                 // omit or ["*"] = all tools; ["Read","Bash"] = just those; [] = none (chat-only)
-    "disallowedTools": ["Bash"],           // deny wins even under allow-all; the escape hatch to subtract one tool
+    "disallowedTools": [],                 // deny wins where supported; overlap is rejected
     "mcpConfigPath": "./mcp.json",         // stdio/sse/http servers; inlined for SDK runtimes
     "mcpCallTimeoutMs": 120000,            // inactivity cap per MCP call; tool progress resets it
     "mcpCallMaxTotalTimeoutMs": 2700000    // hard per-call wall clock (45 min); progress cannot extend it
@@ -135,7 +136,9 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "progress": { "enabled": true }
   },
 
-  // Sandbox for runtime commands. Omit for no sandboxing.
+  // Sandbox for Pi-owned runtime commands. Direct codex:* uses its own native
+  // sandbox; Claude/direct opencode:* cannot enforce these srt scopes. All
+  // three provider-owned routes reject this block (pi:opencode-go:* is Pi).
   "sandbox": {
     "mode": "native",                      // native (srt-wrapped) | off
     "network": { "mode": "none", "allowlist": [] }, // none|localhost|allowlist|all; *.suffix wildcards
@@ -310,8 +313,10 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
 ## Lifecycle
 
 ```bash
-mono-agent init --model codex:gpt-5.6-terra --fallback-models pi:opencode-go:kimi-k2.6,pi:ollama:gemma4:31b [--memory lite|journal|bujo]
-mono-agent validate     # per-section report incl. sandbox, observability, every channel; exit 0 means structurally valid
+mono-agent init         # bare TTY wizard: primary model check + strict full Agent ready gate
+mono-agent init --model pi:openai-codex:gpt-5.6-terra --fallback-models pi:opencode-go:kimi-k2.6,pi:ollama:gemma4:31b [--memory lite|journal|bujo]
+                        # any flag/non-TTY is scaffold-only and makes no readiness claim
+mono-agent validate     # section report; exit 0 means structurally valid, not zero waiting dependencies
 mono-agent validate --consumer ../local-agent-alpha  # read-only report for a downstream folder
 mono-agent start        # traceability + every configured channel
 mono-agent restart      # apply config edits (config is JSON-first; restart to re-apply)

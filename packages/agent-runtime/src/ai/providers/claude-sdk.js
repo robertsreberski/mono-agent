@@ -14,6 +14,10 @@ import {
   claudeNativeAgentDefinitions,
   resolveClaudeAllowedTools,
 } from "./claude-subagents.js";
+import {
+  claudeSandboxCapabilityMismatchResult,
+  claudeSandboxPolicyProblem,
+} from "./claude-sandbox.js";
 
 function thinkingForEffort(effort) {
   if (effort === "low") return { thinking: { type: "disabled" } };
@@ -406,6 +410,16 @@ export async function generateClaudeResponse(systemPrompt, options) {
     abortSignal,
     onEvent = () => {},
   } = options;
+
+  if (claudeSandboxPolicyProblem(options)) {
+    return claudeSandboxCapabilityMismatchResult({
+      model: model.reference || `claude:${model.model}`,
+      effort,
+      sdk: "claude",
+      providerSessionId: pickSessionId(options.sessionId, options.providerSessionId),
+      outputSchema: options.outputSchema,
+    });
+  }
 
   const thinkingOpts = thinkingForEffort(effort);
 

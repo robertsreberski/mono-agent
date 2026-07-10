@@ -107,6 +107,10 @@
  * The options object a host passes to `createRuntime(host).run(systemPrompt, options)`.
  * @property {RuntimeModelRef} model                     Resolved model reference; see parseRuntimeModelReference.
  * @property {string} [executionMode]                     "sdk" (default) or "cli"; selects which bridge variant handles the model.
+ * @property {string} [sessionId]                         Host conversation/session key for resumable bridges.
+ * @property {string} [providerSessionId]                 Provider-owned resume id for resumable bridges.
+ * @property {boolean} [sessionKeepAlive]                 Keep resumable provider state alive after the turn.
+ * @property {number} [sessionIdleTimeoutMs]              Idle TTL for resumable provider state.
  * @property {boolean} [liveInput]                        Whether this run expects a live/streaming input channel.
  * @property {ReadonlyArray<*>} [observers]               Per-call observers (see RuntimeObserver) merged with host-level (createRuntime) observers.
  * @property {(event: RuntimeEvent) => void} [onEvent]
@@ -115,6 +119,7 @@
  * @property {boolean} [fastMode]
  * @property {string} [cwd]
  * @property {Object<string, Object>} [mcpServers]
+ * @property {ReadonlyArray<Object>} [skills]             Runtime skill metadata for progressive disclosure.
  * @property {ReadonlyArray<string>} [allowedTools]
  * @property {ReadonlyArray<string>} [disallowedTools]
  * @property {string} [permissionMode]
@@ -299,4 +304,4 @@
  * @property {() => Promise<void>} disposeAllSessions
  */
 
-export const PROVIDER_KIND_VALUES = ["claude", "pi", "codex"];
+export const PROVIDER_KIND_VALUES = ["claude", "pi", "codex", "opencode"];

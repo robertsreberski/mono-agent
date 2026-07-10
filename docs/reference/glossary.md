@@ -55,11 +55,17 @@ The retry layer that, on a fallback-eligible provider failure (including provide
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",
-    "fallbackModels": ["pi:opencode-go:kimi-k2.6", "codex:gpt-5.5"]
+    "model": "pi:openai-codex:gpt-5.6-terra",
+    "fallbackModels": ["pi:opencode-go:kimi-k2.6", "pi:ollama:gemma4:31b"]
   }
 }
 ```
+
+Direct `codex:*` references form a separate safety family: a chain containing one
+must contain only direct Codex references. Pi, Claude, and direct OpenCode may
+share a chain only when no mono-agent native sandbox is configured; Claude and
+direct OpenCode do not project `srt` filesystem or network policy into their
+provider-owned tool loops. Pi `pi:opencode-go:*` is sandbox-compatible.
 
 See [Fallback](/runtime/fallback/).
 
@@ -69,7 +75,7 @@ The execution engine (`@mono-agent/agent-harness`) that runs a single turn again
 
 ## Model reference
 
-The string that names a backend and model together, in the form `backend:model` (or `backend:provider:model` for pi). Examples: `pi:openai-codex:gpt-5.5`, `pi:opencode-go:kimi-k2.6`, `codex:gpt-5.5`. Set via `runtime.model` (`MONO_AGENT_MODEL`). See [Backends](/runtime/backends/).
+The string that names a backend and model together, in the form `backend:model` (or `backend:provider:model` for pi). Examples: `pi:openai-codex:gpt-5.6-terra`, `pi:opencode-go:kimi-k2.6`, `codex:gpt-5.6-terra`. Set via `runtime.model` (`MONO_AGENT_MODEL`). See [Backends](/runtime/backends/).
 
 ## OpenInference
 
@@ -114,6 +120,11 @@ The sandbox runtime that wraps executed commands when `sandbox.mode: "native"` i
 ```
 
 Env: `MONO_AGENT_SANDBOX_MODE`, `MONO_AGENT_SANDBOX_FALLBACK`. See [Sandbox](/tools/sandbox/).
+
+The native `srt` contract applies to Pi-owned mono-agent tools. Direct Codex uses
+its own network-off sandbox and rejects this config block; Claude and direct
+OpenCode reject it because their provider-owned tool loops cannot enforce the
+same scopes.
 
 ## Trace source
 

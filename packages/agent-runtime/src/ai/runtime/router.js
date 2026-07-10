@@ -91,8 +91,11 @@ export function createRouterRuntime({ host = {}, chain = [] } = {}) {
       const failoverHistory = [];
       /** @type {RuntimeResult|null} */
       let lastResult = null;
+      /** @type {RuntimeResult|null} */
+      let lastCapabilityMismatch = null;
+      let promptBase = systemPrompt;
       /** @type {*} */
-      let resumeSnapshot = null;
+      let pendingSnapshot = null;
 
       for (let i = 0; i < entries.length; i += 1) {
         const entry = entries[i];
@@ -110,18 +113,25 @@ export function createRouterRuntime({ host = {}, chain = [] } = {}) {
           model: entry.model,
           executionMode: entry.executionMode || options.executionMode,
         };
-        if (resumeSnapshot) {
+        if (!entrySupportsSessionResume(entry)) {
+          delete callOptions.sessionId;
+          delete callOptions.providerSessionId;
+          delete callOptions.sessionKeepAlive;
+          delete callOptions.sessionIdleTimeoutMs;
+        }
+        let attemptSystemPrompt = promptBase;
+        if (pendingSnapshot) {
           callOptions.diagnosticsSeed = {
             ...(callOptions.diagnosticsSeed || {}),
-            resume_snapshot: resumeSnapshot,
+            resume_snapshot: pendingSnapshot,
           };
           // Also prepend the rendered snapshot to the system prompt so SDK
           // backends that don't read diagnosticsSeed still continue from the
           // previous attempt.
-          const rendered = renderResumeSnapshot(resumeSnapshot);
+          const rendered = renderResumeSnapshot(pendingSnapshot);
           if (rendered) {
             callOptions.systemPromptPrefix = rendered;
-            systemPrompt = `${rendered}\n\n${systemPrompt}`;
+            attemptSystemPrompt = `${rendered}\n\n${promptBase}`;
           }
         }
 
@@ -136,7 +146,7 @@ export function createRouterRuntime({ host = {}, chain = [] } = {}) {
 
         let result;
         try {
-          result = await inner.run(systemPrompt, callOptions);
+          result = await inner.run(attemptSystemPrompt, callOptions);
         } catch (err) {
           // The inner runtime usually surfaces errors as structured result
           // fields, but a bridge can still throw synchronously (e.g. spawn
@@ -178,6 +188,12 @@ export function createRouterRuntime({ host = {}, chain = [] } = {}) {
           requestId: retryability.requestId,
           retryableSubkind: retryability.subkind,
         });
+        if (result.failureKind === "skipped_capability_mismatch") {
+          lastCapabilityMismatch = result;
+          // A bridge-level mismatch is about this route, not the logical run.
+          // Try the next entry and do not derive a transcript snapshot from it.
+          continue;
+        }
         lastResult = result;
 
         // Provider auth is terminal for one provider, but chain-retryable: a
@@ -193,10 +209,15 @@ export function createRouterRuntime({ host = {}, chain = [] } = {}) {
         // next provider can continue. If the run produced no usable events,
         // skip the snapshot (the next attempt starts fresh).
         const snapshot = buildTranscriptTailSnapshot(result.events, { runtimeBrand });
-        if (snapshot) resumeSnapshot = snapshot;
+        // Commit the context this real provider attempt saw, then queue only
+        // its newly produced snapshot for the next attempt. A bridge mismatch
+        // takes the earlier continue path, so it neither consumes nor duplicates
+        // the pending snapshot.
+        promptBase = attemptSystemPrompt;
+        pendingSnapshot = snapshot || null;
       }
 
-      const exhaustedResult = lastResult || {
+      const exhaustedResult = lastResult || lastCapabilityMismatch || {
         text: null,
         events: [],
         error: "router chain exhausted with no executions",
@@ -263,18 +284,39 @@ function entrySatisfiesRequirements(entry, options) {
   // one today) still respects option-implied capability needs. Each option
   // inference defers to an explicit entry pin, never overriding it.
   const effectiveRequires = { ...(requires || null) };
-  // Honour request-time outputSchema → require structured_output unless the
-  // entry already pins it.
-  if (options.outputSchema && effectiveRequires.structured_output === undefined) {
+  // Infer required capabilities from request-time options. These requirements
+  // override a contradictory entry pin (`requires: false`): the caller's actual
+  // request cannot be silently weakened. Empty JSON Schema `{}` still counts.
+  if (
+    options.outputSchema !== undefined
+    && options.outputSchema !== null
+  ) {
     effectiveRequires.structured_output = true;
   }
-  // Honour native-subagent teammates → require supports_native_subagents unless
-  // the entry already pins it. A pi entry (supports_native_subagents:false) then
-  // fails here rather than silently dropping the teammates.
+  if (
+    options.mcpServers !== undefined
+    && options.mcpServers !== null
+    && Object.keys(options.mcpServers).length > 0
+  ) {
+    effectiveRequires.supports_mcp = true;
+  }
+  if (
+    Array.isArray(options.skills)
+    && options.skills.length > 0
+  ) {
+    effectiveRequires.supports_skills = true;
+  }
+  if (options.liveInput) {
+    effectiveRequires.supports_live_input = true;
+  }
+  if (options.fastMode === true) {
+    effectiveRequires.supports_fast_mode = true;
+  }
+  // Native teammates likewise require a capable route; Pi/OpenCode must skip
+  // rather than silently dropping them.
   if (
     Array.isArray(options.nativeSubagents?.teammates)
     && options.nativeSubagents.teammates.length > 0
-    && effectiveRequires.supports_native_subagents === undefined
   ) {
     effectiveRequires.supports_native_subagents = true;
   }
@@ -289,6 +331,22 @@ function entrySatisfiesRequirements(entry, options) {
     if (caps[key] !== expected) return false;
   }
   return true;
+}
+
+/**
+ * Session identifiers belong to the bridge that created them. Never forward
+ * one into a bridge that declares no resume support (notably isolated
+ * per-run OpenCode), including when that bridge is reached through fallback.
+ * Unknown SDKs retain the existing fail-later behavior.
+ * @param {RouterChainEntry} entry
+ * @returns {boolean}
+ */
+function entrySupportsSessionResume(entry) {
+  try {
+    return runtimeCapabilities(entry.model).supports_session_resume === true;
+  } catch {
+    return true;
+  }
 }
 
 /**

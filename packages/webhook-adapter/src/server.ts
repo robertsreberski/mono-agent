@@ -279,7 +279,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
         res.status(404).json({ status: "not_found", requestId });
         return;
       }
-      res.status(200).json(stored.status);
+      res.status(200).json(sanitizeWebhookInvocationStatus(stored.status));
     });
   }
   app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
@@ -414,7 +414,8 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       return activeByRun.size;
     },
     getStatus(requestId: string): WebhookInvocationStatus | undefined {
-      return statuses.get(requestId)?.status;
+      const status = statuses.get(requestId)?.status;
+      return status === undefined ? undefined : sanitizeWebhookInvocationStatus(status);
     },
     async stop() {
       for (const active of activeByRun.values()) {
@@ -536,9 +537,12 @@ async function runResponder(input: {
       input.activeByRun.delete(input.runKey);
     }
   }
+  // Every external destination receives its own sanitized copy. Keeping the
+  // store, callback, and HTTP result separate also prevents an onResult hook
+  // from mutating the status later returned by the status endpoint.
   setStatus(input.statuses, status, input.retentionMs, input.maxStoredRequests);
-  emitResult(input, status);
-  return status;
+  emitResult(input, sanitizeWebhookInvocationStatus(status));
+  return sanitizeWebhookInvocationStatus(status);
 }
 
 function emitResult(input: {
@@ -601,8 +605,134 @@ function setStatus(
   retentionMs: number,
   maxStoredRequests: number,
 ): void {
-  statuses.set(status.requestId, { status, updatedAtMs: Date.now() });
+  statuses.set(status.requestId, {
+    status: sanitizeWebhookInvocationStatus(status),
+    updatedAtMs: Date.now(),
+  });
   pruneStatuses(statuses, retentionMs, maxStoredRequests);
+}
+
+/**
+ * A webhook responder is only structurally typed and may be supplied by a host,
+ * so treat its metadata as untrusted at the HTTP boundary. The reserved
+ * `metadata.summary.systemPrompt` field is private recorder data; remove exactly
+ * that field while preserving every sibling and unrelated metadata branch.
+ */
+function sanitizeWebhookInvocationStatus(status: WebhookInvocationStatus): WebhookInvocationStatus {
+  if (status.status !== "succeeded" || status.metadata === undefined) {
+    return { ...status };
+  }
+  return {
+    ...status,
+    metadata: sanitizeWebhookResponseMetadata(status.metadata),
+  };
+}
+
+function sanitizeWebhookResponseMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
+  const snapshot = jsonSafeSnapshot(metadata);
+  const externalMetadata = isRecord(snapshot) ? snapshot : {};
+  const summary = externalMetadata.summary;
+  if (summary === undefined) {
+    return externalMetadata;
+  }
+  // Only an ordinary JSON object is a valid summary. Arrays, functions,
+  // primitives, accessors, cyclic values, and other malformed shapes are
+  // removed rather than handed to JSON.stringify where a serialization hook
+  // could reconstruct the reserved field.
+  if (!isRecord(summary)) {
+    delete externalMetadata.summary;
+    return externalMetadata;
+  }
+  delete summary.systemPrompt;
+  return externalMetadata;
+}
+
+type JsonSafeValue = null | boolean | number | string | JsonSafeValue[] | JsonSafeObject;
+interface JsonSafeObject {
+  [key: string]: JsonSafeValue;
+}
+
+const MAX_JSON_SNAPSHOT_DEPTH = 64;
+
+/**
+ * Clone untrusted responder metadata without invoking getters or `toJSON`.
+ * Every sanitizer call builds a fresh graph, so the store, callback, HTTP
+ * response and programmatic status APIs never share nested mutable objects.
+ * Unsupported object properties are omitted; unsupported array entries become
+ * null, matching JSON's fail-closed container behavior.
+ */
+function jsonSafeSnapshot(
+  value: unknown,
+  ancestors: ReadonlySet<object> = new Set(),
+  depth = 0,
+): JsonSafeValue | undefined {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value !== "object" || depth >= MAX_JSON_SNAPSHOT_DEPTH || ancestors.has(value)) {
+    return undefined;
+  }
+  try {
+    if (value instanceof Date) {
+      return Date.prototype.toISOString.call(value);
+    }
+  } catch {
+    return undefined;
+  }
+
+  const nextAncestors = new Set(ancestors);
+  nextAncestors.add(value);
+  if (Array.isArray(value)) {
+    let length: number;
+    try {
+      length = value.length;
+    } catch {
+      return undefined;
+    }
+    const snapshot: JsonSafeValue[] = [];
+    for (let index = 0; index < length; index += 1) {
+      let descriptor: PropertyDescriptor | undefined;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      } catch {
+        snapshot.push(null);
+        continue;
+      }
+      if (descriptor === undefined || !("value" in descriptor)) {
+        snapshot.push(null);
+        continue;
+      }
+      snapshot.push(jsonSafeSnapshot(descriptor.value, nextAncestors, depth + 1) ?? null);
+    }
+    return snapshot;
+  }
+
+  let descriptors: PropertyDescriptorMap;
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(value);
+  } catch {
+    return undefined;
+  }
+  const snapshot = Object.create(null) as JsonSafeObject;
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (descriptor.enumerable !== true || !("value" in descriptor)) {
+      continue;
+    }
+    const child = jsonSafeSnapshot(descriptor.value, nextAncestors, depth + 1);
+    if (child === undefined) {
+      continue;
+    }
+    Object.defineProperty(snapshot, key, {
+      value: child,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return snapshot;
 }
 
 function pruneStatuses(

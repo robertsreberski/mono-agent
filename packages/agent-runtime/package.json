@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/agent-runtime",
   "version": "0.6.2",
-  "description": "Agent runtime supporting Claude SDK, Claude CLI, Codex CLI, and PI SDK out of the box",
+  "description": "Agent runtime supporting Claude SDK/CLI, Codex, OpenCode, and Pi SDK bridges out of the box",
   "type": "module",
   "license": "GPL-3.0-only",
   "keywords": [
@@ -136,6 +136,7 @@
     "@earendil-works/pi-ai": "^0.80.5",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@opencode-ai/sdk": "^1.15.13",
+    "cross-spawn": "^7.0.6",
     "zod": "^4.3.6"
   }
 }

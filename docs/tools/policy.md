@@ -29,18 +29,22 @@ If you set no `tools` block, or omit `allowedTools`, the agent can call **every*
 
 An explicit empty list is still expressible and still meaningful: `"allowedTools": []` means the agent can hold a conversation but cannot read files, run commands, or send proactively. [`validate` / `doctor`](/observability/cli-reference/#validate) reports that as `waiting` (never a silent `ok`) so an accidental empty list surfaces, while allow-all reports `All tools allowed.`
 
+In guided init, **Allow all tools** remains the default product choice. Pi/Claude flows explicitly name the resulting shell, file, web, and enabled channel-send surface before accepting it. If no enforceable sandbox constrains that runtime, a second confirmation is required before continuing; the review never presents allow-all as a risk-free default. Direct Codex skips the tool and mono-srt prompts because normal runs require exact allow-all and use the Codex-native network-off workspace sandbox.
+
 :::note
 Allow-all is the **config** default, not a programmatic one. For code-defined agents built directly on `@mono-agent/agent-harness`, the no-config safety net is the opposite: `failClosedToolPolicy()` returns `{ allowedTools: [], disallowedTools: [] }` — an empty, fail-closed policy — so a harness constructed with no policy starts with zero tools until you pass one. The allow-all default lives in the config loader, not the harness.
 :::
 
 :::caution
-**Enforcement varies by runtime.** The two guarantees above — `[]` yields a chat-only agent, and a specific list restricts to exactly those names — are enforced in full only on the **pi-native** runtime.
+**Enforcement varies by runtime.** Unsupported combinations fail before provider startup instead of silently widening the tool surface.
 
 - **pi-native** — both guarantees hold: `[]` is a true chat-only agent, and a specific list is the agent's complete tool surface.
-- **Claude Code** CLI — a specific non-empty list is passed as `--tools` and *does* restrict, but `[]` omits `--tools`, so Claude Code falls back to its **full default toolset** (auto-approved under a permissive `permissionMode`). To constrain it, use `disallowedTools` or a stricter `permissionMode` rather than relying on `[]`.
-- **Codex** CLI — `allowedTools` (`[]`, a specific list, or `["*"]`) is inert for Codex's own native tools; the tool policy does not gate them.
+- **Claude SDK** — both guarantees hold through the SDK's native tool options.
+- **Claude Code** CLI — a specific non-empty list is passed as `--tools` and restricts the surface; `disallowedTools` reaches the native denylist. An explicit `[]` cannot represent chat-only in that CLI and is therefore rejected by validation and runtime before spawn.
+- **Codex** CLI — the app-server cannot enforce arbitrary mono-agent name lists. Normal direct `codex:*` runs are accepted only with exact allow-all (`["*"]` or omitted, with no `disallowedTools`). A specific list, `[]`, or any denylist fails validation and runtime startup with a capability mismatch; mono-agent never silently widens it. Choose another runtime for a restrictive policy.
+- **Direct OpenCode** — the app-server bridge likewise requires exact allow-all (`["*"]` or omitted, with no `disallowedTools`). Restrictive policies fail validation and runtime before the OpenCode server is created. `pi:opencode-go:*` is a Pi runtime and supports Pi's full policy instead.
 
-`disallowedTools` still filters mono-agent's built-in, skill, and adapter send tools on every runtime (see [Deny is enforced on every runtime](#deny-is-enforced-on-every-runtime)).
+The guided direct-Codex primary-model check is not an exception operators can reuse: it is a dedicated internal contract with a read-only sandbox, approval policy `never`, no MCP/dynamic tools, a disposable session, and interruption/failure on the first tool-action event.
 :::
 
 ## allowedTools / disallowedTools
@@ -69,9 +73,9 @@ Each list must contain unique, non-empty strings; duplicate names within a singl
 The example above keeps allow-all (every tool stays available) but denies `Bash` — the agent can read, edit, fetch, and send, just not run shell commands. To go the other way and hand-pick a minimal surface, list the exact names in `allowedTools` instead.
 :::
 
-## Deny is enforced on every runtime
+## Deny enforcement by runtime
 
-`disallowedTools` is honored on **every** runtime, including the pi-native bridge. It filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, and the app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …). The **Claude Code** CLI runtime additionally passes `--disallowedTools` down to the underlying CLI, so the denial reaches the tools Claude Code itself exposes. The **Codex** CLI runtime passes **no** tool denylist flag — there, `disallowedTools` still filters mono-agent's built-in, skill, and adapter send tools, but it does **not** gate the Codex CLI's own native tools.
+`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …) on runtimes that expose those tools through mono-agent. The **Claude Code** CLI additionally receives `--disallowedTools`, so the denial reaches its native tools. Pi-native honors the list for built-ins and adapter tools. Direct Codex has no corresponding native denylist boundary, so configurations containing `disallowedTools` are rejected rather than partially enforced.
 
 :::caution
 **Known limitation — external MCP tools on pi.** Arbitrary tools advertised by an external MCP server are **not** deny-filtered on the pi-native runtime yet. Listing such a tool in `disallowedTools` has no effect there. To hard-restrict an external MCP tool on pi, **don't declare its server** in `mcp.json` / `tools.mcpServers` — server declaration, not the denylist, is what governs its availability. (The app-owned adapter send tools are exempt from this limitation: they are gated by the app, so their `disallowedTools` entries are honored everywhere.)
@@ -123,7 +127,7 @@ The allow/deny lists can be supplied via environment variables (coverage: `confi
 | `MONO_AGENT_ALLOWED_TOOLS` | `tools.allowedTools` |
 | `MONO_AGENT_DISALLOWED_TOOLS` | `tools.disallowedTools` |
 
-The same rules apply through the environment: an **unset** `MONO_AGENT_ALLOWED_TOOLS` keeps the allow-all default, an empty value (`MONO_AGENT_ALLOWED_TOOLS=""`) is the explicit chat-only `[]`, and deny-wins / overlap-rejection are unchanged. See [Environment variables](/config/env-vars/).
+The same rules apply through the environment: an **unset** `MONO_AGENT_ALLOWED_TOOLS` keeps the allow-all default, while an empty value (`MONO_AGENT_ALLOWED_TOOLS=""`) requests explicit chat-only `[]`. That request is valid on Pi/Claude SDK and rejected on direct Codex, direct OpenCode, and Claude Code CLI because those boundaries cannot enforce it. Deny-wins / overlap-rejection are otherwise unchanged. See [Environment variables](/config/env-vars/).
 
 ## Back-compat: legacy tool names
 
