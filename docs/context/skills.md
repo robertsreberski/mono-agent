@@ -41,7 +41,7 @@ The folder convention is part of the standard [agent folder layout](/config/fold
 
 `mono-agent init` creates and selects two versioned project-local skills:
 
-- `mono-agent-configure` guides minimal local configuration proposals and refuses secrets or authority expansion in chat.
+- `mono-agent-configure` guides the fail-closed low-risk proposal allowlist and hands paths, tiers/capture, secrets, providers, channels, plugins, MCP, sandbox/network, exporters, and unknown fields to explicit guided setup.
 - `mono-agent-memory` explains the built-in memory tiers, prerequisites, and cost/quality tradeoffs.
 
 Generated agents use `skillDisclosure: "index"`, so their names/descriptions enter the prompt while the bodies load on demand through `ReadSkill`. `ReadSkill` is shown separately from action-tool allowlists because disabling file/shell/web actions does not disable skill disclosure.

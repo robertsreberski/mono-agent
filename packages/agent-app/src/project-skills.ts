@@ -1,6 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  type Stats,
+  unlinkSync,
+} from "node:fs";
+import { lstat, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import type { GeneratedFile } from "./modules/types.js";
 
@@ -34,7 +46,7 @@ Use this skill when the operator asks to configure, tune, or change this agent.
 3. Never ask for API keys, OAuth tokens, passwords, bot tokens, or other secrets in chat. Explain the exact masked mono-agent auth or owner-only .env flow instead.
 4. For a safe local change, call ProposeAgentConfiguration with a short rationale, an RFC 6902 JSON Patch against mono-agent.config.json, and optionally a replacement body for the existing ## Role section in IDENTITY.md.
 5. Do not claim the proposal was applied. The host validates it, shows an out-of-band diff, and requires the operator to approve it.
-6. Do not propose new external MCP servers, plugins, channels or cron/proactive jobs, broader tool/runtime permissions, model-route or provider posture changes, exporters, external memory backends, weaker sandboxing, or network exposure. Those changes require the explicit guided flow named by the host.
+6. Keep config proposals to the host's documented low-risk allowlist: public name; effort, turn/session UX; selected project skills and disclosure; memory size or MemoryRecall enablement; and tool-policy tightening. Paths, memory tier/capture behavior, external MCP servers, plugins, channels or cron/proactive jobs, tool/runtime permissions, model-route or provider posture, embeddings/LLM endpoints, exporters, sandboxing, and network exposure require the explicit guided flow named by the host.
 
 Keep proposals minimal. Preserve unrelated config, existing knowledge references, and every identity section except the optional Role body.
 `;
@@ -58,7 +70,7 @@ MemoryRecall is a read-only tool and is enabled by default whenever a memory tie
 
 Never paste remembered private content into a config proposal. Never request embedding or provider secrets in chat. Hand credential setup to the masked guided flow.
 
-When a safe memory change is clear, use ProposeAgentConfiguration with the smallest RFC 6902 patch. Explain prerequisite services and expected indexing/capture cost before proposing Journal or BuJo. The host, not this skill, decides whether the candidate validates and can be applied.
+Use ProposeAgentConfiguration only to adjust memory.maxBytes or memory.recallTool.enabled. Memory tier, path, write/capture behavior, consolidation, embeddings, LLM, provider, endpoint, and credential changes belong in the explicit guided flow. Explain prerequisite services and expected indexing/capture cost before handing Journal or BuJo setup to that flow. The host, not this skill, decides whether a candidate validates and can be applied.
 `;
 
 export const BUNDLED_PROJECT_SKILLS: readonly BundledProjectSkill[] = [
@@ -95,8 +107,8 @@ export interface UpdateProjectSkillsResult extends CheckProjectSkillsResult {
 }
 
 export interface UpdateManagedProjectSkillsOptions {
-  /** Fault-injection seam; rollback always uses the built-in atomic writer. */
-  readonly writeFile?: (path: string, contents: string) => Promise<void>;
+  /** Fault-injection seam invoked before the built-in compare-and-swap writer. */
+  readonly beforeActivate?: (path: string, contents: string) => Promise<void>;
 }
 
 interface ManagedFileSnapshot {
@@ -185,6 +197,14 @@ export async function updateManagedProjectSkills(
   cwd: string,
   options: UpdateManagedProjectSkillsOptions = {},
 ): Promise<UpdateProjectSkillsResult> {
+  return await withManagedProjectSkillLock(cwd, async () =>
+    await updateManagedProjectSkillsUnlocked(cwd, options));
+}
+
+async function updateManagedProjectSkillsUnlocked(
+  cwd: string,
+  options: UpdateManagedProjectSkillsOptions,
+): Promise<UpdateProjectSkillsResult> {
   const before = await checkManagedProjectSkills(cwd);
   const unsafe = before.statuses.filter((entry) => entry.status === "modified" || entry.status === "collision");
   if (unsafe.length > 0) {
@@ -214,31 +234,46 @@ export async function updateManagedProjectSkills(
   for (const target of [...skillTargets, { path: manifestPath, contents: manifestContents, name: "manifest" }]) {
     snapshots.set(target.path, await snapshotManagedFile(target.path));
   }
+  const afterSnapshots = await checkManagedProjectSkills(root);
+  if (!isDeepStrictEqual(afterSnapshots, before)) {
+    throw new Error("Managed project skills changed while the update was being prepared. No files were written; retry from the current copies.");
+  }
 
   for (const status of needsUpdate) {
-    const existing = await readOptional(status.path);
-    if (existing !== undefined) {
+    const snapshot = snapshots.get(status.path)!;
+    if (snapshot.contents !== undefined) {
       const backup = join(backupDir, status.name, "SKILL.md");
       await mkdir(dirname(backup), { recursive: true, mode: 0o700 });
-      await cp(status.path, backup, { force: false });
+      await writeFile(backup, snapshot.contents, { flag: "wx", mode: snapshot.mode ?? 0o600 });
     }
   }
-  if ((await readOptional(manifestPath)) !== undefined) {
-    await cp(manifestPath, join(backupDir, ".mono-agent-managed.json"), { force: false });
+  const manifestSnapshot = snapshots.get(manifestPath)!;
+  if (manifestSnapshot.contents !== undefined) {
+    await writeFile(join(backupDir, ".mono-agent-managed.json"), manifestSnapshot.contents, {
+      flag: "wx",
+      mode: manifestSnapshot.mode ?? 0o600,
+    });
   }
 
   const updated: string[] = [];
-  const activated: string[] = [];
-  const activate = options.writeFile ?? ((path: string, contents: string) => atomicWrite(path, contents));
+  const activated: Array<{ readonly path: string; readonly contents: string }> = [];
   try {
     for (const target of skillTargets) {
       await mkdir(dirname(target.path), { recursive: true });
-      await activate(target.path, target.contents);
-      activated.push(target.path);
+      await options.beforeActivate?.(target.path, target.contents);
+      const snapshot = snapshots.get(target.path)!;
+      await atomicWriteManagedExact(target.path, snapshot.contents, target.contents, snapshot.mode ?? 0o600);
+      activated.push({ path: target.path, contents: target.contents });
       updated.push(target.path);
     }
-    await activate(manifestPath, manifestContents);
-    activated.push(manifestPath);
+    await options.beforeActivate?.(manifestPath, manifestContents);
+    await atomicWriteManagedExact(
+      manifestPath,
+      manifestSnapshot.contents,
+      manifestContents,
+      manifestSnapshot.mode ?? 0o600,
+    );
+    activated.push({ path: manifestPath, contents: manifestContents });
 
     const after = await checkManagedProjectSkills(root);
     if (!after.ok) {
@@ -247,12 +282,12 @@ export async function updateManagedProjectSkills(
     return { ...after, updated, backupDir };
   } catch (error) {
     const rollbackFailures: string[] = [];
-    for (const path of [...activated].reverse()) {
-      const snapshot = snapshots.get(path)!;
+    for (const activatedFile of [...activated].reverse()) {
+      const snapshot = snapshots.get(activatedFile.path)!;
       try {
-        await restoreManagedFile(snapshot);
+        await restoreManagedFile(snapshot, activatedFile.contents);
       } catch (rollbackError) {
-        rollbackFailures.push(`${path}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+        rollbackFailures.push(`${activatedFile.path}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
       }
     }
     if (rollbackFailures.length > 0) {
@@ -293,29 +328,217 @@ async function readOptional(path: string): Promise<string | undefined> {
 }
 
 async function snapshotManagedFile(path: string): Promise<ManagedFileSnapshot> {
-  const contents = await readOptional(path);
-  if (contents === undefined) return { path };
-  const info = await stat(path);
+  let info: Stats;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { path };
+    throw error;
+  }
+  assertManagedFileInfo(info, path);
+  const contents = await readFile(path, "utf8");
+  const after = await lstat(path);
+  if (!sameManagedFileMetadata(info, after)) {
+    throw new Error(`Managed project skill changed while it was being snapshotted: ${path}`);
+  }
   return { path, contents, mode: info.mode & 0o777 };
 }
 
-async function restoreManagedFile(snapshot: ManagedFileSnapshot): Promise<void> {
+async function restoreManagedFile(snapshot: ManagedFileSnapshot, expectedCurrent: string): Promise<void> {
   if (snapshot.contents === undefined) {
-    await rm(snapshot.path, { force: true });
+    removeManagedFileExactSync(snapshot.path, expectedCurrent);
     return;
   }
-  await atomicWrite(snapshot.path, snapshot.contents, snapshot.mode ?? 0o600);
+  await atomicWriteManagedExact(
+    snapshot.path,
+    expectedCurrent,
+    snapshot.contents,
+    snapshot.mode ?? 0o600,
+  );
 }
 
-async function atomicWrite(path: string, contents: string, mode = 0o600): Promise<void> {
-  const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
+async function atomicWriteManagedExact(
+  path: string,
+  expected: string | undefined,
+  contents: string,
+  mode = 0o600,
+): Promise<void> {
+  const temporary = join(dirname(path), `.${randomUUID()}.mono-agent-tmp`);
   await mkdir(dirname(path), { recursive: true });
+  const initialInfo = await managedFileInfo(path, expected);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    await writeFile(temporary, contents, { flag: "wx", mode });
-    await chmod(temporary, mode);
-    await rename(temporary, path);
+    handle = await open(
+      temporary,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      mode,
+    );
+    await handle.writeFile(contents, "utf8");
+    await handle.chmod(mode);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    commitManagedReplacementSync(path, temporary, expected, initialInfo);
   } finally {
+    await handle?.close();
     await rm(temporary, { force: true });
+  }
+}
+
+async function managedFileInfo(path: string, expected: string | undefined): Promise<Stats | undefined> {
+  let info: Stats;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && expected === undefined) return undefined;
+    throw error;
+  }
+  if (expected === undefined) {
+    throw new Error(`Refusing to overwrite a concurrently created managed project skill: ${path}`);
+  }
+  assertManagedFileInfo(info, path);
+  if (await readFile(path, "utf8") !== expected) {
+    throw new Error(`Refusing to overwrite a concurrently edited managed project skill: ${path}`);
+  }
+  return info;
+}
+
+function commitManagedReplacementSync(
+  path: string,
+  temporary: string,
+  expected: string | undefined,
+  initialInfo: Stats | undefined,
+): void {
+  if (expected === undefined) {
+    try {
+      lstatSync(path);
+      throw new Error(`Refusing to overwrite a concurrently created managed project skill: ${path}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    renameSync(temporary, path);
+    return;
+  }
+
+  let sourceHandle: number | undefined;
+  try {
+    sourceHandle = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const openedBefore = fstatSync(sourceHandle);
+    assertManagedFileInfo(openedBefore, path);
+    const current = readFileSync(sourceHandle, "utf8");
+    const openedAfter = fstatSync(sourceHandle);
+    const named = lstatSync(path);
+    if (
+      current !== expected
+      || initialInfo === undefined
+      || !sameManagedFileMetadata(initialInfo, openedBefore)
+      || !sameManagedFileMetadata(openedBefore, openedAfter)
+      || !sameManagedFileMetadata(openedAfter, named)
+    ) {
+      throw new Error(`Refusing to overwrite a concurrently edited managed project skill: ${path}`);
+    }
+    renameSync(temporary, path);
+  } finally {
+    if (sourceHandle !== undefined) closeSync(sourceHandle);
+  }
+}
+
+function removeManagedFileExactSync(path: string, expected: string): void {
+  let sourceHandle: number | undefined;
+  try {
+    sourceHandle = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const openedBefore = fstatSync(sourceHandle);
+    assertManagedFileInfo(openedBefore, path);
+    const current = readFileSync(sourceHandle, "utf8");
+    const openedAfter = fstatSync(sourceHandle);
+    const named = lstatSync(path);
+    if (
+      current !== expected
+      || !sameManagedFileMetadata(openedBefore, openedAfter)
+      || !sameManagedFileMetadata(openedAfter, named)
+    ) {
+      throw new Error(`Refusing to remove a concurrently edited managed project skill: ${path}`);
+    }
+    unlinkSync(path);
+  } finally {
+    if (sourceHandle !== undefined) closeSync(sourceHandle);
+  }
+}
+
+function assertManagedFileInfo(info: Stats, path: string): void {
+  if (!info.isFile() || info.nlink !== 1) {
+    throw new Error(`Managed project skill must be one regular file with one link: ${path}`);
+  }
+  const uid = process.getuid?.();
+  if (uid !== undefined && info.uid !== uid) {
+    throw new Error(`Managed project skill must be owned by the current user: ${path}`);
+  }
+  if ((info.mode & 0o022) !== 0) {
+    throw new Error(`Managed project skill must not be group/world writable: ${path}`);
+  }
+}
+
+function sameManagedFileMetadata(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.nlink === right.nlink
+    && left.mode === right.mode
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
+}
+
+async function withManagedProjectSkillLock<T>(cwd: string, operation: () => Promise<T>): Promise<T> {
+  const skillsDir = join(resolve(cwd), "skills");
+  await mkdir(skillsDir, { recursive: true, mode: 0o700 });
+  const lockPath = join(skillsDir, ".mono-agent-managed.lock");
+  const contents = `${JSON.stringify({
+    schema: "mono-agent.managed-project-skills-lock.v1",
+    pid: process.pid,
+    token: randomUUID(),
+    createdAt: new Date().toISOString(),
+  })}\n`;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let identity: { readonly dev: number; readonly ino: number } | undefined;
+  try {
+    try {
+      handle = await open(
+        lockPath,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+        0o600,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new Error(`Another managed project-skill update owns ${lockPath}. Wait for it to finish.`);
+      }
+      throw error;
+    }
+    await handle.writeFile(contents, "utf8");
+    await handle.chmod(0o600);
+    await handle.sync();
+    const info = await handle.stat();
+    assertManagedFileInfo(info, lockPath);
+    identity = { dev: info.dev, ino: info.ino };
+    await handle.close();
+    handle = undefined;
+    return await operation();
+  } finally {
+    await handle?.close();
+    if (identity !== undefined) {
+      const current = await lstat(lockPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (
+        current === undefined
+        || current.dev !== identity.dev
+        || current.ino !== identity.ino
+        || await readFile(lockPath, "utf8") !== contents
+      ) {
+        throw new Error(`Managed project-skill lock changed unexpectedly and was left untouched: ${lockPath}`);
+      }
+      await rm(lockPath);
+    }
   }
 }
 

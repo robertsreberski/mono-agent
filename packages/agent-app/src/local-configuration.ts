@@ -1,5 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants, type Stats } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  type Stats,
+} from "node:fs";
 import {
   chmod,
   lstat,
@@ -8,7 +18,6 @@ import {
   open,
   readFile,
   realpath,
-  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -261,8 +270,11 @@ export class LocalConfigurationManager {
     assertNoEnvironmentShadow(proposal.patch, this.options.env);
 
     const candidate = applyJsonPatch(current.json, proposal.patch);
-    assertNoAuthorityExpansion(current.json, candidate, this.options.cwd);
-    const configBefore = `${JSON.stringify(current.json, null, 2)}\n`;
+    assertConversationalPatchAllowed(current.json, candidate);
+    const configBefore = await readFile(secureConfig, "utf8");
+    if (sha256(configBefore) !== current.version) {
+      throw new Error("Configuration changed while the agent was preparing its proposal. Run /configure again from the current config.");
+    }
     await this.validateCandidate(candidate, proposal.id);
 
     let rolePath: string | undefined;
@@ -340,7 +352,7 @@ export class LocalConfigurationManager {
       // serializes every mono-agent writer; the comparison also catches an
       // editor or other non-cooperating process.
       await assertPreparedSourcesCurrent(this.options.cwd, this.options.configPath, prepared, "while the approved change was being prepared");
-      await atomicReplaceExact(this.options.cwd, this.options.configPath, configAfter);
+      await atomicReplaceExact(this.options.cwd, this.options.configPath, prepared.configBefore, configAfter);
       configWritten = true;
       if (prepared.rolePath !== undefined && prepared.roleAfter !== undefined) {
         // Config and Role are two files, so re-check both sides after the first
@@ -348,7 +360,7 @@ export class LocalConfigurationManager {
         // restores only files that still equal our exact committed bytes.
         await assertExactOwnedContents(this.options.cwd, this.options.configPath, configAfter, "Committed config changed before the Role update");
         await assertExactOwnedContents(this.options.cwd, prepared.rolePath, prepared.roleBefore!, "IDENTITY.md changed at the Role commit boundary");
-        await atomicReplaceExact(this.options.cwd, prepared.rolePath, prepared.roleAfter);
+        await atomicReplaceExact(this.options.cwd, prepared.rolePath, prepared.roleBefore!, prepared.roleAfter);
         roleWritten = true;
       }
       const verified = await readMonoAgentConfigJson(this.options.configPath);
@@ -405,9 +417,9 @@ export class LocalConfigurationManager {
           await assertExactOwnedContents(this.options.cwd, this.options.configPath, configAfter, "Configuration changed before rollback");
           if (prepared.rolePath !== undefined && prepared.roleAfter !== undefined) {
             await assertExactOwnedContents(this.options.cwd, prepared.rolePath, prepared.roleAfter, "IDENTITY.md changed before rollback");
-            await atomicReplaceExact(this.options.cwd, prepared.rolePath, prepared.roleBefore!);
+            await atomicReplaceExact(this.options.cwd, prepared.rolePath, prepared.roleAfter, prepared.roleBefore!);
           }
-          await atomicReplaceExact(this.options.cwd, this.options.configPath, prepared.configBefore);
+          await atomicReplaceExact(this.options.cwd, this.options.configPath, configAfter, prepared.configBefore);
           await ensureOwnedDirectoryInside(this.options.cwd, rollbackDir, "Configuration change directory");
           await writeFile(join(rollbackDir, "rollback.json"), `${JSON.stringify({
             schema: "mono-agent.configuration-rollback.v1",
@@ -646,182 +658,93 @@ function assertNoEnvironmentShadow(
   }
 }
 
-const CHANNEL_AND_PROACTIVE_CONFIG_KEYS = [
-  "channels",
-  "telegram",
-  "slack",
-  "webhook",
-  "openaiApi",
-  "cron",
-  "tui",
-  "live",
-  // Legacy/external adapter-owned roots are blocked too; canonical plugins
-  // live under channels.plugins, which the first entry covers.
-  "a2a",
-  "whatsapp",
-] as const;
+/**
+ * Conversational configuration deliberately exposes a small positive surface.
+ * New schema fields therefore fail closed until they receive an explicit
+ * safety decision here; everything involving paths, providers, credentials,
+ * background work, network access, or sandbox policy stays in a guided flow.
+ */
+const CONVERSATIONAL_CONFIG_POINTERS = new Set([
+  "/agent/name",
+  "/runtime/effort",
+  "/runtime/maxTurns",
+  "/runtime/session/mode",
+  "/runtime/session/idleTimeoutMs",
+  "/runtime/session/rollover",
+  "/runtime/session/rolloverTimezone",
+  "/runtime/session/rolloverNotice",
+  "/context/selectedSkills",
+  "/context/skillMaxBytes",
+  "/context/skillDisclosure",
+  "/memory/maxBytes",
+  "/memory/recallTool/enabled",
+  "/tools/allowedTools",
+  "/tools/disallowedTools",
+]);
 
-function assertNoAuthorityExpansion(
+function assertConversationalPatchAllowed(
   before: MonoAgentConfigJson,
   after: MonoAgentConfigJson,
-  cwd: string,
 ): void {
-  const beforeRecord = before as Record<string, unknown>;
-  const afterRecord = after as Record<string, unknown>;
-  if (CHANNEL_AND_PROACTIVE_CONFIG_KEYS.some((key) =>
-    !isDeepStrictEqual(beforeRecord[key], afterRecord[key])
-  )) {
-    throw new Error("Channel and proactive-delivery changes require the guided channel setup so credentials and destinations stay out of chat.");
+  const changed = changedJsonPointers(before, after);
+  const unsupported = changed.filter((pointer) => !CONVERSATIONAL_CONFIG_POINTERS.has(pointer));
+  if (unsupported.length > 0) {
+    throw new Error(
+      `Conversational configuration cannot change ${unsupported.join(", ")}. ` +
+      "Paths, memory tiers or capture cost, providers/models/routes, embeddings endpoints, credentials, channels/cron/plugins, MCP, sandbox/network policy, exporters, and other new schema fields require the explicit guided flow.",
+    );
   }
-  if (
-    !isDeepStrictEqual(before.providers, after.providers)
-    || !isDeepStrictEqual(before.tools?.mcpConfigPath, after.tools?.mcpConfigPath)
-  ) {
-    throw new Error("Provider credentials and external MCP servers require the existing masked auth/configuration flow.");
-  }
-  if (!isDeepStrictEqual(before.context?.identityPath, after.context?.identityPath)) {
-    throw new Error("Changing the identity file path is outside conversational configuration; edit the path explicitly and validate it first.");
-  }
-
-  const beforeRuntime = before.runtime ?? {};
-  const afterRuntime = after.runtime ?? {};
-  if (
-    !isDeepStrictEqual(beforeRuntime.model, afterRuntime.model)
-    || !isDeepStrictEqual(beforeRuntime.fallbackModels, afterRuntime.fallbackModels)
-    || !isDeepStrictEqual(beforeRuntime.fallbacks, afterRuntime.fallbacks)
-    || !isDeepStrictEqual(beforeRuntime.executionMode, afterRuntime.executionMode)
-  ) {
-    throw new Error("Model routes and direct-provider execution posture require the guided runtime setup.");
-  }
-  const permissionRank: Record<string, number> = {
-    plan: 0,
-    default: 1,
-    acceptEdits: 2,
-    bypassPermissions: 3,
-  };
-  const beforePermission = beforeRuntime.permissionMode ?? "default";
-  const afterPermission = afterRuntime.permissionMode ?? "default";
-  if ((permissionRank[afterPermission] ?? 99) > (permissionRank[beforePermission] ?? 99)) {
-    throw new Error("Broader runtime permissionMode requires explicit guided confirmation outside the model conversation.");
-  }
-  const routeSafetyRank: Record<string, number> = { uniform: 0, "per-route-native": 1 };
-  const beforeRouteSafety = beforeRuntime.routeSafety ?? "uniform";
-  const afterRouteSafety = afterRuntime.routeSafety ?? "uniform";
-  if ((routeSafetyRank[afterRouteSafety] ?? 99) > (routeSafetyRank[beforeRouteSafety] ?? 99)) {
-    throw new Error("Broader per-route-native safety posture requires the guided runtime setup.");
-  }
-
-  const beforeAllowedRaw = before.tools?.allowedTools;
-  const afterAllowedRaw = after.tools?.allowedTools;
-  const beforeAllowed = new Set(beforeAllowedRaw ?? []);
-  const afterAllowed = new Set(afterAllowedRaw ?? []);
-  const beforeDenied = new Set(before.tools?.disallowedTools ?? []);
-  const afterDenied = new Set(after.tools?.disallowedTools ?? []);
-  const beforeAllowsAll = beforeAllowedRaw === undefined || beforeAllowed.has("*");
-  const afterAllowsAll = afterAllowedRaw === undefined || afterAllowed.has("*");
-  if (
-    (!beforeAllowsAll && (afterAllowsAll || [...afterAllowed].some((tool) => !beforeAllowed.has(tool))))
-    || [...beforeDenied].some((tool) => !afterDenied.has(tool))
-  ) {
+  if (toolAuthorityBroadened(before.tools, after.tools)) {
     throw new Error("Broader tool authority requires explicit guided confirmation outside the model conversation.");
   }
-
-  if (
-    (
-      before.memory?.backend !== after.memory?.backend
-      && (before.memory?.backend === "supermemory" || after.memory?.backend === "supermemory")
-    )
-    || !isDeepStrictEqual(before.memory?.supermemory, after.memory?.supermemory)
-  ) {
-    throw new Error("External memory backends and their MCP/network settings require explicit guided plugin configuration.");
-  }
-  if (!isDeepStrictEqual(before.memory?.llm, after.memory?.llm)) {
-    throw new Error("Memory LLM route changes require the guided runtime and credential flow.");
-  }
-  if (
-    before.memory?.embeddings?.provider !== after.memory?.embeddings?.provider
-    && after.memory?.embeddings?.provider === "openai"
-  ) {
-    throw new Error("Enabling remote embedding providers requires the guided credential flow.");
-  }
-  if (
-    before.memory?.embeddings?.endpoint !== after.memory?.embeddings?.endpoint
-    && after.memory?.embeddings?.endpoint !== undefined
-    && !isLoopbackUrl(after.memory.embeddings.endpoint)
-  ) {
-    throw new Error("A remote embeddings endpoint requires explicit guided network and credential configuration.");
-  }
-  if (!isDeepStrictEqual(before.observability, after.observability)) {
-    throw new Error("Observability exporter changes require explicit guided configuration because they can send run data externally.");
-  }
-
-  if (sandboxBroadened(before.sandbox, after.sandbox)) {
-    throw new Error("Weaker sandbox or broader filesystem/network authority requires `mono-agent sandbox` and explicit operator confirmation.");
-  }
-
-  const beforeWorkspace = resolve(cwd, beforeRuntime.workspace ?? ".");
-  const afterWorkspace = resolve(cwd, afterRuntime.workspace ?? ".");
-  assertLexicalPathInside(cwd, afterWorkspace, "Runtime workspace");
-  if (!isLexicallyInside(beforeWorkspace, afterWorkspace)) {
-    throw new Error("A broader runtime workspace requires explicit guided confirmation outside the model conversation.");
-  }
-
-  const changedPaths: Array<{
-    readonly before: string | undefined;
-    readonly after: string | undefined;
-    readonly label: string;
-  }> = [
-    { before: before.context?.soulPath, after: after.context?.soulPath, label: "Soul path" },
-    { before: before.context?.skillsRoot, after: after.context?.skillsRoot, label: "Skills root" },
-    { before: before.memory?.path, after: after.memory?.path, label: "Memory path" },
-    { before: before.artifacts?.dir, after: after.artifacts?.dir, label: "Artifacts directory" },
-    { before: before.traceability?.registryDir, after: after.traceability?.registryDir, label: "Trace registry directory" },
-  ];
-  for (const entry of changedPaths) {
-    if (entry.before !== entry.after && entry.after !== undefined) {
-      assertLexicalPathInside(cwd, resolve(cwd, entry.after), entry.label);
-    }
-  }
 }
 
-function isLoopbackUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    const hostname = url.hostname.toLowerCase();
-    return (url.protocol === "http:" || url.protocol === "https:")
-      && (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]" || hostname === "::1");
-  } catch {
-    return false;
+function changedJsonPointers(before: unknown, after: unknown, pointer = ""): string[] {
+  if (isDeepStrictEqual(before, after)) return [];
+  const beforeObject = isRecord(before);
+  const afterObject = isRecord(after);
+  if (
+    (beforeObject || before === undefined)
+    && (afterObject || after === undefined)
+    && (beforeObject || afterObject)
+  ) {
+    const keys = new Set([
+      ...(beforeObject ? Object.keys(before) : []),
+      ...(afterObject ? Object.keys(after) : []),
+    ]);
+    if (keys.size === 0) return [pointer || "/"];
+    return [...keys].flatMap((key) => changedJsonPointers(
+      beforeObject ? before[key] : undefined,
+      afterObject ? after[key] : undefined,
+      `${pointer}/${escapeJsonPointerSegment(key)}`,
+    ));
   }
+  return [pointer || "/"];
 }
 
-function sandboxBroadened(
-  before: MonoAgentConfigJson["sandbox"],
-  after: MonoAgentConfigJson["sandbox"],
+function escapeJsonPointerSegment(value: string): string {
+  return value.replace(/~/gu, "~0").replace(/\//gu, "~1");
+}
+
+function toolAuthorityBroadened(
+  before: MonoAgentConfigJson["tools"],
+  after: MonoAgentConfigJson["tools"],
 ): boolean {
-  if (before === undefined) return false;
-  if (after === undefined || (before.mode !== "off" && after.mode === "off")) return true;
-  if (before.mode === "off") return false;
-  const beforeReadable = new Set(before.readableRoots ?? []);
-  const afterReadable = new Set(after.readableRoots ?? []);
-  const beforeWritable = new Set(before.writableRoots ?? []);
-  const afterWritable = new Set(after.writableRoots ?? []);
-  const beforeDenied = new Set(before.denyWrite ?? []);
-  const afterDenied = new Set(after.denyWrite ?? []);
-  if ([...afterReadable].some((path) => !beforeReadable.has(path))) return true;
-  if ([...afterWritable].some((path) => !beforeWritable.has(path))) return true;
-  if ([...beforeDenied].some((path) => !afterDenied.has(path))) return true;
-  if (before.fallback !== "unsafe-host-process" && after.fallback === "unsafe-host-process") return true;
-  if (before.unsafeAllowHostProcess !== true && after.unsafeAllowHostProcess === true) return true;
-  const rank: Record<string, number> = { none: 0, localhost: 1, allowlist: 2, all: 3 };
-  const beforeMode = before.network?.mode ?? "none";
-  const afterMode = after.network?.mode ?? "none";
-  if ((rank[afterMode] ?? 99) > (rank[beforeMode] ?? 99)) return true;
-  if (afterMode === "allowlist") {
-    const beforeAllowlist = new Set(before.network?.allowlist ?? []);
-    if ((after.network?.allowlist ?? []).some((host) => !beforeAllowlist.has(host))) return true;
+  const beforeAllowed = new Set(before?.allowedTools ?? []);
+  const afterAllowed = new Set(after?.allowedTools ?? []);
+  const beforeDenied = new Set(before?.disallowedTools ?? []);
+  const afterDenied = new Set(after?.disallowedTools ?? []);
+  const beforeAllowsAll = before?.allowedTools === undefined || beforeAllowed.has("*");
+  const afterAllowsAll = after?.allowedTools === undefined || afterAllowed.has("*");
+
+  if (afterAllowsAll) {
+    return !beforeAllowsAll || [...beforeDenied].some((tool) => !afterDenied.has(tool));
   }
-  return false;
+  return [...afterAllowed].some((tool) =>
+    tool !== "*"
+    && !afterDenied.has(tool)
+    && ((!beforeAllowsAll && !beforeAllowed.has(tool)) || beforeDenied.has(tool))
+  );
 }
 
 function replaceRoleSection(identity: string, role: string): string {
@@ -913,7 +836,10 @@ async function ensureOwnedDirectoryInside(root: string, path: string, label: str
 }
 
 async function assertOwnedDirectory(path: string, label: string): Promise<void> {
-  const info = await lstat(path);
+  assertOwnedDirectoryInfo(await lstat(path), path, label);
+}
+
+function assertOwnedDirectoryInfo(info: Stats, path: string, label: string): void {
   if (!info.isDirectory()) throw new Error(`${label} must be a real directory, not a symbolic link: ${path}`);
   const uid = process.getuid?.();
   if (uid !== undefined && info.uid !== uid) throw new Error(`${label} must be owned by the current user: ${path}`);
@@ -975,11 +901,15 @@ async function assertExactOwnedContents(
 }
 
 async function restoreIfExact(cwd: string, path: string, expected: string, restore: string): Promise<void> {
-  await assertExactOwnedContents(cwd, path, expected, `Refusing to restore changed file ${path}`);
-  await atomicReplaceExact(cwd, path, restore);
+  await atomicReplaceExact(cwd, path, expected, restore);
 }
 
-async function atomicReplaceExact(root: string, path: string, contents: string): Promise<void> {
+async function atomicReplaceExact(
+  root: string,
+  path: string,
+  expected: string,
+  contents: string,
+): Promise<void> {
   const securePath = await resolveOwnedRegularFileInside(root, path, "Configuration transaction file");
   const info = await lstat(securePath);
   const temporary = join(dirname(securePath), `.${randomUUID()}.mono-agent-tmp`);
@@ -995,11 +925,78 @@ async function atomicReplaceExact(root: string, path: string, contents: string):
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporary, securePath);
+    // Temp creation and fsync intentionally happen before the last source
+    // comparison. From that comparison through rename there is no JavaScript
+    // yield: an editor that reacts to the staged temp is observed, while a
+    // cooperating mono-agent writer is also serialized by the owner lock.
+    commitAtomicReplacementSync(root, securePath, temporary, expected, info);
   } finally {
     await handle?.close();
     await rm(temporary, { force: true });
   }
+}
+
+function commitAtomicReplacementSync(
+  root: string,
+  path: string,
+  temporary: string,
+  expected: string,
+  initialInfo: Stats,
+): void {
+  const securePath = resolveOwnedRegularFileInsideSync(root, path, "Configuration transaction file");
+  let sourceHandle: number | undefined;
+  try {
+    sourceHandle = openSync(securePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const openedBefore = fstatSync(sourceHandle);
+    assertOwnedRegularFileInfo(openedBefore, securePath, "Configuration transaction file");
+    const current = readFileSync(sourceHandle, "utf8");
+    const openedAfter = fstatSync(sourceHandle);
+    const named = lstatSync(securePath);
+    if (
+      current !== expected
+      || !sameFileIdentityAndMetadata(initialInfo, openedBefore)
+      || !sameFileIdentityAndMetadata(openedBefore, openedAfter)
+      || !sameFileIdentityAndMetadata(openedAfter, named)
+    ) {
+      throw new Error(`Refusing to replace changed file ${securePath}; the concurrent edit was preserved.`);
+    }
+    renameSync(temporary, securePath);
+  } finally {
+    if (sourceHandle !== undefined) closeSync(sourceHandle);
+  }
+}
+
+function resolveOwnedRegularFileInsideSync(root: string, path: string, label: string): string {
+  const canonicalRoot = realpathSync(resolve(root));
+  const absolute = resolve(path);
+  assertLexicalPathInside(canonicalRoot, absolute, label);
+  const segments = relative(canonicalRoot, absolute).split(sep).filter((segment) => segment.length > 0);
+  if (segments.length === 0) throw new Error(`${label} must name a file inside the current agent folder.`);
+
+  let parent = canonicalRoot;
+  assertOwnedDirectoryInfo(lstatSync(parent), parent, "Current agent folder");
+  for (const segment of segments.slice(0, -1)) {
+    parent = join(parent, segment);
+    assertOwnedDirectoryInfo(lstatSync(parent), parent, `${label} parent`);
+  }
+  const target = join(parent, segments.at(-1)!);
+  assertOwnedRegularFileInfo(lstatSync(target), target, label);
+  const canonicalTarget = realpathSync(target);
+  assertLexicalPathInside(canonicalRoot, canonicalTarget, label);
+  if (canonicalTarget !== target) {
+    throw new Error(`${label} must not traverse a symbolic-link parent: ${path}`);
+  }
+  return target;
+}
+
+function sameFileIdentityAndMetadata(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.nlink === right.nlink
+    && left.mode === right.mode
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
 }
 
 async function withConfigurationTransactionLock<T>(

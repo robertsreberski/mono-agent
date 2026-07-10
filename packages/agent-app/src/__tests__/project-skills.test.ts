@@ -96,10 +96,9 @@ describe("managed project skills", () => {
 
     let activations = 0;
     await expect(updateManagedProjectSkills(dir, {
-      writeFile: async (path, contents) => {
+      beforeActivate: async () => {
         activations += 1;
         if (activations === 2) throw new Error("injected second-skill activation failure");
-        await writeFile(path, contents);
       },
     })).rejects.toThrow(/restored.*retryable/u);
 
@@ -109,5 +108,67 @@ describe("managed project skills", () => {
     expect((await checkManagedProjectSkills(dir)).statuses.every((entry) => entry.status === "stale")).toBe(true);
 
     await expect(updateManagedProjectSkills(dir)).resolves.toMatchObject({ ok: true });
+  });
+
+  it("preserves an operator edit made after one file activates and rollback begins", async () => {
+    const dir = await scaffold();
+    const manifestPath = join(dir, PROJECT_SKILL_MANIFEST_PATH);
+    const configurePath = join(dir, "skills", "mono-agent-configure", "SKILL.md");
+    const memoryPath = join(dir, "skills", "mono-agent-memory", "SKILL.md");
+    const oldConfigure = "# previous managed configure skill\n";
+    const oldMemory = "# previous managed memory skill\n";
+    const operatorEdit = "# operator edited during update\n";
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      version: string;
+      skills: Record<string, { sha256: string }>;
+    };
+    manifest.version = "0.0.0";
+    manifest.skills["mono-agent-configure"] = {
+      sha256: createHash("sha256").update(oldConfigure).digest("hex"),
+    };
+    manifest.skills["mono-agent-memory"] = {
+      sha256: createHash("sha256").update(oldMemory).digest("hex"),
+    };
+    await writeFile(configurePath, oldConfigure);
+    await writeFile(memoryPath, oldMemory);
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    let activations = 0;
+    await expect(updateManagedProjectSkills(dir, {
+      beforeActivate: async () => {
+        activations += 1;
+        if (activations === 2) {
+          await writeFile(configurePath, operatorEdit);
+          throw new Error("injected failure after concurrent operator edit");
+        }
+      },
+    })).rejects.toThrow(/rollback was incomplete|concurrently edited/u);
+
+    expect(await readFile(configurePath, "utf8")).toBe(operatorEdit);
+    expect(await readFile(memoryPath, "utf8")).toBe(oldMemory);
+    expect(JSON.parse(await readFile(manifestPath, "utf8"))).toEqual(manifest);
+  });
+
+  it("refuses to activate over an operator edit made after the update check", async () => {
+    const dir = await scaffold();
+    const manifestPath = join(dir, PROJECT_SKILL_MANIFEST_PATH);
+    const configurePath = join(dir, "skills", "mono-agent-configure", "SKILL.md");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { version: string };
+    manifest.version = "0.0.0";
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    const operatorEdit = "# operator edit after check\n";
+    let injected = false;
+
+    await expect(updateManagedProjectSkills(dir, {
+      beforeActivate: async (path) => {
+        if (!injected && path === configurePath) {
+          injected = true;
+          await writeFile(configurePath, operatorEdit);
+        }
+      },
+    })).rejects.toThrow(/concurrently edited/u);
+
+    expect(injected).toBe(true);
+    expect(await readFile(configurePath, "utf8")).toBe(operatorEdit);
   });
 });

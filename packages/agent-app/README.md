@@ -108,17 +108,23 @@ Every scaffold selects versioned `mono-agent-configure` and `mono-agent-memory`
 skills from `./skills` with index disclosure. `ReadSkill` remains separate from
 action-tool policy. `mono-agent install-skill --project --check|--update` reports
 version/hash drift and refreshes only unchanged managed copies with backups; a
-partial activation restores every prior file so the next update remains safe.
+per-project owner lock plus compare-and-swap activation prevents concurrent
+operator edits from being overwritten, and a partial activation restores only
+files that still equal the managed bytes it wrote.
 
 In a marked local configuration turn only, the app injects proposal-only
-`ProposeAgentConfiguration`. The host rejects stale, secret-bearing,
-environment-shadowed, or authority-expanding RFC 6902/Role proposals, including
-runtime/provider posture, channel/proactive/plugin, exporter, external-memory,
-and sandbox expansion. It canonicalizes config/Identity/state paths without
-following symlink parents, rechecks both source files under an owner-only
-transaction lock at the commit boundary, renders the candidate, requires a
-separate TUI confirmation, then writes atomically with rollback evidence and replaces the responder after the active
-turn settles. Remote/proactive channels never receive this tool.
+`ProposeAgentConfiguration`. The host accepts only a fail-closed low-risk
+allowlist: public name; effort, turn/session UX; selected project skills and
+disclosure; memory size or MemoryRecall enablement; semantic tool-policy
+tightening; and the separately validated Role body. Every path, memory-tier or
+capture-cost change, runtime/provider route, channel/proactive/plugin, MCP,
+exporter, embeddings/LLM endpoint, sandbox/network field, secret, and unknown
+future field is handed to the explicit guided flow. It canonicalizes
+config/Identity/state paths without following symlink parents, stages and
+fsyncs replacements, then performs the final source comparison and rename as
+one non-yielding commit step under an owner-only transaction lock. Separate TUI
+confirmation, rollback evidence, and a fresh responder remain mandatory.
+Remote/proactive channels never receive this tool.
 
 Guided readiness uses a worker-reproducible environment rather than the launching
 shell: durable `.env` values, entered selected secrets, the resolved Pi auth path,

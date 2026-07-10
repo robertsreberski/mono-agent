@@ -1,6 +1,8 @@
+import { readdirSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setImmediate as yieldNow } from "node:timers/promises";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -212,7 +214,7 @@ describe("local configuration transaction", () => {
       await expect(envManager.prepareProposal(proposal(first.version, {
         id: "route-safety-proposal",
         patch: [{ op: "replace", path: "/runtime/routeSafety", value: "per-route-native" }],
-      }))).rejects.toThrow(/route-native|runtime setup/u);
+      }))).rejects.toThrow(/routeSafety|guided flow/u);
       await expect(envManager.prepareProposal(proposal(first.version, {
         id: "cron-proposal",
         patch: [{
@@ -220,21 +222,20 @@ describe("local configuration transaction", () => {
           path: "/cron",
           value: { jobs: [{ id: "unattended", expression: "* * * * *", prompt: "Run unattended." }] },
         }],
-      }))).rejects.toThrow(/Channel and proactive-delivery/u);
+      }))).rejects.toThrow(/cron|guided flow/u);
       await expect(envManager.prepareProposal(proposal(first.version, {
         id: "telegram-proposal",
         patch: [{ op: "add", path: "/telegram", value: { enabled: true, allowedUserIds: ["123"] } }],
-      }))).rejects.toThrow(/Channel and proactive-delivery/u);
+      }))).rejects.toThrow(/telegram|guided flow/u);
       await expect(envManager.prepareProposal(proposal(first.version, {
         id: "plugin-proposal",
         patch: [{ op: "add", path: "/channels", value: { plugins: [{ package: "example-channel" }] } }],
-      }))).rejects.toThrow(/Channel and proactive-delivery/u);
+      }))).rejects.toThrow(/channels|guided flow/u);
 
-      const tightening = await envManager.prepareProposal(proposal(first.version, {
+      await expect(envManager.prepareProposal(proposal(first.version, {
         id: "permission-tightening",
         patch: [{ op: "add", path: "/runtime/permissionMode", value: "plan" }],
-      }));
-      await expect(envManager.reject(tightening.id)).resolves.toMatchObject({ message: expect.stringContaining("Rejected") });
+      }))).rejects.toThrow(/permissionMode|guided flow/u);
     } finally {
       await envManager.dispose();
     }
@@ -306,6 +307,131 @@ describe("local configuration transaction", () => {
       expect((await readMonoAgentConfigJson(roleRace.configPath)).json.agent?.name).toBe("Local Test");
     } finally {
       await roleManager.dispose();
+    }
+  });
+
+  it("preserves an edit made after the atomic temp is staged", async () => {
+    const { dir, configPath } = await scaffold();
+    const current = await readMonoAgentConfigJson(configPath);
+    const concurrent: MonoAgentConfigJson = {
+      ...current.json,
+      agent: { ...current.json.agent, name: "CONCURRENT-EDIT" },
+    };
+    const manager = await LocalConfigurationManager.create({ cwd: dir, configPath, env: {}, configure: true });
+    let stop = false;
+    let fired = false;
+    try {
+      const card = await manager.prepareProposal(proposal(current.version));
+      const monitor = (async () => {
+        while (!stop) {
+          if (!fired && readdirSync(dir).some((name) => name.endsWith(".mono-agent-tmp"))) {
+            fired = true;
+            writeFileSync(configPath, `${JSON.stringify(concurrent, null, 2)}\n`);
+          }
+          await yieldNow();
+        }
+      })();
+
+      let outcome: unknown;
+      try {
+        outcome = await manager.apply(card.id);
+      } catch (error) {
+        outcome = error;
+      } finally {
+        stop = true;
+        await monitor;
+      }
+      expect(fired).toBe(true);
+      expect(outcome).toBeInstanceOf(Error);
+      expect((await readMonoAgentConfigJson(configPath)).json.agent?.name).toBe("CONCURRENT-EDIT");
+    } finally {
+      stop = true;
+      await manager.dispose();
+    }
+  });
+
+  it("uses a fail-closed allowlist for paths, endpoints, sandbox, and new schema fields", async () => {
+    const { dir, configPath } = await scaffold();
+    const external = await mkdtemp(join(tmpdir(), "mono-agent-external-memory-"));
+    dirs.push(external);
+    await symlink(external, join(dir, "linked-external"), "dir");
+    const raw = JSON.parse(await readFile(configPath, "utf8")) as MonoAgentConfigJson;
+    await writeFile(configPath, `${JSON.stringify({
+      ...raw,
+      memory: {
+        mode: "journal",
+        path: ".mono-agent/memory",
+        maxBytes: 64_000,
+        writeMode: "append-host-summary",
+        embeddings: {
+          provider: "openai",
+          model: "text-embedding-3-small",
+          endpoint: "http://127.0.0.1:9999/v1",
+          apiKeyEnv: "TEST_EMBEDDINGS_KEY",
+        },
+      },
+    }, null, 2)}\n`);
+    const current = await readMonoAgentConfigJson(configPath);
+    const manager = await LocalConfigurationManager.create({
+      cwd: dir,
+      configPath,
+      env: { TEST_EMBEDDINGS_KEY: "synthetic-not-real" },
+      configure: true,
+    });
+    try {
+      await expect(manager.prepareProposal(proposal(current.version, {
+        id: "memory-path-escape",
+        patch: [{ op: "replace", path: "/memory/path", value: "./linked-external" }],
+      }))).rejects.toThrow(/memory\/path|Paths/u);
+      await expect(manager.prepareProposal(proposal(current.version, {
+        id: "public-endpoint-fallback",
+        patch: [{ op: "remove", path: "/memory/embeddings/endpoint" }],
+      }))).rejects.toThrow(/embeddings\/endpoint|network/u);
+      await expect(manager.prepareProposal(proposal(current.version, {
+        id: "sandbox-default-widening",
+        patch: [{ op: "add", path: "/sandbox", value: { readableRoots: [], writableRoots: [] } }],
+      }))).rejects.toThrow(/sandbox|guided flow/u);
+      await expect(manager.prepareProposal(proposal(current.version, {
+        id: "unknown-future-field",
+        patch: [{ op: "add", path: "/futureAuthority", value: true }],
+      }))).rejects.toThrow(/futureAuthority|new schema fields/u);
+    } finally {
+      await manager.dispose();
+    }
+  });
+
+  it("allows low-risk fields and semantic tool-authority tightening", async () => {
+    const { dir, configPath } = await scaffold();
+    const current = await readMonoAgentConfigJson(configPath);
+    const seeded: MonoAgentConfigJson = {
+      ...current.json,
+      runtime: { ...current.json.runtime, model: "pi:openai-codex:gpt-5.5" },
+      memory: {
+        mode: "lite",
+        path: ".mono-agent/memory",
+        writeMode: "append-host-summary",
+      },
+      tools: { allowedTools: ["Read", "Grep"], disallowedTools: [] },
+    };
+    await writeFile(configPath, `${JSON.stringify(seeded, null, 2)}\n`);
+    const seededVersion = (await readMonoAgentConfigJson(configPath)).version;
+    const manager = await LocalConfigurationManager.create({ cwd: dir, configPath, env: {}, configure: true });
+    try {
+      const card = await manager.prepareProposal(proposal(seededVersion, {
+        id: "safe-low-risk-fields",
+        patch: [
+          { op: "replace", path: "/agent/name", value: "Focused Local Test" },
+          { op: "add", path: "/runtime/effort", value: "low" },
+          { op: "replace", path: "/context/selectedSkills", value: ["mono-agent-configure"] },
+          { op: "add", path: "/memory/maxBytes", value: 32_000 },
+          { op: "add", path: "/memory/recallTool", value: { enabled: true } },
+          { op: "replace", path: "/tools/allowedTools", value: ["Read"] },
+          { op: "replace", path: "/tools/disallowedTools", value: ["Bash"] },
+        ],
+      }));
+      await expect(manager.reject(card.id)).resolves.toMatchObject({ message: expect.stringContaining("Rejected") });
+    } finally {
+      await manager.dispose();
     }
   });
 

@@ -108,7 +108,7 @@ The skill asks discovery questions (runtime + backup models, channels incl. cron
 mono-agent install-skill   # copies into ~/.claude/skills and ~/.agents/skills
 ```
 
-This authoring-oriented composer is not auto-selected inside generated agents. New agents instead select the narrower `mono-agent-configure` and `mono-agent-memory` project skills with index disclosure. Check or safely refresh their managed copies with `mono-agent install-skill --project --check` / `--update`; modified copies are never overwritten.
+This authoring-oriented composer is not auto-selected inside generated agents. New agents instead select the narrower `mono-agent-configure` and `mono-agent-memory` project skills with index disclosure. Check or safely refresh their managed copies with `mono-agent install-skill --project --check` / `--update`; owner-locked compare-and-swap activation and guarded rollback never overwrite modified or concurrently edited copies.
 
 To use it as a selected mono-agent skill instead, point `context.skillsRoot` at `./packages/agent-app/skills` and add `mono-agent-composer` to `context.selectedSkills`.
 
