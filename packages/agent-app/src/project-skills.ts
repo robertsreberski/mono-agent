@@ -2,16 +2,20 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
+  fchmodSync,
   fstatSync,
+  fsyncSync,
   lstatSync,
   openSync,
   readFileSync,
+  realpathSync,
   renameSync,
   type Stats,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
-import { lstat, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { lstat, mkdir, readFile, realpath, stat } from "node:fs/promises";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import type { GeneratedFile } from "./modules/types.js";
@@ -147,14 +151,16 @@ export function managedProjectSkillFiles(): readonly GeneratedFile[] {
 }
 
 export async function checkManagedProjectSkills(cwd: string): Promise<CheckProjectSkillsResult> {
-  const root = resolve(cwd);
+  const root = await canonicalManagedRoot(cwd);
   const manifestPath = join(root, PROJECT_SKILL_MANIFEST_PATH);
+  await inspectManagedFileInside(root, manifestPath, "Managed project-skill manifest");
   const manifest = await readManifest(manifestPath);
   const desired = desiredManifest();
   const statuses: ProjectSkillStatus[] = [];
 
   for (const skill of BUNDLED_PROJECT_SKILLS) {
     const path = join(root, "skills", skill.name, "SKILL.md");
+    await inspectManagedFileInside(root, path, `Managed project skill ${skill.name}`);
     const expectedSha256 = desired.skills[skill.name].sha256;
     const installed = await readOptional(path);
     if (installed === undefined) {
@@ -197,15 +203,16 @@ export async function updateManagedProjectSkills(
   cwd: string,
   options: UpdateManagedProjectSkillsOptions = {},
 ): Promise<UpdateProjectSkillsResult> {
-  return await withManagedProjectSkillLock(cwd, async () =>
-    await updateManagedProjectSkillsUnlocked(cwd, options));
+  const root = await canonicalManagedRoot(cwd);
+  return await withManagedProjectSkillLock(root, async () =>
+    await updateManagedProjectSkillsUnlocked(root, options));
 }
 
 async function updateManagedProjectSkillsUnlocked(
-  cwd: string,
+  root: string,
   options: UpdateManagedProjectSkillsOptions,
 ): Promise<UpdateProjectSkillsResult> {
-  const before = await checkManagedProjectSkills(cwd);
+  const before = await checkManagedProjectSkills(root);
   const unsafe = before.statuses.filter((entry) => entry.status === "modified" || entry.status === "collision");
   if (unsafe.length > 0) {
     throw new Error(
@@ -219,10 +226,9 @@ async function updateManagedProjectSkillsUnlocked(
     return { ...before, updated: [] };
   }
 
-  const root = resolve(cwd);
   const changeId = `${new Date().toISOString().replace(/[:.]/gu, "-")}-${randomUUID().slice(0, 8)}`;
   const backupDir = join(root, "skills", ".mono-agent-backups", changeId);
-  await mkdir(backupDir, { recursive: true, mode: 0o700 });
+  await ensureOwnedManagedDirectoryInside(root, backupDir, "Managed project-skill backup directory");
 
   const skillTargets = BUNDLED_PROJECT_SKILLS.flatMap((skill) => {
     const status = needsUpdate.find((entry) => entry.name === skill.name);
@@ -232,7 +238,7 @@ async function updateManagedProjectSkillsUnlocked(
   const manifestContents = `${JSON.stringify(desiredManifest(), null, 2)}\n`;
   const snapshots = new Map<string, ManagedFileSnapshot>();
   for (const target of [...skillTargets, { path: manifestPath, contents: manifestContents, name: "manifest" }]) {
-    snapshots.set(target.path, await snapshotManagedFile(target.path));
+    snapshots.set(target.path, await snapshotManagedFile(root, target.path));
   }
   const afterSnapshots = await checkManagedProjectSkills(root);
   if (!isDeepStrictEqual(afterSnapshots, before)) {
@@ -243,31 +249,34 @@ async function updateManagedProjectSkillsUnlocked(
     const snapshot = snapshots.get(status.path)!;
     if (snapshot.contents !== undefined) {
       const backup = join(backupDir, status.name, "SKILL.md");
-      await mkdir(dirname(backup), { recursive: true, mode: 0o700 });
-      await writeFile(backup, snapshot.contents, { flag: "wx", mode: snapshot.mode ?? 0o600 });
+      await ensureOwnedManagedDirectoryInside(root, dirname(backup), "Managed project-skill backup directory");
+      writeNewManagedFileSync(root, backup, snapshot.contents, snapshot.mode ?? 0o600);
     }
   }
   const manifestSnapshot = snapshots.get(manifestPath)!;
   if (manifestSnapshot.contents !== undefined) {
-    await writeFile(join(backupDir, ".mono-agent-managed.json"), manifestSnapshot.contents, {
-      flag: "wx",
-      mode: manifestSnapshot.mode ?? 0o600,
-    });
+    writeNewManagedFileSync(
+      root,
+      join(backupDir, ".mono-agent-managed.json"),
+      manifestSnapshot.contents,
+      manifestSnapshot.mode ?? 0o600,
+    );
   }
 
   const updated: string[] = [];
   const activated: Array<{ readonly path: string; readonly contents: string }> = [];
   try {
     for (const target of skillTargets) {
-      await mkdir(dirname(target.path), { recursive: true });
+      await ensureOwnedManagedDirectoryInside(root, dirname(target.path), "Managed project-skill directory");
       await options.beforeActivate?.(target.path, target.contents);
       const snapshot = snapshots.get(target.path)!;
-      await atomicWriteManagedExact(target.path, snapshot.contents, target.contents, snapshot.mode ?? 0o600);
+      await atomicWriteManagedExact(root, target.path, snapshot.contents, target.contents, snapshot.mode ?? 0o600);
       activated.push({ path: target.path, contents: target.contents });
       updated.push(target.path);
     }
     await options.beforeActivate?.(manifestPath, manifestContents);
     await atomicWriteManagedExact(
+      root,
       manifestPath,
       manifestSnapshot.contents,
       manifestContents,
@@ -285,7 +294,7 @@ async function updateManagedProjectSkillsUnlocked(
     for (const activatedFile of [...activated].reverse()) {
       const snapshot = snapshots.get(activatedFile.path)!;
       try {
-        await restoreManagedFile(snapshot, activatedFile.contents);
+        await restoreManagedFile(root, snapshot, activatedFile.contents);
       } catch (rollbackError) {
         rollbackFailures.push(`${activatedFile.path}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
       }
@@ -327,7 +336,120 @@ async function readOptional(path: string): Promise<string | undefined> {
   }
 }
 
-async function snapshotManagedFile(path: string): Promise<ManagedFileSnapshot> {
+async function canonicalManagedRoot(cwd: string): Promise<string> {
+  const root = await realpath(resolve(cwd));
+  assertManagedDirectoryInfo(await lstat(root), root, "Agent folder");
+  return root;
+}
+
+async function inspectManagedFileInside(root: string, path: string, label: string): Promise<string> {
+  const canonicalRoot = await canonicalManagedRoot(root);
+  const absolute = resolve(path);
+  assertManagedPathInside(canonicalRoot, absolute, label);
+  const segments = relative(canonicalRoot, absolute).split(sep).filter((segment) => segment.length > 0);
+  if (segments.length === 0) throw new Error(`${label} must name a file inside the agent folder.`);
+  let parent = canonicalRoot;
+  for (const segment of segments.slice(0, -1)) {
+    parent = join(parent, segment);
+    let info: Stats;
+    try {
+      info = await lstat(parent);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return absolute;
+      throw error;
+    }
+    assertManagedDirectoryInfo(info, parent, `${label} parent`);
+  }
+  try {
+    assertManagedFileInfo(await lstat(absolute), absolute);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return absolute;
+}
+
+async function ensureOwnedManagedDirectoryInside(root: string, path: string, label: string): Promise<string> {
+  const canonicalRoot = await canonicalManagedRoot(root);
+  const absolute = resolve(path);
+  assertManagedPathInside(canonicalRoot, absolute, label);
+  const segments = relative(canonicalRoot, absolute).split(sep).filter((segment) => segment.length > 0);
+  let current = canonicalRoot;
+  for (const segment of segments) {
+    current = join(current, segment);
+    try {
+      await mkdir(current, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    assertManagedDirectoryInfo(await lstat(current), current, label);
+  }
+  return absolute;
+}
+
+function inspectManagedFileInsideSync(
+  root: string,
+  path: string,
+  label: string,
+  allowMissingTarget: boolean,
+): string {
+  const canonicalRoot = realpathSync(resolve(root));
+  const absolute = resolve(path);
+  assertManagedPathInside(canonicalRoot, absolute, label);
+  const segments = relative(canonicalRoot, absolute).split(sep).filter((segment) => segment.length > 0);
+  if (segments.length === 0) throw new Error(`${label} must name a file inside the agent folder.`);
+  assertManagedDirectoryInfo(lstatSync(canonicalRoot), canonicalRoot, "Agent folder");
+  let parent = canonicalRoot;
+  for (const segment of segments.slice(0, -1)) {
+    parent = join(parent, segment);
+    assertManagedDirectoryInfo(lstatSync(parent), parent, `${label} parent`);
+  }
+  try {
+    assertManagedFileInfo(lstatSync(absolute), absolute);
+  } catch (error) {
+    if (!allowMissingTarget || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return absolute;
+}
+
+function writeNewManagedFileSync(root: string, path: string, contents: string, mode: number): void {
+  const securePath = inspectManagedFileInsideSync(root, path, "Managed project-skill backup", true);
+  let handle: number | undefined;
+  try {
+    handle = openSync(
+      securePath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      mode,
+    );
+    writeFileSync(handle, contents, "utf8");
+    fchmodSync(handle, mode);
+    fsyncSync(handle);
+  } finally {
+    if (handle !== undefined) closeSync(handle);
+  }
+}
+
+function assertManagedDirectoryInfo(info: Stats, path: string, label: string): void {
+  if (!info.isDirectory()) {
+    throw new Error(`${label} must be a real directory, not a symbolic link: ${path}`);
+  }
+  const uid = process.getuid?.();
+  if (uid !== undefined && info.uid !== uid) {
+    throw new Error(`${label} must be owned by the current user: ${path}`);
+  }
+  if ((info.mode & 0o022) !== 0) {
+    throw new Error(`${label} must not be group/world writable: ${path}`);
+  }
+}
+
+function assertManagedPathInside(root: string, path: string, label: string): void {
+  const rel = relative(resolve(root), resolve(path));
+  if (rel === ".." || rel.startsWith(`..${sep}`)) {
+    throw new Error(`${label} must stay inside the agent folder: ${path}`);
+  }
+}
+
+async function snapshotManagedFile(root: string, path: string): Promise<ManagedFileSnapshot> {
+  await inspectManagedFileInside(root, path, "Managed project skill");
   let info: Stats;
   try {
     info = await lstat(path);
@@ -344,12 +466,17 @@ async function snapshotManagedFile(path: string): Promise<ManagedFileSnapshot> {
   return { path, contents, mode: info.mode & 0o777 };
 }
 
-async function restoreManagedFile(snapshot: ManagedFileSnapshot, expectedCurrent: string): Promise<void> {
+async function restoreManagedFile(
+  root: string,
+  snapshot: ManagedFileSnapshot,
+  expectedCurrent: string,
+): Promise<void> {
   if (snapshot.contents === undefined) {
-    removeManagedFileExactSync(snapshot.path, expectedCurrent);
+    removeManagedFileExactSync(root, snapshot.path, expectedCurrent);
     return;
   }
   await atomicWriteManagedExact(
+    root,
     snapshot.path,
     expectedCurrent,
     snapshot.contents,
@@ -358,34 +485,62 @@ async function restoreManagedFile(snapshot: ManagedFileSnapshot, expectedCurrent
 }
 
 async function atomicWriteManagedExact(
+  root: string,
   path: string,
   expected: string | undefined,
   contents: string,
   mode = 0o600,
 ): Promise<void> {
-  const temporary = join(dirname(path), `.${randomUUID()}.mono-agent-tmp`);
-  await mkdir(dirname(path), { recursive: true });
-  const initialInfo = await managedFileInfo(path, expected);
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  const secureParent = await ensureOwnedManagedDirectoryInside(root, dirname(path), "Managed project-skill directory");
+  const securePath = join(secureParent, basename(path));
+  const temporary = join(secureParent, `.${randomUUID()}.mono-agent-tmp`);
+  const initialInfo = await managedFileInfo(root, securePath, expected);
+  let handle: number | undefined;
+  let temporaryIdentity: { readonly dev: number; readonly ino: number } | undefined;
   try {
-    handle = await open(
-      temporary,
+    const secureTemporary = inspectManagedFileInsideSync(root, temporary, "Managed project-skill temporary file", true);
+    handle = openSync(
+      secureTemporary,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
       mode,
     );
-    await handle.writeFile(contents, "utf8");
-    await handle.chmod(mode);
-    await handle.sync();
-    await handle.close();
+    writeFileSync(handle, contents, "utf8");
+    fchmodSync(handle, mode);
+    fsyncSync(handle);
+    const temporaryInfo = fstatSync(handle);
+    assertManagedFileInfo(temporaryInfo, secureTemporary);
+    temporaryIdentity = { dev: temporaryInfo.dev, ino: temporaryInfo.ino };
+    closeSync(handle);
     handle = undefined;
-    commitManagedReplacementSync(path, temporary, expected, initialInfo);
+    commitManagedReplacementSync(root, securePath, secureTemporary, expected, initialInfo);
   } finally {
-    await handle?.close();
-    await rm(temporary, { force: true });
+    if (handle !== undefined) closeSync(handle);
+    removeManagedTemporaryIfOwnedSync(root, temporary, temporaryIdentity);
   }
 }
 
-async function managedFileInfo(path: string, expected: string | undefined): Promise<Stats | undefined> {
+function removeManagedTemporaryIfOwnedSync(
+  root: string,
+  path: string,
+  identity: { readonly dev: number; readonly ino: number } | undefined,
+): void {
+  if (identity === undefined) return;
+  const securePath = inspectManagedFileInsideSync(root, path, "Managed project-skill temporary file", true);
+  let info: Stats;
+  try {
+    info = lstatSync(securePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (info.dev !== identity.dev || info.ino !== identity.ino) {
+    throw new Error(`Managed project-skill temporary file changed unexpectedly and was left untouched: ${securePath}`);
+  }
+  unlinkSync(securePath);
+}
+
+async function managedFileInfo(root: string, path: string, expected: string | undefined): Promise<Stats | undefined> {
+  await inspectManagedFileInside(root, path, "Managed project skill");
   let info: Stats;
   try {
     info = await lstat(path);
@@ -404,30 +559,32 @@ async function managedFileInfo(path: string, expected: string | undefined): Prom
 }
 
 function commitManagedReplacementSync(
+  root: string,
   path: string,
   temporary: string,
   expected: string | undefined,
   initialInfo: Stats | undefined,
 ): void {
+  const securePath = inspectManagedFileInsideSync(root, path, "Managed project skill", expected === undefined);
   if (expected === undefined) {
     try {
-      lstatSync(path);
-      throw new Error(`Refusing to overwrite a concurrently created managed project skill: ${path}`);
+      lstatSync(securePath);
+      throw new Error(`Refusing to overwrite a concurrently created managed project skill: ${securePath}`);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    renameSync(temporary, path);
+    renameSync(temporary, securePath);
     return;
   }
 
   let sourceHandle: number | undefined;
   try {
-    sourceHandle = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    sourceHandle = openSync(securePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const openedBefore = fstatSync(sourceHandle);
-    assertManagedFileInfo(openedBefore, path);
+    assertManagedFileInfo(openedBefore, securePath);
     const current = readFileSync(sourceHandle, "utf8");
     const openedAfter = fstatSync(sourceHandle);
-    const named = lstatSync(path);
+    const named = lstatSync(securePath);
     if (
       current !== expected
       || initialInfo === undefined
@@ -435,31 +592,32 @@ function commitManagedReplacementSync(
       || !sameManagedFileMetadata(openedBefore, openedAfter)
       || !sameManagedFileMetadata(openedAfter, named)
     ) {
-      throw new Error(`Refusing to overwrite a concurrently edited managed project skill: ${path}`);
+      throw new Error(`Refusing to overwrite a concurrently edited managed project skill: ${securePath}`);
     }
-    renameSync(temporary, path);
+    renameSync(temporary, securePath);
   } finally {
     if (sourceHandle !== undefined) closeSync(sourceHandle);
   }
 }
 
-function removeManagedFileExactSync(path: string, expected: string): void {
+function removeManagedFileExactSync(root: string, path: string, expected: string): void {
+  const securePath = inspectManagedFileInsideSync(root, path, "Managed project skill", false);
   let sourceHandle: number | undefined;
   try {
-    sourceHandle = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    sourceHandle = openSync(securePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const openedBefore = fstatSync(sourceHandle);
-    assertManagedFileInfo(openedBefore, path);
+    assertManagedFileInfo(openedBefore, securePath);
     const current = readFileSync(sourceHandle, "utf8");
     const openedAfter = fstatSync(sourceHandle);
-    const named = lstatSync(path);
+    const named = lstatSync(securePath);
     if (
       current !== expected
       || !sameManagedFileMetadata(openedBefore, openedAfter)
       || !sameManagedFileMetadata(openedAfter, named)
     ) {
-      throw new Error(`Refusing to remove a concurrently edited managed project skill: ${path}`);
+      throw new Error(`Refusing to remove a concurrently edited managed project skill: ${securePath}`);
     }
-    unlinkSync(path);
+    unlinkSync(securePath);
   } finally {
     if (sourceHandle !== undefined) closeSync(sourceHandle);
   }
@@ -488,9 +646,8 @@ function sameManagedFileMetadata(left: Stats, right: Stats): boolean {
     && left.ctimeMs === right.ctimeMs;
 }
 
-async function withManagedProjectSkillLock<T>(cwd: string, operation: () => Promise<T>): Promise<T> {
-  const skillsDir = join(resolve(cwd), "skills");
-  await mkdir(skillsDir, { recursive: true, mode: 0o700 });
+async function withManagedProjectSkillLock<T>(root: string, operation: () => Promise<T>): Promise<T> {
+  const skillsDir = await ensureOwnedManagedDirectoryInside(root, join(root, "skills"), "Managed project-skills directory");
   const lockPath = join(skillsDir, ".mono-agent-managed.lock");
   const contents = `${JSON.stringify({
     schema: "mono-agent.managed-project-skills-lock.v1",
@@ -498,12 +655,13 @@ async function withManagedProjectSkillLock<T>(cwd: string, operation: () => Prom
     token: randomUUID(),
     createdAt: new Date().toISOString(),
   })}\n`;
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let handle: number | undefined;
   let identity: { readonly dev: number; readonly ino: number } | undefined;
   try {
     try {
-      handle = await open(
-        lockPath,
+      const secureLockPath = inspectManagedFileInsideSync(root, lockPath, "Managed project-skill lock", true);
+      handle = openSync(
+        secureLockPath,
         constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
         0o600,
       );
@@ -513,38 +671,37 @@ async function withManagedProjectSkillLock<T>(cwd: string, operation: () => Prom
       }
       throw error;
     }
-    await handle.writeFile(contents, "utf8");
-    await handle.chmod(0o600);
-    await handle.sync();
-    const info = await handle.stat();
+    writeFileSync(handle, contents, "utf8");
+    fchmodSync(handle, 0o600);
+    fsyncSync(handle);
+    const info = fstatSync(handle);
     assertManagedFileInfo(info, lockPath);
     identity = { dev: info.dev, ino: info.ino };
-    await handle.close();
+    closeSync(handle);
     handle = undefined;
     return await operation();
   } finally {
-    await handle?.close();
+    if (handle !== undefined) closeSync(handle);
     if (identity !== undefined) {
-      const current = await lstat(lockPath).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return undefined;
-        throw error;
-      });
+      const secureLockPath = inspectManagedFileInsideSync(root, lockPath, "Managed project-skill lock", false);
+      const current = lstatSync(secureLockPath);
       if (
-        current === undefined
-        || current.dev !== identity.dev
+        current.dev !== identity.dev
         || current.ino !== identity.ino
-        || await readFile(lockPath, "utf8") !== contents
+        || readFileSync(secureLockPath, "utf8") !== contents
       ) {
         throw new Error(`Managed project-skill lock changed unexpectedly and was left untouched: ${lockPath}`);
       }
-      await rm(lockPath);
+      unlinkSync(secureLockPath);
     }
   }
 }
 
 export async function managedProjectSkillsExist(cwd: string): Promise<boolean> {
   try {
-    return (await stat(join(resolve(cwd), PROJECT_SKILL_MANIFEST_PATH))).isFile();
+    const root = await canonicalManagedRoot(cwd);
+    const path = await inspectManagedFileInside(root, join(root, PROJECT_SKILL_MANIFEST_PATH), "Managed project-skill manifest");
+    return (await stat(path)).isFile();
   } catch {
     return false;
   }

@@ -49,6 +49,12 @@ export class ChatView extends Container {
    * tracking only the latest would orphan the turn that is actually running.
    */
   private readonly activeControllers = new Set<AbortController>();
+  /**
+   * TUI turns are serialized through their full settled hook. This keeps a
+   * fast follow-up from entering a responder that the configuration hook is
+   * about to rotate and dispose.
+   */
+  private turnBoundary: Promise<void> = Promise.resolve();
   private turnCounter = 0;
   private thinkingExpandedFlag = false;
   /**
@@ -273,6 +279,14 @@ export class ChatView extends Container {
     }
 
     const controller = new AbortController();
+    const serializeThroughSettledHook = this.options.onTurnSettled !== undefined;
+    const previousTurnBoundary = serializeThroughSettledHook ? this.turnBoundary : Promise.resolve();
+    let releaseTurnBoundary: (() => void) | undefined;
+    if (serializeThroughSettledHook) {
+      this.turnBoundary = new Promise<void>((resolve) => {
+        releaseTurnBoundary = resolve;
+      });
+    }
     const presenter = new TurnPresenter({
       transcript: this.transcript,
       statusBar: this.options.statusBar,
@@ -294,6 +308,10 @@ export class ChatView extends Container {
     };
     let status: "ok" | "cancelled" | "error" = "ok";
     try {
+      await previousTurnBoundary;
+      if (serializeThroughSettledHook && controller.signal.aborted) {
+        throw new Error("Turn cancelled before it started.");
+      }
       const response = await this.responder.respond(
         {
           conversationId: this.options.conversationId,
@@ -321,33 +339,37 @@ export class ChatView extends Container {
         this.addNotice(message, "error");
       }
     } finally {
-      this.activeControllers.delete(controller);
-      if (this.activeControllers.size === 0) {
-        this.setLoading(false);
-      }
-      presenter.settle();
-      this.options.statusBar.setEphemeral("");
-      const answer = presenter.assistantText();
-      if (answer.length > 0 || status !== "ok") {
-        this.options.history?.append({
-          id: `${turnId}-assistant`,
-          role: "assistant",
-          text: answer,
-          timestamp: Date.now(),
-          conversationId: this.options.conversationId,
-          status,
-        });
-      }
-      this.options.tui.requestRender();
       try {
-        await this.options.onTurnSettled?.({
-          configuration: options.configuration === true,
-          status,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.options.logger?.error?.("tui.turn.settled_hook_failed", { message });
-        this.addNotice(message, "error");
+        presenter.settle();
+        this.options.statusBar.setEphemeral("");
+        const answer = presenter.assistantText();
+        if (answer.length > 0 || status !== "ok") {
+          this.options.history?.append({
+            id: `${turnId}-assistant`,
+            role: "assistant",
+            text: answer,
+            timestamp: Date.now(),
+            conversationId: this.options.conversationId,
+            status,
+          });
+        }
+        this.options.tui.requestRender();
+        try {
+          await this.options.onTurnSettled?.({
+            configuration: options.configuration === true,
+            status,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.options.logger?.error?.("tui.turn.settled_hook_failed", { message });
+          this.addNotice(message, "error");
+        }
+      } finally {
+        this.activeControllers.delete(controller);
+        if (this.activeControllers.size === 0) {
+          this.setLoading(false);
+        }
+        releaseTurnBoundary?.();
       }
     }
   }

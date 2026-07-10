@@ -108,7 +108,8 @@ Every scaffold selects versioned `mono-agent-configure` and `mono-agent-memory`
 skills from `./skills` with index disclosure. `ReadSkill` remains separate from
 action-tool policy. `mono-agent install-skill --project --check|--update` reports
 version/hash drift and refreshes only unchanged managed copies with backups; a
-per-project owner lock plus compare-and-swap activation prevents concurrent
+canonical owner-only non-symlink parent chain, per-project owner lock, and
+compare-and-swap activation prevent outside or concurrent
 operator edits from being overwritten, and a partial activation restores only
 files that still equal the managed bytes it wrote.
 
@@ -123,7 +124,11 @@ future field is handed to the explicit guided flow. It canonicalizes
 config/Identity/state paths without following symlink parents, stages and
 fsyncs replacements, then performs the final source comparison and rename as
 one non-yielding commit step under an owner-only transaction lock. Separate TUI
-confirmation, rollback evidence, and a fresh responder remain mandatory.
+confirmation, failure-atomic config/Role rollback compensation, rollback
+evidence, and a fresh responder remain mandatory. Configuration turns replace
+the ordinary tool/MCP policy with `ReadSkill`, `MemoryRecall`, and the proposal
+tool only; direct providers that cannot project a finite list run in their
+native read-only plan posture. Fast follow-ups wait through responder rotation.
 Remote/proactive channels never receive this tool.
 
 Guided readiness uses a worker-reproducible environment rather than the launching

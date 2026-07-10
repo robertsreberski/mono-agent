@@ -6,6 +6,7 @@ import { setImmediate as yieldNow } from "node:timers/promises";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { AgentHarnessRuntimeOptionsExtension } from "@mono-agent/agent-harness";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -85,6 +86,72 @@ describe("RFC 6902 configuration proposals", () => {
 });
 
 describe("local configuration transaction", () => {
+  it("replaces ordinary tool/MCP authority with a read-only configuration boundary", async () => {
+    const inspectExtension = async (model?: string) => {
+      const { dir, configPath } = await scaffold();
+      const mcpPath = join(dir, "mcp.json");
+      await writeFile(mcpPath, `${JSON.stringify({
+        allowedTools: ["*"],
+        mcpServers: { configuredMutator: { command: "configured-mutator" } },
+      }, null, 2)}\n`);
+      const raw = JSON.parse(await readFile(configPath, "utf8")) as MonoAgentConfigJson;
+      await writeFile(configPath, `${JSON.stringify({
+        ...raw,
+        ...(model === undefined ? {} : { runtime: { ...raw.runtime, model } }),
+        tools: { allowedTools: ["*"], disallowedTools: [], mcpConfigPath: "./mcp.json" },
+      }, null, 2)}\n`);
+      const manager = await LocalConfigurationManager.create({ cwd: dir, configPath, env: {}, configure: true });
+      const internals = manager as unknown as {
+        runtimeExtension(input: {
+          request: { metadata?: Record<string, unknown> };
+          runId: string;
+          context: Record<string, never>;
+        }): Promise<AgentHarnessRuntimeOptionsExtension>;
+      };
+      return { dir, manager, internals };
+    };
+
+    const direct = await inspectExtension();
+    try {
+      const extension = await direct.internals.runtimeExtension({
+        request: { metadata: { tui: { local: true, configuration: true } } },
+        runId: "direct-config",
+        context: {},
+      });
+      expect(extension.runtimeOptions).toMatchObject({ permissionMode: "plan" });
+      expect(extension.toolPolicyOverride?.allowedTools).toEqual(["*"]);
+      expect(Object.keys(extension.toolPolicyOverride?.mcpServers ?? {})).toEqual(["agent_configuration"]);
+      expect(extension.toolPolicyOverride?.mcpConfigPath).toBeUndefined();
+
+      const ordinary = await direct.internals.runtimeExtension({
+        request: { metadata: { tui: { local: true } } },
+        runId: "ordinary",
+        context: {},
+      });
+      expect(ordinary).toEqual({ runtimeOptions: {} });
+    } finally {
+      await direct.manager.dispose();
+    }
+
+    const pi = await inspectExtension("pi:openai-codex:gpt-5.5");
+    try {
+      const extension = await pi.internals.runtimeExtension({
+        request: { metadata: { tui: { local: true, configuration: true } } },
+        runId: "pi-config",
+        context: {},
+      });
+      expect(extension.toolPolicyOverride?.allowedTools).toEqual(expect.arrayContaining([
+        "ReadSkill",
+        "MemoryRecall",
+        CONFIGURATION_PROPOSAL_TOOL_NAME,
+      ]));
+      expect(extension.toolPolicyOverride?.allowedTools).not.toEqual(expect.arrayContaining(["Bash", "Write", "Edit"]));
+      expect(Object.keys(extension.toolPolicyOverride?.mcpServers ?? {})).toEqual(["agent_configuration"]);
+    } finally {
+      await pi.manager.dispose();
+    }
+  });
+
   it("builds an OS-owner-local responder and refuses a writable-by-others folder", async () => {
     const { dir, configPath } = await scaffold();
     const session = await createLocalConfigurationSession({ cwd: dir, configPath, env: {}, configure: false });
@@ -350,6 +417,51 @@ describe("local configuration transaction", () => {
     }
   });
 
+  it("reapplies the approved Role when a concurrent config edit aborts rollback", async () => {
+    const { dir, configPath } = await scaffold();
+    const identityPath = join(dir, "IDENTITY.md");
+    const identityBefore = await readFile(identityPath, "utf8");
+    const current = await readMonoAgentConfigJson(configPath);
+    const manager = await LocalConfigurationManager.create({ cwd: dir, configPath, env: {}, configure: true });
+    let stop = false;
+    let fired = false;
+    try {
+      const card = await manager.prepareProposal(proposal(current.version, {
+        role: "Keep the approved Role if automatic rollback cannot restore config.",
+      }));
+      const applied = await manager.apply(card.id);
+      const approved = await readMonoAgentConfigJson(configPath);
+      const concurrent: MonoAgentConfigJson = {
+        ...approved.json,
+        agent: { ...approved.json.agent, name: "CONCURRENT-ROLLBACK-EDIT" },
+      };
+      const approvedRole = await readFile(identityPath, "utf8");
+      const monitor = (async () => {
+        while (!stop) {
+          if (!fired && readdirSync(dir).some((name) => name.endsWith(".mono-agent-tmp"))) {
+            fired = true;
+            writeFileSync(configPath, `${JSON.stringify(concurrent, null, 2)}\n`);
+          }
+          await yieldNow();
+        }
+      })();
+
+      try {
+        await expect(applied.rollback()).rejects.toThrow(/concurrent edit was preserved|Refusing to replace changed file/u);
+      } finally {
+        stop = true;
+        await monitor;
+      }
+      expect(fired).toBe(true);
+      expect((await readMonoAgentConfigJson(configPath)).json.agent?.name).toBe("CONCURRENT-ROLLBACK-EDIT");
+      expect(await readFile(identityPath, "utf8")).toBe(approvedRole);
+      expect(approvedRole).not.toBe(identityBefore);
+    } finally {
+      stop = true;
+      await manager.dispose();
+    }
+  });
+
   it("uses a fail-closed allowlist for paths, endpoints, sandbox, and new schema fields", async () => {
     const { dir, configPath } = await scaffold();
     const external = await mkdtemp(join(tmpdir(), "mono-agent-external-memory-"));
@@ -358,6 +470,7 @@ describe("local configuration transaction", () => {
     const raw = JSON.parse(await readFile(configPath, "utf8")) as MonoAgentConfigJson;
     await writeFile(configPath, `${JSON.stringify({
       ...raw,
+      context: { ...raw.context, skillMaxBytes: 65_536 },
       memory: {
         mode: "journal",
         path: ".mono-agent/memory",
@@ -375,7 +488,10 @@ describe("local configuration transaction", () => {
     const manager = await LocalConfigurationManager.create({
       cwd: dir,
       configPath,
-      env: { TEST_EMBEDDINGS_KEY: "synthetic-not-real" },
+      env: {
+        TEST_EMBEDDINGS_KEY: "synthetic-not-real",
+        MONO_AGENT_SKILL_MAX_BYTES: "131072",
+      },
       configure: true,
     });
     try {
@@ -395,6 +511,10 @@ describe("local configuration transaction", () => {
         id: "unknown-future-field",
         patch: [{ op: "add", path: "/futureAuthority", value: true }],
       }))).rejects.toThrow(/futureAuthority|new schema fields/u);
+      await expect(manager.prepareProposal(proposal(current.version, {
+        id: "env-shadowed-move-source",
+        patch: [{ op: "move", from: "/context/skillMaxBytes", path: "/memory/maxBytes" }],
+      }))).rejects.toThrow(/environment overrides|MONO_AGENT_SKILL_MAX_BYTES/u);
     } finally {
       await manager.dispose();
     }

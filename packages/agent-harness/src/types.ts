@@ -254,5 +254,12 @@ export interface AgentHarnessRuntimeOptionsExtension {
   // from the effective model + host config in the harness, so an extension must
   // not set it.
   readonly runtimeOptions?: Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "executionMode">>;
+  /**
+   * Authoritative request-scoped tool boundary. When present, it replaces the
+   * host/static allowed, denied, MCP-server, and MCP-config-path fields instead
+   * of unioning with them. Use for narrowly authenticated turns such as local
+   * configuration where ordinary action tools must not leak through.
+   */
+  readonly toolPolicyOverride?: ToolPolicy;
   readonly cleanup?: () => void | Promise<void>;
 }

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -161,7 +161,7 @@ describe("managed project skills", () => {
 
     await expect(updateManagedProjectSkills(dir, {
       beforeActivate: async (path) => {
-        if (!injected && path === configurePath) {
+        if (!injected && path.endsWith("/skills/mono-agent-configure/SKILL.md")) {
           injected = true;
           await writeFile(configurePath, operatorEdit);
         }
@@ -170,5 +170,17 @@ describe("managed project skills", () => {
 
     expect(injected).toBe(true);
     expect(await readFile(configurePath, "utf8")).toBe(operatorEdit);
+  });
+
+  it("rejects a symlinked skills parent without writing outside the agent", async () => {
+    const dir = await scaffold();
+    const external = await mkdtemp(join(tmpdir(), "mono-agent-external-skills-"));
+    dirs.push(external);
+    await rm(join(dir, "skills"), { recursive: true, force: true });
+    await symlink(external, join(dir, "skills"), "dir");
+
+    await expect(checkManagedProjectSkills(dir)).rejects.toThrow(/real directory|symbolic link/u);
+    await expect(updateManagedProjectSkills(dir)).rejects.toThrow(/real directory|symbolic link/u);
+    expect(await readdir(external)).toEqual([]);
   });
 });

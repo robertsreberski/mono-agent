@@ -35,12 +35,14 @@ import type {
   AgentHarnessRuntimeOptionsExtension,
   AgentHarnessRuntimeOptionsInput,
 } from "@mono-agent/agent-harness";
+import { createToolPolicy } from "@mono-agent/agent-harness";
 import type { ConfigurationProposalCard, ConfigurationProposalResult } from "@mono-agent/tui";
 
 import { loadAppCoreConfig } from "./app-config.js";
 import { createConfiguredAgentResponder } from "./configured-agent.js";
 import {
   CONFIGURATION_PROPOSAL_MCP_SERVER_NAME,
+  CONFIGURATION_PROPOSAL_TOOL_NAME,
   configurationProposalMcpServerSpec,
   type AgentConfigurationProposal,
   type JsonPatchOperation,
@@ -49,6 +51,13 @@ import { validateMonoAgentFolder } from "./doctor.js";
 
 export const LOCAL_CONFIGURATION_PROMPT =
   "Begin local configuration mode. Read the mono-agent-configure skill, then ask the operator one concise question: how would they like to configure you further? Mention that behavior, memory, skills, tools, or channels can be discussed, but do not repeat the setup wizard and do not ask for secrets.";
+
+const CONFIGURATION_READ_ONLY_TOOLS = [
+  "ReadSkill",
+  "MemoryRecall",
+  CONFIGURATION_PROPOSAL_TOOL_NAME,
+  `mcp__${CONFIGURATION_PROPOSAL_MCP_SERVER_NAME}__${CONFIGURATION_PROPOSAL_TOOL_NAME}`,
+] as const;
 
 type DisposableResponder = AgentResponder & { dispose?(): Promise<void> };
 
@@ -222,14 +231,27 @@ export class LocalConfigurationManager {
     );
     const sinkPath = join(sessionDir, `${safeFilePart(input.runId)}.json`);
     this.pendingSinks.add(sinkPath);
+    const proposalServer = configurationProposalMcpServerSpec({
+      sinkPath,
+      baseVersion: snapshot.version,
+    }, this.options.cwd);
+    const directProviderNeedsNativeReadOnly = this.currentConfig.runtime.model.sdk === "codex"
+      || this.currentConfig.runtime.model.sdk === "opencode";
     return {
-      runtimeOptions: {
+      toolPolicyOverride: createToolPolicy({
+        // Direct Codex/OpenCode cannot project a finite tool list. Their native
+        // plan posture below denies mutating built-ins; replacing MCP policy
+        // still removes every configured external/action server.
+        allowedTools: directProviderNeedsNativeReadOnly ? ["*"] : CONFIGURATION_READ_ONLY_TOOLS,
+        disallowedTools: [],
         mcpServers: {
-          [CONFIGURATION_PROPOSAL_MCP_SERVER_NAME]: configurationProposalMcpServerSpec({
-            sinkPath,
-            baseVersion: snapshot.version,
-          }, this.options.cwd),
+          [CONFIGURATION_PROPOSAL_MCP_SERVER_NAME]: proposalServer,
         },
+      }),
+      runtimeOptions: {
+        // Native direct-provider bridges enforce read-only/deny-all action
+        // posture with this field; finite-list runtimes get both defenses.
+        permissionMode: "plan",
       },
     };
   }
@@ -415,11 +437,28 @@ export class LocalConfigurationManager {
       rollback: async () => {
         await withConfigurationTransactionLock(this.options.cwd, `${id}-rollback`, async () => {
           await assertExactOwnedContents(this.options.cwd, this.options.configPath, configAfter, "Configuration changed before rollback");
+          let roleRestored = false;
           if (prepared.rolePath !== undefined && prepared.roleAfter !== undefined) {
             await assertExactOwnedContents(this.options.cwd, prepared.rolePath, prepared.roleAfter, "IDENTITY.md changed before rollback");
             await atomicReplaceExact(this.options.cwd, prepared.rolePath, prepared.roleAfter, prepared.roleBefore!);
+            roleRestored = true;
           }
-          await atomicReplaceExact(this.options.cwd, this.options.configPath, configAfter, prepared.configBefore);
+          try {
+            await atomicReplaceExact(this.options.cwd, this.options.configPath, configAfter, prepared.configBefore);
+          } catch (error) {
+            if (roleRestored && prepared.rolePath !== undefined && prepared.roleAfter !== undefined) {
+              try {
+                await atomicReplaceExact(this.options.cwd, prepared.rolePath, prepared.roleBefore!, prepared.roleAfter);
+              } catch (compensationError) {
+                throw new Error(
+                  `${error instanceof Error ? error.message : String(error)} ` +
+                  `Role compensation also failed: ${compensationError instanceof Error ? compensationError.message : String(compensationError)} ` +
+                  `Concurrent edits were preserved; manual recovery is required. Rollback evidence: ${rollbackDir}`,
+                );
+              }
+            }
+            throw error;
+          }
           await ensureOwnedDirectoryInside(this.options.cwd, rollbackDir, "Configuration change directory");
           await writeFile(join(rollbackDir, "rollback.json"), `${JSON.stringify({
             schema: "mono-agent.configuration-rollback.v1",
@@ -648,7 +687,10 @@ function assertNoEnvironmentShadow(
   const shadowed = Object.entries(CONFIG_ENV_KEYS).filter(([field, envKey]) => {
     if ((env[envKey]?.trim().length ?? 0) === 0) return false;
     const pointer = `/${field.split(".").join("/")}`;
-    return patch.some((operation) => pathsOverlap(operation.path, pointer));
+    return patch.some((operation) =>
+      pathsOverlap(operation.path, pointer)
+      || (operation.from !== undefined && pathsOverlap(operation.from, pointer))
+    );
   });
   if (shadowed.length > 0) {
     throw new Error(
