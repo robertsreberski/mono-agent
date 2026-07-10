@@ -14,10 +14,55 @@ import {
   claudeNativeAgentDefinitions,
   resolveClaudeAllowedTools,
 } from "./claude-subagents.js";
+import {
+  claudeSandboxCapabilityMismatchResult,
+  claudeSandboxPolicyProblem,
+} from "./claude-sandbox.js";
 
-function thinkingForEffort(effort) {
-  if (effort === "low") return { thinking: { type: "disabled" } };
-  return { thinking: { type: "adaptive" }, effort };
+const CLAUDE_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const MAX_CLAUDE_ERROR_CHARS = 2_000;
+
+/**
+ * Preserve the provider default when effort is omitted. The current Agent SDK
+ * accepts the five values below verbatim; mono-agent must not infer thinking
+ * enablement/disablement from a requested effort level.
+ * @param {unknown} effort
+ * @returns {{effort?: "low" | "medium" | "high" | "xhigh" | "max"}}
+ */
+export function claudeEffortOptions(effort) {
+  if (effort == null || String(effort).trim() === "") return {};
+  const normalized = String(effort).trim();
+  if (normalized === "none") {
+    throw new Error(
+      'Claude Agent SDK does not support effort "none". Omit effort to use the provider default, or choose low, medium, high, xhigh, or max.',
+    );
+  }
+  if (!CLAUDE_EFFORT_LEVELS.has(normalized)) {
+    throw new Error(
+      `Claude Agent SDK does not support effort "${boundedText(normalized, 64)}". Choose low, medium, high, xhigh, or max, or omit effort.`,
+    );
+  }
+  return { effort: /** @type {"low" | "medium" | "high" | "xhigh" | "max"} */ (normalized) };
+}
+
+function boundedText(value, limit = MAX_CLAUDE_ERROR_CHARS) {
+  const text = String(value ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ").trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 16))}… [truncated]`;
+}
+
+function createClaudeSdkEnvironment(overrides, providerEnvironment) {
+  return {
+    ...process.env,
+    ...(overrides && typeof overrides === "object" ? overrides : {}),
+    ...(providerEnvironment && typeof providerEnvironment === "object" ? providerEnvironment : {}),
+    MCP_CONNECTION_NONBLOCKING: "0",
+  };
+}
+
+/** @param {string} model @param {unknown} contextWindow */
+export function claudeSdkModelForQuery(model, contextWindow) {
+  return modelWithContextWindow(model, contextWindow);
 }
 
 function extractText(event) {
@@ -36,6 +81,12 @@ function assistantToolNames(event) {
     .map((block) => block.name);
 }
 
+function assistantThinkingObserved(event) {
+  return event?.type === "assistant"
+    && Array.isArray(event.message?.content)
+    && event.message.content.some((block) => block?.type === "thinking" || block?.type === "redacted_thinking");
+}
+
 function extractResultText(event) {
   if (event.type !== "result") return "";
   if (typeof event.result === "string") return event.result;
@@ -50,6 +101,117 @@ function stringifyError(value) {
   if (typeof value === "string") return value;
   if (typeof value.message === "string") return value.message;
   try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+function claudeAssistantFailure(code, requestId = null) {
+  const normalizedCode = boundedText(code || "unknown", 80);
+  const mapping = {
+    authentication_failed: {
+      message: "Claude authentication failed. Sign in again or provide a valid Claude credential.",
+      failureKind: "provider_auth",
+      category: "authentication",
+      retryable: false,
+    },
+    oauth_org_not_allowed: {
+      message: "Claude authentication succeeded, but this organization does not allow the OAuth session.",
+      failureKind: "provider_auth",
+      category: "authentication",
+      retryable: false,
+    },
+    rate_limit: {
+      message: "Claude usage or rate limit reached.",
+      failureKind: "usage_limit",
+      category: "usage_limit",
+      retryable: false,
+    },
+    max_output_tokens: {
+      message: "Claude reached the maximum output-token limit.",
+      failureKind: "usage_limit",
+      category: "usage_limit",
+      retryable: false,
+    },
+    overloaded: {
+      message: "Claude is temporarily overloaded.",
+      failureKind: "provider_unavailable",
+      category: "provider_unavailable",
+      retryable: true,
+    },
+    server_error: {
+      message: "Claude returned a temporary server error.",
+      failureKind: "provider_unavailable",
+      category: "provider_unavailable",
+      retryable: true,
+    },
+    billing_error: {
+      message: "Claude rejected the request because the account needs billing attention.",
+      failureKind: "provider_unavailable",
+      category: "nonretryable",
+      retryable: false,
+    },
+    invalid_request: {
+      message: "Claude rejected the request as invalid.",
+      failureKind: "provider_unavailable",
+      category: "nonretryable",
+      retryable: false,
+    },
+    model_not_found: {
+      message: "Claude could not find or access the requested model.",
+      failureKind: "provider_unavailable",
+      category: "nonretryable",
+      retryable: false,
+    },
+    unknown: {
+      message: "Claude reported an unknown provider error.",
+      failureKind: "provider_unavailable",
+      category: "unknown",
+      retryable: false,
+    },
+  };
+  const selected = mapping[normalizedCode] || mapping.unknown;
+  const safeRequestId = typeof requestId === "string" && requestId.trim()
+    ? boundedText(requestId, 160)
+    : null;
+  return {
+    ...selected,
+    code: normalizedCode,
+    requestId: safeRequestId,
+    message: `${selected.message}${safeRequestId ? ` Request ID: ${safeRequestId}.` : ""}`,
+  };
+}
+
+function resultFailureCategory(event, resultError) {
+  const text = `${resultError?.message || ""} ${Array.isArray(event?.errors) ? event.errors.join(" ") : ""}`;
+  if (/auth|oauth|api key|401|403|sign[ -]?in|log[ -]?in/i.test(text)) {
+    return claudeAssistantFailure("authentication_failed");
+  }
+  if (event?.subtype === "error_max_turns" || event?.subtype === "error_max_budget_usd") {
+    return {
+      message: boundedText(resultError?.message || "Claude usage limit reached."),
+      failureKind: "usage_limit",
+      category: "usage_limit",
+      retryable: false,
+      code: event.subtype,
+      requestId: null,
+    };
+  }
+  if (/overload|temporar|server error|\b50[0234]\b/i.test(text)) {
+    return {
+      message: boundedText(resultError?.message || "Claude is temporarily unavailable."),
+      failureKind: "provider_unavailable",
+      category: "provider_unavailable",
+      retryable: true,
+      code: event?.subtype || "result_error",
+      requestId: null,
+    };
+  }
+  return {
+    message: boundedText(resultError?.message || "Claude request failed."),
+    failureKind: resultError?.failureKind || "provider_unavailable",
+    category: resultError?.failureKind === "invalid_result" ? "nonretryable" : "unknown",
+    retryable: false,
+    code: event?.subtype || "result_error",
+    requestId: null,
+  };
 }
 
 function humanizeSubtype(subtype) {
@@ -69,7 +231,7 @@ function resultEventError(event) {
     ? "Claude stopped before final output: max turns reached"
     : `Claude result error${label ? ` (${label})` : ""}${detail ? `: ${detail}` : ""}`;
   return {
-    message,
+    message: boundedText(message),
     failureKind: subtype === "error_max_turns"
       ? "usage_limit"
       : subtype === "error_max_structured_output_retries"
@@ -161,21 +323,32 @@ function buildClaudeErrorDetails({
   toolResultsSeen = 0,
   numTurns = 0,
   lastStructuredOutputRejection = null,
+  failureCode = null,
+  failureCategory = null,
+  retryable = null,
+  requestId = null,
 }) {
-  const resolvedSubtype = subtype || event?.subtype || event?.type || null;
+  const rawSubtype = subtype || event?.subtype || event?.type || null;
+  const resolvedSubtype = rawSubtype == null ? null : boundedText(rawSubtype, 160);
   const turnCount = Number(event?.num_turns ?? numTurns) || 0;
   const excerpt = lastTextSnippet(assistantTexts);
   return {
     claude_error_subtype: resolvedSubtype,
     last_text_excerpt: excerpt,
-    last_tool_name: lastToolName || null,
+    last_tool_name: lastToolName ? boundedText(lastToolName, 160) : null,
     had_partial_progress: !!(excerpt || lastToolName || toolResultsSeen > 0),
     tool_results_seen: toolResultsSeen,
     turn_count: turnCount,
     max_turns_hit: resolvedSubtype === "error_max_turns",
     structured_output_retry_exhausted: resolvedSubtype === "error_max_structured_output_retries",
-    last_structured_output_rejection: lastStructuredOutputRejection || null,
-    provider_session_id: providerSessionId || null,
+    last_structured_output_rejection: lastStructuredOutputRejection
+      ? boundedText(lastStructuredOutputRejection, 500)
+      : null,
+    provider_session_id: providerSessionId ? boundedText(providerSessionId, 160) : null,
+    claude_error_code: failureCode ? boundedText(failureCode, 80) : null,
+    claude_error_category: failureCategory || null,
+    retryable: typeof retryable === "boolean" ? retryable : null,
+    request_id: requestId || null,
   };
 }
 
@@ -372,7 +545,7 @@ function createClaudeCanUseTool(approvalManager, modelName) {
       toolName,
       input,
       model: modelName,
-      toolUseId: context?.toolUseId || context?.tool_use_id || null,
+      toolUseId: context?.toolUseID || context?.toolUseId || context?.tool_use_id || null,
     });
     if (decision.decision === "deny") {
       return {
@@ -395,7 +568,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
   const {
     messages,
     model,
-    effort = "medium",
+    effort,
     cwd,
     mcpServers,
     allowedTools,
@@ -407,7 +580,45 @@ export async function generateClaudeResponse(systemPrompt, options) {
     onEvent = () => {},
   } = options;
 
-  const thinkingOpts = thinkingForEffort(effort);
+  let effortOptions;
+  try {
+    effortOptions = claudeEffortOptions(effort);
+  } catch (error) {
+    const message = boundedText(error?.message || error);
+    return {
+      text: "",
+      structuredResult: undefined,
+      structuredResultSource: null,
+      events: [],
+      usage: {},
+      durationMs: 0,
+      numTurns: 0,
+      model: model.model,
+      effort: effort ?? null,
+      sdk: "claude",
+      cancelled: false,
+      error: message,
+      errorDetails: {
+        claude_error_code: "claude_effort_unsupported",
+        claude_error_category: "nonretryable",
+        retryable: false,
+      },
+      failureKind: "skipped_capability_mismatch",
+      providerSessionId: pickSessionId(options.sessionId, options.providerSessionId),
+      runtimeWarnings: [],
+      capabilitiesUsed: buildCapabilitiesUsed({ thinkingEnabled: null }),
+    };
+  }
+
+  if (claudeSandboxPolicyProblem(options)) {
+    return claudeSandboxCapabilityMismatchResult({
+      model: model.reference || `claude:${model.model}`,
+      effort,
+      sdk: "claude",
+      providerSessionId: pickSessionId(options.sessionId, options.providerSessionId),
+      outputSchema: options.outputSchema,
+    });
+  }
 
   const promptString = promptStringFromMessages(messages);
   const runtimeWarnings = [];
@@ -467,18 +678,34 @@ export async function generateClaudeResponse(systemPrompt, options) {
   // toolset (every tool, incl. Task — not double-added). disallowedTools still
   // flows through, so deny-wins holds under allow-all.
   const { allowAll: allowAllTools, tools: resolvedAllowedTools } = resolveClaudeAllowedTools(allowedTools, options.nativeSubagents);
+  const hasExplicitToolProjection = Array.isArray(allowedTools) && !allowAllTools;
+  const internalAbortController = new AbortController();
+  const disposableSession = options.persistSession === false
+    || options.disposable === true
+    || options.readinessProbe === true
+    || options.sessionKeepAlive === false;
   // Assembled incrementally, then handed across the SDK `query` boundary
   // (outputFormat/resume/maxTurns are attached conditionally below).
   /** @type {any} */
   const queryOptions = {
     systemPrompt,
-    model: modelWithContextWindow(model.model, options.contextWindow),
+    model: claudeSdkModelForQuery(model.model, options.contextWindow),
     cwd,
     permissionMode: effectivePermissionMode,
     ...(effectivePermissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
-    allowedTools: allowAllTools ? undefined : resolvedAllowedTools,
+    // `tools` is the SDK's availability projection. In particular, [] must
+    // remain [] so a readiness/discovery call cannot silently regain defaults.
+    ...(hasExplicitToolProjection ? { tools: resolvedAllowedTools } : {}),
+    // `allowedTools` only controls auto-approval. Never provide it alongside
+    // canUseTool, where it would bypass the host approval callback.
+    ...(!approvalManager && hasExplicitToolProjection ? { allowedTools: resolvedAllowedTools } : {}),
     disallowedTools,
-    mcpServers,
+    mcpServers: mcpServers || {},
+    strictMcpConfig: true,
+    settingSources: [],
+    env: createClaudeSdkEnvironment(options.env, options.providerEnv),
+    abortController: internalAbortController,
+    ...(disposableSession ? { persistSession: false } : options.persistSession === true ? { persistSession: true } : {}),
     ...(approvalManager ? { canUseTool: createClaudeCanUseTool(approvalManager, model.model) } : {}),
     ...(nativeAgents ? { agents: nativeAgents } : {}),
     hooks: mergeHookMatchers(hooks, createClaudeRuntimeHooks({
@@ -489,7 +716,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
       onToolUse: noteToolUse,
       onToolResult: noteToolResult,
     })),
-    ...thinkingOpts,
+    ...effortOptions,
   };
   if (options.outputSchema) {
     queryOptions.outputFormat = {
@@ -515,7 +742,8 @@ export async function generateClaudeResponse(systemPrompt, options) {
     runtime: "sdk",
     timestamp: providerRequestStartedAt,
   });
-  const stream = query({ prompt: /** @type {any} */ (prompt), options: queryOptions });
+  /** @type {ReturnType<typeof query> | null} */
+  let stream = null;
 
   let text = "";
   let usage = {};
@@ -531,6 +759,9 @@ export async function generateClaudeResponse(systemPrompt, options) {
   let structuredResult = undefined;
   let errorDetails = null;
   let lastStructuredOutputRejection = null;
+  let totalCostUsd = null;
+  let thinkingObserved = false;
+  let structuredTerminalFailure = null;
   const pendingStructuredOutputById = new Map();
 
   const rawFinalText = () => resultText || text;
@@ -549,16 +780,18 @@ export async function generateClaudeResponse(systemPrompt, options) {
     runtimeWarnings.push(makeRuntimeWarning(message));
   }
 
-  const abortHandler = async () => {
+  const abortHandler = () => {
     cancelled = true;
-    if (stream.return) await stream.return();
+    internalAbortController.abort();
+    try { stream?.close?.(); } catch { /* best effort; finally closes again */ }
   };
   if (abortSignal) {
-    if (abortSignal.aborted) await abortHandler();
+    if (abortSignal.aborted) abortHandler();
     else abortSignal.addEventListener("abort", abortHandler, { once: true });
   }
 
   try {
+    stream = query({ prompt: /** @type {any} */ (prompt), options: queryOptions });
     for await (const event of stream) {
       const nextSessionId = sessionIdFromEvent(event);
       if (nextSessionId) providerSessionId = nextSessionId;
@@ -584,6 +817,25 @@ export async function generateClaudeResponse(systemPrompt, options) {
         emitEvent(structuredOutputEvent(eventStructuredOutput));
       }
       if (event.type === "assistant") {
+        thinkingObserved = thinkingObserved || assistantThinkingObserved(event);
+        if (event.error && !structuredTerminalFailure) {
+          const assistantFailure = claudeAssistantFailure(event.error, event.request_id);
+          structuredTerminalFailure = assistantFailure;
+          errorDetails = buildClaudeErrorDetails({
+            event,
+            subtype: event.error,
+            providerSessionId,
+            assistantTexts: assistantTextFragments,
+            lastToolName,
+            toolResultsSeen,
+            numTurns,
+            lastStructuredOutputRejection,
+            failureCode: assistantFailure.code,
+            failureCategory: assistantFailure.category,
+            retryable: assistantFailure.retryable,
+            requestId: assistantFailure.requestId,
+          });
+        }
         const delta = extractText(event);
         if (delta) assistantTextFragments.push(delta);
         text += delta;
@@ -594,8 +846,12 @@ export async function generateClaudeResponse(systemPrompt, options) {
       // narrowed union.
       else if (/** @type {any} */ (event).type === "error") {
         const errorEvent = /** @type {any} */ (event);
-        const message = errorEvent.error?.message || errorEvent.error || "sdk stream error";
-        if (hasPreservableFinalOutput()) {
+        const message = boundedText(errorEvent.error?.message || errorEvent.error || "sdk stream error");
+        if (structuredTerminalFailure) {
+          // A typed assistant error is authoritative. A later transport error
+          // cannot turn authentication/billing diagnostics into a generic
+          // provider failure.
+        } else if (hasPreservableFinalOutput()) {
           preservePostSuccessError(`Claude SDK emitted an error after final output; preserved final result. ${message}`);
         } else {
           errorMessage = message;
@@ -613,6 +869,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
         }
         break;
       } else if (event.type === "result") {
+        if (Number.isFinite(Number(event.total_cost_usd))) totalCostUsd = Number(event.total_cost_usd);
         const resultError = resultEventError(event);
         if (resultError) {
           if (!successfulResultSeen) {
@@ -620,15 +877,19 @@ export async function generateClaudeResponse(systemPrompt, options) {
             durationMs = event.duration_ms || durationMs;
             numTurns = event.num_turns || numTurns;
           }
-          if (hasPreservableFinalOutput()) {
+          if (structuredTerminalFailure) {
+            // Retain the typed assistant error and request id. The result still
+            // contributes usage/duration/cost above.
+          } else if (hasPreservableFinalOutput()) {
             preservePostSuccessError(`Claude SDK emitted an error after final output; preserved final result. ${resultError.message}`);
             successfulResultSeen = true;
           } else {
+            const categorized = resultFailureCategory(event, resultError);
             usage = event.usage || usage;
             durationMs = event.duration_ms || durationMs;
             numTurns = event.num_turns || numTurns;
-            errorMessage = resultError.message;
-            failureKind = resultError.failureKind;
+            errorMessage = categorized.message;
+            failureKind = categorized.failureKind;
             if (failureKind === "invalid_result") {
               runtimeWarnings.push(makeRuntimeWarning(
                 resultError.message,
@@ -644,6 +905,10 @@ export async function generateClaudeResponse(systemPrompt, options) {
               toolResultsSeen,
               numTurns,
               lastStructuredOutputRejection,
+              failureCode: categorized.code,
+              failureCategory: categorized.category,
+              retryable: categorized.retryable,
+              requestId: categorized.requestId,
             });
           }
         } else {
@@ -659,8 +924,10 @@ export async function generateClaudeResponse(systemPrompt, options) {
     }
   } catch (err) {
     if (!cancelled) {
-      const message = err?.message || String(err);
-      if (successfulResultSeen && hasUsableFinalOutput()) {
+      const message = boundedText(err?.message || String(err));
+      if (structuredTerminalFailure) {
+        // Keep the earlier typed provider failure and its request id.
+      } else if (successfulResultSeen && hasUsableFinalOutput()) {
         preservePostSuccessError(`Claude SDK stream failed after final output; preserved final result. ${message}`);
       } else {
         errorMessage = message;
@@ -673,11 +940,20 @@ export async function generateClaudeResponse(systemPrompt, options) {
           toolResultsSeen,
           numTurns,
           lastStructuredOutputRejection,
+          failureCode: "exception",
+          failureCategory: "unknown",
+          retryable: false,
         });
       }
     }
   } finally {
+    try { stream?.close?.(); } catch { /* best effort after every terminal path */ }
     if (abortSignal) abortSignal.removeEventListener?.("abort", abortHandler);
+  }
+
+  if (structuredTerminalFailure) {
+    errorMessage = structuredTerminalFailure.message;
+    failureKind = structuredTerminalFailure.failureKind;
   }
 
   const reference = model.reference || `claude:${model.model}`;
@@ -685,14 +961,16 @@ export async function generateClaudeResponse(systemPrompt, options) {
   const outputTokens = usage?.output_tokens ?? usage?.outputTokens ?? 0;
   const cachedTokens = usage?.cache_read_input_tokens ?? usage?.cache_read_tokens ?? 0;
   const cacheCreationTokens = usage?.cache_creation_input_tokens ?? usage?.cache_creation_tokens ?? 0;
-  const costUsd = estimateCost({
-    resolveCustomPricing: options.resolveCustomPricing,
-    model: reference,
-    inputTokens,
-    outputTokens,
-    cachedTokens,
-    cacheWriteTokens: cacheCreationTokens,
-  });
+  const costUsd = Number.isFinite(totalCostUsd)
+    ? totalCostUsd
+    : estimateCost({
+      resolveCustomPricing: options.resolveCustomPricing,
+      model: reference,
+      inputTokens,
+      outputTokens,
+      cachedTokens,
+      cacheWriteTokens: cacheCreationTokens,
+    });
   const enrichedUsage = {
     ...usage,
     input_tokens: inputTokens || null,
@@ -736,7 +1014,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
     : [];
   const capabilitiesUsed = buildCapabilitiesUsed({
     promptCacheActive: cachedTokens > 0 || cacheCreationTokens > 0,
-    thinkingEnabled: effort !== "low",
+    thinkingEnabled: thinkingObserved ? true : null,
     structuredOutputEnforced: !!options.outputSchema,
     // Claude SDK doesn't surface a per-call "subagent was invoked" signal,
     // so we report null when subagents were configured (unknown) and false

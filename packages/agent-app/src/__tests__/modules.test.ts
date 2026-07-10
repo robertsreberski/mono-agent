@@ -50,50 +50,52 @@ describe("resolveModuleInputs", () => {
 
 describe("baseConfig", () => {
   it("sets runtime.model and workspace '.'", () => {
-    const config = baseConfig({ dirBasename: "my-agent", skillsRootExists: false }, DEFAULT_MODEL, []);
+    const config = baseConfig({ dirBasename: "my-agent", skillsRootExists: false }, "My Agent", DEFAULT_MODEL, [], "uniform");
     expect(config.runtime?.model).toBe(DEFAULT_MODEL);
     expect(config.runtime?.workspace).toBe(".");
   });
 
   it("includes context.skillsRoot only when skillsRootExists", () => {
-    const withSkills = baseConfig({ dirBasename: "a", skillsRootExists: true }, DEFAULT_MODEL, []);
+    const withSkills = baseConfig({ dirBasename: "a", skillsRootExists: true }, "A", DEFAULT_MODEL, [], "uniform");
     expect(withSkills.context?.skillsRoot).toBe("./skills");
 
-    const withoutSkills = baseConfig({ dirBasename: "a", skillsRootExists: false }, DEFAULT_MODEL, []);
+    const withoutSkills = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [], "uniform");
     expect(withoutSkills.context).not.toHaveProperty("skillsRoot");
     expect(withoutSkills.context?.selectedSkills).toEqual([]);
   });
 
-  it("sets traceability.sourceLabel from the directory basename", () => {
-    const config = baseConfig({ dirBasename: "orchestrator", skillsRootExists: false }, DEFAULT_MODEL, []);
-    expect(config.traceability?.sourceLabel).toBe("Mono Agent (orchestrator)");
+  it("sets public identity and traceability.sourceLabel from the agent name", () => {
+    const config = baseConfig({ dirBasename: "orchestrator", skillsRootExists: false }, "Research Companion", DEFAULT_MODEL, [], "uniform");
+    expect(config.agent?.name).toBe("Research Companion");
+    expect(config.traceability?.sourceLabel).toBe("Research Companion");
     expect(config.traceability?.registryDir).toBe("./.mono-agent/trace-sources");
   });
 
-  it("includes fallbackModels only when non-empty", () => {
-    const none = baseConfig({ dirBasename: "a", skillsRootExists: false }, DEFAULT_MODEL, []);
-    expect(none.runtime).not.toHaveProperty("fallbackModels");
+  it("includes canonical fallbacks only when non-empty", () => {
+    const none = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [], "uniform");
+    expect(none.runtime).not.toHaveProperty("fallbacks");
 
-    const some = baseConfig({ dirBasename: "a", skillsRootExists: false }, DEFAULT_MODEL, ["codex:gpt-5.5"]);
-    expect(some.runtime?.fallbackModels).toEqual(["codex:gpt-5.5"]);
+    const some = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [{ model: "codex:gpt-5.5", effort: "high" }], "per-route-native");
+    expect(some.runtime?.fallbacks).toEqual([{ model: "codex:gpt-5.5", effort: "high" }]);
+    expect(some.runtime?.routeSafety).toBe("per-route-native");
   });
 
   it("includes runtime.effort only when supplied", () => {
-    const none = baseConfig({ dirBasename: "a", skillsRootExists: false }, DEFAULT_MODEL, []);
+    const none = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [], "uniform");
     expect(none.runtime).not.toHaveProperty("effort");
 
-    const configured = baseConfig({ dirBasename: "a", skillsRootExists: false }, DEFAULT_MODEL, [], "high");
+    const configured = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [], "uniform", "high");
     expect(configured.runtime?.effort).toBe("high");
   });
 
   it("starts with an empty allowedTools policy", () => {
-    const config = baseConfig({ dirBasename: "a", skillsRootExists: false }, DEFAULT_MODEL, []);
+    const config = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [], "uniform");
     expect(config.tools?.allowedTools).toEqual([]);
     expect(config.tools?.disallowedTools).toEqual([]);
   });
 
   it("omits $schema and any module-owned blocks (memory/sandbox/webhook)", () => {
-    const config = baseConfig({ dirBasename: "a", skillsRootExists: false }, DEFAULT_MODEL, []);
+    const config = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, [], "uniform");
     expect(config).not.toHaveProperty("$schema");
     expect(config).not.toHaveProperty("memory");
     expect(config).not.toHaveProperty("sandbox");

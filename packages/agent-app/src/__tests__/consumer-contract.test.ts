@@ -9,7 +9,9 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
 import {
   consumerContractNames,
@@ -200,8 +202,19 @@ describe("golden consumer config contracts", () => {
 });
 
 async function validateFixture(name: ConsumerContractName) {
-  return await validateConsumerContractFixture({
+  const sandboxEngine: SandboxEngine = {
+    id: "synthetic-unavailable-srt",
+    isAvailable: vi.fn(async () => false),
+    prepareCommand: vi.fn(async () => {
+      throw new Error("not used in consumer contract validation");
+    }),
+  };
+  const result = await validateConsumerContractFixture({
     name,
     fixtureDir: join(consumersRoot, name),
+    sandboxEngine,
   });
+  expect(sandboxEngine.isAvailable).toHaveBeenCalledTimes(1);
+  expect(sandboxEngine.prepareCommand).not.toHaveBeenCalled();
+  return result;
 }

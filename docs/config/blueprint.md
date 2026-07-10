@@ -36,13 +36,21 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
 
 ```jsonc
 {
+  // Public display metadata only. This does not influence filesystem paths,
+  // service ids, sessions, or provider identity.
+  "agent": { "name": "Research Companion" },
+
   // Runtime: primary model plus ordered backups tried on retryable provider
   // failures (failover is reported in run results, never silent).
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",    // pi:<provider>:<model> | claude:* | codex:* | opencode:*
-    "fallbackModels": ["pi:opencode-go:kimi-k2.6", "pi:ollama:gemma4:31b"],
+    "model": "pi:openai-codex:gpt-5.6-terra", // pi:<provider>:<model> | claude:* | codex:* | opencode:*
+    "fallbacks": [
+      { "model": "claude:claude-sonnet-5", "effort": "xhigh" },
+      { "model": "pi:ollama:gemma4:31b" } // omitted effort = provider default
+    ],
+    "routeSafety": "per-route-native",     // uniform (default) | per-route-native
     "executionMode": "sdk",                // sdk | cli (default inferred from model)
-    "effort": "medium",                    // none|low|medium|high|xhigh|max
+    "effort": "medium",                    // none|minimal|low|medium|high|xhigh|max|ultra
     "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "workspace": ".",
@@ -107,20 +115,21 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "llm": {                               // enables bujo capture and the effective bujo tier; omit for lite/journal
       // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _EXECUTION_MODE / _ENDPOINT / _TIMEOUT_MS.
       "provider": "ollama",                // ollama | agent-host
-      "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. pi:openai-codex:gpt-5.5
+      "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. pi:openai-codex:gpt-5.6-terra
       "endpoint": "http://localhost:11434", // ollama only; invalid for agent-host
       "timeoutMs": 60000                   // in-app per-call timeout; 1000-600000, default 60000. Raise for slow local models.
-      // For agent-host, use: "model": "pi:openai-codex:gpt-5.5", "executionMode": "sdk"; omit endpoint.
+      // For agent-host, use: "model": "pi:openai-codex:gpt-5.6-terra", "executionMode": "sdk"; omit endpoint.
     },
     // Bujo auto-scheduler — override the default or disable it.
     // Consolidation runs in-app; no external cron or launchd needed.
     "consolidation": { "enabled": true, "cron": "0 */2 * * *" } // default: every two hours
   },
 
-  // Tool policy (allow-all by default) + MCP servers. Deny wins; overlap is rejected.
+  // Tool policy (allow-all by default) + MCP servers. Direct codex:* normal runs
+  // require this exact allow-all shape; use an enforcing runtime for narrower lists.
   "tools": {
     "allowedTools": ["*"],                 // omit or ["*"] = all tools; ["Read","Bash"] = just those; [] = none (chat-only)
-    "disallowedTools": ["Bash"],           // deny wins even under allow-all; the escape hatch to subtract one tool
+    "disallowedTools": [],                 // deny wins where supported; overlap is rejected
     "mcpConfigPath": "./mcp.json",         // stdio/sse/http servers; inlined for SDK runtimes
     "mcpCallTimeoutMs": 120000,            // inactivity cap per MCP call; tool progress resets it
     "mcpCallMaxTotalTimeoutMs": 2700000    // hard per-call wall clock (45 min); progress cannot extend it
@@ -135,10 +144,12 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "progress": { "enabled": true }
   },
 
-  // Sandbox for runtime commands. Omit for no sandboxing.
+  // Sandbox for Pi-owned runtime commands. Under uniform route safety, a route
+  // that cannot enforce these scopes fails closed. Under per-route-native,
+  // non-Pi routes use the explicit provider-native contract instead.
   "sandbox": {
     "mode": "native",                      // native (srt-wrapped) | off
-    "network": { "mode": "none", "allowlist": [] }, // none|localhost|allowlist|all; *.suffix wildcards
+    "network": { "mode": "none", "allowlist": [] }, // none|localhost|allowlist; *.suffix wildcards
     "readableRoots": ["."],                // relative entries resolve against the workspace
     "writableRoots": ["."],
     "denyWrite": [".env", ".env.*", ".git/config", ".git/hooks/**"], // these are the defaults
@@ -310,8 +321,12 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
 ## Lifecycle
 
 ```bash
-mono-agent init --model pi:openai-codex:gpt-5.5 --fallback-models pi:opencode-go:kimi-k2.6,pi:ollama:gemma4:31b [--memory lite|journal|bujo]
-mono-agent validate     # per-section report incl. sandbox, observability, every channel; exit 0 means ready
+mono-agent init         # bare TTY wizard: every route checked + strict full Agent ready gate
+mono-agent init --name "Research Companion" --model pi:openai-codex:gpt-5.6-terra \
+  --fallback pi:opencode-go:kimi-k2.6 --fallback-effort medium \
+  --fallback pi:ollama:gemma4:31b --fallback-effort provider-default [--memory lite|journal|bujo]
+                        # any flag/non-TTY is scaffold-only and makes no readiness claim
+mono-agent validate     # section report; exit 0 means structurally valid, not zero waiting dependencies
 mono-agent validate --consumer ../local-agent-alpha  # read-only report for a downstream folder
 mono-agent start        # traceability + every configured channel
 mono-agent restart      # apply config edits (config is JSON-first; restart to re-apply)
@@ -324,7 +339,7 @@ A `.env` file in the folder is loaded automatically (exported shell variables wi
 
 :::caution
 :::
-For `memory.llm`, CLI-backed refs such as `codex:gpt-5.5` are rejected; use `provider: "ollama"` with a local model string, or `provider: "agent-host"` with an SDK runtime ref like `pi:openai-codex:gpt-5.5` and `executionMode: "sdk"` (omit `endpoint`). See [Capture & recall](/memory/capture-and-recall/).
+For `memory.llm`, CLI-backed refs such as `codex:gpt-5.6-terra` are rejected; use `provider: "ollama"` with a local model string, or `provider: "agent-host"` with an SDK runtime ref like `pi:openai-codex:gpt-5.6-terra` and `executionMode: "sdk"` (omit `endpoint`). See [Capture & recall](/memory/capture-and-recall/).
 
 ## Section reference
 
@@ -332,6 +347,7 @@ Every top-level section maps to a deep-dive page:
 
 | Section | What it controls | Deep dive |
 | --- | --- | --- |
+| `agent` | Public display name (never path/service/session identity) | [Identity & soul](/context/identity-and-soul/) |
 | `runtime` | Model, fallback chain, execution mode, effort, sessions | [Backends](/runtime/backends/), [Effort & permissions](/runtime/execution-effort-permissions/), [Fallback](/runtime/fallback/), [Sessions & concurrency](/runtime/sessions-concurrency/) |
 | `providers` | Pi auth, `piNative` bridge tuning, local/self-hosted providers | [Local providers](/runtime/local-providers/) |
 | `context` | Identity, soul, skills selection | [Identity & soul](/context/identity-and-soul/), [Skills](/context/skills/), [Assembly](/context/assembly/) |

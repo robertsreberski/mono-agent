@@ -12,7 +12,9 @@ import {
   composeWizardPlan,
   type ComposeContext,
   defaultAnswers,
+  humanizeAgentName,
   moduleOverrides,
+  referencedSetupModelRefs,
   type WizardAnswers,
 } from "../wizard/answers.js";
 import { PRESET_CATALOG, presetAnswers } from "../wizard/presets.js";
@@ -136,6 +138,50 @@ describe("wizard composer — env-example + secret checklist coverage", () => {
   }
 });
 
+describe("wizard composer — complete setup dependencies", () => {
+  it("includes runtime, fallback, hidden agent-host memory, and local memory services in stable order", () => {
+    const plan = composeWizardPlan(defaultAnswers({
+      fallbackModels: ["claude:claude-sonnet-4-6"],
+      memory: "memory:bujo",
+    }), CTX);
+
+    expect(referencedSetupModelRefs(plan)).toEqual([
+      "codex:gpt-5.6-terra",
+      "claude:claude-sonnet-4-6",
+      "pi:openai-codex:gpt-5.6-terra",
+      "pi:ollama:nomic-embed-text",
+    ]);
+    expect(plan.validateExpectations).toContainEqual(expect.objectContaining({ sectionId: "credentials", mustBe: "ok" }));
+  });
+
+  it("dedupes local-only runtime and memory refs without requiring credentials", () => {
+    const plan = composeWizardPlan(defaultAnswers({
+      model: "pi:ollama:qwen3:8b",
+      memory: "memory:bujo",
+    }), CTX);
+
+    expect(referencedSetupModelRefs(plan)).toEqual([
+      "pi:ollama:qwen3:8b",
+      "pi:ollama:nomic-embed-text",
+    ]);
+    expect(plan.validateExpectations.map((expectation) => expectation.sectionId)).not.toContain("credentials");
+  });
+
+  it("maps every CLI-only Codex primary to the SDK-capable Pi memory model", () => {
+    const plan = composeWizardPlan(defaultAnswers({
+      model: "codex:gpt-5.5",
+      memory: "memory:bujo",
+    }), CTX);
+
+    expect(plan.configJson.memory?.llm?.model).toBe("pi:openai-codex:gpt-5.6-terra");
+    expect(referencedSetupModelRefs(plan)).toEqual([
+      "codex:gpt-5.5",
+      "pi:openai-codex:gpt-5.6-terra",
+      "pi:ollama:nomic-embed-text",
+    ]);
+  });
+});
+
 describe("wizard composer — tool selection", () => {
   it("defaults allowedTools to allow-all (the single scaffold/preset/flag choke point)", () => {
     expect(defaultAnswers().allowedTools).toEqual(["*"]);
@@ -180,6 +226,7 @@ describe("wizard composer — alwaysOnTools (auto-provisioned, not gated by allo
 describe("wizard composer — per-preset invariants", () => {
   it("code-sandbox: allow-all tools + native fail-closed sandbox", () => {
     const plan = composeWizardPlan(presetAnswers(PRESET_CATALOG.find((p) => p.id === "code-sandbox")!), CTX);
+    expect(plan.configJson.runtime?.model).toBe("pi:openai-codex:gpt-5.6-terra");
     expect(plan.configJson.tools?.allowedTools).toEqual(["*"]);
     expect(plan.configJson.sandbox).toMatchObject({ mode: "native", fallback: "fail-closed" });
   });
@@ -188,7 +235,7 @@ describe("wizard composer — per-preset invariants", () => {
     const plan = composeWizardPlan(presetAnswers(PRESET_CATALOG.find((p) => p.id === "telegram-assistant")!), CTX);
     expect(plan.configJson.tools?.allowedTools).toEqual(["*"]);
     expect(plan.configJson.memory?.mode).toBe("bujo");
-    expect(plan.configJson.memory?.llm?.model).toBe("pi:openai-codex:gpt-5.5");
+    expect(plan.configJson.memory?.llm?.model).toBe("pi:openai-codex:gpt-5.6-terra");
   });
 
   it("local-private: ollama provider block, embeddings endpoint, provider module selected", () => {
@@ -218,10 +265,28 @@ describe("wizard composer — per-preset invariants", () => {
   it("preserves fallback model order in the runtime config", () => {
     const plan = composeWizardPlan(defaultAnswers({
       model: "claude:claude-sonnet-4-6",
-      fallbackModels: ["codex:gpt-5.5", "pi:ollama:gemma4:31b"],
+      fallbacks: [
+        { model: "codex:gpt-5.6-terra", effort: "minimal" },
+        { model: "pi:ollama:gemma4:31b" },
+      ],
+      routeSafety: "per-route-native",
     }), CTX);
 
-    expect(plan.configJson.runtime?.fallbackModels).toEqual(["codex:gpt-5.5", "pi:ollama:gemma4:31b"]);
+    expect(plan.configJson.runtime?.fallbacks).toEqual([
+      { model: "codex:gpt-5.6-terra", effort: "minimal" },
+      { model: "pi:ollama:gemma4:31b" },
+    ]);
+    expect(plan.configJson.runtime?.fallbackModels).toBeUndefined();
+    expect(plan.configJson.runtime?.routeSafety).toBe("per-route-native");
+  });
+
+  it("converts legacy fallbackModels inputs to canonical routes with inherited effort", () => {
+    const plan = composeWizardPlan(defaultAnswers({
+      effort: "high",
+      fallbackModels: ["codex:gpt-5.6-sol"],
+    }), CTX);
+    expect(plan.configJson.runtime?.fallbacks).toEqual([{ model: "codex:gpt-5.6-sol", effort: "high" }]);
+    expect(plan.configJson.runtime?.fallbackModels).toBeUndefined();
   });
 
   it("writes runtime.effort when wizard answers specify one", () => {
@@ -235,16 +300,31 @@ describe("wizard composer — default parity with today's scaffold", () => {
     const plan = composeWizardPlan(defaultAnswers(), { dirBasename: "acme", skillsRootExists: false });
     const config = plan.configJson;
 
-    expect(config.runtime?.model).toBe("pi:openai-codex:gpt-5.5");
+    expect(config.runtime?.model).toBe("codex:gpt-5.6-terra");
     expect(config.runtime?.workspace).toBe(".");
     expect(config.context?.identityPath).toBe("./IDENTITY.md");
     expect(config.context?.selectedSkills).toEqual([]);
     expect(config.context).not.toHaveProperty("skillsRoot");
     expect((config as Record<string, { enabled?: boolean }>).webhook?.enabled).toBe(true);
     expect(config.artifacts?.retention?.maxCount).toBe(50000);
-    expect(config.traceability?.sourceLabel).toBe("Mono Agent (acme)");
+    expect(config.agent?.name).toBe("Acme");
+    expect(config.traceability?.sourceLabel).toBe("Acme");
     expect(config).not.toHaveProperty("memory");
     // The one intentional difference from today's scaffold — the default is now allow-all:
     expect(config.tools?.allowedTools).toEqual(["*"]);
+  });
+
+  it("humanizes the folder default and applies an authored name to trace and A2A metadata", () => {
+    expect(humanizeAgentName("research-companion")).toBe("Research Companion");
+    expect(Array.from(humanizeAgentName("a".repeat(100))).length).toBe(80);
+    const plan = composeWizardPlan(defaultAnswers({
+      name: "Research Companion",
+      channels: ["channel:a2a"],
+    }), CTX);
+    expect(plan.configJson.agent?.name).toBe("Research Companion");
+    expect(plan.configJson.traceability?.sourceLabel).toBe("Research Companion");
+    const channels = plan.configJson.channels as { plugins?: Array<{ package?: string; config?: unknown }> } | undefined;
+    const plugin = channels?.plugins?.find((entry) => entry.package === "@mono-agent/a2a-adapter");
+    expect((plugin?.config as { agent?: { name?: string } } | undefined)?.agent?.name).toBe("Research Companion");
   });
 });

@@ -10,17 +10,17 @@ A mono-agent is declared by a single `mono-agent.config.json` in the agent folde
 
 ## The one config file
 
-Everything about an agent — its model, channels, memory, tools, sandbox, and observability — is declared in one JSON file. Paths inside it are resolved relative to the folder that contains it. Scaffold one with the CLI:
+Everything about an agent — its public name, model routes, channels, memory, tools, sandbox, and observability — is declared in one JSON file. Paths inside it are resolved relative to the folder that contains it. Scaffold one with the CLI:
 
 ```bash
-mono-agent init --model pi:openai-codex:gpt-5.5
+mono-agent init --model codex:gpt-5.6-terra
 ```
 
 A minimal valid config has exactly two fields:
 
 ```json
 {
-  "runtime": { "model": "pi:openai-codex:gpt-5.5" },
+  "runtime": { "model": "codex:gpt-5.6-terra" },
   "context": { "identityPath": "./IDENTITY.md" }
 }
 ```
@@ -38,7 +38,7 @@ Resolution order is fixed everywhere:
 Every config key has a matching `MONO_AGENT_*` override. For example `runtime.model` is overridden by `MONO_AGENT_MODEL`, and `runtime.effort` by `MONO_AGENT_EFFORT`:
 
 ```json
-{ "runtime": { "model": "pi:openai-codex:gpt-5.5", "effort": "medium" } }
+{ "runtime": { "model": "codex:gpt-5.6-terra", "effort": "medium" } }
 ```
 
 ```bash
@@ -59,11 +59,12 @@ Each top-level key maps to one capability area. All are optional except the two 
 
 | Section | Purpose | Page |
 | --- | --- | --- |
+| `agent` | Public display name; never used for paths, service ids, sessions, or provider identity | [Identity & Soul](/context/identity-and-soul/) |
 | `runtime` | Model, execution mode, effort, sessions, concurrency | [Runtime](/runtime/) |
 | `providers` | Local/self-hosted providers, Pi credentials, pi-native tuning | [Local Providers](/runtime/local-providers/) |
 | `context` | Identity, soul, selected skills | [Context Assembly](/context/assembly/) |
 | `memory` | Tiered memory (lite/journal/bujo), embeddings, consolidation | [Capture & Recall](/memory/capture-and-recall/) |
-| `tools` | Fail-closed allow/deny policy, MCP servers | [Tool Policy](/tools/policy/), [MCP](/tools/mcp/) |
+| `tools` | Allow-all-by-default, runtime-enforced allow/deny policy; MCP servers | [Tool Policy](/tools/policy/), [MCP](/tools/mcp/) |
 | `sandbox` | Filesystem/network sandboxing for runtime commands | [Sandbox](/tools/sandbox/) |
 | `artifacts`, `traceability`, `observability` | JSONL run artifacts, trace registry, Phoenix exporter | [Observability](/observability/) |
 | `telegram`, `slack` | Built-in chat channels (opt-in via `enabled`) | [Channels](/channels/) |
@@ -99,7 +100,7 @@ A handful of capabilities are `code`-only — for example structured output sche
 
 ## Validate before you run
 
-`mono-agent validate` prints a per-section report — **secret placement**, runtime, **provider credentials** (Pi auth-store/API-key presence and OAuth token expiry for every referenced model), context, memory, tools, sandbox, observability, and every channel — and exits 0 only when the config is ready to start. The provider-credentials check is static and read-only, flagging a keyless or expired-OAuth provider as `waiting` with a provider-specific hint (`pi-ai login` for OAuth providers, `OPENCODE_API_KEY` for OpenCode-Go); see [CLI reference → Provider credentials](/observability/cli-reference/#provider-credentials):
+`mono-agent validate` prints a per-section report — **secret placement**, runtime, **provider credentials** for every referenced primary/fallback/agent-host memory model and enabled static webhook/cron override, context, memory, tools, sandbox, observability, and every channel. It exits 0 when the config is structurally valid, but `waiting` means a selected capability still needs attention and is not an **Agent ready** result. Provider validation never mints credentials or makes a model request: it checks Pi/env state and, with liveness enabled, can run bounded read-only Codex/Claude status commands. Direct OpenCode provider ids are read from the standard `auth.json` plus its migration marker without invoking auth middleware; live validation adds a bounded `opencode --version` check and requires stable CLI >=1.15.0. Static start preflight launches no process. Bare interactive `mono-agent init` searches the bundled/live Pi, Codex, and Claude catalogs and adds one live no-tool check for every selected runtime route. A credential can be detected without being called verified; only the exact successful route call promotes it. The wizard requires every selected expectation to be `ok` before it offers immediate start; advanced direct OpenCode is scaffold/config-only, while flag/non-TTY init remains scaffold-only for every model. See [CLI reference → Provider credentials](/observability/cli-reference/#provider-credentials):
 
 ```bash
 mono-agent validate

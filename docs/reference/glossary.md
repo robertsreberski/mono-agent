@@ -50,16 +50,24 @@ The default-deny posture. It survives in two places: the **programmatic** harnes
 
 ## Fallback router
 
-The retry layer that, on a fallback-eligible provider failure (including provider authentication failures), walks an ordered list of backup models and resumes from the transcript tail. Configured via `runtime.fallbackModels` (`MONO_AGENT_FALLBACK_MODELS`).
+The retry layer that walks ordered canonical `{model, effort?}` routes after fallback-eligible provider/auth failures. It records failover and safety history, keeps the chain provider-session-stateless, and carries bounded transcript context between attempts. Configured via `runtime.fallbacks` (`MONO_AGENT_FALLBACKS_JSON`); legacy `runtime.fallbackModels` remains compatible.
 
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",
-    "fallbackModels": ["pi:opencode-go:kimi-k2.6", "codex:gpt-5.5"]
+    "model": "pi:openai-codex:gpt-5.6-terra",
+    "fallbacks": [
+      { "model": "codex:gpt-5.6-sol", "effort": "xhigh" },
+      { "model": "pi:ollama:gemma4:31b" }
+    ],
+    "routeSafety": "per-route-native"
   }
 }
 ```
+
+`routeSafety: "uniform"` (default) requires one compatible monotonic contract.
+Explicit `per-route-native` isolates mixed providers and applies their documented
+native contracts; unsupported capabilities skip/fail rather than disappearing.
 
 See [Fallback](/runtime/fallback/).
 
@@ -69,7 +77,7 @@ The execution engine (`@mono-agent/agent-harness`) that runs a single turn again
 
 ## Model reference
 
-The string that names a backend and model together, in the form `backend:model` (or `backend:provider:model` for pi). Examples: `pi:openai-codex:gpt-5.5`, `pi:opencode-go:kimi-k2.6`, `codex:gpt-5.5`. Set via `runtime.model` (`MONO_AGENT_MODEL`). See [Backends](/runtime/backends/).
+The string that names a backend and model together, in the form `backend:model` (or `backend:provider:model` for pi). Examples: `pi:openai-codex:gpt-5.6-terra`, `pi:opencode-go:kimi-k2.6`, `codex:gpt-5.6-terra`. Set via `runtime.model` (`MONO_AGENT_MODEL`). See [Backends](/runtime/backends/).
 
 ## OpenInference
 
@@ -105,7 +113,7 @@ The decay-weighted importance score the journal and BuJo tiers attach to memorie
 
 ## srt
 
-The sandbox runtime that wraps executed commands when `sandbox.mode: "native"` is set. If `srt` is unavailable, behavior is governed by `sandbox.fallback` (default [fail-closed](#fail-closed)).
+The sandbox runtime that wraps executed commands when `sandbox.mode: "native"` is set. On macOS, `mono-agent sandbox setup` installs the pinned runtime into a private user cache; `sandbox check` proves real enforcement. Missing or corrupt SRT follows `sandbox.fallback` (default [fail-closed](#fail-closed)); a corrupt managed install never falls back to PATH.
 
 ```json
 {
@@ -114,6 +122,11 @@ The sandbox runtime that wraps executed commands when `sandbox.mode: "native"` i
 ```
 
 Env: `MONO_AGENT_SANDBOX_MODE`, `MONO_AGENT_SANDBOX_FALLBACK`. See [Sandbox](/tools/sandbox/).
+
+The native `srt` contract applies to Pi-owned mono-agent tools. Uniform route
+safety rejects a route that cannot enforce those scopes. Explicit
+per-route-native routing may use Claude/Codex/OpenCode only under their recorded
+provider-native contracts; SRT never pretends to cover those attempts.
 
 ## Trace source
 

@@ -14,6 +14,11 @@ import {
   createAgentResponder,
   createInMemoryHistoryStore,
 } from "../index.js";
+import type { ExternalRunSummary } from "../index.js";
+
+type ExternalRunSummaryOmitsSystemPrompt =
+  "systemPrompt" extends keyof ExternalRunSummary ? false : true;
+const externalRunSummaryOmitsSystemPrompt: ExternalRunSummaryOmitsSystemPrompt = true;
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
@@ -32,8 +37,13 @@ class FakeRecorder implements RunRecorder {
   readonly events: RuntimeEventLike[] = [];
   startCount = 0;
   summaryStatus?: string;
+  systemPrompt?: string;
 
-  constructor(private readonly runId: string, private readonly conversationId: string) {}
+  constructor(
+    private readonly runId: string,
+    private readonly conversationId: string,
+    private readonly forcedSystemPrompt?: string,
+  ) {}
 
   onEvent(event: RuntimeEventLike): void {
     this.events.push(event);
@@ -52,6 +62,10 @@ class FakeRecorder implements RunRecorder {
   }
 
   async finish(result: RuntimeResultLike): Promise<RunSummary> {
+    const systemPrompt = result.systemPrompt ?? this.forcedSystemPrompt;
+    if (systemPrompt !== undefined) {
+      this.systemPrompt = systemPrompt;
+    }
     const status = result.cancelled === true ? "cancelled" : result.failureKind !== undefined || result.error !== undefined ? "failed" : "succeeded";
     this.summaryStatus = status;
     return {
@@ -64,6 +78,7 @@ class FakeRecorder implements RunRecorder {
       eventCount: this.events.length,
       artifactPaths: [],
       ...(result.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: result.capabilitiesUsed }),
+      ...(systemPrompt === undefined ? {} : { systemPrompt }),
     };
   }
 
@@ -95,6 +110,338 @@ function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => 
 }
 
 describe("AgentHarness", () => {
+  it("keeps the compiled system prompt in recorded summaries but never returns it to channel callers", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const recorder = new FakeRecorder("run-private-prompt", "webhook:1");
+    const fake = createFakeRuntime(async () => ({ text: "ready" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      recorderFactory: () => recorder,
+      createRunId: () => "run-private-prompt",
+    });
+
+    const response = await harness.run({
+      conversationId: "webhook:1",
+      userMessage: "Check readiness.",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(recorder.systemPrompt).toContain("You are Mono.");
+    expect(response.metadata.summary).not.toHaveProperty("systemPrompt");
+    expect(externalRunSummaryOmitsSystemPrompt).toBe(true);
+  });
+
+  it("returns a serialization-safe deep copy of a custom recorder summary", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const privatePrompt = "private prompt from callable serialization";
+    const recorderCost = { totalUsd: 0.01 };
+    const cyclicDiagnostics: Record<string, unknown> = {};
+    cyclicDiagnostics.self = cyclicDiagnostics;
+    const customPrototypeCapabilities = Object.assign(Object.create({ inherited: true }) as Record<string, unknown>, {
+      retained: true,
+    });
+    const unsafeSummary = {
+      runId: "run-unsafe-summary",
+      conversationId: "webhook:unsafe-summary",
+      status: "succeeded",
+      durationMs: 1,
+      eventCount: 0,
+      artifactPaths: [],
+      cost: recorderCost,
+      usage: { left: recorderCost, right: recorderCost },
+      runtimeWarnings: cyclicDiagnostics,
+      capabilitiesUsed: customPrototypeCapabilities,
+      diagnostics: {
+        toJSON() {
+          return { systemPrompt: privatePrompt };
+        },
+      },
+      systemPrompt: privatePrompt,
+      toJSON() {
+        return { runId: this.runId, systemPrompt: privatePrompt };
+      },
+    } as RunSummary & { toJSON(): unknown };
+    const recorder: RunRecorder = {
+      onEvent() {},
+      async finish() {
+        return unsafeSummary;
+      },
+      async fail() {
+        return unsafeSummary;
+      },
+    };
+    const fake = createFakeRuntime(async () => ({ text: "ready" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      recorderFactory: () => recorder,
+      createRunId: () => "run-unsafe-summary",
+    });
+
+    const response = await harness.run({
+      conversationId: "webhook:unsafe-summary",
+      userMessage: "Check the boundary.",
+      abortSignal: new AbortController().signal,
+    });
+    const externalCost = response.metadata.summary?.cost as { totalUsd: number } | undefined;
+    const externalUsage = response.metadata.summary?.usage as {
+      left: { totalUsd: number };
+      right: { totalUsd: number };
+    } | undefined;
+
+    expect(response.metadata.summary).not.toHaveProperty("systemPrompt");
+    expect(response.metadata.summary).not.toHaveProperty("toJSON");
+    expect(response.metadata.summary).not.toHaveProperty("diagnostics");
+    expect(response.metadata.summary).not.toHaveProperty("runtimeWarnings");
+    expect(response.metadata.summary).not.toHaveProperty("capabilitiesUsed");
+    expect(JSON.stringify(response)).not.toContain(privatePrompt);
+    expect(externalCost).toEqual({ totalUsd: 0.01 });
+    recorderCost.totalUsd = 99;
+    expect(externalCost).toEqual({ totalUsd: 0.01 });
+    if (externalCost !== undefined) externalCost.totalUsd = 0.02;
+    if (externalUsage !== undefined) externalUsage.left.totalUsd = 0.03;
+    expect(externalUsage?.right).toEqual({ totalUsd: 0.01 });
+    expect(recorderCost.totalUsd).toBe(99);
+  });
+
+  it.each(["success", "pre-runtime cancellation", "runtime failure"])(
+    "omits an invalid required summary shape on %s without invoking its serializer",
+    async (responsePath) => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      const privatePrompt = `private required-field prompt (${responsePath})`;
+      let serializerCalls = 0;
+      const invalidRunId = {
+        toJSON() {
+          serializerCalls += 1;
+          return { systemPrompt: privatePrompt };
+        },
+      };
+      const unsafeSummary = {
+        runId: invalidRunId,
+        conversationId: "webhook:unsafe-required",
+        status: "succeeded",
+        durationMs: 1,
+        eventCount: 0,
+        artifactPaths: [],
+      } as unknown as RunSummary;
+      const recorder: RunRecorder = {
+        onEvent() {},
+        async finish() {
+          return unsafeSummary;
+        },
+        async fail() {
+          return unsafeSummary;
+        },
+      };
+      const fake = createFakeRuntime(async () => {
+        if (responsePath === "runtime failure") throw new Error("runtime failed");
+        return { text: "ready" };
+      });
+      const harness = createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        cwd: dir,
+        recorderFactory: () => recorder,
+        createRunId: () => "outer-safe-run-id",
+      });
+      const controller = new AbortController();
+      if (responsePath === "pre-runtime cancellation") {
+        controller.abort(new Error("cancelled before context assembly"));
+      }
+
+      const response = await harness.run({
+        conversationId: "webhook:unsafe-required",
+        userMessage: "Check the boundary.",
+        abortSignal: controller.signal,
+      });
+
+      expect(response.metadata.summary).toBeUndefined();
+      expect(serializerCalls).toBe(0);
+      expect(JSON.stringify(response)).not.toContain(privatePrompt);
+    },
+  );
+
+  it("reads a custom recorder summary through descriptors and fails unsafe properties closed", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let optionalGetterCalls = 0;
+    const summaryWithOptionalGetter = {
+      runId: "run-optional-getter",
+      conversationId: "webhook:optional-getter",
+      status: "succeeded",
+      durationMs: 1,
+      eventCount: 0,
+      artifactPaths: [],
+    } as RunSummary;
+    Object.defineProperty(summaryWithOptionalGetter, "cost", {
+      enumerable: true,
+      get() {
+        optionalGetterCalls += 1;
+        return { totalUsd: 0.01 };
+      },
+    });
+    const optionalGetterRecorder: RunRecorder = {
+      onEvent() {},
+      async finish() {
+        return summaryWithOptionalGetter;
+      },
+      async fail() {
+        return summaryWithOptionalGetter;
+      },
+    };
+    const fake = createFakeRuntime(async () => ({ text: "ready" }));
+    const getterHarness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      recorderFactory: () => optionalGetterRecorder,
+    });
+
+    const getterResponse = await getterHarness.run({
+      conversationId: "webhook:optional-getter",
+      userMessage: "Check the boundary.",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(getterResponse.metadata.summary).toMatchObject({ runId: "run-optional-getter" });
+    expect(getterResponse.metadata.summary).not.toHaveProperty("cost");
+    expect(optionalGetterCalls).toBe(0);
+
+    let requiredGetterCalls = 0;
+    const summaryWithRequiredGetter = {
+      runId: "run-required-getter",
+      conversationId: "webhook:required-getter",
+      status: "succeeded",
+      durationMs: 1,
+      eventCount: 0,
+    } as unknown as RunSummary;
+    Object.defineProperty(summaryWithRequiredGetter, "artifactPaths", {
+      enumerable: true,
+      get() {
+        requiredGetterCalls += 1;
+        throw new Error("required getter must not run");
+      },
+    });
+    const requiredGetterRecorder: RunRecorder = {
+      onEvent() {},
+      async finish() {
+        return summaryWithRequiredGetter;
+      },
+      async fail() {
+        return summaryWithRequiredGetter;
+      },
+    };
+    const requiredGetterHarness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      recorderFactory: () => requiredGetterRecorder,
+    });
+
+    const requiredGetterResponse = await requiredGetterHarness.run({
+      conversationId: "webhook:required-getter",
+      userMessage: "Check the boundary.",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(requiredGetterResponse.metadata.summary).toBeUndefined();
+    expect(requiredGetterCalls).toBe(0);
+
+    let inheritedSerializerCalls = 0;
+    const customPrototype = {
+      toJSON() {
+        inheritedSerializerCalls += 1;
+        return { systemPrompt: "private inherited prompt" };
+      },
+    };
+    const customSummary = Object.assign(Object.create(customPrototype) as Record<string, unknown>, {
+      runId: "run-custom-prototype",
+      conversationId: "webhook:custom-prototype",
+      status: "succeeded",
+      durationMs: 1,
+      eventCount: 0,
+      artifactPaths: [],
+    }) as unknown as RunSummary;
+    const customRecorder: RunRecorder = {
+      onEvent() {},
+      async finish() {
+        return customSummary;
+      },
+      async fail() {
+        return customSummary;
+      },
+    };
+    const customHarness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      recorderFactory: () => customRecorder,
+    });
+
+    const customResponse = await customHarness.run({
+      conversationId: "webhook:custom-prototype",
+      userMessage: "Check the boundary.",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(customResponse.metadata.summary).toBeUndefined();
+    expect(inheritedSerializerCalls).toBe(0);
+    expect(JSON.stringify(customResponse)).not.toContain("private inherited prompt");
+  });
+
+  it("sanitizes an unsafe custom recorder summary on pre-runtime cancellation", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const recorder = new FakeRecorder(
+      "run-cancelled-before-context",
+      "webhook:cancelled",
+      "private prompt returned by a custom recorder",
+    );
+    const fake = createFakeRuntime(async () => ({ text: "must not run" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      recorderFactory: () => recorder,
+      createRunId: () => "run-cancelled-before-context",
+    });
+    const controller = new AbortController();
+    controller.abort(new Error("cancelled before context assembly"));
+
+    const response = await harness.run({
+      conversationId: "webhook:cancelled",
+      userMessage: "Do not run.",
+      abortSignal: controller.signal,
+    });
+
+    expect(fake.calls).toHaveLength(0);
+    expect(recorder.systemPrompt).toBe("private prompt returned by a custom recorder");
+    expect(response.failure).toMatchObject({ kind: "cancelled" });
+    expect(response.metadata.summary).toMatchObject({
+      runId: "run-cancelled-before-context",
+      status: "cancelled",
+    });
+    expect(response.metadata.summary).not.toHaveProperty("systemPrompt");
+  });
+
   it("assembles context, memory, history, selected skills, tool policy, and runtime metadata", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

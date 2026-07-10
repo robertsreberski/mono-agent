@@ -13,7 +13,7 @@ A representative runtime block:
 ```json
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",
+    "model": "pi:openai-codex:gpt-5.6-terra",
     "executionMode": "sdk",
     "effort": "medium",
     "permissionMode": "default",
@@ -35,14 +35,27 @@ Several other features key off the backend implied by execution mode — most no
 
 ## Effort
 
-`runtime.effort` is a single reasoning-effort hint that normalizes across providers. Higher effort trades latency and token cost for deeper reasoning; for pi-native backends, reasoning depth is **derived from this field**.
+`runtime.effort` is the primary route's reasoning-effort hint. Canonical `runtime.fallbacks[]` entries have independent optional effort; omission means that route's provider default rather than inheritance from the primary. Higher effort trades latency and token cost for deeper reasoning. The wizard offers only the effort values advertised for the selected model plus **Provider default**. The direct OpenCode bridge exposes no reasoning-effort input, so any explicit effort on that route is rejected before provider startup; `pi:opencode-go:*` remains a normal Pi effort path.
 
 | Key | Values | Default | Env var |
 |-----|--------|---------|---------|
-| `runtime.effort` | `none` \| `low` \| `medium` \| `high` \| `xhigh` \| `max` | `medium` | `MONO_AGENT_EFFORT` |
+| `runtime.effort` | `none` \| `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `max` \| `ultra` | provider/model default when omitted | `MONO_AGENT_EFFORT` |
 
 ```json
-{ "runtime": { "model": "pi:openai-codex:gpt-5.5", "effort": "high" } }
+{ "runtime": { "model": "pi:openai-codex:gpt-5.6-terra", "effort": "high" } }
+```
+
+```json
+{
+  "runtime": {
+    "model": "pi:openai-codex:gpt-5.6-terra",
+    "effort": "high",
+    "fallbacks": [
+      { "model": "codex:gpt-5.6-sol", "effort": "xhigh" },
+      { "model": "pi:ollama:gemma4:31b" }
+    ]
+  }
+}
 ```
 
 ## Permission mode
@@ -62,13 +75,48 @@ Several other features key off the backend implied by execution mode — most no
 
 `permissionMode` is the *config-level* posture. Programmatic human-in-the-loop approval gates (risk tiers, timeout, always-allow lists) are a separate, **code-only** mechanism on `createMonoRuntime({ onToolApprovalRequest, toolRiskTiers, approvalDefaultRiskTier, approvalTimeoutMs, approvalAlwaysAllowTools })` that requires a host UI to answer prompts — see [programmatic approval & structured output](/programmatic/approval-and-structured-output/). For limiting *which* tools exist at all, use the tool policy in [Tools & guards](/runtime/tools-and-guards/) and [Tool policy](/tools/policy/).
 
+Direct `codex:*` normal runs currently support only exact allow-all at the mono-agent tool-policy layer (`tools.allowedTools: ["*"]` with no `disallowedTools`, or an omitted allowlist). Unattended direct-Codex turns always use approval policy `never`: `plan` is read-only, `default`/`acceptEdits` use Codex's native workspace-write sandbox, and `bypassPermissions` explicitly selects danger-full-access. Uniform route safety rejects a mono-agent SRT policy that Codex cannot represent; explicit per-route-native routing records that the Codex attempt uses its native contract instead. Choose Pi when exact SRT controls must apply to every route. The guided route check is a dedicated read-only/no-approval/no-tool probe and is not a reusable normal-run policy.
+
+Direct `opencode:*` also requires exact allow-all, but projects `permissionMode`
+into OpenCode's native permission rules and replies rather than pretending the
+mono-agent sandbox applies:
+
+- `plan` allows native file reads while denying edits and all other permissions. This is a read-only workflow posture, **not a confidentiality boundary**: OpenCode's path rules follow symlinks, so a permitted path can still expose sensitive content through an alias.
+- `default` asks through a programmatic `onToolApprovalRequest` callback for reads and other supported permission names, and rejects when no callback answers.
+- `acceptEdits` uses the same baseline as `default` and additionally permits edits.
+- `bypassPermissions` permits non-interactive permission classes without asking.
+
+Direct OpenCode always denies `question`, `task`, `plan_enter`, and `plan_exit`
+because this bridge has no live-question or native-subagent event path. Dynamic
+permission names from MCP/custom tools are valid, but in `default` and
+`acceptEdits` they require an explicit host approval and reject unattended.
+Callback errors, timeouts, malformed permission events, and invalid answers also
+reject. `pi:opencode-go:*` is a Pi SDK route and uses Pi's tool/sandbox contract
+instead.
+
+Every direct-OpenCode run starts a password-authenticated loopback server on an
+ephemeral port with a unique private database (0700 parent / 0600 file). The
+database is deleted after the server closes, so direct OpenCode does not resume
+provider sessions and never imports the user's sessions or saved approvals.
+Repo/global config and external plugins/skills are disabled; provider-owned shell
+tools inherit only a narrow non-secret environment. Built-in providers use the
+normal OpenCode auth store so refresh-token rotation persists.
+`OPENCODE_AUTH_CONTENT` is rejected; persist credentials with `opencode auth
+login`. A host `always` approval is cached only for the current mono-agent run:
+the provider receives `once`, so project-wide approval state is never saved.
+Stable OpenCode CLI >=1.15.0 and a native database migration marker are required;
+run `opencode db migrate --pure` once before first use.
+
+Use Pi with the mono-agent native `srt` sandbox when secrets or filesystem roots
+must be enforced; direct OpenCode permission rules do not provide that boundary.
+
 :::caution
-`permissionMode: "bypassPermissions"` removes interactive guardrails. Pair it with the [sandbox](/tools/sandbox/) filesystem scopes and a constrained [tool policy](/tools/policy/) so an unattended run cannot reach beyond its workspace.
+`permissionMode: "bypassPermissions"` removes interactive guardrails. On Pi, pair a powerful tool surface with the [sandbox](/tools/sandbox/) filesystem scopes. Direct Codex maps bypass mode to danger-full-access and rejects mono-agent `srt`; Claude and direct OpenCode likewise cannot enforce mono-agent `srt` around provider-owned tools. Use Pi (including `pi:opencode-go:*`) when exact mono-agent roots, deny-write globs, or network policy are required.
 :::
 
 ## Max turns
 
-`runtime.maxTurns` caps the number of turns a single run may take. `0` (or omitting the key) means **unlimited**; values `1`–`100` cap the run.
+`runtime.maxTurns` caps the number of turns a single run may take. `0` (or omitting the key) means **unlimited**; values `1`–`100` cap supported runtimes. Direct OpenCode rejects every positive value because its current bridge has no enforceable hard turn cap; use `0`/omit the field or choose another runtime.
 
 | Key | Values | Default | Env var |
 |-----|--------|---------|---------|
@@ -77,7 +125,7 @@ Several other features key off the backend implied by execution mode — most no
 This value also sizes conversation history: history is capped only when turns are capped, and stays unlimited when `maxTurns` is `0` or omitted (`auto` coverage). A custom history store is available via code (`createConfiguredAgentResponder({ historyStore })`). See [Sessions & concurrency](/runtime/sessions-concurrency/).
 
 ```json
-{ "runtime": { "model": "codex:gpt-5.5", "maxTurns": 12 } }
+{ "runtime": { "model": "codex:gpt-5.6-terra", "maxTurns": 12 } }
 ```
 
 ## Workspace
@@ -95,7 +143,7 @@ The workspace is also the default root for sandbox filesystem scopes — `sandbo
 | Key | Env var | Default | Coverage |
 |-----|---------|---------|----------|
 | `runtime.executionMode` | `MONO_AGENT_EXECUTION_MODE` | inferred from model | config |
-| `runtime.effort` | `MONO_AGENT_EFFORT` | `medium` | config |
+| `runtime.effort` | `MONO_AGENT_EFFORT` | unset (provider/model default) | config |
 | `runtime.permissionMode` | `MONO_AGENT_PERMISSION_MODE` | `default` (CLI only) | config |
 | `runtime.maxTurns` | `MONO_AGENT_MAX_TURNS` | `0` (unlimited) | config |
 | `runtime.workspace` | `MONO_AGENT_WORKSPACE` | `"."` | config |

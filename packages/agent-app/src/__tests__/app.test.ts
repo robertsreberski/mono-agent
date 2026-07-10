@@ -16,6 +16,7 @@ import type { SlackAdapterStartOptions } from "@mono-agent/slack-adapter";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 import { startMonoAgentApp } from "../app.js";
+import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME } from "../adapter-send-tools.js";
 import {
   createSlackChannelDriver,
   createTelegramChannelDriver,
@@ -777,6 +778,159 @@ describe("startMonoAgentApp", () => {
     } finally {
       await app.stop();
     }
+  });
+
+  it("suppresses implicit AskUser for a direct OpenCode host and restores it after reloading to Pi", async () => {
+    const configPath = await writeConfig({
+      ...baseConfig(),
+      runtime: { model: "opencode:github-copilot:gpt-5.1", workspace: "." },
+      tools: { allowedTools: ["*"], disallowedTools: [] },
+    });
+    const env: Record<string, string | undefined> = {};
+    const runtimeCalls: RuntimeRunOptions[] = [];
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        runtimeCalls.push(options);
+        return { text: "ok" };
+      },
+    };
+    let responder: AgentResponder | undefined;
+    const driver: ChannelDriver = {
+      id: "probe" as never,
+      label: "Probe",
+      async loadConfig() {
+        return { enabled: true };
+      },
+      isConfigError() {
+        return false;
+      },
+      async start(input) {
+        responder = input.responder;
+        return { summary: {}, stop: async () => undefined };
+      },
+    };
+
+    const app = await startMonoAgentApp({ cwd: dir, configPath, env, drivers: [driver], runtime });
+    try {
+      expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
+      await responder?.respond(
+        { conversationId: "direct", text: "ping", abortSignal: new AbortController().signal },
+        { append: async () => undefined },
+      );
+      expect(runtimeCalls[0]?.model).toEqual(expect.objectContaining({ sdk: "opencode" }));
+      expect(runtimeCalls[0]?.mcpServers).toBeUndefined();
+
+      await writeFile(configPath, JSON.stringify({
+        ...baseConfig(),
+        tools: { allowedTools: ["*"], disallowedTools: [] },
+      }, null, 2));
+      expect((await app.applyConfigChange("switch-to-pi")).kind).toBe("applied");
+      expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+
+      await responder?.respond(
+        { conversationId: "pi", text: "ping", abortSignal: new AbortController().signal },
+        { append: async () => undefined },
+      );
+      expect(runtimeCalls[1]?.model).toEqual(expect.objectContaining({ sdk: "pi" }));
+      const server = runtimeCalls[1]?.mcpServers?.[ADAPTER_SEND_TOOLS_MCP_SERVER_NAME] as
+        | { env?: Record<string, string> }
+        | undefined;
+      expect(server).toBeDefined();
+      expect(JSON.parse(server?.env?.MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS ?? "[]")).toContain("AskUser");
+    } finally {
+      await app.stop();
+    }
+  });
+
+  it("applies an accepted Pi-to-OpenCode request override without leaking AskUser MCP", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      tools: { allowedTools: ["*"], disallowedTools: [] },
+    });
+    const runtimeCalls: RuntimeRunOptions[] = [];
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        runtimeCalls.push(options);
+        return { text: "ok" };
+      },
+    };
+    const driver: ChannelDriver = {
+      id: "probe" as never,
+      label: "Probe",
+      async loadConfig() {
+        return { enabled: true };
+      },
+      isConfigError() {
+        return false;
+      },
+      async start(input) {
+        await input.responder.respond(
+          {
+            conversationId: "direct-override",
+            text: "ping",
+            abortSignal: new AbortController().signal,
+            metadata: { webhook: { model: "opencode:github-copilot:gpt-5.1" } },
+          },
+          { append: async () => undefined },
+        );
+        return { summary: {}, stop: async () => undefined };
+      },
+    };
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver], runtime });
+    expect(runtimeCalls[0]?.model).toEqual(expect.objectContaining({
+      sdk: "opencode",
+      provider: "github-copilot",
+      model: "gpt-5.1",
+    }));
+    expect(runtimeCalls[0]?.mcpServers).toBeUndefined();
+    await app.stop();
+  });
+
+  it("keeps Pi AskUser MCP when an OpenCode override is rejected by inherited effort", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      runtime: { model: "pi:openai-codex:gpt-5.5", workspace: ".", effort: "high" },
+      tools: { allowedTools: ["*"], disallowedTools: [] },
+    });
+    const runtimeCalls: RuntimeRunOptions[] = [];
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        runtimeCalls.push(options);
+        return { text: "ok" };
+      },
+    };
+    const driver: ChannelDriver = {
+      id: "probe" as never,
+      label: "Probe",
+      async loadConfig() {
+        return { enabled: true };
+      },
+      isConfigError() {
+        return false;
+      },
+      async start(input) {
+        await input.responder.respond(
+          {
+            conversationId: "rejected-direct-override",
+            text: "ping",
+            abortSignal: new AbortController().signal,
+            metadata: { webhook: { model: "opencode:github-copilot:gpt-5.1" } },
+          },
+          { append: async () => undefined },
+        );
+        return { summary: {}, stop: async () => undefined };
+      },
+    };
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver], runtime });
+    expect(runtimeCalls[0]?.model).toEqual(expect.objectContaining({ sdk: "pi" }));
+    const server = runtimeCalls[0]?.mcpServers?.[ADAPTER_SEND_TOOLS_MCP_SERVER_NAME] as
+      | { env?: Record<string, string> }
+      | undefined;
+    expect(server).toBeDefined();
+    expect(JSON.parse(server?.env?.MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS ?? "[]")).toContain("AskUser");
+    await app.stop();
   });
 
   it("forwards apiRoot and attachment sizing from telegram config into the adapter start options", async () => {

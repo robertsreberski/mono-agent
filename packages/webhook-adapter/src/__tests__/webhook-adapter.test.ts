@@ -48,6 +48,106 @@ describe("Webhook adapter", () => {
     }
   });
 
+  it("strips an unsafe responder system prompt from sync HTTP without changing unrelated metadata", async () => {
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.append("safe response");
+        return {
+          metadata: {
+            summary: {
+              status: "succeeded",
+              runId: "run-1",
+              systemPrompt: "private compiled prompt",
+              diagnostics: {
+                systemPrompt: "unrelated nested value",
+                nested: {
+                  retained: true,
+                  toJSON() {
+                    return { systemPrompt: "nested serialization bypass" };
+                  },
+                },
+              },
+              toJSON() {
+                return { systemPrompt: "summary serialization bypass" };
+              },
+            },
+            trace: { systemPrompt: "unrelated metadata value" },
+          },
+        };
+      },
+    };
+    const server = await startWebhookAdapter({ host: "127.0.0.1", port: 0, responder });
+
+    try {
+      const response = await fetch(`${server.invokeUrl}`, postJson({ text: "hello", mode: "sync" }));
+      expect(response.status).toBe(200);
+      const body = await response.json() as {
+        metadata?: {
+          summary?: Record<string, unknown>;
+          trace?: Record<string, unknown>;
+        };
+      };
+      expect(body.metadata?.summary).toEqual({
+        status: "succeeded",
+        runId: "run-1",
+        diagnostics: {
+          systemPrompt: "unrelated nested value",
+          nested: { retained: true },
+        },
+      });
+      expect(body.metadata?.summary).not.toHaveProperty("systemPrompt");
+      expect(body.metadata?.trace).toEqual({ systemPrompt: "unrelated metadata value" });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it.each([
+    {
+      shape: "array",
+      summary: () => Object.assign([], {
+        toJSON() {
+          return { systemPrompt: "array serialization bypass" };
+        },
+      }),
+    },
+    {
+      shape: "function",
+      summary: () => Object.assign(() => undefined, {
+        toJSON() {
+          return { systemPrompt: "function serialization bypass" };
+        },
+      }),
+    },
+    { shape: "primitive", summary: () => "not-a-summary-object" },
+  ])("drops a malformed $shape responder summary instead of serializing it", async ({ summary }) => {
+    const responder: AgentResponder = {
+      async respond() {
+        return {
+          text: "safe response",
+          metadata: {
+            summary: summary(),
+            retained: { safe: true },
+          },
+        };
+      },
+    };
+    const server = await startWebhookAdapter({ host: "127.0.0.1", port: 0, responder });
+
+    try {
+      const response = await fetch(`${server.invokeUrl}`, postJson({ text: "hello", mode: "sync" }));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toMatchObject({
+        status: "succeeded",
+        metadata: { retained: { safe: true } },
+      });
+      expect(body).not.toHaveProperty("metadata.summary");
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("includes native notify metadata and reports completed runs", async () => {
     const seen: unknown[] = [];
     const results: unknown[] = [];
@@ -176,13 +276,27 @@ describe("Webhook adapter", () => {
 
   it("accepts async invocations and exposes in-memory request status", async () => {
     let finish!: () => void;
+    let onResultStatus: unknown;
     const responder: AgentResponder = {
       async respond(_request, stream) {
         await new Promise<void>((resolve) => {
           finish = resolve;
         });
         await stream.append("async done");
-        return {};
+        return {
+          metadata: {
+            summary: {
+              status: "succeeded",
+              runId: "async-run",
+              systemPrompt: "private async prompt",
+              cost: { totalUsd: 0.01 },
+            },
+            custom: { retained: true },
+            toJSON() {
+              return { summary: { systemPrompt: "metadata serialization bypass" } };
+            },
+          },
+        };
       },
     };
 
@@ -191,6 +305,23 @@ describe("Webhook adapter", () => {
       port: 0,
       path: "/webhook/invoke",
       responder,
+      onResult: (status) => {
+        onResultStatus = structuredClone(status);
+        if (status.status === "succeeded") {
+          const custom = status.metadata?.custom;
+          if (custom !== null && typeof custom === "object" && !Array.isArray(custom)) {
+            (custom as Record<string, unknown>).retained = false;
+          }
+          const summary = status.metadata?.summary;
+          if (summary !== null && typeof summary === "object" && !Array.isArray(summary)) {
+            (summary as Record<string, unknown>).systemPrompt = "mutation through onResult";
+            const cost = (summary as Record<string, unknown>).cost;
+            if (cost !== null && typeof cost === "object" && !Array.isArray(cost)) {
+              (cost as Record<string, unknown>).totalUsd = 999;
+            }
+          }
+        }
+      },
     });
 
     try {
@@ -213,10 +344,63 @@ describe("Webhook adapter", () => {
 
       finish();
 
+      let statusBody: unknown;
       await expect.poll(async () => {
         const response = await fetch(`${server.url}${acceptedBody.statusUrl}`);
-        return await response.json();
-      }).toMatchObject({ status: "succeeded", text: "async done" });
+        statusBody = await response.json();
+        return statusBody;
+      }).toMatchObject({
+        status: "succeeded",
+        text: "async done",
+        metadata: {
+          summary: {
+            status: "succeeded",
+            runId: "async-run",
+            cost: { totalUsd: 0.01 },
+          },
+          custom: { retained: true },
+        },
+      });
+
+      expect(statusBody).not.toHaveProperty("metadata.summary.systemPrompt");
+      expect(onResultStatus).toMatchObject({
+        status: "succeeded",
+        metadata: { summary: { runId: "async-run" }, custom: { retained: true } },
+      });
+      expect(onResultStatus).not.toHaveProperty("metadata.summary.systemPrompt");
+
+      const programmaticStatus = server.getStatus(acceptedBody.requestId);
+      expect(programmaticStatus).not.toHaveProperty("metadata.summary.systemPrompt");
+      if (programmaticStatus?.status === "succeeded") {
+        const summary = programmaticStatus.metadata?.summary;
+        if (summary !== null && typeof summary === "object" && !Array.isArray(summary)) {
+          (summary as Record<string, unknown>).systemPrompt = "mutation through getStatus";
+          const cost = (summary as Record<string, unknown>).cost;
+          if (cost !== null && typeof cost === "object" && !Array.isArray(cost)) {
+            (cost as Record<string, unknown>).totalUsd = 777;
+          }
+        }
+        const custom = programmaticStatus.metadata?.custom;
+        if (custom !== null && typeof custom === "object" && !Array.isArray(custom)) {
+          (custom as Record<string, unknown>).retained = false;
+        }
+      }
+
+      const afterMutation = await fetch(`${server.url}${acceptedBody.statusUrl}`);
+      const afterMutationBody = await afterMutation.json();
+      expect(afterMutationBody).not.toHaveProperty("metadata.summary.systemPrompt");
+      expect(afterMutationBody).toMatchObject({
+        metadata: {
+          summary: { cost: { totalUsd: 0.01 } },
+          custom: { retained: true },
+        },
+      });
+      expect(server.getStatus(acceptedBody.requestId)).toMatchObject({
+        metadata: {
+          summary: { cost: { totalUsd: 0.01 } },
+          custom: { retained: true },
+        },
+      });
     } finally {
       await server.stop();
     }

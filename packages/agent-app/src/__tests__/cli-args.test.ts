@@ -26,7 +26,7 @@ describe("parseCliArgs", () => {
         "--model",
         "claude:claude-sonnet-4-6",
         "--fallback-models",
-        "pi:ollama:gemma4:31b, codex:gpt-5.5",
+        "pi:ollama:gemma4:31b, codex:gpt-5.6-terra",
         "--auth",
         "--effort",
         "high",
@@ -36,7 +36,7 @@ describe("parseCliArgs", () => {
     ).toEqual({
       command: "init",
       model: "claude:claude-sonnet-4-6",
-      fallbackModels: ["pi:ollama:gemma4:31b", "codex:gpt-5.5"],
+      fallbackModels: ["pi:ollama:gemma4:31b", "codex:gpt-5.6-terra"],
       auth: true,
       effort: "high",
       memory: "journal",
@@ -48,6 +48,64 @@ describe("parseCliArgs", () => {
       dryRun: false,
       includeMemory: false,
     });
+  });
+
+  it("parses canonical named mixed-route init flags with exact per-route effort", () => {
+    expect(parseCliArgs([
+      "init",
+      "--name", "Research Partner",
+      "--fallback", "codex:gpt-5.6-sol",
+      "--fallback-effort", "provider-default",
+      "--fallback", "claude:claude-sonnet-5",
+      "--fallback-effort", "max",
+      "--route-safety", "per-route-native",
+      "--codex-auth", "device",
+    ])).toMatchObject({
+      command: "init",
+      name: "Research Partner",
+      fallbacks: [
+        { model: "codex:gpt-5.6-sol" },
+        { model: "claude:claude-sonnet-5", effort: "max" },
+      ],
+      routeSafety: "per-route-native",
+      codexAuthMode: "device",
+    });
+  });
+
+  it("validates --name with the same Unicode and control-character contract as config", () => {
+    const emojiName = "🧭".repeat(80);
+    expect(parseCliArgs(["init", "--name", emojiName])).toMatchObject({ name: emojiName });
+    expect(() => parseCliArgs(["init", "--name", "🧭".repeat(81)])).toThrow(/1-80/u);
+    expect(() => parseCliArgs(["init", "--name", "agent\u0000name"])).toThrow(/one line/u);
+  });
+
+  it("rejects ambiguous canonical fallback flags", () => {
+    expect(() => parseCliArgs(["init", "--fallback-effort", "high"])).toThrow(/immediately follow/u);
+    expect(() => parseCliArgs(["init", "--fallback", "codex:gpt-5.6-sol", "--fallback", "codex:gpt-5.6-sol"]))
+      .toThrow(/Duplicate/u);
+    expect(() => parseCliArgs([
+      "init", "--fallback-models", "codex:gpt-5.6-sol", "--fallback", "claude:claude-sonnet-5",
+    ])).toThrow(/either legacy/u);
+    expect(() => parseCliArgs([
+      "init", "--model", "codex:gpt-5.6-sol", "--fallback", "codex:gpt-5.6-sol",
+    ])).toThrow(/cannot also be a fallback/u);
+  });
+
+  it("parses sandbox lifecycle commands", () => {
+    expect(parseCliArgs(["sandbox", "status"])).toMatchObject({
+      command: "sandbox",
+      positionals: ["status"],
+    });
+  });
+
+  it("parses explicit headless Codex authentication", () => {
+    expect(parseCliArgs(["auth", "login", "codex", "--codex-auth", "device"])).toMatchObject({
+      command: "auth",
+      positionals: ["login", "codex"],
+      codexAuthMode: "device",
+    });
+    expect(() => parseCliArgs(["auth", "login", "codex", "--codex-auth", "automatic"]))
+      .toThrow(/browser or device/u);
   });
 
   it("normalizes setup to init and parses its preset/channel/dry-run flags", () => {
@@ -250,9 +308,11 @@ describe("parseCliArgs", () => {
     expect(renderHelp()).toContain("mono-agent setup");
     expect(renderHelp()).toContain("mono-agent presets");
     expect(renderHelp()).toContain("mono-agent init [--preset");
-    expect(renderHelp()).toContain("--effort writes runtime.effort, --auth runs supported provider auth/preflight");
-    expect(renderHelp()).toContain("pi:opencode-go:*");
-    expect(renderHelp()).toContain("save OPENCODE_API_KEY");
+    expect(renderHelp()).toContain("Effort levels: none, minimal, low, medium, high, xhigh, max, ultra");
+    expect(renderHelp()).toContain("--fallback-effort <provider-default|level>");
+    expect(renderHelp()).toContain("mono-agent sandbox status | setup | check");
+    expect(renderHelp()).toContain("Guided Pi authentication");
+    expect(renderHelp()).toContain("Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go");
     expect(renderHelp()).toContain("direct opencode:<provider>:<model>");
     expect(renderHelp()).toContain("hand-authored runtime backend config");
     expect(renderHelp()).toContain("mono-agent web");

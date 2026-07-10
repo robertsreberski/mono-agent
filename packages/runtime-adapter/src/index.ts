@@ -18,10 +18,15 @@ export {
 } from "./runtime-adapter.js";
 export type {
   CreateMonoRuntimeOptions,
+  MonoRuntimeAttemptContext,
+  MonoRuntimeAttemptResolution,
+  MonoRuntimeAttemptResolver,
   MonoRuntimeFallbackChainEntry,
+  MonoRuntimeRouteSafetyMode,
   RuntimeAdapterErrorCode,
   RuntimeAdapterErrorDetails,
 } from "./runtime-adapter.js";
+export { discoverClaudeSdkModels } from "@mono-agent/agent-runtime";
 export { CodedError, isCodedError } from "@mono-agent/agent-contracts";
 export {
   applyTemporaryEnv,
@@ -56,6 +61,7 @@ export {
   sandboxRequired,
   srtSettingsForPolicy,
 } from "./sandbox.js";
+export { MANAGED_SRT_TREE_SHA256 } from "./sandbox-managed.js";
 export type {
   PreparedSandboxCommand,
   PrepareSandboxedCommandInput,

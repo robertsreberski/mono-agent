@@ -33,6 +33,20 @@ const cron = startCronAdapter({
 
 Only future ticks after startup are scheduled. Overlapping runs for the same job are skipped, not queued or run concurrently.
 
+Cron expressions use the standard five positional fields `minute hour day-of-month month day-of-week`. The timezone defaults to `UTC`. Six-field expressions with seconds and macro aliases such as `@daily` are not supported. Hosts can validate user input with the same parser used by the scheduler:
+
+```ts
+import { validateCronExpression } from "@mono-agent/cron-adapter";
+
+const result = validateCronExpression("0 8 * * MON-FRI", {
+  timezone: "Europe/Warsaw",
+});
+
+if (!result.ok) {
+  // Handle result.code: required, field_count, or invalid.
+}
+```
+
 ### Jobs as markdown files
 
 Besides `cron.jobs` JSON / `MONO_AGENT_CRON_*` env, jobs can be authored as one `*.md` file per job in a cron folder. Frontmatter holds the schedule metadata and the markdown body is the prompt — convenient for refining long prompt templates:
@@ -56,6 +70,7 @@ Summarize yesterday across my channels and post a short digest.
 
 - `startCronAdapter`
 - `CronAdapterError`
+- `validateCronExpression`
 - `loadCronAdapterConfig`
 - `loadCronJobsFromDirectory`
 - `parseCronJobMarkdown`

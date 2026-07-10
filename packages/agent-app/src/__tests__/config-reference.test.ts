@@ -17,6 +17,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 interface SchemaNode {
   readonly type?: string;
   readonly required?: readonly string[];
+  readonly enum?: readonly string[];
+  readonly minLength?: number;
+  readonly maxLength?: number;
   readonly properties?: Record<string, SchemaNode>;
   readonly items?: SchemaNode;
 }
@@ -86,6 +89,19 @@ describe("config reference", () => {
     expect(schemaNode(schema, "memory", "embeddings", "circuitBreaker", "failureThreshold").type).toBe("integer");
     expect(schemaNode(schema, "cron", "jobs").items?.required).toEqual(["id", "expression", "prompt"]);
     expect(schemaNode(schema, "webhook", "endpoints").items?.required).toEqual(["path"]);
+    expect(schemaNode(schema, "agent", "name")).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: 80,
+      pattern: "^[^\\u0000-\\u001f\\u007f]+$",
+    });
+    expect(schemaNode(schema, "runtime", "fallbacks").items?.required).toEqual(["model"]);
+    expect(schemaNode(schema, "runtime", "fallbacks").items?.properties?.effort?.enum)
+      .toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(schemaNode(schema, "runtime", "routeSafety").enum).toEqual(["uniform", "per-route-native"]);
+    expect(schemaNode(schema, "sandbox", "mode").enum).toEqual(["native", "off"]);
+    expect(schemaNode(schema, "sandbox", "network", "mode").enum).toEqual(["none", "localhost", "allowlist"]);
+    expect(schemaNode(schema, "sandbox", "fallback").enum).toEqual(["fail-closed", "unsafe-host-process"]);
   });
 
   it("uses loader-valid examples for generated complex fields", () => {

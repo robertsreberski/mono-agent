@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 
+import { loadToolPolicyFromJsonFileSync } from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createLiveEventBus } from "@mono-agent/agent-contracts";
 import type { AgentResponder, RunEventBus } from "@mono-agent/agent-contracts";
@@ -56,10 +57,18 @@ import {
   createMemoryRecallRuntimeExtension,
   resolveMemoryRecallSettings,
 } from "./memory-recall.js";
-import { createRequestModelOverrideRuntimeExtension } from "./request-model-override.js";
+import {
+  createRequestModelOverrideRuntimeExtension,
+  requestModelOverrideTargetsDirectOpenCode,
+} from "./request-model-override.js";
 import { resolveNotifyDestinations } from "./notify-destinations.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
+import {
+  configuredRuntimeFallbackModels,
+  configuredRuntimeModels,
+  hasConfiguredRuntimeFallbacks,
+} from "./runtime-routes.js";
 
 /**
  * Outcome of a live config re-apply (`applyConfigChange`). Consumed by callers
@@ -317,6 +326,10 @@ class MonoAgentAppController implements MonoAgentApp {
       for (const driver of this.drivers) {
         await this.stopChannel(driver.id, `${reason}:reload`);
       }
+      // Tool policy/runtime-family changes must re-evaluate implicit AskUser.
+      // Clearing the cached promise also prevents stale bridge env from a Pi
+      // config leaking into a reloaded direct-OpenCode responder.
+      await this.stopInteractionBridge();
       this.stopMemoryRituals();
       this.stopArtifactRetentionScheduler();
       await this.resetSharedMemory();
@@ -578,15 +591,16 @@ class MonoAgentAppController implements MonoAgentApp {
    */
   private ensureInteractionBridge(coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined> {
     this.interactionBridgeStart ??= (async () => {
-      const askUserAllowed = isAdapterSendToolAllowed("AskUser", {
-        allowedTools: coreConfig.tools.allowedTools,
-        disallowedTools: coreConfig.tools.disallowedTools,
-      });
-      const telegramAskAllowed = isAdapterSendToolAllowed("TelegramAskButtons", {
-        allowedTools: coreConfig.tools.allowedTools,
-        disallowedTools: coreConfig.tools.disallowedTools,
-      });
+      const directOpenCodeRoute = runtimeRouteContainsDirectOpenCode(coreConfig);
       const settings = await loadInteractionSettings({ env: this.env, configPath: this.configPath });
+      const askUserAllowed = !directOpenCodeRoute && isAdapterSendToolAllowed("AskUser", {
+        allowedTools: coreConfig.tools.allowedTools,
+        disallowedTools: coreConfig.tools.disallowedTools,
+      });
+      const telegramAskAllowed = !directOpenCodeRoute && isAdapterSendToolAllowed("TelegramAskButtons", {
+        allowedTools: coreConfig.tools.allowedTools,
+        disallowedTools: coreConfig.tools.disallowedTools,
+      });
       if (!askUserAllowed && !telegramAskAllowed && !settings.configured) {
         return undefined;
       }
@@ -987,19 +1001,40 @@ class MonoAgentAppController implements MonoAgentApp {
     const adapterSendTools = await this.adapterSendToolsRuntimeOptions(coreConfig);
     // Always active: a no-op for interactive turns (which carry no cron/webhook
     // metadata), it applies the per-trigger model/effort override otherwise.
-    const requestModelOverride = this.requestModelOverrideRuntimeOptions(coreConfig);
+    const mcpSources: string[] = [];
+    if (coreConfig.tools.mcpConfigPath !== undefined) {
+      try {
+        const names = Object.keys(loadToolPolicyFromJsonFileSync(coreConfig.tools.mcpConfigPath).mcpServers ?? {});
+        if (names.length > 0) mcpSources.push(`tools.mcpConfigPath (${names.join(", ")})`);
+      } catch {
+        // Responder construction owns the missing/malformed policy error.
+      }
+    }
+    if (memoryRecall !== undefined) mcpSources.push("memory.recallTool");
+    if (supermemoryMcp !== undefined) mcpSources.push("memory.supermemory.exposeMcpServer");
+    if (adapterSendTools.blockingToolNames.length > 0) {
+      mcpSources.push(`adapter send tools (${adapterSendTools.blockingToolNames.join(", ")})`);
+    }
+    const requestModelOverride = this.requestModelOverrideRuntimeOptions(coreConfig, {
+      mcpSources,
+      indexSkillsActive: coreConfig.context.skillDisclosure === "index"
+        && coreConfig.context.skillsRoot !== undefined,
+    });
+    const adapterSendToolsExtension = adapterSendTools.createExtension?.(
+      requestModelOverride.targetsDirectOpenCode,
+    );
     const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
       memoryRecall,
       supermemoryMcp,
-      adapterSendTools,
-      requestModelOverride,
+      adapterSendToolsExtension,
+      requestModelOverride.extension,
     ]);
     // The override factory is only needed when fallbacks are configured: the
     // fallback router freezes the model chain, so an override must run on a runtime
     // whose chain has it as primary. With no fallbacks the shared (plain) runtime
     // honors the per-run model directly, so building a separate runtime would be
     // redundant. Omit the factory there and the harness uses the shared runtime.
-    const runtimeForModel = (coreConfig.runtime.fallbackModels?.length ?? 0) > 0
+    const runtimeForModel = hasConfiguredRuntimeFallbacks(coreConfig.runtime)
       ? this.buildRuntimeForModel(coreConfig)
       : undefined;
     const observabilityContext = await this.observabilityContext();
@@ -1030,12 +1065,32 @@ class MonoAgentAppController implements MonoAgentApp {
    * block for the OVERRIDE model (see request-model-override doc). Composed
    * alongside the memory/adapter extensions.
    */
-  private requestModelOverrideRuntimeOptions(coreConfig: MonoAgentConfig): RuntimeOptionsExtension {
-    const extension = createRequestModelOverrideRuntimeExtension({
+  private requestModelOverrideRuntimeOptions(
+    coreConfig: MonoAgentConfig,
+    compatibility: { readonly mcpSources: readonly string[]; readonly indexSkillsActive: boolean },
+  ): {
+    readonly extension: RuntimeOptionsExtension;
+    readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
+  } {
+    const options = {
       ...(this.logger === undefined ? {} : { logger: this.logger }),
+      baseModel: coreConfig.runtime.model,
+      ...(configuredRuntimeFallbackModels(coreConfig.runtime).length === 0
+        ? {}
+        : { fallbackModels: configuredRuntimeFallbackModels(coreConfig.runtime) }),
+      ...(coreConfig.runtime.effort === undefined ? {} : { baseEffort: coreConfig.runtime.effort }),
+      ...(coreConfig.runtime.maxTurns === undefined ? {} : { baseMaxTurns: coreConfig.runtime.maxTurns }),
+      ...(compatibility.mcpSources.length === 0 ? {} : { mcpSources: compatibility.mcpSources }),
+      ...(compatibility.indexSkillsActive ? { indexSkillsActive: true } : {}),
+      ...(coreConfig.sandbox === undefined ? {} : { sandboxPolicy: coreConfig.sandbox }),
+      toolPolicy: coreConfig.tools,
       ...(coreConfig.providers?.local === undefined ? {} : { localProviders: coreConfig.providers.local }),
-    });
-    return async (input) => extension({ request: input.request });
+    };
+    const extension = createRequestModelOverrideRuntimeExtension(options);
+    return {
+      extension: async (input) => extension({ request: input.request }),
+      targetsDirectOpenCode: (metadata) => requestModelOverrideTargetsDirectOpenCode(metadata, options),
+    };
   }
 
   /**
@@ -1128,23 +1183,50 @@ class MonoAgentAppController implements MonoAgentApp {
     return async () => ({ runtimeOptions: { mcpServers: entry }, cleanup: async () => {} });
   }
 
-  private async adapterSendToolsRuntimeOptions(coreConfig: MonoAgentConfig): Promise<RuntimeOptionsExtension | undefined> {
+  private async adapterSendToolsRuntimeOptions(coreConfig: MonoAgentConfig): Promise<{
+    readonly createExtension?: (
+      targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean,
+    ) => RuntimeOptionsExtension;
+    readonly blockingToolNames: readonly string[];
+  }> {
     const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
     const settings = await resolveAdapterSendToolsSettings(input, {
       allowedTools: coreConfig.tools.allowedTools,
       disallowedTools: coreConfig.tools.disallowedTools,
       logger: this.logger,
+      suppressInteractionTools: runtimeRouteContainsDirectOpenCode(coreConfig),
     });
     if (settings === undefined) {
-      return undefined;
+      return { blockingToolNames: [] };
     }
     const toolNames = adapterSendToolNames(settings);
+    const blockingToolNames = toolNames.filter((name) => !isInteractionToolName(name));
     this.logger?.info?.("Adapter send tools enabled.", { tools: toolNames });
     // Forward the posted-message index path so `SlackSendMessage` links each post
     // back to the producing conversation (so a later in-thread reply resumes it).
     const indexPath = resolvePostedMessageIndexPath(await resolveAppArtifactDir(input));
     const interaction = settings.askUser ?? settings.telegram?.askBridge;
-    return createAdapterSendToolsRuntimeExtension(this.configPath, this.cwd, toolNames, indexPath, interaction);
+    const createExtension = (
+      targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean,
+    ): RuntimeOptionsExtension => async (requestInput) => {
+      const effectiveToolNames = targetsDirectOpenCode(requestInput.request.metadata)
+        ? toolNames.filter((name) => !isInteractionToolName(name))
+        : toolNames;
+      if (effectiveToolNames.length === 0) {
+        return { runtimeOptions: {}, cleanup: async () => {} };
+      }
+      const effectiveInteraction = effectiveToolNames.some(isInteractionToolName)
+        ? interaction
+        : undefined;
+      return await createAdapterSendToolsRuntimeExtension(
+        this.configPath,
+        this.cwd,
+        effectiveToolNames,
+        indexPath,
+        effectiveInteraction,
+      )(requestInput);
+    };
+    return { createExtension, blockingToolNames };
   }
 
   /** Build the configured memory store once and share it across responders + the ritual scheduler. */
@@ -1474,6 +1556,15 @@ function sandboxStatusFromState(state: SandboxEffectiveState): SandboxStatus {
 
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function runtimeRouteContainsDirectOpenCode(config: MonoAgentConfig): boolean {
+  return configuredRuntimeModels(config.runtime)
+    .some((model) => model.sdk === "opencode");
+}
+
+function isInteractionToolName(name: string): boolean {
+  return name === "AskUser" || name === "TelegramAskButtons";
 }
 
 /** The per-request runtime-options extension function (memory-recall, adapter-send, ...). */

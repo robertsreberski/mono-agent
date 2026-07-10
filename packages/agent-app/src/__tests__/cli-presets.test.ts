@@ -1,11 +1,11 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { parseCliArgs, renderPresetList, renderPresetShow, runProviderSetupBeforeInit } from "../cli.js";
+import { parseCliArgs, renderPresetList, renderPresetShow, resolvePiAuthPathForLogin, runProviderSetupBeforeInit, shouldRunInitWizard } from "../cli.js";
 import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
 import { initMonoAgentFolder } from "../init.js";
 import { answersFromCli } from "../wizard/from-flags.js";
@@ -36,6 +36,40 @@ describe("parseCliArgs preset flags & alias normalization", () => {
 
   it("parses init --auth", () => {
     expect(parseCliArgs(["init", "--auth"])).toMatchObject({ command: "init", auth: true });
+    expect(shouldRunInitWizard(parseCliArgs(["init"]), true, true)).toBe(true);
+    expect(shouldRunInitWizard(parseCliArgs(["init", "--auth"]), true, true)).toBe(false);
+    expect(shouldRunInitWizard(parseCliArgs(["init", "--env-file", ".env.local"]), true, true)).toBe(false);
+    expect(shouldRunInitWizard(parseCliArgs(["init", "--config", "custom.json"]), true, true)).toBe(false);
+    expect(shouldRunInitWizard(parseCliArgs(["init", "--force"]), true, true)).toBe(false);
+    expect(shouldRunInitWizard(parseCliArgs(["init", "unexpected"]), true, true)).toBe(false);
+  });
+
+  it("parses app-owned Pi auth login and resolves exact path precedence", async () => {
+    expect(parseCliArgs(["auth", "login", "openai-codex", "--pi-auth-path", "custom/auth.json"])).toMatchObject({
+      command: "auth",
+      positionals: ["login", "openai-codex"],
+      piAuthPath: "custom/auth.json",
+    });
+    const dir = await mkdtemp(join(tmpdir(), "cli-pi-auth-path-"));
+    try {
+      const configPath = join(dir, "mono-agent.config.json");
+      await writeFile(configPath, JSON.stringify({ providers: { piAuthPath: "configured/auth.json" } }));
+      await expect(resolvePiAuthPathForLogin({ configPath, cwd: dir }))
+        .resolves.toBe(resolve(dir, "configured/auth.json"));
+      await expect(resolvePiAuthPathForLogin({ configPath, cwd: dir, envPath: "env/auth.json" }))
+        .resolves.toBe(resolve(dir, "env/auth.json"));
+      await expect(resolvePiAuthPathForLogin({
+        configPath,
+        cwd: dir,
+        envPath: "env/auth.json",
+        piAuthPath: "~/flag/auth.json",
+      })).resolves.toBe(resolve(homedir(), "flag/auth.json"));
+
+      await writeFile(configPath, "{ malformed");
+      await expect(resolvePiAuthPathForLogin({ configPath, cwd: dir })).rejects.toThrow();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("parses validate --preset", () => {
@@ -68,7 +102,7 @@ describe("init provider setup gate", () => {
   it("does not execute provider setup during dry-run even with --auth", async () => {
     const execute = vi.fn(async () => []);
     const status = await runProviderSetupBeforeInit({
-      modelRefs: ["codex:gpt-5.5"],
+      modelRefs: ["codex:gpt-5.6-terra"],
       cwd: "/agent",
       auth: true,
       dryRun: true,
@@ -80,7 +114,7 @@ describe("init provider setup gate", () => {
 
   it("reports provider setup failures as failed", async () => {
     const status = await runProviderSetupBeforeInit({
-      modelRefs: ["codex:gpt-5.5"],
+      modelRefs: ["codex:gpt-5.6-terra"],
       cwd: "/agent",
       auth: true,
       dryRun: false,
@@ -93,6 +127,24 @@ describe("init provider setup gate", () => {
       ],
     });
     expect(status).toBe("failed");
+  });
+
+  it("skips direct provider login when durable dotenv credentials are detected", async () => {
+    const execute = vi.fn(async () => []);
+    const status = await runProviderSetupBeforeInit({
+      modelRefs: ["codex:gpt-5.6-sol", "claude:claude-sonnet-5"],
+      cwd: "/agent",
+      auth: true,
+      dryRun: false,
+      persistedEnv: {
+        OPENAI_API_KEY: "durable-openai-key",
+        CLAUDE_CODE_OAUTH_TOKEN: "durable-claude-token",
+      },
+      execute,
+    });
+
+    expect(status).toBe("skipped");
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("does not fail non-interactive setup when an API-key action is skipped", async () => {
@@ -111,6 +163,26 @@ describe("init provider setup gate", () => {
     });
     expect(status).toBe("ok");
   });
+
+  it("returns an explicit interrupted status when scoped provider setup is cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const execute = vi.fn(async () => []);
+
+    const status = await runProviderSetupBeforeInit({
+      modelRefs: ["codex:gpt-5.6-terra"],
+      cwd: "/agent",
+      auth: true,
+      dryRun: false,
+      forceAuthentication: true,
+      credentialStates: { codex: "auth_required" },
+      abortSignal: controller.signal,
+      execute,
+    });
+
+    expect(status).toBe("interrupted");
+    expect(execute).toHaveBeenCalledOnce();
+  });
 });
 
 describe("answersFromCli", () => {
@@ -123,10 +195,57 @@ describe("answersFromCli", () => {
   });
 
   it("maps --memory to a module id and lets --model/--effort override the preset runtime", () => {
-    const answers = answersFromCli({ presetId: "local-private", model: "codex:gpt-5.5", effort: "high", memory: "lite" });
-    expect(answers.model).toBe("codex:gpt-5.5");
+    const answers = answersFromCli({ presetId: "local-private", model: "codex:gpt-5.6-terra", effort: "high", memory: "lite" });
+    expect(answers.model).toBe("codex:gpt-5.6-terra");
     expect(answers.effort).toBe("high");
     expect(answers.memory).toBe("memory:lite");
+  });
+
+  it("preserves exact --model and --fallback-models refs from non-interactive flags", () => {
+    const answers = answersFromCli({
+      model: "pi:ollama:gemma4:31b",
+      fallbackModels: ["codex:gpt-5.6-terra", "pi:lmstudio:qwen/qwen3-8b"],
+    });
+
+    expect(answers.model).toBe("pi:ollama:gemma4:31b");
+    expect(answers.fallbackModels).toEqual(["codex:gpt-5.6-terra", "pi:lmstudio:qwen/qwen3-8b"]);
+    expect(answers.fallbacks).toEqual([
+      { model: "codex:gpt-5.6-terra" },
+      { model: "pi:lmstudio:qwen/qwen3-8b" },
+    ]);
+  });
+
+  it("preserves the public --name compatibility input", () => {
+    expect(answersFromCli({ name: "  Research Companion  " }).name).toBe("Research Companion");
+  });
+
+  it("forwards canonical per-route fallbacks and route safety", () => {
+    const answers = answersFromCli({
+      model: "pi:ollama:qwen3:8b",
+      fallbacks: [
+        { model: "codex:gpt-5.6-sol", effort: "minimal" },
+        { model: "claude:claude-sonnet-5", effort: "max" },
+      ],
+      routeSafety: "per-route-native",
+    });
+    expect(answers.fallbacks).toEqual([
+      { model: "codex:gpt-5.6-sol", effort: "minimal" },
+      { model: "claude:claude-sonnet-5", effort: "max" },
+    ]);
+    expect(answers.routeSafety).toBe("per-route-native");
+  });
+
+  it("rejects duplicate canonical routes and invalid public names", () => {
+    expect(() => answersFromCli({
+      model: "codex:gpt-5.6-sol",
+      fallbacks: [{ model: "codex:gpt-5.6-sol" }],
+    })).toThrow("Duplicate model route");
+    expect(() => answersFromCli({ name: "line one\nline two" })).toThrow("single-line");
+  });
+
+  it("rejects wizard sentinel values from non-interactive model flags", () => {
+    expect(() => answersFromCli({ model: "__other__" })).toThrow("Wizard model sentinel");
+    expect(() => answersFromCli({ fallbackModels: ["__done__", "pi:ollama:gemma4:31b"] })).toThrow("Wizard model sentinel");
   });
 
   it("defaults to the webhook channel with no preset and no flags", () => {
@@ -157,7 +276,7 @@ describe("renderPresetShow", () => {
   it("includes the .env.example and never inlines the secret token", () => {
     const out = renderPresetShow(findPreset("telegram-assistant")!);
     expect(out).toContain(".env.example");
-    expect(out).toContain("MONO_AGENT_TELEGRAM_TOKEN");
+    expect(out).toContain("MONO_AGENT_TELEGRAM_BOT_TOKEN");
     expect(out).not.toMatch(/"telegramToken"\s*:/u);
   });
 });

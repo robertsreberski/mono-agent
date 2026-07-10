@@ -33,6 +33,7 @@ Hosts that need request-scoped runtime setup can provide `runtimeOptionsForReque
 - `createInMemoryHistoryStore`
 - `createRuntimeSessionStore` plus the session record/store types from `sessions.ts`
 - `NoopRunRecorder`
+- `ExternalRunSummary`, the channel-safe run summary type; it omits the recorder-only `systemPrompt` field that the runtime response projection also strips
 - Context assembly helpers: `buildAgentContext`, `loadContextFromFiles`, `buildSkillIndex`, `loadSkillIndexFromDirectory`
 - Selected skill helpers: `loadSelectedSkills`, `createSkillsCache`, `SkillActivationError`
 - Tool policy helpers: `createToolPolicy`, `failClosedToolPolicy`, `loadToolPolicyFromJsonFile`, `loadToolPolicyFromJsonFileSync`, `toolPolicyToRuntimeOptions`, `ToolPolicyError`

@@ -8,8 +8,8 @@ Every framework capability and how a composed agent reaches it. This table is th
 | --- | --- | --- |
 | Model backends: claude (sdk/cli), codex (cli direct fallback), pi sdk providers (OpenAI, OpenAI-Codex preferred when Pi auth exists, Copilot, OpenRouter, OpenCode-through-Pi, Ollama, LM Studio, ...), plus hand-authored opencode runtime refs (cli, `opencode:<provider>:<model>` via the OpenCode server) | config | `runtime.model` |
 | Backup models on retryable provider failure | config | `runtime.fallbackModels` |
-| Execution mode (sdk/cli), effort, max turns, workspace | config + cli | `runtime.executionMode`, `runtime.effort` (`mono-agent init --effort <level>`), `runtime.maxTurns`, `runtime.workspace` |
-| Tool-permission posture for CLI backends | config | `runtime.permissionMode` |
+| Execution mode (sdk/cli), effort, max turns, workspace | config + cli | `runtime.executionMode`, `runtime.effort` (`mono-agent init --effort <level>`; unsupported for direct OpenCode SDK 1.x), `runtime.maxTurns`, `runtime.workspace` |
+| Tool-permission posture for CLI backends (direct OpenCode asks/rejects unanswered by default; configure explicitly) | config | `runtime.permissionMode` |
 | Continuous provider sessions with idle eviction | config | `runtime.session.{mode,idleTimeoutMs}` |
 | Local providers (Ollama / LM Studio / OpenAI-compatible) | config | `providers.local[]` |
 | Pi OAuth credentials | config | `providers.piAuthPath` |
@@ -45,7 +45,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Tool allow/deny lists (deny wins, even under allow-all; pi doesn't deny external MCP tools) | config | `tools.allowedTools`, `tools.disallowedTools` |
 | MCP servers (stdio/sse/http) from a JSON file | config | `tools.mcpConfigPath` |
 | Adapter-derived send tools for enabled Slack/Telegram adapters | config | auto-available under allow-all once the channel is enabled; a **specific** `tools.allowedTools` must include `SlackSendMessage` / `TelegramSendMessage`; valid `slack.*` / `telegram.*` config and existing adapter allowlists provide credentials and destination bounds |
-| Sandbox on/off + srt engine | config | `sandbox.mode` |
+| Sandbox on/off + srt engine (Pi-owned tools; direct Codex has its own sandbox, Claude/direct OpenCode reject native mono policy) | config | `sandbox.mode` |
 | Network policy (none/localhost/allowlist/all) | config | `sandbox.network.{mode,allowlist}` |
 | Filesystem scopes (readable/writable roots, deny-write globs) | config | `sandbox.readableRoots`, `sandbox.writableRoots`, `sandbox.denyWrite` |
 | Fallback behavior when srt is unavailable | config | `sandbox.fallback`, `sandbox.unsafeAllowHostProcess` |

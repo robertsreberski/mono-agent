@@ -434,6 +434,53 @@ describe("A2A adapter contract", () => {
     expect(config.provider.enabled).toBe(true);
   });
 
+  it("uses the public agent name as the default Agent Card name without overriding A2A-specific identity", async () => {
+    const shared = {
+      a2a: {
+        enabled: true,
+        provider: { host: "127.0.0.1", port: 0 },
+        skill: { id: "default", name: "Default", description: "Default skill", tags: [] },
+      },
+    };
+    const inherited = await loadA2AAdapterConfig({
+      env: {},
+      json: {
+        ...shared,
+        agent: { name: "Research Companion" },
+        a2a: {
+          ...shared.a2a,
+          agent: { description: "Public agent", version: "1.0.0" },
+        },
+      },
+    });
+    expect(inherited.agent?.name).toBe("Research Companion");
+
+    const explicit = await loadA2AAdapterConfig({
+      env: {},
+      json: {
+        ...shared,
+        agent: { name: "Research Companion" },
+        a2a: {
+          ...shared.a2a,
+          agent: { name: "External Card", description: "Public agent", version: "1.0.0" },
+        },
+      },
+    });
+    expect(explicit.agent?.name).toBe("External Card");
+
+    const environmentDefault = await loadA2AAdapterConfig({
+      env: { MONO_AGENT_NAME: "Environment Companion" },
+      json: {
+        ...shared,
+        a2a: {
+          ...shared.a2a,
+          agent: { description: "Public agent", version: "1.0.0" },
+        },
+      },
+    });
+    expect(environmentDefault.agent?.name).toBe("Environment Companion");
+  });
+
   it("keeps the legacy `a2a.provider.enabled` form working, with the root flag winning when both are set", async () => {
     // Legacy form alone still enables.
     const legacy = await loadA2AAdapterConfig({
@@ -561,6 +608,50 @@ describe("A2A adapter contract", () => {
       });
       expect(JSON.stringify(section)).not.toContain("provider-json-secret");
       expect(JSON.stringify(section)).not.toContain("consumer-json-secret");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports the same inherited public name in config view and the runtime Agent Card", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-a2a-driver-name-view-"));
+    const configPath = join(dir, "mono-agent.config.json");
+    try {
+      await writeFile(configPath, JSON.stringify({
+        agent: { name: "JSON Companion" },
+        a2a: { enabled: false },
+      }), "utf8");
+      const driver = createA2AChannelDriver();
+      const jsonView = await driver.configView?.({ env: {}, cwd: dir, configPath });
+      const envView = await driver.configView?.({
+        env: { MONO_AGENT_NAME: "Environment Companion" },
+        cwd: dir,
+        configPath,
+      });
+
+      const jsonName = jsonView?.fields.find((field) => field.id === "a2a.agent.name");
+      const envName = envView?.fields.find((field) => field.id === "a2a.agent.name");
+      expect(jsonName).toMatchObject({ value: "JSON Companion", source: "json" });
+      expect(envName).toMatchObject({
+        value: "Environment Companion",
+        source: "env",
+        envKey: "MONO_AGENT_NAME",
+      });
+
+      await writeFile(configPath, JSON.stringify({
+        agent: { name: "JSON Companion" },
+        a2a: { enabled: false, agent: { name: "Protocol Card" } },
+      }), "utf8");
+      const explicitProtocolView = await driver.configView?.({
+        env: { MONO_AGENT_NAME: "Environment Companion" },
+        cwd: dir,
+        configPath,
+      });
+      expect(explicitProtocolView?.fields.find((field) => field.id === "a2a.agent.name")).toMatchObject({
+        value: "Protocol Card",
+        source: "json",
+        envKey: "MONO_AGENT_A2A_AGENT_NAME",
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

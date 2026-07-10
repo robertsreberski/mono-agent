@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 
-import { startCronAdapter, toCronJobs } from "../index.js";
+import { CronAdapterError, startCronAdapter, toCronJobs } from "../index.js";
 // handleTick is an internal export (not re-exported from the package index) so
 // the overlap defense-in-depth fallback can be tested directly, bypassing the
 // startup validateOptions gate that rejects an invalid overlap value.
@@ -662,6 +662,52 @@ describe("Cron adapter", () => {
       jobs: [{ id: "seconds", expression: "* * * * * *", prompt: "too often" }],
       now: () => new Date(0),
     })).toThrow(/five fields/u);
+  });
+
+  it.each([
+    {
+      expression: "",
+      message: "Cron job expression is required.",
+      details: { code: "invalid_config", jobId: "contract" },
+    },
+    {
+      expression: "* * * * * *",
+      message: "Cron job expression must use exactly five fields.",
+      details: { code: "invalid_config", jobId: "contract", fieldCount: 6 },
+    },
+    {
+      expression: "61 * * * *",
+      message: "Cron job expression is invalid.",
+      details: {
+        code: "invalid_config",
+        jobId: "contract",
+        reason: expect.stringMatching(/range 0-59/u),
+      },
+    },
+  ])("preserves the scheduler error contract for '$expression'", ({ expression, message, details }) => {
+    const responder: AgentResponder = {
+      async respond() {
+        return {};
+      },
+    };
+
+    let thrown: unknown;
+    try {
+      startCronAdapter({
+        responder,
+        jobs: [{ id: "contract", expression, prompt: "validate me" }],
+        now: () => new Date(0),
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(CronAdapterError);
+    expect(thrown).toMatchObject({
+      code: "invalid_config",
+      message,
+      details,
+    });
   });
 
   it("does not run jobs early when the next tick is beyond Node's max timeout", async () => {

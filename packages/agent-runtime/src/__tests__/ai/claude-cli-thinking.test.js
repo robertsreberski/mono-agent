@@ -192,4 +192,29 @@ describe("claude-cli — buildCliCommand flags", () => {
     expect(spec.command).toBe("codex");
     expect(spec.args).not.toContain("--include-partial-messages");
   });
+
+  it("passes the 1M context suffix for Opus 4.8 when contextWindow requests it", () => {
+    const spec = buildCliCommand({
+      sdk: "claude-code",
+      model: "claude-opus-4-8",
+      contextWindow: "1m",
+      systemPrompt: "sys",
+      prompt: "hi",
+      cwd: "/tmp",
+    });
+    const modelIndex = spec.args.indexOf("--model");
+    expect(spec.args[modelIndex + 1]).toBe("claude-opus-4-8[1m]");
+  });
+
+  it("preserves an explicitly authored 1M model reference without a separate contextWindow", () => {
+    const spec = buildCliCommand({
+      sdk: "claude-code",
+      model: "claude-opus-4-8[1m]",
+      systemPrompt: "sys",
+      prompt: "hi",
+      cwd: "/tmp",
+    });
+    const modelIndex = spec.args.indexOf("--model");
+    expect(spec.args[modelIndex + 1]).toBe("claude-opus-4-8[1m]");
+  });
 });

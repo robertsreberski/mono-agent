@@ -77,7 +77,7 @@ The validator's behavior depends on `memory.llm.provider`. There are two provide
 | Field | `ollama` | `agent-host` |
 | --- | --- | --- |
 | `provider` | `"ollama"` | `"agent-host"` |
-| `model` | local model string, e.g. `qwen3.6:latest` | SDK runtime ref, e.g. `pi:openai-codex:gpt-5.5` |
+| `model` | local model string, e.g. `qwen3.6:latest` | SDK runtime ref, e.g. `pi:openai-codex:gpt-5.6-terra` |
 | `executionMode` | (n/a) | must be `"sdk"` |
 | `endpoint` | Ollama URL (default `http://localhost:11434`) | **rejected** — Ollama-only |
 | `validate` chat-model check | yes (probes `/api/tags`) | no |
@@ -112,7 +112,7 @@ Env overrides: `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, 
 The `agent-host` provider runs memory LLM passes (capture's distil → reconcile → entity-extraction) on their **own dedicated SDK runtime built from `memory.llm.model`** — independent of the channel runtime — so there is no separate local chat model to pull. The `model` is a runtime reference and `executionMode` **must** be `"sdk"`. Do not set `endpoint` — it is Ollama-only and rejected here.
 
 :::note
-The memory LLM always executes on `memory.llm.model`, and that model is its **sole primary** — the memory turn does **not** inherit `runtime.fallbackModels`, so there is no failover chain on memory passes. This is deliberate: the channel runtime's fallback router rewrites each call's model to the chain primary (`runtime.model`), so reusing it would silently run capture on `runtime.model`. Setting `runtime.fallbackModels` no longer leaks the runtime primary onto memory capture.
+The memory LLM always executes on `memory.llm.model`, and that model is its **sole primary** — the memory turn does **not** inherit canonical `runtime.fallbacks` or legacy `runtime.fallbackModels`, so there is no failover chain on memory passes. This is deliberate: reusing the channel fallback router would silently run capture on `runtime.model`.
 :::
 
 ```json
@@ -129,7 +129,7 @@ The memory LLM always executes on `memory.llm.model`, and that model is its **so
     },
     "llm": {
       "provider": "agent-host",
-      "model": "pi:openai-codex:gpt-5.5",
+      "model": "pi:openai-codex:gpt-5.6-terra",
       "executionMode": "sdk"
     }
   }
@@ -137,7 +137,7 @@ The memory LLM always executes on `memory.llm.model`, and that model is its **so
 ```
 
 :::caution
-`agent-host` memory LLMs are SDK-only for now. CLI-backed refs (e.g. `codex:gpt-5.5`) or an explicit `executionMode: "cli"` are **rejected** at config validation, because those runtimes cannot yet guarantee a no-tools / no-external-actions memory turn.
+`agent-host` memory LLMs are SDK-only for now. CLI-backed refs (e.g. `codex:gpt-5.6-terra`) or an explicit `executionMode: "cli"` are **rejected** at config validation, because those runtimes cannot yet guarantee a no-tools / no-external-actions memory turn.
 :::
 
 ## The two memory-LLM timeouts

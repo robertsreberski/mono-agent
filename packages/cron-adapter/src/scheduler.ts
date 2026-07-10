@@ -1,5 +1,3 @@
-import { CronExpressionParser } from "cron-parser";
-
 import {
   BufferedMessageStream,
   isAgentResponseCancelledError,
@@ -9,6 +7,8 @@ import {
   type AgentResponse,
 } from "@mono-agent/agent-contracts";
 import { normalizeOptionalString } from "@mono-agent/agent-contracts";
+
+import { validateCronExpression } from "./cron-expression.js";
 
 export interface CronRequestMetadata {
   readonly jobId: string;
@@ -479,17 +479,26 @@ async function emitResult(options: CronAdapterOptions, result: CronJobResult): P
 }
 
 function nextDateFor(job: CronJob, currentDate: Date): Date {
-  try {
-    return CronExpressionParser.parse(job.expression, {
-      currentDate,
-      tz: job.timezone ?? DEFAULT_TIMEZONE,
-    }).next().toDate();
-  } catch (error) {
-    throw new CronAdapterError("invalid_config", "Cron job expression is invalid.", {
+  const result = validateCronExpression(job.expression, {
+    currentDate,
+    timezone: job.timezone ?? DEFAULT_TIMEZONE,
+  });
+  if (result.ok) {
+    return result.nextDate;
+  }
+  if (result.code === "required") {
+    throw new CronAdapterError("invalid_config", "Cron job expression is required.", { jobId: job.id });
+  }
+  if (result.code === "field_count") {
+    throw new CronAdapterError("invalid_config", "Cron job expression must use exactly five fields.", {
       jobId: job.id,
-      reason: errorToMessage(error),
+      fieldCount: result.fieldCount,
     });
   }
+  throw new CronAdapterError("invalid_config", "Cron job expression is invalid.", {
+    jobId: job.id,
+    reason: result.reason,
+  });
 }
 
 const VALID_OVERLAP_MODES: ReadonlySet<CronOverlapMode> = new Set(["queue", "skip", "replace"]);
@@ -523,22 +532,7 @@ function validateOptions(options: CronAdapterOptions): void {
         maxRunMs: job.maxRunMs,
       });
     }
-    assertFiveFieldExpression(job);
     nextDateFor(job, options.now?.() ?? new Date());
-  }
-}
-
-function assertFiveFieldExpression(job: CronJob): void {
-  const expression = normalizeOptionalString(job.expression);
-  if (expression === undefined) {
-    throw new CronAdapterError("invalid_config", "Cron job expression is required.", { jobId: job.id });
-  }
-  const fields = expression.split(/\s+/u);
-  if (fields.length !== 5) {
-    throw new CronAdapterError("invalid_config", "Cron job expression must use exactly five fields.", {
-      jobId: job.id,
-      fieldCount: fields.length,
-    });
   }
 }
 

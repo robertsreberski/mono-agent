@@ -10,7 +10,9 @@ This page walks the happy path: scaffold a config-first agent with `mono-agent i
 
 ## Prerequisites
 
-You need Node.js installed, the `mono-agent` CLI available, and credentials for whatever model you point at before you ask for a model response. The quickest path is the `npm create mono-agent@latest` installer (equivalently `npx create-mono-agent`) with no global install, or `npm i -g create-mono-agent` for the persistent `mono-agent` command. The CLI itself ships inside `@mono-agent/agent-app` (the installer just delegates to it), so `npm i -g @mono-agent/agent-app` or `npm exec --package @mono-agent/agent-app -- mono-agent ...` are equivalent. The default model is `pi:openai-codex:gpt-5.5`, backed by the Pi SDK and the Pi auth store; the wizard can offer setup when the store is missing. See [Install](/getting-started/install/) for the full setup and [Environment Variables](/config/env-vars/) for the keys each backend expects.
+You need Node.js installed, the `mono-agent` CLI available, and credentials for whatever model you choose. The quickest path is the `npm create mono-agent@latest` installer (equivalently `npx create-mono-agent`) with no global install, or `npm i -g create-mono-agent` for the persistent command. The CLI itself ships in `@mono-agent/agent-app`, so installing or invoking that scoped package is equivalent.
+
+Guided init searches every bundled model for Pi Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go; the live Codex account catalog when available; the Claude SDK catalog; and discovered local models. Other hand-authored Pi refs and `providers.local[]` remain runtime-compatible but are outside guided cloud-provider setup. The provider-declared Codex default leads when discovery succeeds; curated `codex:gpt-5.6-terra` is the offline fallback. The offline entry does not guess effort support and therefore offers only **Provider default** until live `model/list` metadata is available. The wizard keeps catalog availability, credential detection, and live verification separate. It does not install Codex silently; use only the [official Codex CLI instructions](https://developers.openai.com/codex/cli/). Browser login runs `codex login`; a remote/headless machine can select `codex login --device-auth`. GPT-5.6 Sol is available as `codex:gpt-5.6-sol` or `pi:openai-codex:gpt-5.6-sol`. See [Install](/getting-started/install/) and [Environment Variables](/config/env-vars/) for other backends.
 
 If you are testing unreleased source from a clone, replace `mono-agent` in the commands below with the built CLI entry:
 
@@ -20,52 +22,66 @@ node /absolute/path/to/mono-agent/packages/agent-app/dist/cli.js
 
 ## 1. Scaffold the folder (`cli`)
 
-Run `init` inside an empty folder (or an existing project — it never overwrites your files):
+Run bare `init` inside an empty folder on a TTY. This guided path is the only init mode that proves readiness:
 
 ```bash
 mkdir my-agent
 cd my-agent
-mono-agent init --model pi:openai-codex:gpt-5.5
+mono-agent init
 ```
 
-:::tip
-Prefer a guided first run? On a terminal, run `mono-agent init` **with no flags** to launch the step-by-step wizard: start from a [preset](/reference/recipes/) or go custom, then it walks you through model, channels, memory, and the **tools** your agent may call — a single "Allow all tools? [Yes]" (the default), or decline to hand-pick a specific list — before scaffolding and auto-validating. See the [`init` section of the CLI reference](/observability/cli-reference/#init) for the flags that skip the wizard, and [Presets & capability modules](/reference/recipes/) for what each preset sets up.
-:::
+The wizard starts from a [preset](/reference/recipes/) or custom answers, asks what the agent should be called, then walks through the same model, channel, memory, runtime-appropriate tool/safety, and observability decisions either way. Type to search the primary and fallback catalogs; add as many fallbacks as you need and choose each route's supported effort or **Provider default**. Escape moves back one logical step. Ctrl-C asks before exiting.
 
-Passing a flag like `--model` (as below) skips the wizard and writes the scaffold non-interactively — the composer defaults `tools.allowedTools` to allow-all (`["*"]`), so the agent can use every built-in and any enabled channel's send tools out of the box.
+**Allow all tools** is the default and includes shell, file, web, and enabled channel-send tools. `runtime.routeSafety: "uniform"` keeps one common fail-closed contract. A mixed Pi/Claude/Codex/OpenCode chain requires explicit `per-route-native` acceptance after the wizard displays the concrete route matrix. Pi keeps mono-agent tools and optional managed SRT; provider-owned routes use their documented native contract. Unsupported capabilities are never silently dropped.
+
+After the explicit **Creation review**, the wizard makes one disposable no-tool call for every selected route, sequentially, with a 90-second cloud or 240-second local deadline per route. A detected Codex/Claude sign-in or Pi auth-store entry skips redundant authentication, but it is not called verified until the exact route succeeds. Escape or Ctrl-C interrupts safely. Recovery can resume routes already verified under the same non-secret plan fingerprint, restart all checks, edit choices, or cancel without writing. Choosing authentication repair clears all prior route proofs before the checks rerun. Provider failure, timeout, empty output, or any tool action fails that route. **Agent ready** additionally requires the committed config and every selected credential, channel, sandbox, memory, and observability expectation to be ready.
+
+Passing any flag or running without a TTY skips the wizard and writes a scaffold only. It never runs the readiness proof or labels the result ready. These flags remain useful for automation:
 
 Optional flags:
 
 | Flag | Purpose |
 | --- | --- |
-| `--model <ref>` | Primary runtime model. Format: `pi:<provider>:<model>`, `claude:*`, `codex:*`, or `opencode:*`. Defaults to `pi:openai-codex:gpt-5.5`. |
-| `--fallback-models <csv>` | Ordered backup models tried on retryable provider failure. Written to `runtime.fallbackModels`. See [Fallback Chain](/runtime/fallback/). |
+| `--name <display-name>` | Public agent name. Display metadata only; never used for paths/service/session ids. |
+| `--model <ref>` | Primary runtime model. Format: `pi:<provider>:<model>`, `claude:*`, `codex:*`, or `opencode:*`. Defaults to `codex:gpt-5.6-terra`; selectable Sol refs are `codex:gpt-5.6-sol` and `pi:openai-codex:gpt-5.6-sol`. |
+| `--fallback <ref>` | Repeatable canonical fallback route. Follow immediately with `--fallback-effort <provider-default\|level>` when needed. |
+| `--fallback-models <csv>` | Legacy compatibility form; entries inherit global effort. Do not combine with `--fallback`. |
+| `--route-safety uniform\|per-route-native` | Common monotonic contract (default) or explicit isolated provider-native route contracts. |
+| `--codex-auth browser\|device` | Direct Codex login mode when `--auth` runs; `device` is for headless hosts. |
 | `--memory lite\|journal\|bujo` | Adds a `memory` section with the chosen tier. Omit it and no memory is configured. See [Capture and Recall](/memory/capture-and-recall/). |
 
 A fuller example:
 
 ```bash
 mono-agent init \
-  --model pi:openai-codex:gpt-5.5 \
-  --fallback-models "pi:opencode-go:kimi-k2.6,pi:ollama:gemma4:31b" \
+  --name "Research Companion" \
+  --model pi:openai-codex:gpt-5.6-terra \
+  --fallback claude:claude-sonnet-5 --fallback-effort xhigh \
+  --fallback pi:ollama:gemma4:31b --fallback-effort provider-default \
+  --route-safety per-route-native \
   --memory bujo
 ```
 
 ### What `init` scaffolds
 
-`init` is a non-destructive scaffold (`app.cli-init`). Files that already exist are reported as skipped and left untouched. In a clean folder it creates:
+`init` is non-destructive for scaffold/config files (`app.cli-init`): existing config, identity, and capability files are reported as unchanged. Guided secret setup is the explicit exception and may securely harden/update `.env` plus `.gitignore`. In a clean folder it creates:
 
 - **`mono-agent.config.json`** — the single config file that declares the whole agent. It enables the **webhook channel** (`webhook.enabled: true`) as the zero-credential smoke channel so you can get a response immediately, and wires `artifacts`, `traceability`, and `context.identityPath` to the scaffolded paths.
 - **`IDENTITY.md`** — role, boundaries, and a Knowledge section that references any `AGENTS.md`, `CLAUDE.md`, `README.md`, or `SOUL.md` already present in the folder. Edit this to describe what your agent is for. See [Identity and Soul](/context/identity-and-soul/).
 - **`.mono-agent/`** — working directories: `.mono-agent/artifacts` (run output) and `.mono-agent/workspace`.
 
-The generated config (with `--fallback-models` and `--memory bujo`) looks like this — note that `tools.allowedTools` defaults to allow-all (`["*"]`), and the `bujo` tier scaffolds its embeddings, capture LLM, and recall tool:
+The generated config (with canonical `--fallback` routes and `--memory bujo`) looks like this — note that `tools.allowedTools` defaults to allow-all (`["*"]`), and the `bujo` tier scaffolds its embeddings, capture LLM, and recall tool:
 
 ```json
 {
+  "agent": { "name": "Research Companion" },
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",
-    "fallbackModels": ["pi:opencode-go:kimi-k2.6", "pi:ollama:gemma4:31b"],
+    "model": "pi:openai-codex:gpt-5.6-terra",
+    "fallbacks": [
+      { "model": "claude:claude-sonnet-5", "effort": "xhigh" },
+      { "model": "pi:ollama:gemma4:31b" }
+    ],
+    "routeSafety": "per-route-native",
     "workspace": "."
   },
   "context": {
@@ -81,7 +97,7 @@ The generated config (with `--fallback-models` and `--memory bujo`) looks like t
   },
   "traceability": {
     "registryDir": "./.mono-agent/trace-sources",
-    "sourceLabel": "Mono Agent (my-folder)"
+    "sourceLabel": "Research Companion"
   },
   "webhook": {
     "enabled": true
@@ -91,13 +107,15 @@ The generated config (with `--fallback-models` and `--memory bujo`) looks like t
     "path": "./.mono-agent/memory",
     "writeMode": "capture",
     "embeddings": { "provider": "ollama", "model": "nomic-embed-text" },
-    "llm": { "provider": "agent-host", "model": "pi:openai-codex:gpt-5.5" },
+    "llm": { "provider": "agent-host", "model": "pi:openai-codex:gpt-5.6-terra" },
     "recallTool": { "enabled": true }
   }
 }
 ```
 
-Every field has a `MONO_AGENT_*` env override (env > JSON > defaults) — for example `MONO_AGENT_MODEL`, `MONO_AGENT_FALLBACK_MODELS`. See [Configuration](/config/) for the annotated blueprint. The scaffolder also adds an `artifacts.retention` block and a `$schema` reference, omitted here for brevity.
+Every field has a `MONO_AGENT_*` env override (env > JSON > defaults) — for example `MONO_AGENT_NAME`, `MONO_AGENT_MODEL`, and `MONO_AGENT_FALLBACKS_JSON`. See [Configuration](/config/) for the annotated blueprint. The scaffolder also adds an `artifacts.retention` block and a `$schema` reference, omitted here for brevity.
+
+For selected channel secrets, the guided wizard never shows values in config, examples, review output, or logs. Existing non-empty dotenv assignments/comments are preserved. A shell-only selected secret does not skip the masked prompt because a later background start cannot inherit that shell; the entered value must match any exported or persisted copy before the wizard writes a missing value. Durable provider keys already present in `.env` go through the same secure preflight even when the plan has no channel secret. On POSIX the canonical agent directory must be current-user-owned and not group/world-writable, while existing `.env` and `.gitignore` files must be current-user-owned single-link regular files. The env is written or tightened to owner-only (`0600`) under an external lock, the ignore guard loses group/world write access, and promotion is pathname no-clobber with exact rules for `.env` plus transaction artifacts. Pathname competitors stay at the target. The claimed inode is rechecked; detected writes through an already-open descriptor are retained at a printed owner-only recovery path, while a non-cooperative write after the final check remains outside the POSIX guarantee. Automatic persistence refuses tracked, symlinked, hard-linked, or foreign-owned files, malformed/conflicting dotenv, unrepresentable values, stale locks, concurrent changes, and platforms such as Windows where owner-only protection cannot be verified. Follow the printed manual instructions; never copy `.env.example` over an already populated `.env`.
 
 ## 2. Validate (`cli`)
 
@@ -107,22 +125,16 @@ Check the config section by section before starting:
 mono-agent validate
 ```
 
-`validate` (`app.cli-validate`) prints a per-section report — core, runtime, context, memory, tools, sandbox, and every channel — each tagged with a status:
+`validate` (`app.cli-validate`) prints a per-section report — core, runtime, provider credentials, context, memory, tools, sandbox, observability, and every channel — each tagged with a status:
 
 | Status | Meaning | Action |
 | --- | --- | --- |
 | `[ok]` | Section is healthy. | None. |
-| `[waiting]` | Enabled but missing a credential or input (e.g. a channel awaiting a token). | Fine for the quickstart — webhook needs nothing. |
+| `[waiting]` | Enabled but missing a credential, process, or live dependency. | Resolve it before calling the selected capability ready. |
 | `[disabled]` | Capability is off (not enabled in config). | None. |
 | `[error]` | A real misconfiguration. | Fix before starting. |
 
-Fix every `[error]` section. A `[waiting]` is expected for channels you have not credentialed yet — it does not block `start`. If you added `--memory`, `validate` also runs a memory liveness check (root writable, and Ollama reachability only for components that use it).
-
-For the default Claude model, `validate` reports the runtime shape and SDK route. It does not make a provider request or prove that `ANTHROPIC_API_KEY` is valid. Export credentials before `start` and the webhook smoke test so the first real turn can reach the model:
-
-```bash
-export ANTHROPIC_API_KEY=...
-```
+Fix every `[error]` section. Standalone `validate` keeps `waiting` non-fatal for operators intentionally starting partial configurations, so exit `0` means structurally valid, not that every selected capability is live. The guided wizard's **Agent ready** gate is stricter: no selected expectation may be waiting, and every selected runtime route must have succeeded in its exact live check. Read-only `codex login status` / `claude auth status --json` is credential detection, not a model-turn claim. Hidden memory and static-trigger dependencies are also validated.
 
 :::tip
 Source-build validation from a separate clean folder should use the worktree CLI explicitly:
@@ -131,7 +143,7 @@ Source-build validation from a separate clean folder should use the worktree CLI
 repo=/absolute/path/to/mono-agent
 agent_dir=$(mktemp -d)
 cd "$agent_dir"
-node "$repo/packages/agent-app/dist/cli.js" init --model pi:openai-codex:gpt-5.5
+node "$repo/packages/agent-app/dist/cli.js" init --model codex:gpt-5.6-terra
 node "$repo/packages/agent-app/dist/cli.js" validate
 ```
 :::

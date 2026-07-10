@@ -1,4 +1,5 @@
-import type { LocalProviderDefinition } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type { LocalProviderDefinition, RuntimeModelReference, SandboxPolicy } from "@mono-agent/runtime-adapter";
 import { describe, expect, it, vi } from "vitest";
 
 import { createRequestModelOverrideRuntimeExtension } from "../request-model-override.js";
@@ -6,12 +7,31 @@ import { createRequestModelOverrideRuntimeExtension } from "../request-model-ove
 interface RunOptions {
   readonly logger?: { warn: ReturnType<typeof vi.fn> };
   readonly localProviders?: readonly LocalProviderDefinition[];
+  readonly baseModel?: RuntimeModelReference;
+  readonly fallbackModels?: readonly RuntimeModelReference[];
+  readonly baseEffort?: string;
+  readonly baseMaxTurns?: number;
+  readonly mcpSources?: readonly string[];
+  readonly indexSkillsActive?: boolean;
+  readonly sandboxPolicy?: Pick<SandboxPolicy, "mode">;
+  readonly toolPolicy?: {
+    readonly allowedTools: readonly string[];
+    readonly disallowedTools: readonly string[];
+  };
 }
 
 function run(metadata: Record<string, unknown> | undefined, options: RunOptions = {}) {
   const extension = createRequestModelOverrideRuntimeExtension({
     ...(options.logger === undefined ? {} : { logger: options.logger }),
     ...(options.localProviders === undefined ? {} : { localProviders: options.localProviders }),
+    ...(options.baseModel === undefined ? {} : { baseModel: options.baseModel }),
+    ...(options.fallbackModels === undefined ? {} : { fallbackModels: options.fallbackModels }),
+    ...(options.baseEffort === undefined ? {} : { baseEffort: options.baseEffort }),
+    ...(options.baseMaxTurns === undefined ? {} : { baseMaxTurns: options.baseMaxTurns }),
+    ...(options.mcpSources === undefined ? {} : { mcpSources: options.mcpSources }),
+    ...(options.indexSkillsActive === undefined ? {} : { indexSkillsActive: options.indexSkillsActive }),
+    ...(options.sandboxPolicy === undefined ? {} : { sandboxPolicy: options.sandboxPolicy }),
+    ...(options.toolPolicy === undefined ? {} : { toolPolicy: options.toolPolicy }),
   });
   return extension({ request: { ...(metadata === undefined ? {} : { metadata }) } });
 }
@@ -82,6 +102,289 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     expect(logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("invalid per-request effort"),
       expect.objectContaining({ effort: "turbo" }),
+    );
+  });
+
+  it("rejects a direct-Codex host override to Pi without dropping an effort override", async () => {
+    const logger = { warn: vi.fn() };
+    const result = await run(
+      { webhook: { model: "pi:ollama:qwen3:8b", effort: "high" } },
+      { logger, baseModel: parseMonoRuntimeModelReference("codex:gpt-5.6-terra") },
+    );
+
+    expect(result.runtimeOptions).toEqual({ effort: "high" });
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("direct-Codex runtime boundary"),
+      expect.objectContaining({ model: "pi:ollama:qwen3:8b" }),
+    );
+  });
+
+  it("rejects a Pi host override to direct Codex", async () => {
+    const logger = { warn: vi.fn() };
+    const result = await run(
+      { tui: { model: "codex:gpt-5.6-terra" } },
+      { logger, baseModel: parseMonoRuntimeModelReference("pi:ollama:qwen3:8b") },
+    );
+
+    expect(result.runtimeOptions.model).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("direct-Codex runtime boundary"),
+      expect.objectContaining({ model: "codex:gpt-5.6-terra" }),
+    );
+  });
+
+  it("rejects a Claude override while a native mono-agent sandbox is active", async () => {
+    const logger = { warn: vi.fn() };
+    const result = await run(
+      { webhook: { model: "claude:claude-opus-4-8", effort: "high" } },
+      {
+        logger,
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+        sandboxPolicy: { mode: "native" },
+      },
+    );
+
+    expect(result.runtimeOptions).toEqual({ effort: "high" });
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Claude model override while the mono-agent sandbox is active"),
+      expect.objectContaining({ model: "claude:claude-opus-4-8", sandboxMode: "native" }),
+    );
+  });
+
+  it("allows a Pi host override to Claude when the configured sandbox is off", async () => {
+    const result = await run(
+      { tui: { model: "claude:claude-opus-4-8" } },
+      {
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+        sandboxPolicy: { mode: "off" },
+      },
+    );
+
+    expect(result.runtimeOptions.model).toEqual(
+      expect.objectContaining({ sdk: "claude", model: "claude-opus-4-8" }),
+    );
+  });
+
+  it("rejects a direct OpenCode override while a native mono-agent sandbox is active", async () => {
+    const logger = { warn: vi.fn() };
+    const result = await run(
+      { cron: { model: "opencode:github-copilot:gpt-5.1" } },
+      {
+        logger,
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+        sandboxPolicy: { mode: "native" },
+      },
+    );
+
+    expect(result.runtimeOptions.model).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("direct OpenCode model override while the mono-agent sandbox is active"),
+      expect.objectContaining({ model: "opencode:github-copilot:gpt-5.1", sandboxMode: "native" }),
+    );
+  });
+
+  it("allows a pi:opencode-go override while a native mono-agent sandbox is active", async () => {
+    const result = await run(
+      { cron: { model: "pi:opencode-go:kimi-k2.6" } },
+      {
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+        sandboxPolicy: { mode: "native" },
+      },
+    );
+
+    expect(result.runtimeOptions.model).toEqual(
+      expect.objectContaining({ sdk: "pi", provider: "opencode-go", model: "kimi-k2.6" }),
+    );
+  });
+
+  it("rejects a direct OpenCode override under a restrictive host tool policy", async () => {
+    const logger = { warn: vi.fn() };
+    const result = await run(
+      { webhook: { model: "opencode:github-copilot:gpt-5.1", effort: "high" } },
+      {
+        logger,
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+        toolPolicy: { allowedTools: ["Read", "Grep"], disallowedTools: [] },
+      },
+    );
+
+    expect(result.runtimeOptions).toEqual({ effort: "high" });
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("direct OpenCode model override under a restrictive tool policy"),
+      expect.objectContaining({ model: "opencode:github-copilot:gpt-5.1" }),
+    );
+  });
+
+  it("allows a direct OpenCode override with exact allow-all and no active sandbox", async () => {
+    const result = await run(
+      { webhook: { model: "opencode:github-copilot:gpt-5.1" } },
+      {
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+        sandboxPolicy: { mode: "off" },
+        toolPolicy: { allowedTools: ["*"], disallowedTools: [] },
+      },
+    );
+
+    expect(result.runtimeOptions.model).toEqual(expect.objectContaining({
+      sdk: "opencode",
+      provider: "github-copilot",
+      model: "gpt-5.1",
+    }));
+  });
+
+  it("warns and ignores a dynamic webhook direct OpenCode override with inherited memory MCP", async () => {
+    const logger = { warn: vi.fn() };
+    const result = await run(
+      { webhook: { model: "opencode:github-copilot:gpt-5.1" } },
+      {
+        logger,
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+        toolPolicy: { allowedTools: ["*"], disallowedTools: [] },
+        mcpSources: ["memory.recallTool"],
+      },
+    );
+
+    expect(result.runtimeOptions.model).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("MCP runtime options are unsupported"),
+      expect.objectContaining({ mcpSources: ["memory.recallTool"] }),
+    );
+  });
+
+  it("warns and ignores a dynamic TUI direct OpenCode override with index skills", async () => {
+    const logger = { warn: vi.fn() };
+    const result = await run(
+      { tui: { model: "opencode:github-copilot:gpt-5.1" } },
+      {
+        logger,
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+        toolPolicy: { allowedTools: ["*"], disallowedTools: [] },
+        indexSkillsActive: true,
+      },
+    );
+
+    expect(result.runtimeOptions.model).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("index skill disclosure is unsupported"),
+      expect.objectContaining({ model: "opencode:github-copilot:gpt-5.1" }),
+    );
+  });
+
+  it("rejects a model-only direct OpenCode override that would inherit host effort", async () => {
+    const logger = { warn: vi.fn() };
+    const result = await run(
+      { webhook: { model: "opencode:github-copilot:gpt-5.1" } },
+      {
+        logger,
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+        baseEffort: "high",
+        toolPolicy: { allowedTools: ["*"], disallowedTools: [] },
+      },
+    );
+
+    expect(result.runtimeOptions.model).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("direct OpenCode model override because runtime effort is unsupported"),
+      expect.objectContaining({ model: "opencode:github-copilot:gpt-5.1", baseEffort: "high" }),
+    );
+  });
+
+  it("rejects a direct OpenCode model override paired with requested effort", async () => {
+    const logger = { warn: vi.fn() };
+    const result = await run(
+      { cron: { model: "opencode:github-copilot:gpt-5.1", effort: "max" } },
+      {
+        logger,
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+        toolPolicy: { allowedTools: ["*"], disallowedTools: [] },
+      },
+    );
+
+    expect(result.runtimeOptions.model).toBeUndefined();
+    expect(result.runtimeOptions.effort).toBe("max");
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("direct OpenCode model override because runtime effort is unsupported"),
+      expect.objectContaining({ model: "opencode:github-copilot:gpt-5.1", requestedEffort: "max" }),
+    );
+  });
+
+  it("rejects a direct OpenCode model override that would inherit a hard maxTurns cap", async () => {
+    const logger = { warn: vi.fn() };
+    const result = await run(
+      { webhook: { model: "opencode:github-copilot:gpt-5.1" } },
+      {
+        logger,
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+        baseMaxTurns: 4,
+        toolPolicy: { allowedTools: ["*"], disallowedTools: [] },
+      },
+    );
+
+    expect(result.runtimeOptions.model).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("runtime.maxTurns is unsupported"),
+      expect.objectContaining({ model: "opencode:github-copilot:gpt-5.1", baseMaxTurns: 4 }),
+    );
+  });
+
+  it("ignores an effort-only override on a direct OpenCode host", async () => {
+    const logger = { warn: vi.fn() };
+    const result = await run(
+      { tui: { effort: "high" } },
+      {
+        logger,
+        baseModel: parseMonoRuntimeModelReference("opencode:github-copilot:gpt-5.1"),
+        toolPolicy: { allowedTools: ["*"], disallowedTools: [] },
+      },
+    );
+
+    expect(result.runtimeOptions.effort).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("effort override for direct OpenCode"),
+      expect.objectContaining({ effort: "high" }),
+    );
+  });
+
+  it("ignores an effort-only override when a base fallback is direct OpenCode", async () => {
+    const logger = { warn: vi.fn() };
+    const result = await run(
+      { webhook: { effort: "high" } },
+      {
+        logger,
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+        fallbackModels: [parseMonoRuntimeModelReference("opencode:github-copilot:gpt-5.1")],
+      },
+    );
+
+    expect(result.runtimeOptions.effort).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("effort override for direct OpenCode anywhere in the resulting model chain"),
+      expect.objectContaining({
+        effort: "high",
+        directOpenCodeModels: ["opencode:github-copilot:gpt-5.1"],
+      }),
+    );
+  });
+
+  it("keeps a dynamic model override but ignores its effort when a retained fallback is direct OpenCode", async () => {
+    const logger = { warn: vi.fn() };
+    const result = await run(
+      { tui: { model: "claude:claude-opus-4-8", effort: "low" } },
+      {
+        logger,
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+        fallbackModels: [parseMonoRuntimeModelReference("opencode:github-copilot:gpt-5.1")],
+      },
+    );
+
+    expect(result.runtimeOptions.model).toEqual(expect.objectContaining({
+      sdk: "claude",
+      model: "claude-opus-4-8",
+    }));
+    expect(result.runtimeOptions.effort).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("resulting model chain"),
+      expect.objectContaining({ effort: "low" }),
     );
   });
 

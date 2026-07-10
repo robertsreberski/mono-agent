@@ -14,19 +14,19 @@ New here? Read [Getting Started → Quickstart](/getting-started/quickstart/) to
 
 ## What you get
 
-- **Any backend, one model string** — `runtime.model` defaults to `pi:openai-codex:gpt-5.5` and can select claude (sdk/cli), codex (cli), pi (sdk, 15+ providers), or opencode (cli); e.g. `pi:openai-codex:gpt-5.5`, `pi:opencode-go:kimi-k2.6`, `codex:gpt-5.5`.
+- **Any backend, one model string** — `runtime.model` defaults to `codex:gpt-5.6-terra` and can select claude (sdk/cli), codex (cli), pi (sdk, 15+ providers), or opencode (cli); e.g. `codex:gpt-5.6-terra`, `codex:gpt-5.6-sol`, `pi:openai-codex:gpt-5.6-sol`, and `pi:opencode-go:kimi-k2.6`.
 - **Many channels, one config** — each transport is opt-in via an `enabled` flag and shares the same runtime, tools, memory, and context.
 - **Batteries included** — built-in Read/Write/Edit/Glob/Grep/Bash/WebFetch/WebSearch tools, a tool policy, MCP servers, a native sandbox, tiered memory, and observability.
 
 ```json
 {
-  "runtime": { "model": "pi:openai-codex:gpt-5.5" },
+  "runtime": { "model": "codex:gpt-5.6-terra" },
   "telegram": { "enabled": true, "botToken": "..." },
   "openaiApi": { "enabled": true }
 }
 ```
 
-Equivalent env override: `MONO_AGENT_MODEL=pi:openai-codex:gpt-5.5`. See [Environment variables](/config/env-vars/) for the full mapping.
+Equivalent env override: `MONO_AGENT_MODEL=codex:gpt-5.6-terra`. See [Environment variables](/config/env-vars/) for the full mapping.
 
 ## Site map
 

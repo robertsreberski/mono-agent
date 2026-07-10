@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { backendCapabilities, backendUsesExecenvConfig, backendSupportsSessionResume, BACKEND_CAPABILITIES } from "../../ai/backend.js";
+import { PROVIDER_KIND_VALUES } from "../../ai/types.js";
 
 describe("backendCapabilities", () => {
   it("resolves by sdk kind", () => {
     expect(backendCapabilities("claude")).toMatchObject({ kind: "claude", runtime: "sdk" });
     expect(backendCapabilities("pi")).toMatchObject({ kind: "pi", runtime: "pi-agent" });
     expect(backendCapabilities("codex")).toMatchObject({ kind: "codex", runtime: "cli" });
+    expect(backendCapabilities("opencode")).toMatchObject({ kind: "opencode", runtime: "cli" });
   });
 
   it("resolves by parsed model object", () => {
@@ -23,6 +25,7 @@ describe("backendUsesExecenvConfig", () => {
     expect(backendUsesExecenvConfig("claude")).toBe(false);
     expect(backendUsesExecenvConfig("pi")).toBe(false);
     expect(backendUsesExecenvConfig("codex")).toBe(false);
+    expect(backendUsesExecenvConfig("opencode")).toBe(false);
   });
 });
 
@@ -31,13 +34,14 @@ describe("backendSupportsSessionResume", () => {
     expect(backendSupportsSessionResume("claude")).toBe(true);
     expect(backendSupportsSessionResume("pi")).toBe(true);
     expect(backendSupportsSessionResume("codex")).toBe(true);
+    expect(backendSupportsSessionResume("opencode")).toBe(false);
   });
 });
 
 describe("BACKEND_CAPABILITIES", () => {
   it("covers every PROVIDER_KIND", () => {
     expect(Object.keys(BACKEND_CAPABILITIES).sort()).toEqual(
-      ["claude", "codex", "pi"],
+      [...PROVIDER_KIND_VALUES].sort(),
     );
   });
 });

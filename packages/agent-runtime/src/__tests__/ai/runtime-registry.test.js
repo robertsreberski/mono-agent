@@ -52,5 +52,25 @@ describe("AI runtime bridge registry", () => {
   it("exposes bridge-owned capabilities", () => {
     expect(runtimeCapabilities("pi")).toMatchObject({ kind: "pi", runtime: "pi-agent" });
     expect(runtimeCapabilities("claude")).toMatchObject({ kind: "claude", runtime: "sdk" });
+    const opencode = runtimeCapabilities("opencode");
+    expect(opencode).toMatchObject({
+      kind: "opencode",
+      runtime: "cli",
+      structured_output: false,
+      supports_session_resume: false,
+      supports_mcp: false,
+    });
+    const registered = listRuntimeBridges().find((bridge) => bridge.id === "opencode-app")?.capabilities();
+    expect(registered).toMatchObject({
+      kind: "opencode-app",
+      structured_output: opencode.structured_output,
+      supports_session_resume: opencode.supports_session_resume,
+      supports_mcp: opencode.supports_mcp,
+    });
+    expect(runtimeCapabilities("codex")).toMatchObject({ supports_fast_mode: true });
+    expect(listRuntimeBridges().find((bridge) => bridge.id === "codex-app")?.capabilities()).toMatchObject({
+      kind: "codex-app",
+      supports_fast_mode: true,
+    });
   });
 });

@@ -15,7 +15,11 @@ The resolution order is **env > JSON > built-in defaults**. An environment varia
 A `.env` file in the agent folder is loaded automatically by the CLI. Variables already exported in your shell take precedence over values in `.env` (exported shell vars win). Pass `--env-file <path>` to load an alternate file instead of `./.env`. For `mono-agent validate --consumer <path>`, the consumer folder's `.env` loads by default, and relative `--env-file` paths resolve inside that consumer folder.
 
 :::caution
-Secrets belong in `.env` (or exported shell vars), never in `mono-agent.config.json`, which is meant to be committed. Keep `.env` untracked.
+Secrets belong in `.env` (or exported shell vars), never in `mono-agent.config.json`, which is meant to be committed. Keep `.env` untracked. During guided `mono-agent init`, required selected-capability secrets are entered masked and values never appear in examples, review output, logs, or config JSON. Existing non-empty dotenv assignments and comments are preserved. A shell-only selected secret does not skip the prompt: because background start cannot inherit that shell, the entered value must match every non-empty shell/dotenv copy and is then persisted when the dotenv value is missing.
+
+Guided readiness deliberately proves the durable worker environment, not arbitrary launching-shell state. It keeps operational host values such as `PATH` and `HOME`, then uses `.env`, entered selected secrets, and the resolved Pi auth path for provider/config input. A shell-only API key is therefore not readiness evidence. Non-secret `MONO_AGENT_*` overrides already persisted in `.env` are rejected during guided init because they would make the generated JSON differ from the configuration actually started; move the intended value into the wizard/config instead.
+
+On POSIX, automatic persistence canonicalizes the target directory and requires it to be current-user-owned and not group/world-writable. Existing `.env` and `.gitignore` paths must be current-user-owned, single-link, regular, non-symlinked files; `.env` must be untracked, values must round-trip through the runtime dotenv parser, and exact root ignore rules cover `.env` plus transaction artifacts. It then uses an external owner-only lock, an exclusive same-directory temporary file, mode `0600`, flush, concurrent-change checks, and pathname no-clobber promotion. An owned permissive `.env` is tightened, and group/world write bits are removed from the `.gitignore` guard. A pathname competitor stays at the target. The claimed inode is rechecked before installation/cleanup; detected writes through an already-open descriptor are retained at a named owner-only recovery path. A non-cooperative POSIX write after the final check cannot be guaranteed. Tracked/symlinked/hard-linked/foreign-owned/malformed/conflicting paths, empty or unrepresentable secrets, stale locks, and unverifiable Git state fail closed. Windows refuses automatic secret persistence because owner-only access cannot be proven; follow the manual instructions without copying `.env.example` over a populated `.env`.
 
 `mono-agent config` and `mono-agent validate` warn when a secret-marked field is resolved from committed JSON and name the matching `MONO_AGENT_*` variable to move it to. The warning is advisory and non-fatal.
 :::
@@ -24,14 +28,17 @@ Secrets belong in `.env` (or exported shell vars), never in `mono-agent.config.j
 Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-native** variables, not `MONO_AGENT_*` ones. Reference them from config via `apiKeyEnv` (for local providers) rather than inlining a key. See [../runtime/local-providers.md](/runtime/local-providers/) and [../runtime/backends.md](/runtime/backends/).
 :::
 
-## Runtime
+## Agent and runtime
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_MODEL` | `runtime.model` | Backend-prefixed model, e.g. `pi:openai-codex:gpt-5.5`, `pi:opencode-go:kimi-k2.6`, `codex:gpt-5.5`. Required. |
+| `MONO_AGENT_NAME` | `agent.name` | Public display name. It may seed human-facing trace/A2A labels but never paths, service ids, sessions, or provider identity. |
+| `MONO_AGENT_MODEL` | `runtime.model` | Backend-prefixed model, e.g. `codex:gpt-5.6-terra`, `pi:openai-codex:gpt-5.6-terra`, `pi:opencode-go:kimi-k2.6`. Required. |
 | `MONO_AGENT_EXECUTION_MODE` | `runtime.executionMode` | `sdk` vs `cli`; default inferred from model. |
-| `MONO_AGENT_FALLBACK_MODELS` | `runtime.fallbackModels` | Ordered backup models on fallback-eligible provider failure, including provider auth failures. See [../runtime/fallback.md](/runtime/fallback/). |
-| `MONO_AGENT_EFFORT` | `runtime.effort` | `none` / `low` / `medium` / `high` / `xhigh` / `max`. See [../runtime/execution-effort-permissions.md](/runtime/execution-effort-permissions/). |
+| `MONO_AGENT_FALLBACKS_JSON` | `runtime.fallbacks` | Canonical JSON array of `{ "model": "...", "effort"?: "..." }`; ordered and uncapped. Omitted effort means that route's provider default. Mutually exclusive with the legacy CSV variable. |
+| `MONO_AGENT_FALLBACK_MODELS` | `runtime.fallbackModels` | Legacy CSV compatibility surface. Entries inherit `runtime.effort`; prefer `MONO_AGENT_FALLBACKS_JSON`. See [../runtime/fallback.md](/runtime/fallback/). |
+| `MONO_AGENT_ROUTE_SAFETY` | `runtime.routeSafety` | `uniform` (default common monotonic contract) or explicit `per-route-native` mixed-provider contracts. |
+| `MONO_AGENT_EFFORT` | `runtime.effort` | `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`; the selected model may support only a subset. See [../runtime/execution-effort-permissions.md](/runtime/execution-effort-permissions/). |
 | `MONO_AGENT_PERMISSION_MODE` | `runtime.permissionMode` | `default` / `plan` / `acceptEdits` / `bypassPermissions` (CLI backends). |
 | `MONO_AGENT_MAX_TURNS` | `runtime.maxTurns` | Turn cap per run; omitted or `0` means unlimited. |
 | `MONO_AGENT_WORKSPACE` | `runtime.workspace` | Working directory for runtime tools. |
@@ -46,10 +53,12 @@ Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-na
 
 ```json
 {
+  "agent": { "name": "Research Companion" },
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.5",
+    "model": "pi:openai-codex:gpt-5.6-terra",
     "effort": "high",
-    "fallbackModels": ["pi:opencode-go:kimi-k2.6"],
+    "fallbacks": [{ "model": "pi:opencode-go:kimi-k2.6", "effort": "medium" }],
+    "routeSafety": "uniform",
     "session": { "mode": "continuous", "idleTimeoutMs": 600000, "rollover": "daily", "rolloverTimezone": "UTC", "rolloverNotice": false }
   },
   "concurrency": { "maxConcurrentRuns": 4, "maxPendingRuns": 8 }
@@ -57,9 +66,9 @@ Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-na
 ```
 
 ```bash
-MONO_AGENT_MODEL=pi:openai-codex:gpt-5.5
+MONO_AGENT_MODEL=pi:openai-codex:gpt-5.6-terra
 MONO_AGENT_EFFORT=high
-MONO_AGENT_FALLBACK_MODELS=pi:opencode-go:kimi-k2.6
+MONO_AGENT_FALLBACKS_JSON='[{"model":"pi:opencode-go:kimi-k2.6","effort":"medium"}]'
 MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS=4
 ```
 
@@ -69,7 +78,7 @@ MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS=4
 | --- | --- | --- |
 | `MONO_AGENT_LOCAL_PROVIDERS_JSON` | `providers.local[]` | Full JSON array of local providers (id, type, baseUrl, apiKey/apiKeyEnv, models). |
 | `MONO_AGENT_LOCAL_PROVIDER_*` | `providers.local[]` | Single-provider field overrides. |
-| `MONO_AGENT_PI_AUTH_PATH` | `providers.piAuthPath` | Pi credential file; default `~/.pi/agent/auth.json`. |
+| `MONO_AGENT_PI_AUTH_PATH` | `providers.piAuthPath` | Pi credential file; a non-empty value wins over JSON and loses only to `auth login --pi-auth-path`. Default `~/.pi/agent/auth.json`; `~` expands to home and relative paths resolve from the agent/invocation working directory. |
 | `MONO_AGENT_PI_MAX_RETRIES` | `providers.piNative.piMaxRetries` | Pi-native transport retries, 0-8, default 2. |
 | `MONO_AGENT_MAX_RETRY_DELAY_MS` | `providers.piNative.maxRetryDelayMs` | Default 60000. |
 | `MONO_AGENT_PI_SESSIONS_ROOT` | `providers.piNative.piSessionsRoot` | Durable JSONL session storage (e.g. `.mono-agent/sessions`); unset = in-memory. |
@@ -149,7 +158,7 @@ The interaction bridge starts automatically when `AskUser` is allowed (under the
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_SANDBOX_MODE` | `sandbox.mode` | `native` (srt-wrapped) vs `off`. See [../tools/sandbox.md](/tools/sandbox/). |
-| `MONO_AGENT_SANDBOX_NETWORK` | `sandbox.network.mode` | `none` / `localhost` / `allowlist` / `all`. |
+| `MONO_AGENT_SANDBOX_NETWORK` | `sandbox.network.mode` | `none` / `localhost` / `allowlist`. `all` is rejected because pinned SRT cannot enforce it exactly; use `sandbox.mode=off` explicitly instead. |
 | `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST` | `sandbox.network.allowlist` | Domain allowlist. |
 | `MONO_AGENT_SANDBOX_READABLE_ROOTS` | `sandbox.readableRoots` | Readable filesystem roots. |
 | `MONO_AGENT_SANDBOX_WRITABLE_ROOTS` | `sandbox.writableRoots` | Writable filesystem roots. |
@@ -227,7 +236,7 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | `MONO_AGENT_WEBHOOK_NOTIFY` | `webhook.notify` | Single-endpoint native notification toggle. |
 | `MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID` | `webhook.notifyConversationId` | Single-endpoint native notification destination. |
 | `MONO_AGENT_WEBHOOK_MODEL` | `webhook.model` | Single-endpoint model override (e.g. `claude:claude-opus-4-8`). A request body `model` wins. |
-| `MONO_AGENT_WEBHOOK_EFFORT` | `webhook.effort` | Single-endpoint reasoning-effort override (`none`/`low`/`medium`/`high`/`xhigh`/`max`). A request body `effort` wins. |
+| `MONO_AGENT_WEBHOOK_EFFORT` | `webhook.effort` | Single-endpoint reasoning-effort override (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. A request body `effort` wins. |
 | `MONO_AGENT_WEBHOOK_DIR` | `webhook.dir` | Folder of `*.md` endpoint files. See [../channels/webhook.md](/channels/webhook/). |
 | `MONO_AGENT_WEBHOOK_MAX_RUN_MS` | `webhook.maxRunMs` | Wall-clock bound (ms) per webhook run; default 20 min, `0` disables. Reclaims a hung run's slot (esp. async, which has no client disconnect). |
 

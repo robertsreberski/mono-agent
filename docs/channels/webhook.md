@@ -49,7 +49,7 @@ The actual bound host/port (when `port: 0`) is printed in the start log. In **sy
 | `notify` | boolean | `false` | Deliver the successful final answer via native notification. |
 | `notifyConversationId` | string | inferred if exactly one destination | Destination conversation id for native notification. |
 | `model` | string | `runtime.model` | Per-endpoint model override (e.g. `claude:claude-opus-4-8`). A request body `model` wins. See [Per-trigger model & effort](#per-trigger-model--effort). |
-| `effort` | string | `runtime.effort` | Per-endpoint reasoning effort (`none`/`low`/`medium`/`high`/`xhigh`/`max`). A request body `effort` wins. |
+| `effort` | string | `runtime.effort` | Per-endpoint reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. A request body `effort` wins. |
 | `endpoints` | array | — | Multiple named endpoints — see [Multiple endpoints](#multiple-endpoints). |
 | `dir` | string | `webhook` | Folder of `*.md` endpoint files, resolved against the app working directory. |
 
@@ -67,7 +67,7 @@ The request body is a JSON object. `text` is required; everything else is option
 | `mode` | no | `sync` or `async`, overriding the endpoint's mode for this request. |
 | `conversationId` | no | Reuse to continue a thread. Defaults to a per-request id (`webhook:<requestId>`). |
 | `model` | no | Per-request model override (`sdk:model` / `sdk:provider:model`). Wins over the endpoint's `model`. See [Per-trigger model & effort](#per-trigger-model--effort). |
-| `effort` | no | Per-request reasoning effort (`none`/`low`/`medium`/`high`/`xhigh`/`max`). Wins over the endpoint's `effort`. |
+| `effort` | no | Per-request reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. Wins over the endpoint's `effort`. |
 | `metadata` | no | Arbitrary JSON passed through to the turn. |
 
 ### Sync mode
@@ -91,6 +91,8 @@ curl -s http://127.0.0.1:<port>/webhook/invoke/status/<requestId>
 ```
 
 Async statuses are kept in memory subject to `retentionMs` and `maxStoredRequests`; a status URL polled after expiry returns `not_found`. If a turn is already running and the runtime cannot accept another, a request returns **HTTP 409** (`status: "busy"`) — that transient state is not stored or replayed via the status URL.
+
+Harness response metadata is an external boundary. `metadata.summary` may include normal run status, model, usage, and failure information, but never the compiled `systemPrompt`. The harness removes it on success and early-failure paths, and the webhook adapter sanitizes untrusted custom responders again for sync responses, async storage/status reads, and result callbacks. Private local recorder artifacts may retain the prompt for operator inspection; it is not serialized onto webhook surfaces.
 
 ## Run watchdog: a wedged run is aborted, not left to starve
 
@@ -117,11 +119,15 @@ curl -X POST "$URL/delegate" -H 'content-type: application/json' \
   -d '{"text": "Deep-research X and write a brief.", "model": "claude:claude-opus-4-8", "effort": "high"}'
 ```
 
-Precedence is **request body > endpoint config > agent default** (`runtime.model` / `runtime.effort`). The override becomes that turn's **primary** model; any configured `runtime.fallbackModels` stay as backups, so failover is preserved. An invalid `model`/`effort` declared on an endpoint fails `mono-agent validate` (the webhook channel section reports `error`) and is warn-logged at `start`; a dynamic request-body value is logged and ignored at run time — the request still runs on the default model rather than failing. Model strings use the standard `sdk:model` / `sdk:provider:model` form; effort is one of `none`/`low`/`medium`/`high`/`xhigh`/`max`.
+Precedence is **request body > endpoint config > agent default** (`runtime.model` / `runtime.effort`). The override becomes that turn's **primary** model; configured canonical `runtime.fallbacks` (or legacy backups) remain. Under `runtime.routeSafety: "uniform"`, an incompatible safety-family override is rejected. Explicit `per-route-native` allows it only with the route's documented native contract; required capabilities are never silently removed. Static invalid values fail `mono-agent validate`; dynamic invalid values are warned and ignored, so the request still runs on the safe default model. Effort must be one of `none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra` and supported by the selected model.
 
-The dynamic request-body override is always allowed — its safety rests on the webhook's loopback-only default (`allowNonLoopback: false`). If you expose the endpoint beyond loopback, gate it behind your own auth/reverse proxy.
+The request body may always *request* an override, but the host applies it only
+when it preserves the configured runtime/sandbox boundary; an incompatible value
+is warned and ignored. Its remaining model-selection authority rests on the
+webhook's loopback-only default (`allowNonLoopback: false`). If you expose the
+endpoint beyond loopback, gate it behind your own auth/reverse proxy.
 
-A model-override request runs **ephemerally**: it does not resume or persist a shared continuous session, so the delegated model never mixes into a conversation's session lineage (the per-request `conversationId` default already keeps deploys separate). Overrides target cloud/registry models; overriding to a model on a different local provider than the host default is not supported. Execution mode is preserved from the host config when the override model supports it, otherwise the model's default mode is used. An `effort`-only request keeps the same model and is unaffected.
+A model-override request runs **ephemerally**: it does not resume or persist a shared continuous session, so the delegated model never mixes into a conversation's session lineage (the per-request `conversationId` default already keeps deploys separate). Overrides to configured local providers are supported: mono-agent recomputes the target provider's endpoint and capabilities. An unconfigured or invalid local target clears the inherited endpoint block and is rejected rather than accidentally using the host provider. Execution mode is preserved from the host config when the override model supports it, otherwise the model's default mode is used. An `effort`-only request keeps the same model chain; it is ignored if that chain contains direct OpenCode.
 
 ## Multiple endpoints
 

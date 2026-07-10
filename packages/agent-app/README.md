@@ -3,7 +3,7 @@
 Config-first mono-agent host. Reads one `mono-agent.config.json` in a folder,
 builds the configured responder, and starts every configured communication
 channel plus traceability. Ships the
-`mono-agent` CLI (`init`, `validate`, `memory`, `start`) so an agent folder works without
+`mono-agent` CLI (`init`, `auth`, `sandbox`, `validate`, `memory`, `start`) so an agent folder works without
 hand-written composition code.
 
 ## Category
@@ -19,7 +19,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   external channel plugins from `channels.plugins[]`.
 - Build the shared runtime/responder/memory stack through app-owned configured
   composition
-  (including `runtime.fallbackModels` backup chains).
+  (including canonical `runtime.fallbacks` routes and legacy
+  `runtime.fallbackModels` compatibility).
 - Drive each channel through a uniform driver contract with per-channel
   `disabled` / `waiting_for_config` / `running` / `failed` status.
 - Register the host as a traceability source. Config edits are made directly in
@@ -39,21 +40,96 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 # inside the workspace
 pnpm --filter @mono-agent/agent-app run build
 
-# scaffold and run an agent folder
+# guided, readiness-proven setup and run
 cd /path/to/agent-folder
-node <workspace>/packages/agent-app/dist/cli.js init --model pi:openai-codex:gpt-5.5
-node <workspace>/packages/agent-app/dist/cli.js validate
-node <workspace>/packages/agent-app/dist/cli.js start
+node <workspace>/packages/agent-app/dist/cli.js init
 ```
 
 On an interactive terminal, bare `mono-agent init` (no flags) runs a colourful,
-step-by-step wizard — powered by `@clack/prompts` — that composes the capability
-selection before writing anything and can opt in to provider auth/preflight
-commands before the scaffold is created. The default model is
-`pi:openai-codex:gpt-5.5`; OpenCode-Go Pi refs can save `OPENCODE_API_KEY` into
-the Pi auth store. Any flag (or a piped/non-TTY invocation) takes the silent
-default/preset scaffold path instead; add `--auth` to run supported provider
-setup in that non-interactive path.
+step-by-step wizard — powered by `@clack/prompts` — that asks for the public
+agent name and composes the capability selection before writing anything. Escape
+moves back one logical step; Ctrl-C asks for exit confirmation. The final
+**Creation review** names the agent, routes/efforts, route safety, provider/SRT
+actions, exact files, secret destinations, and number of real model calls before
+offering **Run setup and readiness checks, then create agent** when setup is
+needed, or **Run readiness checks, then create agent** when credentials are
+already detected, alongside **Edit choices** and **Cancel without writing**.
+Status, sandbox, and route preflights accept Escape or Ctrl-C and enter the same
+resume/restart recovery flow without writing agent files. Interactive provider
+authentication uses Ctrl-C only so the parent never competes with the provider
+child for terminal input. This is the readiness-proven path;
+any flag or non-TTY invocation is scaffold-only and never claims the agent is
+ready. Presets seed the same model, channel,
+tool, and sandbox decisions as the custom path; they do not silently bypass
+safety choices. Searchable primary/fallback pickers combine every bundled model
+for the guided Pi providers (Anthropic, GitHub Copilot, OpenAI Codex, and
+OpenCode-Go), Codex's live account catalog, the Claude SDK catalog, and local
+discovery. The live Codex provider default leads when available; offline setup
+falls back to curated `codex:gpt-5.6-terra` without guessing effort metadata, so
+only **Provider default** is offered until live `model/list` succeeds. GPT-5.6 Sol is selectable as
+`codex:gpt-5.6-sol` or `pi:openai-codex:gpt-5.6-sol`.
+OpenCode-Go Pi refs can save `OPENCODE_API_KEY` into
+the Pi auth store or remain environment-provided, and any number of fallback
+models are selected from the same discovered choices one at a time. Each route
+offers only its advertised effort values plus **Provider default**. Standalone
+`mono-agent auth login opencode-go` uses a masked TTY prompt; headless callers
+must opt in to one-line redirected input with `--api-key-stdin`. Any flag (or a piped/non-TTY
+invocation) takes the silent default/preset scaffold path instead; add `--auth`
+to run supported provider setup in that non-interactive path. Required selected
+channel secrets are masked and never enter config JSON, examples, review output,
+or logs. Durable provider credentials already in `.env` are secured by the same
+preflight. POSIX persistence is owner-only (`0600`), preserves existing dotenv
+values/comments, and uses an external lock plus no-clobber promotion with exact
+ignore rules for `.env` and transaction artifacts. The canonical agent directory
+must be current-user-owned and not group/world-writable; existing `.env` and
+`.gitignore` files must be current-user-owned with one link, and the ignore guard
+loses group/world write access. Pathname competitors are
+protected; the claimed inode is rechecked and detected open-descriptor writes are
+retained in a reported recovery copy (writes after the final POSIX check remain
+non-cooperative); unsafe/tracked/foreign-owned/multiply-linked
+paths, stale locks, invalid dotenv, conflicts, and Windows fail closed to manual setup. Before the
+interactive wizard offers immediate start it requires one disposable no-tool
+response from every selected runtime route and a complete validation report with
+every selected expectation ready. Cancellation, provider failure, timeout (90s
+cloud / 240s local per route), empty output, or any tool action fails the check.
+Escape or Ctrl-C interrupts preflight; recovery can resume verified routes when
+the non-secret plan fingerprint still matches, restart all checks, edit choices,
+or cancel. Authentication repair clears every prior route proof because it can
+replace credential bytes. Guided commit atomically
+creates the config and rechecks its exact snapshot after validation and before
+start. Saving after failure is explicitly incomplete and never auto-starts.
+
+Guided readiness uses a worker-reproducible environment rather than the launching
+shell: durable `.env` values, entered selected secrets, the resolved Pi auth path,
+and operational values such as `PATH`/`HOME`. Shell-only provider credentials and
+config overrides cannot create a success that launchd cannot reproduce; persisted
+non-secret `MONO_AGENT_*` overrides are rejected by name.
+
+Direct Codex discovery checks the executable, login status, and live app-server
+model catalog without equating catalog availability with authentication or a
+verified turn. Missing Codex setup points to the official instructions at
+<https://developers.openai.com/codex/cli/>; the app never auto-installs it. The
+wizard offers browser callback and headless device-code login. Detected credentials
+skip redundant authentication but remain unverified until the exact route call
+successfully runs. Guided Pi setup covers Anthropic, GitHub Copilot, OpenAI Codex,
+and OpenCode-Go; other hand-authored Pi and local-provider configs remain compatible
+without being advertised as guided cloud integrations. Supported OAuth methods and
+the OpenCode-Go key flow come from the bundled upstream catalog;
+stale auth locks are repaired only when the recorded process is securely proven
+gone. The
+wizard keeps **Allow all tools** as its default. Pi/Claude flows disclose
+shell/file/web/channel effects and reconfirm an unsandboxed choice. Direct Codex
+fixes policy to exact allow-all, uses its native network-off workspace sandbox,
+denies unattended escalations, and fails unexpected server requests promptly.
+Mixed chains are unrestricted only under explicit `runtime.routeSafety:
+"per-route-native"`, which isolates provider runtimes and applies a documented
+route-local contract. The default `uniform` mode keeps one common monotonic
+contract and rejects/skips routes that cannot represent it. Pi keeps mono-agent
+tool policy and optional SRT; Claude uses representable provider-native controls;
+direct Codex/OpenCode use provider-native safety plus exact allow-all. No route
+silently drops a required capability. Pi `pi:opencode-go:*` remains a Pi route.
+Direct OpenCode also requires exact allow-all; restrictive static policies fail
+validation/runtime and an incompatible dynamic override is warned and ignored.
 
 Programmatic:
 
@@ -76,10 +152,14 @@ await app.stop();
   transport-free programmatic composition from a loaded `MonoAgentConfig`.
 - `createBroadcastRunRecorder` for publishing recorder lifecycle events to a
   live run-event sink.
-- `initMonoAgentFolder(options)` / `validateMonoAgentFolder(options)`.
+- `initMonoAgentFolder(options)` / `validateMonoAgentFolder(options)`. Init results
+  expose precise `changes` and `secretPersistence` outcomes; the compatibility
+  `secretsPersisted` flag is true only after a committed secret write.
 - `MONO_AGENT_APP_FIELD_GROUPS` and the `resolveApp*` traceability/artifact
   resolvers.
 - `runCli(argv)` / `parseCliArgs(argv)` backing the `mono-agent` bin.
+- Managed SRT lifecycle: `sandboxRuntimeStatus`, `setupManagedSrt`, and
+  `checkSandboxRuntime` (also exposed as `mono-agent sandbox status|setup|check`).
 
 ## Dependency Boundary
 

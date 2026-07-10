@@ -11,17 +11,31 @@ export type ModuleKind = "channel" | "memory" | "sandbox" | "observability" | "p
  * they only emit a `.env.example` placeholder via {@link CapabilityModule.envExampleLines}.
  * (Same shape as the old `RecipeInput`.)
  */
-export interface ModuleInput {
+interface ModuleInputBase {
   readonly id: string;
   readonly label: string;
   readonly description: string;
   /** Default used when the wizard/CLI does not override the input. */
   readonly default?: string;
-  /** Secret inputs are externalized to `.env.example`, never inlined in JSON. */
-  readonly secret?: boolean;
-  /** The `MONO_AGENT_*` env var a secret input maps to (for `.env.example`). */
-  readonly envVar?: string;
 }
+
+/** A non-secret module input, safe to store in the composed JSON fragment. */
+export interface PublicModuleInput extends ModuleInputBase {
+  readonly secret?: false;
+  /** Return a user-facing validation error, or undefined when the value is valid. */
+  readonly validate?: (value: string | undefined) => string | undefined;
+}
+
+/** A secret module input, always externalized and never included in config JSON. */
+export interface SecretModuleInput extends ModuleInputBase {
+  readonly secret: true;
+  /** The `MONO_AGENT_*` env var this secret maps to. */
+  readonly envVar: string;
+  /** Whether this capability cannot operate until the value is supplied. */
+  readonly required?: boolean;
+}
+
+export type ModuleInput = PublicModuleInput | SecretModuleInput;
 
 /** Resolved input values keyed by {@link ModuleInput.id}. */
 export type ModuleInputValues = Readonly<Record<string, string | undefined>>;
@@ -39,7 +53,7 @@ export interface GeneratedFile {
  * incomplete when a required section is not yet at the promised status.
  */
 export interface ModuleValidateExpectation {
-  /** Doctor section id: `runtime|memory|sandbox|tools|observability|channel:<driver>`. */
+  /** Doctor section id: `runtime|credentials|memory|sandbox|tools|observability|channel:<driver>`. */
   readonly sectionId: string;
   /** The status the section must reach for the module to be considered live. */
   readonly mustBe: ValidationStatus;
@@ -61,6 +75,8 @@ export interface CapabilityModule {
   /** One-line wizard hint. */
   readonly summary: string;
   readonly riskLevel: "low" | "medium" | "high";
+  /** False for optional plugin capabilities that are not installed by the app. */
+  readonly wizardSelectable?: boolean;
   /** The `docs/playbooks/<file>` this module mirrors, parity-checked to exist. */
   readonly playbook?: string;
   readonly inputs: readonly ModuleInput[];

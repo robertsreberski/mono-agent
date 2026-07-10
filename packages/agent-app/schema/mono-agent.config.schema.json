@@ -12,6 +12,22 @@
     "$schema": {
       "type": "string"
     },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Public display identity used for trace labels and default A2A metadata; never used in paths or service ids.",
+          "examples": [
+            "Research Partner"
+          ],
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        }
+      }
+    },
     "runtime": {
       "type": "object",
       "additionalProperties": false,
@@ -19,12 +35,12 @@
         "model": {
           "description": "Configures model for the runtime section.",
           "examples": [
-            "pi:openai-codex:gpt-5.5"
+            "codex:gpt-5.6-terra"
           ],
           "type": "string"
         },
         "fallbackModels": {
-          "description": "Configures fallbackModels for the runtime section.",
+          "description": "Legacy fallback list whose routes inherit runtime.effort. Prefer runtime.fallbacks for new configs.",
           "examples": [
             [
               "pi:ollama:gemma4:31b"
@@ -33,7 +49,62 @@
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "default": []
+        },
+        "fallbacks": {
+          "description": "Canonical ordered fallback routes. Omitted per-route effort means that provider's default.",
+          "examples": [
+            [
+              {
+                "model": "codex:gpt-5.6-sol"
+              },
+              {
+                "model": "pi:openai-codex:gpt-5.6-terra",
+                "effort": "high"
+              }
+            ]
+          ],
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "model"
+            ],
+            "properties": {
+              "model": {
+                "type": "string",
+                "minLength": 1
+              },
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                  "ultra"
+                ]
+              }
+            }
+          },
+          "default": []
+        },
+        "routeSafety": {
+          "description": "Uniform preserves one shared safety contract; per-route-native uses and reports each provider's explicit contract.",
+          "examples": [
+            "per-route-native"
+          ],
+          "type": "string",
+          "default": "uniform",
+          "enum": [
+            "uniform",
+            "per-route-native"
+          ]
         },
         "executionMode": {
           "description": "Configures executionMode for the runtime section.",
@@ -48,7 +119,17 @@
           "examples": [
             "medium"
           ],
-          "type": "string"
+          "type": "string",
+          "enum": [
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultra"
+          ]
         },
         "permissionMode": {
           "description": "Configures permissionMode for the runtime section.",
@@ -393,7 +474,7 @@
             "model": {
               "description": "Configures llm.model for the memory section.",
               "examples": [
-                "pi:openai-codex:gpt-5.5"
+                "pi:openai-codex:gpt-5.6-terra"
               ],
               "type": "string"
             },
@@ -534,7 +615,11 @@
           "examples": [
             "native"
           ],
-          "type": "string"
+          "type": "string",
+          "enum": [
+            "native",
+            "off"
+          ]
         },
         "network": {
           "type": "object",
@@ -546,7 +631,12 @@
                 "none"
               ],
               "type": "string",
-              "default": "none"
+              "default": "none",
+              "enum": [
+                "none",
+                "localhost",
+                "allowlist"
+              ]
             },
             "allowlist": {
               "description": "Configures network.allowlist for the sandbox section.",
@@ -604,7 +694,11 @@
             "fail-closed"
           ],
           "type": "string",
-          "default": "fail-closed"
+          "default": "fail-closed",
+          "enum": [
+            "fail-closed",
+            "unsafe-host-process"
+          ]
         },
         "unsafeAllowHostProcess": {
           "description": "Configures unsafeAllowHostProcess for the sandbox section.",

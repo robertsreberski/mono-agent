@@ -45,11 +45,26 @@ export function layerJsonOntoEnv(
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
   const fromJson: Record<string, string | undefined> = {};
+  if (json.agent?.name !== undefined) {
+    fromJson.MONO_AGENT_NAME = json.agent.name;
+  }
   if (json.runtime?.model !== undefined) {
     fromJson.MONO_AGENT_MODEL = json.runtime.model;
   }
-  if (json.runtime?.fallbackModels !== undefined) {
-    fromJson.MONO_AGENT_FALLBACK_MODELS = csv(json.runtime.fallbackModels);
+  // Legacy CSV intentionally uses an empty string to clear JSON fallbacks.
+  // Canonical JSON clears with `[]`; an empty JSON string remains unset.
+  const fallbackEnvPresent = hasValue(env.MONO_AGENT_FALLBACKS_JSON)
+    || env.MONO_AGENT_FALLBACK_MODELS !== undefined;
+  if (!fallbackEnvPresent) {
+    if (json.runtime?.fallbackModels !== undefined) {
+      fromJson.MONO_AGENT_FALLBACK_MODELS = csv(json.runtime.fallbackModels);
+    }
+    if (json.runtime?.fallbacks !== undefined) {
+      fromJson.MONO_AGENT_FALLBACKS_JSON = JSON.stringify(json.runtime.fallbacks);
+    }
+  }
+  if (json.runtime?.routeSafety !== undefined) {
+    fromJson.MONO_AGENT_ROUTE_SAFETY = json.runtime.routeSafety;
   }
   if (json.runtime?.executionMode !== undefined) {
     fromJson.MONO_AGENT_EXECUTION_MODE = json.runtime.executionMode;
@@ -304,7 +319,10 @@ export function layerJsonOntoEnv(
   // env wins: spread env last
   const layered: Record<string, string | undefined> = { ...fromJson };
   for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined && value.trim().length > 0) {
+    if (
+      value !== undefined
+      && (value.trim().length > 0 || key === "MONO_AGENT_FALLBACK_MODELS")
+    ) {
       layered[key] = value;
     }
   }
@@ -319,6 +337,10 @@ export function layerJsonOntoEnv(
 
 function csv(values: readonly string[]): string {
   return values.join(",");
+}
+
+function hasValue(value: string | undefined): boolean {
+  return value !== undefined && value.trim().length > 0;
 }
 
 function hasObservabilityEnv(env: Record<string, string | undefined>): boolean {

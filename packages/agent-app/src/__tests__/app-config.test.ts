@@ -1,3 +1,4 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -6,10 +7,48 @@ import { describe, expect, it } from "vitest";
 import {
   isPathUnderTmpdir,
   resolveAppTraceGlobalDiscovery,
+  resolveAppTraceSourceLabel,
   resolveGlobalTraceRegistryDir,
   resolveTraceTmpdirRoot,
   shouldMirrorTraceSourceGlobally,
 } from "../app-config.js";
+
+describe("resolveAppTraceSourceLabel", () => {
+  it("uses agent.name as the display default while preserving an explicit trace label", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-display-name-"));
+    const configPath = join(dir, "mono-agent.config.json");
+    try {
+      await writeFile(configPath, JSON.stringify({ agent: { name: "Research Companion" } }));
+      await expect(resolveAppTraceSourceLabel({ env: {}, cwd: dir, configPath })).resolves.toBe("Research Companion");
+      await expect(resolveAppTraceSourceLabel({
+        env: { MONO_AGENT_NAME: "Environment Companion" },
+        cwd: dir,
+        configPath,
+      })).resolves.toBe("Environment Companion");
+      await expect(resolveAppTraceSourceLabel({
+        env: {
+          MONO_AGENT_NAME: "Environment Companion",
+          MONO_AGENT_TRACE_SOURCE_LABEL: "Explicit Trace",
+        },
+        cwd: dir,
+        configPath,
+      })).resolves.toBe("Explicit Trace");
+
+      await writeFile(configPath, JSON.stringify({
+        agent: { name: "Research Companion" },
+        traceability: { sourceLabel: "Operations Trace" },
+      }));
+      await expect(resolveAppTraceSourceLabel({ env: {}, cwd: dir, configPath })).resolves.toBe("Operations Trace");
+      await expect(resolveAppTraceSourceLabel({
+        env: { MONO_AGENT_NAME: "Environment Companion" },
+        cwd: dir,
+        configPath,
+      })).resolves.toBe("Operations Trace");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("resolveGlobalTraceRegistryDir", () => {
   it("defaults to the host-shared registry under the home directory", () => {

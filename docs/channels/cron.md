@@ -24,6 +24,18 @@ Set `notify: true` on a job to deliver its successful, non-empty final answer to
 
 Notifying **multiple** or **other** conversations from one trigger is not a built-in: compose it from several cron jobs, each with its own `notifyConversationId`, or from a skill.
 
+## Expression format
+
+Cron expressions have exactly five positional fields:
+
+```text
+minute hour day-of-month month day-of-week
+```
+
+For example, `0 9 * * *` runs every day at 09:00. The default timezone is `UTC`; set an IANA timezone such as `Europe/Rome` when the schedule should follow local civil time. A seconds field and macros such as `@daily` are not supported.
+
+When you select **Scheduled jobs (cron)** in the guided `mono-agent init` wizard, the expression is validated at the prompt. Its default is `0 8 * * *` at 08:00 UTC. The wizard scaffolds `cron/digest.md` only after the expression is accepted, then validates the effective folder—including any existing jobs that init will preserve—before making runtime model calls.
+
 ## Configuration
 
 ```json
@@ -53,7 +65,7 @@ Notifying **multiple** or **other** conversations from one trigger is not a buil
 | `cron.jobs[]` | array | no | `[]` | Inline job definitions. Merges with `*.md` files in `cron.dir`. |
 | `jobs[].id` | string | yes | — | Unique job id. Duplicate ids (across config and folder) are an error. |
 | `jobs[].enabled` | boolean | no | `true` | Set `false` to keep a job defined but unscheduled. |
-| `jobs[].expression` | string | yes | — | Five-field cron expression (`min hour dom month dow`). |
+| `jobs[].expression` | string | yes | — | Five fields: `minute hour day-of-month month day-of-week`; no seconds field or macros. |
 | `jobs[].timezone` | string | no | `UTC` | IANA timezone (e.g. `Europe/Rome`) the expression is evaluated in. |
 | `jobs[].prompt` | string | yes | — | Text sent to the responder on each tick. |
 | `jobs[].conversationId` | string | no | per-tick | Share memory/history across ticks (see below). |
@@ -61,8 +73,8 @@ Notifying **multiple** or **other** conversations from one trigger is not a buil
 | `jobs[].notify` | boolean | no | `false` | Deliver the successful final answer via native cron notification. |
 | `jobs[].notifyConversationId` | string | no | inferred if exactly one destination | Destination conversation id for native notification. |
 | `jobs[].notifyFailureCooldownHours` | number | no | `6` | Per-job cooldown, in hours, for all-models-failed error notices on `notify: true` jobs. |
-| `jobs[].model` | string | no | `runtime.model` | Per-job model override (e.g. `claude:claude-opus-4-8`). Becomes this turn's primary, keeping `runtime.fallbackModels` as backups. See [Per-trigger model & effort](#per-trigger-model--effort). |
-| `jobs[].effort` | string | no | `runtime.effort` | Per-job reasoning effort (`none`/`low`/`medium`/`high`/`xhigh`/`max`). |
+| `jobs[].model` | string | no | `runtime.model` | Per-job model override. Becomes this turn's primary, keeping canonical `runtime.fallbacks` (or legacy backups). See [Per-trigger model & effort](#per-trigger-model--effort). |
+| `jobs[].effort` | string | no | `runtime.effort` | Per-job reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. |
 
 ## Per-trigger model & effort
 
@@ -72,9 +84,9 @@ A job can run on a different model or reasoning effort than the agent's default 
 { "id": "deep-research", "expression": "0 3 * * *", "prompt": "…", "model": "claude:claude-opus-4-8", "effort": "high" }
 ```
 
-The override becomes that turn's **primary** model; any configured `runtime.fallbackModels` stay as backups, so failover is preserved. A typo'd model/effort value fails `mono-agent validate` (the cron channel section reports `error`) and is warn-logged at `start`; at run time it is still logged and ignored (the turn falls back to the default), so a job never crashes on it. Only the overridden turn is affected — interactive turns keep using `runtime.model`.
+The override becomes that turn's **primary** model; configured canonical/legacy fallbacks remain. Under `runtime.routeSafety: "uniform"`, crossing into an incompatible safety family is rejected. Explicit `per-route-native` allows the override only with the route's documented native contract; unsupported capabilities still reject/skip rather than being silently removed. Static violations fail `mono-agent validate`; dynamic invalid values are warned and ignored, so the job stays on its safe default. Only the overridden turn is affected.
 
-A model-override tick runs **ephemerally**: it does not resume or persist a shared continuous session (so a different model never mixes into the conversation's session lineage), though it still sees the job's run history. Overrides target cloud/registry models; overriding to a model served by a different local provider than the host default is not supported. (An `effort`-only override keeps the same model and is unaffected.)
+A model-override tick runs **ephemerally**: it does not resume or persist a shared continuous session (so a different model never mixes into the conversation's session lineage), though it still sees the job's run history. Overrides to configured local providers are supported: mono-agent recomputes the target provider's endpoint and capabilities. An unconfigured or invalid local target clears the inherited endpoint block and is rejected rather than accidentally using the host provider. An `effort`-only override keeps the same model chain and therefore must still be compatible with every retained fallback.
 
 ## Environment variables
 

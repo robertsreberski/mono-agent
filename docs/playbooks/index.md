@@ -13,7 +13,7 @@ Every recipe ends with a concrete smoke test (a Telegram message, a `curl`, a cr
 ## How to use these
 
 1. Pick a recipe from the [selector](#pick-a-recipe) or the [full table](#all-recipes) below.
-2. Run `mono-agent init` with the suggested `--model` (and `--memory` / `--fallback-models` where shown).
+2. Run `mono-agent init` with the suggested `--model` (and `--memory` / repeated canonical `--fallback` routes where shown).
 3. Edit `mono-agent.config.json` per the recipe — keys are cross-checked against [the config blueprint](/config/blueprint/) and [feature registry](/reference/feature-matrix/).
 4. Run `mono-agent validate` (catches missing tokens, unreachable providers, un-pulled local models, consolidation cadence, and exporter reachability), then `mono-agent start`.
 5. Run the recipe's smoke test and inspect the JSONL run artifact under `artifacts.dir`.

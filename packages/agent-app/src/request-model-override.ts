@@ -4,6 +4,7 @@ import type {
   LocalProviderDefinition,
   LocalProviderRuntimeOptions,
   RuntimeModelReference,
+  SandboxPolicy,
 } from "@mono-agent/runtime-adapter";
 
 /**
@@ -46,6 +47,29 @@ export interface RequestModelOverrideLogger {
 
 export interface RequestModelOverrideOptions {
   readonly logger?: RequestModelOverrideLogger;
+  /** Host primary used to prevent unsafe direct-Codex ↔ non-Codex family changes. */
+  readonly baseModel?: RuntimeModelReference;
+  /** Host fallback chain retained behind a request-level primary override. */
+  readonly fallbackModels?: readonly RuntimeModelReference[];
+  /** Host effort inherited by model-only overrides unless the override supplies one. */
+  readonly baseEffort?: string;
+  /** Host hard turn cap inherited by request-level model overrides. */
+  readonly baseMaxTurns?: number;
+  /** Effective configured/auto-provisioned MCP sources inherited by the turn. */
+  readonly mcpSources?: readonly string[];
+  /** Whether progressive index disclosure would inject runtime skill metadata. */
+  readonly indexSkillsActive?: boolean;
+  /**
+   * Host mono-agent sandbox policy. Claude and direct OpenCode provider-owned
+   * tool loops do not consume this policy, so a request cannot dynamically
+   * switch to either runtime while a non-off policy is active.
+   */
+  readonly sandboxPolicy?: Pick<SandboxPolicy, "mode">;
+  /** Effective host tool policy used to reject direct OpenCode overrides it cannot enforce. */
+  readonly toolPolicy?: {
+    readonly allowedTools: readonly string[];
+    readonly disallowedTools: readonly string[];
+  };
   /**
    * Configured local providers (`config.providers?.local`). When an override
    * names a model one of these serves, the extension recomputes the provider
@@ -81,29 +105,35 @@ export function createRequestModelOverrideRuntimeExtension(
 ): (input: RequestModelOverrideInput) => Promise<RequestModelOverrideResult> {
   const logger = options?.logger;
   const localProviders = options?.localProviders;
+  const baseModel = options?.baseModel;
+  const fallbackModels = options?.fallbackModels ?? [];
   return async (input) => {
-    const { model: rawModel, effort: rawEffort } = readOverride(input.request.metadata);
+    const { rawModel, rawEffort, model } = resolveAcceptedModelOverride(
+      input.request.metadata,
+      options,
+      logger,
+    );
     const runtimeOptions: RequestModelOverrideResult["runtimeOptions"] = {};
+    const effectiveModelForEffort = model ?? baseModel;
 
-    if (rawModel !== undefined) {
-      let parsed: RuntimeModelReference | undefined;
-      try {
-        parsed = parseMonoRuntimeModelReference(rawModel);
-      } catch (error) {
-        logger?.warn?.("Ignoring invalid per-request model override.", {
-          model: rawModel,
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      }
-      if (parsed !== undefined) {
-        runtimeOptions.model = parsed;
-        applyLocalProviderBlock(runtimeOptions, parsed, rawModel, localProviders, logger);
-      }
+    if (model !== undefined && rawModel !== undefined) {
+      runtimeOptions.model = model;
+      applyLocalProviderBlock(runtimeOptions, model, rawModel, localProviders, logger);
     }
 
     if (rawEffort !== undefined) {
       if (EFFORT_SET.has(rawEffort)) {
-        runtimeOptions.effort = rawEffort;
+        const directOpenCodeModels = [effectiveModelForEffort, ...fallbackModels]
+          .filter((model): model is RuntimeModelReference => model?.sdk === "opencode");
+        if (directOpenCodeModels.length > 0) {
+          logger?.warn?.("Ignoring per-request effort override for direct OpenCode anywhere in the resulting model chain.", {
+            effort: rawEffort,
+            reason: "The direct OpenCode SDK does not expose runtime effort control.",
+            directOpenCodeModels: directOpenCodeModels.map(runtimeModelReferenceLabel),
+          });
+        } else {
+          runtimeOptions.effort = rawEffort;
+        }
       } else {
         logger?.warn?.("Ignoring invalid per-request effort override.", {
           effort: rawEffort,
@@ -114,6 +144,133 @@ export function createRequestModelOverrideRuntimeExtension(
 
     return { runtimeOptions, cleanup: async () => {} };
   };
+}
+
+/**
+ * Whether the request-level override will actually switch this turn to direct
+ * OpenCode under the supplied host constraints. Adapter MCP injection uses the
+ * same decision as the model extension: a merely parseable OpenCode string is
+ * not enough, because a sandbox/tool/MCP/effort/turn-cap rejection must retain
+ * both the Pi model and its interaction tools.
+ */
+export function requestModelOverrideTargetsDirectOpenCode(
+  metadata: Record<string, unknown> | undefined,
+  options?: RequestModelOverrideOptions,
+): boolean {
+  return resolveAcceptedModelOverride(metadata, options, undefined).model?.sdk === "opencode";
+}
+
+interface ModelOverrideResolution {
+  readonly rawModel?: string;
+  readonly rawEffort?: string;
+  readonly model?: RuntimeModelReference;
+}
+
+function resolveAcceptedModelOverride(
+  metadata: Record<string, unknown> | undefined,
+  options: RequestModelOverrideOptions | undefined,
+  logger: RequestModelOverrideLogger | undefined,
+): ModelOverrideResolution {
+  const { model: rawModel, effort: rawEffort } = readOverride(metadata);
+  if (rawModel === undefined) {
+    return { ...(rawEffort === undefined ? {} : { rawEffort }) };
+  }
+
+  let parsed: RuntimeModelReference;
+  try {
+    parsed = parseMonoRuntimeModelReference(rawModel);
+  } catch (error) {
+    logger?.warn?.("Ignoring invalid per-request model override.", {
+      model: rawModel,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    return { rawModel, ...(rawEffort === undefined ? {} : { rawEffort }) };
+  }
+
+  const baseModel = options?.baseModel;
+  const baseEffort = options?.baseEffort;
+  const baseMaxTurns = options?.baseMaxTurns;
+  const mcpSources = options?.mcpSources ?? [];
+  const sandboxPolicy = options?.sandboxPolicy;
+  const toolPolicy = options?.toolPolicy;
+  const sandboxBypassRuntime = monoSandboxBypassRuntime(parsed);
+  const directOpenCodeWouldReceiveEffort = parsed.sdk === "opencode"
+    && (baseEffort !== undefined || (rawEffort !== undefined && EFFORT_SET.has(rawEffort)));
+  const directOpenCodeWouldReceiveTurnCap = parsed.sdk === "opencode"
+    && Number.isFinite(Number(baseMaxTurns))
+    && Number(baseMaxTurns) > 0;
+  const directOpenCodeWouldReceiveMcp = parsed.sdk === "opencode" && mcpSources.length > 0;
+  const directOpenCodeWouldReceiveIndexSkills = parsed.sdk === "opencode" && options?.indexSkillsActive === true;
+
+  if (baseModel !== undefined && isDirectCodex(parsed) !== isDirectCodex(baseModel)) {
+    logger?.warn?.("Ignoring per-request model override across the direct-Codex runtime boundary.", {
+      model: rawModel,
+      baseModel: baseModel.reference ?? `${baseModel.sdk}:${baseModel.model}`,
+      reason: "Direct Codex and non-Codex runtimes use different tool and sandbox contracts.",
+    });
+  } else if (sandboxBypassRuntime !== undefined && sandboxPolicy?.mode !== undefined && sandboxPolicy.mode !== "off") {
+    logger?.warn?.(`Ignoring per-request ${sandboxBypassRuntime} model override while the mono-agent sandbox is active.`, {
+      model: rawModel,
+      sandboxMode: sandboxPolicy.mode,
+      reason: `${sandboxBypassRuntime}'s provider-owned tool loop does not consume the mono-agent sandbox policy.`,
+    });
+  } else if (parsed.sdk === "opencode" && toolPolicy !== undefined && !isExactAllowAllToolPolicy(toolPolicy)) {
+    logger?.warn?.("Ignoring per-request direct OpenCode model override under a restrictive tool policy.", {
+      model: rawModel,
+      reason: "Direct OpenCode does not consume mono-agent allowedTools/disallowedTools.",
+    });
+  } else if (directOpenCodeWouldReceiveMcp) {
+    logger?.warn?.("Ignoring per-request direct OpenCode model override because MCP runtime options are unsupported.", {
+      model: rawModel,
+      mcpSources,
+      reason: "Direct OpenCode cannot safely receive configured or auto-provisioned MCP servers.",
+    });
+  } else if (directOpenCodeWouldReceiveIndexSkills) {
+    logger?.warn?.("Ignoring per-request direct OpenCode model override because index skill disclosure is unsupported.", {
+      model: rawModel,
+      reason: "Direct OpenCode disables runtime/external skills; use full disclosure or a Pi runtime.",
+    });
+  } else if (directOpenCodeWouldReceiveEffort) {
+    logger?.warn?.("Ignoring per-request direct OpenCode model override because runtime effort is unsupported.", {
+      model: rawModel,
+      ...(baseEffort === undefined ? {} : { baseEffort }),
+      ...(rawEffort === undefined || !EFFORT_SET.has(rawEffort) ? {} : { requestedEffort: rawEffort }),
+    });
+  } else if (directOpenCodeWouldReceiveTurnCap) {
+    logger?.warn?.("Ignoring per-request direct OpenCode model override because runtime.maxTurns is unsupported.", {
+      model: rawModel,
+      baseMaxTurns,
+      reason: "Direct OpenCode does not expose an enforceable hard turn cap.",
+    });
+  } else {
+    return {
+      rawModel,
+      ...(rawEffort === undefined ? {} : { rawEffort }),
+      model: parsed,
+    };
+  }
+
+  return { rawModel, ...(rawEffort === undefined ? {} : { rawEffort }) };
+}
+
+function isDirectCodex(model: RuntimeModelReference): boolean {
+  return model.sdk === "codex";
+}
+
+function runtimeModelReferenceLabel(model: RuntimeModelReference): string {
+  return model.reference ?? `${model.sdk}:${model.provider === undefined ? "" : `${model.provider}:`}${model.model}`;
+}
+
+function monoSandboxBypassRuntime(model: RuntimeModelReference): "Claude" | "direct OpenCode" | undefined {
+  if (model.sdk === "claude") return "Claude";
+  if (model.sdk === "opencode") return "direct OpenCode";
+  return undefined;
+}
+
+function isExactAllowAllToolPolicy(policy: NonNullable<RequestModelOverrideOptions["toolPolicy"]>): boolean {
+  return policy.allowedTools.length === 1
+    && policy.allowedTools[0] === "*"
+    && policy.disallowedTools.length === 0;
 }
 
 /**
