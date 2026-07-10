@@ -20,8 +20,9 @@ The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to a
 | --- | --- | --- |
 | Node.js | `>=20` | Runtime for the CLI, host, and TUI. |
 | pnpm | `>=10` | Only needed to build the workspace from source (the published packages install with plain `npm`/`npm exec`). |
+| Codex CLI | Supported version; `>=0.144.0` for GPT-5.6 | Required for every direct `codex:*` route. |
 
-The default `codex:gpt-5.6-terra` runtime also needs the Codex CLI installed and signed in. The init wizard checks both but never installs software or starts an unrequested login flow. Follow only the [official Codex CLI instructions](https://developers.openai.com/codex/cli/): on macOS/Linux the standalone installer is:
+The default `codex:gpt-5.6-terra` runtime also needs Codex CLI 0.144.0 or newer installed and signed in. The init wizard checks version and sign-in state but never installs software or starts an unrequested login flow. Follow only the [official Codex CLI instructions](https://developers.openai.com/codex/cli/): on macOS/Linux the standalone installer is:
 
 ```bash
 curl -fsSL https://chatgpt.com/codex/install.sh | sh

@@ -26,6 +26,13 @@ const discoveryMock = vi.hoisted(() => ({
           defaultEffort: "medium" as const,
         },
         {
+          value: "codex:gpt-5.6-sol",
+          label: "Codex GPT-5.6 Sol",
+          source: "codex" as const,
+          discovered: true,
+          defaultEffort: "medium" as const,
+        },
+        {
           value: "pi:ollama:qwen3:8b",
           label: "Ollama qwen3:8b",
           source: "ollama" as const,
@@ -340,8 +347,8 @@ describe("wizard run state", () => {
     expect(discoveryMock.calls).toEqual([{ piAuthPath: "/agent/custom/pi-auth.json" }]);
   });
 
-  it("uses the truthful unattended Codex-native safety posture without srt or tool-policy prompts", async () => {
-    promptMock.selectAnswers.push("__custom__", "codex:gpt-5.6-terra", "medium", "");
+  it("uses the truthful unattended Codex-native safety posture for Sol without srt or tool-policy prompts", async () => {
+    promptMock.selectAnswers.push("__custom__", "codex:gpt-5.6-sol", "medium", "");
     promptMock.multiselectAnswers.push(["channel:webhook"]);
     promptMock.confirmAnswers.push(
       false, // no fallback
@@ -354,6 +361,7 @@ describe("wizard run state", () => {
 
     expect(result.status).toBe("answers");
     if (result.status !== "answers") return;
+    expect(result.answers.model).toBe("codex:gpt-5.6-sol");
     expect(result.answers.sandbox).toBe(false);
     expect(result.answers.allowedTools).toEqual(["*"]);
     expect(promptMock.confirmCalls.some((call) => String(call.message).includes("Allow all tools"))).toBe(false);

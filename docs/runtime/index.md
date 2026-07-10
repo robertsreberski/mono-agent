@@ -28,6 +28,8 @@ A minimal runtime block selects a backend model and (optionally) backup models:
 
 The `runtime.model` string is always `<backend>:<...>` — `pi:<provider>:<model>`, `claude:*`, `codex:*`, or `opencode:*`. Override it without touching config via `MONO_AGENT_MODEL`.
 
+Terra remains the first-run default. GPT-5.6 Sol can be selected explicitly as `codex:gpt-5.6-sol` or `pi:openai-codex:gpt-5.6-sol`; direct GPT-5.6 routes require Codex CLI 0.144.0 or newer.
+
 | Key | Env var | Default | Notes |
 | --- | --- | --- | --- |
 | `runtime.model` | `MONO_AGENT_MODEL` | `codex:gpt-5.6-terra` from `init`; Pi Terra is selectable | `pi:<provider>:<model>`, `claude:…`, `codex:…`, `opencode:…` |

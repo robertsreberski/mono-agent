@@ -9,7 +9,7 @@ export const DEFAULT_PI_MEMORY_MODEL = "pi:openai-codex:gpt-5.6-terra";
 export const MODEL_INPUT: ModuleInput = {
   id: "model",
   label: "Model",
-  description: "Primary runtime model reference, e.g. pi:openai-codex:gpt-5.6-terra, pi:opencode-go:kimi-k2.6, codex:gpt-5.6-terra, claude:claude-sonnet-4-6.",
+  description: "Primary runtime model reference, e.g. codex:gpt-5.6-terra, codex:gpt-5.6-sol, pi:openai-codex:gpt-5.6-sol, pi:opencode-go:kimi-k2.6, claude:claude-sonnet-4-6.",
   default: DEFAULT_MODEL,
 };
 

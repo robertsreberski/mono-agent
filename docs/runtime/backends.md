@@ -65,9 +65,11 @@ The default execution mode for a `codex:` model is already `cli`, so `executionM
 
 The init wizard defaults to direct `codex:gpt-5.6-terra`. It runs bounded `codex --version` and `codex login status` discovery, then proves the selected primary with a real disposable turn before it can call the agent ready. Missing installation or sign-in remains visible and recoverable; mono-agent never auto-installs Codex. Use only the [official Codex CLI instructions](https://developers.openai.com/codex/cli/) (`curl -fsSL https://chatgpt.com/codex/install.sh | sh` on macOS/Linux, then run `codex` or `codex login`).
 
+GPT-5.6 Sol is an explicit alternative through `codex:gpt-5.6-sol` or the separate Pi route `pi:openai-codex:gpt-5.6-sol`. OpenAI documents Codex CLI 0.144.0 as the minimum direct client in its [current GPT-5.6 availability guide](https://help.openai.com/en/articles/20001354); discovery keeps both direct GPT-5.6 choices selectable but shows an upgrade requirement for older or unverified CLI versions. The disposable selected-model readiness probe exercises the exact chosen primary before it can produce an **Agent ready** result. Terra remains the first-run default.
+
 The Codex app-server does not currently project arbitrary mono-agent allow/deny lists. Normal direct `codex:*` runs therefore require exact allow-all (`tools.allowedTools: ["*"]` and no `disallowedTools`, or the equivalent omitted allowlist); restrictive policies fail validation rather than being silently widened. The guided readiness probe is a separate internal contract: read-only sandbox, approval policy `never`, no MCP/dynamic tools, disposable session, and failure on the first command/file/MCP/tool event.
 
-The wizard also presents `pi:openai-codex:gpt-5.6-terra` as a selectable Pi candidate; it is a separate SDK/auth boundary, and a missing Pi auth store can be repaired with `mono-agent auth login openai-codex`.
+The wizard also presents `pi:openai-codex:gpt-5.6-terra` and `pi:openai-codex:gpt-5.6-sol` as selectable Pi candidates; they use a separate SDK/auth boundary, and a missing Pi auth store can be repaired with `mono-agent auth login openai-codex`.
 
 ### Pi SDK
 

@@ -54,19 +54,21 @@ interface DiscoveredModelEntry {
 const DEFAULT_DISCOVERY_TIMEOUT_MS = 1200;
 const DEFAULT_OPENCODE_DISCOVERY_TIMEOUT_MS = 5000;
 const PI_OPENAI_CODEX_PROVIDER = "openai-codex";
-const PI_OPENAI_CODEX = "pi:openai-codex:gpt-5.6-terra";
-const DIRECT_CODEX = "codex:gpt-5.6-terra";
+
+interface CuratedOpenAiCodexModel {
+  readonly id: string;
+  readonly name: string;
+  readonly minimumCodexCliVersion?: readonly [major: number, minor: number, patch: number];
+}
+
+const OPENAI_CODEX_MODELS: readonly CuratedOpenAiCodexModel[] = [
+  { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", minimumCodexCliVersion: [0, 144, 0] },
+  { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", minimumCodexCliVersion: [0, 144, 0] },
+];
 
 export const STATIC_MODEL_CANDIDATES: readonly WizardModelCandidate[] = [
-  {
-    value: PI_OPENAI_CODEX,
-    label: "Pi OpenAI-Codex GPT-5.6 Terra",
-    hint: "auth setup available",
-    source: "pi",
-    setupRequired: true,
-    defaultEffort: "medium",
-  },
-  { value: DIRECT_CODEX, label: "Codex GPT-5.6 Terra", source: "codex", defaultEffort: "medium" },
+  ...OPENAI_CODEX_MODELS.map(staticDirectCodexCandidate),
+  ...OPENAI_CODEX_MODELS.map(staticPiOpenAiCodexCandidate),
   { value: "claude:claude-sonnet-4-6", label: "Claude Sonnet 4.6", source: "claude", defaultEffort: "medium" },
   { value: "pi:ollama:llama3.1:8b", label: "Ollama llama3.1:8b", hint: "fully local", source: "ollama", defaultEffort: "none" },
 ];
@@ -150,7 +152,7 @@ async function discoverDirectCodex(
     version = firstOutputLine(result.stdout);
   } catch {
     return {
-      candidates: [directCodexCandidate("install-required")],
+      candidates: directCodexCandidates("install-required"),
       status: {
         provider: "Codex",
         status: "setup_available",
@@ -161,17 +163,24 @@ async function discoverDirectCodex(
 
   try {
     await run("codex", ["login", "status"], { timeout: opts.timeoutMs });
+    const candidates = directCodexCandidates("ready", version);
+    const setupModels = candidates.filter((candidate) => candidate.setupRequired === true);
+    const setupDetails = [...new Set(setupModels.map((candidate) => candidate.hint ?? `${candidate.label} setup required`))];
     return {
-      candidates: [directCodexCandidate("ready", version)],
+      candidates,
       status: {
         provider: "Codex",
-        status: "detected",
-        detail: `${version.length > 0 ? `${version}; ` : ""}signed in`,
+        status: setupModels.length === 0 ? "detected" : "setup_available",
+        detail: `${version.length > 0 ? `${version}; ` : ""}signed in${
+          setupModels.length === 0
+            ? ""
+            : `; ${setupDetails.join("; ")}`
+        }`,
       },
     };
   } catch {
     return {
-      candidates: [directCodexCandidate("login-required", version)],
+      candidates: directCodexCandidates("login-required", version),
       status: {
         provider: "Codex",
         status: "setup_available",
@@ -191,18 +200,18 @@ async function discoverPiOpenAiCodex(
     const providers = readPiAuthProviderMap(auth);
     if (providers[PI_OPENAI_CODEX_PROVIDER] !== undefined) {
       return {
-        candidates: [piOpenAiCodexCandidate("authenticated")],
+        candidates: piOpenAiCodexCandidates("authenticated"),
         status: { provider: "Pi", status: "detected", detail: "OpenAI-Codex credentials found" },
       };
     }
     return {
-      candidates: [piOpenAiCodexCandidate("setup-required")],
+      candidates: piOpenAiCodexCandidates("setup-required"),
       status: { provider: "Pi", status: "setup_available", detail: "OpenAI-Codex credentials not found; auth setup available" },
     };
   } catch (error) {
     if (isMissingFileError(error)) {
       return {
-        candidates: [piOpenAiCodexCandidate("setup-required")],
+        candidates: piOpenAiCodexCandidates("setup-required"),
         status: { provider: "Pi", status: "setup_available", detail: "auth store not found; OpenAI-Codex auth setup available" },
       };
     }
@@ -396,7 +405,8 @@ async function discoverLmStudioModels(
 function mergeCandidate(left: WizardModelCandidate, right: WizardModelCandidate): WizardModelCandidate {
   const { setupRequired: leftSetupRequired, defaultEffort: leftDefaultEffort, ...leftRest } = left;
   const { setupRequired: rightSetupRequired, defaultEffort: rightDefaultEffort, ...rightRest } = right;
-  const hint = right.discovered === true ? right.hint ?? left.hint : left.hint ?? right.hint;
+  const rightHasDiscoveryState = right.discovered === true || right.setupRequired === true;
+  const hint = rightHasDiscoveryState ? right.hint ?? left.hint : left.hint ?? right.hint;
   const discovered = left.discovered === true || right.discovered === true;
   const defaultEffort = rightDefaultEffort ?? leftDefaultEffort;
   return {
@@ -410,12 +420,10 @@ function mergeCandidate(left: WizardModelCandidate, right: WizardModelCandidate)
 }
 
 function rank(candidate: WizardModelCandidate): number {
-  if (candidate.value === DIRECT_CODEX) {
-    return 0;
-  }
-  if (candidate.value === PI_OPENAI_CODEX) {
-    return 10;
-  }
+  const directCodexRank = OPENAI_CODEX_MODELS.findIndex((model) => candidate.value === directCodexRef(model));
+  if (directCodexRank >= 0) return directCodexRank;
+  const piOpenAiCodexRank = OPENAI_CODEX_MODELS.findIndex((model) => candidate.value === piOpenAiCodexRef(model));
+  if (piOpenAiCodexRank >= 0) return 10 + piOpenAiCodexRank;
   if (candidate.value === "claude:claude-sonnet-4-6") {
     return 20;
   }
@@ -431,41 +439,130 @@ function rank(candidate: WizardModelCandidate): number {
   return 90;
 }
 
-function piOpenAiCodexCandidate(state: "authenticated" | "setup-required"): WizardModelCandidate {
+function directCodexRef(model: CuratedOpenAiCodexModel): string {
+  return `codex:${model.id}`;
+}
+
+function piOpenAiCodexRef(model: CuratedOpenAiCodexModel): string {
+  return `pi:${PI_OPENAI_CODEX_PROVIDER}:${model.id}`;
+}
+
+function staticDirectCodexCandidate(model: CuratedOpenAiCodexModel): WizardModelCandidate {
   return {
-    value: PI_OPENAI_CODEX,
-    label: "Pi OpenAI-Codex GPT-5.6 Terra",
-    hint: state === "authenticated"
-      ? "recommended when Pi auth is configured"
-      : "auth setup available",
-    source: "pi",
+    value: directCodexRef(model),
+    label: `Codex ${model.name}`,
+    ...(model.minimumCodexCliVersion === undefined
+      ? {}
+      : { hint: `requires Codex CLI ${formatVersion(model.minimumCodexCliVersion)}+` }),
+    source: "codex",
     defaultEffort: "medium",
-    ...(state === "authenticated" ? { discovered: true } : { setupRequired: true }),
   };
 }
 
+function staticPiOpenAiCodexCandidate(model: CuratedOpenAiCodexModel): WizardModelCandidate {
+  return {
+    value: piOpenAiCodexRef(model),
+    label: `Pi OpenAI-Codex ${model.name}`,
+    hint: "auth setup available",
+    source: "pi",
+    setupRequired: true,
+    defaultEffort: "medium",
+  };
+}
+
+function piOpenAiCodexCandidates(state: "authenticated" | "setup-required"): WizardModelCandidate[] {
+  return OPENAI_CODEX_MODELS.map((model) => ({
+    value: piOpenAiCodexRef(model),
+    label: `Pi OpenAI-Codex ${model.name}`,
+    hint: state === "authenticated" ? "Pi auth configured" : "auth setup available",
+    source: "pi",
+    defaultEffort: "medium",
+    ...(state === "authenticated" ? { discovered: true } : { setupRequired: true }),
+  }));
+}
+
+function directCodexCandidates(
+  state: "ready" | "install-required" | "login-required",
+  version = "",
+): WizardModelCandidate[] {
+  return OPENAI_CODEX_MODELS.map((model) => directCodexCandidate(model, state, version));
+}
+
 function directCodexCandidate(
+  model: CuratedOpenAiCodexModel,
   state: "ready" | "install-required" | "login-required",
   version = "",
 ): WizardModelCandidate {
-  if (state === "ready") {
+  if (state === "install-required") {
+    const minimum = model.minimumCodexCliVersion;
     return {
-      value: DIRECT_CODEX,
-      label: "Codex GPT-5.6 Terra",
+      value: directCodexRef(model),
+      label: `Codex ${model.name}`,
+      hint: minimum === undefined
+        ? "install Codex CLI and sign in"
+        : `install Codex CLI ${formatVersion(minimum)}+ and sign in`,
+      source: "codex",
+      setupRequired: true,
+      defaultEffort: "medium",
+    };
+  }
+
+  const prerequisites: string[] = [];
+  const minimum = model.minimumCodexCliVersion;
+  if (minimum !== undefined && !codexVersionMeetsMinimum(version, minimum)) {
+    prerequisites.push(
+      parseCodexVersion(version) === undefined
+        ? `Codex CLI ${formatVersion(minimum)}+ required; installed version could not be verified`
+        : `update Codex CLI to ${formatVersion(minimum)}+ (found ${version})`,
+    );
+  }
+  if (state === "login-required") prerequisites.push("Codex sign-in required");
+
+  if (prerequisites.length === 0) {
+    return {
+      value: directCodexRef(model),
+      label: `Codex ${model.name}`,
       hint: `${version.length > 0 ? `${version}; ` : ""}signed in`,
       source: "codex",
       discovered: true,
       defaultEffort: "medium",
     };
   }
+
   return {
-    value: DIRECT_CODEX,
-    label: "Codex GPT-5.6 Terra",
-    hint: state === "install-required" ? "install Codex CLI and sign in" : "Codex sign-in required",
+    value: directCodexRef(model),
+    label: `Codex ${model.name}`,
+    hint: prerequisites.join("; "),
     source: "codex",
     setupRequired: true,
     defaultEffort: "medium",
   };
+}
+
+function parseCodexVersion(version: string): readonly [major: number, minor: number, patch: number] | undefined {
+  const match = /(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?:[-+\s]|$)/u.exec(version);
+  if (match === null) return undefined;
+  const parts = match.slice(1, 4).map(Number);
+  if (parts.some((part) => !Number.isSafeInteger(part) || part < 0)) return undefined;
+  return [parts[0] as number, parts[1] as number, parts[2] as number];
+}
+
+function codexVersionMeetsMinimum(
+  version: string,
+  minimum: readonly [major: number, minor: number, patch: number],
+): boolean {
+  const parsed = parseCodexVersion(version);
+  if (parsed === undefined) return false;
+  for (let index = 0; index < minimum.length; index += 1) {
+    const installedPart = parsed[index] ?? 0;
+    const minimumPart = minimum[index] ?? 0;
+    if (installedPart !== minimumPart) return installedPart > minimumPart;
+  }
+  return true;
+}
+
+function formatVersion(version: readonly [major: number, minor: number, patch: number]): string {
+  return version.join(".");
 }
 
 function parseOllamaList(stdout: string): string[] {

@@ -53,7 +53,9 @@ ready. Presets seed the same model, channel,
 tool, and sandbox decisions as the custom path; they do not silently bypass
 safety choices. The default model is
 `codex:gpt-5.6-terra`; `pi:openai-codex:gpt-5.6-terra` remains a concrete selectable
-Pi candidate, and OpenCode-Go Pi refs can save `OPENCODE_API_KEY` into
+Pi candidate. GPT-5.6 Sol is also selectable as `codex:gpt-5.6-sol` or
+`pi:openai-codex:gpt-5.6-sol`; direct GPT-5.6 routes require Codex CLI 0.144.0 or newer.
+OpenCode-Go Pi refs can save `OPENCODE_API_KEY` into
 the Pi auth store, and optional fallback models are selected from the same
 discovered choices one at a time before manual entry. Any flag (or a piped/non-TTY
 invocation) takes the silent default/preset scaffold path instead; add `--auth`

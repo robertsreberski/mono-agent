@@ -12,7 +12,7 @@ This page walks the happy path: scaffold a config-first agent with `mono-agent i
 
 You need Node.js installed, the `mono-agent` CLI available, and credentials for whatever model you choose. The quickest path is the `npm create mono-agent@latest` installer (equivalently `npx create-mono-agent`) with no global install, or `npm i -g create-mono-agent` for the persistent command. The CLI itself ships in `@mono-agent/agent-app`, so installing or invoking that scoped package is equivalent.
 
-The first-run default is direct `codex:gpt-5.6-terra`. The wizard checks the Codex executable and sign-in state; it does not install or sign in silently. If needed, use only the [official Codex CLI instructions](https://developers.openai.com/codex/cli/): on macOS/Linux the standalone installer is `curl -fsSL https://chatgpt.com/codex/install.sh | sh`, the first `codex` run prompts for sign-in, and `codex login` / `codex login status` manage it explicitly. Pi Terra remains selectable and uses `mono-agent auth login openai-codex` when its separate Pi auth store needs setup. See [Install](/getting-started/install/) and [Environment Variables](/config/env-vars/) for other backends.
+The first-run default is direct `codex:gpt-5.6-terra`. The wizard checks the Codex executable and sign-in state; it does not install or sign in silently. If needed, use only the [official Codex CLI instructions](https://developers.openai.com/codex/cli/): on macOS/Linux the standalone installer is `curl -fsSL https://chatgpt.com/codex/install.sh | sh`, the first `codex` run prompts for sign-in, and `codex login` / `codex login status` manage it explicitly. Pi Terra remains selectable and uses `mono-agent auth login openai-codex` when its separate Pi auth store needs setup. GPT-5.6 Sol can be selected explicitly as `codex:gpt-5.6-sol` or `pi:openai-codex:gpt-5.6-sol`; direct GPT-5.6 routes require Codex CLI 0.144.0 or newer, and the selected-model readiness probe exercises the exact primary before setup reports **Agent ready**. See [Install](/getting-started/install/) and [Environment Variables](/config/env-vars/) for other backends.
 
 If you are testing unreleased source from a clone, replace `mono-agent` in the commands below with the built CLI entry:
 
@@ -40,7 +40,7 @@ Optional flags:
 
 | Flag | Purpose |
 | --- | --- |
-| `--model <ref>` | Primary runtime model. Format: `pi:<provider>:<model>`, `claude:*`, `codex:*`, or `opencode:*`. Defaults to `codex:gpt-5.6-terra`; `pi:openai-codex:gpt-5.6-terra` is a selectable Pi candidate. |
+| `--model <ref>` | Primary runtime model. Format: `pi:<provider>:<model>`, `claude:*`, `codex:*`, or `opencode:*`. Defaults to `codex:gpt-5.6-terra`; selectable Sol refs are `codex:gpt-5.6-sol` and `pi:openai-codex:gpt-5.6-sol`. |
 | `--fallback-models <csv>` | Ordered backup models tried on retryable provider failure. Written to `runtime.fallbackModels`. Direct Codex chains must remain all-direct; Pi, Claude, and direct OpenCode may mix only without a native mono-agent sandbox. See [Fallback Chain](/runtime/fallback/). |
 | `--memory lite\|journal\|bujo` | Adds a `memory` section with the chosen tier. Omit it and no memory is configured. See [Capture and Recall](/memory/capture-and-recall/). |
 

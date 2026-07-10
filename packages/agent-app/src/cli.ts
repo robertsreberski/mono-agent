@@ -700,10 +700,11 @@ const HELP_NOTES = `Background mode runs the agent under launchd, keeping it ali
 commands require macOS; elsewhere use start --foreground.
 
 Init model references look like pi:<provider>:<model>, claude:claude-sonnet-4-6,
-codex:gpt-5.6-terra, or opencode:<provider>:<model>. The init wizard defaults to
-direct codex:gpt-5.6-terra; pi:openai-codex:gpt-5.6-terra remains selectable when
-Pi auth setup is needed, and the wizard can save OPENCODE_API_KEY for
-pi:opencode-go:* refs. Claude remains selectable; direct opencode:<provider>:<model> refs are for
+codex:gpt-5.6-terra, codex:gpt-5.6-sol, or opencode:<provider>:<model>. The init wizard
+defaults to direct codex:gpt-5.6-terra; direct and Pi OpenAI-Codex Sol choices remain
+selectable. Direct GPT-5.6 routes require Codex CLI 0.144.0 or newer. Pi auth setup stays available,
+and the wizard can save OPENCODE_API_KEY for pi:opencode-go:* refs. Claude remains selectable;
+direct opencode:<provider>:<model> refs are for
 hand-authored runtime backend config and are rejected by guided selection/readiness.
 
 Direct codex:* runs use Codex's network-off workspace sandbox, deny unattended

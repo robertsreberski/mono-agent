@@ -14,7 +14,7 @@ New here? Read [Getting Started → Quickstart](/getting-started/quickstart/) to
 
 ## What you get
 
-- **Any backend, one model string** — `runtime.model` defaults to `codex:gpt-5.6-terra` and can select claude (sdk/cli), codex (cli), pi (sdk, 15+ providers), or opencode (cli); e.g. `codex:gpt-5.6-terra`, selectable `pi:openai-codex:gpt-5.6-terra`, and `pi:opencode-go:kimi-k2.6`.
+- **Any backend, one model string** — `runtime.model` defaults to `codex:gpt-5.6-terra` and can select claude (sdk/cli), codex (cli), pi (sdk, 15+ providers), or opencode (cli); e.g. `codex:gpt-5.6-terra`, `codex:gpt-5.6-sol`, `pi:openai-codex:gpt-5.6-sol`, and `pi:opencode-go:kimi-k2.6`.
 - **Many channels, one config** — each transport is opt-in via an `enabled` flag and shares the same runtime, tools, memory, and context.
 - **Batteries included** — built-in Read/Write/Edit/Glob/Grep/Bash/WebFetch/WebSearch tools, a tool policy, MCP servers, a native sandbox, tiered memory, and observability.
 
