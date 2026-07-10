@@ -5,6 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { CircuitBreakerEmbeddingOptions, EmbeddingProviderConfig } from "@mono-agent/memory/search";
+import type { MemoryStatus, MemoryType } from "@mono-agent/memory/store";
 import * as z from "zod/v4";
 
 /**
@@ -92,7 +93,16 @@ export interface RecallCapableStore {
   recall(
     query: string,
     options?: { readonly topK?: number; readonly trackAccess?: boolean },
-  ): Promise<readonly { readonly score: number; readonly record: { readonly id: string; readonly text: string } }[]>;
+  ): Promise<readonly {
+    readonly score: number;
+    readonly record: {
+      readonly id: string;
+      readonly text: string;
+      readonly type?: MemoryType;
+      readonly status?: MemoryStatus;
+      readonly isInsight?: boolean;
+    };
+  }[]>;
   close(): Promise<void>;
 }
 

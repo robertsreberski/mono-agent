@@ -316,7 +316,7 @@ export class MemoryDb {
       );
       scored.push({ record, score });
     }
-    scored.sort((a, b) => b.score - a.score || a.record.id.localeCompare(b.record.id));
+    scored.sort((a, b) => b.score - a.score || (a.record.id < b.record.id ? -1 : a.record.id > b.record.id ? 1 : 0));
     const top = scored.slice(0, topK);
     if (options.trackAccess === false) {
       return top;

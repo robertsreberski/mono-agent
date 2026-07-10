@@ -163,5 +163,5 @@ export const DEFAULT_WEIGHTS: RecallWeights = {
   insight: 0.01,
 };
 export const DEFAULT_RRF_K = 60;
-/** Retained for API compatibility and deterministic salience maintenance. */
+/** Retained for API compatibility; access-recency scoring is disabled. */
 export const DEFAULT_DECAY_GAMMA = 0.995;

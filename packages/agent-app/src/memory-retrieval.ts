@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { MemoryBlock, MemoryLoadOptions, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";
+import { MARKER_FOR } from "@mono-agent/memory/bujo";
 
 import {
   createMemoryRecallServer,
@@ -37,6 +38,9 @@ interface SharedRecallHit {
   readonly record: {
     readonly id: string;
     readonly text: string;
+    readonly type?: "task" | "event" | "note";
+    readonly status?: "open" | "done" | "scheduled" | "migrated" | "dropped" | "invalidated";
+    readonly isInsight?: boolean;
   };
 }
 
@@ -241,13 +245,18 @@ function formatRecallBlock(
   source: string,
   maxBytes: number,
 ): MemoryBlock {
-  const full = ["## Memory (recalled)", "", ...hits.map((hit) => `- ${hit.record.text}`)].join("\n");
+  const full = ["## Memory (recalled)", "", ...hits.map((hit) => `- ${formatRecallRecord(hit.record)}`)].join("\n");
   if (Buffer.byteLength(full, "utf8") <= maxBytes) {
     return { kind: "markdown", content: full, source, truncated: false };
   }
   const bytes = Buffer.from(full, "utf8").subarray(0, maxBytes);
   const content = new TextDecoder("utf-8").decode(bytes).replace(/�+$/u, "");
   return { kind: "markdown", content, source, truncated: true };
+}
+
+function formatRecallRecord(record: SharedRecallHit["record"]): string {
+  if (record.type === undefined || record.status === undefined) return record.text;
+  return `${MARKER_FOR(record.type, record.status)} ${record.text}${record.isInsight === true ? " *" : ""}`;
 }
 
 function isLoopbackHost(host: string | undefined): boolean {

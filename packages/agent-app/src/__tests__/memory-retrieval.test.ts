@@ -25,7 +25,13 @@ function fakeStore(options: { readonly fail?: boolean } = {}): SharedRecallStore
       }
       return Array.from({ length: 12 }, (_, index) => ({
         score: 0.95 - index * 0.01,
-        record: { id: `hit-${index}`, text: `Relevant memory ${index}` },
+        record: {
+          id: `hit-${index}`,
+          text: `Relevant memory ${index}`,
+          type: "task" as const,
+          status: index === 0 ? "done" as const : "open" as const,
+          isInsight: index === 0,
+        },
       }));
     },
     recordAccess(ids) { accesses.push([...ids]); },
@@ -47,6 +53,7 @@ describe("MemoryRetrievalService", () => {
 
     expect(block).toBeDefined();
     expect(block?.content.match(/Relevant memory/gu)).toHaveLength(5);
+    expect(block?.content).toContain("- [x] Relevant memory 0 *");
     expect(Buffer.byteLength(block?.content ?? "", "utf8")).toBeLessThanOrEqual(8_000);
     expect(hits).toHaveLength(8);
     expect(store.queries).toEqual(["deploy pipeline", "different query"]);
