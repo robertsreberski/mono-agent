@@ -6,7 +6,7 @@ const READY_STATUS = {
   state: "ready" as const,
   source: "managed" as const,
   version: "0.0.64" as const,
-  installRoot: "/Users/test/Library/Caches/mono-agent/tools/srt/0.0.64/hash",
+  installRoot: "/Users/example/Library/Caches/mono-agent/tools/srt/0.0.64/hash",
   nodePath: "/usr/local/bin/node",
   cliPath: "/cache/srt/dist/cli.js",
   message: "Managed SRT 0.0.64 is integrity-verified.",
