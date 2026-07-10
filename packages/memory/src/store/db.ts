@@ -29,6 +29,7 @@ import {
 import type { EmbeddingProvider } from "../search/index.js";
 
 const MIN_SEMANTIC_SIMILARITY = 0.5;
+const VECTOR_CANDIDATE_SCAN_CAP = 4_096;
 const RECALL_STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does", "for", "from",
   "how", "i", "in", "is", "it", "me", "my", "of", "on", "or", "our", "that", "the",
@@ -273,9 +274,9 @@ export class MemoryDb {
     const candidates = options.candidates ?? Math.max(topK * 4, 20);
     const now = options.now ?? this.clock();
 
-    const ftsIds = this.keywordCandidates(query, candidates);
+    const ftsIds = this.keywordCandidates(query, candidates, options.includeInvalid === true, now);
     const vecCandidates = this.embeddings !== undefined
-      ? await this.vectorCandidates(query, candidates)
+      ? await this.vectorCandidates(query, candidates, options.includeInvalid === true, now)
       : [];
     const vecIds = vecCandidates.map((candidate) => candidate.id);
     const vectorSimilarity = new Map(vecCandidates.map((candidate) => [candidate.id, candidate.similarity]));
@@ -325,23 +326,60 @@ export class MemoryDb {
     return top.map((h) => ({ ...h, record: { ...h.record, accessCount: h.record.accessCount + 1, lastAccessedAt: now.toISOString() } }));
   }
 
-  protected async vectorCandidates(query: string, limit: number): Promise<Array<{ id: string; similarity: number }>> {
+  protected async vectorCandidates(
+    query: string,
+    limit: number,
+    includeInvalid = false,
+    now = this.clock(),
+  ): Promise<Array<{ id: string; similarity: number }>> {
     if (this.embeddings === undefined) return [];
     const [vector] = await this.embeddings.embed([`search_query: ${query}`]);
     if (vector === undefined) return [];
     this.assertVectorDim(vector, "recall");
-    const rows = this.db
-      .prepare(`SELECT m.id AS id, v.distance AS distance FROM memories_vec v JOIN memories m ON m.seq = v.rowid WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance`)
-      .all(toBlob(vector), limit) as Array<{ id: string; distance: number }>;
-    return rows.map((row) => ({ id: row.id, similarity: Math.max(-1, Math.min(1, 1 - row.distance)) }));
+    const validity = includeInvalid
+      ? ""
+      : " AND m.status NOT IN ('invalidated','dropped') AND (m.valid_to IS NULL OR m.valid_to >= ?)";
+    const statement = this.db.prepare(
+      `SELECT m.id AS id, v.distance AS distance
+       FROM memories_vec v JOIN memories m ON m.seq = v.rowid
+       WHERE v.embedding MATCH ? AND k = ?${validity}
+       ORDER BY v.distance`,
+    );
+    const totalVectors = includeInvalid
+      ? limit
+      : (this.db.prepare(`SELECT COUNT(*) AS n FROM memories_vec`).get() as { n: number }).n;
+    const maxScan = Math.min(totalVectors, Math.max(limit, VECTOR_CANDIDATE_SCAN_CAP));
+    let scan = Math.min(totalVectors, Math.max(1, limit));
+    let rows: Array<{ id: string; distance: number }> = [];
+    do {
+      rows = statement.all(toBlob(vector), scan, ...(includeInvalid ? [] : [now.toISOString()])) as Array<{
+        id: string;
+        distance: number;
+      }>;
+      if (rows.length >= limit || scan >= maxScan) break;
+      scan = Math.min(maxScan, scan * 2);
+    } while (scan > 0);
+    return rows.slice(0, limit)
+      .map((row) => ({ id: row.id, similarity: Math.max(-1, Math.min(1, 1 - row.distance)) }));
   }
 
-  protected keywordCandidates(query: string, limit: number): string[] {
+  protected keywordCandidates(query: string, limit: number, includeInvalid = false, now = this.clock()): string[] {
     const match = ftsQuery(query);
     if (match.length === 0) return [];
-    const rows = this.db
-      .prepare(`SELECT id FROM memories_fts WHERE memories_fts MATCH ? ORDER BY bm25(memories_fts) LIMIT ?`)
-      .all(match, limit) as { id: string }[];
+    const rows = includeInvalid
+      ? this.db
+        .prepare(`SELECT id FROM memories_fts WHERE memories_fts MATCH ? ORDER BY bm25(memories_fts) LIMIT ?`)
+        .all(match, limit) as { id: string }[]
+      : this.db
+        .prepare(
+          `SELECT memories_fts.id AS id
+           FROM memories_fts JOIN memories m ON m.id = memories_fts.id
+           WHERE memories_fts MATCH ?
+             AND m.status NOT IN ('invalidated','dropped')
+             AND (m.valid_to IS NULL OR m.valid_to >= ?)
+           ORDER BY bm25(memories_fts) LIMIT ?`,
+        )
+        .all(match, now.toISOString(), limit) as { id: string }[];
     return rows.map((r) => r.id);
   }
 

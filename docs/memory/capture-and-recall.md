@@ -84,7 +84,7 @@ The agent reads memory back through a single, read-only `MemoryRecall` tool: hyb
 
 ### How it is provisioned
 
-`agent-app` auto-provisions `MemoryRecall` from the single `config.memory` block when `config.memory.recallTool.enabled` is true. It exposes a request-scoped loopback MCP endpoint backed by the **same open store and retrieval service** as automatic recall. Identical normalized automatic/tool queries share one per-turn lookup; a different tool query may search again. No second SQLite handle, embedding request, or hand-maintained MCP config is involved.
+The configured harness auto-provisions `MemoryRecall` from the single `config.memory` block when `config.memory.recallTool.enabled` is true. This applies both to the full `agent-app` host and to direct `createConfiguredAgentHarness` / `createConfiguredAgentResponder` composition. It exposes a request-scoped loopback MCP endpoint backed by the **same open store and retrieval service** as automatic recall. Identical normalized automatic/tool queries share one per-turn lookup; a different tool query may search again. No second SQLite handle, embedding request, or hand-maintained MCP config is involved. Caller-supplied request extensions are composed with the default tool instead of replacing it.
 
 The endpoint is allocated only after the turn acquires a provider-concurrency slot, so queued turns do not accumulate listeners. If endpoint startup fails, the host warns and omits the explicit tool for that turn; automatic recall and the provider response continue. If the memory backend itself fails during a tool call, `MemoryRecall` returns an explicit degraded result instead of fabricated hits.
 
@@ -117,7 +117,7 @@ Recall fuses two retrievers and re-ranks the result:
 - **BM25 keyword (FTS)** over the markdown entries.
 - **Vector similarity** over the configured embeddings.
 - Results are combined with **Reciprocal Rank Fusion (RRF)** and evidence strength; salience/insight are small tie-breakers. `lastAccessedAt` and access counts are telemetry only and never affect ranking.
-- Automatic recall treats raw embedding similarity as ranking evidence, not a calibrated probability: the strongest result must clear the `0.65` absolute confidence floor, and additional results must also score at least `77%` of the top hit. This prevents semantically adjacent but non-answering memories from riding along with a strong hit. It injects nothing for unrelated queries and is capped at five hits / 8 KB. Deliberate `MemoryRecall` calls may inspect more results (up to the requested limit).
+- Automatic recall treats raw embedding similarity as ranking evidence, not a calibrated probability: it first considers the `0.65` absolute / `77%` top-relative score band, then applies a deterministic answer-evidence gate to a bounded candidate window. The gate requires the recalled text to contain both the query subject and the requested attribute. Multi-record evidence is accepted only for an explicit named-entity relationship hop; unrelated or same-subject attribute fragments cannot be spliced into a fabricated answer. This check adds no embedding or chat-model call, works across provider score scales, injects nothing for unsupported questions, and remains capped at five hits / 8 KB. Deliberate `MemoryRecall` calls may inspect more results (up to the requested limit).
 
 You can exercise the exact same scoring offline against a memory root:
 
@@ -138,7 +138,7 @@ Recall uses the graph for one-hop expansion: entries matched by BM25/vector sear
 `MemoryRecall` is an MCP tool. Like every MCP server tool, it is **gated by its declaration, not by `tools.allowedTools`**. `tools.allowedTools` filters the built-in runtime tools (Read/Bash/…); it does **not** suppress app-injected MCP tools. So `tools.allowedTools: []` ("no built-in tools") still leaves `MemoryRecall` available when it is enabled.
 
 :::caution
-To withhold the on-demand memory tool from the agent, set `config.memory.recallTool.enabled: false` — that is the switch that controls this tool, not the allowlist. Automatic confidence-gated context recall remains part of a configured memory backend.
+To withhold the on-demand memory tool from the agent, set `config.memory.recallTool.enabled: false` — that is the switch that controls this tool, not the allowlist. Automatic score- and answer-evidence-gated context recall remains part of a configured memory backend.
 :::
 
 See [Tool policy](/tools/policy/) and [MCP tools](/tools/mcp/) for how MCP-provided tools differ from the built-in allowlist.

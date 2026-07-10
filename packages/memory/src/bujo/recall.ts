@@ -2,6 +2,7 @@ import type { MemoryBlock } from "@mono-agent/agent-contracts";
 import type { MemoryDb } from "../store/index.js";
 
 import { MARKER_FOR } from "./grammar.js";
+import { selectAnswerBearingRecallHits } from "./recall-evidence.js";
 
 /** Confidence floor for automatic prompt injection. Deliberate tool recall may inspect lower scores. */
 export const AUTO_RECALL_MIN_SCORE = 0.65;
@@ -13,14 +14,35 @@ export const AUTO_RECALL_MAX_BYTES = 8_000;
 export const AUTO_RECALL_BACKEND_HITS = 50;
 
 /** Select confidence-gated automatic hits from an already relevance-sorted result set. */
-export function selectAutomaticRecallHits<T extends { readonly score: number }>(
+export function selectAutomaticRecallHits<T extends {
+  readonly score: number;
+  readonly record?: { readonly text: string };
+}>(
   hits: readonly T[],
-  maxHits = AUTO_RECALL_MAX_HITS,
+  options: { readonly maxHits?: number; readonly query?: string } = {},
 ): readonly T[] {
   const topScore = hits[0]?.score;
-  if (topScore === undefined || topScore < AUTO_RECALL_MIN_SCORE) return [];
+  if (topScore === undefined) return [];
+  const maxHits = Math.max(1, Math.min(options.maxHits ?? AUTO_RECALL_MAX_HITS, AUTO_RECALL_MAX_HITS));
   const floor = Math.max(AUTO_RECALL_MIN_SCORE, topScore * AUTO_RECALL_RELATIVE_SCORE);
-  return hits.filter((hit) => hit.score >= floor).slice(0, Math.max(1, Math.min(maxHits, AUTO_RECALL_MAX_HITS)));
+  const selected = topScore < AUTO_RECALL_MIN_SCORE
+    ? []
+    : hits.filter((hit) => hit.score >= floor).slice(0, maxHits);
+  if (options.query === undefined) return selected;
+  const evidenceHits = selected.filter((hit): hit is T & { readonly record: { readonly text: string } } =>
+    hit.record !== undefined);
+  if (evidenceHits.length !== selected.length) return [];
+  const scoreSupported = selectAnswerBearingRecallHits(options.query, evidenceHits);
+  if (scoreSupported.length > 0) return scoreSupported.slice(0, maxHits);
+
+  // Raw backend scores are not calibrated across providers. A true paraphrase
+  // or complementary entity-hop record can sit just below the score floor, so
+  // inspect the bounded top-eight text window with the stricter answer-evidence
+  // gate before abstaining. This adds no retrieval/model call.
+  const evidenceWindow = hits.slice(0, Math.max(8, maxHits)).filter(
+    (hit): hit is T & { readonly record: { readonly text: string } } => hit.record !== undefined,
+  );
+  return selectAnswerBearingRecallHits(options.query, evidenceWindow).slice(0, maxHits);
 }
 
 export async function composeRecallBlock(
@@ -32,7 +54,7 @@ export async function composeRecallBlock(
   const topK = Math.max(1, Math.min(options.topK ?? AUTO_RECALL_MAX_HITS, AUTO_RECALL_MAX_HITS));
   const hits = selectAutomaticRecallHits(
     await db.recall(query, { topK: Math.max(topK, 8), trackAccess: false }),
-    topK,
+    { maxHits: topK, query },
   );
   // No hits → no block. A header-only block carries no signal and only adds
   // noise/tokens to whatever surface injects it; returning undefined lets

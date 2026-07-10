@@ -26,7 +26,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Identity + optional soul documents | config | `context.identityPath`, `context.soulPath` |
 | Selected skills from a skills root | config | `context.skillsRoot`, `context.selectedSkills` |
 | Per-skill byte cap | config | `context.skillMaxBytes` |
-| Conversation history (in-memory; unlimited unless turns are capped) | auto | sized from `runtime.maxTurns`; custom store via code |
+| Conversation history (bounded in-memory) | auto | 12 messages by default; twice a positive `runtime.maxTurns`; custom store via code |
 | Lite memory (FTS keyword recall + rapid-log capture; no external deps) | config | `memory.mode: "lite"`, `path`, `maxBytes`, `writeMode` |
 | Journal memory (hybrid recall BM25+vector + salience decay; needs configured embeddings) | config | `memory.mode: "journal"`, `path`, `memory.embeddings.{provider,model,dim}` (`provider: "ollama" | "openai"`) |
 | BuJo memory (journal + LLM capture/reconcile ADD/UPDATE/SUPERSEDE/NOOP + entity graph + auto-scheduled consolidation; needs embeddings + an app-level `memory.llm`) | config | `memory.mode: "bujo"`, `path`, `memory.embeddings.{provider,model,dim}`, `memory.llm` with `provider: "ollama"` (`model`, optional `endpoint`) or `provider: "agent-host"` (`model` is an SDK runtime model ref, e.g. `pi:openai-codex:gpt-5.5`, optional `executionMode: "sdk"`) — see `docs/memory/index.md` |

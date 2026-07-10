@@ -760,13 +760,15 @@ export class MonoAgentHarness implements AgentHarness {
   ): Promise<RuntimeResult> {
     const hostOnEvent = request.onEvent;
     let requestExtension: AgentHarnessRuntimeOptionsExtension | undefined;
+    let requestExtensionCleanup: Promise<void> | undefined;
     // Admission precedes per-request extension setup. Extensions may allocate
     // loopback MCP listeners or other bounded resources, so queued runs must
     // hold none of them while waiting for a provider slot.
     let acquired = false;
-    // Release-on-abort (R10): once a slot is held, an abort frees it promptly
-    // even if the provider ignores cancellation. `released` keeps the normal
-    // finally path idempotent.
+    // Release-on-abort (R10): once a slot is held, an abort frees it after its
+    // request-scoped resources close, even if the provider ignores cancellation.
+    // Keeping cleanup inside the permit lifetime prevents repeated cancel/new-run
+    // cycles from accumulating loopback MCP listeners beyond concurrency.
     let released = false;
     const releaseSlot = (): void => {
       if (acquired && !released) {
@@ -774,18 +776,31 @@ export class MonoAgentHarness implements AgentHarness {
         this.runLimiter?.release();
       }
     };
-    const onAbortReleaseSlot = (): void => releaseSlot();
+    const cleanupRequestExtension = (): Promise<void> => {
+      requestExtensionCleanup ??= Promise.resolve()
+        .then(async () => requestExtension?.cleanup?.())
+        .then(() => undefined);
+      return requestExtensionCleanup;
+    };
+    const onAbortCleanupAndRelease = (): void => {
+      void cleanupRequestExtension().catch(() => undefined).finally(releaseSlot);
+    };
     try {
       if (this.runLimiter !== undefined) {
         await this.runLimiter.acquire(request.abortSignal);
         acquired = true;
-        request.abortSignal.addEventListener("abort", onAbortReleaseSlot, { once: true });
       }
       const policyOptions = toolPolicyToRuntimeOptions(this.options.toolPolicy ?? failClosedToolPolicy());
       const sandboxOptions = this.options.sandboxPolicy === undefined
         ? {}
         : sandboxPolicyToRuntimeOptions(this.options.sandboxPolicy);
       requestExtension = await this.options.runtimeOptionsForRequest?.({ request, runId, context });
+      request.abortSignal.addEventListener("abort", onAbortCleanupAndRelease, { once: true });
+      if (request.abortSignal.aborted) {
+        onAbortCleanupAndRelease();
+        await cleanupRequestExtension();
+        throw request.abortSignal.reason ?? new Error("Agent request was cancelled before provider start.");
+      }
       const merged = mergeRuntimeOptions(
         policyOptions,
         sandboxOptions,
@@ -926,9 +941,12 @@ export class MonoAgentHarness implements AgentHarness {
       // Remove the abort listener to avoid leaking it on the signal, then run
       // the (idempotent) release so the slot frees exactly once whether the run
       // settled normally or an abort already released it.
-      request.abortSignal.removeEventListener("abort", onAbortReleaseSlot);
-      releaseSlot();
-      await requestExtension?.cleanup?.();
+      request.abortSignal.removeEventListener("abort", onAbortCleanupAndRelease);
+      try {
+        await cleanupRequestExtension();
+      } finally {
+        releaseSlot();
+      }
     }
   }
 

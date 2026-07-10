@@ -30,16 +30,16 @@ function fakeStore(options: { readonly fail?: boolean } = {}): SharedRecallStore
       }
       if (query.includes("calibrated")) {
         return [
-          { score: 1.005, record: { id: "answer", text: "direct answer" } },
-          { score: 0.751, record: { id: "adjacent", text: "high-similarity adjacent noise" } },
-          { score: 0.708, record: { id: "other", text: "other adjacent noise" } },
+          { score: 1.005, record: { id: "answer", text: "calibrated query direct answer" } },
+          { score: 0.751, record: { id: "adjacent", text: "calibrated query high-similarity adjacent noise" } },
+          { score: 0.708, record: { id: "other", text: "calibrated query other adjacent noise" } },
         ];
       }
       return Array.from({ length: 12 }, (_, index) => ({
         score: 0.95 - index * 0.01,
         record: {
           id: `hit-${index}`,
-          text: `Relevant memory ${index}`,
+          text: `Deploy pipeline: Relevant memory ${index}`,
           type: "task" as const,
           status: index === 0 ? "done" as const : "open" as const,
           isInsight: index === 0,
@@ -65,7 +65,7 @@ describe("MemoryRetrievalService", () => {
 
     expect(block).toBeDefined();
     expect(block?.content.match(/Relevant memory/gu)).toHaveLength(5);
-    expect(block?.content).toContain("- [x] Relevant memory 0 *");
+    expect(block?.content).toContain("- [x] Deploy pipeline: Relevant memory 0 *");
     expect(Buffer.byteLength(block?.content ?? "", "utf8")).toBeLessThanOrEqual(8_000);
     expect(hits).toHaveLength(8);
     expect(store.queries).toEqual(["deploy pipeline", "different query"]);

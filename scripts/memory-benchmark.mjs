@@ -16,6 +16,8 @@ export const MEMORY_BENCHMARK_GATES = Object.freeze({
   mrr: 0.8,
   automaticAnswerCoverage: 0.9,
   abstentionRate: 0.9,
+  missingAttributeAbstentionRate: 1,
+  outOfDomainAbstentionRate: 1,
   staleRecallRate: 0.05,
   falseRecallRate: 0.05,
 });
@@ -37,7 +39,19 @@ const FAST_CASES = [
   testCase("paraphrase", "How are database changes shipped?", ["deploy-strategy"]),
   testCase("update", "Which day does the release train now leave?", ["release-current"], ["release-old"]),
   testCase("temporal", "When is the API launch date?", ["launch-date"]),
-  testCase("abstention", "What fertilizer should I use for roses?", []),
+  testCase("out-of-domain-abstention", "What fertilizer should I use for roses?", []),
+  testCase("out-of-domain-abstention", "What temperature should I bake sourdough at?", []),
+  testCase("out-of-domain-abstention", "What is the capital of Peru?", []),
+  testCase("missing-attribute", "What is Morgans favorite food?", []),
+  testCase("missing-attribute", "What is Morgans phone number?", []),
+  testCase("missing-attribute", "Which cloud provider hosts Project Atlas?", []),
+  testCase("missing-attribute", "Who approved the blue-green deployment strategy?", []),
+  testCase("missing-attribute", "What time does the release train leave on Thursday?", []),
+  testCase("missing-attribute", "Where will the API launch event be held?", []),
+  testCase("missing-attribute", "What is Project Atlas budget?", []),
+  testCase("missing-attribute", "Does Morgan work remotely?", []),
+  testCase("missing-attribute", "Who chose the database vendor?", []),
+  testCase("missing-attribute", "What color is Morgans car?", []),
   testCase("recurring-noise", "Did the nightly heartbeat require action?", [
     "heartbeat-1", "heartbeat-2", "heartbeat-3", "heartbeat-4",
   ]),
@@ -58,12 +72,16 @@ const FAST_CASES = [
 // automatic-selection policy in deterministic CI without pretending those
 // scores came from the deterministic embedding provider.
 const FAST_POLICY_CASES = [{
-  item: testCase("high-similarity-adjacent", "nomic score calibration probe", ["probe-answer", "probe-support"]),
+  item: testCase(
+    "high-similarity-adjacent",
+    "Which city is the person leading Atlas based in?",
+    ["probe-answer", "probe-support"],
+  ),
   hits: [
-    scoredHit("probe-answer", "direct answer", 1.005),
-    scoredHit("probe-support", "supporting answer", 0.798),
-    scoredHit("probe-adjacent", "semantically adjacent non-answer", 0.751),
-    scoredHit("probe-other", "other adjacent non-answer", 0.708),
+    scoredHit("probe-answer", "Project Atlas is led by Morgan.", 1.005),
+    scoredHit("probe-support", "Morgan's office is in Amsterdam.", 0.798),
+    scoredHit("probe-adjacent", "Morgan selected cobalt as the deployment color.", 0.751),
+    scoredHit("probe-other", "Database rollouts use a blue-green deployment strategy.", 0.708),
   ],
 }];
 
@@ -106,30 +124,32 @@ export async function runMemoryBenchmark(options = {}) {
       // second backend lookup for the same normalized query.
       const hits = await db.recall(item.query, { topK: AUTO_RECALL_BACKEND_HITS });
       searchLatencies.push(performance.now() - started);
-      const automatic = selectAutomaticRecallHits(hits);
+      const automatic = selectAutomaticRecallHits(hits, { query: item.query });
       queryResults.push({ item, hits, automatic });
     }
 
     const policyResults = (fixture.policyCases ?? []).map(({ item, hits }) => ({
       item,
       hits,
-      automatic: selectAutomaticRecallHits(hits),
+      automatic: selectAutomaticRecallHits(hits, { query: item.query }),
     }));
-    const evaluatedResults = [...queryResults, ...policyResults];
-    const quality = qualityMetrics(evaluatedResults, fixture.staleIds);
+    const quality = qualityMetrics(queryResults, fixture.staleIds);
+    const policyCalibration = policyCalibrationMetrics(policyResults);
     const audit = db.audit();
     const storageBytes = await directoryBytes(root);
     const report = {
       suite,
       provider: options.provider ?? "deterministic",
       disposableStore: true,
-      cases: evaluatedResults.length,
+      cases: queryResults.length,
       retrievalCases: fixture.cases.length,
       policyCases: policyResults.length,
-      categories: [...new Set(evaluatedResults.map(({ item }) => item.category))].sort(),
+      categories: [...new Set(queryResults.map(({ item }) => item.category))].sort(),
+      policyCategories: [...new Set(policyResults.map(({ item }) => item.category))].sort(),
       quality,
+      policyCalibration,
       efficiency: {
-        contextBytes: contextByteMetrics(evaluatedResults),
+        contextBytes: contextByteMetrics(queryResults),
         indexingLatencyMs: latencyMetrics(indexingLatencies),
         searchLatencyMs: latencyMetrics(searchLatencies),
         storageBytes,
@@ -147,7 +167,7 @@ export async function runMemoryBenchmark(options = {}) {
         duplicateRatio: audit.duplicates.ratio,
         vectorCoverage: audit.vectors.liveCoverage,
       },
-      gates: memoryBenchmarkGateResults(quality),
+      gates: memoryBenchmarkGateResults(quality, policyCalibration),
     };
     return report;
   } finally {
@@ -196,26 +216,60 @@ function qualityMetrics(results, staleIds) {
     ndcgAt8: mean(ndcg),
     automaticRecallAt5: mean(automaticRecalls),
     automaticAnswerCoverage: mean(automaticCoverage),
+    automaticAnswerCoverageByCategory: Object.fromEntries([...new Set(answerable.map(({ item }) => item.category))]
+      .sort()
+      .map((category) => {
+        const matching = results.filter(({ item }) => item.category === category && item.relevantIds.length > 0);
+        return [category, mean(matching.map(({ item, automatic }) => {
+          const relevant = new Set(item.relevantIds);
+          return automatic.some((hit) => relevant.has(hit.record.id)) ? 1 : 0;
+        }))];
+      })),
     staleRecallRate: totalAutomaticHits === 0 ? 0 : staleHits / totalAutomaticHits,
     falseRecallRate: totalAutomaticHits === 0 ? 0 : falseHits / totalAutomaticHits,
     abstentionRate: mean(results
       .filter(({ item }) => item.relevantIds.length === 0)
       .map(({ automatic }) => automatic.length === 0 ? 1 : 0)),
+    missingAttributeAbstentionRate: abstentionRateForCategory(results, "missing-attribute"),
+    outOfDomainAbstentionRate: abstentionRateForCategory(results, "out-of-domain-abstention"),
     answerableCases: answerable.length,
   };
 }
 
-export function memoryBenchmarkGateResults(quality) {
+function policyCalibrationMetrics(results) {
+  const checks = results.map(({ item, automatic }) => {
+    const expected = new Set(item.relevantIds);
+    const selected = new Set(automatic.map((hit) => hit.record.id));
+    return expected.size > 0
+      && [...expected].every((id) => selected.has(id))
+      && [...selected].every((id) => expected.has(id));
+  });
+  return { cases: results.length, passed: checks.every(Boolean), checks };
+}
+
+export function memoryBenchmarkGateResults(quality, policyCalibration = { passed: true }) {
   const checks = {
     recallAt5: quality.recallAt5 >= MEMORY_BENCHMARK_GATES.recallAt5,
     mrr: quality.mrr >= MEMORY_BENCHMARK_GATES.mrr,
     automaticAnswerCoverage:
       quality.automaticAnswerCoverage >= MEMORY_BENCHMARK_GATES.automaticAnswerCoverage,
     abstentionRate: quality.abstentionRate >= MEMORY_BENCHMARK_GATES.abstentionRate,
+    missingAttributeAbstentionRate:
+      quality.missingAttributeAbstentionRate >= MEMORY_BENCHMARK_GATES.missingAttributeAbstentionRate,
+    outOfDomainAbstentionRate:
+      quality.outOfDomainAbstentionRate >= MEMORY_BENCHMARK_GATES.outOfDomainAbstentionRate,
     staleRecallRate: quality.staleRecallRate <= MEMORY_BENCHMARK_GATES.staleRecallRate,
     falseRecallRate: quality.falseRecallRate <= MEMORY_BENCHMARK_GATES.falseRecallRate,
+    policyCalibration: policyCalibration.passed === true,
   };
   return { passed: Object.values(checks).every(Boolean), checks, thresholds: MEMORY_BENCHMARK_GATES };
+}
+
+function abstentionRateForCategory(results, category) {
+  const matching = results.filter(({ item }) => item.category === category);
+  return matching.length === 0
+    ? 1
+    : mean(matching.map(({ automatic }) => automatic.length === 0 ? 1 : 0));
 }
 
 function contextByteMetrics(results) {
@@ -466,6 +520,8 @@ function render(report) {
     `MRR ${q.mrr.toFixed(3)}  nDCG@8 ${q.ndcgAt8.toFixed(3)}`,
     `automatic Recall@5 ${(q.automaticRecallAt5 * 100).toFixed(1)}%  answer coverage ${(q.automaticAnswerCoverage * 100).toFixed(1)}%`,
     `stale ${(q.staleRecallRate * 100).toFixed(2)}%  false ${(q.falseRecallRate * 100).toFixed(2)}%  abstention ${(q.abstentionRate * 100).toFixed(1)}%`,
+    `missing-attribute abstention ${(q.missingAttributeAbstentionRate * 100).toFixed(1)}%  out-of-domain abstention ${(q.outOfDomainAbstentionRate * 100).toFixed(1)}%`,
+    `synthetic policy calibration ${report.policyCalibration.passed ? "PASS" : "FAIL"} (${report.policyCalibration.cases} separate case(s))`,
     `context ${e.contextBytes.total} B  search p50/p95 ${e.searchLatencyMs.p50.toFixed(3)}/${e.searchLatencyMs.p95.toFixed(3)} ms`,
     `index ${e.indexingLatencyMs.total.toFixed(3)} ms  storage ${e.storageBytes} B  embeddings ${e.embeddings.calls} calls/${e.embeddings.texts} texts, ${e.embeddings.inputTokens} tokens, $${e.embeddings.costUsd.toFixed(6)}`,
     `LLM ${e.llm.calls} calls, ${e.llm.inputTokens + e.llm.outputTokens} tokens, $${e.llm.costUsd.toFixed(6)}  queue drain ${e.queueDrainMs.toFixed(3)} ms`,

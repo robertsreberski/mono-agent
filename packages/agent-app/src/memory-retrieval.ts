@@ -53,7 +53,7 @@ interface SharedRecallHit {
 }
 
 /**
- * One app-owned read path for automatic context and MemoryRecall.
+ * One configured-harness read path for automatic context and MemoryRecall.
  *
  * Each normalized query in a turn asks the configured backend for a bounded
  * superset once. Automatic recall and the MCP tool then slice that same promise,
@@ -78,7 +78,8 @@ export class MemoryRetrievalService implements MemoryStore {
     query?: string,
     options: MemoryLoadOptions = {},
   ): Promise<MemoryBlock | undefined> {
-    const recallQuery = normalizeQuery(query ?? conversationId);
+    const evidenceQuery = normalizeEvidenceQuery(query ?? conversationId);
+    const recallQuery = normalizeQuery(evidenceQuery);
     if (recallQuery.length === 0) return undefined;
     const ephemeral = options.turnId === undefined;
     const turnId = options.turnId ?? `uncached:${randomUUID()}`;
@@ -86,7 +87,7 @@ export class MemoryRetrievalService implements MemoryStore {
       const hits = selectAutomaticRecallHits(await this.recallForTurn(turnId, recallQuery, {
         topK: AUTO_RECALL_BACKEND_HITS,
         trackAccess: false,
-      }));
+      }), { query: evidenceQuery });
       if (hits.length === 0) return undefined;
       this.recordServed(turnId, hits);
       return formatRecallBlock(hits, this.source, this.maxBytes);
@@ -248,7 +249,11 @@ export function normalizeMemoryRecallQuery(query: string): string {
 }
 
 function normalizeQuery(query: string): string {
-  return query.normalize("NFKC").trim().replace(/\s+/gu, " ").toLocaleLowerCase("en-US").slice(0, 4_000);
+  return normalizeEvidenceQuery(query).toLocaleLowerCase("en-US");
+}
+
+function normalizeEvidenceQuery(query: string): string {
+  return query.normalize("NFKC").trim().replace(/\s+/gu, " ").slice(0, 4_000);
 }
 
 function clampLimit(limit: number | undefined, fallback: number): number {

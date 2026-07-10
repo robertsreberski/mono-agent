@@ -90,7 +90,7 @@ The entity graph that BuJo capture maintains is part of the BuJo capture pipelin
 | `agent.public-name` | config | `agent.name` | `MONO_AGENT_NAME` | [Identity & soul](/context/identity-and-soul/#public-agent-name) | — |
 | `context.identity` | config | `context.identityPath` | `MONO_AGENT_IDENTITY_PATH` | [Identity & soul](/context/identity-and-soul/) | — |
 | `context.soul` | config | `context.soulPath` | `MONO_AGENT_SOUL_PATH` | [Identity & soul](/context/identity-and-soul/) | — |
-| `context.history` | auto | (sized from `runtime.maxTurns`; custom store via `code`) | `MONO_AGENT_MAX_TURNS` | [Assembly](/context/assembly/) | — |
+| `context.history` | auto | (12 messages by default; twice a positive `runtime.maxTurns`; custom store via `code`) | `MONO_AGENT_MAX_TURNS` | [Assembly](/context/assembly/) | — |
 | `skills.selected-activation` | config | `context.skillsRoot`, `context.selectedSkills` | `MONO_AGENT_SKILLS_ROOT`, `MONO_AGENT_SELECTED_SKILLS` | [Skills](/context/skills/) | [Slack team bot + MCP tools](/playbooks/slack-team-bot-mcp-tools/) |
 | `skills.byte-capping` | config | `context.skillMaxBytes` | `MONO_AGENT_SKILL_MAX_BYTES` | [Skills](/context/skills/) | — |
 

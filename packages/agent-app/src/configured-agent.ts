@@ -27,7 +27,6 @@ import type {
   RunRecorder,
 } from "@mono-agent/observability";
 import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
-import { createBroadcastRunRecorder } from "./broadcast-recorder.js";
 import {
   assertExecutionModeCompatible,
   createMonoRuntime,
@@ -47,6 +46,15 @@ import type {
   RuntimeRunOptions,
 } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
+
+import { createBroadcastRunRecorder } from "./broadcast-recorder.js";
+import { resolveMemoryRecallSettings } from "./memory-recall.js";
+import {
+  createSharedMemoryRecallRuntimeExtension,
+  isSharedRecallStore,
+  MemoryRetrievalService,
+} from "./memory-retrieval.js";
+import { composeRuntimeOptionExtensions } from "./runtime-option-extensions.js";
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
 type StaticRuntimeOptions = NonNullable<AgentHarnessOptions["runtimeOptions"]>;
@@ -100,6 +108,8 @@ export interface ConfiguredAgentHarnessOptions {
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
+  /** Best-effort diagnostic when the default MemoryRecall endpoint cannot start. */
+  readonly onMemoryRecallUnavailable?: (error: unknown) => void;
   readonly onSessionEvent?: ConfiguredAgentSessionEventHandler;
   /**
    * Factory for a runtime bound to a per-request override model (cron/webhook
@@ -366,9 +376,22 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
   // execute memory capture on `config.runtime.model` instead of
   // `config.memory.llm.model`. createConfiguredMemory builds the memory LLM its own
   // fallback-free runtime when no `memoryRuntime` is injected.
-  const memory = options.memory ?? (await createConfiguredMemory(config, {
+  const configuredMemory = options.memory ?? (await createConfiguredMemory(config, {
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
   }));
+  const memory = configuredMemoryForHarness(config, configuredMemory);
+  const memoryRecall = resolveMemoryRecallSettings(config) === undefined
+    || !(memory instanceof MemoryRetrievalService)
+    ? undefined
+    : createSharedMemoryRecallRuntimeExtension(memory, {
+        ...(options.onMemoryRecallUnavailable === undefined
+          ? {}
+          : { onUnavailable: options.onMemoryRecallUnavailable }),
+      });
+  const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
+    memoryRecall,
+    options.runtimeOptionsForRequest,
+  ]);
   const runtimeOptions = mergeStaticRuntimeOptions(
     runtimeOptionsForLocalProvider(model, config.providers?.local),
     configRuntimeFlags(config),
@@ -420,9 +443,9 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
           },
         }),
     runtimeOptions,
-    ...(options.runtimeOptionsForRequest === undefined
+    ...(runtimeOptionsForRequest === undefined
       ? {}
-      : { runtimeOptionsForRequest: options.runtimeOptionsForRequest }),
+      : { runtimeOptionsForRequest }),
     ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
@@ -447,6 +470,19 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
   });
 }
 
+function configuredMemoryForHarness(
+  config: MonoAgentConfig,
+  memory: MemoryStore | undefined,
+): MemoryStore | undefined {
+  if (memory instanceof MemoryRetrievalService || config.memory === undefined || !isSharedRecallStore(memory)) {
+    return memory;
+  }
+  return new MemoryRetrievalService(memory, {
+    maxBytes: config.memory.maxBytes,
+    source: (config.memory.backend ?? "bujo") === "supermemory" ? "supermemory" : "memory-bujo",
+  });
+}
+
 export async function createConfiguredAgentResponder(options: ConfiguredAgentResponderOptions): Promise<AgentResponder> {
   const session = options.config.runtime.session;
   return createAgentResponder({
@@ -458,8 +494,10 @@ export async function createConfiguredAgentResponder(options: ConfiguredAgentRes
   }) as AgentResponder;
 }
 
+const DEFAULT_HISTORY_MAX_MESSAGES = 12;
+
 function historyMaxMessages(maxTurns: number | undefined): number {
-  return maxTurns === undefined || maxTurns <= 0 ? 0 : maxTurns * 2;
+  return maxTurns === undefined || maxTurns <= 0 ? DEFAULT_HISTORY_MAX_MESSAGES : maxTurns * 2;
 }
 
 function hasConfiguredFallback(config: MonoAgentConfig): boolean {

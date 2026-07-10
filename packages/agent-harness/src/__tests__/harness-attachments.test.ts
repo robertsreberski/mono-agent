@@ -372,6 +372,76 @@ describe("AgentHarness attachments", () => {
     expect(activeExtensions).toBe(0);
   });
 
+  it("closes request extensions before releasing an aborted provider slot", async () => {
+    const identityPath = await identityFixture();
+    let releaseZombie!: () => void;
+    let markZombieStarted!: () => void;
+    const zombieStarted = new Promise<void>((resolve) => { markZombieStarted = resolve; });
+    const zombieGate = new Promise<void>((resolve) => { releaseZombie = resolve; });
+    let runtimeCalls = 0;
+    let activeExtensions = 0;
+    let maxActiveExtensions = 0;
+    let cleanupCalls = 0;
+    const runtime = {
+      async run(): Promise<RuntimeResult> {
+        runtimeCalls += 1;
+        if (runtimeCalls === 1) {
+          markZombieStarted();
+          await zombieGate; // Deliberately ignores abort until the test releases it.
+        }
+        return { text: "ok" };
+      },
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime,
+      model,
+      executionMode: "sdk",
+      concurrency: { maxConcurrentRuns: 1 },
+      runtimeOptionsForRequest: () => {
+        activeExtensions += 1;
+        maxActiveExtensions = Math.max(maxActiveExtensions, activeExtensions);
+        let cleaned = false;
+        return {
+          cleanup: async () => {
+            if (cleaned) return;
+            cleaned = true;
+            cleanupCalls += 1;
+            activeExtensions -= 1;
+          },
+        };
+      },
+    });
+
+    const firstAbort = new AbortController();
+    const first = harness.run({
+      conversationId: "abort-zombie",
+      userMessage: "first",
+      abortSignal: firstAbort.signal,
+    });
+    await zombieStarted;
+    expect(activeExtensions).toBe(1);
+
+    firstAbort.abort(new Error("cancelled"));
+    for (let attempt = 0; attempt < 20 && activeExtensions !== 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(activeExtensions).toBe(0);
+
+    const second = await harness.run({
+      conversationId: "after-abort",
+      userMessage: "second",
+      abortSignal: new AbortController().signal,
+    });
+    expect(second.text).toBe("ok");
+    expect(maxActiveExtensions).toBe(1);
+    expect(activeExtensions).toBe(0);
+
+    releaseZombie();
+    await expect(first).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+    expect(cleanupCalls).toBe(2);
+  });
+
   it("persists the original caption + redacted metadata to history/memory, never the extracted document body (F8)", async () => {
     const identityPath = await identityFixture();
     const attachmentsDir = await attachmentsDirFixture();

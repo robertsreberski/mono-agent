@@ -77,7 +77,7 @@ Both back the auto-provisioned `MemoryRecall` tool and the per-turn recall-into-
 BuJo ranks with embeddings + full-text BM25 fused via RRF, with relevance-first salience/insight
 weighting and no LLM call (see [Embeddings](/memory/embeddings/)). Supermemory runs its
 own hybrid search. Deliberate tool/search calls return their top-ranked hits; automatic
-context recall applies the host confidence floor and injects nothing when no result clears it.
+context recall applies the host score and answer-evidence gate and injects nothing when the stored text does not support the requested attribute.
 
 ### Latency & read-after-write
 BuJo appends the per-turn host summary synchronously and runs intelligent capture in the

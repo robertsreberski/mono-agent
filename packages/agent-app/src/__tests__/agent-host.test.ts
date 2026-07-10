@@ -14,7 +14,7 @@ import type {
   RunSummary,
   RuntimeEventLike,
 } from "@mono-agent/observability";
-import type { RunEventFrame, RunEventSink } from "@mono-agent/agent-contracts";
+import type { MemoryStore, RunEventFrame, RunEventSink } from "@mono-agent/agent-contracts";
 import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
@@ -127,6 +127,52 @@ describe("agent host composition helpers", () => {
     const summaryFile = artifactFiles.find((file) => file.endsWith(".summary.json"));
     expect(summaryFile).toBeDefined();
     expect(await readFile(join(artifactDir, summaryFile as string), "utf8")).toContain("run-host");
+  });
+
+  it("auto-provisions MemoryRecall in direct configured responders and composes caller tools", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "Configured" }));
+    const base = monoConfig({ dir, identityPath, artifactDir, memoryPath: join(dir, "memory") });
+    const config: MonoAgentConfig = {
+      ...base,
+      memory: { ...base.memory!, recallTool: { enabled: true } },
+    };
+    const memory = {
+      async load() { return undefined; },
+      async recall() { return []; },
+      async appendHostSummary(conversationId: string) {
+        return { conversationId, source: "test", bytesWritten: 0 };
+      },
+      async close() {},
+    } satisfies MemoryStore & { recall(): Promise<readonly []>; close(): Promise<void> };
+
+    const responder = await createConfiguredAgentResponder({
+      config,
+      runtime: fake.runtime,
+      memory,
+      runtimeOptionsForRequest: () => ({
+        runtimeOptions: {
+          allowedTools: ["ProposeAgentConfiguration"],
+          mcpServers: {
+            configurator: { type: "http", url: "http://127.0.0.1:9876/mcp" },
+          },
+        },
+      }),
+    });
+
+    await responder.respond(
+      { conversationId: "configuration", text: "Configure yourself", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(fake.calls[0]?.options.allowedTools).toEqual(["Read", "ProposeAgentConfiguration"]);
+    expect(fake.calls[0]?.options.mcpServers).toMatchObject({
+      "mono-agent-memory": { type: "http", url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp\//u) },
+      configurator: { type: "http", url: "http://127.0.0.1:9876/mcp" },
+    });
   });
 
   it("publishes run_started, event, and run_finished frames from the normal responder path", async () => {
@@ -773,7 +819,7 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[1]?.options.sessionKeepAlive).toBe(true);
   });
 
-  it("keeps mixed Pi/OpenCode fallback chains stateless and replays later-turn history", async () => {
+  it("replays later-turn history for stateless fallbacks when maxTurns is unlimited", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
@@ -789,6 +835,7 @@ describe("agent host composition helpers", () => {
         ...base,
         runtime: {
           ...base.runtime,
+          maxTurns: 0,
           fallbackModels: [{
             sdk: "opencode",
             provider: "github-copilot",

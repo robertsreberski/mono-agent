@@ -16,18 +16,22 @@ describe("memory benchmark", () => {
       "paraphrase",
       "update",
       "temporal",
-      "abstention",
+      "missing-attribute",
+      "out-of-domain-abstention",
       "recurring-noise",
       "alternating",
       "duplicates",
       "entity-hop",
-      "high-similarity-adjacent",
     ]));
+    expect(report.policyCategories).toContain("high-similarity-adjacent");
+    expect(report.policyCalibration.passed).toBe(true);
     expect(report.gates.passed).toBe(true);
     expect(report.quality.recallAt5).toBeGreaterThanOrEqual(0.9);
     expect(report.quality.mrr).toBeGreaterThanOrEqual(0.8);
     expect(report.quality.automaticAnswerCoverage).toBeGreaterThanOrEqual(0.9);
     expect(report.quality.abstentionRate).toBeGreaterThanOrEqual(0.9);
+    expect(report.quality.missingAttributeAbstentionRate).toBe(1);
+    expect(report.quality.outOfDomainAbstentionRate).toBe(1);
     expect(report.quality.staleRecallRate).toBeLessThanOrEqual(0.05);
     expect(report.quality.falseRecallRate).toBeLessThanOrEqual(0.05);
     expect(report.efficiency).toMatchObject({
@@ -103,6 +107,8 @@ describe("memory benchmark", () => {
       mrr: 1,
       automaticAnswerCoverage: 1,
       abstentionRate: 1,
+      missingAttributeAbstentionRate: 1,
+      outOfDomainAbstentionRate: 1,
       staleRecallRate: 0,
       falseRecallRate: 0,
     };
@@ -114,6 +120,10 @@ describe("memory benchmark", () => {
     expect(memoryBenchmarkGateResults({ ...base, abstentionRate: 0 })).toMatchObject({
       passed: false,
       checks: { abstentionRate: false },
+    });
+    expect(memoryBenchmarkGateResults(base, { passed: false })).toMatchObject({
+      passed: false,
+      checks: { policyCalibration: false },
     });
   });
 

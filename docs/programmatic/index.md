@@ -76,9 +76,9 @@ Notable options on `createConfiguredAgentResponder`:
 | `config` | `MonoAgentConfig` | Required. Drives runtime model, tools, memory, artifacts, traceability. |
 | `runtime` | `MonoRuntimeLike` | Shared runtime override; otherwise built from config. |
 | `memory` | `MemoryStore` | Inject a pre-built memory store instead of letting the host build one from `config.memory`. See [Capture and Recall](/memory/capture-and-recall/). |
-| `historyStore` | `ConversationHistoryStore` | Persist conversation history yourself (e.g. Redis) instead of the default in-memory store sized from `runtime.maxTurns`. |
+| `historyStore` | `ConversationHistoryStore` | Persist conversation history yourself (e.g. Redis) instead of the bounded default in-memory store. |
 | `runtimeOptions` | static runtime options | Static per-harness runtime options merged on every turn. |
-| `runtimeOptionsForRequest` | `(input) => extension \| Promise<extension>` | Compute **request-scoped** runtime options (extra tools, metadata) per turn from the request and `runId`. This is how `agent-app` injects the `MemoryRecall` tool and adapter send-tools. |
+| `runtimeOptionsForRequest` | `(input) => extension \| Promise<extension>` | Compute **request-scoped** runtime options (extra tools, metadata) per turn from the request and `runId`. Configured memory adds `MemoryRecall` automatically and composes it with this callback; `agent-app` also uses the callback for adapter send-tools. |
 
 :::tip
 `runtimeOptionsForRequest` returns an *extension* that is composed onto the static options — it does not replace them. Use it for per-request decisions (which tools this caller may use, request metadata for proactive notify) rather than for static policy, which belongs in config under [Tool Policy](/tools/policy/).
