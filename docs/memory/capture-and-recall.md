@@ -86,6 +86,8 @@ The agent reads memory back through a single, read-only `MemoryRecall` tool: hyb
 
 `agent-app` auto-provisions `MemoryRecall` from the single `config.memory` block when `config.memory.recallTool.enabled` is true. It exposes a request-scoped loopback MCP endpoint backed by the **same open store and retrieval service** as automatic recall. Identical normalized automatic/tool queries share one per-turn lookup; a different tool query may search again. No second SQLite handle, embedding request, or hand-maintained MCP config is involved.
 
+The endpoint is allocated only after the turn acquires a provider-concurrency slot, so queued turns do not accumulate listeners. If endpoint startup fails, the host warns and omits the explicit tool for that turn; automatic recall and the provider response continue. If the memory backend itself fails during a tool call, `MemoryRecall` returns an explicit degraded result instead of fabricated hits.
+
 ```json
 {
   "memory": {
@@ -115,7 +117,7 @@ Recall fuses two retrievers and re-ranks the result:
 - **BM25 keyword (FTS)** over the markdown entries.
 - **Vector similarity** over the configured embeddings.
 - Results are combined with **Reciprocal Rank Fusion (RRF)** and evidence strength; salience/insight are small tie-breakers. `lastAccessedAt` and access counts are telemetry only and never affect ranking.
-- Automatic recall applies a confidence floor, injects nothing for unrelated queries, and is capped at five hits / 8 KB. Deliberate `MemoryRecall` calls may inspect more results (up to the requested limit).
+- Automatic recall treats raw embedding similarity as ranking evidence, not a calibrated probability: the strongest result must clear the `0.65` absolute confidence floor, and additional results must also score at least `77%` of the top hit. This prevents semantically adjacent but non-answering memories from riding along with a strong hit. It injects nothing for unrelated queries and is capped at five hits / 8 KB. Deliberate `MemoryRecall` calls may inspect more results (up to the requested limit).
 
 You can exercise the exact same scoring offline against a memory root:
 

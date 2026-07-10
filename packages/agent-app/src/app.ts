@@ -1164,7 +1164,14 @@ class MonoAgentAppController implements MonoAgentApp {
     this.logger?.info?.("Read-only MemoryRecall tool enabled.", {
       provider: "supermemory" in settings ? "supermemory" : settings.embeddings?.provider ?? "fts-only",
     });
-    return createSharedMemoryRecallRuntimeExtension(service);
+    return createSharedMemoryRecallRuntimeExtension(service, {
+      onUnavailable: (error) => {
+        this.logger?.warn?.(
+          "MemoryRecall tool endpoint could not start; continuing without the explicit tool.",
+          { error: reasonOf(error) },
+        );
+      },
+    });
   }
 
   /**

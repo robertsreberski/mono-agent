@@ -4,7 +4,13 @@ import type { AddressInfo } from "node:net";
 
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { MemoryBlock, MemoryLoadOptions, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";
-import { MARKER_FOR } from "@mono-agent/memory/bujo";
+import {
+  AUTO_RECALL_BACKEND_HITS,
+  AUTO_RECALL_MAX_BYTES,
+  AUTO_RECALL_MAX_HITS,
+  MARKER_FOR,
+  selectAutomaticRecallHits,
+} from "@mono-agent/memory/bujo";
 
 import {
   createMemoryRecallServer,
@@ -12,11 +18,6 @@ import {
   type MemoryRecallRuntimeExtension,
   type RecallCapableStore,
 } from "./memory-recall.js";
-
-const AUTO_RECALL_MAX_BYTES = 8_000;
-const AUTO_RECALL_MAX_HITS = 5;
-const AUTO_RECALL_MIN_SCORE = 0.6;
-const MAX_BACKEND_HITS = 50;
 
 export interface SharedRecallStore extends MemoryStore, RecallCapableStore {
   /** Optional local-store telemetry hook; it must not alter relevance. */
@@ -26,6 +27,13 @@ export interface SharedRecallStore extends MemoryStore, RecallCapableStore {
 export interface MemoryRetrievalServiceOptions {
   readonly maxBytes?: number;
   readonly source?: string;
+}
+
+export interface SharedMemoryRecallRuntimeExtensionOptions {
+  /** Best-effort diagnostic when the loopback tool endpoint cannot start. */
+  readonly onUnavailable?: (error: unknown) => void;
+  /** Test seam for simulating endpoint startup failures. */
+  readonly listen?: (server: Server) => Promise<void>;
 }
 
 interface TurnCache {
@@ -75,12 +83,10 @@ export class MemoryRetrievalService implements MemoryStore {
     const ephemeral = options.turnId === undefined;
     const turnId = options.turnId ?? `uncached:${randomUUID()}`;
     try {
-      const hits = (await this.recallForTurn(turnId, recallQuery, {
-        topK: MAX_BACKEND_HITS,
+      const hits = selectAutomaticRecallHits(await this.recallForTurn(turnId, recallQuery, {
+        topK: AUTO_RECALL_BACKEND_HITS,
         trackAccess: false,
-      }))
-        .filter((hit) => hit.score >= AUTO_RECALL_MIN_SCORE)
-        .slice(0, AUTO_RECALL_MAX_HITS);
+      }));
       if (hits.length === 0) return undefined;
       this.recordServed(turnId, hits);
       return formatRecallBlock(hits, this.source, this.maxBytes);
@@ -100,7 +106,7 @@ export class MemoryRetrievalService implements MemoryStore {
     let lookup = turn.queries.get(normalized);
     if (lookup === undefined) {
       lookup = Promise.resolve(
-        this.store.recall(normalized, { topK: MAX_BACKEND_HITS, trackAccess: false }),
+        this.store.recall(normalized, { topK: AUTO_RECALL_BACKEND_HITS, trackAccess: false }),
       ) as Promise<readonly SharedRecallHit[]>;
       turn.queries.set(normalized, lookup);
     }
@@ -155,6 +161,7 @@ export class MemoryRetrievalService implements MemoryStore {
 /** Create a per-turn loopback MCP endpoint over the shared in-process service. */
 export function createSharedMemoryRecallRuntimeExtension(
   service: MemoryRetrievalService,
+  options: SharedMemoryRecallRuntimeExtensionOptions = {},
 ): (input: { readonly runId: string }) => Promise<MemoryRecallRuntimeExtension> {
   return async ({ runId }) => {
     const path = `/mcp/${randomUUID()}`;
@@ -186,39 +193,48 @@ export function createSharedMemoryRecallRuntimeExtension(
         response.end();
       });
     });
-    await listenLoopback(http);
-    const address = http.address() as AddressInfo;
-    transport = new WebStandardStreamableHTTPServerTransport({
-      sessionIdGenerator: randomUUID,
-      enableJsonResponse: true,
-      allowedHosts: [`127.0.0.1:${address.port}`],
-      enableDnsRebindingProtection: true,
-    });
     try {
+      await (options.listen ?? listenLoopback)(http);
+      const address = http.address() as AddressInfo;
+      transport = new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: randomUUID,
+        enableJsonResponse: true,
+        allowedHosts: [`127.0.0.1:${address.port}`],
+        enableDnsRebindingProtection: true,
+      });
       // The SDK's Node transport declaration is not exact-optional compatible
       // with its own base Transport under this repo's compiler settings.
       await mcp.connect(transport as never);
-    } catch (error) {
-      await closeHttpServer(http);
-      throw error;
-    }
-    let closed = false;
-    return {
-      runtimeOptions: {
-        mcpServers: {
-          [MEMORY_RECALL_MCP_SERVER_NAME]: {
-            type: "http",
-            url: `http://127.0.0.1:${address.port}${path}`,
+      let closed = false;
+      return {
+        runtimeOptions: {
+          mcpServers: {
+            [MEMORY_RECALL_MCP_SERVER_NAME]: {
+              type: "http",
+              url: `http://127.0.0.1:${address.port}${path}`,
+            },
           },
         },
-      },
-      cleanup: async () => {
-        if (closed) return;
-        closed = true;
-        await mcp.close().catch(() => undefined);
-        await closeHttpServer(http);
-      },
-    };
+        cleanup: async () => {
+          if (closed) return;
+          closed = true;
+          await mcp.close().catch(() => undefined);
+          await closeHttpServer(http);
+        },
+      };
+    } catch (error) {
+      await mcp.close().catch(() => undefined);
+      await closeHttpServer(http);
+      try {
+        options.onUnavailable?.(error);
+      } catch {
+        // Diagnostics are best-effort; a logger failure cannot fail the turn.
+      }
+      // Automatic recall already ran through MemoryRetrievalService.load(). A
+      // loopback startup failure therefore omits only the explicit tool and
+      // must not prevent the provider turn from proceeding.
+      return { runtimeOptions: { mcpServers: {} }, cleanup: async () => {} };
+    }
   };
 }
 
@@ -237,7 +253,7 @@ function normalizeQuery(query: string): string {
 
 function clampLimit(limit: number | undefined, fallback: number): number {
   if (limit === undefined || !Number.isFinite(limit)) return fallback;
-  return Math.min(MAX_BACKEND_HITS, Math.max(1, Math.trunc(limit)));
+  return Math.min(AUTO_RECALL_BACKEND_HITS, Math.max(1, Math.trunc(limit)));
 }
 
 function formatRecallBlock(

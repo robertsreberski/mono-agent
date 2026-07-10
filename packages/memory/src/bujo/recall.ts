@@ -4,9 +4,24 @@ import type { MemoryDb } from "../store/index.js";
 import { MARKER_FOR } from "./grammar.js";
 
 /** Confidence floor for automatic prompt injection. Deliberate tool recall may inspect lower scores. */
-export const AUTO_RECALL_MIN_SCORE = 0.6;
+export const AUTO_RECALL_MIN_SCORE = 0.65;
+/** Additional hits must remain close to the strongest result; raw embedding scores are not calibrated probabilities. */
+export const AUTO_RECALL_RELATIVE_SCORE = 0.77;
 export const AUTO_RECALL_MAX_HITS = 5;
 export const AUTO_RECALL_MAX_BYTES = 8_000;
+/** One lookup can satisfy automatic context and the explicit tool's maximum request. */
+export const AUTO_RECALL_BACKEND_HITS = 50;
+
+/** Select confidence-gated automatic hits from an already relevance-sorted result set. */
+export function selectAutomaticRecallHits<T extends { readonly score: number }>(
+  hits: readonly T[],
+  maxHits = AUTO_RECALL_MAX_HITS,
+): readonly T[] {
+  const topScore = hits[0]?.score;
+  if (topScore === undefined || topScore < AUTO_RECALL_MIN_SCORE) return [];
+  const floor = Math.max(AUTO_RECALL_MIN_SCORE, topScore * AUTO_RECALL_RELATIVE_SCORE);
+  return hits.filter((hit) => hit.score >= floor).slice(0, Math.max(1, Math.min(maxHits, AUTO_RECALL_MAX_HITS)));
+}
 
 export async function composeRecallBlock(
   db: MemoryDb,
@@ -15,9 +30,10 @@ export async function composeRecallBlock(
 ): Promise<MemoryBlock | undefined> {
   const maxBytes = Math.max(1, Math.min(options.maxBytes ?? AUTO_RECALL_MAX_BYTES, AUTO_RECALL_MAX_BYTES));
   const topK = Math.max(1, Math.min(options.topK ?? AUTO_RECALL_MAX_HITS, AUTO_RECALL_MAX_HITS));
-  const hits = (await db.recall(query, { topK: Math.max(topK, 8), trackAccess: false }))
-    .filter((hit) => hit.score >= AUTO_RECALL_MIN_SCORE)
-    .slice(0, topK);
+  const hits = selectAutomaticRecallHits(
+    await db.recall(query, { topK: Math.max(topK, 8), trackAccess: false }),
+    topK,
+  );
   // No hits → no block. A header-only block carries no signal and only adds
   // noise/tokens to whatever surface injects it; returning undefined lets
   // callers skip injection via their existing `block === undefined` guard.

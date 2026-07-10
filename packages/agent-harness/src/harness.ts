@@ -759,109 +759,14 @@ export class MonoAgentHarness implements AgentHarness {
     onProviderStart?: () => void,
   ): Promise<RuntimeResult> {
     const hostOnEvent = request.onEvent;
-    const policyOptions = toolPolicyToRuntimeOptions(this.options.toolPolicy ?? failClosedToolPolicy());
-    const sandboxOptions = this.options.sandboxPolicy === undefined
-      ? {}
-      : sandboxPolicyToRuntimeOptions(this.options.sandboxPolicy);
-    const requestExtension = await this.options.runtimeOptionsForRequest?.({ request, runId, context });
-    const merged = mergeRuntimeOptions(
-      policyOptions,
-      sandboxOptions,
-      this.options.runtimeOptions,
-      requestExtension?.runtimeOptions,
-    );
-    // Per-request overrides (cron job / webhook per-trigger model + effort) win
-    // over the harness defaults. These are applied AFTER the `...merged` spread so
-    // the precedence is explicit. Non-override turns are byte-for-byte unchanged.
-    const overrideModel = isRuntimeModelReference(merged.model) ? merged.model : undefined;
-    const effectiveModel = overrideModel ?? this.options.model;
-    // executionMode for an override turn: keep the host's configured mode when the
-    // override model supports it (so a host running e.g. claude in cli mode is not
-    // silently flipped to sdk for a same-family override), else fall back to that
-    // model's default mode (so a codex override under an sdk host correctly runs
-    // cli). executionMode is harness/runtime-owned — extensions cannot set it.
-    const effectiveExecutionMode = overrideModel === undefined
-      ? this.options.executionMode
-      : executionModeForOverride(overrideModel, this.options.executionMode);
-    const overrideEffort = typeof merged.effort === "string" ? merged.effort : undefined;
-    const effectiveEffort = overrideEffort ?? this.options.effort;
-    // When the override names a DIFFERENT model, run it on a runtime built for
-    // that model (override as the fallback-chain primary, configured backups
-    // after) so failover is preserved. Falls back to the shared runtime when no
-    // factory is wired (the app wires it only when fallbacks exist; a plain
-    // runtime honors the per-run model) or the model is unchanged.
-    const runtime =
-      overrideModel !== undefined &&
-      this.options.runtimeForModel !== undefined &&
-      !sameRuntimeModel(overrideModel, this.options.model)
-        ? this.options.runtimeForModel(effectiveModel, effectiveExecutionMode)
-        : this.options.runtime;
-    const runtimeOptions: RuntimeRunOptions = {
-      ...merged,
-      model: effectiveModel,
-      // Recalled memory is appended to the user message (NOT the system prompt) so
-      // it reaches the model on every turn, including resumed turns. See
-      // prepareContext for why.
-      messages: [{ role: "user", content: composeUserMessageWithMemory(request.userMessage, memory) }],
-      abortSignal: request.abortSignal,
-      ...(effectiveExecutionMode === undefined ? {} : { executionMode: effectiveExecutionMode }),
-      ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
-      ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
-      ...(this.options.maxTurns === undefined ? {} : { maxTurns: this.options.maxTurns }),
-      // Durable provider-session root (pi-native): when set, sessions persist to
-      // disk so resume recovers from there instead of re-sending full history.
-      ...(this.options.piSessionsRoot === undefined ? {} : { piSessionsRoot: this.options.piSessionsRoot }),
-      // Progressive skill disclosure (index mode): pass the discovered skill names
-      // and the skills root so pi-native's getPiBuiltinTools creates the on-demand
-      // `ReadSkill` tool. These live after the merge so request extensions cannot
-      // clobber them. Empty in 'full' mode / when no skillsRoot is set, so the
-      // tool is not created and behavior matches the legacy path.
-      ...(skillDisclosureNames.length > 0 && this.options.skillsRoot !== undefined
-        ? {
-          skills: skillDisclosureNames.map((name) => ({ name })),
-          skillsRoot: this.options.skillsRoot,
-        }
-        : {}),
-      // Session keys live after the merge so request extensions cannot
-      // clobber the harness's session decision — including forcing the keys
-      // back to undefined on fresh runs.
-      //
-      // Omitted entirely when running on a per-turn OVERRIDE runtime (a model
-      // override built via runtimeForModel): that runtime is not the one the
-      // shared session store / disposal is keyed to, so keeping a session alive
-      // on it would leak (the store disposes against the base runtime). An
-      // override turn is one-shot, so it runs stateless. Non-override turns
-      // (runtime === this.options.runtime) are byte-for-byte unchanged.
-      ...(this.sessionsEnabled() && runtime === this.options.runtime
-        ? {
-          sessionKeepAlive: true,
-          sessionIdleTimeoutMs: this.options.session?.idleTimeoutMs,
-          sessionId: resumeSessionId,
-          providerSessionId: resumeSessionId,
-        }
-        : {}),
-      onEvent: (event: RuntimeEventLike) => {
-        recorder.onEvent(event);
-        hostOnEvent?.(event);
-      },
-    };
-    // Admission control: acquire a slot only around the actual provider run.
-    // A blocked acquire holds nothing, so per-conversation queued follow-ups
-    // never occupy a concurrency slot while they wait. The acquire is abortable
-    // so a cancelled turn does not hang waiting for a slot to free up. The
-    // acquire lives INSIDE the cleanup try/finally so a rejected admission
-    // (aborted while queued) still runs requestExtension.cleanup(); release()
-    // is guarded by `acquired` so it only fires when a slot was actually taken.
+    let requestExtension: AgentHarnessRuntimeOptionsExtension | undefined;
+    // Admission precedes per-request extension setup. Extensions may allocate
+    // loopback MCP listeners or other bounded resources, so queued runs must
+    // hold none of them while waiting for a provider slot.
     let acquired = false;
-    // Release-on-abort (R10): the permit's lifetime is otherwise coupled to
-    // runtime.run() settlement, but a /cancel severs the caller without forcing
-    // settlement. An abort-ignoring, never-resolving runtime.run would then
-    // retain its maxConcurrentRuns slot forever, stalling all subsequent turns.
-    // So once a slot is held, an abort frees it promptly and lets the orphaned
-    // run finish detached — the same "settle the resource on cancel, let the
-    // zombie finish" tradeoff the live-session queue already makes. `released`
-    // makes release idempotent so the finally never double-releases (and so the
-    // resume-retry's second runRuntime at run() scope is unaffected).
+    // Release-on-abort (R10): once a slot is held, an abort frees it promptly
+    // even if the provider ignores cancellation. `released` keeps the normal
+    // finally path idempotent.
     let released = false;
     const releaseSlot = (): void => {
       if (acquired && !released) {
@@ -876,6 +781,92 @@ export class MonoAgentHarness implements AgentHarness {
         acquired = true;
         request.abortSignal.addEventListener("abort", onAbortReleaseSlot, { once: true });
       }
+      const policyOptions = toolPolicyToRuntimeOptions(this.options.toolPolicy ?? failClosedToolPolicy());
+      const sandboxOptions = this.options.sandboxPolicy === undefined
+        ? {}
+        : sandboxPolicyToRuntimeOptions(this.options.sandboxPolicy);
+      requestExtension = await this.options.runtimeOptionsForRequest?.({ request, runId, context });
+      const merged = mergeRuntimeOptions(
+        policyOptions,
+        sandboxOptions,
+        this.options.runtimeOptions,
+        requestExtension?.runtimeOptions,
+      );
+      // Per-request overrides (cron job / webhook per-trigger model + effort) win
+      // over the harness defaults. These are applied AFTER the `...merged` spread so
+      // the precedence is explicit. Non-override turns are byte-for-byte unchanged.
+      const overrideModel = isRuntimeModelReference(merged.model) ? merged.model : undefined;
+      const effectiveModel = overrideModel ?? this.options.model;
+      // executionMode for an override turn: keep the host's configured mode when the
+      // override model supports it (so a host running e.g. claude in cli mode is not
+      // silently flipped to sdk for a same-family override), else fall back to that
+      // model's default mode (so a codex override under an sdk host correctly runs
+      // cli). executionMode is harness/runtime-owned — extensions cannot set it.
+      const effectiveExecutionMode = overrideModel === undefined
+        ? this.options.executionMode
+        : executionModeForOverride(overrideModel, this.options.executionMode);
+      const overrideEffort = typeof merged.effort === "string" ? merged.effort : undefined;
+      const effectiveEffort = overrideEffort ?? this.options.effort;
+      // When the override names a DIFFERENT model, run it on a runtime built for
+      // that model (override as the fallback-chain primary, configured backups
+      // after) so failover is preserved. Falls back to the shared runtime when no
+      // factory is wired (the app wires it only when fallbacks exist; a plain
+      // runtime honors the per-run model) or the model is unchanged.
+      const runtime =
+        overrideModel !== undefined &&
+        this.options.runtimeForModel !== undefined &&
+        !sameRuntimeModel(overrideModel, this.options.model)
+          ? this.options.runtimeForModel(effectiveModel, effectiveExecutionMode)
+          : this.options.runtime;
+      const runtimeOptions: RuntimeRunOptions = {
+        ...merged,
+        model: effectiveModel,
+        // Recalled memory is appended to the user message (NOT the system prompt) so
+        // it reaches the model on every turn, including resumed turns. See
+        // prepareContext for why.
+        messages: [{ role: "user", content: composeUserMessageWithMemory(request.userMessage, memory) }],
+        abortSignal: request.abortSignal,
+        ...(effectiveExecutionMode === undefined ? {} : { executionMode: effectiveExecutionMode }),
+        ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
+        ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
+        ...(this.options.maxTurns === undefined ? {} : { maxTurns: this.options.maxTurns }),
+        // Durable provider-session root (pi-native): when set, sessions persist to
+        // disk so resume recovers from there instead of re-sending full history.
+        ...(this.options.piSessionsRoot === undefined ? {} : { piSessionsRoot: this.options.piSessionsRoot }),
+        // Progressive skill disclosure (index mode): pass the discovered skill names
+        // and the skills root so pi-native's getPiBuiltinTools creates the on-demand
+        // `ReadSkill` tool. These live after the merge so request extensions cannot
+        // clobber them. Empty in 'full' mode / when no skillsRoot is set, so the
+        // tool is not created and behavior matches the legacy path.
+        ...(skillDisclosureNames.length > 0 && this.options.skillsRoot !== undefined
+          ? {
+            skills: skillDisclosureNames.map((name) => ({ name })),
+            skillsRoot: this.options.skillsRoot,
+          }
+          : {}),
+        // Session keys live after the merge so request extensions cannot
+        // clobber the harness's session decision — including forcing the keys
+        // back to undefined on fresh runs.
+        //
+        // Omitted entirely when running on a per-turn OVERRIDE runtime (a model
+        // override built via runtimeForModel): that runtime is not the one the
+        // shared session store / disposal is keyed to, so keeping a session alive
+        // on it would leak (the store disposes against the base runtime). An
+        // override turn is one-shot, so it runs stateless. Non-override turns
+        // (runtime === this.options.runtime) are byte-for-byte unchanged.
+        ...(this.sessionsEnabled() && runtime === this.options.runtime
+          ? {
+            sessionKeepAlive: true,
+            sessionIdleTimeoutMs: this.options.session?.idleTimeoutMs,
+            sessionId: resumeSessionId,
+            providerSessionId: resumeSessionId,
+          }
+          : {}),
+        onEvent: (event: RuntimeEventLike) => {
+          recorder.onEvent(event);
+          hostOnEvent?.(event);
+        },
+      };
       // The provider call is starting: this run has left the admission-pending
       // tier (it now holds a provider slot rather than waiting for one), so
       // release its maxPendingRuns slot. Idempotent at the run() scope, so the

@@ -3,7 +3,26 @@ import { describe, expect, it } from "vitest";
 
 import { openMemoryDb } from "../../store/index.js";
 import { fakeEmbeddings } from "./helpers.js";
-import { composeRecallBlock } from "../recall.js";
+import { composeRecallBlock, selectAutomaticRecallHits } from "../recall.js";
+
+describe("selectAutomaticRecallHits", () => {
+  it("keeps a strong multi-hit answer cluster while dropping high-similarity adjacent noise", () => {
+    const hits = [
+      { id: "primary", score: 1.005 },
+      { id: "supporting", score: 0.798 },
+      { id: "adjacent-noise", score: 0.751 },
+      { id: "weak-noise", score: 0.62 },
+    ];
+
+    expect(selectAutomaticRecallHits(hits).map((hit) => hit.id)).toEqual(["primary", "supporting"]);
+  });
+
+  it("keeps a lone paraphrase hit but abstains when even the strongest result is weak", () => {
+    expect(selectAutomaticRecallHits([{ id: "paraphrase", score: 0.722 }, { id: "noise", score: 0.51 }]))
+      .toEqual([{ id: "paraphrase", score: 0.722 }]);
+    expect(selectAutomaticRecallHits([{ id: "noise", score: 0.64 }])).toEqual([]);
+  });
+});
 
 describe("composeRecallBlock", () => {
   it("renders a markdown block with the most relevant memories and a source label", async () => {

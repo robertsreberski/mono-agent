@@ -1,9 +1,12 @@
 export { createBujoMemoryStore, BujoMemoryStore } from "./store.js";
 export {
+  AUTO_RECALL_BACKEND_HITS,
   AUTO_RECALL_MAX_BYTES,
   AUTO_RECALL_MAX_HITS,
   AUTO_RECALL_MIN_SCORE,
+  AUTO_RECALL_RELATIVE_SCORE,
   composeRecallBlock,
+  selectAutomaticRecallHits,
 } from "./recall.js";
 export { rebuildFromMarkdown } from "./rebuild.js";
 export { MARKER_FOR, parseBullet, serializeBullet, parseDailyFile, serializeDailyFile } from "./grammar.js";

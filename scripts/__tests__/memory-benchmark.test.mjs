@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { runMemoryBenchmark } from "../memory-benchmark.mjs";
+import { memoryBenchmarkGateResults, runMemoryBenchmark } from "../memory-benchmark.mjs";
 
 describe("memory benchmark", () => {
   it("covers every required fast-suite scenario and passes the offline gates", async () => {
@@ -21,10 +21,13 @@ describe("memory benchmark", () => {
       "alternating",
       "duplicates",
       "entity-hop",
+      "high-similarity-adjacent",
     ]));
     expect(report.gates.passed).toBe(true);
     expect(report.quality.recallAt5).toBeGreaterThanOrEqual(0.9);
     expect(report.quality.mrr).toBeGreaterThanOrEqual(0.8);
+    expect(report.quality.automaticAnswerCoverage).toBeGreaterThanOrEqual(0.9);
+    expect(report.quality.abstentionRate).toBeGreaterThanOrEqual(0.9);
     expect(report.quality.staleRecallRate).toBeLessThanOrEqual(0.05);
     expect(report.quality.falseRecallRate).toBeLessThanOrEqual(0.05);
     expect(report.efficiency).toMatchObject({
@@ -43,30 +46,91 @@ describe("memory benchmark", () => {
     const longMemEval = join(dir, "longmemeval.json");
     const locomo = join(dir, "locomo.json");
     try {
-      await writeFile(longMemEval, JSON.stringify([{
-        question_type: "fact",
-        question: "Where is the launch office?",
-        haystack_session_ids: ["session-alpha"],
-        haystack_sessions: [[{ content: "The launch office is in Amsterdam." }]],
-        answer_session_ids: ["session-alpha"],
-      }]));
+      await writeFile(longMemEval, JSON.stringify([
+        {
+          question_id: "launch-office",
+          question_type: "fact",
+          question: "Where is the launch office?",
+          haystack_session_ids: ["session-alpha"],
+          haystack_sessions: [[{ content: "The launch office is in Amsterdam." }]],
+          answer_session_ids: ["session-alpha"],
+        },
+        {
+          question_id: "fertilizer_abs",
+          question_type: "single-session-user",
+          question: "What fertilizer should roses use?",
+          haystack_session_ids: [],
+          haystack_sessions: [],
+          answer_session_ids: [],
+        },
+      ]));
       await writeFile(locomo, JSON.stringify([{
         conversation: {
           speaker_a: "Morgan",
           session_1: [{ dia_id: "D1:1", text: "The launch office is in Amsterdam." }],
         },
-        qa: [{
-          category: "fact",
-          question: "Where is the launch office?",
-          evidence: ["D1:1"],
-        }],
+        qa: [
+          {
+            category: "fact",
+            question: "Where is the launch office?",
+            evidence: ["D1:1"],
+          },
+          {
+            category: 5,
+            question: "What fertilizer should roses use?",
+            evidence: ["D1:1"],
+          },
+          {
+            category: 3,
+            question: "Which sports car would Morgan probably prefer?",
+          },
+        ],
       }]));
 
       const longReport = await runMemoryBenchmark({ suite: "longmemeval", datasetPath: longMemEval });
       const locomoReport = await runMemoryBenchmark({ suite: "locomo", datasetPath: locomo });
 
-      expect(longReport).toMatchObject({ cases: 1, quality: { answerableCases: 1 } });
-      expect(locomoReport).toMatchObject({ cases: 1, quality: { answerableCases: 1 } });
+      expect(longReport).toMatchObject({ cases: 2, quality: { answerableCases: 1, abstentionRate: 1 } });
+      expect(locomoReport).toMatchObject({ cases: 2, quality: { answerableCases: 1, abstentionRate: 1 } });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails the gate when automatic injection finds no answers or does not abstain", () => {
+    const base = {
+      recallAt5: 1,
+      mrr: 1,
+      automaticAnswerCoverage: 1,
+      abstentionRate: 1,
+      staleRecallRate: 0,
+      falseRecallRate: 0,
+    };
+
+    expect(memoryBenchmarkGateResults({ ...base, automaticAnswerCoverage: 0 })).toMatchObject({
+      passed: false,
+      checks: { automaticAnswerCoverage: false },
+    });
+    expect(memoryBenchmarkGateResults({ ...base, abstentionRate: 0 })).toMatchObject({
+      passed: false,
+      checks: { abstentionRate: false },
+    });
+  });
+
+  it("rejects LongMemEval answer evidence that cannot map to a haystack session", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-memory-invalid-dataset-"));
+    const dataset = join(dir, "longmemeval-invalid.json");
+    try {
+      await writeFile(dataset, JSON.stringify([{
+        question_id: "broken-answer",
+        question_type: "fact",
+        question: "Where is the launch office?",
+        haystack_session_ids: ["session-alpha"],
+        haystack_sessions: [[{ content: "The launch office is in Amsterdam." }]],
+        answer_session_ids: ["missing-session"],
+      }]));
+      await expect(runMemoryBenchmark({ suite: "longmemeval", datasetPath: dataset }))
+        .rejects.toThrow("do not map to haystack_session_ids");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

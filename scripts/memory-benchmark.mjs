@@ -5,19 +5,20 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+  AUTO_RECALL_BACKEND_HITS,
   AUTO_RECALL_MAX_BYTES,
-  AUTO_RECALL_MAX_HITS,
-  AUTO_RECALL_MIN_SCORE,
+  selectAutomaticRecallHits,
 } from "../packages/memory/dist/bujo/index.js";
 import { openMemoryDb } from "../packages/memory/dist/store/index.js";
 
 export const MEMORY_BENCHMARK_GATES = Object.freeze({
   recallAt5: 0.9,
   mrr: 0.8,
+  automaticAnswerCoverage: 0.9,
+  abstentionRate: 0.9,
   staleRecallRate: 0.05,
   falseRecallRate: 0.05,
 });
-const SHARED_RETRIEVAL_SUPERSET = 50;
 
 const FAST_RECORDS = [
   record("fact-cobalt", "Morgan selected cobalt as the deployment color."),
@@ -51,10 +52,25 @@ const FAST_CASES = [
   testCase("alternating", "Remind me of Morgan's deployment color.", ["fact-cobalt"]),
 ];
 
+// Regression distribution captured from the default nomic provider: two
+// answer records form the relevant cluster while semantically adjacent records
+// still receive deceptively high absolute scores. This exercises the shared
+// automatic-selection policy in deterministic CI without pretending those
+// scores came from the deterministic embedding provider.
+const FAST_POLICY_CASES = [{
+  item: testCase("high-similarity-adjacent", "nomic score calibration probe", ["probe-answer", "probe-support"]),
+  hits: [
+    scoredHit("probe-answer", "direct answer", 1.005),
+    scoredHit("probe-support", "supporting answer", 0.798),
+    scoredHit("probe-adjacent", "semantically adjacent non-answer", 0.751),
+    scoredHit("probe-other", "other adjacent non-answer", 0.708),
+  ],
+}];
+
 export async function runMemoryBenchmark(options = {}) {
   const suite = options.suite ?? "fast";
   const fixture = suite === "fast"
-    ? { records: FAST_RECORDS, cases: FAST_CASES, staleIds: new Set(["release-old"]) }
+    ? { records: FAST_RECORDS, cases: FAST_CASES, policyCases: FAST_POLICY_CASES, staleIds: new Set(["release-old"]) }
     : await loadExternalFixture(suite, options.datasetPath);
   const root = await mkdtemp(join(tmpdir(), "mono-agent-memory-benchmark-"));
   const metrics = {
@@ -88,26 +104,32 @@ export async function runMemoryBenchmark(options = {}) {
       // Match the app-owned service: automatic recall fetches one bounded
       // superset that can also satisfy the explicit tool limit without a
       // second backend lookup for the same normalized query.
-      const hits = await db.recall(item.query, { topK: SHARED_RETRIEVAL_SUPERSET });
+      const hits = await db.recall(item.query, { topK: AUTO_RECALL_BACKEND_HITS });
       searchLatencies.push(performance.now() - started);
-      const automatic = hits
-        .filter((hit) => hit.score >= AUTO_RECALL_MIN_SCORE)
-        .slice(0, AUTO_RECALL_MAX_HITS);
+      const automatic = selectAutomaticRecallHits(hits);
       queryResults.push({ item, hits, automatic });
     }
 
-    const quality = qualityMetrics(queryResults, fixture.staleIds);
+    const policyResults = (fixture.policyCases ?? []).map(({ item, hits }) => ({
+      item,
+      hits,
+      automatic: selectAutomaticRecallHits(hits),
+    }));
+    const evaluatedResults = [...queryResults, ...policyResults];
+    const quality = qualityMetrics(evaluatedResults, fixture.staleIds);
     const audit = db.audit();
     const storageBytes = await directoryBytes(root);
     const report = {
       suite,
       provider: options.provider ?? "deterministic",
       disposableStore: true,
-      cases: fixture.cases.length,
-      categories: [...new Set(fixture.cases.map((item) => item.category))].sort(),
+      cases: evaluatedResults.length,
+      retrievalCases: fixture.cases.length,
+      policyCases: policyResults.length,
+      categories: [...new Set(evaluatedResults.map(({ item }) => item.category))].sort(),
       quality,
       efficiency: {
-        contextBytes: contextByteMetrics(queryResults),
+        contextBytes: contextByteMetrics(evaluatedResults),
         indexingLatencyMs: latencyMetrics(indexingLatencies),
         searchLatencyMs: latencyMetrics(searchLatencies),
         storageBytes,
@@ -125,7 +147,7 @@ export async function runMemoryBenchmark(options = {}) {
         duplicateRatio: audit.duplicates.ratio,
         vectorCoverage: audit.vectors.liveCoverage,
       },
-      gates: gateResults(quality),
+      gates: memoryBenchmarkGateResults(quality),
     };
     return report;
   } finally {
@@ -137,6 +159,8 @@ export async function runMemoryBenchmark(options = {}) {
 function qualityMetrics(results, staleIds) {
   const answerable = results.filter(({ item }) => item.relevantIds.length > 0);
   const recalls = { 1: [], 5: [], 8: [] };
+  const automaticRecalls = [];
+  const automaticCoverage = [];
   const reciprocalRanks = [];
   const ndcg = [];
   let staleHits = 0;
@@ -152,6 +176,11 @@ function qualityMetrics(results, staleIds) {
       const first = hits.findIndex((hit) => relevant.has(hit.record.id));
       reciprocalRanks.push(first < 0 ? 0 : 1 / (first + 1));
       ndcg.push(ndcgAt(hits.map((hit) => relevant.has(hit.record.id)), relevant.size, 8));
+      const automaticFound = new Set(automatic
+        .map((hit) => hit.record.id)
+        .filter((id) => relevant.has(id)));
+      automaticRecalls.push(automaticFound.size / relevant.size);
+      automaticCoverage.push(automaticFound.size > 0 ? 1 : 0);
     }
     for (const hit of automatic) {
       totalAutomaticHits += 1;
@@ -165,6 +194,8 @@ function qualityMetrics(results, staleIds) {
     recallAt8: mean(recalls[8]),
     mrr: mean(reciprocalRanks),
     ndcgAt8: mean(ndcg),
+    automaticRecallAt5: mean(automaticRecalls),
+    automaticAnswerCoverage: mean(automaticCoverage),
     staleRecallRate: totalAutomaticHits === 0 ? 0 : staleHits / totalAutomaticHits,
     falseRecallRate: totalAutomaticHits === 0 ? 0 : falseHits / totalAutomaticHits,
     abstentionRate: mean(results
@@ -174,10 +205,13 @@ function qualityMetrics(results, staleIds) {
   };
 }
 
-function gateResults(quality) {
+export function memoryBenchmarkGateResults(quality) {
   const checks = {
     recallAt5: quality.recallAt5 >= MEMORY_BENCHMARK_GATES.recallAt5,
     mrr: quality.mrr >= MEMORY_BENCHMARK_GATES.mrr,
+    automaticAnswerCoverage:
+      quality.automaticAnswerCoverage >= MEMORY_BENCHMARK_GATES.automaticAnswerCoverage,
+    abstentionRate: quality.abstentionRate >= MEMORY_BENCHMARK_GATES.abstentionRate,
     staleRecallRate: quality.staleRecallRate <= MEMORY_BENCHMARK_GATES.staleRecallRate,
     falseRecallRate: quality.falseRecallRate <= MEMORY_BENCHMARK_GATES.falseRecallRate,
   };
@@ -288,8 +322,21 @@ function adaptLongMemEval(value) {
       const numericIndex = typeof entry === "number" ? entry : Number(entry);
       return Number.isInteger(numericIndex) && ids[numericIndex] ? [ids[numericIndex]] : [];
     });
-    if (typeof row.question === "string" && relevant.length > 0) {
-      cases.push(testCase(String(row.question_type ?? "external"), row.question, relevant));
+    if (typeof row.question !== "string") continue;
+    const isAbstention = String(row.question_id ?? "").endsWith("_abs");
+    if (isAbstention) {
+      cases.push(testCase(String(row.question_type ?? "abstention"), row.question, []));
+      continue;
+    }
+    if (rawRelevant.length > 0 && relevant.length === 0) {
+      throw new Error(
+        `LongMemEval row ${rowIndex} has answer_session_ids that do not map to haystack_session_ids.`,
+      );
+    }
+    // A non-abstention row without answer-session evidence is not evaluable as
+    // retrieval recall. Skip it instead of treating it as a successful abstention.
+    if (relevant.length > 0) {
+      cases.push(testCase(String(row.question_type ?? "external"), row.question, [...new Set(relevant)]));
     }
   }
   return { records, cases, staleIds: new Set() };
@@ -322,6 +369,15 @@ function adaptLocomo(value) {
       }
     }
     for (const qa of Array.isArray(row.qa) ? row.qa : []) {
+      if (typeof qa.question !== "string") continue;
+      const isAdversarial = Number(qa.category) === 5 || qa.category === "adversarial";
+      if (isAdversarial) {
+        // LoCoMo category 5 is the adversarial/unanswerable class. Standard QA
+        // reports usually exclude it; this retrieval suite deliberately uses it
+        // to measure automatic-recall abstention.
+        cases.push(testCase("adversarial", qa.question, []));
+        continue;
+      }
       const evidence = (Array.isArray(qa.evidence) ? qa.evidence : [])
         .map((entry) => typeof entry === "object" && entry !== null
           ? String(entry.dia_id ?? entry.dialogue_id ?? entry.message_id ?? entry.id ?? entry.text ?? "")
@@ -331,8 +387,13 @@ function adaptLocomo(value) {
         .filter(({ item, keys }) => evidence.some((snippet) =>
           keys.has(snippet) || item.text.includes(snippet) || snippet.includes(item.text)))
         .map(({ item }) => item.id);
-      if (typeof qa.question === "string" && relevant.length > 0) {
-        cases.push(testCase(String(qa.category ?? "external"), qa.question, relevant));
+      if (evidence.length > 0 && relevant.length === 0) {
+        throw new Error(`LoCoMo row ${rowIndex} has evidence that does not map to any dialogue record.`);
+      }
+      // Ordinary rows without evidence are not necessarily unanswerable and
+      // cannot score retrieval, so leave them unevaluated.
+      if (relevant.length > 0) {
+        cases.push(testCase(String(qa.category ?? "external"), qa.question, [...new Set(relevant)]));
       }
     }
   }
@@ -344,6 +405,10 @@ function record(id, text, overrides = {}) {
     id, type: "note", status: "open", text, salience: 0.5, isInsight: false,
     createdAt: "2026-07-10T12:00:00.000Z", accessCount: 0, tags: [], source: {}, ...overrides,
   };
+}
+
+function scoredHit(id, text, score) {
+  return { score, record: record(id, text) };
 }
 
 function testCase(category, query, relevantIds, staleIds = []) {
@@ -399,6 +464,7 @@ function render(report) {
     `memory benchmark (${report.suite}, ${report.provider}, disposable store)`,
     `Recall@1/5/8 ${(q.recallAt1 * 100).toFixed(1)}% / ${(q.recallAt5 * 100).toFixed(1)}% / ${(q.recallAt8 * 100).toFixed(1)}%`,
     `MRR ${q.mrr.toFixed(3)}  nDCG@8 ${q.ndcgAt8.toFixed(3)}`,
+    `automatic Recall@5 ${(q.automaticRecallAt5 * 100).toFixed(1)}%  answer coverage ${(q.automaticAnswerCoverage * 100).toFixed(1)}%`,
     `stale ${(q.staleRecallRate * 100).toFixed(2)}%  false ${(q.falseRecallRate * 100).toFixed(2)}%  abstention ${(q.abstentionRate * 100).toFixed(1)}%`,
     `context ${e.contextBytes.total} B  search p50/p95 ${e.searchLatencyMs.p50.toFixed(3)}/${e.searchLatencyMs.p95.toFixed(3)} ms`,
     `index ${e.indexingLatencyMs.total.toFixed(3)} ms  storage ${e.storageBytes} B  embeddings ${e.embeddings.calls} calls/${e.embeddings.texts} texts, ${e.embeddings.inputTokens} tokens, $${e.embeddings.costUsd.toFixed(6)}`,

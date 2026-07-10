@@ -1,6 +1,11 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { MemoryWriteResult } from "@mono-agent/agent-contracts";
+import { createAgentHarness } from "@mono-agent/agent-harness";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -22,6 +27,13 @@ function fakeStore(options: { readonly fail?: boolean } = {}): SharedRecallStore
       if (options.fail) throw new Error("embedding endpoint offline");
       if (query.includes("unrelated")) {
         return [{ score: 0.05, record: { id: "low", text: "low confidence neighbour" } }];
+      }
+      if (query.includes("calibrated")) {
+        return [
+          { score: 1.005, record: { id: "answer", text: "direct answer" } },
+          { score: 0.751, record: { id: "adjacent", text: "high-similarity adjacent noise" } },
+          { score: 0.708, record: { id: "other", text: "other adjacent noise" } },
+        ];
       }
       return Array.from({ length: 12 }, (_, index) => ({
         score: 0.95 - index * 0.01,
@@ -65,6 +77,13 @@ describe("MemoryRetrievalService", () => {
   it("abstains from automatic injection below the confidence floor", async () => {
     const service = new MemoryRetrievalService(fakeStore());
     await expect(service.load("conversation", "unrelated topic", { turnId: "turn-2" })).resolves.toBeUndefined();
+  });
+
+  it("drops high-similarity adjacent results outside the top-relative confidence band", async () => {
+    const service = new MemoryRetrievalService(fakeStore());
+    const block = await service.load("conversation", "calibrated query", { turnId: "turn-calibrated" });
+    expect(block?.content).toContain("direct answer");
+    expect(block?.content).not.toContain("adjacent noise");
   });
 
   it("normalizes Unicode, case, and whitespace deterministically", () => {
@@ -117,6 +136,61 @@ describe("shared MemoryRecall MCP", () => {
     } finally {
       await client.close().catch(() => undefined);
       await extension.cleanup();
+    }
+  });
+
+  it("omits the tool and reports degradation when its loopback endpoint cannot start", async () => {
+    const warnings: unknown[] = [];
+    const service = new MemoryRetrievalService(fakeStore());
+    const extension = await createSharedMemoryRecallRuntimeExtension(service, {
+      listen: async () => { throw new Error("loopback unavailable"); },
+      onUnavailable: (error) => { warnings.push(error); },
+    })({ runId: "turn-startup-fail" });
+
+    expect(extension.runtimeOptions.mcpServers).toEqual({});
+    expect(warnings).toEqual([expect.objectContaining({ message: "loopback unavailable" })]);
+    await expect(extension.cleanup()).resolves.toBeUndefined();
+  });
+
+  it("continues the provider turn when the loopback endpoint cannot start", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-memory-retrieval-"));
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const warnings: unknown[] = [];
+    const seenMcpServers: unknown[] = [];
+    try {
+      const service = new MemoryRetrievalService(fakeStore());
+      const harness = createAgentHarness({
+        identityPath,
+        model: {
+          sdk: "pi",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          reference: "pi:openai-codex:gpt-5.5",
+        },
+        runtime: {
+          async run(_prompt, options) {
+            seenMcpServers.push(options.mcpServers);
+            return { text: "provider still ran" };
+          },
+        },
+        runtimeOptionsForRequest: createSharedMemoryRecallRuntimeExtension(service, {
+          listen: async () => { throw new Error("loopback unavailable"); },
+          onUnavailable: (error) => { warnings.push(error); },
+        }),
+      });
+
+      const response = await harness.run({
+        conversationId: "turn-startup-degraded",
+        userMessage: "hello",
+        abortSignal: new AbortController().signal,
+      });
+      expect(response.text).toBe("provider still ran");
+      expect(response.failure).toBeUndefined();
+      expect(seenMcpServers).toEqual([{}]);
+      expect(warnings).toHaveLength(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });
