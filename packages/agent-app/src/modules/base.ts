@@ -17,7 +17,7 @@ export const MODEL_INPUT: ModuleInput = {
 export interface BaseConfigContext {
   /** Basename of the agent folder. It is retained for path-derived defaults only. */
   readonly dirBasename: string;
-  /** Add `context.skillsRoot: "./skills"` only when a `skills/` directory exists. */
+  /** Retained for callers that inspect the target before composition. */
   readonly skillsRootExists: boolean;
 }
 
@@ -49,8 +49,9 @@ export function baseConfig(
     },
     context: {
       identityPath: "./IDENTITY.md",
-      selectedSkills: [],
-      ...(ctx.skillsRootExists ? { skillsRoot: "./skills" } : {}),
+      skillsRoot: "./skills",
+      selectedSkills: ["mono-agent-configure", "mono-agent-memory"],
+      skillDisclosure: "index",
     },
     tools: {
       allowedTools: [],

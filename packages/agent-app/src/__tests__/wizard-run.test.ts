@@ -120,6 +120,11 @@ vi.mock("@clack/prompts", () => ({
   multiselect: vi.fn(async () => nextPromptAnswer(promptMock.multiselectAnswers, "multiselect")),
   text: vi.fn(async (options: Record<string, unknown>) => {
     promptMock.textCalls.push(options);
+    // New identity-purpose prompt: existing flow tests press Enter on the
+    // supplied default so their unrelated module-input queues stay stable.
+    if (options.message === "What should this agent help with?") {
+      return options.initialValue;
+    }
     return nextPromptAnswer(promptMock.textAnswers, "text");
   }),
   password: vi.fn(async (options: Record<string, unknown>) => {
@@ -837,7 +842,10 @@ describe("wizard production flow", () => {
     expect(result.status).toBe("answers");
     if (result.status !== "answers") return;
     expect(result.answers.name).toBe("Renamed Partner");
-    expect(promptMock.textCalls).toHaveLength(1);
+    expect(promptMock.textCalls.map((call) => call.message)).toEqual([
+      "What should this agent be called?",
+      "What should this agent help with?",
+    ]);
     expect(promptMock.autocompleteCalls).toHaveLength(0);
     expect(promptMock.multiselectAnswers).toHaveLength(0);
     expect(promptMock.confirmCalls).toHaveLength(0);

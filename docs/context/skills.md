@@ -29,12 +29,31 @@ For each entry `name` in `selectedSkills`, mono-agent reads `<skillsRoot>/<name>
 | Key | Purpose | Default | Env var |
 | --- | --- | --- | --- |
 | `context.skillsRoot` | Directory that contains one subdirectory per skill | — | `MONO_AGENT_SKILLS_ROOT` |
-| `context.selectedSkills` | Exact skill names to load (each `<root>/<name>/SKILL.md`) | `[]` | `MONO_AGENT_SELECTED_SKILLS` |
+| `context.selectedSkills` | Exact skill names to load (each `<root>/<name>/SKILL.md`) | `[]` at loader level; init selects the two project skills | `MONO_AGENT_SELECTED_SKILLS` |
 | `context.skillMaxBytes` | Per-skill instruction byte cap | `48000` | `MONO_AGENT_SKILL_MAX_BYTES` |
+| `context.skillDisclosure` | `index` exposes names plus `ReadSkill`; `full` inlines every selected body | `full`; generated agents use `index` | `MONO_AGENT_SKILL_DISCLOSURE` |
 
 `MONO_AGENT_SELECTED_SKILLS` is a comma-separated list, e.g. `MONO_AGENT_SELECTED_SKILLS=research,incident-response`.
 
 The folder convention is part of the standard [agent folder layout](/config/folder-layout/): an optional `skills/` directory holding `<skill-name>/SKILL.md` per selected skill.
+
+## Skills generated with every agent
+
+`mono-agent init` creates and selects two versioned project-local skills:
+
+- `mono-agent-configure` guides the fail-closed low-risk proposal allowlist and hands paths, tiers/capture, secrets, providers, channels, plugins, MCP, sandbox/network, exporters, and unknown fields to explicit guided setup.
+- `mono-agent-memory` explains the built-in memory tiers, prerequisites, and cost/quality tradeoffs.
+
+Generated agents use `skillDisclosure: "index"`, so their names/descriptions enter the prompt while the bodies load on demand through `ReadSkill`. `ReadSkill` is shown separately from action-tool allowlists because disabling file/shell/web actions does not disable skill disclosure.
+
+The file `skills/.mono-agent-managed.json` records the installed version and SHA-256 of each managed copy. Check drift without writing, or update only unchanged managed copies:
+
+```bash
+mono-agent install-skill --project --check
+mono-agent install-skill --project --update
+```
+
+Update writes atomically and retains the previous managed files under `skills/.mono-agent-backups/`. A missing or stale unchanged copy can be repaired; an operator-modified or colliding copy is never overwritten and requires manual reconciliation. `mono-agent validate` reports managed drift.
 
 ## The per-skill byte cap
 

@@ -382,6 +382,45 @@ describe("complete readiness gate", () => {
     );
   });
 
+  it.each([
+    {
+      case: "reachable service with a missing model",
+      warning: "[WARN] Embeddings model nomic-embed-text:v1.5 not pulled — run `ollama pull nomic-embed-text:v1.5`.",
+    },
+    {
+      case: "unreachable service",
+      warning: "[WARN] Ollama not reachable at http://localhost:11434; journal memory components configured for that endpoint will fail at runtime. Start Ollama or fix the endpoint.",
+    },
+  ])("propagates the actionable memory warning for $case", ({ warning }) => {
+    const plan = {
+      ...telegramPlan(),
+      validateExpectations: [{
+        sectionId: "memory",
+        mustBe: "ok" as const,
+        note:
+          "Ollama must be reachable and contain nomic-embed-text:v1.5; if the model is missing, run `ollama pull nomic-embed-text:v1.5`.",
+      }],
+    };
+    const gate = evaluateFirstRunConfigurationReadiness({
+      plan,
+      report: report({ memory: "waiting" }, {
+        memory: {
+          label: "Memory",
+          details: [
+            "Mode: journal, path: /agent/.mono-agent/memory, writeMode: disabled.",
+            warning,
+          ],
+        },
+      }),
+      secretPersistence: { status: "not-requested", changed: false },
+    });
+
+    expect(gate.ready).toBe(false);
+    expect(gate.reasons).toHaveLength(1);
+    expect(gate.reasons[0]).toContain(warning);
+    expect(gate.reasons[0]).not.toContain("Mode: journal");
+  });
+
   it.each(["error", "disabled"] as const)(
     "does not defer a %s credential section during configuration preflight",
     (credentialStatus) => {
@@ -590,6 +629,10 @@ describe("complete readiness gate", () => {
         stagedCwd = options.cwd;
         await access(options.configPath);
         await access(join(options.cwd, "IDENTITY.md"));
+        expect(await readFile(join(options.cwd, "skills", "mono-agent-configure", "SKILL.md"), "utf8"))
+          .toContain("ProposeAgentConfiguration");
+        expect(await readFile(join(options.cwd, "skills", "mono-agent-memory", "SKILL.md"), "utf8"))
+          .toContain("# Configure memory");
         expect(options.allowFilesystemWrites).toBe(true);
         expect(options.liveness).toBe(true);
         expect(options.verifiedCredentialModelRefs).toEqual(["codex:gpt-5.6-terra"]);
@@ -967,7 +1010,7 @@ describe("complete readiness gate", () => {
     const base = telegramPlan();
     const plan = {
       ...base,
-      files: [{ path: "../escape.txt", contents: "escape" }],
+      files: [...base.files, { path: "../escape.txt", contents: "escape" }],
     };
 
     await expect(validateWizardPlanInStaging({

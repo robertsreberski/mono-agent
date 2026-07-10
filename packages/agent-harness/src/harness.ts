@@ -750,16 +750,26 @@ export class MonoAgentHarness implements AgentHarness {
     onProviderStart?: () => void,
   ): Promise<RuntimeResult> {
     const hostOnEvent = request.onEvent;
-    const policyOptions = toolPolicyToRuntimeOptions(this.options.toolPolicy ?? failClosedToolPolicy());
+    const requestExtension = await this.options.runtimeOptionsForRequest?.({ request, runId, context });
+    const policyOptions = toolPolicyToRuntimeOptions(
+      requestExtension?.toolPolicyOverride
+      ?? this.options.toolPolicy
+      ?? failClosedToolPolicy(),
+    );
     const sandboxOptions = this.options.sandboxPolicy === undefined
       ? {}
       : sandboxPolicyToRuntimeOptions(this.options.sandboxPolicy);
-    const requestExtension = await this.options.runtimeOptionsForRequest?.({ request, runId, context });
+    const staticRuntimeOptions = requestExtension?.toolPolicyOverride === undefined
+      ? this.options.runtimeOptions
+      : withoutToolPolicyOptions(this.options.runtimeOptions);
+    const requestRuntimeOptions = requestExtension?.toolPolicyOverride === undefined
+      ? requestExtension?.runtimeOptions
+      : withoutToolPolicyOptions(requestExtension.runtimeOptions);
     const merged = mergeRuntimeOptions(
       policyOptions,
       sandboxOptions,
-      this.options.runtimeOptions,
-      requestExtension?.runtimeOptions,
+      staticRuntimeOptions,
+      requestRuntimeOptions,
     );
     // Per-request overrides (cron job / webhook per-trigger model + effort) win
     // over the harness defaults. These are applied AFTER the `...merged` spread so
@@ -1048,6 +1058,22 @@ const ENDPOINT_CLEAR_KEYS: ReadonlySet<string> = new Set([
   "modelCapabilities",
   "isPrivateProvider",
 ]);
+
+const TOOL_POLICY_OPTION_KEYS: ReadonlySet<string> = new Set([
+  "allowedTools",
+  "disallowedTools",
+  "mcpServers",
+  "mcpConfigPath",
+]);
+
+function withoutToolPolicyOptions(
+  options: AgentHarnessRuntimeOptionsExtension["runtimeOptions"] | Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (options === undefined) return undefined;
+  return Object.fromEntries(
+    Object.entries(options).filter(([key]) => !TOOL_POLICY_OPTION_KEYS.has(key)),
+  );
+}
 
 function mergeRuntimeOptions(
   ...optionsList: readonly (AgentHarnessRuntimeOptionsExtension["runtimeOptions"] | Record<string, unknown> | undefined)[]

@@ -180,6 +180,20 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["install-skill", "--target", "browser"])).toThrow(/--target/u);
   });
 
+  it("parses managed project skill checks and updates", () => {
+    expect(parseCliArgs(["install-skill", "--project", "--check"])).toMatchObject({
+      command: "install-skill",
+      project: true,
+      check: true,
+    });
+    expect(parseCliArgs(["install-skill", "--project", "--update"])).toMatchObject({
+      project: true,
+      update: true,
+    });
+    expect(() => parseCliArgs(["install-skill", "--update"])).toThrow(/require.*--project/u);
+    expect(() => parseCliArgs(["install-skill", "--project", "--check", "--update"])).toThrow(/either/u);
+  });
+
   it("parses backfill flags (--run/--all/--since/--until/--include-memory/--dry-run)", () => {
     expect(parseCliArgs(["backfill", "--all", "--dry-run"])).toMatchObject({
       command: "backfill",

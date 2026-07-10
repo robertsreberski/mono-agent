@@ -22,6 +22,15 @@ export interface ChatViewOptions {
   readonly onSlashCommand: (command: string, args: string) => boolean;
   readonly logger?: { error?(message: string, metadata?: Record<string, unknown>): void };
   readonly flushIntervalMs?: number;
+  /** Marks requests as coming from the OS-owner-local in-process TUI. */
+  readonly localMode?: boolean;
+  /** Runs only after the response/presenter has fully settled. */
+  readonly onTurnSettled?: (event: ChatTurnSettledEvent) => void | Promise<void>;
+}
+
+export interface ChatTurnSettledEvent {
+  readonly configuration: boolean;
+  readonly status: "ok" | "cancelled" | "error";
 }
 
 /**
@@ -40,6 +49,12 @@ export class ChatView extends Container {
    * tracking only the latest would orphan the turn that is actually running.
    */
   private readonly activeControllers = new Set<AbortController>();
+  /**
+   * TUI turns are serialized through their full settled hook. This keeps a
+   * fast follow-up from entering a responder that the configuration hook is
+   * about to rotate and dispose.
+   */
+  private turnBoundary: Promise<void> = Promise.resolve();
   private turnCounter = 0;
   private thinkingExpandedFlag = false;
   /**
@@ -68,6 +83,8 @@ export class ChatView extends Container {
    * override string). Mirror of {@link defaultModel}; set via {@link setDefaultEffort}.
    */
   private defaultEffort: string | undefined;
+  /** The next operator-submitted turn is the single response to a configuration invitation. */
+  private nextUserTurnConfiguration = false;
 
   constructor(options: ChatViewOptions) {
     super();
@@ -208,6 +225,16 @@ export class ChatView extends Container {
     this.options.tui.requestRender();
   }
 
+  /** Start a real, recorded agent turn without rendering the host prompt as an operator message. */
+  beginConfiguration(prompt: string): void {
+    if (this.hasActiveTurn()) {
+      this.addNotice("Wait for the active turn to settle, then run /configure again.", "warning");
+      return;
+    }
+    this.nextUserTurnConfiguration = true;
+    void this.runTurn(prompt, { configuration: true, displayUser: false });
+  }
+
   private handleSubmit(raw: string): void {
     const text = raw.trim();
     if (text.length === 0) {
@@ -221,10 +248,15 @@ export class ChatView extends Container {
         return;
       }
     }
-    void this.runTurn(text);
+    const configuration = this.nextUserTurnConfiguration;
+    this.nextUserTurnConfiguration = false;
+    void this.runTurn(text, { configuration });
   }
 
-  private async runTurn(text: string): Promise<void> {
+  private async runTurn(
+    text: string,
+    options: { readonly configuration?: boolean; readonly displayUser?: boolean } = {},
+  ): Promise<void> {
     if (this.responder === undefined) {
       this.addNotice("Not connected to an agent — /agents to pick one.", "error");
       return;
@@ -235,16 +267,26 @@ export class ChatView extends Container {
     }
     this.turnCounter += 1;
     const turnId = `tui-${Date.now()}-${this.turnCounter}`;
-    this.transcript.addChild(new UserCell(text));
-    this.options.history?.append({
-      id: `${turnId}-user`,
-      role: "user",
-      text,
-      timestamp: Date.now(),
-      conversationId: this.options.conversationId,
-    });
+    if (options.displayUser !== false) {
+      this.transcript.addChild(new UserCell(text));
+      this.options.history?.append({
+        id: `${turnId}-user`,
+        role: "user",
+        text,
+        timestamp: Date.now(),
+        conversationId: this.options.conversationId,
+      });
+    }
 
     const controller = new AbortController();
+    const serializeThroughSettledHook = this.options.onTurnSettled !== undefined;
+    const previousTurnBoundary = serializeThroughSettledHook ? this.turnBoundary : Promise.resolve();
+    let releaseTurnBoundary: (() => void) | undefined;
+    if (serializeThroughSettledHook) {
+      this.turnBoundary = new Promise<void>((resolve) => {
+        releaseTurnBoundary = resolve;
+      });
+    }
     const presenter = new TurnPresenter({
       transcript: this.transcript,
       statusBar: this.options.statusBar,
@@ -261,9 +303,15 @@ export class ChatView extends Container {
     const tuiMetadata = {
       ...(this.modelOverride === undefined ? {} : { model: this.modelOverride }),
       ...(this.effortOverride === undefined ? {} : { effort: this.effortOverride }),
+      ...(this.options.localMode === true ? { local: true } : {}),
+      ...(options.configuration === true ? { configuration: true } : {}),
     };
     let status: "ok" | "cancelled" | "error" = "ok";
     try {
+      await previousTurnBoundary;
+      if (serializeThroughSettledHook && controller.signal.aborted) {
+        throw new Error("Turn cancelled before it started.");
+      }
       const response = await this.responder.respond(
         {
           conversationId: this.options.conversationId,
@@ -291,24 +339,38 @@ export class ChatView extends Container {
         this.addNotice(message, "error");
       }
     } finally {
-      this.activeControllers.delete(controller);
-      if (this.activeControllers.size === 0) {
-        this.setLoading(false);
+      try {
+        presenter.settle();
+        this.options.statusBar.setEphemeral("");
+        const answer = presenter.assistantText();
+        if (answer.length > 0 || status !== "ok") {
+          this.options.history?.append({
+            id: `${turnId}-assistant`,
+            role: "assistant",
+            text: answer,
+            timestamp: Date.now(),
+            conversationId: this.options.conversationId,
+            status,
+          });
+        }
+        this.options.tui.requestRender();
+        try {
+          await this.options.onTurnSettled?.({
+            configuration: options.configuration === true,
+            status,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.options.logger?.error?.("tui.turn.settled_hook_failed", { message });
+          this.addNotice(message, "error");
+        }
+      } finally {
+        this.activeControllers.delete(controller);
+        if (this.activeControllers.size === 0) {
+          this.setLoading(false);
+        }
+        releaseTurnBoundary?.();
       }
-      presenter.settle();
-      this.options.statusBar.setEphemeral("");
-      const answer = presenter.assistantText();
-      if (answer.length > 0 || status !== "ok") {
-        this.options.history?.append({
-          id: `${turnId}-assistant`,
-          role: "assistant",
-          text: answer,
-          timestamp: Date.now(),
-          conversationId: this.options.conversationId,
-          status,
-        });
-      }
-      this.options.tui.requestRender();
     }
   }
 
