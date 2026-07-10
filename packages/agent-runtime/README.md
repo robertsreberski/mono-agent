@@ -60,7 +60,7 @@ npm install @mono-agent/agent-runtime
 
 Peer requirements:
 
-- Node.js ≥ 20
+- Node.js ≥ 22.19.0
 - `claude` CLI on PATH (only for `executionMode: "cli"` with `claude` SDK)
 - `codex` CLI on PATH (only for `executionMode: "cli"` with `codex` SDK; override via the `codexAppServerCommand` option)
 - stable `opencode` CLI >= 1.15.0 on PATH (only for direct `opencode:<provider>:<model>` refs)

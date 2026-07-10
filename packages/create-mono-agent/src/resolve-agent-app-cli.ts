@@ -13,8 +13,8 @@ interface AgentAppManifest {
  * means this survives any install layout — npm/npx global, pnpm-linked — and any
  * future change to agent-app's bin location. We resolve it through CJS
  * `require.resolve` of `@mono-agent/agent-app/package.json` (which agent-app
- * exports), so this works on every Node ≥20 without depending on the newer
- * synchronous `import.meta.resolve` (Node 20.6+).
+ * exports), so this works throughout the supported Node range without depending on
+ * synchronous `import.meta.resolve` (available throughout the supported Node 22.19.0+ range).
  */
 export function resolveAgentAppCliEntry(from: string | URL = import.meta.url): string {
   const require = createRequire(from);

@@ -5,6 +5,9 @@
   "type": "module",
   "license": "UNLICENSED",
   "private": false,
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "exports": {
     "./store": {
       "types": "./dist/store/index.d.ts",
