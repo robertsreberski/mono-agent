@@ -56,6 +56,7 @@ import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { piAuthRecoveryCommand } from "./provider-setup.js";
 import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "./pi-auth-store-inspection.js";
 import { configuredRuntimeFallbackModels, configuredRuntimeModels } from "./runtime-routes.js";
+import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -178,7 +179,7 @@ export async function validateMonoAgentFolder(
       staticTriggerCredentialRefs,
     ));
     sections.push(await contextSection(coreConfig));
-    sections.push(await memorySection(coreConfig, liveness, allowFilesystemWrites));
+    sections.push(await memorySection(coreConfig, options.cwd, liveness, allowFilesystemWrites));
     sections.push(await toolsSection(coreConfig, options));
     sections.push(await sandboxSection(coreConfig, options.sandboxEngine));
   }
@@ -1314,6 +1315,7 @@ const DEFAULT_CONSOLIDATION_CRON = "0 */2 * * *";
 
 async function memorySection(
   config: MonoAgentConfig,
+  cwd: string,
   liveness: boolean,
   allowFilesystemWrites: boolean,
 ): Promise<ValidationSection> {
@@ -1331,6 +1333,31 @@ async function memorySection(
         label: "Memory",
         status: "error",
         details: ["[ERROR] backend 'supermemory' requires a memory.supermemory block."],
+      };
+    }
+    try {
+      const plugin = await loadSupermemoryPlugin({ cwd });
+      const validation = plugin.validateSupermemoryConfig({
+        baseUrl: sm.baseUrl,
+        container: resolveSupermemoryContainer(config),
+        ...(sm.apiKey === undefined ? {} : { apiKey: sm.apiKey }),
+        ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
+        ...(config.memory.maxBytes === undefined ? {} : { maxBytes: config.memory.maxBytes }),
+      });
+      if (!validation.valid) {
+        return {
+          id: "memory",
+          label: "Memory",
+          status: "error",
+          details: validation.errors.map((detail) => `[ERROR] ${detail}`),
+        };
+      }
+    } catch (error) {
+      return {
+        id: "memory",
+        label: "Memory",
+        status: "error",
+        details: [`[ERROR] ${error instanceof Error ? error.message : String(error)}`],
       };
     }
     return {

@@ -32,12 +32,16 @@ Each preset maps to a copy-paste [playbook](/playbooks/) that walks the same set
 | --- | --- | --- | --- |
 | `starter` | Webhook loopback, no credentials, no memory — the lowest-friction smoke agent. | low | [Webhook automation](/playbooks/webhook-automation-sync-async/) |
 | `telegram-assistant` | A Telegram bot with daily-log capture + semantic recall (BuJo memory). | medium | [Telegram personal assistant](/playbooks/telegram-personal-assistant-bujo/) |
-| `telegram-supermemory` | A Telegram bot backed by an external Supermemory server. | medium | [Telegram + Supermemory](/playbooks/telegram-supermemory-memory/) |
 | `slack-bot` | A Socket-Mode Slack bot scoped to a channel allowlist, with the send tool. | medium | [Slack team bot](/playbooks/slack-team-bot-mcp-tools/) |
 | `local-private` | Runs entirely on a local Ollama provider with journal memory — no remote calls. Light 8B default for a fast first turn. | low | [Local-only Ollama agent](/playbooks/local-only-ollama-agent/) |
 | `code-sandbox` | Native `srt` sandbox with workspace-only filesystem and code tools; fails closed without `srt`. | medium | [Sandboxed code agent](/playbooks/sandboxed-code-agent/) |
 
 Risk levels reflect blast radius, not difficulty: `low` presets expose nothing beyond loopback and need at most a model key; `medium` presets talk to external services, hold channel credentials, or run shell/file tools you should read before running.
+
+Supermemory is no longer a core preset. Install the exact matching
+`@mono-agent/memory-supermemory` plugin, then use its bundled
+`mono-agent-supermemory` skill or the [Telegram + Supermemory
+playbook](/playbooks/telegram-supermemory-memory/) to apply the explicit config.
 
 ## Capability modules
 
@@ -113,6 +117,6 @@ The old recipe surface still works, mapped forward:
 
 - `mono-agent recipes list | show <id>` → alias of `mono-agent presets list | show <id>`.
 - `mono-agent setup` → alias of `mono-agent init`.
-- `mono-agent init --recipe <id>` and `mono-agent validate --recipe <id>` → the deprecated `--recipe` flag maps to the preset that replaced the recipe (with a deprecation notice), so `minimal-webhook` → `starter`, `personal-telegram-bujo` → `telegram-assistant`, `personal-telegram-supermemory` → `telegram-supermemory`, `slack-team-bot` → `slack-bot`, `local-ollama-private` → `local-private`, and `sandboxed-code-agent` → `code-sandbox`. The `local-lmstudio-private` recipe is retired (mapping it onto the Ollama-based `local-private` preset would silently swap the engine and memory tier); reach LM Studio via `mono-agent init --model pi:lmstudio:<id>`, which auto-adds the `provider:lmstudio` module, or the wizard's "Other…" model choice.
+- `mono-agent init --recipe <id>` and `mono-agent validate --recipe <id>` → the deprecated `--recipe` flag maps to the preset that replaced the recipe (with a deprecation notice), so `minimal-webhook` → `starter`, `personal-telegram-bujo` → `telegram-assistant`, `slack-team-bot` → `slack-bot`, `local-ollama-private` → `local-private`, and `sandboxed-code-agent` → `code-sandbox`. `personal-telegram-supermemory` is retired from core because its backend is now an explicitly installed plugin; use the plugin skill/playbook. The `local-lmstudio-private` recipe is also retired (mapping it onto the Ollama-based `local-private` preset would silently swap the engine and memory tier); reach LM Studio via `mono-agent init --model pi:lmstudio:<id>`, which auto-adds the `provider:lmstudio` module, or the wizard's "Other…" model choice.
 
 The fully-retired blueprints — `full-safe`, `full-local-power`, `openai-api-gateway`, `cron-digest`, `a2a-provider`, and `phoenix-observed` — have no replacement preset. `--recipe` errors with a pointer to the wizard, because each is now either a single wizard choice (enable the `channel:openai-api`, `channel:cron`, `channel:a2a`, or `observability:phoenix` module) or a hand-assembled config the [composer skill](/context/skills/) builds from the capability modules and [playbooks](/playbooks/).

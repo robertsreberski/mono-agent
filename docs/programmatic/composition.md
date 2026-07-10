@@ -73,14 +73,23 @@ const config = await loadMonoAgentConfigWithSources({
   jsonPath: "./mono-agent.config.json",
 });
 
-const responder = await createConfiguredAgentResponder({ config });
+const responder = await createConfiguredAgentResponder({
+  config,
+  cwd: process.cwd(),
+});
 ```
+
+For `memory.backend: "supermemory"`, install the exact matching
+`@mono-agent/memory-supermemory` plugin first. The app imports it only when that
+backend is selected and reports the exact matching-version install command when
+it is absent; other configurations keep it outside the app dependency closure.
 
 `ConfiguredAgentResponderOptions` (a superset of `ConfiguredAgentHarnessOptions`) lets you override the dependencies the config would otherwise build:
 
 | Option | Type | Purpose |
 | --- | --- | --- |
 | `config` | `MonoAgentConfig` | **Required.** The loaded config |
+| `cwd` | `string` | Agent folder used to resolve agent-local optional plugins (defaults to `process.cwd()`) |
 | `runtime` | `MonoRuntimeLike` | Inject a custom or shared runtime instead of building one from `runtime.model` |
 | `model` / `executionMode` | `RuntimeModelReference` / `string` | Override the config's primary model / execution mode |
 | `memory` | `MemoryStore` | Supply a memory store instead of provisioning from `config.memory` |
@@ -115,7 +124,7 @@ Notes:
 
 ## Custom memory stores
 
-The built-in memory tiers are config-driven: `memory.mode: "lite" | "journal" | "bujo"` for local storage, or `memory.backend: "supermemory"` for the Supermemory adapter. Anything else is a code capability: implement the structural `MemoryStore` contract from `@mono-agent/agent-contracts` and inject it into the configured composition layer.
+The built-in memory tiers are config-driven through `memory.mode: "lite" | "journal" | "bujo"` for local storage. The optional Supermemory plugin retains its config-first route at `memory.backend: "supermemory"` after its matching package is installed. Anything else is a code capability: implement the structural `MemoryStore` contract from `@mono-agent/agent-contracts` and inject it into the configured composition layer.
 
 ```ts
 import type { MemoryStore } from "@mono-agent/agent-contracts";

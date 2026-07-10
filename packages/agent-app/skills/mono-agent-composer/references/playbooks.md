@@ -232,7 +232,7 @@ const ext = createCollaboratorToolRuntimeExtension({
   }
 }
 ```
-**Steps:** run `supermemory-server`, save its `sm_...` key in `.env`, `mono-agent init --preset telegram-supermemory --yes`, add Telegram token/chat id, `validate`, `start`.
+**Steps:** install the exact `@mono-agent/memory-supermemory` version matching agent-app, run `supermemory-server`, save its `sm_...` key in `.env`, add the explicit memory block plus Telegram token/chat id, `validate`, `start`.
 **Smoke:** send a fact, wait for ingestion, then ask a paraphrased question; confirm the run shows `MemoryRecall` returning Supermemory hits.
 
 ## 14. Fully local LM Studio agent
