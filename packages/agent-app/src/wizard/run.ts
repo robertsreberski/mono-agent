@@ -734,7 +734,7 @@ async function collectInteractiveFromSeed(
             options: memorySelectOptions({
               includeOptionalPlugins:
                 draft.memory === "memory:supermemory"
-                || isSupermemoryPluginInstalled(),
+                || isSupermemoryPluginInstalled({ cwd: ctx.cwd }),
             }),
             initialValue: draft.memory ?? "",
           });

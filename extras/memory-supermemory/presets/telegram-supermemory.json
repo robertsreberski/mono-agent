@@ -1,9 +1,0 @@
-{
-  "id": "telegram-supermemory",
-  "description": "Telegram agent using the optional Supermemory plugin.",
-  "requiresPackage": "@mono-agent/memory-supermemory",
-  "answers": {
-    "channels": ["channel:telegram"],
-    "memory": "memory:supermemory"
-  }
-}

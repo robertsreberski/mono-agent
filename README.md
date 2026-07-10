@@ -83,7 +83,7 @@ curl -s http://127.0.0.1:<PORT>/webhook/invoke \
 
 ### Presets & the setup wizard
 
-`mono-agent init` composes an agent from **capability modules** (channels, built-in memory tiers, sandbox, observability) and walks you through the tool allowlist so the agent can actually do something. **Presets** are saved answer-sets for five built-in shapes — `starter` (webhook smoke agent), `telegram-assistant` (BuJo memory), `slack-bot`, `local-private` (Ollama), and `code-sandbox`. Optional packages such as Supermemory ship their own setup skill/preset instead of making an unavailable service look built in. Each core preset prints its generated config with secrets externalized to `.env.example`, and mirrors a copy-paste playbook in [`docs/playbooks/`](./docs/playbooks/):
+`mono-agent init` composes an agent from **capability modules** (channels, built-in memory tiers, sandbox, observability) and walks you through the tool allowlist so the agent can actually do something. **Presets** are saved answer-sets for five built-in shapes — `starter` (webhook smoke agent), `telegram-assistant` (BuJo memory), `slack-bot`, `local-private` (Ollama), and `code-sandbox`. Optional packages such as Supermemory ship their own setup skill instead of making an unavailable service look built in. Each core preset prints its generated config with secrets externalized to `.env.example`, and mirrors a copy-paste playbook in [`docs/playbooks/`](./docs/playbooks/):
 
 ```bash
 mono-agent presets list

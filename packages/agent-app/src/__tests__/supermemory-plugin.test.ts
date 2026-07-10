@@ -25,10 +25,50 @@ describe("optional Supermemory plugin loading", () => {
   it("loads a structurally valid installed plugin", async () => {
     const createSupermemoryStore = () => ({}) as never;
     const validateSupermemoryConfig = () => ({ valid: true, errors: [] });
-    await expect(loadSupermemoryPlugin(async (specifier) => {
-      expect(specifier).toMatch(/memory-supermemory\/dist\/index\.js$/u);
-      return { createSupermemoryStore, validateSupermemoryConfig };
+    await expect(loadSupermemoryPlugin({
+      importModule: async (specifier) => {
+        expect(specifier).toMatch(/memory-supermemory\/dist\/index\.js$/u);
+        return { createSupermemoryStore, validateSupermemoryConfig };
+      },
     })).resolves.toEqual({ createSupermemoryStore, validateSupermemoryConfig });
+  });
+
+  it("prefers a plugin installed in the explicit agent folder", async () => {
+    const agentRoot = mkdtempSync(join(tmpdir(), "mono-agent-root-"));
+    temporaryDirectories.push(agentRoot);
+    const packageRoot = join(
+      agentRoot,
+      "node_modules",
+      "@mono-agent",
+      "memory-supermemory",
+    );
+    mkdirSync(join(packageRoot, "dist"), { recursive: true });
+    writeFileSync(
+      join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: SUPERMEMORY_PLUGIN_PACKAGE,
+        version: agentAppPackageVersion(),
+        type: "module",
+        exports: {
+          ".": { import: "./dist/index.js" },
+          "./package.json": "./package.json",
+        },
+      }),
+      "utf8",
+    );
+    writeFileSync(
+      join(packageRoot, "dist", "index.js"),
+      [
+        "export const marker = 'agent-local';",
+        "export const createSupermemoryStore = () => ({});",
+        "export const validateSupermemoryConfig = () => ({ valid: true, errors: [] });",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await expect(loadSupermemoryPlugin({ cwd: agentRoot })).resolves.toMatchObject({
+      marker: "agent-local",
+    });
   });
 
   it("turns only a missing plugin into an exact matching-version install action", async () => {
@@ -37,28 +77,33 @@ describe("optional Supermemory plugin loading", () => {
       { code: "ERR_MODULE_NOT_FOUND" },
     );
     let imported = false;
-    await expect(loadSupermemoryPlugin(
-      async () => {
+    await expect(loadSupermemoryPlugin({
+      importModule: async () => {
         imported = true;
         return {};
       },
-      () => { throw missing; },
-    )).rejects.toThrow(
+      resolveModule: () => { throw missing; },
+    })).rejects.toThrow(
       `npm install @mono-agent/memory-supermemory@${agentAppPackageVersion()}`,
     );
     expect(imported).toBe(false);
     expect(missingSupermemoryPluginMessage()).toContain("optional @mono-agent/memory-supermemory plugin");
   });
 
-  it("preserves initialization failures from an installed plugin", async () => {
-    const failure = new Error("plugin initialization failed");
-    await expect(loadSupermemoryPlugin(async () => {
-      throw failure;
+  it("preserves internal module-not-found failures from an installed plugin", async () => {
+    const pluginManifest = fakePluginManifest(agentAppPackageVersion());
+    const failure = Object.assign(
+      new Error("Cannot find package 'internal-plugin-dependency'"),
+      { code: "ERR_MODULE_NOT_FOUND" },
+    );
+    await expect(loadSupermemoryPlugin({
+      importModule: async () => { throw failure; },
+      resolveModule: () => pluginManifest,
     })).rejects.toBe(failure);
   });
 
   it("rejects an incompatible package instead of pretending it loaded", async () => {
-    await expect(loadSupermemoryPlugin(async () => ({}))).rejects.toThrow(
+    await expect(loadSupermemoryPlugin({ importModule: async () => ({}) })).rejects.toThrow(
       /does not export the expected store and validation API/u,
     );
   });
@@ -74,32 +119,32 @@ describe("optional Supermemory plugin loading", () => {
     const validateSupermemoryConfig = () => ({ valid: true, errors: [] });
     let imported = false;
 
-    await expect(loadSupermemoryPlugin(
-      async () => {
+    await expect(loadSupermemoryPlugin({
+      importModule: async () => {
         imported = true;
         return { createSupermemoryStore, validateSupermemoryConfig };
       },
-      () => pluginManifest,
-    )).rejects.toThrow(
+      resolveModule: () => pluginManifest,
+    })).rejects.toThrow(
       `@mono-agent/memory-supermemory@9.9.9 does not match @mono-agent/agent-app@${agentAppPackageVersion()}`,
     );
     expect(imported).toBe(false);
-    expect(isSupermemoryPluginInstalled(() => pluginManifest)).toBe(false);
+    expect(isSupermemoryPluginInstalled({ resolveModule: () => pluginManifest })).toBe(false);
   });
 
   it("fails closed before importing a plugin with unverifiable version metadata", async () => {
     const pluginManifest = fakePluginManifest(undefined);
     let imported = false;
 
-    await expect(loadSupermemoryPlugin(
-      async () => {
+    await expect(loadSupermemoryPlugin({
+      importModule: async () => {
         imported = true;
         return {};
       },
-      () => pluginManifest,
-    )).rejects.toThrow(/version cannot be verified/u);
+      resolveModule: () => pluginManifest,
+    })).rejects.toThrow(/version cannot be verified/u);
     expect(imported).toBe(false);
-    expect(isSupermemoryPluginInstalled(() => pluginManifest)).toBe(false);
+    expect(isSupermemoryPluginInstalled({ resolveModule: () => pluginManifest })).toBe(false);
   });
 
   function fakePluginManifest(version: string | undefined): string {

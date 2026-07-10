@@ -26,6 +26,8 @@ The package also ships `skills/mono-agent-supermemory/SKILL.md`, which guides a
 local configuration agent through service selection, privacy disclosure,
 validation, and a real recall smoke test. Installing the package never enables
 the backend by itself; `memory.backend: "supermemory"` remains the explicit opt-in.
+There is deliberately no separate plugin-preset loader: an installed plugin is
+offered by the normal wizard, while the skill owns later configuration changes.
 
 ```ts
 import { createSupermemoryStore } from "@mono-agent/memory-supermemory";

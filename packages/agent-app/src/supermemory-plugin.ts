@@ -39,13 +39,22 @@ export interface SupermemoryPluginModule {
 }
 
 export type ImportOptionalPlugin = (specifier: string) => Promise<unknown>;
-export type ResolveOptionalPlugin = (specifier: string) => string;
+export type ResolveOptionalPlugin = (specifier: string, cwd: string) => string;
+
+export interface SupermemoryPluginResolutionOptions {
+  /** Agent folder whose local node_modules should take precedence. */
+  readonly cwd?: string;
+  /** Test seam; production uses dynamic import of the resolved entry point. */
+  readonly importModule?: ImportOptionalPlugin;
+  /** Test seam; production resolves the package manifest from cwd, then the app install. */
+  readonly resolveModule?: ResolveOptionalPlugin;
+}
 
 const importOptionalPlugin: ImportOptionalPlugin = async (specifier) =>
   await import(/* @vite-ignore */ specifier);
-const resolveOptionalPlugin: ResolveOptionalPlugin = (specifier) => {
+const resolveOptionalPlugin: ResolveOptionalPlugin = (specifier, cwd) => {
   const request = `${specifier}/package.json`;
-  const searchRoots = [join(process.cwd(), "package.json"), import.meta.url];
+  const searchRoots = [join(cwd, "package.json"), import.meta.url];
   let lastError: unknown;
   for (const root of searchRoots) {
     try {
@@ -64,12 +73,14 @@ const resolveOptionalPlugin: ResolveOptionalPlugin = (specifier) => {
  * their original cause instead of being mislabeled as absence.
  */
 export async function loadSupermemoryPlugin(
-  importModule: ImportOptionalPlugin = importOptionalPlugin,
-  resolveModule: ResolveOptionalPlugin = resolveOptionalPlugin,
+  options: SupermemoryPluginResolutionOptions = {},
 ): Promise<SupermemoryPluginModule> {
+  const cwd = options.cwd ?? process.cwd();
+  const importModule = options.importModule ?? importOptionalPlugin;
+  const resolveModule = options.resolveModule ?? resolveOptionalPlugin;
   let manifestPath: string;
   try {
-    manifestPath = resolveModule(SUPERMEMORY_PLUGIN_PACKAGE);
+    manifestPath = resolveModule(SUPERMEMORY_PLUGIN_PACKAGE, cwd);
   } catch (error) {
     throw new Error(missingSupermemoryPluginMessage(), { cause: error });
   }
@@ -90,14 +101,10 @@ export async function loadSupermemoryPlugin(
   }
 
   let loaded: unknown;
-  try {
-    loaded = await importModule(pluginEntrySpecifier(manifestPath));
-  } catch (error) {
-    if (!isMissingSupermemoryPlugin(error)) {
-      throw error;
-    }
-    throw new Error(missingSupermemoryPluginMessage(), { cause: error });
-  }
+  // Manifest resolution above already proved that the plugin is installed.
+  // Preserve import failures verbatim: a missing internal dependency/file is a
+  // broken installed plugin, not an absent package and must not be mislabeled.
+  loaded = await importModule(pluginEntrySpecifier(manifestPath));
 
   if (!isSupermemoryPluginModule(loaded)) {
     throw new Error(
@@ -110,11 +117,13 @@ export async function loadSupermemoryPlugin(
 
 /** True only when a resolvable, lockstep-compatible plugin is installed. */
 export function isSupermemoryPluginInstalled(
-  resolveModule: ResolveOptionalPlugin = resolveOptionalPlugin,
+  options: Omit<SupermemoryPluginResolutionOptions, "importModule"> = {},
 ): boolean {
+  const cwd = options.cwd ?? process.cwd();
+  const resolveModule = options.resolveModule ?? resolveOptionalPlugin;
   let manifestPath: string;
   try {
-    manifestPath = resolveModule(SUPERMEMORY_PLUGIN_PACKAGE);
+    manifestPath = resolveModule(SUPERMEMORY_PLUGIN_PACKAGE, cwd);
   } catch {
     return false;
   }
@@ -124,10 +133,12 @@ export function isSupermemoryPluginInstalled(
 }
 
 export function installedSupermemoryPluginVersion(
-  resolveModule: ResolveOptionalPlugin = resolveOptionalPlugin,
+  options: Omit<SupermemoryPluginResolutionOptions, "importModule"> = {},
 ): string | undefined {
+  const cwd = options.cwd ?? process.cwd();
+  const resolveModule = options.resolveModule ?? resolveOptionalPlugin;
   try {
-    return pluginVersionFromManifest(resolveModule(SUPERMEMORY_PLUGIN_PACKAGE));
+    return pluginVersionFromManifest(resolveModule(SUPERMEMORY_PLUGIN_PACKAGE, cwd));
   } catch {
     return undefined;
   }
@@ -194,15 +205,4 @@ function isSupermemoryPluginModule(value: unknown): value is SupermemoryPluginMo
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isMissingSupermemoryPlugin(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-  const code = "code" in error
-    ? (error as Error & { readonly code?: unknown }).code
-    : undefined;
-  return code === "ERR_MODULE_NOT_FOUND"
-    && error.message.includes(SUPERMEMORY_PLUGIN_PACKAGE);
 }

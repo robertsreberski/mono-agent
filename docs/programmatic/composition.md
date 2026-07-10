@@ -73,7 +73,10 @@ const config = await loadMonoAgentConfigWithSources({
   jsonPath: "./mono-agent.config.json",
 });
 
-const responder = await createConfiguredAgentResponder({ config });
+const responder = await createConfiguredAgentResponder({
+  config,
+  cwd: process.cwd(),
+});
 ```
 
 For `memory.backend: "supermemory"`, install the exact matching
@@ -86,6 +89,7 @@ it is absent; other configurations keep it outside the app dependency closure.
 | Option | Type | Purpose |
 | --- | --- | --- |
 | `config` | `MonoAgentConfig` | **Required.** The loaded config |
+| `cwd` | `string` | Agent folder used to resolve agent-local optional plugins (defaults to `process.cwd()`) |
 | `runtime` | `MonoRuntimeLike` | Inject a custom or shared runtime instead of building one from `runtime.model` |
 | `model` / `executionMode` | `RuntimeModelReference` / `string` | Override the config's primary model / execution mode |
 | `memory` | `MemoryStore` | Supply a memory store instead of provisioning from `config.memory` |
