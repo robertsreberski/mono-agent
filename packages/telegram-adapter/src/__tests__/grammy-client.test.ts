@@ -93,6 +93,24 @@ describe("createGrammyTelegramApi", () => {
     expect(result).toBe(true);
   });
 
+  it("editMessageText forwards reply_markup to grammY's options", async () => {
+    const { api, calls } = recordingApi({ editMessageText: () => true });
+    const client = createGrammyTelegramApi(api);
+
+    const reply_markup = { inline_keyboard: [[{ text: "Yes", callback_data: "ask:0" }]] };
+    const result = await client.editMessageText({
+      chat_id: 1,
+      message_id: 9,
+      text: "x",
+      parse_mode: "MarkdownV2",
+      reply_markup,
+    });
+
+    expect(calls[0]?.args.slice(0, 3)).toEqual([1, 9, "x"]);
+    expect(calls[0]?.args[3]).toEqual({ parse_mode: "MarkdownV2", reply_markup });
+    expect(result).toBe(true);
+  });
+
   it("routes inline-message edits to editMessageTextInline", async () => {
     const { api, calls } = recordingApi({ editMessageTextInline: () => true });
     const client = createGrammyTelegramApi(api);

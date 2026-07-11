@@ -917,15 +917,27 @@ export class MemoryDb {
     };
   }
 
+  /**
+   * Mirror a canonical entity record into the active index as a total overwrite.
+   * Callers pass the exact merged record produced by `appendGraphBatch` (whose
+   * `mergeEntityRecord` is the single owner of field-preservation), so every
+   * column — including `created_at` and a cleared `summary`/`type`/`updated_at` —
+   * converges to that record. This write preserves nothing on its own: a NULL
+   * incoming value clears the column rather than keeping the prior one. That is
+   * what lets `assertDbReplayOutcome`'s exact-mirror check converge and self-heal
+   * a row that diverged from its `graph.jsonl` canonical line (e.g. one predating a
+   * memory rework), instead of wedging the capture outbox forever.
+   */
   upsertEntity(entity: EntityRecord): void {
     this.db.prepare(
       `INSERT INTO entities (id, name, type, summary, created_at, updated_at)
        VALUES (@id, @name, @type, @summary, @created_at, @updated_at)
        ON CONFLICT(id) DO UPDATE SET
          name = excluded.name,
-         type = COALESCE(excluded.type, entities.type),
-         summary = COALESCE(excluded.summary, entities.summary),
-         updated_at = COALESCE(excluded.updated_at, entities.updated_at)`,
+         type = excluded.type,
+         summary = excluded.summary,
+         created_at = excluded.created_at,
+         updated_at = excluded.updated_at`,
     ).run({
       id: entity.id,
       name: entity.name,

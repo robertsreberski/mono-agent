@@ -507,6 +507,78 @@ describe("self-hosted Bot API server config", () => {
     ).rejects.toThrow(/ATTACHMENT_MAX_BYTES/u);
   });
 
+  it("layers telegram.transcription from JSON and env", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        telegram: {
+          enabled: true,
+          botToken: "123456:json-token",
+          allowAllChats: true,
+          transcription: {
+            endpoint: "http://localhost:50060/v1/audio/transcriptions",
+            model: "large-v3",
+            language: "en",
+            timeoutMs: 240000,
+          },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const fromJson = await loadTelegramAdapterConfig({ env: {}, jsonPath: path });
+    expect(fromJson.transcription).toEqual({
+      endpoint: "http://localhost:50060/v1/audio/transcriptions",
+      model: "large-v3",
+      language: "en",
+      timeoutMs: 240000,
+    });
+
+    // Env wins for the fields it sets (endpoint + model); an unset env var falls
+    // back to the JSON value, so `language: "en"` is still layered in from JSON.
+    const fromEnv = await loadTelegramAdapterConfig({
+      env: {
+        MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT: "http://localhost:9000/v1/audio/transcriptions",
+        MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL: "small",
+      },
+      jsonPath: path,
+    });
+    expect(fromEnv.transcription).toEqual({
+      endpoint: "http://localhost:9000/v1/audio/transcriptions",
+      model: "small",
+      language: "en",
+      timeoutMs: 240000,
+    });
+  });
+
+  it("rejects an invalid transcription endpoint URL", async () => {
+    await expect(
+      loadTelegramAdapterConfig({
+        env: {
+          MONO_AGENT_TELEGRAM_ENABLED: "true",
+          MONO_AGENT_TELEGRAM_BOT_TOKEN: "123456:env-token",
+          MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS: "true",
+          MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT: "not-a-url",
+          MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL: "large-v3",
+        },
+      }),
+    ).rejects.toThrow(/TRANSCRIPTION_ENDPOINT|transcription\.endpoint/u);
+  });
+
+  it("requires a model when the transcription endpoint is set", async () => {
+    await expect(
+      loadTelegramAdapterConfig({
+        env: {
+          MONO_AGENT_TELEGRAM_ENABLED: "true",
+          MONO_AGENT_TELEGRAM_BOT_TOKEN: "123456:env-token",
+          MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS: "true",
+          MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT: "http://localhost:50060/v1/audio/transcriptions",
+        },
+      }),
+    ).rejects.toThrow(/TRANSCRIPTION_MODEL|transcription\.model/u);
+  });
+
   it("passes apiRoot and attachments through redaction verbatim", async () => {
     const config = await loadTelegramAdapterConfig({
       env: {

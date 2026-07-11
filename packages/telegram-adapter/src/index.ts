@@ -19,6 +19,7 @@ export type {
   TelegramUpdate,
   TelegramUser,
   TelegramVideo,
+  TelegramVideoNote,
   TelegramVoice,
 } from "./types.js";
 
@@ -59,6 +60,7 @@ export type {
 export {
   DEFAULT_ATTACHMENT_MAX_BYTES,
   DEFAULT_ATTACHMENT_MIME_ALLOWLIST,
+  TELEGRAM_TRANSCRIPTION_UNAVAILABLE_NOTE,
   downloadTelegramAttachments,
 } from "./adapter.js";
 export type {
@@ -82,8 +84,15 @@ export type {
   TelegramPhotoAttachmentSize,
   TelegramRequestMetadata,
   TelegramVideoAttachment,
+  TelegramVideoNoteAttachment,
   TelegramVoiceAttachment,
 } from "./adapter.js";
+
+export { createOpenAiTranscriber } from "./transcription.js";
+export type {
+  TelegramTranscriber,
+  TelegramTranscriptionConfig,
+} from "./transcription.js";
 
 export { startTelegramAdapter } from "./start.js";
 export type {

@@ -34,6 +34,7 @@ import type {
   TelegramAdapterStartOptions,
   TelegramAdapterStartResult,
   TelegramChatId,
+  TelegramTranscriptionConfig,
 } from "@mono-agent/telegram-adapter";
 import type {
   TuiAdapterConfig,
@@ -282,18 +283,29 @@ export function createTelegramChannelDriver(
 
 /**
  * Download-path attachment options from config (`maxUploadBytes` stays with the
- * send tools, which reload the config themselves).
+ * send tools, which reload the config themselves). Auto-transcription config is
+ * forwarded here too so inbound audio gets an inlined transcript.
  */
 function telegramAttachmentOptions(
   config: TelegramAdapterConfig,
-): { maxBytes?: number; downloadTimeoutMs?: number } | undefined {
+): {
+  maxBytes?: number;
+  downloadTimeoutMs?: number;
+  transcription?: TelegramTranscriptionConfig;
+} | undefined {
   const attachments = config.attachments;
-  if (attachments?.maxBytes === undefined && attachments?.downloadTimeoutMs === undefined) {
+  const transcription = config.transcription;
+  if (
+    attachments?.maxBytes === undefined &&
+    attachments?.downloadTimeoutMs === undefined &&
+    transcription === undefined
+  ) {
     return undefined;
   }
   return {
-    ...(attachments.maxBytes === undefined ? {} : { maxBytes: attachments.maxBytes }),
-    ...(attachments.downloadTimeoutMs === undefined ? {} : { downloadTimeoutMs: attachments.downloadTimeoutMs }),
+    ...(attachments?.maxBytes === undefined ? {} : { maxBytes: attachments.maxBytes }),
+    ...(attachments?.downloadTimeoutMs === undefined ? {} : { downloadTimeoutMs: attachments.downloadTimeoutMs }),
+    ...(transcription === undefined ? {} : { transcription }),
   };
 }
 

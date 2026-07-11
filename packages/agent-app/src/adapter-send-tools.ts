@@ -12,7 +12,9 @@ import type {
 } from "@mono-agent/slack-adapter";
 import type {
   TelegramChatId,
+  TelegramEditMessageTextParams,
   TelegramMessageSender,
+  TelegramSendMessageParams,
   TelegramSentMessage,
 } from "@mono-agent/telegram-adapter";
 import * as z from "zod/v4";
@@ -94,7 +96,7 @@ export interface AdapterSendToolsSettings {
 
 export interface AdapterSendToolsClients {
   readonly slack?: Pick<SlackWebApi, "chatPostMessage">;
-  readonly telegram?: Pick<TelegramMessageSender, "sendMessage" | "sendDocument" | "sendPhoto">;
+  readonly telegram?: Pick<TelegramMessageSender, "sendMessage" | "sendDocument" | "sendPhoto" | "editMessageText">;
 }
 
 export interface AdapterSendToolsHttpOptions {
@@ -728,10 +730,117 @@ function registerTelegramSendTool(
   );
 }
 
+/** Marker appended (buttons kept) when a Telegram ask times out. */
+const TELEGRAM_ASK_EXPIRED_MARKER =
+  "⌛ Expired — tapping a button still reaches me and starts a new turn.";
+/** Marker appended (buttons kept) when a Telegram ask is cancelled. */
+const TELEGRAM_ASK_CANCELLED_MARKER =
+  "🚫 Cancelled — tapping a button still reaches me and starts a new turn.";
+/** Bounded own-signal budget for the best-effort expiry edit — never the aborted call signal. */
+const TELEGRAM_ASK_EXPIRY_EDIT_TIMEOUT_MS = 2_000;
+
+/** A Telegram 400 is the parse-entity rejection we fall back from (raw text, no parse_mode). */
+function isTelegramParseError(error: unknown, adapter: TelegramAdapterModule): boolean {
+  return error instanceof adapter.TelegramApiError && error.errorCode === 400;
+}
+
+/**
+ * Send the ask keyboard rendered as MarkdownV2, retrying ONCE with the raw source and
+ * no parse_mode when Telegram rejects the entities with a 400 parse error. Any other
+ * failure propagates so the caller can clean up a pending bridge ask.
+ */
+async function sendTelegramAskKeyboard(
+  client: Pick<TelegramMessageSender, "sendMessage">,
+  adapter: TelegramAdapterModule,
+  params: {
+    readonly chat_id: TelegramChatId;
+    readonly rendered: string;
+    readonly rawSource: string;
+    readonly replyMarkup: NonNullable<TelegramSendMessageParams["reply_markup"]>;
+    readonly signal: AbortSignal;
+  },
+): Promise<TelegramSentMessage> {
+  try {
+    return await client.sendMessage(
+      {
+        chat_id: params.chat_id,
+        text: params.rendered,
+        parse_mode: "MarkdownV2",
+        reply_markup: params.replyMarkup,
+      },
+      { signal: params.signal },
+    );
+  } catch (error) {
+    if (!isTelegramParseError(error, adapter)) {
+      throw error;
+    }
+    return await client.sendMessage(
+      {
+        chat_id: params.chat_id,
+        text: params.rawSource,
+        reply_markup: params.replyMarkup,
+      },
+      { signal: params.signal },
+    );
+  }
+}
+
+/**
+ * Best-effort: append an expiry/cancel note to the buttons message while KEEPING the
+ * inline keyboard (Telegram strips the keyboard on `editMessageText` unless reply_markup
+ * is re-sent). Renders through the same MarkdownV2-with-plain-fallback path. Uses its own
+ * bounded signal — never the aborted call signal — and swallows every failure so a failed
+ * edit can never replace the primary ask result.
+ */
+async function editExpiredTelegramAskMessage(
+  client: Pick<TelegramMessageSender, "editMessageText">,
+  adapter: TelegramAdapterModule,
+  params: {
+    readonly chat_id: TelegramChatId;
+    readonly message_id: number;
+    readonly rawSource: string;
+    readonly marker: string;
+    readonly replyMarkup: NonNullable<TelegramEditMessageTextParams["reply_markup"]>;
+  },
+): Promise<void> {
+  try {
+    const source = `${params.rawSource}\n\n${params.marker}`;
+    const rendered = adapter.renderTelegramMarkdown(source);
+    const signal = AbortSignal.timeout(TELEGRAM_ASK_EXPIRY_EDIT_TIMEOUT_MS);
+    try {
+      await client.editMessageText(
+        {
+          chat_id: params.chat_id,
+          message_id: params.message_id,
+          text: rendered,
+          parse_mode: "MarkdownV2",
+          reply_markup: params.replyMarkup,
+        },
+        { signal },
+      );
+    } catch (error) {
+      if (!isTelegramParseError(error, adapter)) {
+        throw error;
+      }
+      await client.editMessageText(
+        {
+          chat_id: params.chat_id,
+          message_id: params.message_id,
+          text: source,
+          reply_markup: params.replyMarkup,
+        },
+        { signal },
+      );
+    }
+  } catch {
+    // Best-effort: a failed expiry edit must never replace the ask result.
+  }
+}
+
 function registerTelegramAskTool(
   server: McpServer,
   settings: TelegramSendToolSettings,
-  client: Pick<TelegramMessageSender, "sendMessage">,
+  client: Pick<TelegramMessageSender, "sendMessage" | "editMessageText">,
   adapter: TelegramAdapterModule,
   fetchImpl: typeof fetch,
 ): void {
@@ -740,7 +849,7 @@ function registerTelegramAskTool(
     {
       title: "Ask via Telegram buttons",
       description:
-        "Ask the owner a question in an allowed Telegram chat with tappable inline-keyboard buttons (e.g. a confirmation or a multiple-choice) and WAIT for their tap. Returns the tapped label. A second concurrent ask in the same chat fails.",
+        "Ask the owner a question in an allowed Telegram chat with tappable inline-keyboard buttons (e.g. a confirmation or a multiple-choice). By default WAITS for their tap (up to the ask timeout) and returns the tapped label; a second concurrent ask in the same chat fails. On a proactive or scheduled turn (cron/heartbeat) set `wait:false`: the buttons are sent and the tool returns immediately, and the tap arrives later as a new message quoting the question.",
       inputSchema: {
         chat_id: z.union([z.string().min(1), z.number().int()]).describe("Telegram chat id from the adapter allowlist."),
         question: z.string().min(1).describe("The question to show above the buttons."),
@@ -750,10 +859,41 @@ function registerTelegramAskTool(
           .max(adapter.TELEGRAM_ASK_MAX_OPTIONS)
           .describe("Button labels (2–8). The label the user taps is echoed back as a new message."),
         note: z.string().min(1).optional().describe("Optional extra context shown beneath the question."),
+        wait: z
+          .boolean()
+          .optional()
+          .describe("Default true: block until the user taps (up to the ask timeout). Set false on proactive/scheduled (cron/heartbeat) turns — send the buttons and return immediately; the tapped answer arrives later as a new message quoting the question."),
       },
     },
     async (args, extra) => {
       assertTelegramChatAllowed(settings, args.chat_id);
+      const inlineKeyboard = args.options.map((label, index) => [
+        { text: label, callback_data: adapter.telegramAskCallbackData(index) },
+      ]);
+      const replyMarkup = { inline_keyboard: inlineKeyboard };
+      // Raw source is what the bridge records and what the plain-text fallback (and the
+      // expiry edit) re-send; the rendered form is only for the MarkdownV2 send.
+      const source = args.note === undefined ? args.question : `${args.question}\n\n${args.note}`;
+      const rendered = adapter.renderTelegramMarkdown(source);
+
+      // Non-blocking mode (proactive/scheduled turns): send the buttons and return.
+      // No bridge is consulted — this must work even with no bridge configured.
+      if (args.wait === false) {
+        const sent = await sendTelegramAskKeyboard(client, adapter, {
+          chat_id: args.chat_id,
+          rendered,
+          rawSource: source,
+          replyMarkup,
+          signal: extra.signal,
+        });
+        return askToolResult(
+          `Sent the question with ${String(args.options.length)} buttons to ${String(sent.chat.id)} (message ${String(sent.message_id)}). Not waiting — the tapped answer will arrive as a new message.`,
+          { answered: false, reason: "not_waiting" },
+          { chat_id: sent.chat.id, message_id: sent.message_id, options: args.options },
+        );
+      }
+
+      // Blocking mode requires the interaction bridge to correlate the tap.
       const bridge = settings.askBridge;
       if (bridge === undefined) {
         return askToolResult("TelegramAskButtons requires a live interaction bridge, but none is configured.", {
@@ -761,14 +901,10 @@ function registerTelegramAskTool(
           reason: "unsupported_channel",
         });
       }
-      const inlineKeyboard = args.options.map((label, index) => [
-        { text: label, callback_data: adapter.telegramAskCallbackData(index) },
-      ]);
-      const text = args.note === undefined ? args.question : `${args.question}\n\n${args.note}`;
       const conversationId = `telegram:${String(args.chat_id)}`;
       const created = await askBridgeRequest(bridge, fetchImpl, "POST", "/v1/asks", {
         conversationId,
-        question: text,
+        question: source,
         timeoutMs: bridge.timeoutMs,
         postQuestion: false,
         answerKind: "callback",
@@ -793,23 +929,35 @@ function registerTelegramAskTool(
       const askId = created.body.askId;
       let result: TelegramSentMessage;
       try {
-        result = await client.sendMessage(
-          {
-            chat_id: args.chat_id,
-            text,
-            reply_markup: { inline_keyboard: inlineKeyboard },
-          },
-          { signal: extra.signal },
-        );
+        result = await sendTelegramAskKeyboard(client, adapter, {
+          chat_id: args.chat_id,
+          rendered,
+          rawSource: source,
+          replyMarkup,
+          signal: extra.signal,
+        });
       } catch (error) {
         await cleanupBridgeAskBestEffort(bridge, fetchImpl, askId);
         throw error;
       }
-      return await awaitBridgeAsk(bridge, askId, "TelegramAskButtons", extra, fetchImpl, extra.signal, {
+      const askResult = await awaitBridgeAsk(bridge, askId, "TelegramAskButtons", extra, fetchImpl, extra.signal, {
         chat_id: result.chat.id,
         message_id: result.message_id,
         options: args.options,
       });
+      // An expired/cancelled ask leaves a live-looking keyboard forever; append a note
+      // while keeping the buttons (a tap still starts a fresh turn). Best-effort only.
+      const reason = (askResult.structuredContent as { readonly reason?: unknown }).reason;
+      if (reason === "timeout" || reason === "cancelled") {
+        await editExpiredTelegramAskMessage(client, adapter, {
+          chat_id: result.chat.id,
+          message_id: result.message_id,
+          rawSource: source,
+          marker: reason === "timeout" ? TELEGRAM_ASK_EXPIRED_MARKER : TELEGRAM_ASK_CANCELLED_MARKER,
+          replyMarkup,
+        });
+      }
+      return askResult;
     },
   );
 }

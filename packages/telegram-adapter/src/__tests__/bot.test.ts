@@ -407,7 +407,7 @@ describe("createTelegramBot", () => {
 
     expect(texts(calls, "sendMessage")).toEqual([
       "Hello! Send text or Telegram media. I pass your caption and download allowed attachments to share with the configured agent.",
-      "Send text, documents, photos, audio, video, or voice messages. I forward your caption and download supported attachments (within size/type limits) for the agent. Use /cancel to stop the current response.",
+      "Send text, documents, photos, audio, video, round videos (video notes), or voice messages. I forward your caption and download supported attachments (within size/type limits) for the agent. Use /cancel to stop the current response.",
     ]);
     expect(responder.respond).not.toHaveBeenCalled();
   });
@@ -722,7 +722,7 @@ describe("createTelegramBot", () => {
       },
     ]);
     expect(texts(calls, "sendMessage")).not.toContain(
-      "I can handle text and Telegram document, photo, audio, video, or voice metadata in this adapter.",
+      "I can handle text and Telegram document, photo, audio, video, round video, or voice metadata in this adapter.",
     );
   });
 
@@ -1339,7 +1339,7 @@ describe("createTelegramBot", () => {
     await bot.handleUpdate(stickerUpdate());
 
     expect(texts(calls, "sendMessage")).toEqual([
-      "I can handle text and Telegram document, photo, audio, video, or voice metadata in this adapter.",
+      "I can handle text and Telegram document, photo, audio, video, round video, or voice metadata in this adapter.",
     ]);
     expect(responder.respond).not.toHaveBeenCalled();
   });
@@ -1351,7 +1351,7 @@ describe("createTelegramBot", () => {
     await bot.handleUpdate(animationUpdate());
 
     expect(texts(calls, "sendMessage")).toEqual([
-      "I can handle text and Telegram document, photo, audio, video, or voice metadata in this adapter.",
+      "I can handle text and Telegram document, photo, audio, video, round video, or voice metadata in this adapter.",
     ]);
     expect(responder.respond).not.toHaveBeenCalled();
   });

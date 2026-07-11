@@ -12,7 +12,7 @@ A new package is rung 3 of 5. Confirm the lower rungs don't satisfy the need:
 1. Existing package / existing public surface
 2. Config field or selected skill (typed config + validation + docs)
 3. **New adapter/package in the correct category** ← this skill
-4. MCP server / auto-provisioned MCP tool (canonical examples: `memory_recall`, `notify_conversation`)
+4. MCP server / auto-provisioned MCP tool (canonical examples: `MemoryRecall`, the adapter send tools like `TelegramAskButtons`)
 5. Shared contract change in `@mono-agent/agent-contracts` — last resort;
    adapter-neutrality is enforced by the arch checker
 

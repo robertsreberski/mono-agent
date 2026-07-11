@@ -17,7 +17,9 @@ import type {
   SlackRequestOptions,
   SlackWebApi,
 } from "@mono-agent/slack-adapter";
+import { TelegramApiError } from "@mono-agent/telegram-adapter";
 import type {
+  TelegramEditMessageTextParams,
   TelegramRequestOptions,
   TelegramSendMessageParams,
   TelegramSentMessage,
@@ -871,6 +873,7 @@ describe("adapter send MCP tools", () => {
           telegramCalls.push(params);
           return { message_id: 77, chat: { id: params.chat_id }, text: params.text };
         },
+        editMessageText: vi.fn(),
       },
     });
 
@@ -946,6 +949,7 @@ describe("adapter send MCP tools", () => {
           signals.file = options?.signal;
           return await waitForAbort<TelegramSentMessage>(options?.signal);
         },
+        editMessageText: vi.fn(),
       },
     });
 
@@ -1066,6 +1070,7 @@ describe("adapter send MCP tools", () => {
             telegramSignal = options?.signal;
             return { message_id: 88, chat: { id: params.chat_id }, text: params.text };
           },
+          editMessageText: vi.fn(),
         },
       });
 
@@ -1105,6 +1110,254 @@ describe("adapter send MCP tools", () => {
     }
   });
 
+  it("TelegramAskButtons with wait:false sends the keyboard and returns immediately without touching the bridge", async () => {
+    const bridgeFetch = vi.fn(async () =>
+      new Response("{}", { status: 200, headers: { "content-type": "application/json" } }));
+    const telegramCalls: TelegramSendMessageParams[] = [];
+    const settings: AdapterSendToolsSettings = {
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        tools: { send: false, ask: true, file: false },
+        askBridge: { bridgeUrl: "http://127.0.0.1:1", bridgeToken: "bridge-token", timeoutMs: 5_000 },
+      },
+    };
+    const server = await createAdapterSendToolsServer(
+      settings,
+      {
+        telegram: {
+          async sendMessage(params: TelegramSendMessageParams): Promise<TelegramSentMessage> {
+            telegramCalls.push(params);
+            return { message_id: 88, chat: { id: params.chat_id }, text: params.text };
+          },
+          editMessageText: vi.fn(),
+        },
+      },
+      undefined,
+      { fetchImpl: bridgeFetch as unknown as typeof fetch },
+    );
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "TelegramAskButtons",
+        arguments: { chat_id: 42, question: "Deploy now?", options: ["Approve", "Reject"], wait: false },
+      });
+      expect(result.structuredContent).toMatchObject({
+        ok: true,
+        answered: false,
+        reason: "not_waiting",
+        chat_id: 42,
+        message_id: 88,
+        options: ["Approve", "Reject"],
+      });
+      expect(JSON.stringify(result.content)).toContain("Not waiting");
+    });
+
+    expect(bridgeFetch).not.toHaveBeenCalled();
+    expect(telegramCalls).toHaveLength(1);
+    expect(telegramCalls[0]?.parse_mode).toBe("MarkdownV2");
+    expect(telegramCalls[0]?.reply_markup).toEqual({
+      inline_keyboard: [
+        [{ text: "Approve", callback_data: "ask:0" }],
+        [{ text: "Reject", callback_data: "ask:1" }],
+      ],
+    });
+  });
+
+  it("TelegramAskButtons with wait:false works when no ask bridge is configured", async () => {
+    const telegramCalls: TelegramSendMessageParams[] = [];
+    const settings: AdapterSendToolsSettings = {
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        tools: { send: false, ask: true, file: false },
+        // No askBridge on purpose: wait:false must not require one.
+      },
+    };
+    const server = await createAdapterSendToolsServer(settings, {
+      telegram: {
+        async sendMessage(params: TelegramSendMessageParams): Promise<TelegramSentMessage> {
+          telegramCalls.push(params);
+          return { message_id: 90, chat: { id: params.chat_id }, text: params.text };
+        },
+        editMessageText: vi.fn(),
+      },
+    });
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "TelegramAskButtons",
+        arguments: { chat_id: 42, question: "Ship it?", options: ["Yes", "No"], wait: false },
+      });
+      expect(result.structuredContent).toMatchObject({
+        answered: false,
+        reason: "not_waiting",
+        chat_id: 42,
+        message_id: 90,
+      });
+    });
+
+    expect(telegramCalls).toHaveLength(1);
+    expect(telegramCalls[0]?.reply_markup).toEqual({
+      inline_keyboard: [
+        [{ text: "Yes", callback_data: "ask:0" }],
+        [{ text: "No", callback_data: "ask:1" }],
+      ],
+    });
+  });
+
+  it("TelegramAskButtons renders the question as MarkdownV2 and falls back to plain text on a parse rejection", async () => {
+    const telegramCalls: TelegramSendMessageParams[] = [];
+    let calls = 0;
+    const settings: AdapterSendToolsSettings = {
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        tools: { send: false, ask: true, file: false },
+      },
+    };
+    const server = await createAdapterSendToolsServer(settings, {
+      telegram: {
+        async sendMessage(params: TelegramSendMessageParams): Promise<TelegramSentMessage> {
+          telegramCalls.push(params);
+          calls += 1;
+          if (calls === 1) {
+            throw new TelegramApiError("Bad Request: can't parse entities", {
+              kind: "telegram",
+              method: "sendMessage",
+              errorCode: 400,
+            });
+          }
+          return { message_id: 93, chat: { id: params.chat_id }, text: params.text };
+        },
+        editMessageText: vi.fn(),
+      },
+    });
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "TelegramAskButtons",
+        arguments: { chat_id: 42, question: "Deploy v2.0 now!", options: ["Yes", "No"], wait: false },
+      });
+      expect(result.structuredContent).toMatchObject({ reason: "not_waiting", message_id: 93 });
+    });
+
+    expect(telegramCalls).toHaveLength(2);
+    // First attempt: MarkdownV2 with reserved chars escaped by telegramify.
+    expect(telegramCalls[0]?.parse_mode).toBe("MarkdownV2");
+    expect(telegramCalls[0]?.text).toBe("Deploy v2\\.0 now\\!");
+    // Fallback: raw source, no parse_mode — keyboard kept on both attempts.
+    expect(telegramCalls[1]?.parse_mode).toBeUndefined();
+    expect(telegramCalls[1]?.text).toBe("Deploy v2.0 now!");
+    expect(telegramCalls[1]?.reply_markup).toEqual({
+      inline_keyboard: [
+        [{ text: "Yes", callback_data: "ask:0" }],
+        [{ text: "No", callback_data: "ask:1" }],
+      ],
+    });
+  });
+
+  it("TelegramAskButtons edits the buttons message with an expiry marker (keyboard kept) when the ask expires", async () => {
+    const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, askTimeoutMs: 100 });
+    bridge.registerSink("telegram", { postQuestion: async () => {}, postStatus: async () => {} });
+    const editCalls: TelegramEditMessageTextParams[] = [];
+    const settings: AdapterSendToolsSettings = {
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        tools: { send: false, ask: true, file: false },
+        askBridge: { bridgeUrl: bridge.url, bridgeToken: bridge.token, timeoutMs: 5_000 },
+      },
+    };
+    try {
+      const server = await createAdapterSendToolsServer(settings, {
+        telegram: {
+          async sendMessage(params: TelegramSendMessageParams): Promise<TelegramSentMessage> {
+            return { message_id: 88, chat: { id: params.chat_id }, text: params.text };
+          },
+          async editMessageText(params: TelegramEditMessageTextParams): Promise<true> {
+            editCalls.push(params);
+            return true;
+          },
+        },
+      });
+
+      await withMcpClient(server, async (client) => {
+        const result = await client.callTool({
+          name: "TelegramAskButtons",
+          arguments: { chat_id: 42, question: "Deploy now?", options: ["Approve", "Reject"] },
+        });
+        expect(result.structuredContent).toMatchObject({
+          answered: false,
+          reason: "timeout",
+          chat_id: 42,
+          message_id: 88,
+        });
+      });
+
+      expect(editCalls).toHaveLength(1);
+      expect(editCalls[0]).toMatchObject({ chat_id: 42, message_id: 88 });
+      expect(editCalls[0]?.text).toContain("Expired");
+      expect(editCalls[0]?.reply_markup).toEqual({
+        inline_keyboard: [
+          [{ text: "Approve", callback_data: "ask:0" }],
+          [{ text: "Reject", callback_data: "ask:1" }],
+        ],
+      });
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("a failing expiry edit never overrides the ask result", async () => {
+    const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, askTimeoutMs: 100 });
+    bridge.registerSink("telegram", { postQuestion: async () => {}, postStatus: async () => {} });
+    const editMessageText = vi.fn(async () => {
+      throw new Error("edit failed");
+    });
+    const settings: AdapterSendToolsSettings = {
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        tools: { send: false, ask: true, file: false },
+        askBridge: { bridgeUrl: bridge.url, bridgeToken: bridge.token, timeoutMs: 5_000 },
+      },
+    };
+    try {
+      const server = await createAdapterSendToolsServer(settings, {
+        telegram: {
+          async sendMessage(params: TelegramSendMessageParams): Promise<TelegramSentMessage> {
+            return { message_id: 88, chat: { id: params.chat_id }, text: params.text };
+          },
+          editMessageText,
+        },
+      });
+
+      await withMcpClient(server, async (client) => {
+        const result = await client.callTool({
+          name: "TelegramAskButtons",
+          arguments: { chat_id: 42, question: "Deploy now?", options: ["Approve", "Reject"] },
+        });
+        expect(result.isError).toBeFalsy();
+        expect(result.structuredContent).toMatchObject({
+          answered: false,
+          reason: "timeout",
+          message_id: 88,
+        });
+      });
+
+      // The parse-error retry only fires on a 400; a generic failure is attempted once.
+      expect(editMessageText).toHaveBeenCalledTimes(1);
+    } finally {
+      await bridge.stop();
+    }
+  });
+
   it("TelegramAskButtons reports already-pending without sending another keyboard", async () => {
     const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, askTimeoutMs: 5_000 });
     bridge.registerSink("telegram", { postQuestion: async () => {}, postStatus: async () => {} });
@@ -1115,7 +1368,7 @@ describe("adapter send MCP tools", () => {
         body: JSON.stringify({ conversationId: "telegram:42", question: "first?", postQuestion: false }),
       });
       expect(created.status).toBe(201);
-      const telegram = { sendMessage: vi.fn() };
+      const telegram = { sendMessage: vi.fn(), editMessageText: vi.fn() };
       const server = await createAdapterSendToolsServer(
         {
           telegram: {
@@ -1156,7 +1409,7 @@ describe("adapter send MCP tools", () => {
             askBridge: { bridgeUrl: bridge.url, bridgeToken: bridge.token, timeoutMs: 5_000 },
           },
         },
-        { telegram: { sendMessage: vi.fn(async () => { throw new Error("telegram unavailable"); }) } },
+        { telegram: { sendMessage: vi.fn(async () => { throw new Error("telegram unavailable"); }), editMessageText: vi.fn() } },
       );
 
       await withMcpClient(server, async (client) => {
@@ -1199,7 +1452,7 @@ describe("adapter send MCP tools", () => {
           askBridge: { bridgeUrl: "http://127.0.0.1:1", bridgeToken: "bridge-token", timeoutMs: 5_000 },
         },
       },
-      { telegram: { sendMessage: vi.fn(async () => { throw new Error("primary telegram failure"); }) } },
+      { telegram: { sendMessage: vi.fn(async () => { throw new Error("primary telegram failure"); }), editMessageText: vi.fn() } },
       undefined,
       { fetchImpl: fetchImpl as unknown as typeof fetch },
     );
@@ -1232,6 +1485,7 @@ describe("adapter send MCP tools", () => {
     const server = await createAdapterSendToolsServer(settings, {
       telegram: {
         sendMessage: vi.fn(),
+        editMessageText: vi.fn(),
         async sendDocument(params): Promise<TelegramSentMessage> {
           docCalls.push({
             chat_id: params.chat_id,
@@ -1269,7 +1523,7 @@ describe("adapter send MCP tools", () => {
       },
     };
     const sendDocument = vi.fn();
-    const server = await createAdapterSendToolsServer(settings, { telegram: { sendMessage: vi.fn(), sendDocument } });
+    const server = await createAdapterSendToolsServer(settings, { telegram: { sendMessage: vi.fn(), editMessageText: vi.fn(), sendDocument } });
 
     await withMcpClient(server, async (client) => {
       const result = await client.callTool({
@@ -1283,7 +1537,7 @@ describe("adapter send MCP tools", () => {
   });
 
   it("TelegramAskButtons rejects a chat outside the adapter allowlist before calling the client", async () => {
-    const telegram = { sendMessage: vi.fn() };
+    const telegram = { sendMessage: vi.fn(), editMessageText: vi.fn() };
     const settings: AdapterSendToolsSettings = {
       telegram: {
         botToken: "telegram-token",
@@ -1307,7 +1561,7 @@ describe("adapter send MCP tools", () => {
 
   it("rejects Slack and Telegram destinations outside the adapter allowlists before calling clients", async () => {
     const slack = { chatPostMessage: vi.fn() };
-    const telegram = { sendMessage: vi.fn() };
+    const telegram = { sendMessage: vi.fn(), editMessageText: vi.fn() };
     const server = await createAdapterSendToolsServer(bothAdaptersSettings(), { slack, telegram });
 
     await withMcpClient(server, async (client) => {
@@ -1707,7 +1961,7 @@ describe("AskUser tool", () => {
         },
         askUser: { bridgeUrl: "http://127.0.0.1:1", bridgeToken: "t", timeoutMs: 1_000 },
       },
-      { telegram: { sendMessage: vi.fn() as never } },
+      { telegram: { sendMessage: vi.fn() as never, editMessageText: vi.fn() as never } },
     );
     await withMcpClient(server, async (client) => {
       const tools = await client.listTools();
@@ -1843,7 +2097,7 @@ describe("TelegramSendFile path upload", () => {
       },
     };
     const server = await createAdapterSendToolsServer(settings, {
-      telegram: { sendMessage: vi.fn() as never, sendDocument },
+      telegram: { sendMessage: vi.fn() as never, editMessageText: vi.fn() as never, sendDocument },
     });
 
     await withMcpClient(server, async (client) => {
@@ -1923,7 +2177,7 @@ describe("self-hosted server send tools", () => {
       },
     };
     const server = await createAdapterSendToolsServer(settings, {
-      telegram: { sendMessage: vi.fn() as never, sendDocument },
+      telegram: { sendMessage: vi.fn() as never, editMessageText: vi.fn() as never, sendDocument },
     });
 
     await withMcpClient(server, async (client) => {
@@ -1955,7 +2209,7 @@ describe("self-hosted server send tools", () => {
       },
     };
     const server = await createAdapterSendToolsServer(settings, {
-      telegram: { sendMessage: vi.fn() as never, sendDocument: sendDocument as never },
+      telegram: { sendMessage: vi.fn() as never, editMessageText: vi.fn() as never, sendDocument: sendDocument as never },
     });
 
     await withMcpClient(server, async (client) => {
@@ -1983,7 +2237,7 @@ describe("self-hosted server send tools", () => {
       },
     };
     const server = await createAdapterSendToolsServer(settings, {
-      telegram: { sendMessage: vi.fn() as never, sendDocument: vi.fn() as never },
+      telegram: { sendMessage: vi.fn() as never, editMessageText: vi.fn() as never, sendDocument: vi.fn() as never },
     });
 
     await withMcpClient(server, async (client) => {

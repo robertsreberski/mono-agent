@@ -1803,6 +1803,40 @@
               "type": "integer"
             }
           }
+        },
+        "transcription": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "endpoint": {
+              "description": "Configures transcription.endpoint for the telegram section.",
+              "examples": [
+                "example"
+              ],
+              "type": "string"
+            },
+            "model": {
+              "description": "Configures transcription.model for the telegram section.",
+              "examples": [
+                "example"
+              ],
+              "type": "string"
+            },
+            "language": {
+              "description": "Configures transcription.language for the telegram section.",
+              "examples": [
+                "example"
+              ],
+              "type": "string"
+            },
+            "timeoutMs": {
+              "description": "Configures transcription.timeoutMs for the telegram section.",
+              "examples": [
+                1
+              ],
+              "type": "integer"
+            }
+          }
         }
       }
     },
