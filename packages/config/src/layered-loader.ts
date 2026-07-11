@@ -57,9 +57,9 @@ function remapJsonMemoryError(
   if (!(error instanceof MonoAgentConfigError) || json.memory === undefined) return error;
 
   const source = error.details.env;
-  const llmPath = jsonMemoryLlmPathForSource(source, json.memory.llm, env);
-  if (llmPath !== undefined && source !== undefined) {
-    return remapConfigErrorToJson(error, source, llmPath);
+  const scalarPath = jsonMemoryPathForSource(source, json.memory, env);
+  if (scalarPath !== undefined && source !== undefined) {
+    return remapConfigErrorToJson(error, source, scalarPath);
   }
   if (error.code !== "invalid_env") return error;
   if (
@@ -100,25 +100,204 @@ function remapJsonMemoryError(
   return new MonoAgentConfigError("invalid_json", message, { path, reason: message });
 }
 
-const MEMORY_LLM_JSON_SOURCES = {
-  MONO_AGENT_MEMORY_LLM_PROVIDER: { field: "provider", path: "memory.llm.provider" },
-  MONO_AGENT_MEMORY_LLM_MODEL: { field: "model", path: "memory.llm.model" },
-  MONO_AGENT_MEMORY_LLM_EXECUTION_MODE: { field: "executionMode", path: "memory.llm.executionMode" },
-  MONO_AGENT_MEMORY_LLM_ENDPOINT: { field: "endpoint", path: "memory.llm.endpoint" },
-  MONO_AGENT_MEMORY_LLM_TRACE: { field: "trace", path: "memory.llm.trace" },
-  MONO_AGENT_MEMORY_LLM_TIMEOUT_MS: { field: "timeoutMs", path: "memory.llm.timeoutMs" },
+type MemoryJson = NonNullable<MonoAgentConfigJson["memory"]>;
+type MemoryJsonBackend = "bujo" | "supermemory";
+
+const MEMORY_JSON_SOURCES = {
+  MONO_AGENT_MEMORY_BACKEND: jsonMemorySource("memory.backend", (memory) => memory.backend),
+  MONO_AGENT_MEMORY_PATH: jsonMemorySource("memory.path", (memory) => memory.path),
+  MONO_AGENT_MEMORY_MAX_BYTES: jsonMemorySource("memory.maxBytes", (memory) => memory.maxBytes),
+  MONO_AGENT_MEMORY_WRITE_MODE: jsonMemorySource("memory.writeMode", (memory) => memory.writeMode),
+  MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED: jsonMemorySource(
+    "memory.recallTool.enabled",
+    (memory) => memory.recallTool?.enabled,
+  ),
+  MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: jsonMemorySource(
+    "memory.supermemory.baseUrl",
+    (memory) => memory.supermemory?.baseUrl,
+  ),
+  MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY: jsonMemorySource(
+    "memory.supermemory.apiKey",
+    (memory) => memory.supermemory?.apiKey,
+  ),
+  MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV: jsonMemorySource(
+    "memory.supermemory.apiKeyEnv",
+    (memory) => memory.supermemory?.apiKeyEnv,
+  ),
+  MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER: jsonMemorySource(
+    "memory.supermemory.container",
+    (memory) => memory.supermemory?.container,
+  ),
+  MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS: jsonMemorySource(
+    "memory.supermemory.timeoutMs",
+    (memory) => memory.supermemory?.timeoutMs,
+  ),
+  MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER: jsonMemorySource(
+    "memory.supermemory.exposeMcpServer",
+    (memory) => memory.supermemory?.exposeMcpServer,
+  ),
+  MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: jsonMemorySource(
+    "memory.embeddings.provider",
+    (memory) => memory.embeddings?.provider,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: jsonMemorySource(
+    "memory.embeddings.model",
+    (memory) => memory.embeddings?.model,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: jsonMemorySource(
+    "memory.embeddings.endpoint",
+    (memory) => memory.embeddings?.endpoint,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: jsonMemorySource(
+    "memory.embeddings.apiKey",
+    (memory) => memory.embeddings?.apiKey,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: jsonMemorySource(
+    "memory.embeddings.apiKeyEnv",
+    (memory) => memory.embeddings?.apiKeyEnv,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_EMBEDDINGS_DIM: jsonMemorySource(
+    "memory.embeddings.dim",
+    (memory) => memory.embeddings?.dim,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS: jsonMemorySource(
+    "memory.embeddings.timeoutMs",
+    (memory) => memory.embeddings?.timeoutMs,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD: jsonMemorySource(
+    "memory.embeddings.circuitBreaker.failureThreshold",
+    (memory) => memory.embeddings?.circuitBreaker?.failureThreshold,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS: jsonMemorySource(
+    "memory.embeddings.circuitBreaker.cooldownMs",
+    (memory) => memory.embeddings?.circuitBreaker?.cooldownMs,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_LLM_PROVIDER: jsonMemorySource(
+    "memory.llm.provider",
+    (memory) => memory.llm?.provider,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_LLM_MODEL: jsonMemorySource(
+    "memory.llm.model",
+    (memory) => memory.llm?.model,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_LLM_EXECUTION_MODE: jsonMemorySource(
+    "memory.llm.executionMode",
+    (memory) => memory.llm?.executionMode,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_LLM_ENDPOINT: jsonMemorySource(
+    "memory.llm.endpoint",
+    (memory) => memory.llm?.endpoint,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_LLM_TRACE: jsonMemorySource(
+    "memory.llm.trace",
+    (memory) => memory.llm?.trace,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_LLM_TIMEOUT_MS: jsonMemorySource(
+    "memory.llm.timeoutMs",
+    (memory) => memory.llm?.timeoutMs,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED: jsonMemorySource(
+    "memory.consolidation.enabled",
+    (memory) => memory.consolidation?.enabled,
+    "bujo",
+  ),
+  MONO_AGENT_MEMORY_CONSOLIDATION_CRON: jsonMemorySource(
+    "memory.consolidation.cron",
+    (memory) => memory.consolidation?.cron,
+    "bujo",
+  ),
 } as const;
 
-function jsonMemoryLlmPathForSource(
+function jsonMemorySource(
+  path: string,
+  read: (memory: MemoryJson) => unknown,
+  backend?: MemoryJsonBackend,
+): { readonly path: string; readonly read: (memory: MemoryJson) => unknown; readonly backend?: MemoryJsonBackend } {
+  return { path, read, ...(backend === undefined ? {} : { backend }) };
+}
+
+function jsonMemoryPathForSource(
   source: unknown,
-  llm: MonoAgentMemoryLlmJson | undefined,
+  memory: MemoryJson,
   env: Record<string, string | undefined>,
 ): string | undefined {
-  if (typeof source !== "string" || !Object.hasOwn(MEMORY_LLM_JSON_SOURCES, source)) return undefined;
-  const envName = source as keyof typeof MEMORY_LLM_JSON_SOURCES;
-  const mapping = MEMORY_LLM_JSON_SOURCES[envName];
-  if (hasValue(env[envName]) || llm?.[mapping.field] === undefined) return undefined;
+  if (source === "MONO_AGENT_MEMORY_MODE") return undefined;
+  if (
+    source === "MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL"
+    && !hasValue(env.MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL)
+    && jsonSupermemoryRequiresBaseUrl(memory, env)
+  ) return "memory.supermemory.baseUrl";
+  if (
+    source === "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY"
+    && !hasValue(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY)
+  ) {
+    const credentialPath = jsonEmbeddingsCredentialPath(memory, env);
+    if (credentialPath !== undefined) return credentialPath;
+  }
+  if (typeof source !== "string" || !Object.hasOwn(MEMORY_JSON_SOURCES, source)) return undefined;
+  const envName = source as keyof typeof MEMORY_JSON_SOURCES;
+  const mapping = MEMORY_JSON_SOURCES[envName];
+  const effectiveBackend = env.MONO_AGENT_MEMORY_BACKEND?.trim() || memory.backend || "bujo";
+  if (
+    hasValue(env[envName])
+    || (mapping.backend !== undefined && mapping.backend !== effectiveBackend)
+    || mapping.read(memory) === undefined
+  ) return undefined;
   return mapping.path;
+}
+
+function jsonSupermemoryRequiresBaseUrl(
+  memory: MemoryJson,
+  env: Record<string, string | undefined>,
+): boolean {
+  if (!hasValue(env.MONO_AGENT_MEMORY_BACKEND) && memory.backend === "supermemory") return true;
+  const supermemory = memory.supermemory;
+  if (supermemory === undefined) return false;
+  const activatingLeaves = [
+    ["apiKey", "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY"],
+    ["apiKeyEnv", "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV"],
+    ["container", "MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER"],
+    ["timeoutMs", "MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS"],
+    ["exposeMcpServer", "MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER"],
+  ] as const;
+  return activatingLeaves.some(([field, envName]) => (
+    supermemory[field] !== undefined && !hasValue(env[envName])
+  ));
+}
+
+function jsonEmbeddingsCredentialPath(
+  memory: MemoryJson,
+  env: Record<string, string | undefined>,
+): "memory.embeddings.apiKey" | "memory.embeddings.apiKeyEnv" | undefined {
+  const embeddings = memory.embeddings;
+  if (embeddings === undefined) return undefined;
+  if (
+    embeddings.apiKeyEnv !== undefined
+    && !hasValue(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV)
+  ) return "memory.embeddings.apiKeyEnv";
+  if (
+    embeddings.provider === "openai"
+    && !hasValue(env.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER)
+    && !hasValue(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV)
+    && embeddings.apiKey === undefined
+    && embeddings.apiKeyEnv === undefined
+  ) return "memory.embeddings.apiKey";
+  return undefined;
 }
 
 function remapConfigErrorToJson(
@@ -140,6 +319,11 @@ function validateJsonMemoryBlocks(
   json: MonoAgentConfigJson,
   env: Record<string, string | undefined>,
 ): void {
+  const memory: unknown = json.memory;
+  if (memory !== undefined && !isJsonObject(memory)) {
+    throwInvalidJsonValue("memory", "an object");
+  }
+
   // Strict BuJo tier blocks do not belong to external memory backends. Resolve
   // backend precedence first (env wins directly here), then ignore stale
   // local blocks exactly as the runtime and published schema do. Unknown
@@ -147,16 +331,67 @@ function validateJsonMemoryBlocks(
   // diagnostic is not masked by a lower-precedence JSON detail.
   const effectiveBackendValue: unknown = hasValue(env.MONO_AGENT_MEMORY_BACKEND)
     ? env.MONO_AGENT_MEMORY_BACKEND
-    : json.memory?.backend;
+    : memory?.backend;
   if (effectiveBackendValue !== undefined && typeof effectiveBackendValue !== "string") {
     throwInvalidJsonValue("memory.backend", "a string");
   }
   const effectiveBackend = effectiveBackendValue?.trim() || "bujo";
-  if (effectiveBackend !== "bujo") return;
+  if (effectiveBackend !== "bujo" && effectiveBackend !== "supermemory") return;
+  if (memory === undefined) return;
 
-  const embeddings: unknown = json.memory?.embeddings;
-  if (embeddings !== undefined && !isJsonObject(embeddings)) {
-    throwInvalidJsonValue("memory.embeddings", "an object");
+  validateJsonScalarFields(memory, "memory", env, [
+    ["backend", "MONO_AGENT_MEMORY_BACKEND", "string"],
+    ["mode", "MONO_AGENT_MEMORY_MODE", "string"],
+    ["path", "MONO_AGENT_MEMORY_PATH", "string"],
+    ["maxBytes", "MONO_AGENT_MEMORY_MAX_BYTES", "number"],
+    ["writeMode", "MONO_AGENT_MEMORY_WRITE_MODE", "string"],
+  ]);
+
+  const recallTool = validateOptionalJsonObject(memory.recallTool, "memory.recallTool");
+  if (recallTool !== undefined) {
+    validateJsonScalarFields(recallTool, "memory.recallTool", env, [
+      ["enabled", "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED", "boolean"],
+    ]);
+  }
+
+  const supermemory = validateOptionalJsonObject(memory.supermemory, "memory.supermemory");
+  if (supermemory !== undefined) {
+    validateJsonScalarFields(supermemory, "memory.supermemory", env, [
+      ["baseUrl", "MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL", "string"],
+      ["apiKey", "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY", "string"],
+      ["apiKeyEnv", "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV", "string"],
+      ["container", "MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER", "string"],
+      ["timeoutMs", "MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS", "number"],
+      ["exposeMcpServer", "MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER", "boolean"],
+    ]);
+  }
+  if (effectiveBackend === "supermemory") return;
+
+  const embeddings = validateOptionalJsonObject(memory.embeddings, "memory.embeddings");
+  if (embeddings !== undefined) {
+    validateJsonScalarFields(embeddings, "memory.embeddings", env, [
+      ["provider", "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER", "string"],
+      ["model", "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL", "string"],
+      ["endpoint", "MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT", "string"],
+      ["apiKey", "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY", "string"],
+      ["apiKeyEnv", "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV", "string"],
+      ["dim", "MONO_AGENT_MEMORY_EMBEDDINGS_DIM", "number"],
+      ["timeoutMs", "MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS", "number"],
+    ]);
+    const circuitBreaker = validateOptionalJsonObject(
+      embeddings.circuitBreaker,
+      "memory.embeddings.circuitBreaker",
+    );
+    if (circuitBreaker !== undefined) {
+      validateJsonScalarFields(circuitBreaker, "memory.embeddings.circuitBreaker", env, [
+        [
+          "failureThreshold",
+          "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
+          "number",
+        ],
+        ["cooldownMs", "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS", "number"],
+      ]);
+    }
   }
   if (embeddings !== undefined && Object.keys(embeddings).length === 0) {
     const path = "memory.embeddings";
@@ -164,16 +399,13 @@ function validateJsonMemoryBlocks(
     throw new MonoAgentConfigError("invalid_json", message, { path, reason: message });
   }
 
-  const llm: unknown = json.memory?.llm;
-  if (llm !== undefined && !isJsonObject(llm)) {
-    throwInvalidJsonValue("memory.llm", "an object");
-  }
+  const llm = validateOptionalJsonObject(memory.llm, "memory.llm");
   if (llm !== undefined) validateJsonMemoryLlmFields(llm, env);
   if (llm !== undefined && Object.keys(llm).length === 0) {
     const path = "memory.llm";
     const effectiveModeValue: unknown = hasValue(env.MONO_AGENT_MEMORY_MODE)
       ? env.MONO_AGENT_MEMORY_MODE
-      : json.memory?.mode;
+      : memory.mode;
     if (effectiveModeValue !== undefined && typeof effectiveModeValue !== "string") {
       throwInvalidJsonValue("memory.mode", "a string");
     }
@@ -183,6 +415,40 @@ function validateJsonMemoryBlocks(
       : `memory.mode "${mode}" cannot configure ${path}.`;
     throw new MonoAgentConfigError("invalid_json", message, { path, reason: message });
   }
+
+  const consolidation = validateOptionalJsonObject(memory.consolidation, "memory.consolidation");
+  if (consolidation !== undefined) {
+    validateJsonScalarFields(consolidation, "memory.consolidation", env, [
+      ["enabled", "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED", "boolean"],
+      ["cron", "MONO_AGENT_MEMORY_CONSOLIDATION_CRON", "string"],
+    ]);
+  }
+}
+
+type JsonScalarKind = "string" | "number" | "boolean";
+type JsonScalarFieldSpec = readonly [field: string, envName: string, kind: JsonScalarKind];
+
+function validateJsonScalarFields(
+  value: Record<string, unknown>,
+  path: string,
+  env: Record<string, string | undefined>,
+  specs: readonly JsonScalarFieldSpec[],
+): void {
+  for (const [field, envName, kind] of specs) {
+    if (hasValue(env[envName]) || value[field] === undefined) continue;
+    if (typeof value[field] !== kind) {
+      throwInvalidJsonValue(`${path}.${field}`, `a ${kind}`);
+    }
+  }
+}
+
+function validateOptionalJsonObject(
+  value: unknown,
+  path: string,
+): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (!isJsonObject(value)) throwInvalidJsonValue(path, "an object");
+  return value;
 }
 
 function validateJsonMemoryLlmFields(
