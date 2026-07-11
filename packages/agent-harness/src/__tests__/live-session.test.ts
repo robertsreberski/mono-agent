@@ -156,6 +156,33 @@ describe("createLiveSessionManager", () => {
     expect(manager.pendingCount("c1")).toBe(0);
   });
 
+  it("treats cancellation after markCommitted as too late while still dropping queued turns", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let committed!: () => void;
+    const committedSignal = new Promise<void>((resolve) => { committed = resolve; });
+    let activeSignal: AbortSignal | undefined;
+    const manager = createLiveSessionManager({
+      run: async (request, lifecycle) => {
+        activeSignal = request.abortSignal;
+        lifecycle.markCommitted();
+        committed();
+        await gate;
+        return response("committed");
+      },
+    });
+
+    const active = manager.enqueue("c1", req("c1", "one"));
+    const queued = manager.enqueue("c1", req("c1", "two"));
+    await committedSignal;
+
+    manager.cancel("c1");
+    expect(activeSignal?.aborted).toBe(false);
+    await expect(queued).rejects.toSatisfy(isAgentResponseCancelledError);
+    release();
+    await expect(active).resolves.toMatchObject({ text: "committed" });
+  });
+
   it("settles the active turn and unwedges the queue when the runner ignores the abort and never resolves", async () => {
     const never = new Promise<void>(() => {});
     let resolvingRan = false;

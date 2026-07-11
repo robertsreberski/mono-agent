@@ -332,6 +332,62 @@ describe("agent host composition helpers", () => {
     expect(frames.at(-1)).toMatchObject({ sourceId: "src-1", runId: "run-live-broadcast", status: "succeeded" });
   });
 
+  it("records and exports memory persistence degradation before one terminal live frame", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const frames: RunEventFrame[] = [];
+    const exportOrder: string[] = [];
+    const exporter: RunExporter = {
+      onEvent(event): void { exportOrder.push(`event:${String(event.type)}`); },
+      finish(): void { exportOrder.push("terminal"); },
+    };
+    const memory: MemoryStore = {
+      load: async () => undefined,
+      appendHostSummary: async () => { throw new Error("memory disk became read-only"); },
+    };
+    const responder = await createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        artifactDir,
+        memoryPath: join(dir, "memory"),
+        memoryWriteMode: "append-host-summary",
+        observability: { exporters: [{ type: "phoenix" }] },
+      }),
+      runtime: createFakeRuntime(async () => ({ text: "Provider answer survives" })).runtime,
+      memory,
+      createRunId: () => "run-memory-warning-order",
+      observabilityContext: { sourceId: "src-warning" },
+      exporterFactory: () => exporter,
+      runEventSink: { publish: (frame) => { frames.push(frame); } },
+    });
+
+    const response = await responder.respond(
+      { conversationId: "telegram:warning", text: "remember this", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(response.text).toBe("Provider answer survives");
+    const warningFrameIndex = frames.findIndex((frame) =>
+      frame.t === "event" && JSON.stringify(frame.event).includes("memory_persistence_degraded")
+    );
+    const terminalFrameIndexes = frames
+      .map((frame, index) => frame.t === "run_finished" ? index : -1)
+      .filter((index) => index >= 0);
+    expect(warningFrameIndex).toBeGreaterThan(0);
+    expect(terminalFrameIndexes).toHaveLength(1);
+    expect(warningFrameIndex).toBeLessThan(terminalFrameIndexes[0] ?? -1);
+    expect(frames.at(-1)?.t).toBe("run_finished");
+
+    const warningExportIndex = exportOrder.indexOf("event:runtime_warning");
+    expect(warningExportIndex).toBeGreaterThanOrEqual(0);
+    expect(warningExportIndex).toBeLessThan(exportOrder.indexOf("terminal"));
+    const eventArtifact = await readFile(join(artifactDir, "run-memory-warning-order.events.jsonl"), "utf8");
+    expect(eventArtifact).toContain("memory_persistence_degraded");
+  });
+
   it("uses the public agent name as the default run source label", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { AgentAttachment } from "@mono-agent/agent-contracts";
 import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
 import { deriveRunSource } from "@mono-agent/observability";
-import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
+import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 import {
   assertExecutionModeCompatible,
   defaultExecutionModeForModel,
@@ -21,7 +21,7 @@ import { loadContextFromFiles, loadSkillIndexFromDirectory } from "./context/ind
 import type { BuiltAgentContext, ContextBlockInput, HistoryMessage, SkillIndexEntry } from "./context/index.js";
 import { NoopRunRecorder } from "./recorder.js";
 import { createLiveSessionManager } from "./live-session.js";
-import type { LiveSessionManager } from "./live-session.js";
+import type { LiveSessionManager, LiveSessionRunLifecycle } from "./live-session.js";
 import { createSemaphore } from "./semaphore.js";
 import type { Semaphore } from "./semaphore.js";
 import { createRuntimeSessionStore } from "./sessions.js";
@@ -97,7 +97,7 @@ export class MonoAgentHarness implements AgentHarness {
     // follow-up arriving mid-run is answered on the warm session after the
     // current turn (queue-after-turn), instead of racing fresh.
     this.liveSessionManager = options.session?.mode === "continuous"
-      ? createLiveSessionManager({ run: (request) => this.run(request) })
+      ? createLiveSessionManager({ run: (request, lifecycle) => this.run(request, lifecycle) })
       : undefined;
     const maxConcurrentRuns = options.concurrency?.maxConcurrentRuns;
     this.runLimiter = typeof maxConcurrentRuns === "number" && maxConcurrentRuns > 0
@@ -150,7 +150,7 @@ export class MonoAgentHarness implements AgentHarness {
     ]);
   }
 
-  async run(request: AgentHarnessRequest): Promise<AgentHarnessResponse> {
+  async run(request: AgentHarnessRequest, lifecycle?: LiveSessionRunLifecycle): Promise<AgentHarnessResponse> {
     validateRequest(request);
     const runId = this.options.createRunId?.() ?? createDefaultRunId();
     const runSource = runSourceFromRequest(request);
@@ -221,6 +221,7 @@ export class MonoAgentHarness implements AgentHarness {
     // every exit path including a throw in applyAttachments/prepareContext.
     this.pendingRuns += 1;
     let left = false;
+    let conversationCommitStarted = false;
     const leavePending = (): void => {
       if (!left) {
         left = true;
@@ -346,31 +347,29 @@ export class MonoAgentHarness implements AgentHarness {
       }
 
       const failure = failureFromRuntimeResult(runtimeResult);
-      // Persist the compiled system prompt (identity + skills + recalled memory)
-      // onto the run so the trace shows what the model was instructed with. It is
-      // redacted+capped at the recorder and sensitive-gated at export.
-      const summary = await recorder.finish(
-        failure === undefined
-          ? { ...runtimeResult, systemPrompt: context.prompt, isolated }
-          : { ...runtimeResult, systemPrompt: context.prompt, isolated, failureKind: failure.kind, error: failure.message },
-      );
-      const baseMetadata = responseMetadata(runId, request, context, summary, runtimeResult);
-
       if (failure !== undefined) {
+        const summary = await recorder.finish({
+          ...runtimeResult,
+          systemPrompt: context.prompt,
+          isolated,
+          failureKind: failure.kind,
+          error: failure.message,
+        });
         if (sessionRecord !== undefined && shouldRetireSessionAfterFailure(failure.kind)) {
           await this.sessionStore?.evict(request.conversationId, "stale", sessionRecord.providerSessionId);
         }
-        return { metadata: baseMetadata, failure };
+        return { metadata: responseMetadata(runId, request, context, summary, runtimeResult), failure };
       }
 
       const text = normalizeAssistantText(runtimeResult.text);
       if (text === undefined) {
+        const summary = await recorder.finish({ ...runtimeResult, systemPrompt: context.prompt, isolated });
         // Empty turns are not appended to history, so a retained provider
         // session would diverge from the history store. Retire it instead;
         // the next message replays history into a fresh session.
         await this.retireRunResultSession(request.conversationId, sessionRecord, runtimeResult.providerSessionId);
         return {
-          metadata: baseMetadata,
+          metadata: responseMetadata(runId, request, context, summary, runtimeResult),
           failure: {
             kind: "empty_response",
             message: "Runtime completed without assistant text.",
@@ -379,22 +378,34 @@ export class MonoAgentHarness implements AgentHarness {
         };
       }
 
-      // Final cancellation recheck immediately before the commit (R9): the
-      // line-221 guard and the empty-text branch are point-in-time checks, but
-      // `await recorder.finish()` above yields to the event loop (real disk I/O
-      // in production), during which a live-session cancel()/request-signal
-      // abort can flip request.abortSignal.aborted. Committing here would bake a
-      // cancelled turn into the warm session + history + memory, diverging from
-      // what the caller (whose promise the LiveSessionManager already rejected)
-      // believes happened. So retire the session and return a cancelled failure
-      // WITHOUT saveSession/persistSuccessfulTurn. The summary from finish()
-      // above is reused as-is (calling finish() a second time would double-write
-      // artifacts); the only cosmetic cost is the recorded artifact says
-      // 'succeeded' for a turn that returns cancelled.
-      if (request.abortSignal.aborted) {
+      const successResult = { ...runtimeResult, systemPrompt: context.prompt, isolated };
+      // Two-phase terminal lifecycle: preparation may yield, but is explicitly
+      // non-terminal. It gives cancellation one final window before any durable
+      // conversation state is committed and before `run_finished` is visible.
+      await recorder.prepareFinish?.(successResult);
+
+      if (isolated) {
+        // An isolated proactive turn must not warm the shared conversation's
+        // session. Retire its one-shot provider session before the final commit
+        // check so an abort during disposal still persists no history/memory.
         await this.retireRunResultSession(request.conversationId, sessionRecord, runtimeResult.providerSessionId);
+      }
+
+      // Final pre-commit cancellation check (R9). After this synchronous check,
+      // markCommitted() is the atomic boundary: cancellation is too late once
+      // history/memory persistence starts, because those durable writes cannot be
+      // rolled back safely.
+      if (request.abortSignal.aborted) {
+        if (!isolated) {
+          await this.retireRunResultSession(request.conversationId, sessionRecord, runtimeResult.providerSessionId);
+        }
+        const summary = await commitRecorderFinish(recorder, {
+          ...successResult,
+          cancelled: true,
+          failureKind: "cancelled",
+        });
         return {
-          metadata: baseMetadata,
+          metadata: responseMetadata(runId, request, context, summary, runtimeResult),
           failure: {
             kind: "cancelled",
             message: "Agent request was cancelled during the turn.",
@@ -403,13 +414,9 @@ export class MonoAgentHarness implements AgentHarness {
         };
       }
 
-      if (isolated) {
-        // An isolated proactive turn must not warm the shared conversation's
-        // session, so it is never saved. Any provider session the runtime opened
-        // for this one-shot turn is retired here so it does not leak (sessionRecord
-        // is undefined, so this disposes the freshly returned providerSessionId).
-        await this.retireRunResultSession(request.conversationId, sessionRecord, runtimeResult.providerSessionId);
-      } else {
+      conversationCommitStarted = true;
+      lifecycle?.markCommitted();
+      if (!isolated) {
         this.saveSession(request.conversationId, runtimeResult.providerSessionId, sessionRecord);
       }
 
@@ -421,12 +428,16 @@ export class MonoAgentHarness implements AgentHarness {
         text,
         { ...(runSource.source === undefined ? {} : { source: runSource.source }), emit },
       );
+      // Memory persistence degradation is emitted above, while the recorder is
+      // still open. Commit exactly one terminal summary only after every
+      // run-scoped event has been recorded/exported/broadcast.
+      const summary = await commitRecorderFinish(recorder, successResult);
       return {
         text,
-        metadata: baseMetadata,
+        metadata: responseMetadata(runId, request, context, summary, runtimeResult),
       };
     } catch (error) {
-      const failure = failureFromThrownError(error, request.abortSignal.aborted);
+      const failure = failureFromThrownError(error, request.abortSignal.aborted && !conversationCommitStarted);
       const summary = await safeRecorderFail(recorder, error);
       return {
         metadata: responseMetadata(runId, request, context, summary),
@@ -1275,6 +1286,12 @@ async function safeRecorderFail(recorder: RunRecorder, error: unknown): Promise<
   } catch {
     return undefined;
   }
+}
+
+async function commitRecorderFinish(recorder: RunRecorder, result: RuntimeResultLike): Promise<RunSummary> {
+  return recorder.commitFinish === undefined
+    ? await recorder.finish(result)
+    : await recorder.commitFinish(result);
 }
 
 function normalizeAssistantText(text: unknown): string | undefined {
