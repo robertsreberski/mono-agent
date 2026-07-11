@@ -37,7 +37,11 @@ describe("capture outbox", () => {
         createdAt: NOW.toISOString(),
       }],
     }, NOW.toISOString());
-    const db = openMemoryDb({ path: join(root, "memory.db"), dim: 2 });
+    const db = openMemoryDb({
+      path: join(root, "memory.db"),
+      embeddings: noCallEmbeddings("test:outbox"),
+      dim: 2,
+    });
     try {
       replayCaptureOutbox(root, db);
       expect(db.get(item.id)?.text).toBe(item.text);
@@ -237,15 +241,59 @@ describe("capture outbox", () => {
       record: memoryRecord(item, file),
       vector: [1, 0, 0],
       threads: [],
-    }], {}, NOW.toISOString());
-    const db = openMemoryDb({ path: join(root, "memory.db"), dim: 2 });
+    }], {
+      entities: [{ id: "concept:dimension", name: "Dimension", type: "concept", createdAt: NOW.toISOString() }],
+      associations: [{
+        memoryId: item.id,
+        entityId: "concept:dimension",
+        provenance: "capture",
+        createdAt: NOW.toISOString(),
+      }],
+    }, NOW.toISOString());
+    const db = openMemoryDb({
+      path: join(root, "memory.db"),
+      embeddings: noCallEmbeddings("test:wrong-dim"),
+      dim: 2,
+    });
     try {
       expect(() => replayCaptureOutbox(root, db)).toThrow(/dimension mismatch.*expected 2.*got 3/iu);
       expect(db.count()).toBe(0);
+      expect(existsSync(dailyFilePath(root, NOW))).toBe(false);
+      expect(readGraph(root)).toEqual({ entities: [], relations: [], associations: [] });
       expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
     } finally {
       db.close();
     }
+  });
+
+  it("preflights every canonical action before applying the first one", () => {
+    const root = tempRoot();
+    const first = bullet("FIRST", "This valid ADD must remain unapplied.");
+    const conflictBefore = bullet("CONFLICT", "Expected before state.");
+    const conflictAfter = { ...conflictBefore, text: "Expected after state." };
+    appendBullet(root, { ...conflictBefore, text: "External conflicting state." }, NOW);
+    const file = relative(root, dailyFilePath(root, NOW));
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: first.id,
+      after: { file, bullet: first },
+      record: memoryRecord(first, file),
+      threads: [],
+    }, {
+      candidateIndex: 1,
+      kind: "update",
+      id: conflictBefore.id,
+      before: { file, bullet: conflictBefore },
+      after: { file, bullet: conflictAfter },
+      record: memoryRecord(conflictAfter, file),
+    }], {}, NOW.toISOString());
+
+    expect(() => replayCaptureOutbox(root)).toThrow(/conflicts with canonical action update/iu);
+    const replayed = parseDailyFile(readFileSync(dailyFilePath(root, NOW), "utf8")).bullets;
+    expect(replayed.some((item) => item.id === first.id)).toBe(false);
+    expect(replayed.find((item) => item.id === conflictBefore.id)?.text).toBe("External conflicting state.");
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
   });
 
   it("rejects a tampered record-to-bullet binding and keeps the intent pending", () => {
@@ -274,6 +322,15 @@ describe("capture outbox", () => {
 
 function tempRoot(): string {
   return mkdtempSync(join(tmpdir(), "capture-outbox-"));
+}
+
+function noCallEmbeddings(id: string) {
+  return {
+    id,
+    embed: async (_texts: readonly string[]): Promise<number[][]> => {
+      throw new Error("stored outbox vectors must not call the embedding provider");
+    },
+  };
 }
 
 function bullet(id: string, text: string): Bullet {

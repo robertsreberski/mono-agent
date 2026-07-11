@@ -100,6 +100,11 @@ export interface CaptureIntentReplayResult extends GraphBatchResult {
   readonly appliedMemoryIds: readonly string[];
 }
 
+export interface CaptureIntentReplayOptions {
+  /** Apply/verify canonical and DB outcomes but leave the durable intent pending. */
+  readonly retainIntent?: boolean;
+}
+
 /** Atomically publish one bounded, fsynced capture intent before source mutation. */
 export function writeCaptureIntent(
   root: string,
@@ -141,48 +146,127 @@ export function replayCaptureIntent(
   root: string,
   handle: CaptureIntentHandle,
   db?: MemoryDb,
+  options: CaptureIntentReplayOptions = {},
 ): CaptureIntentReplayResult {
-  return replayFile(root, handle.file, db);
+  const replay = loadReplay(root, handle.file);
+  const plan = preflightReplay(root, replay, db);
+  return applyReplay(root, plan, db, options);
 }
 
 /** Replay every pending capture before accepting new writes or taking a rebuild snapshot. */
-export function replayCaptureOutbox(root: string, db?: MemoryDb): CaptureIntentReplayResult[] {
-  const files = listCanonicalFileNames(root, OUTBOX_DIR, {
+export function replayCaptureOutbox(
+  root: string,
+  db?: MemoryDb,
+  options: CaptureIntentReplayOptions = {},
+): CaptureIntentReplayResult[] {
+  const files = captureIntentFiles(root);
+  if (files.length > MAX_INTENTS) throw new Error("memory-capture: capture outbox exceeds its bounded intent count.");
+  const replays = files.map((name) => loadReplay(root, `${OUTBOX_DIR}/${name}`));
+  // Validate every queued action and every vector against the current DB before
+  // the first Markdown or graph append. A bad later intent cannot leave an
+  // earlier intent half-applied merely because filenames sort first.
+  const plans = replays.map((replay) => preflightReplay(root, replay, db));
+  return plans.map((plan) => applyReplay(root, plan, db, options));
+}
+
+/** Explicit rollback cannot carry provider-bound pending vectors across identities. */
+export function assertNoPendingCaptureIntent(root: string): void {
+  const files = captureIntentFiles(root);
+  if (files.length === 0) return;
+  for (const name of files) loadReplay(root, `${OUTBOX_DIR}/${name}`);
+  throw new Error(
+    "memory-capture: a durable capture intent is pending; start the current writable store "
+    + "or recover it before rollback.",
+  );
+}
+
+interface LoadedReplay {
+  readonly file: string;
+  readonly snapshot: NonNullable<ReturnType<typeof readCanonicalFileSnapshot>>;
+  readonly intent: CaptureIntent;
+}
+
+interface ReplayPlan extends LoadedReplay {
+  readonly writes: readonly Exclude<CaptureIntentAction, { readonly kind: "noop" }>[];
+  readonly appliedMemoryIds: ReadonlySet<string>;
+}
+
+function captureIntentFiles(root: string): string[] {
+  return listCanonicalFileNames(root, OUTBOX_DIR, {
     allowMissing: true,
     include: (name) => INTENT_FILE_RE.test(name),
   });
-  if (files.length > MAX_INTENTS) throw new Error("memory-capture: capture outbox exceeds its bounded intent count.");
-  return files.map((name) => replayFile(root, `${OUTBOX_DIR}/${name}`, db));
 }
 
-function replayFile(root: string, file: string, db: MemoryDb | undefined): CaptureIntentReplayResult {
+function loadReplay(root: string, file: string): LoadedReplay {
   const snapshot = readCanonicalFileSnapshot(root, file, { maxBytes: MAX_INTENT_BYTES });
   if (snapshot === undefined) throw new Error(`memory-capture: pending intent "${file}" disappeared.`);
   const intent = parseIntent(snapshot.content);
+  return { file, snapshot, intent };
+}
+
+function preflightReplay(root: string, replay: LoadedReplay, db: MemoryDb | undefined): ReplayPlan {
+  const { intent } = replay;
+  if (intent.state === "complete") {
+    return { ...replay, writes: [], appliedMemoryIds: new Set<string>() };
+  }
+
+  const appliedMemoryIds = new Set<string>();
+  for (const action of intent.actions) {
+    if (!canonicalActionCanApply(root, action)) {
+      throw new Error(`memory-capture: pending intent ${intent.id} conflicts with canonical action ${action.kind}.`);
+    }
+    appliedMemoryIds.add(memoryIdFor(action));
+  }
+
+  const writes = intent.actions.flatMap((action) => {
+    if (action.kind === "noop" || (db !== undefined && dbHasCanonicalOutcome(db, action))) return [];
+    return [action];
+  });
+  if (db !== undefined) {
+    db.assertPreparedUpserts(
+      writes.map((action) => action.record),
+      writes.map((action) => action.vector),
+    );
+    for (const action of intent.actions) {
+      if (action.kind === "noop" && !dbHasCanonicalOutcome(db, action)) {
+        throw new Error(`memory-capture: pending NOOP target ${action.id} is missing from the active index.`);
+      }
+      if (action.kind === "supersede" && db.get(action.oldId) === undefined) {
+        throw new Error(`memory-capture: pending supersede target ${action.oldId} is missing from the active index.`);
+      }
+    }
+  }
+
+  return { ...replay, writes, appliedMemoryIds };
+}
+
+function applyReplay(
+  root: string,
+  plan: ReplayPlan,
+  db: MemoryDb | undefined,
+  options: CaptureIntentReplayOptions,
+): CaptureIntentReplayResult {
+  const { file, snapshot, intent, writes, appliedMemoryIds } = plan;
   if (intent.state === "complete") {
     removeCanonicalFile(root, file, snapshot.identity);
     return emptyReplay();
   }
 
-  const appliedActions: CaptureIntentAction[] = [];
-  const appliedMemoryIds = new Set<string>();
   for (const action of intent.actions) {
     if (applyCanonicalAction(root, action) === "conflict") {
       throw new Error(`memory-capture: pending intent ${intent.id} conflicts with canonical action ${action.kind}.`);
     }
-    appliedActions.push(action);
-    appliedMemoryIds.add(memoryIdFor(action));
   }
 
   if (db !== undefined) {
-    const writes = appliedActions.flatMap((action) => action.kind === "noop" ? [] : [action]);
     if (writes.length > 0) {
       db.commitPreparedUpserts(
         writes.map((action) => action.record),
         writes.map((action) => action.vector),
       );
     }
-    for (const action of appliedActions) {
+    for (const action of intent.actions) {
       if (action.kind === "supersede") db.markSuperseded(action.oldId, action.newId, action.at);
       if (action.kind === "add") {
         for (const edge of action.threads) db.addEdge(edge.src, edge.dst, "thread", edge.weight);
@@ -207,6 +291,11 @@ function replayFile(root: string, file: string, db: MemoryDb | undefined): Captu
       db.addEntityRelation(relation.src, relation.dst, relation.relation, relation.createdAt);
     }
     for (const association of canonical.associations) db.associateMemory(association);
+    assertDbReplayOutcome(db, intent.actions, canonical);
+  }
+
+  if (options.retainIntent === true) {
+    return { ...canonical, appliedMemoryIds: [...appliedMemoryIds] };
   }
 
   const completed: CaptureIntent = { ...intent, state: "complete" };
@@ -215,6 +304,119 @@ function replayFile(root: string, file: string, db: MemoryDb | undefined): Captu
   if (completeSnapshot === undefined) throw new Error(`memory-capture: completed intent "${file}" disappeared.`);
   removeCanonicalFile(root, file, completeSnapshot.identity);
   return { ...canonical, appliedMemoryIds: [...appliedMemoryIds] };
+}
+
+function canonicalActionCanApply(root: string, action: CaptureIntentAction): boolean {
+  if (action.kind === "add") {
+    const current = bulletState(root, action.after);
+    return current === "exact" || current === "missing";
+  }
+  if (action.kind === "update") {
+    return bulletState(root, action.after) === "exact" || bulletState(root, action.before) === "exact";
+  }
+  if (action.kind === "noop") return bulletState(root, action.expected) === "exact";
+
+  const oldAfter = bulletState(root, action.afterOld);
+  const oldBefore = bulletState(root, action.beforeOld);
+  const next = bulletState(root, action.afterNew);
+  return (oldAfter === "exact" && next === "exact")
+    || (oldBefore === "exact" && next === "missing")
+    || (oldAfter === "exact" && next === "missing")
+    || (oldBefore === "exact" && next === "exact");
+}
+
+function dbHasCanonicalOutcome(db: MemoryDb, action: CaptureIntentAction): boolean {
+  const state = action.kind === "noop"
+    ? action.expected
+    : action.kind === "supersede" ? action.afterNew : action.after;
+  const record = db.get(state.bullet.id);
+  if (record === undefined || !recordMatchesCanonicalState(record, state)) return false;
+  if (action.kind === "noop" || action.vector === undefined) return true;
+  // A safe rebuild re-embeds the canonical record under the target identity.
+  // Its already-present vector is authoritative; replaying the outbox's old
+  // provider-bound bytes would either downgrade it or fail on a new dimension.
+  if (db.hasVector(record.id)) return true;
+  return db.indexMetadata()?.tier === "lite";
+}
+
+function recordMatchesCanonicalState(record: MemoryRecord, state: CanonicalBulletState): boolean {
+  const bullet = state.bullet;
+  return record.id === bullet.id
+    && record.type === bullet.type
+    && record.status === bullet.status
+    && record.text === bullet.text
+    && record.salience === bullet.salience
+    && record.isInsight === bullet.isInsight
+    && record.createdAt === bullet.createdAt
+    && record.dueAt === bullet.dueAt
+    && record.source.file === state.file;
+}
+
+function assertDbReplayOutcome(
+  db: MemoryDb,
+  actions: readonly CaptureIntentAction[],
+  graph: GraphBatchResult,
+): void {
+  for (const action of actions) {
+    if (!dbHasCanonicalOutcome(db, action)) {
+      throw new Error(`memory-capture: active index did not reach canonical ${action.kind} outcome.`);
+    }
+    if (action.kind === "add") {
+      const edges = db.edges(action.id);
+      for (const expected of action.threads) {
+        if (!edges.some((edge) => edge.kind === "thread" && edge.dst === expected.dst && edge.weight === expected.weight)) {
+          throw new Error(`memory-capture: active index did not retain thread edge for ${action.id}.`);
+        }
+      }
+    } else if (action.kind === "supersede") {
+      const old = db.get(action.oldId);
+      if (old === undefined || !recordMatchesCanonicalState(old, action.afterOld)
+        || old.supersededBy !== action.newId || old.supersededAt !== action.at
+        || !db.edges(action.oldId).some((edge) => edge.kind === "supersedes" && edge.dst === action.newId)) {
+        throw new Error(`memory-capture: active index did not reach supersede outcome for ${action.oldId}.`);
+      }
+    }
+  }
+  for (const entity of graph.entities) {
+    if (!entityRecordsEqual(db.getEntity(entity.id), entity)) {
+      throw new Error(`memory-capture: active index did not mirror entity ${entity.id}.`);
+    }
+  }
+  for (const relation of graph.relations) {
+    if (!db.relationsFor(relation.src).some((actual) => relationRecordsEqual(actual, relation))) {
+      throw new Error(`memory-capture: active index did not mirror relation ${relation.src} -> ${relation.dst}.`);
+    }
+  }
+  for (const association of graph.associations) {
+    if (!db.associationsForMemory(association.memoryId)
+      .some((actual) => associationRecordsEqual(actual, association))) {
+      throw new Error(`memory-capture: active index did not mirror association for ${association.memoryId}.`);
+    }
+  }
+}
+
+function entityRecordsEqual(left: EntityRecord | undefined, right: EntityRecord): boolean {
+  return left !== undefined
+    && left.id === right.id
+    && left.name === right.name
+    && left.type === right.type
+    && left.summary === right.summary
+    && left.createdAt === right.createdAt
+    && left.updatedAt === right.updatedAt;
+}
+
+function relationRecordsEqual(left: EntityRelationRecord, right: EntityRelationRecord): boolean {
+  return left.src === right.src
+    && left.dst === right.dst
+    && left.relation === right.relation
+    && left.createdAt === right.createdAt;
+}
+
+function associationRecordsEqual(left: MemoryEntityAssociation, right: MemoryEntityAssociation): boolean {
+  return left.memoryId === right.memoryId
+    && left.entityId === right.entityId
+    && left.provenance === right.provenance
+    && left.createdAt === right.createdAt;
 }
 
 function applyCanonicalAction(root: string, action: CaptureIntentAction): "applied" | "conflict" {
@@ -366,10 +568,18 @@ function parseIntent(raw: string): CaptureIntent {
     actions: value.actions.map(decodeActionVector),
   } as unknown as CaptureIntent;
   const indexes = new Set<number>();
+  const touchedMemoryIds = new Set<string>();
   for (const action of intent.actions) {
     validateAction(action);
     if (indexes.has(action.candidateIndex)) throw new Error("memory-capture: duplicate candidate index in outbox intent.");
     indexes.add(action.candidateIndex);
+    const ids = action.kind === "supersede" ? [action.oldId, action.newId] : [action.id];
+    for (const id of ids) {
+      if (touchedMemoryIds.has(id)) {
+        throw new Error("memory-capture: overlapping memory actions in outbox intent.");
+      }
+      touchedMemoryIds.add(id);
+    }
   }
   for (const entity of intent.graph.entities) validateEntity(entity);
   for (const relation of intent.graph.relations) validateRelation(relation);

@@ -195,14 +195,35 @@ export class MemoryDb {
     return vectors;
   }
 
+  /** Validate an already-prepared batch without changing SQLite. */
+  assertPreparedUpserts(
+    records: readonly MemoryRecord[],
+    vectors: readonly (readonly number[] | undefined)[],
+  ): void {
+    if (records.length !== vectors.length) {
+      throw new Error("memory-store: record/vector batch length mismatch.");
+    }
+    vectors.forEach((vector) => {
+      if (vector !== undefined) this.assertVectorDim(vector, "commitPreparedUpserts");
+    });
+    if (this.embeddings === undefined && vectors.some((vector) => vector !== undefined)) {
+      throw new Error(
+        "memory-store: prepared embedding vectors require a configured embedding identity.",
+      );
+    }
+    if (this.embeddings !== undefined && vectors.some((vector) => vector === undefined)) {
+      throw new Error(
+        "memory-store: configured embedding identity requires one prepared vector per record.",
+      );
+    }
+  }
+
   /** Persist records with vectors prepared by this DB's configured provider. */
   commitPreparedUpserts(
     records: readonly MemoryRecord[],
     vectors: readonly (readonly number[] | undefined)[],
   ): void {
-    vectors.forEach((vector) => {
-      if (vector !== undefined) this.assertVectorDim(vector, "commitPreparedUpserts");
-    });
+    this.assertPreparedUpserts(records, vectors);
     this.persistRecords(records, vectors, true);
   }
 
