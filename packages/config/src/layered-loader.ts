@@ -240,14 +240,16 @@ function jsonMemoryPathForSource(
   if (
     source === "MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL"
     && !hasValue(env.MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL)
-    && jsonSupermemoryRequiresBaseUrl(memory, env)
-  ) return "memory.supermemory.baseUrl";
+  ) {
+    return jsonSupermemoryRequiresBaseUrl(memory, env)
+      ? "memory.supermemory.baseUrl"
+      : undefined;
+  }
   if (
     source === "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY"
     && !hasValue(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY)
   ) {
-    const credentialPath = jsonEmbeddingsCredentialPath(memory, env);
-    if (credentialPath !== undefined) return credentialPath;
+    return jsonEmbeddingsCredentialPath(memory, env);
   }
   if (typeof source !== "string" || !Object.hasOwn(MEMORY_JSON_SOURCES, source)) return undefined;
   const envName = source as keyof typeof MEMORY_JSON_SOURCES;
@@ -268,14 +270,19 @@ function jsonSupermemoryRequiresBaseUrl(
   if (!hasValue(env.MONO_AGENT_MEMORY_BACKEND) && memory.backend === "supermemory") return true;
   const supermemory = memory.supermemory;
   if (supermemory === undefined) return false;
-  const activatingLeaves = [
+  const activatingStringLeaves = [
     ["apiKey", "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY"],
     ["apiKeyEnv", "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV"],
     ["container", "MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER"],
+  ] as const;
+  if (activatingStringLeaves.some(([field, envName]) => (
+    hasJsonString(supermemory[field]) && !hasValue(env[envName])
+  ))) return true;
+  const activatingScalarLeaves = [
     ["timeoutMs", "MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS"],
     ["exposeMcpServer", "MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER"],
   ] as const;
-  return activatingLeaves.some(([field, envName]) => (
+  return activatingScalarLeaves.some(([field, envName]) => (
     supermemory[field] !== undefined && !hasValue(env[envName])
   ));
 }
@@ -287,15 +294,15 @@ function jsonEmbeddingsCredentialPath(
   const embeddings = memory.embeddings;
   if (embeddings === undefined) return undefined;
   if (
-    embeddings.apiKeyEnv !== undefined
+    hasJsonString(embeddings.apiKeyEnv)
     && !hasValue(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV)
   ) return "memory.embeddings.apiKeyEnv";
   if (
     embeddings.provider === "openai"
     && !hasValue(env.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER)
     && !hasValue(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV)
-    && embeddings.apiKey === undefined
-    && embeddings.apiKeyEnv === undefined
+    && !hasJsonString(embeddings.apiKey)
+    && !hasJsonString(embeddings.apiKeyEnv)
   ) return "memory.embeddings.apiKey";
   return undefined;
 }

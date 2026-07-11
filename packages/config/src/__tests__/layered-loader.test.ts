@@ -1556,6 +1556,63 @@ describe("loadMonoAgentConfigWithSources", () => {
     });
   });
 
+  it.each(["", "   "])(
+    "does not treat a %j JSON Supermemory container as activating a JSON-owned base URL requirement",
+    async (container) => {
+      const path = join(dir, "config.json");
+      await writeFile(path, JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        memory: {
+          backend: "bujo",
+          mode: "lite",
+          path: ".mono-agent/memory",
+          supermemory: { container },
+        },
+      }), "utf8");
+
+      await expect(loadMonoAgentConfigWithSources({
+        env: { MONO_AGENT_MEMORY_BACKEND: "supermemory" },
+        cwd: dir,
+        jsonPath: path,
+      })).rejects.toMatchObject({
+        code: "invalid_env",
+        details: {
+          env: "MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL",
+          code: "invalid_env",
+        },
+      });
+    },
+  );
+
+  it.each(["", "   "])(
+    "does not treat a %j JSON embeddings credential reference as JSON-owned",
+    async (apiKeyEnv) => {
+      const path = join(dir, "config.json");
+      await writeFile(path, JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        memory: {
+          mode: "journal",
+          path: ".mono-agent/memory",
+          embeddings: { dim: 384, apiKeyEnv },
+        },
+      }), "utf8");
+
+      await expect(loadMonoAgentConfigWithSources({
+        env: { MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai" },
+        cwd: dir,
+        jsonPath: path,
+      })).rejects.toMatchObject({
+        code: "invalid_env",
+        details: {
+          env: "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
+          code: "invalid_env",
+        },
+      });
+    },
+  );
+
   it("lets non-empty env leaves override malformed lower-precedence embeddings and Supermemory JSON", async () => {
     const embeddingsPath = join(dir, "embeddings.json");
     await writeFile(embeddingsPath, JSON.stringify({
