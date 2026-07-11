@@ -4,7 +4,6 @@ import type { MemoryDb, MemoryRecord, SimilarHit } from "../store/index.js";
 
 import {
   replayCaptureIntent,
-  replayCaptureOutbox,
   writeCaptureIntent,
   type CaptureIntentAction,
 } from "./capture-outbox.js";
@@ -13,6 +12,7 @@ import { normalizeCandidateText, type CandidateMemory } from "./distill.js";
 import { parseJsonLoose } from "./json.js";
 import type { LlmComplete } from "./llm.js";
 import { MemoryModelError } from "./model-error.js";
+import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
 
 /** The outcome of reconciling a single candidate against the existing index. */
@@ -63,7 +63,13 @@ export async function reconcile(
   candidates: readonly CandidateMemory[],
   deps: ReconcileDeps,
 ): Promise<ReconcileAction[]> {
-  prepareDurableReconcile(deps);
+  return await withSerializedBujoMutation(deps, async () => await reconcileUnlocked(candidates, deps));
+}
+
+async function reconcileUnlocked(
+  candidates: readonly CandidateMemory[],
+  deps: ReconcileDeps,
+): Promise<ReconcileAction[]> {
   const threadThreshold = deps.threadThreshold ?? 0.35;
   const dupThreshold = deps.dupThreshold ?? 0.5;
   const actions: ReconcileAction[] = [];
@@ -121,7 +127,13 @@ export async function reconcileBatch(
   candidates: readonly CandidateMemory[],
   deps: ReconcileDeps,
 ): Promise<Array<ReconcileAction | undefined>> {
-  prepareDurableReconcile(deps);
+  return await withSerializedBujoMutation(deps, async () => await reconcileBatchUnlocked(candidates, deps));
+}
+
+async function reconcileBatchUnlocked(
+  candidates: readonly CandidateMemory[],
+  deps: ReconcileDeps,
+): Promise<Array<ReconcileAction | undefined>> {
   const threadThreshold = deps.threadThreshold ?? 0.35;
   const dupThreshold = deps.dupThreshold ?? 0.5;
   let neighbours: readonly SimilarHit[][];
@@ -266,17 +278,6 @@ async function executePlannedAction(
 
   commitPreparedActionsDurably([withPreparedVector(plan.intent, 0, vectors[0])], deps);
   return plan.action;
-}
-
-/**
- * Recover any previously-published result before provider planning. This is a
- * synchronous lifecycle fence: a public caller can never stack a new intent
- * behind an unresolved canonical/SQLite outcome.
- */
-function prepareDurableReconcile(deps: ReconcileDeps): void {
-  deps.abortSignal?.throwIfAborted();
-  replayCaptureOutbox(deps.root, deps.db);
-  deps.abortSignal?.throwIfAborted();
 }
 
 const MAX_ACTIONS_PER_INTENT = 8;

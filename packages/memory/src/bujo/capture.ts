@@ -1,12 +1,12 @@
 import { extractCapturePlan } from "./capture-batch.js";
 import {
   replayCaptureIntent,
-  replayCaptureOutbox,
   writeCaptureIntent,
   type CaptureIntentAction,
   type CaptureIntentHandle,
 } from "./capture-outbox.js";
 import type { GraphBatchInput } from "./graph.js";
+import { withSerializedBujoMutation } from "./mutation-lock.js";
 import { reconcileBatch, type ReconcileAction, type ReconcileDeps } from "./reconcile.js";
 
 export interface CaptureTurnResult {
@@ -27,11 +27,11 @@ export interface CaptureTurnResult {
  * Returns the action and graph-write counts.
  */
 export async function captureTurn(text: string, deps: ReconcileDeps): Promise<CaptureTurnResult> {
+  return await withSerializedBujoMutation(deps, async () => await captureTurnUnlocked(text, deps));
+}
+
+async function captureTurnUnlocked(text: string, deps: ReconcileDeps): Promise<CaptureTurnResult> {
   deps.abortSignal?.throwIfAborted();
-  // A graph/DB mirror fault can leave one committed intent while the process
-  // remains alive. Finish it before paying for or planning another turn so
-  // later updates cannot make the earlier exact outcome unreplayable.
-  replayCaptureOutbox(deps.root, deps.db);
   // One batched extraction call yields candidates + their precise entity ids;
   // one optional batched reconcile call classifies every near neighbour.
   const extraction = await extractCapturePlan(text, deps.llm, deps.abortSignal);

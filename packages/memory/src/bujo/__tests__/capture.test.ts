@@ -9,6 +9,7 @@ import { captureTurn } from "../capture.js";
 import { replayCaptureOutbox } from "../capture-outbox.js";
 import { appendBullet, dailyFilePath } from "../daily.js";
 import { readGraph } from "../graph.js";
+import { migrate } from "../migrate.js";
 import type { ReconcileDeps } from "../reconcile.js";
 import { createBujoMemoryStore } from "../store.js";
 import type { Bullet } from "../types.js";
@@ -131,6 +132,73 @@ describe("captureTurn", () => {
     expect(batchSizes).toEqual([8, 8]);
     expect(preparedCommits).toBe(1);
     expect(db.count()).toBe(8);
+  });
+
+  it("recovers a paid migration before exported capture pays the extraction model", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const aging: Bullet = {
+      id: "CAPTURE-PAID-MIGRATION",
+      type: "note",
+      status: "open",
+      text: "Paid migration recovery precedes capture planning",
+      salience: 0.2,
+      isInsight: false,
+      createdAt: FIXED.toISOString(),
+      refs: [],
+    };
+    appendBullet(root, aging, FIXED);
+    await db.upsert({
+      ...aging,
+      accessCount: 0,
+      tags: [],
+      source: { file: relative(root, dailyFilePath(root, FIXED)) },
+    });
+    const migrationNow = new Date("2026-08-20T12:00:00.000Z");
+    await expect(migrate({
+      db,
+      root,
+      llm: { id: "paid-migration", complete: async () => JSON.stringify({ action: "promote" }) },
+      nextId: () => "unused",
+      now: () => migrationNow,
+      hooks: { afterDecisionDurable: () => { throw new Error("leave-capture-migration-pending"); } },
+    })).rejects.toThrow("leave-capture-migration-pending");
+    const monthly = join(root, "monthly", "2026-08.md");
+    expect(readFileSync(monthly, "utf8")).toContain("mono-agent-migrate:");
+    let extractionCalls = 0;
+    const llm: ReconcileDeps["llm"] = {
+      id: "capture-after-paid-migration",
+      complete: async (_prompt, options) => {
+        if (options?.label !== "capture:extract") throw new Error(`unexpected ${options?.label ?? "unlabelled"}`);
+        extractionCalls += 1;
+        expect(readFileSync(monthly, "utf8")).not.toContain("mono-agent-migrate:");
+        expect(db.get(aging.id)?.salience).toBe(0.5);
+        return JSON.stringify({
+          memories: [{
+            type: "note",
+            text: "A novel fact after migration recovery",
+            salience: 0.8,
+            isInsight: false,
+            entityIds: [],
+          }],
+          entities: [],
+          relations: [],
+        });
+      },
+    };
+
+    const result = await captureTurn("Capture only after recovery", {
+      db,
+      root,
+      llm,
+      nextId: makeSeqNextId(),
+      now: () => migrationNow,
+      dupThreshold: 0,
+    });
+
+    expect(extractionCalls).toBe(1);
+    expect(result.actions[0]?.kind).toBe("add");
+    expect(readFileSync(monthly, "utf8")).not.toContain("mono-agent-migrate:");
   });
 
   it("writes one durable row and merged association set for same-turn duplicate candidates", async () => {

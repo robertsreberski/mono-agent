@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -210,6 +210,34 @@ describe("BujoMemoryStore — tier derivation", () => {
     const inspected = openMemoryDb({ path: join(root, "memory.db"), readOnly: true, dim: 64 });
     expect(inspected.get(bullet.id)?.salience).toBe(0.2);
     inspected.close();
+  });
+
+  it("rejects writable BuJo startup when a nonempty active index has partial vector coverage", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-startup-partial-vectors-"));
+    const now = new Date("2026-06-16T09:00:00.000Z");
+    const bullet = journalBullet("PARTIAL-VECTOR", "This curated row is missing its vector", now);
+    appendBullet(root, bullet, now);
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
+    db.upsertLexical({
+      ...bullet,
+      accessCount: 0,
+      tags: [],
+      source: { file: relative(root, dailyFilePath(root, now)) },
+    });
+    db.close();
+    const start = () => createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: fakeLlm([]),
+      clock: () => now,
+    });
+
+    expect(start).toThrow(/complete vector coverage.*0\/1 vectors/iu);
+    // Constructor failure releases the writer lease and repeats the same
+    // coverage guard instead of degrading into a stale-lock error.
+    expect(start).toThrow(/complete vector coverage.*0\/1 vectors/iu);
   });
 
   it("rejects an explicit tier that would silently downshift configured prerequisites", () => {
@@ -559,6 +587,206 @@ function recordingLlm(order: string[], opts: { throwOnText?: string } = {}): Llm
 }
 
 describe("BujoMemoryStore async capture queue", () => {
+  it("serializes concurrent direct captures so the second replans without stranding an intent", async () => {
+    const root = tmpRoot();
+    const now = new Date("2026-06-15T12:00:00.000Z");
+    const bullet = journalBullet("CAPTURE-SERIAL", "Morgan prefers blue green deployments", now);
+    appendBullet(root, bullet, now);
+    const seedDb = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
+    await seedDb.upsert({
+      ...bullet,
+      accessCount: 0,
+      tags: [],
+      source: { file: relative(root, dailyFilePath(root, now)) },
+    });
+    seedDb.close();
+
+    const firstText = "Morgan prefers reviewed blue green deployments";
+    const secondText = "Morgan prefers canary blue green deployments";
+    let extractionCalls = 0;
+    let enterFirst!: () => void;
+    let releaseFirst!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { enterFirst = resolve; });
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const llm: LlmComplete = {
+      id: "concurrent-direct-capture",
+      complete: async (prompt, options) => {
+        if (options?.label === "capture:extract") {
+          extractionCalls += 1;
+          if (extractionCalls === 1) {
+            enterFirst();
+            await firstGate;
+          }
+          const text = prompt.includes("SECOND") ? secondText : firstText;
+          return JSON.stringify({
+            memories: [{ type: "note", text, salience: 0.8, isInsight: false, entityIds: [] }],
+            entities: [],
+            relations: [],
+          });
+        }
+        if (options?.label === "capture:reconcile-batch") {
+          const text = prompt.includes(secondText) ? secondText : firstText;
+          return JSON.stringify([{
+            index: 0,
+            action: "update",
+            targetId: "CAPTURE-SERIAL",
+            text,
+          }]);
+        }
+        throw new Error(`unexpected LLM call ${options?.label ?? "unlabelled"}`);
+      },
+    };
+    const store = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm,
+      clock: () => now,
+    });
+    const completionOrder: string[] = [];
+    const first = store.capture("first", "FIRST capture turn").then((result) => {
+      completionOrder.push("first");
+      return result;
+    });
+    await firstEntered;
+    const second = store.capture("second", "SECOND capture turn").then((result) => {
+      completionOrder.push("second");
+      return result;
+    });
+    await Promise.resolve();
+    expect(extractionCalls).toBe(1);
+
+    releaseFirst();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { actions: 1, entities: 0 },
+      { actions: 1, entities: 0 },
+    ]);
+    expect(completionOrder).toEqual(["first", "second"]);
+    expect(extractionCalls).toBe(2);
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+    await store.close();
+
+    const restarted = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: fakeLlm([]),
+      clock: () => now,
+    });
+    await restarted.close();
+    const inspected = openMemoryDb({ path: join(root, "memory.db"), readOnly: true, dim: 64 });
+    expect(inspected.get("CAPTURE-SERIAL")?.text).toBe(secondText);
+    inspected.close();
+  });
+
+  it("keeps a direct capture behind an in-flight scheduled capture for the same root", async () => {
+    const root = tmpRoot();
+    let calls = 0;
+    let enterScheduled!: () => void;
+    let releaseScheduled!: () => void;
+    const scheduledEntered = new Promise<void>((resolve) => { enterScheduled = resolve; });
+    const scheduledGate = new Promise<void>((resolve) => { releaseScheduled = resolve; });
+    const order: string[] = [];
+    const llm: LlmComplete = {
+      id: "scheduled-direct-serializer",
+      complete: async (prompt, options) => {
+        if (options?.label !== "capture:extract") throw new Error(`unexpected ${options?.label ?? "unlabelled"}`);
+        calls += 1;
+        const tag = prompt.includes("SCHEDULED") ? "scheduled" : "direct";
+        order.push(`start:${tag}`);
+        if (tag === "scheduled") {
+          enterScheduled();
+          await scheduledGate;
+        }
+        order.push(`finish:${tag}`);
+        return JSON.stringify({ memories: [], entities: [], relations: [] });
+      },
+    };
+    const store = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm,
+    });
+    store.scheduleCapture("scheduled", "SCHEDULED capture");
+    await scheduledEntered;
+    const direct = store.capture("direct", "DIRECT capture");
+    await Promise.resolve();
+    expect(calls).toBe(1);
+
+    releaseScheduled();
+    await expect(direct).resolves.toEqual({ actions: 0, entities: 0 });
+    await store.flush();
+    expect(order).toEqual([
+      "start:scheduled",
+      "finish:scheduled",
+      "start:direct",
+      "finish:direct",
+    ]);
+    await store.close();
+  });
+
+  it("keeps raw host audit and recall off the blocked curated-capture path", async () => {
+    const root = tmpRoot();
+    const embeddings = fakeEmbeddings(64);
+    const seedDb = openMemoryDb({ path: join(root, "memory.db"), embeddings, dim: 64 });
+    await seedDb.upsert({
+      id: "FAST-RECALL",
+      type: "note",
+      status: "open",
+      text: "The stable recall sentinel remains available",
+      salience: 0.8,
+      isInsight: false,
+      createdAt: new Date("2026-06-15T12:00:00.000Z").toISOString(),
+      accessCount: 0,
+      tags: [],
+      source: {},
+    });
+    seedDb.close();
+    let enterCapture!: () => void;
+    let releaseCapture!: () => void;
+    const captureEntered = new Promise<void>((resolve) => { enterCapture = resolve; });
+    const captureGate = new Promise<void>((resolve) => { releaseCapture = resolve; });
+    const store = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings,
+      dim: 64,
+      llm: {
+        id: "blocked-curation",
+        complete: async (_prompt, options) => {
+          if (options?.label !== "capture:extract") throw new Error(`unexpected ${options?.label ?? "unlabelled"}`);
+          enterCapture();
+          await captureGate;
+          return JSON.stringify({ memories: [], entities: [], relations: [] });
+        },
+      },
+    });
+    const capturing = store.capture("blocked", "BLOCKED curated capture");
+    await captureEntered;
+
+    const criticalPath = Promise.all([
+      store.appendHostSummary("fast", "The compact raw audit must not wait for curation."),
+      store.recall("stable recall sentinel", { topK: 3, trackAccess: false }),
+    ]);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => reject(new Error("raw audit or recall waited behind capture")), 250);
+    });
+    const [raw, hits] = await Promise.race([criticalPath, deadline]).finally(() => {
+      if (timeout !== undefined) clearTimeout(timeout);
+    });
+    expect(readFileSync(raw.source, "utf8")).toContain("compact raw audit must not wait");
+    expect(hits.some((hit) => hit.record.id === "FAST-RECALL")).toBe(true);
+
+    releaseCapture();
+    await expect(capturing).resolves.toEqual({ actions: 0, entities: 0 });
+    await store.close();
+  });
+
   it("scheduleCapture runs captures serially (no interleaving) and flush awaits them", async () => {
     const order: string[] = []; // every LLM call pushes its turn tag (FIRST/SECOND)
     const store = createBujoMemoryStore({ root: tmpRoot(), tier: "bujo", embeddings: fakeEmbeddings(64), dim: 64, llm: recordingLlm(order) });

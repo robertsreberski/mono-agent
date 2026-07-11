@@ -7,8 +7,10 @@ import type { EmbeddingProvider } from "../../search/index.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { appendBullet, dailyFilePath } from "../daily.js";
+import { writeCaptureIntent } from "../capture-outbox.js";
 import { parseDailyFile } from "../grammar.js";
 import { createIdFactory } from "../ids.js";
+import { migrate } from "../migrate.js";
 import { reconcile, reconcileBatch, type ReconcileDeps } from "../reconcile.js";
 import { createBujoMemoryStore } from "../store.js";
 import type { Bullet, CandidateMemory } from "../types.js";
@@ -865,5 +867,202 @@ describe("reconcileBatch", () => {
     );
     expect(actions[0]?.kind).toBe("add");
     expect(db.count()).toBe(2);
+  });
+
+  it("serializes concurrent batches through replay so the second replans against the first", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "SERIAL", "Morgan prefers blue green deployments");
+    const firstText = "Morgan prefers reviewed blue green deployments";
+    const secondText = "Morgan prefers canary blue green deployments";
+    let searches = 0;
+    let enterFirst!: () => void;
+    let releaseFirst!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { enterFirst = resolve; });
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const observedTargets: string[] = [];
+    db.findSimilarMany = async () => {
+      searches += 1;
+      observedTargets.push(db.get("SERIAL")!.text);
+      if (searches === 1) {
+        enterFirst();
+        await firstGate;
+      }
+      return [[{ record: db.get("SERIAL")!, distance: 0.1 }]];
+    };
+    const llm: ReconcileDeps["llm"] = {
+      id: "serialized-batches",
+      complete: async (prompt) => {
+        const text = prompt.includes(secondText) ? secondText : firstText;
+        return JSON.stringify([{ index: 0, action: "update", targetId: "SERIAL", text }]);
+      },
+    };
+    const completionOrder: string[] = [];
+    const first = reconcileBatch(
+      [{ type: "note", text: firstText, salience: 0.7, isInsight: false }],
+      makeDeps(db, root, llm),
+    ).then((result) => {
+      completionOrder.push("first");
+      return result;
+    });
+    await firstEntered;
+    const second = reconcileBatch(
+      [{ type: "note", text: secondText, salience: 0.8, isInsight: false }],
+      makeDeps(db, root, llm),
+    ).then((result) => {
+      completionOrder.push("second");
+      return result;
+    });
+    await Promise.resolve();
+    expect(searches).toBe(1);
+
+    releaseFirst();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      [{ kind: "update", id: "SERIAL" }],
+      [{ kind: "update", id: "SERIAL" }],
+    ]);
+
+    expect(completionOrder).toEqual(["first", "second"]);
+    expect(observedTargets).toEqual([
+      "Morgan prefers blue green deployments",
+      firstText,
+    ]);
+    expect(db.get("SERIAL")?.text).toBe(secondText);
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+
+    closeTrackedDb(db);
+    const restarted = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(DIM),
+      dim: DIM,
+      llm: fakeLlm([]),
+      clock: () => FIXED,
+    });
+    await restarted.close();
+  });
+
+  it("recovers a paid migration before exported reconcile performs provider planning", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "PAID-MIGRATION", "Aging migration state must settle before capture", { salience: 0.2 });
+    const migrationNow = new Date("2026-08-20T12:00:00.000Z");
+    await expect(migrate({
+      db,
+      root,
+      llm: { id: "paid-migration", complete: async () => JSON.stringify({ action: "promote" }) },
+      nextId: () => "unused",
+      now: () => migrationNow,
+      hooks: { afterDecisionDurable: () => { throw new Error("leave-paid-migration-pending"); } },
+    })).rejects.toThrow("leave-paid-migration-pending");
+    const monthly = join(root, "monthly", "2026-08.md");
+    expect(readFileSync(monthly, "utf8")).toContain("mono-agent-migrate:");
+
+    let searches = 0;
+    db.findSimilarMany = async () => {
+      searches += 1;
+      expect(readFileSync(monthly, "utf8")).not.toContain("mono-agent-migrate:");
+      expect(db.get("PAID-MIGRATION")?.salience).toBe(0.5);
+      return [[]];
+    };
+    const actions = await reconcileBatch(
+      [{ type: "note", text: "A novel fact after recovered migration", salience: 0.7, isInsight: false }],
+      makeDeps(db, root, fakeLlm([])),
+    );
+
+    expect(searches).toBe(1);
+    expect(actions[0]?.kind).toBe("add");
+    expect(readFileSync(monthly, "utf8")).not.toContain("mono-agent-migrate:");
+  });
+
+  it("fails dual pending migration and capture state before mutating either protocol", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "DUAL-PENDING", "Dual pending protocols have no shared sequence", { salience: 0.2 });
+    const migrationNow = new Date("2026-08-20T12:00:00.000Z");
+    await expect(migrate({
+      db,
+      root,
+      llm: { id: "paid-migration", complete: async () => JSON.stringify({ action: "promote" }) },
+      nextId: () => "unused",
+      now: () => migrationNow,
+      hooks: { afterDecisionDurable: () => { throw new Error("leave-dual-migration-pending"); } },
+    })).rejects.toThrow("leave-dual-migration-pending");
+    const file = relative(root, dailyFilePath(root, FIXED));
+    const bullet = parseDailyFile(dailyContent(root)).bullets.find((candidate) => candidate.id === "DUAL-PENDING")!;
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "noop",
+      id: bullet.id,
+      expected: { file, bullet },
+    }], { entities: [], relations: [], associations: [] }, migrationNow.toISOString());
+    const monthly = join(root, "monthly", "2026-08.md");
+    const monthlyBefore = readFileSync(monthly, "utf8");
+    const outboxBefore = readdirSync(join(root, ".capture-outbox"));
+    let searches = 0;
+    db.findSimilarMany = async () => {
+      searches += 1;
+      return [[]];
+    };
+
+    await expect(reconcileBatch(
+      [{ type: "note", text: "Must not plan behind ambiguous recovery", salience: 0.7, isInsight: false }],
+      makeDeps(db, root, fakeLlm([])),
+    )).rejects.toThrow(/capture and migration durable state are both pending.*before any mutation/iu);
+
+    expect(searches).toBe(0);
+    expect(db.get("DUAL-PENDING")?.salience).toBe(0.2);
+    expect(readFileSync(monthly, "utf8")).toBe(monthlyBefore);
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual(outboxBefore);
+  });
+
+  it("lets an aborted waiter leave the root queue without entering provider planning", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "WAIT-ABORT", "Morgan prefers serialized memory mutations");
+    let searches = 0;
+    let enterFirst!: () => void;
+    let releaseFirst!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { enterFirst = resolve; });
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    db.findSimilarMany = async () => {
+      searches += 1;
+      if (searches === 1) {
+        enterFirst();
+        await firstGate;
+      }
+      return [[{ record: db.get("WAIT-ABORT")!, distance: 0.1 }]];
+    };
+    const llm: ReconcileDeps["llm"] = {
+      id: "wait-abort",
+      complete: async (prompt) => JSON.stringify([{
+        index: 0,
+        action: "update",
+        targetId: "WAIT-ABORT",
+        text: prompt.includes("third") ? "third serialized update" : "first serialized update",
+      }]),
+    };
+    const first = reconcileBatch(
+      [{ type: "note", text: "first serialized update", salience: 0.7, isInsight: false }],
+      makeDeps(db, root, llm),
+    );
+    await firstEntered;
+    const controller = new AbortController();
+    const waiting = reconcileBatch(
+      [{ type: "note", text: "aborted serialized update", salience: 0.7, isInsight: false }],
+      makeDeps(db, root, llm, { abortSignal: controller.signal }),
+    );
+    controller.abort(new Error("cancel queued reconcile"));
+
+    await expect(waiting).rejects.toThrow("cancel queued reconcile");
+    expect(searches).toBe(1);
+    releaseFirst();
+    await expect(first).resolves.toEqual([{ kind: "update", id: "WAIT-ABORT" }]);
+    await expect(reconcileBatch(
+      [{ type: "note", text: "third serialized update", salience: 0.8, isInsight: false }],
+      makeDeps(db, root, llm),
+    )).resolves.toEqual([{ kind: "update", id: "WAIT-ABORT" }]);
+    expect(searches).toBe(2);
+    expect(db.get("WAIT-ABORT")?.text).toBe("third serialized update");
   });
 });

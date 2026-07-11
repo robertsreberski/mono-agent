@@ -18,13 +18,11 @@ import { createIdFactory } from "./ids.js";
 import type { LlmComplete } from "./llm.js";
 import type { EmbeddingProvider } from "../search/index.js";
 import { captureTurn } from "./capture.js";
-import { replayCaptureOutbox } from "./capture-outbox.js";
 import { composeRecallBlock } from "./recall.js";
+import { recoverDurableMutationState, withSerializedBujoMutation } from "./mutation-lock.js";
 import { reflect as reflectFn, type ReflectResult } from "./reflect.js";
 import {
-  assertNoPendingMigrateDecision,
   migrate as migrateFn,
-  recoverPendingMigrateDecision,
   type MigrateResult,
 } from "./migrate.js";
 import { consolidateBujoMemory, type ConsolidateResult } from "./consolidate.js";
@@ -217,14 +215,21 @@ export class BujoMemoryStore implements MemoryStore {
         }
       }
       if (this._tier !== "lite") this.db.assertEmbeddingIdentity();
+      if (!this.readOnly && this._tier === "bujo") {
+        const coverage = opened.validationSnapshot();
+        if (coverage.vectors !== coverage.memories) {
+          throw new Error(
+            `memory-bujo: writable BuJo requires complete vector coverage; `
+            + `active index has ${coverage.vectors}/${coverage.memories} vectors. `
+            + "Stop the agent and run the safe memory rebuild before starting BuJo.",
+          );
+        }
+      }
       if (!this.readOnly) {
-        // A paid migration decision predates any work this process could
-        // accept. Recover it synchronously from its stored vector, or fence a
-        // mismatched tier/canonical state by failing construction before queues
-        // and runtime write surfaces become available.
-        if (this._tier === "bujo") recoverPendingMigrateDecision(this.root, opened);
-        else assertNoPendingMigrateDecision(this.root);
-        replayCaptureOutbox(this.root, opened);
+        // Already-paid durable state predates any work this process could
+        // accept. Recover it synchronously in protocol order, or fence a
+        // mismatched/ambiguous state before queues and runtime writes exist.
+        recoverDurableMutationState(this.root, opened, this._tier);
       }
       if (!this.readOnly && this._tier === "journal") this.initializeJournalIndexing();
       if (!this.readOnly && this._tier === "bujo") this.initializeCaptureQueue();
@@ -329,10 +334,14 @@ export class BujoMemoryStore implements MemoryStore {
   }
 
   async appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
-    return await this.runAdmittedMutation(
-      "appendHostSummary",
-      async (abortSignal) => await this.appendHostSummaryAccepted(conversationId, summary, abortSignal),
-    );
+    const run = async (abortSignal: AbortSignal): Promise<MemoryWriteResult> =>
+      await this.appendHostSummaryAccepted(conversationId, summary, abortSignal);
+    // BuJo's compact host audit is the always-on loss boundary, not curated
+    // canonical/index state. It must remain off the provider-backed mutation
+    // queue so a slow capture cannot delay successful-turn persistence.
+    return this._tier === "bujo"
+      ? await this.runAdmittedWrite("appendHostSummary", run)
+      : await this.runAdmittedMutation("appendHostSummary", run);
   }
 
   /** Run a direct write that was admitted before close() stopped new mutation. */
@@ -543,15 +552,22 @@ export class BujoMemoryStore implements MemoryStore {
     abortSignal?: AbortSignal,
   ): Promise<{ actions: number; entities: number } | undefined> {
     if (this.llm === undefined) return undefined;
-    const res = await captureTurn(text, {
-      db: this.db,
+    return await withSerializedBujoMutation({
       root: this.root,
-      llm: this.llm,
-      nextId: this.nextId,
-      now: this.clock,
+      db: this.db,
+      tier: this._tier,
       ...(abortSignal === undefined ? {} : { abortSignal }),
+    }, async () => {
+      const res = await captureTurn(text, {
+        db: this.db,
+        root: this.root,
+        llm: this.llm!,
+        nextId: this.nextId,
+        now: this.clock,
+        ...(abortSignal === undefined ? {} : { abortSignal }),
+      });
+      return { actions: res.actions.length, entities: res.entities };
     });
-    return { actions: res.actions.length, entities: res.entities };
   }
 
   /**
@@ -885,6 +901,19 @@ export class BujoMemoryStore implements MemoryStore {
    * be missed by the drain barrier.
    */
   private async runAdmittedMutation<T>(
+    operation: string,
+    run: (abortSignal: AbortSignal) => Promise<T>,
+    callerSignal?: AbortSignal,
+  ): Promise<T> {
+    return await this.runAdmittedWrite(operation, async (abortSignal) => await withSerializedBujoMutation({
+      root: this.root,
+      db: this.db,
+      tier: this._tier,
+      abortSignal,
+    }, async () => await run(abortSignal)), callerSignal);
+  }
+
+  private async runAdmittedWrite<T>(
     operation: string,
     run: (abortSignal: AbortSignal) => Promise<T>,
     callerSignal?: AbortSignal,
