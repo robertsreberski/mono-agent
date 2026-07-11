@@ -74,6 +74,35 @@ describe("AgentHarness resilience + caching", () => {
     );
   });
 
+  it("does not retroactively fail a provider answer when memory persistence and diagnostics throw", async () => {
+    const identityPath = await identityFixture();
+    const warnings: string[] = [];
+    const memory: MemoryStore = {
+      load: async () => undefined,
+      appendHostSummary: async () => { throw new Error("disk became read-only"); },
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fakeRuntime({ text: "provider succeeded", providerSessionId: "ps-2" }),
+      model,
+      executionMode: "sdk",
+      memory,
+      memoryWriteMode: "append-host-summary",
+      onMemoryWarning: (message) => warnings.push(message),
+    });
+
+    const response = await harness.run({
+      ...request("conv-write-failure", "remember this"),
+      onEvent: (event) => {
+        if ((event as { type?: string }).type === "runtime_warning") throw new Error("event sink failed");
+      },
+    });
+
+    expect(response.text).toBe("provider succeeded");
+    expect(response.failure).toBeUndefined();
+    expect(warnings).toEqual([expect.stringContaining("disk became read-only")]);
+  });
+
   it("loads skills through the injected skills cache on every turn", async () => {
     const identityPath = await identityFixture();
     let calls = 0;

@@ -756,6 +756,60 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
         ? embeddings
         : { ...embeddings, dim };
 
+  // Built-in tiers are capability contracts, not best-effort hints.  Keeping
+  // the matrix strict prevents a configured Journal/BuJo agent from silently
+  // running as a cheaper tier when a prerequisite was omitted.
+  if (isBujo) {
+    if (mode === "lite") {
+      const incompatible = embeddingsWithDim !== undefined
+        ? "memory.embeddings"
+        : dim !== undefined
+          ? "memory.embeddings.dim"
+          : llm !== undefined
+            ? "memory.llm"
+            : consolidation !== undefined
+              ? "memory.consolidation"
+              : undefined;
+      if (incompatible !== undefined) {
+        throw new MonoAgentConfigError(
+          "invalid_env",
+          `MONO_AGENT_MEMORY_MODE "lite" is lexical-only and cannot configure ${incompatible}. Remove it or select journal/bujo.`,
+          { env: "MONO_AGENT_MEMORY_MODE" },
+        );
+      }
+    } else if (mode === "journal") {
+      if (embeddingsWithDim === undefined) {
+        throw new MonoAgentConfigError(
+          "invalid_env",
+          'MONO_AGENT_MEMORY_MODE "journal" requires an explicit memory.embeddings block.',
+          { env: "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL" },
+        );
+      }
+      if (llm !== undefined || consolidation !== undefined) {
+        throw new MonoAgentConfigError(
+          "invalid_env",
+          'MONO_AGENT_MEMORY_MODE "journal" is semantic-only and cannot configure a capture LLM or BuJo consolidation.',
+          { env: "MONO_AGENT_MEMORY_MODE" },
+        );
+      }
+    } else {
+      if (embeddingsWithDim === undefined) {
+        throw new MonoAgentConfigError(
+          "invalid_env",
+          'MONO_AGENT_MEMORY_MODE "bujo" requires an explicit memory.embeddings block.',
+          { env: "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL" },
+        );
+      }
+      if (llm === undefined) {
+        throw new MonoAgentConfigError(
+          "invalid_env",
+          'MONO_AGENT_MEMORY_MODE "bujo" requires an explicit memory.llm block.',
+          { env: "MONO_AGENT_MEMORY_LLM_MODEL" },
+        );
+      }
+    }
+  }
+
   // Every configured memory tier has a read-only recall surface: lite uses FTS,
   // journal/bujo add semantic ranking, and external backends provide search.
   // Explicit false remains the privacy/availability opt-out.

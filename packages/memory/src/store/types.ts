@@ -77,6 +77,31 @@ export interface EntityRelationRecord {
   readonly createdAt: string;
 }
 
+export interface MemoryEntityAssociation {
+  readonly memoryId: string;
+  readonly entityId: string;
+  /** `capture` is model-produced and candidate-specific; legacy matches are deterministic rebuild evidence. */
+  readonly provenance: "capture" | "legacy-name-match";
+  readonly createdAt: string;
+}
+
+export interface ContentHashRecord {
+  readonly contentHash: string;
+  readonly memoryId: string;
+  readonly sourceFile: string;
+  readonly createdAt: string;
+}
+
+export interface IndexMetadata {
+  readonly schemaVersion: number;
+  readonly tier: "lite" | "journal" | "bujo";
+  readonly embeddingModel?: string;
+  readonly dimension?: number;
+  readonly sourceFingerprint: string;
+  readonly generation: string;
+  readonly createdAt: string;
+}
+
 export interface RecallWeights {
   readonly rrf: number;
   readonly recency: number;
@@ -116,7 +141,9 @@ export interface MemoryStoreAudit {
     readonly total: number;
     readonly live: number;
     readonly entities: number;
-    readonly entityRelations: number;
+      readonly entityRelations: number;
+      readonly memoryEntityAssociations: number;
+      readonly orphanedAssociations: number;
   };
   readonly duplicates: {
     readonly groups: number;

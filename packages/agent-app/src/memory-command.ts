@@ -512,13 +512,7 @@ function readLocalStats(db: MemoryDb, topEntitiesLimit: number): MemoryStoreStat
 }
 
 function effectiveLocalTier(memory: NonNullable<MonoAgentConfig["memory"]>): string {
-  if (memory.mode === "lite") {
-    return "lite";
-  }
-  if (memory.mode === "journal") {
-    return "journal";
-  }
-  return memory.llm === undefined ? "journal" : "bujo";
+  return memory.mode;
 }
 
 function supermemoryStats(config: MonoAgentConfig): {

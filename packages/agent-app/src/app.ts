@@ -1061,6 +1061,9 @@ class MonoAgentAppController implements MonoAgentApp {
           { error: reasonOf(error) },
         );
       },
+      onMemoryWarning: (message) => {
+        this.logger?.warn?.(message);
+      },
       // Thread run-identifying context onto exported spans and surface per-run
       // export warnings to `exporterStatus` (agent-host only builds the exporter
       // when config.observability.exporters is non-empty).

@@ -1,9 +1,9 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { appendBullet, dailyFilePath } from "../daily.js";
+import { appendBullet, dailyFilePath, normalizedContentHash, withJournalWriteLock } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
 import { createIdFactory } from "../ids.js";
 import type { Bullet } from "../types.js";
@@ -36,6 +36,23 @@ describe("daily file", () => {
     const file = readFileSync(dailyFilePath(root, now), "utf8");
     expect((file.match(/^# 2026-06-15$/gmu) ?? []).length).toBe(1);
     expect(parseDailyFile(file).bullets.map((b) => b.id)).toEqual(["01A", "01B"]);
+  });
+
+  it("normalizes Unicode/whitespace for hashes without folding case-sensitive facts", () => {
+    expect(normalizedContentHash("Token  ABC\nactive")).toBe(normalizedContentHash("Token ABC active"));
+    expect(normalizedContentHash("Token ABC active")).not.toBe(normalizedContentHash("Token abc active"));
+  });
+
+  it("never steals a live lock or unlinks an identity-replaced lock", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-lock-"));
+    expect(() => withJournalWriteLock(root, () => withJournalWriteLock(root, () => undefined))).toThrow(/held/i);
+
+    const lockPath = join(root, ".journal-write.lock");
+    withJournalWriteLock(root, () => {
+      unlinkSync(lockPath);
+      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, replacement: true }), "utf8");
+    });
+    expect(existsSync(lockPath)).toBe(true);
   });
 });
 

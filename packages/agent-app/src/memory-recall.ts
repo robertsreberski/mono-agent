@@ -105,6 +105,7 @@ export interface RecallCapableStore {
       readonly isInsight?: boolean;
     };
   }[]>;
+  flush?(): Promise<void>;
   close(): Promise<void>;
 }
 

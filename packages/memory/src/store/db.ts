@@ -16,6 +16,9 @@ import {
   MEMORY_TYPES,
   type EntityRecord,
   type EntityRelationRecord,
+  type MemoryEntityAssociation,
+  type ContentHashRecord,
+  type IndexMetadata,
   type MemoryDbOptions,
   type MemoryStoreStats,
   type MemoryStoreAudit,
@@ -30,6 +33,7 @@ import type { EmbeddingProvider } from "../search/index.js";
 
 const MIN_SEMANTIC_SIMILARITY = 0.5;
 const VECTOR_CANDIDATE_SCAN_CAP = 4_096;
+export const DEFAULT_EMBEDDING_BATCH_SIZE = 32;
 const RECALL_STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does", "for", "from",
   "how", "i", "in", "is", "it", "me", "my", "of", "on", "or", "our", "that", "the",
@@ -98,22 +102,139 @@ export class MemoryDb {
   }
 
   async upsert(record: MemoryRecord): Promise<void> {
-    // Only embed when a provider is configured; lite tier skips vec entirely.
-    const vector = this.embeddings !== undefined
-      ? await (async () => {
-          const [v] = await this.embeddings!.embed([`search_document: ${record.text}`]);
-          if (v === undefined) {
-            throw new Error("memory-store: embedding provider returned no vector for upsert.");
-          }
-          this.assertVectorDim(v, "upsert");
-          return v;
-        })()
-      : undefined;
+    await this.upsertMany([record]);
+  }
 
-    const tx = this.db.transaction(() => {
-      // seq is computed inside the tx so concurrent upserts of new ids cannot collide on MAX(seq)+1.
-      const seq = this.nextSeq(record.id);
+  /**
+   * Persist the lexical row immediately without calling an embedding service.
+   * Journal uses this on the response path, then upgrades the row with a vector
+   * from its bounded background queue.
+   */
+  upsertLexical(record: MemoryRecord, contentHash?: string): void {
+    this.persistRecords([record], [undefined], true);
+    if (contentHash !== undefined && record.source.file !== undefined) this.recordContentHash({
+      contentHash,
+      memoryId: record.id,
+      sourceFile: record.source.file,
+      createdAt: record.createdAt,
+    });
+  }
+
+  /**
+   * Atomically reserve a Journal content hash and make its lexical row visible.
+   * The unique hash is the cross-process dedupe authority.
+   */
+  insertJournalLexical(record: MemoryRecord, contentHash: string): { inserted: boolean; memoryId: string } {
+    if (record.source.file === undefined) {
+      throw new Error("memory-store: journal content hashes require source.file provenance.");
+    }
+    const tx = this.db.transaction((): { inserted: boolean; memoryId: string } => {
+      const existing = this.db.prepare(
+        `SELECT memory_id FROM content_hashes WHERE content_hash = ?`,
+      ).get(contentHash) as { memory_id: string } | undefined;
+      if (existing !== undefined) return { inserted: false, memoryId: existing.memory_id };
+      this.persistRecordsUnsafe([record], [undefined], true);
       this.db.prepare(
+        `INSERT INTO content_hashes (content_hash, memory_id, source_file, created_at) VALUES (?, ?, ?, ?)`,
+      ).run(contentHash, record.id, record.source.file, record.createdAt);
+      return { inserted: true, memoryId: record.id };
+    });
+    return tx();
+  }
+
+  /** Embed and persist records in provider-sized batches (default 32). */
+  async upsertMany(
+    records: readonly MemoryRecord[],
+    options: { readonly batchSize?: number } = {},
+  ): Promise<{ indexed: number; embeddingCalls: number }> {
+    const batchSize = Math.max(1, Math.min(options.batchSize ?? DEFAULT_EMBEDDING_BATCH_SIZE, 256));
+    let embeddingCalls = 0;
+    for (let offset = 0; offset < records.length; offset += batchSize) {
+      const batch = records.slice(offset, offset + batchSize);
+      let vectors: Array<readonly number[] | undefined>;
+      if (this.embeddings === undefined) {
+        vectors = batch.map(() => undefined);
+      } else {
+        const embedded = await this.embeddings.embed(batch.map((record) => `search_document: ${record.text}`));
+        embeddingCalls += 1;
+        if (embedded.length !== batch.length) {
+          throw new Error(
+            `memory-store: embedding provider returned ${embedded.length} vectors for ${batch.length} records.`,
+          );
+        }
+        vectors = embedded.map((vector) => {
+          this.assertVectorDim(vector, "upsertMany");
+          return vector;
+        });
+      }
+      this.persistRecords(batch, vectors, true);
+    }
+    return { indexed: records.length, embeddingCalls };
+  }
+
+  /**
+   * Add/refresh vectors without replaying a queued record snapshot over newer
+   * status, source, or access telemetry.
+   */
+  async indexVectors(
+    records: readonly Pick<MemoryRecord, "id" | "text">[],
+    options: { readonly batchSize?: number } = {},
+  ): Promise<{ indexed: number; skipped: number; embeddingCalls: number }> {
+    if (this.embeddings === undefined || records.length === 0) {
+      return { indexed: 0, skipped: records.length, embeddingCalls: 0 };
+    }
+    const batchSize = Math.max(1, Math.min(options.batchSize ?? DEFAULT_EMBEDDING_BATCH_SIZE, 256));
+    let indexed = 0;
+    let skipped = 0;
+    let embeddingCalls = 0;
+    for (let offset = 0; offset < records.length; offset += batchSize) {
+      const batch = records.slice(offset, offset + batchSize);
+      const vectors = await this.embeddings.embed(batch.map((record) => `search_document: ${record.text}`));
+      embeddingCalls += 1;
+      if (vectors.length !== batch.length) {
+        throw new Error(`memory-store: embedding provider returned ${vectors.length} vectors for ${batch.length} records.`);
+      }
+      vectors.forEach((vector) => this.assertVectorDim(vector, "indexVectors"));
+      const current = this.db.prepare(`SELECT seq, text FROM memories WHERE id = ?`);
+      const deleteVec = this.db.prepare(`DELETE FROM memories_vec WHERE rowid = ?`);
+      const insertVec = this.db.prepare(`INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)`);
+      const markIdentity = this.db.prepare(`UPDATE memories SET embedding_model = ?, dim = ? WHERE id = ?`);
+      const tx = this.db.transaction(() => {
+        for (const [index, record] of batch.entries()) {
+          const row = current.get(record.id) as { seq: number; text: string } | undefined;
+          if (row === undefined || row.text !== record.text) {
+            skipped += 1;
+            continue;
+          }
+          deleteVec.run(BigInt(row.seq));
+          insertVec.run(BigInt(row.seq), toBlob(vectors[index]!));
+          markIdentity.run(this.embeddings!.id, this.dim, record.id);
+          indexed += 1;
+        }
+      });
+      tx();
+    }
+    return { indexed, skipped, embeddingCalls };
+  }
+
+  private persistRecords(
+    records: readonly MemoryRecord[],
+    vectors: readonly (readonly number[] | undefined)[],
+    clearMissingVector: boolean,
+  ): void {
+    if (records.length !== vectors.length) {
+      throw new Error("memory-store: record/vector batch length mismatch.");
+    }
+    const tx = this.db.transaction(() => this.persistRecordsUnsafe(records, vectors, clearMissingVector));
+    tx();
+  }
+
+  private persistRecordsUnsafe(
+    records: readonly MemoryRecord[],
+    vectors: readonly (readonly number[] | undefined)[],
+    clearMissingVector: boolean,
+  ): void {
+    const upsertMemory = this.db.prepare(
         `INSERT INTO memories (
            id, seq, type, status, text, salience, is_insight, created_at, last_accessed_at,
            access_count, valid_from, valid_to, superseded_by, superseded_at, due_at, collection,
@@ -131,16 +252,83 @@ export class MemoryDb {
            collection=excluded.collection, source_session=excluded.source_session, source_file=excluded.source_file,
            source_line=excluded.source_line, embedding_model=excluded.embedding_model, dim=excluded.dim,
            tags=excluded.tags`,
-      ).run(this.toRow(record, seq));
-      this.db.prepare(`DELETE FROM memories_fts WHERE id = ?`).run(record.id);
-      this.db.prepare(`INSERT INTO memories_fts (id, text) VALUES (?, ?)`).run(record.id, record.text);
-      if (vector !== undefined) {
-        // NOTE (from Task 2 spike): sqlite-vec vec0 rejects float64-bound rowids — bind as BigInt.
-        this.db.prepare(`DELETE FROM memories_vec WHERE rowid = ?`).run(BigInt(seq));
-        this.db.prepare(`INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)`).run(BigInt(seq), toBlob(vector));
+    );
+    const deleteFts = this.db.prepare(`DELETE FROM memories_fts WHERE id = ?`);
+    const insertFts = this.db.prepare(`INSERT INTO memories_fts (id, text) VALUES (?, ?)`);
+    const deleteVec = this.db.prepare(`DELETE FROM memories_vec WHERE rowid = ?`);
+    const insertVec = this.db.prepare(`INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)`);
+    for (const [index, record] of records.entries()) {
+      const vector = vectors[index];
+      // seq is computed inside the caller's tx so concurrent new ids cannot collide.
+      const seq = this.nextSeq(record.id);
+      upsertMemory.run(this.toRow(record, seq));
+      deleteFts.run(record.id);
+      insertFts.run(record.id, record.text);
+      if (vector !== undefined || clearMissingVector) {
+        deleteVec.run(BigInt(seq));
       }
-    });
-    tx();
+      if (vector !== undefined) {
+        insertVec.run(BigInt(seq), toBlob(vector));
+      }
+    }
+  }
+
+  hasVector(id: string): boolean {
+    return this.db.prepare(
+      `SELECT 1 AS present FROM memories m JOIN memories_vec v ON v.rowid = m.seq WHERE m.id = ? LIMIT 1`,
+    ).get(id) !== undefined;
+  }
+
+  recordsMissingVectors(limit = 512): MemoryRecord[] {
+    const normalized = Math.max(0, Math.min(Math.trunc(limit), 4_096));
+    const rows = this.db.prepare(
+      `SELECT m.* FROM memories m LEFT JOIN memories_vec v ON v.rowid = m.seq
+       WHERE v.rowid IS NULL AND m.status NOT IN ('invalidated','dropped')
+       ORDER BY m.seq ASC LIMIT ?`,
+    ).all(normalized) as Record<string, unknown>[];
+    return rows.map((row) => this.fromRow(row));
+  }
+
+  countMissingVectors(): number {
+    return (this.db.prepare(
+      `SELECT COUNT(*) AS n FROM memories m LEFT JOIN memories_vec v ON v.rowid = m.seq
+       WHERE v.rowid IS NULL AND m.status NOT IN ('invalidated','dropped')`,
+    ).get() as { n: number }).n;
+  }
+
+  hasContentHash(contentHash: string): boolean {
+    return this.db.prepare(`SELECT 1 AS present FROM content_hashes WHERE content_hash = ?`).get(contentHash) !== undefined;
+  }
+
+  contentHashRecord(contentHash: string): ContentHashRecord | undefined {
+    const row = this.db.prepare(
+      `SELECT content_hash, memory_id, source_file, created_at FROM content_hashes WHERE content_hash = ?`,
+    ).get(contentHash) as {
+      content_hash: string;
+      memory_id: string;
+      source_file: string;
+      created_at: string;
+    } | undefined;
+    return row === undefined ? undefined : {
+      contentHash: row.content_hash,
+      memoryId: row.memory_id,
+      sourceFile: row.source_file,
+      createdAt: row.created_at,
+    };
+  }
+
+  recordContentHash(record: ContentHashRecord): void {
+    this.db.prepare(
+      `INSERT OR IGNORE INTO content_hashes (content_hash, memory_id, source_file, created_at) VALUES (?, ?, ?, ?)`,
+    ).run(record.contentHash, record.memoryId, record.sourceFile, record.createdAt);
+  }
+
+  deleteContentHashesForMemory(memoryId: string): void {
+    this.db.prepare(`DELETE FROM content_hashes WHERE memory_id = ?`).run(memoryId);
+  }
+
+  countContentHashes(): number {
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM content_hashes`).get() as { n: number }).n;
   }
 
   get(id: string): MemoryRecord | undefined {
@@ -235,6 +423,10 @@ export class MemoryDb {
     const entityRelations = (
       this.db.prepare(`SELECT COUNT(*) AS n FROM entity_relations`).get() as { n: number }
     ).n;
+    const memoryEntityAssociations = (
+      this.db.prepare(`SELECT COUNT(*) AS n FROM memory_entities`).get() as { n: number }
+    ).n;
+    const orphanedAssociations = this.orphanedAssociationCount();
     const live = counts.live ?? 0;
     const totalAccess = counts.total_access ?? 0;
     const concentrationRows = this.db.prepare(
@@ -250,6 +442,8 @@ export class MemoryDb {
         live,
         entities,
         entityRelations,
+        memoryEntityAssociations,
+        orphanedAssociations,
       },
       duplicates: {
         groups: duplicate.groups,
@@ -489,14 +683,13 @@ export class MemoryDb {
   async rebuild(records: readonly MemoryRecord[]): Promise<{ indexed: number }> {
     const tx = this.db.transaction(() => {
       this.db.exec(
-        `DELETE FROM memories; DELETE FROM memories_fts; DELETE FROM memories_vec; DELETE FROM edges; DELETE FROM entities; DELETE FROM entity_relations;`,
+        `DELETE FROM memories; DELETE FROM memories_fts; DELETE FROM memories_vec; DELETE FROM edges;
+         DELETE FROM memory_entities; DELETE FROM entities; DELETE FROM entity_relations;
+         DELETE FROM content_hashes; DELETE FROM index_metadata;`,
       );
     });
     tx();
-    for (const record of records) {
-      await this.upsert(record);
-    }
-    return { indexed: records.length };
+    return await this.upsertMany(records);
   }
 
   protected bumpAccess(ids: readonly string[], now: Date): void {
@@ -623,6 +816,185 @@ export class MemoryDb {
       .prepare(`SELECT src, dst, relation, created_at FROM entity_relations WHERE src = ?`)
       .all(src) as { src: string; dst: string; relation: string; created_at: string }[];
     return rows.map((r) => ({ src: r.src, dst: r.dst, relation: r.relation, createdAt: r.created_at }));
+  }
+
+  relationsTouching(entityId: string): EntityRelationRecord[] {
+    const rows = this.db
+      .prepare(`SELECT src, dst, relation, created_at FROM entity_relations WHERE src = ? OR dst = ?`)
+      .all(entityId, entityId) as { src: string; dst: string; relation: string; created_at: string }[];
+    return rows.map((row) => ({
+      src: row.src,
+      dst: row.dst,
+      relation: row.relation,
+      createdAt: row.created_at,
+    }));
+  }
+
+  associateMemory(record: MemoryEntityAssociation): void {
+    if (this.get(record.memoryId) === undefined) {
+      throw new Error(`memory-store: cannot associate unknown memory "${record.memoryId}".`);
+    }
+    if (this.getEntity(record.entityId) === undefined) {
+      throw new Error(`memory-store: cannot associate unknown entity "${record.entityId}".`);
+    }
+    this.db.prepare(
+      `INSERT INTO memory_entities (memory_id, entity_id, provenance, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(memory_id, entity_id) DO UPDATE SET
+         provenance = CASE
+           WHEN memory_entities.provenance = 'capture' THEN memory_entities.provenance
+           ELSE excluded.provenance
+         END`,
+    ).run(record.memoryId, record.entityId, record.provenance, record.createdAt);
+  }
+
+  associationsForMemory(memoryId: string): MemoryEntityAssociation[] {
+    const rows = this.db.prepare(
+      `SELECT memory_id, entity_id, provenance, created_at FROM memory_entities WHERE memory_id = ? ORDER BY entity_id`,
+    ).all(memoryId) as Array<{ memory_id: string; entity_id: string; provenance: MemoryEntityAssociation["provenance"]; created_at: string }>;
+    return rows.map((row) => ({
+      memoryId: row.memory_id,
+      entityId: row.entity_id,
+      provenance: row.provenance,
+      createdAt: row.created_at,
+    }));
+  }
+
+  /**
+   * Deterministic one-relation expansion for the explicit MemoryRecall tool.
+   * Both relation directions are traversed, but never more than one relation.
+   */
+  expandEntityRelations(
+    seedIds: readonly string[],
+    options: { readonly seedLimit?: number; readonly maxAdditions?: number; readonly now?: Date } = {},
+  ): MemoryRecord[] {
+    const seedLimit = Math.max(1, Math.min(options.seedLimit ?? 3, 3));
+    const maxAdditions = Math.max(0, Math.min(options.maxAdditions ?? 5, 5));
+    if (maxAdditions === 0) return [];
+    const seeds = new Set(seedIds.slice(0, seedLimit));
+    const seedEntities = new Set<string>();
+    for (const seedId of seeds) {
+      for (const association of this.associationsForMemory(seedId)) seedEntities.add(association.entityId);
+    }
+    if (seedEntities.size === 0) return [];
+
+    const relatedEntities = new Set<string>();
+    for (const entityId of seedEntities) {
+      for (const relation of this.relationsTouching(entityId)) {
+        // Self loops and duplicate reverse observations cannot broaden the set.
+        relatedEntities.add(relation.src === entityId ? relation.dst : relation.src);
+      }
+    }
+    if (relatedEntities.size === 0) return [];
+
+    const entities = [...relatedEntities];
+    const placeholders = entities.map(() => "?").join(",");
+    const now = (options.now ?? this.clock()).toISOString();
+    const rows = this.db.prepare(
+      `SELECT DISTINCT m.*
+       FROM memory_entities me
+       JOIN memories m ON m.id = me.memory_id
+       JOIN entities e ON e.id = me.entity_id
+       WHERE me.entity_id IN (${placeholders})
+         AND m.status NOT IN ('invalidated','dropped')
+         AND (m.valid_to IS NULL OR m.valid_to >= ?)
+       ORDER BY m.created_at DESC, m.id ASC`,
+    ).all(...entities, now) as Record<string, unknown>[];
+    const additions: MemoryRecord[] = [];
+    for (const row of rows) {
+      const record = this.fromRow(row);
+      if (seeds.has(record.id)) continue;
+      additions.push(record);
+      if (additions.length >= maxAdditions) break;
+    }
+    return additions;
+  }
+
+  orphanedAssociationCount(): number {
+    return (this.db.prepare(
+      `SELECT COUNT(*) AS n FROM memory_entities me
+       LEFT JOIN memories m ON m.id = me.memory_id
+       LEFT JOIN entities e ON e.id = me.entity_id
+       WHERE m.id IS NULL OR e.id IS NULL`,
+    ).get() as { n: number }).n;
+  }
+
+  setIndexMetadata(metadata: IndexMetadata): void {
+    const entries: Array<[string, string]> = [
+      ["schemaVersion", String(metadata.schemaVersion)],
+      ["tier", metadata.tier],
+      ["sourceFingerprint", metadata.sourceFingerprint],
+      ["generation", metadata.generation],
+      ["createdAt", metadata.createdAt],
+      ...(metadata.embeddingModel === undefined ? [] : [["embeddingModel", metadata.embeddingModel] as [string, string]]),
+      ...(metadata.dimension === undefined ? [] : [["dimension", String(metadata.dimension)] as [string, string]]),
+    ];
+    const statement = this.db.prepare(
+      `INSERT INTO index_metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    );
+    const tx = this.db.transaction(() => {
+      this.db.prepare(`DELETE FROM index_metadata`).run();
+      for (const entry of entries) statement.run(...entry);
+    });
+    tx();
+  }
+
+  indexMetadata(): IndexMetadata | undefined {
+    const rows = this.db.prepare(`SELECT key, value FROM index_metadata`).all() as Array<{ key: string; value: string }>;
+    if (rows.length === 0) return undefined;
+    const values = new Map(rows.map((row) => [row.key, row.value]));
+    const schemaVersion = Number(values.get("schemaVersion"));
+    const tier = values.get("tier");
+    const sourceFingerprint = values.get("sourceFingerprint");
+    const generation = values.get("generation");
+    const createdAt = values.get("createdAt");
+    if (!Number.isInteger(schemaVersion) || (tier !== "lite" && tier !== "journal" && tier !== "bujo")
+      || sourceFingerprint === undefined || generation === undefined || createdAt === undefined) {
+      throw new Error("memory-store: index metadata is incomplete or corrupt.");
+    }
+    const embeddingModel = values.get("embeddingModel");
+    const dimensionRaw = values.get("dimension");
+    const dimension = dimensionRaw === undefined ? undefined : Number(dimensionRaw);
+    if (dimension !== undefined && (!Number.isInteger(dimension) || dimension <= 0)) {
+      throw new Error("memory-store: index metadata dimension is invalid.");
+    }
+    return {
+      schemaVersion,
+      tier,
+      sourceFingerprint,
+      generation,
+      createdAt,
+      ...(embeddingModel === undefined ? {} : { embeddingModel }),
+      ...(dimension === undefined ? {} : { dimension }),
+    };
+  }
+
+  integrityCheck(): string {
+    return String(this.db.pragma("integrity_check", { simple: true }));
+  }
+
+  vectorCount(): number {
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM memories_vec`).get() as { n: number }).n;
+  }
+
+  assertEmbeddingIdentity(): void {
+    if (this.embeddings === undefined) return;
+    const rows = this.db.prepare(
+      `SELECT DISTINCT m.embedding_model AS model, m.dim AS dim
+       FROM memories m JOIN memories_vec v ON v.rowid = m.seq`,
+    ).all() as Array<{ model: string | null; dim: number | null }>;
+    for (const row of rows) {
+      if (row.dim !== null && row.dim !== this.dim) {
+        throw new Error(
+          `memory-store: active index dimension ${row.dim} does not match configured ${this.dim}; run the safe memory rebuild.`,
+        );
+      }
+      if (row.model !== null && row.model !== this.embeddings.id) {
+        throw new Error(
+          `memory-store: active index model "${row.model}" does not match configured "${this.embeddings.id}"; run the safe memory rebuild.`,
+        );
+      }
+    }
   }
 
   protected entityFromRow(row: Record<string, unknown>): EntityRecord {

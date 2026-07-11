@@ -419,7 +419,7 @@ export class MonoAgentHarness implements AgentHarness {
         request.conversationId,
         persistText,
         text,
-        runSource.source === undefined ? {} : { source: runSource.source },
+        { ...(runSource.source === undefined ? {} : { source: runSource.source }), emit },
       );
       return {
         text,
@@ -972,7 +972,7 @@ export class MonoAgentHarness implements AgentHarness {
     conversationId: string,
     userMessage: string,
     assistantText: string,
-    options: { readonly source?: string } = {},
+    options: { readonly source?: string; readonly emit?: (event: RuntimeEventLike) => void } = {},
   ): Promise<void> {
     const timestamp = this.options.now?.().toISOString() ?? new Date().toISOString();
     await this.options.historyStore?.append(conversationId, [
@@ -986,13 +986,33 @@ export class MonoAgentHarness implements AgentHarness {
         return;
       }
       // Always write the deterministic rapid-log line (sync, durable).
-      await this.options.memory.appendHostSummary(
-        conversationId,
-        deterministicHostSummary(userMessage, assistantText, options),
-      );
-      // 'capture' additionally enqueues a best-effort intelligent capture (async, non-blocking).
-      if (mode === "capture") {
-        this.options.memory.scheduleCapture?.(conversationId, captureTurnText(userMessage, assistantText, options));
+      try {
+        await this.options.memory.appendHostSummary(
+          conversationId,
+          deterministicHostSummary(userMessage, assistantText, options),
+        );
+        // 'capture' additionally enqueues a best-effort intelligent capture (async, non-blocking).
+        if (mode === "capture") {
+          this.options.memory.scheduleCapture?.(conversationId, captureTurnText(userMessage, assistantText, options));
+        }
+      } catch (error) {
+        // The provider answer already succeeded. Memory is additive and must
+        // never retroactively turn that answer into a failed turn.
+        const message = `Memory persistence failed after the provider answer; continuing. ${errorMessageText(error)}`;
+        try {
+          options.emit?.({
+            type: "runtime_warning",
+            warning_kind: "memory_persistence_degraded",
+            message,
+          });
+        } catch {
+          // User event callbacks are untrusted and cannot fail the turn.
+        }
+        try {
+          this.options.onMemoryWarning?.(message);
+        } catch {
+          // Host diagnostics are best-effort.
+        }
       }
     }
   }

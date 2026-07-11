@@ -463,6 +463,8 @@ describe("layerJsonOntoEnv", () => {
         memory: {
           mode: "bujo",
           path: ".mono-agent/memory",
+          embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+          llm: { provider: "ollama", model: "qwen3.6:latest" },
           consolidation: { enabled: true, cron: "0 */2 * * *" },
         },
       },
@@ -998,6 +1000,8 @@ describe("loadMonoAgentConfigWithSources", () => {
         memory: {
           mode: "bujo",
           path: ".mono-agent/memory",
+          embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+          llm: { provider: "ollama", model: "qwen3.6:latest" },
           consolidation: { enabled: true, cron: "0 */2 * * *" },
         },
       }),

@@ -73,14 +73,14 @@ describe("BujoMemoryStore — tier derivation", () => {
     await store.close();
   });
 
-  it("explicit tier override is respected (overrides derivation)", async () => {
+  it("rejects an explicit tier that would silently downshift configured prerequisites", () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-tier-override-"));
-    // embeddings provided but explicit tier=lite overrides the derivation
-    const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, tier: "lite" });
-
-    expect(store.tier()).toBe("lite");
-
-    await store.close();
+    expect(() => createBujoMemoryStore({
+      root,
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      tier: "lite",
+    })).toThrow(/lexical-only/i);
   });
 
   it("decay() works in lite tier (no embeddings, no throw)", async () => {
@@ -395,6 +395,7 @@ describe("BujoMemoryStore — recall query (load 2nd arg)", () => {
 // ─── Async capture queue tests ───────────────────────────────────────────────
 
 import type { LlmComplete } from "../llm.js";
+import type { EmbeddingProvider } from "../../search/index.js";
 
 function tmpRoot(): string {
   return mkdtempSync(join(tmpdir(), "bujo-queue-"));
@@ -420,7 +421,7 @@ function recordingLlm(order: string[], opts: { throwOnText?: string } = {}): Llm
 describe("BujoMemoryStore async capture queue", () => {
   it("scheduleCapture runs captures serially (no interleaving) and flush awaits them", async () => {
     const order: string[] = []; // every LLM call pushes its turn tag (FIRST/SECOND)
-    const store = createBujoMemoryStore({ root: tmpRoot(), tier: "bujo", llm: recordingLlm(order) });
+    const store = createBujoMemoryStore({ root: tmpRoot(), tier: "bujo", embeddings: fakeEmbeddings(64), dim: 64, llm: recordingLlm(order) });
     store.scheduleCapture("c1", "FIRST user text");
     store.scheduleCapture("c1", "SECOND user text");
     await store.flush();
@@ -437,7 +438,7 @@ describe("BujoMemoryStore async capture queue", () => {
     const order: string[] = [];
     const warnings: string[] = [];
     const store = createBujoMemoryStore({
-      root: tmpRoot(), tier: "bujo",
+      root: tmpRoot(), tier: "bujo", embeddings: fakeEmbeddings(64), dim: 64,
       llm: recordingLlm(order),
       logger: { warn: (m) => warnings.push(m) },
     });
@@ -462,7 +463,7 @@ describe("BujoMemoryStore async capture queue", () => {
   it("a throw in the logging path does not permanently disable the capture chain", async () => {
     const order: string[] = [];
     const store = createBujoMemoryStore({
-      root: tmpRoot(), tier: "bujo",
+      root: tmpRoot(), tier: "bujo", embeddings: fakeEmbeddings(64), dim: 64,
       llm: recordingLlm(order),
       // The logger itself throws — without the terminal guard this would reject captureChain and
       // silently stop every future capture.
@@ -498,6 +499,8 @@ describe("BujoMemoryStore async capture queue", () => {
     const store = createBujoMemoryStore({
       root: tmpRoot(),
       tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
       llm: throwingLlm,
       logger: { warn: (m) => warnings.push(m) },
     });
@@ -520,9 +523,164 @@ describe("BujoMemoryStore async capture queue", () => {
 
   it("close() drains a pending capture before closing the db", async () => {
     const order: string[] = [];
-    const store = createBujoMemoryStore({ root: tmpRoot(), tier: "bujo", llm: recordingLlm(order) });
+    const store = createBujoMemoryStore({ root: tmpRoot(), tier: "bujo", embeddings: fakeEmbeddings(64), dim: 64, llm: recordingLlm(order) });
     store.scheduleCapture("c1", "DRAINME user text");
     await store.close(); // must await the queued capture before closing — no explicit flush()
     expect(order.some((t) => t.includes("DRAINME"))).toBe(true);
   });
 });
+
+describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
+  it("rejects every incomplete or cross-tier store shape", () => {
+    expect(() => createBujoMemoryStore({ root: tmpRoot(), tier: "journal" })).toThrow(/requires embeddings/i);
+    expect(() => createBujoMemoryStore({
+      root: tmpRoot(), tier: "journal", embeddings: fakeEmbeddings(64), dim: 64, llm: recordingLlm([]),
+    })).toThrow(/rejects capture llms/i);
+    expect(() => createBujoMemoryStore({
+      root: tmpRoot(), tier: "bujo", embeddings: fakeEmbeddings(64), dim: 64,
+    })).toThrow(/requires a capture llm/i);
+  });
+
+  it("returns before embeddings, coalesces 65 writes into 32-sized batches, and drains observably", async () => {
+    const root = tmpRoot();
+    const calls: number[] = [];
+    const releases: Array<() => void> = [];
+    const embeddings: EmbeddingProvider = {
+      id: "deferred:64",
+      async embed(texts) {
+        calls.push(texts.length);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        return texts.map(() => Array.from({ length: 64 }, (_, index) => index === 0 ? 1 : 0));
+      },
+    };
+    const store = createBujoMemoryStore({ root, tier: "journal", embeddings, dim: 64 });
+    const writes = await Promise.all(Array.from({ length: 65 }, (_, index) =>
+      store.appendHostSummary(`c-${index}`, `Journal fact ${index} is durable.`)));
+    expect(writes.every((write) => write.bytesWritten > 0)).toBe(true);
+    expect(calls).toEqual([]);
+    expect(parseDailyFile(readFileSync(dailyFilePath(root, new Date()), "utf8")).bullets).toHaveLength(65);
+
+    const flushing = store.flush();
+    for (let expected = 1; expected <= 3; expected += 1) {
+      await waitUntil(() => releases.length >= expected);
+      releases[expected - 1]!();
+    }
+    await flushing;
+    expect(calls).toEqual([32, 32, 1]);
+    expect(store.queueSnapshot().index).toMatchObject({
+      queued: 0,
+      inFlight: 0,
+      completed: 65,
+      remainingBacklog: 0,
+      highWaterItems: 65,
+    });
+    await store.close();
+  });
+
+  it("deduplicates representation-equivalent Journal content but preserves case-sensitive facts", async () => {
+    const root = tmpRoot();
+    const store = createBujoMemoryStore({ root, tier: "journal", embeddings: fakeEmbeddings(64), dim: 64 });
+    const [first, duplicate] = await Promise.all([
+      store.appendHostSummary("a", "Token  ABC   is active."),
+      store.appendHostSummary("b", "Token ABC is active."),
+    ]);
+    await store.appendHostSummary("c", "Token abc is active.");
+    await store.flush();
+    const bullets = parseDailyFile(readFileSync(dailyFilePath(root, new Date()), "utf8")).bullets;
+    expect([first.bytesWritten, duplicate.bytesWritten].filter((bytes) => bytes > 0)).toHaveLength(1);
+    expect(bullets.map((bullet) => bullet.text)).toEqual(["Token ABC is active.", "Token abc is active."]);
+    await store.close();
+  });
+
+  it("recovers a failed semantic backlog on restart without replaying an LLM", async () => {
+    const root = tmpRoot();
+    const warnings: string[] = [];
+    const failing: EmbeddingProvider = {
+      id: "stable:64",
+      embed: async () => { throw new Error("embedding offline"); },
+    };
+    const first = createBujoMemoryStore({
+      root, tier: "journal", embeddings: failing, dim: 64, logger: { warn: (message) => warnings.push(message) },
+    });
+    await first.appendHostSummary("c", "The restart backlog fact is durable.");
+    await first.flush();
+    expect(first.queueSnapshot().index).toMatchObject({ failed: 1, remainingBacklog: 1, recoveryPaused: true });
+    expect(warnings.join(" ")).toContain("embedding offline");
+    await first.close();
+
+    const calls: number[] = [];
+    const healthy: EmbeddingProvider = {
+      id: "stable:64",
+      embed: async (texts) => {
+        calls.push(texts.length);
+        return texts.map(() => Array.from({ length: 64 }, (_, index) => index === 0 ? 1 : 0));
+      },
+    };
+    const second = createBujoMemoryStore({ root, tier: "journal", embeddings: healthy, dim: 64 });
+    await second.flush();
+    expect(calls).toEqual([1]);
+    expect(second.queueSnapshot().index?.remainingBacklog).toBe(0);
+    await second.close();
+  });
+
+  it("keeps BuJo compact raw audit outside curated daily recall on capture failure", async () => {
+    const root = tmpRoot();
+    const warnings: string[] = [];
+    const llm: LlmComplete = { id: "down", complete: async () => { throw new Error("capture offline"); } };
+    const store = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm,
+      logger: { warn: (message) => warnings.push(message) },
+    });
+    const write = await store.appendHostSummary("c", "Host-observed completed turn. User: hello. Assistant: hi.");
+    store.scheduleCapture("c", "User: hello\nAssistant: hi");
+    await store.flush();
+    expect(write.source).toContain("/audit/");
+    expect(readFileSync(write.source, "utf8")).toContain("Host-observed completed turn");
+    expect(existsSync(join(root, "daily"))).toBe(false);
+    expect(warnings.join(" ")).toContain("capture offline");
+    await store.close();
+  });
+
+  it("bounds BuJo capture overflow while preserving every compact raw audit entry", async () => {
+    const root = tmpRoot();
+    const llm = recordingLlm([]);
+    const store = createBujoMemoryStore({
+      root, tier: "bujo", embeddings: fakeEmbeddings(64), dim: 64, llm,
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let calls = 0;
+    store.capture = async () => {
+      calls += 1;
+      if (calls === 1) await gate;
+      return { actions: 0, entities: 0 };
+    };
+
+    for (let index = 0; index < 33; index += 1) {
+      await store.appendHostSummary(`c-${index}`, `Host-observed completed turn ${index}.`);
+      store.scheduleCapture(`c-${index}`, `User: turn ${index}\nAssistant: done ${index}`);
+    }
+    expect(store.queueSnapshot().capture).toMatchObject({ queued: 32, dropped: 1, highWaterItems: 32 });
+    const audit = readFileSync(join(root, "audit", `${new Date().toISOString().slice(0, 10)}.md`), "utf8");
+    expect(parseDailyFile(audit).bullets).toHaveLength(33);
+
+    const flushing = store.flush();
+    await waitUntil(() => calls === 1);
+    release();
+    await flushing;
+    expect(store.queueSnapshot().capture).toMatchObject({ queued: 0, inFlight: 0, completed: 32, dropped: 1 });
+    await store.close();
+  });
+});
+
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error("condition was not reached");
+}

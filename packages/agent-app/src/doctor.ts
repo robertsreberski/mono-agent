@@ -1416,16 +1416,10 @@ async function memorySection(
     // Report consolidation scheduler cadence.
     const consolidationEnabled = config.memory.consolidation?.enabled !== false;
     const consolidationCron = config.memory.consolidation?.cron ?? DEFAULT_CONSOLIDATION_CRON;
-    const hasLlm = config.memory.llm !== undefined;
-
-    if (hasLlm) {
-      if (consolidationEnabled) {
-        details.push(`Consolidation: ${consolidationCron} (auto).`);
-      } else {
-        details.push("Consolidation: disabled.");
-      }
+    if (consolidationEnabled) {
+      details.push(`Consolidation: ${consolidationCron} (auto).`);
     } else {
-      details.push("Consolidation: not scheduled (no chat model — bujo runtime tier downgrades to journal).");
+      details.push("Consolidation: disabled.");
     }
   }
 

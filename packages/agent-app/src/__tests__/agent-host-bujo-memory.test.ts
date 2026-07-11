@@ -41,18 +41,16 @@ afterEach(async () => {
 });
 
 describe("createConfiguredMemory — bujo mode", () => {
-  it("constructs a harness for mode: bujo without throwing (exercises the bujo branch)", async () => {
+  it("rejects a programmatic bujo config without its required capture LLM", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
 
     const fakeRuntime = { async run() { return { text: "ok" }; } };
-    const harness = await createConfiguredAgentHarness({
+    await expect(createConfiguredAgentHarness({
       config: bujoConfig({ dir, identityPath, memoryRoot: join(dir, "bujo-memory") }),
       runtime: fakeRuntime as never,
-    });
-    expect(harness).toBeDefined();
-    expect(typeof harness.run).toBe("function");
+    })).rejects.toThrow(/requires memory\.embeddings and memory\.llm/i);
   });
 
   it("BujoMemoryStore.appendHostSummary writes into <root>/daily/ (proves bujo, not markdown)", async () => {

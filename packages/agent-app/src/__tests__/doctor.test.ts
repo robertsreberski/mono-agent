@@ -220,6 +220,8 @@ describe("validateMonoAgentFolder", () => {
       memory: {
         mode: "bujo",
         path: dir,
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "ollama", model: "qwen3.6:latest" },
         reflection: { cron: "ignored-secret-cron" },
         migration: { enabled: false },
       },
@@ -1638,6 +1640,8 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     );
   }
 
+  const strictBujoLlm = { provider: "ollama", model: "nomic-embed-text:v1.5" } as const;
+
   it("passes the bujo memory section when Ollama is reachable and the embeddings model is present", async () => {
     stubFetch(["nomic-embed-text:v1.5"]);
 
@@ -1647,6 +1651,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
         path: dir,
         writeMode: "append-host-summary",
         embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: strictBujoLlm,
       },
     });
 
@@ -1738,6 +1743,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
         path: dir,
         writeMode: "append-host-summary",
         embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: strictBujoLlm,
       },
     });
 
@@ -1761,6 +1767,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
         path: dir,
         writeMode: "append-host-summary",
         embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: strictBujoLlm,
       },
     });
 
@@ -1812,6 +1819,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
         path: unwritablePath,
         writeMode: "append-host-summary",
         embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: strictBujoLlm,
       },
     });
 
@@ -1868,7 +1876,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     // fetch is NOT stubbed — if the Ollama probe were attempted it would fail and warn.
     const configPath = await writeMinimalConfig({
       memory: {
-        mode: "bujo",
+        mode: "journal",
         path: dir,
         writeMode: "append-host-summary",
         embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-test" },
@@ -2082,9 +2090,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(text).toMatch(/auto/iu);
   });
 
-  it("reports no automatic consolidation for bujo without a chat LLM", async () => {
-    stubFetch(["nomic-embed-text:v1.5"]);
-
+  it("reports a configuration error instead of downgrading bujo without a chat LLM", async () => {
     const configPath = await writeMinimalConfig({
       memory: {
         mode: "bujo",
@@ -2097,13 +2103,10 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
 
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
 
-    const memory = sectionById(report, "memory");
-    expect(memory.status).toBe("ok");
-    const text = memory.details.join("\n");
-    expect(text).toMatch(/consolidation/iu);
-    expect(text).toMatch(/not scheduled/iu);
-    expect(text).toMatch(/no chat model/iu);
-    expect(text).toMatch(/downgrades to journal/iu);
+    expect(report.ok).toBe(false);
+    const core = sectionById(report, "core");
+    expect(core.status).toBe("error");
+    expect(core.details.join("\n")).toMatch(/bujo.*requires.*memory\.llm/iu);
   });
 
   it("reports custom consolidation cron when configured", async () => {
@@ -2164,6 +2167,7 @@ describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
         path: dir,
         writeMode: "append-host-summary",
         embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "ollama", model: "nomic-embed-text:v1.5" },
       },
     });
 
@@ -2191,6 +2195,7 @@ describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
         path: join(blocker, "root"),
         writeMode: "append-host-summary",
         embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "ollama", model: "nomic-embed-text:v1.5" },
       },
     });
 

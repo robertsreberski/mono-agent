@@ -110,6 +110,8 @@ export interface ConfiguredAgentHarnessOptions {
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
   /** Best-effort diagnostic when the default MemoryRecall endpoint cannot start. */
   readonly onMemoryRecallUnavailable?: (error: unknown) => void;
+  /** Best-effort host diagnostic for post-provider memory write failures. */
+  readonly onMemoryWarning?: (message: string) => void;
   readonly onSessionEvent?: ConfiguredAgentSessionEventHandler;
   /**
    * Factory for a runtime bound to a per-request override model (cron/webhook
@@ -454,6 +456,7 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
     ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
+    ...(options.onMemoryWarning === undefined ? {} : { onMemoryWarning: options.onMemoryWarning }),
     historyStore: options.historyStore ?? createInMemoryHistoryStore({ maxMessages: historyMaxMessages(config.runtime.maxTurns) }),
     // Inbound channel attachments are saved here (under the artifacts dir, which
     // sits inside a sandbox-readable root) so the agent can open them by path.
@@ -578,9 +581,13 @@ export async function createConfiguredMemory(
   const bujo = await loadMemoryBujoModule();
 
   if (mode === "lite") {
+    if (embeddingsConfig !== undefined || llmConfig !== undefined || config.memory.consolidation !== undefined) {
+      throw new Error("memory.mode 'lite' is lexical-only and rejects embeddings, memory.llm, and consolidation.");
+    }
     // Lite tier: FTS-only recall, no external deps.
     return bujo.createBujoMemoryStore({
       root,
+      tier: "lite",
       ...(maxBytes !== undefined && { maxBytes }),
       ...(deps.logger !== undefined && { logger: deps.logger }),
     });
@@ -612,9 +619,16 @@ export async function createConfiguredMemory(
   const dim = embeddingsConfig?.dim ?? 768;
 
   if (mode === "journal") {
+    if (embeddingsConfig === undefined) {
+      throw new Error("memory.mode 'journal' requires memory.embeddings; configuration must not downshift tiers.");
+    }
+    if (llmConfig !== undefined || config.memory.consolidation !== undefined) {
+      throw new Error("memory.mode 'journal' rejects memory.llm and consolidation; select bujo for curated capture.");
+    }
     // Journal tier: hybrid recall + decay; no chat LLM.
     return bujo.createBujoMemoryStore({
       root,
+      tier: "journal",
       embeddings,
       dim,
       ...(maxBytes !== undefined && { maxBytes }),
@@ -622,18 +636,27 @@ export async function createConfiguredMemory(
     });
   }
 
-  // bujo tier: full stack — embeddings + optional chat LLM for capture/reflect/migrate.
+  // BuJo is a strict full-stack tier. The config loader enforces both
+  // prerequisites; keep the composition boundary defensive for programmatic
+  // callers that may construct MonoAgentConfig directly.
+  if (embeddingsConfig === undefined || llmConfig === undefined) {
+    throw new Error("memory.mode 'bujo' requires memory.embeddings and memory.llm; configuration must not downshift tiers.");
+  }
   const recording =
     deps.observability === undefined
       ? undefined
       : recorderCompositionDeps(config, deps.observability);
   const llm = configuredMemoryLlm(bujo, config, llmConfig, deps.memoryRuntime, recording);
+  if (llm === undefined) {
+    throw new Error("memory.mode 'bujo' could not construct the required memory.llm.");
+  }
   return bujo.createBujoMemoryStore({
     root,
+    tier: "bujo",
     embeddings,
     dim,
     ...(maxBytes !== undefined && { maxBytes }),
-    ...(llm === undefined ? {} : { llm }),
+    llm,
     ...(deps.logger !== undefined && { logger: deps.logger }),
   });
 }

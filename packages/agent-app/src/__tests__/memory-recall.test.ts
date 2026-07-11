@@ -331,8 +331,9 @@ describe("createRecallStore", () => {
       },
     }) as unknown as BujoMemoryStore;
     try {
-      // First embed (during append) fails fast (timeout/refused) and opens the breaker.
-      await expect(store.appendHostSummary("conv-1", "Anything that needs an embedding.")).rejects.toThrow();
+      // Append is now lexical/durable and returns before the background embedding fails.
+      await expect(store.appendHostSummary("conv-1", "Anything that needs an embedding.")).resolves.toBeDefined();
+      await store.flush?.();
       // With the breaker OPEN, recall fast-fails without re-hitting the dead backend.
       await expect(store.recall("anything")).rejects.toThrow(/circuit is open/u);
     } finally {
