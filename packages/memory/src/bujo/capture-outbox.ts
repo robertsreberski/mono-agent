@@ -148,6 +148,7 @@ export function replayCaptureIntent(
   db?: MemoryDb,
   options: CaptureIntentReplayOptions = {},
 ): CaptureIntentReplayResult {
+  assertReplayMode(db, options);
   const replay = loadReplay(root, handle.file);
   const plan = preflightReplay(root, replay, db);
   return applyReplay(root, plan, db, options);
@@ -159,6 +160,7 @@ export function replayCaptureOutbox(
   db?: MemoryDb,
   options: CaptureIntentReplayOptions = {},
 ): CaptureIntentReplayResult[] {
+  assertReplayMode(db, options);
   const files = captureIntentFiles(root);
   if (files.length > MAX_INTENTS) throw new Error("memory-capture: capture outbox exceeds its bounded intent count.");
   const replays = files.map((name) => loadReplay(root, `${OUTBOX_DIR}/${name}`));
@@ -169,15 +171,29 @@ export function replayCaptureOutbox(
   return plans.map((plan) => applyReplay(root, plan, db, options));
 }
 
+function assertReplayMode(db: MemoryDb | undefined, options: CaptureIntentReplayOptions): void {
+  if (db === undefined && options.retainIntent !== true) {
+    throw new Error(
+      "memory-capture: replay without an active index may only stage canonical source while retaining the intent.",
+    );
+  }
+}
+
 /** Explicit rollback cannot carry provider-bound pending vectors across identities. */
 export function assertNoPendingCaptureIntent(root: string): void {
-  const files = captureIntentFiles(root);
-  if (files.length === 0) return;
-  for (const name of files) loadReplay(root, `${OUTBOX_DIR}/${name}`);
+  if (!hasPendingCaptureIntent(root)) return;
   throw new Error(
     "memory-capture: a durable capture intent is pending; start the current writable store "
     + "or recover it before rollback.",
   );
+}
+
+/** Read-only bounded probe used to avoid opening an active DB when there is no recovery work. */
+export function hasPendingCaptureIntent(root: string): boolean {
+  const files = captureIntentFiles(root);
+  if (files.length > MAX_INTENTS) throw new Error("memory-capture: capture outbox exceeds its bounded intent count.");
+  for (const name of files) loadReplay(root, `${OUTBOX_DIR}/${name}`);
+  return files.length > 0;
 }
 
 interface LoadedReplay {

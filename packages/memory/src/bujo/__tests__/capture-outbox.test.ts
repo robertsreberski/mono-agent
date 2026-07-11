@@ -100,7 +100,7 @@ describe("capture outbox", () => {
     writeCaptureIntent(root, actions, {}, NOW.toISOString());
     appendBullet(root, added, NOW);
 
-    replayCaptureOutbox(root);
+    replayCaptureOutbox(root, undefined, { retainIntent: true });
 
     const replayed = parseDailyFile(readFileSync(dailyFilePath(root, NOW), "utf8")).bullets;
     expect(replayed.find((item) => item.id === added.id)).toEqual(added);
@@ -108,7 +108,7 @@ describe("capture outbox", () => {
     expect(replayed.find((item) => item.id === old.id)?.status).toBe("invalidated");
     expect(replayed.find((item) => item.id === replacement.id)).toEqual(replacement);
     expect(replayed.find((item) => item.id === noop.id)).toEqual(noop);
-    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
   });
 
   it("repairs a known supersede half-state before applying its graph", () => {
@@ -141,7 +141,7 @@ describe("capture outbox", () => {
 
     // Simulate a process dying after append-new but before invalidating old.
     appendBullet(root, replacement, NOW);
-    replayCaptureOutbox(root);
+    replayCaptureOutbox(root, undefined, { retainIntent: true });
 
     const daily = readCanonicalFileSnapshot(root, file)!;
     const parsed = parseDailyFile(daily.content);
@@ -150,7 +150,7 @@ describe("capture outbox", () => {
     expect(readGraph(root).associations).toEqual([
       expect.objectContaining({ memoryId: replacement.id, entityId: "project:atlas" }),
     ]);
-    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
   });
 
   it("fails closed when canonical state matches neither the before nor after outcome", () => {
@@ -178,7 +178,8 @@ describe("capture outbox", () => {
     }, NOW.toISOString());
     expect(rewriteBullet(root, file, before.id, { text: "A conflicting external rewrite." })).toBe(true);
 
-    expect(() => replayCaptureOutbox(root)).toThrow(/conflicts with canonical action update/iu);
+    expect(() => replayCaptureOutbox(root, undefined, { retainIntent: true }))
+      .toThrow(/conflicts with canonical action update/iu);
     expect(readGraph(root).associations).toEqual([]);
     expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
   });
@@ -225,8 +226,9 @@ describe("capture outbox", () => {
     const [name] = readdirSync(join(root, ".capture-outbox"));
     expect(name).toBeDefined();
     expect(statSync(join(root, ".capture-outbox", name!)).size).toBeLessThan(2 * 1024 * 1024);
-    replayCaptureOutbox(root);
+    replayCaptureOutbox(root, undefined, { retainIntent: true });
     expect(parseDailyFile(readFileSync(dailyFilePath(root, NOW), "utf8")).bullets).toHaveLength(8);
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
   });
 
   it("rejects a replay vector that does not match the active database dimension", () => {
@@ -289,7 +291,8 @@ describe("capture outbox", () => {
       record: memoryRecord(conflictAfter, file),
     }], {}, NOW.toISOString());
 
-    expect(() => replayCaptureOutbox(root)).toThrow(/conflicts with canonical action update/iu);
+    expect(() => replayCaptureOutbox(root, undefined, { retainIntent: true }))
+      .toThrow(/conflicts with canonical action update/iu);
     const replayed = parseDailyFile(readFileSync(dailyFilePath(root, NOW), "utf8")).bullets;
     expect(replayed.some((item) => item.id === first.id)).toBe(false);
     expect(replayed.find((item) => item.id === conflictBefore.id)?.text).toBe("External conflicting state.");
@@ -314,7 +317,8 @@ describe("capture outbox", () => {
     raw.actions[0]!.record.text = "Tampered SQLite text.";
     writeFileSync(path, `${JSON.stringify(raw)}\n`, "utf8");
 
-    expect(() => replayCaptureOutbox(root)).toThrow(/does not match.*canonical bullet/iu);
+    expect(() => replayCaptureOutbox(root, undefined, { retainIntent: true }))
+      .toThrow(/does not match.*canonical bullet/iu);
     expect(existsSync(dailyFilePath(root, NOW))).toBe(false);
     expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
   });

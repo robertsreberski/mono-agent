@@ -25,7 +25,12 @@ import type { EmbeddingProvider } from "../search/index.js";
 import { normalizedContentHash } from "./daily.js";
 import { parseDailyFile } from "./grammar.js";
 import { readGraph } from "./graph.js";
-import { replayCaptureOutbox } from "./capture-outbox.js";
+import {
+  assertNoPendingCaptureIntent,
+  hasPendingCaptureIntent,
+  replayCaptureOutbox,
+} from "./capture-outbox.js";
+import { assertNoPendingMigrateDecision } from "./migrate.js";
 import type { BujoTier, Bullet } from "./types.js";
 import {
   MANAGED_INDEX_SCHEMA_VERSION,
@@ -173,6 +178,11 @@ interface StrictGraph {
   readonly entities: readonly EntityRecord[];
   readonly relations: readonly EntityRelationRecord[];
   readonly associations: readonly MemoryEntityAssociation[];
+  readonly collectionSupports: readonly {
+    readonly memoryId: string;
+    readonly entityId: string;
+    readonly collection: string;
+  }[];
   readonly derivedLegacyAssociations: number;
 }
 
@@ -204,8 +214,26 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
     const rootIdentity = identityOf(root);
     const manifestState = captureManagedManifestState(root);
     const priorManifest = readManagedIndexManifest(root);
-    assertNoActiveSqliteWriter(resolveActiveMemoryDbPath(root));
-    replayCaptureOutbox(root);
+    const priorActivePath = resolveActiveMemoryDbPath(root);
+    assertNoActiveSqliteWriter(priorActivePath);
+    // A paid migration decision is a separate transaction whose vector and
+    // source outcome must be recovered by migrate() under the current identity.
+    // Refuse before capture replay can touch canonical Markdown or graph data.
+    assertNoPendingMigrateDecision(root);
+    // Repair the current active DB and canonical sources together, but retain
+    // the intent. This preflights its stored vector against the old identity,
+    // gives any retained rollback full parity, and leaves every later rebuild
+    // failure startup-repairable.
+    if (hasPendingCaptureIntent(root)) {
+      const priorReplay = openCurrentReplayDb(root, priorManifest, options);
+      try {
+        replayCaptureOutbox(root, priorReplay.db, { retainIntent: true });
+        priorReplay.db.checkpoint();
+      } finally {
+        priorReplay.db.close();
+      }
+      if (priorReplay.path !== undefined) fsyncFile(priorReplay.path);
+    }
     const snapshot = snapshotCanonicalSources(root, options.tier);
     const rollbackSnapshot = priorManifest === undefined || priorManifest.active.tier === options.tier
       ? snapshot
@@ -258,6 +286,9 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
         db.addEntityRelation(relation.src, relation.dst, relation.relation, relation.createdAt);
       }
       for (const association of plan.graph.associations) db.associateMemory(association);
+      for (const support of plan.graph.collectionSupports) {
+        db.addEdge(support.memoryId, support.entityId, "supports");
+      }
       db.setIndexMetadata({
         schemaVersion: MANAGED_INDEX_SCHEMA_VERSION,
         policyVersion: MEMORY_REBUILD_POLICY_VERSION,
@@ -334,6 +365,22 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       beforeManifestRename: assertFinalCas,
     });
     activated = true;
+    // The candidate was rebuilt from the retained intent's canonical outcome,
+    // so replay verifies its new-model vector instead of writing the stale
+    // stored vector. Retirement happens only after both active and rollback
+    // generations are parity-safe.
+    const activeDb = openMemoryDb({
+      path: generation.dbPath,
+      ...(options.embeddings === undefined ? {} : { embeddings: options.embeddings }),
+      ...(options.dim === undefined ? {} : { dim: options.dim }),
+    });
+    try {
+      replayCaptureOutbox(root, activeDb);
+      activeDb.checkpoint();
+    } finally {
+      activeDb.close();
+    }
+    fsyncFile(generation.dbPath);
     return {
       active: generation.dbPath,
       ...(rollback === undefined ? {} : { rollback: managedGenerationDbPath(root, rollback.name, true) }),
@@ -367,6 +414,8 @@ export async function rollbackMemoryIndex(options: SafeMemoryIndexOptions): Prom
   const lease = acquireMemoryWriterLease(options.root);
   try {
     const root = lease.root;
+    assertNoPendingMigrateDecision(root);
+    assertNoPendingCaptureIntent(root);
     const rootIdentity = identityOf(root);
     const manifestState = captureManagedManifestState(root);
     const manifest = readManagedIndexManifest(root);
@@ -549,6 +598,11 @@ function buildPlan(snapshot: SourceSnapshot, tier: BujoTier): BuildPlan {
   }
 
   const graph = tier === "bujo" ? parseStrictGraph(snapshot.graph, records) : emptyGraph();
+  for (const support of graph.collectionSupports) {
+    const record = records.get(support.memoryId);
+    if (record === undefined) throw new Error("memory-rebuild: collection support lost its memory endpoint.");
+    records.set(record.id, { ...record, collection: support.collection });
+  }
   const parsedSourceItems = rawRecords.length + skippedUnstructuredRecords
     + missingIdentityLocations.length + legacySourceLocations.length;
   const accountedSourceItems = records.size + skippedRawRecords + skippedUnstructuredRecords
@@ -612,6 +666,24 @@ function parseStrictGraph(source: SourceFileSnapshot | undefined, memories: Read
       throw new Error(`memory-rebuild: graph association has an orphan endpoint (${association.memoryId} -> ${association.entityId}).`);
     }
   }
+  const collectionSupports: Array<{ memoryId: string; entityId: string; collection: string }> = [];
+  for (const memory of memories.values()) {
+    if (memory.status !== "migrated") continue;
+    const collectionAssociations = [...associations.values()].filter((association) => {
+      if (association.memoryId !== memory.id) return false;
+      return entities.get(association.entityId)?.type === "collection";
+    });
+    if (collectionAssociations.length > 1) {
+      throw new Error(`memory-rebuild: migrated memory ${memory.id} has ambiguous collection associations.`);
+    }
+    if (collectionAssociations.length === 0) continue;
+    const entityId = collectionAssociations[0]!.entityId;
+    const collection = entityId.startsWith("collection:") ? entityId.slice("collection:".length) : "";
+    if (collection.length === 0) {
+      throw new Error(`memory-rebuild: migrated memory ${memory.id} has an invalid collection entity.`);
+    }
+    collectionSupports.push({ memoryId: memory.id, entityId, collection });
+  }
   let derivedLegacyAssociations = 0;
   const uniqueNames = new Map<string, EntityRecord | undefined>();
   for (const entity of entities.values()) {
@@ -644,6 +716,7 @@ function parseStrictGraph(source: SourceFileSnapshot | undefined, memories: Read
     entities: [...entities.values()],
     relations: [...relations.values()],
     associations: [...associations.values()],
+    collectionSupports,
     derivedLegacyAssociations,
   };
 }
@@ -716,6 +789,11 @@ function validateCandidate(path: string, descriptor: ManagedGeneration, plan: Bu
       || stableJson(actualAssociations) !== stableJson(plan.graph.associations)) {
       throw new Error("memory-rebuild: candidate graph payload validation failed.");
     }
+    for (const support of plan.graph.collectionSupports) {
+      if (!db.edges(support.memoryId).some((edge) => edge.kind === "supports" && edge.dst === support.entityId)) {
+        throw new Error("memory-rebuild: candidate collection support validation failed.");
+      }
+    }
     if (descriptor.tier === "journal") {
       if (state.contentHashes !== plan.contentHashes.size || state.contentHashOrphans !== 0) {
         throw new Error("memory-rebuild: Journal content-hash bijection validation failed.");
@@ -784,6 +862,78 @@ function validateDb(db: MemoryDb, descriptor: ManagedGeneration): void {
       || state.embeddingDimensions.some((dimension) => dimension !== descriptor.dimension)) {
     throw new Error("memory-rebuild: embedding model/dimension identity validation failed.");
   }
+}
+
+interface CurrentReplayDb {
+  readonly db: MemoryDb;
+  readonly path?: string;
+}
+
+function openCurrentReplayDb(
+  root: string,
+  manifest: ManagedIndexManifest | undefined,
+  target: SafeMemoryIndexOptions,
+): CurrentReplayDb {
+  const path = resolveActiveMemoryDbPath(root);
+  if (!existsSync(path)) {
+    return {
+      db: openMemoryDb({
+        path: ":memory:",
+        ...(target.embeddings === undefined ? {} : { embeddings: noCallEmbeddings(target.embeddings.id) }),
+        ...(target.dim === undefined ? {} : { dim: target.dim }),
+      }),
+    };
+  }
+  if (manifest !== undefined) {
+    const active = manifest.active;
+    return {
+      path,
+      db: openMemoryDb({
+        path,
+        ...(active.embeddingModel === undefined ? {} : { embeddings: noCallEmbeddings(active.embeddingModel) }),
+        ...(active.dimension === undefined ? {} : { dim: active.dimension }),
+      }),
+    };
+  }
+
+  // A pre-managed database has no manifest descriptor. Read its actual vec DDL
+  // and persisted model identity before reopening writable; the provider stub
+  // supplies identity only and must never perform a paid embedding call.
+  const probe = openMemoryDb({ path, readOnly: true });
+  let dimension: number;
+  let embeddingModel: string | undefined;
+  try {
+    dimension = probe.vectorDimension();
+    const state = probe.validationSnapshot();
+    if (state.embeddingModels.length > 1) {
+      throw new Error("memory-rebuild: active legacy index contains multiple embedding model identities.");
+    }
+    embeddingModel = probe.indexMetadata()?.embeddingModel ?? state.embeddingModels[0];
+    if (state.vectors > 0 && embeddingModel === undefined) {
+      throw new Error(
+        "memory-rebuild: active legacy vectors have no embedding model identity; recover them under their prior configuration.",
+      );
+    }
+  } finally {
+    probe.close();
+  }
+  return {
+    path,
+    db: openMemoryDb({
+      path,
+      dim: dimension,
+      ...(embeddingModel === undefined ? {} : { embeddings: noCallEmbeddings(embeddingModel) }),
+    }),
+  };
+}
+
+function noCallEmbeddings(id: string): EmbeddingProvider {
+  return {
+    id,
+    embed: async (): Promise<number[][]> => {
+      throw new Error("memory-rebuild: durable replay must not call the embedding provider.");
+    },
+  };
 }
 
 async function adoptLegacyRollback(
@@ -977,7 +1127,7 @@ function readOnlyDb(path: string, descriptor: ManagedGeneration): MemoryDb {
 }
 
 function emptyGraph(): StrictGraph {
-  return { entities: [], relations: [], associations: [], derivedLegacyAssociations: 0 };
+  return { entities: [], relations: [], associations: [], collectionSupports: [], derivedLegacyAssociations: 0 };
 }
 
 function isLegacyHostObservation(text: string): boolean {

@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { createHash } from "node:crypto";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +22,8 @@ import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
 import {
   createBujoMemoryStore,
   appendGraphBatch,
+  migrate,
+  readGraph,
   readManagedIndexManifest,
   resolveActiveMemoryDbPath,
   rollbackMemoryIndex,
@@ -30,6 +32,8 @@ import {
 } from "../index.js";
 import { acquireMemoryWriterLease } from "../generations.js";
 import { writeCaptureIntent } from "../capture-outbox.js";
+import { appendBullet, dailyFilePath } from "../daily.js";
+import type { Bullet } from "../types.js";
 
 const NOW = "2026-07-11T09:00:00.000Z";
 const roots: string[] = [];
@@ -128,6 +132,7 @@ describe("safe memory index rebuild", () => {
       id: item.id,
       after: { file: "daily/2026-07-11.md", bullet: item },
       record,
+      vector: [1, 0, 0, 0, 0, 0, 0, 0],
       threads: [],
     }], {
       entities: [{ id: "person:morgan", name: "Morgan", type: "person", createdAt: NOW }],
@@ -155,6 +160,229 @@ describe("safe memory index rebuild", () => {
     } finally {
       rebuilt.close();
     }
+  });
+
+  it("keeps an after-snapshot failure repairable by current-identity startup", async () => {
+    const root = tempRoot();
+    const model = embeddings("test:after-snapshot", 8);
+    writeDaily(root, [bullet("BASE", "The current generation remains active.")]);
+    await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: model, dim: 8 });
+    const activeBefore = resolveActiveMemoryDbPath(root);
+    const item = bullet("PENDING-FAIL", "Pending capture survives a rebuild fault.");
+    const file = "daily/2026-07-11.md";
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: item.id,
+      after: { file, bullet: item },
+      record: memoryRecordForBullet(item, file),
+      vector: deterministicVector(item.text, 8),
+      threads: [],
+    }], {
+      entities: [{ id: "concept:recovery", name: "Recovery", type: "concept", createdAt: NOW }],
+      associations: [{
+        memoryId: item.id,
+        entityId: "concept:recovery",
+        provenance: "capture",
+        createdAt: NOW,
+      }],
+    }, NOW);
+
+    await expect(safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: model,
+      dim: 8,
+      hooks: { afterSnapshot: () => { throw new Error("fault-after-retained-snapshot"); } },
+    })).rejects.toThrow("fault-after-retained-snapshot");
+
+    expect(resolveActiveMemoryDbPath(root)).toBe(activeBefore);
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
+    const repaired = openMemoryDb({ path: activeBefore, readOnly: true, dim: 8 });
+    try {
+      expect(repaired.get(item.id)?.text).toBe(item.text);
+      expect(repaired.associationsForMemory(item.id)).toEqual([
+        expect.objectContaining({ entityId: "concept:recovery", provenance: "capture" }),
+      ]);
+    } finally {
+      repaired.close();
+    }
+
+    const startup = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings: model,
+      dim: 8,
+      llm: { id: "must-not-run", complete: async () => { throw new Error("startup replay called LLM"); } },
+    });
+    await startup.close();
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+  });
+
+  it("carries a pending capture across a dimension change and into immediate rollback", async () => {
+    const root = tempRoot();
+    const oldModel = embeddings("test:old-dimension", 8);
+    const newModel = embeddings("test:new-dimension", 4);
+    writeDaily(root, [bullet("BASE", "Base record under the old model.")]);
+    await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: oldModel, dim: 8 });
+    const item = bullet("PENDING-DIM", "Pending capture crosses model dimensions safely.");
+    const file = "daily/2026-07-11.md";
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: item.id,
+      after: { file, bullet: item },
+      record: memoryRecordForBullet(item, file),
+      vector: deterministicVector(item.text, 8),
+      threads: [],
+    }], {
+      entities: [{ id: "concept:dimension", name: "Dimension", type: "concept", createdAt: NOW }],
+      associations: [{
+        memoryId: item.id,
+        entityId: "concept:dimension",
+        provenance: "capture",
+        createdAt: NOW,
+      }],
+    }, NOW);
+
+    const rebuilt = await safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: newModel,
+      dim: 4,
+    });
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+    const newDb = openMemoryDb({ path: rebuilt.active, readOnly: true, dim: 4 });
+    try {
+      expect(newDb.get(item.id)).toMatchObject({ text: item.text, embeddingModel: newModel.id, dim: 4 });
+      expect(newDb.associationsForMemory(item.id)).toEqual([
+        expect.objectContaining({ entityId: "concept:dimension", provenance: "capture" }),
+      ]);
+    } finally {
+      newDb.close();
+    }
+
+    const rolledBack = await rollbackMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: oldModel,
+      dim: 8,
+    });
+    const oldDb = openMemoryDb({ path: rolledBack.active, readOnly: true, dim: 8 });
+    try {
+      expect(oldDb.get(item.id)).toMatchObject({ text: item.text, embeddingModel: oldModel.id, dim: 8 });
+      expect(oldDb.associationsForMemory(item.id)).toEqual([
+        expect.objectContaining({ entityId: "concept:dimension", provenance: "capture" }),
+      ]);
+    } finally {
+      oldDb.close();
+    }
+  });
+
+  it("keeps a post-activation crash startup-repairable without replaying the stored vector", async () => {
+    const root = tempRoot();
+    const model = embeddings("test:post-activation", 8);
+    writeDaily(root, [bullet("BASE", "Base record before uncertain activation.")]);
+    await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: model, dim: 8 });
+    const before = resolveActiveMemoryDbPath(root);
+    const item = bullet("PENDING-ACTIVE", "Pending capture survives activation uncertainty.");
+    const file = "daily/2026-07-11.md";
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: item.id,
+      after: { file, bullet: item },
+      record: memoryRecordForBullet(item, file),
+      vector: deterministicVector(item.text, 8),
+      threads: [],
+    }], {}, NOW);
+
+    await expect(safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: model,
+      dim: 8,
+      hooks: { afterManifestRename: () => { throw new Error("crash-after-activation"); } },
+    })).rejects.toThrow(/crash-after-activation|activation.*uncertain/iu);
+
+    expect(resolveActiveMemoryDbPath(root)).not.toBe(before);
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
+    const startup = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings: model,
+      dim: 8,
+      llm: { id: "must-not-run", complete: async () => { throw new Error("startup replay called LLM"); } },
+    });
+    await startup.close();
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+    const active = openMemoryDb({ path: resolveActiveMemoryDbPath(root), readOnly: true, dim: 8 });
+    try {
+      expect(active.get(item.id)?.text).toBe(item.text);
+      expect(active.hasVector(item.id)).toBe(true);
+    } finally {
+      active.close();
+    }
+  });
+
+  it("refuses explicit rollback while a capture intent is pending", async () => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("ONE", "First Lite generation.")]);
+    await safeRebuildMemoryIndex({ root, tier: "lite" });
+    writeDaily(root, [bullet("ONE", "First Lite generation."), bullet("TWO", "Second Lite generation.")]);
+    await safeRebuildMemoryIndex({ root, tier: "lite" });
+    const activeBefore = resolveActiveMemoryDbPath(root);
+    const pending = bullet("PENDING-ROLLBACK", "Rollback must recover this under the current identity first.");
+    const file = "daily/2026-07-11.md";
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: pending.id,
+      after: { file, bullet: pending },
+      record: memoryRecordForBullet(pending, file),
+      threads: [],
+    }], {}, NOW);
+
+    await expect(rollbackMemoryIndex({ root, tier: "lite" }))
+      .rejects.toThrow(/capture intent.*pending.*current writable store|recover/iu);
+    expect(resolveActiveMemoryDbPath(root)).toBe(activeBefore);
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
+  });
+
+  it("refuses rebuild before source mutation when a paid migration decision is pending", async () => {
+    const root = tempRoot();
+    const model = embeddings("test:migration-pending", 8);
+    const createdAt = "2026-01-01T09:00:00.000Z";
+    const item = { ...bullet("MIG-PENDING", "A paid migration decision remains durable."), createdAt, salience: 0.2 };
+    const created = new Date(createdAt);
+    appendBullet(root, item, created);
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: model, dim: 8 });
+    await db.upsert({
+      ...memoryRecordForBullet(item, relative(root, dailyFilePath(root, created))),
+      salience: 0.2,
+    });
+    await expect(migrate({
+      db,
+      root,
+      llm: { id: "paid", complete: async () => JSON.stringify({ action: "promote" }) },
+      nextId: () => "unused",
+      now: () => new Date(NOW),
+      hooks: { afterDecisionDurable: () => { throw new Error("fault-after-paid-decision"); } },
+    })).rejects.toThrow("fault-after-paid-decision");
+    db.close();
+    const before = readFileSync(dailyFilePath(root, created), "utf8");
+    const embed = vi.fn(model.embed);
+
+    await expect(safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: { id: model.id, embed },
+      dim: 8,
+    })).rejects.toThrow(/durable decision.*pending/iu);
+
+    expect(embed).not.toHaveBeenCalled();
+    expect(readFileSync(dailyFilePath(root, created), "utf8")).toBe(before);
+    expect(readFileSync(join(root, "monthly", "2026-07.md"), "utf8")).toContain("mono-agent-migrate:");
   });
 
   it("builds beside a legacy index, activates one versioned generation, and retains a working rollback", async () => {
@@ -291,6 +519,67 @@ describe("safe memory index rebuild", () => {
 
     release.resolve();
     await first;
+  });
+
+  it("reconstructs migrated collection state and its supports edge from canonical graph evidence", async () => {
+    const root = tempRoot();
+    const migrated: Bullet = { ...bullet("MIGRATED", "Clustered into release-notes."), status: "migrated" };
+    writeDaily(root, [migrated]);
+    writeGraph(root, [{
+      kind: "entity",
+      id: "collection:release-notes",
+      name: "release-notes",
+      type: "collection",
+      createdAt: NOW,
+    }, {
+      kind: "association",
+      memoryId: migrated.id,
+      entityId: "collection:release-notes",
+      provenance: "capture",
+      createdAt: NOW,
+    }]);
+
+    const result = await safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: embeddings("test:cluster-rebuild", 8),
+      dim: 8,
+    });
+    const rebuilt = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
+    try {
+      expect(rebuilt.get(migrated.id)?.collection).toBe("release-notes");
+      expect(rebuilt.edges(migrated.id)).toEqual([
+        expect.objectContaining({ dst: "collection:release-notes", kind: "supports" }),
+      ]);
+    } finally {
+      rebuilt.close();
+    }
+  });
+
+  it("rejects ambiguous canonical collection associations for one migrated memory", async () => {
+    const root = tempRoot();
+    const migrated: Bullet = { ...bullet("MIGRATED", "Ambiguous collection evidence."), status: "migrated" };
+    writeDaily(root, [migrated]);
+    writeGraph(root, ["alpha", "beta"].flatMap((collection) => [{
+      kind: "entity",
+      id: `collection:${collection}`,
+      name: collection,
+      type: "collection",
+      createdAt: NOW,
+    }, {
+      kind: "association",
+      memoryId: migrated.id,
+      entityId: `collection:${collection}`,
+      provenance: "capture",
+      createdAt: NOW,
+    }]));
+
+    await expect(safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: embeddings("test:ambiguous-cluster", 8),
+      dim: 8,
+    })).rejects.toThrow(/ambiguous collection associations/iu);
   });
 
   it.each([
@@ -948,7 +1237,7 @@ function bullet(id: string, text: string) {
   };
 }
 
-function writeDaily(root: string, bullets: readonly ReturnType<typeof bullet>[]): void {
+function writeDaily(root: string, bullets: readonly Bullet[]): void {
   const daily = join(root, "daily");
   mkdirSync(daily, { recursive: true });
   writeFileSync(
@@ -978,6 +1267,24 @@ function note(id: string, text: string): MemoryRecord {
     accessCount: 0,
     tags: [],
     source: {},
+  };
+}
+
+function memoryRecordForBullet(
+  item: Bullet,
+  file: string,
+): MemoryRecord {
+  return {
+    id: item.id,
+    type: item.type,
+    status: item.status,
+    text: item.text,
+    salience: item.salience,
+    isInsight: item.isInsight,
+    createdAt: item.createdAt,
+    accessCount: 0,
+    tags: [],
+    source: { file },
   };
 }
 
