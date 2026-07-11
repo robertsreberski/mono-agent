@@ -33,7 +33,7 @@ Weighing the built-in engine against an external memory service? See
 
 ### `lite`
 
-FTS keyword recall plus rapid-log daily capture. No external dependencies — SQLite
+FTS keyword recall plus a canonical daily host observation. No external dependencies — SQLite
 is bundled. Suitable when you want lightweight, predictable context injection without
 running Ollama. Host summaries can be appended after each run
 (`writeMode: "append-host-summary"`).

@@ -201,7 +201,7 @@ Supermemory owns its remote index, so `mono-agent memory rebuild` and `rollback`
 
 After the product-v1 packages are published, this is the complete cutover for an existing local agent. Use the exact lockstep version named in the release announcement; “product v1” does not by itself imply npm major `1`.
 
-1. Install the v1 CLI and confirm the major version:
+1. Install the v1 CLI and confirm the exact published version:
 
    ```bash
    VERSION="<published-v1-version>"
