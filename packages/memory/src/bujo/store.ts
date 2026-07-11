@@ -1,5 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
-import { join, relative } from "node:path";
+import { relative } from "node:path";
 
 import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";
 import type { RecallHit } from "../store/index.js";
@@ -24,6 +23,7 @@ import { reflect as reflectFn, type ReflectResult } from "./reflect.js";
 import { migrate as migrateFn, type MigrateResult } from "./migrate.js";
 import { consolidateBujoMemory, type ConsolidateResult } from "./consolidate.js";
 import { writeFutureLog, writeIndex } from "./projections.js";
+import { listCanonicalFileNames, readCanonicalFileSnapshot } from "./path-safety.js";
 import type { Bullet, BujoLogger, BujoOptions, BujoTier } from "./types.js";
 import { BoundedBatchQueue, type BackgroundQueueSnapshot, type QueueJob } from "./queue.js";
 import {
@@ -62,6 +62,11 @@ interface IndexJob extends QueueJob {
 interface CaptureJob extends QueueJob {
   readonly conversationId: string;
   readonly text: string;
+}
+
+interface AdmittedMutation {
+  readonly controller: AbortController;
+  readonly settled: Promise<void>;
 }
 
 export interface BujoQueueSnapshot {
@@ -118,6 +123,7 @@ export class BujoMemoryStore implements MemoryStore {
   private closePromise: Promise<void> | undefined;
   private activeCaptureController: AbortController | undefined;
   private activeIndexController: AbortController | undefined;
+  private readonly admittedMutations = new Set<AdmittedMutation>();
   private shutdownDiscarded = 0;
   private shutdownTimedOut = false;
   private readonly runtimeStartedAt = new Date().toISOString();
@@ -303,7 +309,19 @@ export class BujoMemoryStore implements MemoryStore {
   }
 
   async appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
-    this.assertWritable("appendHostSummary");
+    return await this.runAdmittedMutation(
+      "appendHostSummary",
+      async (abortSignal) => await this.appendHostSummaryAccepted(conversationId, summary, abortSignal),
+    );
+  }
+
+  /** Run a direct write that was admitted before close() stopped new mutation. */
+  private async appendHostSummaryAccepted(
+    conversationId: string,
+    summary: string,
+    abortSignal: AbortSignal,
+  ): Promise<MemoryWriteResult> {
+    abortSignal.throwIfAborted();
     const now = this.clock();
     const text = summary.trim().replace(/\s+/gu, " ");
     const hash = normalizedContentHash(text);
@@ -321,6 +339,7 @@ export class BujoMemoryStore implements MemoryStore {
       refs: [`sha256:${hash}`],
     };
     if (this._tier === "bujo") {
+      abortSignal.throwIfAborted();
       const path = auditFilePath(this.root, now);
       appendAuditBullet(this.root, bullet, now);
       return {
@@ -346,10 +365,12 @@ export class BujoMemoryStore implements MemoryStore {
       // Recovery is deliberately off the successful-turn path. Both new writes
       // and legacy backfill converge on J-<content-hash>, so whichever runs first
       // reserves the same canonical representation without waiting for history.
-      return await serializeJournalWrite(this.root, async () => await withJournalWriteLockRetry(
+      return await serializeJournalWrite(this.root, abortSignal, async () => await withJournalWriteLockRetry(
         this.root,
         this.db.busyTimeoutMs(),
+        abortSignal,
         () => {
+          abortSignal.throwIfAborted();
           const reserved = this.db.contentHashRecord(hash);
           if (reserved !== undefined) {
             const existing = this.db.get(reserved.memoryId);
@@ -368,6 +389,7 @@ export class BujoMemoryStore implements MemoryStore {
       ));
     }
 
+    abortSignal.throwIfAborted();
     appendBullet(this.root, bullet, now);
     this.db.upsertLexical(record);
     // bytesWritten reflects the bullet line actually appended to the daily file, not the raw summary.
@@ -381,18 +403,21 @@ export class BujoMemoryStore implements MemoryStore {
    * Returns `undefined` when no `llm` was configured (matches `capture()` pattern).
    */
   async reflect(): Promise<ReflectResult | undefined> {
-    this.assertWritable("reflect");
-    if (this.llm === undefined) return undefined;
-    const r = await reflectFn({
-      db: this.db,
-      root: this.root,
-      llm: this.llm,
-      nextId: this.nextId,
-      now: this.clock,
+    return await this.runAdmittedMutation("reflect", async (abortSignal) => {
+      if (this.llm === undefined) return undefined;
+      const r = await reflectFn({
+        db: this.db,
+        root: this.root,
+        llm: this.llm,
+        nextId: this.nextId,
+        now: this.clock,
+        abortSignal,
+      });
+      abortSignal.throwIfAborted();
+      writeFutureLog(this.root, this.db, this.clock());
+      writeIndex(this.root, this.db, this.clock());
+      return r;
     });
-    writeFutureLog(this.root, this.db, this.clock());
-    writeIndex(this.root, this.db, this.clock());
-    return r;
   }
 
   /**
@@ -402,17 +427,20 @@ export class BujoMemoryStore implements MemoryStore {
    * Returns `undefined` when no `llm` was configured (matches `capture()` pattern).
    */
   async migrate(): Promise<MigrateResult | undefined> {
-    this.assertWritable("migrate");
-    if (this.llm === undefined) return undefined;
-    const m = await migrateFn({
-      db: this.db,
-      root: this.root,
-      llm: this.llm,
-      nextId: this.nextId,
-      now: this.clock,
+    return await this.runAdmittedMutation("migrate", async (abortSignal) => {
+      if (this.llm === undefined) return undefined;
+      const m = await migrateFn({
+        db: this.db,
+        root: this.root,
+        llm: this.llm,
+        nextId: this.nextId,
+        now: this.clock,
+        abortSignal,
+      });
+      abortSignal.throwIfAborted();
+      writeFutureLog(this.root, this.db, this.clock());
+      return m;
     });
-    writeFutureLog(this.root, this.db, this.clock());
-    return m;
   }
 
   /**
@@ -481,8 +509,11 @@ export class BujoMemoryStore implements MemoryStore {
     text: string,
     abortSignal?: AbortSignal,
   ): Promise<{ actions: number; entities: number } | undefined> {
-    this.assertWritable("capture");
-    return await this.captureAccepted(conversationId, text, abortSignal);
+    return await this.runAdmittedMutation(
+      "capture",
+      async (shutdownSignal) => await this.captureAccepted(conversationId, text, shutdownSignal),
+      abortSignal,
+    );
   }
 
   /** Run work that was admitted before shutdown stopped the capture queue. */
@@ -510,17 +541,21 @@ export class BujoMemoryStore implements MemoryStore {
    * tiers this is the primary maintenance call; in the `lite` tier it still runs harmlessly.
    */
   async decay(): Promise<{ decayed: number }> {
-    this.assertWritable("decay");
-    return this.db.applyDecay(this.clock());
+    return await this.runAdmittedMutation("decay", async (abortSignal) => {
+      abortSignal.throwIfAborted();
+      return this.db.applyDecay(this.clock());
+    });
   }
 
   /** Run deterministic, no-LLM BuJo consolidation in every tier. */
   async consolidate(): Promise<ConsolidateResult> {
-    this.assertWritable("consolidate");
-    return consolidateBujoMemory({
-      root: this.root,
-      db: this.db,
-      now: this.clock(),
+    return await this.runAdmittedMutation("consolidate", async (abortSignal) => {
+      abortSignal.throwIfAborted();
+      return await consolidateBujoMemory({
+        root: this.root,
+        db: this.db,
+        now: this.clock(),
+      });
     });
   }
 
@@ -536,28 +571,32 @@ export class BujoMemoryStore implements MemoryStore {
   private async performClose(): Promise<void> {
     this.disableRuntimeTimers();
     if (this.journalRetryTimer !== undefined) clearTimeout(this.journalRetryTimer);
-    this.indexQueue?.stopAccepting();
-    this.captureQueue?.stopAccepting();
     let primary: unknown;
     try {
       const drained = await waitForDrain(
-        this.flush(),
+        this.drainAcceptedWork(),
         this.backgroundDrainTimeoutMs,
       );
       if (!drained) {
         this.shutdownTimedOut = true;
+        this.indexQueue?.stopAccepting();
+        this.captureQueue?.stopAccepting();
         this.shutdownDiscarded += this.indexQueue?.discardQueued() ?? 0;
         this.shutdownDiscarded += this.captureQueue?.discardQueued() ?? 0;
+        const timeoutReason = new Error("memory mutation drain deadline exceeded");
+        for (const mutation of this.admittedMutations) mutation.controller.abort(timeoutReason);
         this.activeIndexController?.abort(new Error("memory background drain deadline exceeded"));
         this.activeCaptureController?.abort(new Error("memory background drain deadline exceeded"));
         this.safeWarn(
-          `memory background drain exceeded ${this.backgroundDrainTimeoutMs}ms; pending semantic/curation work was abandoned while durable source remains.`,
+          `memory mutation/background drain exceeded ${this.backgroundDrainTimeoutMs}ms; pending work was abandoned before further canonical mutation while durable source remains.`,
         );
       }
     } catch (error) {
       primary = error;
     } finally {
       const cleanupErrors: unknown[] = [];
+      this.indexQueue?.stopAccepting();
+      this.captureQueue?.stopAccepting();
       this.publishRuntimeSnapshot("closed");
       this.runtimeSnapshotEnabled = false;
       this.disableRuntimeTimers();
@@ -568,6 +607,14 @@ export class BujoMemoryStore implements MemoryStore {
         throw withCleanupErrors(primary, cleanupErrors, "memory-bujo close failed");
       }
     }
+  }
+
+  /** Drain admitted direct mutators before freezing their downstream queues. */
+  private async drainAcceptedWork(): Promise<void> {
+    await Promise.all([...this.admittedMutations].map(async (mutation) => await mutation.settled));
+    this.indexQueue?.stopAccepting();
+    this.captureQueue?.stopAccepting();
+    await this.flush();
   }
 
   private initializeJournalIndexing(): void {
@@ -724,16 +771,10 @@ export class BujoMemoryStore implements MemoryStore {
   }
 
   private initializeJournalRecoveryCursor(): void {
-    const dailyDir = join(this.root, "daily");
-    try {
-      this.journalRecoveryFiles = readdirSync(dailyDir).filter((file) => file.endsWith(".md")).sort();
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        this.journalRecoveryFiles = [];
-        return;
-      }
-      throw error;
-    }
+    this.journalRecoveryFiles = listCanonicalFileNames(this.root, "daily", {
+      allowMissing: true,
+      include: (file) => file.endsWith(".md"),
+    });
     if (this.journalRecoveryFiles.length === 0) return;
     this.journalRecoveryPromise = new Promise<void>((resolve) => { this.resolveJournalRecovery = resolve; });
     setImmediate(() => this.scanNextJournalFile());
@@ -753,8 +794,9 @@ export class BujoMemoryStore implements MemoryStore {
       return;
     }
     try {
-      const dailyDir = join(this.root, "daily");
-      const parsed = parseDailyFile(readFileSync(join(dailyDir, file), "utf8"));
+      const snapshot = readCanonicalFileSnapshot(this.root, `daily/${file}`);
+      if (snapshot === undefined) throw new Error(`memory-bujo: canonical daily file "${file}" disappeared.`);
+      const parsed = parseDailyFile(snapshot.content);
       for (const line of parsed.lines) {
         const bullet = line.bullet;
         if (bullet === undefined) continue;
@@ -816,6 +858,37 @@ export class BujoMemoryStore implements MemoryStore {
     return this.lastKnownMissingVectors;
   }
 
+  /**
+   * Admit one direct async mutation synchronously, then expose a store-owned
+   * abort signal to every await boundary before canonical commit. close() takes
+   * a stable snapshot after setting `closing`, so no admitted mutation can be
+   * missed by the drain barrier.
+   */
+  private async runAdmittedMutation<T>(
+    operation: string,
+    run: (abortSignal: AbortSignal) => Promise<T>,
+    callerSignal?: AbortSignal,
+  ): Promise<T> {
+    this.assertWritable(operation);
+    const controller = new AbortController();
+    const abortSignal = callerSignal === undefined
+      ? controller.signal
+      : AbortSignal.any([controller.signal, callerSignal]);
+    let markSettled!: () => void;
+    const admitted: AdmittedMutation = {
+      controller,
+      settled: new Promise<void>((resolve) => { markSettled = resolve; }),
+    };
+    this.admittedMutations.add(admitted);
+    try {
+      abortSignal.throwIfAborted();
+      return await run(abortSignal);
+    } finally {
+      this.admittedMutations.delete(admitted);
+      markSettled();
+    }
+  }
+
   private assertWritable(operation: string): void {
     if (this.readOnly) throw new Error(`memory-bujo: read-only store rejects ${operation}.`);
     this.assertOpen(operation);
@@ -866,7 +939,11 @@ function withCleanupErrors(primary: unknown, cleanup: readonly unknown[], messag
   return new AggregateError(primary === undefined ? cleanup : [primary, ...cleanup], message);
 }
 
-async function serializeJournalWrite<T>(root: string, write: () => T | Promise<T>): Promise<T> {
+async function serializeJournalWrite<T>(
+  root: string,
+  abortSignal: AbortSignal,
+  write: () => T | Promise<T>,
+): Promise<T> {
   const prior = JOURNAL_WRITE_CHAINS.get(root) ?? Promise.resolve();
   let release!: () => void;
   const mine = new Promise<void>((resolve) => { release = resolve; });
@@ -874,6 +951,7 @@ async function serializeJournalWrite<T>(root: string, write: () => T | Promise<T
   JOURNAL_WRITE_CHAINS.set(root, tail);
   await prior;
   try {
+    abortSignal.throwIfAborted();
     return await write();
   } finally {
     release();
@@ -881,14 +959,21 @@ async function serializeJournalWrite<T>(root: string, write: () => T | Promise<T
   }
 }
 
-async function withJournalWriteLockRetry<T>(root: string, timeoutMs: number, write: () => T): Promise<T> {
+async function withJournalWriteLockRetry<T>(
+  root: string,
+  timeoutMs: number,
+  abortSignal: AbortSignal,
+  write: () => T,
+): Promise<T> {
   const deadline = Date.now() + Math.max(0, timeoutMs);
   for (;;) {
+    abortSignal.throwIfAborted();
     try {
       return withJournalWriteLock(root, write);
     } catch (error) {
       if (!/journal write lock is held/iu.test(reasonOf(error)) || Date.now() >= deadline) throw error;
       await new Promise<void>((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
+      abortSignal.throwIfAborted();
     }
   }
 }

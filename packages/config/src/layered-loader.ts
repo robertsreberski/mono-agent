@@ -36,8 +36,8 @@ export async function loadMonoAgentConfigWithSources(
   const jsonLayer = input.jsonPath === undefined
     ? {}
     : (await readMonoAgentConfigJson(input.jsonPath)).json;
-  validateJsonMemoryBlocks(jsonLayer);
   const layeredEnv = layerJsonOntoEnv(jsonLayer, input.env);
+  validateJsonMemoryBlocks(jsonLayer, layeredEnv);
   try {
     return loadMonoAgentConfig({ env: layeredEnv, cwd: input.cwd });
   } catch (error) {
@@ -94,10 +94,28 @@ function remapJsonMemoryTierError(
   return new MonoAgentConfigError("invalid_json", message, { path, reason: message });
 }
 
-function validateJsonMemoryBlocks(json: MonoAgentConfigJson): void {
+function validateJsonMemoryBlocks(
+  json: MonoAgentConfigJson,
+  layeredEnv: Record<string, string | undefined>,
+): void {
+  // Strict BuJo tier blocks do not belong to external memory backends. Resolve
+  // backend precedence first (env already won in layeredEnv), then ignore stale
+  // local blocks exactly as the runtime and published schema do. Unknown
+  // backends are left to loadMonoAgentConfig so the authoritative invalid_env
+  // diagnostic is not masked by a lower-precedence JSON detail.
+  const effectiveBackend = layeredEnv.MONO_AGENT_MEMORY_BACKEND?.trim() || "bujo";
+  if (effectiveBackend !== "bujo") return;
   if (json.memory?.embeddings !== undefined && Object.keys(json.memory.embeddings).length === 0) {
     const path = "memory.embeddings";
     const message = `${path} must contain at least one setting; provider, model, and dim default after the block is activated.`;
+    throw new MonoAgentConfigError("invalid_json", message, { path, reason: message });
+  }
+  if (json.memory?.llm !== undefined && Object.keys(json.memory.llm).length === 0) {
+    const path = "memory.llm";
+    const mode = layeredEnv.MONO_AGENT_MEMORY_MODE?.trim() || "lite";
+    const message = mode === "bujo"
+      ? `${path} must contain a model for memory.mode "bujo".`
+      : `memory.mode "${mode}" cannot configure ${path}.`;
     throw new MonoAgentConfigError("invalid_json", message, { path, reason: message });
   }
 }

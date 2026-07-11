@@ -8,6 +8,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   renameSync,
   unlinkSync,
@@ -183,6 +184,71 @@ export function readCanonicalFileSnapshot(
   }
 }
 
+/**
+ * List regular, single-link files from one canonical directory.
+ *
+ * Directory enumeration itself cannot be performed through an fd with Node's
+ * synchronous API, so the directory identity is pinned with a no-follow fd
+ * before and after `readdirSync`, and every selected child must be a regular,
+ * single-link file at enumeration time. Callers read a selected name through
+ * `readCanonicalFileSnapshot`, which re-validates the complete chain and child
+ * identity. A name observed through a transient replacement can therefore
+ * never make that later snapshot read outside the configured root.
+ */
+export function listCanonicalFileNames(
+  root: string,
+  relativeDirectory: string,
+  options: {
+    readonly allowMissing?: boolean;
+    readonly include?: (name: string) => boolean;
+  } = {},
+): string[] {
+  assertCanonicalRelativePath(relativeDirectory);
+  const canonicalRoot = canonicalMemoryRootPath(root, false);
+  const directoryPath = join(canonicalRoot, ...relativeDirectory.split("/"));
+  assertInside(canonicalRoot, directoryPath);
+
+  let before: Stats;
+  try {
+    before = lstatSync(directoryPath);
+  } catch (error) {
+    if (options.allowMissing === true && isMissing(error)) return [];
+    throw error;
+  }
+  assertSafeDirectory(before, relativeDirectory);
+
+  const fd = openSync(directoryPath, constants.O_RDONLY | directoryFlag() | noFollowFlag());
+  let names: string[];
+  try {
+    const opened = fstatSync(fd);
+    assertSafeDirectory(opened, relativeDirectory);
+    assertSameNode(before, opened, relativeDirectory);
+    assertPathMatchesDirectoryFd(directoryPath, opened, relativeDirectory);
+    names = readdirSync(directoryPath, { encoding: "utf8" }).sort();
+    assertPathMatchesDirectoryFd(directoryPath, opened, relativeDirectory);
+  } finally {
+    closeSync(fd);
+  }
+
+  const selected: string[] = [];
+  for (const name of names) {
+    if (options.include !== undefined && !options.include(name)) continue;
+    // `readdir` returns one basename, but keep this validation explicit so a
+    // future caller cannot turn directory enumeration into path traversal.
+    if (name.length === 0 || name === "." || name === ".." || basename(name) !== name) {
+      throw new Error(`memory-bujo: unsafe canonical directory entry "${name}".`);
+    }
+    const relativePath = `${relativeDirectory}/${name}`;
+    assertCanonicalRelativePath(relativePath);
+    assertSafeRegularFile(lstatSync(join(directoryPath, name)), relativePath);
+    selected.push(name);
+  }
+
+  // Detect a directory replacement that happened while entries were inspected.
+  assertPathMatchesDirectoryIdentity(directoryPath, before, relativeDirectory);
+  return selected;
+}
+
 /** Append through a no-follow descriptor after validating the complete directory chain. */
 export function appendCanonicalFile(
   root: string,
@@ -334,9 +400,27 @@ function assertPathMatchesFd(path: string, opened: Stats, label: string): void {
   assertSameNode(current, opened, label);
 }
 
+function assertPathMatchesDirectoryFd(path: string, opened: Stats, label: string): void {
+  const current = lstatSync(path);
+  assertSafeDirectory(current, label);
+  assertSameNode(current, opened, label);
+}
+
+function assertPathMatchesDirectoryIdentity(path: string, expected: Stats, label: string): void {
+  const current = lstatSync(path);
+  assertSafeDirectory(current, label);
+  assertSameNode(current, expected, label);
+}
+
 function assertSafeRegularFile(stat: Stats, label: string): void {
   if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
     throw new Error(`memory-bujo: canonical file "${label}" must be regular, single-link, and not a symlink.`);
+  }
+}
+
+function assertSafeDirectory(stat: Stats, label: string): void {
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error(`memory-bujo: canonical directory "${label}" must be a real directory and not a symlink.`);
   }
 }
 
@@ -395,6 +479,10 @@ function fsyncDirectory(path: string): void {
 
 function noFollowFlag(): number {
   return constants.O_NOFOLLOW ?? 0;
+}
+
+function directoryFlag(): number {
+  return constants.O_DIRECTORY ?? 0;
 }
 
 function optionalLstat(path: string): Stats | undefined {

@@ -523,37 +523,40 @@ describe("agent host composition helpers", () => {
       artifactDir,
     });
     const memory = await createConfiguredMemory(config, { memoryRuntime: memoryRuntime.runtime });
+    try {
+      const responder = await createConfiguredAgentResponder({
+        config,
+        runtime: channel.runtime,
+        ...(memory === undefined ? {} : { memory }),
+      });
 
-    const responder = await createConfiguredAgentResponder({
-      config,
-      runtime: channel.runtime,
-      ...(memory === undefined ? {} : { memory }),
-    });
+      const response = await responder.respond({
+        conversationId: "channel-a",
+        text: "Remember that memory capture must use its own runtime.",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => {} });
 
-    const response = await responder.respond({
-      conversationId: "channel-a",
-      text: "Remember that memory capture must use its own runtime.",
-      abortSignal: new AbortController().signal,
-    }, { append: async () => {} });
+      expect(response.text).toBe("Harness answer");
+      for (let i = 0; i < 20 && memoryRuntime.calls.length < 1; i += 1) {
+        await delay(5);
+      }
 
-    expect(response.text).toBe("Harness answer");
-    for (let i = 0; i < 20 && memoryRuntime.calls.length < 1; i += 1) {
-      await delay(5);
-    }
+      // The channel runtime served the channel turn only — the memory model never
+      // leaked onto it.
+      expect(channel.calls.every((call) => call.options.model.provider !== "openai-codex")).toBe(true);
 
-    // The channel runtime served the channel turn only — the memory model never
-    // leaked onto it.
-    expect(channel.calls.every((call) => call.options.model.provider !== "openai-codex")).toBe(true);
-
-    // The memory LLM ran on its own runtime, with the configured memory model and
-    // the locked-down per-call shape.
-    expect(memoryRuntime.calls).toHaveLength(1);
-    for (const call of memoryRuntime.calls) {
-      expect(call.options.model).toMatchObject({ sdk: "pi", provider: "openai-codex", model: "gpt-5.5" });
-      expect(call.options.allowedTools).toEqual([]);
-      expect(call.options.disallowedTools).toEqual([]);
-      expect(call.options.mcpServers).toEqual({});
-      expect(call.options.maxTurns).toBe(1);
+      // The memory LLM ran on its own runtime, with the configured memory model and
+      // the locked-down per-call shape.
+      expect(memoryRuntime.calls).toHaveLength(1);
+      for (const call of memoryRuntime.calls) {
+        expect(call.options.model).toMatchObject({ sdk: "pi", provider: "openai-codex", model: "gpt-5.5" });
+        expect(call.options.allowedTools).toEqual([]);
+        expect(call.options.disallowedTools).toEqual([]);
+        expect(call.options.mcpServers).toEqual({});
+        expect(call.options.maxTurns).toBe(1);
+      }
+    } finally {
+      await (memory as unknown as { close(): Promise<void> }).close();
     }
   });
 
@@ -795,12 +798,16 @@ describe("agent host composition helpers", () => {
       },
     } as MonoAgentConfig);
 
-    // First load drives an embedding request that fails and trips the breaker.
-    await expect(memory!.load("conv")).rejects.toThrow();
-    expect(requests).toBe(1);
-    // Second load fast-fails on the OPEN breaker without hitting the server again.
-    await expect(memory!.load("conv")).rejects.toThrow();
-    expect(requests).toBe(1);
+    try {
+      // First load drives an embedding request that fails and trips the breaker.
+      await expect(memory!.load("conv")).rejects.toThrow();
+      expect(requests).toBe(1);
+      // Second load fast-fails on the OPEN breaker without hitting the server again.
+      await expect(memory!.load("conv")).rejects.toThrow();
+      expect(requests).toBe(1);
+    } finally {
+      await (memory as unknown as { close(): Promise<void> }).close();
+    }
   });
 
   it("lets host runtimeOptions override config runtime flags", async () => {

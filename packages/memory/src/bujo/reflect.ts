@@ -17,6 +17,7 @@ export interface ReflectDeps {
   readonly halfLifeDays?: number;
   readonly floor?: number;
   readonly maxInsights?: number;
+  readonly abortSignal?: AbortSignal;
 }
 
 export interface ReflectResult {
@@ -26,12 +27,14 @@ export interface ReflectResult {
 }
 
 export async function reflect(deps: ReflectDeps): Promise<ReflectResult> {
+  deps.abortSignal?.throwIfAborted();
   const now = deps.now();
   const { decayed } = deps.db.applyDecay(now, {
     ...(deps.halfLifeDays !== undefined && { halfLifeDays: deps.halfLifeDays }),
     ...(deps.floor !== undefined && { floor: deps.floor }),
   });
   const insights = await synthesizeInsights(deps, now);
+  deps.abortSignal?.throwIfAborted();
   const due = deps.db.dueItems(now).length;
   return { decayed, insights, due };
 }
@@ -75,20 +78,29 @@ export async function synthesizeInsights(deps: ReflectDeps, now: Date): Promise<
 
   let raw: string;
   try {
-    raw = await deps.llm.complete(prompt, { label: "reflect" });
+    raw = await deps.llm.complete(prompt, {
+      label: "reflect",
+      ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
+    });
   } catch (cause) {
+    deps.abortSignal?.throwIfAborted();
     throw new MemoryModelError("llm", "insights", cause);
   }
+  deps.abortSignal?.throwIfAborted();
 
   const parsed = parseJsonLoose<InsightCandidate[]>(raw);
   if (!Array.isArray(parsed)) return 0;
 
   const candidateIds = new Set(candidates.map((m) => m.id));
   const maxInsights = deps.maxInsights ?? 3;
-  let created = 0;
+  const planned: Array<{
+    readonly bullet: Bullet;
+    readonly record: MemoryRecord;
+    readonly sourceIds: readonly string[];
+  }> = [];
 
   for (const item of parsed) {
-    if (created >= maxInsights) break;
+    if (planned.length >= maxInsights) break;
     if (typeof item !== "object" || item === null) continue;
     const text = typeof item.text === "string" ? item.text.trim() : "";
     if (text.length === 0) continue;
@@ -105,21 +117,28 @@ export async function synthesizeInsights(deps: ReflectDeps, now: Date): Promise<
       refs: [],
     };
 
-    appendBullet(deps.root, bullet, now);
-    await deps.db.upsert(insightRecordFor(bullet, deps.root, now));
-
-    // Add "supports" edges from this insight to each referenced source that is in our candidate set.
     const sourceIds = Array.isArray(item.sourceIds) ? item.sourceIds : [];
-    for (const sourceId of sourceIds) {
-      if (typeof sourceId === "string" && candidateIds.has(sourceId)) {
-        deps.db.addEdge(id, sourceId, "supports");
-      }
-    }
-
-    created += 1;
+    planned.push({
+      bullet,
+      record: insightRecordFor(bullet, deps.root, now),
+      sourceIds: sourceIds.filter((sourceId): sourceId is string => (
+        typeof sourceId === "string" && candidateIds.has(sourceId)
+      )),
+    });
   }
 
-  return created;
+  // Embedding work is the final await and happens before canonical mutation.
+  // close() may therefore abort a stalled provider without allowing a late
+  // Markdown write after the DB/lease has been released.
+  const vectors = await deps.db.prepareUpsertVectors(planned.map((item) => item.record));
+  deps.abortSignal?.throwIfAborted();
+  for (const [index, item] of planned.entries()) {
+    appendBullet(deps.root, item.bullet, now);
+    deps.db.commitPreparedUpserts([item.record], [vectors[index]]);
+    for (const sourceId of item.sourceIds) deps.db.addEdge(item.bullet.id, sourceId, "supports");
+  }
+
+  return planned.length;
 }
 
 function buildInsightPrompt(memories: readonly MemoryRecord[], maxInsights: number): string {

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -633,6 +633,183 @@ describe("BujoMemoryStore async capture queue", () => {
     expect(order.some((t) => t.includes("DRAINME"))).toBe(true);
   });
 
+  it("bounds close around a direct capture and prevents its ignored-abort reply from mutating later", async () => {
+    const root = tmpRoot();
+    let entered = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const llm: LlmComplete = {
+      id: "direct-capture-close-race",
+      complete: async () => {
+        entered = true;
+        await gate; // deliberately ignore abortSignal
+        return JSON.stringify({
+          memories: [{ type: "note", text: "Late direct capture must not persist.", salience: 0.8, isInsight: false }],
+          entities: [],
+          relations: [],
+        });
+      },
+    };
+    const store = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm,
+      backgroundDrainTimeoutMs: 20,
+    });
+
+    const capturing = store.capture("direct", "Remember this only if capture finishes before shutdown.");
+    await waitUntil(() => entered);
+    await store.close();
+    expect(existsSync(join(root, "daily"))).toBe(false);
+
+    const rejected = expect(capturing).rejects.toThrow(/mutation drain deadline/iu);
+    release();
+    await rejected;
+    expect(existsSync(join(root, "daily"))).toBe(false);
+  });
+
+  it("bounds close around reflection and blocks a late insight before canonical mutation", async () => {
+    const root = tmpRoot();
+    const now = new Date("2026-06-15T12:00:00.000Z");
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
+    for (const [index, text] of ["Morning focus", "Calendar blocks", "No meetings before noon"].entries()) {
+      const id = `RACE-${index}`;
+      const bullet = journalBullet(id, text, now);
+      appendBullet(root, bullet, now);
+      await db.upsert({
+        id,
+        type: "note",
+        status: "open",
+        text,
+        salience: 0.8 - index * 0.05,
+        isInsight: false,
+        createdAt: now.toISOString(),
+        accessCount: 0,
+        tags: [],
+        source: { file: relative(root, dailyFilePath(root, now)) },
+      });
+    }
+    db.close();
+    const source = dailyFilePath(root, now);
+    const sourceBefore = readFileSync(source, "utf8");
+    let entered = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const llm: LlmComplete = {
+      id: "reflect-close-race",
+      complete: async () => {
+        entered = true;
+        await gate; // deliberately ignore abortSignal
+        return JSON.stringify([{ text: "Late reflection must not persist.", sourceIds: ["RACE-0"] }]);
+      },
+    };
+    const store = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm,
+      clock: () => now,
+      backgroundDrainTimeoutMs: 20,
+    });
+
+    const reflecting = store.reflect();
+    await waitUntil(() => entered);
+    await store.close();
+    // The writer lease is released even though the abort-ignoring provider is still pending.
+    await createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: fakeLlm([]),
+      clock: () => now,
+    }).close();
+
+    const rejected = expect(reflecting).rejects.toThrow(/mutation drain deadline/iu);
+    release();
+    await rejected;
+    expect(readFileSync(source, "utf8")).toBe(sourceBefore);
+    expect(existsSync(join(root, "future-log.md"))).toBe(false);
+    expect(existsSync(join(root, "index.md"))).toBe(false);
+  });
+
+  it("bounds close around migration and blocks a late decision before source rewrite", async () => {
+    const root = tmpRoot();
+    const now = new Date("2026-06-15T12:00:00.000Z");
+    const createdAt = new Date(now.getTime() - 60 * 86_400_000);
+    const source = dailyFilePath(root, createdAt);
+    const bullet = { ...journalBullet("MIGRATE-RACE", "Old migration candidate.", createdAt), salience: 0.2 };
+    appendBullet(root, bullet, createdAt);
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
+    await db.upsert({
+      id: bullet.id,
+      type: bullet.type,
+      status: bullet.status,
+      text: bullet.text,
+      salience: bullet.salience,
+      isInsight: bullet.isInsight,
+      createdAt: bullet.createdAt,
+      accessCount: 0,
+      tags: [],
+      source: { file: relative(root, source) },
+    });
+    db.close();
+    const sourceBefore = readFileSync(source, "utf8");
+    let entered = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const llm: LlmComplete = {
+      id: "migrate-close-race",
+      complete: async () => {
+        entered = true;
+        await gate; // deliberately ignore abortSignal
+        return JSON.stringify({ action: "forget" });
+      },
+    };
+    const store = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm,
+      clock: () => now,
+      backgroundDrainTimeoutMs: 20,
+    });
+
+    const migrating = store.migrate();
+    await waitUntil(() => entered);
+    await store.close();
+    const rejected = expect(migrating).rejects.toThrow(/mutation drain deadline/iu);
+    release();
+    await rejected;
+    expect(readFileSync(source, "utf8")).toBe(sourceBefore);
+    expect(existsSync(join(root, "monthly"))).toBe(false);
+    expect(existsSync(join(root, "future-log.md"))).toBe(false);
+  });
+
+  it("drains an admitted Journal host-summary write before freezing its semantic queue", async () => {
+    const root = tmpRoot();
+    const store = createBujoMemoryStore({ root, tier: "journal", embeddings: fakeEmbeddings(64), dim: 64 });
+    const lockPath = join(root, ".journal-write.lock");
+    writeFileSync(lockPath, `${JSON.stringify({ pid: process.pid, token: "direct-close-race" })}\n`, { mode: 0o600 });
+
+    const writing = store.appendHostSummary("accepted", "An admitted Journal write survives graceful close.");
+    const closing = store.close();
+    let closeSettled = false;
+    void closing.then(() => { closeSettled = true; });
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+    expect(closeSettled).toBe(false);
+
+    unlinkSync(lockPath);
+    const [write] = await Promise.all([writing, closing.then(() => undefined)]);
+    expect(write.bytesWritten).toBeGreaterThan(0);
+    expect(readFileSync(write.source, "utf8")).toContain("admitted Journal write");
+    expect(store.queueSnapshot().index).toMatchObject({ accepting: false, remainingBacklog: 0 });
+  });
+
   it("rejects reads, writes, queue admission, capture, and maintenance after close without changing source", async () => {
     const root = tmpRoot();
     const store = createBujoMemoryStore({
@@ -729,6 +906,28 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
     expect(() => createBujoMemoryStore({ root: linkedRoot })).toThrow(/memory root.*symlink/iu);
     expect(existsSync(join(outside, ".index"))).toBe(false);
     expect(existsSync(join(outside, "memory.db"))).toBe(false);
+  });
+
+  it("never indexes or recalls Journal content through a symlinked daily directory", async () => {
+    const root = tmpRoot();
+    const outsideRoot = tmpRoot();
+    const outsideDay = new Date("2026-01-03T09:00:00.000Z");
+    appendBullet(outsideRoot, journalBullet("outside", "Outside recovery sentinel must stay private.", outsideDay), outsideDay);
+    symlinkSync(join(outsideRoot, "daily"), join(root, "daily"), "dir");
+
+    expect(() => createBujoMemoryStore({
+      root,
+      tier: "journal",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+    })).toThrow(/canonical directory.*daily.*symlink|daily.*real directory/iu);
+
+    unlinkSync(join(root, "daily"));
+    mkdirSync(join(root, "daily"));
+    const clean = createBujoMemoryStore({ root, tier: "journal", embeddings: fakeEmbeddings(64), dim: 64 });
+    await clean.flush();
+    expect(await clean.recall("Outside recovery sentinel", { topK: 10, trackAccess: false })).toEqual([]);
+    await clean.close();
   });
 
   it("rejects SQLite sidecar symlinks and read-only dbPath escapes", () => {

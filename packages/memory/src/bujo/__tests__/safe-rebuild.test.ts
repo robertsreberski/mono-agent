@@ -345,6 +345,46 @@ describe("safe memory index rebuild", () => {
     expect(await resolveActiveMemoryDbPath(root)).toBe(before);
   });
 
+  it.each(["embedding_model", "dim"] as const)(
+    "rejects a rebuilt candidate whose vector-linked %s identity was nulled after close",
+    async (column) => {
+      const root = tempRoot();
+      writeDaily(root, [bullet("M1", "Candidate vector identity must be complete.")]);
+
+      await expect(safeRebuildMemoryIndex({
+        root,
+        tier: "journal",
+        embeddings: embeddings("test:identity-null", 8),
+        dim: 8,
+        hooks: {
+          afterCandidateClosed: () => {
+            const generations = join(realpathSync(root), ".index", "generations");
+            const candidate = join(generations, readdirSync(generations)[0] ?? "missing", "memory.db");
+            nullVectorIdentity(candidate, column);
+          },
+        },
+      })).rejects.toThrow(/vector rows.*incomplete.*identity|model\/dimension identity/iu);
+
+      expect(readManagedIndexManifest(root)).toBeUndefined();
+    },
+  );
+
+  it("refuses rollback to a retained generation with NULL vector identity", async () => {
+    const root = tempRoot();
+    const provider = embeddings("test:rollback-identity", 8);
+    writeDaily(root, [bullet("M1", "Rollback vector identity must stay complete.")]);
+    const first = await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 8 });
+    const second = await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 8 });
+    expect(second.rollback).toBe(first.active);
+    const activeBefore = resolveActiveMemoryDbPath(root);
+    nullVectorIdentity(second.rollback!, "both");
+
+    await expect(rollbackMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 8 }))
+      .rejects.toThrow(/vector rows.*incomplete.*identity|model\/dimension identity/iu);
+
+    expect(resolveActiveMemoryDbPath(root)).toBe(activeBefore);
+  });
+
   it("refuses a stale rollback after canonical source changes", async () => {
     const root = tempRoot();
     await seedLegacy(root, note("OLD", "Old retained generation."));
@@ -582,7 +622,7 @@ describe("safe memory index rebuild", () => {
       tier: "journal",
       embeddings: embeddings("test:init", 8),
       dim: 8,
-    })).toThrow(/ENOTDIR|not a directory/iu);
+    })).toThrow(/ENOTDIR|not a directory|must be a real directory/iu);
     rmSync(join(initRoot, "daily"));
     await createBujoMemoryStore({ root: initRoot, tier: "lite" }).close();
 
@@ -928,6 +968,17 @@ function embeddings(id: string, dim: number): EmbeddingProvider {
     id,
     embed: async (texts) => texts.map((text) => deterministicVector(text, dim)),
   };
+}
+
+function nullVectorIdentity(path: string, column: "embedding_model" | "dim" | "both"): void {
+  const raw = new BetterSqlite3(path);
+  try {
+    const assignment = column === "both" ? "embedding_model = NULL, dim = NULL" : `${column} = NULL`;
+    raw.exec(`UPDATE memories SET ${assignment}`);
+    raw.pragma("wal_checkpoint(TRUNCATE)");
+  } finally {
+    raw.close();
+  }
 }
 
 function deterministicVector(text: string, dim: number): number[] {

@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendCanonicalFile,
   assertCanonicalRelativePath,
+  listCanonicalFileNames,
   readCanonicalFileSnapshot,
   writeCanonicalFileAtomic,
 } from "../path-safety.js";
@@ -52,6 +53,28 @@ describe("canonical memory path safety", () => {
 
     expect(() => appendCanonicalFile(root, "daily/2026-07-11.md", "private\n")).toThrow(/directory.*symlink/iu);
     expect(existsSync(join(outside, "2026-07-11.md"))).toBe(false);
+  });
+
+  it("lists only canonical regular single-link files and rejects directory/file indirection", () => {
+    const root = tempRoot();
+    const outside = tempRoot("bujo-path-outside-");
+    mkdirSync(join(root, "daily"));
+    const secret = join(outside, "2026-07-11.md");
+    writeFileSync(secret, "outside\n", "utf8");
+    symlinkSync(secret, join(root, "daily/2026-07-11.md"));
+
+    expect(() => listCanonicalFileNames(root, "daily", { include: (name) => name.endsWith(".md") }))
+      .toThrow(/symlink|regular/iu);
+
+    renameSync(join(root, "daily"), join(root, "linked-daily"));
+    symlinkSync(outside, join(root, "daily"), "dir");
+    expect(() => listCanonicalFileNames(root, "daily")).toThrow(/directory.*symlink/iu);
+    expect(() => listCanonicalFileNames(root, "../outside")).toThrow(/unsafe canonical relative path/iu);
+
+    const hardLinkRoot = tempRoot();
+    mkdirSync(join(hardLinkRoot, "daily"));
+    linkSync(secret, join(hardLinkRoot, "daily/2026-07-12.md"));
+    expect(() => listCanonicalFileNames(hardLinkRoot, "daily")).toThrow(/single-link/iu);
   });
 
   it("rejects symlink and hard-link file targets without changing their referents", () => {

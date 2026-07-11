@@ -772,9 +772,15 @@ function validateDb(db: MemoryDb, descriptor: ManagedGeneration): void {
   }
   const expectedDimension = descriptor.dimension ?? DEFAULT_VEC_DIM;
   if (db.vectorDimension() !== expectedDimension) throw new Error("memory-rebuild: actual vector DDL dimension does not match metadata.");
-  const models = db.validationSnapshot().embeddingModels;
-  if (descriptor.embeddingModel === undefined ? models.length !== 0 : models.some((model) => model !== descriptor.embeddingModel)) {
-    throw new Error("memory-rebuild: embedding model identity validation failed.");
+  const state = db.validationSnapshot();
+  if (state.vectorIdentityMissing !== 0) {
+    throw new Error("memory-rebuild: vector rows have incomplete embedding model/dimension identity.");
+  }
+  if (descriptor.embeddingModel === undefined
+    ? state.embeddingModels.length !== 0 || state.embeddingDimensions.length !== 0
+    : state.embeddingModels.some((model) => model !== descriptor.embeddingModel)
+      || state.embeddingDimensions.some((dimension) => dimension !== descriptor.dimension)) {
+    throw new Error("memory-rebuild: embedding model/dimension identity validation failed.");
   }
 }
 

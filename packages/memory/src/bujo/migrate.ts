@@ -42,6 +42,7 @@ Decide what to do with it. Return ONLY a JSON object (no prose, no code fences):
 
 /** Monthly BuJo migration ritual: review aging open memories and apply LLM decisions. */
 export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
+  deps.abortSignal?.throwIfAborted();
   const now = deps.now();
   // Re-run safety: every action moves the item out of agingOpen's pool (promote raises salience above
   // the threshold; reschedule/forget change status away from 'open'), so a repeated run won't re-process it.
@@ -59,12 +60,17 @@ export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
       const prompt = buildMigratePrompt(item.id, item.text);
       let raw: string;
       try {
-        raw = await deps.llm.complete(prompt, { label: "migrate" });
+        raw = await deps.llm.complete(prompt, {
+          label: "migrate",
+          ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
+        });
       } catch (cause) {
+        deps.abortSignal?.throwIfAborted();
         // A model outage fails every item, so tag it and let the catch below surface it rather than
         // swallowing it as a per-item skip (which would make a dead model look like an empty migration).
         throw new MemoryModelError("llm", "migrate", cause);
       }
+      deps.abortSignal?.throwIfAborted();
       const parsed = parseJsonLoose<LlmDecision>(raw);
 
       // Validate: must be a non-null object with a recognized action
@@ -82,10 +88,13 @@ export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
 
       if (action === "promote") {
         const newSalience = Math.min(1, item.salience + 0.3);
+        const updated = { ...item, salience: newSalience };
+        const vectors = await deps.db.prepareUpsertVectors([updated]);
+        deps.abortSignal?.throwIfAborted();
         if (sourceFile !== undefined) {
           rewriteBullet(deps.root, sourceFile, item.id, { salience: newSalience });
         }
-        await deps.db.upsert({ ...item, salience: newSalience });
+        deps.db.commitPreparedUpserts([updated], vectors);
         promoted += 1;
         decisions.push({ action, id: item.id, text: item.text });
       } else if (action === "reschedule") {
@@ -94,20 +103,26 @@ export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
           status: "scheduled",
           ...(dueAt !== undefined && { dueAt }),
         };
+        const updated = {
+          ...item,
+          status: "scheduled" as const,
+          ...(dueAt !== undefined && { dueAt }),
+        };
+        const vectors = await deps.db.prepareUpsertVectors([updated]);
+        deps.abortSignal?.throwIfAborted();
         if (sourceFile !== undefined) {
           rewriteBullet(deps.root, sourceFile, item.id, patch);
         }
-        await deps.db.upsert({
-          ...item,
-          status: "scheduled",
-          ...(dueAt !== undefined && { dueAt }),
-        });
+        deps.db.commitPreparedUpserts([updated], vectors);
         rescheduled += 1;
         decisions.push({ action, id: item.id, text: item.text });
       } else if (action === "cluster") {
         const slug = typeof parsed.collection === "string" ? parsed.collection.trim() : "";
         if (slug.length === 0) continue; // cluster without a collection slug is malformed — skip, don't mint a catch-all
-        await deps.db.upsert({ ...item, collection: slug });
+        const updated = { ...item, collection: slug };
+        const vectors = await deps.db.prepareUpsertVectors([updated]);
+        deps.abortSignal?.throwIfAborted();
+        deps.db.commitPreparedUpserts([updated], vectors);
         deps.db.upsertEntity({
           id: `collection:${slug}`,
           name: slug,
@@ -118,14 +133,18 @@ export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
         clustered += 1;
         decisions.push({ action, id: item.id, text: item.text });
       } else if (action === "forget") {
+        const updated = { ...item, status: "dropped" as const, validTo: now.toISOString() };
+        const vectors = await deps.db.prepareUpsertVectors([updated]);
+        deps.abortSignal?.throwIfAborted();
         if (sourceFile !== undefined) {
           rewriteBullet(deps.root, sourceFile, item.id, { status: "dropped" });
         }
-        await deps.db.upsert({ ...item, status: "dropped", validTo: now.toISOString() });
+        deps.db.commitPreparedUpserts([updated], vectors);
         forgotten += 1;
         decisions.push({ action, id: item.id, text: item.text });
       }
     } catch (err) {
+      deps.abortSignal?.throwIfAborted();
       // A model outage is systemic — surface it (the ritual scheduler logs it).
       if (err instanceof MemoryModelError) throw err;
       // Per-item isolation: a genuine per-item data error (e.g. a missing daily file) is skipped so
@@ -136,6 +155,7 @@ export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
 
   // Write monthly/<YYYY-MM>.md — append a dated section with all decisions
   if (decisions.length > 0) {
+    deps.abortSignal?.throwIfAborted();
     const yearMonth = now.toISOString().slice(0, 7); // "YYYY-MM"
     const dateStr = now.toISOString().slice(0, 10);
     const lines = [

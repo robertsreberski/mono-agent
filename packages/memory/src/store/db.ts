@@ -1241,6 +1241,7 @@ export class MemoryDb {
     readonly ftsMismatches: number;
     readonly vectors: number;
     readonly vectorOrphans: number;
+    readonly vectorIdentityMissing: number;
     readonly contentHashes: number;
     readonly contentHashOrphans: number;
     readonly entities: number;
@@ -1249,12 +1250,19 @@ export class MemoryDb {
     readonly associations: number;
     readonly associationOrphans: number;
     readonly embeddingModels: readonly string[];
+    readonly embeddingDimensions: readonly number[];
   } {
     const count = (sql: string): number => (this.db.prepare(sql).get() as { n: number }).n;
     const embeddingModels = (this.db.prepare(
-      `SELECT DISTINCT embedding_model AS model FROM memories
-       WHERE embedding_model IS NOT NULL ORDER BY embedding_model`,
+      `SELECT DISTINCT m.embedding_model AS model FROM memories m
+       JOIN memories_vec v ON v.rowid = m.seq
+       WHERE m.embedding_model IS NOT NULL ORDER BY m.embedding_model`,
     ).all() as Array<{ model: string }>).map((row) => row.model);
+    const embeddingDimensions = (this.db.prepare(
+      `SELECT DISTINCT m.dim AS dim FROM memories m
+       JOIN memories_vec v ON v.rowid = m.seq
+       WHERE m.dim IS NOT NULL ORDER BY m.dim`,
+    ).all() as Array<{ dim: number }>).map((row) => row.dim);
     return {
       memories: count(`SELECT COUNT(*) AS n FROM memories`),
       ftsRows: count(`SELECT COUNT(*) AS n FROM memories_fts`),
@@ -1267,6 +1275,10 @@ export class MemoryDb {
       ),
       vectors: count(`SELECT COUNT(*) AS n FROM memories_vec`),
       vectorOrphans: count(`SELECT COUNT(*) AS n FROM memories_vec v LEFT JOIN memories m ON m.seq = v.rowid WHERE m.id IS NULL`),
+      vectorIdentityMissing: count(
+        `SELECT COUNT(*) AS n FROM memories_vec v JOIN memories m ON m.seq = v.rowid
+         WHERE m.embedding_model IS NULL OR m.dim IS NULL`,
+      ),
       contentHashes: count(`SELECT COUNT(*) AS n FROM content_hashes`),
       contentHashOrphans: count(
         `SELECT COUNT(*) AS n FROM content_hashes h LEFT JOIN memories m ON m.id = h.memory_id WHERE m.id IS NULL`,
@@ -1285,6 +1297,7 @@ export class MemoryDb {
          WHERE m.id IS NULL OR e.id IS NULL`,
       ),
       embeddingModels,
+      embeddingDimensions,
     };
   }
 
