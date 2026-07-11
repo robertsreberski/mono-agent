@@ -25,6 +25,7 @@ import type { EmbeddingProvider } from "../search/index.js";
 import { normalizedContentHash } from "./daily.js";
 import { parseDailyFile } from "./grammar.js";
 import { readGraph } from "./graph.js";
+import { replayCaptureOutbox } from "./capture-outbox.js";
 import type { BujoTier, Bullet } from "./types.js";
 import {
   MANAGED_INDEX_SCHEMA_VERSION,
@@ -204,6 +205,7 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
     const manifestState = captureManagedManifestState(root);
     const priorManifest = readManagedIndexManifest(root);
     assertNoActiveSqliteWriter(resolveActiveMemoryDbPath(root));
+    replayCaptureOutbox(root);
     const snapshot = snapshotCanonicalSources(root, options.tier);
     const rollbackSnapshot = priorManifest === undefined || priorManifest.active.tier === options.tier
       ? snapshot

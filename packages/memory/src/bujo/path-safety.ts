@@ -13,7 +13,6 @@ import {
   renameSync,
   unlinkSync,
   writeFileSync,
-  writeSync,
   type Stats,
 } from "node:fs";
 import { basename, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
@@ -264,6 +263,7 @@ export function appendCanonicalFile(
     constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | noFollowFlag(),
     DEFAULT_FILE_MODE,
   );
+  const created = existing === undefined;
   try {
     const opened = fstatSync(fd);
     assertSafeRegularFile(opened, relativePath);
@@ -271,10 +271,14 @@ export function appendCanonicalFile(
     assertStableDirectories(location.directories);
     assertPathMatchesFd(location.path, opened, relativePath);
     const data = typeof content === "function" ? content(opened.size) : content;
-    if (data.length > 0) writeSync(fd, data, null, "utf8");
+    if (data.length > 0) writeFileSync(fd, data, "utf8");
+    fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
+  // The file fsync makes appended bytes durable; the directory fsync makes a
+  // newly-created canonical name durable before a later intent is completed.
+  if (created) fsyncDirectory(location.parent);
 }
 
 /**
@@ -328,6 +332,23 @@ export function writeCanonicalFileAtomic(
       try { unlinkSync(temp); } catch { /* best-effort temp cleanup */ }
     }
   }
+}
+
+/** Remove one identity-stable canonical file and durably publish the deletion. */
+export function removeCanonicalFile(
+  root: string,
+  relativePath: string,
+  expectedIdentity?: CanonicalFileIdentity,
+): void {
+  const location = canonicalLocation(root, relativePath, false, false);
+  const current = lstatSync(location.path);
+  assertSafeRegularFile(current, relativePath);
+  if (expectedIdentity !== undefined && !sameIdentity(current, expectedIdentity)) {
+    throw new Error(`memory-bujo: canonical file "${relativePath}" changed before removal.`);
+  }
+  assertStableDirectories(location.directories);
+  unlinkSync(location.path);
+  fsyncDirectory(location.parent);
 }
 
 function canonicalLocation(

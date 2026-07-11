@@ -29,6 +29,7 @@ import {
   serializeBullet,
 } from "../index.js";
 import { acquireMemoryWriterLease } from "../generations.js";
+import { writeCaptureIntent } from "../capture-outbox.js";
 
 const NOW = "2026-07-11T09:00:00.000Z";
 const roots: string[] = [];
@@ -107,6 +108,50 @@ describe("safe memory index rebuild", () => {
     try {
       expect(rebuilt.getEntity("person:morgan")).toEqual(liveEntity);
       expect(rebuilt.associationsForMemory("M1")).toEqual(liveAssociation);
+    } finally {
+      rebuilt.close();
+    }
+  });
+
+  it("replays an exact pending capture intent before taking the rebuild source snapshot", async () => {
+    const root = tempRoot();
+    const item = bullet("PENDING", "Morgan owns safe rebuild replay.");
+    writeDaily(root, [item]);
+    const record: MemoryRecord = {
+      ...note(item.id, item.text),
+      salience: item.salience,
+      source: { file: "daily/2026-07-11.md", line: 3 },
+    };
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: item.id,
+      after: { file: "daily/2026-07-11.md", bullet: item },
+      record,
+      threads: [],
+    }], {
+      entities: [{ id: "person:morgan", name: "Morgan", type: "person", createdAt: NOW }],
+      associations: [{
+        memoryId: item.id,
+        entityId: "person:morgan",
+        provenance: "capture",
+        createdAt: NOW,
+      }],
+    }, NOW);
+
+    const result = await safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: embeddings("test:pending-replay", 8),
+      dim: 8,
+    });
+    const rebuilt = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
+    try {
+      expect(rebuilt.get(item.id)?.text).toBe(item.text);
+      expect(rebuilt.associationsForMemory(item.id)).toEqual([
+        expect.objectContaining({ entityId: "person:morgan", provenance: "capture" }),
+      ]);
+      expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
     } finally {
       rebuilt.close();
     }

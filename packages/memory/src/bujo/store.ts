@@ -18,6 +18,7 @@ import { createIdFactory } from "./ids.js";
 import type { LlmComplete } from "./llm.js";
 import type { EmbeddingProvider } from "../search/index.js";
 import { captureTurn } from "./capture.js";
+import { replayCaptureOutbox } from "./capture-outbox.js";
 import { composeRecallBlock } from "./recall.js";
 import { reflect as reflectFn, type ReflectResult } from "./reflect.js";
 import { migrate as migrateFn, type MigrateResult } from "./migrate.js";
@@ -211,6 +212,7 @@ export class BujoMemoryStore implements MemoryStore {
         }
       }
       if (this._tier !== "lite") this.db.assertEmbeddingIdentity();
+      if (!this.readOnly) replayCaptureOutbox(this.root, opened);
       if (!this.readOnly && this._tier === "journal") this.initializeJournalIndexing();
       if (!this.readOnly && this._tier === "bujo") this.initializeCaptureQueue();
       if (!this.readOnly) this.initializeRuntimeSnapshot();

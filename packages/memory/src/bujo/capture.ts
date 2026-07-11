@@ -1,5 +1,12 @@
 import { extractCapturePlan } from "./capture-batch.js";
-import { appendGraphBatch } from "./graph.js";
+import {
+  replayCaptureIntent,
+  replayCaptureOutbox,
+  writeCaptureIntent,
+  type CaptureIntentAction,
+  type CaptureIntentHandle,
+} from "./capture-outbox.js";
+import type { GraphBatchInput } from "./graph.js";
 import { reconcileBatch, type ReconcileAction, type ReconcileDeps } from "./reconcile.js";
 
 export interface CaptureTurnResult {
@@ -20,21 +27,57 @@ export interface CaptureTurnResult {
  * Returns the action and graph-write counts.
  */
 export async function captureTurn(text: string, deps: ReconcileDeps): Promise<CaptureTurnResult> {
+  deps.abortSignal?.throwIfAborted();
+  // A graph/DB mirror fault can leave one committed intent while the process
+  // remains alive. Finish it before paying for or planning another turn so
+  // later updates cannot make the earlier exact outcome unreplayable.
+  replayCaptureOutbox(deps.root, deps.db);
   // One batched extraction call yields candidates + their precise entity ids;
   // one optional batched reconcile call classifies every near neighbour.
   const extraction = await extractCapturePlan(text, deps.llm, deps.abortSignal);
   deps.abortSignal?.throwIfAborted();
-  const actionSlots = await reconcileBatch(extraction.candidates, deps);
-  deps.abortSignal?.throwIfAborted();
-  const actions = actionSlots.filter((action): action is ReconcileAction => action !== undefined);
-
   const now = deps.now();
   const createdAt = now.toISOString();
+  let intentHandle: CaptureIntentHandle | undefined;
+  let preparedActions: readonly CaptureIntentAction[] = [];
+  await reconcileBatch(extraction.candidates, {
+    ...deps,
+    beforeBatchCommit: (prepared) => {
+      const graph = graphForPreparedActions(extraction, prepared, createdAt);
+      intentHandle = writeCaptureIntent(deps.root, prepared, graph, createdAt);
+      preparedActions = prepared;
+    },
+  });
+  deps.abortSignal?.throwIfAborted();
+  if (intentHandle === undefined) throw new Error("memory-capture: reconcile completed without a durable intent.");
+  const canonical = replayCaptureIntent(deps.root, intentHandle, deps.db);
+  const actions = preparedActions.map(reconcileActionForIntent);
 
+  return {
+    actions,
+    entities: canonical.entities.length,
+    relations: canonical.relations.length,
+    associations: canonical.associations.length,
+  };
+}
+
+function reconcileActionForIntent(action: CaptureIntentAction): ReconcileAction {
+  if (action.kind === "supersede") {
+    return { kind: "supersede", oldId: action.oldId, newId: action.newId };
+  }
+  return { kind: action.kind, id: action.id };
+}
+
+function graphForPreparedActions(
+  extraction: Awaited<ReturnType<typeof extractCapturePlan>>,
+  prepared: Parameters<NonNullable<ReconcileDeps["beforeBatchCommit"]>>[0],
+  createdAt: string,
+): GraphBatchInput {
+  const byIndex = new Map(prepared.map((action) => [action.candidateIndex, action]));
   const associations = extraction.candidates.flatMap((candidate, index) => {
-    const action = actionSlots[index];
+    const action = byIndex.get(index);
     if (action === undefined) return [];
-    const memoryId = memoryIdForAction(action);
+    const memoryId = action.kind === "supersede" ? action.newId : action.id;
     return (candidate.entityIds ?? []).map((entityId) => ({
       memoryId,
       entityId,
@@ -42,9 +85,7 @@ export async function captureTurn(text: string, deps: ReconcileDeps): Promise<Ca
       createdAt,
     }));
   });
-  // Canonical-first with one graph read + one append for the whole capture.
-  deps.abortSignal?.throwIfAborted();
-  const canonical = appendGraphBatch(deps.root, {
+  return {
     entities: extraction.entities.map((entity) => ({
       id: entity.id,
       name: entity.name,
@@ -53,49 +94,5 @@ export async function captureTurn(text: string, deps: ReconcileDeps): Promise<Ca
     })),
     relations: extraction.relations.map((relation) => ({ ...relation, createdAt })),
     associations,
-  });
-
-  // Mirror exact canonical records to the rebuildable DB. Per-item DB
-  // isolation cannot alter the single canonical append.
-  for (const entity of canonical.entities) {
-    try {
-      deps.db.upsertEntity(entity);
-    } catch {
-      // Per-item isolation: a single bad entity must not abort the turn
-    }
-  }
-
-  // Persist each relation canonical-first (graph.jsonl), then mirror to the db index.
-  for (const relation of canonical.relations) {
-    try {
-      deps.db.addEntityRelation(relation.src, relation.dst, relation.relation, relation.createdAt);
-    } catch {
-      // Per-item isolation: a single bad relation must not abort the turn
-    }
-  }
-
-  // Persist candidate-specific associations. Reconcile action identity
-  // is preserved: update/noop target the existing id; supersede/add target the
-  // new id. There is deliberately no turn-wide Cartesian association.
-  let associationCount = 0;
-  for (const association of canonical.associations) {
-    try {
-      deps.db.associateMemory(association);
-      associationCount += 1;
-    } catch {
-      // Per-item isolation
-    }
-  }
-
-  return {
-    actions,
-    entities: extraction.entities.length,
-    relations: extraction.relations.length,
-    associations: associationCount,
   };
-}
-
-function memoryIdForAction(action: ReconcileAction): string {
-  if (action.kind === "supersede") return action.newId;
-  return action.id;
 }

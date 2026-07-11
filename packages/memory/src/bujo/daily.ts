@@ -231,3 +231,11 @@ export function rewriteBullet(
   writeCanonicalFileAtomic(root, file, serializeDailyFile({ lines: newLines }), snapshot.identity);
   return true;
 }
+
+/** Read one exact canonical bullet without following links or accepting non-daily paths. */
+export function readBullet(root: string, file: string, id: string): Bullet | undefined {
+  assertCanonicalDailySourcePath(file);
+  const snapshot = readCanonicalFileSnapshot(root, file);
+  if (snapshot === undefined) throw new Error(`memory-bujo: canonical source "${file}" is missing.`);
+  return parseDailyFile(snapshot.content).bullets.find((bullet) => bullet.id === id);
+}

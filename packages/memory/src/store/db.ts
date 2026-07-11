@@ -101,6 +101,9 @@ export class MemoryDb {
           "Ensure the embedding model matches the configured `dim`.",
       );
     }
+    if (vector.some((value) => typeof value !== "number" || !Number.isFinite(value))) {
+      throw new Error(`memory-store: embedding vector in ${context} contains a non-finite value.`);
+    }
   }
 
   async upsert(record: MemoryRecord): Promise<void> {
@@ -197,6 +200,9 @@ export class MemoryDb {
     records: readonly MemoryRecord[],
     vectors: readonly (readonly number[] | undefined)[],
   ): void {
+    vectors.forEach((vector) => {
+      if (vector !== undefined) this.assertVectorDim(vector, "commitPreparedUpserts");
+    });
     this.persistRecords(records, vectors, true);
   }
 

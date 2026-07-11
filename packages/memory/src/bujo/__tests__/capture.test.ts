@@ -1,13 +1,18 @@
-import { mkdtempSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 import { openMemoryDb, type MemoryDb } from "../../store/index.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { captureTurn } from "../capture.js";
+import { replayCaptureOutbox } from "../capture-outbox.js";
+import { appendBullet, dailyFilePath } from "../daily.js";
 import { readGraph } from "../graph.js";
 import type { ReconcileDeps } from "../reconcile.js";
+import { createBujoMemoryStore } from "../store.js";
+import type { Bullet } from "../types.js";
+import type { MemoryRecord } from "../../store/index.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 
 const DIM = 64;
@@ -30,10 +35,43 @@ function openDb(root: string): MemoryDb {
   return db;
 }
 
+function closeDb(db: MemoryDb): void {
+  const index = openDbs.indexOf(db);
+  if (index >= 0) openDbs.splice(index, 1);
+  db.close();
+}
+
 /** Simple counter-based nextId factory — avoids the duplicate-id problem of fixed clock+random. */
 function makeSeqNextId(): () => string {
   let seq = 0;
   return () => `CAP${String(++seq).padStart(4, "0")}`;
+}
+
+async function seed(db: MemoryDb, root: string, id: string, text: string): Promise<void> {
+  const bullet: Bullet = {
+    id,
+    type: "note",
+    status: "open",
+    text,
+    salience: 0.6,
+    isInsight: false,
+    createdAt: FIXED.toISOString(),
+    refs: [],
+  };
+  appendBullet(root, bullet, FIXED);
+  const record: MemoryRecord = {
+    id,
+    type: "note",
+    status: "open",
+    text,
+    salience: bullet.salience,
+    isInsight: false,
+    createdAt: bullet.createdAt,
+    accessCount: 0,
+    tags: [],
+    source: { file: relative(root, dailyFilePath(root, FIXED)) },
+  };
+  await db.upsert(record);
 }
 
 describe("captureTurn", () => {
@@ -324,7 +362,7 @@ describe("captureTurn", () => {
     expect(graph.associations).toHaveLength(1);
   });
 
-  it("writes entities/relations to canonical graph.jsonl even when the db mirror fails (canonical-first)", async () => {
+  it("leaves a durable intent when the graph mirror fails and completes it idempotently on replay", async () => {
     const root = newRoot();
     const db = openDb(root);
 
@@ -355,11 +393,158 @@ describe("captureTurn", () => {
     ]);
 
     const deps: ReconcileDeps = { db: failingDb, root, llm, nextId: makeSeqNextId(), now: () => FIXED };
-    await expect(captureTurn("Morgan maintains mono-agent", deps)).resolves.toBeDefined();
+    await expect(captureTurn("Morgan maintains mono-agent", deps)).rejects.toThrow("index mirror down");
 
     const graph = readGraph(root);
     expect(graph.entities.some((e) => e.id === "person:morgan")).toBe(true);
     expect(graph.relations.some((r) => r.src === "person:morgan" && r.relation === "maintains")).toBe(true);
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
+
+    const replayed = replayCaptureOutbox(root, db);
+    expect(replayed).toHaveLength(1);
+    expect(db.associationsForMemory("CAP0001")).toEqual([
+      expect.objectContaining({ entityId: "person:morgan", provenance: "capture" }),
+      expect.objectContaining({ entityId: "project:mono-agent", provenance: "capture" }),
+    ]);
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+  });
+
+  it("replays graph evidence only after exact ADD/UPDATE/SUPERSEDE/NOOP outcomes match", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "UPDATE", "Morgan prefers blue deployment releases.");
+    await seed(db, root, "OLD", "Atlas launches in July.");
+    await seed(db, root, "NOOP", "Paola prefers quiet mornings.");
+    db.findSimilarMany = async () => [
+      [],
+      [{ record: db.get("UPDATE")!, distance: 0.1 }],
+      [{ record: db.get("OLD")!, distance: 0.1 }],
+      [{ record: db.get("NOOP")!, distance: 0.1 }],
+    ];
+    const labels: string[] = [];
+    const llm = {
+      id: "all-actions",
+      async complete(_prompt: string, options?: { readonly label?: string }) {
+        labels.push(options?.label ?? "unknown");
+        if (options?.label === "capture:extract") {
+          return JSON.stringify({
+            memories: [
+              { type: "note", text: "Aster uses quarterly red-team reviews.", salience: 0.7, isInsight: false, entityIds: ["project:aster"] },
+              { type: "note", text: "Morgan prefers reviewed blue deployment releases.", salience: 0.8, isInsight: false, entityIds: ["person:morgan"] },
+              { type: "note", text: "Atlas launches in August.", salience: 0.8, isInsight: false, entityIds: ["project:atlas"] },
+              { type: "note", text: "Paola prefers quiet mornings.", salience: 0.7, isInsight: false, entityIds: ["person:paola"] },
+            ],
+            entities: [
+              { id: "project:aster", name: "Aster", type: "project" },
+              { id: "person:morgan", name: "Morgan", type: "person" },
+              { id: "project:atlas", name: "Atlas", type: "project" },
+              { id: "person:paola", name: "Paola", type: "person" },
+            ],
+            relations: [],
+          });
+        }
+        return JSON.stringify([
+          { index: 1, action: "update", targetId: "UPDATE", text: "Morgan prefers reviewed blue deployment releases." },
+          { index: 2, action: "supersede", targetId: "OLD", text: "Atlas launches in August." },
+          { index: 3, action: "noop", targetId: "NOOP" },
+        ]);
+      },
+    };
+    const outside = join(mkdtempSync(join(tmpdir(), "capture-graph-outside-")), "graph.jsonl");
+    symlinkSync(outside, join(root, "graph.jsonl"));
+
+    await expect(captureTurn("four exact action outcomes", {
+      db,
+      root,
+      llm,
+      nextId: makeSeqNextId(),
+      now: () => FIXED,
+    })).rejects.toThrow(/graph|symlink|regular/iu);
+
+    expect(labels).toEqual(["capture:extract", "capture:reconcile-batch"]);
+    expect(db.get("CAP0001")?.text).toBe("Aster uses quarterly red-team reviews.");
+    expect(db.get("UPDATE")?.text).toBe("Morgan prefers reviewed blue deployment releases.");
+    expect(db.get("OLD")?.status).toBe("invalidated");
+    expect(db.get("CAP0002")?.text).toBe("Atlas launches in August.");
+    expect(db.get("NOOP")?.text).toBe("Paola prefers quiet mornings.");
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
+
+    unlinkSync(join(root, "graph.jsonl"));
+    replayCaptureOutbox(root, db);
+
+    expect(labels).toEqual(["capture:extract", "capture:reconcile-batch"]);
+    expect(readGraph(root).associations.map((association) => association.memoryId).sort()).toEqual([
+      "CAP0001",
+      "CAP0002",
+      "NOOP",
+      "UPDATE",
+    ]);
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+  });
+
+  it("replays a pending intent during writable startup without another LLM or embedding call", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const failingDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "associateMemory") return () => { throw new Error("association mirror fault"); };
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as MemoryDb;
+    const llm = fakeLlm([["Extract one bounded", JSON.stringify({
+      memories: [{
+        type: "note",
+        text: "Morgan owns startup replay.",
+        salience: 0.8,
+        isInsight: false,
+        entityIds: ["person:morgan"],
+      }],
+      entities: [{ id: "person:morgan", name: "Morgan", type: "person" }],
+      relations: [],
+    })]]);
+
+    await expect(captureTurn("Morgan owns startup replay", {
+      db: failingDb,
+      root,
+      llm,
+      nextId: makeSeqNextId(),
+      now: () => FIXED,
+    })).rejects.toThrow("association mirror fault");
+    closeDb(db);
+
+    let embeddingCalls = 0;
+    let llmCalls = 0;
+    const base = fakeEmbeddings(DIM);
+    const store = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings: {
+        id: base.id,
+        embed: async (texts) => {
+          embeddingCalls += 1;
+          return await base.embed(texts);
+        },
+      },
+      dim: DIM,
+      llm: {
+        id: "must-not-run",
+        complete: async () => {
+          llmCalls += 1;
+          throw new Error("startup replay must not call the LLM");
+        },
+      },
+    });
+    expect(embeddingCalls).toBe(0);
+    expect(llmCalls).toBe(0);
+    await store.close();
+
+    const inspected = openMemoryDb({ path: join(root, "memory.db"), dim: DIM, readOnly: true });
+    openDbs.push(inspected);
+    expect(inspected.associationsForMemory("CAP0001")).toEqual([
+      expect.objectContaining({ entityId: "person:morgan", provenance: "capture" }),
+    ]);
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
   });
 
   it("propagates a model failure (does not silently no-op the whole turn)", async () => {

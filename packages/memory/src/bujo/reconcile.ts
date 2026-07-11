@@ -2,12 +2,13 @@ import { relative } from "node:path";
 
 import type { MemoryDb, MemoryRecord, SimilarHit } from "../store/index.js";
 
-import { appendBullet, dailyFilePath, rewriteBullet } from "./daily.js";
+import { appendBullet, dailyFilePath, readBullet, rewriteBullet } from "./daily.js";
 import { normalizeCandidateText, type CandidateMemory } from "./distill.js";
 import { parseJsonLoose } from "./json.js";
 import type { LlmComplete } from "./llm.js";
 import { MemoryModelError } from "./model-error.js";
 import type { Bullet } from "./types.js";
+import type { CaptureIntentAction } from "./capture-outbox.js";
 
 /** The outcome of reconciling a single candidate against the existing index. */
 export type ReconcileAction =
@@ -27,6 +28,8 @@ export interface ReconcileDeps {
   readonly threadThreshold?: number;
   /** Distance below which we consult the LLM to classify; above → ADD outright (skip LLM). Default 0.5. */
   readonly dupThreshold?: number;
+  /** Capture-only durable boundary invoked after provider planning and before source mutation. */
+  readonly beforeBatchCommit?: (actions: readonly CaptureIntentAction[]) => void;
 }
 
 const VALID_ACTIONS = new Set(["add", "update", "supersede", "noop"]);
@@ -126,7 +129,7 @@ export async function reconcileBatch(
   const decisions = reconcileIndexes.length === 0
     ? new Map<number, Classification>()
     : await classifyBatch(candidates, neighbours, reconcileIndexes, deps);
-  rejectConflictingMutations(decisions);
+  rejectConflictingTargets(decisions);
   deps.abortSignal?.throwIfAborted();
   const plans: Array<BatchActionPlan | undefined> = candidates.map(() => undefined);
   for (const [index, candidate] of candidates.entries()) {
@@ -161,6 +164,16 @@ export async function reconcileBatch(
   }
   deps.abortSignal?.throwIfAborted();
 
+  if (deps.beforeBatchCommit !== undefined) {
+    const vectorsByIndex = new Map(writes.map((plan, index) => [plan.index, vectors[index]]));
+    deps.beforeBatchCommit(plans.flatMap((plan) => plan === undefined ? [] : [withPreparedVector(
+      plan.intent,
+      plan.index,
+      vectorsByIndex.get(plan.index),
+    )]));
+  }
+  deps.abortSignal?.throwIfAborted();
+
   const accepted: BatchActionPlan[] = [];
   const acceptedVectors: Array<readonly number[] | undefined> = [];
   for (const [index, plan] of writes.entries()) {
@@ -188,15 +201,16 @@ export async function reconcileBatch(
 }
 
 /**
- * A batch is planned against one pre-write snapshot. Two UPDATE/SUPERSEDE
- * decisions for the same existing row would therefore overwrite or invalidate
- * each other while both appeared accepted. Fail every colliding mutation
+ * A batch is planned against one pre-write snapshot. Every target-bearing
+ * decision contributes candidate-specific graph evidence, including NOOP.
+ * Allowing any two candidates to share a target would either race mutations or
+ * merge unrelated entity evidence onto one row. Fail the entire target group
  * closed before vector preflight or canonical writes.
  */
-function rejectConflictingMutations(decisions: Map<number, Classification>): void {
+function rejectConflictingTargets(decisions: Map<number, Classification>): void {
   const byTarget = new Map<string, number[]>();
   for (const [index, decision] of decisions) {
-    if ((decision.action !== "update" && decision.action !== "supersede") || decision.targetId === undefined) continue;
+    if (decision.targetId === undefined) continue;
     const indexes = byTarget.get(decision.targetId) ?? [];
     indexes.push(index);
     byTarget.set(decision.targetId, indexes);
@@ -210,6 +224,7 @@ function rejectConflictingMutations(decisions: Map<number, Classification>): voi
 interface BatchActionPlan {
   readonly index: number;
   readonly action: ReconcileAction;
+  readonly intent: CaptureIntentAction;
   readonly record?: MemoryRecord;
   writeCanonical(): void;
   finalizeIndex(): void;
@@ -271,11 +286,7 @@ function planBatchAction(
     case "add":
       return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
     case "noop":
-      return {
-        action: { kind: "noop", id: decision.targetId ?? "" },
-        writeCanonical: () => {},
-        finalizeIndex: () => {},
-      };
+      return planNoop(decision, deps);
     case "update":
       return planUpdate(candidate, decision, deps);
     case "supersede":
@@ -304,15 +315,48 @@ function planAddWithoutIndex(
     refs: [],
   };
   const record = recordFor(bullet, deps.root, now);
+  const file = record.source.file!;
+  const threads = similar
+    .filter((hit) => hit.distance <= threadThreshold)
+    .map((hit) => ({ src: id, dst: hit.record.id, weight: 1 - hit.distance }));
   return {
     action: { kind: "add", id },
+    intent: {
+      candidateIndex: -1,
+      kind: "add",
+      id,
+      after: { file, bullet },
+      record,
+      threads,
+    },
     record,
     writeCanonical: () => { appendBullet(deps.root, bullet, now); },
     finalizeIndex: () => {
-      for (const hit of similar) {
-        if (hit.distance <= threadThreshold) deps.db.addEdge(id, hit.record.id, "thread", 1 - hit.distance);
-      }
+      for (const edge of threads) deps.db.addEdge(edge.src, edge.dst, "thread", edge.weight);
     },
+  };
+}
+
+function planNoop(
+  decision: Classification,
+  deps: ReconcileDeps,
+): Omit<BatchActionPlan, "index"> {
+  const targetId = decision.targetId ?? "";
+  const target = deps.db.get(targetId);
+  if (target?.source.file === undefined) {
+    throw new Error(`memory-reconcile: noop target "${targetId}" is unavailable.`);
+  }
+  const bullet = requireCanonicalTarget(deps.root, target.source.file, targetId);
+  return {
+    action: { kind: "noop", id: targetId },
+    intent: {
+      candidateIndex: -1,
+      kind: "noop",
+      id: targetId,
+      expected: { file: target.source.file, bullet },
+    },
+    writeCanonical: () => {},
+    finalizeIndex: () => {},
   };
 }
 
@@ -326,11 +370,23 @@ function planUpdate(
   if (target === undefined || target.source.file === undefined) {
     throw new Error(`memory-reconcile: update target "${targetId}" is unavailable.`);
   }
+  const before = requireCanonicalTarget(deps.root, target.source.file, targetId);
   const mergedText = decision.text ?? candidate.text;
+  const after: Bullet = { ...before, text: mergedText };
   return {
     action: { kind: "update", id: targetId },
+    intent: {
+      candidateIndex: -1,
+      kind: "update",
+      id: targetId,
+      before: { file: target.source.file, bullet: before },
+      after: { file: target.source.file, bullet: after },
+      record: { ...target, text: mergedText },
+    },
     record: { ...target, text: mergedText },
-    writeCanonical: () => { rewriteBullet(deps.root, target.source.file!, targetId, { text: mergedText }); },
+    writeCanonical: () => {
+      requireBulletRewrite(deps.root, target.source.file!, targetId, { text: mergedText });
+    },
     finalizeIndex: () => {},
   };
 }
@@ -342,7 +398,11 @@ function planSupersede(
 ): Omit<BatchActionPlan, "index"> {
   const targetId = decision.targetId ?? "";
   const old = deps.db.get(targetId);
-  if (old === undefined) throw new Error(`memory-reconcile: supersede target "${targetId}" is unavailable.`);
+  if (old === undefined || old.source.file === undefined) {
+    throw new Error(`memory-reconcile: supersede target "${targetId}" is unavailable.`);
+  }
+  const oldSourceFile = old.source.file;
+  const beforeOld = requireCanonicalTarget(deps.root, oldSourceFile, targetId);
   const now = deps.now();
   const id = deps.nextId();
   const bullet: Bullet = {
@@ -356,14 +416,58 @@ function planSupersede(
     refs: [],
   };
   const record = recordFor(bullet, deps.root, now);
+  const newSourceFile = record.source.file!;
   return {
     action: { kind: "supersede", oldId: targetId, newId: id },
+    intent: {
+      candidateIndex: -1,
+      kind: "supersede",
+      oldId: targetId,
+      newId: id,
+      beforeOld: { file: oldSourceFile, bullet: beforeOld },
+      afterOld: { file: oldSourceFile, bullet: { ...beforeOld, status: "invalidated" } },
+      afterNew: { file: newSourceFile, bullet },
+      record,
+      at: now.toISOString(),
+    },
     record,
     writeCanonical: () => {
       appendBullet(deps.root, bullet, now);
-      if (old.source.file !== undefined) rewriteBullet(deps.root, old.source.file, targetId, { status: "invalidated" });
+      requireBulletRewrite(deps.root, oldSourceFile, targetId, { status: "invalidated" });
     },
     finalizeIndex: () => { deps.db.markSuperseded(targetId, id, now.toISOString()); },
+  };
+}
+
+function requireCanonicalTarget(root: string, file: string, id: string): Bullet {
+  const bullet = readBullet(root, file, id);
+  if (bullet === undefined) {
+    throw new Error(`memory-reconcile: canonical source "${file}" does not contain target "${id}".`);
+  }
+  return bullet;
+}
+
+function requireBulletRewrite(
+  root: string,
+  file: string,
+  id: string,
+  patch: Parameters<typeof rewriteBullet>[3],
+): void {
+  if (!rewriteBullet(root, file, id, patch)) {
+    throw new Error(`memory-reconcile: canonical source "${file}" does not contain target "${id}".`);
+  }
+}
+
+function withPreparedVector(
+  action: CaptureIntentAction,
+  candidateIndex: number,
+  vector: readonly number[] | undefined,
+): CaptureIntentAction {
+  if (action.kind === "noop") return { ...action, candidateIndex };
+  return {
+    ...action,
+    candidateIndex,
+    ...(vector === undefined ? {} : { vector }),
   };
 }
 

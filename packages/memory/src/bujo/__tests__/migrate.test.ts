@@ -1,11 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
 import { openMemoryDb, type MemoryDb, type MemoryRecord } from "../../store/index.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { appendBullet, dailyFilePath } from "../daily.js";
+import { appendBullet, dailyFilePath, rewriteBullet } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
 import { createIdFactory } from "../ids.js";
 import { migrate, type MigrateDeps } from "../migrate.js";
@@ -35,6 +35,12 @@ function openDb(root: string): MemoryDb {
   });
   openDbs.push(db);
   return db;
+}
+
+function closeDb(db: MemoryDb): void {
+  const index = openDbs.indexOf(db);
+  if (index >= 0) openDbs.splice(index, 1);
+  db.close();
 }
 
 /** Seed an aging memory: append a bullet to the daily file and upsert with old createdAt + low salience. */
@@ -146,7 +152,11 @@ describe("migrate", () => {
     // --- cluster: collection set in db + collection entity + supports edge ---
     const clustered = db.get("MIG-CLUSTER");
     expect(clustered).toBeDefined();
+    expect(clustered!.status).toBe("migrated");
     expect(clustered!.collection).toBe("books");
+    expect(parseDailyFile(dailyContent(root, SIXTY_DAYS_AGO)).bullets.find(
+      (b) => b.id === "MIG-CLUSTER",
+    )?.status).toBe("migrated");
 
     const collectionEntity = db.getEntity("collection:books");
     expect(collectionEntity).toBeDefined();
@@ -180,6 +190,7 @@ describe("migrate", () => {
     expect(monthlyContent).toContain("MIG-CLUSTER");
     expect(monthlyContent).toContain("forget");
     expect(monthlyContent).toContain("MIG-FORGET");
+    expect(monthlyContent).not.toContain("mono-agent-migrate:");
   });
 
   it("refuses a symlinked monthly directory without writing outside the memory root", async () => {
@@ -192,6 +203,126 @@ describe("migrate", () => {
 
     await expect(migrate(makeDeps(db, root, { llm }))).rejects.toThrow(/directory.*symlink/iu);
     expect(existsSync(join(outside, "2026-06.md"))).toBe(false);
+    expect(db.get("MIG-LINK")?.salience).toBe(0.2);
+  });
+
+  it.each(["after-decision", "after-action"] as const)(
+    "replays a durable pending decision after restart without another model call (%s)",
+    async (fault) => {
+      const root = newRoot();
+      let db = openDb(root);
+      await seedAging(db, root, "MIG-RETRY", "retry-safe monthly migration sentinel");
+      const firstLlm = vi.fn(async () => JSON.stringify({ action: "promote" }));
+
+      await expect(migrate(makeDeps(db, root, {
+        llm: { id: "first", complete: firstLlm },
+        hooks: fault === "after-decision"
+          ? { afterDecisionDurable: () => { throw new Error("fault-after-decision"); } }
+          : { afterActionCommitted: () => { throw new Error("fault-after-action"); } },
+      }))).rejects.toThrow(`fault-${fault}`);
+
+      expect(firstLlm).toHaveBeenCalledTimes(1);
+      expect(db.get("MIG-RETRY")?.salience).toBe(fault === "after-decision" ? 0.2 : 0.5);
+      const monthly = readFileSync(join(root, "monthly", "2026-06.md"), "utf8");
+      expect(monthly).toContain("mono-agent-migrate:");
+      expect(monthly).not.toContain("mono-agent-migrate:complete:");
+
+      closeDb(db);
+      db = openDb(root);
+      const retryLlm = vi.fn(async () => { throw new Error("retry must not call the LLM"); });
+      const retried = await migrate(makeDeps(db, root, { llm: { id: "retry", complete: retryLlm } }));
+
+      expect(retryLlm).not.toHaveBeenCalled();
+      expect(retried).toMatchObject({ promoted: 1, reviewed: 1 });
+      expect(db.get("MIG-RETRY")?.salience).toBe(0.5);
+      expect(parseDailyFile(dailyContent(root, SIXTY_DAYS_AGO)).bullets[0]?.salience).toBe(0.5);
+      const recoveredMonthly = readFileSync(join(root, "monthly", "2026-06.md"), "utf8");
+      expect(recoveredMonthly).toContain("- promote MIG-RETRY");
+      expect(recoveredMonthly).not.toContain("mono-agent-migrate:");
+    },
+  );
+
+  it("promotes very-low-salience memories out of the aging pool", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-LOW", "very low salience promotion sentinel", { salience: 0 });
+    const firstLlm = vi.fn(async () => JSON.stringify({ action: "promote" }));
+
+    const first = await migrate(makeDeps(db, root, { llm: { id: "first", complete: firstLlm } }));
+    expect(first.promoted).toBe(1);
+    expect(db.get("MIG-LOW")?.salience).toBe(0.5);
+
+    const retryLlm = vi.fn(async () => { throw new Error("promoted item must leave aging pool"); });
+    const retry = await migrate(makeDeps(db, root, { llm: { id: "retry", complete: retryLlm } }));
+    expect(retry.reviewed).toBe(0);
+    expect(retryLlm).not.toHaveBeenCalled();
+  });
+
+  it("recovers a clustered decision into a terminal state without a second LLM call", async () => {
+    const root = newRoot();
+    let db = openDb(root);
+    await seedAging(db, root, "MIG-CLUSTER-RETRY", "cluster retry migration sentinel");
+    await expect(migrate(makeDeps(db, root, {
+      llm: fakeLlm([["cluster retry", JSON.stringify({ action: "cluster", collection: "retries" })]]),
+      hooks: { afterDecisionDurable: () => { throw new Error("crash-after-cluster-decision"); } },
+    }))).rejects.toThrow("crash-after-cluster-decision");
+    closeDb(db);
+    db = openDb(root);
+    const retryLlm = vi.fn(async () => { throw new Error("cluster recovery must not call LLM"); });
+
+    const recovered = await migrate(makeDeps(db, root, { llm: { id: "retry", complete: retryLlm } }));
+
+    expect(retryLlm).not.toHaveBeenCalled();
+    expect(recovered).toMatchObject({ clustered: 1, reviewed: 1 });
+    expect(db.get("MIG-CLUSTER-RETRY")).toMatchObject({ status: "migrated", collection: "retries" });
+    expect(parseDailyFile(dailyContent(root, SIXTY_DAYS_AGO)).bullets.find(
+      (b) => b.id === "MIG-CLUSTER-RETRY",
+    )?.status).toBe("migrated");
+  });
+
+  it("fails closed when canonical source changes after a pending decision is durable", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-CONFLICT", "canonical conflict migration sentinel");
+    await expect(migrate(makeDeps(db, root, {
+      llm: fakeLlm([["canonical conflict", JSON.stringify({ action: "promote" })]]),
+      hooks: { afterDecisionDurable: () => { throw new Error("crash-after-decision"); } },
+    }))).rejects.toThrow("crash-after-decision");
+    const source = relative(root, dailyFilePath(root, SIXTY_DAYS_AGO));
+    expect(rewriteBullet(root, source, "MIG-CONFLICT", { text: "An intervening canonical edit." })).toBe(true);
+    const retryLlm = vi.fn(async () => { throw new Error("must not call model on conflict"); });
+
+    await expect(migrate(makeDeps(db, root, {
+      llm: { id: "retry", complete: retryLlm },
+    }))).rejects.toThrow(/no longer matches|canonical/iu);
+
+    expect(retryLlm).not.toHaveBeenCalled();
+    expect(db.get("MIG-CONFLICT")?.salience).toBe(0.2);
+    expect(readFileSync(join(root, "monthly", "2026-06.md"), "utf8")).toContain("mono-agent-migrate:");
+  });
+
+  it("fails closed on a corrupted pending marker instead of silently paying for another decision", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-CORRUPT", "corrupted marker migration sentinel");
+    await expect(migrate(makeDeps(db, root, {
+      llm: fakeLlm([["corrupted marker", JSON.stringify({ action: "promote" })]]),
+      hooks: { afterDecisionDurable: () => { throw new Error("crash-after-decision"); } },
+    }))).rejects.toThrow("crash-after-decision");
+    const monthlyPath = join(root, "monthly", "2026-06.md");
+    const corrupted = readFileSync(monthlyPath, "utf8").replace(
+      /<!-- mono-agent-migrate:[^\n]+ -->/u,
+      "<!-- mono-agent-migrate:not-valid-base64 -->",
+    );
+    writeFileSync(monthlyPath, corrupted, "utf8");
+    const retryLlm = vi.fn(async () => { throw new Error("must not call model on corrupt marker"); });
+
+    await expect(migrate(makeDeps(db, root, {
+      llm: { id: "retry", complete: retryLlm },
+    }))).rejects.toThrow(/malformed durable pending decision/iu);
+
+    expect(retryLlm).not.toHaveBeenCalled();
+    expect(db.get("MIG-CORRUPT")?.salience).toBe(0.2);
   });
 
   it("surfaces (rethrows) a model failure during migration instead of swallowing it per-item", async () => {
