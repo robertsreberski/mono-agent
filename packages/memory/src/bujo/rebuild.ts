@@ -205,6 +205,7 @@ interface BuildPlan {
 export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): Promise<SafeMemoryIndexResult> {
   assertSafeRebuildOptions(options);
   const lease = acquireMemoryWriterLease(options.root);
+  let sourceFence: SqliteWriterFence | undefined;
   let candidateName: string | undefined;
   let activated = false;
   try {
@@ -250,6 +251,10 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       }
       assertManagedManifestState(root, manifestState);
     }
+    // Pin and fence the complete prior SQLite state before any model/provider
+    // or test-hook await. The configured process is stopped, so any competing
+    // SQLite writer is a violation rather than useful concurrency.
+    sourceFence = hasPriorActiveDb ? acquireSqliteWriterFences([priorActivePath]) : undefined;
     // Pin the complete prior SQLite state before any model/provider or test
     // hook await. A later rollback snapshot may trust vectors that cannot be
     // regenerated without a paid call, so concurrent mutation must be caught.
@@ -309,6 +314,7 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       ...(options.dim === undefined ? {} : { dim: options.dim }),
     });
     openCandidateIdentity = identityOf(generation.dbPath);
+    let stagedReplayIntegrity: string | undefined;
     try {
       await db.rebuild(plan.records);
       for (const [contentHash, memoryId] of plan.contentHashes) {
@@ -348,13 +354,23 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
         ...(options.embeddings === undefined ? {} : { embeddingModel: options.embeddings.id }),
         ...(options.dim === undefined ? {} : { dimension: options.dim }),
       });
-      if (stagedCaptureForCandidate) replayCaptureOutbox(root, db);
+      if (stagedCaptureForCandidate) {
+        replayCaptureOutbox(root, db);
+        // The durable intent is the exact authority for the lifecycle/thread
+        // state that canonical Markdown cannot reconstruct. Pin that known-good
+        // replay result before exposing any hook or other asynchronous seam.
+        stagedReplayIntegrity = db.logicalIntegrityDigest();
+      }
       await options.hooks?.afterCandidateBuilt?.();
       db.checkpoint();
     } finally {
       db.close();
     }
     await options.hooks?.afterCandidateClosed?.();
+    if (stagedReplayIntegrity !== undefined
+      && logicalIntegrityDigest(generation.dbPath, descriptor) !== stagedReplayIntegrity) {
+      throw new Error("memory-rebuild: staged capture candidate changed after exact durable replay.");
+    }
     fsyncFile(generation.dbPath);
     fsyncDirectory(generation.dir);
     validateCandidate(generation.dbPath, descriptor, plan, stagedCaptureForCandidate);
@@ -363,18 +379,22 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
     const candidateLogicalDigest = logicalIntegrityDigest(generation.dbPath, descriptor);
     await options.hooks?.afterCandidateValidated?.();
     await options.hooks?.beforeSourceCas?.();
-    const rollback = await snapshotCurrentRollback(
+    let rollback = await snapshotCurrentRollback(
       root,
       priorManifest?.active,
       rollbackSnapshot,
       priorActiveIntegrity,
     );
+    const tentativeRollbackPath = rollback === undefined ? undefined : managedGenerationDbPath(root, rollback.name, true);
+    if (tentativeRollbackPath !== undefined && rollback !== undefined) {
+      validateRollbackSnapshot(tentativeRollbackPath, rollback, buildPlan(rollbackSnapshot, rollback.tier));
+      if (!retainedVectorsMatchCandidate(generation.dbPath, descriptor, tentativeRollbackPath, rollback)) {
+        rollback = undefined;
+      }
+    }
     const rollbackPath = rollback === undefined ? undefined : managedGenerationDbPath(root, rollback.name, true);
     const rollbackIdentity = rollbackPath === undefined ? undefined : identityOf(rollbackPath);
     const rollbackDigest = rollbackPath === undefined ? undefined : fileDigest(rollbackPath);
-    if (rollbackPath !== undefined && rollback !== undefined) {
-      validateRollbackSnapshot(rollbackPath, rollback, buildPlan(rollbackSnapshot, rollback.tier));
-    }
     // This is the final source/root/candidate CAS. All potentially long awaited
     // candidate and rollback work has completed; activation performs only the
     // same-directory manifest transaction after this point.
@@ -407,33 +427,41 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       }
       assertManagedManifestState(root, manifestState);
     };
-    assertFinalCas();
     const nextManifest: ManagedIndexManifest = {
       schemaVersion: MANAGED_INDEX_SCHEMA_VERSION,
       active: descriptor,
       ...(rollback === undefined ? {} : { rollback }),
     };
-    await activateManagedIndex(root, nextManifest, {
-      ...options.hooks,
-      beforeManifestRename: assertFinalCas,
-    });
-    activated = true;
-    return {
-      active: generation.dbPath,
-      ...(rollback === undefined ? {} : { rollback: managedGenerationDbPath(root, rollback.name, true) }),
-      indexed: plan.records.length,
-      sourceFingerprint: snapshot.fingerprint,
-      generation: generation.name,
-      skippedRawRecords: plan.skippedRawRecords,
-      skippedUnstructuredRecords: plan.skippedUnstructuredRecords,
-      skippedMissingIdentityRecords: plan.skippedMissingIdentityRecords,
-      missingIdentityLocations: plan.missingIdentityLocations,
-      skippedLegacySourceRecords: plan.skippedLegacySourceRecords,
-      legacySourceLocations: plan.legacySourceLocations,
-      skippedJournalDuplicateRecords: plan.skippedJournalDuplicateRecords,
-      parsedSourceItems: plan.parsedSourceItems,
-      derivedLegacyAssociations: plan.graph.derivedLegacyAssociations,
-    };
+    const activationFence = acquireSqliteWriterFences([
+      generation.dbPath,
+      ...(rollbackPath === undefined ? [] : [rollbackPath]),
+    ]);
+    try {
+      assertFinalCas();
+      await activateManagedIndex(root, nextManifest, {
+        ...options.hooks,
+        beforeManifestRename: assertFinalCas,
+      });
+      activated = true;
+      return {
+        active: generation.dbPath,
+        ...(rollback === undefined ? {} : { rollback: managedGenerationDbPath(root, rollback.name, true) }),
+        indexed: plan.records.length,
+        sourceFingerprint: snapshot.fingerprint,
+        generation: generation.name,
+        skippedRawRecords: plan.skippedRawRecords,
+        skippedUnstructuredRecords: plan.skippedUnstructuredRecords,
+        skippedMissingIdentityRecords: plan.skippedMissingIdentityRecords,
+        missingIdentityLocations: plan.missingIdentityLocations,
+        skippedLegacySourceRecords: plan.skippedLegacySourceRecords,
+        legacySourceLocations: plan.legacySourceLocations,
+        skippedJournalDuplicateRecords: plan.skippedJournalDuplicateRecords,
+        parsedSourceItems: plan.parsedSourceItems,
+        derivedLegacyAssociations: plan.graph.derivedLegacyAssociations,
+      };
+    } finally {
+      activationFence.release();
+    }
   } catch (error) {
     // A generation referenced by a renamed manifest must never be deleted. Other
     // candidates are intentionally retained as orphans for explicit inspection;
@@ -441,7 +469,11 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
     if (activated && candidateName === undefined) throw new Error("memory-rebuild: activated generation identity was lost.");
     throw error;
   } finally {
-    lease.release();
+    try {
+      sourceFence?.release();
+    } finally {
+      lease.release();
+    }
   }
 }
 
@@ -449,6 +481,7 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
 export async function rollbackMemoryIndex(options: SafeMemoryIndexOptions): Promise<SafeMemoryIndexResult> {
   assertSafeRebuildOptions(options);
   const lease = acquireMemoryWriterLease(options.root);
+  let sourceFence: SqliteWriterFence | undefined;
   try {
     const root = lease.root;
     assertNoPendingMigrateDecision(root);
@@ -471,6 +504,7 @@ export async function rollbackMemoryIndex(options: SafeMemoryIndexOptions): Prom
     const targetIdentity = identityOf(targetPath);
     const targetDigest = fileDigest(targetPath);
     const currentPath = managedGenerationDbPath(root, manifest.active.name, true);
+    sourceFence = acquireSqliteWriterFences([currentPath]);
     const currentIdentity = identityOf(currentPath);
     const currentDigest = fileDigest(currentPath);
     let currentIntegrity: string | undefined;
@@ -542,36 +576,48 @@ export async function rollbackMemoryIndex(options: SafeMemoryIndexOptions): Prom
       }
       assertManagedManifestState(root, manifestState);
     };
-    assertFinalRollbackCas();
-    await activateManagedIndex(root, next, {
-      ...options.hooks,
-      beforeManifestRename: assertFinalRollbackCas,
-    });
-    const inspected = readOnlyDb(targetPath, target);
-    let indexed: number;
+    const activationFence = acquireSqliteWriterFences([
+      targetPath,
+      ...(outgoingPath === undefined ? [] : [outgoingPath]),
+    ]);
     try {
-      indexed = inspected.validationSnapshot().memories;
+      assertFinalRollbackCas();
+      await activateManagedIndex(root, next, {
+        ...options.hooks,
+        beforeManifestRename: assertFinalRollbackCas,
+      });
+      const inspected = readOnlyDb(targetPath, target);
+      let indexed: number;
+      try {
+        indexed = inspected.validationSnapshot().memories;
+      } finally {
+        inspected.close();
+      }
+      return {
+        active: targetPath,
+        ...(outgoingPath === undefined ? {} : { rollback: outgoingPath }),
+        indexed,
+        sourceFingerprint: target.sourceFingerprint,
+        generation: target.name,
+        skippedRawRecords: target.skippedRawRecords ?? 0,
+        skippedUnstructuredRecords: target.skippedUnstructuredRecords ?? 0,
+        skippedMissingIdentityRecords: target.skippedMissingIdentityRecords ?? 0,
+        missingIdentityLocations: target.missingIdentityLocations ?? [],
+        skippedLegacySourceRecords: target.skippedLegacySourceRecords ?? 0,
+        legacySourceLocations: target.legacySourceLocations ?? [],
+        skippedJournalDuplicateRecords: target.skippedJournalDuplicateRecords ?? 0,
+        parsedSourceItems: target.parsedSourceItems ?? indexed,
+        derivedLegacyAssociations: target.derivedLegacyAssociations ?? 0,
+      };
     } finally {
-      inspected.close();
+      activationFence.release();
     }
-    return {
-      active: targetPath,
-      ...(outgoingPath === undefined ? {} : { rollback: outgoingPath }),
-      indexed,
-      sourceFingerprint: target.sourceFingerprint,
-      generation: target.name,
-      skippedRawRecords: target.skippedRawRecords ?? 0,
-      skippedUnstructuredRecords: target.skippedUnstructuredRecords ?? 0,
-      skippedMissingIdentityRecords: target.skippedMissingIdentityRecords ?? 0,
-      missingIdentityLocations: target.missingIdentityLocations ?? [],
-      skippedLegacySourceRecords: target.skippedLegacySourceRecords ?? 0,
-      legacySourceLocations: target.legacySourceLocations ?? [],
-      skippedJournalDuplicateRecords: target.skippedJournalDuplicateRecords ?? 0,
-      parsedSourceItems: target.parsedSourceItems ?? indexed,
-      derivedLegacyAssociations: target.derivedLegacyAssociations ?? 0,
-    };
   } finally {
-    lease.release();
+    try {
+      sourceFence?.release();
+    } finally {
+      lease.release();
+    }
   }
 }
 
@@ -1520,6 +1566,34 @@ function logicalIntegrityDigest(path: string, descriptor?: ManagedGeneration): s
   }
 }
 
+/**
+ * When the new candidate re-embedded the exact same source with the exact same
+ * provider identity, it is an independent vector oracle we already paid for.
+ * Journal may retain missing vectors, but every vector it does retain must
+ * equal the candidate. Other tier/model/source migrations have no comparable
+ * no-call oracle and rely on the pinned online-backup commitment instead.
+ */
+function retainedVectorsMatchCandidate(
+  candidatePath: string,
+  candidate: ManagedGeneration,
+  retainedPath: string,
+  retained: ManagedGeneration,
+): boolean {
+  if (candidate.tier !== retained.tier
+    || candidate.sourceFingerprint !== retained.sourceFingerprint
+    || candidate.embeddingModel !== retained.embeddingModel
+    || candidate.dimension !== retained.dimension) return true;
+  const candidateDb = readOnlyDb(candidatePath, candidate);
+  const retainedDb = readOnlyDb(retainedPath, retained);
+  try {
+    const expected = new Map(candidateDb.vectorPayloadDigests().map((entry) => [entry.memoryId, entry.sha256]));
+    return retainedDb.vectorPayloadDigests().every((entry) => expected.get(entry.memoryId) === entry.sha256);
+  } finally {
+    retainedDb.close();
+    candidateDb.close();
+  }
+}
+
 function stableJson(values: readonly unknown[]): string {
   return JSON.stringify(values.map(canonicalJsonValue).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))));
 }
@@ -1660,6 +1734,56 @@ function isLegacySourceRecord(raw: string): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+interface SqliteWriterFence {
+  release(): void;
+}
+
+/** Hold BEGIN IMMEDIATE on every activation input so WAL writers cannot cross validation + rename. */
+function acquireSqliteWriterFences(paths: readonly string[]): SqliteWriterFence {
+  const databases: BetterSqlite3.Database[] = [];
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    const errors: unknown[] = [];
+    for (const db of databases.reverse()) {
+      try {
+        if (db.inTransaction) db.exec("ROLLBACK");
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        db.close();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) throw new AggregateError(errors, "memory-rebuild: SQLite writer fence release failed.");
+  };
+  try {
+    for (const path of [...new Set(paths)].sort()) {
+      const db = new BetterSqlite3(path, { fileMustExist: true, timeout: 0 });
+      try {
+        db.exec("BEGIN IMMEDIATE");
+      } catch (error) {
+        db.close();
+        throw error;
+      }
+      databases.push(db);
+    }
+  } catch (error) {
+    try {
+      release();
+    } catch (releaseError) {
+      throw new AggregateError([error, releaseError], "memory-rebuild: SQLite writer fence acquisition failed.");
+    }
+    throw new Error(
+      `memory-rebuild: a SQLite writer owns an activation database; stop it and retry. ${reasonOf(error)}`,
+    );
+  }
+  return { release };
 }
 
 function assertNoActiveSqliteWriter(path: string): void {

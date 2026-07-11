@@ -412,6 +412,47 @@ describe("safe memory index rebuild", () => {
     }
   });
 
+  it("rejects staged-candidate lifecycle and edge changes outside the exact durable replay", async () => {
+    const root = tempRoot();
+    const item = bullet("NO-ACTIVE-ADD", "Only the staged ADD intent may shape its candidate.");
+    const file = "daily/2026-07-11.md";
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: item.id,
+      after: { file, bullet: item },
+      record: memoryRecordForBullet(item, file),
+      vector: deterministicVector(item.text, 8),
+      threads: [],
+    }], {}, NOW);
+
+    await expect(safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: embeddings("test:no-active-tamper", 8),
+      dim: 8,
+      hooks: {
+        afterCandidateBuilt: () => {
+          const generations = join(realpathSync(root), ".index", "generations");
+          const candidate = join(generations, readdirSync(generations)[0] ?? "missing", "memory.db");
+          const raw = new BetterSqlite3(candidate);
+          try {
+            raw.prepare(`UPDATE memories SET valid_to = ? WHERE id = ?`)
+              .run("2000-01-01T00:00:00.000Z", item.id);
+            raw.prepare(
+              `INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, 'thread', 1.0, ?)`,
+            ).run(item.id, item.id, NOW);
+            raw.pragma("wal_checkpoint(TRUNCATE)");
+          } finally {
+            raw.close();
+          }
+        },
+      },
+    })).rejects.toThrow(/staged capture candidate changed.*durable replay/iu);
+
+    expect(readManagedIndexManifest(root)).toBeUndefined();
+  });
+
   it("completes a no-active SUPERSEDE lifecycle through the candidate before activation", async () => {
     const root = tempRoot();
     const old = bullet("NO-ACTIVE-OLD", "The old canonical claim.");

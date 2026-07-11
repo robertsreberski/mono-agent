@@ -1283,76 +1283,94 @@ export class MemoryDb {
    * rollback snapshot so later semantic tampering cannot authenticate itself.
    */
   logicalIntegrityDigest(): string {
+    const ownsSnapshot = !this.db.inTransaction;
+    if (ownsSnapshot) this.db.exec("BEGIN");
     const hash = createHash("sha256");
-    hash.update("mono-agent-memory-logical-integrity-v1\0");
-    const bytes = (marker: string, value: Uint8Array): void => {
-      hash.update(marker);
-      hash.update(String(value.byteLength));
-      hash.update("\0");
-      hash.update(value);
-    };
-    const add = (value: unknown): void => {
-      if (value === null) {
-        hash.update("N");
-      } else if (value === undefined) {
-        hash.update("U");
-      } else if (typeof value === "string") {
-        bytes("S", Buffer.from(value));
-      } else if (typeof value === "number") {
-        const encoded = Buffer.allocUnsafe(8);
-        encoded.writeDoubleBE(value);
-        bytes("D", encoded);
-      } else if (typeof value === "bigint") {
-        bytes("I", Buffer.from(value.toString()));
-      } else if (typeof value === "boolean") {
-        hash.update(value ? "T" : "F");
-      } else if (ArrayBuffer.isView(value)) {
-        bytes("B", Buffer.from(value.buffer, value.byteOffset, value.byteLength));
-      } else if (value instanceof ArrayBuffer) {
-        bytes("B", Buffer.from(value));
-      } else if (Array.isArray(value)) {
-        hash.update("A");
-        add(value.length);
-        for (const entry of value) add(entry);
-      } else {
-        const entries = Object.entries(value as Record<string, unknown>)
-          .sort(([left], [right]) => left.localeCompare(right));
-        hash.update("O");
-        add(entries.length);
-        for (const [key, entry] of entries) {
-          add(key);
-          add(entry);
+    try {
+      hash.update("mono-agent-memory-logical-integrity-v1\0");
+      const bytes = (marker: string, value: Uint8Array): void => {
+        hash.update(marker);
+        hash.update(String(value.byteLength));
+        hash.update("\0");
+        hash.update(value);
+      };
+      const add = (value: unknown): void => {
+        if (value === null) {
+          hash.update("N");
+        } else if (value === undefined) {
+          hash.update("U");
+        } else if (typeof value === "string") {
+          bytes("S", Buffer.from(value));
+        } else if (typeof value === "number") {
+          const encoded = Buffer.allocUnsafe(8);
+          encoded.writeDoubleBE(value);
+          bytes("D", encoded);
+        } else if (typeof value === "bigint") {
+          bytes("I", Buffer.from(value.toString()));
+        } else if (typeof value === "boolean") {
+          hash.update(value ? "T" : "F");
+        } else if (ArrayBuffer.isView(value)) {
+          bytes("B", Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+        } else if (value instanceof ArrayBuffer) {
+          bytes("B", Buffer.from(value));
+        } else if (Array.isArray(value)) {
+          hash.update("A");
+          add(value.length);
+          for (const entry of value) add(entry);
+        } else {
+          const entries = Object.entries(value as Record<string, unknown>)
+            .sort(([left], [right]) => left.localeCompare(right));
+          hash.update("O");
+          add(entries.length);
+          for (const [key, entry] of entries) {
+            add(key);
+            add(entry);
+          }
         }
-      }
-    };
-    const section = (name: string, sql: string): void => {
-      add(name);
-      for (const row of this.db.prepare(sql).iterate()) add(row);
-    };
+      };
+      const section = (name: string, sql: string): void => {
+        add(name);
+        for (const row of this.db.prepare(sql).iterate()) add(row);
+      };
 
-    section(
-      "sqlite_master",
-      `SELECT type, name, tbl_name, sql FROM sqlite_master
-       WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`,
-    );
-    for (const table of [
-      "memories",
-      "edges",
-      "memories_fts",
-      "memories_vec",
-      "entities",
-      "entity_relations",
-      "memory_entities",
-      "content_hashes",
-      "index_metadata",
-    ]) {
-      if (this.tableExists(table)) section(table, `SELECT rowid, * FROM ${table} ORDER BY rowid`);
+      section(
+        "sqlite_master",
+        `SELECT type, name, tbl_name, sql FROM sqlite_master
+         WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`,
+      );
+      for (const table of [
+        "memories",
+        "edges",
+        "memories_fts",
+        "memories_vec",
+        "entities",
+        "entity_relations",
+        "memory_entities",
+        "content_hashes",
+        "index_metadata",
+      ]) {
+        if (this.tableExists(table)) section(table, `SELECT rowid, * FROM ${table} ORDER BY rowid`);
+      }
+      return hash.digest("hex");
+    } finally {
+      if (ownsSnapshot && this.db.inTransaction) this.db.exec("ROLLBACK");
     }
-    return hash.digest("hex");
   }
 
   vectorCount(): number {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM memories_vec`).get() as { n: number }).n;
+  }
+
+  /** Deterministic per-memory vector commitments for same-provider rebuild parity. */
+  vectorPayloadDigests(): { readonly memoryId: string; readonly sha256: string }[] {
+    const rows = this.db.prepare(
+      `SELECT m.id AS memory_id, v.embedding AS embedding
+       FROM memories_vec v JOIN memories m ON m.seq = v.rowid ORDER BY m.id`,
+    ).all() as Array<{ memory_id: string; embedding: Uint8Array }>;
+    return rows.map((row) => ({
+      memoryId: row.memory_id,
+      sha256: createHash("sha256").update(row.embedding).digest("hex"),
+    }));
   }
 
   /** Dimension encoded in the actual vec0 DDL, including an empty vector table. */

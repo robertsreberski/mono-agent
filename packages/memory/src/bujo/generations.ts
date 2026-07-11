@@ -284,6 +284,15 @@ export async function activateManagedIndex(
   const data = `${JSON.stringify(manifest, null, 2)}\n`;
   const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0);
   let renamed = false;
+  let tempIdentity!: { readonly dev: number; readonly ino: number };
+  const expectedTempDigest = createHash("sha256").update(data).digest("hex");
+  const assertManifestTemp = (): void => {
+    const current = fileIdentity(temp, canonicalRoot, "managed memory manifest temporary file");
+    if (current.dev !== tempIdentity.dev || current.ino !== tempIdentity.ino
+      || createHash("sha256").update(readFileSync(temp)).digest("hex") !== expectedTempDigest) {
+      throw new Error("memory-rebuild: managed index manifest temporary file changed before activation.");
+    }
+  };
   try {
     const fd = openSync(temp, flags, 0o600);
     try {
@@ -292,9 +301,13 @@ export async function activateManagedIndex(
     } finally {
       closeSync(fd);
     }
+    tempIdentity = fileIdentity(temp, canonicalRoot, "managed memory manifest temporary file");
     await hooks.afterManifestTempFsync?.();
     hooks.beforeManifestRename?.();
     assertManagedLayoutState(canonicalRoot, layoutState);
+    // No JavaScript yield remains between this exact-byte/identity check and
+    // the same-directory rename.
+    assertManifestTemp();
     renameSync(temp, path);
     renamed = true;
     await hooks.afterManifestRename?.();

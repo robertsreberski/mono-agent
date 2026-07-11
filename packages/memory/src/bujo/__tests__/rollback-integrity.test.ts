@@ -105,6 +105,7 @@ describe("managed rollback logical integrity", () => {
               const path = generationPath(root, rollback.name);
               attacker = openRaw(path);
               loadVec(attacker);
+              attacker.pragma("busy_timeout = 0");
               attacker.pragma("wal_autocheckpoint = 0");
               mainBefore = sha256(path);
               attacker.exec("BEGIN IMMEDIATE");
@@ -120,13 +121,13 @@ describe("managed rollback logical integrity", () => {
               mainAfter = sha256(path);
             },
           },
-        })).rejects.toThrow(mutation === "vector" ? /logical integrity|digest/iu : /source parity|logical integrity|digest/iu);
+        })).rejects.toThrow(/database is locked|SQLite writer|source parity|logical integrity|digest/iu);
       } finally {
         attacker?.close();
       }
 
       expect(mainBefore).toBeDefined();
-      expect(mainAfter).toBe(mainBefore);
+      expect(mainAfter === undefined || mainAfter === mainBefore).toBe(true);
       expect(resolveActiveMemoryDbPath(root)).toBe(activeBefore);
     },
   );
@@ -151,6 +152,7 @@ describe("managed rollback logical integrity", () => {
             const path = generationPath(root, active.name);
             attacker = openRaw(path);
             loadVec(attacker);
+            attacker.pragma("busy_timeout = 0");
             attacker.pragma("wal_autocheckpoint = 0");
             mainBefore = sha256(path);
             const row = attacker.prepare(`SELECT seq FROM memories WHERE id = ?`)
@@ -162,13 +164,13 @@ describe("managed rollback logical integrity", () => {
             mainAfter = sha256(path);
           },
         },
-      })).rejects.toThrow(/candidate.*logical state|logical integrity|digest/iu);
+      })).rejects.toThrow(/database is locked|SQLite writer|candidate.*logical state|logical integrity|digest/iu);
     } finally {
       attacker?.close();
     }
 
     expect(mainBefore).toBeDefined();
-    expect(mainAfter).toBe(mainBefore);
+    expect(mainAfter === undefined || mainAfter === mainBefore).toBe(true);
     expect(readManagedIndexManifest(root)).toBeUndefined();
   });
 
@@ -192,7 +194,7 @@ describe("managed rollback logical integrity", () => {
     };
     try {
       await expect(safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 }))
-        .rejects.toThrow(/backup does not match.*pinned|pinned active database state/iu);
+        .rejects.toThrow(/database is locked|SQLite writer|backup does not match.*pinned|pinned active database state/iu);
     } finally {
       BetterSqlite3.prototype.backup = originalBackup;
     }
@@ -200,6 +202,43 @@ describe("managed rollback logical integrity", () => {
     expect(intercepted).toBe(true);
     expect(logicalDigest(first.active, 4)).toBe(sourceDigest);
     expect(resolveActiveMemoryDbPath(root)).toBe(first.active);
+  });
+
+  it("rejects a rollback backup whose copied logical state differs from its fenced source", async () => {
+    const root = tempRoot();
+    const provider = embeddings("test:backup-copy", 4);
+    writeDaily(root, [bullet("BACKUP-COPY", "The online copy must equal its fenced source.")]);
+    const first = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+    const originalBackup = BetterSqlite3.prototype.backup;
+
+    BetterSqlite3.prototype.backup = async function (...args): ReturnType<typeof originalBackup> {
+      const result = await originalBackup.apply(this, args);
+      replaceVector(String(args[0]), "BACKUP-COPY", vectorBlob([1, 0, 0, 0]));
+      return result;
+    };
+    try {
+      await expect(safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 }))
+        .rejects.toThrow(/backup does not match.*pinned|pinned active database state/iu);
+    } finally {
+      BetterSqlite3.prototype.backup = originalBackup;
+    }
+
+    expect(resolveActiveMemoryDbPath(root)).toBe(first.active);
+  });
+
+  it("does not advertise a same-provider rollback whose preexisting vector differs from the rebuilt candidate", async () => {
+    const root = tempRoot();
+    const provider = embeddings("test:prior-vector-parity", 4);
+    writeDaily(root, [bullet("VECTOR-PARITY", "The rebuilt candidate is the no-call vector oracle.")]);
+    const first = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+    replaceVector(first.active, "VECTOR-PARITY", vectorBlob([1, 0, 0, 0]));
+
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+
+    expect(rebuilt.rollback).toBeUndefined();
+    expect(readManagedIndexManifest(root)?.rollback).toBeUndefined();
+    expect(vectorFor(rebuilt.active, "VECTOR-PARITY")).not.toEqual([1, 0, 0, 0]);
+    expect(vectorFor(first.active, "VECTOR-PARITY")).toEqual([1, 0, 0, 0]);
   });
 
   it("rejects a noncanonical edge even when the manifest digest is recomputed", async () => {
@@ -222,6 +261,76 @@ describe("managed rollback logical integrity", () => {
 
     await expect(rollbackMemoryIndex({ root, tier: "lite" }))
       .rejects.toThrow(/rollback source parity.*edge inventory/iu);
+  });
+
+  it("rejects changed manifest-temp bytes before the activation rename", async () => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("TEMP-MANIFEST", "The fsynced manifest bytes stay pinned.")]);
+
+    await expect(safeRebuildMemoryIndex({
+      root,
+      tier: "lite",
+      hooks: {
+        afterManifestTempFsync: () => {
+          const path = pendingManifestPath(root);
+          const pending = JSON.parse(readFileSync(path, "utf8")) as MutableManifest & {
+            active: MutableGeneration & { createdAt?: string };
+          };
+          pending.active.createdAt = "2000-01-01T00:00:00.000Z";
+          writeFileSync(path, `${JSON.stringify(pending, null, 2)}\n`, "utf8");
+        },
+      },
+    })).rejects.toThrow(/manifest temporary file changed/iu);
+
+    expect(readManagedIndexManifest(root)).toBeUndefined();
+  });
+
+  it("holds a candidate writer fence across manifest activation", async () => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("CANDIDATE-FENCE", "No uncommitted writer may cross activation.")]);
+    let attacker: ReturnType<typeof openRaw> | undefined;
+    try {
+      await expect(safeRebuildMemoryIndex({
+        root,
+        tier: "lite",
+        hooks: {
+          afterManifestTempFsync: () => {
+            attacker = openRaw(generationPath(root, pendingManifest(root).active.name));
+            attacker.pragma("busy_timeout = 0");
+            attacker.exec("BEGIN IMMEDIATE");
+          },
+        },
+      })).rejects.toThrow(/database is locked|SQLite writer/iu);
+    } finally {
+      if (attacker?.inTransaction) attacker.exec("ROLLBACK");
+      attacker?.close();
+    }
+    expect(readManagedIndexManifest(root)).toBeUndefined();
+  });
+
+  it("holds a rollback-target writer fence across manifest activation", async () => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("ROLLBACK-FENCE", "A retained target cannot change during its swap.")]);
+    await safeRebuildMemoryIndex({ root, tier: "lite" });
+    const current = await safeRebuildMemoryIndex({ root, tier: "lite" });
+    let attacker: ReturnType<typeof openRaw> | undefined;
+    try {
+      await expect(rollbackMemoryIndex({
+        root,
+        tier: "lite",
+        hooks: {
+          afterManifestTempFsync: () => {
+            attacker = openRaw(generationPath(root, pendingManifest(root).active.name));
+            attacker.pragma("busy_timeout = 0");
+            attacker.exec("BEGIN IMMEDIATE");
+          },
+        },
+      })).rejects.toThrow(/database is locked|SQLite writer/iu);
+    } finally {
+      if (attacker?.inTransaction) attacker.exec("ROLLBACK");
+      attacker?.close();
+    }
+    expect(resolveActiveMemoryDbPath(root)).toBe(current.active);
   });
 
   it.each(["source_file", "created_at"] as const)(
@@ -394,6 +503,7 @@ function replaceVector(path: string, id: string, replacement: Buffer): Buffer {
   const raw = openRaw(path);
   try {
     loadVec(raw);
+    raw.pragma("busy_timeout = 0");
     const row = raw.prepare(
       `SELECT v.embedding AS embedding FROM memories_vec v JOIN memories m ON m.seq = v.rowid WHERE m.id = ?`,
     ).get(id) as { embedding: Buffer };
@@ -403,6 +513,23 @@ function replaceVector(path: string, id: string, replacement: Buffer): Buffer {
     ).run(replacement, id);
     raw.pragma("wal_checkpoint(TRUNCATE)");
     return prior;
+  } finally {
+    raw.close();
+  }
+}
+
+function vectorFor(path: string, id: string): number[] {
+  const raw = openRaw(path);
+  try {
+    loadVec(raw);
+    const row = raw.prepare(
+      `SELECT v.embedding AS embedding FROM memories_vec v JOIN memories m ON m.seq = v.rowid WHERE m.id = ?`,
+    ).get(id) as { embedding: Buffer };
+    const vector: number[] = [];
+    for (let offset = 0; offset < row.embedding.byteLength; offset += 4) {
+      vector.push(row.embedding.readFloatLE(offset));
+    }
+    return vector;
   } finally {
     raw.close();
   }
@@ -426,10 +553,14 @@ function generationPath(root: string, generation: string): string {
 }
 
 function pendingManifest(root: string): MutableManifest {
+  return JSON.parse(readFileSync(pendingManifestPath(root), "utf8")) as MutableManifest;
+}
+
+function pendingManifestPath(root: string): string {
   const managed = join(realpathSync(root), ".index");
   const temp = readdirSync(managed).find((name) => name.startsWith(".manifest-") && name.endsWith(".tmp"));
   if (temp === undefined) throw new Error("test: pending manifest temp not found");
-  return JSON.parse(readFileSync(join(managed, temp), "utf8")) as MutableManifest;
+  return join(managed, temp);
 }
 
 function mutableManifest(root: string): MutableManifest {
