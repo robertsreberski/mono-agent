@@ -1,7 +1,5 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-
 import type { MemoryDb } from "../store/index.js";
+import { writeCanonicalFileAtomic } from "./path-safety.js";
 
 /** Write <root>/future-log.md: the due/scheduled intentions queue, soonest first. Returns count. */
 export function writeFutureLog(root: string, db: MemoryDb, now: Date, horizonDays = 365): number {
@@ -9,15 +7,13 @@ export function writeFutureLog(root: string, db: MemoryDb, now: Date, horizonDay
   const items = db.dueItems(horizon, 200);
   const lines = items.map((m) => `- [<] ${m.text}  (due ${m.dueAt ?? "?"})  ^${m.id}`);
   const body = ["# Future Log", "", ...lines, ""].join("\n");
-  mkdirSync(root, { recursive: true });
-  writeFileSync(join(root, "future-log.md"), body, "utf8");
+  writeCanonicalFileAtomic(root, "future-log.md", body);
   return items.length;
 }
 
 /** Write the deterministic consolidation future log. No synthesis or due-item expansion. */
 export function writeEmptyFutureLog(root: string): void {
-  mkdirSync(root, { recursive: true });
-  writeFileSync(join(root, "future-log.md"), "# Future Log\n", "utf8");
+  writeCanonicalFileAtomic(root, "future-log.md", "# Future Log\n");
 }
 
 /** Write <root>/index.md: a living table of contents — counts + top entities + top-salient memories. */
@@ -57,6 +53,5 @@ export function writeIndex(root: string, db: MemoryDb, _now: Date): void {
     "",
   ].join("\n");
 
-  mkdirSync(root, { recursive: true });
-  writeFileSync(join(root, "index.md"), body, "utf8");
+  writeCanonicalFileAtomic(root, "index.md", body);
 }

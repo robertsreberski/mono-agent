@@ -30,6 +30,7 @@ import {
   resolveSupermemoryContainer,
 } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
+import { readManagedIndexManifest } from "@mono-agent/memory/bujo";
 import {
   describeSandboxEffectiveState,
   resolveSandboxEffectiveState,
@@ -1416,17 +1417,21 @@ async function memorySection(
     // Report consolidation scheduler cadence.
     const consolidationEnabled = config.memory.consolidation?.enabled !== false;
     const consolidationCron = config.memory.consolidation?.cron ?? DEFAULT_CONSOLIDATION_CRON;
-    const hasLlm = config.memory.llm !== undefined;
-
-    if (hasLlm) {
-      if (consolidationEnabled) {
-        details.push(`Consolidation: ${consolidationCron} (auto).`);
-      } else {
-        details.push("Consolidation: disabled.");
-      }
+    if (consolidationEnabled) {
+      details.push(`Consolidation: ${consolidationCron} (auto).`);
     } else {
-      details.push("Consolidation: not scheduled (no chat model — bujo runtime tier downgrades to journal).");
+      details.push("Consolidation: disabled.");
     }
+  }
+
+  const managedIdentity = await managedMemoryIdentityStatus(config.memory);
+  if (managedIdentity !== undefined) {
+    return {
+      id: "memory",
+      label: "Memory",
+      status: status === "error" ? "error" : managedIdentity.status,
+      details: [...details, ...managedIdentity.details],
+    };
   }
 
   if (config.memory.mode === "journal" || config.memory.mode === "bujo") {
@@ -1454,6 +1459,44 @@ async function memorySection(
   }
 
   return { id: "memory", label: "Memory", status, details };
+}
+
+async function managedMemoryIdentityStatus(
+  memory: NonNullable<MonoAgentConfig["memory"]>,
+): Promise<{ readonly status: "waiting" | "error"; readonly details: readonly string[] } | undefined> {
+  const manifestPath = join(memory.path, ".index", "manifest.json");
+  if (!(await pathExists(manifestPath))) return undefined;
+  let manifest;
+  try {
+    manifest = readManagedIndexManifest(memory.path);
+  } catch (error) {
+    return {
+      status: "error",
+      details: [`[ERROR] Managed memory generation metadata is invalid: ${error instanceof Error ? error.message : String(error)}`],
+    };
+  }
+  if (manifest === undefined) return undefined;
+
+  const configuredModel = memory.embeddings === undefined
+    ? undefined
+    : `${memory.embeddings.provider}:${memory.embeddings.model}`;
+  const configuredDimension = memory.embeddings === undefined ? undefined : memory.embeddings.dim ?? 768;
+  const active = manifest.active;
+  if (active.tier === memory.mode
+    && active.embeddingModel === configuredModel
+    && active.dimension === configuredDimension) {
+    return undefined;
+  }
+
+  const identity = (tier: string, model: string | undefined, dimension: number | undefined): string =>
+    `tier=${tier}, model=${model ?? "none"}, dim=${dimension ?? "none"}`;
+  return {
+    status: "waiting",
+    details: [
+      `[WARN] Active managed generation does not match the configured memory identity: active ${identity(active.tier, active.embeddingModel, active.dimension)}; configured ${identity(memory.mode, configuredModel, configuredDimension)}.`,
+      "Stop the agent with `mono-agent stop`, run `mono-agent memory rebuild`, then re-run `mono-agent validate` before restarting.",
+    ],
+  };
 }
 
 async function liteRootWritableWarning(memoryPath: string, allowFilesystemWrites: boolean): Promise<string[]> {

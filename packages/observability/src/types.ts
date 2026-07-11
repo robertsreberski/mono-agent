@@ -146,6 +146,18 @@ export interface RunSummary {
 export interface RunRecorder {
   start?(): Promise<RunSummary>;
   onEvent(event: RuntimeEventLike): void;
+  /**
+   * Awaitable, non-terminal preflight for a successful result. Harnesses use
+   * this as the last cancellation window before committing conversation state.
+   * It MUST NOT write/export a terminal summary or publish `run_finished`.
+   */
+  prepareFinish?(result: RuntimeResultLike): Promise<void>;
+  /**
+   * Commit the prepared result exactly once. Implementations should make this
+   * idempotent so repeated callers observe the same terminal summary without a
+   * second export or terminal live frame.
+   */
+  commitFinish?(result: RuntimeResultLike): Promise<RunSummary>;
   finish(result: RuntimeResultLike): Promise<RunSummary>;
   fail(error: unknown): Promise<RunSummary>;
 }

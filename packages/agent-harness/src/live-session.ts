@@ -17,7 +17,7 @@ import type { AgentHarnessRequest, AgentHarnessResponse } from "./types.js";
 export interface LiveSessionManager {
   /** Enqueue a turn; resolves when *this* turn completes (after any ahead of it). */
   enqueue(conversationId: string, request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
-  /** Abort the in-flight turn and reject every queued turn for the conversation. */
+  /** Abort an uncommitted in-flight turn and reject every queued turn for the conversation. */
   cancel(conversationId: string, reason?: unknown): void;
   /** Number of turns queued behind the active one. */
   pendingCount(conversationId: string): number;
@@ -27,13 +27,19 @@ export interface LiveSessionManager {
 
 export interface LiveSessionManagerOptions {
   /** Executes a single turn — typically `MonoAgentHarness.run`. */
-  readonly run: (request: AgentHarnessRequest) => Promise<AgentHarnessResponse>;
+  readonly run: (request: AgentHarnessRequest, lifecycle: LiveSessionRunLifecycle) => Promise<AgentHarnessResponse>;
   /**
    * Max turns queued behind the active one per conversation. Beyond this, new
    * enqueues are rejected (cancelled) so a stuck active turn cannot retain
    * unbounded follow-ups. Default 100.
    */
   readonly maxPendingPerConversation?: number;
+}
+
+/** Internal commit handshake between the serialized queue and the harness. */
+export interface LiveSessionRunLifecycle {
+  /** Cancellation is too late once durable conversation state starts committing. */
+  markCommitted(): void;
 }
 
 const DEFAULT_MAX_PENDING_PER_CONVERSATION = 100;
@@ -51,6 +57,7 @@ interface ConversationQueue {
   draining: boolean;
   activeController: AbortController | undefined;
   activeTurn: QueuedTurn | undefined;
+  activeCommitted: boolean;
 }
 
 export function createLiveSessionManager(options: LiveSessionManagerOptions): LiveSessionManager {
@@ -61,7 +68,7 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
   function queueFor(conversationId: string): ConversationQueue {
     let queue = conversations.get(conversationId);
     if (queue === undefined) {
-      queue = { pending: [], draining: false, activeController: undefined, activeTurn: undefined };
+      queue = { pending: [], draining: false, activeController: undefined, activeTurn: undefined, activeCommitted: false };
       conversations.set(conversationId, queue);
     }
     return queue;
@@ -90,14 +97,22 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
         linkAbort(turn.request.abortSignal, controller);
         queue.activeController = controller;
         queue.activeTurn = turn;
+        queue.activeCommitted = false;
         try {
-          const result = await options.run({ ...turn.request, abortSignal: controller.signal });
+          const result = await options.run(
+            { ...turn.request, abortSignal: controller.signal },
+            {
+              markCommitted(): void {
+                if (queue.activeTurn === turn) queue.activeCommitted = true;
+              },
+            },
+          );
           // Guard against a runner that ignores/races the abort and returns a
           // success despite an explicit cancel(): check the LOCAL controller
           // (the finally below clears queue.activeController) so a cancelled
           // active turn rejects rather than resolving success. This also covers
           // aborts propagated via request.abortSignal through linkAbort above.
-          if (controller.signal.aborted) {
+          if (controller.signal.aborted && !queue.activeCommitted) {
             turn.reject(
               new AgentResponseCancelledError("Cancelled during active turn.", {
                 reason: controller.signal.reason,
@@ -111,6 +126,7 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
         } finally {
           queue.activeController = undefined;
           queue.activeTurn = undefined;
+          queue.activeCommitted = false;
         }
       }
     } finally {
@@ -170,13 +186,15 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
       if (queue === undefined) {
         return;
       }
-      queue.activeController?.abort(reason);
-      // Settle the in-flight turn's promise directly (mirroring dispose()): an
-      // AbortController.abort() does not interrupt a pending `await options.run`,
-      // so a runner that ignores the abort and never resolves would otherwise
-      // hang the caller forever. A later resolve/reject from the drain loop is a
-      // no-op on a settled promise.
-      queue.activeTurn?.reject(new AgentResponseCancelledError("Cancelled during active turn.", { reason }));
+      const activeCommitted = queue.activeCommitted;
+      if (!activeCommitted) {
+        queue.activeController?.abort(reason);
+        // Settle the in-flight turn's promise directly: AbortController.abort()
+        // cannot interrupt an arbitrary pending runner. After markCommitted(),
+        // however, persistence is already atomic-in-progress and cancellation is
+        // deliberately too late; that response is allowed to finish normally.
+        queue.activeTurn?.reject(new AgentResponseCancelledError("Cancelled during active turn.", { reason }));
+      }
       const dropped = queue.pending.splice(0);
       for (const turn of dropped) {
         turn.detachAbort();
@@ -190,7 +208,7 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
       // `conversations.get(conversationId) === queue` identity check, so it will
       // not clobber a fresh queue. cancel() keeps accepting future turns — unlike
       // dispose(), we set no disposed flag; deleting the queue is sufficient.
-      conversations.delete(conversationId);
+      if (!activeCommitted) conversations.delete(conversationId);
     },
     pendingCount(conversationId: string): number {
       return conversations.get(conversationId)?.pending.length ?? 0;
@@ -198,17 +216,17 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
     dispose(): void {
       disposed = true;
       for (const [conversationId, queue] of conversations) {
-        queue.activeController?.abort();
-        // Shutdown does not wait for a runner to honor the abort — settle the
-        // in-flight turn's promise directly so callers never hang. A later
-        // resolve/reject from the drain loop is a no-op on a settled promise.
-        queue.activeTurn?.reject(new AgentResponseCancelledError("Live session manager has been disposed."));
+        if (!queue.activeCommitted) {
+          queue.activeController?.abort();
+          // Shutdown does not wait for an uncommitted runner to honor the abort.
+          queue.activeTurn?.reject(new AgentResponseCancelledError("Live session manager has been disposed."));
+        }
         const dropped = queue.pending.splice(0);
         for (const turn of dropped) {
           turn.detachAbort();
           turn.reject(new AgentResponseCancelledError("Live session manager has been disposed."));
         }
-        conversations.delete(conversationId);
+        if (!queue.activeCommitted) conversations.delete(conversationId);
       }
     },
   };

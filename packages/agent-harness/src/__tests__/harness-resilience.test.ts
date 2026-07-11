@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { MemoryStore } from "@mono-agent/agent-contracts";
+import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 import type { RuntimeResult } from "@mono-agent/runtime-adapter";
 import type { SkillsCache } from "../skills/index.js";
 
@@ -72,6 +73,68 @@ describe("AgentHarness resilience + caching", () => {
     expect(events).toContainEqual(
       expect.objectContaining({ type: "runtime_warning", warning_kind: "memory_degraded" }),
     );
+  });
+
+  it("does not retroactively fail a provider answer when memory persistence and diagnostics throw", async () => {
+    const identityPath = await identityFixture();
+    const warnings: string[] = [];
+    const lifecycle: string[] = [];
+    let terminalCalls = 0;
+    const memory: MemoryStore = {
+      load: async () => undefined,
+      appendHostSummary: async () => { throw new Error("disk became read-only"); },
+    };
+    const recorderFactory = (input: { readonly runId: string; readonly conversationId: string }): RunRecorder => {
+      const events: RuntimeEventLike[] = [];
+      const summary = (status: RunSummary["status"]): RunSummary => ({
+        runId: input.runId,
+        conversationId: input.conversationId,
+        status,
+        durationMs: 1,
+        eventCount: events.length,
+        artifactPaths: [],
+      });
+      const commit = async (_result: RuntimeResultLike): Promise<RunSummary> => {
+        terminalCalls += 1;
+        lifecycle.push("terminal");
+        return summary("succeeded");
+      };
+      return {
+        onEvent(event): void {
+          events.push(event);
+          if (event.type === "runtime_warning") lifecycle.push("warning");
+        },
+        async start(): Promise<RunSummary> { return summary("running"); },
+        async prepareFinish(): Promise<void> { lifecycle.push("prepare"); },
+        commitFinish: commit,
+        finish: commit,
+        async fail(): Promise<RunSummary> { return summary("failed"); },
+      };
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fakeRuntime({ text: "provider succeeded", providerSessionId: "ps-2" }),
+      model,
+      executionMode: "sdk",
+      memory,
+      memoryWriteMode: "append-host-summary",
+      onMemoryWarning: (message) => warnings.push(message),
+      recorderFactory,
+    });
+
+    const response = await harness.run({
+      ...request("conv-write-failure", "remember this"),
+      onEvent: (event) => {
+        if ((event as { type?: string }).type === "runtime_warning") throw new Error("event sink failed");
+      },
+    });
+
+    expect(response.text).toBe("provider succeeded");
+    expect(response.failure).toBeUndefined();
+    expect(warnings).toEqual([expect.stringContaining("disk became read-only")]);
+    expect(lifecycle).toEqual(["prepare", "warning", "terminal"]);
+    expect(terminalCalls).toBe(1);
+    expect(response.metadata.summary?.eventCount).toBeGreaterThan(0);
   });
 
   it("loads skills through the injected skills cache on every turn", async () => {

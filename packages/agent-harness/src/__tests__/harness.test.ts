@@ -922,6 +922,8 @@ describe("AgentHarness", () => {
     expect(response.text).toBe("All good.");
     expect(calls).toContain("append:c1");
     expect(calls.some((c) => c.startsWith("schedule:c1"))).toBe(true);
+    expect(fake.calls[0]?.prompt).toContain("Long-term memory state is owned by the host");
+    expect(fake.calls[0]?.prompt).toContain("never edit memory Markdown, SQLite databases, indexes, manifests");
   });
 
   for (const [label, metadata] of [

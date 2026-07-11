@@ -6,6 +6,7 @@ export class NoopRunRecorder implements RunRecorder {
   private readonly isolated: boolean | undefined;
   private readonly startedAt = Date.now();
   private eventCount = 0;
+  private terminalPromise: Promise<RunSummary> | undefined;
 
   constructor(input: { readonly runId: string; readonly conversationId: string; readonly isolated?: boolean }) {
     this.runId = input.runId;
@@ -14,6 +15,7 @@ export class NoopRunRecorder implements RunRecorder {
   }
 
   onEvent(_event: RuntimeEventLike): void {
+    if (this.terminalPromise !== undefined) return;
     this.eventCount += 1;
   }
 
@@ -21,12 +23,25 @@ export class NoopRunRecorder implements RunRecorder {
     return this.summary("running", undefined, {});
   }
 
+  async prepareFinish(_result: RuntimeResultLike): Promise<void> {}
+
+  async commitFinish(result: RuntimeResultLike): Promise<RunSummary> {
+    this.terminalPromise ??= Promise.resolve(
+      this.summary(result.cancelled === true ? "cancelled" : result.failureKind !== undefined || result.error !== undefined ? "failed" : "succeeded", result.failureKind ?? undefined, result),
+    );
+    return await this.terminalPromise;
+  }
+
   async finish(result: RuntimeResultLike): Promise<RunSummary> {
-    return this.summary(result.cancelled === true ? "cancelled" : result.failureKind !== undefined || result.error !== undefined ? "failed" : "succeeded", result.failureKind ?? undefined, result);
+    await this.prepareFinish(result);
+    return await this.commitFinish(result);
   }
 
   async fail(error: unknown): Promise<RunSummary> {
-    return this.summary("failed", error instanceof Error ? error.name : "exception", {});
+    this.terminalPromise ??= Promise.resolve(
+      this.summary("failed", error instanceof Error ? error.name : "exception", {}),
+    );
+    return await this.terminalPromise;
   }
 
   private summary(status: RunSummary["status"], failureKind: string | undefined, result: RuntimeResultLike): RunSummary {

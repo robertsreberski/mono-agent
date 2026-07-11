@@ -77,6 +77,41 @@ export interface EntityRelationRecord {
   readonly createdAt: string;
 }
 
+export interface MemoryEntityAssociation {
+  readonly memoryId: string;
+  readonly entityId: string;
+  /** `capture` is model-produced and candidate-specific; legacy matches are deterministic rebuild evidence. */
+  readonly provenance: "capture" | "legacy-name-match";
+  readonly createdAt: string;
+}
+
+export interface ContentHashRecord {
+  readonly contentHash: string;
+  readonly memoryId: string;
+  readonly sourceFile: string;
+  readonly createdAt: string;
+}
+
+export interface IndexMetadata {
+  readonly schemaVersion: number;
+  readonly policyVersion: string;
+  readonly tier: "lite" | "journal" | "bujo";
+  readonly embeddingModel?: string;
+  readonly dimension?: number;
+  readonly sourceFingerprint: string;
+  readonly generation: string;
+  readonly createdAt: string;
+  readonly skippedRawRecords?: number;
+  readonly skippedUnstructuredRecords?: number;
+  readonly skippedMissingIdentityRecords?: number;
+  readonly missingIdentityLocations?: readonly string[];
+  readonly skippedLegacySourceRecords?: number;
+  readonly legacySourceLocations?: readonly string[];
+  readonly skippedJournalDuplicateRecords?: number;
+  readonly parsedSourceItems?: number;
+  readonly derivedLegacyAssociations?: number;
+}
+
 export interface RecallWeights {
   readonly rrf: number;
   readonly recency: number;
@@ -91,6 +126,8 @@ export interface RecallOptions {
   readonly includeInvalid?: boolean;
   readonly trackAccess?: boolean;
   readonly now?: Date;
+  /** Abort before any post-provider SQLite access. */
+  readonly abortSignal?: AbortSignal;
 }
 
 export interface MemoryStoreStatsOptions {
@@ -116,7 +153,9 @@ export interface MemoryStoreAudit {
     readonly total: number;
     readonly live: number;
     readonly entities: number;
-    readonly entityRelations: number;
+      readonly entityRelations: number;
+      readonly memoryEntityAssociations: number;
+      readonly orphanedAssociations: number;
   };
   readonly duplicates: {
     readonly groups: number;
@@ -137,6 +176,7 @@ export interface MemoryStoreAudit {
 
 export interface MemoryDbOptions {
   readonly path: string;
+  readonly readOnly?: boolean;
   readonly embeddings?: EmbeddingProvider;
   readonly dim?: number;
   readonly k?: number;

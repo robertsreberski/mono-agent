@@ -1290,18 +1290,17 @@ describe("startMonoAgentApp", () => {
     expect(disposeSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("logs an accurate consolidation skip (not 'started') when bujo mode has no chat LLM (tier downgrades to journal)", async () => {
+  it("never starts BuJo consolidation for the strict Journal tier", async () => {
     const infos: string[] = [];
     const logger = { info: (m: string) => { infos.push(m); } };
 
     await writeConfig({
       ...baseConfig(),
       memory: {
-        mode: "bujo",
+        mode: "journal",
         path: join(dir, "mem"),
         writeMode: "append-host-summary",
         embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
-        // no llm -> runtime tier is "journal" -> consolidation is a no-op
       },
     });
 
@@ -1311,10 +1310,6 @@ describe("startMonoAgentApp", () => {
       logger,
     });
 
-    expect(infos.some((m) => /consolidation scheduler skipped/iu.test(m))).toBe(true);
-    expect(
-      infos.some((m) => /configured bujo mode resolved to the journal tier because memory\.llm is missing/iu.test(m)),
-    ).toBe(true);
     expect(infos.some((m) => /consolidation scheduler started/iu.test(m))).toBe(false);
     await app.stop();
   });
@@ -1344,7 +1339,7 @@ describe("startMonoAgentApp", () => {
     await app.stop();
   });
 
-  it("drains pending captures (flush) before closing memory on stop", async () => {
+  it("delegates bounded draining to a lifecycle-aware memory close on stop", async () => {
     await writeConfig(baseConfig());
 
     const order: string[] = [];
@@ -1365,7 +1360,25 @@ describe("startMonoAgentApp", () => {
       .__setSharedMemoryForTest(fakeStore);
 
     await app.stop();
-    expect(order).toEqual(["flush", "close"]);
+    // Calling an independently unbounded flush first would defeat BuJo's
+    // bounded close deadline. Its close drains accepted work up to that bound.
+    expect(order).toEqual(["close"]);
+  });
+
+  it("retains the legacy flush fallback for memory stores without close", async () => {
+    await writeConfig(baseConfig());
+
+    const order: string[] = [];
+    const app = await startMonoAgentApp({ cwd: dir, env: {} });
+    (app as unknown as { __setSharedMemoryForTest(store: unknown): void })
+      .__setSharedMemoryForTest({
+        load: async () => undefined,
+        appendHostSummary: async () => ({ conversationId: "c", source: "s", bytesWritten: 1 }),
+        flush: async () => { order.push("flush"); },
+      });
+
+    await app.stop();
+    expect(order).toEqual(["flush"]);
   });
 
   it("builds the shared memory store once when concurrent channel startup requests it", async () => {
