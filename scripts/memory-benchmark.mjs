@@ -27,6 +27,8 @@ export const MEMORY_BENCHMARK_GATES = Object.freeze({
   outOfDomainAbstentionRate: 1,
   staleRecallRate: 0.05,
   falseRecallRate: 0.05,
+  providerEligibleDirectFactCaseCount: 1,
+  providerEligibleDirectFactCoverage: 1,
 });
 
 const FAST_RECORDS = [
@@ -71,6 +73,37 @@ const FAST_CASES = [
   testCase("alternating", "Remind me of Morgan's deployment color.", ["fact-cobalt"]),
   testCase("alternating", "What date is the API launch?", ["launch-date"]),
   testCase("alternating", "Remind me of Morgan's deployment color.", ["fact-cobalt"]),
+];
+
+// Unlike FAST_POLICY_CASES, these cases exercise the configured embedding
+// provider, a real disposable index, db.recall, and the production selector.
+// Unsupported cases are informational: only the finite eligible direct-fact
+// contract is gated.
+const PROVIDER_AUTOMATIC_RECORDS = [
+  record("provider-color", "Morgan selected cobalt as the deployment color."),
+  record("provider-phone", "Morgan's phone number is 555-0100."),
+  record("provider-car", "Morgan's car color is red."),
+  record("provider-release", "The release train leaves on Thursday."),
+  record("provider-launch", "The API launch date is 2026-08-14."),
+  record("provider-location", "Morgan works in Amsterdam."),
+  record("provider-strategy", "Database rollouts use a blue-green deployment strategy."),
+  record("provider-atlas-lead", "Project Atlas is led by Morgan."),
+  record("provider-morgan-office", "Morgan's office is in Amsterdam."),
+];
+
+const PROVIDER_AUTOMATIC_CASES = [
+  providerCase("eligible-direct-fact", "What deployment color did Morgan select?", ["provider-color"]),
+  providerCase("eligible-direct-fact", "What is Morgan's phone number?", ["provider-phone"]),
+  providerCase("eligible-direct-fact", "What color is Morgan's car?", ["provider-car"]),
+  providerCase("eligible-direct-fact", "When does the release train leave?", ["provider-release"]),
+  providerCase("eligible-direct-fact", "When is the API launch date?", ["provider-launch"]),
+  providerCase("eligible-direct-fact", "Where does Morgan work?", ["provider-location"]),
+  providerCase("unsupported", "How are database changes shipped?", ["provider-strategy"]),
+  providerCase(
+    "unsupported",
+    "Where is Morgan, the person who leads Project Atlas, based?",
+    ["provider-morgan-office", "provider-atlas-lead"],
+  ),
 ];
 
 // Regression distribution captured from the default nomic provider: a direct
@@ -159,7 +192,15 @@ const FAST_POLICY_CASES = [{
 export async function runMemoryBenchmark(options = {}) {
   const suite = options.suite ?? "fast";
   const fixture = suite === "fast"
-    ? { records: FAST_RECORDS, cases: FAST_CASES, policyCases: FAST_POLICY_CASES, staleIds: new Set(["release-old"]) }
+    ? {
+        groups: [{
+          id: "fast",
+          records: FAST_RECORDS,
+          cases: FAST_CASES,
+          staleIds: new Set(["release-old"]),
+        }],
+        policyCases: FAST_POLICY_CASES,
+      }
     : await loadExternalFixture(suite, options.datasetPath);
   const root = await mkdtemp(join(tmpdir(), "mono-agent-memory-benchmark-"));
   const metrics = {
@@ -169,35 +210,37 @@ export async function runMemoryBenchmark(options = {}) {
   };
   const provider = await embeddingProvider(options.provider ?? "deterministic", options, metrics);
   const dim = options.dim ?? provider.dim;
-  const dbPath = join(root, "memory.db");
-  const db = openMemoryDb({ path: dbPath, embeddings: provider, dim });
   const indexingLatencies = [];
   const searchLatencies = [];
   const queryResults = [];
+  const audits = [];
   let queueDrainMs = 0;
   try {
-    let indexingTail = Promise.resolve();
-    for (const item of fixture.records) {
-      indexingTail = indexingTail.then(async () => {
+    for (const [groupIndex, group] of fixture.groups.entries()) {
+      const dbPath = join(root, `memory-${groupIndex}.db`);
+      const db = openMemoryDb({ path: dbPath, embeddings: provider, dim });
+      try {
         const started = performance.now();
-        await db.upsert(item);
+        await db.upsertMany(group.records, { batchSize: 32 });
         indexingLatencies.push(performance.now() - started);
-      });
+        for (const item of group.cases) {
+          const searchStarted = performance.now();
+          // Match the app-owned service: automatic recall fetches one bounded
+          // superset that can also satisfy the explicit tool limit without a
+          // second backend lookup for the same normalized query.
+          const hits = await db.recall(item.query, { topK: AUTO_RECALL_BACKEND_HITS });
+          searchLatencies.push(performance.now() - searchStarted);
+          const automatic = selectAutomaticRecallHits(hits, { query: item.query });
+          queryResults.push({ item, hits, automatic, staleIds: group.staleIds ?? new Set() });
+        }
+        audits.push(db.audit());
+      } finally {
+        db.close();
+      }
     }
-    const drainStarted = performance.now();
-    await indexingTail;
-    queueDrainMs = performance.now() - drainStarted;
-
-    for (const item of fixture.cases) {
-      const started = performance.now();
-      // Match the app-owned service: automatic recall fetches one bounded
-      // superset that can also satisfy the explicit tool limit without a
-      // second backend lookup for the same normalized query.
-      const hits = await db.recall(item.query, { topK: AUTO_RECALL_BACKEND_HITS });
-      searchLatencies.push(performance.now() - started);
-      const automatic = selectAutomaticRecallHits(hits, { query: item.query });
-      queryResults.push({ item, hits, automatic });
-    }
+    // Compatibility field: there is no longer a serial per-record queue, so
+    // this is the aggregate wall time spent draining group-local batch writes.
+    queueDrainMs = sum(indexingLatencies);
 
     const policyResults = (fixture.policyCases ?? FAST_POLICY_CASES).map(({ item, hits }) => ({
       item,
@@ -205,22 +248,29 @@ export async function runMemoryBenchmark(options = {}) {
       automatic: selectAutomaticRecallHits(hits, { query: item.query }),
     }));
     const automaticContract = automaticContractMetrics(policyResults);
-    const quality = { ...qualityMetrics(queryResults, fixture.staleIds), ...automaticContract };
+    const quality = { ...qualityMetrics(queryResults), ...automaticContract };
     const policyCalibration = policyCalibrationMetrics(policyResults);
-    const audit = db.audit();
     const storageBytes = await directoryBytes(root);
+    const providerAutomaticRecall = await runProviderAutomaticRecallCalibration(options);
     // Fixed capture/graph calibration is intentionally separate from provider
     // retrieval quality, latency, and cost. It uses its own disposable stores,
     // deterministic providers, and counters so it cannot improve or pollute the
     // selected provider's metrics above.
     const memoryCleanup = suite === "fast" ? await runMemoryCleanupBenchmark() : undefined;
-    const primaryGates = memoryBenchmarkGateResults(quality, policyCalibration);
+    const primaryGates = memoryBenchmarkGateResults(
+      quality,
+      policyCalibration,
+      providerAutomaticRecall,
+    );
+    const recordCount = fixture.groups.reduce((total, group) => total + group.records.length, 0);
+    const aggregateAudit = aggregateStoreAudits(audits);
     const report = {
       suite,
       provider: options.provider ?? "deterministic",
       disposableStore: true,
+      groups: fixture.groups.length,
       cases: queryResults.length,
-      retrievalCases: fixture.cases.length,
+      retrievalCases: queryResults.length,
       policyCases: policyResults.length,
       categories: [...new Set(queryResults.map(({ item }) => item.category))].sort(),
       policyCategories: [...new Set(policyResults.map(({ item }) => item.category))].sort(),
@@ -241,16 +291,19 @@ export async function runMemoryBenchmark(options = {}) {
         queueDrainMs,
       },
       store: {
-        records: fixture.records.length,
-        duplicateRatio: audit.duplicates.ratio,
-        vectorCoverage: audit.vectors.liveCoverage,
+        groups: fixture.groups.length,
+        records: recordCount,
+        duplicateRatio: aggregateAudit.duplicateRatio,
+        vectorCoverage: aggregateAudit.vectorCoverage,
       },
-      ...(memoryCleanup === undefined ? {} : { calibrations: { memoryCleanup } }),
+      calibrations: {
+        providerAutomaticRecall,
+        ...(memoryCleanup === undefined ? {} : { memoryCleanup }),
+      },
       gates: combineBenchmarkGates(primaryGates, memoryCleanup),
     };
     return report;
   } finally {
-    db.close();
     await rm(root, { recursive: true, force: true });
   }
 }
@@ -265,7 +318,7 @@ function combineBenchmarkGates(primary, memoryCleanup) {
   };
 }
 
-function qualityMetrics(results, staleIds) {
+function qualityMetrics(results) {
   const answerable = results.filter(({ item }) => item.relevantIds.length > 0);
   const recalls = { 1: [], 5: [], 8: [] };
   const automaticRecalls = [];
@@ -275,7 +328,7 @@ function qualityMetrics(results, staleIds) {
   let staleHits = 0;
   let falseHits = 0;
   let totalAutomaticHits = 0;
-  for (const { item, hits, automatic } of results) {
+  for (const { item, hits, automatic, staleIds } of results) {
     const relevant = new Set(item.relevantIds);
     if (relevant.size > 0) {
       for (const k of [1, 5, 8]) {
@@ -352,7 +405,11 @@ function automaticContractMetrics(results) {
   };
 }
 
-export function memoryBenchmarkGateResults(quality, policyCalibration = { passed: true }) {
+export function memoryBenchmarkGateResults(
+  quality,
+  policyCalibration = { passed: true },
+  providerAutomaticRecall = {},
+) {
   const checks = {
     recallAt5: quality.recallAt5 >= MEMORY_BENCHMARK_GATES.recallAt5,
     mrr: quality.mrr >= MEMORY_BENCHMARK_GATES.mrr,
@@ -372,6 +429,12 @@ export function memoryBenchmarkGateResults(quality, policyCalibration = { passed
     staleRecallRate: quality.staleRecallRate <= MEMORY_BENCHMARK_GATES.staleRecallRate,
     falseRecallRate: quality.falseRecallRate <= MEMORY_BENCHMARK_GATES.falseRecallRate,
     policyCalibration: policyCalibration.passed === true,
+    providerEligibleDirectFactCaseCount:
+      (providerAutomaticRecall.eligibleDirectFact?.cases ?? 0)
+        >= MEMORY_BENCHMARK_GATES.providerEligibleDirectFactCaseCount,
+    providerEligibleDirectFactCoverage:
+      (providerAutomaticRecall.eligibleDirectFact?.coverage ?? 0)
+        >= MEMORY_BENCHMARK_GATES.providerEligibleDirectFactCoverage,
   };
   return { passed: Object.values(checks).every(Boolean), checks, thresholds: MEMORY_BENCHMARK_GATES };
 }
@@ -393,6 +456,86 @@ function contextByteMetrics(results) {
 
 function latencyMetrics(values) {
   return { total: sum(values), average: mean(values), p50: percentile(values, 0.5), p95: percentile(values, 0.95) };
+}
+
+async function runProviderAutomaticRecallCalibration(options) {
+  const root = await mkdtemp(join(tmpdir(), "mono-agent-memory-provider-contract-"));
+  const metrics = { embeddingCalls: 0, embeddedTexts: 0, embeddingInputTokens: 0 };
+  const provider = await embeddingProvider(options.provider ?? "deterministic", options, metrics);
+  const dim = options.dim ?? provider.dim;
+  const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: provider, dim });
+  const indexingLatencies = [];
+  const searchLatencies = [];
+  try {
+    const indexStarted = performance.now();
+    await db.upsertMany(PROVIDER_AUTOMATIC_RECORDS, { batchSize: 32 });
+    indexingLatencies.push(performance.now() - indexStarted);
+
+    const results = [];
+    for (const item of PROVIDER_AUTOMATIC_CASES) {
+      const searchStarted = performance.now();
+      const hits = await db.recall(item.query, { topK: AUTO_RECALL_BACKEND_HITS });
+      searchLatencies.push(performance.now() - searchStarted);
+      results.push({
+        item,
+        automatic: selectAutomaticRecallHits(hits, { query: item.query }),
+      });
+    }
+
+    const eligible = results.filter(({ item }) => item.eligibility === "eligible-direct-fact");
+    const unsupported = results.filter(({ item }) => item.eligibility === "unsupported");
+    const eligibleCoverage = mean(eligible.map(({ item, automatic }) => {
+      const relevant = new Set(item.relevantIds);
+      return automatic.some((hit) => relevant.has(hit.record.id)) ? 1 : 0;
+    }));
+    const unsupportedAbstention = mean(unsupported.map(({ automatic }) =>
+      automatic.length === 0 ? 1 : 0));
+    const audit = db.audit();
+    return {
+      provider: options.provider ?? "deterministic",
+      disposableStore: true,
+      passed: eligible.length >= MEMORY_BENCHMARK_GATES.providerEligibleDirectFactCaseCount
+        && eligibleCoverage >= MEMORY_BENCHMARK_GATES.providerEligibleDirectFactCoverage,
+      eligibleDirectFact: {
+        cases: eligible.length,
+        coverage: eligibleCoverage,
+      },
+      unsupported: {
+        cases: unsupported.length,
+        abstentionRate: unsupportedAbstention,
+      },
+      efficiency: {
+        indexingLatencyMs: latencyMetrics(indexingLatencies),
+        searchLatencyMs: latencyMetrics(searchLatencies),
+        storageBytes: await directoryBytes(root),
+        embeddings: {
+          calls: metrics.embeddingCalls,
+          texts: metrics.embeddedTexts,
+          inputTokens: metrics.embeddingInputTokens,
+          costUsd: 0,
+        },
+        llm: { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 },
+      },
+      store: {
+        records: PROVIDER_AUTOMATIC_RECORDS.length,
+        duplicateRatio: audit.duplicates.ratio,
+        vectorCoverage: audit.vectors.liveCoverage,
+      },
+    };
+  } finally {
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+function aggregateStoreAudits(audits) {
+  const live = sum(audits.map((audit) => audit.counts.live));
+  const redundant = sum(audits.map((audit) => audit.duplicates.redundantRecords));
+  const liveIndexed = sum(audits.map((audit) => audit.vectors.liveIndexed));
+  return {
+    duplicateRatio: live === 0 ? 0 : redundant / live,
+    vectorCoverage: live === 0 ? 1 : liveIndexed / live,
+  };
 }
 
 async function embeddingProvider(kind, options, metrics) {
@@ -466,9 +609,10 @@ async function loadExternalFixture(suite, datasetPath) {
 function adaptLongMemEval(value) {
   const rows = Array.isArray(value) ? value : value.data;
   if (!Array.isArray(rows)) throw new Error("LongMemEval dataset must be an array or {data: array}.");
-  const records = [];
-  const cases = [];
+  const groups = [];
   for (const [rowIndex, row] of rows.entries()) {
+    const records = [];
+    const cases = [];
     const sessions = Array.isArray(row.haystack_sessions) ? row.haystack_sessions : [];
     const upstreamSessionIds = Array.isArray(row.haystack_session_ids)
       ? row.haystack_session_ids.map(String)
@@ -487,32 +631,35 @@ function adaptLongMemEval(value) {
       const numericIndex = typeof entry === "number" ? entry : Number(entry);
       return Number.isInteger(numericIndex) && ids[numericIndex] ? [ids[numericIndex]] : [];
     });
-    if (typeof row.question !== "string") continue;
-    const isAbstention = String(row.question_id ?? "").endsWith("_abs");
-    if (isAbstention) {
-      cases.push(testCase(String(row.question_type ?? "abstention"), row.question, []));
-      continue;
+    if (typeof row.question === "string") {
+      const isAbstention = String(row.question_id ?? "").endsWith("_abs");
+      if (isAbstention) {
+        cases.push(testCase(String(row.question_type ?? "abstention"), row.question, []));
+      } else {
+        if (rawRelevant.length > 0 && relevant.length === 0) {
+          throw new Error(
+            `LongMemEval row ${rowIndex} has answer_session_ids that do not map to haystack_session_ids.`,
+          );
+        }
+        // A non-abstention row without answer-session evidence is not evaluable as
+        // retrieval recall. Skip it instead of treating it as a successful abstention.
+        if (relevant.length > 0) {
+          cases.push(testCase(String(row.question_type ?? "external"), row.question, [...new Set(relevant)]));
+        }
+      }
     }
-    if (rawRelevant.length > 0 && relevant.length === 0) {
-      throw new Error(
-        `LongMemEval row ${rowIndex} has answer_session_ids that do not map to haystack_session_ids.`,
-      );
-    }
-    // A non-abstention row without answer-session evidence is not evaluable as
-    // retrieval recall. Skip it instead of treating it as a successful abstention.
-    if (relevant.length > 0) {
-      cases.push(testCase(String(row.question_type ?? "external"), row.question, [...new Set(relevant)]));
-    }
+    if (cases.length > 0) groups.push({ id: `longmemeval-${rowIndex}`, records, cases, staleIds: new Set() });
   }
-  return { records, cases, staleIds: new Set() };
+  return { groups };
 }
 
 function adaptLocomo(value) {
   const rows = Array.isArray(value) ? value : value.data;
   if (!Array.isArray(rows)) throw new Error("LoCoMo dataset must be an array or {data: array}.");
-  const records = [];
-  const cases = [];
+  const groups = [];
   for (const [rowIndex, row] of rows.entries()) {
+    const records = [];
+    const cases = [];
     const sessions = row.conversation && typeof row.conversation === "object" ? row.conversation : {};
     const localRecords = [];
     for (const [session, messages] of Object.entries(sessions)) {
@@ -561,8 +708,9 @@ function adaptLocomo(value) {
         cases.push(testCase(String(qa.category ?? "external"), qa.question, [...new Set(relevant)]));
       }
     }
+    if (cases.length > 0) groups.push({ id: `locomo-${rowIndex}`, records, cases, staleIds: new Set() });
   }
-  return { records, cases, staleIds: new Set() };
+  return { groups };
 }
 
 function record(id, text, overrides = {}) {
@@ -578,6 +726,10 @@ function scoredHit(id, text, score) {
 
 function testCase(category, query, relevantIds, staleIds = [], automaticClass) {
   return { category, query, relevantIds, staleIds, automaticClass };
+}
+
+function providerCase(eligibility, query, relevantIds) {
+  return { eligibility, query, relevantIds };
 }
 
 function ndcgAt(relevance, relevantCount, k) {
@@ -625,6 +777,7 @@ function parseArgs(argv) {
 function render(report) {
   const q = report.quality;
   const e = report.efficiency;
+  const providerAutomatic = report.calibrations.providerAutomaticRecall;
   const cleanup = report.calibrations?.memoryCleanup;
   const cleanupLines = cleanup === undefined ? [] : [
     `capture calls ${cleanup.capture.metrics.baseline.calls}->${cleanup.capture.metrics.candidate.calls} (${(cleanup.capture.metrics.candidate.callReduction * 100).toFixed(1)}% reduction)  associations P/R ${cleanup.capture.metrics.candidate.associationPrecision.toFixed(3)}/${cleanup.capture.metrics.candidate.associationRecall.toFixed(3)}`,
@@ -639,6 +792,7 @@ function render(report) {
     `stale ${(q.staleRecallRate * 100).toFixed(2)}%  false ${(q.falseRecallRate * 100).toFixed(2)}%  abstention ${(q.abstentionRate * 100).toFixed(1)}%`,
     `missing-attribute abstention ${(q.missingAttributeAbstentionRate * 100).toFixed(1)}%  out-of-domain abstention ${(q.outOfDomainAbstentionRate * 100).toFixed(1)}%`,
     `synthetic policy calibration ${report.policyCalibration.passed ? "PASS" : "FAIL"} (${report.policyCalibration.cases} separate case(s))`,
+    `provider-backed eligible direct-fact coverage ${(providerAutomatic.eligibleDirectFact.coverage * 100).toFixed(1)}% (${providerAutomatic.eligibleDirectFact.cases} cases)  unsupported abstention ${(providerAutomatic.unsupported.abstentionRate * 100).toFixed(1)}% (${providerAutomatic.unsupported.cases} informational cases)`,
     `context ${e.contextBytes.total} B  search p50/p95 ${e.searchLatencyMs.p50.toFixed(3)}/${e.searchLatencyMs.p95.toFixed(3)} ms`,
     `index ${e.indexingLatencyMs.total.toFixed(3)} ms  storage ${e.storageBytes} B  embeddings ${e.embeddings.calls} calls/${e.embeddings.texts} texts, ${e.embeddings.inputTokens} tokens, $${e.embeddings.costUsd.toFixed(6)}`,
     `LLM ${e.llm.calls} calls, ${e.llm.inputTokens + e.llm.outputTokens} tokens, $${e.llm.costUsd.toFixed(6)}  queue drain ${e.queueDrainMs.toFixed(3)} ms`,
