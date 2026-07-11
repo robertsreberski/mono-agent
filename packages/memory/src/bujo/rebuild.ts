@@ -1165,6 +1165,9 @@ async function adoptLegacyRollback(
   if (logicalIntegrityDigest(legacyPath) !== legacyIntegrity) {
     throw new Error("memory-rebuild: legacy database changed concurrently while it was being retained.");
   }
+  if (logicalIntegrityDigest(generation.dbPath) !== legacyIntegrity) {
+    throw new Error("memory-rebuild: legacy backup does not match the pinned source state.");
+  }
   const copy = openMemoryDb({ path: generation.dbPath, dim: actualDimension });
   let embeddingModel: string | undefined;
   let tier!: BujoTier;
@@ -1300,6 +1303,9 @@ async function snapshotDatabaseForRollback(
   const actualDimension = await backupRawSqlite(sourcePath, generation.dbPath);
   if (logicalIntegrityDigest(sourcePath, preservedIdentity) !== expectedIntegrity) {
     throw new Error("memory-rebuild: active database changed concurrently while it was being retained.");
+  }
+  if (logicalIntegrityDigest(generation.dbPath, preservedIdentity) !== expectedIntegrity) {
+    throw new Error("memory-rebuild: retained backup does not match the pinned active database state.");
   }
   // Re-check the online copy before changing its metadata. A concurrent source
   // mutation may produce a structurally valid backup that no longer mirrors

@@ -172,6 +172,36 @@ describe("managed rollback logical integrity", () => {
     expect(readManagedIndexManifest(root)).toBeUndefined();
   });
 
+  it("rejects an ABA vector change captured only by the online rollback backup", async () => {
+    const root = tempRoot();
+    const provider = embeddings("test:backup-aba", 4);
+    writeDaily(root, [bullet("BACKUP-ABA", "A rollback copy must equal the pinned source snapshot.")]);
+    const first = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+    const sourceDigest = logicalDigest(first.active, 4);
+    const originalBackup = BetterSqlite3.prototype.backup;
+    let intercepted = false;
+
+    BetterSqlite3.prototype.backup = async function (...args): ReturnType<typeof originalBackup> {
+      intercepted = true;
+      const originalVector = replaceVector(first.active, "BACKUP-ABA", vectorBlob([1, 0, 0, 0]));
+      try {
+        return await originalBackup.apply(this, args);
+      } finally {
+        replaceVector(first.active, "BACKUP-ABA", originalVector);
+      }
+    };
+    try {
+      await expect(safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 }))
+        .rejects.toThrow(/backup does not match.*pinned|pinned active database state/iu);
+    } finally {
+      BetterSqlite3.prototype.backup = originalBackup;
+    }
+
+    expect(intercepted).toBe(true);
+    expect(logicalDigest(first.active, 4)).toBe(sourceDigest);
+    expect(resolveActiveMemoryDbPath(root)).toBe(first.active);
+  });
+
   it("rejects a noncanonical edge even when the manifest digest is recomputed", async () => {
     const root = tempRoot();
     writeDaily(root, [bullet("EDGE", "Only source-derived edges belong in rollback.")]);
@@ -358,6 +388,24 @@ function vectorBlob(values: readonly number[]): Buffer {
   const blob = Buffer.alloc(values.length * 4);
   values.forEach((value, index) => blob.writeFloatLE(value, index * 4));
   return blob;
+}
+
+function replaceVector(path: string, id: string, replacement: Buffer): Buffer {
+  const raw = openRaw(path);
+  try {
+    loadVec(raw);
+    const row = raw.prepare(
+      `SELECT v.embedding AS embedding FROM memories_vec v JOIN memories m ON m.seq = v.rowid WHERE m.id = ?`,
+    ).get(id) as { embedding: Buffer };
+    const prior = Buffer.from(row.embedding);
+    raw.prepare(
+      `UPDATE memories_vec SET embedding = ? WHERE rowid = (SELECT seq FROM memories WHERE id = ?)`,
+    ).run(replacement, id);
+    raw.pragma("wal_checkpoint(TRUNCATE)");
+    return prior;
+  } finally {
+    raw.close();
+  }
 }
 
 function openRaw(path: string): BetterSqlite3.Database {
