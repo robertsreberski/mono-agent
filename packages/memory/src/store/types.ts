@@ -94,6 +94,7 @@ export interface ContentHashRecord {
 
 export interface IndexMetadata {
   readonly schemaVersion: number;
+  readonly policyVersion: string;
   readonly tier: "lite" | "journal" | "bujo";
   readonly embeddingModel?: string;
   readonly dimension?: number;
@@ -164,6 +165,7 @@ export interface MemoryStoreAudit {
 
 export interface MemoryDbOptions {
   readonly path: string;
+  readonly readOnly?: boolean;
   readonly embeddings?: EmbeddingProvider;
   readonly dim?: number;
   readonly k?: number;

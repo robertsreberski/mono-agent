@@ -872,7 +872,7 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
   },
   {
     signature:
-      "mono-agent memory [stats|today|show <date>|search <query>|top|audit]\n" +
+      "mono-agent memory [stats|today|show <date>|search <query>|top|audit|rebuild|rollback]\n" +
       "                  [--limit <n>] [--json] [--config <path>] [--env-file <path>]",
     lines: [
       "Preview the configured memory store from an agent folder. Reads the",

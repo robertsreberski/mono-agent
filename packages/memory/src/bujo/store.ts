@@ -25,6 +25,13 @@ import { consolidateBujoMemory, type ConsolidateResult } from "./consolidate.js"
 import { writeFutureLog, writeIndex } from "./projections.js";
 import type { Bullet, BujoLogger, BujoOptions, BujoTier } from "./types.js";
 import { BoundedBatchQueue, type BackgroundQueueSnapshot, type QueueJob } from "./queue.js";
+import {
+  acquireMemoryWriterLease,
+  canonicalMemoryRoot,
+  readManagedIndexManifest,
+  resolveActiveMemoryDbPath,
+  type MemoryWriterLease,
+} from "./generations.js";
 
 // Cap the recall query so an attachment turn's inlined document text (the user message can carry
 // up to a few KB of extracted file content) cannot drown the FTS/embedding signal.
@@ -67,6 +74,8 @@ export interface BujoQueueSnapshot {
 export class BujoMemoryStore implements MemoryStore {
   private readonly root: string;
   private readonly db: MemoryDb;
+  private readonly writerLease: MemoryWriterLease | undefined;
+  private readonly readOnly: boolean;
   private readonly maxBytes: number;
   private readonly clock: () => Date;
   private readonly nextId: () => string;
@@ -87,32 +96,58 @@ export class BujoMemoryStore implements MemoryStore {
   private journalRecoveryRowsScanned = 0;
   private journalRecoveryRefillQueries = 0;
   private closing = false;
+  private closed = false;
 
   constructor(options: BujoOptions) {
-    this.root = options.root;
-    this.maxBytes = options.maxBytes ?? 8_000;
-    this.clock = options.clock ?? (() => new Date());
-    this.nextId = createIdFactory({ clock: this.clock });
     const derivedTier = options.embeddings === undefined
       ? "lite"
       : options.llm === undefined
         ? "journal"
         : "bujo";
-    this._tier = options.tier ?? derivedTier;
-    assertTierPrerequisites(this._tier, options);
-    this.db = openMemoryDb({
-      path: join(options.root, "memory.db"),
-      ...(options.embeddings !== undefined && { embeddings: options.embeddings }),
-      ...(options.dim !== undefined && { dim: options.dim }),
-      clock: this.clock,
-    });
-    if (options.llm !== undefined) {
-      this.llm = options.llm;
-    }
+    const tier = options.tier ?? derivedTier;
+    // Pure validation precedes every filesystem/lease side effect.
+    assertTierPrerequisites(tier, options);
+    this.readOnly = options.readOnly === true;
+    const writerLease = this.readOnly ? undefined : acquireMemoryWriterLease(options.root);
+    this.writerLease = writerLease;
+    this.root = writerLease?.root ?? canonicalMemoryRoot(options.root, true);
+    this.maxBytes = options.maxBytes ?? 8_000;
+    this.clock = options.clock ?? (() => new Date());
+    this.nextId = createIdFactory({ clock: this.clock });
+    this._tier = tier;
+    if (options.llm !== undefined) this.llm = options.llm;
     this.logger = options.logger ?? { warn: () => {} };
-    if (this._tier !== "lite") this.db.assertEmbeddingIdentity();
-    if (this._tier === "journal") this.initializeJournalIndexing();
-    if (this._tier === "bujo") this.initializeCaptureQueue();
+    let opened: MemoryDb | undefined;
+    try {
+      const managed = readManagedIndexManifest(this.root);
+      if (!this.readOnly && managed !== undefined && (
+        managed.active.tier !== this._tier
+        || managed.active.embeddingModel !== options.embeddings?.id
+        || managed.active.dimension !== options.dim
+      )) {
+        throw new Error(
+          `memory-bujo: active generation requires tier=${managed.active.tier}, `
+          + `model=${managed.active.embeddingModel ?? "none"}, dim=${managed.active.dimension ?? "none"}; `
+          + "run the safe memory rebuild for the configured identity.",
+        );
+      }
+      opened = openMemoryDb({
+        path: options.dbPath ?? resolveActiveMemoryDbPath(this.root),
+        ...(options.embeddings !== undefined && { embeddings: options.embeddings }),
+        ...(options.dim !== undefined && { dim: options.dim }),
+        ...(this.readOnly ? { readOnly: true } : {}),
+        clock: this.clock,
+      });
+      this.db = opened;
+      if (this._tier !== "lite") this.db.assertEmbeddingIdentity();
+      if (!this.readOnly && this._tier === "journal") this.initializeJournalIndexing();
+      if (!this.readOnly && this._tier === "bujo") this.initializeCaptureQueue();
+    } catch (error) {
+      const cleanupErrors: unknown[] = [];
+      try { opened?.close(); } catch (closeError) { cleanupErrors.push(closeError); }
+      try { writerLease?.release(); } catch (releaseError) { cleanupErrors.push(releaseError); }
+      throw withCleanupErrors(error, cleanupErrors, "memory-bujo initialization failed");
+    }
   }
 
   /** The effective tier of this store (lite / journal / bujo). */
@@ -141,7 +176,9 @@ export class BujoMemoryStore implements MemoryStore {
   async recall(query: string, options: { topK?: number; trackAccess?: boolean } = {}): Promise<RecallHit[]> {
     return this.db.recall(query, {
       ...(options.topK !== undefined && { topK: options.topK }),
-      ...(options.trackAccess !== undefined && { trackAccess: options.trackAccess }),
+      ...(this.readOnly
+        ? { trackAccess: false }
+        : options.trackAccess === undefined ? {} : { trackAccess: options.trackAccess }),
     });
   }
 
@@ -191,10 +228,12 @@ export class BujoMemoryStore implements MemoryStore {
 
   /** Record served recall hits as telemetry without re-running retrieval. */
   recordAccess(ids: readonly string[]): void {
+    if (this.readOnly) return;
     this.db.recordAccess(ids);
   }
 
   async appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
+    this.assertWritable("appendHostSummary");
     const now = this.clock();
     const text = summary.trim().replace(/\s+/gu, " ");
     const hash = normalizedContentHash(text);
@@ -272,6 +311,7 @@ export class BujoMemoryStore implements MemoryStore {
    * Returns `undefined` when no `llm` was configured (matches `capture()` pattern).
    */
   async reflect(): Promise<ReflectResult | undefined> {
+    this.assertWritable("reflect");
     if (this.llm === undefined) return undefined;
     const r = await reflectFn({
       db: this.db,
@@ -292,6 +332,7 @@ export class BujoMemoryStore implements MemoryStore {
    * Returns `undefined` when no `llm` was configured (matches `capture()` pattern).
    */
   async migrate(): Promise<MigrateResult | undefined> {
+    this.assertWritable("migrate");
     if (this.llm === undefined) return undefined;
     const m = await migrateFn({
       db: this.db,
@@ -310,6 +351,7 @@ export class BujoMemoryStore implements MemoryStore {
    * logged so it never breaks the chain, the reply, or the process. No-op without an llm.
    */
   scheduleCapture(conversationId: string, text: string): void {
+    this.assertWritable("scheduleCapture");
     if (this.captureQueue === undefined) return;
     const outcome = this.captureQueue.enqueue({
       key: `${conversationId}:${normalizedContentHash(text)}`,
@@ -359,6 +401,7 @@ export class BujoMemoryStore implements MemoryStore {
    * present, and a no-op when one is not.
    */
   async capture(conversationId: string, text: string): Promise<{ actions: number; entities: number } | undefined> {
+    this.assertWritable("capture");
     if (this.llm === undefined) return undefined;
     const res = await captureTurn(text, {
       db: this.db,
@@ -377,11 +420,13 @@ export class BujoMemoryStore implements MemoryStore {
    * tiers this is the primary maintenance call; in the `lite` tier it still runs harmlessly.
    */
   async decay(): Promise<{ decayed: number }> {
+    this.assertWritable("decay");
     return this.db.applyDecay(this.clock());
   }
 
   /** Run deterministic, no-LLM BuJo consolidation in every tier. */
   async consolidate(): Promise<ConsolidateResult> {
+    this.assertWritable("consolidate");
     return consolidateBujoMemory({
       root: this.root,
       db: this.db,
@@ -392,10 +437,23 @@ export class BujoMemoryStore implements MemoryStore {
   async close(): Promise<void> {
     // Drain any queued captures before closing the db handle, so a caller that omits flush()
     // (e.g. the MCP's signal handler) doesn't strand an in-flight capture against a closed db.
+    if (this.closed) return;
+    this.closed = true;
     this.closing = true;
     if (this.journalRetryTimer !== undefined) clearTimeout(this.journalRetryTimer);
-    await this.flush();
-    this.db.close();
+    let primary: unknown;
+    try {
+      await this.flush();
+    } catch (error) {
+      primary = error;
+    } finally {
+      const cleanupErrors: unknown[] = [];
+      try { this.db.close(); } catch (closeError) { cleanupErrors.push(closeError); }
+      try { this.writerLease?.release(); } catch (releaseError) { cleanupErrors.push(releaseError); }
+      if (primary !== undefined || cleanupErrors.length > 0) {
+        throw withCleanupErrors(primary, cleanupErrors, "memory-bujo close failed");
+      }
+    }
   }
 
   private initializeJournalIndexing(): void {
@@ -550,6 +608,10 @@ export class BujoMemoryStore implements MemoryStore {
       // A logger failure cannot poison memory queues or provider turns.
     }
   }
+
+  private assertWritable(operation: string): void {
+    if (this.readOnly) throw new Error(`memory-bujo: read-only store rejects ${operation}.`);
+  }
 }
 
 export function createBujoMemoryStore(options: BujoOptions): BujoMemoryStore {
@@ -579,6 +641,11 @@ function assertTierPrerequisites(tier: BujoTier, options: BujoOptions): void {
 
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function withCleanupErrors(primary: unknown, cleanup: readonly unknown[], message: string): unknown {
+  if (cleanup.length === 0) return primary;
+  return new AggregateError(primary === undefined ? cleanup : [primary, ...cleanup], message);
 }
 
 async function serializeJournalWrite<T>(root: string, write: () => T | Promise<T>): Promise<T> {

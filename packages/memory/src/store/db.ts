@@ -58,16 +58,18 @@ export class MemoryDb {
     if (options.path !== ":memory:") {
       mkdirSync(dirname(options.path), { recursive: true });
     }
-    this.db = new BetterSqlite3(options.path);
-    this.db.pragma("journal_mode = WAL");
+    this.db = new BetterSqlite3(options.path, options.readOnly === true
+      ? { readonly: true, fileMustExist: true }
+      : undefined);
+    if (options.readOnly !== true) this.db.pragma("journal_mode = WAL");
     // WAL gives concurrent readers + a single writer. better-sqlite3 (v11) already defaults
     // busy_timeout to 5000ms, so a second connection (e.g. the bundled recall-tool child opening
     // the same db next to the live in-app store) retries on a locked db instead of throwing
     // SQLITE_BUSY. open.test.ts pins this
     // invariant — if an upgrade ever drops the default, the test fails and we set it explicitly here.
     loadVec(this.db);
-    for (const statement of migrations(vecDim)) {
-      this.db.exec(statement);
+    if (options.readOnly !== true) {
+      for (const statement of migrations(vecDim)) this.db.exec(statement);
     }
     this.embeddings = options.embeddings;
     this.dim = vecDim;
@@ -1077,6 +1079,7 @@ export class MemoryDb {
   setIndexMetadata(metadata: IndexMetadata): void {
     const entries: Array<[string, string]> = [
       ["schemaVersion", String(metadata.schemaVersion)],
+      ["policyVersion", metadata.policyVersion],
       ["tier", metadata.tier],
       ["sourceFingerprint", metadata.sourceFingerprint],
       ["generation", metadata.generation],
@@ -1099,11 +1102,13 @@ export class MemoryDb {
     if (rows.length === 0) return undefined;
     const values = new Map(rows.map((row) => [row.key, row.value]));
     const schemaVersion = Number(values.get("schemaVersion"));
+    const policyVersion = values.get("policyVersion");
     const tier = values.get("tier");
     const sourceFingerprint = values.get("sourceFingerprint");
     const generation = values.get("generation");
     const createdAt = values.get("createdAt");
-    if (!Number.isInteger(schemaVersion) || (tier !== "lite" && tier !== "journal" && tier !== "bujo")
+    if (!Number.isInteger(schemaVersion) || policyVersion === undefined
+      || (tier !== "lite" && tier !== "journal" && tier !== "bujo")
       || sourceFingerprint === undefined || generation === undefined || createdAt === undefined) {
       throw new Error("memory-store: index metadata is incomplete or corrupt.");
     }
@@ -1115,6 +1120,7 @@ export class MemoryDb {
     }
     return {
       schemaVersion,
+      policyVersion,
       tier,
       sourceFingerprint,
       generation,
@@ -1130,6 +1136,93 @@ export class MemoryDb {
 
   vectorCount(): number {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM memories_vec`).get() as { n: number }).n;
+  }
+
+  /** Dimension encoded in the actual vec0 DDL, including an empty vector table. */
+  vectorDimension(): number {
+    const row = this.db.prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memories_vec'`,
+    ).get() as { sql: string } | undefined;
+    const match = row?.sql.match(/embedding\s+float\[(\d+)\]/iu);
+    const dimension = Number(match?.[1]);
+    if (!Number.isInteger(dimension) || dimension <= 0) {
+      throw new Error("memory-store: memories_vec DDL has no valid vector dimension.");
+    }
+    return dimension;
+  }
+
+  /** Closed-candidate validation counters; every value is derived without mutating the DB. */
+  validationSnapshot(): {
+    readonly memories: number;
+    readonly ftsRows: number;
+    readonly ftsMismatches: number;
+    readonly vectors: number;
+    readonly vectorOrphans: number;
+    readonly contentHashes: number;
+    readonly contentHashOrphans: number;
+    readonly entities: number;
+    readonly relations: number;
+    readonly relationOrphans: number;
+    readonly associations: number;
+    readonly associationOrphans: number;
+    readonly embeddingModels: readonly string[];
+  } {
+    const count = (sql: string): number => (this.db.prepare(sql).get() as { n: number }).n;
+    const embeddingModels = (this.db.prepare(
+      `SELECT DISTINCT embedding_model AS model FROM memories
+       WHERE embedding_model IS NOT NULL ORDER BY embedding_model`,
+    ).all() as Array<{ model: string }>).map((row) => row.model);
+    return {
+      memories: count(`SELECT COUNT(*) AS n FROM memories`),
+      ftsRows: count(`SELECT COUNT(*) AS n FROM memories_fts`),
+      ftsMismatches: count(
+        `SELECT COUNT(*) AS n FROM (
+           SELECT id, text FROM memories EXCEPT SELECT id, text FROM memories_fts
+           UNION ALL
+           SELECT id, text FROM memories_fts EXCEPT SELECT id, text FROM memories
+         )`,
+      ),
+      vectors: count(`SELECT COUNT(*) AS n FROM memories_vec`),
+      vectorOrphans: count(`SELECT COUNT(*) AS n FROM memories_vec v LEFT JOIN memories m ON m.seq = v.rowid WHERE m.id IS NULL`),
+      contentHashes: count(`SELECT COUNT(*) AS n FROM content_hashes`),
+      contentHashOrphans: count(
+        `SELECT COUNT(*) AS n FROM content_hashes h LEFT JOIN memories m ON m.id = h.memory_id WHERE m.id IS NULL`,
+      ),
+      entities: count(`SELECT COUNT(*) AS n FROM entities`),
+      relations: count(`SELECT COUNT(*) AS n FROM entity_relations`),
+      relationOrphans: count(
+        `SELECT COUNT(*) AS n FROM entity_relations r
+         LEFT JOIN entities s ON s.id = r.src LEFT JOIN entities d ON d.id = r.dst
+         WHERE s.id IS NULL OR d.id IS NULL`,
+      ),
+      associations: count(`SELECT COUNT(*) AS n FROM memory_entities`),
+      associationOrphans: count(
+        `SELECT COUNT(*) AS n FROM memory_entities a
+         LEFT JOIN memories m ON m.id = a.memory_id LEFT JOIN entities e ON e.id = a.entity_id
+         WHERE m.id IS NULL OR e.id IS NULL`,
+      ),
+      embeddingModels,
+    };
+  }
+
+  contentHashRecords(): ContentHashRecord[] {
+    const rows = this.db.prepare(
+      `SELECT content_hash, memory_id, source_file, created_at FROM content_hashes ORDER BY content_hash`,
+    ).all() as Array<{ content_hash: string; memory_id: string; source_file: string; created_at: string }>;
+    return rows.map((row) => ({
+      contentHash: row.content_hash,
+      memoryId: row.memory_id,
+      sourceFile: row.source_file,
+      createdAt: row.created_at,
+    }));
+  }
+
+  checkpoint(): void {
+    this.db.pragma("wal_checkpoint(TRUNCATE)");
+  }
+
+  async backupTo(path: string): Promise<void> {
+    await this.db.backup(path);
   }
 
   assertEmbeddingIdentity(): void {

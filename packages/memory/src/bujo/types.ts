@@ -27,6 +27,10 @@ export interface BujoLogger {
 
 export interface BujoOptions {
   readonly root: string;
+  /** Pin this instance to an already-resolved generation. Used to keep fallback reads on one snapshot. */
+  readonly dbPath?: string;
+  /** Read-only recall snapshot: opens no writer lease and starts no recovery/capture writers. */
+  readonly readOnly?: boolean;
   /** Embedding provider. When absent, the store runs in `lite` tier (FTS-only recall). */
   readonly embeddings?: EmbeddingProvider;
   /** Vector dimension. Required when `embeddings` is provided; ignored in the `lite` tier. */

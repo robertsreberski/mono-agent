@@ -9,7 +9,21 @@ export {
   selectAutomaticRecallHits,
 } from "./recall.js";
 export { isConversationRelativeQuery } from "./recall-evidence.js";
-export { rebuildFromMarkdown } from "./rebuild.js";
+export {
+  rollbackMemoryIndex,
+  safeRebuildMemoryIndex,
+} from "./rebuild.js";
+export type {
+  SafeMemoryIndexOptions,
+  SafeMemoryIndexResult,
+  SafeMemoryRebuildHooks,
+} from "./rebuild.js";
+export {
+  MEMORY_REBUILD_POLICY_VERSION,
+  readManagedIndexManifest,
+  resolveActiveMemoryDbPath,
+} from "./generations.js";
+export type { ManagedGeneration, ManagedIndexManifest } from "./generations.js";
 export { MARKER_FOR, parseBullet, serializeBullet, parseDailyFile, serializeDailyFile } from "./grammar.js";
 export { appendBullet, dailyFilePath } from "./daily.js";
 export { createIdFactory } from "./ids.js";

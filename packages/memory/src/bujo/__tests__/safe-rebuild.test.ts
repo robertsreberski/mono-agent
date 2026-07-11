@@ -2,6 +2,10 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -10,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import BetterSqlite3 from "better-sqlite3";
 
 import type { EmbeddingProvider } from "../../search/index.js";
 import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
@@ -35,7 +40,7 @@ describe("safe memory index rebuild", () => {
     writeDaily(root, [bullet("NEW", "Canonical source sentinel.")]);
 
     const legacyPath = await resolveActiveMemoryDbPath(root);
-    expect(legacyPath).toBe(join(root, "memory.db"));
+    expect(legacyPath).toBe(join(realpathSync(root), "memory.db"));
 
     await safeRebuildMemoryIndex({ root, tier: "lite" });
 
@@ -275,6 +280,194 @@ describe("safe memory index rebuild", () => {
     expect(await resolveActiveMemoryDbPath(root)).toBe(active);
     expect(readTexts(active)).toEqual(["Source at activation."]);
   });
+
+  it("keeps legacy raw host observations out of BuJo recall and derives only precise whole-name associations", async () => {
+    const root = tempRoot();
+    writeDaily(root, [
+      bullet("M1", "Morgan owns the Annual migration plan."),
+      bullet("RAW", "Host-observed completed turn. Morgan asked about setup."),
+    ]);
+    writeGraph(root, [
+      { kind: "entity", id: "person:morgan", name: "Morgan", type: "person", createdAt: NOW },
+      { kind: "entity", id: "person:ann", name: "Ann", type: "person", createdAt: NOW },
+    ]);
+
+    const result = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: embeddings("test:bujo", 8), dim: 8 });
+    expect(result).toMatchObject({ indexed: 1, skippedRawRecords: 1, derivedLegacyAssociations: 1 });
+    const db = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
+    try {
+      expect(db.get("RAW")).toBeUndefined();
+      expect(db.associationsForMemory("M1")).toEqual([
+        expect.objectContaining({ entityId: "person:morgan", provenance: "legacy-name-match" }),
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("never supplements a precise captured association with legacy text matches", async () => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("M1", "Morgan owns Atlas.")]);
+    writeGraph(root, [
+      { kind: "entity", id: "person:morgan", name: "Morgan", createdAt: NOW },
+      { kind: "entity", id: "project:atlas", name: "Atlas", createdAt: NOW },
+      { kind: "association", memoryId: "M1", entityId: "person:morgan", provenance: "capture", createdAt: NOW },
+    ]);
+    const result = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: embeddings("test:bujo", 8), dim: 8 });
+    expect(result.derivedLegacyAssociations).toBe(0);
+    const db = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
+    try {
+      expect(db.associationsForMemory("M1")).toEqual([
+        expect.objectContaining({ entityId: "person:morgan", provenance: "capture" }),
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects candidate DB replacement after validation", async () => {
+    const root = tempRoot();
+    await seedLegacy(root, note("OLD", "Candidate replacement sentinel."));
+    writeDaily(root, [bullet("NEW", "Validated candidate.")]);
+    const before = resolveActiveMemoryDbPath(root);
+    await expect(safeRebuildMemoryIndex({
+      root,
+      tier: "lite",
+      hooks: {
+        afterCandidateValidated: () => {
+          const generations = join(realpathSync(root), ".index", "generations");
+          const candidate = join(generations, readdirSync(generations)[0] ?? "missing", "memory.db");
+          renameSync(candidate, `${candidate}.replaced`);
+          writeFileSync(candidate, "not sqlite", { mode: 0o600 });
+        },
+      },
+    })).rejects.toThrow(/candidate|database|changed|replaced/iu);
+    expect(resolveActiveMemoryDbPath(root)).toBe(before);
+  });
+
+  it("CAS-protects both absent and existing manifests from non-cooperating edits", async () => {
+    const root = tempRoot();
+    await seedLegacy(root, note("OLD", "Manifest CAS sentinel."));
+    writeDaily(root, [bullet("NEW", "Manifest candidate.")]);
+    const manifestPath = join(realpathSync(root), ".index", "manifest.json");
+    await expect(safeRebuildMemoryIndex({
+      root,
+      tier: "lite",
+      hooks: { afterCandidateValidated: () => writeFileSync(manifestPath, "{}\n", { mode: 0o600 }) },
+    })).rejects.toThrow(/manifest.*changed|concurrent/iu);
+
+    rmSync(manifestPath);
+    await safeRebuildMemoryIndex({ root, tier: "lite" });
+    const active = resolveActiveMemoryDbPath(root);
+    const originalManifest = readFileSync(manifestPath, "utf8");
+    await expect(safeRebuildMemoryIndex({
+      root,
+      tier: "lite",
+      hooks: { afterCandidateValidated: () => writeFileSync(manifestPath, `${originalManifest.trim()}\n\n`, { mode: 0o600 }) },
+    })).rejects.toThrow(/manifest.*changed|concurrent/iu);
+    expect(resolveActiveMemoryDbPath(root)).toBe(active);
+  });
+
+  it.each([
+    ["journal", "bujo"],
+    ["bujo", "journal"],
+  ] as const)("preserves the correct source domain for %s -> %s rollback", async (from, to) => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("M1", "Morgan owns the cross-tier plan.")]);
+    writeGraph(root, [{ kind: "entity", id: "person:morgan", name: "Morgan", createdAt: NOW }]);
+    const provider = embeddings("test:cross-tier", 8);
+    await safeRebuildMemoryIndex({ root, tier: from, embeddings: provider, dim: 8 });
+    const first = resolveActiveMemoryDbPath(root);
+    await safeRebuildMemoryIndex({ root, tier: to, embeddings: provider, dim: 8 });
+    await rollbackMemoryIndex({ root, tier: from, embeddings: provider, dim: 8 });
+    expect(resolveActiveMemoryDbPath(root)).toBe(first);
+  });
+
+  it("rejects a legacy SQLite write transaction before calling embeddings", async () => {
+    const root = tempRoot();
+    await seedLegacy(root, note("OLD", "Legacy live writer sentinel."));
+    writeDaily(root, [bullet("NEW", "Must wait for stopped legacy writer.")]);
+    const legacy = new BetterSqlite3(join(root, "memory.db"));
+    legacy.exec("BEGIN IMMEDIATE");
+    const embed = vi.fn(embeddings("test:locked", 8).embed);
+    try {
+      await expect(safeRebuildMemoryIndex({
+        root,
+        tier: "journal",
+        embeddings: { id: "test:locked", embed },
+        dim: 8,
+      })).rejects.toThrow(/active legacy SQLite writer|stop/iu);
+      expect(embed).not.toHaveBeenCalled();
+    } finally {
+      legacy.exec("ROLLBACK");
+      legacy.close();
+    }
+  });
+
+  it("releases leases on invalid tier, post-open initialization failure, and flush failure", async () => {
+    const invalidRoot = tempRoot();
+    expect(() => createBujoMemoryStore({ root: invalidRoot, tier: "journal" })).toThrow(/requires embeddings/iu);
+    await createBujoMemoryStore({ root: invalidRoot, tier: "lite" }).close();
+
+    const initRoot = tempRoot();
+    writeFileSync(join(initRoot, "daily"), "not a directory");
+    expect(() => createBujoMemoryStore({
+      root: initRoot,
+      tier: "journal",
+      embeddings: embeddings("test:init", 8),
+      dim: 8,
+    })).toThrow(/ENOTDIR|not a directory/iu);
+    rmSync(join(initRoot, "daily"));
+    await createBujoMemoryStore({ root: initRoot, tier: "lite" }).close();
+
+    const closeRoot = tempRoot();
+    const broken = createBujoMemoryStore({ root: closeRoot, tier: "lite" });
+    (broken as unknown as { flush(): Promise<void> }).flush = async () => { throw new Error("flush-fault"); };
+    await expect(broken.close()).rejects.toThrow("flush-fault");
+    await createBujoMemoryStore({ root: closeRoot, tier: "lite" }).close();
+  });
+
+  it("checks managed identity even when an empty semantic generation has no vector rows", async () => {
+    const root = tempRoot();
+    await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: embeddings("test:model-a", 8), dim: 8 });
+    const wrongEmbed = vi.fn(embeddings("test:model-b", 4).embed);
+    expect(() => createBujoMemoryStore({
+      root,
+      tier: "journal",
+      embeddings: { id: "test:model-b", embed: wrongEmbed },
+      dim: 4,
+    })).toThrow(/active generation requires.*model=test:model-a.*dim=8|safe memory rebuild/iu);
+    expect(wrongEmbed).not.toHaveBeenCalled();
+    await createBujoMemoryStore({
+      root,
+      tier: "journal",
+      embeddings: embeddings("test:model-a", 8),
+      dim: 8,
+    }).close();
+  });
+
+  it("rebuilds Journal duplicates as one content-derived row, hash reservation, and vector", async () => {
+    const root = tempRoot();
+    writeDaily(root, [
+      bullet("legacy-a", "  One   durable journal fact. "),
+      bullet("legacy-b", "One durable journal fact."),
+    ]);
+    const result = await safeRebuildMemoryIndex({
+      root,
+      tier: "journal",
+      embeddings: embeddings("test:journal", 8),
+      dim: 8,
+    });
+    expect(result.indexed).toBe(1);
+    const db = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
+    try {
+      const state = db.validationSnapshot();
+      expect(state).toMatchObject({ memories: 1, contentHashes: 1, vectors: 1, ftsRows: 1 });
+      expect(db.topSalient(2)[0]?.id).toMatch(/^J-[a-f0-9]{64}$/u);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 function tempRoot(): string {
@@ -304,6 +497,10 @@ function writeDaily(root: string, bullets: readonly ReturnType<typeof bullet>[])
     `# 2026-07-11\n\n${bullets.map((item) => serializeBullet(item)).join("\n")}\n`,
     "utf8",
   );
+}
+
+function writeGraph(root: string, records: readonly Record<string, unknown>[]): void {
+  writeFileSync(join(root, "graph.jsonl"), `${records.map((record) => JSON.stringify(record)).join("\n")}\n`, "utf8");
 }
 
 function note(id: string, text: string): MemoryRecord {
