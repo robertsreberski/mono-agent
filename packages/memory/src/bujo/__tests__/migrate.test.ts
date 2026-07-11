@@ -9,7 +9,12 @@ import { appendBullet, dailyFilePath, rewriteBullet } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
 import { readGraph } from "../graph.js";
 import { createIdFactory } from "../ids.js";
-import { assertNoPendingMigrateDecision, migrate, type MigrateDeps } from "../migrate.js";
+import {
+  assertNoPendingMigrateDecision,
+  migrate,
+  recoverPendingMigrateDecision,
+  type MigrateDeps,
+} from "../migrate.js";
 import { MemoryModelError } from "../model-error.js";
 import type { Bullet } from "../types.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
@@ -253,6 +258,73 @@ describe("migrate", () => {
     },
   );
 
+  it("recovers a paid decision without providers while preserving newer access telemetry", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-TELEMETRY", "preserve live migration access telemetry");
+    const firstLlm = vi.fn(async () => JSON.stringify({ action: "promote" }));
+    await expect(migrate(makeDeps(db, root, {
+      llm: { id: "first", complete: firstLlm },
+      hooks: { afterDecisionDurable: () => { throw new Error("fault-after-paid-decision"); } },
+    }))).rejects.toThrow("fault-after-paid-decision");
+
+    const accessedAt = new Date("2026-06-15T12:30:00.000Z");
+    db.recordAccess(["MIG-TELEMETRY"], accessedAt);
+    const provider = vi.spyOn(db, "prepareUpsertVectors");
+
+    expect(recoverPendingMigrateDecision(root, db)).toBe(true);
+
+    expect(firstLlm).toHaveBeenCalledTimes(1);
+    expect(provider).not.toHaveBeenCalled();
+    expect(db.get("MIG-TELEMETRY")).toMatchObject({
+      salience: 0.5,
+      accessCount: 1,
+      lastAccessedAt: accessedAt.toISOString(),
+    });
+    expect(readFileSync(join(root, "monthly", "2026-06.md"), "utf8")).not.toContain("mono-agent-migrate:");
+    expect(recoverPendingMigrateDecision(root, db)).toBe(false);
+  });
+
+  it("rejects duplicate canonical ids before paying providers or publishing a decision", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-DUPLICATE", "duplicate canonical migration sentinel");
+    const canonical = parseDailyFile(dailyContent(root, SIXTY_DAYS_AGO)).bullets[0]!;
+    appendBullet(root, canonical, SIXTY_DAYS_AGO);
+    const before = dailyContent(root, SIXTY_DAYS_AGO);
+    const llm = vi.fn(async () => JSON.stringify({ action: "promote" }));
+    const provider = vi.spyOn(db, "prepareUpsertVectors");
+
+    await expect(migrate(makeDeps(db, root, { llm: { id: "must-not-run", complete: llm } })))
+      .rejects.toThrow(/contains 2 bullets.*exactly one/iu);
+
+    expect(llm).not.toHaveBeenCalled();
+    expect(provider).not.toHaveBeenCalled();
+    expect(db.get("MIG-DUPLICATE")?.salience).toBe(0.2);
+    expect(dailyContent(root, SIXTY_DAYS_AGO)).toBe(before);
+    expect(existsSync(join(root, "monthly", "2026-06.md"))).toBe(false);
+  });
+
+  it("keeps a paid decision pending when its canonical id becomes duplicated", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-DUPLICATE-RETRY", "duplicate recovery migration sentinel");
+    await expect(migrate(makeDeps(db, root, {
+      llm: { id: "first", complete: async () => JSON.stringify({ action: "promote" }) },
+      hooks: { afterDecisionDurable: () => { throw new Error("fault-after-paid-decision"); } },
+    }))).rejects.toThrow("fault-after-paid-decision");
+    const canonical = parseDailyFile(dailyContent(root, SIXTY_DAYS_AGO)).bullets[0]!;
+    appendBullet(root, canonical, SIXTY_DAYS_AGO);
+    const before = dailyContent(root, SIXTY_DAYS_AGO);
+
+    expect(() => recoverPendingMigrateDecision(root, db))
+      .toThrow(/contains 2 bullets.*exactly one/iu);
+
+    expect(db.get("MIG-DUPLICATE-RETRY")?.salience).toBe(0.2);
+    expect(dailyContent(root, SIXTY_DAYS_AGO)).toBe(before);
+    expect(readFileSync(join(root, "monthly", "2026-06.md"), "utf8")).toContain("mono-agent-migrate:");
+  });
+
   it("promotes very-low-salience memories out of the aging pool", async () => {
     const root = newRoot();
     const db = openDb(root);
@@ -415,7 +487,7 @@ describe("migrate", () => {
     expect(db.get("MIG-GOOD")!.status).toBe("dropped");
   });
 
-  it("skips rewriteBullet when source.file is undefined, still mirrors index", async () => {
+  it("skips an index-only item before paying the model when no canonical bullet exists", async () => {
     const root = newRoot();
     const db = openDb(root);
 
@@ -433,15 +505,16 @@ describe("migrate", () => {
       source: {}, // no file
     });
 
-    const llm = fakeLlm([["orphaned", JSON.stringify({ action: "promote" })]]);
+    const complete = vi.fn(async () => JSON.stringify({ action: "promote" }));
 
-    // Should not throw even though there's no file to rewrite
-    const result = await migrate(makeDeps(db, root, { llm }));
+    const result = await migrate(makeDeps(db, root, { llm: { id: "must-not-run", complete } }));
 
-    expect(result.promoted).toBe(1);
+    expect(result).toMatchObject({ promoted: 0, reviewed: 1 });
+    expect(complete).not.toHaveBeenCalled();
 
     const record = db.get("MIG-NOFILE");
-    expect(record!.salience).toBeCloseTo(0.2 + 0.3, 5);
+    expect(record!.salience).toBe(0.2);
+    expect(existsSync(join(root, "monthly", "2026-06.md"))).toBe(false);
   });
 
   it("skips items with invalid/unrecognized action from LLM", async () => {

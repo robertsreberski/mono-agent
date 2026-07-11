@@ -1,17 +1,19 @@
 import { createHash } from "node:crypto";
 
-import type { MemoryRecord } from "../store/index.js";
+import type { EntityRecord, MemoryDb, MemoryEntityAssociation, MemoryRecord } from "../store/index.js";
 import { parseJsonLoose } from "./json.js";
 import { MemoryModelError } from "./model-error.js";
 import {
   appendCanonicalFile,
+  assertCanonicalDailySourcePath,
   listCanonicalFileNames,
   readCanonicalFileSnapshot,
   writeCanonicalFileAtomic,
 } from "./path-safety.js";
 import type { ReflectDeps } from "./reflect.js";
-import { readBullet, rewriteBullet } from "./daily.js";
-import { appendGraphBatch } from "./graph.js";
+import { parseDailyFile, serializeDailyFile, type DailyFile } from "./grammar.js";
+import { appendGraphBatch, readGraph } from "./graph.js";
+import type { Bullet } from "./types.js";
 
 export interface MigrateDeps extends ReflectDeps {
   /** Fault-injection seams used to prove the durable decision boundary. */
@@ -49,6 +51,18 @@ interface DurableMigrateDecision {
   readonly vector?: readonly number[];
   readonly collection?: string;
 }
+
+type DurableMigrateApplyDeps = Pick<MigrateDeps, "db" | "root" | "hooks">;
+
+interface CanonicalMigrationState {
+  readonly file: string;
+  readonly snapshot: NonNullable<ReturnType<typeof readCanonicalFileSnapshot>>;
+  readonly parsed: ReturnType<typeof parseDailyFile>;
+  readonly lineNumber: number;
+  readonly bullet: Bullet;
+}
+
+class CanonicalMigrationMultiplicityError extends Error {}
 
 const MIGRATE_MARKER = "mono-agent-migrate:";
 const MAX_MONTHLY_AUDIT_BYTES = 8 * 1024 * 1024;
@@ -95,6 +109,16 @@ export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
   const aging = deps.db.agingOpen(now, { olderThanDays: 30, maxSalience: 0.4, limit: 50 });
 
   for (const item of aging) {
+    // Canonical identity is a prerequisite for paying the model or embedding
+    // provider. Missing source is an isolatable stale-index item; duplicate ids
+    // are ambiguous corruption and must stop the ritual without rewriting both.
+    try {
+      assertCanonicalDecisionState(deps.root, item);
+    } catch (error) {
+      if (error instanceof CanonicalMigrationMultiplicityError) throw error;
+      continue;
+    }
+
     let decision: DurableMigrateDecision | undefined;
     try {
       const prompt = buildMigratePrompt(item.id, item.text);
@@ -137,12 +161,15 @@ export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
         throw new MemoryModelError("embedding", "migrate", cause);
       }
       deps.abortSignal?.throwIfAborted();
+      // Recheck after both provider awaits. A concurrent source edit cannot be
+      // bound into a paid durable decision merely because preflight once passed.
       assertCanonicalDecisionState(deps.root, item);
       decision = durableDecision(item, updated, action, now, vector, collection);
     } catch (err) {
       deps.abortSignal?.throwIfAborted();
       // A model outage is systemic — surface it (the ritual scheduler logs it).
       if (err instanceof MemoryModelError) throw err;
+      if (err instanceof CanonicalMigrationMultiplicityError) throw err;
       // Per-item isolation: a genuine per-item data error (e.g. a missing daily file) is skipped so
       // it doesn't abort the rest of the batch.
       continue;
@@ -246,60 +273,98 @@ function pendingMarker(decision: DurableMigrateDecision): string {
 }
 
 function applyDurableDecision(
-  deps: MigrateDeps,
+  deps: DurableMigrateApplyDeps,
   file: string,
   decision: DurableMigrateDecision,
 ): void {
   const current = deps.db.get(decision.id);
   const dbBefore = current !== undefined && sameDecisionState(current, decision.before);
   const dbAfter = current !== undefined && sameDecisionState(current, decision.updated);
-  const canonicalBefore = canonicalDecisionStateMatches(deps.root, decision.before);
-  const canonicalAfter = canonicalDecisionStateMatches(deps.root, decision.updated);
-  if ((!dbBefore && !dbAfter) || (!canonicalBefore && !canonicalAfter)) {
+  const canonical = readCanonicalMigrationState(deps.root, decision.updated);
+  const canonicalBefore = bulletMatchesRecord(canonical.bullet, decision.before);
+  const canonicalAfter = bulletMatchesRecord(canonical.bullet, decision.updated);
+  if (current === undefined || (!dbBefore && !dbAfter) || (!canonicalBefore && !canonicalAfter)) {
     throw new Error(`memory-migrate: durable decision ${decision.decisionId} no longer matches memory ${decision.id}.`);
   }
-  const sourceFile = decision.updated.source.file;
-  if (!canonicalAfter && sourceFile !== undefined) {
-    const patch = canonicalPatch(decision);
-    if (patch !== undefined && !rewriteBullet(deps.root, sourceFile, decision.id, patch)) {
-      throw new Error(`memory-migrate: canonical source "${sourceFile}" does not contain "${decision.id}".`);
-    }
+
+  const expectedDb = dbAfter ? current : withLatestLiveState(decision.updated, current!);
+  if (!dbAfter) {
+    // Stored vectors and the active DB identity must agree before canonical
+    // Markdown is rewritten. Recovery is provider-free and cannot repair an
+    // identity mismatch by paying for a fresh vector.
+    deps.db.assertPreparedUpserts([expectedDb], [decision.vector]);
   }
+
+  if (!canonicalAfter) rewriteCanonicalDecision(deps.root, canonical, decision);
   if (!canonicalDecisionStateMatches(deps.root, decision.updated)) {
     throw new Error(`memory-migrate: canonical outcome for ${decision.id} did not match its durable decision.`);
   }
-  if (!dbAfter) deps.db.commitPreparedUpserts([decision.updated], [decision.vector]);
+  if (!dbAfter) deps.db.commitPreparedUpserts([expectedDb], [decision.vector]);
   if (decision.action === "cluster") {
-    const collection = decision.collection!;
-    const entity = {
-      id: `collection:${collection}`,
-      name: collection,
-      type: "collection",
-      createdAt: decision.at,
-    };
-    const association = {
-      memoryId: decision.id,
-      entityId: entity.id,
-      provenance: "capture" as const,
-      createdAt: decision.at,
-    };
-    // Collection membership is canonical graph evidence, not SQLite-only
-    // ritual state. A graph failure leaves the durable marker in place; replay
-    // then reuses the exact decision and appendGraphBatch's idempotent merge.
-    const canonical = appendGraphBatch(deps.root, {
-      entities: [entity],
-      associations: [association],
-    });
-    deps.db.upsertEntity(canonical.entities[0]!);
-    deps.db.associateMemory(canonical.associations[0]!);
-    deps.db.addEdge(decision.id, entity.id, "supports");
+    applyClusterOutcome(deps.root, deps.db, decision);
   }
   const after = deps.db.get(decision.id);
-  if (after === undefined || !sameDecisionState(after, decision.updated)) {
+  if (after === undefined || !sameMemoryRecord(after, expectedDb)) {
     throw new Error(`memory-migrate: SQLite outcome for ${decision.id} did not match its durable decision.`);
+  }
+  if (!canonicalDecisionStateMatches(deps.root, decision.updated)) {
+    throw new Error(`memory-migrate: canonical outcome for ${decision.id} changed before completion.`);
   }
   deps.hooks?.afterActionCommitted?.(decision.decisionId);
   removePendingDecision(deps.root, file, decision);
+}
+
+function applyClusterOutcome(root: string, db: MemoryDb, decision: DurableMigrateDecision): void {
+  const collection = decision.collection!;
+  const entity: EntityRecord = {
+    id: `collection:${collection}`,
+    name: collection,
+    type: "collection",
+    createdAt: decision.at,
+  };
+  const association: MemoryEntityAssociation = {
+    memoryId: decision.id,
+    entityId: entity.id,
+    provenance: "capture",
+    createdAt: decision.at,
+  };
+  // Collection membership is canonical graph evidence, not SQLite-only ritual
+  // state. Any canonical or mirror fault leaves the marker for exact replay.
+  const canonical = appendGraphBatch(root, { entities: [entity], associations: [association] });
+  const canonicalEntity = canonical.entities[0];
+  const canonicalAssociation = canonical.associations[0];
+  if (canonicalEntity === undefined || canonicalAssociation === undefined) {
+    throw new Error(`memory-migrate: canonical collection graph outcome for ${decision.id} is incomplete.`);
+  }
+  db.upsertEntity(canonicalEntity);
+  db.associateMemory(canonicalAssociation);
+  db.addEdge(decision.id, canonicalEntity.id, "supports");
+  assertClusterOutcome(root, db, decision.id, canonicalEntity, canonicalAssociation);
+}
+
+function assertClusterOutcome(
+  root: string,
+  db: MemoryDb,
+  memoryId: string,
+  entity: EntityRecord,
+  association: MemoryEntityAssociation,
+): void {
+  const graph = readGraph(root);
+  const sourceEntity = graph.entities.find((candidate) => candidate.id === entity.id);
+  const sourceAssociation = graph.associations.find((candidate) => (
+    candidate.memoryId === association.memoryId && candidate.entityId === association.entityId
+  ));
+  const dbEntity = db.getEntity(entity.id);
+  const dbAssociation = db.associationsForMemory(memoryId).find((candidate) => (
+    candidate.entityId === association.entityId
+  ));
+  if (!sameEntity(sourceEntity, entity)
+    || !sameAssociation(sourceAssociation, association)
+    || !sameEntity(dbEntity, entity)
+    || !sameAssociation(dbAssociation, association)
+    || !db.edges(memoryId).some((edge) => edge.kind === "supports" && edge.dst === entity.id)) {
+    throw new Error(`memory-migrate: collection graph outcome for ${memoryId} did not match its durable decision.`);
+  }
 }
 
 function removePendingDecision(root: string, file: string, decision: DurableMigrateDecision): void {
@@ -319,7 +384,9 @@ function removePendingDecision(root: string, file: string, decision: DurableMigr
   );
 }
 
-function canonicalPatch(decision: DurableMigrateDecision): Parameters<typeof rewriteBullet>[3] | undefined {
+type CanonicalMigrationPatch = Partial<Pick<Bullet, "status" | "salience" | "dueAt">>;
+
+function canonicalPatch(decision: DurableMigrateDecision): CanonicalMigrationPatch | undefined {
   if (decision.action === "promote") return { salience: decision.updated.salience };
   if (decision.action === "reschedule") {
     return {
@@ -341,23 +408,79 @@ function sameDecisionState(left: MemoryRecord, right: MemoryRecord): boolean {
     && left.isInsight === right.isInsight
     && left.createdAt === right.createdAt
     && left.validTo === right.validTo
+    && left.supersededBy === right.supersededBy
+    && left.supersededAt === right.supersededAt
     && left.dueAt === right.dueAt
     && left.collection === right.collection
-    && left.source.file === right.source.file;
+    && left.source.file === right.source.file
+    && left.embeddingModel === right.embeddingModel
+    && left.dim === right.dim;
 }
 
 function assertCanonicalDecisionState(root: string, record: MemoryRecord): void {
-  if (!canonicalDecisionStateMatches(root, record)) {
+  const canonical = readCanonicalMigrationState(root, record);
+  if (!bulletMatchesRecord(canonical.bullet, record)) {
     throw new Error(`memory-migrate: canonical source does not exactly match memory ${record.id}.`);
   }
 }
 
 function canonicalDecisionStateMatches(root: string, record: MemoryRecord): boolean {
+  const canonical = readCanonicalMigrationState(root, record);
+  return bulletMatchesRecord(canonical.bullet, record);
+}
+
+function readCanonicalMigrationState(root: string, record: MemoryRecord): CanonicalMigrationState {
   const file = record.source.file;
-  if (file === undefined) return true;
-  const bullet = readBullet(root, file, record.id);
-  return bullet !== undefined
-    && bullet.id === record.id
+  if (file === undefined) {
+    throw new Error(`memory-migrate: memory ${record.id} requires exactly one canonical source bullet.`);
+  }
+  assertCanonicalDailySourcePath(file);
+  const snapshot = readCanonicalFileSnapshot(root, file, { allowMissing: true });
+  if (snapshot === undefined) {
+    throw new Error(`memory-migrate: canonical source "${file}" is missing for memory ${record.id}.`);
+  }
+  const parsed = parseDailyFile(snapshot.content);
+  const matches = parsed.lines.filter((line) => line.bullet?.id === record.id);
+  if (matches.length !== 1) {
+    if (matches.length > 1) {
+      throw new CanonicalMigrationMultiplicityError(
+        `memory-migrate: canonical source "${file}" contains ${matches.length} bullets for ${record.id}; exactly one is required.`,
+      );
+    }
+    throw new Error(`memory-migrate: canonical source "${file}" does not contain memory ${record.id}.`);
+  }
+  const match = matches[0]!;
+  return {
+    file,
+    snapshot,
+    parsed,
+    lineNumber: match.lineNumber,
+    bullet: match.bullet!,
+  };
+}
+
+function rewriteCanonicalDecision(
+  root: string,
+  canonical: CanonicalMigrationState,
+  decision: DurableMigrateDecision,
+): void {
+  const patch = canonicalPatch(decision);
+  if (patch === undefined) return;
+  const lines: DailyFile["lines"] = canonical.parsed.lines.map((line) => (
+    line.lineNumber === canonical.lineNumber && line.bullet?.id === decision.id
+      ? { ...line, bullet: { ...line.bullet, ...patch } }
+      : line
+  ));
+  writeCanonicalFileAtomic(
+    root,
+    canonical.file,
+    serializeDailyFile({ lines }),
+    canonical.snapshot.identity,
+  );
+}
+
+function bulletMatchesRecord(bullet: Bullet, record: MemoryRecord): boolean {
+  return bullet.id === record.id
     && bullet.type === record.type
     && bullet.status === record.status
     && bullet.text === record.text
@@ -365,6 +488,57 @@ function canonicalDecisionStateMatches(root: string, record: MemoryRecord): bool
     && bullet.isInsight === record.isInsight
     && bullet.createdAt === record.createdAt
     && bullet.dueAt === record.dueAt;
+}
+
+function withLatestLiveState(updated: MemoryRecord, current: MemoryRecord): MemoryRecord {
+  const {
+    accessCount: _accessCount,
+    lastAccessedAt: _lastAccessedAt,
+    validFrom: _validFrom,
+    tags: _tags,
+    source: _source,
+    ...durable
+  } = updated;
+  return {
+    ...durable,
+    accessCount: current.accessCount,
+    ...(current.lastAccessedAt === undefined ? {} : { lastAccessedAt: current.lastAccessedAt }),
+    ...(current.validFrom === undefined ? {} : { validFrom: current.validFrom }),
+    tags: [...current.tags],
+    source: { ...current.source },
+  };
+}
+
+function sameMemoryRecord(left: MemoryRecord, right: MemoryRecord): boolean {
+  return sameDecisionState(left, right)
+    && left.validFrom === right.validFrom
+    && left.lastAccessedAt === right.lastAccessedAt
+    && left.accessCount === right.accessCount
+    && left.tags.length === right.tags.length
+    && left.tags.every((tag, index) => tag === right.tags[index])
+    && left.source.session === right.source.session
+    && left.source.line === right.source.line;
+}
+
+function sameEntity(left: EntityRecord | undefined, right: EntityRecord): boolean {
+  return left !== undefined
+    && left.id === right.id
+    && left.name === right.name
+    && left.type === right.type
+    && left.summary === right.summary
+    && left.createdAt === right.createdAt
+    && left.updatedAt === right.updatedAt;
+}
+
+function sameAssociation(
+  left: MemoryEntityAssociation | undefined,
+  right: MemoryEntityAssociation,
+): boolean {
+  return left !== undefined
+    && left.memoryId === right.memoryId
+    && left.entityId === right.entityId
+    && left.provenance === right.provenance
+    && left.createdAt === right.createdAt;
 }
 
 function readPendingDecision(
@@ -395,13 +569,24 @@ function readPendingDecision(
   return pending[0];
 }
 
+/**
+ * Finish one already-paid migration transaction synchronously from its stored
+ * vector and exact before/after states. No LLM or embedding provider is called.
+ */
+export function recoverPendingMigrateDecision(root: string, db: MemoryDb): boolean {
+  const pending = readPendingDecision(root);
+  if (pending === undefined) return false;
+  applyDurableDecision({ root, db }, pending.file, pending.decision);
+  return true;
+}
+
 /** Refuse maintenance that cannot carry a paid pending migration transaction. */
 export function assertNoPendingMigrateDecision(root: string): void {
   const pending = readPendingDecision(root);
   if (pending !== undefined) {
     throw new Error(
       `memory-migrate: durable decision ${pending.decision.decisionId} is pending; `
-      + "restart the writable memory store or run migration recovery before rebuilding.",
+      + "restart the writable BuJo store under its current identity or run migration recovery before rebuilding.",
     );
   }
 }

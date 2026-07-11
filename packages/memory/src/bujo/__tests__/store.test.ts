@@ -1,13 +1,14 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 import { createBujoMemoryStore } from "../store.js";
 import { appendBullet, dailyFilePath, normalizedContentHash } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
+import { migrate } from "../migrate.js";
 import { readBujoRuntimeSnapshot } from "../runtime-snapshot.js";
 import type { Bullet } from "../types.js";
 
@@ -104,6 +105,111 @@ describe("BujoMemoryStore — tier derivation", () => {
       stale: true,
       reason: "invalid",
     });
+  });
+
+  it("recovers an already-paid migration synchronously before exposing writable startup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-startup-migrate-"));
+    const now = new Date("2026-06-16T09:00:00.000Z");
+    const created = new Date("2026-04-01T09:00:00.000Z");
+    const embeddings = fakeEmbeddings(64);
+    const bullet: Bullet = {
+      id: "MIG-STARTUP",
+      type: "note",
+      status: "open",
+      text: "startup must finish this already-paid migration",
+      salience: 0.2,
+      isInsight: false,
+      createdAt: created.toISOString(),
+      refs: [],
+    };
+    appendBullet(root, bullet, created);
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings, dim: 64 });
+    await db.upsert({
+      ...bullet,
+      accessCount: 0,
+      tags: [],
+      source: { file: relative(root, dailyFilePath(root, created)) },
+    });
+    await expect(migrate({
+      db,
+      root,
+      llm: { id: "paid", complete: async () => JSON.stringify({ action: "promote" }) },
+      nextId: () => "unused",
+      now: () => now,
+      hooks: { afterDecisionDurable: () => { throw new Error("fault-after-paid-decision"); } },
+    })).rejects.toThrow("fault-after-paid-decision");
+    db.close();
+    const startupLlm = vi.fn(async () => { throw new Error("startup recovery must not call the LLM"); });
+
+    const store = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings,
+      dim: 64,
+      llm: { id: "startup", complete: startupLlm },
+      clock: () => now,
+    });
+
+    expect(startupLlm).not.toHaveBeenCalled();
+    expect(readFileSync(join(root, "monthly", "2026-06.md"), "utf8")).not.toContain("mono-agent-migrate:");
+    await store.close();
+    const inspected = openMemoryDb({ path: join(root, "memory.db"), readOnly: true, dim: 64 });
+    expect(inspected.get(bullet.id)?.salience).toBe(0.5);
+    inspected.close();
+  });
+
+  it("fails and releases writable startup when paid migration canonical identity is duplicated", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-startup-migrate-duplicate-"));
+    const now = new Date("2026-06-16T09:00:00.000Z");
+    const created = new Date("2026-04-01T09:00:00.000Z");
+    const embeddings = fakeEmbeddings(64);
+    const bullet: Bullet = {
+      id: "MIG-STARTUP-DUPLICATE",
+      type: "note",
+      status: "open",
+      text: "duplicate migration startup sentinel",
+      salience: 0.2,
+      isInsight: false,
+      createdAt: created.toISOString(),
+      refs: [],
+    };
+    appendBullet(root, bullet, created);
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings, dim: 64 });
+    await db.upsert({
+      ...bullet,
+      accessCount: 0,
+      tags: [],
+      source: { file: relative(root, dailyFilePath(root, created)) },
+    });
+    await expect(migrate({
+      db,
+      root,
+      llm: { id: "paid", complete: async () => JSON.stringify({ action: "promote" }) },
+      nextId: () => "unused",
+      now: () => now,
+      hooks: { afterDecisionDurable: () => { throw new Error("fault-after-paid-decision"); } },
+    })).rejects.toThrow("fault-after-paid-decision");
+    db.close();
+    appendBullet(root, bullet, created);
+    const startupLlm = vi.fn(async () => { throw new Error("startup recovery must not call the LLM"); });
+    const start = () => createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings,
+      dim: 64,
+      llm: { id: "startup", complete: startupLlm },
+      clock: () => now,
+    });
+
+    expect(start).toThrow(/contains 2 bullets.*exactly one/iu);
+    // A failed constructor must release the writer lease; the same canonical
+    // fence, rather than a stale lock, is observed on the next attempt.
+    expect(start).toThrow(/contains 2 bullets.*exactly one/iu);
+    expect(startupLlm).not.toHaveBeenCalled();
+    expect(readFileSync(join(root, "monthly", "2026-06.md"), "utf8")).toContain("mono-agent-migrate:");
+    const inspected = openMemoryDb({ path: join(root, "memory.db"), readOnly: true, dim: 64 });
+    expect(inspected.get(bullet.id)?.salience).toBe(0.2);
+    inspected.close();
   });
 
   it("rejects an explicit tier that would silently downshift configured prerequisites", () => {

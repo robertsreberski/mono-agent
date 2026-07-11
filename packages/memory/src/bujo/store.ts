@@ -21,7 +21,12 @@ import { captureTurn } from "./capture.js";
 import { replayCaptureOutbox } from "./capture-outbox.js";
 import { composeRecallBlock } from "./recall.js";
 import { reflect as reflectFn, type ReflectResult } from "./reflect.js";
-import { migrate as migrateFn, type MigrateResult } from "./migrate.js";
+import {
+  assertNoPendingMigrateDecision,
+  migrate as migrateFn,
+  recoverPendingMigrateDecision,
+  type MigrateResult,
+} from "./migrate.js";
 import { consolidateBujoMemory, type ConsolidateResult } from "./consolidate.js";
 import { writeFutureLog, writeIndex } from "./projections.js";
 import { listCanonicalFileNames, readCanonicalFileSnapshot } from "./path-safety.js";
@@ -212,7 +217,15 @@ export class BujoMemoryStore implements MemoryStore {
         }
       }
       if (this._tier !== "lite") this.db.assertEmbeddingIdentity();
-      if (!this.readOnly) replayCaptureOutbox(this.root, opened);
+      if (!this.readOnly) {
+        // A paid migration decision predates any work this process could
+        // accept. Recover it synchronously from its stored vector, or fence a
+        // mismatched tier/canonical state by failing construction before queues
+        // and runtime write surfaces become available.
+        if (this._tier === "bujo") recoverPendingMigrateDecision(this.root, opened);
+        else assertNoPendingMigrateDecision(this.root);
+        replayCaptureOutbox(this.root, opened);
+      }
       if (!this.readOnly && this._tier === "journal") this.initializeJournalIndexing();
       if (!this.readOnly && this._tier === "bujo") this.initializeCaptureQueue();
       if (!this.readOnly) this.initializeRuntimeSnapshot();
