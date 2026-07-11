@@ -10,6 +10,7 @@ export {
 } from "./recall.js";
 export { isConversationRelativeQuery } from "./recall-evidence.js";
 export {
+  rebuildFromMarkdown,
   rollbackMemoryIndex,
   safeRebuildMemoryIndex,
 } from "./rebuild.js";
