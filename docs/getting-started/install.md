@@ -146,6 +146,7 @@ npm exec --package "@mono-agent/agent-app@$version" -- mono-agent init
 ```
 
 Review published version notes in [GitHub Releases](https://github.com/robertsreberski/mono-agent/releases).
+For the 0.7.0 product-v1 milestone, follow the complete [existing-agent cutover checklist](/memory/validation-and-cli/#enable-v1-on-an-existing-agent) after updating the binaries.
 
 ## Run an unreleased build
 

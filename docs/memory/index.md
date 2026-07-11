@@ -266,7 +266,7 @@ Rebuild never calls the chat LLM or replays historical turns through a paid mode
 re-embed canonical Journal/BuJo facts in bounded batches. A prior index is retained only as
 a fresh immutable, source-parity-verified backup with a logical integrity commitment;
 divergent legacy/current indexes are preserved but not advertised as safe rollback.
-Pre-activation failures leave the current active generation in place. See [Validation & CLI](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback) for the generation layout, source accounting, safety gates, v1 cutover, and rollback procedure.
+Pre-activation failures leave the current active generation in place. See the [safe generation model](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback) for layout, source accounting, safety gates, and rollback; use the separate [product-v1 cutover checklist](/memory/validation-and-cli/#enable-v1-on-an-existing-agent) for an existing agent.
 
 The lower-level `memory-bujo` binary remains for advanced root-oriented inspection and
 legacy/manual maintenance. `rebuild`/`rollback` require an explicit tier and operate only

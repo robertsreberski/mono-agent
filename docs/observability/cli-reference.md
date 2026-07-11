@@ -275,7 +275,7 @@ mono-agent memory rollback --json
 | `--config <path>` | Use a non-default config file. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file before resolving the config. |
 
-Stop the configured agent before `rebuild` or `rollback`. Both commands reject Supermemory because that service owns its remote index. See [Validation & CLI](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback) for the full safety model and v1 cutover checklist.
+Stop the configured agent before `rebuild` or `rollback`. Both commands reject Supermemory because that service owns its remote index. See the [safe generation model](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback) for the full integrity contract and the separate [product-v1 cutover checklist](/memory/validation-and-cli/#enable-v1-on-an-existing-agent) for an existing agent.
 
 ## `start`
 
