@@ -95,6 +95,10 @@ export interface AdapterSendToolsClients {
   readonly telegram?: Pick<TelegramMessageSender, "sendMessage" | "sendDocument" | "sendPhoto">;
 }
 
+export interface AdapterSendToolsHttpOptions {
+  readonly fetchImpl?: typeof fetch;
+}
+
 export interface AdapterSendToolsRuntimeExtension {
   readonly runtimeOptions: {
     readonly mcpServers: Record<string, unknown>;
@@ -289,7 +293,11 @@ export function adapterSendToolsMcpServerSpec(
   return {
     type: "stdio",
     command: process.execPath,
-    args: [fileURLToPath(new URL("./adapter-send-tools-main.js", import.meta.url))],
+    // Node 24 on macOS defaults to the system trust store, whose trustd access
+    // is intentionally unavailable inside strict SRT. Force Node's bundled CA
+    // set for this child while still honoring NODE_EXTRA_CA_CERTS when SRT TLS
+    // termination or an operator supplies an additional root.
+    args: ["--use-bundled-ca", fileURLToPath(new URL("./adapter-send-tools-main.js", import.meta.url))],
     cwd,
     env: adapterSendToolsMcpEnv(configPath, allowedTools, context, interaction),
   };
@@ -333,16 +341,23 @@ export function createAdapterSendToolsRuntimeExtension(
   };
 }
 
-export async function createAdapterSendToolsClients(settings: AdapterSendToolsSettings): Promise<AdapterSendToolsClients> {
+export async function createAdapterSendToolsClients(
+  settings: AdapterSendToolsSettings,
+  options: AdapterSendToolsHttpOptions = {},
+): Promise<AdapterSendToolsClients> {
   const slack =
     settings.slack === undefined
       ? undefined
-      : new (await loadSlackModule()).SlackWebApiClient({ botToken: settings.slack.botToken });
+      : new (await loadSlackModule()).SlackWebApiClient({
+          botToken: settings.slack.botToken,
+          ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+        });
   const telegram =
     settings.telegram === undefined
       ? undefined
       : (await loadTelegramModule()).createTelegramMessageSender(settings.telegram.botToken, {
           ...(settings.telegram.apiRoot === undefined ? {} : { apiRoot: settings.telegram.apiRoot }),
+          ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
         });
   return {
     ...(slack === undefined ? {} : { slack }),
@@ -354,6 +369,7 @@ export async function createAdapterSendToolsServer(
   settings: AdapterSendToolsSettings,
   clients: AdapterSendToolsClients,
   indexing?: AdapterSendToolsIndexing,
+  options: AdapterSendToolsHttpOptions = {},
 ): Promise<McpServer> {
   const server = new McpServer({ name: "agent-adapter-send-tools", version: "0.3.0" });
 
@@ -370,7 +386,7 @@ export async function createAdapterSendToolsServer(
       registerTelegramSendTool(server, settings.telegram, clients.telegram);
     }
     if (settings.telegram.tools.ask) {
-      registerTelegramAskTool(server, settings.telegram, clients.telegram, adapter);
+      registerTelegramAskTool(server, settings.telegram, clients.telegram, adapter, options.fetchImpl ?? globalThis.fetch);
     }
     if (settings.telegram.tools.file) {
       registerTelegramSendFileTool(server, settings.telegram, clients.telegram, adapter);
@@ -379,7 +395,11 @@ export async function createAdapterSendToolsServer(
   // AskUser needs a target conversation; the parent app process resolves the
   // settings without one (for tool-name gating) and must not register the tool.
   if (settings.askUser?.conversationId !== undefined) {
-    registerAskUserTool(server, { ...settings.askUser, conversationId: settings.askUser.conversationId });
+    registerAskUserTool(
+      server,
+      { ...settings.askUser, conversationId: settings.askUser.conversationId },
+      options.fetchImpl ?? globalThis.fetch,
+    );
   }
 
   return server;
@@ -391,6 +411,7 @@ const ASK_USER_POLL_WAIT_MS = 20_000;
 function registerAskUserTool(
   server: McpServer,
   settings: AskUserToolSettings & { readonly conversationId: string },
+  fetchImpl: typeof fetch,
 ): void {
   server.registerTool(
     "AskUser",
@@ -403,7 +424,7 @@ function registerAskUserTool(
       },
     },
     async (args, extra) => {
-      const created = await askBridgeRequest(settings, "POST", "/v1/asks", {
+      const created = await askBridgeRequest(settings, fetchImpl, "POST", "/v1/asks", {
         conversationId: settings.conversationId,
         question: args.question,
         timeoutMs: settings.timeoutMs,
@@ -423,7 +444,7 @@ function registerAskUserTool(
       if (created.status !== 201 || typeof created.body.askId !== "string") {
         throw new Error(`AskUser: the interaction bridge rejected the ask (HTTP ${String(created.status)}).`);
       }
-      return await awaitBridgeAsk(settings, created.body.askId, "AskUser", extra);
+      return await awaitBridgeAsk(settings, created.body.askId, "AskUser", extra, fetchImpl);
     },
   );
 }
@@ -444,12 +465,14 @@ async function awaitBridgeAsk(
   askId: string,
   toolName: "AskUser" | "TelegramAskButtons",
   extra: unknown,
+  fetchImpl: typeof fetch,
   extraStructured: Record<string, unknown> = {},
 ): Promise<{ content: Array<{ type: "text"; text: string }>; structuredContent: Record<string, unknown> }> {
   const startedMs = Date.now();
   for (;;) {
     const poll = await askBridgeRequest(
       settings,
+      fetchImpl,
       "GET",
       `/v1/asks/${encodeURIComponent(askId)}?waitMs=${String(ASK_USER_POLL_WAIT_MS)}`,
     );
@@ -485,11 +508,12 @@ async function awaitBridgeAsk(
 
 async function askBridgeRequest(
   settings: AskUserToolSettings,
+  fetchImpl: typeof fetch,
   method: "DELETE" | "GET" | "POST",
   path: string,
   body?: Record<string, unknown>,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
-  const response = await fetch(new URL(path, settings.bridgeUrl), {
+  const response = await fetchImpl(new URL(path, settings.bridgeUrl), {
     method,
     headers: {
       authorization: `Bearer ${settings.bridgeToken}`,
@@ -646,6 +670,7 @@ function registerTelegramAskTool(
   settings: TelegramSendToolSettings,
   client: Pick<TelegramMessageSender, "sendMessage">,
   adapter: TelegramAdapterModule,
+  fetchImpl: typeof fetch,
 ): void {
   server.registerTool(
     "TelegramAskButtons",
@@ -678,7 +703,7 @@ function registerTelegramAskTool(
       ]);
       const text = args.note === undefined ? args.question : `${args.question}\n\n${args.note}`;
       const conversationId = `telegram:${String(args.chat_id)}`;
-      const created = await askBridgeRequest(bridge, "POST", "/v1/asks", {
+      const created = await askBridgeRequest(bridge, fetchImpl, "POST", "/v1/asks", {
         conversationId,
         question: text,
         timeoutMs: bridge.timeoutMs,
@@ -711,10 +736,10 @@ function registerTelegramAskTool(
           reply_markup: { inline_keyboard: inlineKeyboard },
         });
       } catch (error) {
-        await askBridgeRequest(bridge, "DELETE", `/v1/asks/${encodeURIComponent(askId)}`);
+        await askBridgeRequest(bridge, fetchImpl, "DELETE", `/v1/asks/${encodeURIComponent(askId)}`);
         throw error;
       }
-      return await awaitBridgeAsk(bridge, askId, "TelegramAskButtons", extra, {
+      return await awaitBridgeAsk(bridge, askId, "TelegramAskButtons", extra, fetchImpl, {
         chat_id: result.chat.id,
         message_id: result.message_id,
         options: args.options,

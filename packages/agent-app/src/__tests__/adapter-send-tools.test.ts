@@ -1,6 +1,8 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { once } from "node:events";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -23,12 +25,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelDriver } from "../channels.js";
 import { startMonoAgentApp } from "../app.js";
 import {
+  createAdapterSendProxy,
+  safeAdapterSendProxyErrorMessage,
+} from "../adapter-send-proxy.js";
+import {
   ADAPTER_SEND_TOOLS_MCP_SERVER_NAME,
   adapterSendToolsChildConfigFromEnv,
   adapterSendToolNames,
   adapterSendToolsMcpEnv,
   adapterSendToolsMcpServerSpec,
   createAdapterSendToolsRuntimeExtension,
+  createAdapterSendToolsClients,
   createAdapterSendToolsServer,
   isAdapterSendToolAllowed,
   resolveAdapterSendToolsSettings,
@@ -248,15 +255,18 @@ describe("adapter send tools MCP spec/env", () => {
     expect(spec.type).toBe("stdio");
     expect(spec.command).toBe(process.execPath);
     expect(spec.cwd).toBe("/agent");
-    expect(String((spec.args as string[])[0])).toMatch(/adapter-send-tools-main\.js$/u);
+    expect((spec.args as string[])[0]).toBe("--use-bundled-ca");
+    expect(String((spec.args as string[]).at(-1))).toMatch(/adapter-send-tools-main\.js$/u);
     expect(spec.env).toEqual({
       MONO_AGENT_ADAPTER_TOOLS_CONFIG_PATH: "/agent/mono-agent.config.json",
       MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS: JSON.stringify(allowedTools),
     });
+    expect(spec.env).not.toHaveProperty("HTTP_PROXY");
+    expect(spec.env).not.toHaveProperty("HTTPS_PROXY");
     expect(JSON.stringify(spec.env)).not.toContain("xoxb-slack");
     expect(JSON.stringify(spec.env)).not.toContain("telegram-token");
-    expect(String((spec.args as string[])[0])).not.toContain("xoxb-slack");
-    expect(String((spec.args as string[])[0])).not.toContain("telegram-token");
+    expect(JSON.stringify(spec.args)).not.toContain("xoxb-slack");
+    expect(JSON.stringify(spec.args)).not.toContain("telegram-token");
   });
 
   it("forwards the producing conversation id and index path when indexing is configured, and parses them back", () => {
@@ -322,6 +332,278 @@ describe("adapter send tools MCP spec/env", () => {
       timeoutMs: interaction.timeoutMs,
       conversationId: "telegram:42",
     });
+  });
+});
+
+describe("adapter send tools sandbox proxy", () => {
+  it("redacts authenticated proxy credentials from child diagnostics", () => {
+    expect(safeAdapterSendProxyErrorMessage(
+      new Error("connect failed via http://srt-user:srt-password@127.0.0.1:43123/path"),
+    )).toBe("connect failed via http://[redacted]@127.0.0.1:43123/path");
+    expect(safeAdapterSendProxyErrorMessage(
+      "Proxy-Authorization: Basic dXNlcjpwYXNzd29yZA== request failed",
+    )).toBe("Proxy-Authorization: [redacted] request failed");
+    expect(safeAdapterSendProxyErrorMessage(
+      new Error("invalid proxy opaque-srt-secret"),
+      { HTTPS_PROXY: "opaque-srt-secret" },
+    )).toBe("invalid proxy [redacted-proxy]");
+  });
+
+  it("does not create a dispatcher when no HTTP proxy is configured", () => {
+    expect(createAdapterSendProxy({})).toBeUndefined();
+  });
+
+  it("routes the real Telegram sender through an authenticated proxy on the Node 22.19 floor", async () => {
+    const responseBody = JSON.stringify({
+      ok: true,
+      result: { message_id: 77, chat: { id: 42 }, text: "through proxy" },
+    });
+    let authenticatedProxyRequests = 0;
+    const expectedAuth = `Basic ${Buffer.from("probe:secret").toString("base64")}`;
+    const proxy = createServer((request, response) => {
+      if (request.headers["proxy-authorization"] === expectedAuth) authenticatedProxyRequests += 1;
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "content-length": String(Buffer.byteLength(responseBody)),
+        connection: "close",
+      });
+      response.end(responseBody);
+    });
+    proxy.on("connect", (request, socket) => {
+      if (request.headers["proxy-authorization"] === expectedAuth) authenticatedProxyRequests += 1;
+      socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      socket.once("data", () => {
+        socket.end([
+          "HTTP/1.1 200 OK",
+          "Content-Type: application/json",
+          `Content-Length: ${Buffer.byteLength(responseBody)}`,
+          "Connection: close",
+          "",
+          responseBody,
+        ].join("\r\n"));
+      });
+    });
+    proxy.listen(0, "127.0.0.1");
+    await once(proxy, "listening");
+    const address = proxy.address();
+    if (address === null || typeof address === "string") throw new Error("proxy did not bind a TCP port");
+
+    const names = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"] as const;
+    const previous = new Map(names.map((name) => [name, process.env[name]]));
+    // Managed SRT publishes this loopback proxy as localhost. The child must
+    // normalize that proxy endpoint without changing its credentials.
+    process.env.HTTP_PROXY = `http://probe:secret@localhost:${address.port}`;
+    process.env.HTTPS_PROXY = process.env.HTTP_PROXY;
+    process.env.NO_PROXY = "";
+    delete process.env.http_proxy;
+    delete process.env.https_proxy;
+    delete process.env.no_proxy;
+
+    let transport: ReturnType<typeof createAdapterSendProxy>;
+    try {
+      const settings: AdapterSendToolsSettings = {
+        telegram: {
+          botToken: "123:telegram-token",
+          allowedChatIds: ["42"],
+          allowAllChats: false,
+          apiRoot: "http://mono-agent-proxy-probe.invalid",
+          tools: { send: true, ask: false, file: false },
+        },
+      };
+
+      // Negative control: grammY's default node-fetch transport does not use
+      // the child-owned undici dispatcher, so the deliberately unresolvable
+      // API host cannot reach the proxy.
+      const directClients = await createAdapterSendToolsClients(settings);
+      const directAbort = new AbortController();
+      const abortTimer = setTimeout(() => directAbort.abort(), 250);
+      try {
+        await expect(
+          directClients.telegram?.sendMessage({ chat_id: 42, text: "direct" }, { signal: directAbort.signal }),
+        ).rejects.toThrow();
+      } finally {
+        clearTimeout(abortTimer);
+      }
+      expect(authenticatedProxyRequests).toBe(0);
+
+      transport = createAdapterSendProxy(process.env);
+      if (transport === undefined) throw new Error("expected the child proxy transport");
+      const clients = await createAdapterSendToolsClients(settings, { fetchImpl: transport.fetchImpl });
+      const result = await clients.telegram?.sendMessage({ chat_id: 42, text: "through proxy" });
+
+      expect(result).toMatchObject({ message_id: 77, chat: { id: 42 }, text: "through proxy" });
+      expect(authenticatedProxyRequests).toBe(1);
+    } finally {
+      for (const name of names) {
+        const value = previous.get(name);
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      try {
+        await transport?.close();
+      } finally {
+        const proxyClosed = once(proxy, "close");
+        proxy.close();
+        await proxyClosed;
+      }
+    }
+  }, 10_000);
+
+  it("routes Slack and Telegram clients through the supplied child fetch", async () => {
+    const routedFetch = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
+      const host = new URL(String(input)).hostname;
+      return host === "slack.com"
+        ? new Response(JSON.stringify({ ok: true, channel: "C1", ts: "171.1" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          })
+        : new Response(JSON.stringify({
+            ok: true,
+            result: { message_id: 78, chat: { id: 42 }, text: "telegram" },
+          }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    const clients = await createAdapterSendToolsClients(bothAdaptersSettings(), {
+      fetchImpl: routedFetch as unknown as typeof fetch,
+    });
+
+    await clients.slack?.chatPostMessage({ channel: "C1", text: "slack" });
+    await clients.telegram?.sendMessage({ chat_id: 42, text: "telegram" });
+
+    expect(routedFetch).toHaveBeenCalledTimes(2);
+    expect(routedFetch.mock.calls.map(([input]) => new URL(String(input)).hostname)).toEqual([
+      "slack.com",
+      "api.telegram.org",
+    ]);
+  });
+
+  it("honors NO_PROXY while adapting grammY's shim signal and streamed multipart body", async () => {
+    let receivedBody = "";
+    const target = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        receivedBody = Buffer.concat(chunks).toString("utf8");
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ok: true, result: { message_id: 79, chat: { id: 42 } } }));
+      });
+    });
+    target.listen(0, "127.0.0.1");
+    await once(target, "listening");
+    const targetAddress = target.address();
+    if (targetAddress === null || typeof targetAddress === "string") throw new Error("target did not bind a TCP port");
+
+    let proxyConnects = 0;
+    const proxy = createServer((_request, response) => {
+      proxyConnects += 1;
+      response.writeHead(502);
+      response.end();
+    });
+    proxy.on("connect", (_request, socket) => {
+      proxyConnects += 1;
+      socket.destroy();
+    });
+    proxy.listen(0, "127.0.0.1");
+    await once(proxy, "listening");
+    const proxyAddress = proxy.address();
+    if (proxyAddress === null || typeof proxyAddress === "string") throw new Error("proxy did not bind a TCP port");
+
+    const transport = createAdapterSendProxy({
+      HTTP_PROXY: `http://127.0.0.1:${String(proxyAddress.port)}`,
+      HTTPS_PROXY: `http://127.0.0.1:${String(proxyAddress.port)}`,
+      NO_PROXY: "127.0.0.1",
+    });
+    if (transport === undefined) throw new Error("expected the child proxy transport");
+    try {
+      const clients = await createAdapterSendToolsClients({
+        telegram: {
+          botToken: "123:telegram-token",
+          allowedChatIds: ["42"],
+          allowAllChats: false,
+          apiRoot: `http://127.0.0.1:${String(targetAddress.port)}`,
+          tools: { send: false, ask: false, file: true },
+        },
+      }, { fetchImpl: transport.fetchImpl });
+
+      const result = await clients.telegram?.sendDocument?.({
+        chat_id: 42,
+        document: new Uint8Array([65, 66, 67]),
+        filename: "proof.txt",
+        caption: "streamed",
+      });
+
+      expect(result?.message_id).toBe(79);
+      expect(proxyConnects).toBe(0);
+      expect(receivedBody).toContain("proof.txt");
+      expect(receivedBody).toContain("streamed");
+      expect(receivedBody).toContain("ABC");
+    } finally {
+      await transport?.close();
+      const targetClosed = once(target, "close");
+      target.close();
+      await targetClosed;
+      const proxyClosed = once(proxy, "close");
+      proxy.close();
+      await proxyClosed;
+    }
+  });
+
+  it("mirrors a non-native abort signal and detaches its listener", async () => {
+    const target = createServer(() => {});
+    target.listen(0, "127.0.0.1");
+    await once(target, "listening");
+    const address = target.address();
+    if (address === null || typeof address === "string") throw new Error("target did not bind a TCP port");
+    const transport = createAdapterSendProxy({
+      HTTP_PROXY: "http://127.0.0.1:9",
+      NO_PROXY: "127.0.0.1",
+    });
+    if (transport === undefined) throw new Error("expected the child proxy transport");
+    const listeners = new Set<() => void>();
+    let aborted = false;
+    const shimSignal = {
+      get aborted(): boolean {
+        return aborted;
+      },
+      addEventListener(_type: "abort", listener: () => void): void {
+        listeners.add(listener);
+      },
+      removeEventListener(_type: "abort", listener: () => void): void {
+        listeners.delete(listener);
+      },
+    };
+
+    try {
+      const pending = transport.fetchImpl(`http://127.0.0.1:${String(address.port)}`, {
+        signal: shimSignal as unknown as AbortSignal,
+      });
+      await once(target, "request");
+      aborted = true;
+      for (const listener of listeners) listener();
+
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      expect(listeners.size).toBe(0);
+    } finally {
+      await transport.destroy();
+      const closed = once(target, "close");
+      target.close();
+      await closed;
+    }
+  });
+
+  it("makes dispatcher close and destroy repeat-safe", async () => {
+    const closeTransport = createAdapterSendProxy({ HTTP_PROXY: "http://127.0.0.1:9" });
+    if (closeTransport === undefined) throw new Error("expected a closeable child proxy transport");
+    const firstClose = closeTransport.close();
+    const secondClose = closeTransport.close();
+    expect(firstClose).toBe(secondClose);
+    await firstClose;
+
+    const destroyTransport = createAdapterSendProxy({ HTTP_PROXY: "http://127.0.0.1:9" });
+    if (destroyTransport === undefined) throw new Error("expected a destroyable child proxy transport");
+    const firstDestroy = destroyTransport.destroy();
+    const secondDestroy = destroyTransport.destroy();
+    expect(firstDestroy).toBe(secondDestroy);
+    await firstDestroy;
   });
 });
 
@@ -1066,6 +1348,7 @@ describe("AskUser tool", () => {
 
   it("blocks on the bridge until the user's reply resolves the ask", async () => {
     const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, askTimeoutMs: 5_000 });
+    const bridgeFetch = vi.fn((input: Parameters<typeof fetch>[0], init?: RequestInit) => globalThis.fetch(input, init));
     const posts: string[] = [];
     bridge.registerSink("telegram", {
       postQuestion: async (_conversationId, text) => {
@@ -1084,6 +1367,8 @@ describe("AskUser tool", () => {
           },
         },
         {},
+        undefined,
+        { fetchImpl: bridgeFetch as unknown as typeof fetch },
       );
       await withMcpClient(server, async (client) => {
         const pending = client.callTool({ name: "AskUser", arguments: { question: "Who is speaking?" } });
@@ -1096,6 +1381,8 @@ describe("AskUser tool", () => {
         expect(result.structuredContent).toMatchObject({ answered: true, answer: "Alice and Bob, Polish" });
         expect(JSON.stringify(result.content)).toContain("Alice and Bob, Polish");
       });
+      expect(bridgeFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(bridgeFetch.mock.calls.every(([input]) => new URL(String(input)).origin === bridge.url)).toBe(true);
     } finally {
       await bridge.stop();
     }

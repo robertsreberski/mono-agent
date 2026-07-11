@@ -75,6 +75,19 @@ async function awaitAnswer(
 }
 
 describe("interaction bridge", () => {
+  it("exports a valid bracketed URL when bound to IPv6 loopback", async () => {
+    bridge = await startInteractionBridge({ host: "::1", port: 0 });
+
+    const parsed = new URL(bridge.url);
+    expect(parsed.protocol).toBe("http:");
+    expect(parsed.hostname).toBe("[::1]");
+    expect(parsed.port).not.toBe("");
+    const response = await fetch(new URL("/unknown", bridge.url), {
+      headers: { authorization: `Bearer ${bridge.token}` },
+    });
+    expect(response.status).toBe(404);
+  });
+
   it("posts the question through the channel sink and resolves the long-poll with the user's answer", async () => {
     const handle = await startBridge();
     const { posts, sink } = recordingSink();

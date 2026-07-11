@@ -64,6 +64,12 @@ export interface InteractionBridgeHandle {
 export const DEFAULT_INTERACTION_BRIDGE_PORT = 0;
 export const DEFAULT_ASK_USER_TIMEOUT_MS = 600_000;
 
+/** Render a loopback bridge origin, including bracketed IPv6 literals. */
+export function formatInteractionBridgeUrl(host: string, port?: number): string {
+  const urlHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  return `http://${urlHost}${port === undefined ? "" : `:${String(port)}`}`;
+}
+
 /** Resolved `interaction` config block (JSON `interaction` key + env overrides). */
 export interface InteractionSettings {
   /** True when the operator explicitly configured the block (JSON or env). */
@@ -383,7 +389,7 @@ export async function startInteractionBridge(
   await listenOn(server, host, options.port ?? DEFAULT_INTERACTION_BRIDGE_PORT);
   const address = server.address();
   const port = typeof address === "object" && address !== null ? address.port : 0;
-  const url = `http://${host}:${String(port)}`;
+  const url = formatInteractionBridgeUrl(host, port);
 
   return {
     url,

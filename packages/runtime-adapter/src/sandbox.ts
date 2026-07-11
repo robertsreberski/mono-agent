@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { constants as fsConstants, lstatSync, realpathSync } from "node:fs";
 import { access, chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -480,7 +481,8 @@ export function srtSettingsForPolicy(
       allowedDomains: domainsForNetworkPolicy(policy.network),
       deniedDomains: policy.network.mode === "none" ? ["*"] : [],
       strictAllowlist: true,
-      allowLocalBinding: policy.network.mode === "localhost",
+      allowLocalBinding: policy.network.mode === "localhost"
+        || (policy.network.mode === "allowlist" && policy.network.allowlist.some(isLocalhost)),
       allowAllUnixSockets: false,
     },
     filesystem: {
@@ -515,6 +517,13 @@ export function networkPolicyAllowsUrl(policy: SandboxPolicy | undefined, url: s
   }
   if (policy.network.mode === "localhost") {
     return isLocalhost(host);
+  }
+  // SRT's allowLocalBinding switch admits loopback as one capability rather
+  // than one exact spelling. Mirror that effective policy for readiness checks:
+  // any explicit loopback allowlist entry admits every loopback URL, while an
+  // external hostname that merely starts with "127." does not.
+  if (isLocalhost(host) && policy.network.allowlist.some(isLocalhost)) {
+    return true;
   }
   return policy.network.allowlist.some((domain) => domainMatches(host, domain));
 }
@@ -783,7 +792,7 @@ function stripIpv6Brackets(host: string): string {
 }
 
 function isLocalhost(host: string): boolean {
-  return host === "localhost" || host === "::1" || host === "127.0.0.1" || host.startsWith("127.");
+  return host === "localhost" || host === "::1" || (isIP(host) === 4 && host.split(".")[0] === "127");
 }
 
 function domainMatches(host: string, pattern: string): boolean {

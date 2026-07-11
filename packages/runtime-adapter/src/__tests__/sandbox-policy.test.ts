@@ -372,6 +372,17 @@ describe("network policy URL checks", () => {
     expect(networkPolicyAllowsUrl(policy, "https://api.github.com/")).toBe(false);
     expect(networkPolicyAllowsUrl(policy, "https://registry.npmjs.org/")).toBe(true);
   });
+
+  it("treats an explicit loopback allowlist entry as SRT's effective loopback capability", () => {
+    const policy = createSandboxPolicy({
+      root: "/repo",
+      network: { mode: "allowlist", allowlist: ["localhost", "api.telegram.org"] },
+    });
+
+    expect(networkPolicyAllowsUrl(policy, "http://127.0.0.1:43123/v1/asks")).toBe(true);
+    expect(networkPolicyAllowsUrl(policy, "http://127.8.9.10:43123/v1/asks")).toBe(true);
+    expect(networkPolicyAllowsUrl(policy, "https://api.telegram.org/bot")).toBe(true);
+  });
 });
 
 describe("srt integration contract", () => {
@@ -466,6 +477,51 @@ describe("srt integration contract", () => {
       allowAllUnixSockets: false,
     });
   });
+
+  it("does not enable local binding for an external-only network allowlist", () => {
+    const policy = failClosedSandboxPolicy({
+      root: "/repo",
+      network: { mode: "allowlist", allowlist: ["api.telegram.org"] },
+    });
+
+    expect(srtSettingsForPolicy(policy).network).toEqual({
+      allowedDomains: ["api.telegram.org"],
+      deniedDomains: [],
+      strictAllowlist: true,
+      allowLocalBinding: false,
+      allowAllUnixSockets: false,
+    });
+  });
+
+  it("does not confuse an external hostname beginning with 127 for a loopback address", () => {
+    const policy = failClosedSandboxPolicy({
+      root: "/repo",
+      network: { mode: "allowlist", allowlist: ["127.example.com"] },
+    });
+
+    expect(srtSettingsForPolicy(policy).network).toMatchObject({
+      allowedDomains: ["127.example.com"],
+      allowLocalBinding: false,
+    });
+  });
+
+  it.each(["127.0.0.1", "localhost", "127.8.9.10"])(
+    "enables local binding only when allowlist mode explicitly includes loopback host %s",
+    (loopbackHost) => {
+      const policy = failClosedSandboxPolicy({
+        root: "/repo",
+        network: { mode: "allowlist", allowlist: ["api.telegram.org", loopbackHost] },
+      });
+
+      expect(srtSettingsForPolicy(policy).network).toEqual({
+        allowedDomains: ["api.telegram.org", loopbackHost],
+        deniedDomains: [],
+        strictAllowlist: true,
+        allowLocalBinding: true,
+        allowAllUnixSockets: false,
+      });
+    },
+  );
 
   it("fails closed before process execution when the native engine is unavailable", async () => {
     const policy = failClosedSandboxPolicy({ root: "/repo" });
