@@ -161,7 +161,7 @@ There are **two** per-call memory-LLM timeouts. They share the env var name `MON
 | Path | Config / env | Default | Governs |
 | --- | --- | --- | --- |
 | **In-app** (the running agent) | `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`) | `60000` | Each per-turn [capture](/memory/capture-and-recall/#capture--per-turn-intelligent-capture-bujo) LLM call (one extraction + at most one reconcile) |
-| **Standalone CLI** | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` only | `120000` | Legacy `memory-bujo reflect` / `migrate` run by hand |
+| **Standalone CLI** | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` only | `120000` | Advanced `memory-bujo migrate` run by hand (`reflect` is read-only and uses no LLM) |
 
 So in the app, raise `memory.llm.timeoutMs` (config) when a slow local memory model trips the cap on extraction or reconcile — its default is **`60000`**, not the CLI's `120000`. The value is bounded `1000`–`600000` ms.
 
@@ -277,8 +277,8 @@ memory-bujo recall <root> "<query>"
 # Write the living index.md (counts, top memories, entities)
 memory-bujo index <root>
 
-# Legacy reflection pass: decay + insight synthesis (Ollama-only; needs MONO_AGENT_MEMORY_LLM_MODEL)
-MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo reflect <root>
+# Legacy compatibility report: read-only due-state check, no LLM or mutation
+memory-bujo reflect <root>
 
 # Legacy migration: promote/reschedule/cluster/forget (Ollama-only; needs MONO_AGENT_MEMORY_LLM_MODEL)
 MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
@@ -290,7 +290,7 @@ MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
 | `rollback` | required to declare the retained `journal` / `bujo` identity; no provider request | no |
 | `recall` | only if `MONO_AGENT_MEMORY_EMBEDDINGS_*` set (else FTS-only) | no |
 | `index` | no | no |
-| `reflect` | no | yes — Ollama-only, `MONO_AGENT_MEMORY_LLM_MODEL` required |
+| `reflect` | no | no — read-only compatibility report |
 | `migrate` | no | yes — Ollama-only, `MONO_AGENT_MEMORY_LLM_MODEL` required |
 
 `rebuild` and `rollback` require `--tier <lite|journal|bujo>`. The standalone CLI refuses the first managed activation because it cannot safely infer the configured agent identity or prove that the configured process is stopped; use `mono-agent memory rebuild` for that transition. For subsequent standalone rebuilds, the embeddings environment must match the declared tier and retained generation exactly.
@@ -299,9 +299,19 @@ MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
 
 The standalone CLI reads the **same `MONO_AGENT_MEMORY_*` env vars** as the app. Embeddings remain opt-in for `recall`: set `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` (`ollama` / `openai`) to enable semantic recall, or omit it for FTS-only recall. For safe rebuild/rollback, the strict tier decides whether embeddings are forbidden (`lite`) or required (`journal`/`bujo`). When enabled, the model defaults to `nomic-embed-text:v1.5` (`MONO_AGENT_MEMORY_EMBEDDINGS_MODEL`) and the dimension to 768 (`MONO_AGENT_MEMORY_EMBEDDINGS_DIM`). See [Embeddings](/memory/embeddings/) for the full env list.
 
-### reflect / migrate are legacy and Ollama-only
+### `reflect` compatibility; `migrate` advanced maintenance
 
-The standalone CLI uses the built-in Ollama chat adapter for `reflect` / `migrate` — it does **not** route through the agent host, so `memory.llm.provider: "agent-host"` does not apply to the CLI. These commands are manual compatibility tools, not the app's scheduled maintenance path. You must set `MONO_AGENT_MEMORY_LLM_MODEL`; if it is unset when running `reflect` or `migrate`, the command prints a clear error and exits `2` (no silent fallback). `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint (default `http://localhost:11434`), and `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call timeout (CLI default `120000` — distinct from the in-app default; see [The two memory-LLM timeouts](#the-two-memory-llm-timeouts)); raise it for slow models.
+Legacy `reflect` is read-only. It reports whether reflection would be due, makes no LLM call,
+and never synthesizes insights, decays salience, or mutates canonical Markdown/the index.
+
+`migrate` remains a durable, explicit advanced-maintenance operation. It uses the standalone
+built-in Ollama chat adapter and does **not** route through the agent host, so
+`memory.llm.provider: "agent-host"` does not apply. Set `MONO_AGENT_MEMORY_LLM_MODEL`; if it
+is unset, `migrate` prints a clear error and exits `2` (no silent fallback).
+`MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint (default
+`http://localhost:11434`), and `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call timeout
+(CLI default `120000` — distinct from the in-app default; see
+[The two memory-LLM timeouts](#the-two-memory-llm-timeouts)); raise it for slow models.
 
 For the in-app runtime you can instead use `memory.llm.provider: "agent-host"` for capture through an SDK model — see the [provider choices](#memoryllm-provider-choices) above and [Consolidation](/memory/rituals/) for the deterministic auto-scheduler the CLI complements.
 

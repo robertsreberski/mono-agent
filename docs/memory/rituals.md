@@ -8,10 +8,14 @@ sidebar:
 
 The `bujo` memory tier maintains itself with one scheduled **consolidation** pass that
 runs **in-app** — no external cron, launchd, or sidecar process. Consolidation is a
-lightweight housekeeping cycle: decay salience, deduplicate near-identical bullets by
-superseding duplicates, and rewrite the living index.
+lightweight, projection-only housekeeping cycle: refresh the living `index.md`, keep the
+retired `future-log.md` stub empty, and report how many exact-normalized duplicate groups
+were found.
 
-The `consolidate()` operation itself is deterministic and can run without a chat model.
+The `consolidate()` operation itself is deterministic and makes no chat-model call. In v1,
+salience is static canonical Markdown metadata: scheduled consolidation does not decay it,
+and it never supersedes, deletes, or rewrites canonical memories. Journal content-hash
+identity and BuJo capture reconciliation prevent most new duplicates at write time.
 The in-app scheduler starts only for the strict `bujo` tier. Configuration therefore requires
 `memory.mode: "bujo"`, embeddings, and `memory.llm`; omitting a prerequisite is a validation
 error, never a downshift to Journal. The `lite` and `journal` tiers do not run scheduled
@@ -26,7 +30,7 @@ alongside your channels.
 
 | Pass | What it does | Default cron |
 | --- | --- | --- |
-| Consolidation | Decay salience, supersede duplicate bullets, rewrite `index.md`, keep `future-log.md` empty | `0 */2 * * *` |
+| Consolidation | Refresh `index.md`, keep `future-log.md` empty, report the duplicate-group count; no canonical-memory mutation | `0 */2 * * *` |
 
 The scheduler starts with the app and stops cleanly on shutdown. The pass is error
 isolated: a failed consolidation is logged and the scheduler carries on.
@@ -35,7 +39,7 @@ isolated: a failed consolidation is logged and the scheduler carries on.
 flight. Long passes will not stack up or run concurrently with themselves.
 
 Cron expressions are evaluated by the in-app scheduler. The default runs every two hours
-because the pass is intentionally cheap and does not synthesize long-form insights.
+because the projection pass is intentionally cheap and does not call an LLM.
 
 ## Configuration
 
@@ -107,12 +111,23 @@ Consolidation (and the `index` CLI command) maintain markdown files at the root 
 `memory.path`:
 
 - **`index.md`** — a living table of contents: entry counts, the top/most-relevant
-  memories, and the entity graph summary. Regenerated as memories change.
+  memories, and the entity graph summary. Regenerated from canonical state without
+  rewriting that state. The consolidation result reports the duplicate-group count
+  separately.
 - **`future-log.md`** — a retired compatibility stub. Consolidation writes it as exactly
   `# Future Log` and does not project future items there.
 
 Because the whole `bujo` store is plain markdown on disk, these files are human-readable
 and diffable — you can browse them directly or commit them.
+
+## Why consolidation is projection-only
+
+Canonical Markdown and the active SQLite index must move together. Any lifecycle feature
+that decays salience, merges duplicates, or supersedes existing facts therefore needs the
+same durable transaction, replay, validation, and rollback guarantees as capture and
+migration. V1 keeps the scheduled path deliberately small and safe. Richer lifecycle
+mutation belongs behind an explicit future feature or external plugin boundary, not an
+implicit timer that rewrites memory.
 
 ## Verifying the schedule
 
@@ -130,19 +145,21 @@ reports that consolidation is not scheduled.
 :::caution
 Scheduled consolidation needs a valid strict `bujo` configuration. Missing embeddings or
 `memory.llm` fails configuration instead of silently running a reduced tier. Manual deterministic
-`consolidate()` remains available to programmatic callers. Validate before relying on automated
-maintenance.
+`consolidate()` remains available to programmatic callers and has the same projection-only
+contract. Validate before relying on automated maintenance.
 :::
 
 ## Manual / out-of-band runs
 
 The `memory-bujo` CLI still includes the older `reflect` and `migrate` commands for
-manual backfills and compatibility with older stores. They are not auto-scheduled by the
-app. The standalone CLI is Ollama-only and requires `MONO_AGENT_MEMORY_LLM_MODEL`:
+compatibility with older stores. They are not auto-scheduled by the app. `reflect` is now
+read-only: it reports whether reflection would be due and performs no decay, insight
+synthesis, or canonical/index mutation. `migrate` remains an explicit, durable advanced
+maintenance operation and uses the standalone Ollama adapter:
 
 ```bash
-# Legacy reflection pass: decay + insight synthesis
-MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo reflect ./memory
+# Legacy compatibility report: read-only due-state check, no LLM or mutation
+memory-bujo reflect ./memory
 
 # Legacy migration: promote/reschedule/cluster/forget
 MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate ./memory
@@ -151,11 +168,11 @@ MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate ./memory
 memory-bujo index ./memory
 ```
 
-`MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint (default
+For `migrate`, `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint (default
 `http://localhost:11434`) and `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` the per-call timeout
 (CLI default `120000` — in-app capture uses `memory.llm.timeoutMs`, default `60000`;
 see [the two memory-LLM timeouts](/memory/validation-and-cli/#the-two-memory-llm-timeouts)).
-If `MONO_AGENT_MEMORY_LLM_MODEL` is unset, `reflect`/`migrate` exit
-with a clear error. See [Validation & CLI](/memory/validation-and-cli/) for the full subcommand
+If `MONO_AGENT_MEMORY_LLM_MODEL` is unset, `migrate` exits with a clear error. `reflect`
+needs no model. See [Validation & CLI](/memory/validation-and-cli/) for the full subcommand
 reference, and [Embeddings](/memory/embeddings/) for the semantic-recall env vars these
 commands share.

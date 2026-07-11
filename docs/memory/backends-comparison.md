@@ -42,9 +42,9 @@ npm install "@mono-agent/memory-supermemory@${APP_VERSION}"
 | Runs without a network | Yes (fully local) | Yes with the local binary; the cloud is off-machine |
 | Memory extraction | `bujo`: separate raw audit + bounded in-app LLM curation and precise entity graph. `lite`/`journal`: deterministic canonical capture, no chat LLM | Server-side, inside Supermemory — you just POST turns |
 | Dependencies | Configured embeddings (`journal`/`bujo`) + required chat model (`bujo`) | The Supermemory binary + an OpenAI-compatible LLM endpoint for its extractor (Ollama works); embeddings bundled |
-| Recall | Embeddings + FTS, RRF fusion + decay/salience, no LLM | Hybrid search (`/v4/search`, legacy `/v3` fallback) |
+| Recall | Embeddings + FTS, RRF fusion + static salience metadata, no LLM | Hybrid search (`/v4/search`, legacy `/v3` fallback) |
 | Capture latency | Lite/Journal lexical row or BuJo raw audit written synchronously; semantic indexing/curation bounded and async | Ingestion is **async** ("queued") — a just-captured turn isn't instantly searchable |
-| Maintenance | `bujo`: lightweight consolidation every two hours by default (in-app scheduler) | Consolidation happens server-side; BuJo scheduled consolidation is a no-op |
+| Maintenance | `bujo`: projection-only consolidation every two hours by default (`index.md`, empty `future-log.md`, duplicate-group count) | Consolidation happens server-side; BuJo scheduled consolidation is a no-op |
 | Cost model | Your tokens for `bujo` capture; embeddings local | Extraction runs on Supermemory's configured LLM endpoint |
 | Privacy / ownership | Fully local, plain-text markdown you can read and `grep` | Local binary keeps data on-machine; the hosted cloud sends it out |
 | Setup effort | Pull Ollama models (for `journal`/`bujo`); zero extra services for `lite` | Install the optional mono-agent plugin plus `supermemory-server` (and point it at an LLM) |
@@ -75,8 +75,8 @@ consolidation **server-side**: you POST raw turns and it decides what to remembe
 
 ### Recall
 Both back the auto-provisioned `MemoryRecall` tool and the per-turn recall-into-context.
-BuJo ranks with embeddings + full-text BM25 fused via RRF, with relevance-first salience/insight
-weighting and no LLM call (see [Embeddings](/memory/embeddings/)). Supermemory runs its
+BuJo ranks with embeddings + full-text BM25 fused via RRF, with relevance-first static
+salience/insight tie-breakers and no LLM call (see [Embeddings](/memory/embeddings/)). Supermemory runs its
 own hybrid search. Deliberate tool/search calls return their top-ranked hits; BuJo tool calls
 may expand one graph hop. Automatic context recall remains direct-only, applies the host score
 and answer-evidence gate, and injects nothing for unsupported attributes or unqualified
@@ -90,10 +90,11 @@ fact captured this turn may take seconds to minutes to become searchable — don
 reading it back within the same turn.
 
 ### Maintenance & consolidation
-BuJo's `bujo` tier auto-runs lightweight **consolidation** every two hours by default:
-temporal decay, duplicate superseding, `index.md` refresh, and an empty retired
-`future-log.md` stub — see [Consolidation](/memory/rituals/). Supermemory performs its own
-consolidation server-side, so the BuJo scheduler does not run for the Supermemory backend.
+BuJo's `bujo` tier auto-runs projection-only **consolidation** every two hours by default:
+`index.md` refresh, an empty retired `future-log.md` stub, and a duplicate-group count —
+see [Consolidation](/memory/rituals/). It does not decay salience or automatically supersede
+canonical memories. Supermemory performs its own consolidation server-side, so the BuJo
+scheduler does not run for the Supermemory backend.
 
 ### Privacy & data ownership
 BuJo keeps everything local in formats you own and can inspect. The Supermemory **local
@@ -102,7 +103,7 @@ cloud** sends your memory off-machine — choose the local binary if that matter
 
 ## Config side by side
 
-BuJo (`bujo` tier — full capture + consolidation):
+BuJo (`bujo` tier — full capture + projection-only consolidation):
 
 ```json
 {
@@ -143,7 +144,7 @@ tiers default to `append-host-summary`.
 
 - You want a fully local, zero-or-Ollama-only setup with no extra service to run.
 - You value human-readable, owned memory you can read, `grep`, and version.
-- You want the entity graph, lightweight consolidation, and deterministic, inspectable
+- You want the entity graph, mutation-free scheduled projections, and deterministic, inspectable
   recall.
 - You're on `lite`/`journal` and don't want any LLM in the memory loop at all.
 

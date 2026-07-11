@@ -78,10 +78,10 @@ MONO_AGENT_MEMORY_WRITE_MODE=capture
 ```
 
 :::caution
-The capture pipeline never fails the user's reply. An LLM/embedding timeout leaves the raw audit intact, emits a memory warning/run failure, and stores no curated facts for that turn. Raise the in-app per-call timeout — `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`), **default `60000`** — for a slow model. The standalone legacy `memory-bujo reflect`/`migrate` path reads the same env var but defaults to `120000`; see [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts).
+The capture pipeline never fails the user's reply. An LLM/embedding timeout leaves the raw audit intact, emits a memory warning/run failure, and stores no curated facts for that turn. Raise the in-app per-call timeout — `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`), **default `60000`** — for a slow model. The standalone advanced `memory-bujo migrate` path reads the same env var but defaults to `120000`; see [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts).
 :::
 
-The BuJo chat model used by capture is the same required `memory.llm` block used by [scheduled consolidation](/memory/rituals/). With `memory.llm.provider: "agent-host"` it can point at an SDK runtime model reference (e.g. `pi:openai-codex:gpt-5.6-terra`); the standalone legacy `reflect`/`migrate` CLI commands remain Ollama-only.
+The BuJo chat model used by capture comes from the tier's required `memory.llm` block. [Scheduled consolidation](/memory/rituals/) keeps that strict tier contract but is projection-only and makes no LLM call. With `memory.llm.provider: "agent-host"`, capture can point at an SDK runtime model reference (e.g. `pi:openai-codex:gpt-5.6-terra`). Standalone `migrate` remains Ollama-only; legacy `reflect` is a read-only due-state report and needs no model.
 
 ## The `MemoryRecall` tool
 
@@ -163,9 +163,9 @@ See [Tool policy](/tools/policy/) and [MCP tools](/tools/mcp/) for how MCP-provi
 | `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture` (`capture` requires `mode: bujo`) |
 | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned `MemoryRecall`; default on for every configured tier |
 | `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo` |
-| `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline (and legacy CLI `reflect`/`migrate`) |
+| `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline (and standalone advanced `migrate`; legacy `reflect` needs no model) |
 | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama chat endpoint (default `http://localhost:11434`) |
-| `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | `memory.llm.timeoutMs` | Per-call chat-LLM timeout. **In-app (agent-app) default `60000`**; the standalone `memory-bujo` CLI reads the same var but defaults to `120000`. See [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts). |
+| `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | `memory.llm.timeoutMs` | Per-call chat-LLM timeout. **In-app (agent-app) default `60000`**; standalone `memory-bujo migrate` reads the same var but defaults to `120000`. See [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts). |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama` / `openai`; defaults to `ollama` once the required Journal/BuJo embeddings block is present |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Defaults by provider (`nomic-embed-text:v1.5` for Ollama) |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` | Defaults to `768`; set it when the model output dimension differs |
@@ -178,5 +178,5 @@ Journal and BuJo require an explicit, non-empty `memory.embeddings` **block**, b
 
 - [Memory overview](/memory/) — tier matrix and the single `memory` config block
 - [Embeddings](/memory/embeddings/) — the provider/model behind vector recall
-- [Consolidation](/memory/rituals/) — scheduled salience decay, duplicate superseding, and index maintenance
+- [Consolidation](/memory/rituals/) — scheduled projection refresh and duplicate-group counting, without canonical-memory mutation
 - [Validation & CLI](/memory/validation-and-cli/) — `mono-agent validate` checks and the `memory-bujo` binary

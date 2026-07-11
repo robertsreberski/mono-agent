@@ -22,10 +22,10 @@ Weighing the built-in engine against an external memory service? See
 | Deterministic host observation | canonical daily log | canonical daily log, hash-deduplicated | separate raw audit |
 | Hybrid recall (BM25 + vector RRF) | — | yes | yes |
 | Semantic indexing off the successful-turn path | — | yes, bounded batches | yes, during bounded curation |
-| Salience decay | — | yes | yes |
+| Static canonical salience metadata | yes | yes | yes |
 | LLM capture/reconcile (ADD/UPDATE/SUPERSEDE/NOOP) | — | — | yes |
 | Entity graph | — | — | yes |
-| Lightweight consolidation (dedupe + salience decay) | — | — | yes |
+| Projection-only consolidation (`index.md` + duplicate-group count) | — | — | yes |
 | Auto-scheduled maintenance (in-app scheduler) | — | — | yes |
 | Living `index.md` + retired `future-log.md` stub | — | — | yes |
 | **Requires embeddings** | no | **yes** | **yes** |
@@ -40,7 +40,8 @@ running Ollama. Host summaries can be appended after each run
 
 ### `journal`
 
-Adds hybrid recall (BM25 + vector RRF) and salience decay on top of the lite tier.
+Adds hybrid recall (BM25 + vector RRF) on top of the lite tier. Salience remains
+static canonical Markdown metadata; the scheduler does not decay it over time.
 Requires a configured embeddings provider, either Ollama or OpenAI. No chat model needed.
 The host commits a new lexical observation first, using a stable content-hash identity to
 deduplicate repeated summaries, then queues vector indexing in bounded batches. A slow or
@@ -56,10 +57,12 @@ most one batched reconcile call to promote durable facts into daily notes, class
 entries as ADD / UPDATE / SUPERSEDE / NOOP. Each fact retains only its explicitly extracted
 entity associations. The raw audit is never automatically treated as curated truth.
 
-A **consolidation** pass keeps the store legible without writing an LLM essay: it applies
-temporal decay, deduplicates near-identical bullets by superseding duplicates, rewrites
-the living `index.md`, and leaves `future-log.md` as an empty retired stub (`# Future Log`).
-It does not create monthly projection files.
+A **consolidation** pass keeps the store legible as a projection: it refreshes the living
+`index.md`, writes `future-log.md` as an empty retired stub (`# Future Log`), and reports
+how many exact-normalized duplicate groups it found. It does not change salience,
+supersede or rewrite canonical memories, or create monthly projection files. Capture-time
+reconciliation and Journal content-hash identities prevent most new duplicates before this
+report is needed.
 
 Consolidation is **auto-scheduled in-app** for the `bujo` tier: the agent-app scheduler
 runs `store.consolidate()` at the configured cron cadence (default `0 */2 * * *`, every
@@ -211,19 +214,20 @@ ollama pull nomic-embed-text:v1.5
 ollama pull qwen3.6:latest   # or any local chat model you prefer
 ```
 
-Set `MONO_AGENT_MEMORY_LLM_MODEL` to the model name when running the legacy standalone
-CLI `reflect`/`migrate` commands manually. The standalone CLI remains Ollama-only. For the app
-runtime, `memory.llm.provider: "agent-host"` may instead point at a SDK runtime model
-reference such as `pi:openai-codex:gpt-5.6-terra`.
+Set `MONO_AGENT_MEMORY_LLM_MODEL` to the model name when running the standalone
+`migrate` command manually. Migration remains an Ollama-only, durable advanced-maintenance
+path. Legacy `reflect` is read-only and needs no model: it only reports whether reflection
+would be due. For the app runtime, `memory.llm.provider: "agent-host"` may instead point at
+an SDK runtime model reference such as `pi:openai-codex:gpt-5.6-terra`.
 
 ## Auto-Scheduler (bujo tier)
 
 When `memory.mode` is `"bujo"` and `memory.llm` is configured, the agent-app starts an
 **in-app consolidation scheduler** alongside the other channels. It runs
 `store.consolidate()` at the `memory.consolidation.cron` cadence (default `0 */2 * * *`,
-every two hours). Consolidation applies decay, deduplicates repeated bullets by
-superseding duplicates, rewrites the living `index.md`, and keeps `future-log.md` as a
-literal empty stub.
+every two hours). Consolidation refreshes the living `index.md`, keeps `future-log.md` as a
+literal empty stub, and reports the duplicate-group count. It never decays salience or automatically
+supersedes or rewrites canonical memories.
 
 Overlap protection: a new run is skipped if the previous consolidation is still in
 flight. Failures are logged and the scheduler carries on. The scheduler starts with the
@@ -276,8 +280,8 @@ memory-bujo recall <root> "<query>"
 # Write the living index.md (table of contents: counts, top memories, entities)
 memory-bujo index <root>
 
-# Legacy reflection pass: decay + insight synthesis (requires MONO_AGENT_MEMORY_LLM_MODEL)
-MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo reflect <root>
+# Legacy compatibility report: read-only due-state check, no LLM or mutation
+memory-bujo reflect <root>
 
 # Legacy migration: promote/reschedule/cluster/forget (requires MONO_AGENT_MEMORY_LLM_MODEL)
 MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
@@ -288,13 +292,14 @@ agent (the memory root is the positional `<root>` argument). Embeddings are opt-
 read-only `recall`; safe rebuild/rollback instead enforce the declared tier identity
 (`lite` forbids embeddings, while `journal`/`bujo` require them). When enabled, the model
 defaults to `nomic-embed-text:v1.5` (`MONO_AGENT_MEMORY_EMBEDDINGS_MODEL`) and dim to 768
-(`MONO_AGENT_MEMORY_EMBEDDINGS_DIM`). For legacy `reflect`/`migrate`, the standalone CLI uses the
-built-in Ollama chat adapter: `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint
-for the chat model (default `http://localhost:11434`). If `MONO_AGENT_MEMORY_LLM_MODEL` is
-unset when running `reflect` or `migrate`, the command prints a clear error and exits 2.
+(`MONO_AGENT_MEMORY_EMBEDDINGS_DIM`). For `migrate`, the standalone CLI uses the built-in
+Ollama chat adapter: `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint for the
+chat model (default `http://localhost:11434`). If `MONO_AGENT_MEMORY_LLM_MODEL` is unset,
+`migrate` prints a clear error and exits 2. Legacy `reflect` is a read-only compatibility
+report and makes no LLM call.
 
 `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call chat-LLM timeout, but the **default differs
-by binary**: the standalone `memory-bujo` `reflect`/`migrate` CLI defaults to `120000`, while the
+by binary**: the standalone `memory-bujo migrate` CLI defaults to `120000`, while the
 **in-app** memory LLM (per-turn capture) reads `memory.llm.timeoutMs` — the same env var maps
 to it — and defaults to `60000`. A capture runs one extraction call and at most one reconcile
 call; a timeout is recorded and warned without failing the user's reply. The raw audit survives,
