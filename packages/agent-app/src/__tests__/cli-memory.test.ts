@@ -220,17 +220,40 @@ describe("runCli memory", () => {
     const rebuild = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "rebuild", "--json"]))));
     expect(rebuild.code).toBe(0);
     expect(rebuild.stderr).toBe("");
-    const rebuilt = JSON.parse(rebuild.stdout) as { operation: string; activeDatabase: string };
+    const rebuilt = JSON.parse(rebuild.stdout) as {
+      operation: string;
+      activeDatabase: string;
+      details: { rollback?: string };
+    };
     expect(rebuilt.operation).toBe("rebuild");
     expect(rebuilt.activeDatabase).not.toBe(legacyPath);
+    expect(rebuilt.details.rollback).toBeUndefined();
     expect(await resolveActiveMemoryDbPath(memoryRoot)).toBe(rebuilt.activeDatabase);
 
+    // A divergent legacy database is preserved as memory.db, but is not
+    // advertised as a safe rollback target. Rebuild the managed generation
+    // once more so rollback retains a validated immutable snapshot.
+    const managedRebuild = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "rebuild", "--json"]))));
+    expect(managedRebuild.code, managedRebuild.stderr).toBe(0);
+    expect(managedRebuild.stderr).toBe("");
+    const managed = JSON.parse(managedRebuild.stdout) as {
+      operation: string;
+      activeDatabase: string;
+      details: { rollback?: string };
+    };
+    expect(managed.operation).toBe("rebuild");
+    expect(managed.activeDatabase).not.toBe(rebuilt.activeDatabase);
+    expect(managed.details.rollback).toBeDefined();
+    expect(managed.details.rollback).not.toBe(rebuilt.activeDatabase);
+
     const rollback = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "rollback", "--json"]))));
-    expect(rollback.code).toBe(0);
+    expect(rollback.code, rollback.stderr).toBe(0);
     expect(rollback.stderr).toBe("");
     const rolledBack = JSON.parse(rollback.stdout) as { operation: string; activeDatabase: string };
     expect(rolledBack.operation).toBe("rollback");
-    expect(rolledBack.activeDatabase).not.toBe(rebuilt.activeDatabase);
+    expect(rolledBack.activeDatabase).toBe(managed.details.rollback);
+    expect(rolledBack.activeDatabase).not.toBe(managed.activeDatabase);
     expect(await resolveActiveMemoryDbPath(memoryRoot)).toBe(rolledBack.activeDatabase);
   });
 
@@ -364,12 +387,13 @@ describe("runCli memory", () => {
     const embeddings = deterministicEmbeddings("ollama:test-embed", 8);
 
     await safeRebuildMemoryIndex({ root: memoryRoot, tier: "journal", embeddings, dim: 8 });
-    const rollbackPath = await resolveActiveMemoryDbPath(memoryRoot);
-    await upsertIndexed(rollbackPath, embeddings, 8, record("ROLLBACK-SENTINEL", "Rollback generation alpha sentinel."));
+    const firstManagedPath = await resolveActiveMemoryDbPath(memoryRoot);
 
-    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "journal", embeddings, dim: 8 });
+    const rebuilt = await safeRebuildMemoryIndex({ root: memoryRoot, tier: "journal", embeddings, dim: 8 });
     const activePath = await resolveActiveMemoryDbPath(memoryRoot);
-    expect(activePath).not.toBe(rollbackPath);
+    expect(activePath).not.toBe(firstManagedPath);
+    expect(rebuilt.rollback).toBeDefined();
+    expect(rebuilt.rollback).not.toBe(firstManagedPath);
     await upsertIndexed(activePath, embeddings, 8, record("ACTIVE-SENTINEL", "Pinned active beta sentinel."));
 
     let switched = false;
@@ -401,9 +425,8 @@ describe("runCli memory", () => {
       expect(search.code).toBe(0);
       expect(search.stdout).toContain("[WARN] Semantic embeddings unavailable");
       expect(search.stdout).toContain("Pinned active beta sentinel.");
-      expect(search.stdout).not.toContain("Rollback generation alpha sentinel.");
       expect(server.requests).toBe(1);
-      expect(await resolveActiveMemoryDbPath(memoryRoot)).toBe(rollbackPath);
+      expect(await resolveActiveMemoryDbPath(memoryRoot)).toBe(rebuilt.rollback);
     } finally {
       await server.close();
     }
