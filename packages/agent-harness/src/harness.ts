@@ -599,7 +599,11 @@ export class MonoAgentHarness implements AgentHarness {
     const context = await loadContextFromFiles({
       identityPath: this.options.identityPath,
       userMessage: request.userMessage,
-      session: sessionContextBlock(request.conversationId, request.metadata),
+      session: sessionContextBlock(
+        request.conversationId,
+        request.metadata,
+        this.options.memory !== undefined,
+      ),
       ...(this.options.soulPath === undefined ? {} : { soulPath: this.options.soulPath }),
       ...(history.length === 0 ? {} : { history }),
       ...(this.options.skillsRoot !== undefined
@@ -1501,19 +1505,33 @@ function cloneExternalSummaryValue(
  * conversation cannot itself receive a proactive follow-up. The daily-rollover
  * bucket suffix is stripped so the id is the stable, deliverable one.
  */
-function sessionContextBlock(conversationId: string, metadata?: Record<string, unknown>): string {
+function sessionContextBlock(
+  conversationId: string,
+  metadata?: Record<string, unknown>,
+  hostManagedMemory = false,
+): string {
   const baseId = conversationId.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
   const deliverable = baseId.startsWith("telegram:") || baseId.startsWith("slack:");
+  const memoryGuidance = hostManagedMemory ? HOST_MANAGED_MEMORY_GUIDANCE : undefined;
   if (deliverable) {
     return [
       `You are currently handling the conversation \`${baseId}\`.`,
       `If you start a long-running external operation and want its result delivered back to THIS conversation later, have the service include \`"conversationId": "${baseId}"\` in the JSON body of its callback to your inbound webhook — the follow-up will be routed here.`,
-    ].join("\n\n");
+      memoryGuidance,
+    ].filter((part) => part !== undefined).join("\n\n");
   }
   const base = `You are currently handling the conversation \`${baseId}\`. This is a request-driven run (scheduled, webhook, or API) with no interactive user attached to this conversation.`;
   const notifyGuidance = notifyDeliveryGuidance(metadata);
-  return notifyGuidance === undefined ? base : `${base}\n\n${notifyGuidance}`;
+  return [base, notifyGuidance, memoryGuidance]
+    .filter((part) => part !== undefined)
+    .join("\n\n");
 }
+
+const HOST_MANAGED_MEMORY_GUIDANCE = [
+  "Long-term memory is owned and persisted by the host after successful turns.",
+  "To remember something, acknowledge it in your reply and let host capture complete; never edit memory Markdown, SQLite databases, indexes, manifests, or other internal memory state with file or shell tools.",
+  "Use the available recall/search tools to read memory.",
+].join(" ");
 
 /**
  * Guidance for a notify-enabled cron/webhook turn (its trigger metadata carries
