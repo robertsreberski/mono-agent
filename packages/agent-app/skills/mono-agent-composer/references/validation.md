@@ -90,7 +90,7 @@ pnpm run test:demo
 | Webhook | `curl` the invocation path and inspect the response body/status. |
 | Cron | Run a one-off scheduled invocation or wait for one tick. |
 | Observability | Confirm a run writes a redacted JSONL artifact; if an `observability.exporters` Phoenix entry is set, confirm the trace appears in Phoenix. |
-| Memory recall tool | With `memory.recallTool.enabled` (default on for journal/bujo with embeddings), ask the agent to recall an old note and confirm `MemoryRecall` appears in the run artifact and returns it. |
+| Memory recall tool | With any memory tier configured (`memory.recallTool.enabled` defaults on), ask the agent to recall an old note and confirm `MemoryRecall` appears separately from action-tool allowlists and returns it. |
 | Semantic memory search | With `memory.embeddings` set (Ollama: `ollama pull nomic-embed-text:v1.5` first), ask a paraphrased question about an old note and confirm `MemoryRecall` (hybrid keyword + semantic) returns it. |
 
 ## Failure Handling

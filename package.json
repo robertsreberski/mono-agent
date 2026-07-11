@@ -23,6 +23,7 @@
     "typecheck": "pnpm -r --sort run typecheck && pnpm run typecheck:demo",
     "typecheck:demo": "tsc -p demos/final-agent/tsconfig.json --noEmit",
     "test": "pnpm run release:test && pnpm run scripts:test && pnpm -r --sort run test && pnpm run test:demo",
+    "benchmark:memory": "pnpm --filter '@mono-agent/memory...' run build && node scripts/memory-benchmark.mjs --gate",
     "test:demo": "vitest run --passWithNoTests demos/final-agent/src/__tests__/final-demo.test.ts demos/final-agent/src/__tests__/cli-args.test.ts demos/final-agent/src/__tests__/deployment.test.ts",
     "demo:final": "node demos/final-agent/dist/cli.js",
     "deploy:final": "pnpm run build && node demos/final-agent/dist/deploy-cli.js",
@@ -31,7 +32,7 @@
     "release:consumer": "node scripts/release/verify-packed-consumer.mjs",
     "release:publish": "node scripts/release/publish-release.mjs",
     "release:verify": "node scripts/release/verify-release.mjs",
-    "scripts:test": "vitest run scripts/__tests__/*.test.mjs",
+    "scripts:test": "pnpm --filter '@mono-agent/memory...' run build && vitest run scripts/__tests__/*.test.mjs",
     "release:test": "vitest run scripts/release/__tests__/release.test.mjs scripts/release/__tests__/package-count-drift.test.mjs scripts/release/__tests__/packed-consumer.test.mjs"
   },
   "devDependencies": {

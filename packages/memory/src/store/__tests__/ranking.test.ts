@@ -15,20 +15,20 @@ describe("rrfFuse", () => {
 });
 
 describe("reScore", () => {
-  it("boosts recent, salient, insight memories", () => {
+  it("ignores access recency while retaining salience and insight tie-breakers", () => {
     const now = new Date("2026-06-15T00:00:00.000Z");
-    const base = { rrfScore: 1, salience: 0.5, isInsight: false, lastAccessedAt: "2026-06-15T00:00:00.000Z" };
-    const old = reScore({ ...base, lastAccessedAt: "2026-01-01T00:00:00.000Z" }, DEFAULT_WEIGHTS, 0.995, now);
+    const base = { rrfScore: 1, salience: 0.5, isInsight: false };
+    const old = reScore(base, DEFAULT_WEIGHTS, 0.995, new Date("2026-01-01T00:00:00.000Z"));
     const fresh = reScore(base, DEFAULT_WEIGHTS, 0.995, now);
     const insight = reScore({ ...base, isInsight: true }, DEFAULT_WEIGHTS, 0.995, now);
-    expect(fresh).toBeGreaterThan(old);
+    expect(fresh).toBe(old);
     expect(insight).toBeGreaterThan(fresh);
   });
 
-  it("returns a finite score (no NaN) for a malformed lastAccessedAt", () => {
+  it("returns a finite score from relevance and bounded tie-breakers", () => {
     const now = new Date("2026-06-15T00:00:00.000Z");
     const score = reScore(
-      { rrfScore: 1, salience: 0.5, isInsight: false, lastAccessedAt: "not-a-date" },
+      { rrfScore: 1, salience: 0.5, isInsight: false },
       DEFAULT_WEIGHTS,
       0.995,
       now,

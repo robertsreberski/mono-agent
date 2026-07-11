@@ -75,13 +75,13 @@ A few specifics:
 - **Skipped when empty.** A recall that returns no hits injects nothing — no delimiter, no header.
 - **Still traced.** A lightweight `memory_recalled` diagnostic (source + byte size, not the content) keeps the fact that recall fired visible in the run record even though memory no longer appears in the prompt sections.
 
-For the `journal`/`bujo` tiers with embeddings, an auto-provisioned read-only `MemoryRecall` tool also lets the agent pull more context mid-turn via `config.memory.recallTool.enabled` (`MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`, default on). Recall combines keyword (FTS) and semantic search with no chat LLM. See [Capture and recall](/memory/capture-and-recall/) and [Embeddings](/memory/embeddings/).
+Every configured memory tier also exposes the read-only `MemoryRecall` tool by default (`config.memory.recallTool.enabled`; explicit false opts out). Lite uses FTS; Journal/BuJo combine keyword and semantic search. Automatic context recall is score- and answer-evidence-gated to five hits / 8 KB and shares a per-turn lookup cache with the tool. See [Capture and recall](/memory/capture-and-recall/) and [Embeddings](/memory/embeddings/).
 
 ## Conversation history
 
-Coverage: `auto`. History is kept in an **in-memory store** and is **unlimited** unless you cap turns. The history section renders prior `system`/`user`/`assistant`/`tool` messages for the conversation in order.
+Coverage: `auto`. History is kept in an **in-memory store**. The default retains the latest 12 messages; a positive turn cap retains up to twice that many messages. The history section renders prior `system`/`user`/`assistant`/`tool` messages for the conversation in order.
 
-- `runtime.maxTurns` (`MONO_AGENT_MAX_TURNS`) is `0` or omitted for **unlimited**; set `1`–`100` to cap turns per run. History sizing follows from this cap.
+- `runtime.maxTurns` (`MONO_AGENT_MAX_TURNS`) is `0` or omitted for an **unlimited provider run**; set `1`–`100` to cap turns per run. This does not disable history: unlimited runs use the bounded 12-message history default.
 - History is keyed per conversation. Channels reuse a stable conversation id; for cron, share one with `cron.jobs[].conversationId` so ticks accumulate the same history (see [Cron](/channels/cron/)).
 
 ```json

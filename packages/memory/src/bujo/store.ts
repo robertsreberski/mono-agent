@@ -85,6 +85,11 @@ export class BujoMemoryStore implements MemoryStore {
     });
   }
 
+  /** Record served recall hits as telemetry without re-running retrieval. */
+  recordAccess(ids: readonly string[]): void {
+    this.db.recordAccess(ids);
+  }
+
   async appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
     const now = this.clock();
     const bullet: Bullet = {

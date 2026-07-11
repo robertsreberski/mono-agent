@@ -254,7 +254,7 @@ const memoryLite: CapabilityModule = {
   summary: "SQLite full-text recall, zero external dependencies.",
   riskLevel: "low",
   inputs: [],
-  configFragment: () => ({ memory: memoryBlock("lite") }),
+  configFragment: () => ({ memory: { ...memoryBlock("lite"), recallTool: { enabled: true } } }),
   validateExpectations: [{ sectionId: "memory", mustBe: "ok" }],
 };
 

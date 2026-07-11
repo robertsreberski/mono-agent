@@ -141,9 +141,6 @@ describe("local configuration transaction", () => {
         context: {},
       });
       expect(extension.toolPolicyOverride?.allowedTools).toEqual([
-        "Read",
-        "Glob",
-        "Grep",
         "ReadSkill",
         "MemoryRecall",
         CONFIGURATION_PROPOSAL_TOOL_NAME,

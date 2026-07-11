@@ -55,6 +55,22 @@ describe("recall", () => {
     db.close();
   });
 
+  it("keeps alternating query rankings stable regardless of access history", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    await db.upsert(note("cats", "cats prefer quiet window seats", { accessCount: 900, lastAccessedAt: "2026-06-15T23:59:59.000Z" }));
+    await db.upsert(note("deploy", "deploy pipeline uses blue green releases"));
+
+    const before = (await db.recall("deploy pipeline", { topK: 1 })).at(0)?.record.id;
+    for (let index = 0; index < 20; index += 1) {
+      await db.recall(index % 2 === 0 ? "quiet window cats" : "deploy pipeline", { topK: 2 });
+    }
+    const after = (await db.recall("deploy pipeline", { topK: 1 })).at(0)?.record.id;
+
+    expect(before).toBe("deploy");
+    expect(after).toBe("deploy");
+    db.close();
+  });
+
   it("excludes memories whose validTo has passed, unless includeInvalid", async () => {
     const now = new Date("2026-06-15T00:00:00.000Z");
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });
@@ -65,6 +81,46 @@ describe("recall", () => {
       "expired",
       "future",
     ]);
+    db.close();
+  });
+
+  it("filters invalid candidates before the bounded FTS limit so they cannot crowd out a live answer", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    for (let index = 0; index < 250; index += 1) {
+      await db.upsert(note(`stale-${String(index).padStart(3, "0")}`, "The release train now leaves on Tuesday.", {
+        status: "invalidated",
+      }));
+    }
+    await db.upsert(note("live-thursday", "The release train now leaves on Thursday."));
+
+    const hits = await db.recall("When does the release train now leave?", {
+      topK: 50,
+      trackAccess: false,
+    });
+
+    expect(hits.map((hit) => hit.record.id)).toEqual(["live-thursday"]);
+    db.close();
+  });
+
+  it("boundedly over-fetches vector-only candidates when stale nearest neighbours consume the KNN budget", async () => {
+    const constantEmbeddings = {
+      id: "constant-8",
+      embed: async (texts: readonly string[]) => texts.map(() => [1, 0, 0, 0, 0, 0, 0, 0]),
+    };
+    const db = openMemoryDb({ path: ":memory:", embeddings: constantEmbeddings, dim: 8 });
+    for (let index = 0; index < 250; index += 1) {
+      await db.upsert(note(`stale-vector-${String(index).padStart(3, "0")}`, "obsolete unrelated archive", {
+        status: "invalidated",
+      }));
+    }
+    await db.upsert(note("live-vector", "current semantic answer"));
+
+    const hits = await db.recall("needle with no lexical overlap", {
+      topK: 50,
+      trackAccess: false,
+    });
+
+    expect(hits.map((hit) => hit.record.id)).toEqual(["live-vector"]);
     db.close();
   });
 });

@@ -14,13 +14,14 @@ import type {
   RunSummary,
   RuntimeEventLike,
 } from "@mono-agent/observability";
-import type { RunEventFrame, RunEventSink } from "@mono-agent/agent-contracts";
+import type { MemoryStore, RunEventFrame, RunEventSink } from "@mono-agent/agent-contracts";
 import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
+import { createToolPolicy } from "@mono-agent/agent-harness";
 
 /** Deterministic non-zero fake embeddings (dim 64) — keeps journal/bujo-tier tests hermetic (no Ollama). */
 const fakeEmbeddings: EmbeddingProvider = {
@@ -44,6 +45,11 @@ import {
   createConfiguredAgentRuntime,
   createConfiguredMemory,
 } from "../index.js";
+import {
+  CONFIGURATION_PROPOSAL_MCP_SERVER_NAME,
+  CONFIGURATION_PROPOSAL_TOOL_NAME,
+  configurationProposalMcpServerSpec,
+} from "../configuration-proposal-tool.js";
 
 const tempDirs: string[] = [];
 const servers: Server[] = [];
@@ -127,6 +133,159 @@ describe("agent host composition helpers", () => {
     const summaryFile = artifactFiles.find((file) => file.endsWith(".summary.json"));
     expect(summaryFile).toBeDefined();
     expect(await readFile(join(artifactDir, summaryFile as string), "utf8")).toContain("run-host");
+  });
+
+  it("auto-provisions MemoryRecall in direct configured responders and composes caller tools", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "Configured" }));
+    const base = monoConfig({ dir, identityPath, artifactDir, memoryPath: join(dir, "memory") });
+    const config: MonoAgentConfig = {
+      ...base,
+      memory: { ...base.memory!, recallTool: { enabled: true } },
+    };
+    const memory = {
+      async load() { return undefined; },
+      async recall() { return []; },
+      async appendHostSummary(conversationId: string) {
+        return { conversationId, source: "test", bytesWritten: 0 };
+      },
+      async close() {},
+    } satisfies MemoryStore & { recall(): Promise<readonly []>; close(): Promise<void> };
+
+    const responder = await createConfiguredAgentResponder({
+      config,
+      runtime: fake.runtime,
+      memory,
+      runtimeOptionsForRequest: () => ({
+        runtimeOptions: {
+          allowedTools: ["ProposeAgentConfiguration"],
+          mcpServers: {
+            configurator: { type: "http", url: "http://127.0.0.1:9876/mcp" },
+          },
+        },
+      }),
+    });
+
+    await responder.respond(
+      { conversationId: "configuration", text: "Configure yourself", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(fake.calls[0]?.options.allowedTools).toEqual(["Read", "ProposeAgentConfiguration"]);
+    expect(fake.calls[0]?.options.mcpServers).toMatchObject({
+      "mono-agent-memory": { type: "http", url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp\//u) },
+      configurator: { type: "http", url: "http://127.0.0.1:9876/mcp" },
+    });
+  });
+
+  it("keeps local configuration authority to proposal, MemoryRecall, and ReadSkill", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    const skillsRoot = join(dir, "skills");
+    const skillDir = join(skillsRoot, "mono-agent-configure");
+    const mcpConfigPath = join(dir, "mcp.json");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    await writeFile(join(skillDir, "SKILL.md"), "# Configure\n\nInspect and propose configuration.", "utf8");
+    await writeFile(mcpConfigPath, `${JSON.stringify({
+      allowedTools: ["*"],
+      mcpServers: { configuredAction: { command: "configured-action" } },
+    })}\n`, "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "Configured" }));
+    const base = monoConfig({
+      dir,
+      identityPath,
+      artifactDir,
+      memoryPath: join(dir, "memory"),
+      skillsRoot,
+      selectedSkills: ["mono-agent-configure"],
+      mcpConfigPath,
+    });
+    const config: MonoAgentConfig = {
+      ...base,
+      context: { ...base.context, skillDisclosure: "index" },
+      memory: { ...base.memory!, recallTool: { enabled: true } },
+    };
+    const memory = {
+      async load() { return undefined; },
+      async recall() { return []; },
+      async appendHostSummary(conversationId: string) {
+        return { conversationId, source: "test", bytesWritten: 0 };
+      },
+      async close() {},
+    } satisfies MemoryStore & { recall(): Promise<readonly []>; close(): Promise<void> };
+    const proposalServer = configurationProposalMcpServerSpec({
+      sinkPath: join(dir, ".mono-agent", "configuration-proposal.json"),
+      baseVersion: "test-version",
+    }, dir);
+    const allowedConfigurationTools = [
+      "ReadSkill",
+      "MemoryRecall",
+      CONFIGURATION_PROPOSAL_TOOL_NAME,
+      `mcp__${CONFIGURATION_PROPOSAL_MCP_SERVER_NAME}__${CONFIGURATION_PROPOSAL_TOOL_NAME}`,
+    ];
+
+    const responder = await createConfiguredAgentResponder({
+      config,
+      runtime: fake.runtime,
+      memory,
+      runtimeOptions: {
+        allowedTools: ["Write"],
+        mcpServers: { staticAction: { command: "static-action" } },
+      },
+      runtimeOptionsForRequest: () => ({
+        toolPolicyOverride: createToolPolicy({
+          allowedTools: allowedConfigurationTools,
+          disallowedTools: [],
+          mcpServers: {
+            [CONFIGURATION_PROPOSAL_MCP_SERVER_NAME]: proposalServer,
+          },
+        }),
+        runtimeOptions: {
+          permissionMode: "plan",
+          // These hostile tool-shaped fields exercise the harness's
+          // authoritative-override stripping rather than the happy path alone.
+          allowedTools: ["Bash", "Write", "Edit"],
+          mcpServers: { requestAction: { command: "request-action" } },
+        },
+      }),
+    });
+
+    await responder.respond(
+      {
+        conversationId: "configuration",
+        text: "Configure yourself",
+        abortSignal: new AbortController().signal,
+        metadata: { tui: { local: true, configuration: true } },
+      },
+      { append: async () => {} },
+    );
+
+    const options = fake.calls[0]?.options;
+    expect(options).toMatchObject({
+      allowedTools: allowedConfigurationTools,
+      disallowedTools: [],
+      permissionMode: "plan",
+      skills: [{ name: "mono-agent-configure" }],
+      skillsRoot,
+    });
+    expect(Object.keys(options?.mcpServers ?? {}).sort()).toEqual([
+      CONFIGURATION_PROPOSAL_MCP_SERVER_NAME,
+      "mono-agent-memory",
+    ]);
+    expect(options?.mcpServers).toMatchObject({
+      [CONFIGURATION_PROPOSAL_MCP_SERVER_NAME]: proposalServer,
+      "mono-agent-memory": {
+        type: "http",
+        url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp\//u),
+      },
+    });
+    expect(options?.mcpConfigPath).toBeUndefined();
+    expect(options?.allowedTools).not.toEqual(expect.arrayContaining(["Read", "Glob", "Grep", "Bash", "Write", "Edit"]));
   });
 
   it("publishes run_started, event, and run_finished frames from the normal responder path", async () => {
@@ -224,7 +383,7 @@ describe("agent host composition helpers", () => {
     expect(summary.sourceDetail).toBe("nightly-digest");
   });
 
-  it("records each turn into today's daily file (journal tier) and surfaces it on the next turn", async () => {
+  it("records compound host summaries without auto-injecting ambiguous text", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const memoryRoot = join(dir, "memory");
@@ -259,16 +418,15 @@ describe("agent host composition helpers", () => {
     const dailyContent = await readFile(join(memoryRoot, "daily", todayFile!), "utf8");
     expect(dailyContent).toContain("Logged answer");
 
-    // A second turn sees the stored memory in context via FTS/semantic recall.
+    // A compound host summary contains User/Assistant roles and is deliberately
+    // outside the canonical direct-fact contract. It remains available through
+    // the default-on explicit MemoryRecall endpoint instead of being injected.
     await responder.respond(
       { conversationId: "channel-b", text: "Logged answer", abortSignal: new AbortController().signal },
       { append: async () => {} },
     );
-    // Recalled memory rides on the user message (not the system prompt) so it
-    // survives session resume on every runtime.
     const recalledMessage = String(fake.calls[1]?.options.messages?.[0]?.content);
-    expect(recalledMessage).toContain("## Memory (recalled)");
-    expect(recalledMessage).toContain("Logged answer");
+    expect(recalledMessage).toBe("Logged answer");
     expect(fake.calls[1]?.prompt).not.toContain("## Memory (recalled)");
   });
 
@@ -773,7 +931,7 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[1]?.options.sessionKeepAlive).toBe(true);
   });
 
-  it("keeps mixed Pi/OpenCode fallback chains stateless and replays later-turn history", async () => {
+  it("replays later-turn history for stateless fallbacks when maxTurns is unlimited", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
@@ -789,6 +947,7 @@ describe("agent host composition helpers", () => {
         ...base,
         runtime: {
           ...base.runtime,
+          maxTurns: 0,
           fallbackModels: [{
             sdk: "opencode",
             provider: "github-copilot",

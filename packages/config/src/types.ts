@@ -249,7 +249,7 @@ export interface MonoAgentConfig {
     /**
      * Read-only `MemoryRecall` tool exposed to the agent (embeddings + FTS, no
      * chat LLM). Derived from this single memory block — no hand-wired MCP entry.
-     * Defaults on when the resolved tier has embeddings; off for lite.
+     * Defaults on for every configured memory tier; explicit false opts out.
      */
     readonly recallTool?: { readonly enabled: boolean };
     /** Bujo-tier lightweight consolidation. Scheduler default cadence: every two hours. */

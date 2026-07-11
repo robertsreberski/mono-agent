@@ -252,6 +252,7 @@ mono-agent memory today
 mono-agent memory show 2026-07-06
 mono-agent memory search "deployment notes"
 mono-agent memory top --limit 20
+mono-agent memory audit --json
 ```
 
 | Subcommand | Effect |
@@ -261,6 +262,7 @@ mono-agent memory top --limit 20
 | `show <YYYY-MM-DD>` | Renders one local BuJo daily log by date. Both current `daily/YYYY-MM-DD.md` and older root-level `YYYY-MM-DD.md` layouts are recognized. |
 | `search <query>` | Uses the same recall-store construction as `MemoryRecall`. Local BuJo/journal search returns scores plus sources; if configured embeddings are unavailable, it retries FTS-only and prints a warning. Supermemory search proxies the remote API. |
 | `top` | Shows highest-salience local BuJo/journal memories with salience, type/status, and source. Supermemory has no local salience ranking, so it tells you to use search. |
+| `audit` | Emits metadata-only health: counts, bytes, duplicate ratio, vector coverage, access concentration, backlog, and available latency/cost fields. It never emits memory text, query text, or entity names; unavailable offline fields are explicit `null` values. |
 
 | Flag | Effect |
 | --- | --- |

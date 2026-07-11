@@ -54,9 +54,16 @@ import type { RunningRituals } from "./memory-rituals.js";
 import { startArtifactRetentionScheduler } from "./artifact-retention.js";
 import type { RunningArtifactRetentionScheduler } from "./artifact-retention.js";
 import {
-  createMemoryRecallRuntimeExtension,
   resolveMemoryRecallSettings,
 } from "./memory-recall.js";
+import {
+  isSharedRecallStore,
+  MemoryRetrievalService,
+} from "./memory-retrieval.js";
+import {
+  composeRuntimeOptionExtensions,
+  type RuntimeOptionsExtension,
+} from "./runtime-option-extensions.js";
 import {
   createRequestModelOverrideRuntimeExtension,
   requestModelOverrideTargetsDirectOpenCode,
@@ -253,6 +260,7 @@ class MonoAgentAppController implements MonoAgentApp {
   // One shared memory store across all channel responders + the ritual scheduler, so there is a single
   // memory.db handle (not one per channel plus one for rituals). Rebuilt on config reload, closed on stop.
   private sharedMemory: Awaited<ReturnType<typeof createConfiguredMemory>> = undefined;
+  private sharedMemoryRetrieval: MemoryRetrievalService | undefined;
   private sharedMemoryBuilt = false;
   private sharedMemoryBuild: Promise<Awaited<ReturnType<typeof createConfiguredMemory>>> | undefined;
   private configApplyTail: Promise<void> = Promise.resolve();
@@ -995,8 +1003,10 @@ class MonoAgentAppController implements MonoAgentApp {
     if (!this.activeRuntimes.includes(runtime)) {
       this.activeRuntimes.push(runtime);
     }
-    const memory = await this.memoryStore(coreConfig);
-    const memoryRecall = this.memoryRecallRuntimeOptions(coreConfig);
+    const memoryBackend = await this.memoryStore(coreConfig);
+    const memoryRetrieval = this.ensureSharedMemoryRetrieval(coreConfig, memoryBackend);
+    const memory = memoryRetrieval ?? memoryBackend;
+    const memoryRecallEnabled = this.reportMemoryRecallStatus(coreConfig, memoryRetrieval);
     const supermemoryMcp = this.supermemoryMcpRuntimeOptions(coreConfig);
     const adapterSendTools = await this.adapterSendToolsRuntimeOptions(coreConfig);
     // Always active: a no-op for interactive turns (which carry no cron/webhook
@@ -1010,7 +1020,7 @@ class MonoAgentAppController implements MonoAgentApp {
         // Responder construction owns the missing/malformed policy error.
       }
     }
-    if (memoryRecall !== undefined) mcpSources.push("memory.recallTool");
+    if (memoryRecallEnabled) mcpSources.push("memory.recallTool");
     if (supermemoryMcp !== undefined) mcpSources.push("memory.supermemory.exposeMcpServer");
     if (adapterSendTools.blockingToolNames.length > 0) {
       mcpSources.push(`adapter send tools (${adapterSendTools.blockingToolNames.join(", ")})`);
@@ -1024,7 +1034,6 @@ class MonoAgentAppController implements MonoAgentApp {
       requestModelOverride.targetsDirectOpenCode,
     );
     const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
-      memoryRecall,
       supermemoryMcp,
       adapterSendToolsExtension,
       requestModelOverride.extension,
@@ -1046,6 +1055,12 @@ class MonoAgentAppController implements MonoAgentApp {
       ...(this.sandboxEngine === undefined ? {} : { sandboxEngine: this.sandboxEngine }),
       ...(memory !== undefined && { memory }),
       ...(runtimeOptionsForRequest === undefined ? {} : { runtimeOptionsForRequest }),
+      onMemoryRecallUnavailable: (error) => {
+        this.logger?.warn?.(
+          "MemoryRecall tool endpoint could not start; continuing without the explicit tool.",
+          { error: reasonOf(error) },
+        );
+      },
       // Thread run-identifying context onto exported spans and surface per-run
       // export warnings to `exporterStatus` (agent-host only builds the exporter
       // when config.observability.exporters is non-empty).
@@ -1143,15 +1158,22 @@ class MonoAgentAppController implements MonoAgentApp {
     return { sourceId, sourceLabel, configPath: this.configPath };
   }
 
-  private memoryRecallRuntimeOptions(coreConfig: MonoAgentConfig): RuntimeOptionsExtension | undefined {
+  private reportMemoryRecallStatus(
+    coreConfig: MonoAgentConfig,
+    service: MemoryRetrievalService | undefined,
+  ): boolean {
     const settings = resolveMemoryRecallSettings(coreConfig);
     if (settings === undefined) {
-      return undefined;
+      return false;
+    }
+    if (service === undefined) {
+      this.logger?.warn?.("MemoryRecall could not be enabled because the configured store has no recall surface.");
+      return false;
     }
     this.logger?.info?.("Read-only MemoryRecall tool enabled.", {
       provider: "supermemory" in settings ? "supermemory" : settings.embeddings?.provider ?? "fts-only",
     });
-    return createMemoryRecallRuntimeExtension(settings, this.cwd);
+    return true;
   }
 
   /**
@@ -1266,6 +1288,7 @@ class MonoAgentAppController implements MonoAgentApp {
         ...(logger === undefined ? {} : { logger }),
         observability,
       });
+      this.ensureSharedMemoryRetrieval(coreConfig, this.sharedMemory);
       this.sharedMemoryBuilt = true;
       return this.sharedMemory;
     })();
@@ -1282,6 +1305,8 @@ class MonoAgentAppController implements MonoAgentApp {
       | { flush?: () => Promise<void>; close?: () => Promise<void> | void }
       | undefined;
     this.sharedMemory = undefined;
+    this.sharedMemoryRetrieval?.releaseAllTurns();
+    this.sharedMemoryRetrieval = undefined;
     this.sharedMemoryBuilt = false;
     this.sharedMemoryBuild = undefined;
     if (mem?.flush !== undefined) {
@@ -1295,7 +1320,21 @@ class MonoAgentAppController implements MonoAgentApp {
   /** @internal Test-only seam: seed the shared memory store without going through config. */
   __setSharedMemoryForTest(store: Awaited<ReturnType<typeof createConfiguredMemory>>): void {
     this.sharedMemory = store;
+    this.sharedMemoryRetrieval = undefined;
     this.sharedMemoryBuilt = true;
+  }
+
+  private ensureSharedMemoryRetrieval(
+    coreConfig: MonoAgentConfig,
+    store: Awaited<ReturnType<typeof createConfiguredMemory>>,
+  ): MemoryRetrievalService | undefined {
+    if (this.sharedMemoryRetrieval !== undefined) return this.sharedMemoryRetrieval;
+    if (coreConfig.memory === undefined || !isSharedRecallStore(store)) return undefined;
+    this.sharedMemoryRetrieval = new MemoryRetrievalService(store, {
+      maxBytes: coreConfig.memory.maxBytes,
+      source: (coreConfig.memory.backend ?? "bujo") === "supermemory" ? "supermemory" : "memory-bujo",
+    });
+    return this.sharedMemoryRetrieval;
   }
 
   private setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus {
@@ -1567,83 +1606,4 @@ function runtimeRouteContainsDirectOpenCode(config: MonoAgentConfig): boolean {
 
 function isInteractionToolName(name: string): boolean {
   return name === "AskUser" || name === "TelegramAskButtons";
-}
-
-/** The per-request runtime-options extension function (memory-recall, adapter-send, ...). */
-type RuntimeOptionsExtension = NonNullable<
-  Parameters<typeof createConfiguredAgentResponder>[0]["runtimeOptionsForRequest"]
->;
-type RuntimeOptionsExtensionResult = Awaited<ReturnType<RuntimeOptionsExtension>>;
-
-/**
- * Compose several per-request runtime-options extensions into one. Each extension is invoked per
- * request; mergeable runtime option maps/lists are unioned and their cleanups are chained. Returns
- * `undefined` when no extension is active, so the host omits `runtimeOptionsForRequest` entirely.
- */
-function composeRuntimeOptionExtensions(
-  extensions: ReadonlyArray<RuntimeOptionsExtension | undefined>,
-): RuntimeOptionsExtension | undefined {
-  const active = extensions.filter((extension): extension is RuntimeOptionsExtension => extension !== undefined);
-  if (active.length === 0) {
-    return undefined;
-  }
-  if (active.length === 1) {
-    return active[0];
-  }
-  return async (input) => {
-    const results = await Promise.all(active.map((extension) => extension(input)));
-    const runtimeOptions: Record<string, unknown> = {};
-    for (const result of results) {
-      mergeRuntimeOptions(runtimeOptions, result.runtimeOptions);
-    }
-    return {
-      runtimeOptions,
-      cleanup: async () => {
-        // Chain every cleanup; run them all even if one rejects so no extension leaks resources.
-        await Promise.all(results.map(async (result) => result.cleanup?.()));
-      },
-    } satisfies RuntimeOptionsExtensionResult;
-  };
-}
-
-function mergeRuntimeOptions(target: Record<string, unknown>, next: RuntimeOptionsExtensionResult["runtimeOptions"]): void {
-  if (next === undefined) {
-    return;
-  }
-  for (const [key, value] of Object.entries(next)) {
-    if (value === undefined) {
-      continue;
-    }
-    if (key === "allowedTools" || key === "disallowedTools") {
-      target[key] = mergeStringLists(target[key], value);
-      continue;
-    }
-    if (key === "mcpServers") {
-      target[key] = {
-        ...(isRecord(target[key]) ? target[key] : {}),
-        ...(isRecord(value) ? value : {}),
-      };
-      continue;
-    }
-    target[key] = value;
-  }
-}
-
-function mergeStringLists(current: unknown, next: unknown): readonly string[] {
-  const out: string[] = [];
-  for (const list of [current, next]) {
-    if (!Array.isArray(list)) {
-      continue;
-    }
-    for (const item of list) {
-      if (typeof item === "string" && !out.includes(item)) {
-        out.push(item);
-      }
-    }
-  }
-  return out;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -4,7 +4,7 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { openMemoryDb } from "@mono-agent/memory/store";
-import type { EntityRecord, MemoryDb, MemoryRecord, MemoryStoreStats } from "@mono-agent/memory/store";
+import type { EntityRecord, MemoryDb, MemoryRecord, MemoryStoreAudit, MemoryStoreStats } from "@mono-agent/memory/store";
 import { parseDailyFile } from "@mono-agent/memory/bujo";
 
 import { isAppCoreConfigError, loadAppCoreConfig } from "./app-config.js";
@@ -85,11 +85,96 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
     }
     case "top":
       return await runTop(context, input);
+    case "audit":
+      return await runAudit(context, input.json);
     default:
       process.stderr.write(ui.errorLine(`Unknown memory subcommand \`${subcommand}\`.`));
-      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, or top."));
+      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, or audit."));
       return 2;
   }
+}
+
+async function runAudit(context: MemoryCommandContext, json: boolean): Promise<number> {
+  const memory = context.config.memory;
+  if (memory === undefined) {
+    writeNoMemory(context.configPath, json);
+    return 0;
+  }
+  if ((memory.backend ?? "bujo") === "supermemory") {
+    const result = {
+      configured: true,
+      backend: "supermemory",
+      metadataOnly: true,
+      counts: null,
+      bytes: null,
+      duplicates: null,
+      vectorCoverage: null,
+      accessConcentration: null,
+      backlog: { known: false, captureQueue: null, vectorIndex: null },
+      latency: { known: false, searchP50Ms: null, searchP95Ms: null, indexingMs: null },
+      cost: { known: false, totalUsd: null, embeddingCalls: null, llmCalls: null, tokens: null },
+      notes: ["Remote backend health metadata is not exposed by the configured client."],
+    };
+    write(json, result, () => renderAudit(result));
+    return 0;
+  }
+
+  const root = memory.path;
+  const dbPath = join(root, "memory.db");
+  const rootExists = await exists(root);
+  const size = rootExists ? await collectStoreSize(root) : emptySize();
+  let audit: MemoryStoreAudit | undefined;
+  let metadataQueryMs: number | null = null;
+  if (await exists(dbPath)) {
+    const db = openMemoryDb({ path: dbPath });
+    try {
+      const started = performance.now();
+      audit = db.audit();
+      metadataQueryMs = performance.now() - started;
+    } finally {
+      db.close();
+    }
+  }
+  const live = audit?.counts.live ?? 0;
+  const liveIndexed = audit?.vectors.liveIndexed ?? 0;
+  const semanticExpected = memory.embeddings !== undefined;
+  const result = {
+    configured: true,
+    backend: "bujo",
+    mode: memory.mode,
+    metadataOnly: true,
+    counts: audit?.counts ?? { total: 0, live: 0, entities: 0, entityRelations: 0 },
+    bytes: size,
+    duplicates: audit?.duplicates ?? { groups: 0, redundantRecords: 0, ratio: 0 },
+    vectorCoverage: audit?.vectors ?? { indexed: 0, liveIndexed: 0, liveCoverage: live === 0 ? 1 : 0 },
+    accessConcentration: audit?.access ?? { totalCount: 0, accessedMemories: 0, topOnePercentShare: 0 },
+    backlog: {
+      known: true,
+      captureQueue: null,
+      vectorIndex: semanticExpected ? Math.max(0, live - liveIndexed) : 0,
+    },
+    latency: {
+      known: metadataQueryMs !== null,
+      metadataQueryMs,
+      searchP50Ms: null,
+      searchP95Ms: null,
+      indexingMs: null,
+    },
+    cost: {
+      known: false,
+      totalUsd: null,
+      embeddingCalls: null,
+      llmCalls: null,
+      tokens: null,
+    },
+    notes: [
+      ...(audit === undefined ? [`No SQLite index found at ${dbPath}.`] : []),
+      "Search latency and model cost require benchmark/run telemetry and are not inferred from memory content.",
+      "captureQueue is process-local and unavailable to an offline audit.",
+    ],
+  };
+  write(json, result, () => renderAudit(result));
+  return 0;
 }
 
 async function loadMemoryCommandContext(
@@ -626,6 +711,35 @@ function renderSupermemoryStats(stats: ReturnType<typeof supermemoryStats>): str
   ].join("");
 }
 
+function renderAudit(result: {
+  readonly backend: string;
+  readonly counts: { readonly total: number; readonly live: number; readonly entities: number; readonly entityRelations: number } | null;
+  readonly bytes: { readonly rootBytes: number; readonly dailyBytes: number; readonly databaseBytes: number; readonly fileCount: number } | null;
+  readonly duplicates: { readonly groups: number; readonly redundantRecords: number; readonly ratio: number } | null;
+  readonly vectorCoverage: { readonly indexed: number; readonly liveIndexed: number; readonly liveCoverage: number } | null;
+  readonly accessConcentration: { readonly totalCount: number; readonly accessedMemories: number; readonly topOnePercentShare: number } | null;
+  readonly backlog: { readonly captureQueue: number | null; readonly vectorIndex: number | null };
+  readonly latency: { readonly metadataQueryMs?: number | null; readonly searchP50Ms: number | null; readonly searchP95Ms: number | null; readonly indexingMs: number | null };
+  readonly cost: { readonly totalUsd: number | null; readonly embeddingCalls: number | null; readonly llmCalls: number | null; readonly tokens: number | null };
+  readonly notes: readonly string[];
+}): string {
+  let out = ui.banner("mono-agent memory", "metadata audit") + "\n";
+  out += ui.keyValue([
+    ["backend", result.backend],
+    ["memories", result.counts === null ? "unknown" : `${result.counts.total} total, ${result.counts.live} live`],
+    ["bytes", result.bytes === null ? "unknown" : formatBytes(result.bytes.rootBytes)],
+    ["duplicate ratio", result.duplicates === null ? "unknown" : formatRatio(result.duplicates.ratio)],
+    ["vector coverage", result.vectorCoverage === null ? "unknown" : formatRatio(result.vectorCoverage.liveCoverage)],
+    ["top 1% access share", result.accessConcentration === null ? "unknown" : formatRatio(result.accessConcentration.topOnePercentShare)],
+    ["vector backlog", result.backlog.vectorIndex === null ? "unknown" : String(result.backlog.vectorIndex)],
+    ["capture queue", result.backlog.captureQueue === null ? "unavailable offline" : String(result.backlog.captureQueue)],
+    ["metadata query", result.latency.metadataQueryMs == null ? "unknown" : `${result.latency.metadataQueryMs.toFixed(3)} ms`],
+    ["recorded cost", result.cost.totalUsd === null ? "unknown" : `$${result.cost.totalUsd.toFixed(6)}`],
+  ], 2);
+  for (const note of result.notes) out += ui.style.yellow(`[WARN] ${note}`) + "\n";
+  return out;
+}
+
 function renderLocalStats(stats: {
   readonly mode: string;
   readonly effectiveTier: string;
@@ -767,6 +881,10 @@ function formatBytes(bytes: number): string {
     unit = units[i] ?? unit;
   }
   return `${value >= 10 ? value.toFixed(1) : value.toFixed(2)} ${unit}`;
+}
+
+function formatRatio(value: number): string {
+  return `${(value * 100).toFixed(2)}%`;
 }
 
 function reasonOf(error: unknown): string {

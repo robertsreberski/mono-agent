@@ -5,6 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { CircuitBreakerEmbeddingOptions, EmbeddingProviderConfig } from "@mono-agent/memory/search";
+import type { MemoryStatus, MemoryType } from "@mono-agent/memory/store";
 import * as z from "zod/v4";
 
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
@@ -13,14 +14,15 @@ import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
  * Read-only memory recall, wired from the SINGLE `config.memory` block.
  *
  * When `config.memory.recallTool.enabled` is true, the app exposes a `MemoryRecall` MCP tool
- * (server name {@link MEMORY_RECALL_MCP_SERVER_NAME}) to the agent. Recall needs only embeddings +
- * FTS — no chat LLM — so the recall server is built with embeddings alone. When embeddings are
- * absent (lite tier, or an explicit opt-in on a no-embeddings store) recall still serves FTS-only
- * (lexical) results. Capture stays in-app (unchanged); this module never touches it.
+ * (server name {@link MEMORY_RECALL_MCP_SERVER_NAME}) to the agent. The normal app path registers
+ * the tool against the request-scoped shared retrieval service in `memory-retrieval.ts`, so
+ * automatic recall and explicit tool calls use the same store and per-turn cache. Recall needs only
+ * embeddings + FTS — no chat LLM — and still serves FTS-only (lexical) results when embeddings are
+ * absent. Capture stays in-app (unchanged); this module never touches it.
  *
- * Embeddings parity with the in-app store (`createConfiguredMemory`): the recall child applies the
- * SAME resilience wrapping — a per-call timeout plus a circuit breaker — so a slow/failing backend
- * cannot stall or repeatedly block recall in the child process either.
+ * The child-process settings below remain as a standalone/compatibility surface. Their embeddings
+ * path keeps parity with the in-app store (`createConfiguredMemory`): the recall child applies the
+ * same per-call timeout and circuit breaker.
  *
  * Secret handling: the raw embeddings api key is NOT copied into the recall child's env. When the
  * key was sourced from a named environment variable (`apiKeyEnv`) we forward only the NAME and the
@@ -28,8 +30,7 @@ import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
  * `apiKeyEnv`) still has to transit the child env as a value — that residual is documented on
  * {@link memoryRecallMcpEnv}.
  *
- * A stdio MCP server is injected purely as an `mcpServers` entry via the per-request runtime
- * options. MCP tools are not gated by `tools.allowedTools`, so no allowlist entry is required.
+ * MCP tools are not gated by `tools.allowedTools`, so no allowlist entry is required.
  */
 
 export const MEMORY_RECALL_MCP_SERVER_NAME = "mono-agent-memory";
@@ -94,7 +95,16 @@ export interface RecallCapableStore {
   recall(
     query: string,
     options?: { readonly topK?: number; readonly trackAccess?: boolean },
-  ): Promise<readonly { readonly score: number; readonly record: { readonly id: string; readonly text: string } }[]>;
+  ): Promise<readonly {
+    readonly score: number;
+    readonly record: {
+      readonly id: string;
+      readonly text: string;
+      readonly type?: MemoryType;
+      readonly status?: MemoryStatus;
+      readonly isInsight?: boolean;
+    };
+  }[]>;
   close(): Promise<void>;
 }
 
@@ -403,7 +413,16 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     },
     async (args) => {
       const topK = clampLimit(args.limit, 8);
-      const hits = await store.recall(args.query, { topK });
+      let hits: Awaited<ReturnType<RecallCapableStore["recall"]>>;
+      try {
+        hits = await store.recall(args.query, { topK });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: "text", text: `Memory recall is temporarily unavailable: ${reason}` }],
+          structuredContent: { hits: [], degraded: true, reason },
+        };
+      }
       if (hits.length === 0) {
         return { content: [{ type: "text", text: `No memories matched "${args.query}".` }], structuredContent: { hits: [] } };
       }
