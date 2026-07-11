@@ -201,18 +201,64 @@ function scheduleNext(
   entry: ScheduledJob,
   options: CronAdapterOptions,
   jobStates: Map<string, JobRuntimeState>,
+  lastFiredScheduledAt?: Date,
 ): void {
   const now = options.now?.() ?? new Date();
-  const scheduledAt = nextDateFor(entry.job, now);
+  // Belt-and-braces against a backward clock step (or a timer that coalesced early
+  // and woke the just-fired timer before its target): never compute the next fire
+  // from an instant at or before the firing we just dispatched, or cron-parser's
+  // strictly-after `.next()` could hand back the SAME scheduledAt and we would fire
+  // it twice. Anchoring to at-or-after the last firing guarantees a strictly-later
+  // next target.
+  const base =
+    lastFiredScheduledAt === undefined
+      ? now
+      : new Date(Math.max(now.getTime(), lastFiredScheduledAt.getTime()));
+  const scheduledAt = nextDateFor(entry.job, base);
+  armTimer(entry, scheduledAt, options, jobStates);
+}
+
+/**
+ * Arm (or re-arm) `entry.timer` to fire at `scheduledAt`. Splitting arming from
+ * computing lets the early-wake guard below re-arm for the SAME target without
+ * recomputing the next cron instant. The callback never dispatches before
+ * `scheduledAt`: OS timer coalescing (observed on macOS) can wake a timer a few
+ * ms EARLY, and firing then would dispatch the firing and immediately schedule
+ * the same target again — a duplicate that trips the overlap guard as a spurious
+ * kind:"skipped".
+ */
+function armTimer(
+  entry: ScheduledJob,
+  scheduledAt: Date,
+  options: CronAdapterOptions,
+  jobStates: Map<string, JobRuntimeState>,
+): void {
+  const now = options.now?.() ?? new Date();
   const delayMs = Math.max(0, scheduledAt.getTime() - now.getTime());
   entry.timer = setTimeout(() => {
     entry.timer = undefined;
+    // Long-delay chunking: the full delay to `scheduledAt` exceeded a single
+    // setTimeout's max, so this wake only counted down MAX_TIMEOUT_MS. Re-arm for
+    // the SAME target and keep counting down the remainder. (Today's code recomputes
+    // the next cron instant here; keeping the same target is more precise, identical
+    // semantics.)
     if (delayMs > MAX_TIMEOUT_MS) {
-      scheduleNext(entry, options, jobStates);
+      armTimer(entry, scheduledAt, options, jobStates);
       return;
     }
+    // Early-wake guard: if the timer woke before `scheduledAt`, re-arm for the
+    // remaining sliver (max(1, …) ms) instead of firing. The loop converges because
+    // the remainder shrinks as the real clock catches up to `scheduledAt`.
+    const wake = options.now?.() ?? new Date();
+    if (wake.getTime() < scheduledAt.getTime()) {
+      armTimer(entry, scheduledAt, options, jobStates);
+      return;
+    }
+    // Due (now >= scheduledAt): dispatch this firing, then schedule the next one
+    // anchored at-or-after this firing so a backward clock step cannot recompute the
+    // same target (see scheduleNext's `base`).
     handleTick(entry.job, scheduledAt, options, jobStates);
-    scheduleNext(entry, options, jobStates);
+    scheduleNext(entry, options, jobStates, scheduledAt);
   }, Math.min(delayMs, MAX_TIMEOUT_MS));
 }
 

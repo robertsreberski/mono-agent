@@ -745,4 +745,69 @@ describe("Cron adapter", () => {
       vi.useRealTimers();
     }
   });
+
+  it("does not double-fire the same scheduledAt when the timer wakes early (timer coalescing)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    // A mutable clock skew models OS timer coalescing: the fake timer wakes at the
+    // scheduled wall-clock instant, but the adapter's now() reads a few ms EARLIER
+    // (production showed startedAt 16:29:59.995 for scheduledAt 16:30:00.000).
+    let skewMs = 0;
+    const now = () => new Date(Date.now() + skewMs);
+    let respondCount = 0;
+    const gates: Array<() => void> = [];
+    const responder: AgentResponder = {
+      async respond() {
+        respondCount += 1;
+        // Gate the run so it stays active across the second (potential duplicate)
+        // wake — mirroring how the real run is still in flight when the coalesced
+        // duplicate arrives and trips the overlap guard.
+        await new Promise<void>((resolve) => {
+          gates.push(resolve);
+        });
+        return { text: "done" };
+      },
+    };
+    const results: Array<{ kind: string; scheduledAt?: string; startedAt?: string }> = [];
+
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "hb", expression: "* * * * *", prompt: "heartbeat" }],
+      now,
+      onResult: (result) => {
+        results.push(result);
+      },
+    });
+
+    try {
+      // Make now() read 5ms BEFORE scheduledAt when the 00:01:00 timer fires.
+      // Old scheduler: dispatches the firing at 00:00:59.995, then the post-fire
+      // recompute (now < scheduledAt) returns the SAME 00:01:00 and fires it AGAIN
+      // — a duplicate caught by the overlap guard as a spurious kind:"skipped".
+      skewMs = -5;
+      await vi.advanceTimersByTimeAsync(60_000); // early wake -> re-arm the sliver, do NOT fire
+      await vi.advanceTimersByTimeAsync(5); // now() reaches 00:01:00 exactly -> fire once
+
+      expect(respondCount).toBe(1); // responder invoked exactly once
+      expect(results.filter((r) => r.kind === "skipped")).toHaveLength(0); // no spurious overlap-skip
+
+      // Let the single run finish and assert the succeeded result did NOT start early.
+      gates[0]?.();
+      await expect.poll(() => results.filter((r) => r.kind === "succeeded")).toHaveLength(1);
+      const succeeded = results.find((r) => r.kind === "succeeded")!;
+      expect(succeeded.scheduledAt).toBe("1970-01-01T00:01:00.000Z");
+      expect(Date.parse(succeeded.startedAt!)).toBeGreaterThanOrEqual(
+        Date.parse(succeeded.scheduledAt!),
+      ); // run started at/after scheduledAt (no ms-early startedAt)
+
+      // With the skew cleared, the next minute must fire exactly one more time.
+      skewMs = 0;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(respondCount).toBe(2);
+      expect(results.filter((r) => r.kind === "skipped")).toHaveLength(0);
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
 });
