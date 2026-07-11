@@ -42,6 +42,10 @@ export async function captureTurn(text: string, deps: ReconcileDeps): Promise<Ca
   let preparedActions: readonly CaptureIntentAction[] = [];
   await reconcileBatch(extraction.candidates, {
     ...deps,
+    // Once the intent exists it is the single commit owner. Writing the same
+    // records directly here and then replaying the intent would duplicate the
+    // SQLite/canonical transaction without improving durability.
+    deferBatchCommit: true,
     beforeBatchCommit: (prepared) => {
       const graph = graphForPreparedActions(extraction, prepared, createdAt);
       intentHandle = writeCaptureIntent(deps.root, prepared, graph, createdAt);

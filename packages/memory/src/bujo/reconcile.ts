@@ -30,6 +30,12 @@ export interface ReconcileDeps {
   readonly dupThreshold?: number;
   /** Capture-only durable boundary invoked after provider planning and before source mutation. */
   readonly beforeBatchCommit?: (actions: readonly CaptureIntentAction[]) => void;
+  /**
+   * Leave persistence to the durable boundary after it publishes the prepared
+   * actions. Capture uses this so intent replay is the sole canonical/SQLite
+   * commit owner; ordinary reconcileBatch callers retain the direct path.
+   */
+  readonly deferBatchCommit?: boolean;
 }
 
 const VALID_ACTIONS = new Set(["add", "update", "supersede", "noop"]);
@@ -173,6 +179,13 @@ export async function reconcileBatch(
     )]));
   }
   deps.abortSignal?.throwIfAborted();
+
+  if (deps.deferBatchCommit === true) {
+    if (deps.beforeBatchCommit === undefined) {
+      throw new Error("memory-reconcile: deferred batch commit requires a durable commit boundary.");
+    }
+    return plans.map((plan) => plan?.action);
+  }
 
   const accepted: BatchActionPlan[] = [];
   const acceptedVectors: Array<readonly number[] | undefined> = [];

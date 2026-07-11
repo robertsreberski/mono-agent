@@ -87,6 +87,19 @@ describe("captureTurn", () => {
     };
     const db = openMemoryDb({ path: join(root, "memory.db"), embeddings, dim: DIM });
     openDbs.push(db);
+    let preparedCommits = 0;
+    const captureDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "commitPreparedUpserts") {
+          return (...args: Parameters<MemoryDb["commitPreparedUpserts"]>) => {
+            preparedCommits += 1;
+            return target.commitPreparedUpserts(...args);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as MemoryDb;
     const facts = [
       "The launch window is Tuesday morning",
       "Morgan prefers jasmine tea",
@@ -107,7 +120,7 @@ describe("captureTurn", () => {
     const llm = fakeLlm([["Extract one bounded", JSON.stringify({ memories, entities: [], relations: [] })]]);
 
     const result = await captureTurn("Eight unrelated durable facts", {
-      db,
+      db: captureDb,
       root,
       llm,
       nextId: makeSeqNextId(),
@@ -116,6 +129,7 @@ describe("captureTurn", () => {
 
     expect(result.actions).toHaveLength(8);
     expect(batchSizes).toEqual([8, 8]);
+    expect(preparedCommits).toBe(1);
     expect(db.count()).toBe(8);
   });
 
