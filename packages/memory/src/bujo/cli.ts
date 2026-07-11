@@ -43,7 +43,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  if (command === "reflect" || command === "migrate") {
+  if (command === "migrate") {
     const chatModel = process.env.MONO_AGENT_MEMORY_LLM_MODEL;
     if (chatModel === undefined) {
       process.stderr.write(
@@ -84,29 +84,31 @@ async function main(): Promise<void> {
     return;
   }
 
-  const writerLease = command === "recall" ? undefined : acquireMemoryWriterLease(root);
+  const readOnly = command === "recall" || command === "reflect";
+  const writerLease = readOnly ? undefined : acquireMemoryWriterLease(root);
   let db: ReturnType<typeof openMemoryDb> | undefined;
   try {
     db = openMemoryDb({
       path: resolveActiveMemoryDbPath(root),
       ...(embeddingsConfig !== undefined ? { embeddings: embeddingsConfig.provider, dim: embeddingsConfig.dim } : {}),
-      ...(command === "recall" ? { readOnly: true } : {}),
+      ...(readOnly ? { readOnly: true } : {}),
     });
     if (command === "index") {
       writeIndex(root, db, new Date());
       process.stdout.write(`wrote ${join(root, "index.md")}\n`);
     } else if (command === "reflect") {
-      // MONO_AGENT_MEMORY_LLM_MODEL is guaranteed non-undefined here (guard above)
-      const chatModel = process.env.MONO_AGENT_MEMORY_LLM_MODEL as string;
-      const timeoutMs = llmTimeoutMsFromEnv();
-      const llm = createOllamaLlm({
-        model: chatModel,
-        ...(process.env.MONO_AGENT_MEMORY_LLM_ENDPOINT ? { endpoint: process.env.MONO_AGENT_MEMORY_LLM_ENDPOINT } : {}),
-        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      const r = await reflect({
+        db,
+        root,
+        llm: {
+          id: "reflect-disabled",
+          complete: async () => {
+            throw new Error("memory-bujo: read-only reflection must not call an LLM.");
+          },
+        },
+        nextId: createIdFactory(),
+        now: () => new Date(),
       });
-      const r = await reflect({ db, root, llm, nextId: createIdFactory(), now: () => new Date() });
-      writeFutureLog(root, db, new Date());
-      writeIndex(root, db, new Date());
       process.stdout.write(`reflected: decayed ${r.decayed}, insights ${r.insights}, due ${r.due}\n`);
     } else if (command === "migrate") {
       // MONO_AGENT_MEMORY_LLM_MODEL is guaranteed non-undefined here (guard above)
