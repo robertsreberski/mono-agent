@@ -201,7 +201,15 @@ Supermemory owns its remote index, so `mono-agent memory rebuild` and `rollback`
 
 After the product-v1 packages are published, this is the complete cutover for an existing local agent, with one backend-specific branch in step 5. Use the exact lockstep version named in the release announcement; “product v1” does not by itself imply npm major `1`.
 
-1. Install the v1 CLI and confirm the exact published version:
+1. Confirm Node.js meets the supported floor. The repository `.nvmrc` pins the exact minimum; an existing agent directory may not contain that file, so select the version explicitly there:
+
+   ```bash
+   node --version                 # must be >= 22.19.0
+   nvm install 22.19.0            # only if it is not installed
+   nvm use 22.19.0
+   ```
+
+2. Install the v1 CLI and confirm the exact published version:
 
    ```bash
    VERSION="<published-v1-version>"
@@ -209,7 +217,7 @@ After the product-v1 packages are published, this is the complete cutover for an
    mono-agent --version
    ```
 
-2. In the agent directory, stop the old process, check/refresh the two managed configuration skills, and open the post-wizard configuration conversation. Reconcile any operator-modified skill before using `--update`:
+3. In the agent directory, stop the old process, check/refresh the two managed configuration skills, and open the post-wizard configuration conversation. Reconcile any operator-modified skill before using `--update`:
 
    ```bash
    cd /path/to/agent
@@ -222,20 +230,20 @@ After the product-v1 packages are published, this is the complete cutover for an
 
    The first local turn asks how you would like to configure the agent. The bundled `mono-agent-configure` and `mono-agent-memory` skills can prepare a constrained proposal; the host still validates it and asks for separate approval before writing.
 
-3. If the configured embeddings provider is Ollama, confirm the exact embeddings model is present:
+4. If the configured embeddings provider is Ollama, confirm the exact embeddings model is present:
 
    ```bash
    ollama list
    ollama pull nomic-embed-text:v1.5   # only if that exact tag is absent
    ```
 
-4. Validate the configured folder and read the **Memory** section. A running Ollama process is not sufficient if the active managed generation has a different tier/model/dimension, the configured endpoint differs, or the exact model tag is missing:
+5. Validate the configured folder and read the **Memory** section. A running Ollama process is not sufficient if the active managed generation has a different tier/model/dimension, the configured endpoint differs, or the exact model tag is missing:
 
    ```bash
    mono-agent validate
    ```
 
-5. For the built-in Lite, Journal, or BuJo backend, build the first managed index and inspect its local accounting. Then start the agent:
+6. For the built-in Lite, Journal, or BuJo backend, build the first managed index and inspect its local accounting. Then start the agent:
 
    ```bash
    mono-agent memory rebuild --json
@@ -246,7 +254,7 @@ After the product-v1 packages are published, this is the complete cutover for an
 
    If `memory.backend` is `supermemory`, skip both `memory rebuild` and the local index audit: Supermemory owns its remote index and those built-in maintenance commands intentionally reject it. Start/status the agent after validation instead.
 
-6. Verify both kinds of context in Telegram without restarting between messages: send `Reply exactly with this token: V1-HISTORY-<unique>`, wait for that reply, then ask `What did you send in the last message?` and confirm the token comes back. That second run should use active history and inject no durable memory. Finally ask a qualified durable-memory question such as `What did we decide about releases last month?` to exercise `MemoryRecall`.
+7. Verify both kinds of context in Telegram without restarting between messages: send `Reply exactly with this token: V1-HISTORY-<unique>`, wait for that reply, then ask `What did you send in the last message?` and confirm the token comes back. That second run should use active history and inject no durable memory. Finally ask a qualified durable-memory question such as `What did we decide about releases last month?` to exercise `MemoryRecall`.
 
 If `memory.llm.provider` is `agent-host`, Ollama is needed only for `memory.embeddings.provider: "ollama"`; you do not need an Ollama chat model. If rollback is needed, stop the agent, restore the prior tier/model/dimension if it changed, run `mono-agent memory rollback --json`, then start again.
 
