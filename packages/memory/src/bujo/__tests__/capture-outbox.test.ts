@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { replayCaptureOutbox, writeCaptureIntent, type CaptureIntentAction } from "../capture-outbox.js";
 import { appendBullet, dailyFilePath, rewriteBullet } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
-import { readGraph } from "../graph.js";
+import { appendEntity, readGraph } from "../graph.js";
 import { readCanonicalFileSnapshot } from "../path-safety.js";
 import type { Bullet } from "../types.js";
 import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
@@ -50,6 +50,110 @@ describe("capture outbox", () => {
         expect.objectContaining({ entityId: "concept:crash", provenance: "capture" }),
       ]);
       expect(parseDailyFile(readFileSync(dailyFilePath(root, NOW), "utf8")).bullets).toEqual([item]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("converges instead of throwing when a pre-existing entity row diverges from the canonical record", () => {
+    const root = tempRoot();
+    const item = bullet("PAOLA-ADD", "Paola owns the capture that used to wedge the outbox.");
+    const file = relative(root, dailyFilePath(root, NOW));
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: item.id,
+      after: { file, bullet: item },
+      record: memoryRecord(item, file),
+      vector: [1, 0],
+      threads: [],
+    }], {
+      // Capture-time entity: no summary, capture-time createdAt — exactly the shape
+      // graphForPreparedActions emits.
+      entities: [{ id: "person:paola", name: "Paola", type: "person", createdAt: NOW.toISOString() }],
+    }, NOW.toISOString());
+    const db = openMemoryDb({
+      path: join(root, "memory.db"),
+      embeddings: noCallEmbeddings("test:diverged-entity"),
+      dim: 2,
+    });
+    try {
+      // The live wedge shape: a DB row predating the memory rework carries a stale
+      // summary and an old created_at, with NO graph.jsonl line to reconcile against.
+      db.upsertEntity({
+        id: "person:paola",
+        name: "Paola",
+        type: "person",
+        summary: "stale",
+        createdAt: "2025-01-01T00:00:00.000Z",
+        updatedAt: "2025-01-02T00:00:00.000Z",
+      });
+
+      expect(() => replayCaptureOutbox(root, db)).not.toThrow();
+
+      // The dumb-mirror upsert overwrote the diverged row to the canonical record:
+      // summary cleared, updatedAt cleared, created_at taken from the canonical entity.
+      expect(db.getEntity("person:paola")).toEqual({
+        id: "person:paola",
+        name: "Paola",
+        type: "person",
+        createdAt: NOW.toISOString(),
+      });
+      expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("converges when graph.jsonl and the index disagree on createdAt/summary", () => {
+    const root = tempRoot();
+    const createdAtA = "2025-01-01T00:00:00.000Z";
+    // Canonical graph line: authoritative createdAt A and a summary S.
+    appendEntity(root, {
+      id: "person:paola",
+      name: "Paola",
+      type: "person",
+      summary: "canonical summary",
+      createdAt: createdAtA,
+    });
+    const item = bullet("PAOLA-GRAPH", "Paola's capture reconciles against the canonical graph line.");
+    const file = relative(root, dailyFilePath(root, NOW));
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: item.id,
+      after: { file, bullet: item },
+      record: memoryRecord(item, file),
+      vector: [1, 0],
+      threads: [],
+    }], {
+      entities: [{ id: "person:paola", name: "Paola", type: "person", createdAt: NOW.toISOString() }],
+    }, NOW.toISOString());
+    const db = openMemoryDb({
+      path: join(root, "memory.db"),
+      embeddings: noCallEmbeddings("test:graph-index-disagree"),
+      dim: 2,
+    });
+    try {
+      // Index row disagrees with the graph line: createdAt B and no summary.
+      db.upsertEntity({
+        id: "person:paola",
+        name: "Paola",
+        type: "person",
+        createdAt: "2025-06-06T00:00:00.000Z",
+      });
+
+      expect(() => replayCaptureOutbox(root, db)).not.toThrow();
+
+      // Convergence to the merged canonical record: createdAt A + summary S.
+      expect(db.getEntity("person:paola")).toEqual({
+        id: "person:paola",
+        name: "Paola",
+        type: "person",
+        summary: "canonical summary",
+        createdAt: createdAtA,
+      });
+      expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
     } finally {
       db.close();
     }

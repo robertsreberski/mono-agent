@@ -12,28 +12,34 @@ describe("entity repository", () => {
     db.close();
   });
 
-  it("preserves optional entity details when an upsert omits them", () => {
+  it("upsertEntity mirrors every column of the given record, including created_at and cleared summary", () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(8), dim: 8 });
     db.upsertEntity({
       id: "person:morgan",
       name: "Morgan",
       type: "person",
-      summary: "prefers opt-in memory",
-      createdAt: "2026-06-15T09:00:00.000Z",
-      updatedAt: "2026-06-16T00:00:00.000Z",
+      summary: "stale summary",
+      createdAt: "2025-01-01T00:00:00.000Z",
+      updatedAt: "2025-01-02T00:00:00.000Z",
     });
+    // The DB is a dumb mirror of the canonical merged record (appendGraphBatch
+    // output owns all field-preservation via mergeEntityRecord). A canonical record
+    // that omits summary/updatedAt and carries a fresh createdAt overwrites every
+    // column — the prior summary/createdAt/updatedAt are NOT preserved here.
     db.upsertEntity({
       id: "person:morgan",
-      name: "Morgan Updated",
-      createdAt: "2026-06-17T00:00:00.000Z",
+      name: "Morgan",
+      type: "person",
+      createdAt: "2026-07-11T00:00:00.000Z",
     });
 
-    expect(db.getEntity("person:morgan")).toMatchObject({
-      name: "Morgan Updated",
+    expect(db.getEntity("person:morgan")).toEqual({
+      id: "person:morgan",
+      name: "Morgan",
       type: "person",
-      summary: "prefers opt-in memory",
-      updatedAt: "2026-06-16T00:00:00.000Z",
+      createdAt: "2026-07-11T00:00:00.000Z",
     });
+    expect(db.countEntities()).toBe(1);
     db.close();
   });
 
