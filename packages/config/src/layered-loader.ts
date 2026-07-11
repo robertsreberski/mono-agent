@@ -53,25 +53,7 @@ function remapJsonMemoryTierError(
   ) return error;
 
   if (error.details.env === "MONO_AGENT_MEMORY_MODE") {
-    const implicatedEnv = firstConfiguredEnv(env, [
-      "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_DIM",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
-      "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
-      "MONO_AGENT_MEMORY_LLM_PROVIDER",
-      "MONO_AGENT_MEMORY_LLM_MODEL",
-      "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
-      "MONO_AGENT_MEMORY_LLM_ENDPOINT",
-      "MONO_AGENT_MEMORY_LLM_TRACE",
-      "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
-      "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED",
-      "MONO_AGENT_MEMORY_CONSOLIDATION_CRON",
-    ]);
+    const implicatedEnv = firstConfiguredEnv(env, incompatibleMemoryEnvKeys(json.memory.mode ?? "lite"));
     if (implicatedEnv !== undefined) {
       const message = `${implicatedEnv} is incompatible with memory.mode "${json.memory.mode ?? "lite"}" from mono-agent.config.json.`;
       return new MonoAgentConfigError("invalid_env", message, { env: implicatedEnv, reason: message });
@@ -92,6 +74,38 @@ function remapJsonMemoryTierError(
       ? `memory.mode "${mode}" requires an explicit memory.llm block.`
       : error.message.replaceAll("MONO_AGENT_MEMORY_MODE", "memory.mode");
   return new MonoAgentConfigError("invalid_json", message, { path, reason: message });
+}
+
+const MEMORY_EMBEDDINGS_ENV_KEYS = [
+  "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER",
+  "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL",
+  "MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT",
+  "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
+  "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV",
+  "MONO_AGENT_MEMORY_EMBEDDINGS_DIM",
+  "MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS",
+  "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
+  "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
+] as const;
+const MEMORY_LLM_ENV_KEYS = [
+  "MONO_AGENT_MEMORY_LLM_PROVIDER",
+  "MONO_AGENT_MEMORY_LLM_MODEL",
+  "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
+  "MONO_AGENT_MEMORY_LLM_ENDPOINT",
+  "MONO_AGENT_MEMORY_LLM_TRACE",
+  "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
+] as const;
+const MEMORY_CONSOLIDATION_ENV_KEYS = [
+  "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED",
+  "MONO_AGENT_MEMORY_CONSOLIDATION_CRON",
+] as const;
+
+function incompatibleMemoryEnvKeys(mode: "lite" | "journal" | "bujo"): readonly string[] {
+  if (mode === "lite") {
+    return [...MEMORY_EMBEDDINGS_ENV_KEYS, ...MEMORY_LLM_ENV_KEYS, ...MEMORY_CONSOLIDATION_ENV_KEYS];
+  }
+  if (mode === "journal") return [...MEMORY_LLM_ENV_KEYS, ...MEMORY_CONSOLIDATION_ENV_KEYS];
+  return [];
 }
 
 function firstConfiguredEnv(

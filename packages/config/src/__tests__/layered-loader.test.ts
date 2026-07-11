@@ -679,6 +679,33 @@ describe("loadMonoAgentConfigWithSources", () => {
       env: { MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED: "true" },
       implicated: "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED",
     },
+    {
+      mode: "journal",
+      memory: {},
+      env: {
+        MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "nomic-embed-text:v1.5",
+        MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest",
+      },
+      implicated: "MONO_AGENT_MEMORY_LLM_MODEL",
+    },
+    {
+      mode: "journal",
+      memory: {},
+      env: {
+        MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "nomic-embed-text:v1.5",
+        MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED: "true",
+      },
+      implicated: "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED",
+    },
+    {
+      mode: "journal",
+      memory: {},
+      env: {
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+        MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest",
+      },
+      implicated: "MONO_AGENT_MEMORY_LLM_MODEL",
+    },
   ])("attributes a mixed-source $mode incompatibility to $implicated", async ({ mode, memory, env, implicated }) => {
     const path = join(dir, "config.json");
     await writeFile(path, JSON.stringify({
