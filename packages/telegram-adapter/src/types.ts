@@ -156,6 +156,11 @@ export interface TelegramEditMessageTextParams {
   text: string;
   parse_mode?: string;
   disable_web_page_preview?: boolean;
+  /**
+   * Inline keyboard to keep (or replace) on the edited message. Telegram drops an
+   * existing keyboard on `editMessageText` unless it is re-sent here.
+   */
+  reply_markup?: TelegramInlineKeyboardMarkup;
 }
 
 export interface TelegramGetUpdatesParams {
