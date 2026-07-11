@@ -671,7 +671,10 @@ export async function downloadTelegramAttachments(
   const transcriber =
     options?.transcriber ??
     (options?.transcription === undefined ? undefined : createOpenAiTranscriber(options.transcription));
-  const transcribeTimeoutMs = options?.downloadTimeoutMs ?? DEFAULT_TRANSCRIBE_TIMEOUT_MS;
+  // Independent of downloadTimeoutMs: download latency scales with file size,
+  // transcription latency with audio duration (a multi-minute note can take
+  // minutes on a local whisper server).
+  const transcribeTimeoutMs = options?.transcription?.timeoutMs ?? DEFAULT_TRANSCRIBE_TIMEOUT_MS;
   const resolved: AgentAttachment[] = [];
 
   for (const attachment of attachments) {
@@ -775,8 +778,8 @@ function isTranscribableKind(kind: TelegramAttachmentKind): boolean {
   return kind === "voice" || kind === "audio" || kind === "video_note";
 }
 
-/** Default per-call transcription timeout when `downloadTimeoutMs` is unset (30s). */
-const DEFAULT_TRANSCRIBE_TIMEOUT_MS = 30_000;
+/** Default per-call transcription timeout when `transcription.timeoutMs` is unset (120s). */
+const DEFAULT_TRANSCRIBE_TIMEOUT_MS = 120_000;
 
 /** The text inlined when transcription fails, pointing at the saved audio file. */
 export const TELEGRAM_TRANSCRIPTION_UNAVAILABLE_NOTE =

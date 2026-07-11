@@ -148,6 +148,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `telegram.transcription.endpoint` | `string` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT` | unset | `example` | Configures transcription.endpoint for the telegram section. |
 | `telegram.transcription.language` | `string` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_LANGUAGE` | unset | `example` | Configures transcription.language for the telegram section. |
 | `telegram.transcription.model` | `string` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL` | unset | `example` | Configures transcription.model for the telegram section. |
+| `telegram.transcription.timeoutMs` | `integer` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_TIMEOUT_MS` | unset | `1` | Configures transcription.timeoutMs for the telegram section. |
 | `telegram.transport.ipFamily` | `integer` | `MONO_AGENT_TELEGRAM_IP_FAMILY` | unset | `example` | Configures transport.ipFamily for the telegram section. |
 | `tools.allowedTools` | `string[]` | `MONO_AGENT_ALLOWED_TOOLS` | ["*"] | `["Read","Grep"]` | Configures allowedTools for the tools section. |
 | `tools.disallowedTools` | `string[]` | `MONO_AGENT_DISALLOWED_TOOLS` | [] | `["Read","Grep"]` | Configures disallowedTools for the tools section. |

@@ -240,9 +240,17 @@ function readTelegramTranscription(
   const endpoint = normalizeOptionalString(env.MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT);
   const model = normalizeOptionalString(env.MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL);
   const language = normalizeOptionalString(env.MONO_AGENT_TELEGRAM_TRANSCRIPTION_LANGUAGE);
+  const timeoutRaw = normalizeOptionalString(env.MONO_AGENT_TELEGRAM_TRANSCRIPTION_TIMEOUT_MS);
   if (endpoint === undefined) {
     return undefined;
   }
+  const timeoutMs =
+    timeoutRaw === undefined
+      ? undefined
+      : readInteger(timeoutRaw, "MONO_AGENT_TELEGRAM_TRANSCRIPTION_TIMEOUT_MS", 1, invalidConfig, {
+          min: 1,
+          max: 3_600_000,
+        });
   let parsed: URL;
   try {
     parsed = new URL(endpoint);
@@ -268,6 +276,7 @@ function readTelegramTranscription(
     endpoint,
     model,
     ...(language === undefined ? {} : { language }),
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
   };
 }
 
@@ -593,6 +602,7 @@ export const TELEGRAM_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "telegram.transcription.endpoint", env: "MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT", fromJson: (s) => readRecord(s.transcription).endpoint },
   { id: "telegram.transcription.model", env: "MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL", fromJson: (s) => readRecord(s.transcription).model },
   { id: "telegram.transcription.language", env: "MONO_AGENT_TELEGRAM_TRANSCRIPTION_LANGUAGE", fromJson: (s) => readRecord(s.transcription).language },
+  { id: "telegram.transcription.timeoutMs", env: "MONO_AGENT_TELEGRAM_TRANSCRIPTION_TIMEOUT_MS", kind: "integer", fromJson: (s) => readRecord(s.transcription).timeoutMs },
 ];
 
 function layerTelegramJsonOntoEnv(

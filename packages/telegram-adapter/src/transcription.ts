@@ -15,6 +15,13 @@ export interface TelegramTranscriptionConfig {
   readonly model: string;
   /** Optional ISO-639 language hint sent as the `language` part. */
   readonly language?: string;
+  /**
+   * Bound for one transcription call in milliseconds (default 120s, enforced
+   * by the download path). Independent of `attachments.downloadTimeoutMs`:
+   * download latency scales with file size, transcription latency with audio
+   * duration.
+   */
+  readonly timeoutMs?: number;
 }
 
 /** A pluggable transcriber. The download path passes a per-call abort signal. */
@@ -41,7 +48,7 @@ export function createOpenAiTranscriber(
   return {
     async transcribe(input, signal): Promise<string> {
       const form = new FormData();
-      const filename = input.filename ?? "voice.ogg";
+      const filename = input.filename ?? defaultAudioFilename(input.mimeType);
       // Copy into a fresh ArrayBuffer-backed view so the Blob owns contiguous bytes
       // regardless of the source Uint8Array's offset into a larger buffer.
       const blob = new Blob([new Uint8Array(input.bytes)], { type: input.mimeType });
@@ -68,4 +75,25 @@ export function createOpenAiTranscriber(
       return payload.text;
     },
   };
+}
+
+/**
+ * Default upload filename whose extension matches the container, for servers
+ * that key their decoder off the extension rather than sniffing content.
+ */
+function defaultAudioFilename(mimeType: string): string {
+  switch (mimeType.toLowerCase()) {
+    case "audio/mpeg":
+      return "audio.mp3";
+    case "audio/mp4":
+    case "audio/x-m4a":
+      return "audio.m4a";
+    case "audio/wav":
+    case "audio/x-wav":
+      return "audio.wav";
+    case "video/mp4":
+      return "video.mp4";
+    default:
+      return "voice.ogg";
+  }
 }

@@ -520,6 +520,7 @@ describe("self-hosted Bot API server config", () => {
             endpoint: "http://localhost:50060/v1/audio/transcriptions",
             model: "large-v3",
             language: "en",
+            timeoutMs: 240000,
           },
         },
       })}\n`,
@@ -531,6 +532,7 @@ describe("self-hosted Bot API server config", () => {
       endpoint: "http://localhost:50060/v1/audio/transcriptions",
       model: "large-v3",
       language: "en",
+      timeoutMs: 240000,
     });
 
     // Env wins for the fields it sets (endpoint + model); an unset env var falls
@@ -546,6 +548,7 @@ describe("self-hosted Bot API server config", () => {
       endpoint: "http://localhost:9000/v1/audio/transcriptions",
       model: "small",
       language: "en",
+      timeoutMs: 240000,
     });
   });
 

@@ -1828,6 +1828,13 @@
                 "example"
               ],
               "type": "string"
+            },
+            "timeoutMs": {
+              "description": "Configures transcription.timeoutMs for the telegram section.",
+              "examples": [
+                1
+              ],
+              "type": "integer"
             }
           }
         }
