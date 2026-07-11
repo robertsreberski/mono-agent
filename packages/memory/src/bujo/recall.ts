@@ -48,7 +48,7 @@ export function selectAutomaticRecallHits<T extends {
 export async function composeRecallBlock(
   db: MemoryDb,
   query: string,
-  options: { topK?: number; maxBytes?: number; abortSignal?: AbortSignal } = {},
+  options: { topK?: number; maxBytes?: number; trackAccess?: boolean; abortSignal?: AbortSignal } = {},
 ): Promise<MemoryBlock | undefined> {
   const maxBytes = Math.max(1, Math.min(options.maxBytes ?? AUTO_RECALL_MAX_BYTES, AUTO_RECALL_MAX_BYTES));
   const topK = Math.max(1, Math.min(options.topK ?? AUTO_RECALL_MAX_HITS, AUTO_RECALL_MAX_HITS));
@@ -68,7 +68,7 @@ export async function composeRecallBlock(
   if (hits.length === 0) {
     return undefined;
   }
-  db.recordAccess(hits.map((hit) => hit.record.id));
+  if (options.trackAccess !== false) db.recordAccess(hits.map((hit) => hit.record.id));
   const lines = ["## Memory (recalled)", ""];
   for (const hit of hits) {
     const star = hit.record.isInsight ? " *" : "";

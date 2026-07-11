@@ -317,6 +317,28 @@ describe("BujoMemoryStore", () => {
     await store.close();
   });
 
+  it("loads a qualifying block from a read-only store without access writes", async () => {
+    const root = tmpRoot();
+    const writable = createBujoMemoryStore({ root });
+    await writable.appendHostSummary("seed", "Morgan's memory preference is opt-in.");
+    await writable.close();
+
+    const readOnly = createBujoMemoryStore({ root, readOnly: true });
+    await expect(readOnly.load("seed", "What is Morgan's memory preference?")).resolves.toMatchObject({
+      kind: "markdown",
+      content: expect.stringContaining("Morgan's memory preference is opt-in."),
+    });
+    await readOnly.close();
+
+    const inspected = openMemoryDb({ path: join(root, "memory.db"), readOnly: true });
+    try {
+      const [hit] = await inspected.recall("What is Morgan's memory preference?", { trackAccess: false });
+      expect(hit?.record.accessCount).toBe(0);
+    } finally {
+      inspected.close();
+    }
+  });
+
   it("appends multiple summaries: both indexed, single daily header, bytesWritten counts the bullet line", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-store-"));
     const now = new Date("2026-06-15T09:00:00.000Z");
