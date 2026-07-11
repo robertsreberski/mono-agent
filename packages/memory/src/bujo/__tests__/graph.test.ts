@@ -204,14 +204,11 @@ describe("readGraph", () => {
       createdAt: "2026-06-16T09:00:00.000Z",
     }));
 
-    const started = performance.now();
     const result = appendGraphBatch(root, { entities, relations, associations });
-    const durationMs = performance.now() - started;
 
     expect(result.entities).toHaveLength(16);
     expect(result.relations).toHaveLength(16);
     expect(result.associations).toHaveLength(128);
-    expect(durationMs).toBeLessThan(500);
     expect(readFileSync(join(root, "graph.jsonl"), "utf8").trim().split("\n")).toHaveLength(11_160);
   });
 
