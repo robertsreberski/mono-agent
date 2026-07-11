@@ -21,6 +21,8 @@ import type { EmbeddingProvider } from "../../search/index.js";
 import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
 import {
   createBujoMemoryStore,
+  appendGraphBatch,
+  readManagedIndexManifest,
   resolveActiveMemoryDbPath,
   rollbackMemoryIndex,
   safeRebuildMemoryIndex,
@@ -36,6 +38,80 @@ afterEach(() => {
 });
 
 describe("safe memory index rebuild", () => {
+  it("indexes root-level legacy dates while daily/<date> takes deterministic precedence", async () => {
+    const root = tempRoot();
+    writeFileSync(
+      join(root, "2026-07-09.md"),
+      `# 2026-07-09\n\n${serializeBullet(bullet("ROOT-ONLY", "Root-level legacy source is preserved."))}\n`,
+      "utf8",
+    );
+    writeFileSync(
+      join(root, "2026-07-11.md"),
+      `# 2026-07-11\n\n${serializeBullet(bullet("SHADOWED", "Shadowed root-level copy."))}\n`,
+      "utf8",
+    );
+    writeDaily(root, [bullet("CANONICAL", "Canonical daily layout wins.")]);
+
+    const result = await safeRebuildMemoryIndex({ root, tier: "lite" });
+
+    expect(result.indexed).toBe(2);
+    expect(readTexts(result.active)).toEqual([
+      "Canonical daily layout wins.",
+      "Root-level legacy source is preserved.",
+    ]);
+  });
+
+  it("keeps live canonical graph timestamps identical after safe rebuild", async () => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("M1", "Morgan maintains the memory graph.")]);
+    const live = openMemoryDb({ path: join(root, "memory.db"), embeddings: embeddings("test:graph-parity", 8), dim: 8 });
+    await live.upsert({ ...note("M1", "Morgan maintains the memory graph."), source: { file: "daily/2026-07-11.md", line: 3 } });
+    const initial = appendGraphBatch(root, {
+      entities: [{ id: "person:morgan", name: "Morgan", type: "person", createdAt: "2026-01-01T00:00:00.000Z" }],
+      associations: [{
+        memoryId: "M1",
+        entityId: "person:morgan",
+        provenance: "legacy-name-match",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }],
+    });
+    live.upsertEntity(initial.entities[0]!);
+    live.associateMemory(initial.associations[0]!);
+    const updated = appendGraphBatch(root, {
+      entities: [{ id: "person:morgan", name: "Morgan R.", type: "person", createdAt: NOW }],
+      associations: [{ memoryId: "M1", entityId: "person:morgan", provenance: "capture", createdAt: NOW }],
+    });
+    live.upsertEntity(updated.entities[0]!);
+    live.associateMemory(updated.associations[0]!);
+    const liveEntity = live.getEntity("person:morgan");
+    const liveAssociation = live.associationsForMemory("M1");
+    live.close();
+
+    expect(liveEntity).toMatchObject({
+      name: "Morgan R.",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: NOW,
+    });
+    expect(liveAssociation).toEqual([expect.objectContaining({
+      provenance: "capture",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    })]);
+
+    const result = await safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: embeddings("test:graph-parity", 8),
+      dim: 8,
+    });
+    const rebuilt = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
+    try {
+      expect(rebuilt.getEntity("person:morgan")).toEqual(liveEntity);
+      expect(rebuilt.associationsForMemory("M1")).toEqual(liveAssociation);
+    } finally {
+      rebuilt.close();
+    }
+  });
+
   it("builds beside a legacy index, activates one versioned generation, and retains a working rollback", async () => {
     const root = tempRoot();
     await seedLegacy(root, note("OLD", "Legacy index sentinel."));
@@ -417,6 +493,62 @@ describe("safe memory index rebuild", () => {
     expect(resolveActiveMemoryDbPath(root)).toBe(first);
   });
 
+  it.each([
+    [false, "journal"],
+    [true, "bujo"],
+  ] as const)("infers a realizable legacy semantic rollback identity (graph=%s => %s)", async (withGraph, priorTier) => {
+    const root = tempRoot();
+    const modelA = embeddings("test:legacy-semantic-a", 8);
+    const legacy = openMemoryDb({ path: join(root, "memory.db"), embeddings: modelA, dim: 8 });
+    await legacy.upsert(note("OLD", "Legacy semantic rollback sentinel."));
+    legacy.close();
+    writeDaily(root, [bullet("NEW", "Lite replacement source.")]);
+    if (withGraph) writeGraph(root, [{ kind: "entity", id: "person:morgan", name: "Morgan", createdAt: NOW }]);
+
+    await safeRebuildMemoryIndex({ root, tier: "lite" });
+    expect(readManagedIndexManifest(root)?.rollback).toMatchObject({
+      tier: priorTier,
+      embeddingModel: modelA.id,
+      dimension: 8,
+    });
+
+    await rollbackMemoryIndex({ root, tier: priorTier, embeddings: modelA, dim: 8 });
+    expect(readTexts(resolveActiveMemoryDbPath(root))).toContain("Legacy semantic rollback sentinel.");
+  });
+
+  it("infers a legacy Lite identity before first activation into Journal", async () => {
+    const root = tempRoot();
+    await seedLegacy(root, note("OLD", "Legacy Lite rollback sentinel."));
+    writeDaily(root, [bullet("NEW", "Journal replacement source.")]);
+    const model = embeddings("test:new-journal", 8);
+
+    await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: model, dim: 8 });
+    expect(readManagedIndexManifest(root)?.rollback).toMatchObject({ tier: "lite" });
+    expect(readManagedIndexManifest(root)?.rollback).not.toHaveProperty("embeddingModel");
+
+    await rollbackMemoryIndex({ root, tier: "lite" });
+    expect(readTexts(resolveActiveMemoryDbPath(root))).toContain("Legacy Lite rollback sentinel.");
+  });
+
+  it("retains the actual legacy model identity across a first managed model change", async () => {
+    const root = tempRoot();
+    const modelA = embeddings("test:legacy-model-a", 8);
+    const modelB = embeddings("test:new-model-b", 4);
+    const legacy = openMemoryDb({ path: join(root, "memory.db"), embeddings: modelA, dim: 8 });
+    await legacy.upsert(note("OLD", "Legacy model A sentinel."));
+    legacy.close();
+    writeDaily(root, [bullet("NEW", "Model B replacement source.")]);
+
+    await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: modelB, dim: 4 });
+    expect(readManagedIndexManifest(root)?.rollback).toMatchObject({
+      tier: "journal",
+      embeddingModel: modelA.id,
+      dimension: 8,
+    });
+    await rollbackMemoryIndex({ root, tier: "journal", embeddings: modelA, dim: 8 });
+    expect(readTexts(resolveActiveMemoryDbPath(root))).toContain("Legacy model A sentinel.");
+  });
+
   it("rejects a legacy SQLite write transaction before calling embeddings", async () => {
     const root = tempRoot();
     await seedLegacy(root, note("OLD", "Legacy live writer sentinel."));
@@ -617,6 +749,40 @@ describe("safe memory index rebuild", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("validates empty managed semantic identity for read-only stores and allows only explicit FTS fallback", async () => {
+    const root = tempRoot();
+    const modelA = embeddings("test:empty-managed-a", 8);
+    const result = await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: modelA, dim: 8 });
+
+    expect(() => createBujoMemoryStore({
+      root,
+      dbPath: result.active,
+      readOnly: true,
+      tier: "journal",
+      embeddings: embeddings("test:empty-managed-b", 4),
+      dim: 4,
+    })).toThrow(/managed read-only generation requires.*empty-managed-a.*dim=8/iu);
+
+    const fallback = createBujoMemoryStore({
+      root,
+      dbPath: result.active,
+      readOnly: true,
+      allowFtsFallback: true,
+    });
+    await expect(fallback.recall("anything", { trackAccess: false })).resolves.toEqual([]);
+    await fallback.close();
+
+    const matching = createBujoMemoryStore({
+      root,
+      dbPath: result.active,
+      readOnly: true,
+      tier: "journal",
+      embeddings: modelA,
+      dim: 8,
+    });
+    await matching.close();
   });
 
   it("detects retained rollback replacement after manifest temp fsync", async () => {

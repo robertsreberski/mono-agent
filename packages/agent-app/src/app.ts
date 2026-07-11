@@ -1312,11 +1312,12 @@ class MonoAgentAppController implements MonoAgentApp {
     this.sharedMemoryRetrieval = undefined;
     this.sharedMemoryBuilt = false;
     this.sharedMemoryBuild = undefined;
-    if (mem?.flush !== undefined) {
-      await Promise.resolve(mem.flush()).catch(() => undefined);
-    }
     if (mem?.close !== undefined) {
       await Promise.resolve(mem.close()).catch(() => undefined);
+    } else if (mem?.flush !== undefined) {
+      // Stores without a lifecycle-aware close retain the legacy best-effort
+      // drain. BuJo close owns its bounded shutdown deadline itself.
+      await Promise.resolve(mem.flush()).catch(() => undefined);
     }
   }
 

@@ -37,6 +37,50 @@ function makeSeqNextId(): () => string {
 }
 
 describe("captureTurn", () => {
+  it("batches persistence embeddings across the maximum eight novel candidates", async () => {
+    const root = newRoot();
+    const batchSizes: number[] = [];
+    const embeddings = {
+      id: "capture-batch:64",
+      async embed(texts: readonly string[]) {
+        batchSizes.push(texts.length);
+        return texts.map(() => Array.from({ length: DIM }, (_, index) => index === 0 ? 1 : 0));
+      },
+    };
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings, dim: DIM });
+    openDbs.push(db);
+    const facts = [
+      "The launch window is Tuesday morning",
+      "Morgan prefers jasmine tea",
+      "Project Atlas uses PostgreSQL",
+      "The bicycle lock code changed",
+      "Taylor moved the review to Friday",
+      "Invoices belong in the finance folder",
+      "The garden sprinkler runs at dawn",
+      "Jordan owns the incident checklist",
+    ];
+    const memories = facts.map((text) => ({
+      type: "note",
+      text,
+      salience: 0.6,
+      isInsight: false,
+      entityIds: [],
+    }));
+    const llm = fakeLlm([["Extract one bounded", JSON.stringify({ memories, entities: [], relations: [] })]]);
+
+    const result = await captureTurn("Eight unrelated durable facts", {
+      db,
+      root,
+      llm,
+      nextId: makeSeqNextId(),
+      now: () => FIXED,
+    });
+
+    expect(result.actions).toHaveLength(8);
+    expect(batchSizes).toEqual([8, 8]);
+    expect(db.count()).toBe(8);
+  });
+
   it("writes one durable row and merged association set for same-turn duplicate candidates", async () => {
     const root = newRoot();
     const db = openDb(root);

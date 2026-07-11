@@ -94,6 +94,60 @@ describe("runCli memory", () => {
     expect(audit.stdout).not.toContain("mono-agent\"");
   });
 
+  it("reads metadata-only live queue and model-call telemetry from the runtime snapshot", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({
+      memory: {
+        mode: "bujo",
+        path: memoryRoot,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "test-embed", dim: 8 },
+        llm: { provider: "ollama", model: "test-capture" },
+      },
+    });
+    const embeddings: EmbeddingProvider = {
+      id: "ollama:test-embed",
+      embed: async (texts) => texts.map(() => [1, 0, 0, 0, 0, 0, 0, 0]),
+    };
+    const store = createBujoMemoryStore({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings,
+      dim: 8,
+      llm: {
+        id: "ollama:test-capture",
+        complete: async () => JSON.stringify({
+          memories: [{ type: "note", text: "Private sentinel durable fact", salience: 0.7, isInsight: false, entityIds: [] }],
+          entities: [],
+          relations: [],
+        }),
+      },
+    });
+    try {
+      store.scheduleCapture("telegram:live", "private sentinel input");
+      await store.flush();
+
+      const audit = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "audit", "--json"]))));
+      expect(audit.code).toBe(0);
+      expect(JSON.parse(audit.stdout)).toMatchObject({
+        backlog: { captureQueue: 0 },
+        runtime: {
+          available: true,
+          stale: false,
+          processAlive: true,
+          state: "running",
+          queues: { capture: { completed: 1, queued: 0, inFlight: 0 } },
+        },
+        cost: { known: true, embeddingCalls: 2, embeddingTexts: 2, llmCalls: 1 },
+      });
+      expect(audit.stdout).not.toContain("Private sentinel");
+      expect(audit.stdout).not.toContain("private sentinel input");
+      expect(audit.stdout).not.toContain("telegram:live");
+    } finally {
+      await store.close();
+    }
+  });
+
   it("falls back to FTS-only when configured embeddings are down", async () => {
     const memoryRoot = join(await tempDir(), "memory");
     const dir = await agentDir({

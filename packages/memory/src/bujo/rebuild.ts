@@ -288,7 +288,7 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
     const candidateDigest = fileDigest(generation.dbPath);
     await options.hooks?.afterCandidateValidated?.();
     await options.hooks?.beforeSourceCas?.();
-    const rollback = await snapshotCurrentRollback(root, priorManifest?.active, rollbackSnapshot, options);
+    const rollback = await snapshotCurrentRollback(root, priorManifest?.active, rollbackSnapshot);
     const rollbackPath = rollback === undefined ? undefined : managedGenerationDbPath(root, rollback.name, true);
     const rollbackIdentity = rollbackPath === undefined ? undefined : identityOf(rollbackPath);
     const rollbackDigest = rollbackPath === undefined ? undefined : fileDigest(rollbackPath);
@@ -301,8 +301,8 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       if (finalSnapshot.fingerprint !== snapshot.fingerprint) {
         throw new Error("memory-rebuild: canonical source fingerprint changed concurrently; active index was not switched.");
       }
-      if (rollbackSnapshot !== snapshot
-        && snapshotCanonicalSources(root, priorManifest?.active.tier ?? options.tier).fingerprint !== rollbackSnapshot.fingerprint) {
+      if (rollback !== undefined
+        && snapshotCanonicalSources(root, rollback.tier).fingerprint !== rollback.sourceFingerprint) {
         throw new Error("memory-rebuild: rollback source domain changed concurrently; active index was not switched.");
       }
       assertSameIdentity(root, rootIdentity, "memory root");
@@ -440,9 +440,22 @@ function snapshotCanonicalSources(root: string, tier: BujoTier): SourceSnapshot 
   const canonicalRoot = canonicalMemoryRoot(root, false);
   const dailyDir = join(canonicalRoot, "daily");
   const files: SourceFileSnapshot[] = [];
+  const dailyNames = new Set<string>();
   if (existsSync(dailyDir)) {
     assertSafeDirectory(canonicalRoot, dailyDir, "canonical daily source directory");
     for (const name of readdirSync(dailyDir).filter((file) => file.endsWith(".md")).sort()) {
+      dailyNames.add(name);
+    }
+  }
+  // Older stores placed dated logs at the root. A canonical daily/<date>.md
+  // wins when both layouts contain the same date, matching operator preview.
+  for (const name of readdirSync(canonicalRoot).filter((file) => LEGACY_DAILY_FILE.test(file)).sort()) {
+    if (dailyNames.has(name)) continue;
+    const path = join(canonicalRoot, name);
+    files.push(readStableSourceFile(canonicalRoot, path, name));
+  }
+  if (existsSync(dailyDir)) {
+    for (const name of [...dailyNames].sort()) {
       const path = join(dailyDir, name);
       files.push(readStableSourceFile(canonicalRoot, path, `daily/${name}`));
     }
@@ -767,8 +780,6 @@ function validateDb(db: MemoryDb, descriptor: ManagedGeneration): void {
 
 async function adoptLegacyRollback(
   root: string,
-  snapshot: SourceSnapshot,
-  options: SafeMemoryIndexOptions,
 ): Promise<ManagedGeneration | undefined> {
   const legacyPath = join(root, "memory.db");
   if (!existsSync(legacyPath)) return undefined;
@@ -777,16 +788,44 @@ async function adoptLegacyRollback(
   const actualDimension = await backupRawSqlite(legacyPath, generation.dbPath);
   const copy = openMemoryDb({ path: generation.dbPath, dim: actualDimension });
   let embeddingModel: string | undefined;
+  let tier: BujoTier;
+  let sourceFingerprint: string;
   const createdAt = new Date().toISOString();
   try {
-    const models = copy.validationSnapshot().embeddingModels;
+    const state = copy.validationSnapshot();
+    const models = state.embeddingModels;
     if (models.length > 1) throw new Error("memory-rebuild: legacy index contains multiple embedding model identities.");
-    embeddingModel = models[0] ?? (options.tier === "lite" ? undefined : options.embeddings?.id);
+    const priorMetadata = copy.indexMetadata();
+    embeddingModel = priorMetadata?.embeddingModel ?? models[0];
+    const semantic = state.vectors > 0 || embeddingModel !== undefined;
+    if (priorMetadata?.tier === "lite" || priorMetadata?.tier === "journal" || priorMetadata?.tier === "bujo") {
+      tier = priorMetadata.tier;
+    } else if (!semantic) {
+      tier = "lite";
+    } else {
+      tier = state.entities > 0 || state.relations > 0 || state.associations > 0 || existsSync(join(root, "graph.jsonl"))
+        ? "bujo"
+        : "journal";
+    }
+    if (tier === "lite") {
+      if (semantic || actualDimension !== DEFAULT_VEC_DIM) {
+        throw new Error(
+          "memory-rebuild: legacy index identity cannot be represented as Lite; first rebuild it under its prior semantic configuration.",
+        );
+      }
+      embeddingModel = undefined;
+    } else if (embeddingModel === undefined) {
+      throw new Error(
+        "memory-rebuild: legacy semantic index has no embedding-model identity; first rebuild it under its prior configuration.",
+      );
+    }
+    const source = snapshotCanonicalSources(root, tier);
+    sourceFingerprint = source.fingerprint;
     copy.setIndexMetadata({
       schemaVersion: MANAGED_INDEX_SCHEMA_VERSION,
       policyVersion: MEMORY_REBUILD_POLICY_VERSION,
-      tier: options.tier,
-      sourceFingerprint: snapshot.fingerprint,
+      tier,
+      sourceFingerprint,
       generation: generation.name,
       createdAt,
       ...(embeddingModel === undefined ? {} : { embeddingModel, dimension: actualDimension }),
@@ -797,8 +836,8 @@ async function adoptLegacyRollback(
   }
   const descriptor: ManagedGeneration = {
     name: generation.name,
-    tier: options.tier,
-    sourceFingerprint: snapshot.fingerprint,
+    tier,
+    sourceFingerprint,
     policyVersion: MEMORY_REBUILD_POLICY_VERSION,
     createdAt,
     origin: "legacy-snapshot",
@@ -814,9 +853,8 @@ async function snapshotCurrentRollback(
   root: string,
   active: ManagedGeneration | undefined,
   snapshot: SourceSnapshot,
-  options: SafeMemoryIndexOptions,
 ): Promise<ManagedGeneration | undefined> {
-  if (active === undefined) return await adoptLegacyRollback(root, snapshot, options);
+  if (active === undefined) return await adoptLegacyRollback(root);
   if (active.sourceFingerprint === snapshot.fingerprint) {
     validateRetainedGeneration(managedGenerationDbPath(root, active.name, true), active);
     return active;
@@ -1036,6 +1074,7 @@ function requiredTimestamp(value: unknown, label: string, line: number): string 
   return timestamp;
 }
 
+const LEGACY_DAILY_FILE = /^\d{4}-\d{2}-\d{2}\.md$/u;
 const CANONICAL_VISIBLE_BULLET = /^- (?:\[[ x><~]\]|◦|–) /u;
 const VALID_BULLET_TYPES = new Set(["task", "event", "note"]);
 const VALID_BULLET_STATUSES = new Set(["open", "done", "scheduled", "migrated", "dropped", "invalidated"]);

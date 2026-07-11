@@ -1,5 +1,5 @@
 import { extractCapturePlan } from "./capture-batch.js";
-import { appendAssociation, appendEntity, appendRelation } from "./graph.js";
+import { appendGraphBatch } from "./graph.js";
 import { reconcileBatch, type ReconcileAction, type ReconcileDeps } from "./reconcile.js";
 
 export interface CaptureTurnResult {
@@ -22,41 +22,53 @@ export interface CaptureTurnResult {
 export async function captureTurn(text: string, deps: ReconcileDeps): Promise<CaptureTurnResult> {
   // One batched extraction call yields candidates + their precise entity ids;
   // one optional batched reconcile call classifies every near neighbour.
-  const extraction = await extractCapturePlan(text, deps.llm);
+  const extraction = await extractCapturePlan(text, deps.llm, deps.abortSignal);
+  deps.abortSignal?.throwIfAborted();
   const actionSlots = await reconcileBatch(extraction.candidates, deps);
+  deps.abortSignal?.throwIfAborted();
   const actions = actionSlots.filter((action): action is ReconcileAction => action !== undefined);
 
   const now = deps.now();
   const createdAt = now.toISOString();
 
-  // Persist each entity canonical-first (graph.jsonl), then mirror to the rebuildable db
-  // index. graph.jsonl is the canonical source rebuildFromMarkdown reads; writing it first means a
-  // crash between the two writes still recovers the entity on the next rebuild.
-  for (const entity of extraction.entities) {
+  const associations = extraction.candidates.flatMap((candidate, index) => {
+    const action = actionSlots[index];
+    if (action === undefined) return [];
+    const memoryId = memoryIdForAction(action);
+    return (candidate.entityIds ?? []).map((entityId) => ({
+      memoryId,
+      entityId,
+      provenance: "capture" as const,
+      createdAt,
+    }));
+  });
+  // Canonical-first with one graph read + one append for the whole capture.
+  deps.abortSignal?.throwIfAborted();
+  const canonical = appendGraphBatch(deps.root, {
+    entities: extraction.entities.map((entity) => ({
+      id: entity.id,
+      name: entity.name,
+      ...(entity.type !== undefined ? { type: entity.type } : {}),
+      createdAt,
+    })),
+    relations: extraction.relations.map((relation) => ({ ...relation, createdAt })),
+    associations,
+  });
+
+  // Mirror exact canonical records to the rebuildable DB. Per-item DB
+  // isolation cannot alter the single canonical append.
+  for (const entity of canonical.entities) {
     try {
-      const record = {
-        id: entity.id,
-        name: entity.name,
-        ...(entity.type !== undefined ? { type: entity.type } : {}),
-        createdAt,
-      };
-      appendEntity(deps.root, record);
-      deps.db.upsertEntity(record);
+      deps.db.upsertEntity(entity);
     } catch {
       // Per-item isolation: a single bad entity must not abort the turn
     }
   }
 
   // Persist each relation canonical-first (graph.jsonl), then mirror to the db index.
-  for (const relation of extraction.relations) {
+  for (const relation of canonical.relations) {
     try {
-      appendRelation(deps.root, {
-        src: relation.src,
-        dst: relation.dst,
-        relation: relation.relation,
-        createdAt,
-      });
-      deps.db.addEntityRelation(relation.src, relation.dst, relation.relation);
+      deps.db.addEntityRelation(relation.src, relation.dst, relation.relation, relation.createdAt);
     } catch {
       // Per-item isolation: a single bad relation must not abort the turn
     }
@@ -65,20 +77,13 @@ export async function captureTurn(text: string, deps: ReconcileDeps): Promise<Ca
   // Persist candidate-specific associations. Reconcile action identity
   // is preserved: update/noop target the existing id; supersede/add target the
   // new id. There is deliberately no turn-wide Cartesian association.
-  let associations = 0;
-  for (const [index, candidate] of extraction.candidates.entries()) {
-    const action = actionSlots[index];
-    if (action === undefined) continue;
-    const memoryId = memoryIdForAction(action);
-    for (const entityId of candidate.entityIds ?? []) {
-      try {
-        const association = { memoryId, entityId, provenance: "capture" as const, createdAt };
-        appendAssociation(deps.root, association);
-        deps.db.associateMemory(association);
-        associations += 1;
-      } catch {
-        // Per-item isolation
-      }
+  let associationCount = 0;
+  for (const association of canonical.associations) {
+    try {
+      deps.db.associateMemory(association);
+      associationCount += 1;
+    } catch {
+      // Per-item isolation
     }
   }
 
@@ -86,7 +91,7 @@ export async function captureTurn(text: string, deps: ReconcileDeps): Promise<Ca
     actions,
     entities: extraction.entities.length,
     relations: extraction.relations.length,
-    associations,
+    associations: associationCount,
   };
 }
 

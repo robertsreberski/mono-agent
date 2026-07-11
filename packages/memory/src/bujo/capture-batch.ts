@@ -35,11 +35,14 @@ TURN:
 ${text}`;
 
 /** One LLM call produces candidates and their precise graph evidence. */
-export async function extractCapturePlan(text: string, llm: LlmComplete): Promise<CapturePlan> {
+export async function extractCapturePlan(text: string, llm: LlmComplete, abortSignal?: AbortSignal): Promise<CapturePlan> {
   if (text.trim().length === 0) return { candidates: [], entities: [], relations: [] };
   let raw: string;
   try {
-    raw = await llm.complete(prompt(text), { label: "capture:extract" });
+    raw = await llm.complete(prompt(text), {
+      label: "capture:extract",
+      ...(abortSignal === undefined ? {} : { abortSignal }),
+    });
   } catch (cause) {
     throw new MemoryModelError("llm", "capture-extract", cause);
   }

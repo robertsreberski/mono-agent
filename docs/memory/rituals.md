@@ -12,16 +12,16 @@ lightweight housekeeping cycle: decay salience, deduplicate near-identical bulle
 superseding duplicates, and rewrite the living index.
 
 The `consolidate()` operation itself is deterministic and can run without a chat model.
-The in-app scheduler, however, only starts for the effective `bujo` runtime tier. In
-configuration terms, that means `memory.mode: "bujo"` plus `memory.llm`; without
-`memory.llm`, the store resolves to `journal` and scheduled consolidation is skipped. The
-`lite` and `journal` tiers do not run scheduled maintenance. For tier selection and the
+The in-app scheduler starts only for the strict `bujo` tier. Configuration therefore requires
+`memory.mode: "bujo"`, embeddings, and `memory.llm`; omitting a prerequisite is a validation
+error, never a downshift to Journal. The `lite` and `journal` tiers do not run scheduled
+maintenance. For tier selection and the
 `memory.llm` block, see [Capture & recall](/memory/capture-and-recall/) and the
 [Memory overview](/memory/). Coverage type: **config**.
 
 ## The in-app scheduler
 
-When the effective store tier is `bujo`, `agent-app` starts a consolidation scheduler
+When the configured store tier is `bujo`, `agent-app` starts a consolidation scheduler
 alongside your channels.
 
 | Pass | What it does | Default cron |
@@ -124,14 +124,14 @@ and diffable — you can browse them directly or commit them.
 ```
 
 See [Validation & CLI](/memory/validation-and-cli/) for the full liveness check. Validation
-reports scheduled consolidation only when the effective store tier is `bujo`; otherwise it
+reports scheduled consolidation only when the configured store tier is `bujo`; otherwise it
 reports that consolidation is not scheduled.
 
 :::caution
-Scheduled consolidation needs the effective `bujo` runtime tier. If `memory.llm` is
-missing, configured `bujo` mode resolves to the `journal` tier and the scheduler does not
-run. Manual deterministic `consolidate()` remains available to callers that invoke the
-store directly. Validate before relying on automated maintenance.
+Scheduled consolidation needs a valid strict `bujo` configuration. Missing embeddings or
+`memory.llm` fails configuration instead of silently running a reduced tier. Manual deterministic
+`consolidate()` remains available to programmatic callers. Validate before relying on automated
+maintenance.
 :::
 
 ## Manual / out-of-band runs

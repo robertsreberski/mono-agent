@@ -17,6 +17,7 @@ import { parseDailyFile } from "./grammar.js";
 import { serializeBullet } from "./grammar.js";
 import { createIdFactory } from "./ids.js";
 import type { LlmComplete } from "./llm.js";
+import type { EmbeddingProvider } from "../search/index.js";
 import { captureTurn } from "./capture.js";
 import { composeRecallBlock } from "./recall.js";
 import { reflect as reflectFn, type ReflectResult } from "./reflect.js";
@@ -25,6 +26,11 @@ import { consolidateBujoMemory, type ConsolidateResult } from "./consolidate.js"
 import { writeFutureLog, writeIndex } from "./projections.js";
 import type { Bullet, BujoLogger, BujoOptions, BujoTier } from "./types.js";
 import { BoundedBatchQueue, type BackgroundQueueSnapshot, type QueueJob } from "./queue.js";
+import {
+  BUJO_RUNTIME_SNAPSHOT_STALE_AFTER_MS,
+  writeBujoRuntimeSnapshot,
+  type BujoRuntimeCounters,
+} from "./runtime-snapshot.js";
 import {
   acquireMemoryWriterLease,
   canonicalMemoryRoot,
@@ -42,6 +48,9 @@ const CAPTURE_QUEUE_MAX_ITEMS = 32;
 const CAPTURE_QUEUE_MAX_BYTES = 1024 * 1024;
 const JOURNAL_RETRY_DELAY_MS = 1_000;
 const JOURNAL_RETRY_MAX_DELAY_MS = 30_000;
+const DEFAULT_BACKGROUND_DRAIN_TIMEOUT_MS = 10_000;
+const RUNTIME_SNAPSHOT_COALESCE_MS = 25;
+const RUNTIME_SNAPSHOT_HEARTBEAT_MS = Math.floor(BUJO_RUNTIME_SNAPSHOT_STALE_AFTER_MS / 3);
 const JOURNAL_WRITE_CHAINS = new Map<string, Promise<void>>();
 
 interface IndexJob extends QueueJob {
@@ -69,6 +78,11 @@ export interface BujoQueueSnapshot {
     readonly nextRetryAt?: string;
   };
   readonly capture?: BackgroundQueueSnapshot;
+  readonly shutdown: {
+    readonly drainTimeoutMs: number;
+    readonly discarded: number;
+    readonly timedOut: boolean;
+  };
 }
 
 export class BujoMemoryStore implements MemoryStore {
@@ -82,6 +96,7 @@ export class BujoMemoryStore implements MemoryStore {
   private readonly llm?: LlmComplete;
   private readonly _tier: BujoTier;
   private readonly logger: BujoLogger;
+  private readonly backgroundDrainTimeoutMs: number;
   private indexQueue?: BoundedBatchQueue<IndexJob>;
   private captureQueue?: BoundedBatchQueue<CaptureJob>;
   private journalRecoveryPaused = false;
@@ -97,6 +112,20 @@ export class BujoMemoryStore implements MemoryStore {
   private journalRecoveryRefillQueries = 0;
   private closing = false;
   private closed = false;
+  private activeCaptureController: AbortController | undefined;
+  private activeIndexController: AbortController | undefined;
+  private shutdownDiscarded = 0;
+  private shutdownTimedOut = false;
+  private readonly runtimeStartedAt = new Date().toISOString();
+  private readonly runtimeCounters: {
+    embeddingCalls: number;
+    embeddingTexts: number;
+    llmCalls: number;
+    llmInputChars: number;
+  } = { embeddingCalls: 0, embeddingTexts: 0, llmCalls: 0, llmInputChars: 0 };
+  private runtimeSnapshotEnabled = false;
+  private runtimeSnapshotTimer: ReturnType<typeof setTimeout> | undefined;
+  private runtimeHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(options: BujoOptions) {
     const derivedTier = options.embeddings === undefined
@@ -107,9 +136,22 @@ export class BujoMemoryStore implements MemoryStore {
     const tier = options.tier ?? derivedTier;
     // Pure validation precedes every filesystem/lease side effect.
     assertTierPrerequisites(tier, options);
+    if (options.allowFtsFallback === true && (
+      options.readOnly !== true
+      || options.embeddings !== undefined
+      || options.dim !== undefined
+      || options.llm !== undefined
+    )) {
+      throw new Error("memory-bujo: allowFtsFallback is only valid for an explicit read-only FTS store.");
+    }
     if (options.dbPath !== undefined && options.readOnly !== true) {
       throw new Error("memory-bujo: dbPath may pin only a read-only snapshot; writable stores always use the managed active generation.");
     }
+    const backgroundDrainTimeoutMs = options.backgroundDrainTimeoutMs ?? DEFAULT_BACKGROUND_DRAIN_TIMEOUT_MS;
+    if (!Number.isInteger(backgroundDrainTimeoutMs) || backgroundDrainTimeoutMs <= 0) {
+      throw new Error("memory-bujo: backgroundDrainTimeoutMs must be a positive integer.");
+    }
+    this.backgroundDrainTimeoutMs = backgroundDrainTimeoutMs;
     this.readOnly = options.readOnly === true;
     const writerLease = this.readOnly ? undefined : acquireMemoryWriterLease(options.root);
     this.writerLease = writerLease;
@@ -118,8 +160,8 @@ export class BujoMemoryStore implements MemoryStore {
     this.clock = options.clock ?? (() => new Date());
     this.nextId = createIdFactory({ clock: this.clock });
     this._tier = tier;
-    if (options.llm !== undefined) this.llm = options.llm;
     this.logger = options.logger ?? { warn: () => {} };
+    if (options.llm !== undefined) this.llm = this.instrumentLlm(options.llm);
     let opened: MemoryDb | undefined;
     try {
       const managed = readManagedIndexManifest(this.root);
@@ -136,15 +178,29 @@ export class BujoMemoryStore implements MemoryStore {
       }
       opened = openMemoryDb({
         path: options.dbPath ?? resolveActiveMemoryDbPath(this.root),
-        ...(options.embeddings !== undefined && { embeddings: options.embeddings }),
+        ...(options.embeddings !== undefined && { embeddings: this.instrumentEmbeddings(options.embeddings) }),
         ...(options.dim !== undefined && { dim: options.dim }),
         ...(this.readOnly ? { readOnly: true } : {}),
         clock: this.clock,
       });
       this.db = opened;
+      if (this.readOnly && managed !== undefined && options.allowFtsFallback !== true) {
+        const metadata = opened.indexMetadata();
+        if (metadata === undefined
+          || metadata.tier !== this._tier
+          || metadata.embeddingModel !== options.embeddings?.id
+          || metadata.dimension !== options.dim) {
+          throw new Error(
+            `memory-bujo: managed read-only generation requires tier=${metadata?.tier ?? "unknown"}, `
+            + `model=${metadata?.embeddingModel ?? "none"}, dim=${metadata?.dimension ?? "none"}; `
+            + "open it with the configured identity or request an explicit FTS fallback.",
+          );
+        }
+      }
       if (this._tier !== "lite") this.db.assertEmbeddingIdentity();
       if (!this.readOnly && this._tier === "journal") this.initializeJournalIndexing();
       if (!this.readOnly && this._tier === "bujo") this.initializeCaptureQueue();
+      if (!this.readOnly) this.initializeRuntimeSnapshot();
     } catch (error) {
       const cleanupErrors: unknown[] = [];
       try { opened?.close(); } catch (closeError) { cleanupErrors.push(closeError); }
@@ -372,6 +428,7 @@ export class BujoMemoryStore implements MemoryStore {
     await this.journalRecoveryPromise;
     await this.indexQueue?.flush();
     await this.captureQueue?.flush();
+    if (!this.closing) this.publishRuntimeSnapshot("running");
   }
 
   queueSnapshot(): BujoQueueSnapshot {
@@ -390,6 +447,11 @@ export class BujoMemoryStore implements MemoryStore {
         },
       }),
       ...(this.captureQueue === undefined ? {} : { capture: this.captureQueue.snapshot() }),
+      shutdown: {
+        drainTimeoutMs: this.backgroundDrainTimeoutMs,
+        discarded: this.shutdownDiscarded,
+        timedOut: this.shutdownTimedOut,
+      },
     };
   }
 
@@ -403,7 +465,11 @@ export class BujoMemoryStore implements MemoryStore {
    * reflection/cron and future session hooks; it is safe to call on every turn when an LLM is
    * present, and a no-op when one is not.
    */
-  async capture(conversationId: string, text: string): Promise<{ actions: number; entities: number } | undefined> {
+  async capture(
+    conversationId: string,
+    text: string,
+    abortSignal?: AbortSignal,
+  ): Promise<{ actions: number; entities: number } | undefined> {
     this.assertWritable("capture");
     if (this.llm === undefined) return undefined;
     const res = await captureTurn(text, {
@@ -412,6 +478,7 @@ export class BujoMemoryStore implements MemoryStore {
       llm: this.llm,
       nextId: this.nextId,
       now: this.clock,
+      ...(abortSignal === undefined ? {} : { abortSignal }),
     });
     return { actions: res.actions.length, entities: res.entities };
   }
@@ -438,19 +505,38 @@ export class BujoMemoryStore implements MemoryStore {
   }
 
   async close(): Promise<void> {
-    // Drain any queued captures before closing the db handle, so a caller that omits flush()
-    // (e.g. the MCP's signal handler) doesn't strand an in-flight capture against a closed db.
+    // Bound shutdown: deterministic lexical/raw source already survived, so
+    // queued semantic/curation work may be discarded rather than hanging stop.
     if (this.closed) return;
     this.closed = true;
     this.closing = true;
+    this.disableRuntimeTimers();
     if (this.journalRetryTimer !== undefined) clearTimeout(this.journalRetryTimer);
+    this.indexQueue?.stopAccepting();
+    this.captureQueue?.stopAccepting();
     let primary: unknown;
     try {
-      await this.flush();
+      const drained = await waitForDrain(
+        this.flush(),
+        this.backgroundDrainTimeoutMs,
+      );
+      if (!drained) {
+        this.shutdownTimedOut = true;
+        this.shutdownDiscarded += this.indexQueue?.discardQueued() ?? 0;
+        this.shutdownDiscarded += this.captureQueue?.discardQueued() ?? 0;
+        this.activeIndexController?.abort(new Error("memory background drain deadline exceeded"));
+        this.activeCaptureController?.abort(new Error("memory background drain deadline exceeded"));
+        this.safeWarn(
+          `memory background drain exceeded ${this.backgroundDrainTimeoutMs}ms; pending semantic/curation work was abandoned while durable source remains.`,
+        );
+      }
     } catch (error) {
       primary = error;
     } finally {
       const cleanupErrors: unknown[] = [];
+      this.publishRuntimeSnapshot("closed");
+      this.runtimeSnapshotEnabled = false;
+      this.disableRuntimeTimers();
       try { this.db.close(); } catch (closeError) { cleanupErrors.push(closeError); }
       try { this.writerLease?.release(); } catch (releaseError) { cleanupErrors.push(releaseError); }
       if (primary !== undefined || cleanupErrors.length > 0) {
@@ -465,8 +551,13 @@ export class BujoMemoryStore implements MemoryStore {
       maxBytes: JOURNAL_QUEUE_MAX_BYTES,
       batchSize: 32,
       process: async (jobs) => {
+        const controller = new AbortController();
+        this.activeIndexController = controller;
         try {
-          await this.db.indexVectors(jobs.map((job) => job.record), { batchSize: 32 });
+          await this.db.indexVectors(jobs.map((job) => job.record), {
+            batchSize: 32,
+            abortSignal: controller.signal,
+          });
           this.journalRecoveryPaused = false;
           this.journalRetryAttempt = 0;
           this.currentJournalRetryDelayMs = 0;
@@ -475,12 +566,15 @@ export class BujoMemoryStore implements MemoryStore {
           this.journalRecoveryPaused = true;
           this.scheduleJournalRetry();
           throw error;
+        } finally {
+          if (this.activeIndexController === controller) this.activeIndexController = undefined;
         }
       },
       onBatchSettled: () => {
         if (!this.journalRecoveryPaused) this.refillJournalQueue();
       },
       onError: (error) => this.safeWarn(`journal indexing failed: ${reasonOf(error)}`),
+      onChange: () => this.scheduleRuntimeSnapshot(),
     });
     this.initializeJournalRecoveryCursor();
   }
@@ -491,10 +585,84 @@ export class BujoMemoryStore implements MemoryStore {
       maxBytes: CAPTURE_QUEUE_MAX_BYTES,
       batchSize: 1,
       process: async (jobs) => {
-        for (const job of jobs) await this.capture(job.conversationId, job.text);
+        for (const job of jobs) {
+          const controller = new AbortController();
+          this.activeCaptureController = controller;
+          try {
+            await this.capture(job.conversationId, job.text, controller.signal);
+          } finally {
+            if (this.activeCaptureController === controller) this.activeCaptureController = undefined;
+          }
+        }
       },
       onError: (error) => this.safeWarn(`bujo capture failed: ${reasonOf(error)}`),
+      onChange: () => this.scheduleRuntimeSnapshot(),
     });
+  }
+
+  private instrumentEmbeddings(provider: EmbeddingProvider): EmbeddingProvider {
+    return {
+      id: provider.id,
+      embed: async (texts) => {
+        this.runtimeCounters.embeddingCalls += 1;
+        this.runtimeCounters.embeddingTexts += texts.length;
+        this.scheduleRuntimeSnapshot();
+        return await provider.embed(texts);
+      },
+    };
+  }
+
+  private instrumentLlm(llm: LlmComplete): LlmComplete {
+    return {
+      id: llm.id,
+      complete: async (prompt, options) => {
+        this.runtimeCounters.llmCalls += 1;
+        this.runtimeCounters.llmInputChars += prompt.length;
+        this.scheduleRuntimeSnapshot();
+        return await llm.complete(prompt, options);
+      },
+    };
+  }
+
+  private initializeRuntimeSnapshot(): void {
+    this.runtimeSnapshotEnabled = true;
+    this.publishRuntimeSnapshot("running");
+    this.runtimeHeartbeatTimer = setInterval(() => this.publishRuntimeSnapshot("running"), RUNTIME_SNAPSHOT_HEARTBEAT_MS);
+    this.runtimeHeartbeatTimer.unref?.();
+  }
+
+  private scheduleRuntimeSnapshot(): void {
+    if (!this.runtimeSnapshotEnabled || this.closing || this.closed || this.runtimeSnapshotTimer !== undefined) return;
+    this.runtimeSnapshotTimer = setTimeout(() => {
+      this.runtimeSnapshotTimer = undefined;
+      this.publishRuntimeSnapshot("running");
+    }, RUNTIME_SNAPSHOT_COALESCE_MS);
+    this.runtimeSnapshotTimer.unref?.();
+  }
+
+  private publishRuntimeSnapshot(state: "running" | "closed"): void {
+    if (!this.runtimeSnapshotEnabled) return;
+    try {
+      writeBujoRuntimeSnapshot(this.root, {
+        schemaVersion: 1,
+        pid: process.pid,
+        tier: this._tier,
+        state,
+        startedAt: this.runtimeStartedAt,
+        updatedAt: new Date().toISOString(),
+        queues: this.queueSnapshot(),
+        counters: this.runtimeCounters as BujoRuntimeCounters,
+      });
+    } catch (error) {
+      this.safeWarn(`memory runtime snapshot failed: ${reasonOf(error)}`);
+    }
+  }
+
+  private disableRuntimeTimers(): void {
+    if (this.runtimeSnapshotTimer !== undefined) clearTimeout(this.runtimeSnapshotTimer);
+    if (this.runtimeHeartbeatTimer !== undefined) clearInterval(this.runtimeHeartbeatTimer);
+    this.runtimeSnapshotTimer = undefined;
+    this.runtimeHeartbeatTimer = undefined;
   }
 
   private enqueueIndex(record: MemoryRecord): void {
@@ -507,7 +675,7 @@ export class BujoMemoryStore implements MemoryStore {
   }
 
   private refillJournalQueue(): void {
-    if (this.indexQueue === undefined || this.journalRecoveryPaused) return;
+    if (this.closing || this.indexQueue === undefined || this.journalRecoveryPaused) return;
     const before = this.indexQueue.snapshot();
     const availableItems = before.capacity.items - before.queued - before.inFlight;
     const availableBytes = before.capacity.bytes - before.queuedBytes - before.inFlightBytes;
@@ -547,6 +715,11 @@ export class BujoMemoryStore implements MemoryStore {
   }
 
   private scanNextJournalFile(): void {
+    if (this.closing) {
+      this.resolveJournalRecovery?.();
+      this.resolveJournalRecovery = undefined;
+      return;
+    }
     const file = this.journalRecoveryFiles[this.journalRecoveryCursor];
     if (file === undefined) {
       this.resolveJournalRecovery?.();
@@ -680,4 +853,16 @@ async function withJournalWriteLockRetry<T>(root: string, timeoutMs: number, wri
 
 function retryDelayMs(attempt: number): number {
   return Math.min(JOURNAL_RETRY_MAX_DELAY_MS, JOURNAL_RETRY_DELAY_MS * (2 ** Math.min(attempt, 10)));
+}
+
+async function waitForDrain(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then(() => true),
+      new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }

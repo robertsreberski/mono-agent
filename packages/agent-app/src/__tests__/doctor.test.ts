@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
+import { safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 
 import { validateMonoAgentFolder } from "../doctor.js";
 import type { SdkAuthStatusExecFile } from "../doctor.js";
@@ -1641,6 +1642,69 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
   }
 
   const strictBujoLlm = { provider: "ollama", model: "nomic-embed-text:v1.5" } as const;
+
+  it("reports a managed tier/model/dimension change as a pending rebuild before provider probes", async () => {
+    const memoryPath = join(dir, "managed-memory");
+    await safeRebuildMemoryIndex({
+      root: memoryPath,
+      tier: "journal",
+      embeddings: {
+        id: "ollama:old-embed",
+        embed: async (texts) => texts.map(() => [1, 0, 0, 0, 0, 0, 0, 0]),
+      },
+      dim: 8,
+    });
+    const fetchSpy = vi.fn().mockRejectedValue(new Error("provider probe must not run"));
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: memoryPath,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "new-embed", dim: 16 },
+        llm: { provider: "ollama", model: "capture-model" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("waiting");
+    const text = memory.details.join("\n");
+    expect(text).toContain("active tier=journal, model=ollama:old-embed, dim=8");
+    expect(text).toContain("configured tier=bujo, model=ollama:new-embed, dim=16");
+    expect(text).toContain("mono-agent stop");
+    expect(text).toContain("mono-agent memory rebuild");
+    expect(text).toContain("mono-agent validate");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("accepts a managed generation whose configured identity matches before normal liveness checks", async () => {
+    const memoryPath = join(dir, "matching-managed-memory");
+    await safeRebuildMemoryIndex({
+      root: memoryPath,
+      tier: "journal",
+      embeddings: {
+        id: "ollama:nomic-embed-text:v1.5",
+        embed: async (texts) => texts.map(() => Array.from({ length: 8 }, (_value, index) => index === 0 ? 1 : 0)),
+      },
+      dim: 8,
+    });
+    stubFetch(["nomic-embed-text:v1.5"]);
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "journal",
+        path: memoryPath,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5", dim: 8 },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    expect(sectionById(report, "memory").status).toBe("ok");
+    expect(fetch).toHaveBeenCalled();
+  });
 
   it("passes the bujo memory section when Ollama is reachable and the embeddings model is present", async () => {
     stubFetch(["nomic-embed-text:v1.5"]);

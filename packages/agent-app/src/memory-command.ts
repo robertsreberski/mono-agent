@@ -9,6 +9,7 @@ import { listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 import {
   parseDailyFile,
+  readBujoRuntimeSnapshot,
   resolveActiveMemoryDbPath,
   rollbackMemoryIndex,
   safeRebuildMemoryIndex,
@@ -202,6 +203,7 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
   }
 
   const root = memory.path;
+  const runtime = readBujoRuntimeSnapshot(root);
   const dbPath = await resolveActiveMemoryDbPath(root);
   const rootExists = await exists(root);
   const size = rootExists ? await collectStoreSize(root) : emptySize();
@@ -222,6 +224,9 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
   const live = audit?.counts.live ?? 0;
   const liveIndexed = audit?.vectors.liveIndexed ?? 0;
   const semanticExpected = memory.embeddings !== undefined;
+  const runtimeQueues = runtime.snapshot?.queues;
+  const captureQueue = runtime.stale ? undefined : runtimeQueues?.capture;
+  const runtimeVectorBacklog = runtime.stale ? undefined : runtimeQueues?.index?.remainingBacklog;
   const result = {
     configured: true,
     backend: "bujo",
@@ -235,8 +240,23 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
     accessConcentration: audit?.access ?? { totalCount: 0, accessedMemories: 0, topOnePercentShare: 0 },
     backlog: {
       known: true,
-      captureQueue: null,
-      vectorIndex: semanticExpected ? Math.max(0, live - liveIndexed) : 0,
+      captureQueue: captureQueue === undefined ? null : captureQueue.queued + captureQueue.inFlight,
+      vectorIndex: runtimeVectorBacklog ?? (semanticExpected ? Math.max(0, live - liveIndexed) : 0),
+    },
+    runtime: {
+      available: runtime.available,
+      stale: runtime.stale,
+      ...(runtime.reason === undefined ? {} : { reason: runtime.reason }),
+      ...(runtime.ageMs === undefined ? {} : { ageMs: runtime.ageMs }),
+      ...(runtime.processAlive === undefined ? {} : { processAlive: runtime.processAlive }),
+      ...(runtime.snapshot === undefined ? {} : {
+        pid: runtime.snapshot.pid,
+        tier: runtime.snapshot.tier,
+        state: runtime.snapshot.state,
+        startedAt: runtime.snapshot.startedAt,
+        updatedAt: runtime.snapshot.updatedAt,
+        queues: runtime.snapshot.queues,
+      }),
     },
     latency: {
       known: metadataQueryMs !== null,
@@ -246,10 +266,12 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
       indexingMs: null,
     },
     cost: {
-      known: false,
+      known: runtime.snapshot !== undefined,
       totalUsd: null,
-      embeddingCalls: null,
-      llmCalls: null,
+      embeddingCalls: runtime.snapshot?.counters.embeddingCalls ?? null,
+      embeddingTexts: runtime.snapshot?.counters.embeddingTexts ?? null,
+      llmCalls: runtime.snapshot?.counters.llmCalls ?? null,
+      llmInputChars: runtime.snapshot?.counters.llmInputChars ?? null,
       tokens: null,
     },
     notes: [
@@ -266,7 +288,11 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
         + `derived legacy associations ${generation.derivedLegacyAssociations ?? 0}.`,
       ]),
       "Search latency and model cost require benchmark/run telemetry and are not inferred from memory content.",
-      "captureQueue is process-local and unavailable to an offline audit.",
+      ...(!runtime.available ? [
+        `Runtime queue/call telemetry is ${runtime.reason === "invalid" ? "invalid" : "not available until the configured store starts"}.`,
+      ] : runtime.stale ? [
+        `Runtime queue/call telemetry is stale (${runtime.snapshot?.state ?? "unknown"} snapshot; last update ${runtime.snapshot?.updatedAt ?? "unknown"}).`,
+      ] : []),
     ],
   };
   write(json, result, () => renderAudit(result));
@@ -642,6 +668,7 @@ async function recallWithFtsFallback(
     const fallback: MemoryRecallBujoSettings = {
       root: settings.root,
       ...(settings.dbPath === undefined ? {} : { dbPath: settings.dbPath }),
+      ftsOnlyFallback: true,
     };
     const ftsStore = await createRecallStore(fallback);
     try {
@@ -882,6 +909,7 @@ function renderAudit(result: {
   readonly vectorCoverage: { readonly indexed: number; readonly liveIndexed: number; readonly liveCoverage: number } | null;
   readonly accessConcentration: { readonly totalCount: number; readonly accessedMemories: number; readonly topOnePercentShare: number } | null;
   readonly backlog: { readonly captureQueue: number | null; readonly vectorIndex: number | null };
+  readonly runtime?: { readonly available: boolean; readonly stale: boolean; readonly state?: string };
   readonly latency: { readonly metadataQueryMs?: number | null; readonly searchP50Ms: number | null; readonly searchP95Ms: number | null; readonly indexingMs: number | null };
   readonly cost: { readonly totalUsd: number | null; readonly embeddingCalls: number | null; readonly llmCalls: number | null; readonly tokens: number | null };
   readonly notes: readonly string[];
@@ -895,8 +923,13 @@ function renderAudit(result: {
     ["vector coverage", result.vectorCoverage === null ? "unknown" : formatRatio(result.vectorCoverage.liveCoverage)],
     ["top 1% access share", result.accessConcentration === null ? "unknown" : formatRatio(result.accessConcentration.topOnePercentShare)],
     ["vector backlog", result.backlog.vectorIndex === null ? "unknown" : String(result.backlog.vectorIndex)],
-    ["capture queue", result.backlog.captureQueue === null ? "unavailable offline" : String(result.backlog.captureQueue)],
+    ["capture queue", result.backlog.captureQueue === null ? "not live/available" : String(result.backlog.captureQueue)],
+    ["runtime telemetry", result.runtime === undefined || !result.runtime.available
+      ? "unavailable"
+      : `${result.runtime.state ?? "unknown"}${result.runtime.stale ? " (stale)" : " (live)"}`],
     ["metadata query", result.latency.metadataQueryMs == null ? "unknown" : `${result.latency.metadataQueryMs.toFixed(3)} ms`],
+    ["embedding calls", result.cost.embeddingCalls === null ? "unknown" : String(result.cost.embeddingCalls)],
+    ["memory LLM calls", result.cost.llmCalls === null ? "unknown" : String(result.cost.llmCalls)],
     ["recorded cost", result.cost.totalUsd === null ? "unknown" : `$${result.cost.totalUsd.toFixed(6)}`],
   ], 2);
   for (const note of result.notes) out += ui.style.yellow(`[WARN] ${note}`) + "\n";

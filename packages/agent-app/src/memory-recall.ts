@@ -89,6 +89,8 @@ export interface MemoryRecallBujoSettings {
   readonly dbPath?: string;
   /** Embeddings for semantic recall. Omitted for an FTS-only (lite) recall store. */
   readonly embeddings?: MemoryRecallEmbeddings;
+  /** Explicit degraded path used only after a configured semantic recall failure. */
+  readonly ftsOnlyFallback?: true;
 }
 
 /** supermemory recall: search the external instance over REST. */
@@ -399,7 +401,12 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
   const { embeddings } = settings;
   if (embeddings === undefined) {
     // FTS-only recall: no embedding provider, no dim (mirrors the lite-tier store shape).
-    return createBujoMemoryStore({ root: settings.root, dbPath, readOnly: true });
+    return createBujoMemoryStore({
+      root: settings.root,
+      dbPath,
+      readOnly: true,
+      ...(settings.ftsOnlyFallback === true ? { allowFtsFallback: true } : {}),
+    });
   }
   const provider = await createMemoryEmbeddingProvider(embeddings);
   return createBujoMemoryStore({

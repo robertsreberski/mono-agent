@@ -1339,7 +1339,7 @@ describe("startMonoAgentApp", () => {
     await app.stop();
   });
 
-  it("drains pending captures (flush) before closing memory on stop", async () => {
+  it("delegates bounded draining to a lifecycle-aware memory close on stop", async () => {
     await writeConfig(baseConfig());
 
     const order: string[] = [];
@@ -1360,7 +1360,25 @@ describe("startMonoAgentApp", () => {
       .__setSharedMemoryForTest(fakeStore);
 
     await app.stop();
-    expect(order).toEqual(["flush", "close"]);
+    // Calling an independently unbounded flush first would defeat BuJo's
+    // bounded close deadline. Its close drains accepted work up to that bound.
+    expect(order).toEqual(["close"]);
+  });
+
+  it("retains the legacy flush fallback for memory stores without close", async () => {
+    await writeConfig(baseConfig());
+
+    const order: string[] = [];
+    const app = await startMonoAgentApp({ cwd: dir, env: {} });
+    (app as unknown as { __setSharedMemoryForTest(store: unknown): void })
+      .__setSharedMemoryForTest({
+        load: async () => undefined,
+        appendHostSummary: async () => ({ conversationId: "c", source: "s", bytesWritten: 1 }),
+        flush: async () => { order.push("flush"); },
+      });
+
+    await app.stop();
+    expect(order).toEqual(["flush"]);
   });
 
   it("builds the shared memory store once when concurrent channel startup requests it", async () => {

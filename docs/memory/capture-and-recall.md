@@ -15,8 +15,8 @@ For tier selection (lite / journal / bujo) and embeddings setup, start at the [M
 | Mode | What it does | Tiers | LLM |
 |------|--------------|-------|-----|
 | `disabled` | Never persist turns. Recall still works over whatever is already on disk. | all | no |
-| `append-host-summary` | Append a deterministic, single-line rapid-log of the turn to today's daily file. Fast and synchronous. | all (lite/journal/bujo) | no |
-| `capture` | **bujo only.** A superset of `append-host-summary` — see below. | bujo | yes (chat model) |
+| `append-host-summary` | Persist one deterministic, single-line host observation. Lite/Journal write the canonical daily log; BuJo writes the separate immutable raw audit. | all (lite/journal/bujo) | no |
+| `capture` | **bujo only.** Preserve the raw audit synchronously, then curate durable facts and graph evidence in the background. | bujo | yes (chat model) |
 
 The host deliberately skips memory writes for two low-signal successful turns, in every write mode: final answers equal to `NOTHING_TO_REPORT` (the cron/webhook no-op sentinel) and tiny explicit test/ping probes such as `test` / `test ok`. Short contextual acknowledgements are not skipped by this default.
 
@@ -36,18 +36,27 @@ Cron and webhook turns are also capture-hygienic: when they do write memory, onl
 MONO_AGENT_MEMORY_WRITE_MODE=append-host-summary
 ```
 
+### Strict tier write behavior
+
+- **Lite:** appends the normalized host observation to `daily/YYYY-MM-DD.md` and indexes it for FTS synchronously. It never embeds and never calls a chat model.
+- **Journal:** reserves a case-preserving, NFKC/whitespace-normalized SHA-256 identity, appends only a new canonical observation, and makes it available to FTS synchronously. Semantic indexing is queued after the successful turn in batches of up to 32, so Ollama/OpenAI embedding latency is not on the provider-success critical path. Repeated content converges on one markdown/index identity.
+- **BuJo:** appends every compact host observation to `audit/YYYY-MM-DD.md`, outside curated recall. Only `writeMode: "capture"` asks the memory model to promote durable facts into canonical `daily/` notes and the graph. A model outage or queue overflow therefore cannot turn an uncurated raw transcript into recalled fact.
+
+Both background paths are bounded and observable. Journal indexing holds at most 256 items / 2 MiB; BuJo curation holds at most 32 turns / 1 MiB. Queue snapshots report capacity, queued/in-flight/high-water counts and bytes, completed/failed/dropped/coalesced/discarded work, and recovery backlog. Shutdown gives accepted work up to 10 seconds to drain; after that deadline it discards queued best-effort work and aborts cooperative in-flight work instead of hanging indefinitely. Overflow or deadline loss preserves the lexical Journal row or BuJo raw audit and emits a warning.
+
 ### `capture` — per-turn intelligent capture (bujo)
 
-`capture` still writes the deterministic rapid-log **synchronously** (so the canonical markdown rapid-log is durable), and *additionally* enqueues the intelligent capture pipeline — **distil → reconcile → entity extraction** — in the background, except for the low-signal skipped turns described above.
+`capture` writes the compact raw audit **synchronously**, then enqueues one bounded curation plan in the background, except for the low-signal skipped turns described above. The plan uses exactly one chat-LLM call to extract up to eight atomic memories plus their precise entities/relations, then at most one additional batched call to classify close existing candidates as `ADD` / `UPDATE` / `SUPERSEDE` / `NOOP`. Clearly novel candidates skip the second call. Entity extraction is part of the first call, not a third pass.
 
 Key properties:
 
 - **Async and non-blocking.** Reply latency is unchanged; the capture runs after the turn returns.
 - **Serialized per store.** Captures do not race each other against the same memory root.
-- **Drained on graceful shutdown.** Nothing queued is lost on a clean stop. Even if a capture is interrupted, the synchronous markdown rapid-log already survived.
+- **Bounded shutdown.** A normal stop drains accepted work, with a 10-second safety deadline. If a provider ignores cancellation, stop still returns; queued curation may be discarded, while the synchronous raw audit remains outside recall.
 - **Reconcile is intelligent**, not append-only: the pipeline classifies each observation as `ADD` / `UPDATE` / `SUPERSEDE` / `NOOP` against existing memories to avoid duplication.
+- **Associations are precise.** Each curated fact carries only the entity IDs explicitly extracted for that fact; the implementation never creates a turn-wide memory/entity Cartesian product.
 
-Because it runs sequential chat-LLM calls, `writeMode: "capture"` **requires `mode: "bujo"`** and fails `mono-agent validate` otherwise — there is no silent fallback.
+Because it uses a chat LLM, `writeMode: "capture"` **requires `mode: "bujo"`** and fails config validation otherwise — there is no silent fallback or tier downshift.
 
 ```json
 {
@@ -67,7 +76,7 @@ MONO_AGENT_MEMORY_WRITE_MODE=capture
 ```
 
 :::caution
-The capture pipeline swallows LLM errors (never-throw), so a too-short timeout makes a capture **silently store nothing** rather than fail loudly. Raise the in-app memory-LLM timeout — `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`), **default `60000`** in the app — for slow local chat models. (The standalone `memory-bujo` CLI reads the same env var but defaults to `120000`; see [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts).)
+The capture pipeline never fails the user's reply. An LLM/embedding timeout leaves the raw audit intact, emits a memory warning/run failure, and stores no curated facts for that turn. Raise the in-app per-call timeout — `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`), **default `60000`** — for a slow model. The standalone legacy `memory-bujo reflect`/`migrate` path reads the same env var but defaults to `120000`; see [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts).
 :::
 
 The bujo chat model used by capture is the same `memory.llm` block that lets the app resolve the effective `bujo` tier for [scheduled consolidation](/memory/rituals/). With `memory.llm.provider: "agent-host"` it can point at an SDK runtime model reference (e.g. `pi:openai-codex:gpt-5.6-terra`); the standalone legacy `reflect`/`migrate` CLI commands remain Ollama-only.
@@ -77,6 +86,8 @@ The bujo chat model used by capture is the same `memory.llm` block that lets the
 The agent reads memory back through a single, read-only `MemoryRecall` tool: hybrid **keyword (FTS) + vector** search over the same memory it writes to. Coverage: **config** (env: `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`).
 
 `MemoryRecall` runs **no chat LLM** — recall is embeddings + full-text search only. Durable writes stay in-app on the agent-host LLM via [per-turn capture](#capture--per-turn-intelligent-capture-bujo); recall just reads.
+
+Questions about the active chat are intentionally not durable-memory queries. For unqualified prompts such as `What did you send in the last message?`, `What was your previous reply?`, or `What happened in this conversation?`, automatic recall injects nothing and `MemoryRecall` returns guidance to use the active conversation history without calling the memory backend. Qualified archived questions—such as `What did Alice's last message say?` or `What did we decide last month?`—still use durable recall. This prevents an older semantically similar record from displacing the actual latest Telegram message.
 
 :::note
 **Where recalled memory appears in the prompt.** Beyond this on-demand tool, the harness *automatically* appends recalled memory to the **user message** at the start of each turn (when a recall returns hits), clearly delimited as background context — it is **not** folded into the system prompt. Riding the user message is what lets memory survive a session resume on runtimes that drop the system prompt. The injected block is not persisted to history, and a `memory_recalled` diagnostic records that recall fired (source + byte size, not the content). See [Context assembly → Memory recall](/context/assembly/#memory-recall).
@@ -119,7 +130,7 @@ Recall fuses two retrievers and re-ranks the result:
 - Results are combined with **Reciprocal Rank Fusion (RRF)** and evidence strength; salience/insight are small tie-breakers. `lastAccessedAt` and access counts are telemetry only and never affect ranking.
 - Automatic recall treats raw embedding similarity as ranking evidence, not a calibrated probability: it first considers the `0.65` absolute / `77%` top-relative score band, then applies a deterministic direct-fact gate to a bounded candidate window. The gate admits only canonical, unambiguous shapes: an explicitly named possessive property (`Morgan's phone number is ...`), a direct choice (`Morgan selected ... as the deployment color`), a direct event date/time, or a direct work/live location. Coordination, reported or ditransitive speech, negation/unknown values, actor/relationship questions, subordinate clauses, and multi-hop evidence abstain. Those records remain available through the default-on `MemoryRecall` tool, where the model can inspect separate results and provenance instead of receiving a fabricated binding. The gate adds no embedding or chat-model call, works across provider score scales, injects nothing for unsupported questions, and remains capped at five hits / 8 KB. Deliberate tool calls may inspect more results (up to the requested limit).
 
-You can exercise the exact same scoring offline against a memory root:
+You can exercise the direct hybrid scoring offline against a memory root:
 
 ```bash
 memory-bujo recall ./.mono-agent/memory "what did we decide about the rollout?"
@@ -127,11 +138,11 @@ memory-bujo recall ./.mono-agent/memory "what did we decide about the rollout?"
 
 ### Entity graph (bujo auto)
 
-The BuJo tier also maintains a lightweight entity graph beside the markdown rapid-log. During `writeMode: "capture"` the pipeline runs `distil -> reconcile -> entity extraction`; the extraction step records people, projects, organizations, concepts, and directed relationships in `graph.jsonl` under `memory.path`.
+The BuJo tier also maintains a lightweight entity graph beside the curated daily notes. During `writeMode: "capture"`, the first bounded extraction plan records people, projects, organizations, concepts, precise per-memory associations, and directed relationships in `graph.jsonl` under `memory.path`.
 
 There is no separate config switch. The graph is built only for the effective `bujo` tier, which means `memory.mode: "bujo"` plus embeddings and `memory.llm`. The `lite` and `journal` tiers do not build it. Capture is async and serialized per store, so graph extraction never blocks the user's reply; if the memory LLM fails or times out, that capture stores nothing for the turn rather than throwing.
 
-Recall uses the graph for one-hop expansion: entries matched by BM25/vector search contribute their entities, and directly related entities can pull in neighboring context. The living `index.md`, regenerated by consolidation or `memory-bujo index`, includes a top-entities table so the graph is inspectable as plain markdown.
+Only an explicit `MemoryRecall` call uses the graph, and expansion is deterministic and limited to one hop: direct BM25/vector seeds contribute their associated entities, and one directly related entity may pull in neighboring memories. Automatic prompt injection stays direct-only and never synthesizes a graph answer in the background. Lite and Journal never expand the graph. The living `index.md`, regenerated by consolidation or `memory-bujo index`, includes a top-entities table so the graph is inspectable as plain markdown.
 
 ### Tool policy: recall is gated by `recallTool.enabled`, not `allowedTools`
 

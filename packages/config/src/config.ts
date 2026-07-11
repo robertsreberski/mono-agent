@@ -29,7 +29,17 @@ import {
 } from "@mono-agent/agent-contracts";
 import type { ConfigErrorFactory } from "@mono-agent/agent-contracts";
 
-import { ALLOW_ALL_TOOLS, EFFORT_LEVELS, PERMISSION_MODES, ROUTE_SAFETY_MODES } from "./enums.js";
+import {
+  ALLOW_ALL_TOOLS,
+  EFFORT_LEVELS,
+  MEMORY_BACKENDS,
+  MEMORY_EMBEDDINGS_PROVIDERS,
+  MEMORY_LLM_PROVIDERS,
+  MEMORY_MODES,
+  MEMORY_WRITE_MODES,
+  PERMISSION_MODES,
+  ROUTE_SAFETY_MODES,
+} from "./enums.js";
 import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, RouteSafetyMode, RuntimeFallbackConfig, SessionMode, SessionRollover, SkillDisclosureMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
@@ -77,6 +87,14 @@ const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
   ollama: "nomic-embed-text:v1.5",
   openai: "text-embedding-3-small",
 };
+const MEMORY_LLM_ENV_KEYS = [
+  "MONO_AGENT_MEMORY_LLM_PROVIDER",
+  "MONO_AGENT_MEMORY_LLM_MODEL",
+  "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
+  "MONO_AGENT_MEMORY_LLM_ENDPOINT",
+  "MONO_AGENT_MEMORY_LLM_TRACE",
+  "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
+] as const;
 export const DEFAULT_ARTIFACT_RETENTION_MAX_AGE_DAYS = 365;
 export const DEFAULT_ARTIFACT_RETENTION_MAX_COUNT = 50_000;
 export const DEFAULT_MEMORY_ARTIFACT_RETENTION_MAX_AGE_DAYS = 7;
@@ -668,10 +686,13 @@ function warnRetiredMemoryKeys(env: Record<string, string | undefined>): void {
 
 function readMemoryConfig(env: Record<string, string | undefined>, cwd: string): MonoAgentConfig["memory"] | undefined {
   warnRetiredMemoryKeys(env);
-  const backend = readChoice<MemoryBackend>(env.MONO_AGENT_MEMORY_BACKEND, "MONO_AGENT_MEMORY_BACKEND", [
+  const backend = readChoice<MemoryBackend>(
+    env.MONO_AGENT_MEMORY_BACKEND,
+    "MONO_AGENT_MEMORY_BACKEND",
+    MEMORY_BACKENDS,
     "bujo",
-    "supermemory",
-  ], "bujo", invalidEnv);
+    invalidEnv,
+  );
   const supermemory = readMemorySupermemoryConfig(env);
   const rawPath = normalizeOptionalString(env.MONO_AGENT_MEMORY_PATH);
 
@@ -698,6 +719,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
       "MONO_AGENT_MEMORY_LLM_MODEL",
       "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
       "MONO_AGENT_MEMORY_LLM_ENDPOINT",
+      "MONO_AGENT_MEMORY_LLM_TRACE",
       "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
       "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED",
       "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED",
@@ -718,16 +740,20 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     );
   }
 
-  const mode = readChoice<MemoryMode>(env.MONO_AGENT_MEMORY_MODE, "MONO_AGENT_MEMORY_MODE", [
+  const mode = readChoice<MemoryMode>(
+    env.MONO_AGENT_MEMORY_MODE,
+    "MONO_AGENT_MEMORY_MODE",
+    MEMORY_MODES,
     "lite",
-    "journal",
-    "bujo",
-  ], "lite", invalidEnv);
-  const writeMode = readChoice<MemoryWriteMode>(env.MONO_AGENT_MEMORY_WRITE_MODE, "MONO_AGENT_MEMORY_WRITE_MODE", [
+    invalidEnv,
+  );
+  const writeMode = readChoice<MemoryWriteMode>(
+    env.MONO_AGENT_MEMORY_WRITE_MODE,
+    "MONO_AGENT_MEMORY_WRITE_MODE",
+    MEMORY_WRITE_MODES,
     "disabled",
-    "append-host-summary",
-    "capture",
-  ], "disabled", invalidEnv);
+    invalidEnv,
+  );
   // "capture" needs server-side or LLM-driven extraction. The bujo backend gets it from a chat
   // LLM (so it requires mode "bujo"); external backends (e.g. supermemory) extract server-side,
   // so capture is valid for them regardless of mode.
@@ -742,6 +768,12 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
   // them for supermemory so a stale BuJo env (e.g. an openai embeddings provider with no key) does
   // not throw and block switching an existing BuJo config over to Supermemory.
   const isBujo = backend === "bujo";
+  if (isBujo && (mode === "lite" || mode === "journal") && hasMemoryLlmConfig(env)) {
+    const message = mode === "lite"
+      ? 'MONO_AGENT_MEMORY_MODE "lite" is lexical-only and cannot configure memory.llm. Remove it or select journal/bujo.'
+      : 'MONO_AGENT_MEMORY_MODE "journal" is semantic-only and cannot configure a capture LLM or BuJo consolidation.';
+    throw new MonoAgentConfigError("invalid_env", message, { env: "MONO_AGENT_MEMORY_MODE" });
+  }
   const embeddings = isBujo ? readMemoryEmbeddingsConfig(env) : undefined;
   const llm = isBujo ? readMemoryLlmConfig(env) : undefined;
   const dim = isBujo
@@ -855,7 +887,7 @@ function readMemoryEmbeddingsConfig(env: Record<string, string | undefined>): Me
   const provider = readChoice<MemoryEmbeddingsProvider>(
     env.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER,
     "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER",
-    ["ollama", "openai"],
+    MEMORY_EMBEDDINGS_PROVIDERS,
     "ollama",
     invalidEnv,
   );
@@ -958,14 +990,21 @@ function readMemorySupermemoryConfig(env: Record<string, string | undefined>): M
 }
 
 function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlmConfig | undefined {
+  if (!hasMemoryLlmConfig(env)) {
+    return undefined;
+  }
   const rawModel = normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_MODEL);
   if (rawModel === undefined) {
-    return undefined;
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_MEMORY_LLM_MODEL is required when any memory.llm value is set.",
+      { env: "MONO_AGENT_MEMORY_LLM_MODEL" },
+    );
   }
   const provider = readChoice<MemoryLlmProvider>(
     env.MONO_AGENT_MEMORY_LLM_PROVIDER,
     "MONO_AGENT_MEMORY_LLM_PROVIDER",
-    ["ollama", "agent-host"],
+    MEMORY_LLM_PROVIDERS,
     "ollama",
     invalidEnv,
   );
@@ -1032,6 +1071,10 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
     model: rawModel,
     ...(endpoint === undefined ? {} : { endpoint }),
   };
+}
+
+function hasMemoryLlmConfig(env: Record<string, string | undefined>): boolean {
+  return MEMORY_LLM_ENV_KEYS.some((name) => normalizeOptionalString(env[name]) !== undefined);
 }
 
 function readMemoryLlmExecutionMode(

@@ -6,6 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { MemoryWriteResult } from "@mono-agent/agent-contracts";
 import { createAgentHarness } from "@mono-agent/agent-harness";
+import { openMemoryDb, type MemoryRecord } from "@mono-agent/memory/store";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -79,6 +80,25 @@ describe("MemoryRetrievalService", () => {
     await expect(service.load("conversation", "unrelated topic", { turnId: "turn-2" })).resolves.toBeUndefined();
   });
 
+  it("bypasses automatic durable lookup for the exact last-message question but keeps qualified history searchable", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+
+    await expect(service.load(
+      "telegram:123",
+      "What did you send in the last message?",
+      { turnId: "turn-current-history" },
+    )).resolves.toBeUndefined();
+    expect(store.queries).toEqual([]);
+
+    await service.load(
+      "telegram:123",
+      "What did Alice send in her last message?",
+      { turnId: "turn-current-history" },
+    );
+    expect(store.queries).toEqual(["what did alice send in her last message?"]);
+  });
+
   it("drops high-similarity adjacent results outside the top-relative confidence band", async () => {
     const service = new MemoryRetrievalService(fakeStore());
     const block = await service.load("conversation", "What launch color did Morgan select?", { turnId: "turn-calibrated" });
@@ -88,6 +108,64 @@ describe("MemoryRetrievalService", () => {
 
   it("normalizes Unicode, case, and whitespace deterministically", () => {
     expect(normalizeMemoryRecallQuery("  ＤEPLOY\n\tPipeline  ")).toBe("deploy pipeline");
+  });
+
+  it("preserves capitalized query-local entity evidence for graph expansion", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-memory-graph-evidence-"));
+    const db = openMemoryDb({ path: join(dir, "memory.db") });
+    const record = (id: string, text: string): MemoryRecord => ({
+      id,
+      type: "note",
+      status: "open",
+      text,
+      salience: 0.5,
+      isInsight: false,
+      createdAt: "2026-07-11T00:00:00.000Z",
+      accessCount: 0,
+      tags: [],
+      source: {},
+    });
+    const seed = record("seed-morgan", "Morgan anchors this memory.");
+    const target = record("target-taylor", "Taylor uses cobalt.");
+    try {
+      await db.upsertMany([seed, target]);
+      for (const [id, name] of [["person:morgan", "Morgan"], ["person:taylor", "Taylor"], ["person:jordan", "Jordan"]] as const) {
+        db.upsertEntity({ id, name, type: "person", createdAt: "2026-07-11T00:00:00.000Z" });
+      }
+      db.addEntityRelation("person:morgan", "person:taylor", "mentors", "2026-07-11T00:00:00.000Z");
+      db.associateMemory({ memoryId: seed.id, entityId: "person:morgan", provenance: "capture", createdAt: seed.createdAt });
+      db.associateMemory({ memoryId: target.id, entityId: "person:taylor", provenance: "capture", createdAt: target.createdAt });
+
+      const direct = [{ score: 1, record: seed }];
+      const expansionQueries: string[] = [];
+      const store = fakeStore();
+      store.recall = async (query) => {
+        store.queries.push(query);
+        return direct;
+      };
+      store.supportsGraphExpansion = () => true;
+      store.expandGraph = (query, hits, options) => {
+        expansionQueries.push(query);
+        const additions = db.expandEntityRelations(hits.map((hit) => hit.record.id), {
+          query,
+          maxAdditions: 5,
+        });
+        return [...hits, ...additions.map((item) => ({ score: 0.9, record: item }))]
+          .slice(0, options?.topK ?? 8);
+      };
+      const query = "Does Morgan mentor Jordan or Taylor?";
+      expect((await store.expandGraph(query.toLowerCase(), direct, { topK: 8 })).map((hit) => hit.record.id))
+        .toContain(target.id);
+
+      const service = new MemoryRetrievalService(store);
+      const hits = await service.recallForTurn("turn-capitalized-graph", query, { topK: 8, expandHops: 1 });
+      expect(hits.map((hit) => hit.record.id)).toEqual([seed.id]);
+      expect(store.queries).toEqual([query.toLowerCase()]);
+      expect(expansionQueries.at(-1)).toBe(query);
+    } finally {
+      db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("drops the query cache when the logical turn is released", async () => {

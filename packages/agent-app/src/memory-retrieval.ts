@@ -8,6 +8,7 @@ import {
   AUTO_RECALL_BACKEND_HITS,
   AUTO_RECALL_MAX_BYTES,
   AUTO_RECALL_MAX_HITS,
+  isConversationRelativeQuery,
   MARKER_FOR,
   selectAutomaticRecallHits,
 } from "@mono-agent/memory/bujo";
@@ -38,6 +39,7 @@ export interface SharedMemoryRecallRuntimeExtensionOptions {
 
 interface TurnCache {
   readonly queries: Map<string, Promise<readonly SharedRecallHit[]>>;
+  readonly expansions: Map<string, Promise<readonly SharedRecallHit[]>>;
   readonly accessedIds: Set<string>;
 }
 
@@ -79,12 +81,15 @@ export class MemoryRetrievalService implements MemoryStore {
     options: MemoryLoadOptions = {},
   ): Promise<MemoryBlock | undefined> {
     const evidenceQuery = normalizeEvidenceQuery(query ?? conversationId);
-    const recallQuery = normalizeQuery(evidenceQuery);
-    if (recallQuery.length === 0) return undefined;
+    if (evidenceQuery.length === 0) return undefined;
+    // Current/last-message questions belong to the active channel transcript.
+    // Abstain before constructing a turn cache or paying for embeddings/search;
+    // an older semantically similar durable record must never displace history.
+    if (isConversationRelativeQuery(evidenceQuery)) return undefined;
     const ephemeral = options.turnId === undefined;
     const turnId = options.turnId ?? `uncached:${randomUUID()}`;
     try {
-      const hits = selectAutomaticRecallHits(await this.recallForTurn(turnId, recallQuery, {
+      const hits = selectAutomaticRecallHits(await this.recallForTurn(turnId, evidenceQuery, {
         topK: AUTO_RECALL_BACKEND_HITS,
         trackAccess: false,
       }), { query: evidenceQuery });
@@ -101,21 +106,34 @@ export class MemoryRetrievalService implements MemoryStore {
     query: string,
     options: { readonly topK?: number; readonly trackAccess?: boolean; readonly expandHops?: 0 | 1 } = {},
   ): Promise<readonly SharedRecallHit[]> {
-    const normalized = normalizeQuery(query);
-    if (normalized.length === 0) return [];
+    const evidenceQuery = normalizeEvidenceQuery(query);
+    const backendQuery = normalizeQuery(evidenceQuery);
+    if (backendQuery.length === 0) return [];
     const turn = this.turnCache(turnId);
-    let lookup = turn.queries.get(normalized);
+    // Raw backend lookup remains normalized/shared, while graph expansion has
+    // its own evidence-preserving key below. Capitalization is a precision
+    // signal for query-local entity references and must reach graph policy.
+    let lookup = turn.queries.get(backendQuery);
     if (lookup === undefined) {
       lookup = Promise.resolve(
-        this.store.recall(normalized, { topK: AUTO_RECALL_BACKEND_HITS, trackAccess: false }),
+        this.store.recall(backendQuery, { topK: AUTO_RECALL_BACKEND_HITS, trackAccess: false }),
       ) as Promise<readonly SharedRecallHit[]>;
-      turn.queries.set(normalized, lookup);
+      turn.queries.set(backendQuery, lookup);
     }
     const limit = clampLimit(options.topK, 8);
     const direct = await lookup;
-    const hits = options.expandHops === 1 && this.supportsGraphExpansion() && this.store.expandGraph !== undefined
-      ? await this.store.expandGraph(normalized, direct, { topK: limit })
-      : direct.slice(0, limit);
+    let hits: readonly SharedRecallHit[];
+    if (options.expandHops === 1 && this.supportsGraphExpansion() && this.store.expandGraph !== undefined) {
+      const expansionKey = `${evidenceQuery}\0${limit}`;
+      let expanded = turn.expansions.get(expansionKey);
+      if (expanded === undefined) {
+        expanded = Promise.resolve(this.store.expandGraph(evidenceQuery, direct, { topK: limit }));
+        turn.expansions.set(expansionKey, expanded);
+      }
+      hits = await expanded;
+    } else {
+      hits = direct.slice(0, limit);
+    }
     if (options.trackAccess !== false) this.recordServed(turnId, hits);
     return hits;
   }
@@ -158,7 +176,7 @@ export class MemoryRetrievalService implements MemoryStore {
   private turnCache(turnId: string): TurnCache {
     let cache = this.turns.get(turnId);
     if (cache !== undefined) return cache;
-    cache = { queries: new Map(), accessedIds: new Set() };
+    cache = { queries: new Map(), expansions: new Map(), accessedIds: new Set() };
     this.turns.set(turnId, cache);
     return cache;
   }

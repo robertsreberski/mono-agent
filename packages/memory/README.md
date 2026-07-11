@@ -33,15 +33,25 @@ await store.appendHostSummary("conv-1", "User prefers concise answers.");
 ```
 
 ```bash
-memory-bujo rebuild ./memory
 memory-bujo recall ./memory "what did we decide about releases?"
 ```
+
+Normal index maintenance is config-aware and owned by `@mono-agent/agent-app`:
+
+```bash
+mono-agent stop
+mono-agent memory rebuild --json
+mono-agent memory audit --json
+mono-agent start
+```
+
+This performs the first managed activation, builds and validates a side-by-side generation, and retains the prior generation for `mono-agent memory rollback`. The lower-level `memory-bujo rebuild|rollback <root> --tier <lite|journal|bujo>` commands are for already-managed roots; they deliberately refuse to infer tier identity or perform the first activation.
 
 ## Public API
 
 - `@mono-agent/memory/store`: `openMemoryDb`, `MemoryDb`, `DEFAULT_VEC_DIM`, `MEMORY_TYPES`, `MEMORY_STATUSES`, local record/entity/recall/stats/audit types, and re-exported `MemoryBlock`, `MemoryLoadOptions`, `MemoryStore`, `MemoryWriteResult`
 - `@mono-agent/memory/search`: `createEmbeddingProvider`, `createCircuitBreakerEmbeddingProvider`, `createVectorMemoryIndex`, `gatherMemoryChunks`, embedding/search provider classes and types
-- `@mono-agent/memory/bujo`: `createBujoMemoryStore`, `BujoMemoryStore`, `composeRecallBlock`, markdown grammar helpers, daily-file helpers, capture/reconcile/reflection/migration helpers, `createOllamaLlm`, and related BuJo/LLM types
+- `@mono-agent/memory/bujo`: `createBujoMemoryStore`, `BujoMemoryStore`, `composeRecallBlock`, `safeRebuildMemoryIndex`, `rollbackMemoryIndex`, `resolveActiveMemoryDbPath`, managed-generation helpers, privacy-safe runtime-snapshot reader/types, markdown grammar helpers, batched capture/reconcile/reflection/migration helpers, `createOllamaLlm`, and related BuJo/LLM types
 - CLI: `memory-bujo`
 
 ## Dependency Boundary

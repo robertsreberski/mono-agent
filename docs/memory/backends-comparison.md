@@ -40,10 +40,10 @@ npm install "@mono-agent/memory-supermemory@${APP_VERSION}"
 | --- | --- | --- |
 | Where data lives | Local SQLite + markdown at `memory.path` — yours, human-readable | Supermemory instance (local binary or hosted cloud); its own store |
 | Runs without a network | Yes (fully local) | Yes with the local binary; the cloud is off-machine |
-| Memory extraction | `bujo` tier: in-app LLM capture/reconcile + entity graph. `lite`/`journal`: deterministic rapid-log, no LLM | Server-side, inside Supermemory — you just POST turns |
-| Dependencies | Ollama embeddings (`journal`/`bujo`) + optional chat model (`bujo`) | The Supermemory binary + an OpenAI-compatible LLM endpoint for its extractor (Ollama works); embeddings bundled |
+| Memory extraction | `bujo`: separate raw audit + bounded in-app LLM curation and precise entity graph. `lite`/`journal`: deterministic canonical capture, no chat LLM | Server-side, inside Supermemory — you just POST turns |
+| Dependencies | Configured embeddings (`journal`/`bujo`) + required chat model (`bujo`) | The Supermemory binary + an OpenAI-compatible LLM endpoint for its extractor (Ollama works); embeddings bundled |
 | Recall | Embeddings + FTS, RRF fusion + decay/salience, no LLM | Hybrid search (`/v4/search`, legacy `/v3` fallback) |
-| Capture latency | Host summary written synchronously; intelligent capture async | Ingestion is **async** ("queued") — a just-captured turn isn't instantly searchable |
+| Capture latency | Lite/Journal lexical row or BuJo raw audit written synchronously; semantic indexing/curation bounded and async | Ingestion is **async** ("queued") — a just-captured turn isn't instantly searchable |
 | Maintenance | `bujo`: lightweight consolidation every two hours by default (in-app scheduler) | Consolidation happens server-side; BuJo scheduled consolidation is a no-op |
 | Cost model | Your tokens for `bujo` capture; embeddings local | Extraction runs on Supermemory's configured LLM endpoint |
 | Privacy / ownership | Fully local, plain-text markdown you can read and `grep` | Local binary keeps data on-machine; the hosted cloud sends it out |
@@ -63,11 +63,12 @@ resolved config retains compatibility defaults for `memory.path`/`mode`, but ope
 do not need to set them and the plugin ignores them; `embeddings`/`llm` are also ignored.
 
 ### Memory extraction
-This is the biggest conceptual difference. BuJo's `bujo` tier runs an **in-app** LLM
-pipeline that distills each turn into atomic memories and reconciles them against the
-existing store (classifying ADD / UPDATE / SUPERSEDE / NOOP) and builds an entity graph —
-so it needs a chat model (`memory.llm`). The `lite` and `journal` tiers skip the LLM
-entirely (deterministic rapid-log + hybrid recall). Supermemory does extraction and
+This is the biggest conceptual difference. BuJo's `bujo` tier first records a compact raw
+audit outside recall, then runs **in-app** curation with one batched memory/graph extraction
+and at most one batched reconcile (ADD / UPDATE / SUPERSEDE / NOOP). Associations are
+fact-specific rather than turn-wide. It therefore needs a chat model (`memory.llm`). Lite
+and Journal skip the chat LLM entirely; Journal hash-deduplicates lexical capture and embeds
+in bounded background batches. Supermemory does extraction and
 consolidation **server-side**: you POST raw turns and it decides what to remember, so no
 `memory.llm` is needed on the mono-agent side. See
 [Write modes, capture & recall](/memory/capture-and-recall/).
@@ -76,12 +77,15 @@ consolidation **server-side**: you POST raw turns and it decides what to remembe
 Both back the auto-provisioned `MemoryRecall` tool and the per-turn recall-into-context.
 BuJo ranks with embeddings + full-text BM25 fused via RRF, with relevance-first salience/insight
 weighting and no LLM call (see [Embeddings](/memory/embeddings/)). Supermemory runs its
-own hybrid search. Deliberate tool/search calls return their top-ranked hits; automatic
-context recall applies the host score and answer-evidence gate and injects nothing when the stored text does not support the requested attribute.
+own hybrid search. Deliberate tool/search calls return their top-ranked hits; BuJo tool calls
+may expand one graph hop. Automatic context recall remains direct-only, applies the host score
+and answer-evidence gate, and injects nothing for unsupported attributes or unqualified
+current/last-message questions.
 
 ### Latency & read-after-write
-BuJo appends the per-turn host summary synchronously and runs intelligent capture in the
-background. Supermemory ingestion is **asynchronous** (the API returns `queued`), so a
+BuJo appends the tier-appropriate lexical observation or raw audit synchronously and runs
+semantic indexing/curation in bounded background queues. Supermemory ingestion is
+**asynchronous** (the API returns `queued`), so a
 fact captured this turn may take seconds to minutes to become searchable — don't rely on
 reading it back within the same turn.
 

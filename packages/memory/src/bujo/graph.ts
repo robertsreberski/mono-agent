@@ -9,6 +9,18 @@ type GraphLine =
   | ({ readonly kind: "relation" } & EntityRelationRecord)
   | ({ readonly kind: "association" } & MemoryEntityAssociation);
 
+export interface GraphBatchInput {
+  readonly entities?: readonly EntityRecord[];
+  readonly relations?: readonly EntityRelationRecord[];
+  readonly associations?: readonly MemoryEntityAssociation[];
+}
+
+export interface GraphBatchResult {
+  readonly entities: readonly EntityRecord[];
+  readonly relations: readonly EntityRelationRecord[];
+  readonly associations: readonly MemoryEntityAssociation[];
+}
+
 function graphPath(root: string): string {
   return join(root, GRAPH_FILE);
 }
@@ -86,43 +98,93 @@ export function readGraph(root: string): {
   };
 }
 
-/** Append one precise memory/entity association to canonical graph evidence. */
-export function appendAssociation(root: string, record: MemoryEntityAssociation): void {
-  const current = readGraph(root).associations.find(
-    (association) => association.memoryId === record.memoryId && association.entityId === record.entityId,
-  );
-  if (current !== undefined && (current.provenance === "capture" || record.provenance !== "capture")) return;
-  mkdirSync(root, { recursive: true });
-  const line: GraphLine = { kind: "association", ...record };
-  appendFileSync(graphPath(root), `${JSON.stringify(line)}\n`, "utf8");
+/**
+ * Merge a capture's graph evidence with one source read and one append.
+ * Returned records are the exact canonical forms callers must mirror to DB.
+ */
+export function appendGraphBatch(root: string, input: GraphBatchInput): GraphBatchResult {
+  const current = readGraph(root);
+  const originalEntities = new Map(current.entities.map((record) => [record.id, record]));
+  const originalRelations = new Map(current.relations.map((record) => [relationKey(record), record]));
+  const originalAssociations = new Map(current.associations.map((record) => [associationKey(record), record]));
+  const entities = new Map(originalEntities);
+  const relations = new Map(originalRelations);
+  const associations = new Map(originalAssociations);
+  const touchedEntities = new Set<string>();
+  const touchedRelations = new Set<string>();
+  const touchedAssociations = new Set<string>();
+
+  for (const record of input.entities ?? []) {
+    const prior = entities.get(record.id);
+    entities.set(record.id, prior === undefined ? record : mergeEntityRecord(prior, record));
+    touchedEntities.add(record.id);
+  }
+  for (const record of input.relations ?? []) {
+    const key = relationKey(record);
+    if (!relations.has(key)) relations.set(key, record);
+    touchedRelations.add(key);
+  }
+  for (const record of input.associations ?? []) {
+    const key = associationKey(record);
+    const prior = associations.get(key);
+    if (prior === undefined) {
+      associations.set(key, record);
+    } else if (prior.provenance !== "capture" && record.provenance === "capture") {
+      associations.set(key, { ...record, createdAt: prior.createdAt });
+    }
+    touchedAssociations.add(key);
+  }
+
+  const lines: GraphLine[] = [];
+  for (const key of touchedEntities) {
+    const record = entities.get(key)!;
+    const prior = originalEntities.get(key);
+    if (prior === undefined || !entityRecordsEqual(prior, record)) lines.push({ kind: "entity", ...record });
+  }
+  for (const key of touchedRelations) {
+    const record = relations.get(key)!;
+    if (!originalRelations.has(key)) lines.push({ kind: "relation", ...record });
+  }
+  for (const key of touchedAssociations) {
+    const record = associations.get(key)!;
+    const prior = originalAssociations.get(key);
+    if (prior === undefined || prior.provenance !== record.provenance || prior.createdAt !== record.createdAt) {
+      lines.push({ kind: "association", ...record });
+    }
+  }
+  if (lines.length > 0) {
+    mkdirSync(root, { recursive: true });
+    appendFileSync(graphPath(root), `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`, "utf8");
+  }
+
+  return {
+    entities: [...touchedEntities].map((key) => entities.get(key)!),
+    relations: [...touchedRelations].map((key) => relations.get(key)!),
+    associations: [...touchedAssociations].map((key) => associations.get(key)!),
+  };
 }
 
-/** Append a single entity record to `<root>/graph.jsonl` (mkdir root if needed). */
-export function appendEntity(root: string, record: EntityRecord): void {
-  const current = readGraph(root).entities.find((entity) => entity.id === record.id);
-  const recordToAppend = current === undefined ? record : mergeEntityRecord(current, record);
-  if (current !== undefined && entityRecordsEqual(current, recordToAppend)) {
-    return;
-  }
-  mkdirSync(root, { recursive: true });
-  const line: GraphLine = { kind: "entity", ...recordToAppend };
-  appendFileSync(graphPath(root), `${JSON.stringify(line)}\n`, "utf8");
+/** Append one precise memory/entity association and return its canonical merged record. */
+export function appendAssociation(root: string, record: MemoryEntityAssociation): MemoryEntityAssociation {
+  return appendGraphBatch(root, { associations: [record] }).associations[0]!;
+}
+
+/** Append an entity and return the exact canonical merged record. */
+export function appendEntity(root: string, record: EntityRecord): EntityRecord {
+  return appendGraphBatch(root, { entities: [record] }).entities[0]!;
 }
 
 /** Append a single relation record to `<root>/graph.jsonl` (mkdir root if needed). */
 export function appendRelation(root: string, record: EntityRelationRecord): void {
-  const exists = readGraph(root).relations.some(
-    (relation) =>
-      relation.src === record.src &&
-      relation.dst === record.dst &&
-      relation.relation === record.relation,
-  );
-  if (exists) {
-    return;
-  }
-  mkdirSync(root, { recursive: true });
-  const line: GraphLine = { kind: "relation", ...record };
-  appendFileSync(graphPath(root), `${JSON.stringify(line)}\n`, "utf8");
+  appendGraphBatch(root, { relations: [record] });
+}
+
+function relationKey(record: Pick<EntityRelationRecord, "src" | "dst" | "relation">): string {
+  return `${record.src}|${record.dst}|${record.relation}`;
+}
+
+function associationKey(record: Pick<MemoryEntityAssociation, "memoryId" | "entityId">): string {
+  return `${record.memoryId}|${record.entityId}`;
 }
 
 function entityRecordsEqual(a: EntityRecord, b: EntityRecord): boolean {
@@ -130,15 +192,29 @@ function entityRecordsEqual(a: EntityRecord, b: EntityRecord): boolean {
     a.id === b.id &&
     a.name === b.name &&
     a.type === b.type &&
-    a.summary === b.summary
+    a.summary === b.summary &&
+    a.createdAt === b.createdAt &&
+    a.updatedAt === b.updatedAt
   );
 }
 
 function mergeEntityRecord(current: EntityRecord, next: EntityRecord): EntityRecord {
+  const type = next.type ?? current.type;
+  const summary = next.summary ?? current.summary;
+  const merged: EntityRecord = {
+    id: next.id,
+    name: next.name,
+    createdAt: current.createdAt,
+    ...(type === undefined ? {} : { type }),
+    ...(summary === undefined ? {} : { summary }),
+  };
+  const changed = current.name !== merged.name
+    || current.type !== merged.type
+    || current.summary !== merged.summary;
   return {
-    ...next,
-    ...(next.type === undefined && current.type !== undefined ? { type: current.type } : {}),
-    ...(next.summary === undefined && current.summary !== undefined ? { summary: current.summary } : {}),
-    ...(next.updatedAt === undefined && current.updatedAt !== undefined ? { updatedAt: current.updatedAt } : {}),
+    ...merged,
+    ...(changed
+      ? { updatedAt: next.updatedAt ?? next.createdAt }
+      : current.updatedAt === undefined ? {} : { updatedAt: current.updatedAt }),
   };
 }

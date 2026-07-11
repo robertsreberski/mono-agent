@@ -175,12 +175,38 @@ export class MemoryDb {
   }
 
   /**
+   * Prepare one provider batch before a caller mutates canonical source files.
+   * BuJo capture uses the returned vectors with commitPreparedUpserts so an
+   * embedding outage cannot leave a newly edited source pretending success.
+   */
+  async prepareUpsertVectors(
+    records: readonly MemoryRecord[],
+  ): Promise<readonly (readonly number[] | undefined)[]> {
+    if (this.embeddings === undefined) return records.map(() => undefined);
+    if (records.length === 0) return [];
+    const vectors = await this.embeddings.embed(records.map((record) => `search_document: ${record.text}`));
+    if (vectors.length !== records.length) {
+      throw new Error(`memory-store: embedding provider returned ${vectors.length} vectors for ${records.length} records.`);
+    }
+    vectors.forEach((vector) => this.assertVectorDim(vector, "prepareUpsertVectors"));
+    return vectors;
+  }
+
+  /** Persist records with vectors prepared by this DB's configured provider. */
+  commitPreparedUpserts(
+    records: readonly MemoryRecord[],
+    vectors: readonly (readonly number[] | undefined)[],
+  ): void {
+    this.persistRecords(records, vectors, true);
+  }
+
+  /**
    * Add/refresh vectors without replaying a queued record snapshot over newer
    * status, source, or access telemetry.
    */
   async indexVectors(
     records: readonly Pick<MemoryRecord, "id" | "text">[],
-    options: { readonly batchSize?: number } = {},
+    options: { readonly batchSize?: number; readonly abortSignal?: AbortSignal } = {},
   ): Promise<{ indexed: number; skipped: number; embeddingCalls: number }> {
     if (this.embeddings === undefined || records.length === 0) {
       return { indexed: 0, skipped: records.length, embeddingCalls: 0 };
@@ -192,6 +218,7 @@ export class MemoryDb {
     for (let offset = 0; offset < records.length; offset += batchSize) {
       const batch = records.slice(offset, offset + batchSize);
       const vectors = await this.embeddings.embed(batch.map((record) => `search_document: ${record.text}`));
+      options.abortSignal?.throwIfAborted();
       embeddingCalls += 1;
       if (vectors.length !== batch.length) {
         throw new Error(`memory-store: embedding provider returned ${vectors.length} vectors for ${batch.length} records.`);

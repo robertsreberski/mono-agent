@@ -19,8 +19,9 @@ Weighing the built-in engine against an external memory service? See
 | Capability | `lite` | `journal` | `bujo` |
 | --- | --- | --- | --- |
 | FTS keyword recall | yes | yes | yes |
-| Rapid-log capture (host summaries appended) | yes | yes | yes |
+| Deterministic host observation | canonical daily log | canonical daily log, hash-deduplicated | separate raw audit |
 | Hybrid recall (BM25 + vector RRF) | — | yes | yes |
+| Semantic indexing off the successful-turn path | — | yes, bounded batches | yes, during bounded curation |
 | Salience decay | — | yes | yes |
 | LLM capture/reconcile (ADD/UPDATE/SUPERSEDE/NOOP) | — | — | yes |
 | Entity graph | — | — | yes |
@@ -41,15 +42,19 @@ running Ollama. Host summaries can be appended after each run
 
 Adds hybrid recall (BM25 + vector RRF) and salience decay on top of the lite tier.
 Requires a configured embeddings provider, either Ollama or OpenAI. No chat model needed.
+The host commits a new lexical observation first, using a stable content-hash identity to
+deduplicate repeated summaries, then queues vector indexing in bounded batches. A slow or
+temporarily unavailable embedding provider therefore does not delay an otherwise successful
+agent reply; the lexical memory remains durable and the vector backlog is retried.
 
 ### `bujo` (BuJo — Bullet Journal memory)
 
-The full tier: everything in `journal` plus an LLM-augmented capture-and-reconcile
-pipeline, entity graph, and lightweight consolidation. Capture writes agent observations
-and conversation summaries into daily markdown notes, reconciles them against existing
-memories (classifying each entry as ADD / UPDATE / SUPERSEDE / NOOP to avoid
-duplication), and maintains hybrid recall via BM25 full-text + vector RRF with deterministic relevance
-and salience weighting.
+The full tier: hybrid recall plus bounded LLM curation, an entity graph, and lightweight
+consolidation. The host first preserves a compact immutable observation in `audit/`, outside
+curated recall. `writeMode: "capture"` then uses one batched memory/graph extraction and at
+most one batched reconcile call to promote durable facts into daily notes, classifying close
+entries as ADD / UPDATE / SUPERSEDE / NOOP. Each fact retains only its explicitly extracted
+entity associations. The raw audit is never automatically treated as curated truth.
 
 A **consolidation** pass keeps the store legible without writing an LLM essay: it applies
 temporal decay, deduplicates near-identical bullets by superseding duplicates, rewrites
@@ -64,6 +69,10 @@ confirm whether automatic consolidation will run.
 Requires embeddings and a chat model for the LLM pipelines. The app-level chat model can
 be a direct Ollama model or an `agent-host` runtime model reference such as
 `pi:openai-codex:gpt-5.6-terra`.
+
+The tier matrix is strict. `lite` rejects embeddings/LLM configuration, `journal` requires
+embeddings and rejects a memory LLM/consolidation, and `bujo` requires both embeddings and
+the memory LLM. Invalid configuration fails instead of silently downshifting.
 
 ## Config
 
@@ -107,7 +116,7 @@ be a direct Ollama model or an `agent-host` runtime model reference such as
   "memory": {
     "mode": "bujo",
     "path": "./.mono-agent/memory",
-    "writeMode": "append-host-summary",
+    "writeMode": "capture",
     "maxBytes": 64000,
     "embeddings": {
       "provider": "ollama",
@@ -161,8 +170,8 @@ runtimes cannot yet guarantee a no-tools/no-external-actions memory turn.
 How the **host** persists each completed turn (independent of the tier's recall):
 
 - `disabled` — never write.
-- `append-host-summary` — append a deterministic, single-line rapid-log of the turn to today's daily file (fast, no LLM). Available in every tier.
-- `capture` — **bujo only.** A superset of `append-host-summary`: it still writes the deterministic rapid-log synchronously (durable), and *additionally* runs the intelligent capture pipeline (distil → reconcile → entity extraction) in the background. Capture is **async and non-blocking** (reply latency is unchanged), serialized per store, and **drained on graceful shutdown** (nothing queued is lost on stop; the canonical markdown rapid-log survives even if a capture is interrupted). Because it needs a chat LLM, `writeMode: "capture"` requires `mode: "bujo"` and fails config validation otherwise — no silent fallback.
+- `append-host-summary` — persist a deterministic single-line observation with no chat LLM. Lite/Journal put it in the canonical daily log; Journal queues semantic indexing after the lexical commit. BuJo puts it in the separate raw audit and does not promote it to curated recall.
+- `capture` — **bujo only.** Preserve the raw audit synchronously, then enqueue bounded curation in the background. One extraction call plus at most one batch-reconcile call writes canonical facts and precise graph evidence. Accepted jobs are serialized and get a 10-second shutdown drain deadline; after it, queued work is discarded and cooperative in-flight work is aborted so stop cannot hang forever. A failure, overflow, or deadline keeps the raw audit but does not contaminate curated recall. Because it needs a chat LLM, `writeMode: "capture"` requires `mode: "bujo"` and fails config validation otherwise.
 
 Low-signal successful turns are skipped in every write mode: the `NOTHING_TO_REPORT` no-op sentinel and tiny explicit test/ping probes such as `test` / `test ok`. Cron and webhook writes are assistant-answer-only, so trigger prompts and webhook pre-instructions do not enter memory.
 
@@ -233,16 +242,33 @@ To disable scheduled consolidation while keeping the tier, set
 Retired `memory.reflection.*` / `memory.migration.*` keys and their env vars are tolerated
 but ignored; `mono-agent validate` reports a warning when it sees them.
 
-## CLI Subcommands
+## CLI maintenance
 
-The `memory-bujo` binary provides out-of-band maintenance against a bujo root. It is
-available for all tiers (lite/journal/bujo) for manual runs. Routine in-app maintenance
-uses lightweight consolidation; `reflect` and `migrate` remain as legacy/manual escape
-hatches for old stores or one-off experiments.
+Use the config-aware CLI from the agent folder for index transitions. It reads the exact
+tier/model/dimension from `mono-agent.config.json`, refuses a running configured agent,
+builds a validated generation beside the active database, and switches it atomically.
 
 ```bash
-# Rebuild the SQLite index from the markdown files on disk
-memory-bujo rebuild <root>
+mono-agent stop
+mono-agent memory rebuild --json
+mono-agent memory audit --json
+mono-agent start
+
+# If needed: stop, restore the prior tier/model/dim config, then swap generations
+mono-agent memory rollback --json
+```
+
+Rebuild never calls the chat LLM or replays historical turns through a paid model. It may
+re-embed canonical Journal/BuJo facts in bounded batches. The prior active generation is
+retained for rollback, and pre-activation failures leave it active. See [Validation & CLI](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback) for the generation layout, source accounting, safety gates, v1 cutover, and rollback procedure.
+
+The lower-level `memory-bujo` binary remains for advanced root-oriented inspection and
+legacy/manual maintenance. `rebuild`/`rollback` require an explicit tier and operate only
+after a config-aware first activation:
+
+```bash
+memory-bujo rebuild <root> --tier journal
+memory-bujo rollback <root> --tier journal
 
 # Recall: hybrid BM25+vector search (prints matching entries)
 memory-bujo recall <root> "<query>"
@@ -258,10 +284,9 @@ MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
 ```
 
 The standalone CLI reads the **same embedding/root `MONO_AGENT_MEMORY_*` env vars** as the
-agent (the memory root is the positional `<root>` argument).
-Embeddings are **opt-in**: set
-`MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` (`ollama`/`openai`) to enable semantic recall — without
-it, `recall`/`rebuild` run FTS-only and need no embedding service. When enabled, the model
+agent (the memory root is the positional `<root>` argument). Embeddings are opt-in for
+read-only `recall`; safe rebuild/rollback instead enforce the declared tier identity
+(`lite` forbids embeddings, while `journal`/`bujo` require them). When enabled, the model
 defaults to `nomic-embed-text:v1.5` (`MONO_AGENT_MEMORY_EMBEDDINGS_MODEL`) and dim to 768
 (`MONO_AGENT_MEMORY_EMBEDDINGS_DIM`). For legacy `reflect`/`migrate`, the standalone CLI uses the
 built-in Ollama chat adapter: `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint
@@ -270,11 +295,10 @@ unset when running `reflect` or `migrate`, the command prints a clear error and 
 
 `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call chat-LLM timeout, but the **default differs
 by binary**: the standalone `memory-bujo` `reflect`/`migrate` CLI defaults to `120000`, while the
-**in-app** memory LLM (per-turn capture and the in-app scheduler) reads `memory.llm.timeoutMs` —
-the same env var maps to it — and defaults to `60000`. A single capture runs several sequential
-LLM calls (distil → reconcile → entity extraction), and slow local models can take tens of
-seconds each; because those steps swallow LLM errors (never-throw), a too-short timeout makes a
-capture *silently store nothing* rather than fail loudly. Raise it for slow models. See
+**in-app** memory LLM (per-turn capture) reads `memory.llm.timeoutMs` — the same env var maps
+to it — and defaults to `60000`. A capture runs one extraction call and at most one reconcile
+call; a timeout is recorded and warned without failing the user's reply. The raw audit survives,
+but that turn produces no curated fact. Raise the timeout for slow models. See
 [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts).
 
 ## Liveness Check — `mono-agent validate`
@@ -316,6 +340,12 @@ the full question flow and config blocks the composer writes.
 ## Recall Tool (`MemoryRecall`)
 
 The agent gets a single read-only `MemoryRecall` tool — FTS search for Lite and hybrid keyword/semantic search for Journal/BuJo. It is **auto-provisioned by `agent-app`** from the single `config.memory` block and defaults on for every configured tier; set `recallTool.enabled` to `false` to opt out. There is no hand-wired `.mcp.json` entry and no separate local LLM to run.
+
+Unqualified active-conversation questions are not durable-memory searches. For example,
+`What did you send in the last message?` bypasses automatic recall, and a mistaken tool call
+returns guidance to use the current provider conversation without querying the memory backend.
+Qualified archived history still uses the tool. BuJo tool recall may add one deterministic graph
+hop; automatic context remains direct-only, while Lite/Journal never expand the graph.
 
 Recalled entries do **not** sit in the system prompt. The harness appends them to the **user message** each turn (when recall returns hits), so memory survives a session resume; a `memory_recalled` diagnostic keeps recall visible in run traces. The `MemoryRecall` tool described here is the *on-demand* path the agent can additionally call mid-turn to pull more. See [Context assembly → Memory recall](/context/assembly/#memory-recall).
 

@@ -51,4 +51,40 @@ describe("extractCapturePlan intra-turn precision", () => {
     ]);
     expect(plan.candidates[0]?.entityIds).toEqual(["person:morgan"]);
   });
+
+  it("drops malformed or oversized graph fields before canonical capture", async () => {
+    const huge = "x".repeat(2_000);
+    const llm = fakeLlm([["Extract one bounded", JSON.stringify({
+      memories: [
+        { type: "note", text: "Morgan keeps the bounded graph fact", salience: 0.8, isInsight: false,
+          entityIds: ["Person:Morgan", `person:${huge}`, "person:morgan"] },
+      ],
+      entities: [
+        { id: "Person:Morgan", name: "wrong case", type: "person" },
+        { id: "person:bad id", name: "bad slug", type: "person" },
+        { id: `person:${huge}`, name: "oversized id", type: "person" },
+        { id: "person:morgan", name: `Morgan\n${"R".repeat(200)}`, type: "person" },
+        { id: "person:morgan", name: "  Morgan\nReberski  ", type: "PERSON!" },
+        { id: "project:mono-agent", name: "mono-agent", type: "project" },
+      ],
+      relations: [
+        { src: "person:morgan", dst: "project:mono-agent", relation: huge },
+        { src: "person:morgan", dst: "project:mono-agent", relation: "Maintains!" },
+        { src: "person:morgan", dst: "project:mono-agent", relation: "maintains 🔥" },
+        { src: "person:morgan", dst: "project:mono-agent", relation: "  maintains\ncarefully  " },
+        { src: "Person:Morgan", dst: "project:mono-agent", relation: "invalid endpoint" },
+      ],
+    })]]);
+
+    const plan = await extractCapturePlan("Morgan maintains mono-agent.", llm);
+
+    expect(plan.entities).toEqual([
+      { id: "person:morgan", name: "Morgan Reberski" },
+      { id: "project:mono-agent", name: "mono-agent", type: "project" },
+    ]);
+    expect(plan.relations).toEqual([
+      { src: "person:morgan", dst: "project:mono-agent", relation: "maintains carefully" },
+    ]);
+    expect(plan.candidates[0]?.entityIds).toEqual(["person:morgan"]);
+  });
 });

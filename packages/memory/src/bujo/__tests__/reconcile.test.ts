@@ -278,6 +278,39 @@ describe("reconcile", () => {
 });
 
 describe("reconcileBatch", () => {
+  it("preflights persistence embeddings for add/update/supersede before any canonical mutation", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "UPDATE", "Morgan prefers blue deployments");
+    await seed(db, root, "OLD", "Atlas launches in July");
+    const before = dailyContent(root);
+    const candidates: CandidateMemory[] = [
+      { type: "note", text: "A wholly novel durable fact", salience: 0.6, isInsight: false },
+      { type: "note", text: "Morgan prefers blue deployments with review", salience: 0.7, isInsight: false },
+      { type: "note", text: "Atlas launches in August", salience: 0.8, isInsight: false },
+    ];
+    db.findSimilarMany = async () => [
+      [],
+      [{ record: db.get("UPDATE")!, distance: 0.1 }],
+      [{ record: db.get("OLD")!, distance: 0.1 }],
+    ];
+    db.prepareUpsertVectors = async () => { throw new Error("persistence embedding offline"); };
+    const reply = JSON.stringify([
+      { index: 1, action: "update", targetId: "UPDATE", text: "Morgan prefers reviewed blue deployments" },
+      { index: 2, action: "supersede", targetId: "OLD", text: "Atlas launches in August" },
+    ]);
+
+    await expect(reconcileBatch(
+      candidates,
+      makeDeps(db, root, fakeLlm([["Classify each candidate", reply]])),
+    )).rejects.toThrow(/persistBatch|persistence embedding offline/iu);
+
+    expect(dailyContent(root)).toBe(before);
+    expect(db.count()).toBe(2);
+    expect(db.get("UPDATE")?.text).toBe("Morgan prefers blue deployments");
+    expect(db.get("OLD")?.status).toBe("open");
+  });
+
   it("skips a close candidate on malformed output while a novel candidate still adds", async () => {
     const root = newRoot();
     const db = openDb(root);

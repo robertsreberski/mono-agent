@@ -1128,6 +1128,43 @@ describe("loadMonoAgentConfig", () => {
     })).toThrow(/requires an explicit memory\.embeddings/i);
   });
 
+  it.each(["lite", "journal"] as const)(
+    "rejects a partial memory.llm block in %s mode instead of silently dropping it",
+    (mode) => {
+      expect(() => loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          ...(mode === "journal" ? journalMemoryPrerequisite : {}),
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_MODE: mode,
+          MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama",
+          MONO_AGENT_MEMORY_LLM_ENDPOINT: "http://localhost:11434",
+        },
+      })).toThrowError(expect.objectContaining({
+        code: "invalid_env",
+        details: expect.objectContaining({ env: "MONO_AGENT_MEMORY_MODE" }),
+      }));
+    },
+  );
+
+  it("rejects a partial BuJo memory.llm block when its model is missing", () => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        ...journalMemoryPrerequisite,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama",
+        MONO_AGENT_MEMORY_LLM_ENDPOINT: "http://localhost:11434",
+      },
+    })).toThrowError(expect.objectContaining({
+      code: "invalid_env",
+      details: expect.objectContaining({ env: "MONO_AGENT_MEMORY_LLM_MODEL" }),
+    }));
+  });
+
   it("loads memory.llm from env when model is set", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",

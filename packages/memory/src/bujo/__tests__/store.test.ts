@@ -8,6 +8,7 @@ import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 import { createBujoMemoryStore } from "../store.js";
 import { appendBullet, dailyFilePath, normalizedContentHash } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
+import { readBujoRuntimeSnapshot } from "../runtime-snapshot.js";
 import type { Bullet } from "../types.js";
 
 describe("BujoMemoryStore — tier derivation", () => {
@@ -70,7 +71,39 @@ describe("BujoMemoryStore — tier derivation", () => {
     expect(result).toBeDefined();
     expect(result?.actions).toBeGreaterThanOrEqual(1);
 
+    await store.flush();
+    const running = readBujoRuntimeSnapshot(root);
+    expect(running).toMatchObject({
+      available: true,
+      stale: false,
+      processAlive: true,
+      snapshot: {
+        pid: process.pid,
+        tier: "bujo",
+        state: "running",
+        counters: { embeddingCalls: 2, embeddingTexts: 2, llmCalls: 1 },
+        queues: { capture: { queued: 0, inFlight: 0 } },
+      },
+    });
+
     await store.close();
+    expect(readBujoRuntimeSnapshot(root)).toMatchObject({
+      available: true,
+      stale: true,
+      snapshot: { state: "closed" },
+    });
+
+    const runtimePath = join(root, ".index", "runtime.json");
+    const injected = JSON.parse(readFileSync(runtimePath, "utf8")) as {
+      queues: { capture: Record<string, unknown> };
+    };
+    injected.queues.capture["privateText"] = "must never pass through audit";
+    writeFileSync(runtimePath, `${JSON.stringify(injected)}\n`, "utf8");
+    expect(readBujoRuntimeSnapshot(root)).toEqual({
+      available: false,
+      stale: true,
+      reason: "invalid",
+    });
   });
 
   it("rejects an explicit tier that would silently downshift configured prerequisites", () => {
@@ -510,6 +543,77 @@ describe("BujoMemoryStore async capture queue", () => {
     expect(warnings.some((w) => /capture/i.test(w))).toBe(true);
     expect(warnings.some((w) => /ollama down/i.test(w))).toBe(true);
     await store.close();
+  });
+
+  it("marks persistence embedding outages as failed capture work without mutating curated source", async () => {
+    const root = tmpRoot();
+    const warnings: string[] = [];
+    let embeddingCalls = 0;
+    const embeddings = {
+      id: "capture-persist-outage:64",
+      async embed(texts: readonly string[]) {
+        embeddingCalls += 1;
+        if (embeddingCalls === 2) throw new Error("persistence embedding offline");
+        return texts.map(() => Array.from({ length: 64 }, (_, index) => index === 0 ? 1 : 0));
+      },
+    };
+    const llm: LlmComplete = {
+      id: "capture-plan",
+      complete: async () => JSON.stringify({
+        memories: [{ type: "note", text: "A durable candidate", salience: 0.7, isInsight: false, entityIds: [] }],
+        entities: [],
+        relations: [],
+      }),
+    };
+    const store = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings,
+      dim: 64,
+      llm,
+      logger: { warn: (message) => warnings.push(message) },
+    });
+    const raw = await store.appendHostSummary("c", "Host-observed completed turn. Candidate discussed.");
+    store.scheduleCapture("c", "User: remember a durable candidate");
+    await store.flush();
+
+    expect(embeddingCalls).toBe(2);
+    expect(store.queueSnapshot().capture).toMatchObject({ completed: 0, failed: 1 });
+    expect(warnings.join(" ")).toMatch(/persistBatch|persistence embedding offline/iu);
+    expect(readFileSync(raw.source, "utf8")).toContain("Candidate discussed");
+    expect(existsSync(join(root, "daily"))).toBe(false);
+    const db = openMemoryDb({ path: join(root, "memory.db"), readOnly: true, dim: 64 });
+    expect(db.count()).toBe(0);
+    db.close();
+    await store.close();
+  });
+
+  it("bounds close when an in-flight capture ignores abort and discards queued curation", async () => {
+    const warnings: string[] = [];
+    const store = createBujoMemoryStore({
+      root: tmpRoot(),
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: fakeLlm([]),
+      backgroundDrainTimeoutMs: 20,
+      logger: { warn: (message) => warnings.push(message) },
+    });
+    store.capture = async () => await new Promise<never>(() => {});
+    store.scheduleCapture("c1", "first never-ending capture");
+    store.scheduleCapture("c2", "queued capture safely discarded");
+    await waitUntil(() => store.queueSnapshot().capture?.inFlight === 1);
+
+    const started = performance.now();
+    await store.close();
+    const durationMs = performance.now() - started;
+
+    expect(durationMs).toBeLessThan(500);
+    expect(store.queueSnapshot()).toMatchObject({
+      capture: { discarded: 1, dropped: 1, inFlight: 1, accepting: false },
+      shutdown: { drainTimeoutMs: 20, discarded: 1, timedOut: true },
+    });
+    expect(warnings.join(" ")).toContain("drain exceeded 20ms");
   });
 
   it("recall delegates to db.recall and returns scored hits", async () => {

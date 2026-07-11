@@ -635,6 +635,33 @@ describe("loadMonoAgentConfigWithSources", () => {
     });
   });
 
+  it.each([
+    ["provider", { provider: "ollama" }],
+    ["endpoint", { endpoint: "http://localhost:11434" }],
+    ["executionMode", { executionMode: "sdk" }],
+    ["trace", { trace: false }],
+    ["timeoutMs", { timeoutMs: 120_000 }],
+    ["provider and endpoint", { provider: "ollama", endpoint: "http://localhost:11434" }],
+  ])("rejects a Journal JSON memory.llm block with only %s", async (_name, llm) => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: {
+        mode: "journal",
+        path: ".mono-agent/memory",
+        embeddings: { provider: "ollama" },
+        llm,
+      },
+    }), "utf8");
+
+    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_json",
+      message: expect.stringContaining("memory.llm"),
+      details: { path: "memory.llm", code: "invalid_json" },
+    });
+  });
+
   it("retains env attribution when the strict memory tier came from env", async () => {
     const path = join(dir, "config.json");
     await writeFile(path, JSON.stringify({

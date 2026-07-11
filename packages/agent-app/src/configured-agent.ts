@@ -752,14 +752,21 @@ function createAgentHostMemoryLlm(options: {
   const timeoutMs = options.timeoutMs ?? 60_000;
   return {
     id: `agent-host:${referenceOf(options.model)}`,
-    async complete(prompt: string, opts?: { readonly label?: string }): Promise<string> {
+    async complete(prompt: string, opts?: { readonly label?: string; readonly abortSignal?: AbortSignal }): Promise<string> {
       const ctrl = new AbortController();
+      const abort = (): void => ctrl.abort(opts?.abortSignal?.reason);
+      if (opts?.abortSignal?.aborted === true) abort();
+      else opts?.abortSignal?.addEventListener("abort", abort, { once: true });
       // Track whether OUR timeout fired vs an external abort. A provider that is slow or
       // misconfigured (e.g. a dead OAuth token whose refresh hangs) trips this timeout and the
       // runtime reports `cancelled` — without this flag the failure is mislabeled as a generic
       // "run was cancelled", which is exactly what made a 10-day memory outage hard to diagnose.
       let timedOut = false;
-      const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs);
+      const timer = setTimeout(() => {
+        if (ctrl.signal.aborted) return;
+        timedOut = true;
+        ctrl.abort();
+      }, timeoutMs);
       const memoryOperation = memoryOperationFromLabel(opts?.label);
       const recorder =
         options.recording === undefined
@@ -806,6 +813,7 @@ function createAgentHostMemoryLlm(options: {
         return textFromMemoryRuntimeResult(result, { timedOut, timeoutMs });
       } finally {
         clearTimeout(timer);
+        opts?.abortSignal?.removeEventListener("abort", abort);
       }
     },
   };
