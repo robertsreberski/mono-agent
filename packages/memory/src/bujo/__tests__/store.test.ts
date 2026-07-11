@@ -54,12 +54,12 @@ describe("BujoMemoryStore — tier derivation", () => {
     const now = new Date("2026-06-16T09:00:00.000Z");
     const llm = fakeLlm([
       [
-        "type:name-kebab",
-        JSON.stringify({ entities: [{ id: "person:morgan", name: "Morgan", type: "person" }], relations: [] }),
-      ],
-      [
-        "TEXT:",
-        JSON.stringify([{ type: "note", text: "Morgan prefers morning routines", salience: 0.8, isInsight: false }]),
+        "Extract one bounded",
+        JSON.stringify({
+          memories: [{ type: "note", text: "Morgan prefers morning routines", salience: 0.8, isInsight: false, entityIds: ["person:morgan"] }],
+          entities: [{ id: "person:morgan", name: "Morgan", type: "person" }],
+          relations: [],
+        }),
       ],
     ]);
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, llm, clock: () => now });
@@ -186,23 +186,24 @@ describe("BujoMemoryStore", () => {
     await store.close();
   });
 
-  it("capture() with llm: distills+reconciles+extracts; memories are recallable and entity present", async () => {
+  it("capture() with llm: extracts+reconciles; memories are recallable and entity present", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-store-capture-"));
     const now = new Date("2026-06-15T10:00:00.000Z");
 
-    // Entity extraction prompt contains "type:name-kebab" — match BEFORE "TEXT:" to avoid the
-    // distill reply being routed to extractEntities (both prompts end with TEXT:\n<input>).
     const llm = fakeLlm([
       [
-        "type:name-kebab",
+        "Extract one bounded",
         JSON.stringify({
+          memories: [{
+            type: "note",
+            text: "Morgan's memory preference is opt-in",
+            salience: 0.8,
+            isInsight: false,
+            entityIds: ["person:morgan"],
+          }],
           entities: [{ id: "person:morgan", name: "Morgan", type: "person" }],
           relations: [],
         }),
-      ],
-      [
-        "TEXT:",
-        JSON.stringify([{ type: "note", text: "Morgan's memory preference is opt-in", salience: 0.8, isInsight: false }]),
       ],
     ]);
 
@@ -746,6 +747,7 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
       recoveryPaused: true,
       retryDelayMs: 1_000,
       nextRetryDelayMs: 2_000,
+      nextRetryAt: expect.any(String),
     });
     expect(warnings.join(" ")).toContain("embedding offline");
     await first.close();

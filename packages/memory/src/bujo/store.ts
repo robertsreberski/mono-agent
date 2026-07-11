@@ -145,6 +145,50 @@ export class BujoMemoryStore implements MemoryStore {
     });
   }
 
+  /** Whether this strict tier may expose graph expansion to explicit MemoryRecall. */
+  supportsGraphExpansion(): boolean {
+    return this._tier === "bujo";
+  }
+
+  /** Deterministically expand already-fetched direct hits for explicit MemoryRecall only. */
+  expandGraph(
+    query: string,
+    directHits: readonly RecallHit[],
+    options: { readonly topK?: number } = {},
+  ): RecallHit[] {
+    const topK = Math.max(1, Math.min(options.topK ?? 8, 50));
+    if (this._tier !== "bujo" || directHits.length === 0) return directHits.slice(0, topK);
+    const seeds = directHits.slice(0, 3);
+    const additions = this.db.expandEntityRelations(seeds.map((hit) => hit.record.id), {
+      query,
+      seedLimit: 3,
+      maxAdditions: 5,
+    });
+    if (additions.length === 0) return directHits.slice(0, topK);
+    const seedFloor = Math.min(...seeds.map((hit) => hit.score));
+    const merged = new Map(directHits.map((hit) => [hit.record.id, hit]));
+    for (const [index, record] of additions.entries()) {
+      const score = Math.max(0, seedFloor * 0.95 - index * 1e-6);
+      const existing = merged.get(record.id);
+      // The raw cache is intentionally a 50-hit superset. A graph target may
+      // already sit below the requested topK there; promote it instead of
+      // treating presence in the superset as a reason to discard the path.
+      if (existing === undefined || score > existing.score) merged.set(record.id, { record, score });
+    }
+    const sorted = [...merged.values()]
+      .sort((a, b) => b.score - a.score || a.record.id.localeCompare(b.record.id))
+      .slice(0, topK);
+    const bestGraphId = additions[0]?.id;
+    if (bestGraphId !== undefined && !sorted.some((hit) => hit.record.id === bestGraphId)) {
+      const graphHit = merged.get(bestGraphId);
+      if (graphHit !== undefined) {
+        sorted.splice(Math.max(0, sorted.length - 1), 1, graphHit);
+        sorted.sort((a, b) => b.score - a.score || a.record.id.localeCompare(b.record.id));
+      }
+    }
+    return sorted;
+  }
+
   /** Record served recall hits as telemetry without re-running retrieval. */
   recordAccess(ids: readonly string[]): void {
     this.db.recordAccess(ids);

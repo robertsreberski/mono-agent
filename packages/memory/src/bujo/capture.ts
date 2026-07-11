@@ -1,38 +1,35 @@
-import { distill } from "./distill.js";
-import { extractEntities } from "./entities.js";
-import { appendEntity, appendRelation } from "./graph.js";
-import { reconcile, type ReconcileAction, type ReconcileDeps } from "./reconcile.js";
+import { extractCapturePlan } from "./capture-batch.js";
+import { appendAssociation, appendEntity, appendRelation } from "./graph.js";
+import { reconcileBatch, type ReconcileAction, type ReconcileDeps } from "./reconcile.js";
 
 export interface CaptureTurnResult {
   readonly actions: ReconcileAction[];
   readonly entities: number;
   readonly relations: number;
+  readonly associations: number;
 }
 
 /**
  * Full capture pipeline for a single conversation turn:
- *  1. distill(text) → candidate memories
- *  2. reconcile(candidates) → ADD / UPDATE / SUPERSEDE / NOOP actions (writes markdown + index)
- *  3. extractEntities(text) → typed entities + relations
- *  4. Persist each entity canonical-first: graph.jsonl, THEN mirror to the db index
- *  5. Persist each relation canonical-first: graph.jsonl, THEN mirror to the db index
- *  6. Link this turn's ADDed memories to extracted entities via `about` edges (coarse co-occurrence)
+ *  1. Extract bounded candidate memories plus their precise graph evidence in one LLM call.
+ *  2. Reconcile all close candidates in at most one additional LLM call.
+ *  3. Persist entities and relations canonical-first, then mirror them to the index.
+ *  4. Persist only each candidate's explicit memory/entity associations.
  *
  * Never throws on a single bad entity/relation item — each write is wrapped defensively.
- * Returns a summary: actions list, entity count, relation count.
+ * Returns the action and graph-write counts.
  */
 export async function captureTurn(text: string, deps: ReconcileDeps): Promise<CaptureTurnResult> {
-  // Step 1+2: distill candidates and reconcile against existing index
-  const candidates = await distill(text, deps.llm);
-  const actions = await reconcile(candidates, deps);
-
-  // Step 3: extract entities and relations from the turn text
-  const extraction = await extractEntities(text, deps.llm);
+  // One batched extraction call yields candidates + their precise entity ids;
+  // one optional batched reconcile call classifies every near neighbour.
+  const extraction = await extractCapturePlan(text, deps.llm);
+  const actionSlots = await reconcileBatch(extraction.candidates, deps);
+  const actions = actionSlots.filter((action): action is ReconcileAction => action !== undefined);
 
   const now = deps.now();
   const createdAt = now.toISOString();
 
-  // Step 4: persist each entity canonical-first (graph.jsonl), then mirror to the rebuildable db
+  // Persist each entity canonical-first (graph.jsonl), then mirror to the rebuildable db
   // index. graph.jsonl is the canonical source rebuildFromMarkdown reads; writing it first means a
   // crash between the two writes still recovers the entity on the next rebuild.
   for (const entity of extraction.entities) {
@@ -50,7 +47,7 @@ export async function captureTurn(text: string, deps: ReconcileDeps): Promise<Ca
     }
   }
 
-  // Step 5: persist each relation canonical-first (graph.jsonl), then mirror to the db index.
+  // Persist each relation canonical-first (graph.jsonl), then mirror to the db index.
   for (const relation of extraction.relations) {
     try {
       appendRelation(deps.root, {
@@ -65,13 +62,20 @@ export async function captureTurn(text: string, deps: ReconcileDeps): Promise<Ca
     }
   }
 
-  // Step 6: link ADDed memories to extracted entities via `about` edges
-  const addedIds = actions.flatMap((a) => (a.kind === "add" ? [a.id] : []));
-  const entityIds = extraction.entities.map((e) => e.id);
-  for (const memoryId of addedIds) {
-    for (const entityId of entityIds) {
+  // Persist candidate-specific associations. Reconcile action identity
+  // is preserved: update/noop target the existing id; supersede/add target the
+  // new id. There is deliberately no turn-wide Cartesian association.
+  let associations = 0;
+  for (const [index, candidate] of extraction.candidates.entries()) {
+    const action = actionSlots[index];
+    if (action === undefined) continue;
+    const memoryId = memoryIdForAction(action);
+    for (const entityId of candidate.entityIds ?? []) {
       try {
-        deps.db.addEdge(memoryId, entityId, "about");
+        const association = { memoryId, entityId, provenance: "capture" as const, createdAt };
+        appendAssociation(deps.root, association);
+        deps.db.associateMemory(association);
+        associations += 1;
       } catch {
         // Per-item isolation
       }
@@ -82,5 +86,11 @@ export async function captureTurn(text: string, deps: ReconcileDeps): Promise<Ca
     actions,
     entities: extraction.entities.length,
     relations: extraction.relations.length,
+    associations,
   };
+}
+
+function memoryIdForAction(action: ReconcileAction): string {
+  if (action.kind === "supersede") return action.newId;
+  return action.id;
 }

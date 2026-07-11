@@ -37,29 +37,63 @@ function makeSeqNextId(): () => string {
 }
 
 describe("captureTurn", () => {
-  it("distills → reconciles → extracts entities, mirrors to db AND graph.jsonl, links about edges", async () => {
+  it("writes one durable row and merged association set for same-turn duplicate candidates", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const labels: string[] = [];
+    const llm = {
+      id: "duplicates",
+      async complete(_prompt: string, options?: { readonly label?: string }) {
+        labels.push(options?.label ?? "");
+        return JSON.stringify({
+          memories: [
+            { type: "note", text: "Morgan  prefers tea.", salience: 0.8, isInsight: false, entityIds: ["person:morgan"] },
+            { type: "note", text: "morgan prefers tea", salience: 0.7, isInsight: false, entityIds: ["concept:tea"] },
+          ],
+          entities: [
+            { id: "person:morgan", name: "Morgan", type: "person" },
+            { id: "concept:tea", name: "Tea", type: "concept" },
+          ],
+          relations: [],
+        });
+      },
+    };
+
+    const result = await captureTurn("Morgan prefers tea.", {
+      db,
+      root,
+      llm,
+      nextId: makeSeqNextId(),
+      now: () => FIXED,
+    });
+
+    expect(labels).toEqual(["capture:extract"]);
+    expect(result.actions).toHaveLength(1);
+    expect(result.associations).toBe(2);
+    expect(db.count()).toBe(1);
+    const id = result.actions[0]?.kind === "add" ? result.actions[0].id : "";
+    expect(db.associationsForMemory(id).map((association) => association.entityId)).toEqual([
+      "concept:tea",
+      "person:morgan",
+    ]);
+    expect(readGraph(root).associations).toHaveLength(2);
+  });
+
+  it("extracts a bounded plan, reconciles, mirrors the graph, and keeps precise associations", async () => {
     const root = newRoot();
     const db = openDb(root);
 
-    // Scripted fakeLlm:
-    //  - distill: keyed on "TEXT:" → returns 2 candidates
-    //  - entity extraction: keyed on "Extract named entities" (from entities.ts PROMPT)
-    //  CLASSIFY won't be called because the db is empty (no similar) → all ADD outright.
-    // Entity extraction prompt also contains "TEXT:" so must be matched FIRST (more specific wins).
     const llm = fakeLlm([
       [
-        "Extract named entities",
+        "Extract one bounded",
         JSON.stringify({
           entities: [{ id: "person:morgan", name: "Morgan", type: "person" }],
           relations: [{ src: "person:morgan", dst: "person:morgan", relation: "self-reference" }],
+          memories: [
+            { type: "note", text: "Morgan prefers opt-in memory capture", salience: 0.8, isInsight: false, entityIds: ["person:morgan"] },
+            { type: "task", text: "ship Phase 2 memory pipeline", salience: 0.7, isInsight: false, entityIds: [] },
+          ],
         }),
-      ],
-      [
-        "TEXT:",
-        JSON.stringify([
-          { type: "note", text: "Morgan prefers opt-in memory capture", salience: 0.8, isInsight: false },
-          { type: "task", text: "ship Phase 2 memory pipeline", salience: 0.7, isInsight: false },
-        ]),
       ],
     ]);
 
@@ -101,12 +135,16 @@ describe("captureTurn", () => {
     // Relation present in graph.jsonl
     expect(graph.relations.some((r) => r.src === "person:morgan" && r.relation === "self-reference")).toBe(true);
 
-    // about edges: each added memory links to the extracted entity
-    for (const action of result.actions) {
-      if (action.kind === "add") {
-        const edges = db.edges(action.id);
-        expect(edges.some((e) => e.kind === "about" && e.dst === "person:morgan")).toBe(true);
-      }
+    expect(result.associations).toBe(1);
+    const first = result.actions[0];
+    const second = result.actions[1];
+    expect(first?.kind).toBe("add");
+    expect(second?.kind).toBe("add");
+    if (first?.kind === "add" && second?.kind === "add") {
+      expect(db.associationsForMemory(first.id)).toEqual([
+        expect.objectContaining({ entityId: "person:morgan", provenance: "capture" }),
+      ]);
+      expect(db.associationsForMemory(second.id)).toEqual([]);
     }
   });
 
@@ -118,12 +156,9 @@ describe("captureTurn", () => {
 
     const llm = fakeLlm([
       [
-        "TEXT:",
-        JSON.stringify([{ type: "note", text: "brief note about something", salience: 0.5, isInsight: false }]),
-      ],
-      [
-        "Extract named entities",
+        "Extract one bounded",
         JSON.stringify({
+          memories: [{ type: "note", text: "brief note about something", salience: 0.5, isInsight: false, entityIds: ["concept:something"] }],
           entities: [{ id: "concept:something", name: "Something", type: "concept" }],
           relations: [],
         }),
@@ -147,15 +182,16 @@ describe("captureTurn", () => {
     const db = openDb(root);
     const llm = fakeLlm([
       [
-        "Extract named entities",
+        "Extract one bounded",
         JSON.stringify({
+          memories: [{ type: "note", text: "Paola prefers quiet mornings", salience: 0.7, isInsight: false, entityIds: ["person:paola"] }],
           entities: [{ id: "person:paola", name: "Paola", type: "person" }],
           relations: [{ src: "person:paola", dst: "person:paola", relation: "self-reference" }],
         }),
       ],
       [
-        "TEXT:",
-        JSON.stringify([{ type: "note", text: "Paola prefers quiet mornings", salience: 0.7, isInsight: false }]),
+        "Classify each candidate",
+        JSON.stringify([{ index: 0, action: "noop", targetId: "CAP0001" }]),
       ],
     ]);
     let now = new Date("2026-06-15T12:00:00.000Z");
@@ -172,10 +208,11 @@ describe("captureTurn", () => {
     await captureTurn("Paola prefers quiet mornings", deps);
 
     const graphLines = readFileSync(join(root, "graph.jsonl"), "utf8").trim().split("\n");
-    expect(graphLines).toHaveLength(2);
+    expect(graphLines).toHaveLength(3);
     const graph = readGraph(root);
     expect(graph.entities).toHaveLength(1);
     expect(graph.relations).toHaveLength(1);
+    expect(graph.associations).toHaveLength(1);
   });
 
   it("writes entities/relations to canonical graph.jsonl even when the db mirror fails (canonical-first)", async () => {
@@ -196,18 +233,15 @@ describe("captureTurn", () => {
 
     const llm = fakeLlm([
       [
-        "Extract named entities",
+        "Extract one bounded",
         JSON.stringify({
+          memories: [{ type: "note", text: "Morgan maintains mono-agent", salience: 0.7, isInsight: false, entityIds: ["person:morgan", "project:mono-agent"] }],
           entities: [
             { id: "person:morgan", name: "Morgan", type: "person" },
             { id: "project:mono-agent", name: "mono-agent", type: "project" },
           ],
           relations: [{ src: "person:morgan", dst: "project:mono-agent", relation: "maintains" }],
         }),
-      ],
-      [
-        "TEXT:",
-        JSON.stringify([{ type: "note", text: "Morgan maintains mono-agent", salience: 0.7, isInsight: false }]),
       ],
     ]);
 

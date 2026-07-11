@@ -55,6 +55,14 @@ export async function rebuildFromMarkdown(root: string, db: MemoryDb): Promise<{
       // Per-item isolation
     }
   }
+  for (const association of g.associations) {
+    try {
+      db.associateMemory(association);
+    } catch {
+      // Candidate validation reports orphan endpoints; a malformed canonical
+      // association does not prevent preservation of the remaining source.
+    }
+  }
 
   return result;
 }

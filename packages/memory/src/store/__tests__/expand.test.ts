@@ -1,11 +1,25 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { openMemoryDb } from "../db.js";
 import { fakeEmbeddings } from "./helpers.js";
 import type { MemoryRecord } from "../types.js";
 
-function note(id: string, text: string): MemoryRecord {
-  return { id, type: "note", status: "open", text, salience: 0.5, isInsight: false, createdAt: "2026-06-15T09:00:00.000Z", accessCount: 0, tags: [], source: {} };
+const NOW = "2026-06-15T09:00:00.000Z";
+
+function note(id: string, text: string, over: Partial<MemoryRecord> = {}): MemoryRecord {
+  return {
+    id,
+    type: "note",
+    status: "open",
+    text,
+    salience: 0.5,
+    isInsight: false,
+    createdAt: NOW,
+    accessCount: 0,
+    tags: [],
+    source: {},
+    ...over,
+  };
 }
 
 describe("addEdge/expand", () => {
@@ -21,3 +35,194 @@ describe("addEdge/expand", () => {
     db.close();
   });
 });
+
+describe("expandEntityRelations", () => {
+  it("traverses an outgoing relation and the same stored relation in the incoming direction", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    try {
+      await db.upsert(note("morgan-memory", "Morgan owns the leadership decision."));
+      await db.upsert(note("atlas-memory", "Project Atlas has a budget of 200."));
+      addEntity(db, "person:morgan", "Morgan");
+      addEntity(db, "project:atlas", "Project Atlas");
+      associate(db, "morgan-memory", "person:morgan");
+      associate(db, "atlas-memory", "project:atlas");
+      db.addEntityRelation("person:morgan", "project:atlas", "leads");
+
+      expect(expandIds(db, ["morgan-memory"], "Which project does Morgan lead?")).toEqual(["atlas-memory"]);
+      expect(expandIds(db, ["atlas-memory"], "Who leads Atlas?")).toEqual(["morgan-memory"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects the semantic inverse of a directed relation", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    try {
+      await db.upsert(note("morgan-memory", "Morgan owns the leadership decision."));
+      await db.upsert(note("atlas-memory", "Project Atlas has a budget of 200."));
+      addEntity(db, "person:morgan", "Morgan");
+      addEntity(db, "project:atlas", "Project Atlas");
+      associate(db, "morgan-memory", "person:morgan");
+      associate(db, "atlas-memory", "project:atlas");
+      db.addEntityRelation("person:morgan", "project:atlas", "leads");
+
+      expect(expandIds(db, ["atlas-memory"], "Who does Atlas lead?")).toEqual([]);
+      expect(expandIds(db, ["atlas-memory"], "Who is Atlas led by?")).toEqual([]);
+      expect(expandIds(db, ["atlas-memory"], "What is the lead relationship between Morgan and Atlas?")).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("treats a possessive manager as incoming and does not authorize the seed's location edge", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    try {
+      await db.upsert(note("morgan-seed", "Morgan has durable team context."));
+      await db.upsert(note("taylor-manager", "Taylor is based in Utrecht."));
+      await db.upsert(note("casey-report", "Casey is based in Rotterdam."));
+      await db.upsert(note("amsterdam-distractor", "Amsterdam is Morgan's current home."));
+      addEntity(db, "person:morgan", "Morgan");
+      addEntity(db, "person:taylor", "Taylor");
+      addEntity(db, "person:casey", "Casey");
+      addEntity(db, "city:amsterdam", "Amsterdam");
+      associate(db, "morgan-seed", "person:morgan");
+      associate(db, "taylor-manager", "person:taylor");
+      associate(db, "casey-report", "person:casey");
+      associate(db, "amsterdam-distractor", "city:amsterdam");
+      db.addEntityRelation("person:taylor", "person:morgan", "manages");
+      db.addEntityRelation("person:morgan", "person:casey", "manages");
+      db.addEntityRelation("person:morgan", "city:amsterdam", "lives in");
+
+      expect(expandIds(db, ["morgan-seed"], "Where is Morgan's manager based?")).toEqual(["taylor-manager"]);
+      expect(expandIds(db, ["morgan-seed"], "Who manages Morgan?")).toEqual(["taylor-manager"]);
+      expect(expandIds(db, ["morgan-seed"], "Who does Morgan manage?")).toEqual(["casey-report"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("uses relation evidence beyond the seed name and rejects a distractor edge", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    try {
+      await db.upsert(note("morgan-memory", "Morgan has durable project context."));
+      await db.upsert(note("atlas-memory", "Project Atlas has a budget of 200."));
+      await db.upsert(note("amsterdam-memory", "Amsterdam has a quiet office."));
+      addEntity(db, "person:morgan", "Morgan");
+      addEntity(db, "project:atlas", "Project Atlas");
+      addEntity(db, "city:amsterdam", "Amsterdam");
+      associate(db, "morgan-memory", "person:morgan");
+      associate(db, "atlas-memory", "project:atlas");
+      associate(db, "amsterdam-memory", "city:amsterdam");
+      db.addEntityRelation("person:morgan", "project:atlas", "leads");
+      db.addEntityRelation("person:morgan", "city:amsterdam", "lives in");
+
+      expect(expandIds(db, ["morgan-memory"], "What does Morgan lead?")).toEqual(["atlas-memory"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("matches a base-form query verb to an inflected relation label", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    try {
+      await db.upsert(note("morgan-memory", "Morgan has durable location context."));
+      await db.upsert(note("amsterdam-memory", "Amsterdam is Morgan's current home."));
+      addEntity(db, "person:morgan", "Morgan");
+      addEntity(db, "city:amsterdam", "Amsterdam");
+      associate(db, "morgan-memory", "person:morgan");
+      associate(db, "amsterdam-memory", "city:amsterdam");
+      db.addEntityRelation("person:morgan", "city:amsterdam", "lives in");
+
+      expect(expandIds(db, ["morgan-memory"], "Where does Morgan live?")).toEqual(["amsterdam-memory"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not materialize the full entity catalog to resolve a query-local relation", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    try {
+      await db.upsert(note("morgan-memory", "Morgan has durable project context."));
+      await db.upsert(note("atlas-memory", "Project Atlas has a budget of 200."));
+      addEntity(db, "person:morgan", "Morgan");
+      addEntity(db, "project:atlas", "Project Atlas");
+      associate(db, "morgan-memory", "person:morgan");
+      associate(db, "atlas-memory", "project:atlas");
+      db.addEntityRelation("person:morgan", "project:atlas", "leads");
+      const fullCatalog = vi.spyOn(db, "listEntities").mockImplementation(() => {
+        throw new Error("graph expansion must not scan the full entity catalog");
+      });
+
+      expect(expandIds(db, ["morgan-memory"], "Which project does Morgan lead?")).toEqual(["atlas-memory"]);
+      expect(fullCatalog).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+      db.close();
+    }
+  });
+
+  it("stays at one hop, ignores self-loops, and deduplicates a target reached by two relations", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    try {
+      await db.upsert(note("morgan-seed", "Morgan has durable project context."));
+      await db.upsert(note("morgan-other", "Morgan prefers quiet mornings."));
+      await db.upsert(note("atlas-target", "Project Atlas has a budget of 200."));
+      await db.upsert(note("casey-two-hop", "Casey starts the migration Monday."));
+      addEntity(db, "person:morgan", "Morgan");
+      addEntity(db, "project:atlas", "Project Atlas");
+      addEntity(db, "person:casey", "Casey");
+      associate(db, "morgan-seed", "person:morgan");
+      associate(db, "morgan-other", "person:morgan");
+      associate(db, "atlas-target", "project:atlas");
+      associate(db, "casey-two-hop", "person:casey");
+      db.addEntityRelation("person:morgan", "person:morgan", "leads");
+      db.addEntityRelation("person:morgan", "project:atlas", "leads");
+      db.addEntityRelation("person:morgan", "project:atlas", "manages");
+      db.addEntityRelation("project:atlas", "person:casey", "mentors");
+      db.addEntityRelation("person:casey", "project:atlas", "mentors");
+
+      expect(expandIds(db, ["morgan-seed"], "What does Morgan lead and manage?")).toEqual(["atlas-target"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("excludes invalidated, dropped, and temporally stale target memories", async () => {
+    const db = openMemoryDb({
+      path: ":memory:",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      clock: () => new Date(NOW),
+    });
+    try {
+      await db.upsert(note("morgan-seed", "Morgan has durable project context."));
+      await db.upsert(note("atlas-live", "Project Atlas has a live budget of 200."));
+      await db.upsert(note("atlas-invalid", "Project Atlas has an invalid budget.", { status: "invalidated" }));
+      await db.upsert(note("atlas-dropped", "Project Atlas has a dropped budget.", { status: "dropped" }));
+      await db.upsert(note("atlas-stale", "Project Atlas had an expired budget.", { validTo: "2026-06-14T09:00:00.000Z" }));
+      addEntity(db, "person:morgan", "Morgan");
+      addEntity(db, "project:atlas", "Project Atlas");
+      associate(db, "morgan-seed", "person:morgan");
+      for (const id of ["atlas-live", "atlas-invalid", "atlas-dropped", "atlas-stale"]) {
+        associate(db, id, "project:atlas");
+      }
+      db.addEntityRelation("person:morgan", "project:atlas", "leads");
+
+      expect(expandIds(db, ["morgan-seed"], "What project does Morgan lead?")).toEqual(["atlas-live"]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+function addEntity(db: ReturnType<typeof openMemoryDb>, id: string, name: string): void {
+  db.upsertEntity({ id, name, createdAt: NOW });
+}
+
+function associate(db: ReturnType<typeof openMemoryDb>, memoryId: string, entityId: string): void {
+  db.associateMemory({ memoryId, entityId, provenance: "capture", createdAt: NOW });
+}
+
+function expandIds(db: ReturnType<typeof openMemoryDb>, seedIds: readonly string[], query: string): string[] {
+  return db.expandEntityRelations(seedIds, { query, now: new Date(NOW), maxAdditions: 20 }).map((record) => record.id);
+}

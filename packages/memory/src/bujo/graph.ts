@@ -1,12 +1,13 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { EntityRecord, EntityRelationRecord } from "../store/index.js";
+import type { EntityRecord, EntityRelationRecord, MemoryEntityAssociation } from "../store/index.js";
 
 const GRAPH_FILE = "graph.jsonl";
 
 type GraphLine =
   | ({ readonly kind: "entity" } & EntityRecord)
-  | ({ readonly kind: "relation" } & EntityRelationRecord);
+  | ({ readonly kind: "relation" } & EntityRelationRecord)
+  | ({ readonly kind: "association" } & MemoryEntityAssociation);
 
 function graphPath(root: string): string {
   return join(root, GRAPH_FILE);
@@ -19,13 +20,18 @@ function graphPath(root: string): string {
  * Dedupes on read: entities by `id` keeping the LAST occurrence;
  * relations by `src|dst|relation` keeping the last.
  */
-export function readGraph(root: string): { entities: EntityRecord[]; relations: EntityRelationRecord[] } {
+export function readGraph(root: string): {
+  entities: EntityRecord[];
+  relations: EntityRelationRecord[];
+  associations: MemoryEntityAssociation[];
+} {
   const path = graphPath(root);
-  if (!existsSync(path)) return { entities: [], relations: [] };
+  if (!existsSync(path)) return { entities: [], relations: [], associations: [] };
 
   const raw = readFileSync(path, "utf8");
   const entityMap = new Map<string, EntityRecord>();
   const relationMap = new Map<string, EntityRelationRecord>();
+  const associationMap = new Map<string, MemoryEntityAssociation>();
 
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
@@ -56,13 +62,39 @@ export function readGraph(root: string): { entities: EntityRecord[]; relations: 
         const key = `${relation.src}|${relation.dst}|${relation.relation}`;
         relationMap.set(key, relation);
       }
+    } else if (rec["kind"] === "association") {
+      const { kind: _kind, ...rest } = rec;
+      const association = rest as unknown as MemoryEntityAssociation;
+      if (
+        typeof association.memoryId === "string"
+        && association.memoryId.length > 0
+        && typeof association.entityId === "string"
+        && association.entityId.length > 0
+        && (association.provenance === "capture" || association.provenance === "legacy-name-match")
+        && typeof association.createdAt === "string"
+        && association.createdAt.length > 0
+      ) {
+        associationMap.set(`${association.memoryId}|${association.entityId}`, association);
+      }
     }
   }
 
   return {
     entities: Array.from(entityMap.values()),
     relations: Array.from(relationMap.values()),
+    associations: Array.from(associationMap.values()),
   };
+}
+
+/** Append one precise memory/entity association to canonical graph evidence. */
+export function appendAssociation(root: string, record: MemoryEntityAssociation): void {
+  const current = readGraph(root).associations.find(
+    (association) => association.memoryId === record.memoryId && association.entityId === record.entityId,
+  );
+  if (current !== undefined && (current.provenance === "capture" || record.provenance !== "capture")) return;
+  mkdirSync(root, { recursive: true });
+  const line: GraphLine = { kind: "association", ...record };
+  appendFileSync(graphPath(root), `${JSON.stringify(line)}\n`, "utf8");
 }
 
 /** Append a single entity record to `<root>/graph.jsonl` (mkdir root if needed). */

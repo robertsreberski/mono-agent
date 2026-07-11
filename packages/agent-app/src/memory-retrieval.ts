@@ -99,7 +99,7 @@ export class MemoryRetrievalService implements MemoryStore {
   async recallForTurn(
     turnId: string,
     query: string,
-    options: { readonly topK?: number; readonly trackAccess?: boolean } = {},
+    options: { readonly topK?: number; readonly trackAccess?: boolean; readonly expandHops?: 0 | 1 } = {},
   ): Promise<readonly SharedRecallHit[]> {
     const normalized = normalizeQuery(query);
     if (normalized.length === 0) return [];
@@ -112,7 +112,10 @@ export class MemoryRetrievalService implements MemoryStore {
       turn.queries.set(normalized, lookup);
     }
     const limit = clampLimit(options.topK, 8);
-    const hits = (await lookup).slice(0, limit);
+    const direct = await lookup;
+    const hits = options.expandHops === 1 && this.supportsGraphExpansion() && this.store.expandGraph !== undefined
+      ? await this.store.expandGraph(normalized, direct, { topK: limit })
+      : direct.slice(0, limit);
     if (options.trackAccess !== false) this.recordServed(turnId, hits);
     return hits;
   }
@@ -123,6 +126,21 @@ export class MemoryRetrievalService implements MemoryStore {
 
   releaseAllTurns(): void {
     this.turns.clear();
+  }
+
+  supportsGraphExpansion(): boolean {
+    return this.store.expandGraph !== undefined && this.store.supportsGraphExpansion?.() !== false;
+  }
+
+  recordAccessIdsForTurn(turnId: string, ids: readonly string[]): void {
+    if (this.store.recordAccess === undefined) return;
+    const turn = this.turnCache(turnId);
+    const fresh = ids.filter((id) => {
+      if (turn.accessedIds.has(id)) return false;
+      turn.accessedIds.add(id);
+      return true;
+    });
+    if (fresh.length > 0) this.store.recordAccess(fresh);
   }
 
   appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
@@ -146,16 +164,7 @@ export class MemoryRetrievalService implements MemoryStore {
   }
 
   private recordServed(turnId: string, hits: readonly SharedRecallHit[]): void {
-    if (this.store.recordAccess === undefined) return;
-    const turn = this.turnCache(turnId);
-    const fresh: string[] = [];
-    for (const hit of hits) {
-      if (!turn.accessedIds.has(hit.record.id)) {
-        turn.accessedIds.add(hit.record.id);
-        fresh.push(hit.record.id);
-      }
-    }
-    if (fresh.length > 0) this.store.recordAccess(fresh);
+    this.recordAccessIdsForTurn(turnId, hits.map((hit) => hit.record.id));
   }
 }
 
@@ -166,8 +175,18 @@ export function createSharedMemoryRecallRuntimeExtension(
 ): (input: { readonly runId: string }) => Promise<MemoryRecallRuntimeExtension> {
   return async ({ runId }) => {
     const path = `/mcp/${randomUUID()}`;
+    const graphEnabled = service.supportsGraphExpansion();
     const boundStore: RecallCapableStore = {
       recall: (query, options) => service.recallForTurn(runId, query, options),
+      ...(graphEnabled ? {
+        supportsGraphExpansion: () => true,
+        expandGraph: (query: string, _directHits: readonly SharedRecallHit[], graphOptions?: { readonly topK?: number }) => service.recallForTurn(runId, query, {
+          ...(graphOptions?.topK === undefined ? {} : { topK: graphOptions.topK }),
+          trackAccess: false,
+          expandHops: 1,
+        }),
+        recordAccess: (ids: readonly string[]) => service.recordAccessIdsForTurn(runId, ids),
+      } : {}),
       close: async () => {},
     };
     const mcp = createMemoryRecallServer(boundStore);

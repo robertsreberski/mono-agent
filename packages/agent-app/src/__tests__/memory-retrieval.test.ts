@@ -101,6 +101,71 @@ describe("MemoryRetrievalService", () => {
 });
 
 describe("shared MemoryRecall MCP", () => {
+  it("does not query the configured backend for the exact Telegram last-message question", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+    const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-last-message" });
+    const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+    const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const result = await client.callTool({
+        name: "MemoryRecall",
+        arguments: { query: "What did you send in the last message?" },
+      });
+      expect(result.structuredContent).toMatchObject({ hits: [], conversationRelative: true });
+      expect(store.queries).toEqual([]);
+    } finally {
+      await client.close().catch(() => undefined);
+      await extension.cleanup();
+    }
+  });
+
+  it("keeps graph expansion explicit-only while reusing one raw backend lookup", async () => {
+    const store = fakeStore();
+    let expansionCalls = 0;
+    store.recall = async (query) => {
+      store.queries.push(query);
+      return [
+        { score: 1, record: { id: "seed", text: "Taylor joined the Atlas project." } },
+        ...Array.from({ length: 8 }, (_, index) => ({
+          score: 0.9 - index * 0.01,
+          record: { id: `distractor-${index}`, text: `Unrelated planning note ${index}.` },
+        })),
+        { score: 0.1, record: { id: "graph-target", text: "Morgan manages Taylor and uses cobalt." } },
+      ];
+    };
+    store.expandGraph = (_query, direct, options) => {
+      expansionCalls += 1;
+      const target = direct.find((hit) => hit.record.id === "graph-target");
+      return target === undefined
+        ? direct.slice(0, options?.topK ?? 8)
+        : [target, ...direct.filter((hit) => hit.record.id !== target.record.id)].slice(0, options?.topK ?? 8);
+    };
+    const service = new MemoryRetrievalService(store);
+    const query = "Who manages Taylor?";
+    await expect(service.load("conversation", query, { turnId: "turn-graph" })).resolves.toBeUndefined();
+
+    const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-graph" });
+    const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+    const client = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const result = await client.callTool({ name: "MemoryRecall", arguments: { query, limit: 5 } });
+      expect(result.structuredContent).toMatchObject({
+        hits: expect.arrayContaining([expect.objectContaining({ id: "graph-target" })]),
+      });
+      const servedIds = (result.structuredContent as { hits: Array<{ id: string }> }).hits.map((hit) => hit.id);
+      expect(store.queries).toEqual(["who manages taylor?"]);
+      expect(expansionCalls).toBe(1);
+      expect(store.accesses).toEqual([servedIds]);
+      expect(servedIds).not.toContain("distractor-7");
+    } finally {
+      await client.close().catch(() => undefined);
+      await extension.cleanup();
+    }
+  });
+
   it("serves the shared store over a per-turn loopback endpoint", async () => {
     const store = fakeStore();
     const service = new MemoryRetrievalService(store);

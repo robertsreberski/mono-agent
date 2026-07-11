@@ -8,6 +8,8 @@ export interface CandidateMemory {
   readonly text: string;              // one atomic sentence
   readonly salience: number;          // 0..1
   readonly isInsight: boolean;
+  /** Candidate-specific canonical entity ids emitted by batched BuJo capture. */
+  readonly entityIds?: readonly string[];
 }
 
 const PROMPT = (text: string) => `Extract durable memories from the text below as a JSON array.
@@ -34,16 +36,15 @@ export async function distill(text: string, llm: LlmComplete): Promise<Candidate
 
 const VALID_TYPES = new Set<string>(["task", "event", "note"]);
 
-function normalizeCandidate(it: unknown): CandidateMemory[] {
+export function normalizeCandidate(it: unknown): CandidateMemory[] {
   if (it === null || typeof it !== "object") return [];
   const obj = it as Record<string, unknown>;
 
   // Require non-empty text, then normalize to a bullet-safe single line so it round-trips through
   // serializeBullet (which rejects newlines and the `<!--mem` delimiter) instead of being silently
   // dropped by reconcile's per-candidate isolation. Collapse whitespace, strip the delimiter, cap ~280.
-  const rawText = typeof obj["text"] === "string" ? obj["text"] : "";
-  const text = rawText.replace(/\s+/gu, " ").replace(/<!--mem/gu, "").trim().slice(0, 280);
-  if (text.length === 0) return [];
+  const text = normalizeCandidateText(obj["text"]);
+  if (text === undefined) return [];
 
   // Coerce type to one of task/event/note (default "note")
   const rawType = typeof obj["type"] === "string" ? obj["type"] : "";
@@ -59,4 +60,11 @@ function normalizeCandidate(it: unknown): CandidateMemory[] {
   const isInsight = typeof obj["isInsight"] === "boolean" ? obj["isInsight"] : false;
 
   return [{ type, text, salience, isInsight }];
+}
+
+/** Normalize any model-authored memory sentence to the canonical bullet-safe form. */
+export function normalizeCandidateText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.normalize("NFKC").replace(/\s+/gu, " ").replace(/<!--mem/gu, "").trim().slice(0, 280);
+  return text.length === 0 ? undefined : text;
 }

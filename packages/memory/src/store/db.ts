@@ -702,12 +702,21 @@ export class MemoryDb {
   }
 
   async findSimilar(text: string, k = 5): Promise<SimilarHit[]> {
-    if (this.embeddings === undefined) return [];
-    // Deliberately the `search_document:` prefix (not `search_query:` like recall): dedup/reconciliation
-    // compares a candidate memory to stored memories document-to-document, not query-to-document.
-    const [vector] = await this.embeddings.embed([`search_document: ${text}`]);
-    if (vector === undefined) return [];
-    this.assertVectorDim(vector, "findSimilar");
+    return (await this.findSimilarMany([text], k))[0] ?? [];
+  }
+
+  /** One provider batch for all capture candidates, then bounded local KNN per candidate. */
+  async findSimilarMany(texts: readonly string[], k = 5): Promise<SimilarHit[][]> {
+    if (this.embeddings === undefined || texts.length === 0) return texts.map(() => []);
+    const vectors = await this.embeddings.embed(texts.map((text) => `search_document: ${text}`));
+    if (vectors.length !== texts.length) {
+      throw new Error(`memory-store: embedding provider returned ${vectors.length} vectors for ${texts.length} similarity queries.`);
+    }
+    return vectors.map((vector) => this.findSimilarVector(vector, k));
+  }
+
+  private findSimilarVector(vector: readonly number[], k: number): SimilarHit[] {
+    this.assertVectorDim(vector, "findSimilarMany");
     const rows = this.db
       .prepare(
         `SELECT m.id AS id, v.distance AS distance FROM memories_vec v JOIN memories m ON m.seq = v.rowid WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance`,
@@ -918,7 +927,7 @@ export class MemoryDb {
    */
   expandEntityRelations(
     seedIds: readonly string[],
-    options: { readonly seedLimit?: number; readonly maxAdditions?: number; readonly now?: Date } = {},
+    options: { readonly query: string; readonly seedLimit?: number; readonly maxAdditions?: number; readonly now?: Date },
   ): MemoryRecord[] {
     const seedLimit = Math.max(1, Math.min(options.seedLimit ?? 3, 3));
     const maxAdditions = Math.max(0, Math.min(options.maxAdditions ?? 5, 5));
@@ -930,20 +939,40 @@ export class MemoryDb {
     }
     if (seedEntities.size === 0) return [];
 
-    const relatedEntities = new Set<string>();
+    const queryTokens = relevanceTokens(options.query);
+    const relatedEntities = new Map<string, number>();
     for (const entityId of seedEntities) {
       for (const relation of this.relationsTouching(entityId)) {
-        // Self loops and duplicate reverse observations cannot broaden the set.
-        relatedEntities.add(relation.src === entityId ? relation.dst : relation.src);
+        if (relation.src === relation.dst) continue;
+        const relatedId = relation.src === entityId ? relation.dst : relation.src;
+        const seedEntity = this.getEntity(entityId);
+        const relatedEntity = this.getEntity(relatedId);
+        if (seedEntity === undefined || relatedEntity === undefined) continue;
+        // The seed name is deliberately excluded from path evidence. A query
+        // about Morgan is not permission to traverse every relation Morgan has.
+        const relationTokens = relevanceTokens(relation.relation);
+        const relatedTokens = relevanceTokens(relatedEntity.name);
+        const overlap = tokenOverlap(queryTokens, relationTokens) + tokenOverlap(queryTokens, relatedTokens);
+        if (overlap === 0 || !relationDirectionMatches(
+          options.query,
+          seedEntity.name,
+          relatedEntity.name,
+          relation.relation,
+          relation.src === entityId,
+          entityId,
+          relatedId,
+          (id, words) => this.entityReferenceIsUnique(id, words),
+        )) continue;
+        relatedEntities.set(relatedId, Math.max(relatedEntities.get(relatedId) ?? 0, overlap));
       }
     }
     if (relatedEntities.size === 0) return [];
 
-    const entities = [...relatedEntities];
+    const entities = [...relatedEntities.keys()];
     const placeholders = entities.map(() => "?").join(",");
     const now = (options.now ?? this.clock()).toISOString();
     const rows = this.db.prepare(
-      `SELECT DISTINCT m.*
+      `SELECT m.*, me.entity_id AS graph_entity_id
        FROM memory_entities me
        JOIN memories m ON m.id = me.memory_id
        JOIN entities e ON e.id = me.entity_id
@@ -951,15 +980,39 @@ export class MemoryDb {
          AND m.status NOT IN ('invalidated','dropped')
          AND (m.valid_to IS NULL OR m.valid_to >= ?)
        ORDER BY m.created_at DESC, m.id ASC`,
-    ).all(...entities, now) as Record<string, unknown>[];
-    const additions: MemoryRecord[] = [];
+    ).all(...entities, now) as Array<Record<string, unknown> & { graph_entity_id: string }>;
+    const ranked = new Map<string, { record: MemoryRecord; score: number }>();
     for (const row of rows) {
       const record = this.fromRow(row);
       if (seeds.has(record.id)) continue;
-      additions.push(record);
-      if (additions.length >= maxAdditions) break;
+      const pathScore = relatedEntities.get(String(row.graph_entity_id)) ?? 0;
+      const lexical = lexicalEvidence(queryTokens, record.text);
+      const score = pathScore + lexical;
+      const prior = ranked.get(record.id);
+      if (prior === undefined || score > prior.score) ranked.set(record.id, { record, score });
     }
-    return additions;
+    return [...ranked.values()]
+      .sort((a, b) => b.score - a.score || b.record.createdAt.localeCompare(a.record.createdAt) || a.record.id.localeCompare(b.record.id))
+      .slice(0, maxAdditions)
+      .map((entry) => entry.record);
+  }
+
+  /** Resolve one query-local entity spelling without materializing the entity catalog. */
+  private entityReferenceIsUnique(entityId: string, words: readonly string[]): boolean {
+    if (words.length === 0) return false;
+    const phrase = words.join(" ");
+    const rows = this.db.prepare(
+      `SELECT id, name FROM entities
+       WHERE id = ?
+          OR lower(name) = (SELECT lower(name) FROM entities WHERE id = ?)
+          OR lower(name) = ?
+          OR lower(name) LIKE ?
+       ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, id
+       LIMIT 3`,
+    ).all(entityId, entityId, phrase, `% ${phrase}`, entityId) as Array<{ id: string; name: string }>;
+    const key = words.join("\u0000");
+    const owners = rows.filter((row) => entityNameVariants(row.name).some((variant) => variant.join("\u0000") === key));
+    return owners.length === 1 && owners[0]?.id === entityId;
   }
 
   orphanedAssociationCount(): number {
@@ -1137,7 +1190,119 @@ function relevanceTokens(text: string): ReadonlySet<string> {
 function canonicalRelevanceToken(token: string): string {
   if (token === "decision" || token === "decided" || token === "decides" || token === "deciding") return "decide";
   if (token === "preferences" || token === "preferred" || token === "prefers") return "prefer";
+  if (token === "manager" || token === "managers" || token === "managed" || token === "manages" || token === "managing") return "manage";
+  if (token === "leader" || token === "leaders" || token === "led" || token === "leads" || token === "leading") return "lead";
+  if (token === "base" || token === "based" || token === "live" || token === "located" || token === "location" || token === "lived" || token === "lives" || token === "living") return "locate";
+  if (token === "mentored" || token === "mentors" || token === "mentoring") return "mentor";
   return token.endsWith("s") && token.length > 4 ? token.slice(0, -1) : token;
+}
+
+function tokenOverlap(left: ReadonlySet<string>, right: ReadonlySet<string>): number {
+  let overlap = 0;
+  for (const token of left) if (right.has(token)) overlap += 1;
+  return overlap;
+}
+
+/**
+ * Require an oriented relation phrase in the query. For active relation
+ * labels, `seed ... relation` asks for an outgoing edge and `relation ...
+ * seed` asks for an incoming edge. When both endpoints are named, the query
+ * must preserve the stored src -> relation -> dst order. This intentionally
+ * rejects ambiguous/passive phrasing rather than reversing graph semantics.
+ */
+function relationDirectionMatches(
+  query: string,
+  seedName: string,
+  relatedName: string,
+  relation: string,
+  seedIsSource: boolean,
+  seedId: string,
+  relatedId: string,
+  referenceIsUnique: (entityId: string, words: readonly string[]) => boolean,
+): boolean {
+  const queryWords = canonicalWords(query);
+  const seedMatch = entityPhraseMatch(queryWords, seedId, seedName, referenceIsUnique);
+  if (seedMatch === undefined) return false;
+  const seedPosition = seedMatch.position;
+  const relationTokens = relevanceTokens(relation);
+  const possessiveRole = possessiveRoleAfter(queryWords, seedMatch);
+  if (possessiveRole !== undefined) {
+    // `Morgan's manager/mentor/lead` asks for the incoming role-holder.
+    // Other predicates later in the question (for example `based`) describe
+    // the related memory and must not authorize an unrelated seed edge.
+    return relationTokens.has(possessiveRole) && !seedIsSource;
+  }
+  const relationPosition = firstTokenPosition(queryWords, relationTokens);
+  if (relationPosition < 0) return false;
+  const relatedPosition = entityPhrasePosition(queryWords, relatedId, relatedName, referenceIsUnique);
+
+  if (relatedPosition >= 0) {
+    return seedIsSource
+      ? seedPosition < relationPosition && relationPosition < relatedPosition
+      : relatedPosition < relationPosition && relationPosition < seedPosition;
+  }
+  return seedIsSource ? seedPosition < relationPosition : relationPosition < seedPosition;
+}
+
+function canonicalWords(text: string): string[] {
+  return (text.toLowerCase().match(/[a-z0-9]+/gu) ?? []).map(canonicalRelevanceToken);
+}
+
+const GENERIC_ENTITY_PREFIXES = new Set(["company", "concept", "org", "organization", "person", "project", "team"]);
+
+function entityPhraseMatch(
+  queryWords: readonly string[],
+  entityId: string,
+  name: string,
+  referenceIsUnique: (entityId: string, words: readonly string[]) => boolean,
+): { readonly position: number; readonly length: number } | undefined {
+  for (const variant of entityNameVariants(name)) {
+    const position = phrasePosition(queryWords, variant);
+    if (position < 0) continue;
+    if (referenceIsUnique(entityId, variant)) return { position, length: variant.length };
+  }
+  return undefined;
+}
+
+function entityPhrasePosition(
+  queryWords: readonly string[],
+  entityId: string,
+  name: string,
+  referenceIsUnique: (entityId: string, words: readonly string[]) => boolean,
+): number {
+  return entityPhraseMatch(queryWords, entityId, name, referenceIsUnique)?.position ?? -1;
+}
+
+const POSSESSIVE_INCOMING_ROLES = new Set(["lead", "manage", "mentor"]);
+
+function possessiveRoleAfter(
+  queryWords: readonly string[],
+  seed: { readonly position: number; readonly length: number },
+): string | undefined {
+  const possessive = seed.position + seed.length;
+  if (queryWords[possessive] !== "s") return undefined;
+  for (const token of queryWords.slice(possessive + 1, possessive + 6)) {
+    if (POSSESSIVE_INCOMING_ROLES.has(token ?? "")) return token;
+  }
+  return undefined;
+}
+
+function entityNameVariants(name: string): string[][] {
+  const full = canonicalWords(name);
+  if (full.length <= 1 || !GENERIC_ENTITY_PREFIXES.has(full[0] ?? "")) return full.length === 0 ? [] : [full];
+  return [full, full.slice(1)];
+}
+
+function phrasePosition(haystack: readonly string[], needle: readonly string[]): number {
+  if (needle.length === 0 || needle.length > haystack.length) return -1;
+  for (let index = 0; index <= haystack.length - needle.length; index += 1) {
+    if (needle.every((token, offset) => haystack[index + offset] === token)) return index;
+  }
+  return -1;
+}
+
+function firstTokenPosition(words: readonly string[], tokens: ReadonlySet<string>): number {
+  return words.findIndex((word) => tokens.has(word));
 }
 
 function lexicalEvidence(queryTokens: ReadonlySet<string>, text: string): number {

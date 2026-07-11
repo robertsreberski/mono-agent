@@ -250,6 +250,40 @@ describe("memoryRecallMcpServerSpec / env", () => {
 });
 
 describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
+  it("routes last-message questions to active history without searching durable memory", async () => {
+    let recallCalls = 0;
+    const store = {
+      async recall() {
+        recallCalls += 1;
+        return [{ score: 0.99, record: { id: "old", text: "an unrelated old message" } }];
+      },
+      async close() {},
+    };
+    const server = createMemoryRecallServer(store);
+    const client = new Client({ name: "memory-recall-test", version: "0.1.0" }, { capabilities: {} });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const tools = await client.listTools();
+      expect(tools.tools[0]?.description).toMatch(/Never use it.*last.*message/iu);
+      const result = (await client.callTool({
+        name: "MemoryRecall",
+        arguments: { query: "What did you send in the last message?" },
+      })) as {
+        content: Array<{ type: string; text: string }>;
+        structuredContent?: { hits: unknown[]; conversationRelative?: boolean };
+      };
+
+      expect(recallCalls).toBe(0);
+      expect(result.structuredContent).toMatchObject({ hits: [], conversationRelative: true });
+      expect(result.content[0]?.text).toMatch(/active conversation|current conversation history/iu);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it("answers a tools/call against a lite (FTS-only) store", async () => {
     // No embeddings → lite tier → FTS-only recall, so the test needs no Ollama/OpenAI.
     const store = createBujoMemoryStore({ root: dir });
@@ -299,6 +333,36 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
       await client.close();
       await server.close();
       await store.close();
+    }
+  });
+
+  it("keeps a non-BuJo tier on the direct limit without graph prefetch", async () => {
+    const recalls: Array<{ readonly topK?: number; readonly trackAccess?: boolean }> = [];
+    let expansions = 0;
+    const store = {
+      async recall(_query: string, options?: { readonly topK?: number; readonly trackAccess?: boolean }) {
+        recalls.push(options ?? {});
+        return [{ score: 0.9, record: { id: "direct", text: "Morgan prefers cobalt." } }];
+      },
+      supportsGraphExpansion: () => false,
+      expandGraph() {
+        expansions += 1;
+        return [];
+      },
+      async close() {},
+    };
+    const server = createMemoryRecallServer(store);
+    const client = new Client({ name: "memory-recall-test", version: "0.1.0" }, { capabilities: {} });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      await client.callTool({ name: "MemoryRecall", arguments: { query: "Morgan preference", limit: 3 } });
+      expect(recalls).toEqual([{ topK: 3 }]);
+      expect(expansions).toBe(0);
+    } finally {
+      await client.close();
+      await server.close();
     }
   });
 });

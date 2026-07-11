@@ -10,6 +10,10 @@ import {
   selectAutomaticRecallHits,
 } from "../packages/memory/dist/bujo/index.js";
 import { openMemoryDb } from "../packages/memory/dist/store/index.js";
+import {
+  MEMORY_CLEANUP_BENCHMARK_GATES,
+  runMemoryCleanupBenchmark,
+} from "./lib/memory-cleanup-calibration.mjs";
 
 export const MEMORY_BENCHMARK_GATES = Object.freeze({
   recallAt5: 0.9,
@@ -205,6 +209,12 @@ export async function runMemoryBenchmark(options = {}) {
     const policyCalibration = policyCalibrationMetrics(policyResults);
     const audit = db.audit();
     const storageBytes = await directoryBytes(root);
+    // Fixed capture/graph calibration is intentionally separate from provider
+    // retrieval quality, latency, and cost. It uses its own disposable stores,
+    // deterministic providers, and counters so it cannot improve or pollute the
+    // selected provider's metrics above.
+    const memoryCleanup = suite === "fast" ? await runMemoryCleanupBenchmark() : undefined;
+    const primaryGates = memoryBenchmarkGateResults(quality, policyCalibration);
     const report = {
       suite,
       provider: options.provider ?? "deterministic",
@@ -235,13 +245,24 @@ export async function runMemoryBenchmark(options = {}) {
         duplicateRatio: audit.duplicates.ratio,
         vectorCoverage: audit.vectors.liveCoverage,
       },
-      gates: memoryBenchmarkGateResults(quality, policyCalibration),
+      ...(memoryCleanup === undefined ? {} : { calibrations: { memoryCleanup } }),
+      gates: combineBenchmarkGates(primaryGates, memoryCleanup),
     };
     return report;
   } finally {
     db.close();
     await rm(root, { recursive: true, force: true });
   }
+}
+
+function combineBenchmarkGates(primary, memoryCleanup) {
+  if (memoryCleanup === undefined) return primary;
+  return {
+    ...primary,
+    passed: primary.passed && memoryCleanup.passed,
+    checks: { ...primary.checks, memoryCleanup: memoryCleanup.passed },
+    thresholds: { ...primary.thresholds, memoryCleanup: MEMORY_CLEANUP_BENCHMARK_GATES },
+  };
 }
 
 function qualityMetrics(results, staleIds) {
@@ -604,6 +625,11 @@ function parseArgs(argv) {
 function render(report) {
   const q = report.quality;
   const e = report.efficiency;
+  const cleanup = report.calibrations?.memoryCleanup;
+  const cleanupLines = cleanup === undefined ? [] : [
+    `capture calls ${cleanup.capture.metrics.baseline.calls}->${cleanup.capture.metrics.candidate.calls} (${(cleanup.capture.metrics.candidate.callReduction * 100).toFixed(1)}% reduction)  associations P/R ${cleanup.capture.metrics.candidate.associationPrecision.toFixed(3)}/${cleanup.capture.metrics.candidate.associationRecall.toFixed(3)}`,
+    `graph multi-hop Recall@5 ${(cleanup.graph.metrics.multiHop.baselineRecallAt5 * 100).toFixed(1)}%->${(cleanup.graph.metrics.multiHop.enabledRecallAt5 * 100).toFixed(1)}%  direct ${(cleanup.graph.metrics.direct.baselineRecallAt5 * 100).toFixed(1)}%->${(cleanup.graph.metrics.direct.enabledRecallAt5 * 100).toFixed(1)}%  adversarial leaks ${cleanup.graph.metrics.adversarial.leakCount}`,
+  ];
   return [
     `memory benchmark (${report.suite}, ${report.provider}, disposable store)`,
     `Recall@1/5/8 ${(q.recallAt1 * 100).toFixed(1)}% / ${(q.recallAt5 * 100).toFixed(1)}% / ${(q.recallAt8 * 100).toFixed(1)}%`,
@@ -616,6 +642,7 @@ function render(report) {
     `context ${e.contextBytes.total} B  search p50/p95 ${e.searchLatencyMs.p50.toFixed(3)}/${e.searchLatencyMs.p95.toFixed(3)} ms`,
     `index ${e.indexingLatencyMs.total.toFixed(3)} ms  storage ${e.storageBytes} B  embeddings ${e.embeddings.calls} calls/${e.embeddings.texts} texts, ${e.embeddings.inputTokens} tokens, $${e.embeddings.costUsd.toFixed(6)}`,
     `LLM ${e.llm.calls} calls, ${e.llm.inputTokens + e.llm.outputTokens} tokens, $${e.llm.costUsd.toFixed(6)}  queue drain ${e.queueDrainMs.toFixed(3)} ms`,
+    ...cleanupLines,
     `gate ${report.gates.passed ? "PASS" : "FAIL"}`,
   ].join("\n") + "\n";
 }

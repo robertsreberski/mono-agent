@@ -33,6 +33,11 @@ const TIME_VALUE = /\b(?:[01]?\d|2[0-3]):[0-5]\d\b|\b\d{1,2}(?::[0-5]\d)?\s*(?:a
 const PHONE_VALUE = /\b(?:\+?\d[\d .()-]{5,}\d|\d{3}[- .]\d{3,})\b/u;
 const CONVERSATION_RELATIVE = /\b(?:last|previous|immediately preceding)\s+(?:message|reply|response)\b|\bwhat did you (?:send|say)\b/iu;
 
+/** True when the answer belongs to active conversation history, never durable memory. */
+export function isConversationRelativeQuery(query: string): boolean {
+  return CONVERSATION_RELATIVE.test(query);
+}
+
 // Ambiguous roles and relations are explicit-tool territory. In particular,
 // automatic context never tries to resolve who/manager/lead/approval queries.
 const ACTOR_OR_RELATION_QUERY = /\b(?:who|whose|manager|manages?|managed|lead|leads|leading|led|approve|approves|approved|approving|approval)\b/iu;
@@ -71,7 +76,7 @@ export function selectAnswerBearingRecallHits<T extends RecallEvidenceHit>(
   query: string,
   hits: readonly T[],
 ): readonly T[] {
-  if (hits.length === 0 || CONVERSATION_RELATIVE.test(query)) return [];
+  if (hits.length === 0 || isConversationRelativeQuery(query)) return [];
   const directFact = parseDirectFactQuery(query);
   if (directFact === undefined) return [];
   return hits.filter((hit) => matchesDirectFact(directFact, hit.record.text));

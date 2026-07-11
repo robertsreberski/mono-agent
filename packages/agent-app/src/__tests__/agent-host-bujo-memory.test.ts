@@ -133,7 +133,7 @@ describe("createConfiguredMemory — bujo mode", () => {
       .capture("conv-1", "Morgan prefers agent-host memory LLM calls.");
 
     expect(result).toEqual({ actions: 0, entities: 0 });
-    expect(runtime.calls.length).toBeGreaterThanOrEqual(2);
+    expect(runtime.calls).toHaveLength(1);
     for (const call of runtime.calls) {
       expect(call.systemPrompt).toMatch(/private memory maintenance LLM/u);
       expect(call.options.model).toMatchObject({ sdk: "pi", provider: "openai-codex", model: "gpt-5.5" });
@@ -185,16 +185,14 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
 
     expect(await readSummaries(join(dir, "artifacts"))).toHaveLength(0);
     const summaries = await readSummaries(join(dir, "artifacts", "memory"));
-    expect(summaries.length).toBeGreaterThanOrEqual(2);
+    expect(summaries).toHaveLength(1);
     for (const s of summaries) {
       expect(s.runId).toMatch(/^mem-/u);
       expect(s.status).toBe("succeeded");
       expect(s.conversationId).toMatch(/^memory:/u);
     }
     const convs = summaries.map((s) => s.conversationId);
-    // distill + entities both fire on a first capture; their labels flow from memory-bujo through to the recorder.
-    expect(convs).toContain("memory:capture:distill");
-    expect(convs).toContain("memory:capture:entities");
+    expect(convs).toEqual(["memory:capture:extract"]);
   });
 
   it("publishes traced memory LLM runs to the configured live run-event sink", async () => {
@@ -242,12 +240,10 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
 
     expect(await readSummaries(join(dir, "artifacts"))).toHaveLength(0);
     const summaries = await readSummaries(join(dir, "artifacts", "memory"));
-    expect(summaries.length).toBeGreaterThanOrEqual(2);
+    expect(summaries).toHaveLength(1);
     expect(summaries.every((s) => s.source === "memory")).toBe(true);
-    const distill = summaries.find((s) => s.conversationId === "memory:capture:distill");
-    expect(distill?.sourceDetail).toBe("distill");
-    const entities = summaries.find((s) => s.conversationId === "memory:capture:entities");
-    expect(entities?.sourceDetail).toBe("entities");
+    const extract = summaries.find((s) => s.conversationId === "memory:capture:extract");
+    expect(extract?.sourceDetail).toBe("extract");
   });
 
   it("exports memory runs through the configured exporter", async () => {
@@ -270,13 +266,13 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     await store.capture("conv-1", "some text");
     await store.close();
 
-    expect(spy.finished.length).toBeGreaterThanOrEqual(2);
-    expect(spy.finished.map((s) => s.conversationId)).toContain("memory:capture:distill");
-    // Every memory run is tagged as a "memory" kind, and the distill run carries
+    expect(spy.finished).toHaveLength(1);
+    expect(spy.finished.map((s) => s.conversationId)).toContain("memory:capture:extract");
+    // Every memory run is tagged as a "memory" kind, and the extract run carries
     // its operation — these drive the Phoenix span kind + memory.operation attribute.
     expect(spy.contexts.every((c) => c.runKind === "memory")).toBe(true);
-    const distill = spy.contexts.find((c) => c.conversationId === "memory:capture:distill");
-    expect(distill?.memoryOperation).toBe("distill");
+    const extract = spy.contexts.find((c) => c.conversationId === "memory:capture:extract");
+    expect(extract?.memoryOperation).toBe("extract");
   });
 
   it("reports a memory LLM timeout distinctly from a cancellation (provider too slow/unavailable)", async () => {
@@ -328,7 +324,7 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     await store.capture("conv-1", "text");
     await store.close();
 
-    expect(runtime.calls.length).toBeGreaterThanOrEqual(2);
+    expect(runtime.calls).toHaveLength(1);
     for (const call of runtime.calls) {
       expect("onEvent" in call.options).toBe(false);
     }
@@ -438,7 +434,7 @@ function createRecordingRuntime() {
     calls,
     async run(systemPrompt: string, options: RuntimeRunOptions) {
       calls.push({ systemPrompt, options });
-      return { text: "[]" };
+      return { text: '{"memories":[],"entities":[],"relations":[]}' };
     },
   };
 }

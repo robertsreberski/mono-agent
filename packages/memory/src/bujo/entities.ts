@@ -94,9 +94,13 @@ export async function extractEntities(text: string, llm: LlmComplete): Promise<E
   }
 
   const parsed = parseJsonLoose<RawExtraction>(raw);
-  if (parsed === undefined || typeof parsed !== "object" || parsed === null) return EMPTY;
+  return normalizeExtraction(parsed);
+}
 
-  const rawEntities = Array.isArray(parsed.entities) ? parsed.entities : [];
+export function normalizeExtraction(parsed: unknown): Extraction {
+  if (parsed === undefined || typeof parsed !== "object" || parsed === null) return EMPTY;
+  const input = parsed as RawExtraction;
+  const rawEntities = Array.isArray(input.entities) ? input.entities : [];
   const entities: ExtractedEntity[] = [];
   for (const item of rawEntities) {
     const normalized = normalizeEntity(item);
@@ -104,7 +108,7 @@ export async function extractEntities(text: string, llm: LlmComplete): Promise<E
   }
 
   const entityIds = new Set(entities.map((e) => e.id));
-  const rawRelations = Array.isArray(parsed.relations) ? parsed.relations : [];
+  const rawRelations = Array.isArray(input.relations) ? input.relations : [];
   const relations: ExtractedRelation[] = [];
   for (const item of rawRelations) {
     const normalized = normalizeRelation(item, entityIds);

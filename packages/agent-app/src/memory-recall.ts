@@ -6,6 +6,7 @@ import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { CircuitBreakerEmbeddingOptions, EmbeddingProviderConfig } from "@mono-agent/memory/search";
 import type { MemoryStatus, MemoryType } from "@mono-agent/memory/store";
+import { isConversationRelativeQuery } from "@mono-agent/memory/bujo";
 import * as z from "zod/v4";
 
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
@@ -105,6 +106,16 @@ export interface RecallCapableStore {
       readonly isInsight?: boolean;
     };
   }[]>;
+  /** Optional deterministic one-hop expansion, used only by the explicit tool. */
+  expandGraph?(
+    query: string,
+    directHits: Awaited<ReturnType<RecallCapableStore["recall"]>>,
+    options?: { readonly topK?: number },
+  ): Awaited<ReturnType<RecallCapableStore["recall"]>> | Promise<Awaited<ReturnType<RecallCapableStore["recall"]>>>;
+  /** Explicit capability check for stores whose graph method is tier-dependent. */
+  supportsGraphExpansion?(): boolean;
+  /** Record only the final hits actually served by the tool. */
+  recordAccess?(ids: readonly string[]): void;
   flush?(): Promise<void>;
   close(): Promise<void>;
 }
@@ -406,17 +417,32 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     "MemoryRecall",
     {
       title: "Recall from memory",
-      description: "Read-only hybrid (keyword + semantic) search over the agent's long-term memory. Call this proactively whenever you are missing context, unsure about a prior decision, or about to assume or ask the user for something that may already be recorded — recall first, then act.",
+      description: "Read-only hybrid (keyword + semantic) search over durable long-term memory. Use it for prior preferences, facts, and decisions. Never use it to answer what was said or sent in the current, last, previous, or immediately preceding message; use the active conversation history for those questions.",
       inputSchema: {
         query: z.string().min(1).describe("Natural-language description of what to recall."),
         limit: z.number().int().min(1).max(50).optional().describe("Max results (default 8)."),
       },
     },
     async (args) => {
+      if (isConversationRelativeQuery(args.query)) {
+        const guidance = "This question refers to the active conversation, not long-term memory. Use the current conversation history to identify the last message.";
+        return {
+          content: [{ type: "text", text: guidance }],
+          structuredContent: { hits: [], conversationRelative: true, guidance },
+        };
+      }
       const topK = clampLimit(args.limit, 8);
       let hits: Awaited<ReturnType<RecallCapableStore["recall"]>>;
       try {
-        hits = await store.recall(args.query, { topK });
+        const graphEnabled = store.expandGraph !== undefined && store.supportsGraphExpansion?.() !== false;
+        const direct = await store.recall(args.query, {
+          topK: graphEnabled ? 50 : topK,
+          ...(graphEnabled ? { trackAccess: false } : {}),
+        });
+        hits = !graphEnabled || store.expandGraph === undefined
+          ? direct.slice(0, topK)
+          : await store.expandGraph(args.query, direct, { topK });
+        if (graphEnabled) store.recordAccess?.(hits.map((hit) => hit.record.id));
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         return {

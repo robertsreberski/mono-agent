@@ -3,10 +3,11 @@ import { relative } from "node:path";
 import type { MemoryDb, MemoryRecord, SimilarHit } from "../store/index.js";
 
 import { appendBullet, dailyFilePath, rewriteBullet } from "./daily.js";
+import { normalizeCandidateText, type CandidateMemory } from "./distill.js";
 import { parseJsonLoose } from "./json.js";
 import type { LlmComplete } from "./llm.js";
 import { MemoryModelError } from "./model-error.js";
-import type { Bullet, CandidateMemory } from "./types.js";
+import type { Bullet } from "./types.js";
 
 /** The outcome of reconciling a single candidate against the existing index. */
 export type ReconcileAction =
@@ -82,8 +83,117 @@ export async function reconcile(
 }
 
 /**
+ * Reconcile a whole captured turn with one embedding batch and at most one LLM
+ * classification call. Novel candidates bypass the second LLM call.
+ */
+export async function reconcileBatch(
+  candidates: readonly CandidateMemory[],
+  deps: ReconcileDeps,
+): Promise<Array<ReconcileAction | undefined>> {
+  const threadThreshold = deps.threadThreshold ?? 0.35;
+  const dupThreshold = deps.dupThreshold ?? 0.5;
+  let neighbours: readonly SimilarHit[][];
+  try {
+    neighbours = await deps.db.findSimilarMany(candidates.map((candidate) => candidate.text), 5);
+  } catch (cause) {
+    throw new MemoryModelError("embedding", "findSimilarBatch", cause);
+  }
+
+  const reconcileIndexes = candidates.flatMap((_candidate, index) => {
+    const similar = neighbours[index] ?? [];
+    return similar.length > 0 && (similar[0]?.distance ?? Infinity) <= dupThreshold ? [index] : [];
+  });
+  const reconcileIndexSet = new Set(reconcileIndexes);
+  const decisions = reconcileIndexes.length === 0
+    ? new Map<number, Classification>()
+    : await classifyBatch(candidates, neighbours, reconcileIndexes, deps);
+  const actions: Array<ReconcileAction | undefined> = candidates.map(() => undefined);
+  for (const [index, candidate] of candidates.entries()) {
+    const similar = neighbours[index] ?? [];
+    try {
+      if (!reconcileIndexSet.has(index)) {
+        actions[index] = await add(candidate, similar, deps, threadThreshold);
+      } else {
+        // A close candidate with a missing or malformed batch decision must
+        // fail closed. Leave its slot empty: synthesizing a noop would later
+        // attach this candidate's entities to a neighbour the model never
+        // selected, corrupting the precise graph.
+        const decision = decisions.get(index);
+        if (decision === undefined) continue;
+        actions[index] = await apply(candidate, decision, similar, deps, threadThreshold);
+      }
+    } catch (error) {
+      if (error instanceof MemoryModelError) throw error;
+      // One malformed candidate cannot abort the rest of the turn.
+    }
+  }
+  return actions;
+}
+
+async function classifyBatch(
+  candidates: readonly CandidateMemory[],
+  neighbours: readonly (readonly SimilarHit[])[],
+  indexes: readonly number[],
+  deps: ReconcileDeps,
+): Promise<Map<number, Classification>> {
+  const input = indexes.map((index) => ({
+    index,
+    candidate: candidates[index],
+    existing: (neighbours[index] ?? []).map((hit) => ({
+      id: hit.record.id,
+      distance: Number(hit.distance.toFixed(6)),
+      text: hit.record.text,
+    })),
+  }));
+  let raw: string;
+  try {
+    raw = await deps.llm.complete(
+      `Classify each candidate against only its supplied existing memories. Return ONLY a JSON array:
+[{"index":0,"action":"add|update|supersede|noop","targetId":"existing id when required","text":"merged/replacement text when needed"}]
+- add: genuinely new; noop: duplicate; update: refinement; supersede: contradiction.
+- Preserve every input index exactly once. targetId must come from that candidate's existing list.
+
+INPUT:
+${JSON.stringify(input)}`,
+      { label: "capture:reconcile-batch" },
+    );
+  } catch (cause) {
+    throw new MemoryModelError("llm", "classify-batch", cause);
+  }
+  const parsed = parseJsonLoose<unknown[]>(raw);
+  const decisions = new Map<number, Classification>();
+  const seenIndexes = new Set<number>();
+  const duplicates = new Set<number>();
+  if (!Array.isArray(parsed)) return decisions;
+  for (const item of parsed) {
+    if (item === null || typeof item !== "object") continue;
+    const record = item as { index?: unknown; action?: unknown; targetId?: unknown; text?: unknown };
+    const index = typeof record.index === "number" && Number.isInteger(record.index) ? record.index : -1;
+    if (!indexes.includes(index) || duplicates.has(index)) continue;
+    if (seenIndexes.has(index)) {
+      decisions.delete(index);
+      duplicates.add(index);
+      continue;
+    }
+    seenIndexes.add(index);
+    if (typeof record.action !== "string" || !VALID_ACTIONS.has(record.action)) continue;
+    const targetId = typeof record.targetId === "string" ? record.targetId : undefined;
+    if (record.action !== "add" && (
+      targetId === undefined || !(neighbours[index] ?? []).some((hit) => hit.record.id === targetId)
+    )) continue;
+    const text = normalizeCandidateText(record.text);
+    decisions.set(index, {
+      action: record.action,
+      ...(targetId === undefined ? {} : { targetId }),
+      ...(text === undefined ? {} : { text }),
+    });
+  }
+  return decisions;
+}
+
+/**
  * Ask the LLM to classify the candidate against its nearest neighbours. A malformed *reply* is
- * tolerated (→ undefined → caller falls back to ADD), but a model *failure* is rethrown as a
+ * tolerated (→ undefined → caller fails closed to the nearest neighbour), but a model *failure* is rethrown as a
  * {@link MemoryModelError} so a dead model surfaces instead of silently degrading to ADD.
  */
 async function classify(
@@ -107,10 +217,11 @@ async function classify(
   if (action !== "add") {
     if (targetId === undefined || !similar.some((h) => h.record.id === targetId)) return undefined;
   }
+  const text = normalizeCandidateText(parsed.text);
   return {
     action,
     ...(targetId !== undefined && { targetId }),
-    ...(typeof parsed.text === "string" && { text: parsed.text }),
+    ...(text === undefined ? {} : { text }),
   };
 }
 
@@ -132,7 +243,7 @@ EXISTING:
 ${neighbours}`;
 };
 
-/** Dispatch a parsed classification (or fall back to ADD when it is missing/invalid). */
+/** Dispatch a parsed classification, failing closed for ambiguous close candidates. */
 async function apply(
   candidate: CandidateMemory,
   decision: Classification | undefined,
@@ -140,9 +251,16 @@ async function apply(
   deps: ReconcileDeps,
   threadThreshold: number,
 ): Promise<ReconcileAction> {
-  if (decision === undefined) return add(candidate, similar, deps, threadThreshold);
+  if (decision === undefined) {
+    const fallback = closestNoop(similar);
+    return fallback === undefined
+      ? add(candidate, similar, deps, threadThreshold)
+      : { kind: "noop", id: fallback.targetId ?? "" };
+  }
 
   switch (decision.action) {
+    case "add":
+      return add(candidate, similar, deps, threadThreshold);
     case "noop":
       // targetId is guaranteed present for non-add by classify().
       return { kind: "noop", id: decision.targetId ?? "" };
@@ -150,9 +268,18 @@ async function apply(
       return update(candidate, decision, similar, deps, threadThreshold);
     case "supersede":
       return supersede(candidate, decision, similar, deps, threadThreshold);
-    default:
-      return add(candidate, similar, deps, threadThreshold);
+    default: {
+      const fallback = closestNoop(similar);
+      return fallback === undefined
+        ? add(candidate, similar, deps, threadThreshold)
+        : { kind: "noop", id: fallback.targetId ?? "" };
+    }
   }
+}
+
+function closestNoop(similar: readonly SimilarHit[]): Classification | undefined {
+  const id = similar[0]?.record.id;
+  return id === undefined ? undefined : { action: "noop", targetId: id };
 }
 
 /** ADD: append a new bullet, index it, and thread edges to near neighbours. */
@@ -196,7 +323,7 @@ async function update(
   const targetId = decision.targetId ?? "";
   const target = deps.db.get(targetId);
   if (target === undefined || target.source.file === undefined) {
-    return add(candidate, similar, deps, threadThreshold);
+    throw new Error(`memory-reconcile: update target "${targetId}" is unavailable.`);
   }
   const mergedText = decision.text ?? candidate.text;
   rewriteBullet(deps.root, target.source.file, targetId, { text: mergedText });
@@ -215,7 +342,7 @@ async function supersede(
   const targetId = decision.targetId ?? "";
   const old = deps.db.get(targetId);
   if (old === undefined) {
-    return add(candidate, similar, deps, threadThreshold);
+    throw new Error(`memory-reconcile: supersede target "${targetId}" is unavailable.`);
   }
   const now = deps.now();
   const id = deps.nextId();
@@ -230,12 +357,13 @@ async function supersede(
     createdAt: now.toISOString(),
     refs: [],
   };
-  // Canonical-markdown first (strike old, append new), then mirror to the index. If the index step
-  // throws, a rebuild from markdown still reproduces the correct state (old invalidated, new present).
+  // Append the validated replacement before invalidating the old bullet. A
+  // filesystem failure may temporarily leave both live (precision-safe), but
+  // can never leave the only durable fact invalidated with no replacement.
+  appendBullet(deps.root, bullet, now);
   if (old.source.file !== undefined) {
     rewriteBullet(deps.root, old.source.file, targetId, { status: "invalidated" });
   }
-  appendBullet(deps.root, bullet, now);
   await deps.db.supersede(targetId, recordFor(bullet, deps.root, now));
   return { kind: "supersede", oldId: targetId, newId: id };
 }

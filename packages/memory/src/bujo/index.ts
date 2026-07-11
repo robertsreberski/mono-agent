@@ -8,6 +8,7 @@ export {
   composeRecallBlock,
   selectAutomaticRecallHits,
 } from "./recall.js";
+export { isConversationRelativeQuery } from "./recall-evidence.js";
 export { rebuildFromMarkdown } from "./rebuild.js";
 export { MARKER_FOR, parseBullet, serializeBullet, parseDailyFile, serializeDailyFile } from "./grammar.js";
 export { appendBullet, dailyFilePath } from "./daily.js";
@@ -20,13 +21,16 @@ export type { MemoryModelKind } from "./model-error.js";
 // Phase 2 capture pipeline
 export { captureTurn } from "./capture.js";
 export type { CaptureTurnResult } from "./capture.js";
+export { extractCapturePlan, MAX_CAPTURE_ENTITIES, MAX_CAPTURE_MEMORIES, MAX_CAPTURE_RELATIONS } from "./capture-batch.js";
+export type { CapturePlan } from "./capture-batch.js";
 export { distill } from "./distill.js";
 export type { CandidateMemory } from "./distill.js";
 export { reconcile } from "./reconcile.js";
+export { reconcileBatch } from "./reconcile.js";
 export type { ReconcileAction, ReconcileDeps } from "./reconcile.js";
 export { extractEntities } from "./entities.js";
 export type { Extraction, ExtractedEntity, ExtractedRelation } from "./entities.js";
-export { readGraph } from "./graph.js";
+export { appendAssociation, readGraph } from "./graph.js";
 
 // Phase 4 built-in LLM adapter
 export { createOllamaLlm } from "./ollama-llm.js";

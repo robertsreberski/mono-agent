@@ -445,7 +445,7 @@ describe("agent host composition helpers", () => {
     const channel = createFakeRuntime(async () => ({ text: "Harness answer" }));
     // Dedicated memory runtime (the injection seam the production path builds for
     // itself). Captures the memory LLM calls so we can assert their shape.
-    const memoryRuntime = createFakeRuntime(async () => ({ text: "[]" }));
+    const memoryRuntime = createFakeRuntime(async () => ({ text: '{"memories":[],"entities":[],"relations":[]}' }));
 
     const config = monoConfig({
       dir,
@@ -481,7 +481,7 @@ describe("agent host composition helpers", () => {
     }, { append: async () => {} });
 
     expect(response.text).toBe("Harness answer");
-    for (let i = 0; i < 20 && memoryRuntime.calls.length < 2; i += 1) {
+    for (let i = 0; i < 20 && memoryRuntime.calls.length < 1; i += 1) {
       await delay(5);
     }
 
@@ -491,7 +491,7 @@ describe("agent host composition helpers", () => {
 
     // The memory LLM ran on its own runtime, with the configured memory model and
     // the locked-down per-call shape.
-    expect(memoryRuntime.calls.length).toBeGreaterThanOrEqual(2);
+    expect(memoryRuntime.calls).toHaveLength(1);
     for (const call of memoryRuntime.calls) {
       expect(call.options.model).toMatchObject({ sdk: "pi", provider: "openai-codex", model: "gpt-5.5" });
       expect(call.options.allowedTools).toEqual([]);

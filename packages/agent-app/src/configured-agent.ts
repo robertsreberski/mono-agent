@@ -741,7 +741,7 @@ function createAgentHostMemoryLlm(options: {
   readonly timeoutMs?: number;
   /**
    * When set, each `complete()` is recorded as one run through the shared
-   * JSONL + Phoenix pipeline. The per-call `label` (e.g. "capture:distill")
+   * JSONL + Phoenix pipeline. The per-call `label` (e.g. "capture:extract")
    * selects the run's conversation id and id slug. Omitted → bare, unrecorded run.
    */
   readonly recording?: {
@@ -846,7 +846,7 @@ function memorySlug(label: string | undefined): string {
 
 /**
  * Memory sub-operation for the `mono.agent.memory.operation` trace attribute.
- * The ritual labels are `capture:distill` / `capture:reconcile` / `capture:entities`
+ * The capture ritual labels are `capture:extract` / `capture:reconcile-batch`
  * (take the part after the colon) and the bare `reflect` / `migrate` (verbatim).
  */
 function memoryOperationFromLabel(label: string | undefined): string | undefined {

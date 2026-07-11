@@ -48,6 +48,21 @@ describe("memory benchmark", () => {
       llm: expect.any(Object),
       queueDrainMs: expect.any(Number),
     });
+    const cleanup = report.calibrations.memoryCleanup;
+    expect(cleanup.capture).toMatchObject({
+      passed: true,
+      metrics: { candidate: { calls: 2, callReduction: 0.6, associationPrecision: 1, associationRecall: 1 } },
+    });
+    expect(cleanup.graph).toMatchObject({
+      passed: true,
+      metrics: {
+        multiHop: { cases: 10, baselineRecallAt5: 0, enabledRecallAt5: 1 },
+        direct: { cases: 10, baselineRecallAt5: 1, enabledRecallAt5: 1 },
+        adversarial: { cases: 10, leakCount: 0, missingRequiredCount: 0 },
+        efficiency: { queryEmbeddingCalls: 20, expectedQueryEmbeddingCalls: 20, llmCalls: 0 },
+      },
+    });
+    expect(report.gates.checks.memoryCleanup).toBe(true);
   });
 
   it("adapts opt-in LongMemEval session ids and LoCoMo dialogue evidence", async () => {

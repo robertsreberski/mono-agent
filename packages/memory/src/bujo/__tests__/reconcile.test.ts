@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { appendBullet, dailyFilePath } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
 import { createIdFactory } from "../ids.js";
-import { reconcile, type ReconcileDeps } from "../reconcile.js";
+import { reconcile, reconcileBatch, type ReconcileDeps } from "../reconcile.js";
 import type { Bullet, CandidateMemory } from "../types.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 
@@ -274,5 +274,112 @@ describe("reconcile", () => {
       isInsight: false,
     };
     await expect(reconcile([candidate], makeDeps(db, root, throwingLlm))).rejects.toThrow(/classif/i);
+  });
+});
+
+describe("reconcileBatch", () => {
+  it("skips a close candidate on malformed output while a novel candidate still adds", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "NEAR", "ship the phase two reconcile engine across markdown and index");
+    const close: CandidateMemory = {
+      type: "task", text: "ship the phase two reconcile engine across markdown and index now", salience: 0.6, isInsight: false,
+    };
+    const novel: CandidateMemory = {
+      type: "task", text: "schedule offsite catering and travel logistics", salience: 0.7, isInsight: false,
+    };
+
+    const actions = await reconcileBatch(
+      [close, novel],
+      makeDeps(db, root, fakeLlm([["Classify each candidate", "not-json"]])),
+    );
+
+    expect(actions[0]).toBeUndefined();
+    expect(actions[1]?.kind).toBe("add");
+    expect(db.count()).toBe(2);
+    expect(db.get("NEAR")?.status).toBe("open");
+    expect(parseDailyFile(dailyContent(root)).bullets).toHaveLength(2);
+  });
+
+  it("fails closed for duplicate indexes and cross-candidate targets without corrupting other slots", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "A", "alpha deployment uses a cobalt release train");
+    await seed(db, root, "B", "beta deployment uses a green release train");
+    await seed(db, root, "C", "gamma deployment uses a silver release train");
+    const candidates: CandidateMemory[] = [
+      { type: "note", text: "alpha deployment uses cobalt releases", salience: 0.5, isInsight: false },
+      { type: "note", text: "beta deployment uses green releases", salience: 0.5, isInsight: false },
+      { type: "note", text: "gamma deployment uses silver releases", salience: 0.5, isInsight: false },
+    ];
+    db.findSimilarMany = async () => [
+      [{ record: db.get("A")!, distance: 0.1 }],
+      [{ record: db.get("B")!, distance: 0.1 }],
+      [{ record: db.get("C")!, distance: 0.1 }],
+    ];
+    const reply = JSON.stringify([
+      { index: 0, action: "noop", targetId: "A" },
+      { index: 0, action: "noop", targetId: "A" },
+      { index: 1, action: "noop", targetId: "A" },
+      { index: 2, action: "noop", targetId: "C" },
+    ]);
+
+    const actions = await reconcileBatch(
+      candidates,
+      makeDeps(db, root, fakeLlm([["Classify each candidate", reply]])),
+    );
+
+    expect(actions).toEqual([undefined, undefined, { kind: "noop", id: "C" }]);
+    expect(db.count()).toBe(3);
+    expect(parseDailyFile(dailyContent(root)).bullets).toHaveLength(3);
+  });
+
+  it("normalizes model-authored update and supersede text before canonical mutation", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "UPDATE", "Morgan prefers blue green deployments");
+    await seed(db, root, "OLD", "Atlas launches in July this year");
+    const candidates: CandidateMemory[] = [
+      { type: "note", text: "Morgan prefers blue green deployments with review", salience: 0.7, isInsight: false },
+      { type: "note", text: "Atlas launches in August this year", salience: 0.8, isInsight: false },
+    ];
+    db.findSimilarMany = async () => [
+      [{ record: db.get("UPDATE")!, distance: 0.1 }],
+      [{ record: db.get("OLD")!, distance: 0.1 }],
+    ];
+    const unsafe = `  Morgan\n prefers <!--mem blue green deployments ${"with review ".repeat(40)}`;
+    const reply = JSON.stringify([
+      { index: 0, action: "update", targetId: "UPDATE", text: unsafe },
+      { index: 1, action: "supersede", targetId: "OLD", text: " \n <!--mem " },
+    ]);
+
+    const actions = await reconcileBatch(
+      candidates,
+      makeDeps(db, root, fakeLlm([["Classify each candidate", reply]])),
+    );
+
+    expect(actions[0]).toEqual({ kind: "update", id: "UPDATE" });
+    expect(actions[1]?.kind).toBe("supersede");
+    expect(db.get("UPDATE")?.text).not.toMatch(/[\n\r]|<!--mem/u);
+    expect(db.get("UPDATE")?.text.length).toBeLessThanOrEqual(280);
+    const replacementId = actions[1]?.kind === "supersede" ? actions[1].newId : "";
+    expect(db.get(replacementId)?.text).toBe(candidates[1]?.text);
+    expect(db.get("OLD")?.status).toBe("invalidated");
+  });
+
+  it("allows an explicit valid add decision for a close candidate", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "NEAR", "Morgan reviewed the Atlas release budget");
+    const candidate: CandidateMemory = {
+      type: "note", text: "Morgan reviewed the Atlas release budget today", salience: 0.6, isInsight: false,
+    };
+    db.findSimilarMany = async () => [[{ record: db.get("NEAR")!, distance: 0.1 }]];
+    const actions = await reconcileBatch(
+      [candidate],
+      makeDeps(db, root, fakeLlm([["Classify each candidate", '[{"index":0,"action":"add"}]']])),
+    );
+    expect(actions[0]?.kind).toBe("add");
+    expect(db.count()).toBe(2);
   });
 });

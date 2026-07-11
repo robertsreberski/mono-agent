@@ -2,7 +2,7 @@ import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { appendEntity, appendRelation, readGraph } from "../graph.js";
+import { appendAssociation, appendEntity, appendRelation, readGraph } from "../graph.js";
 import type { EntityRecord, EntityRelationRecord } from "../../store/index.js";
 
 function entity(id: string, name: string): EntityRecord {
@@ -16,7 +16,7 @@ function relation(src: string, dst: string, rel: string): EntityRelationRecord {
 describe("readGraph", () => {
   it("returns empty collections when file does not exist", () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-graph-"));
-    expect(readGraph(root)).toEqual({ entities: [], relations: [] });
+    expect(readGraph(root)).toEqual({ entities: [], relations: [], associations: [] });
   });
 
   it("round-trips: appended entities and relations are readable", () => {
@@ -141,6 +141,33 @@ describe("readGraph", () => {
     const lines = readFileSync(join(root, "graph.jsonl"), "utf8").trim().split("\n");
     expect(lines).toHaveLength(1);
     expect(readGraph(root).relations).toHaveLength(1);
+  });
+
+  it("appends a precise capture association over legacy evidence so last-write wins", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-"));
+    appendAssociation(root, {
+      memoryId: "memory-1",
+      entityId: "person:alice",
+      provenance: "legacy-name-match",
+      createdAt: "2026-06-15T09:00:00.000Z",
+    });
+    appendAssociation(root, {
+      memoryId: "memory-1",
+      entityId: "person:alice",
+      provenance: "capture",
+      createdAt: "2026-06-16T09:00:00.000Z",
+    });
+    appendAssociation(root, {
+      memoryId: "memory-1",
+      entityId: "person:alice",
+      provenance: "legacy-name-match",
+      createdAt: "2026-06-17T09:00:00.000Z",
+    });
+
+    expect(readGraph(root).associations).toEqual([
+      expect.objectContaining({ memoryId: "memory-1", entityId: "person:alice", provenance: "capture" }),
+    ]);
+    expect(readFileSync(join(root, "graph.jsonl"), "utf8").trim().split("\n")).toHaveLength(2);
   });
 
   it("skips malformed lines without throwing", () => {
