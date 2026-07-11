@@ -1528,8 +1528,8 @@ function sessionContextBlock(
 }
 
 const HOST_MANAGED_MEMORY_GUIDANCE = [
-  "Long-term memory is owned and persisted by the host after successful turns.",
-  "To remember something, acknowledge it in your reply and let host capture complete; never edit memory Markdown, SQLite databases, indexes, manifests, or other internal memory state with file or shell tools.",
+  "Long-term memory state is owned by the host; its configured memory pipeline decides whether and how qualifying successful turns are persisted.",
+  "To remember something, acknowledge it in your reply and let the host handle capture; never edit memory Markdown, SQLite databases, indexes, manifests, or other internal memory state with file or shell tools.",
   "Use the available recall/search tools to read memory.",
 ].join(" ");
 
