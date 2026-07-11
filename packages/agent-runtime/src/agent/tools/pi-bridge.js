@@ -499,6 +499,7 @@ export function resolveMcpStdioCwd(cfg = {}, cwd = null) {
 export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPolicy = null, sandboxEngine = null, ctx = null } = {}) {
   const resolvedCtx = ctx ?? readToolRuntime();
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
+  const appOwnedLocalBinding = cfg[Symbol.for("@mono-agent/app-owned-local-binding")] === true;
   return sandbox.prepareCommand({
     policy: resolveSandboxPolicy(resolvedCtx, sandboxPolicy),
     engine: sandboxEngine ?? undefined,
@@ -507,6 +508,7 @@ export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPoli
       args: cfg.args || [],
       cwd: resolveMcpStdioCwd(cfg, cwd),
       ...(cfg.env && typeof cfg.env === "object" ? { env: cfg.env } : {}),
+      ...(appOwnedLocalBinding ? { allowLocalBinding: true } : {}),
     },
   });
 }

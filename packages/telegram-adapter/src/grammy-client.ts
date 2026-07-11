@@ -1,4 +1,11 @@
-import { Bot, GrammyError, HttpError, InputFile, type Api } from "grammy";
+import {
+  Bot,
+  GrammyError,
+  HttpError,
+  InputFile,
+  type Api,
+  type ApiClientOptions,
+} from "grammy";
 
 import {
   TelegramApiError,
@@ -172,18 +179,25 @@ export function createGrammyTelegramApi(api: Api): TelegramMessageSender {
 
 export function createTelegramMessageSender(
   botToken: string,
-  options?: { readonly apiRoot?: string },
+  options?: {
+    readonly apiRoot?: string;
+    readonly fetchImpl?: ApiClientOptions["fetch"];
+  },
 ): TelegramMessageSender {
   const token = botToken.trim();
   if (token.length === 0) {
     throw new TypeError("Telegram bot token is required.");
   }
-  // apiRoot must reach EVERY Bot construction — this sender feeds the send tools,
-  // which would otherwise keep talking to the hosted API next to a self-hosted bot.
-  const bot =
-    options?.apiRoot === undefined
-      ? new Bot(token)
-      : new Bot(token, { client: { apiRoot: options.apiRoot } });
+  // apiRoot and fetchImpl must reach the same Bot client construction — this
+  // sender feeds the send tools, which may use a self-hosted API root and/or an
+  // app-owned transport seam. With neither option, preserve grammY's untouched
+  // default client (including its default node-fetch implementation).
+  const hasClientOptions = options?.apiRoot !== undefined || options?.fetchImpl !== undefined;
+  const client: ApiClientOptions = {
+    ...(options?.apiRoot === undefined ? {} : { apiRoot: options.apiRoot }),
+    ...(options?.fetchImpl === undefined ? {} : { fetch: options.fetchImpl }),
+  };
+  const bot = hasClientOptions ? new Bot(token, { client }) : new Bot(token);
   return createGrammyTelegramApi(bot.api);
 }
 

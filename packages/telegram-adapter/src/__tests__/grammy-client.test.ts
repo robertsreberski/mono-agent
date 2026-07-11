@@ -1,6 +1,9 @@
+import { createServer } from "node:http";
+import { once } from "node:events";
+
 import { GrammyError, HttpError } from "grammy";
-import type { Api } from "grammy";
-import { describe, expect, it } from "vitest";
+import type { Api, ApiClientOptions } from "grammy";
+import { describe, expect, it, vi } from "vitest";
 
 import { createGrammyTelegramApi, createTelegramMessageSender } from "../grammy-client.js";
 import { TelegramApiError } from "../telegram-error.js";
@@ -205,9 +208,103 @@ describe("sendDocument document shapes", () => {
   });
 });
 
-describe("createTelegramMessageSender apiRoot", () => {
-  it("accepts an apiRoot option without throwing (self-hosted server)", () => {
-    const sender = createTelegramMessageSender("123456:token", { apiRoot: "http://127.0.0.1:8081" });
-    expect(typeof sender.sendMessage).toBe("function");
+describe("createTelegramMessageSender client options", () => {
+  it("preserves grammY's default fetch while applying apiRoot", async () => {
+    const requests: Array<{ url: string; body: string }> = [];
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        requests.push({
+          url: request.url ?? "",
+          body: Buffer.concat(chunks).toString("utf8"),
+        });
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({
+          ok: true,
+          result: { message_id: 7, chat: { id: 42 }, text: "hello" },
+        }));
+      });
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      server.close();
+      throw new Error("expected an address for the Telegram test server");
+    }
+
+    try {
+      const sender = createTelegramMessageSender("123456:token", {
+        apiRoot: `http://127.0.0.1:${String(address.port)}`,
+      });
+
+      const sent = await sender.sendMessage({ chat_id: 42, text: "hello" });
+
+      expect(sent.message_id).toBe(7);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.url).toBe("/bot123456:token/sendMessage");
+      expect(JSON.parse(requests[0]?.body ?? "{}")).toMatchObject({ chat_id: 42, text: "hello" });
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
+
+  it("passes a supplied fetch seam through the grammY JSON request path", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({
+        ok: true,
+        result: { message_id: 8, chat: { id: 42 }, text: "proxied" },
+      }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as NonNullable<ApiClientOptions["fetch"]>;
+    const sender = createTelegramMessageSender("123456:token", {
+      apiRoot: "https://telegram.invalid",
+      fetchImpl,
+    });
+
+    const sent = await sender.sendMessage({ chat_id: 42, text: "proxied" });
+
+    expect(sent.message_id).toBe(8);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
+    expect(String(url)).toBe("https://telegram.invalid/bot123456:token/sendMessage");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toMatchObject({ chat_id: 42, text: "proxied" });
+  });
+
+  it("passes a supplied fetch seam through grammY's streamed multipart path", async () => {
+    const requests: Array<{ contentType: string; body: Buffer }> = [];
+    const fetchImpl = vi.fn(async (_url: Parameters<NonNullable<ApiClientOptions["fetch"]>>[0], init) => {
+      const chunks: Buffer[] = [];
+      const body = init?.body as unknown as AsyncIterable<Uint8Array>;
+      for await (const chunk of body) {
+        chunks.push(Buffer.from(chunk));
+      }
+      const headers = init?.headers as Record<string, string> | undefined;
+      requests.push({
+        contentType: headers?.["content-type"] ?? "",
+        body: Buffer.concat(chunks),
+      });
+      return new Response(JSON.stringify({
+        ok: true,
+        result: { message_id: 9, chat: { id: 42 } },
+      }), { status: 200, headers: { "content-type": "application/json" } }) as never;
+    }) as unknown as NonNullable<ApiClientOptions["fetch"]>;
+    const sender = createTelegramMessageSender("123456:token", { fetchImpl });
+
+    const sent = await sender.sendDocument!({
+      chat_id: 42,
+      document: new Uint8Array([65, 66, 67]),
+      filename: "proof.txt",
+      caption: "attached",
+    });
+
+    expect(sent.message_id).toBe(9);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(requests[0]?.contentType).toMatch(/^multipart\/form-data; boundary=/u);
+    const payload = requests[0]?.body.toString("utf8") ?? "";
+    expect(payload).toContain("proof.txt");
+    expect(payload).toContain("attached");
+    expect(payload).toContain("ABC");
   });
 });

@@ -2,6 +2,10 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import {
+  createAdapterSendProxy,
+  safeAdapterSendProxyErrorMessage,
+} from "./adapter-send-proxy.js";
+import {
   adapterSendToolsChildConfigFromEnv,
   createAdapterSendToolsClients,
   createAdapterSendToolsServer,
@@ -16,12 +20,69 @@ async function main(): Promise<void> {
   if (settings === undefined) {
     throw new Error("no adapter send tools configured.");
   }
-  const clients = await createAdapterSendToolsClients(settings);
-  const server = await createAdapterSendToolsServer(settings, clients, childConfig.indexing);
-  await server.connect(new StdioServerTransport());
+  const proxy = createAdapterSendProxy(process.env, {
+    directLoopbackUrls: [
+      settings.telegram?.apiRoot,
+      settings.telegram?.askBridge?.bridgeUrl,
+      settings.askUser?.bridgeUrl,
+    ].filter((value): value is string => value !== undefined),
+  });
+  const removeProxyLifecycle = proxy === undefined ? () => {} : installProxyLifecycle(proxy);
+  try {
+    const httpOptions = proxy === undefined ? {} : { fetchImpl: proxy.fetchImpl };
+    const clients = await createAdapterSendToolsClients(settings, httpOptions);
+    const server = await createAdapterSendToolsServer(settings, clients, childConfig.indexing, httpOptions);
+    await server.connect(new StdioServerTransport());
+  } catch (error) {
+    removeProxyLifecycle();
+    await proxy?.destroy().catch((closeError: unknown) => {
+      logProxyShutdownError(closeError);
+    });
+    throw error;
+  }
+}
+
+function installProxyLifecycle(proxy: NonNullable<ReturnType<typeof createAdapterSendProxy>>): () => void {
+  let gracefulShutdown: Promise<void> | undefined;
+  let forcedShutdown: Promise<void> | undefined;
+  const shutdown = (force: boolean, exitAfter: boolean): void => {
+    const operation = force
+      ? (forcedShutdown ??= proxy.destroy())
+      : (gracefulShutdown ??= proxy.close());
+    void operation
+      .catch((error: unknown) => {
+        logProxyShutdownError(error);
+      })
+      .finally(() => {
+        if (exitAfter) process.exit(0);
+      });
+  };
+  const onStdinEnd = (): void => {
+    shutdown(false, false);
+  };
+  const onSignal = (): void => {
+    // Installing signal handlers replaces Node's default termination behavior,
+    // so destroy active requests and exit explicitly once the dispatcher drains.
+    shutdown(true, true);
+  };
+  process.stdin.once("end", onStdinEnd);
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+  return () => {
+    process.stdin.off("end", onStdinEnd);
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  };
+}
+
+function logProxyShutdownError(error: unknown): void {
+  void error;
+  // Dispatcher errors can include the proxy URL. Keep credentials out of MCP
+  // stderr even when the underlying client reports an unsafe diagnostic.
+  process.stderr.write("mono-agent-adapter-send-tools: proxy shutdown failed.\n");
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`mono-agent-adapter-send-tools: fatal: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`mono-agent-adapter-send-tools: fatal: ${safeAdapterSendProxyErrorMessage(error)}\n`);
   process.exitCode = 1;
 });

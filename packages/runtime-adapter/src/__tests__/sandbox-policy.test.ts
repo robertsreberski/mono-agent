@@ -372,6 +372,18 @@ describe("network policy URL checks", () => {
     expect(networkPolicyAllowsUrl(policy, "https://api.github.com/")).toBe(false);
     expect(networkPolicyAllowsUrl(policy, "https://registry.npmjs.org/")).toBe(true);
   });
+
+  it("keeps general allowlist URL checks exact instead of implying a scoped child capability", () => {
+    const policy = createSandboxPolicy({
+      root: "/repo",
+      network: { mode: "allowlist", allowlist: ["localhost", "api.telegram.org"] },
+    });
+
+    expect(networkPolicyAllowsUrl(policy, "http://127.0.0.1:43123/v1/asks")).toBe(false);
+    expect(networkPolicyAllowsUrl(policy, "http://127.8.9.10:43123/v1/asks")).toBe(false);
+    expect(networkPolicyAllowsUrl(policy, "http://localhost:43123/v1/asks")).toBe(true);
+    expect(networkPolicyAllowsUrl(policy, "https://api.telegram.org/bot")).toBe(true);
+  });
 });
 
 describe("srt integration contract", () => {
@@ -460,6 +472,66 @@ describe("srt integration contract", () => {
 
     expect(srtSettingsForPolicy(policy).network).toEqual({
       allowedDomains: ["localhost", "127.0.0.1"],
+      deniedDomains: [],
+      strictAllowlist: true,
+      allowLocalBinding: true,
+      allowAllUnixSockets: false,
+    });
+  });
+
+  it("does not enable local binding for an external-only network allowlist", () => {
+    const policy = failClosedSandboxPolicy({
+      root: "/repo",
+      network: { mode: "allowlist", allowlist: ["api.telegram.org"] },
+    });
+
+    expect(srtSettingsForPolicy(policy).network).toEqual({
+      allowedDomains: ["api.telegram.org"],
+      deniedDomains: [],
+      strictAllowlist: true,
+      allowLocalBinding: false,
+      allowAllUnixSockets: false,
+    });
+  });
+
+  it("does not confuse an external hostname beginning with 127 for a loopback address", () => {
+    const policy = failClosedSandboxPolicy({
+      root: "/repo",
+      network: { mode: "allowlist", allowlist: ["127.example.com"] },
+    });
+
+    expect(srtSettingsForPolicy(policy).network).toMatchObject({
+      allowedDomains: ["127.example.com"],
+      allowLocalBinding: false,
+    });
+  });
+
+  it.each(["127.0.0.1", "localhost", "127.8.9.10"])(
+    "does not globally enable local binding for allowlist loopback host %s",
+    (loopbackHost) => {
+      const policy = failClosedSandboxPolicy({
+        root: "/repo",
+        network: { mode: "allowlist", allowlist: ["api.telegram.org", loopbackHost] },
+      });
+
+      expect(srtSettingsForPolicy(policy).network).toEqual({
+        allowedDomains: ["api.telegram.org", loopbackHost],
+        deniedDomains: [],
+        strictAllowlist: true,
+        allowLocalBinding: false,
+        allowAllUnixSockets: false,
+      });
+    },
+  );
+
+  it("enables local binding only for an explicitly scoped trusted command capability", () => {
+    const policy = failClosedSandboxPolicy({
+      root: "/repo",
+      network: { mode: "allowlist", allowlist: ["api.telegram.org", "127.0.0.1"] },
+    });
+
+    expect(srtSettingsForPolicy(policy, undefined, [], { allowLocalBinding: true }).network).toEqual({
+      allowedDomains: ["api.telegram.org", "127.0.0.1"],
       deniedDomains: [],
       strictAllowlist: true,
       allowLocalBinding: true,
@@ -562,6 +634,32 @@ describe("srt integration contract", () => {
     await first.cleanup?.();
     await second.cleanup?.();
     await expect(access(first.sandboxSettingsPath as string)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("writes the local-binding capability only into the trusted command's one-use settings", async () => {
+    const tempRoot = await tempDir();
+    const policy = failClosedSandboxPolicy({
+      root: "/repo",
+      tempRoot,
+      network: { mode: "allowlist", allowlist: ["api.telegram.org", "127.0.0.1"] },
+    });
+    const engine = createSrtSandboxEngine({ command: await fakeSrtExecutable() });
+
+    const ordinary = await engine.prepareCommand({ command: "node", args: ["ordinary.js"] }, policy);
+    const appOwned = await engine.prepareCommand({
+      command: "node",
+      args: ["adapter-send.js"],
+      allowLocalBinding: true,
+    }, policy);
+    try {
+      const ordinarySettings = JSON.parse(await readFile(ordinary.sandboxSettingsPath as string, "utf8"));
+      const appOwnedSettings = JSON.parse(await readFile(appOwned.sandboxSettingsPath as string, "utf8"));
+      expect(ordinarySettings.network.allowLocalBinding).toBe(false);
+      expect(appOwnedSettings.network.allowLocalBinding).toBe(true);
+    } finally {
+      await ordinary.cleanup?.();
+      await appOwned.cleanup?.();
+    }
   });
 
   it("prepares distinct one-use settings for concurrent commands without staging collisions", async () => {

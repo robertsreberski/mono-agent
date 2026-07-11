@@ -272,6 +272,49 @@ describe("pi MCP tool helpers", () => {
     });
   });
 
+  it("forwards the non-serializable app-owned local-binding capability to only that MCP command", async () => {
+    const policy = failClosedSandboxPolicy({ root: "/repo/project" });
+    const cfg = { command: "node", args: ["adapter-send.js"] };
+    Object.defineProperty(cfg, Symbol.for("@mono-agent/app-owned-local-binding"), {
+      value: true,
+      enumerable: false,
+    });
+    const seen = [];
+
+    await prepareMcpStdioCommand(cfg, {
+      cwd: "/repo/project",
+      sandboxPolicy: policy,
+      sandboxEngine: {
+        id: "fake",
+        async isAvailable() {
+          return true;
+        },
+        async prepareCommand(command) {
+          seen.push(command);
+          return { ...command, sandboxed: true };
+        },
+      },
+    });
+    await prepareMcpStdioCommand({ command: "node", args: ["ordinary.js"] }, {
+      cwd: "/repo/project",
+      sandboxPolicy: policy,
+      sandboxEngine: {
+        id: "fake",
+        async isAvailable() {
+          return true;
+        },
+        async prepareCommand(command) {
+          seen.push(command);
+          return { ...command, sandboxed: true };
+        },
+      },
+    });
+
+    expect(seen[0]).toMatchObject({ allowLocalBinding: true });
+    expect(seen[1]).not.toHaveProperty("allowLocalBinding");
+    expect(JSON.stringify(cfg)).not.toContain("local-binding");
+  });
+
   it("prepares stdio MCP commands under the context-configured sandbox policy without per-call options", async () => {
     const root = tempWorkspace();
     configureToolRuntime({

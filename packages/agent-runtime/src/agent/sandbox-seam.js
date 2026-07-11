@@ -49,6 +49,7 @@
  * @property {ReadonlyArray<string>} [args]
  * @property {string} [cwd]
  * @property {Object<string, string|undefined>} [env]
+ * @property {boolean} [allowLocalBinding] Trusted per-command capability.
  */
 
 /**

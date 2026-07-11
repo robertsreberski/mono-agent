@@ -2,6 +2,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
 import { access, lstat, mkdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
+import { isIP } from "node:net";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -17,6 +18,7 @@ import {
   defaultExecutionModeForModel,
   describeMonoRuntimeSupport,
   modelReferenceKey,
+  networkPolicyAllowsUrl,
   parseMonoRuntimeModelReference,
   resolveModelEffortLevels,
 } from "@mono-agent/runtime-adapter";
@@ -53,6 +55,7 @@ import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
 import { findUnknownAppConfigWarnings } from "./config-reference.js";
+import { formatInteractionBridgeUrl, loadInteractionSettings } from "./interaction-bridge.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { piAuthRecoveryCommand } from "./provider-setup.js";
 import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "./pi-auth-store-inspection.js";
@@ -1773,6 +1776,18 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
   } else {
     details.push(`Adapter send tools: ${adapterSendToolNames(adapterSendTools).join(", ")}.`);
   }
+  const blockedAdapterEndpoints = await adapterSendToolNetworkPolicyWarnings(
+    config,
+    input,
+    adapterSendTools,
+    directOpenCodeModels.length > 0,
+  );
+  if (blockedAdapterEndpoints.length > 0) {
+    if (status !== "error") {
+      status = "waiting";
+    }
+    details.push(...blockedAdapterEndpoints);
+  }
   const effectiveMcpSources = effectiveMcpRuntimeSources(
     config,
     configuredMcpServerNames,
@@ -1787,6 +1802,96 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
   }
 
   return { id: "tools", label: "Tools & MCP", status, details };
+}
+
+interface AdapterEndpointRequirement {
+  readonly label: string;
+  readonly tools: readonly string[];
+  readonly url: string;
+}
+
+/**
+ * Adapter-send tools run in a stdio MCP child governed by the native SRT
+ * policy. Channel readiness alone therefore is not enough: the child also
+ * needs the remote adapter API (or the app-owned interaction bridge) admitted
+ * by sandbox.network.
+ */
+async function adapterSendToolNetworkPolicyWarnings(
+  config: MonoAgentConfig,
+  input: ValidateMonoAgentFolderOptions,
+  settings: Awaited<ReturnType<typeof resolveAdapterSendToolsSettings>>,
+  suppressInteractionTools: boolean,
+): Promise<readonly string[]> {
+  if (config.sandbox === undefined || config.sandbox.mode !== "native") {
+    return [];
+  }
+
+  const toolNames = settings === undefined ? [] : adapterSendToolNames(settings);
+  const requirements: AdapterEndpointRequirement[] = [];
+  if (settings?.slack !== undefined) {
+    requirements.push({
+      label: "Slack adapter-send API",
+      tools: ["SlackSendMessage"],
+      url: "https://slack.com/api",
+    });
+  }
+  if (settings?.telegram !== undefined) {
+    requirements.push({
+      label: "Telegram adapter-send API",
+      tools: toolNames.filter((name) => name.startsWith("Telegram")),
+      url: settings.telegram.apiRoot ?? "https://api.telegram.org",
+    });
+  }
+
+  const askUserAllowed = !suppressInteractionTools && isAdapterSendToolAllowed("AskUser", {
+    allowedTools: config.tools.allowedTools,
+    disallowedTools: config.tools.disallowedTools,
+  });
+  const bridgeTools = [
+    ...(askUserAllowed ? ["AskUser"] : []),
+    ...(toolNames.includes("TelegramAskButtons") ? ["TelegramAskButtons"] : []),
+  ];
+  if (bridgeTools.length > 0) {
+    const configuredBridgeUrl = input.env.MONO_AGENT_INTERACTION_BRIDGE_URL?.trim();
+    const interaction = await loadInteractionSettings(input);
+    const bridgeUrl = configuredBridgeUrl === undefined || configuredBridgeUrl.length === 0
+      ? formatInteractionBridgeUrl(interaction.host, interaction.port)
+      : configuredBridgeUrl;
+    requirements.push({ label: "AskUser interaction bridge", tools: bridgeTools, url: bridgeUrl });
+  }
+
+  return requirements.flatMap((requirement) => {
+    if (adapterSendChildNetworkAllowsUrl(config, requirement.url)) {
+      return [];
+    }
+    const host = endpointHost(requirement.url);
+    const allowlistHost = host === "::1" ? "localhost" : host;
+    return [
+      `Native sandbox network policy blocks ${requirement.label} host "${host}", required by ${requirement.tools.join(", ")}. ` +
+        `Set sandbox.network.mode to "allowlist" and add "${allowlistHost}" to sandbox.network.allowlist, ` +
+        `or disable ${requirement.tools.join(", ")}.`,
+    ];
+  });
+}
+
+function adapterSendChildNetworkAllowsUrl(config: MonoAgentConfig, url: string): boolean {
+  if (networkPolicyAllowsUrl(config.sandbox, url)) return true;
+  if (config.sandbox?.mode !== "native" || config.sandbox.network.mode !== "allowlist") return false;
+  const host = endpointHost(url);
+  return isLoopbackEndpointHost(host) && config.sandbox.network.allowlist.some(isLoopbackEndpointHost);
+}
+
+function isLoopbackEndpointHost(host: string): boolean {
+  return host === "localhost" || host === "::1" || (isIP(host) === 4 && host.split(".")[0] === "127");
+}
+
+function endpointHost(url: string): string {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  } catch {
+    return url;
+  }
 }
 
 function effectiveMcpRuntimeSources(

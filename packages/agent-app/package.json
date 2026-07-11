@@ -51,6 +51,7 @@
     "@mono-agent/telegram-adapter": "workspace:0.6.2",
     "@mono-agent/tui": "workspace:0.6.2",
     "@mono-agent/webhook-adapter": "workspace:0.6.2",
+    "undici": "8.7.0",
     "zod": "^4.4.3"
   },
   "publishConfig": {

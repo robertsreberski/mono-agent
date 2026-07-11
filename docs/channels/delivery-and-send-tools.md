@@ -58,10 +58,11 @@ mono-agent derives MCP **send tools** from already-enabled chat adapters so the 
 - `TelegramSendFile` — upload and send a file (`kind:"document"`) or an inline image (`kind:"photo"`) through the Telegram adapter
 - `AskUser` — ask ONE free-text question on the current conversation and **block until the user replies** (channel-agnostic; see below)
 
-Coverage: `config`. Two conditions must both hold for a send tool to work:
+Coverage: `config`. Three conditions must hold for a send tool to work:
 
 1. The tool must be **permitted by the policy**. Under allow-all (the default) that is automatic once the channel is enabled — no allowlist entry needed. On runtimes that enforce specific lists, include the exact name or deny it normally. Direct `codex:*` rejects all restrictive normal-run policies before start; it never silently widens them.
 2. The corresponding adapter must have **valid config** — `slack.*` for `SlackSendMessage`, `telegram.*` for the Telegram tools — which supplies the credentials and the destination bounds.
+3. With `sandbox.mode: "native"`, the sandbox network policy must admit the tool's HTTP endpoint: `slack.com`, `api.telegram.org` (or the configured Telegram `apiRoot` host), and the configured loopback interaction-bridge host for `AskUser` / `TelegramAskButtons`. `mono-agent validate` names any missing host.
 
 ### Telegram interactive send tools
 
@@ -71,6 +72,20 @@ Coverage: `config`. Two conditions must both hold for a send tool to work:
 - **`TelegramSendFile`** uploads and sends a file (`kind:"document"`) or an inline image (`kind:"photo"`) to an allowed chat. It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path` (filename derived from the path), plus an optional `caption`. Uploads are bounded by the adapter's attachment size cap (~20 MB).
 
 The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels`, `telegram.allowedChatIds` / `telegram.allowAllChats`) **remains the destination boundary**: allowing the tool does not widen where the agent may send. A send to a destination outside the adapter allowlist is refused.
+
+The native sandbox's network allowlist is a separate egress boundary. App-owned send tools run in a sandboxed child and use SRT's authenticated proxy automatically; no `NODE_USE_ENV_PROXY` setting is needed. A `localhost`-only policy cannot reach Slack or Telegram. In `allowlist` mode, include the exact external API hosts plus an explicit loopback host (normally `127.0.0.1`) when a blocking ask tool is enabled. Mono-agent grants SRT's coarse loopback capability only to this trusted app-owned child; it does not let Bash or project MCP servers bind arbitrary loopback ports:
+
+```json
+{
+  "sandbox": {
+    "mode": "native",
+    "network": {
+      "mode": "allowlist",
+      "allowlist": ["slack.com", "api.telegram.org", "127.0.0.1"]
+    }
+  }
+}
+```
 
 `SlackSendMessage` accepts standard Markdown by default, renders it to Slack `mrkdwn`, and preserves Slack thread/formatting options on every chunk. Set its `mrkdwn` argument to `false` only when you need plain text sent unchanged. Text below Slack's 40,000-character platform limit is one post; text above the limit is split and each posted chunk is indexed so replies in those threads can resume the producing conversation.
 
