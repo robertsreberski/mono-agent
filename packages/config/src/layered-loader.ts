@@ -44,36 +44,30 @@ export async function loadMonoAgentConfigWithSources(
   try {
     return loadMonoAgentConfig({ env: layeredEnv, cwd: input.cwd });
   } catch (error) {
-    throw remapJsonMemoryTierError(error, jsonLayer, input.env);
+    throw remapJsonMemoryError(error, jsonLayer, input.env);
   }
 }
 
-/** Preserve the operator's real source surface when strict memory-tier validation fails. */
-function remapJsonMemoryTierError(
+/** Preserve the operator's real source surface when layered memory validation fails. */
+function remapJsonMemoryError(
   error: unknown,
   json: MonoAgentConfigJson,
   env: Record<string, string | undefined>,
 ): unknown {
-  if (!(error instanceof MonoAgentConfigError) || error.code !== "invalid_env" || json.memory === undefined) return error;
+  if (!(error instanceof MonoAgentConfigError) || json.memory === undefined) return error;
 
   const source = error.details.env;
-  if (
-    source === "MONO_AGENT_MEMORY_LLM_ENDPOINT"
-    && !hasValue(env.MONO_AGENT_MEMORY_LLM_ENDPOINT)
-    && json.memory.llm?.endpoint !== undefined
-  ) {
-    const path = "memory.llm.endpoint";
-    const message = error.message.replaceAll("MONO_AGENT_MEMORY_LLM_ENDPOINT", path);
-    return new MonoAgentConfigError("invalid_json", message, { path, reason: message });
+  const llmPath = jsonMemoryLlmPathForSource(source, json.memory.llm, env);
+  if (llmPath !== undefined && source !== undefined) {
+    return remapConfigErrorToJson(error, source, llmPath);
   }
+  if (error.code !== "invalid_env") return error;
   if (
     source === "MONO_AGENT_MEMORY_BACKEND"
     && !hasValue(env.MONO_AGENT_MEMORY_BACKEND)
     && json.memory.backend !== undefined
   ) {
-    const path = "memory.backend";
-    const message = error.message.replaceAll("MONO_AGENT_MEMORY_BACKEND", path);
-    return new MonoAgentConfigError("invalid_json", message, { path, reason: message });
+    return remapConfigErrorToJson(error, source, "memory.backend");
   }
   if (hasValue(env.MONO_AGENT_MEMORY_MODE)) return error;
 
@@ -104,6 +98,42 @@ function remapJsonMemoryTierError(
       ? `memory.mode "${mode}" requires an explicit memory.llm block.`
       : error.message.replaceAll("MONO_AGENT_MEMORY_MODE", "memory.mode");
   return new MonoAgentConfigError("invalid_json", message, { path, reason: message });
+}
+
+const MEMORY_LLM_JSON_SOURCES = {
+  MONO_AGENT_MEMORY_LLM_PROVIDER: { field: "provider", path: "memory.llm.provider" },
+  MONO_AGENT_MEMORY_LLM_MODEL: { field: "model", path: "memory.llm.model" },
+  MONO_AGENT_MEMORY_LLM_EXECUTION_MODE: { field: "executionMode", path: "memory.llm.executionMode" },
+  MONO_AGENT_MEMORY_LLM_ENDPOINT: { field: "endpoint", path: "memory.llm.endpoint" },
+  MONO_AGENT_MEMORY_LLM_TRACE: { field: "trace", path: "memory.llm.trace" },
+  MONO_AGENT_MEMORY_LLM_TIMEOUT_MS: { field: "timeoutMs", path: "memory.llm.timeoutMs" },
+} as const;
+
+function jsonMemoryLlmPathForSource(
+  source: unknown,
+  llm: MonoAgentMemoryLlmJson | undefined,
+  env: Record<string, string | undefined>,
+): string | undefined {
+  if (typeof source !== "string" || !Object.hasOwn(MEMORY_LLM_JSON_SOURCES, source)) return undefined;
+  const envName = source as keyof typeof MEMORY_LLM_JSON_SOURCES;
+  const mapping = MEMORY_LLM_JSON_SOURCES[envName];
+  if (hasValue(env[envName]) || llm?.[mapping.field] === undefined) return undefined;
+  return mapping.path;
+}
+
+function remapConfigErrorToJson(
+  error: MonoAgentConfigError,
+  source: string,
+  path: string,
+): MonoAgentConfigError {
+  const replaced = error.message.replaceAll(source, path);
+  const message = replaced.includes(path) ? replaced : `${path}: ${replaced}`;
+  const { code: _code, env: _env, ...details } = error.details;
+  return new MonoAgentConfigError("invalid_json", message, {
+    ...details,
+    path,
+    reason: error.details.reason ?? message,
+  });
 }
 
 function validateJsonMemoryBlocks(
@@ -166,6 +196,7 @@ function validateJsonMemoryLlmFields(
     ["endpoint", "MONO_AGENT_MEMORY_LLM_ENDPOINT"],
   ] as const;
   for (const [field, envName] of stringFields) {
+    if (field === "endpoint" && shouldDropJsonMemoryLlmEndpoint(llm, env)) continue;
     if (hasValue(env[envName]) || llm[field] === undefined) continue;
     if (typeof llm[field] !== "string") throwInvalidJsonValue(`memory.llm.${field}`, "a string");
   }
@@ -184,6 +215,16 @@ function validateJsonMemoryLlmFields(
   ) {
     throwInvalidJsonValue("memory.llm.timeoutMs", "a number");
   }
+}
+
+/** Match the established provider-switch cleanup before validating the stale JSON endpoint leaf. */
+function shouldDropJsonMemoryLlmEndpoint(
+  llm: { readonly provider?: unknown } | undefined,
+  env: Record<string, string | undefined>,
+): boolean {
+  return env.MONO_AGENT_MEMORY_LLM_PROVIDER?.trim() === "agent-host"
+    && llm?.provider !== "agent-host"
+    && !hasValue(env.MONO_AGENT_MEMORY_LLM_ENDPOINT);
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -580,11 +621,7 @@ export function layerJsonOntoEnv(
       layered[key] = value;
     }
   }
-  if (
-    env.MONO_AGENT_MEMORY_LLM_PROVIDER?.trim() === "agent-host" &&
-    json.memory?.llm?.provider !== "agent-host" &&
-    (env.MONO_AGENT_MEMORY_LLM_ENDPOINT === undefined || env.MONO_AGENT_MEMORY_LLM_ENDPOINT.trim().length === 0)
-  ) {
+  if (shouldDropJsonMemoryLlmEndpoint(json.memory?.llm, env)) {
     delete layered.MONO_AGENT_MEMORY_LLM_ENDPOINT;
   }
   return layered;

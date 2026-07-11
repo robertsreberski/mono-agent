@@ -414,7 +414,14 @@ describe("layerJsonOntoEnv", () => {
       },
     }), "utf8");
 
-    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+    await expect(loadMonoAgentConfigWithSources({
+      env: {
+        MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+        MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
+      },
+      cwd: dir,
+      jsonPath: path,
+    })).rejects.toMatchObject({
       code: "invalid_json",
       details: { path: "memory.llm.endpoint", code: "invalid_json" },
     });
@@ -1313,6 +1320,225 @@ describe("loadMonoAgentConfigWithSources", () => {
       code: "invalid_json",
       message: expect.stringContaining(expected),
       details: { path: `memory.llm.${field}`, code: "invalid_json" },
+    });
+  });
+
+  it.each([
+    ["unsupported provider", { provider: "bad-provider", model: "qwen3:4b" }, "provider"],
+    ["invalid execution mode", {
+      provider: "agent-host", model: "pi:openai-codex:gpt-5.5", executionMode: "native",
+    }, "executionMode"],
+    ["provider-incompatible execution mode", {
+      provider: "ollama", model: "qwen3:4b", executionMode: "sdk",
+    }, "executionMode"],
+    ["invalid agent-host model", { provider: "agent-host", model: "not-a-runtime-model" }, "model"],
+    ["fractional timeout", {
+      provider: "agent-host", model: "pi:openai-codex:gpt-5.5", timeoutMs: 1_500.5,
+    }, "timeoutMs"],
+    ["timeout below range", {
+      provider: "agent-host", model: "pi:openai-codex:gpt-5.5", timeoutMs: 999,
+    }, "timeoutMs"],
+    ["timeout above range", {
+      provider: "agent-host", model: "pi:openai-codex:gpt-5.5", timeoutMs: 600_001,
+    }, "timeoutMs"],
+    ["provider-incompatible timeout", { provider: "ollama", model: "qwen3:4b", timeoutMs: 60_000 }, "timeoutMs"],
+    ["provider-incompatible trace", { provider: "ollama", model: "qwen3:4b", trace: false }, "trace"],
+    ["CLI-backed model", { provider: "agent-host", model: "codex:gpt-5.5" }, "model"],
+    ["explicit CLI mode", {
+      provider: "agent-host", model: "claude:claude-sonnet-4-6", executionMode: "cli",
+    }, "executionMode"],
+  ] as const)("attributes semantically invalid JSON memory.llm case %s to its exact leaf", async (_name, llm, field) => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: {
+        mode: "bujo",
+        path: ".mono-agent/memory",
+        embeddings: { dim: 768 },
+        llm,
+      },
+    }), "utf8");
+
+    let error: unknown;
+    try {
+      await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    } catch (cause) {
+      error = cause;
+    }
+    expect(error).toMatchObject({
+      name: "MonoAgentConfigError",
+      code: "invalid_json",
+      message: expect.stringContaining(`memory.llm.${field}`),
+      details: {
+        path: `memory.llm.${field}`,
+        code: "invalid_json",
+        reason: expect.any(String),
+      },
+    });
+    if (!(error instanceof MonoAgentConfigError)) throw new Error("Expected a MonoAgentConfigError.");
+    expect(error.details.env).toBeUndefined();
+  });
+
+  it.each([
+    ["provider", "MONO_AGENT_MEMORY_LLM_PROVIDER", "bad-provider", "invalid_env"],
+    ["model", "MONO_AGENT_MEMORY_LLM_MODEL", "not-a-runtime-model", "invalid_model_reference"],
+    ["model", "MONO_AGENT_MEMORY_LLM_MODEL", "codex:gpt-5.5", "incompatible_execution_mode"],
+    ["executionMode", "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE", "native", "invalid_env"],
+    ["executionMode", "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE", "cli", "incompatible_execution_mode"],
+    ["endpoint", "MONO_AGENT_MEMORY_LLM_ENDPOINT", "http://127.0.0.1:11434", "invalid_env"],
+    ["trace", "MONO_AGENT_MEMORY_LLM_TRACE", "not-a-boolean", "invalid_env"],
+    ["timeoutMs", "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS", "1500.5", "invalid_env"],
+  ] as const)("keeps a non-empty env-owned memory.llm.%s failure attributed to env", async (
+    _field,
+    envName,
+    value,
+    code,
+  ) => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: {
+        mode: "bujo",
+        path: ".mono-agent/memory",
+        embeddings: { dim: 768 },
+        llm: { provider: "agent-host", model: "pi:openai-codex:gpt-5.5" },
+      },
+    }), "utf8");
+
+    let error: unknown;
+    try {
+      await loadMonoAgentConfigWithSources({
+        env: { [envName]: value },
+        cwd: dir,
+        jsonPath: path,
+      });
+    } catch (cause) {
+      error = cause;
+    }
+    expect(error).toMatchObject({
+      name: "MonoAgentConfigError",
+      code,
+      details: { env: envName, code },
+    });
+    if (!(error instanceof MonoAgentConfigError)) throw new Error("Expected a MonoAgentConfigError.");
+    expect(error.details.path).toBeUndefined();
+  });
+
+  it.each([
+    ["number", 123, undefined],
+    ["array", [], undefined],
+    ["array with a blank env endpoint", [], "   "],
+  ])("drops a stale malformed JSON Ollama endpoint (%s) when env switches to agent-host", async (
+    _type,
+    endpoint,
+    envEndpoint,
+  ) => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: {
+        mode: "bujo",
+        path: ".mono-agent/memory",
+        embeddings: { dim: 768 },
+        llm: { provider: "ollama", model: "qwen3:4b", endpoint },
+      },
+    }), "utf8");
+
+    const config = await loadMonoAgentConfigWithSources({
+      env: {
+        MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+        MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
+        MONO_AGENT_MEMORY_LLM_ENDPOINT: envEndpoint,
+      },
+      cwd: dir,
+      jsonPath: path,
+    });
+    expect(config.memory?.llm).toEqual({
+      provider: "agent-host",
+      model: "pi:openai-codex:gpt-5.5",
+      executionMode: "sdk",
+    });
+  });
+
+  it("keeps a malformed JSON endpoint strict when JSON already selects agent-host", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: {
+        mode: "bujo",
+        path: ".mono-agent/memory",
+        embeddings: { dim: 768 },
+        llm: { provider: "agent-host", model: "pi:openai-codex:gpt-5.5", endpoint: [] },
+      },
+    }), "utf8");
+
+    await expect(loadMonoAgentConfigWithSources({
+      env: {
+        MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+        MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
+      },
+      cwd: dir,
+      jsonPath: path,
+    })).rejects.toMatchObject({
+      code: "invalid_json",
+      details: { path: "memory.llm.endpoint", code: "invalid_json" },
+    });
+  });
+
+  it("skips only the stale endpoint leaf when env switches JSON Ollama to agent-host", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: {
+        mode: "bujo",
+        path: ".mono-agent/memory",
+        embeddings: { dim: 768 },
+        llm: { provider: "ollama", model: "qwen3:4b", endpoint: [], trace: [false] },
+      },
+    }), "utf8");
+
+    await expect(loadMonoAgentConfigWithSources({
+      env: {
+        MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+        MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
+      },
+      cwd: dir,
+      jsonPath: path,
+    })).rejects.toMatchObject({
+      code: "invalid_json",
+      details: { path: "memory.llm.trace", code: "invalid_json" },
+    });
+  });
+
+  it("keeps an explicit env endpoint strict when the dropped JSON endpoint is malformed", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: {
+        mode: "bujo",
+        path: ".mono-agent/memory",
+        embeddings: { dim: 768 },
+        llm: { provider: "ollama", model: "qwen3:4b", endpoint: [] },
+      },
+    }), "utf8");
+
+    await expect(loadMonoAgentConfigWithSources({
+      env: {
+        MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+        MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
+        MONO_AGENT_MEMORY_LLM_ENDPOINT: "http://127.0.0.1:11434",
+      },
+      cwd: dir,
+      jsonPath: path,
+    })).rejects.toMatchObject({
+      code: "invalid_env",
+      details: { env: "MONO_AGENT_MEMORY_LLM_ENDPOINT", code: "invalid_env" },
     });
   });
 
