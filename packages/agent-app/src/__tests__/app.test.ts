@@ -17,6 +17,7 @@ import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapt
 
 import { startMonoAgentApp } from "../app.js";
 import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME } from "../adapter-send-tools.js";
+import { RUN_HISTORY_MCP_SERVER_NAME } from "../run-history.js";
 import {
   createSlackChannelDriver,
   createTelegramChannelDriver,
@@ -837,6 +838,7 @@ describe("startMonoAgentApp", () => {
         | undefined;
       expect(server).toBeDefined();
       expect(JSON.parse(server?.env?.MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS ?? "[]")).toContain("AskUser");
+      expect(runtimeCalls[1]?.mcpServers?.[RUN_HISTORY_MCP_SERVER_NAME]).toBeDefined();
     } finally {
       await app.stop();
     }
@@ -930,6 +932,7 @@ describe("startMonoAgentApp", () => {
       | undefined;
     expect(server).toBeDefined();
     expect(JSON.parse(server?.env?.MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS ?? "[]")).toContain("AskUser");
+    expect(runtimeCalls[0]?.mcpServers?.[RUN_HISTORY_MCP_SERVER_NAME]).toBeDefined();
     await app.stop();
   });
 

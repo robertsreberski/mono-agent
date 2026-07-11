@@ -9,7 +9,7 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import { findModule } from "../modules/catalog.js";
 import { hasSensitivePersistedEnvironmentValue } from "../first-run-readiness.js";
 import { DEFAULT_MODEL } from "../modules/base.js";
-import { ALLOW_ALL_TOOLS, BUILTIN_TOOL_NAMES, isAllowAllTools } from "../modules/known-tools.js";
+import { ALLOW_ALL_TOOLS, APP_TOOL_NAMES, BUILTIN_TOOL_NAMES, isAllowAllTools } from "../modules/known-tools.js";
 import {
   hasDurableProviderEnvironmentCredential,
   isProviderSetupPiApiKeyAction,
@@ -1146,7 +1146,7 @@ function alwaysOnDisplay(alwaysOn: readonly string[]): string[] {
  */
 function channelSendTools(channels: readonly string[]): string[] {
   return toolMultiselectOptions(channels)
-    .slice(BUILTIN_TOOL_NAMES.length)
+    .slice(BUILTIN_TOOL_NAMES.length + APP_TOOL_NAMES.length)
     .map((option) => option.value)
     .filter((value) => value !== "AskUser");
 }
@@ -1156,7 +1156,8 @@ function channelSendTools(channels: readonly string[]): string[] {
  * knows what "Allow all" turns on and what is unaffected by the choice:
  *   1. Always on — auto-provisioned, NOT gated by this choice (e.g. MemoryRecall).
  *   2. Built-ins — file/shell/web tools.
- *   3. Channel tools — the send/ask tools that came with the channels you enabled,
+ *   3. App tools — safe host capabilities such as bounded run inspection.
+ *   4. Channel tools — the send/ask tools that came with the channels you enabled,
  *      plus AskUser (ask the human, any channel).
  */
 function toolSituationFraming(draft: DraftAnswers, alwaysOn: readonly string[]): string {
@@ -1169,6 +1170,7 @@ function toolSituationFraming(draft: DraftAnswers, alwaysOn: readonly string[]):
       ? `Always on (auto-provisioned, not affected by this choice): ${alwaysOnDisplay(alwaysOn).join(", ")}.`
       : "Always on (auto-provisioned): none for this setup.",
     "Built-ins: files (Read/Write/Edit/Glob/Grep), shell (Bash), web (WebFetch/WebSearch).",
+    "App tools: RunHistory (read-only evidence from completed prior runs in this conversation).",
     channelLine,
     '"Allow all" lets the model run shell commands, read/change files, access the web, and send through enabled channels. These actions can modify data or contact people; you can turn specific tools off later via tools.disallowedTools.',
   ].join("\n");

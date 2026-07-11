@@ -3479,7 +3479,7 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(tools.details.join("\n")).toContain('allowedTools: ["*"] with no disallowedTools');
   });
 
-  it("accepts a minimal direct OpenCode host and does not treat implicit AskUser as MCP", async () => {
+  it("accepts a minimal direct OpenCode host and suppresses implicit app-owned MCP tools", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
       runtime: { model: "opencode:github-copilot:gpt-5.1", executionMode: "cli" },
@@ -3494,6 +3494,7 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(tools.status).toBe("ok");
     expect(tools.details.join("\n")).not.toContain("MCP runtime options");
     expect(tools.details.join("\n")).not.toContain("AskUser");
+    expect(tools.details.join("\n")).not.toContain("RunHistory");
   });
 
   it("fails closed when direct OpenCode would receive configured MCP servers", async () => {

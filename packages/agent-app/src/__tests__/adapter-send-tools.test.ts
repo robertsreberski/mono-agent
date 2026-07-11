@@ -287,15 +287,19 @@ describe("adapter send tools MCP spec/env", () => {
     expect(adapterSendToolsChildConfigFromEnv(env, "/agent").indexing).toEqual(indexing);
   });
 
-  it("always forwards the producing conversation id so AskUser can target the conversation without indexing", async () => {
+  it("always forwards the producing run and exact conversation id for interaction history", async () => {
     const extension = createAdapterSendToolsRuntimeExtension("/agent/mono-agent.config.json", "/agent", ["AskUser"]);
 
-    const result = await extension({ request: { conversationId: "telegram:42#2026-07-02" } });
+    const result = await extension({
+      runId: "run-env-wiring",
+      request: { conversationId: "telegram:42#2026-07-02" },
+    });
 
     const spec = result.runtimeOptions.mcpServers[ADAPTER_SEND_TOOLS_MCP_SERVER_NAME] as {
       env: Record<string, string | undefined>;
     };
     expect(spec.env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID).toBe("telegram:42#2026-07-02");
+    expect(spec.env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_RUN_ID).toBe("run-env-wiring");
     expect(spec.env.MONO_AGENT_ADAPTER_TOOLS_POST_INDEX_PATH).toBeUndefined();
   });
 
@@ -317,13 +321,14 @@ describe("adapter send tools MCP spec/env", () => {
       interaction,
     );
 
-    const result = await extension({ request: { conversationId: "telegram:42" } });
+    const result = await extension({ runId: "run-bridge-env", request: { conversationId: "telegram:42#today" } });
 
     const spec = result.runtimeOptions.mcpServers[ADAPTER_SEND_TOOLS_MCP_SERVER_NAME] as {
       env: Record<string, string | undefined>;
     };
     expect(spec.env).toMatchObject({
-      MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID: "telegram:42",
+      MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID: "telegram:42#today",
+      MONO_AGENT_ADAPTER_TOOLS_PRODUCING_RUN_ID: "run-bridge-env",
       MONO_AGENT_INTERACTION_BRIDGE_URL: interaction.bridgeUrl,
       MONO_AGENT_INTERACTION_BRIDGE_TOKEN: interaction.bridgeToken,
       MONO_AGENT_ASK_USER_TIMEOUT_MS: "123000",
@@ -336,7 +341,8 @@ describe("adapter send tools MCP spec/env", () => {
       bridgeUrl: interaction.bridgeUrl,
       bridgeToken: interaction.bridgeToken,
       timeoutMs: interaction.timeoutMs,
-      conversationId: "telegram:42",
+      conversationId: "telegram:42#today",
+      runId: "run-bridge-env",
     });
   });
 });
@@ -1056,6 +1062,8 @@ describe("adapter send MCP tools", () => {
           bridgeUrl: bridge.url,
           bridgeToken: bridge.token,
           timeoutMs: 5_000,
+          conversationId: "telegram:42#2026-07-12",
+          runId: "run-telegram-buttons",
         },
       },
     };
@@ -1105,6 +1113,17 @@ describe("adapter send MCP tools", () => {
         ],
       });
       expect(telegramSignal).toBeInstanceOf(AbortSignal);
+      const history = bridge.enrichAssistantHistory({
+        runId: "run-telegram-buttons",
+        conversationId: "telegram:42#2026-07-12",
+        assistantText: "Deployment approved.",
+      });
+      expect(history).toContain("Tool: TelegramAskButtons");
+      expect(history).toContain("Deploy now?");
+      expect(history).toContain("- ⟦Approve⟧");
+      expect(history).toContain("Outcome: answered");
+      expect(history).toContain("Approve");
+      expect(history.endsWith("Deployment approved.")).toBe(true);
     } finally {
       await bridge.stop();
     }
@@ -1406,7 +1425,13 @@ describe("adapter send MCP tools", () => {
             allowedChatIds: ["42"],
             allowAllChats: false,
             tools: { send: false, ask: true, file: false },
-            askBridge: { bridgeUrl: bridge.url, bridgeToken: bridge.token, timeoutMs: 5_000 },
+            askBridge: {
+              bridgeUrl: bridge.url,
+              bridgeToken: bridge.token,
+              timeoutMs: 5_000,
+              conversationId: "telegram:42#send-failed",
+              runId: "run-send-failed",
+            },
           },
         },
         { telegram: { sendMessage: vi.fn(async () => { throw new Error("telegram unavailable"); }), editMessageText: vi.fn() } },
@@ -1420,6 +1445,11 @@ describe("adapter send MCP tools", () => {
         expect(result.isError).toBe(true);
       });
       expect(bridge.tryResolveAsk("telegram:42", "Approve")).toBe(false);
+      expect(bridge.enrichAssistantHistory({
+        runId: "run-send-failed",
+        conversationId: "telegram:42#send-failed",
+        assistantText: "Send failed.",
+      })).toBe("Send failed.");
     } finally {
       await bridge.stop();
     }
@@ -1987,6 +2017,7 @@ describe("AskUser tool", () => {
             bridgeToken: bridge.token,
             timeoutMs: 5_000,
             conversationId: "telegram:42#2026-07-02",
+            runId: "run-ask-user",
           },
         },
         {},
@@ -2007,6 +2038,15 @@ describe("AskUser tool", () => {
       expect(bridgeFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
       expect(bridgeFetch.mock.calls.every(([input]) => new URL(String(input)).origin === bridge.url)).toBe(true);
       expect(bridgeFetch.mock.calls.every(([, init]) => init?.signal instanceof AbortSignal)).toBe(true);
+      const history = bridge.enrichAssistantHistory({
+        runId: "run-ask-user",
+        conversationId: "telegram:42#2026-07-02",
+        assistantText: "Thanks.",
+      });
+      expect(history).toContain("Tool: AskUser");
+      expect(history).toContain("Who is speaking?");
+      expect(history).toContain("Outcome: answered");
+      expect(history).toContain("Alice and Bob, Polish");
     } finally {
       await bridge.stop();
     }
@@ -2022,7 +2062,8 @@ describe("AskUser tool", () => {
             bridgeUrl: bridge.url,
             bridgeToken: bridge.token,
             timeoutMs: 5_000,
-            conversationId: "telegram:42",
+            conversationId: "telegram:42#cancelled",
+            runId: "run-ask-cancelled",
           },
         },
         {},
@@ -2043,6 +2084,11 @@ describe("AskUser tool", () => {
           expect(bridge.hasPendingAsk("telegram:42")).toBe(false);
         });
       });
+      expect(bridge.enrichAssistantHistory({
+        runId: "run-ask-cancelled",
+        conversationId: "telegram:42#cancelled",
+        assistantText: "Cancelled.",
+      })).toBe("Cancelled.");
     } finally {
       await bridge.stop();
     }

@@ -25,6 +25,18 @@ export type {
 export { createBroadcastRunRecorder } from "./broadcast-recorder.js";
 export type { BroadcastRunContext } from "./broadcast-recorder.js";
 export {
+  createRunHistoryRuntimeExtension,
+  createRunHistoryServer,
+  isRunHistoryToolAllowed,
+  RUN_HISTORY_MCP_SERVER_NAME,
+  RUN_HISTORY_TOOL_NAME,
+} from "./run-history.js";
+export type {
+  RunHistoryBinding,
+  RunHistoryRuntimeExtension,
+  RunHistoryRuntimeExtensionOptions,
+} from "./run-history.js";
+export {
   createCronChannelDriver,
   createOpenAIApiChannelDriver,
   createSlackChannelDriver,

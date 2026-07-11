@@ -157,6 +157,24 @@ export interface AgentHarnessRecorderFactoryInput {
   readonly isolated?: boolean;
 }
 
+/**
+ * Optional app-owned hook that can add request-scoped interaction details to
+ * the durable assistant history entry without changing the delivered response
+ * or memory capture. Implementations must release all run-scoped state after
+ * {@link releaseRun}.
+ */
+export interface AgentHarnessTurnHistoryEnricher {
+  enrichAssistantHistory(input: {
+    readonly runId: string;
+    readonly conversationId: string;
+    readonly assistantText: string;
+  }): string | Promise<string>;
+  releaseRun(input: {
+    readonly runId: string;
+    readonly conversationId: string;
+  }): void | Promise<void>;
+}
+
 export interface AgentHarnessOptions {
   readonly identityPath: string;
   readonly soulPath?: string;
@@ -212,6 +230,8 @@ export interface AgentHarnessOptions {
   /** Best-effort post-provider persistence warning sink (host log/metric). */
   readonly onMemoryWarning?: (message: string) => void;
   readonly historyStore?: ConversationHistoryStore;
+  /** Best-effort enrichment applied only to the assistant history entry. */
+  readonly turnHistoryEnricher?: AgentHarnessTurnHistoryEnricher;
   readonly toolPolicy?: ToolPolicy;
   readonly sandboxPolicy?: SandboxPolicy;
   readonly recorderFactory?: (input: AgentHarnessRecorderFactoryInput) => RunRecorder;

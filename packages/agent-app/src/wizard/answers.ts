@@ -7,6 +7,7 @@ import {
 import { monoAgentConfigWithSchema } from "../config-reference.js";
 import {
   ADAPTER_SEND_TOOL_NAMES,
+  APP_TOOL_NAMES,
   ALLOW_ALL_TOOLS,
   baseConfig,
   BUILTIN_TOOL_NAMES,
@@ -145,8 +146,12 @@ function modelRefNeedsCredentials(modelRef: string): boolean {
     || (modelRef.startsWith("pi:") && !/^pi:(?:ollama|lmstudio):/u.test(modelRef));
 }
 
-/** Tools ordered canonically: built-ins first, then adapter send tools. */
-const ORDERED_TOOL_NAMES: readonly string[] = [...BUILTIN_TOOL_NAMES, ...ADAPTER_SEND_TOOL_NAMES];
+/** Tools ordered canonically: runtime built-ins, app-owned tools, then adapter send tools. */
+const ORDERED_TOOL_NAMES: readonly string[] = [
+  ...BUILTIN_TOOL_NAMES,
+  ...APP_TOOL_NAMES,
+  ...ADAPTER_SEND_TOOL_NAMES,
+];
 
 const ZERO_TOOLS_WARNING =
   "Zero tools selected — the agent will be chat-only: it cannot read files, run commands, or send proactive messages.";

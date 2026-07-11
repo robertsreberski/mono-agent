@@ -65,6 +65,10 @@ import {
   type RuntimeOptionsExtension,
 } from "./runtime-option-extensions.js";
 import {
+  createRunHistoryRuntimeExtension,
+  isRunHistoryToolAllowed,
+} from "./run-history.js";
+import {
   createRequestModelOverrideRuntimeExtension,
   requestModelOverrideTargetsDirectOpenCode,
 } from "./request-model-override.js";
@@ -1009,6 +1013,17 @@ class MonoAgentAppController implements MonoAgentApp {
     const memoryRecallEnabled = this.reportMemoryRecallStatus(coreConfig, memoryRetrieval);
     const supermemoryMcp = this.supermemoryMcpRuntimeOptions(coreConfig);
     const adapterSendTools = await this.adapterSendToolsRuntimeOptions(coreConfig);
+    const runHistoryBase = isRunHistoryToolAllowed(coreConfig.tools)
+      && !runtimeRouteContainsDirectOpenCode(coreConfig)
+      ? createRunHistoryRuntimeExtension({
+          artifactDir: coreConfig.artifacts.dir,
+          onUnavailable: (error) => {
+            this.logger?.warn?.("RunHistory tool endpoint could not start; continuing without prior-run inspection.", {
+              reason: reasonOf(error),
+            });
+          },
+        })
+      : undefined;
     // Always active: a no-op for interactive turns (which carry no cron/webhook
     // metadata), it applies the per-trigger model/effort override otherwise.
     const mcpSources: string[] = [];
@@ -1033,8 +1048,14 @@ class MonoAgentAppController implements MonoAgentApp {
     const adapterSendToolsExtension = adapterSendTools.createExtension?.(
       requestModelOverride.targetsDirectOpenCode,
     );
+    const runHistoryExtension: RuntimeOptionsExtension | undefined = runHistoryBase === undefined
+      ? undefined
+      : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
+        ? { runtimeOptions: {}, cleanup: async () => {} }
+        : await runHistoryBase(requestInput);
     const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
       supermemoryMcp,
+      runHistoryExtension,
       adapterSendToolsExtension,
       requestModelOverride.extension,
     ]);
@@ -1054,6 +1075,7 @@ class MonoAgentAppController implements MonoAgentApp {
       ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
       ...(this.sandboxEngine === undefined ? {} : { sandboxEngine: this.sandboxEngine }),
       ...(memory !== undefined && { memory }),
+      ...(this.interactionBridge === undefined ? {} : { turnHistoryEnricher: this.interactionBridge }),
       ...(runtimeOptionsForRequest === undefined ? {} : { runtimeOptionsForRequest }),
       onMemoryRecallUnavailable: (error) => {
         this.logger?.warn?.(
