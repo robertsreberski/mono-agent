@@ -197,14 +197,35 @@ export function readCanonicalFileSnapshot(
 export function listCanonicalFileNames(
   root: string,
   relativeDirectory: string,
-  options: {
-    readonly allowMissing?: boolean;
-    readonly include?: (name: string) => boolean;
-  } = {},
+  options: CanonicalFileListOptions = {},
 ): string[] {
   assertCanonicalRelativePath(relativeDirectory);
+  return listCanonicalDirectoryFileNames(root, relativeDirectory, options);
+}
+
+/** List canonical files directly under the memory root with the same pinned-directory checks. */
+export function listCanonicalRootFileNames(
+  root: string,
+  options: CanonicalFileListOptions = {},
+): string[] {
+  return listCanonicalDirectoryFileNames(root, undefined, options);
+}
+
+interface CanonicalFileListOptions {
+  readonly allowMissing?: boolean;
+  readonly include?: (name: string) => boolean;
+}
+
+function listCanonicalDirectoryFileNames(
+  root: string,
+  relativeDirectory: string | undefined,
+  options: CanonicalFileListOptions,
+): string[] {
   const canonicalRoot = canonicalMemoryRootPath(root, false);
-  const directoryPath = join(canonicalRoot, ...relativeDirectory.split("/"));
+  const directoryPath = relativeDirectory === undefined
+    ? canonicalRoot
+    : join(canonicalRoot, ...relativeDirectory.split("/"));
+  const directoryLabel = relativeDirectory ?? "memory root";
   assertInside(canonicalRoot, directoryPath);
 
   let before: Stats;
@@ -214,17 +235,17 @@ export function listCanonicalFileNames(
     if (options.allowMissing === true && isMissing(error)) return [];
     throw error;
   }
-  assertSafeDirectory(before, relativeDirectory);
+  assertSafeDirectory(before, directoryLabel);
 
   const fd = openSync(directoryPath, constants.O_RDONLY | directoryFlag() | noFollowFlag());
   let names: string[];
   try {
     const opened = fstatSync(fd);
-    assertSafeDirectory(opened, relativeDirectory);
-    assertSameNode(before, opened, relativeDirectory);
-    assertPathMatchesDirectoryFd(directoryPath, opened, relativeDirectory);
+    assertSafeDirectory(opened, directoryLabel);
+    assertSameNode(before, opened, directoryLabel);
+    assertPathMatchesDirectoryFd(directoryPath, opened, directoryLabel);
     names = readdirSync(directoryPath, { encoding: "utf8" }).sort();
-    assertPathMatchesDirectoryFd(directoryPath, opened, relativeDirectory);
+    assertPathMatchesDirectoryFd(directoryPath, opened, directoryLabel);
   } finally {
     closeSync(fd);
   }
@@ -237,14 +258,14 @@ export function listCanonicalFileNames(
     if (name.length === 0 || name === "." || name === ".." || basename(name) !== name) {
       throw new Error(`memory-bujo: unsafe canonical directory entry "${name}".`);
     }
-    const relativePath = `${relativeDirectory}/${name}`;
+    const relativePath = relativeDirectory === undefined ? name : `${relativeDirectory}/${name}`;
     assertCanonicalRelativePath(relativePath);
     assertSafeRegularFile(lstatSync(join(directoryPath, name)), relativePath);
     selected.push(name);
   }
 
   // Detect a directory replacement that happened while entries were inspected.
-  assertPathMatchesDirectoryIdentity(directoryPath, before, relativeDirectory);
+  assertPathMatchesDirectoryIdentity(directoryPath, before, directoryLabel);
   return selected;
 }
 
