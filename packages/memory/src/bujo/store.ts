@@ -26,7 +26,7 @@ import {
   type MigrateResult,
 } from "./migrate.js";
 import { consolidateBujoMemory, type ConsolidateResult } from "./consolidate.js";
-import { writeFutureLog, writeIndex } from "./projections.js";
+import { writeFutureLog } from "./projections.js";
 import { listCanonicalFileNames, readCanonicalFileSnapshot } from "./path-safety.js";
 import type { Bullet, BujoLogger, BujoOptions, BujoTier } from "./types.js";
 import { BoundedBatchQueue, type BackgroundQueueSnapshot, type QueueJob } from "./queue.js";
@@ -425,27 +425,26 @@ export class BujoMemoryStore implements MemoryStore {
     return { conversationId, source: path, bytesWritten: Buffer.byteLength(`${serializeBullet(bullet)}\n`, "utf8") };
   }
 
-  /**
-   * Run the nightly reflection ritual: decay salience, synthesize insights from top memories,
-   * and surface due intentions. Also writes future-log.md + index.md.
-   *
-   * Returns `undefined` when no `llm` was configured (matches `capture()` pattern).
-   */
-  async reflect(): Promise<ReflectResult | undefined> {
-    return await this.runAdmittedMutation("reflect", async (abortSignal) => {
-      if (this.llm === undefined) return undefined;
-      const r = await reflectFn({
+  /** @deprecated Read-only compatibility probe; returns the current due count. */
+  async reflect(): Promise<ReflectResult> {
+    this.assertOpen("reflect");
+    return await this.runAdmittedOperation(async (abortSignal) => {
+      // ReflectDeps keeps its historical LLM field for source compatibility.
+      // The compatibility implementation never invokes it.
+      const llm = this.llm ?? {
+        id: "reflect-disabled",
+        complete: async (): Promise<string> => {
+          throw new Error("memory-bujo: read-only reflection must not call an LLM.");
+        },
+      };
+      return await reflectFn({
         db: this.db,
         root: this.root,
-        llm: this.llm,
+        llm,
         nextId: this.nextId,
         now: this.clock,
         abortSignal,
       });
-      abortSignal.throwIfAborted();
-      writeFutureLog(this.root, this.db, this.clock());
-      writeIndex(this.root, this.db, this.clock());
-      return r;
     });
   }
 
@@ -570,22 +569,18 @@ export class BujoMemoryStore implements MemoryStore {
     });
   }
 
-  /**
-   * Apply salience decay to all memories in the store.
-   *
-   * Usable in all tiers (lite, journal, bujo) — no LLM required. In the `journal` and `bujo`
-   * tiers this is the primary maintenance call; in the `lite` tier it still runs harmlessly.
-   */
+  /** @deprecated Salience is static canonical state; this is a compatibility no-op. */
   async decay(): Promise<{ decayed: number }> {
-    return await this.runAdmittedMutation("decay", async (abortSignal) => {
+    this.assertOpen("decay");
+    return await this.runAdmittedOperation(async (abortSignal) => {
       abortSignal.throwIfAborted();
-      return this.db.applyDecay(this.clock());
+      return { decayed: 0 };
     });
   }
 
-  /** Run deterministic, no-LLM BuJo consolidation in every tier. */
+  /** Refresh derived projections and report duplicates without changing memory state. */
   async consolidate(): Promise<ConsolidateResult> {
-    return await this.runAdmittedMutation("consolidate", async (abortSignal) => {
+    return await this.runAdmittedWrite("consolidate", async (abortSignal) => {
       abortSignal.throwIfAborted();
       return await consolidateBujoMemory({
         root: this.root,

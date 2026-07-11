@@ -1439,25 +1439,15 @@ export class MemoryDb {
     return rows.map((r) => this.fromRow(r));
   }
 
-  /** Decay salience toward `floor` by age (half-life in days). Access telemetry is deliberately ignored. */
-  applyDecay(now: Date, opts: { halfLifeDays?: number; floor?: number } = {}): { decayed: number } {
-    const halfLife = opts.halfLifeDays ?? 30;
-    const floor = opts.floor ?? 0.05;
-    const rows = this.db.prepare(
-      `SELECT id, salience, created_at AS ref FROM memories WHERE status NOT IN ('invalidated','dropped')`,
-    ).all() as { id: string; salience: number; ref: string }[];
-    const stmt = this.db.prepare(`UPDATE memories SET salience = ? WHERE id = ?`);
-    let decayed = 0;
-    const tx = this.db.transaction(() => {
-      for (const r of rows) {
-        const days = Math.max(0, (now.getTime() - new Date(r.ref).getTime()) / 86_400_000);
-        const factor = 0.5 ** (days / halfLife);
-        const next = Math.max(floor, r.salience * factor);
-        if (Math.abs(next - r.salience) > 1e-9) { stmt.run(next, r.id); decayed += 1; }
-      }
-    });
-    tx();
-    return { decayed };
+  /**
+   * @deprecated Salience is a static canonical Bullet field in v1.
+   *
+   * Kept as a compatibility no-op so older integrations can upgrade without
+   * allowing a derived SQLite maintenance pass to diverge from canonical
+   * Markdown.
+   */
+  applyDecay(_now: Date, _opts: { halfLifeDays?: number; floor?: number } = {}): { decayed: number } {
+    return { decayed: 0 };
   }
 
   close(): void {
