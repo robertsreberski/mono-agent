@@ -20,6 +20,7 @@ import BetterSqlite3 from "better-sqlite3";
 
 import type { EmbeddingProvider } from "../../search/index.js";
 import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
+import { loadVec } from "../../store/vec.js";
 import {
   createBujoMemoryStore,
   appendGraphBatch,
@@ -945,6 +946,55 @@ describe("safe memory index rebuild", () => {
     expect(resolveActiveMemoryDbPath(root)).toBe(activeBefore);
   });
 
+  it("refuses to retain a nonempty BuJo generation with missing vectors", async () => {
+    const root = tempRoot();
+    const provider = embeddings("test:bujo-retain-coverage", 8);
+    writeDaily(root, [bullet("M1", "Every retained BuJo memory needs its vector.")]);
+    const first = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 8 });
+    deleteAllVectors(first.active);
+
+    await expect(safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 8 }))
+      .rejects.toThrow(/retained rollback generation failed coverage|vector coverage/iu);
+
+    expect(resolveActiveMemoryDbPath(root)).toBe(first.active);
+  });
+
+  it("refuses rollback to a nonempty BuJo generation with missing vectors", async () => {
+    const root = tempRoot();
+    const provider = embeddings("test:bujo-rollback-coverage", 8);
+    writeDaily(root, [bullet("M1", "A damaged BuJo rollback must never activate.")]);
+    await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 8 });
+    const second = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 8 });
+    expect(second.rollback).toBeDefined();
+    const activeBefore = resolveActiveMemoryDbPath(root);
+    deleteAllVectors(second.rollback!);
+
+    await expect(rollbackMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 8 }))
+      .rejects.toThrow(/retained rollback generation failed coverage|vector coverage/iu);
+
+    expect(resolveActiveMemoryDbPath(root)).toBe(activeBefore);
+  });
+
+  it("preserves Journal's recoverable missing-vector backlog across rollback", async () => {
+    const root = tempRoot();
+    const provider = embeddings("test:journal-rollback-backlog", 8);
+    writeDaily(root, [bullet("M1", "Journal can restore missing vectors after lexical rollback.")]);
+    const first = await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 8 });
+    const second = await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 8 });
+    expect(second.rollback).toBe(first.active);
+    deleteAllVectors(second.rollback!);
+
+    await rollbackMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 8 });
+
+    expect(resolveActiveMemoryDbPath(root)).toBe(first.active);
+    const rolledBack = openMemoryDb({ path: first.active, readOnly: true, dim: 8 });
+    try {
+      expect(rolledBack.validationSnapshot()).toMatchObject({ memories: 1, vectors: 0 });
+    } finally {
+      rolledBack.close();
+    }
+  });
+
   it("refuses a stale rollback after canonical source changes", async () => {
     const root = tempRoot();
     await seedLegacy(root, note("OLD", "Old retained generation."));
@@ -1553,6 +1603,17 @@ function nullVectorIdentity(path: string, column: "embedding_model" | "dim" | "b
   try {
     const assignment = column === "both" ? "embedding_model = NULL, dim = NULL" : `${column} = NULL`;
     raw.exec(`UPDATE memories SET ${assignment}`);
+    raw.pragma("wal_checkpoint(TRUNCATE)");
+  } finally {
+    raw.close();
+  }
+}
+
+function deleteAllVectors(path: string): void {
+  const raw = new BetterSqlite3(path);
+  try {
+    loadVec(raw);
+    raw.exec("DELETE FROM memories_vec");
     raw.pragma("wal_checkpoint(TRUNCATE)");
   } finally {
     raw.close();

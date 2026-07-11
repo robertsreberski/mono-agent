@@ -813,8 +813,14 @@ function validateRetainedGeneration(path: string, descriptor: ManagedGeneration)
   try {
     validateDb(db, descriptor);
     const state = db.validationSnapshot();
+    const invalidTierVectorCoverage = descriptor.tier === "lite"
+      ? state.vectors !== 0
+      : descriptor.tier === "bujo"
+        ? state.vectors !== state.memories
+        : false;
     if (state.ftsRows !== state.memories || state.ftsMismatches !== 0 || state.vectorOrphans !== 0
-      || state.contentHashOrphans !== 0 || state.relationOrphans !== 0 || state.associationOrphans !== 0) {
+      || invalidTierVectorCoverage || state.contentHashOrphans !== 0
+      || state.relationOrphans !== 0 || state.associationOrphans !== 0) {
       throw new Error("memory-rebuild: retained rollback generation failed coverage validation.");
     }
   } finally {
