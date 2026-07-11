@@ -622,6 +622,34 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
     await store.close();
   });
 
+  it("keeps canonical row and hash provenance on the earliest source in either creation order", async () => {
+    const hash = normalizedContentHash("Project Atlas ships Friday.");
+    const early = new Date("2026-01-01T09:00:00.000Z");
+    const late = new Date("2026-01-02T09:00:00.000Z");
+    for (const reversed of [false, true]) {
+      const root = tmpRoot();
+      const entries = [
+        { id: "early", text: "Project Atlas ships Friday.", when: early },
+        { id: "late", text: "Project   Atlas ships Friday.", when: late },
+      ];
+      for (const entry of reversed ? [...entries].reverse() : entries) {
+        appendBullet(root, journalBullet(entry.id, entry.text, entry.when), entry.when);
+      }
+      const store = createBujoMemoryStore({ root, tier: "journal", embeddings: fakeEmbeddings(64), dim: 64 });
+      await store.flush();
+      await store.close();
+
+      const db = openMemoryDb({ path: join(root, "memory.db"), dim: 64 });
+      expect(db.get(`J-${hash}`)?.source).toMatchObject({ file: "daily/2026-01-01.md", line: 3 });
+      expect(db.contentHashRecord(hash)).toMatchObject({
+        memoryId: `J-${hash}`,
+        sourceFile: "daily/2026-01-01.md",
+        createdAt: early.toISOString(),
+      });
+      db.close();
+    }
+  });
+
   it("does not gate a first Journal write on startup recovery", async () => {
     const root = tmpRoot();
     for (let day = 1; day <= 3; day += 1) {

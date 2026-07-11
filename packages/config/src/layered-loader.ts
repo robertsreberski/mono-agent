@@ -52,6 +52,32 @@ function remapJsonMemoryTierError(
     || json.memory === undefined
   ) return error;
 
+  if (error.details.env === "MONO_AGENT_MEMORY_MODE") {
+    const implicatedEnv = firstConfiguredEnv(env, [
+      "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_DIM",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
+      "MONO_AGENT_MEMORY_LLM_PROVIDER",
+      "MONO_AGENT_MEMORY_LLM_MODEL",
+      "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
+      "MONO_AGENT_MEMORY_LLM_ENDPOINT",
+      "MONO_AGENT_MEMORY_LLM_TRACE",
+      "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
+      "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED",
+      "MONO_AGENT_MEMORY_CONSOLIDATION_CRON",
+    ]);
+    if (implicatedEnv !== undefined) {
+      const message = `${implicatedEnv} is incompatible with memory.mode "${json.memory.mode ?? "lite"}" from mono-agent.config.json.`;
+      return new MonoAgentConfigError("invalid_env", message, { env: implicatedEnv, reason: message });
+    }
+  }
+
   const source = error.details.env;
   let path: string | undefined;
   if (source === "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL") path = "memory.embeddings";
@@ -66,6 +92,13 @@ function remapJsonMemoryTierError(
       ? `memory.mode "${mode}" requires an explicit memory.llm block.`
       : error.message.replaceAll("MONO_AGENT_MEMORY_MODE", "memory.mode");
   return new MonoAgentConfigError("invalid_json", message, { path, reason: message });
+}
+
+function firstConfiguredEnv(
+  env: Record<string, string | undefined>,
+  names: readonly string[],
+): string | undefined {
+  return names.find((name) => hasValue(env[name]));
 }
 
 /**

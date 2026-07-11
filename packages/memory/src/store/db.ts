@@ -342,14 +342,16 @@ export class MemoryDb {
       const existing = this.get(record.id);
       const sourceKey = journalSourceKey(record);
       const existingSourceKey = existing === undefined ? undefined : journalSourceKey(existing);
-      if (
+      const recordWins = (
         existing === undefined
         || existingSourceKey === undefined
         || sourceKey < existingSourceKey
         || (sourceKey === existingSourceKey && journalRecordChanged(existing, record))
-      ) {
+      );
+      if (recordWins) {
         this.persistRecordsUnsafe([record], [undefined], true);
       }
+      const representative = recordWins ? record : existing;
       const priorAtSource = this.db.prepare(
         `SELECT id FROM memories WHERE source_file = ? AND source_line = ? AND id <> ?`,
       ).all(record.source.file, record.source.line, record.id) as { id: string }[];
@@ -364,7 +366,7 @@ export class MemoryDb {
            memory_id = excluded.memory_id,
            source_file = excluded.source_file,
            created_at = excluded.created_at`,
-      ).run(contentHash, record.id, record.source.file, record.createdAt);
+      ).run(contentHash, representative.id, representative.source.file, representative.createdAt);
       if (sourceId !== record.id) {
         this.db.prepare(`UPDATE memories SET status = 'dropped' WHERE id = ?`).run(sourceId);
         this.db.prepare(`DELETE FROM content_hashes WHERE memory_id = ? AND content_hash <> ?`).run(sourceId, contentHash);

@@ -660,6 +660,40 @@ describe("loadMonoAgentConfigWithSources", () => {
     throw new Error("Expected the env-selected Journal tier to fail.");
   });
 
+  it.each([
+    {
+      mode: "lite",
+      memory: {},
+      env: { MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "nomic-embed-text:v1.5" },
+      implicated: "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL",
+    },
+    {
+      mode: "journal",
+      memory: { embeddings: { provider: "ollama" } },
+      env: { MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest" },
+      implicated: "MONO_AGENT_MEMORY_LLM_MODEL",
+    },
+    {
+      mode: "journal",
+      memory: { embeddings: { provider: "ollama" } },
+      env: { MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED: "true" },
+      implicated: "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED",
+    },
+  ])("attributes a mixed-source $mode incompatibility to $implicated", async ({ mode, memory, env, implicated }) => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: { mode, path: ".mono-agent/memory", ...memory },
+    }), "utf8");
+
+    await expect(loadMonoAgentConfigWithSources({ env, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_env",
+      message: expect.stringContaining(implicated),
+      details: { env: implicated, code: "invalid_env" },
+    });
+  });
+
   it("resolves an omitted tools block to the allow-all default (['*'])", async () => {
     const path = join(dir, "config.json");
     await writeFile(
