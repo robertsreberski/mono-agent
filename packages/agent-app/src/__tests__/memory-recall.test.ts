@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
+  appendGraphBatch,
   createBujoMemoryStore,
   resolveActiveMemoryDbPath,
   safeRebuildMemoryIndex,
@@ -12,8 +13,9 @@ import {
 import type { BujoMemoryStore } from "@mono-agent/memory/bujo";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { SupermemoryMemoryStore } from "@mono-agent/memory-supermemory";
+import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import { openMemoryDb } from "@mono-agent/memory/store";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   MEMORY_RECALL_MCP_SERVER_NAME,
@@ -33,6 +35,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -79,7 +82,7 @@ describe("resolveMemoryRecallSettings", () => {
         recallTool: { enabled: true },
       }),
     );
-    expect(settings).toEqual({ root: "/memory" });
+    expect(settings).toEqual({ root: "/memory", tier: "lite" });
     expect(bujo(settings).embeddings).toBeUndefined();
   });
 
@@ -144,6 +147,7 @@ describe("resolveMemoryRecallSettings", () => {
     );
     expect(settings).toEqual({
       root: "/memory",
+      tier: "journal",
       embeddings: {
         provider: "openai",
         model: "text-embedding-3-small",
@@ -158,6 +162,7 @@ describe("resolveMemoryRecallSettings", () => {
 describe("memoryRecallMcpServerSpec / env", () => {
   const settings = {
     root: "/memory",
+    tier: "bujo" as const,
     embeddings: {
       provider: "ollama" as const,
       model: "nomic-embed-text:v1.5",
@@ -174,6 +179,7 @@ describe("memoryRecallMcpServerSpec / env", () => {
     expect(String((spec.args as string[])[0])).toMatch(/memory-recall-main\.js$/u);
     expect(spec.env).toMatchObject({
       MONO_AGENT_MEMORY_PATH: "/memory",
+      MONO_AGENT_MEMORY_MODE: "bujo",
       MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
       MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "nomic-embed-text:v1.5",
       MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: "http://localhost:11434",
@@ -452,6 +458,80 @@ describe("createRecallStore", () => {
       await store.close();
     }
   });
+
+  it("opens managed BuJo generations for semantic and pinned FTS recall without losing graph capability", async () => {
+    await seedRecallMemory(dir, "The cobalt launch plan uses blue-green deployment.");
+    await seedRecallMemory(dir, "Taylor owns the incident checklist for midnight incidents.");
+    const legacy = openMemoryDb({ path: join(dir, "memory.db") });
+    const records = legacy.topSalient(10);
+    legacy.close();
+    const launch = records.find((record) => record.text.includes("cobalt launch plan"))!;
+    const incident = records.find((record) => record.text.includes("incident checklist"))!;
+    appendGraphBatch(dir, {
+      entities: [
+        { id: "project:launch", name: "Launch", type: "project", createdAt: "2026-07-11T09:00:00.000Z" },
+        { id: "person:taylor", name: "Taylor", type: "person", createdAt: "2026-07-11T09:00:00.000Z" },
+      ],
+      relations: [{
+        src: "project:launch",
+        dst: "person:taylor",
+        relation: "supported by",
+        createdAt: "2026-07-11T09:00:00.000Z",
+      }],
+      associations: [
+        { memoryId: launch.id, entityId: "project:launch", provenance: "capture", createdAt: "2026-07-11T09:00:00.000Z" },
+        { memoryId: incident.id, entityId: "person:taylor", provenance: "capture", createdAt: "2026-07-11T09:00:00.000Z" },
+      ],
+    });
+    const embeddings = deterministicEmbeddings("ollama:test-embed", 8);
+    await safeRebuildMemoryIndex({ root: dir, tier: "bujo", embeddings, dim: 8 });
+    const activePath = await resolveActiveMemoryDbPath(dir);
+
+    let fetchCalls = 0;
+    vi.stubGlobal("fetch", async (_url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls += 1;
+      const body = JSON.parse(String(init?.body)) as { input: string[] };
+      return new Response(JSON.stringify({
+        embeddings: body.input.map(() => [1, 0, 0, 0, 0, 0, 0, 0]),
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const semantic = await createRecallStore({
+      root: dir,
+      tier: "bujo",
+      dbPath: activePath,
+      embeddings: { provider: "ollama", model: "test-embed", dim: 8 },
+    }) as BujoMemoryStore;
+    try {
+      expect(semantic.tier()).toBe("bujo");
+      expect(semantic.supportsGraphExpansion()).toBe(true);
+      const hits = await semantic.recall("cobalt launch plan", { trackAccess: false });
+      expect(hits.some((hit) => hit.record.text.includes("cobalt launch plan"))).toBe(true);
+      const expanded = semantic.expandGraph("Who is Launch supported by?", [{ record: launch, score: 0.9 }], { topK: 5 });
+      expect(expanded.some((hit) => hit.record.text.includes("incident checklist"))).toBe(true);
+      expect(fetchCalls).toBeGreaterThan(0);
+    } finally {
+      await semantic.close();
+    }
+
+    const fallback = await createRecallStore({
+      root: dir,
+      tier: "bujo",
+      dbPath: activePath,
+      ftsOnlyFallback: true,
+    }) as BujoMemoryStore;
+    try {
+      expect(fallback.tier()).toBe("bujo");
+      expect(fallback.supportsGraphExpansion()).toBe(true);
+      const hits = await fallback.recall("cobalt launch plan", { trackAccess: false });
+      expect(hits.some((hit) => hit.record.text.includes("cobalt launch plan"))).toBe(true);
+      const expanded = fallback.expandGraph("Who is Launch supported by?", [{ record: launch, score: 0.9 }], { topK: 5 });
+      expect(expanded.some((hit) => hit.record.text.includes("incident checklist"))).toBe(true);
+      expect(await resolveActiveMemoryDbPath(dir)).toBe(activePath);
+    } finally {
+      await fallback.close();
+    }
+  });
 });
 
 async function seedRecallMemory(root: string, text: string): Promise<void> {
@@ -475,6 +555,19 @@ function memoryRecord(id: string, text: string) {
     accessCount: 0,
     tags: [] as readonly string[],
     source: {},
+  };
+}
+
+function deterministicEmbeddings(id: string, dim: number): EmbeddingProvider {
+  return {
+    id,
+    embed: async (texts) => texts.map((text) => {
+      const vector = new Array<number>(dim).fill(0);
+      for (const [index, byte] of Buffer.from(text).entries()) {
+        vector[index % dim] = (vector[index % dim] ?? 0) + byte / 255;
+      }
+      return vector;
+    }),
   };
 }
 

@@ -1,6 +1,5 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { EntityRecord, EntityRelationRecord, MemoryEntityAssociation } from "../store/index.js";
+import { appendCanonicalFile, readCanonicalFileSnapshot } from "./path-safety.js";
 
 const GRAPH_FILE = "graph.jsonl";
 
@@ -21,10 +20,6 @@ export interface GraphBatchResult {
   readonly associations: readonly MemoryEntityAssociation[];
 }
 
-function graphPath(root: string): string {
-  return join(root, GRAPH_FILE);
-}
-
 /**
  * Read the canonical graph.jsonl at `<root>/graph.jsonl`.
  * Missing file → `{entities:[], relations:[]}`.
@@ -37,10 +32,9 @@ export function readGraph(root: string): {
   relations: EntityRelationRecord[];
   associations: MemoryEntityAssociation[];
 } {
-  const path = graphPath(root);
-  if (!existsSync(path)) return { entities: [], relations: [], associations: [] };
-
-  const raw = readFileSync(path, "utf8");
+  const snapshot = readCanonicalFileSnapshot(root, GRAPH_FILE, { allowMissing: true });
+  if (snapshot === undefined) return { entities: [], relations: [], associations: [] };
+  const raw = snapshot.content;
   const entityMap = new Map<string, EntityRecord>();
   const relationMap = new Map<string, EntityRelationRecord>();
   const associationMap = new Map<string, MemoryEntityAssociation>();
@@ -153,8 +147,7 @@ export function appendGraphBatch(root: string, input: GraphBatchInput): GraphBat
     }
   }
   if (lines.length > 0) {
-    mkdirSync(root, { recursive: true });
-    appendFileSync(graphPath(root), `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`, "utf8");
+    appendCanonicalFile(root, GRAPH_FILE, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
   }
 
   return {

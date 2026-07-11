@@ -36,6 +36,7 @@ export async function loadMonoAgentConfigWithSources(
   const jsonLayer = input.jsonPath === undefined
     ? {}
     : (await readMonoAgentConfigJson(input.jsonPath)).json;
+  validateJsonMemoryBlocks(jsonLayer);
   const layeredEnv = layerJsonOntoEnv(jsonLayer, input.env);
   try {
     return loadMonoAgentConfig({ env: layeredEnv, cwd: input.cwd });
@@ -50,12 +51,19 @@ function remapJsonMemoryTierError(
   json: MonoAgentConfigJson,
   env: Record<string, string | undefined>,
 ): unknown {
+  if (!(error instanceof MonoAgentConfigError) || error.code !== "invalid_env" || json.memory === undefined) return error;
+
+  const source = error.details.env;
   if (
-    !(error instanceof MonoAgentConfigError)
-    || error.code !== "invalid_env"
-    || hasValue(env.MONO_AGENT_MEMORY_MODE)
-    || json.memory === undefined
-  ) return error;
+    source === "MONO_AGENT_MEMORY_LLM_ENDPOINT"
+    && !hasValue(env.MONO_AGENT_MEMORY_LLM_ENDPOINT)
+    && json.memory.llm?.endpoint !== undefined
+  ) {
+    const path = "memory.llm.endpoint";
+    const message = error.message.replaceAll("MONO_AGENT_MEMORY_LLM_ENDPOINT", path);
+    return new MonoAgentConfigError("invalid_json", message, { path, reason: message });
+  }
+  if (hasValue(env.MONO_AGENT_MEMORY_MODE)) return error;
 
   if (error.details.env === "MONO_AGENT_MEMORY_MODE") {
     const mode = json.memory.mode ?? "lite";
@@ -71,7 +79,6 @@ function remapJsonMemoryTierError(
     }
   }
 
-  const source = error.details.env;
   let path: string | undefined;
   if (source === "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL") path = "memory.embeddings";
   else if (source === "MONO_AGENT_MEMORY_LLM_MODEL") path = "memory.llm";
@@ -85,6 +92,14 @@ function remapJsonMemoryTierError(
       ? `memory.mode "${mode}" requires an explicit memory.llm block.`
       : error.message.replaceAll("MONO_AGENT_MEMORY_MODE", "memory.mode");
   return new MonoAgentConfigError("invalid_json", message, { path, reason: message });
+}
+
+function validateJsonMemoryBlocks(json: MonoAgentConfigJson): void {
+  if (json.memory?.embeddings !== undefined && Object.keys(json.memory.embeddings).length === 0) {
+    const path = "memory.embeddings";
+    const message = `${path} must contain at least one setting; provider, model, and dim default after the block is activated.`;
+    throw new MonoAgentConfigError("invalid_json", message, { path, reason: message });
+  }
 }
 
 const MEMORY_EMBEDDINGS_ENV_KEYS = [
@@ -353,7 +368,7 @@ export function layerJsonOntoEnv(
   if (json.memory?.llm?.timeoutMs !== undefined) {
     fromJson.MONO_AGENT_MEMORY_LLM_TIMEOUT_MS = String(json.memory.llm.timeoutMs);
   }
-  if (json.memory?.llm?.endpoint !== undefined && json.memory.llm.provider !== "agent-host") {
+  if (json.memory?.llm?.endpoint !== undefined) {
     fromJson.MONO_AGENT_MEMORY_LLM_ENDPOINT = json.memory.llm.endpoint;
   }
   if (json.memory?.recallTool?.enabled !== undefined) {
@@ -473,7 +488,8 @@ export function layerJsonOntoEnv(
     }
   }
   if (
-    layered.MONO_AGENT_MEMORY_LLM_PROVIDER === "agent-host" &&
+    env.MONO_AGENT_MEMORY_LLM_PROVIDER?.trim() === "agent-host" &&
+    json.memory?.llm?.provider !== "agent-host" &&
     (env.MONO_AGENT_MEMORY_LLM_ENDPOINT === undefined || env.MONO_AGENT_MEMORY_LLM_ENDPOINT.trim().length === 0)
   ) {
     delete layered.MONO_AGENT_MEMORY_LLM_ENDPOINT;

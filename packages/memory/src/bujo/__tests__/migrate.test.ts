@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
@@ -180,6 +180,18 @@ describe("migrate", () => {
     expect(monthlyContent).toContain("MIG-CLUSTER");
     expect(monthlyContent).toContain("forget");
     expect(monthlyContent).toContain("MIG-FORGET");
+  });
+
+  it("refuses a symlinked monthly directory without writing outside the memory root", async () => {
+    const root = newRoot();
+    const outside = mkdtempSync(join(tmpdir(), "bujo-migrate-outside-"));
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-LINK", "monthly path confinement sentinel");
+    symlinkSync(outside, join(root, "monthly"), "dir");
+    const llm = fakeLlm([["path confinement", JSON.stringify({ action: "promote" })]]);
+
+    await expect(migrate(makeDeps(db, root, { llm }))).rejects.toThrow(/directory.*symlink/iu);
+    expect(existsSync(join(outside, "2026-06.md"))).toBe(false);
   });
 
   it("surfaces (rethrows) a model failure during migration instead of swallowing it per-item", async () => {

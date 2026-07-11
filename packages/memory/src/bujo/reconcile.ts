@@ -109,6 +109,7 @@ export async function reconcileBatch(
   const decisions = reconcileIndexes.length === 0
     ? new Map<number, Classification>()
     : await classifyBatch(candidates, neighbours, reconcileIndexes, deps);
+  rejectConflictingMutations(decisions);
   deps.abortSignal?.throwIfAborted();
   const plans: Array<BatchActionPlan | undefined> = candidates.map(() => undefined);
   for (const [index, candidate] of candidates.entries()) {
@@ -167,6 +168,26 @@ export async function reconcileBatch(
     if (plan.record !== undefined && !acceptedIndexes.has(plan.index)) return undefined;
     return plan.action;
   });
+}
+
+/**
+ * A batch is planned against one pre-write snapshot. Two UPDATE/SUPERSEDE
+ * decisions for the same existing row would therefore overwrite or invalidate
+ * each other while both appeared accepted. Fail every colliding mutation
+ * closed before vector preflight or canonical writes.
+ */
+function rejectConflictingMutations(decisions: Map<number, Classification>): void {
+  const byTarget = new Map<string, number[]>();
+  for (const [index, decision] of decisions) {
+    if ((decision.action !== "update" && decision.action !== "supersede") || decision.targetId === undefined) continue;
+    const indexes = byTarget.get(decision.targetId) ?? [];
+    indexes.push(index);
+    byTarget.set(decision.targetId, indexes);
+  }
+  for (const indexes of byTarget.values()) {
+    if (indexes.length < 2) continue;
+    for (const index of indexes) decisions.delete(index);
+  }
 }
 
 interface BatchActionPlan {

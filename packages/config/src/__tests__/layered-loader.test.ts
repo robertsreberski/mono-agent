@@ -396,6 +396,30 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MEMORY_LLM_ENDPOINT).toBeUndefined();
   });
 
+  it("preserves an invalid JSON agent-host endpoint so config validation can reject it", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: {
+        mode: "bujo",
+        path: ".mono-agent/memory",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: {
+          provider: "agent-host",
+          model: "pi:openai-codex:gpt-5.5",
+          executionMode: "sdk",
+          endpoint: "http://127.0.0.1:11434",
+        },
+      },
+    }), "utf8");
+
+    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_json",
+      details: { path: "memory.llm.endpoint", code: "invalid_json" },
+    });
+  });
+
   it("translates JSON memory llm timeoutMs to its env key", () => {
     const layered = layerJsonOntoEnv(
       {
@@ -1115,6 +1139,89 @@ describe("loadMonoAgentConfigWithSources", () => {
     const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
     expect(config.memory).not.toHaveProperty("graphPath");
     expect(config.memory?.embeddings).toEqual({ provider: "ollama", model: "nomic-embed-text:v1.5" });
+  });
+
+  it("treats a dim-only JSON embeddings block as explicit and applies provider/model defaults", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        memory: {
+          mode: "journal",
+          path: ".mono-agent/memory",
+          embeddings: { dim: 768 },
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    expect(config.memory?.embeddings).toEqual({
+      provider: "ollama",
+      model: "nomic-embed-text:v1.5",
+      dim: 768,
+    });
+  });
+
+  it("rejects an empty JSON embeddings block consistently with the published schema", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: { mode: "journal", path: ".mono-agent/memory", embeddings: {} },
+    }), "utf8");
+
+    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_json",
+      details: { path: "memory.embeddings", code: "invalid_json" },
+    });
+  });
+
+  it("attributes a JSON agent-host endpoint to JSON even when the memory tier comes from env", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: {
+        path: ".mono-agent/memory",
+        embeddings: { dim: 768 },
+        llm: {
+          provider: "agent-host",
+          model: "pi:openai-codex:gpt-5.5",
+          executionMode: "sdk",
+          endpoint: "http://127.0.0.1:11434",
+        },
+      },
+    }), "utf8");
+
+    await expect(loadMonoAgentConfigWithSources({
+      env: { MONO_AGENT_MEMORY_MODE: "bujo" },
+      cwd: dir,
+      jsonPath: path,
+    })).rejects.toMatchObject({
+      code: "invalid_json",
+      details: { path: "memory.llm.endpoint", code: "invalid_json" },
+    });
+  });
+
+  it("treats a dim-only embeddings env surface as explicit and applies provider/model defaults", async () => {
+    const config = await loadMonoAgentConfigWithSources({
+      env: {
+        MONO_AGENT_MODEL: "pi:openai-codex:gpt-5.5",
+        MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_PATH: ".mono-agent/memory",
+        MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "384",
+      },
+      cwd: dir,
+    });
+    expect(config.memory?.embeddings).toEqual({
+      provider: "ollama",
+      model: "nomic-embed-text:v1.5",
+      dim: 384,
+    });
   });
 
   it("works without a jsonPath (pure env loader behavior)", async () => {

@@ -1,22 +1,6 @@
-import {
-  closeSync,
-  constants,
-  existsSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
-import { randomUUID } from "node:crypto";
-
 import type { BujoQueueSnapshot } from "./store.js";
 import type { BujoTier } from "./types.js";
-import { assertSafeDirectory, assertSafeRegularFile, canonicalMemoryRoot, fsyncDirectory } from "./generations.js";
+import { readCanonicalFileSnapshot, writeCanonicalFileAtomic } from "./path-safety.js";
 
 export const BUJO_RUNTIME_SNAPSHOT_SCHEMA_VERSION = 1;
 export const BUJO_RUNTIME_SNAPSHOT_STALE_AFTER_MS = 90_000;
@@ -55,27 +39,7 @@ export interface BujoRuntimeSnapshotObservation {
 /** Atomically publish one metadata-only runtime snapshot under the managed index directory. */
 export function writeBujoRuntimeSnapshot(root: string, snapshot: BujoRuntimeSnapshot): void {
   validateSnapshot(snapshot);
-  const canonicalRoot = canonicalMemoryRoot(root, true);
-  const managed = join(canonicalRoot, ".index");
-  mkdirSync(managed, { recursive: true, mode: 0o700 });
-  assertSafeDirectory(canonicalRoot, managed, "managed memory directory");
-  const path = join(managed, RUNTIME_FILE);
-  const temp = join(managed, `.runtime-${randomUUID()}.tmp`);
-  const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
-  let renamed = false;
-  try {
-    writeFileSync(fd, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
-    fsyncSync(fd);
-    closeSync(fd);
-    renameSync(temp, path);
-    renamed = true;
-    fsyncDirectory(dirname(path));
-  } finally {
-    if (!renamed) {
-      try { closeSync(fd); } catch { /* already closed */ }
-      try { unlinkSync(temp); } catch { /* best-effort temp cleanup */ }
-    }
-  }
+  writeCanonicalFileAtomic(root, `.index/${RUNTIME_FILE}`, `${JSON.stringify(snapshot, null, 2)}\n`);
 }
 
 /** Read and validate the last operational snapshot without exposing memory content. */
@@ -83,20 +47,19 @@ export function readBujoRuntimeSnapshot(
   root: string,
   now = new Date(),
 ): BujoRuntimeSnapshotObservation {
-  let canonicalRoot: string;
+  let file: ReturnType<typeof readCanonicalFileSnapshot>;
   try {
-    canonicalRoot = canonicalMemoryRoot(root, false);
+    file = readCanonicalFileSnapshot(root, `.index/${RUNTIME_FILE}`, {
+      allowMissing: true,
+      maxBytes: MAX_RUNTIME_SNAPSHOT_BYTES,
+    });
   } catch {
-    return { available: false, stale: true, reason: "missing" };
+    return { available: false, stale: true, reason: "invalid" };
   }
-  const path = join(canonicalRoot, ".index", RUNTIME_FILE);
-  if (!existsSync(path)) return { available: false, stale: true, reason: "missing" };
+  if (file === undefined) return { available: false, stale: true, reason: "missing" };
   try {
-    assertSafeRegularFile(canonicalRoot, path, "memory runtime snapshot");
-    const stat = lstatSync(path);
-    if ((stat.mode & 0o077) !== 0) throw new Error("runtime snapshot must not be group/world accessible");
-    if (stat.size > MAX_RUNTIME_SNAPSHOT_BYTES) throw new Error("runtime snapshot is unexpectedly large");
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if ((file.identity.mode & 0o077) !== 0) throw new Error("runtime snapshot must not be group/world accessible");
+    const parsed = JSON.parse(file.content) as unknown;
     validateSnapshot(parsed);
     const updatedMs = Date.parse(parsed.updatedAt);
     const ageMs = Math.max(0, now.getTime() - updatedMs);

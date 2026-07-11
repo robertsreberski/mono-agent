@@ -123,6 +123,71 @@ describe("captureTurn", () => {
     expect(readGraph(root).associations).toHaveLength(2);
   });
 
+  it("does not attach either candidate's entities when same-turn mutations collide on one target", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    let extractionCall = 0;
+    const llm = {
+      id: "conflicting-mutations",
+      async complete(_prompt: string, options?: { readonly label?: string }) {
+        if (options?.label === "capture:extract") {
+          extractionCall += 1;
+          if (extractionCall === 1) {
+            return JSON.stringify({
+              memories: [{
+                type: "note",
+                text: "Morgan prefers blue-green deployments",
+                salience: 0.7,
+                isInsight: false,
+                entityIds: [],
+              }],
+              entities: [],
+              relations: [],
+            });
+          }
+          return JSON.stringify({
+            memories: [
+              {
+                type: "note",
+                text: "Morgan prefers reviewed blue-green deployments",
+                salience: 0.8,
+                isInsight: false,
+                entityIds: ["concept:review"],
+              },
+              {
+                type: "note",
+                text: "Morgan prefers canary blue-green deployments",
+                salience: 0.8,
+                isInsight: false,
+                entityIds: ["concept:canary"],
+              },
+            ],
+            entities: [
+              { id: "concept:review", name: "Review", type: "concept" },
+              { id: "concept:canary", name: "Canary", type: "concept" },
+            ],
+            relations: [],
+          });
+        }
+        return JSON.stringify([
+          { index: 0, action: "update", targetId: "CAP0001", text: "Reviewed blue-green deployments" },
+          { index: 1, action: "update", targetId: "CAP0001", text: "Canary blue-green deployments" },
+        ]);
+      },
+    };
+    const deps: ReconcileDeps = { db, root, llm, nextId: makeSeqNextId(), now: () => FIXED };
+    await captureTurn("Morgan prefers blue-green deployments", deps);
+    db.findSimilarMany = async (texts) => texts.map(() => [{ record: db.get("CAP0001")!, distance: 0.1 }]);
+
+    const result = await captureTurn("Morgan clarified the deployment preference", deps);
+
+    expect(result.actions).toEqual([]);
+    expect(result.associations).toBe(0);
+    expect(db.get("CAP0001")?.text).toBe("Morgan prefers blue-green deployments");
+    expect(db.associationsForMemory("CAP0001")).toEqual([]);
+    expect(readGraph(root).associations).toEqual([]);
+  });
+
   it("extracts a bounded plan, reconciles, mirrors the graph, and keeps precise associations", async () => {
     const root = newRoot();
     const db = openDb(root);

@@ -42,7 +42,7 @@ MONO_AGENT_MEMORY_WRITE_MODE=append-host-summary
 - **Journal:** reserves a case-preserving, NFKC/whitespace-normalized SHA-256 identity, appends only a new canonical observation, and makes it available to FTS synchronously. Semantic indexing is queued after the successful turn in batches of up to 32, so Ollama/OpenAI embedding latency is not on the provider-success critical path. Repeated content converges on one markdown/index identity.
 - **BuJo:** appends every compact host observation to `audit/YYYY-MM-DD.md`, outside curated recall. Only `writeMode: "capture"` asks the memory model to promote durable facts into canonical `daily/` notes and the graph. A model outage or queue overflow therefore cannot turn an uncurated raw transcript into recalled fact.
 
-Both background paths are bounded and observable. Journal indexing holds at most 256 items / 2 MiB; BuJo curation holds at most 32 turns / 1 MiB. Queue snapshots report capacity, queued/in-flight/high-water counts and bytes, completed/failed/dropped/coalesced/discarded work, and recovery backlog. Shutdown gives accepted work up to 10 seconds to drain; after that deadline it discards queued best-effort work and aborts cooperative in-flight work instead of hanging indefinitely. Overflow or deadline loss preserves the lexical Journal row or BuJo raw audit and emits a warning.
+Both background paths are bounded and observable. Journal indexing holds at most 256 items / 2 MiB; BuJo curation holds at most 32 turns / 1 MiB. Each capture-model completion is rejected before JSON parsing when it exceeds 262,144 JavaScript characters. Queue snapshots report capacity, queued/in-flight/high-water counts and bytes, completed/failed/dropped/coalesced/discarded work, and recovery backlog. Shutdown gives accepted work up to 10 seconds to drain; after that deadline it discards queued best-effort work and aborts cooperative in-flight work instead of hanging indefinitely. Overflow or deadline loss preserves the lexical Journal row or BuJo raw audit and emits a warning.
 
 ### `capture` — per-turn intelligent capture (bujo)
 
@@ -164,11 +164,13 @@ See [Tool policy](/tools/policy/) and [MCP tools](/tools/mcp/) for how MCP-provi
 | `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline (and legacy CLI `reflect`/`migrate`) |
 | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama chat endpoint (default `http://localhost:11434`) |
 | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | `memory.llm.timeoutMs` | Per-call chat-LLM timeout. **In-app (agent-app) default `60000`**; the standalone `memory-bujo` CLI reads the same var but defaults to `120000`. See [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts). |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama` / `openai`; required for vector recall |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Required in the app; the standalone CLI defaults to `nomic-embed-text:v1.5` |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` | Required in the app; the standalone CLI defaults to `768` |
+| `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama` / `openai`; defaults to `ollama` once the required Journal/BuJo embeddings block is present |
+| `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Defaults by provider (`nomic-embed-text:v1.5` for Ollama) |
+| `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` | Defaults to `768`; set it when the model output dimension differs |
 
 See [Environment variables](/config/env-vars/) for the full table and precedence rules.
+
+Journal and BuJo require an explicit, non-empty `memory.embeddings` **block**, but they do not require every field in that block. Provider, model, and dimension use the defaults above; even a block that only overrides `dim` is valid.
 
 ## Related pages
 

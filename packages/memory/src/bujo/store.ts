@@ -33,7 +33,9 @@ import {
 } from "./runtime-snapshot.js";
 import {
   acquireMemoryWriterLease,
+  assertSafeSqlitePathState,
   canonicalMemoryRoot,
+  captureSafeSqlitePathState,
   readManagedIndexManifest,
   resolveActiveMemoryDbPath,
   type MemoryWriterLease,
@@ -110,8 +112,10 @@ export class BujoMemoryStore implements MemoryStore {
   private nextJournalRetryAt: Date | undefined;
   private journalRecoveryRowsScanned = 0;
   private journalRecoveryRefillQueries = 0;
+  private lastKnownMissingVectors = 0;
   private closing = false;
   private closed = false;
+  private closePromise: Promise<void> | undefined;
   private activeCaptureController: AbortController | undefined;
   private activeIndexController: AbortController | undefined;
   private shutdownDiscarded = 0;
@@ -176,13 +180,16 @@ export class BujoMemoryStore implements MemoryStore {
           + "run the safe memory rebuild for the configured identity.",
         );
       }
+      const dbPath = options.dbPath ?? resolveActiveMemoryDbPath(this.root);
+      const dbPathState = captureSafeSqlitePathState(this.root, dbPath, "memory database");
       opened = openMemoryDb({
-        path: options.dbPath ?? resolveActiveMemoryDbPath(this.root),
+        path: dbPath,
         ...(options.embeddings !== undefined && { embeddings: this.instrumentEmbeddings(options.embeddings) }),
         ...(options.dim !== undefined && { dim: options.dim }),
         ...(this.readOnly ? { readOnly: true } : {}),
         clock: this.clock,
       });
+      assertSafeSqlitePathState(this.root, dbPath, dbPathState, "memory database");
       this.db = opened;
       if (this.readOnly && managed !== undefined && options.allowFtsFallback !== true) {
         const metadata = opened.indexMetadata();
@@ -215,6 +222,7 @@ export class BujoMemoryStore implements MemoryStore {
   }
 
   async load(conversationId: string, query?: string): Promise<MemoryBlock | undefined> {
+    this.assertOpen("load");
     // Recall against what the user actually said. Legacy callers pass no query, so fall back to the
     // conversation id as a coarse seed; an explicit empty query carries no usable signal, so skip
     // recall rather than surface near-random hits.
@@ -233,6 +241,7 @@ export class BujoMemoryStore implements MemoryStore {
 
   /** Query-based hybrid recall (text + score). Used by the MCP and any deliberate recall surface. */
   async recall(query: string, options: { topK?: number; trackAccess?: boolean } = {}): Promise<RecallHit[]> {
+    this.assertOpen("recall");
     return this.db.recall(query, {
       ...(options.topK !== undefined && { topK: options.topK }),
       ...(this.readOnly
@@ -252,6 +261,7 @@ export class BujoMemoryStore implements MemoryStore {
     directHits: readonly RecallHit[],
     options: { readonly topK?: number } = {},
   ): RecallHit[] {
+    this.assertOpen("expandGraph");
     const topK = Math.max(1, Math.min(options.topK ?? 8, 50));
     if (this._tier !== "bujo" || directHits.length === 0) return directHits.slice(0, topK);
     const seeds = directHits.slice(0, 3);
@@ -287,6 +297,7 @@ export class BujoMemoryStore implements MemoryStore {
 
   /** Record served recall hits as telemetry without re-running retrieval. */
   recordAccess(ids: readonly string[]): void {
+    this.assertOpen("recordAccess");
     if (this.readOnly) return;
     this.db.recordAccess(ids);
   }
@@ -436,7 +447,7 @@ export class BujoMemoryStore implements MemoryStore {
       ...(this.indexQueue === undefined ? {} : {
         index: {
           ...this.indexQueue.snapshot(),
-          remainingBacklog: this.db.countMissingVectors(),
+          remainingBacklog: this.remainingIndexBacklog(),
           recoveryFilesRemaining: Math.max(0, this.journalRecoveryFiles.length - this.journalRecoveryCursor),
           recoveryPaused: this.journalRecoveryPaused,
           retryDelayMs: this.currentJournalRetryDelayMs,
@@ -471,6 +482,15 @@ export class BujoMemoryStore implements MemoryStore {
     abortSignal?: AbortSignal,
   ): Promise<{ actions: number; entities: number } | undefined> {
     this.assertWritable("capture");
+    return await this.captureAccepted(conversationId, text, abortSignal);
+  }
+
+  /** Run work that was admitted before shutdown stopped the capture queue. */
+  private async captureAccepted(
+    conversationId: string,
+    text: string,
+    abortSignal?: AbortSignal,
+  ): Promise<{ actions: number; entities: number } | undefined> {
     if (this.llm === undefined) return undefined;
     const res = await captureTurn(text, {
       db: this.db,
@@ -504,12 +524,16 @@ export class BujoMemoryStore implements MemoryStore {
     });
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
     // Bound shutdown: deterministic lexical/raw source already survived, so
     // queued semantic/curation work may be discarded rather than hanging stop.
-    if (this.closed) return;
-    this.closed = true;
+    if (this.closePromise !== undefined) return this.closePromise;
     this.closing = true;
+    this.closePromise = this.performClose();
+    return this.closePromise;
+  }
+
+  private async performClose(): Promise<void> {
     this.disableRuntimeTimers();
     if (this.journalRetryTimer !== undefined) clearTimeout(this.journalRetryTimer);
     this.indexQueue?.stopAccepting();
@@ -539,6 +563,7 @@ export class BujoMemoryStore implements MemoryStore {
       this.disableRuntimeTimers();
       try { this.db.close(); } catch (closeError) { cleanupErrors.push(closeError); }
       try { this.writerLease?.release(); } catch (releaseError) { cleanupErrors.push(releaseError); }
+      this.closed = true;
       if (primary !== undefined || cleanupErrors.length > 0) {
         throw withCleanupErrors(primary, cleanupErrors, "memory-bujo close failed");
       }
@@ -589,7 +614,7 @@ export class BujoMemoryStore implements MemoryStore {
           const controller = new AbortController();
           this.activeCaptureController = controller;
           try {
-            await this.capture(job.conversationId, job.text, controller.signal);
+            await this.captureAccepted(job.conversationId, job.text, controller.signal);
           } finally {
             if (this.activeCaptureController === controller) this.activeCaptureController = undefined;
           }
@@ -785,8 +810,21 @@ export class BujoMemoryStore implements MemoryStore {
     }
   }
 
+  private remainingIndexBacklog(): number {
+    if (this.closed) return this.lastKnownMissingVectors;
+    this.lastKnownMissingVectors = this.db.countMissingVectors();
+    return this.lastKnownMissingVectors;
+  }
+
   private assertWritable(operation: string): void {
     if (this.readOnly) throw new Error(`memory-bujo: read-only store rejects ${operation}.`);
+    this.assertOpen(operation);
+  }
+
+  private assertOpen(operation: string): void {
+    if (this.closing || this.closed) {
+      throw new Error(`memory-bujo: closing or closed store rejects ${operation}.`);
+    }
   }
 }
 
@@ -795,6 +833,10 @@ export function createBujoMemoryStore(options: BujoOptions): BujoMemoryStore {
 }
 
 function assertTierPrerequisites(tier: BujoTier, options: BujoOptions): void {
+  if (tier !== "lite" && tier !== "journal" && tier !== "bujo") {
+    throw new Error(`memory-bujo: unsupported tier "${String(tier)}".`);
+  }
+  if (options.readOnly === true && options.allowFtsFallback === true) return;
   if (tier === "lite") {
     if (options.embeddings !== undefined || options.llm !== undefined || options.dim !== undefined) {
       throw new Error("memory-bujo: lite tier is lexical-only and rejects embeddings, dimensions, and capture LLMs.");
@@ -810,7 +852,7 @@ function assertTierPrerequisites(tier: BujoTier, options: BujoOptions): void {
     }
     return;
   }
-  if (options.llm === undefined) {
+  if (options.llm === undefined && options.readOnly !== true) {
     throw new Error("memory-bujo: bujo tier requires a capture LLM.");
   }
 }

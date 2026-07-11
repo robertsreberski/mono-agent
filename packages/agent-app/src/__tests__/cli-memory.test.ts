@@ -174,6 +174,43 @@ describe("runCli memory", () => {
     expect(search.stdout).toContain("Deploy pipeline uses blue green releases.");
   });
 
+  it("keeps a managed BuJo generation pinned while semantic search falls back to graph-capable FTS", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({
+      memory: {
+        mode: "bujo",
+        path: memoryRoot,
+        writeMode: "capture",
+        embeddings: {
+          provider: "ollama",
+          model: "test-embed",
+          endpoint: "http://127.0.0.1:1",
+          dim: 8,
+          timeoutMs: 20,
+          circuitBreaker: { failureThreshold: 1, cooldownMs: 60_000 },
+        },
+        llm: { provider: "ollama", model: "test-capture" },
+      },
+    });
+    await seedLocalStore(memoryRoot);
+    await safeRebuildMemoryIndex({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: deterministicEmbeddings("ollama:test-embed", 8),
+      dim: 8,
+    });
+    const activeBefore = await resolveActiveMemoryDbPath(memoryRoot);
+
+    const search = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "search", "deploy", "releases"]))));
+
+    expect(search.code).toBe(0);
+    expect(search.stdout).toContain("[WARN] Semantic embeddings unavailable");
+    expect(search.stdout).toContain("FTS-only");
+    expect(search.stdout).toContain("Deploy pipeline uses blue green releases.");
+    expect(await resolveActiveMemoryDbPath(memoryRoot)).toBe(activeBefore);
+  });
+
   it("rebuilds and rolls back the configured built-in store without an LLM", async () => {
     const memoryRoot = join(await tempDir(), "memory");
     const dir = await agentDir({ memory: { mode: "lite", path: memoryRoot, writeMode: "append-host-summary" } });

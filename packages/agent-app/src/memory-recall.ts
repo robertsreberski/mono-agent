@@ -11,6 +11,7 @@ import type {
 } from "@mono-agent/memory/search";
 import type { MemoryStatus, MemoryType } from "@mono-agent/memory/store";
 import { isConversationRelativeQuery } from "@mono-agent/memory/bujo";
+import type { BujoTier } from "@mono-agent/memory/bujo";
 import * as z from "zod/v4";
 
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
@@ -80,6 +81,8 @@ export interface MemoryRecallSupermemory {
 export interface MemoryRecallBujoSettings {
   /** Memory root directory (config.memory.path). */
   readonly root: string;
+  /** Configured strict tier; required to retain BuJo graph capability in read-only recall. */
+  readonly tier?: BujoTier;
   /**
    * Optional exact managed-generation database path. Command paths resolve this
    * once so a semantic attempt and its FTS fallback cannot observe different
@@ -183,10 +186,11 @@ export function resolveMemoryRecallSettings(config: MonoAgentConfig): MemoryReca
   const embeddings = memory.embeddings;
   if (embeddings === undefined) {
     // Explicit opt-in without embeddings → FTS-only recall (no embedding provider built).
-    return { root: memory.path };
+    return { root: memory.path, tier: memory.mode };
   }
   return {
     root: memory.path,
+    tier: memory.mode,
     embeddings: {
       provider: embeddings.provider,
       model: embeddings.model,
@@ -243,11 +247,16 @@ export function memoryRecallSettingsFromEnv(env: Record<string, string | undefin
   if (root === undefined) {
     throw new Error("memory-recall: missing required environment (MONO_AGENT_MEMORY_PATH).");
   }
+  const rawTier = optionalString(env.MONO_AGENT_MEMORY_MODE);
+  if (rawTier !== undefined && rawTier !== "lite" && rawTier !== "journal" && rawTier !== "bujo") {
+    throw new Error(`memory-recall: unsupported MONO_AGENT_MEMORY_MODE "${rawTier}" (expected lite, journal, or bujo).`);
+  }
+  const tier = rawTier as BujoTier | undefined;
   const provider = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER);
   const model = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL);
   if (provider === undefined && model === undefined) {
     // No embeddings configured → FTS-only recall store.
-    return { root };
+    return { root, ...(tier === undefined ? {} : { tier }) };
   }
   if (provider === undefined || model === undefined) {
     throw new Error(
@@ -282,6 +291,7 @@ export function memoryRecallSettingsFromEnv(env: Record<string, string | undefin
         };
   return {
     root,
+    ...(tier === undefined ? {} : { tier }),
     embeddings: {
       provider,
       model,
@@ -321,12 +331,16 @@ export function memoryRecallMcpEnv(settings: MemoryRecallSettings): Record<strin
   }
   const { embeddings } = settings;
   if (embeddings === undefined) {
-    return { MONO_AGENT_MEMORY_PATH: settings.root };
+    return {
+      MONO_AGENT_MEMORY_PATH: settings.root,
+      ...(settings.tier === undefined ? {} : { MONO_AGENT_MEMORY_MODE: settings.tier }),
+    };
   }
   // Forward the secret only as a last resort: prefer the env-var name passthrough.
   const forwardLiteralApiKey = embeddings.apiKeyEnv === undefined && embeddings.apiKey !== undefined;
   return {
     MONO_AGENT_MEMORY_PATH: settings.root,
+    ...(settings.tier === undefined ? {} : { MONO_AGENT_MEMORY_MODE: settings.tier }),
     MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: embeddings.provider,
     MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: embeddings.model,
     ...(embeddings.endpoint === undefined ? {} : { MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: embeddings.endpoint }),
@@ -405,6 +419,7 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
       root: settings.root,
       dbPath,
       readOnly: true,
+      ...(settings.tier === undefined ? {} : { tier: settings.tier }),
       ...(settings.ftsOnlyFallback === true ? { allowFtsFallback: true } : {}),
     });
   }
@@ -413,6 +428,7 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
     root: settings.root,
     dbPath,
     readOnly: true,
+    ...(settings.tier === undefined ? {} : { tier: settings.tier }),
     embeddings: provider,
     dim: embeddings.dim ?? 768,
   });

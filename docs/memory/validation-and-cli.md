@@ -199,7 +199,7 @@ Supermemory owns its remote index, so `mono-agent memory rebuild` and `rollback`
 
 ## Enable v1 on an existing agent
 
-After the product-v1 packages are published, this is the complete cutover for an existing local agent. Use the exact lockstep version named in the release announcement; “product v1” does not by itself imply npm major `1`.
+After the product-v1 packages are published, this is the complete cutover for an existing local agent, with one backend-specific branch in step 5. Use the exact lockstep version named in the release announcement; “product v1” does not by itself imply npm major `1`.
 
 1. Install the v1 CLI and confirm the exact published version:
 
@@ -235,7 +235,7 @@ After the product-v1 packages are published, this is the complete cutover for an
    mono-agent validate
    ```
 
-5. Build the first managed index, inspect its accounting, and start the agent:
+5. For the built-in Lite, Journal, or BuJo backend, build the first managed index and inspect its local accounting. Then start the agent:
 
    ```bash
    mono-agent memory rebuild --json
@@ -243,6 +243,8 @@ After the product-v1 packages are published, this is the complete cutover for an
    mono-agent start
    mono-agent status
    ```
+
+   If `memory.backend` is `supermemory`, skip both `memory rebuild` and the local index audit: Supermemory owns its remote index and those built-in maintenance commands intentionally reject it. Start/status the agent after validation instead.
 
 6. Verify both kinds of context in Telegram without restarting between messages: send `Reply exactly with this token: V1-HISTORY-<unique>`, wait for that reply, then ask `What did you send in the last message?` and confirm the token comes back. That second run should use active history and inject no durable memory. Finally ask a qualified durable-memory question such as `What did we decide about releases last month?` to exercise `MemoryRecall`.
 

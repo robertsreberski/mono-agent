@@ -635,10 +635,11 @@ function previewRecallSettings(config: MonoAgentConfig): MemoryRecallSettings | 
   }
   const embeddings = memory.embeddings;
   if (embeddings === undefined) {
-    return { root: memory.path };
+    return { root: memory.path, tier: memory.mode };
   }
   return {
     root: memory.path,
+    tier: memory.mode,
     embeddings: {
       provider: embeddings.provider,
       model: embeddings.model,
@@ -667,6 +668,7 @@ async function recallWithFtsFallback(
     await store.close().catch(() => undefined);
     const fallback: MemoryRecallBujoSettings = {
       root: settings.root,
+      ...(settings.tier === undefined ? {} : { tier: settings.tier }),
       ...(settings.dbPath === undefined ? {} : { dbPath: settings.dbPath }),
       ftsOnlyFallback: true,
     };

@@ -1,8 +1,6 @@
-import { appendFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
-
 import { parseJsonLoose } from "./json.js";
 import { MemoryModelError } from "./model-error.js";
+import { appendCanonicalFile } from "./path-safety.js";
 import type { ReflectDeps } from "./reflect.js";
 import { rewriteBullet } from "./daily.js";
 
@@ -139,16 +137,13 @@ export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
   // Write monthly/<YYYY-MM>.md — append a dated section with all decisions
   if (decisions.length > 0) {
     const yearMonth = now.toISOString().slice(0, 7); // "YYYY-MM"
-    const monthlyDir = join(deps.root, "monthly");
-    mkdirSync(monthlyDir, { recursive: true });
-    const monthlyPath = join(monthlyDir, `${yearMonth}.md`);
     const dateStr = now.toISOString().slice(0, 10);
     const lines = [
       `\n## ${dateStr}`,
       ...decisions.map((d) => `- ${d.action} ${d.id}: "${d.text}"`),
       "",
     ].join("\n");
-    appendFileSync(monthlyPath, lines, "utf8");
+    appendCanonicalFile(deps.root, `monthly/${yearMonth}.md`, lines);
   }
 
   return {

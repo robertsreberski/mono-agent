@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -227,5 +227,26 @@ describe("readGraph", () => {
     const g = readGraph(root);
     expect(g.entities).toHaveLength(2);
     expect(g.entities.map((e) => e.id)).toContain("person:charlie");
+  });
+
+  it("rejects a symlinked graph target without reading or appending its referent", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-link-"));
+    const outside = join(mkdtempSync(join(tmpdir(), "bujo-graph-outside-")), "graph.jsonl");
+    writeFileSync(outside, '{"kind":"entity","id":"secret","name":"Secret"}\n', "utf8");
+    symlinkSync(outside, join(root, "graph.jsonl"));
+
+    expect(() => readGraph(root)).toThrow(/symlink|regular/iu);
+    expect(() => appendEntity(root, entity("person:alice", "Alice"))).toThrow(/symlink|regular/iu);
+    expect(readFileSync(outside, "utf8")).toContain('"secret"');
+  });
+
+  it("rejects a symlinked root component used as graph storage", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-link-"));
+    const outside = mkdtempSync(join(tmpdir(), "bujo-graph-outside-"));
+    mkdirSync(join(root, "container"));
+    symlinkSync(outside, join(root, "container", "memory"), "dir");
+
+    expect(() => appendEntity(join(root, "container", "memory"), entity("person:alice", "Alice"))).toThrow(/root.*symlink/iu);
+    expect(() => readGraph(join(root, "container", "memory"))).toThrow(/root.*symlink/iu);
   });
 });

@@ -1,37 +1,121 @@
-/** Extract the first top-level JSON value (object or array) from an LLM completion, tolerating prose/code fences. */
-export function parseJsonLoose<T>(text: string): T | undefined {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/u);
-  const body = fenced?.[1] ?? text;
-  // Scan EVERY bracket-like start, not just the first: prose, markdown citations (`[1]`), or
-  // pseudocode can put a stray `[`/`{` ahead of the real payload. Keep the LARGEST value that
-  // actually parses, so a trivial "[1]" citation loses to the real object/array later on.
-  let best: { value: unknown; len: number } | undefined;
-  for (let i = 0; i < body.length; i += 1) {
-    const open = body[i];
-    if (open !== "[" && open !== "{") continue;
-    const end = matchingClose(body, i, open);
-    if (end === -1) continue;
-    const slice = body.slice(i, end + 1);
-    try {
-      const value = JSON.parse(slice) as unknown;
-      if (best === undefined || slice.length > best.len) best = { value, len: slice.length };
-      i = end; // this span parsed — skip the nested brackets it already covers
-    } catch {
-      // Not valid JSON at this position; try the next bracket.
-    }
-  }
-  return best?.value as T | undefined;
+/** Maximum model completion accepted by the loose JSON decoder (256 KiB in JS characters). */
+export const MAX_MODEL_JSON_CHARS = 256 * 1024;
+
+/**
+ * At most this many bracket candidates are scanned concurrently. This keeps a
+ * malformed prefix with thousands of unmatched openers linear while retaining
+ * enough nesting for ordinary model-authored JSON.
+ */
+export const MAX_OVERLAPPING_JSON_CANDIDATES = 64;
+
+interface CandidateScan {
+  readonly start: number;
+  readonly stack: Array<"[" | "{">;
+  inString: boolean;
+  escaped: boolean;
 }
 
-/** Index of the bracket closing `body[start]` (an `[` or `{`), respecting strings/escapes; -1 if unbalanced. */
-function matchingClose(body: string, start: number, open: "[" | "{"): number {
-  const close = open === "[" ? "]" : "}";
-  let depth = 0, inStr = false, esc = false;
-  for (let i = start; i < body.length; i += 1) {
-    const ch = body[i];
-    if (ch === undefined) break;
-    if (inStr) { if (esc) esc = false; else if (ch === "\\") esc = true; else if (ch === '"') inStr = false; continue; }
-    if (ch === '"') inStr = true; else if (ch === open) depth += 1; else if (ch === close) { depth -= 1; if (depth === 0) return i; }
+export interface JsonLooseScanDiagnostics<T> {
+  readonly value: T | undefined;
+  readonly characters: number;
+  readonly candidateSteps: number;
+  readonly parseAttempts: number;
+  readonly rejectedForSize: boolean;
+}
+
+/** Extract the largest top-level JSON object/array from an LLM completion, tolerating prose/code fences. */
+export function parseJsonLoose<T>(text: string): T | undefined {
+  return parseJsonLooseWithDiagnostics<T>(text).value;
+}
+
+/** Internal-module diagnostic surface used to prove bounded linear scan work without wall-clock assertions. */
+export function parseJsonLooseWithDiagnostics<T>(text: string): JsonLooseScanDiagnostics<T> {
+  // Reject before fence discovery, slicing, or JSON.parse. Model output is an
+  // untrusted boundary and callers do not need arbitrarily large payloads.
+  if (text.length > MAX_MODEL_JSON_CHARS) {
+    return { value: undefined, characters: 0, candidateSteps: 0, parseAttempts: 0, rejectedForSize: true };
   }
-  return -1;
+
+  const body = firstFenceBody(text);
+  const active: CandidateScan[] = [];
+  let best: { readonly value: unknown; readonly len: number } | undefined;
+  let candidateSteps = 0;
+  let parseAttempts = 0;
+
+  for (let index = 0; index < body.length; index += 1) {
+    const ch = body[index];
+    if (ch === undefined) break;
+
+    // Advance candidates that began before this character. Every candidate
+    // owns its string/escape state, so malformed prose before a real payload
+    // cannot hide a later object. The active set is hard bounded above.
+    for (let candidateIndex = active.length - 1; candidateIndex >= 0; candidateIndex -= 1) {
+      const candidate = active[candidateIndex]!;
+      candidateSteps += 1;
+      const outcome = advanceCandidate(candidate, ch);
+      if (outcome === "continue") continue;
+      active.splice(candidateIndex, 1);
+      if (outcome === "invalid") continue;
+
+      const slice = body.slice(candidate.start, index + 1);
+      try {
+        parseAttempts += 1;
+        const value = JSON.parse(slice) as unknown;
+        if (best === undefined || slice.length > best.len) best = { value, len: slice.length };
+      } catch {
+        // Balanced punctuation is not necessarily JSON; keep scanning.
+      }
+    }
+
+    if (ch !== "[" && ch !== "{") continue;
+    if (active.length >= MAX_OVERLAPPING_JSON_CANDIDATES) {
+      // Prefer recent starts so a valid value after a long unmatched prefix is
+      // still considered. Only pathological >64-deep JSON loses its outermost
+      // candidate; inner candidates remain recoverable.
+      active.shift();
+    }
+    active.push({ start: index, stack: [ch], inString: false, escaped: false });
+  }
+
+  return {
+    value: best?.value as T | undefined,
+    characters: body.length,
+    candidateSteps,
+    parseAttempts,
+    rejectedForSize: false,
+  };
+}
+
+function advanceCandidate(candidate: CandidateScan, ch: string): "continue" | "complete" | "invalid" {
+  if (candidate.inString) {
+    if (candidate.escaped) candidate.escaped = false;
+    else if (ch === "\\") candidate.escaped = true;
+    else if (ch === '"') candidate.inString = false;
+    return "continue";
+  }
+  if (ch === '"') {
+    candidate.inString = true;
+    return "continue";
+  }
+  if (ch === "[" || ch === "{") {
+    candidate.stack.push(ch);
+    return "continue";
+  }
+  if (ch !== "]" && ch !== "}") return "continue";
+
+  const open = candidate.stack.at(-1);
+  if ((ch === "]" && open !== "[") || (ch === "}" && open !== "{")) return "invalid";
+  candidate.stack.pop();
+  return candidate.stack.length === 0 ? "complete" : "continue";
+}
+
+/** Return the first complete fenced block, matching the previous decoder's precedence without an unbounded regex. */
+function firstFenceBody(text: string): string {
+  const fence = text.indexOf("```");
+  if (fence === -1) return text;
+  let start = fence + 3;
+  if (text.slice(start, start + 4).toLocaleLowerCase("en-US") === "json") start += 4;
+  while (start < text.length && /\s/u.test(text[start] ?? "")) start += 1;
+  const end = text.indexOf("```", start);
+  return end === -1 ? text : text.slice(start, end);
 }

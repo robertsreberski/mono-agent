@@ -367,6 +367,46 @@ describe("reconcileBatch", () => {
     expect(parseDailyFile(dailyContent(root)).bullets).toHaveLength(3);
   });
 
+  it.each(["update", "supersede"] as const)(
+    "fails every colliding %s decision closed before canonical or index mutation",
+    async (action) => {
+      const root = newRoot();
+      const db = openDb(root);
+      await seed(db, root, "ONE", "Morgan prefers blue-green deployments");
+      const before = dailyContent(root);
+      const candidates: CandidateMemory[] = [
+        { type: "note", text: "Morgan prefers blue-green deployments with review", salience: 0.7, isInsight: false },
+        { type: "note", text: "Morgan prefers blue-green deployments with canaries", salience: 0.8, isInsight: false },
+      ];
+      db.findSimilarMany = async () => candidates.map(() => [{ record: db.get("ONE")!, distance: 0.1 }]);
+      let persistencePreflights = 0;
+      db.prepareUpsertVectors = async (records) => {
+        persistencePreflights += records.length;
+        return records.map(() => undefined);
+      };
+      const reply = JSON.stringify(candidates.map((candidate, index) => ({
+        index,
+        action,
+        targetId: "ONE",
+        text: candidate.text,
+      })));
+
+      const actions = await reconcileBatch(
+        candidates,
+        makeDeps(db, root, fakeLlm([["Classify each candidate", reply]])),
+      );
+
+      expect(actions).toEqual([undefined, undefined]);
+      expect(persistencePreflights).toBe(0);
+      expect(db.count()).toBe(1);
+      expect(db.get("ONE")).toMatchObject({
+        text: "Morgan prefers blue-green deployments",
+        status: "open",
+      });
+      expect(dailyContent(root)).toBe(before);
+    },
+  );
+
   it("normalizes model-authored update and supersede text before canonical mutation", async () => {
     const root = newRoot();
     const db = openDb(root);

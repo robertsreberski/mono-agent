@@ -1316,17 +1316,30 @@ export class MemoryDb {
 
   assertEmbeddingIdentity(): void {
     if (this.embeddings === undefined) return;
+    const ddlDimension = this.vectorDimension();
+    if (ddlDimension !== this.dim) {
+      throw new Error(
+        `memory-store: active index vector dimension ${ddlDimension} does not match configured ${this.dim}; `
+        + "run the safe memory rebuild before writing or recalling semantically.",
+      );
+    }
     const rows = this.db.prepare(
       `SELECT DISTINCT m.embedding_model AS model, m.dim AS dim
        FROM memories m JOIN memories_vec v ON v.rowid = m.seq`,
     ).all() as Array<{ model: string | null; dim: number | null }>;
     for (const row of rows) {
-      if (row.dim !== null && row.dim !== this.dim) {
+      if (row.dim === null || row.model === null) {
+        throw new Error(
+          "memory-store: active index contains vectors without complete embedding model/dimension identity; "
+          + "run the safe memory rebuild before writing or recalling semantically.",
+        );
+      }
+      if (row.dim !== this.dim) {
         throw new Error(
           `memory-store: active index dimension ${row.dim} does not match configured ${this.dim}; run the safe memory rebuild.`,
         );
       }
-      if (row.model !== null && row.model !== this.embeddings.id) {
+      if (row.model !== this.embeddings.id) {
         throw new Error(
           `memory-store: active index model "${row.model}" does not match configured "${this.embeddings.id}"; run the safe memory rebuild.`,
         );

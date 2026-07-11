@@ -8,7 +8,6 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
-  realpathSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -16,12 +15,14 @@ import {
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
+import { canonicalMemoryRootPath } from "./path-safety.js";
 import type { BujoTier } from "./types.js";
 
 export const MANAGED_INDEX_SCHEMA_VERSION = 1;
 export const MEMORY_REBUILD_POLICY_VERSION = "mono-agent-memory-rebuild-v1";
 
 const GENERATION_RE = /^g-[0-9]{8}T[0-9]{9}Z-[a-f0-9-]{36}$/u;
+const SOURCE_LOCATION_RE = /^(?:daily\/[^/]+|\d{4}-\d{2}-\d{2})\.md:\d+$/u;
 const MANAGED_DIR = ".index";
 const MANIFEST_FILE = "manifest.json";
 const WRITER_LOCK_FILE = "writer.lock";
@@ -70,6 +71,12 @@ export interface ManagedManifestState {
   readonly sha256?: string;
 }
 
+export interface SafeSqlitePathState {
+  readonly exists: boolean;
+  readonly dev?: number;
+  readonly ino?: number;
+}
+
 export function captureManagedManifestState(root: string): ManagedManifestState {
   const canonicalRoot = canonicalMemoryRoot(root, true);
   const path = manifestPath(canonicalRoot);
@@ -96,7 +103,11 @@ export function assertManagedManifestState(root: string, expected: ManagedManife
 export function resolveActiveMemoryDbPath(root: string): string {
   const canonicalRoot = canonicalMemoryRoot(root, true);
   const manifest = readManagedIndexManifest(canonicalRoot);
-  if (manifest === undefined) return join(canonicalRoot, "memory.db");
+  if (manifest === undefined) {
+    const path = join(canonicalRoot, "memory.db");
+    captureSafeSqlitePathState(canonicalRoot, path, "legacy memory database");
+    return path;
+  }
   return generationDbPath(canonicalRoot, manifest.active.name, true);
 }
 
@@ -257,9 +268,7 @@ export async function activateManagedIndex(
 }
 
 export function canonicalMemoryRoot(root: string, create: boolean): string {
-  const absolute = resolve(root);
-  if (create) mkdirSync(absolute, { recursive: true, mode: 0o700 });
-  const canonical = realpathSync(absolute);
+  const canonical = canonicalMemoryRootPath(root, create);
   assertSafeDirectory(canonical, canonical, "memory root");
   return canonical;
 }
@@ -291,6 +300,31 @@ export function assertSafeDirectory(root: string, path: string, label: string): 
   if (resolve(path) !== resolve(root)) assertSafeAncestors(root, dirname(path));
 }
 
+/** Validate a SQLite database and any pre-existing sidecars without following links. */
+export function captureSafeSqlitePathState(root: string, path: string, label: string): SafeSqlitePathState {
+  assertInside(root, path);
+  assertSafeAncestors(root, dirname(path));
+  const state = optionalRegularFileState(path, label);
+  for (const suffix of ["-wal", "-shm", "-journal"]) {
+    optionalRegularFileState(`${path}${suffix}`, `${label} ${suffix.slice(1)} sidecar`);
+  }
+  return state;
+}
+
+/** Revalidate after SQLite opens and reject a path-identity swap across the open boundary. */
+export function assertSafeSqlitePathState(
+  root: string,
+  path: string,
+  expected: SafeSqlitePathState,
+  label: string,
+): void {
+  const actual = captureSafeSqlitePathState(root, path, label);
+  if (!actual.exists) throw new Error(`memory-rebuild: ${label} was not created as a regular file.`);
+  if (expected.exists && (actual.dev !== expected.dev || actual.ino !== expected.ino)) {
+    throw new Error(`memory-rebuild: ${label} changed identity while it was being opened.`);
+  }
+}
+
 function parseManifest(value: unknown): ManagedIndexManifest {
   validateManifest(value);
   return value;
@@ -318,12 +352,12 @@ function validateGeneration(value: unknown, label: string): asserts value is Man
     || !optionalNonNegativeInteger(value.skippedUnstructuredRecords)
     || !optionalNonNegativeInteger(value.skippedMissingIdentityRecords)
     || (value.missingIdentityLocations !== undefined && (!Array.isArray(value.missingIdentityLocations)
-      || value.missingIdentityLocations.some((location) => typeof location !== "string" || !/^daily\/[^/]+\.md:\d+$/u.test(location))))
+      || value.missingIdentityLocations.some((location) => typeof location !== "string" || !SOURCE_LOCATION_RE.test(location))))
     || (Array.isArray(value.missingIdentityLocations) && value.skippedMissingIdentityRecords !== undefined
       && value.missingIdentityLocations.length !== value.skippedMissingIdentityRecords)
     || !optionalNonNegativeInteger(value.skippedLegacySourceRecords)
     || (value.legacySourceLocations !== undefined && (!Array.isArray(value.legacySourceLocations)
-      || value.legacySourceLocations.some((location) => typeof location !== "string" || !/^daily\/[^/]+\.md:\d+$/u.test(location))))
+      || value.legacySourceLocations.some((location) => typeof location !== "string" || !SOURCE_LOCATION_RE.test(location))))
     || (Array.isArray(value.legacySourceLocations) && value.skippedLegacySourceRecords !== undefined
       && value.legacySourceLocations.length !== value.skippedLegacySourceRecords)
     || !optionalNonNegativeInteger(value.skippedJournalDuplicateRecords)
@@ -344,8 +378,22 @@ function generationDbPath(root: string, name: string, requireExisting: boolean):
   if (requireExisting) {
     assertSafeDirectory(root, dir, "memory generation");
     assertSafeRegularFile(root, db, "memory generation database");
+    captureSafeSqlitePathState(root, db, "memory generation database");
   }
   return db;
+}
+
+function optionalRegularFileState(path: string, label: string): SafeSqlitePathState {
+  try {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
+      throw new Error(`memory-rebuild: ${label} must be a regular, single-link file and not a symlink.`);
+    }
+    return { exists: true, dev: stat.dev, ino: stat.ino };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { exists: false };
+    throw error;
+  }
 }
 
 function ensureManagedLayout(root: string): void {

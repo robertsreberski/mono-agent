@@ -105,12 +105,12 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "path": "./.mono-agent/memory",        // root directory for all tiers
     "writeMode": "capture",                // disabled | append-host-summary | capture (bujo only)
     "maxBytes": 64000,
-    "embeddings": {                        // required for journal and bujo
-      "provider": "ollama",                // ollama | openai
-      "model": "nomic-embed-text:v1.5",   // use exact :v1.5 tag (pull first with ollama pull)
+    "embeddings": {                        // block required for journal/bujo; fields below have defaults
+      "provider": "ollama",                // ollama | openai; default ollama
+      "model": "nomic-embed-text:v1.5",   // provider default; use exact :v1.5 tag (pull first with ollama pull)
       "endpoint": "http://localhost:11434",
       "apiKeyEnv": "OPENAI_API_KEY",       // or inline "apiKey"; required for openai
-      "dim": 768                           // nomic-embed-text:v1.5 output dimension
+      "dim": 768                           // default 768; must match the model output dimension
     },
     "llm": {                               // required for strict bujo; rejected for lite/journal
       // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _EXECUTION_MODE / _ENDPOINT / _TIMEOUT_MS.

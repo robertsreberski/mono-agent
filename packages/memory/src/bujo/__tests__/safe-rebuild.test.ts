@@ -695,6 +695,40 @@ describe("safe memory index rebuild", () => {
     });
   });
 
+  it("preserves root-level legacy diagnostic locations through rebuild and rollback manifests", async () => {
+    const root = tempRoot();
+    writeFileSync(join(root, "2026-07-10.md"), [
+      "# 2026-07-10",
+      "",
+      "- – Root legacy record without identity.  <!--mem type=note status=open salience=0.6 isInsight=0 created=2026-07-10T09:00:00.000Z refs=-->",
+      "- Root focus scan. <!--mem type=note status=open salience=0.5 source=focus-scan-hourly-->",
+      "",
+    ].join("\n"));
+
+    const first = await safeRebuildMemoryIndex({ root, tier: "lite" });
+    expect(first).toMatchObject({
+      skippedMissingIdentityRecords: 1,
+      missingIdentityLocations: ["2026-07-10.md:3"],
+      skippedLegacySourceRecords: 1,
+      legacySourceLocations: ["2026-07-10.md:4"],
+    });
+    expect(readManagedIndexManifest(root)?.active).toMatchObject({
+      missingIdentityLocations: ["2026-07-10.md:3"],
+      legacySourceLocations: ["2026-07-10.md:4"],
+    });
+
+    await safeRebuildMemoryIndex({ root, tier: "lite" });
+    expect(readManagedIndexManifest(root)?.rollback).toMatchObject({
+      missingIdentityLocations: ["2026-07-10.md:3"],
+      legacySourceLocations: ["2026-07-10.md:4"],
+    });
+    await rollbackMemoryIndex({ root, tier: "lite" });
+    expect(readManagedIndexManifest(root)?.active).toMatchObject({
+      missingIdentityLocations: ["2026-07-10.md:3"],
+      legacySourceLocations: ["2026-07-10.md:4"],
+    });
+  });
+
   it("rejects writable pinned DB paths so retained generations stay immutable", async () => {
     const root = tempRoot();
     writeDaily(root, [bullet("M1", "First generation sentinel.")]);
