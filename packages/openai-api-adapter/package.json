@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/openai-api-adapter",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "OpenAI-compatible Chat Completions adapter for host responders.",
   "type": "module",
   "license": "UNLICENSED",
@@ -26,7 +26,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.6.2",
+    "@mono-agent/agent-contracts": "workspace:0.7.0",
     "express": "^5.1.0"
   },
   "devDependencies": {
