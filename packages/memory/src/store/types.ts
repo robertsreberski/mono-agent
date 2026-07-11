@@ -126,6 +126,8 @@ export interface RecallOptions {
   readonly includeInvalid?: boolean;
   readonly trackAccess?: boolean;
   readonly now?: Date;
+  /** Abort before any post-provider SQLite access. */
+  readonly abortSignal?: AbortSignal;
 }
 
 export interface MemoryStoreStatsOptions {

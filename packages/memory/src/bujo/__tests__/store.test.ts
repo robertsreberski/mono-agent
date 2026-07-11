@@ -625,6 +625,68 @@ describe("BujoMemoryStore async capture queue", () => {
     await store.close();
   });
 
+  it.each(["recall", "load"] as const)(
+    "blocks an abort-ignoring semantic %s reply before post-close SQLite access",
+    async (surface) => {
+      const root = tmpRoot();
+      const stableEmbeddings: EmbeddingProvider = {
+        id: "semantic-read-close-race:64",
+        embed: async (texts) => await fakeEmbeddings(64).embed(texts),
+      };
+      const seed = openMemoryDb({ path: join(root, "memory.db"), embeddings: stableEmbeddings, dim: 64 });
+      await seed.upsert({
+        id: "READ-RACE",
+        type: "note",
+        status: "open",
+        text: "The semantic shutdown sentinel is durable.",
+        salience: 0.8,
+        isInsight: false,
+        createdAt: new Date().toISOString(),
+        accessCount: 0,
+        tags: [],
+        source: {},
+      });
+      seed.close();
+
+      let entered = false;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const gatedEmbeddings: EmbeddingProvider = {
+        id: stableEmbeddings.id,
+        embed: async (texts) => {
+          entered = true;
+          await gate; // deliberately ignore store shutdown
+          return await fakeEmbeddings(64).embed(texts);
+        },
+      };
+      const store = createBujoMemoryStore({
+        root,
+        tier: "journal",
+        embeddings: gatedEmbeddings,
+        dim: 64,
+        backgroundDrainTimeoutMs: 20,
+      });
+
+      const reading = surface === "recall"
+        ? store.recall("semantic shutdown sentinel", { trackAccess: false })
+        : store.load("read-race", "What is the semantic shutdown sentinel?");
+      await waitUntil(() => entered);
+      await store.close();
+      // The closed store releases its writer lease while the provider remains
+      // pending; its eventual reply must observe abort before touching SQLite.
+      await createBujoMemoryStore({
+        root,
+        tier: "journal",
+        embeddings: stableEmbeddings,
+        dim: 64,
+      }).close();
+
+      const rejected = expect(reading).rejects.toThrow(/operation drain deadline/iu);
+      release();
+      await rejected;
+    },
+  );
+
   it("close() drains a pending capture before closing the db", async () => {
     const order: string[] = [];
     const store = createBujoMemoryStore({ root: tmpRoot(), tier: "bujo", embeddings: fakeEmbeddings(64), dim: 64, llm: recordingLlm(order) });
@@ -633,27 +695,31 @@ describe("BujoMemoryStore async capture queue", () => {
     expect(order.some((t) => t.includes("DRAINME"))).toBe(true);
   });
 
-  it("bounds close around a direct capture and prevents its ignored-abort reply from mutating later", async () => {
+  it("blocks an abort-ignoring capture embedding reply before post-close SQLite or canonical access", async () => {
     const root = tmpRoot();
     let entered = false;
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const llm: LlmComplete = {
       id: "direct-capture-close-race",
-      complete: async () => {
+      complete: async () => JSON.stringify({
+        memories: [{ type: "note", text: "Late direct capture must not persist.", salience: 0.8, isInsight: false }],
+        entities: [],
+        relations: [],
+      }),
+    };
+    const embeddings: EmbeddingProvider = {
+      id: "direct-capture-close-race:64",
+      embed: async (texts) => {
         entered = true;
         await gate; // deliberately ignore abortSignal
-        return JSON.stringify({
-          memories: [{ type: "note", text: "Late direct capture must not persist.", salience: 0.8, isInsight: false }],
-          entities: [],
-          relations: [],
-        });
+        return await fakeEmbeddings(64).embed(texts);
       },
     };
     const store = createBujoMemoryStore({
       root,
       tier: "bujo",
-      embeddings: fakeEmbeddings(64),
+      embeddings,
       dim: 64,
       llm,
       backgroundDrainTimeoutMs: 20,
@@ -664,7 +730,7 @@ describe("BujoMemoryStore async capture queue", () => {
     await store.close();
     expect(existsSync(join(root, "daily"))).toBe(false);
 
-    const rejected = expect(capturing).rejects.toThrow(/mutation drain deadline/iu);
+    const rejected = expect(capturing).rejects.toThrow(/operation drain deadline/iu);
     release();
     await rejected;
     expect(existsSync(join(root, "daily"))).toBe(false);
@@ -728,7 +794,7 @@ describe("BujoMemoryStore async capture queue", () => {
       clock: () => now,
     }).close();
 
-    const rejected = expect(reflecting).rejects.toThrow(/mutation drain deadline/iu);
+    const rejected = expect(reflecting).rejects.toThrow(/operation drain deadline/iu);
     release();
     await rejected;
     expect(readFileSync(source, "utf8")).toBe(sourceBefore);
@@ -782,7 +848,7 @@ describe("BujoMemoryStore async capture queue", () => {
     const migrating = store.migrate();
     await waitUntil(() => entered);
     await store.close();
-    const rejected = expect(migrating).rejects.toThrow(/mutation drain deadline/iu);
+    const rejected = expect(migrating).rejects.toThrow(/operation drain deadline/iu);
     release();
     await rejected;
     expect(readFileSync(source, "utf8")).toBe(sourceBefore);

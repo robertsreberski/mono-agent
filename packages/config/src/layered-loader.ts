@@ -103,21 +103,48 @@ function validateJsonMemoryBlocks(
   // local blocks exactly as the runtime and published schema do. Unknown
   // backends are left to loadMonoAgentConfig so the authoritative invalid_env
   // diagnostic is not masked by a lower-precedence JSON detail.
-  const effectiveBackend = layeredEnv.MONO_AGENT_MEMORY_BACKEND?.trim() || "bujo";
+  const effectiveBackendValue: unknown = layeredEnv.MONO_AGENT_MEMORY_BACKEND;
+  if (effectiveBackendValue !== undefined && typeof effectiveBackendValue !== "string") {
+    throwInvalidJsonValue("memory.backend", "a string");
+  }
+  const effectiveBackend = effectiveBackendValue?.trim() || "bujo";
   if (effectiveBackend !== "bujo") return;
-  if (json.memory?.embeddings !== undefined && Object.keys(json.memory.embeddings).length === 0) {
+
+  const embeddings: unknown = json.memory?.embeddings;
+  if (embeddings !== undefined && !isJsonObject(embeddings)) {
+    throwInvalidJsonValue("memory.embeddings", "an object");
+  }
+  if (embeddings !== undefined && Object.keys(embeddings).length === 0) {
     const path = "memory.embeddings";
     const message = `${path} must contain at least one setting; provider, model, and dim default after the block is activated.`;
     throw new MonoAgentConfigError("invalid_json", message, { path, reason: message });
   }
-  if (json.memory?.llm !== undefined && Object.keys(json.memory.llm).length === 0) {
+
+  const llm: unknown = json.memory?.llm;
+  if (llm !== undefined && !isJsonObject(llm)) {
+    throwInvalidJsonValue("memory.llm", "an object");
+  }
+  if (llm !== undefined && Object.keys(llm).length === 0) {
     const path = "memory.llm";
-    const mode = layeredEnv.MONO_AGENT_MEMORY_MODE?.trim() || "lite";
+    const effectiveModeValue: unknown = layeredEnv.MONO_AGENT_MEMORY_MODE;
+    if (effectiveModeValue !== undefined && typeof effectiveModeValue !== "string") {
+      throwInvalidJsonValue("memory.mode", "a string");
+    }
+    const mode = effectiveModeValue?.trim() || "lite";
     const message = mode === "bujo"
       ? `${path} must contain a model for memory.mode "bujo".`
       : `memory.mode "${mode}" cannot configure ${path}.`;
     throw new MonoAgentConfigError("invalid_json", message, { path, reason: message });
   }
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function throwInvalidJsonValue(path: string, expected: string): never {
+  const message = `${path} must be ${expected}.`;
+  throw new MonoAgentConfigError("invalid_json", message, { path, reason: message });
 }
 
 const MEMORY_EMBEDDINGS_ENV_KEYS = [

@@ -546,14 +546,16 @@ export class MemoryDb {
   }
 
   async recall(query: string, options: RecallOptions = {}): Promise<RecallHit[]> {
+    options.abortSignal?.throwIfAborted();
     const topK = options.topK ?? 8;
     const candidates = options.candidates ?? Math.max(topK * 4, 20);
     const now = options.now ?? this.clock();
 
     const ftsIds = this.keywordCandidates(query, candidates, options.includeInvalid === true, now);
     const vecCandidates = this.embeddings !== undefined
-      ? await this.vectorCandidates(query, candidates, options.includeInvalid === true, now)
+      ? await this.vectorCandidates(query, candidates, options.includeInvalid === true, now, options.abortSignal)
       : [];
+    options.abortSignal?.throwIfAborted();
     const vecIds = vecCandidates.map((candidate) => candidate.id);
     const vectorSimilarity = new Map(vecCandidates.map((candidate) => [candidate.id, candidate.similarity]));
     const retrieverCount = Number(vecIds.length > 0) + Number(ftsIds.length > 0);
@@ -607,9 +609,12 @@ export class MemoryDb {
     limit: number,
     includeInvalid = false,
     now = this.clock(),
+    abortSignal?: AbortSignal,
   ): Promise<Array<{ id: string; similarity: number }>> {
+    abortSignal?.throwIfAborted();
     if (this.embeddings === undefined) return [];
     const [vector] = await this.embeddings.embed([`search_query: ${query}`]);
+    abortSignal?.throwIfAborted();
     if (vector === undefined) return [];
     this.assertVectorDim(vector, "recall");
     const validity = includeInvalid
@@ -731,14 +736,24 @@ export class MemoryDb {
     return rows.map((row) => this.fromRow(row));
   }
 
-  async findSimilar(text: string, k = 5): Promise<SimilarHit[]> {
-    return (await this.findSimilarMany([text], k))[0] ?? [];
+  async findSimilar(
+    text: string,
+    k = 5,
+    options: { readonly abortSignal?: AbortSignal } = {},
+  ): Promise<SimilarHit[]> {
+    return (await this.findSimilarMany([text], k, options))[0] ?? [];
   }
 
   /** One provider batch for all capture candidates, then bounded local KNN per candidate. */
-  async findSimilarMany(texts: readonly string[], k = 5): Promise<SimilarHit[][]> {
+  async findSimilarMany(
+    texts: readonly string[],
+    k = 5,
+    options: { readonly abortSignal?: AbortSignal } = {},
+  ): Promise<SimilarHit[][]> {
+    options.abortSignal?.throwIfAborted();
     if (this.embeddings === undefined || texts.length === 0) return texts.map(() => []);
     const vectors = await this.embeddings.embed(texts.map((text) => `search_document: ${text}`));
+    options.abortSignal?.throwIfAborted();
     if (vectors.length !== texts.length) {
       throw new Error(`memory-store: embedding provider returned ${vectors.length} vectors for ${texts.length} similarity queries.`);
     }

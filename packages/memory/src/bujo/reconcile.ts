@@ -57,10 +57,14 @@ export async function reconcile(
       // a systemic outage, not a per-item data problem. Tag it so the catch below surfaces it.
       let similar: readonly SimilarHit[];
       try {
-        similar = await deps.db.findSimilar(candidate.text, 5);
+        similar = await deps.db.findSimilar(candidate.text, 5, {
+          ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
+        });
       } catch (cause) {
+        deps.abortSignal?.throwIfAborted();
         throw new MemoryModelError("embedding", "findSimilar", cause);
       }
+      deps.abortSignal?.throwIfAborted();
 
       // Clearly novel (nothing close enough) → ADD outright, no LLM.
       if (similar.length === 0 || (similar[0]?.distance ?? Infinity) > dupThreshold) {
@@ -95,8 +99,11 @@ export async function reconcileBatch(
   const dupThreshold = deps.dupThreshold ?? 0.5;
   let neighbours: readonly SimilarHit[][];
   try {
-    neighbours = await deps.db.findSimilarMany(candidates.map((candidate) => candidate.text), 5);
+    neighbours = await deps.db.findSimilarMany(candidates.map((candidate) => candidate.text), 5, {
+      ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
+    });
   } catch (cause) {
+    deps.abortSignal?.throwIfAborted();
     throw new MemoryModelError("embedding", "findSimilarBatch", cause);
   }
   deps.abortSignal?.throwIfAborted();

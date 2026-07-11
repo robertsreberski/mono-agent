@@ -64,7 +64,7 @@ interface CaptureJob extends QueueJob {
   readonly text: string;
 }
 
-interface AdmittedMutation {
+interface AdmittedOperation {
   readonly controller: AbortController;
   readonly settled: Promise<void>;
 }
@@ -123,7 +123,7 @@ export class BujoMemoryStore implements MemoryStore {
   private closePromise: Promise<void> | undefined;
   private activeCaptureController: AbortController | undefined;
   private activeIndexController: AbortController | undefined;
-  private readonly admittedMutations = new Set<AdmittedMutation>();
+  private readonly admittedOperations = new Set<AdmittedOperation>();
   private shutdownDiscarded = 0;
   private shutdownTimedOut = false;
   private readonly runtimeStartedAt = new Date().toISOString();
@@ -242,18 +242,23 @@ export class BujoMemoryStore implements MemoryStore {
       }
       recallQuery = trimmed.slice(0, MAX_RECALL_QUERY_CHARS);
     }
-    return composeRecallBlock(this.db, recallQuery, { topK: 8, maxBytes: this.maxBytes });
+    return await this.runAdmittedOperation(async (abortSignal) => await composeRecallBlock(
+      this.db,
+      recallQuery,
+      { topK: 8, maxBytes: this.maxBytes, abortSignal },
+    ));
   }
 
   /** Query-based hybrid recall (text + score). Used by the MCP and any deliberate recall surface. */
   async recall(query: string, options: { topK?: number; trackAccess?: boolean } = {}): Promise<RecallHit[]> {
     this.assertOpen("recall");
-    return this.db.recall(query, {
+    return await this.runAdmittedOperation(async (abortSignal) => await this.db.recall(query, {
       ...(options.topK !== undefined && { topK: options.topK }),
       ...(this.readOnly
         ? { trackAccess: false }
         : options.trackAccess === undefined ? {} : { trackAccess: options.trackAccess }),
-    });
+      abortSignal,
+    }));
   }
 
   /** Whether this strict tier may expose graph expansion to explicit MemoryRecall. */
@@ -583,12 +588,12 @@ export class BujoMemoryStore implements MemoryStore {
         this.captureQueue?.stopAccepting();
         this.shutdownDiscarded += this.indexQueue?.discardQueued() ?? 0;
         this.shutdownDiscarded += this.captureQueue?.discardQueued() ?? 0;
-        const timeoutReason = new Error("memory mutation drain deadline exceeded");
-        for (const mutation of this.admittedMutations) mutation.controller.abort(timeoutReason);
+        const timeoutReason = new Error("memory operation drain deadline exceeded");
+        for (const operation of this.admittedOperations) operation.controller.abort(timeoutReason);
         this.activeIndexController?.abort(new Error("memory background drain deadline exceeded"));
         this.activeCaptureController?.abort(new Error("memory background drain deadline exceeded"));
         this.safeWarn(
-          `memory mutation/background drain exceeded ${this.backgroundDrainTimeoutMs}ms; pending work was abandoned before further canonical mutation while durable source remains.`,
+          `memory operation/background drain exceeded ${this.backgroundDrainTimeoutMs}ms; pending work was abandoned before further canonical or SQLite access while durable source remains.`,
         );
       }
     } catch (error) {
@@ -609,9 +614,9 @@ export class BujoMemoryStore implements MemoryStore {
     }
   }
 
-  /** Drain admitted direct mutators before freezing their downstream queues. */
+  /** Drain admitted direct operations before freezing downstream queues. */
   private async drainAcceptedWork(): Promise<void> {
-    await Promise.all([...this.admittedMutations].map(async (mutation) => await mutation.settled));
+    await Promise.all([...this.admittedOperations].map(async (operation) => await operation.settled));
     this.indexQueue?.stopAccepting();
     this.captureQueue?.stopAccepting();
     await this.flush();
@@ -859,10 +864,10 @@ export class BujoMemoryStore implements MemoryStore {
   }
 
   /**
-   * Admit one direct async mutation synchronously, then expose a store-owned
-   * abort signal to every await boundary before canonical commit. close() takes
-   * a stable snapshot after setting `closing`, so no admitted mutation can be
-   * missed by the drain barrier.
+   * Admit one direct async operation synchronously, then expose a store-owned
+   * abort signal to every provider boundary before canonical or SQLite access.
+   * close() takes a stable snapshot after setting `closing`, so no operation can
+   * be missed by the drain barrier.
    */
   private async runAdmittedMutation<T>(
     operation: string,
@@ -870,21 +875,28 @@ export class BujoMemoryStore implements MemoryStore {
     callerSignal?: AbortSignal,
   ): Promise<T> {
     this.assertWritable(operation);
+    return await this.runAdmittedOperation(run, callerSignal);
+  }
+
+  private async runAdmittedOperation<T>(
+    run: (abortSignal: AbortSignal) => Promise<T>,
+    callerSignal?: AbortSignal,
+  ): Promise<T> {
     const controller = new AbortController();
     const abortSignal = callerSignal === undefined
       ? controller.signal
       : AbortSignal.any([controller.signal, callerSignal]);
     let markSettled!: () => void;
-    const admitted: AdmittedMutation = {
+    const admitted: AdmittedOperation = {
       controller,
       settled: new Promise<void>((resolve) => { markSettled = resolve; }),
     };
-    this.admittedMutations.add(admitted);
+    this.admittedOperations.add(admitted);
     try {
       abortSignal.throwIfAborted();
       return await run(abortSignal);
     } finally {
-      this.admittedMutations.delete(admitted);
+      this.admittedOperations.delete(admitted);
       markSettled();
     }
   }
