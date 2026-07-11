@@ -31,7 +31,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   artifacts remain local; `validate` performs the live reachability probe. Export
   is best-effort and never changes a run outcome.
 - Preview the configured memory backend from the same config/env resolution path
-  via `mono-agent memory` (`stats`, `today`, `show`, `search`, `top`).
+  via `mono-agent memory` (`stats`, `today`, `show`, `search`, `top`, metadata-only `audit`).
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
   folders non-destructively.
 

@@ -218,8 +218,8 @@ describe("wizard composer — alwaysOnTools (auto-provisioned, not gated by allo
     expect(alwaysOnTools(defaultAnswers({ memory: "memory:supermemory" }))).toEqual(["ReadSkill", "MemoryRecall"]);
   });
 
-  it("keeps ReadSkill separate for lite memory and for no memory", () => {
-    expect(alwaysOnTools(defaultAnswers({ memory: "memory:lite" }))).toEqual(["ReadSkill"]);
+  it("includes recall for lite memory and keeps ReadSkill with no memory", () => {
+    expect(alwaysOnTools(defaultAnswers({ memory: "memory:lite" }))).toEqual(["ReadSkill", "MemoryRecall"]);
     expect(alwaysOnTools(defaultAnswers())).toEqual(["ReadSkill"]);
   });
 });

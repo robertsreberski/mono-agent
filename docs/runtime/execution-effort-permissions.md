@@ -122,7 +122,7 @@ must be enforced; direct OpenCode permission rules do not provide that boundary.
 |-----|--------|---------|---------|
 | `runtime.maxTurns` | `0` (unlimited) \| `1`–`100` | `0` | `MONO_AGENT_MAX_TURNS` |
 
-This value also sizes conversation history: history is capped only when turns are capped, and stays unlimited when `maxTurns` is `0` or omitted (`auto` coverage). A custom history store is available via code (`createConfiguredAgentResponder({ historyStore })`). See [Sessions & concurrency](/runtime/sessions-concurrency/).
+This value also sizes conversation history: positive caps retain twice `maxTurns` messages, while `0` or omission uses the bounded 12-message default (`auto` coverage). A custom history store is available via code (`createConfiguredAgentResponder({ historyStore })`). See [Sessions & concurrency](/runtime/sessions-concurrency/).
 
 ```json
 { "runtime": { "model": "codex:gpt-5.6-terra", "maxTurns": 12 } }

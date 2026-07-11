@@ -872,12 +872,12 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
   },
   {
     signature:
-      "mono-agent memory [stats|today|show <date>|search <query>|top]\n" +
+      "mono-agent memory [stats|today|show <date>|search <query>|top|audit]\n" +
       "                  [--limit <n>] [--json] [--config <path>] [--env-file <path>]",
     lines: [
       "Preview the configured memory store from an agent folder. Reads the",
       "memory block from mono-agent.config.json, not the standalone memory-bujo",
-      "env workflow. Human-first output by default; --json is for scripts.",
+      "env workflow. Human-first output by default; audit --json is metadata-only.",
     ],
   },
 ];

@@ -84,7 +84,9 @@ The agent reads memory back through a single, read-only `MemoryRecall` tool: hyb
 
 ### How it is provisioned
 
-`agent-app` auto-provisions `MemoryRecall` from the single `config.memory` block when `config.memory.recallTool.enabled` is true. Under the hood it spawns a bundled stdio MCP child named `mono-agent-memory` (shipped inside `@mono-agent/agent-app`) that exposes only `MemoryRecall`, configured automatically from `config.memory` — it uses the **same memory root + embeddings** as the in-app memory, so there is nothing to keep in sync.
+The configured harness auto-provisions `MemoryRecall` from the single `config.memory` block when `config.memory.recallTool.enabled` is true. This applies both to the full `agent-app` host and to direct `createConfiguredAgentHarness` / `createConfiguredAgentResponder` composition. It exposes a request-scoped loopback MCP endpoint backed by the **same open store and retrieval service** as automatic recall. Identical normalized automatic/tool queries share one per-turn lookup; a different tool query may search again. No second SQLite handle, embedding request, or hand-maintained MCP config is involved. Caller-supplied request extensions are composed with the default tool instead of replacing it.
+
+The endpoint is allocated only after the turn acquires a provider-concurrency slot, so queued turns do not accumulate listeners. If endpoint startup fails, the host warns and omits the explicit tool for that turn; automatic recall and the provider response continue. If the memory backend itself fails during a tool call, `MemoryRecall` returns an explicit degraded result instead of fabricated hits.
 
 ```json
 {
@@ -103,8 +105,8 @@ MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED=true
 
 | `recallTool.enabled` default | Condition |
 |------------------------------|-----------|
-| **on** | `journal` or `bujo` tier with embeddings configured |
-| off | `lite` tier (no vector recall) — or set explicitly to `false` |
+| **on** | every configured tier: Lite (FTS), Journal/BuJo (hybrid), and external backends |
+| off | only when set explicitly to `false` |
 
 This replaces the retired standalone `@mono-agent/memory-mcp` package (which also shipped `memory_capture` / `memory_note` write tools — both dropped, since in-app capture now covers durable writes). To build a recall server directly in your own code, compose `@mono-agent/memory/bujo` (`createBujoMemoryStore`) with `@mono-agent/memory/search` (`createEmbeddingProvider`) — exactly what the bundled server does. See [Programmatic composition](/programmatic/composition/).
 
@@ -114,7 +116,8 @@ Recall fuses two retrievers and re-ranks the result:
 
 - **BM25 keyword (FTS)** over the markdown entries.
 - **Vector similarity** over the configured embeddings.
-- Results are combined with **Reciprocal Rank Fusion (RRF)**, then weighted by **recency** and **salience** so fresh, important memories surface above stale or low-signal ones (salience decays over time via scheduled [consolidation](/memory/rituals/)).
+- Results are combined with **Reciprocal Rank Fusion (RRF)** and evidence strength; salience/insight are small tie-breakers. `lastAccessedAt` and access counts are telemetry only and never affect ranking.
+- Automatic recall treats raw embedding similarity as ranking evidence, not a calibrated probability: it first considers the `0.65` absolute / `77%` top-relative score band, then applies a deterministic direct-fact gate to a bounded candidate window. The gate admits only canonical, unambiguous shapes: an explicitly named possessive property (`Morgan's phone number is ...`), a direct choice (`Morgan selected ... as the deployment color`), a direct event date/time, or a direct work/live location. Coordination, reported or ditransitive speech, negation/unknown values, actor/relationship questions, subordinate clauses, and multi-hop evidence abstain. Those records remain available through the default-on `MemoryRecall` tool, where the model can inspect separate results and provenance instead of receiving a fabricated binding. The gate adds no embedding or chat-model call, works across provider score scales, injects nothing for unsupported questions, and remains capped at five hits / 8 KB. Deliberate tool calls may inspect more results (up to the requested limit).
 
 You can exercise the exact same scoring offline against a memory root:
 
@@ -135,7 +138,7 @@ Recall uses the graph for one-hop expansion: entries matched by BM25/vector sear
 `MemoryRecall` is an MCP tool. Like every MCP server tool, it is **gated by its declaration, not by `tools.allowedTools`**. `tools.allowedTools` filters the built-in runtime tools (Read/Bash/…); it does **not** suppress app-injected MCP tools. So `tools.allowedTools: []` ("no built-in tools") still leaves `MemoryRecall` available when it is enabled.
 
 :::caution
-To fully withhold memory reads from the agent, set `config.memory.recallTool.enabled: false` (or run a `lite` tier with no vector recall) — that is the switch that controls this tool, not the allowlist.
+To withhold the on-demand memory tool from the agent, set `config.memory.recallTool.enabled: false` — that is the switch that controls this tool, not the allowlist. Automatic score- and answer-evidence-gated context recall remains part of a configured memory backend.
 :::
 
 See [Tool policy](/tools/policy/) and [MCP tools](/tools/mcp/) for how MCP-provided tools differ from the built-in allowlist.
@@ -145,7 +148,7 @@ See [Tool policy](/tools/policy/) and [MCP tools](/tools/mcp/) for how MCP-provi
 | Env var | Config key | Notes |
 |---------|-----------|-------|
 | `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture` (`capture` requires `mode: bujo`) |
-| `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned `MemoryRecall`; default on for journal/bujo with embeddings |
+| `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned `MemoryRecall`; default on for every configured tier |
 | `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo` |
 | `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline (and legacy CLI `reflect`/`migrate`) |
 | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama chat endpoint (default `http://localhost:11434`) |

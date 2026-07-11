@@ -28,11 +28,16 @@ mono-agent memory search "release checklist"
 # Highest-salience local memories
 mono-agent memory top --limit 10
 
+# Aggregate health only: never prints memory text or entity names
+mono-agent memory audit --json
+
 # Machine-readable output for scripts
 mono-agent memory stats --json
 ```
 
 If memory is disabled or missing from config, the command exits successfully and says no memory backend is configured. For local BuJo/journal/lite memory, `stats` reports the configured and effective tier, write mode, recall-tool state, memory root and database paths, daily-file counts, markdown/database sizes, record/status/type counts, latest capture/access timestamps, and top entities. `today` / `show <date>` print daily markdown when present, and `top` ranks local memories by salience.
+
+`audit` is the safe automation surface: its JSON contains counts, store bytes, exact-duplicate ratio, vector coverage, access concentration, vector backlog, and available latency/cost metadata. It never includes memory text, query text, entity names, or source content. Offline-only values such as the live capture queue, recorded search percentiles, or model cost are emitted explicitly as unavailable rather than guessed.
 
 `search` uses the same recall path as the `MemoryRecall` tool. When local semantic embeddings are configured but unavailable, it prints a warning and falls back to FTS-only recall instead of pretending semantic search succeeded. For Supermemory-backed agents, `search` queries Supermemory and `stats` reports the known configured container/base URL while marking local SQLite-only counts as unknown.
 

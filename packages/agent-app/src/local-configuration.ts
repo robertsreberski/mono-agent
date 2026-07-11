@@ -53,9 +53,6 @@ export const LOCAL_CONFIGURATION_PROMPT =
   "Begin local configuration mode. Read the mono-agent-configure skill, then ask the operator one concise question: how would they like to configure you further? Mention that behavior, memory, skills, tools, or channels can be discussed, but do not repeat the setup wizard and do not ask for secrets.";
 
 const CONFIGURATION_READ_ONLY_TOOLS = [
-  "Read",
-  "Glob",
-  "Grep",
   "ReadSkill",
   "MemoryRecall",
   CONFIGURATION_PROPOSAL_TOOL_NAME,

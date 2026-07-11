@@ -147,4 +147,25 @@ describe("stats", () => {
     expect(() => db.stats({ topEntitiesLimit: 1.5 })).toThrow(/topEntitiesLimit/u);
     db.close();
   });
+
+  it("returns aggregate audit health without memory or entity content", async () => {
+    const db = openMemoryDb({ path: ":memory:" });
+    await db.upsert(record({ id: "one", text: "private duplicate text", accessCount: 9 }));
+    await db.upsert(record({ id: "two", text: "private duplicate text", accessCount: 1 }));
+    await db.upsert(record({ id: "invalid", text: "retired private text", status: "invalidated", accessCount: 100 }));
+    db.upsertEntity({ id: "person:private", name: "Private Person", createdAt: "2026-06-15T00:00:00.000Z" });
+
+    const audit = db.audit();
+    const serialized = JSON.stringify(audit);
+
+    expect(audit).toMatchObject({
+      counts: { total: 3, live: 2, entities: 1 },
+      duplicates: { groups: 1, redundantRecords: 1, ratio: 0.5 },
+      vectors: { indexed: 0, liveIndexed: 0, liveCoverage: 0 },
+      access: { totalCount: 10, accessedMemories: 2, topOnePercentShare: 0.9 },
+    });
+    expect(serialized).not.toContain("private duplicate text");
+    expect(serialized).not.toContain("Private Person");
+    db.close();
+  });
 });

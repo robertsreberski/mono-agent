@@ -93,7 +93,7 @@ it is absent; other configurations keep it outside the app dependency closure.
 | `runtime` | `MonoRuntimeLike` | Inject a custom or shared runtime instead of building one from `runtime.model` |
 | `model` / `executionMode` | `RuntimeModelReference` / `string` | Override the config's primary model / execution mode |
 | `memory` | `MemoryStore` | Supply a memory store instead of provisioning from `config.memory` |
-| `historyStore` | `ConversationHistoryStore` | Plug in durable conversation history (default is an in-memory store sized from `runtime.maxTurns`) |
+| `historyStore` | `ConversationHistoryStore` | Plug in durable conversation history (default is a bounded in-memory store) |
 | `runtimeOptions` | static run options | Extra runtime options merged for every run (no `model`/`messages`/`abortSignal`/`executionMode`/`onEvent`) |
 | `runtimeOptionsForRequest` | `(input) => extension` | Per-request run options (see below) |
 
@@ -142,7 +142,7 @@ The injected store wins over anything `config.memory` would otherwise build, and
 
 ## Per-request runtime options (`runtimeOptionsForRequest`)
 
-`runtimeOptionsForRequest` is a callback invoked once per turn to compute run options scoped to that request. The app uses it internally to attach the per-turn `MemoryRecall` and adapter send tools; you can supply your own to vary tools, system context, or other run options per request.
+`runtimeOptionsForRequest` is a callback invoked once per turn to compute run options scoped to that request. A configured memory backend attaches the per-turn `MemoryRecall` endpoint at the shared configured-harness boundary and composes it with your callback; supplying custom tools does not replace the default recall tool. The full app uses the same composition path for adapter send tools and request overrides.
 
 ```ts
 import { createConfiguredAgentResponder } from "@mono-agent/agent-app";

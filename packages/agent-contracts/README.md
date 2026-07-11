@@ -26,6 +26,7 @@ Adapter packages extend the base request with transport metadata while keeping t
 - `AgentRequestBase`, `AgentResponse`, `AgentMessageStream`, `AgentStreamEvent`, `AgentResponder`
 - `AgentResponseCancelledError`, `isAgentResponseCancelledError`
 - `AgentRequestMetadata`, `AgentResponseMetadata`, `AgentMessageStreamResult`
+- Memory contract: `MemoryBlock`, `MemoryLoadOptions`, `MemoryStore`, `MemoryWriteResult`. `MemoryLoadOptions.turnId` and optional `releaseTurn` are host context/lifecycle hooks for per-turn read deduplication; existing stores may ignore them.
 - Channel contract: `ChannelDriver`, `ChannelStartInput`, `RunningChannel`, `ChannelStatus`, `ChannelId`, `ChannelLogger`, `ChannelConfigInput`, `ChannelConfigViewSection`/`ChannelConfigViewField`, `NotifyDeliveryResult`, `NotifyDestination`. The driver contract is generic over the host's core-config type (`TCore`), so this package stays dependency-free while hosts bind their own config type.
 - Settings helpers: `readSettingsJson`, `writeSettingsJson`, `SettingsJsonError`, JSON/env coercion helpers, `assertSafeBind`, `listen`, `close`, `generateBearerToken`, `bearerTokensEqual`, and related types.
 

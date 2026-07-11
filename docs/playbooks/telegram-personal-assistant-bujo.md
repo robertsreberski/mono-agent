@@ -23,7 +23,7 @@ A Telegram bot that answers via long-polling, captures every turn into BuJo memo
 - [`memory.bujo`](/memory/rituals/) — BuJo tier: capture + scheduled consolidation (config)
 - [`memory.per-turn-capture`](/memory/capture-and-recall/) — `writeMode: "capture"` records each turn asynchronously (config)
 - [`memory.bujo-consolidation`](/memory/rituals/) — in-app lightweight consolidation (config / auto)
-- [`memory.recall-tool`](/memory/capture-and-recall/) — `MemoryRecall` tool auto-provisioned for journal/bujo with embeddings (auto)
+- [`memory.recall-tool`](/memory/capture-and-recall/) — `MemoryRecall` defaults on for every configured memory tier (auto)
 - [`memory.embeddings-config`](/memory/embeddings/) — embeddings provider for semantic recall (config)
 
 ## Configuration

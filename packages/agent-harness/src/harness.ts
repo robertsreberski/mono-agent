@@ -284,7 +284,7 @@ export class MonoAgentHarness implements AgentHarness {
       // pi-native ignores it when it successfully resumes the JSONL (the session
       // carries the transcript) and SEEDS it when it creates-on-miss — so a
       // create-on-miss on an existing conversation never loses prior context.
-      let prepared = await this.prepareContext(activeRequest, { omitHistory: sessionRecord !== undefined }, emit);
+      let prepared = await this.prepareContext(activeRequest, { omitHistory: sessionRecord !== undefined, turnId: runId }, emit);
       context = prepared.context;
 
       let runtimeResult: RuntimeResult | undefined;
@@ -316,7 +316,7 @@ export class MonoAgentHarness implements AgentHarness {
         });
         await this.sessionStore?.evict(request.conversationId, "stale", resumeSessionId);
         resumeSessionId = undefined;
-        prepared = await this.prepareContext(activeRequest, { omitHistory: false }, emit);
+        prepared = await this.prepareContext(activeRequest, { omitHistory: false, turnId: runId }, emit);
         context = prepared.context;
         runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, undefined, prepared.skillDisclosureNames, prepared.history, prepared.historyOmitted, leavePending);
       }
@@ -433,6 +433,14 @@ export class MonoAgentHarness implements AgentHarness {
         failure,
       };
     } finally {
+      // App-owned retrieval services use this to discard the normalized query
+      // cache after the whole logical turn (including any resume retry), not
+      // after one provider attempt.
+      try {
+        await this.options.memory?.releaseTurn?.(runId);
+      } catch {
+        // Cache cleanup is best-effort and must not change the turn outcome.
+      }
       // Release the admission-pending slot if the run never reached its provider
       // call (e.g. a throw in applyAttachments/prepareContext, or an aborted
       // admission). No-op when onProviderStart already released it.
@@ -555,7 +563,7 @@ export class MonoAgentHarness implements AgentHarness {
 
   private async prepareContext(
     request: AgentHarnessRequest,
-    options: { readonly omitHistory: boolean },
+    options: { readonly omitHistory: boolean; readonly turnId: string },
     emit?: (event: RuntimeEventLike) => void,
   ): Promise<{
     readonly context: BuiltAgentContext;
@@ -575,7 +583,7 @@ export class MonoAgentHarness implements AgentHarness {
     // turn (e.g. codex-app sends developerInstructions only on a fresh thread).
     // Keeping it out of the system prompt also leaves that prompt stable across a
     // session, which is better for provider prompt caching.
-    const memory = await this.loadMemory(request.conversationId, request.userMessage, emit);
+    const memory = await this.loadMemory(request.conversationId, request.userMessage, options.turnId, emit);
     const selectedSkills = await this.loadSkills();
     const context = await loadContextFromFiles({
       identityPath: this.options.identityPath,
@@ -689,11 +697,12 @@ export class MonoAgentHarness implements AgentHarness {
   private async loadMemory(
     conversationId: string,
     query: string,
+    turnId: string,
     emit?: (event: RuntimeEventLike) => void,
   ): Promise<ContextBlockInput | undefined> {
     let block;
     try {
-      block = await this.options.memory?.load(conversationId, query);
+      block = await this.options.memory?.load(conversationId, query, { turnId });
     } catch (error) {
       // A slow or failing memory backend (e.g. embeddings timeout / circuit
       // breaker open) must never block or fail the turn — degrade to empty
@@ -750,119 +759,16 @@ export class MonoAgentHarness implements AgentHarness {
     onProviderStart?: () => void,
   ): Promise<RuntimeResult> {
     const hostOnEvent = request.onEvent;
-    const requestExtension = await this.options.runtimeOptionsForRequest?.({ request, runId, context });
-    const policyOptions = toolPolicyToRuntimeOptions(
-      requestExtension?.toolPolicyOverride
-      ?? this.options.toolPolicy
-      ?? failClosedToolPolicy(),
-    );
-    const sandboxOptions = this.options.sandboxPolicy === undefined
-      ? {}
-      : sandboxPolicyToRuntimeOptions(this.options.sandboxPolicy);
-    const staticRuntimeOptions = requestExtension?.toolPolicyOverride === undefined
-      ? this.options.runtimeOptions
-      : withoutToolPolicyOptions(this.options.runtimeOptions);
-    const requestRuntimeOptions = requestExtension?.toolPolicyOverride === undefined
-      ? requestExtension?.runtimeOptions
-      : withoutToolPolicyOptions(requestExtension.runtimeOptions);
-    const merged = mergeRuntimeOptions(
-      policyOptions,
-      sandboxOptions,
-      staticRuntimeOptions,
-      requestRuntimeOptions,
-    );
-    // Per-request overrides (cron job / webhook per-trigger model + effort) win
-    // over the harness defaults. These are applied AFTER the `...merged` spread so
-    // the precedence is explicit. Non-override turns are byte-for-byte unchanged.
-    const overrideModel = isRuntimeModelReference(merged.model) ? merged.model : undefined;
-    const effectiveModel = overrideModel ?? this.options.model;
-    // executionMode for an override turn: keep the host's configured mode when the
-    // override model supports it (so a host running e.g. claude in cli mode is not
-    // silently flipped to sdk for a same-family override), else fall back to that
-    // model's default mode (so a codex override under an sdk host correctly runs
-    // cli). executionMode is harness/runtime-owned — extensions cannot set it.
-    const effectiveExecutionMode = overrideModel === undefined
-      ? this.options.executionMode
-      : executionModeForOverride(overrideModel, this.options.executionMode);
-    const overrideEffort = typeof merged.effort === "string" ? merged.effort : undefined;
-    const effectiveEffort = overrideEffort ?? this.options.effort;
-    // When the override names a DIFFERENT model, run it on a runtime built for
-    // that model (override as the fallback-chain primary, configured backups
-    // after) so failover is preserved. Falls back to the shared runtime when no
-    // factory is wired (the app wires it only when fallbacks exist; a plain
-    // runtime honors the per-run model) or the model is unchanged.
-    const runtime =
-      overrideModel !== undefined &&
-      this.options.runtimeForModel !== undefined &&
-      !sameRuntimeModel(overrideModel, this.options.model)
-        ? this.options.runtimeForModel(effectiveModel, effectiveExecutionMode)
-        : this.options.runtime;
-    const runtimeOptions: RuntimeRunOptions = {
-      ...merged,
-      model: effectiveModel,
-      // Recalled memory is appended to the user message (NOT the system prompt) so
-      // it reaches the model on every turn, including resumed turns. See
-      // prepareContext for why.
-      messages: [{ role: "user", content: composeUserMessageWithMemory(request.userMessage, memory) }],
-      abortSignal: request.abortSignal,
-      ...(effectiveExecutionMode === undefined ? {} : { executionMode: effectiveExecutionMode }),
-      ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
-      ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
-      ...(this.options.maxTurns === undefined ? {} : { maxTurns: this.options.maxTurns }),
-      // Durable provider-session root (pi-native): when set, sessions persist to
-      // disk so resume recovers from there instead of re-sending full history.
-      ...(this.options.piSessionsRoot === undefined ? {} : { piSessionsRoot: this.options.piSessionsRoot }),
-      // Progressive skill disclosure (index mode): pass the discovered skill names
-      // and the skills root so pi-native's getPiBuiltinTools creates the on-demand
-      // `ReadSkill` tool. These live after the merge so request extensions cannot
-      // clobber them. Empty in 'full' mode / when no skillsRoot is set, so the
-      // tool is not created and behavior matches the legacy path.
-      ...(skillDisclosureNames.length > 0 && this.options.skillsRoot !== undefined
-        ? {
-          skills: skillDisclosureNames.map((name) => ({ name })),
-          skillsRoot: this.options.skillsRoot,
-        }
-        : {}),
-      // Session keys live after the merge so request extensions cannot
-      // clobber the harness's session decision — including forcing the keys
-      // back to undefined on fresh runs.
-      //
-      // Omitted entirely when running on a per-turn OVERRIDE runtime (a model
-      // override built via runtimeForModel): that runtime is not the one the
-      // shared session store / disposal is keyed to, so keeping a session alive
-      // on it would leak (the store disposes against the base runtime). An
-      // override turn is one-shot, so it runs stateless. Non-override turns
-      // (runtime === this.options.runtime) are byte-for-byte unchanged.
-      ...(this.sessionsEnabled() && runtime === this.options.runtime
-        ? {
-          sessionKeepAlive: true,
-          sessionIdleTimeoutMs: this.options.session?.idleTimeoutMs,
-          sessionId: resumeSessionId,
-          providerSessionId: resumeSessionId,
-        }
-        : {}),
-      onEvent: (event: RuntimeEventLike) => {
-        recorder.onEvent(event);
-        hostOnEvent?.(event);
-      },
-    };
-    // Admission control: acquire a slot only around the actual provider run.
-    // A blocked acquire holds nothing, so per-conversation queued follow-ups
-    // never occupy a concurrency slot while they wait. The acquire is abortable
-    // so a cancelled turn does not hang waiting for a slot to free up. The
-    // acquire lives INSIDE the cleanup try/finally so a rejected admission
-    // (aborted while queued) still runs requestExtension.cleanup(); release()
-    // is guarded by `acquired` so it only fires when a slot was actually taken.
+    let requestExtension: AgentHarnessRuntimeOptionsExtension | undefined;
+    let requestExtensionCleanup: Promise<void> | undefined;
+    // Admission precedes per-request extension setup. Extensions may allocate
+    // loopback MCP listeners or other bounded resources, so queued runs must
+    // hold none of them while waiting for a provider slot.
     let acquired = false;
-    // Release-on-abort (R10): the permit's lifetime is otherwise coupled to
-    // runtime.run() settlement, but a /cancel severs the caller without forcing
-    // settlement. An abort-ignoring, never-resolving runtime.run would then
-    // retain its maxConcurrentRuns slot forever, stalling all subsequent turns.
-    // So once a slot is held, an abort frees it promptly and lets the orphaned
-    // run finish detached — the same "settle the resource on cancel, let the
-    // zombie finish" tradeoff the live-session queue already makes. `released`
-    // makes release idempotent so the finally never double-releases (and so the
-    // resume-retry's second runRuntime at run() scope is unaffected).
+    // Release-on-abort (R10): once a slot is held, an abort frees it after its
+    // request-scoped resources close, even if the provider ignores cancellation.
+    // Keeping cleanup inside the permit lifetime prevents repeated cancel/new-run
+    // cycles from accumulating loopback MCP listeners beyond concurrency.
     let released = false;
     const releaseSlot = (): void => {
       if (acquired && !released) {
@@ -870,13 +776,122 @@ export class MonoAgentHarness implements AgentHarness {
         this.runLimiter?.release();
       }
     };
-    const onAbortReleaseSlot = (): void => releaseSlot();
+    const cleanupRequestExtension = (): Promise<void> => {
+      requestExtensionCleanup ??= Promise.resolve()
+        .then(async () => requestExtension?.cleanup?.())
+        .then(() => undefined);
+      return requestExtensionCleanup;
+    };
+    const onAbortCleanupAndRelease = (): void => {
+      void cleanupRequestExtension().catch(() => undefined).finally(releaseSlot);
+    };
     try {
       if (this.runLimiter !== undefined) {
         await this.runLimiter.acquire(request.abortSignal);
         acquired = true;
-        request.abortSignal.addEventListener("abort", onAbortReleaseSlot, { once: true });
       }
+      requestExtension = await this.options.runtimeOptionsForRequest?.({ request, runId, context });
+      request.abortSignal.addEventListener("abort", onAbortCleanupAndRelease, { once: true });
+      if (request.abortSignal.aborted) {
+        onAbortCleanupAndRelease();
+        await cleanupRequestExtension();
+        throw request.abortSignal.reason ?? new Error("Agent request was cancelled before provider start.");
+      }
+      const policyOptions = toolPolicyToRuntimeOptions(
+        requestExtension?.toolPolicyOverride
+        ?? this.options.toolPolicy
+        ?? failClosedToolPolicy(),
+      );
+      const sandboxOptions = this.options.sandboxPolicy === undefined
+        ? {}
+        : sandboxPolicyToRuntimeOptions(this.options.sandboxPolicy);
+      const staticRuntimeOptions = requestExtension?.toolPolicyOverride === undefined
+        ? this.options.runtimeOptions
+        : withoutToolPolicyOptions(this.options.runtimeOptions);
+      const requestRuntimeOptions = requestExtension?.toolPolicyOverride === undefined
+        ? requestExtension?.runtimeOptions
+        : withoutToolPolicyOptions(requestExtension.runtimeOptions);
+      const merged = mergeRuntimeOptions(
+        policyOptions,
+        sandboxOptions,
+        staticRuntimeOptions,
+        requestRuntimeOptions,
+      );
+      // Per-request overrides (cron job / webhook per-trigger model + effort) win
+      // over the harness defaults. These are applied AFTER the `...merged` spread so
+      // the precedence is explicit. Non-override turns are byte-for-byte unchanged.
+      const overrideModel = isRuntimeModelReference(merged.model) ? merged.model : undefined;
+      const effectiveModel = overrideModel ?? this.options.model;
+      // executionMode for an override turn: keep the host's configured mode when the
+      // override model supports it (so a host running e.g. claude in cli mode is not
+      // silently flipped to sdk for a same-family override), else fall back to that
+      // model's default mode (so a codex override under an sdk host correctly runs
+      // cli). executionMode is harness/runtime-owned — extensions cannot set it.
+      const effectiveExecutionMode = overrideModel === undefined
+        ? this.options.executionMode
+        : executionModeForOverride(overrideModel, this.options.executionMode);
+      const overrideEffort = typeof merged.effort === "string" ? merged.effort : undefined;
+      const effectiveEffort = overrideEffort ?? this.options.effort;
+      // When the override names a DIFFERENT model, run it on a runtime built for
+      // that model (override as the fallback-chain primary, configured backups
+      // after) so failover is preserved. Falls back to the shared runtime when no
+      // factory is wired (the app wires it only when fallbacks exist; a plain
+      // runtime honors the per-run model) or the model is unchanged.
+      const runtime =
+        overrideModel !== undefined &&
+        this.options.runtimeForModel !== undefined &&
+        !sameRuntimeModel(overrideModel, this.options.model)
+          ? this.options.runtimeForModel(effectiveModel, effectiveExecutionMode)
+          : this.options.runtime;
+      const runtimeOptions: RuntimeRunOptions = {
+        ...merged,
+        model: effectiveModel,
+        // Recalled memory is appended to the user message (NOT the system prompt) so
+        // it reaches the model on every turn, including resumed turns. See
+        // prepareContext for why.
+        messages: [{ role: "user", content: composeUserMessageWithMemory(request.userMessage, memory) }],
+        abortSignal: request.abortSignal,
+        ...(effectiveExecutionMode === undefined ? {} : { executionMode: effectiveExecutionMode }),
+        ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
+        ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
+        ...(this.options.maxTurns === undefined ? {} : { maxTurns: this.options.maxTurns }),
+        // Durable provider-session root (pi-native): when set, sessions persist to
+        // disk so resume recovers from there instead of re-sending full history.
+        ...(this.options.piSessionsRoot === undefined ? {} : { piSessionsRoot: this.options.piSessionsRoot }),
+        // Progressive skill disclosure (index mode): pass the discovered skill names
+        // and the skills root so pi-native's getPiBuiltinTools creates the on-demand
+        // `ReadSkill` tool. These live after the merge so request extensions cannot
+        // clobber them. Empty in 'full' mode / when no skillsRoot is set, so the
+        // tool is not created and behavior matches the legacy path.
+        ...(skillDisclosureNames.length > 0 && this.options.skillsRoot !== undefined
+          ? {
+            skills: skillDisclosureNames.map((name) => ({ name })),
+            skillsRoot: this.options.skillsRoot,
+          }
+          : {}),
+        // Session keys live after the merge so request extensions cannot
+        // clobber the harness's session decision — including forcing the keys
+        // back to undefined on fresh runs.
+        //
+        // Omitted entirely when running on a per-turn OVERRIDE runtime (a model
+        // override built via runtimeForModel): that runtime is not the one the
+        // shared session store / disposal is keyed to, so keeping a session alive
+        // on it would leak (the store disposes against the base runtime). An
+        // override turn is one-shot, so it runs stateless. Non-override turns
+        // (runtime === this.options.runtime) are byte-for-byte unchanged.
+        ...(this.sessionsEnabled() && runtime === this.options.runtime
+          ? {
+            sessionKeepAlive: true,
+            sessionIdleTimeoutMs: this.options.session?.idleTimeoutMs,
+            sessionId: resumeSessionId,
+            providerSessionId: resumeSessionId,
+          }
+          : {}),
+        onEvent: (event: RuntimeEventLike) => {
+          recorder.onEvent(event);
+          hostOnEvent?.(event);
+        },
+      };
       // The provider call is starting: this run has left the admission-pending
       // tier (it now holds a provider slot rather than waiting for one), so
       // release its maxPendingRuns slot. Idempotent at the run() scope, so the
@@ -936,9 +951,12 @@ export class MonoAgentHarness implements AgentHarness {
       // Remove the abort listener to avoid leaking it on the signal, then run
       // the (idempotent) release so the slot frees exactly once whether the run
       // settled normally or an abort already released it.
-      request.abortSignal.removeEventListener("abort", onAbortReleaseSlot);
-      releaseSlot();
-      await requestExtension?.cleanup?.();
+      request.abortSignal.removeEventListener("abort", onAbortCleanupAndRelease);
+      try {
+        await cleanupRequestExtension();
+      } finally {
+        releaseSlot();
+      }
     }
   }
 
