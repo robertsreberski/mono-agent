@@ -1,4 +1,7 @@
+import { isIP } from "node:net";
+
 import {
+  Agent,
   EnvHttpProxyAgent,
   fetch as undiciFetch,
   type RequestInfo as UndiciRequestInfo,
@@ -24,6 +27,11 @@ export interface AdapterSendProxy {
   readonly fetchImpl: typeof fetch;
   close(): Promise<void>;
   destroy(error?: Error): Promise<void>;
+}
+
+export interface AdapterSendProxyOptions {
+  /** Explicit configured endpoints that may need SRT's coarse loopback capability. */
+  readonly directLoopbackUrls?: readonly string[];
 }
 
 export function safeAdapterSendProxyErrorMessage(
@@ -54,6 +62,7 @@ export function safeAdapterSendProxyErrorMessage(
  */
 export function createAdapterSendProxy(
   env: Record<string, string | undefined> = process.env,
+  options: AdapterSendProxyOptions = {},
 ): AdapterSendProxy | undefined {
   const httpProxy = proxyEnvValue(env.http_proxy) ?? proxyEnvValue(env.HTTP_PROXY);
   const httpsProxy = proxyEnvValue(env.https_proxy) ?? proxyEnvValue(env.HTTPS_PROXY);
@@ -61,14 +70,16 @@ export function createAdapterSendProxy(
     return undefined;
   }
 
-  const noProxy = proxyEnvValue(env.no_proxy) ?? proxyEnvValue(env.NO_PROXY) ?? "";
-  const dispatcher = new EnvHttpProxyAgent({
+  const noProxy = normalizeNoProxyValue(env.no_proxy ?? env.NO_PROXY);
+  const proxyDispatcher = new EnvHttpProxyAgent({
     // Empty values prevent EnvHttpProxyAgent from consulting ambient process.env
     // when a caller supplies an explicit environment snapshot (notably tests).
     httpProxy: httpProxy ?? "",
     httpsProxy: httpsProxy ?? "",
     noProxy,
   });
+  const directLoopbackHosts = collectDirectLoopbackHosts(options.directLoopbackUrls ?? []);
+  const directDispatcher = directLoopbackHosts.size === 0 ? undefined : new Agent();
   let closePromise: Promise<void> | undefined;
   let destroyPromise: Promise<void> | undefined;
 
@@ -77,7 +88,9 @@ export function createAdapterSendProxy(
     try {
       return await undiciFetch(input as UndiciRequestInfo, {
         ...requestInit,
-        dispatcher,
+        dispatcher: shouldUseDirectLoopback(input, directLoopbackHosts)
+          ? (directDispatcher ?? proxyDispatcher)
+          : proxyDispatcher,
       }) as unknown as Response;
     } finally {
       detachAbortListener();
@@ -87,12 +100,69 @@ export function createAdapterSendProxy(
   return {
     fetchImpl,
     close(): Promise<void> {
-      return closePromise ??= dispatcher.close();
+      return closePromise ??= Promise.all([
+        proxyDispatcher.close(),
+        ...(directDispatcher === undefined ? [] : [directDispatcher.close()]),
+      ]).then(() => undefined);
     },
     destroy(error?: Error): Promise<void> {
-      return destroyPromise ??= (error === undefined ? dispatcher.destroy() : dispatcher.destroy(error));
+      return destroyPromise ??= Promise.all([
+        error === undefined ? proxyDispatcher.destroy() : proxyDispatcher.destroy(error),
+        ...(directDispatcher === undefined
+          ? []
+          : [error === undefined ? directDispatcher.destroy() : directDispatcher.destroy(error)]),
+      ]).then(() => undefined);
     },
   };
+}
+
+function normalizeNoProxyValue(value: string | undefined): string {
+  const entries = (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  // SRT 0.0.64 emits bare ::1, while Undici 8 expects the bracketed URL-host
+  // spelling. Preserve SRT's list and add the compatible equivalent.
+  if (entries.includes("::1") && !entries.includes("[::1]")) entries.push("[::1]");
+  return entries.join(",");
+}
+
+function collectDirectLoopbackHosts(urls: readonly string[]): ReadonlySet<string> {
+  const hosts = new Set<string>();
+  for (const value of urls) {
+    try {
+      const host = stripIpv6Brackets(new URL(value).hostname.toLowerCase());
+      if (isLoopbackHost(host)) hosts.add(host);
+    } catch {
+      // The config loader owns URL diagnostics; an invalid endpoint must not
+      // accidentally become a direct-routing exception here.
+    }
+  }
+  return hosts;
+}
+
+function shouldUseDirectLoopback(
+  input: Parameters<typeof fetch>[0],
+  directLoopbackHosts: ReadonlySet<string>,
+): boolean {
+  if (directLoopbackHosts.size === 0) return false;
+  try {
+    const value = typeof input === "string" || input instanceof URL
+      ? String(input)
+      : input.url;
+    const host = stripIpv6Brackets(new URL(value).hostname.toLowerCase());
+    return directLoopbackHosts.has(host);
+  } catch {
+    return false;
+  }
+}
+
+function stripIpv6Brackets(host: string): string {
+  return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === "localhost" || host === "::1" || (isIP(host) === 4 && host.split(".")[0] === "127");
 }
 
 function adaptFetchInit(init: RequestInit | undefined): {

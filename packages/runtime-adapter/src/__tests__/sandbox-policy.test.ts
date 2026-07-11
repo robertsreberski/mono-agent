@@ -373,14 +373,15 @@ describe("network policy URL checks", () => {
     expect(networkPolicyAllowsUrl(policy, "https://registry.npmjs.org/")).toBe(true);
   });
 
-  it("treats an explicit loopback allowlist entry as SRT's effective loopback capability", () => {
+  it("keeps general allowlist URL checks exact instead of implying a scoped child capability", () => {
     const policy = createSandboxPolicy({
       root: "/repo",
       network: { mode: "allowlist", allowlist: ["localhost", "api.telegram.org"] },
     });
 
-    expect(networkPolicyAllowsUrl(policy, "http://127.0.0.1:43123/v1/asks")).toBe(true);
-    expect(networkPolicyAllowsUrl(policy, "http://127.8.9.10:43123/v1/asks")).toBe(true);
+    expect(networkPolicyAllowsUrl(policy, "http://127.0.0.1:43123/v1/asks")).toBe(false);
+    expect(networkPolicyAllowsUrl(policy, "http://127.8.9.10:43123/v1/asks")).toBe(false);
+    expect(networkPolicyAllowsUrl(policy, "http://localhost:43123/v1/asks")).toBe(true);
     expect(networkPolicyAllowsUrl(policy, "https://api.telegram.org/bot")).toBe(true);
   });
 });
@@ -506,7 +507,7 @@ describe("srt integration contract", () => {
   });
 
   it.each(["127.0.0.1", "localhost", "127.8.9.10"])(
-    "enables local binding only when allowlist mode explicitly includes loopback host %s",
+    "does not globally enable local binding for allowlist loopback host %s",
     (loopbackHost) => {
       const policy = failClosedSandboxPolicy({
         root: "/repo",
@@ -517,11 +518,26 @@ describe("srt integration contract", () => {
         allowedDomains: ["api.telegram.org", loopbackHost],
         deniedDomains: [],
         strictAllowlist: true,
-        allowLocalBinding: true,
+        allowLocalBinding: false,
         allowAllUnixSockets: false,
       });
     },
   );
+
+  it("enables local binding only for an explicitly scoped trusted command capability", () => {
+    const policy = failClosedSandboxPolicy({
+      root: "/repo",
+      network: { mode: "allowlist", allowlist: ["api.telegram.org", "127.0.0.1"] },
+    });
+
+    expect(srtSettingsForPolicy(policy, undefined, [], { allowLocalBinding: true }).network).toEqual({
+      allowedDomains: ["api.telegram.org", "127.0.0.1"],
+      deniedDomains: [],
+      strictAllowlist: true,
+      allowLocalBinding: true,
+      allowAllUnixSockets: false,
+    });
+  });
 
   it("fails closed before process execution when the native engine is unavailable", async () => {
     const policy = failClosedSandboxPolicy({ root: "/repo" });
@@ -618,6 +634,32 @@ describe("srt integration contract", () => {
     await first.cleanup?.();
     await second.cleanup?.();
     await expect(access(first.sandboxSettingsPath as string)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("writes the local-binding capability only into the trusted command's one-use settings", async () => {
+    const tempRoot = await tempDir();
+    const policy = failClosedSandboxPolicy({
+      root: "/repo",
+      tempRoot,
+      network: { mode: "allowlist", allowlist: ["api.telegram.org", "127.0.0.1"] },
+    });
+    const engine = createSrtSandboxEngine({ command: await fakeSrtExecutable() });
+
+    const ordinary = await engine.prepareCommand({ command: "node", args: ["ordinary.js"] }, policy);
+    const appOwned = await engine.prepareCommand({
+      command: "node",
+      args: ["adapter-send.js"],
+      allowLocalBinding: true,
+    }, policy);
+    try {
+      const ordinarySettings = JSON.parse(await readFile(ordinary.sandboxSettingsPath as string, "utf8"));
+      const appOwnedSettings = JSON.parse(await readFile(appOwned.sandboxSettingsPath as string, "utf8"));
+      expect(ordinarySettings.network.allowLocalBinding).toBe(false);
+      expect(appOwnedSettings.network.allowLocalBinding).toBe(true);
+    } finally {
+      await ordinary.cleanup?.();
+      await appOwned.cleanup?.();
+    }
   });
 
   it("prepares distinct one-use settings for concurrent commands without staging collisions", async () => {

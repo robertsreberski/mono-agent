@@ -2,6 +2,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
 import { access, lstat, mkdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
+import { isIP } from "node:net";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -1817,7 +1818,7 @@ async function adapterSendToolNetworkPolicyWarnings(
   }
 
   return requirements.flatMap((requirement) => {
-    if (networkPolicyAllowsUrl(config.sandbox, requirement.url)) {
+    if (adapterSendChildNetworkAllowsUrl(config, requirement.url)) {
       return [];
     }
     const host = endpointHost(requirement.url);
@@ -1828,6 +1829,17 @@ async function adapterSendToolNetworkPolicyWarnings(
         `or disable ${requirement.tools.join(", ")}.`,
     ];
   });
+}
+
+function adapterSendChildNetworkAllowsUrl(config: MonoAgentConfig, url: string): boolean {
+  if (networkPolicyAllowsUrl(config.sandbox, url)) return true;
+  if (config.sandbox?.mode !== "native" || config.sandbox.network.mode !== "allowlist") return false;
+  const host = endpointHost(url);
+  return isLoopbackEndpointHost(host) && config.sandbox.network.allowlist.some(isLoopbackEndpointHost);
+}
+
+function isLoopbackEndpointHost(host: string): boolean {
+  return host === "localhost" || host === "::1" || (isIP(host) === 4 && host.split(".")[0] === "127");
 }
 
 function endpointHost(url: string): string {

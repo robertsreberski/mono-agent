@@ -84,7 +84,7 @@ unsandboxed posture is deliberate and visible.
 
 Allowlist entries are matched as host suffixes. A leading `*.` is a wildcard suffix — `*.example.com` matches `api.example.com`. There is **no CIDR and no port syntax**; entries are hostnames/suffixes only. Bare `*`, IPv6 literals (including `::1`), whitespace, paths, and port-bearing entries are rejected. Localhost policy uses the enforceable `localhost`/IPv4 loopback representation.
 
-Loopback is never implicit in `allowlist` mode. Add `127.0.0.1` (or the exact configured loopback host) when a sandboxed child must reach a local service such as the `AskUser` interaction bridge. Enabled app-owned send tools also need their external API host: `slack.com` for `SlackSendMessage`, and `api.telegram.org` or the configured Telegram `apiRoot` host for Telegram send/ask/file tools. The adapter destination allowlist still applies independently. `mono-agent validate` reports a `waiting` Tools & MCP section with the missing host before a run.
+Loopback is never implicit in `allowlist` mode. Enabled app-owned ask tools need `127.0.0.1` or `localhost` for their interaction bridge, in addition to `slack.com` for `SlackSendMessage` and `api.telegram.org` (or the configured `apiRoot`) for Telegram tools. Mono-agent scopes SRT's coarse loopback connect/bind capability to the trusted adapter-send child; ordinary Bash and project MCP commands do not gain loopback binding from that entry. Use network mode `localhost` only when every sandboxed command intentionally needs local networking (including SRT's loopback binding capability). The adapter destination allowlist still applies independently. `mono-agent validate` reports a `waiting` Tools & MCP section with the missing host before a run.
 
 ```json
 {

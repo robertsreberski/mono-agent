@@ -135,6 +135,8 @@ export interface SandboxCommandSpec {
   readonly args?: readonly string[];
   readonly cwd?: string;
   readonly env?: Record<string, string | undefined>;
+  /** Trusted per-command capability; never derived from model/user tool input. */
+  readonly allowLocalBinding?: boolean;
 }
 
 export interface PreparedSandboxCommand extends SandboxCommandSpec {
@@ -343,7 +345,7 @@ export function createSrtSandboxEngine(options: SrtSandboxEngineOptions = {}): S
         );
       }
       const runtimeReadRoots = await runtimeReadRootsForCommand(spec, cwd);
-      const settings = await writeSrtSettingsFile(policy, runtimeReadRoots);
+      const settings = await writeSrtSettingsFile(policy, runtimeReadRoots, spec.allowLocalBinding === true);
       return {
         ...spec,
         command: launch.command,
@@ -468,6 +470,7 @@ export function srtSettingsForPolicy(
   policy: SandboxPolicy,
   protectedSettingsPath?: string,
   runtimeReadRoots: readonly string[] = [],
+  commandCapabilities: { readonly allowLocalBinding?: boolean } = {},
 ): SrtSettings {
   if (policy.network.mode === "all") {
     throw new SandboxPolicyError(
@@ -481,8 +484,7 @@ export function srtSettingsForPolicy(
       allowedDomains: domainsForNetworkPolicy(policy.network),
       deniedDomains: policy.network.mode === "none" ? ["*"] : [],
       strictAllowlist: true,
-      allowLocalBinding: policy.network.mode === "localhost"
-        || (policy.network.mode === "allowlist" && policy.network.allowlist.some(isLocalhost)),
+      allowLocalBinding: policy.network.mode === "localhost" || commandCapabilities.allowLocalBinding === true,
       allowAllUnixSockets: false,
     },
     filesystem: {
@@ -518,13 +520,6 @@ export function networkPolicyAllowsUrl(policy: SandboxPolicy | undefined, url: s
   if (policy.network.mode === "localhost") {
     return isLocalhost(host);
   }
-  // SRT's allowLocalBinding switch admits loopback as one capability rather
-  // than one exact spelling. Mirror that effective policy for readiness checks:
-  // any explicit loopback allowlist entry admits every loopback URL, while an
-  // external hostname that merely starts with "127." does not.
-  if (isLocalhost(host) && policy.network.allowlist.some(isLocalhost)) {
-    return true;
-  }
   return policy.network.allowlist.some((domain) => domainMatches(host, domain));
 }
 
@@ -536,6 +531,7 @@ function normalizeCommandSpec(spec: SandboxCommandSpec, fallbackCwd: string | un
     args: normalizeArgs(spec.args ?? []),
     cwd,
     ...(spec.env === undefined ? {} : { env: { ...spec.env } }),
+    ...(spec.allowLocalBinding === true ? { allowLocalBinding: true } : {}),
     sandboxed: false,
   };
 }
@@ -714,7 +710,11 @@ function symlinkAncestorsSync(path: string): readonly string[] {
   return links;
 }
 
-async function writeSrtSettingsFile(policy: SandboxPolicy, runtimeReadRoots: readonly string[] = []): Promise<{
+async function writeSrtSettingsFile(
+  policy: SandboxPolicy,
+  runtimeReadRoots: readonly string[] = [],
+  allowLocalBinding = false,
+): Promise<{
   readonly path: string;
   readonly cleanup: () => Promise<void>;
 }> {
@@ -726,6 +726,7 @@ async function writeSrtSettingsFile(policy: SandboxPolicy, runtimeReadRoots: rea
     policy,
     settingsPath,
     expandedRuntimeReadRoots,
+    { allowLocalBinding },
   ), null, 2)}\n`;
   const noFollow = fsConstants.O_NOFOLLOW ?? 0;
   let handle;

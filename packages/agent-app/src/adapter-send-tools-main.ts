@@ -20,7 +20,13 @@ async function main(): Promise<void> {
   if (settings === undefined) {
     throw new Error("no adapter send tools configured.");
   }
-  const proxy = createAdapterSendProxy(process.env);
+  const proxy = createAdapterSendProxy(process.env, {
+    directLoopbackUrls: [
+      settings.telegram?.apiRoot,
+      settings.telegram?.askBridge?.bridgeUrl,
+      settings.askUser?.bridgeUrl,
+    ].filter((value): value is string => value !== undefined),
+  });
   const removeProxyLifecycle = proxy === undefined ? () => {} : installProxyLifecycle(proxy);
   try {
     const httpOptions = proxy === undefined ? {} : { fetchImpl: proxy.fetchImpl };

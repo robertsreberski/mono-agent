@@ -73,7 +73,7 @@ Coverage: `config`. Three conditions must hold for a send tool to work:
 
 The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels`, `telegram.allowedChatIds` / `telegram.allowAllChats`) **remains the destination boundary**: allowing the tool does not widen where the agent may send. A send to a destination outside the adapter allowlist is refused.
 
-The native sandbox's network allowlist is a separate egress boundary. App-owned send tools run in a sandboxed child and use SRT's authenticated proxy automatically; no `NODE_USE_ENV_PROXY` setting is needed. A `localhost`-only policy cannot reach Slack or Telegram. In `allowlist` mode, include the exact external API hosts plus an explicit loopback host (normally `127.0.0.1`) when a blocking ask tool is enabled:
+The native sandbox's network allowlist is a separate egress boundary. App-owned send tools run in a sandboxed child and use SRT's authenticated proxy automatically; no `NODE_USE_ENV_PROXY` setting is needed. A `localhost`-only policy cannot reach Slack or Telegram. In `allowlist` mode, include the exact external API hosts plus an explicit loopback host (normally `127.0.0.1`) when a blocking ask tool is enabled. Mono-agent grants SRT's coarse loopback capability only to this trusted app-owned child; it does not let Bash or project MCP servers bind arbitrary loopback ports:
 
 ```json
 {

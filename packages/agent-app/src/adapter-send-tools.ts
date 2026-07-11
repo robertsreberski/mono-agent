@@ -290,7 +290,7 @@ export function adapterSendToolsMcpServerSpec(
   context?: AdapterSendToolsChildContext,
   interaction?: AdapterSendToolsInteractionEnv,
 ): Record<string, unknown> {
-  return {
+  const spec: Record<string | symbol, unknown> = {
     type: "stdio",
     command: process.execPath,
     // Node 24 on macOS defaults to the system trust store, whose trustd access
@@ -301,6 +301,15 @@ export function adapterSendToolsMcpServerSpec(
     cwd,
     env: adapterSendToolsMcpEnv(configPath, allowedTools, context, interaction),
   };
+  // Only the trusted app-owned adapter child receives SRT's coarse loopback
+  // capability. A symbol cannot be supplied by JSON MCP config and disappears
+  // from serialized provider/tool metadata, so ordinary Bash/project MCP
+  // processes keep the stricter no-bind allowlist policy.
+  Object.defineProperty(spec, Symbol.for("@mono-agent/app-owned-local-binding"), {
+    value: true,
+    enumerable: false,
+  });
+  return spec;
 }
 
 /**
@@ -428,7 +437,7 @@ function registerAskUserTool(
         conversationId: settings.conversationId,
         question: args.question,
         timeoutMs: settings.timeoutMs,
-      });
+      }, extra.signal);
       if (created.status === 409) {
         return askToolResult(
           "A question is already pending for the user. Wait for its answer instead of asking again.",
@@ -444,7 +453,7 @@ function registerAskUserTool(
       if (created.status !== 201 || typeof created.body.askId !== "string") {
         throw new Error(`AskUser: the interaction bridge rejected the ask (HTTP ${String(created.status)}).`);
       }
-      return await awaitBridgeAsk(settings, created.body.askId, "AskUser", extra, fetchImpl);
+      return await awaitBridgeAsk(settings, created.body.askId, "AskUser", extra, fetchImpl, extra.signal);
     },
   );
 }
@@ -466,43 +475,54 @@ async function awaitBridgeAsk(
   toolName: "AskUser" | "TelegramAskButtons",
   extra: unknown,
   fetchImpl: typeof fetch,
+  signal: AbortSignal,
   extraStructured: Record<string, unknown> = {},
 ): Promise<{ content: Array<{ type: "text"; text: string }>; structuredContent: Record<string, unknown> }> {
   const startedMs = Date.now();
-  for (;;) {
-    const poll = await askBridgeRequest(
-      settings,
-      fetchImpl,
-      "GET",
-      `/v1/asks/${encodeURIComponent(askId)}?waitMs=${String(ASK_USER_POLL_WAIT_MS)}`,
-    );
-    if (poll.status !== 200) {
-      throw new Error(`${toolName}: lost the pending ask (HTTP ${String(poll.status)}).`);
-    }
-    // Keep-alive: progress notifications reset the runtime's MCP inactivity
-    // timeout so a long human wait cannot kill the tool call.
-    await sendAskProgress(extra, Math.round((Date.now() - startedMs) / 1000));
-    const status = poll.body.status;
-    if (status === "answered" && typeof poll.body.answer === "string") {
-      const answeredText =
-        toolName === "TelegramAskButtons"
-          ? `The user tapped:\n${poll.body.answer}`
-          : `The user answered:\n${poll.body.answer}`;
-      return askToolResult(answeredText, { answered: true, answer: poll.body.answer }, extraStructured);
-    }
-    if (status === "expired") {
-      return askToolResult(
-        "The user did not answer within the wait window. Their reply will arrive as their next message — wrap up this turn gracefully (proceed with sensible defaults and say what you assumed).",
-        { answered: false, reason: "timeout" },
-        extraStructured,
+  try {
+    for (;;) {
+      const poll = await askBridgeRequest(
+        settings,
+        fetchImpl,
+        "GET",
+        `/v1/asks/${encodeURIComponent(askId)}?waitMs=${String(ASK_USER_POLL_WAIT_MS)}`,
+        undefined,
+        signal,
       );
+      if (poll.status !== 200) {
+        throw new Error(`${toolName}: lost the pending ask (HTTP ${String(poll.status)}).`);
+      }
+      // Keep-alive: progress notifications reset the runtime's MCP inactivity
+      // timeout so a long human wait cannot kill the tool call.
+      await sendAskProgress(extra, Math.round((Date.now() - startedMs) / 1000));
+      const status = poll.body.status;
+      if (status === "answered" && typeof poll.body.answer === "string") {
+        const answeredText =
+          toolName === "TelegramAskButtons"
+            ? `The user tapped:\n${poll.body.answer}`
+            : `The user answered:\n${poll.body.answer}`;
+        return askToolResult(answeredText, { answered: true, answer: poll.body.answer }, extraStructured);
+      }
+      if (status === "expired") {
+        return askToolResult(
+          "The user did not answer within the wait window. Their reply will arrive as their next message — wrap up this turn gracefully (proceed with sensible defaults and say what you assumed).",
+          { answered: false, reason: "timeout" },
+          extraStructured,
+        );
+      }
+      if (status === "cancelled") {
+        return askToolResult("The user cancelled the current run. Stop this task.", {
+          answered: false,
+          reason: "cancelled",
+        }, extraStructured);
+      }
     }
-    if (status === "cancelled") {
-      return askToolResult("The user cancelled the current run. Stop this task.", {
-        answered: false,
-        reason: "cancelled",
-      }, extraStructured);
-    }
+  } catch (error) {
+    // A cancelled MCP call must not leave a bridge ask pending until its full
+    // human timeout. Use a fresh request (not the aborted call signal) so the
+    // parent registry is cleared best-effort before propagating the failure.
+    await askBridgeRequest(settings, fetchImpl, "DELETE", `/v1/asks/${encodeURIComponent(askId)}`).catch(() => undefined);
+    throw error;
   }
 }
 
@@ -512,6 +532,7 @@ async function askBridgeRequest(
   method: "DELETE" | "GET" | "POST",
   path: string,
   body?: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const response = await fetchImpl(new URL(path, settings.bridgeUrl), {
     method,
@@ -520,6 +541,7 @@ async function askBridgeRequest(
       ...(body === undefined ? {} : { "content-type": "application/json" }),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    ...(signal === undefined ? {} : { signal }),
   });
   let parsed: unknown;
   try {
@@ -577,21 +599,24 @@ function registerSlackSendTool(
         unfurl_media: z.boolean().optional().describe("Whether Slack should unfurl media."),
       },
     },
-    async (args) => {
+    async (args, extra) => {
       assertSlackChannelAllowed(settings, args.channel);
       const mrkdwn = args.mrkdwn ?? true;
       const text = mrkdwn ? formatMarkdownForSlack(args.text) : args.text;
       const chunks = splitTextByCodePoints(text, SLACK_SEND_MESSAGE_MAX_CHARS);
       const results: SlackChatPostMessageResult[] = [];
       for (const chunk of chunks) {
-        const result: SlackChatPostMessageResult = await client.chatPostMessage({
-          channel: args.channel.trim(),
-          text: chunk,
-          ...(args.thread_ts === undefined ? {} : { thread_ts: args.thread_ts }),
-          mrkdwn,
-          ...(args.unfurl_links === undefined ? {} : { unfurl_links: args.unfurl_links }),
-          ...(args.unfurl_media === undefined ? {} : { unfurl_media: args.unfurl_media }),
-        });
+        const result: SlackChatPostMessageResult = await client.chatPostMessage(
+          {
+            channel: args.channel.trim(),
+            text: chunk,
+            ...(args.thread_ts === undefined ? {} : { thread_ts: args.thread_ts }),
+            mrkdwn,
+            ...(args.unfurl_links === undefined ? {} : { unfurl_links: args.unfurl_links }),
+            ...(args.unfurl_media === undefined ? {} : { unfurl_media: args.unfurl_media }),
+          },
+          { signal: extra.signal },
+        );
         results.push(result);
         // Link every posted chunk back to this conversation so an in-thread reply can
         // resume it. Best-effort: appendPostedMessage never throws, so a failed index
@@ -648,15 +673,18 @@ function registerTelegramSendTool(
         disable_web_page_preview: z.boolean().optional().describe("Disable Telegram link previews."),
       },
     },
-    async (args) => {
+    async (args, extra) => {
       assertTelegramChatAllowed(settings, args.chat_id);
-      const result: TelegramSentMessage = await client.sendMessage({
-        chat_id: args.chat_id,
-        text: args.text,
-        ...(args.parse_mode === undefined ? {} : { parse_mode: args.parse_mode }),
-        ...(args.reply_to_message_id === undefined ? {} : { reply_to_message_id: args.reply_to_message_id }),
-        ...(args.disable_web_page_preview === undefined ? {} : { disable_web_page_preview: args.disable_web_page_preview }),
-      });
+      const result: TelegramSentMessage = await client.sendMessage(
+        {
+          chat_id: args.chat_id,
+          text: args.text,
+          ...(args.parse_mode === undefined ? {} : { parse_mode: args.parse_mode }),
+          ...(args.reply_to_message_id === undefined ? {} : { reply_to_message_id: args.reply_to_message_id }),
+          ...(args.disable_web_page_preview === undefined ? {} : { disable_web_page_preview: args.disable_web_page_preview }),
+        },
+        { signal: extra.signal },
+      );
       return {
         content: [{ type: "text", text: `Sent Telegram message ${result.message_id} to ${String(result.chat.id)}.` }],
         structuredContent: { ok: true, chat_id: result.chat.id, message_id: result.message_id },
@@ -709,7 +737,7 @@ function registerTelegramAskTool(
         timeoutMs: bridge.timeoutMs,
         postQuestion: false,
         answerKind: "callback",
-      });
+      }, extra.signal);
       if (created.status === 409) {
         return askToolResult(
           "A question is already pending for this Telegram chat. Wait for its answer instead of asking again.",
@@ -730,16 +758,19 @@ function registerTelegramAskTool(
       const askId = created.body.askId;
       let result: TelegramSentMessage;
       try {
-        result = await client.sendMessage({
-          chat_id: args.chat_id,
-          text,
-          reply_markup: { inline_keyboard: inlineKeyboard },
-        });
+        result = await client.sendMessage(
+          {
+            chat_id: args.chat_id,
+            text,
+            reply_markup: { inline_keyboard: inlineKeyboard },
+          },
+          { signal: extra.signal },
+        );
       } catch (error) {
         await askBridgeRequest(bridge, fetchImpl, "DELETE", `/v1/asks/${encodeURIComponent(askId)}`);
         throw error;
       }
-      return await awaitBridgeAsk(bridge, askId, "TelegramAskButtons", extra, fetchImpl, {
+      return await awaitBridgeAsk(bridge, askId, "TelegramAskButtons", extra, fetchImpl, extra.signal, {
         chat_id: result.chat.id,
         message_id: result.message_id,
         options: args.options,
@@ -777,7 +808,8 @@ function registerTelegramSendFileTool(
         caption: z.string().min(1).optional().describe("Optional caption shown with the file."),
       },
     },
-    async (args) => {
+    async (args, extra) => {
+      extra.signal.throwIfAborted();
       const kind = args.kind;
       assertTelegramChatAllowed(settings, args.chat_id);
       const maxUploadBytes = settings.maxUploadBytes ?? adapter.DEFAULT_ATTACHMENT_MAX_BYTES;
@@ -795,11 +827,14 @@ function registerTelegramSendFileTool(
           throw new Error(`file exceeds the ${String(maxUploadBytes)}-byte upload cap.`);
         }
         try {
-          const sent: TelegramSentMessage = await client.sendDocument!({
-            chat_id: args.chat_id,
-            document: pathToFileURL(resolved).href,
-            ...(args.caption === undefined ? {} : { caption: args.caption }),
-          });
+          const sent: TelegramSentMessage = await client.sendDocument!(
+            {
+              chat_id: args.chat_id,
+              document: pathToFileURL(resolved).href,
+              ...(args.caption === undefined ? {} : { caption: args.caption }),
+            },
+            { signal: extra.signal },
+          );
           const name = basename(resolved);
           return {
             content: [{ type: "text", text: `Sent ${kind} ${sent.message_id} (${name}) to ${String(sent.chat.id)}.` }],
@@ -818,21 +853,28 @@ function registerTelegramSendFileTool(
         filename: args.filename,
         requireFilename: kind === "document",
         maxBytes: maxUploadBytes,
+        signal: extra.signal,
       });
       const result: TelegramSentMessage =
         kind === "document"
-          ? await client.sendDocument!({
-              chat_id: args.chat_id,
-              document: bytes,
-              filename,
-              ...(args.caption === undefined ? {} : { caption: args.caption }),
-            })
-          : await client.sendPhoto!({
-              chat_id: args.chat_id,
-              photo: bytes,
-              filename,
-              ...(args.caption === undefined ? {} : { caption: args.caption }),
-            });
+          ? await client.sendDocument!(
+              {
+                chat_id: args.chat_id,
+                document: bytes,
+                filename,
+                ...(args.caption === undefined ? {} : { caption: args.caption }),
+              },
+              { signal: extra.signal },
+            )
+          : await client.sendPhoto!(
+              {
+                chat_id: args.chat_id,
+                photo: bytes,
+                filename,
+                ...(args.caption === undefined ? {} : { caption: args.caption }),
+              },
+              { signal: extra.signal },
+            );
       return {
         content: [{ type: "text", text: `Sent ${kind} ${result.message_id} (${filename}) to ${String(result.chat.id)}.` }],
         structuredContent: { ok: true, chat_id: result.chat.id, message_id: result.message_id, filename },
@@ -848,6 +890,7 @@ async function resolveTelegramFileBytes(input: {
   filename: string | undefined;
   requireFilename: boolean;
   maxBytes: number;
+  signal: AbortSignal;
 }): Promise<{ bytes: Uint8Array; filename: string }> {
   const hasData = input.data !== undefined;
   const hasPath = input.path !== undefined;
@@ -868,7 +911,7 @@ async function resolveTelegramFileBytes(input: {
     }
   } else {
     const resolved = resolvePath(process.cwd(), input.path!);
-    bytes = new Uint8Array(await readFile(resolved));
+    bytes = new Uint8Array(await readFile(resolved, { signal: input.signal }));
     filename = input.filename ?? basename(resolved);
   }
   if (bytes.byteLength === 0) {

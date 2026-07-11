@@ -14,9 +14,11 @@ import type {
   SlackChatPostMessageResult,
   SlackChatUpdateParams,
   SlackEventCallback,
+  SlackRequestOptions,
   SlackWebApi,
 } from "@mono-agent/slack-adapter";
 import type {
+  TelegramRequestOptions,
   TelegramSendMessageParams,
   TelegramSentMessage,
 } from "@mono-agent/telegram-adapter";
@@ -263,10 +265,12 @@ describe("adapter send tools MCP spec/env", () => {
     });
     expect(spec.env).not.toHaveProperty("HTTP_PROXY");
     expect(spec.env).not.toHaveProperty("HTTPS_PROXY");
+    expect((spec as Record<PropertyKey, unknown>)[Symbol.for("@mono-agent/app-owned-local-binding")]).toBe(true);
     expect(JSON.stringify(spec.env)).not.toContain("xoxb-slack");
     expect(JSON.stringify(spec.env)).not.toContain("telegram-token");
     expect(JSON.stringify(spec.args)).not.toContain("xoxb-slack");
     expect(JSON.stringify(spec.args)).not.toContain("telegram-token");
+    expect(JSON.stringify(spec)).not.toContain("local-binding");
   });
 
   it("forwards the producing conversation id and index path when indexing is configured, and parses them back", () => {
@@ -547,6 +551,98 @@ describe("adapter send tools sandbox proxy", () => {
     }
   });
 
+  it("accepts SRT's bare IPv6 NO_PROXY spelling for an IPv6 loopback target", async () => {
+    let proxyHits = 0;
+    const target = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.end("ipv6-direct");
+    });
+    target.listen(0, "::1");
+    await once(target, "listening");
+    const targetAddress = target.address();
+    if (targetAddress === null || typeof targetAddress === "string") throw new Error("IPv6 target did not bind");
+
+    const proxy = createServer((_request, response) => {
+      proxyHits += 1;
+      response.writeHead(502);
+      response.end();
+    });
+    proxy.on("connect", (_request, socket) => {
+      proxyHits += 1;
+      socket.destroy();
+    });
+    proxy.listen(0, "127.0.0.1");
+    await once(proxy, "listening");
+    const proxyAddress = proxy.address();
+    if (proxyAddress === null || typeof proxyAddress === "string") throw new Error("proxy did not bind");
+
+    const transport = createAdapterSendProxy({
+      HTTP_PROXY: `http://127.0.0.1:${String(proxyAddress.port)}`,
+      HTTPS_PROXY: `http://127.0.0.1:${String(proxyAddress.port)}`,
+      NO_PROXY: "localhost,127.0.0.1,::1",
+    });
+    if (transport === undefined) throw new Error("expected the child proxy transport");
+    try {
+      const response = await transport.fetchImpl(`http://[::1]:${String(targetAddress.port)}`);
+      expect(await response.text()).toBe("ipv6-direct");
+      expect(proxyHits).toBe(0);
+    } finally {
+      await transport.close();
+      const targetClosed = once(target, "close");
+      target.close();
+      await targetClosed;
+      const proxyClosed = once(proxy, "close");
+      proxy.close();
+      await proxyClosed;
+    }
+  });
+
+  it("routes an explicitly configured loopback endpoint through the scoped direct capability", async () => {
+    let proxyHits = 0;
+    const target = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.end("127-range-direct");
+    });
+    target.listen(0, "127.0.0.1");
+    await once(target, "listening");
+    const targetAddress = target.address();
+    if (targetAddress === null || typeof targetAddress === "string") throw new Error("127/8 target did not bind");
+    const targetUrl = `http://127.0.0.1:${String(targetAddress.port)}`;
+
+    const proxy = createServer((_request, response) => {
+      proxyHits += 1;
+      response.writeHead(502);
+      response.end();
+    });
+    proxy.on("connect", (_request, socket) => {
+      proxyHits += 1;
+      socket.destroy();
+    });
+    proxy.listen(0, "127.0.0.1");
+    await once(proxy, "listening");
+    const proxyAddress = proxy.address();
+    if (proxyAddress === null || typeof proxyAddress === "string") throw new Error("proxy did not bind");
+
+    const transport = createAdapterSendProxy({
+      HTTP_PROXY: `http://127.0.0.1:${String(proxyAddress.port)}`,
+      NO_PROXY: "",
+    }, { directLoopbackUrls: [targetUrl, "https://remote.example.com"] });
+    if (transport === undefined) throw new Error("expected the child proxy transport");
+    try {
+      const response = await transport.fetchImpl(targetUrl);
+      expect(await response.text()).toBe("127-range-direct");
+      expect(proxyHits).toBe(0);
+    } finally {
+      await transport.close();
+      const targetClosed = once(target, "close");
+      target.close();
+      await targetClosed;
+      const proxyClosed = once(proxy, "close");
+      proxy.close();
+      await proxyClosed;
+    }
+  });
+
   it("mirrors a non-native abort signal and detaches its listener", async () => {
     const target = createServer(() => {});
     target.listen(0, "127.0.0.1");
@@ -661,6 +757,74 @@ describe("adapter send MCP tools", () => {
     expect(telegramCalls).toEqual([{ chat_id: -100, text: "hi", disable_web_page_preview: true }]);
   });
 
+  it("forwards MCP cancellation to Slack, Telegram message, and Telegram file requests", async () => {
+    const signals: Record<"slack" | "telegram" | "file", AbortSignal | undefined> = {
+      slack: undefined,
+      telegram: undefined,
+      file: undefined,
+    };
+    const waitForAbort = async <T>(signal: AbortSignal | undefined): Promise<T> => {
+      if (signal === undefined) throw new Error("missing request signal");
+      await new Promise<never>((_resolve, reject) => {
+        const rejectAbort = (): void => reject(signal.reason ?? new Error("aborted"));
+        if (signal.aborted) rejectAbort();
+        else signal.addEventListener("abort", rejectAbort, { once: true });
+      });
+      throw new Error("unreachable");
+    };
+    const settings: AdapterSendToolsSettings = {
+      ...bothAdaptersSettings(),
+      telegram: {
+        ...bothAdaptersSettings().telegram!,
+        tools: { send: true, ask: false, file: true },
+      },
+    };
+    const server = await createAdapterSendToolsServer(settings, {
+      slack: {
+        async chatPostMessage(_params: SlackChatPostMessageParams, options?: SlackRequestOptions) {
+          signals.slack = options?.signal;
+          return await waitForAbort<SlackChatPostMessageResult>(options?.signal);
+        },
+      },
+      telegram: {
+        async sendMessage(_params: TelegramSendMessageParams, options?: TelegramRequestOptions) {
+          signals.telegram = options?.signal;
+          return await waitForAbort<TelegramSentMessage>(options?.signal);
+        },
+        async sendDocument(params, options?: TelegramRequestOptions) {
+          signals.file = options?.signal;
+          return await waitForAbort<TelegramSentMessage>(options?.signal);
+        },
+      },
+    });
+
+    await withMcpClient(server, async (client) => {
+      const cases = [
+        { key: "slack" as const, name: "SlackSendMessage", args: { channel: "C1", text: "cancel" } },
+        { key: "telegram" as const, name: "TelegramSendMessage", args: { chat_id: 42, text: "cancel" } },
+        {
+          key: "file" as const,
+          name: "TelegramSendFile",
+          args: { kind: "document", chat_id: 42, data: "QQ==", filename: "cancel.txt" },
+        },
+      ];
+      for (const candidate of cases) {
+        const controller = new AbortController();
+        const pending = client.callTool(
+          { name: candidate.name, arguments: candidate.args },
+          undefined,
+          { signal: controller.signal },
+        );
+        await vi.waitFor(() => {
+          expect(signals[candidate.key]).toBeInstanceOf(AbortSignal);
+        });
+        controller.abort(new Error(`${candidate.name} cancelled`));
+        await expect(pending).rejects.toThrow("cancelled");
+        expect(signals[candidate.key]?.aborted).toBe(true);
+      }
+    });
+  });
+
   it("sends SlackSendMessage text unchanged when mrkdwn is explicitly disabled", async () => {
     const slackCalls: SlackChatPostMessageParams[] = [];
     const server = await createAdapterSendToolsServer(bothAdaptersSettings(), {
@@ -726,6 +890,7 @@ describe("adapter send MCP tools", () => {
     const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, askTimeoutMs: 5_000 });
     bridge.registerSink("telegram", { postQuestion: async () => {}, postStatus: async () => {} });
     const telegramCalls: TelegramSendMessageParams[] = [];
+    let telegramSignal: AbortSignal | undefined;
     const settings: AdapterSendToolsSettings = {
       telegram: {
         botToken: "telegram-token",
@@ -742,8 +907,12 @@ describe("adapter send MCP tools", () => {
     try {
       const server = await createAdapterSendToolsServer(settings, {
         telegram: {
-          async sendMessage(params: TelegramSendMessageParams): Promise<TelegramSentMessage> {
+          async sendMessage(
+            params: TelegramSendMessageParams,
+            options?: TelegramRequestOptions,
+          ): Promise<TelegramSentMessage> {
             telegramCalls.push(params);
+            telegramSignal = options?.signal;
             return { message_id: 88, chat: { id: params.chat_id }, text: params.text };
           },
         },
@@ -779,6 +948,7 @@ describe("adapter send MCP tools", () => {
           [{ text: "Reject", callback_data: "ask:1" }],
         ],
       });
+      expect(telegramSignal).toBeInstanceOf(AbortSignal);
     } finally {
       await bridge.stop();
     }
@@ -1165,6 +1335,7 @@ describe("adapter send tool app composition", () => {
     });
     expect(JSON.stringify(server?.env)).not.toContain("xoxb-slack");
     expect(JSON.stringify(server?.env)).not.toContain("telegram-token");
+    expect((server as Record<PropertyKey, unknown>)[Symbol.for("@mono-agent/app-owned-local-binding")]).toBe(true);
 
     await app.stop();
   });
@@ -1383,6 +1554,43 @@ describe("AskUser tool", () => {
       });
       expect(bridgeFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
       expect(bridgeFetch.mock.calls.every(([input]) => new URL(String(input)).origin === bridge.url)).toBe(true);
+      expect(bridgeFetch.mock.calls.every(([, init]) => init?.signal instanceof AbortSignal)).toBe(true);
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("aborts the bridge poll and removes the pending ask when the MCP call is cancelled", async () => {
+    const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, askTimeoutMs: 5_000 });
+    bridge.registerSink("telegram", { postQuestion: async () => {}, postStatus: async () => {} });
+    try {
+      const server = await createAdapterSendToolsServer(
+        {
+          askUser: {
+            bridgeUrl: bridge.url,
+            bridgeToken: bridge.token,
+            timeoutMs: 5_000,
+            conversationId: "telegram:42",
+          },
+        },
+        {},
+      );
+      await withMcpClient(server, async (client) => {
+        const controller = new AbortController();
+        const pending = client.callTool(
+          { name: "AskUser", arguments: { question: "Cancel this ask?" } },
+          undefined,
+          { signal: controller.signal },
+        );
+        await vi.waitFor(() => {
+          expect(bridge.hasPendingAsk("telegram:42")).toBe(true);
+        });
+        controller.abort(new Error("AskUser cancelled"));
+        await expect(pending).rejects.toThrow("cancelled");
+        await vi.waitFor(() => {
+          expect(bridge.hasPendingAsk("telegram:42")).toBe(false);
+        });
+      });
     } finally {
       await bridge.stop();
     }
