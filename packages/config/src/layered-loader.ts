@@ -1,5 +1,9 @@
 import { readMonoAgentConfigJson } from "./json-source.js";
-import type { MonoAgentConfigJson } from "./json-source.js";
+import type {
+  MonoAgentConfigJson,
+  MonoAgentMemoryConsolidationJson,
+  MonoAgentMemoryEmbeddingsJson,
+} from "./json-source.js";
 import { loadMonoAgentConfig, MonoAgentConfigError } from "./config.js";
 import type { MonoAgentConfig } from "./types.js";
 
@@ -53,9 +57,15 @@ function remapJsonMemoryTierError(
   ) return error;
 
   if (error.details.env === "MONO_AGENT_MEMORY_MODE") {
-    const implicatedEnv = firstConfiguredEnv(env, incompatibleMemoryEnvKeys(json.memory.mode ?? "lite"));
+    const mode = json.memory.mode ?? "lite";
+    const jsonPath = incompatibleJsonMemoryPath(mode, json.memory);
+    if (jsonPath !== undefined) {
+      const message = `memory.mode "${mode}" cannot configure ${jsonPath}.`;
+      return new MonoAgentConfigError("invalid_json", message, { path: jsonPath, reason: message });
+    }
+    const implicatedEnv = envCapabilityActivator(mode, env);
     if (implicatedEnv !== undefined) {
-      const message = `${implicatedEnv} is incompatible with memory.mode "${json.memory.mode ?? "lite"}" from mono-agent.config.json.`;
+      const message = `${implicatedEnv} is incompatible with memory.mode "${mode}" from mono-agent.config.json.`;
       return new MonoAgentConfigError("invalid_env", message, { env: implicatedEnv, reason: message });
     }
   }
@@ -87,25 +97,60 @@ const MEMORY_EMBEDDINGS_ENV_KEYS = [
   "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
   "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
 ] as const;
-const MEMORY_LLM_ENV_KEYS = [
-  "MONO_AGENT_MEMORY_LLM_PROVIDER",
-  "MONO_AGENT_MEMORY_LLM_MODEL",
-  "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
-  "MONO_AGENT_MEMORY_LLM_ENDPOINT",
-  "MONO_AGENT_MEMORY_LLM_TRACE",
-  "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
-] as const;
 const MEMORY_CONSOLIDATION_ENV_KEYS = [
   "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED",
   "MONO_AGENT_MEMORY_CONSOLIDATION_CRON",
 ] as const;
 
-function incompatibleMemoryEnvKeys(mode: "lite" | "journal" | "bujo"): readonly string[] {
-  if (mode === "lite") {
-    return [...MEMORY_EMBEDDINGS_ENV_KEYS, ...MEMORY_LLM_ENV_KEYS, ...MEMORY_CONSOLIDATION_ENV_KEYS];
+function incompatibleJsonMemoryPath(
+  mode: "lite" | "journal" | "bujo",
+  memory: NonNullable<MonoAgentConfigJson["memory"]>,
+): string | undefined {
+  if (mode === "lite" && jsonEmbeddingsActive(memory.embeddings)) return "memory.embeddings";
+  if ((mode === "lite" || mode === "journal") && hasJsonString(memory.llm?.model)) return "memory.llm";
+  if ((mode === "lite" || mode === "journal") && jsonConsolidationActive(memory.consolidation)) {
+    return "memory.consolidation";
   }
-  if (mode === "journal") return [...MEMORY_LLM_ENV_KEYS, ...MEMORY_CONSOLIDATION_ENV_KEYS];
-  return [];
+  return undefined;
+}
+
+function envCapabilityActivator(
+  mode: "lite" | "journal" | "bujo",
+  env: Record<string, string | undefined>,
+): string | undefined {
+  if (mode === "lite") {
+    const embeddings = firstConfiguredEnv(env, MEMORY_EMBEDDINGS_ENV_KEYS);
+    if (embeddings !== undefined) return embeddings;
+  }
+  if ((mode === "lite" || mode === "journal") && hasValue(env.MONO_AGENT_MEMORY_LLM_MODEL)) {
+    return "MONO_AGENT_MEMORY_LLM_MODEL";
+  }
+  if (mode === "lite" || mode === "journal") {
+    return firstConfiguredEnv(env, MEMORY_CONSOLIDATION_ENV_KEYS);
+  }
+  return undefined;
+}
+
+function jsonEmbeddingsActive(value: MonoAgentMemoryEmbeddingsJson | undefined): boolean {
+  return value !== undefined && (
+    hasJsonString(value.provider)
+    || hasJsonString(value.model)
+    || hasJsonString(value.endpoint)
+    || hasJsonString(value.apiKey)
+    || hasJsonString(value.apiKeyEnv)
+    || value.dim !== undefined
+    || value.timeoutMs !== undefined
+    || value.circuitBreaker?.failureThreshold !== undefined
+    || value.circuitBreaker?.cooldownMs !== undefined
+  );
+}
+
+function jsonConsolidationActive(value: MonoAgentMemoryConsolidationJson | undefined): boolean {
+  return value !== undefined && (value.enabled !== undefined || hasJsonString(value.cron));
+}
+
+function hasJsonString(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function firstConfiguredEnv(

@@ -721,6 +721,79 @@ describe("loadMonoAgentConfigWithSources", () => {
     });
   });
 
+  it.each([
+    {
+      name: "Journal JSON LLM with an env trace override",
+      memory: {
+        mode: "journal",
+        embeddings: { provider: "ollama" },
+        llm: { provider: "agent-host", model: "pi:openai-codex:gpt-5.5" },
+      },
+      env: { MONO_AGENT_MEMORY_LLM_TRACE: "false" },
+      path: "memory.llm",
+    },
+    {
+      name: "Journal JSON LLM with an env provider override",
+      memory: {
+        mode: "journal",
+        embeddings: { provider: "ollama" },
+        llm: { provider: "agent-host", model: "pi:openai-codex:gpt-5.5" },
+      },
+      env: { MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama" },
+      path: "memory.llm",
+    },
+    {
+      name: "Lite JSON embeddings with an env LLM",
+      memory: { mode: "lite", embeddings: { provider: "ollama" } },
+      env: { MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest" },
+      path: "memory.embeddings",
+    },
+    {
+      name: "Journal JSON consolidation with an env LLM",
+      memory: {
+        mode: "journal",
+        embeddings: { provider: "ollama" },
+        consolidation: { enabled: true },
+      },
+      env: { MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest" },
+      path: "memory.consolidation",
+    },
+  ])("keeps $name attributed to $path", async ({ memory, env, path: expectedPath }) => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: { path: ".mono-agent/memory", ...memory },
+    }), "utf8");
+
+    await expect(loadMonoAgentConfigWithSources({ env, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_json",
+      message: expect.stringContaining(expectedPath),
+      details: { path: expectedPath, code: "invalid_json" },
+    });
+  });
+
+  it("lets an env tier override make a JSON capability valid", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: {
+        mode: "lite",
+        path: ".mono-agent/memory",
+        embeddings: { provider: "ollama" },
+      },
+    }), "utf8");
+
+    const config = await loadMonoAgentConfigWithSources({
+      env: { MONO_AGENT_MEMORY_MODE: "journal" },
+      cwd: dir,
+      jsonPath: path,
+    });
+    expect(config.memory?.mode).toBe("journal");
+    expect(config.memory?.embeddings?.provider).toBe("ollama");
+  });
+
   it("resolves an omitted tools block to the allow-all default (['*'])", async () => {
     const path = join(dir, "config.json");
     await writeFile(
