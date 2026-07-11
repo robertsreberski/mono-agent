@@ -13,6 +13,7 @@ import {
 import type { ReflectDeps } from "./reflect.js";
 import { parseDailyFile, serializeDailyFile, type DailyFile } from "./grammar.js";
 import { appendGraphBatch, readGraph } from "./graph.js";
+import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
 
 export interface MigrateDeps extends ReflectDeps {
@@ -31,7 +32,11 @@ export interface MigrateResult {
   readonly reviewed: number;
 }
 
-type MigrateAction = "promote" | "reschedule" | "cluster" | "forget";
+export type MigrateAction = "promote" | "reschedule" | "cluster" | "forget";
+
+export interface PendingMigrateRecovery {
+  readonly action: MigrateAction;
+}
 
 interface LlmDecision {
   readonly action: MigrateAction;
@@ -87,24 +92,23 @@ Decide what to do with it. Return ONLY a JSON object (no prose, no code fences):
 
 /** Monthly BuJo migration ritual: review aging open memories and apply LLM decisions. */
 export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
+  return await withSerializedBujoMutation(
+    deps,
+    async (recovery) => await migrateUnlocked(deps, recovery.migrationAction),
+  );
+}
+
+/** The caller holds the per-root mutation lease for planning through durable application. */
+async function migrateUnlocked(
+  deps: MigrateDeps,
+  recoveredAction: MigrateAction | undefined,
+): Promise<MigrateResult> {
   deps.abortSignal?.throwIfAborted();
   const now = deps.now();
-  let promoted = 0;
-  let rescheduled = 0;
-  let clustered = 0;
-  let forgotten = 0;
-
-  // At most one hidden pending decision may exist. Recover it before asking the
-  // model for more work, then remove only the hidden marker while retaining its
-  // human-readable monthly audit line.
-  const pending = readPendingDecision(deps.root);
-  let recovered = 0;
-  if (pending !== undefined) {
-    deps.abortSignal?.throwIfAborted();
-    applyDurableDecision(deps, pending.file, pending.decision);
-    increment(pending.decision.action);
-    recovered = 1;
-  }
+  let promoted = recoveredAction === "promote" ? 1 : 0;
+  let rescheduled = recoveredAction === "reschedule" ? 1 : 0;
+  let clustered = recoveredAction === "cluster" ? 1 : 0;
+  let forgotten = recoveredAction === "forget" ? 1 : 0;
 
   const aging = deps.db.agingOpen(now, { olderThanDays: 30, maxSalience: 0.4, limit: 50 });
 
@@ -190,7 +194,7 @@ export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
     rescheduled,
     clustered,
     forgotten,
-    reviewed: aging.length + recovered,
+    reviewed: aging.length + (recoveredAction === undefined ? 0 : 1),
   };
 
   function increment(action: MigrateAction): void {
@@ -574,10 +578,18 @@ function readPendingDecision(
  * vector and exact before/after states. No LLM or embedding provider is called.
  */
 export function recoverPendingMigrateDecision(root: string, db: MemoryDb): boolean {
+  return recoverPendingMigrateDecisionWithMetadata(root, db) !== undefined;
+}
+
+/** Provider-free recovery metadata used by the shared per-root mutation fence. */
+export function recoverPendingMigrateDecisionWithMetadata(
+  root: string,
+  db: MemoryDb,
+): PendingMigrateRecovery | undefined {
   const pending = readPendingDecision(root);
-  if (pending === undefined) return false;
+  if (pending === undefined) return undefined;
   applyDurableDecision({ root, db }, pending.file, pending.decision);
-  return true;
+  return { action: pending.decision.action };
 }
 
 /** Refuse maintenance that cannot carry a paid pending migration transaction. */

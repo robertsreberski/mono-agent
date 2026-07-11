@@ -6,6 +6,7 @@ import { appendBullet, dailyFilePath } from "./daily.js";
 import { parseJsonLoose } from "./json.js";
 import type { LlmComplete } from "./llm.js";
 import { MemoryModelError } from "./model-error.js";
+import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
 
 export interface ReflectDeps {
@@ -27,6 +28,11 @@ export interface ReflectResult {
 }
 
 export async function reflect(deps: ReflectDeps): Promise<ReflectResult> {
+  return await withSerializedBujoMutation(deps, async () => await reflectUnlocked(deps));
+}
+
+/** The caller holds the per-root mutation lease for decay, planning, and insight publication. */
+async function reflectUnlocked(deps: ReflectDeps): Promise<ReflectResult> {
   deps.abortSignal?.throwIfAborted();
   const now = deps.now();
   const { decayed } = deps.db.applyDecay(now, {
@@ -70,7 +76,7 @@ function insightRecordFor(bullet: Bullet, root: string, now: Date): MemoryRecord
  * {@link MemoryModelError} so a dead model surfaces (the ritual scheduler logs it) instead of
  * looking like a reflection that simply found no insights.
  */
-export async function synthesizeInsights(deps: ReflectDeps, now: Date): Promise<number> {
+async function synthesizeInsights(deps: ReflectDeps, now: Date): Promise<number> {
   const candidates = deps.db.topSalient(20).filter((m) => !m.isInsight);
   if (candidates.length < 3) return 0;
 

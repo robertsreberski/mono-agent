@@ -1,6 +1,7 @@
 import type { MemoryDb, MemoryRecord } from "../store/index.js";
 
 import { rewriteBullet } from "./daily.js";
+import { withSerializedBujoMutation } from "./mutation-lock.js";
 import { writeEmptyFutureLog, writeIndex } from "./projections.js";
 
 export interface ConsolidateDeps {
@@ -18,6 +19,11 @@ export interface ConsolidateResult {
 
 /** Deterministic, no-LLM maintenance: decay, exact-normalized duplicate folding, projections. */
 export async function consolidateBujoMemory(deps: ConsolidateDeps): Promise<ConsolidateResult> {
+  return await withSerializedBujoMutation(deps, async () => consolidateBujoMemoryUnlocked(deps));
+}
+
+/** The caller holds the per-root mutation lease for the complete consolidation transaction. */
+function consolidateBujoMemoryUnlocked(deps: ConsolidateDeps): ConsolidateResult {
   const { decayed } = deps.db.applyDecay(deps.now);
   const liveRecords = deps.db.topSalient(Math.max(deps.db.count(), 1));
   const groups = groupByNormalizedText(liveRecords);

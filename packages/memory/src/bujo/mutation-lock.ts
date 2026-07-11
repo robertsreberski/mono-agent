@@ -6,7 +6,8 @@ import { hasPendingCaptureIntent, replayCaptureOutbox } from "./capture-outbox.j
 import { canonicalMemoryRoot } from "./generations.js";
 import {
   assertNoPendingMigrateDecision,
-  recoverPendingMigrateDecision,
+  recoverPendingMigrateDecisionWithMetadata,
+  type MigrateAction,
 } from "./migrate.js";
 import type { BujoTier } from "./types.js";
 
@@ -16,6 +17,13 @@ interface MutationContext {
 
 interface MutationLease {
   active: boolean;
+  recovery: DurableMutationRecovery;
+}
+
+/** Provider-free durable work completed before a newly admitted mutation runs. */
+export interface DurableMutationRecovery {
+  readonly migrationAction?: MigrateAction;
+  readonly captureReplayed: number;
 }
 
 export interface SerializedBujoMutation {
@@ -39,14 +47,15 @@ const MUTATION_CHAINS = new Map<string, Promise<void>>();
  */
 export async function withSerializedBujoMutation<T>(
   options: SerializedBujoMutation,
-  run: () => Promise<T>,
+  run: (recovery: DurableMutationRecovery) => Promise<T>,
 ): Promise<T> {
   options.abortSignal?.throwIfAborted();
   const root = canonicalMemoryRoot(options.root, true);
   const active = MUTATION_CONTEXT.getStore();
-  if (active?.roots.get(root)?.active === true) {
+  const activeLease = active?.roots.get(root);
+  if (activeLease?.active === true) {
     options.abortSignal?.throwIfAborted();
-    return await run();
+    return await run(activeLease.recovery);
   }
 
   const predecessor = MUTATION_CHAINS.get(root) ?? Promise.resolve();
@@ -58,14 +67,14 @@ export async function withSerializedBujoMutation<T>(
   try {
     await waitForPredecessor(predecessor, options.abortSignal);
     options.abortSignal?.throwIfAborted();
-    const lease: MutationLease = { active: true };
+    const lease: MutationLease = { active: true, recovery: { captureReplayed: 0 } };
     const roots = new Map(active?.roots ?? []);
     roots.set(root, lease);
     return await MUTATION_CONTEXT.run({ roots }, async () => {
       try {
-        recoverDurableMutationState(root, options.db, options.tier ?? "bujo");
+        lease.recovery = recoverDurableMutationState(root, options.db, options.tier ?? "bujo");
         options.abortSignal?.throwIfAborted();
-        return await run();
+        return await run(lease.recovery);
       } finally {
         // AsyncLocalStorage is inherited by detached queue timers. Expire the
         // token before releasing the root so those later jobs cannot mistake
@@ -82,7 +91,11 @@ export async function withSerializedBujoMutation<T>(
 }
 
 /** Recover already-paid state in its one valid order before new planning. */
-export function recoverDurableMutationState(root: string, db: MemoryDb, tier: BujoTier): void {
+export function recoverDurableMutationState(
+  root: string,
+  db: MemoryDb,
+  tier: BujoTier,
+): DurableMutationRecovery {
   // Older processes could publish these independent protocols concurrently.
   // Neither protocol carries a shared sequence, so mutating either one first
   // can make the other unreplayable. Detect the dual-pending state entirely
@@ -98,9 +111,14 @@ export function recoverDurableMutationState(root: string, db: MemoryDb, tier: Bu
       );
     }
   }
-  if (tier === "bujo") recoverPendingMigrateDecision(root, db);
-  else assertNoPendingMigrateDecision(root);
-  replayCaptureOutbox(root, db);
+  const migration = tier === "bujo"
+    ? recoverPendingMigrateDecisionWithMetadata(root, db)
+    : (assertNoPendingMigrateDecision(root), undefined);
+  const captureReplayed = replayCaptureOutbox(root, db).length;
+  return {
+    ...(migration === undefined ? {} : { migrationAction: migration.action }),
+    captureReplayed,
+  };
 }
 
 async function waitForPredecessor(

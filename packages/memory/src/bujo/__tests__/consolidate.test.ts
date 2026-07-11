@@ -1,13 +1,15 @@
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
 import type { EmbeddingProvider } from "../../search/index.js";
 import { appendBullet, dailyFilePath } from "../daily.js";
+import { writeCaptureIntent, type CaptureIntentHandle } from "../capture-outbox.js";
 import { consolidateBujoMemory } from "../consolidate.js";
 import { parseDailyFile } from "../grammar.js";
+import { migrate } from "../migrate.js";
 import { fakeEmbeddings } from "./helpers.js";
 import type { Bullet } from "../types.js";
 
@@ -24,6 +26,15 @@ function recordFor(root: string, bullet: Bullet, when: Date): MemoryRecord {
     tags: [],
     source: { file: relative(root, dailyFilePath(root, when)) },
   };
+}
+
+function stageNoopCapture(root: string, bullet: Bullet, when: Date): CaptureIntentHandle {
+  return writeCaptureIntent(root, [{
+    candidateIndex: 0,
+    kind: "noop",
+    id: bullet.id,
+    expected: { file: relative(root, dailyFilePath(root, when)), bullet },
+  }], { entities: [], relations: [], associations: [] }, when.toISOString());
 }
 
 describe("consolidateBujoMemory", () => {
@@ -148,6 +159,85 @@ describe("consolidateBujoMemory", () => {
     });
     expect(readFileSync(join(root, "index.md"), "utf8")).toContain("# Index");
     expect(readFileSync(join(root, "future-log.md"), "utf8")).toBe("# Future Log\n");
+    db.close();
+  });
+
+  it("recovers a pending migration before consolidation changes state", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-consolidate-migration-"));
+    const now = new Date("2026-08-20T12:00:00.000Z");
+    const created = new Date("2026-06-01T09:00:00.000Z");
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
+    const bullet: Bullet = {
+      id: "CONSOLIDATE-MIGRATION",
+      type: "note",
+      status: "open",
+      text: "consolidation must observe recovered migration",
+      salience: 0.2,
+      isInsight: false,
+      createdAt: created.toISOString(),
+      refs: [],
+    };
+    appendBullet(root, bullet, created);
+    await db.upsert(recordFor(root, bullet, created));
+    const migrationLlm = vi.fn(async () => JSON.stringify({ action: "promote" }));
+    await expect(migrate({
+      db,
+      root,
+      llm: { id: "migration", complete: migrationLlm },
+      nextId: () => "unused",
+      now: () => now,
+      hooks: { afterDecisionDurable: () => { throw new Error("leave-consolidate-migration-pending"); } },
+    })).rejects.toThrow("leave-consolidate-migration-pending");
+    const monthly = join(root, "monthly", "2026-08.md");
+    const originalApplyDecay = db.applyDecay.bind(db);
+    const decay = vi.spyOn(db, "applyDecay").mockImplementation((at, options) => {
+      expect(readFileSync(monthly, "utf8")).not.toContain("mono-agent-migrate:");
+      expect(db.get(bullet.id)?.salience).toBe(0.5);
+      return originalApplyDecay(at, options);
+    });
+    const embeddings = vi.spyOn(db, "prepareUpsertVectors");
+
+    const result = await consolidateBujoMemory({ root, db, now });
+
+    expect(result.duplicateGroups).toBe(0);
+    expect(decay).toHaveBeenCalledTimes(1);
+    expect(migrationLlm).toHaveBeenCalledTimes(1);
+    expect(embeddings).not.toHaveBeenCalled();
+    expect(readFileSync(monthly, "utf8")).not.toContain("mono-agent-migrate:");
+    db.close();
+  });
+
+  it("replays a pending capture before consolidation changes state", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-consolidate-capture-"));
+    const now = new Date("2026-07-06T12:00:00.000Z");
+    const created = new Date("2026-07-01T09:00:00.000Z");
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
+    const bullet: Bullet = {
+      id: "CONSOLIDATE-CAPTURE",
+      type: "note",
+      status: "open",
+      text: "consolidation must observe replayed capture",
+      salience: 0.6,
+      isInsight: false,
+      createdAt: created.toISOString(),
+      refs: [],
+    };
+    appendBullet(root, bullet, created);
+    await db.upsert(recordFor(root, bullet, created));
+    const handle = stageNoopCapture(root, bullet, created);
+    const originalApplyDecay = db.applyDecay.bind(db);
+    const decay = vi.spyOn(db, "applyDecay").mockImplementation((at, options) => {
+      expect(existsSync(join(root, handle.file))).toBe(false);
+      return originalApplyDecay(at, options);
+    });
+    const embeddings = vi.spyOn(db, "prepareUpsertVectors");
+
+    const result = await consolidateBujoMemory({ root, db, now });
+
+    expect(result.duplicateGroups).toBe(0);
+    expect(decay).toHaveBeenCalledTimes(1);
+    expect(embeddings).not.toHaveBeenCalled();
+    expect(existsSync(join(root, handle.file))).toBe(false);
     db.close();
   });
 });

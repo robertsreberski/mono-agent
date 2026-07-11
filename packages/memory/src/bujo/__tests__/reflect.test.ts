@@ -1,12 +1,15 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
 import { openMemoryDb, type MemoryDb, type MemoryRecord } from "../../store/index.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { appendBullet, dailyFilePath } from "../daily.js";
+import { writeCaptureIntent, type CaptureIntentHandle } from "../capture-outbox.js";
+import { parseDailyFile } from "../grammar.js";
 import { createIdFactory } from "../ids.js";
+import { migrate } from "../migrate.js";
 import { MemoryModelError } from "../model-error.js";
 import { reflect, type ReflectDeps } from "../reflect.js";
 import type { Bullet } from "../types.js";
@@ -72,6 +75,17 @@ function makeDeps(db: MemoryDb, root: string, overrides: Partial<ReflectDeps> = 
     now: () => FIXED,
     ...overrides,
   };
+}
+
+function stageNoopCapture(root: string, id: string, when: Date): CaptureIntentHandle {
+  const source = dailyFilePath(root, when);
+  const bullet = parseDailyFile(readFileSync(source, "utf8")).bullets.find((candidate) => candidate.id === id)!;
+  return writeCaptureIntent(root, [{
+    candidateIndex: 0,
+    kind: "noop",
+    id,
+    expected: { file: relative(root, source), bullet },
+  }], { entities: [], relations: [], associations: [] }, when.toISOString());
 }
 
 describe("reflect", () => {
@@ -214,5 +228,99 @@ describe("reflect", () => {
     // Decay ran (we just verify it didn't throw and returns a valid number).
     expect(result.decayed).toBeGreaterThanOrEqual(0);
     expect(result.insights).toBe(0); // only 1 memory, skip synthesis
+  });
+
+  it("recovers a pending migration before reflection mutates or plans", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const migrationNow = new Date("2026-08-20T12:00:00.000Z");
+    await seed(db, root, "REFLECT-MIGRATION", "reflection must observe recovered migration", { salience: 0.2 });
+    const migrationLlm = vi.fn(async () => JSON.stringify({ action: "promote" }));
+    await expect(migrate({
+      db,
+      root,
+      llm: { id: "migration", complete: migrationLlm },
+      nextId: () => "unused",
+      now: () => migrationNow,
+      hooks: { afterDecisionDurable: () => { throw new Error("leave-reflect-migration-pending"); } },
+    })).rejects.toThrow("leave-reflect-migration-pending");
+    const monthly = join(root, "monthly", "2026-08.md");
+    expect(readFileSync(monthly, "utf8")).toContain("mono-agent-migrate:");
+    const originalApplyDecay = db.applyDecay.bind(db);
+    const decay = vi.spyOn(db, "applyDecay").mockImplementation((now, options) => {
+      expect(readFileSync(monthly, "utf8")).not.toContain("mono-agent-migrate:");
+      expect(db.get("REFLECT-MIGRATION")?.salience).toBe(0.5);
+      return originalApplyDecay(now, options);
+    });
+    const embeddings = vi.spyOn(db, "prepareUpsertVectors");
+    const reflectLlm = vi.fn(async () => { throw new Error("one memory must not call reflection model"); });
+
+    const result = await reflect(makeDeps(db, root, {
+      now: () => migrationNow,
+      llm: { id: "reflect", complete: reflectLlm },
+    }));
+
+    expect(decay).toHaveBeenCalledTimes(1);
+    expect(result.insights).toBe(0);
+    expect(migrationLlm).toHaveBeenCalledTimes(1);
+    expect(reflectLlm).not.toHaveBeenCalled();
+    expect(embeddings).not.toHaveBeenCalled();
+    expect(readFileSync(monthly, "utf8")).not.toContain("mono-agent-migrate:");
+  });
+
+  it("replays a pending capture before reflection mutates or plans", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "REFLECT-CAPTURE", "reflection must observe replayed capture");
+    const handle = stageNoopCapture(root, "REFLECT-CAPTURE", FIXED);
+    const originalApplyDecay = db.applyDecay.bind(db);
+    const decay = vi.spyOn(db, "applyDecay").mockImplementation((now, options) => {
+      expect(existsSync(join(root, handle.file))).toBe(false);
+      return originalApplyDecay(now, options);
+    });
+    const embeddings = vi.spyOn(db, "prepareUpsertVectors");
+    const complete = vi.fn(async () => { throw new Error("one memory must not call reflection model"); });
+
+    const result = await reflect(makeDeps(db, root, { llm: { id: "reflect", complete } }));
+
+    expect(decay).toHaveBeenCalledTimes(1);
+    expect(result.insights).toBe(0);
+    expect(complete).not.toHaveBeenCalled();
+    expect(embeddings).not.toHaveBeenCalled();
+    expect(existsSync(join(root, handle.file))).toBe(false);
+  });
+
+  it("rejects legacy dual pending state before changing either artifact", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const migrationNow = new Date("2026-08-20T12:00:00.000Z");
+    await seed(db, root, "REFLECT-DUAL", "dual protocols must remain untouched", { salience: 0.2 });
+    await expect(migrate({
+      db,
+      root,
+      llm: { id: "migration", complete: async () => JSON.stringify({ action: "promote" }) },
+      nextId: () => "unused",
+      now: () => migrationNow,
+      hooks: { afterDecisionDurable: () => { throw new Error("leave-reflect-dual-pending"); } },
+    })).rejects.toThrow("leave-reflect-dual-pending");
+    const handle = stageNoopCapture(root, "REFLECT-DUAL", FIXED);
+    const monthly = join(root, "monthly", "2026-08.md");
+    const monthlyBefore = readFileSync(monthly, "utf8");
+    const captureBefore = readFileSync(join(root, handle.file), "utf8");
+    const dailyBefore = readFileSync(dailyFilePath(root, FIXED), "utf8");
+    const decay = vi.spyOn(db, "applyDecay");
+    const embeddings = vi.spyOn(db, "prepareUpsertVectors");
+    const complete = vi.fn(async () => { throw new Error("dual recovery must fail before model planning"); });
+
+    await expect(reflect(makeDeps(db, root, { llm: { id: "reflect", complete } })))
+      .rejects.toThrow(/capture and migration durable state are both pending.*before any mutation/iu);
+
+    expect(decay).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(embeddings).not.toHaveBeenCalled();
+    expect(db.get("REFLECT-DUAL")?.salience).toBe(0.2);
+    expect(readFileSync(monthly, "utf8")).toBe(monthlyBefore);
+    expect(readFileSync(join(root, handle.file), "utf8")).toBe(captureBefore);
+    expect(readFileSync(dailyFilePath(root, FIXED), "utf8")).toBe(dailyBefore);
   });
 });

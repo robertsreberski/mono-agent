@@ -6,6 +6,7 @@ import { openMemoryDb, type MemoryDb, type MemoryRecord } from "../../store/inde
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { appendBullet, dailyFilePath, rewriteBullet } from "../daily.js";
+import { writeCaptureIntent } from "../capture-outbox.js";
 import { parseDailyFile } from "../grammar.js";
 import { readGraph } from "../graph.js";
 import { createIdFactory } from "../ids.js";
@@ -563,5 +564,36 @@ describe("migrate", () => {
     expect(result.reviewed).toBe(0);
     expect(result.promoted).toBe(0);
     expect(result.forgotten).toBe(0);
+  });
+
+  it("replays a pending capture before migration scans for new provider work", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-CAPTURE-FENCE", "capture must settle before migration", { salience: 0.8 });
+    const file = relative(root, dailyFilePath(root, SIXTY_DAYS_AGO));
+    const bullet = parseDailyFile(dailyContent(root, SIXTY_DAYS_AGO)).bullets.find(
+      (candidate) => candidate.id === "MIG-CAPTURE-FENCE",
+    )!;
+    const handle = writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "noop",
+      id: bullet.id,
+      expected: { file, bullet },
+    }], { entities: [], relations: [], associations: [] }, NOW.toISOString());
+    const originalAgingOpen = db.agingOpen.bind(db);
+    const scan = vi.spyOn(db, "agingOpen").mockImplementation((now, options) => {
+      expect(existsSync(join(root, handle.file))).toBe(false);
+      return originalAgingOpen(now, options);
+    });
+    const embeddings = vi.spyOn(db, "prepareUpsertVectors");
+    const complete = vi.fn(async () => { throw new Error("fresh migration must not call the model"); });
+
+    const result = await migrate(makeDeps(db, root, { llm: { id: "must-not-run", complete } }));
+
+    expect(result).toEqual({ promoted: 0, rescheduled: 0, clustered: 0, forgotten: 0, reviewed: 0 });
+    expect(scan).toHaveBeenCalledTimes(1);
+    expect(complete).not.toHaveBeenCalled();
+    expect(embeddings).not.toHaveBeenCalled();
+    expect(existsSync(join(root, handle.file))).toBe(false);
   });
 });
