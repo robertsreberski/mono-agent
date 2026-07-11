@@ -4,6 +4,7 @@ import {
   ALLOW_ALL_TOOLS,
   baseConfig,
   BUILTIN_TOOL_NAMES,
+  APP_TOOL_NAMES,
   type CapabilityModule,
   DEFAULT_MODEL,
   isAllowAllTools,
@@ -116,6 +117,9 @@ describe("known-tools", () => {
     expect(isKnownToolName("Read")).toBe(true);
     expect(isKnownToolName("read")).toBe(false);
     expect(isKnownToolName("TelegramAskButtons")).toBe(true);
+    expect(APP_TOOL_NAMES).toEqual(["RunHistory"]);
+    expect(isKnownToolName("RunHistory")).toBe(true);
+    expect(isKnownToolName("run_history")).toBe(true);
     expect(isKnownToolName("nope")).toBe(false);
   });
 
@@ -127,7 +131,7 @@ describe("known-tools", () => {
       expect(isKnownToolName(name)).toBe(true);
     }
     // The deprecated snake_case aliases stay accepted for backwards-compat.
-    for (const alias of ["read_skill", "ask_collaborator", "memory_recall"]) {
+    for (const alias of ["read_skill", "ask_collaborator", "memory_recall", "run_history"]) {
       expect(isKnownToolName(alias)).toBe(true);
     }
     // The retired loopback tool was deleted — its dead alias no longer resolves.

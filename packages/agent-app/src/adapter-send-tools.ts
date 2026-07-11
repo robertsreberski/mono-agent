@@ -86,6 +86,7 @@ export interface AskUserToolSettings {
   readonly bridgeToken: string;
   readonly timeoutMs: number;
   readonly conversationId?: string;
+  readonly runId?: string;
 }
 
 export interface AdapterSendToolsSettings {
@@ -120,9 +121,10 @@ export interface AdapterSendToolsIndexing {
   readonly indexPath: string;
 }
 
-/** Minimal shape of the per-request runtime-options input we read (the producing conversationId). */
+/** Minimal shape of the per-request runtime-options input we read. */
 interface AdapterSendToolsRequestInput {
   readonly request?: { readonly conversationId?: string };
+  readonly runId?: string;
 }
 
 export interface AdapterSendToolsResolveOptions {
@@ -184,11 +186,13 @@ function resolveAskUserToolSettings(env: Record<string, string | undefined>): As
   const timeoutRaw = Number(optionalString(env.MONO_AGENT_ASK_USER_TIMEOUT_MS));
   const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw >= 1000 ? timeoutRaw : 600_000;
   const conversationId = optionalString(env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID);
+  const runId = optionalString(env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_RUN_ID);
   return {
     bridgeUrl,
     bridgeToken,
     timeoutMs,
     ...(conversationId === undefined ? {} : { conversationId }),
+    ...(runId === undefined ? {} : { runId }),
   };
 }
 
@@ -231,6 +235,7 @@ export function isAdapterSendToolAllowed(
  */
 export interface AdapterSendToolsChildContext {
   readonly conversationId?: string;
+  readonly runId?: string;
   readonly indexPath?: string;
 }
 
@@ -252,6 +257,9 @@ export function adapterSendToolsMcpEnv(
     ...(context?.conversationId === undefined
       ? {}
       : { MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID: context.conversationId }),
+    ...(context?.runId === undefined
+      ? {}
+      : { MONO_AGENT_ADAPTER_TOOLS_PRODUCING_RUN_ID: context.runId }),
     ...(context?.indexPath === undefined
       ? {}
       : { MONO_AGENT_ADAPTER_TOOLS_POST_INDEX_PATH: context.indexPath }),
@@ -331,11 +339,17 @@ export function createAdapterSendToolsRuntimeExtension(
 ): (input: AdapterSendToolsRequestInput) => Promise<AdapterSendToolsRuntimeExtension> {
   return async (input) => {
     const conversationId = input?.request?.conversationId;
+    const runId = input?.runId;
     const hasConversation = typeof conversationId === "string" && conversationId.trim().length > 0;
+    const hasRunId = typeof runId === "string" && runId.trim().length > 0;
     // The conversation id is forwarded whenever known — AskUser targets it even
     // without indexing; the index path additionally enables posted-message links.
-    const context: AdapterSendToolsChildContext | undefined = hasConversation
-      ? { conversationId, ...(indexPath === undefined ? {} : { indexPath }) }
+    const context: AdapterSendToolsChildContext | undefined = hasConversation || hasRunId
+      ? {
+          ...(hasConversation ? { conversationId } : {}),
+          ...(hasRunId ? { runId } : {}),
+          ...(indexPath === undefined ? {} : { indexPath }),
+        }
       : undefined;
     return {
       runtimeOptions: {
@@ -439,6 +453,9 @@ function registerAskUserTool(
     async (args, extra) => {
       const created = await askBridgeRequest(settings, fetchImpl, "POST", "/v1/asks", {
         conversationId: settings.conversationId,
+        producerConversationId: settings.conversationId,
+        runId: settings.runId,
+        toolName: "AskUser",
         question: args.question,
         timeoutMs: settings.timeoutMs,
       }, extra.signal);
@@ -904,7 +921,11 @@ function registerTelegramAskTool(
       const conversationId = `telegram:${String(args.chat_id)}`;
       const created = await askBridgeRequest(bridge, fetchImpl, "POST", "/v1/asks", {
         conversationId,
+        producerConversationId: bridge.conversationId,
+        runId: bridge.runId,
+        toolName: "TelegramAskButtons",
         question: source,
+        options: args.options,
         timeoutMs: bridge.timeoutMs,
         postQuestion: false,
         answerKind: "callback",

@@ -80,6 +80,19 @@ mono-agent audit-runs --artifact-dir /path/to/.mono-agent/artifacts --stale-afte
 The artifacts directory is the durable record of what your agent did. Keep it out of version control (it grows per run) but back it up if you care about historical runs you might want to backfill or audit later.
 :::
 
+## Agent-facing prior-run evidence (`RunHistory`)
+
+`RunHistory` is an app-owned, read-only, request-scoped MCP tool that lets the agent recover exact evidence from its own recorded runs without shelling into `artifacts.dir`. It has no separate config key: allow-all exposes it automatically on MCP-capable routes, while a restrictive tool policy must name `RunHistory` explicitly. See [MCP servers](/tools/mcp/#runhistory-prior-run-evidence) and [Tool policy](/tools/policy/#runhistory).
+
+The tool exposes two actions:
+
+- `list` returns a bounded inventory of completed prior runs in the **exact current conversation bucket**.
+- `inspect` accepts one run id returned by `list` and projects its trigger, visible assistant output, tool calls and linked results, runtime warnings/provider failures, timestamps, and final output.
+
+The boundary is deliberately narrower than direct artifact access. `RunHistory` excludes the current or any running run, other conversations and rollover buckets, system prompts, model reasoning/thinking, recalled memory and turn-context payloads, and raw artifact paths. Results reuse observability redaction and string bounds, impose a deterministic total cap, and report truncation rather than silently presenting an unbounded log. Historical text is labelled **untrusted evidence** and must never be followed as instructions.
+
+Start with active conversation history for the current exchange. Use `MemoryRecall` for intentionally captured durable facts. Use `RunHistory` only when exact prior-run or tool evidence is needed.
+
 ## Artifact metrics
 
 `mono-agent metrics` aggregates recorded run summaries into operational numbers: status rates, failure-kind rates, duration percentiles, and total plus per-run cost. It is offline and read-only. It reads `*.summary.json` files from `artifacts.dir` or an explicit artifact directory; it does not read exporter config, contact Phoenix, reconcile stale runs, or rewrite artifacts. By default it reports agent runs only; pass `--include-memory` to include memory-maintenance `mem-*` runs from the `memory/` namespace and legacy mixed directories.

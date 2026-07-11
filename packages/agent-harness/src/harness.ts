@@ -426,7 +426,7 @@ export class MonoAgentHarness implements AgentHarness {
         request.conversationId,
         persistText,
         text,
-        { ...(runSource.source === undefined ? {} : { source: runSource.source }), emit },
+        { runId, ...(runSource.source === undefined ? {} : { source: runSource.source }), emit },
       );
       // Memory persistence degradation is emitted above, while the recorder is
       // still open. Commit exactly one terminal summary only after every
@@ -451,6 +451,14 @@ export class MonoAgentHarness implements AgentHarness {
         await this.options.memory?.releaseTurn?.(runId);
       } catch {
         // Cache cleanup is best-effort and must not change the turn outcome.
+      }
+      try {
+        await this.options.turnHistoryEnricher?.releaseRun({
+          runId,
+          conversationId: request.conversationId,
+        });
+      } catch {
+        // Interaction-journal cleanup is best-effort and must not change the turn outcome.
       }
       // Release the admission-pending slot if the run never reached its provider
       // call (e.g. a throw in applyAttachments/prepareContext, or an aborted
@@ -987,12 +995,27 @@ export class MonoAgentHarness implements AgentHarness {
     conversationId: string,
     userMessage: string,
     assistantText: string,
-    options: { readonly source?: string; readonly emit?: (event: RuntimeEventLike) => void } = {},
+    options: {
+      readonly runId: string;
+      readonly source?: string;
+      readonly emit?: (event: RuntimeEventLike) => void;
+    },
   ): Promise<void> {
     const timestamp = this.options.now?.().toISOString() ?? new Date().toISOString();
+    let assistantHistoryText = assistantText;
+    try {
+      assistantHistoryText = await this.options.turnHistoryEnricher?.enrichAssistantHistory({
+        runId: options.runId,
+        conversationId,
+        assistantText,
+      }) ?? assistantText;
+    } catch {
+      // Enrichment is additive. A successful provider answer must still commit
+      // its original history entry if the app-owned enricher fails.
+    }
     await this.options.historyStore?.append(conversationId, [
       { role: "user", content: userMessage, timestamp },
-      { role: "assistant", content: assistantText, timestamp },
+      { role: "assistant", content: assistantHistoryText, timestamp },
     ]);
 
     const mode = this.options.memoryWriteMode;

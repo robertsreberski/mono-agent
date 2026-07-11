@@ -38,7 +38,7 @@ import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 
 - `createJsonlRunRecorder`, `JsonlRunRecorder`
 - `auditRecordedRuns`
-- `listRecordedRuns`, `readRecordedRun`, `pruneRunArtifacts`, `classifyRecordedRunEvent`
+- `listRecordedRuns`, `readRecordedRun`, `pruneRunArtifacts`, `classifyRecordedRunEvent`, `isSafeRunId`
 - `combineRecordedRunEvents`
 - `registerTraceSource`, `listTraceSources`, `listTraceRuns`, `readTraceRun`
 - `redactJsonValue`
@@ -46,6 +46,12 @@ import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 - `buildRootSpanAttributes`, `buildEventSpanAttributes`, `countRuntimeWarnings`, `spanKindHint` and the exporter-config types (`PhoenixExporterConfig`, `ObservabilityExporterConfig`)
 - `ObservabilityError`, `ObservabilityReadError`
 - Recorder, summary, list, detail, event, trace source, and trace run types
+
+`readRecordedRun` keeps the first `maxEventsPerRun` events by default. Readers
+that need bounded final-output evidence can set `eventSelection: "head-tail"` to
+split that same cap between the beginning and end while preserving original
+event indexes so an omitted middle remains detectable. Head-tail reads stream
+into a fixed-size ring and refuse event artifacts above the 16 MiB safety bound.
 
 ## OTLP / Phoenix Subpath
 

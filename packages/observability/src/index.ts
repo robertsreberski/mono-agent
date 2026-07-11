@@ -81,6 +81,7 @@ export {
 export {
   RUNS_HEALTH_STALE_RUNNING_MS,
 } from "./run-health.js";
+export { isSafeRunId } from "./artifact-fs.js";
 export type {
   DescribeRunFailureKindInput,
   KnownRunFailureKindDescription,

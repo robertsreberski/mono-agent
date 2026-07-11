@@ -77,6 +77,7 @@ Notable options on `createConfiguredAgentResponder`:
 | `runtime` | `MonoRuntimeLike` | Shared runtime override; otherwise built from config. |
 | `memory` | `MemoryStore` | Inject a pre-built memory store instead of letting the host build one from `config.memory`. See [Capture and Recall](/memory/capture-and-recall/). |
 | `historyStore` | `ConversationHistoryStore` | Persist conversation history yourself (e.g. Redis) instead of the bounded default in-memory store. |
+| `turnHistoryEnricher` | `AgentHarnessTurnHistoryEnricher` | Enrich only the assistant history copy with run-scoped interaction evidence; delivered text and memory capture are unchanged. |
 | `runtimeOptions` | static runtime options | Static per-harness runtime options merged on every turn. |
 | `runtimeOptionsForRequest` | `(input) => extension \| Promise<extension>` | Compute **request-scoped** runtime options (extra tools, metadata) per turn from the request and `runId`. Configured memory adds `MemoryRecall` automatically and composes it with this callback; `agent-app` also uses the callback for adapter send-tools. |
 

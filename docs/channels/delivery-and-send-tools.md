@@ -68,7 +68,7 @@ Coverage: `config`. Three conditions must hold for a send tool to work:
 
 `TelegramAskButtons` and `TelegramSendFile` (added by the Telegram interactivity work) are gated exactly like the plain send tools above: permitted by the policy (automatic under allow-all, or their exact name in a specific `tools.allowedTools`) plus valid `telegram.*` config, with the adapter chat allowlist (`telegram.allowedChatIds` / `telegram.allowAllChats`) remaining the destination boundary.
 
-- **`TelegramAskButtons`** posts an inline-keyboard question with **2–8** option labels and **waits for the user's tap**. The tapped label is returned to the same in-flight tool call, preserving the agent's mid-turn context. If a callback arrives with no pending ask, the tap still falls back to the existing synthetic-turn path on the same conversation. Allowing `TelegramAskButtons` is also the single switch that subscribes the bot to `callback_query` updates and wires the tap handler. See [Telegram](/channels/telegram/) for the full interactivity setup.
+- **`TelegramAskButtons`** posts an inline-keyboard question with **2–8** option labels and, by default, **waits for the user's tap**. The tapped label is returned to the same in-flight tool call, preserving the agent's mid-turn context. Set `wait: false` only when the tool must return immediately; the later tap then arrives as a separate synthetic user turn quoting the question and selected label. If a callback arrives with no pending ask, it uses that same synthetic-turn fallback. Allowing `TelegramAskButtons` is also the single switch that subscribes the bot to `callback_query` updates and wires the tap handler. See [Telegram](/channels/telegram/) for the full interactivity setup.
 - **`TelegramSendFile`** uploads and sends a file (`kind:"document"`) or an inline image (`kind:"photo"`) to an allowed chat. It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path` (filename derived from the path), plus an optional `caption`. Uploads are bounded by the adapter's attachment size cap (~20 MB).
 
 The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels`, `telegram.allowedChatIds` / `telegram.allowAllChats`) **remains the destination boundary**: allowing the tool does not widen where the agent may send. A send to a destination outside the adapter allowlist is refused.
@@ -98,6 +98,8 @@ The native sandbox's network allowlist is a separate egress boundary. App-owned 
 - On timeout (default 10 min, `interaction.askUser.timeoutMs`) the tool returns without an answer and the user's late reply arrives as a normal next turn. On an app restart pending asks degrade the same way.
 - The wait keeps the MCP call alive via progress notifications (see `tools.mcpCallTimeoutMs` / `tools.mcpCallMaxTotalTimeoutMs`).
 - Tool children can also POST `{conversationId, key, message, state}` to the bridge's `/v1/progress` (URL/token in `MONO_AGENT_INTERACTION_BRIDGE_URL`/`_TOKEN` env) to surface long-tool progress as a channel status message edited in place.
+
+When a blocking `AskUser` or `TelegramAskButtons` call completes, mono-agent stores its exact question, options, outcome, and answer/selection when present in the assistant history copy committed for that turn. This makes the interaction available to a later cold/stateless replay even though the transport posted the question out of band. The final outward message and long-term memory capture remain unchanged. Non-blocking `TelegramAskButtons` (`wait: false`) is not folded into that in-turn record; its later callback remains a synthetic next turn.
 
 ```json
 {
@@ -168,5 +170,5 @@ Notifying **multiple** or **other** conversations from one trigger is not a buil
 - [OpenAI-compatible endpoint](/channels/openai-api/) — token streaming over SSE.
 - [Cron](/channels/cron/) and [Webhook](/channels/webhook/) — the proactive turns that support native `notify: true` delivery.
 - [Tool policy](/tools/policy/) — `allowedTools` / `disallowedTools` precedence.
-- [MCP tools](/tools/mcp/) — why app-injected tools sit outside the allowlist.
+- [MCP tools](/tools/mcp/) — external MCP policy and the app-owned tool exceptions.
 - [Write your own channel adapter](/programmatic/custom-channels/) — building a driver to override `stream.finalOnly`, debounce, and message texts.

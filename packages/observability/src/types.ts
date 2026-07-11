@@ -374,6 +374,8 @@ export interface JsonlRunReaderOptions {
   readonly scope?: RunArtifactScope;
   readonly maxRuns?: number;
   readonly maxEventsPerRun?: number;
+  /** Keep the default prefix, or retain an equal-sized tail when the event cap is reached. */
+  readonly eventSelection?: "head" | "head-tail";
   readonly maxStringBytes?: number;
 }
 

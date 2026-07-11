@@ -90,7 +90,7 @@ The entity graph that BuJo capture maintains is part of the BuJo capture pipelin
 | `agent.public-name` | config | `agent.name` | `MONO_AGENT_NAME` | [Identity & soul](/context/identity-and-soul/#public-agent-name) | — |
 | `context.identity` | config | `context.identityPath` | `MONO_AGENT_IDENTITY_PATH` | [Identity & soul](/context/identity-and-soul/) | — |
 | `context.soul` | config | `context.soulPath` | `MONO_AGENT_SOUL_PATH` | [Identity & soul](/context/identity-and-soul/) | — |
-| `context.history` | auto | (12 messages by default; twice a positive `runtime.maxTurns`; custom store via `code`) | `MONO_AGENT_MAX_TURNS` | [Assembly](/context/assembly/) | — |
+| `context.history` | auto | (12 messages by default; twice a positive `runtime.maxTurns`; custom store via `code`; completed blocking asks retain a bounded interaction transcript) | `MONO_AGENT_MAX_TURNS` | [Assembly](/context/assembly/) | — |
 | `skills.selected-activation` | config | `context.skillsRoot`, `context.selectedSkills` | `MONO_AGENT_SKILLS_ROOT`, `MONO_AGENT_SELECTED_SKILLS` | [Skills](/context/skills/) | [Slack team bot + MCP tools](/playbooks/slack-team-bot-mcp-tools/) |
 | `skills.byte-capping` | config | `context.skillMaxBytes` | `MONO_AGENT_SKILL_MAX_BYTES` | [Skills](/context/skills/) | — |
 
@@ -101,6 +101,7 @@ The entity graph that BuJo capture maintains is part of the BuJo capture pipelin
 | `tool-policy.allow-all` | config | omitted / `["*"]` = all tools (default; risk disclosed and reconfirmed unsandboxed in guided init) | `MONO_AGENT_ALLOWED_TOOLS` | [Tool policy](/tools/policy/) | — |
 | `tool-policy.allowlist` / `tool-policy.denylist` | config | runtime-specific enforcement; direct Codex/OpenCode require exact allow-all; Claude Code CLI rejects explicit empty | `MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS` | [Tool policy](/tools/policy/) | — |
 | `tool-policy.mcp-servers` | config | `tools.mcpConfigPath` | `MONO_AGENT_MCP_CONFIG_PATH` | [MCP](/tools/mcp/) | [Slack team bot + MCP tools](/playbooks/slack-team-bot-mcp-tools/) |
+| `agent-app.run-history-tool` | auto | `RunHistory` under allow-all; restrictive policy explicitly lists `RunHistory` (legacy input alias `run_history`); no new config key | `MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS` | [Artifacts & traces](/observability/artifacts-and-traces/) | — |
 | `agent-app.adapter-send-tools` | config | auto-available under allow-all once the channel is enabled; a specific `tools.allowedTools` needs the exact names (`SlackSendMessage`, `TelegramSendMessage`) + valid `slack.*` / `telegram.*` config | `MONO_AGENT_ALLOWED_TOOLS` | [Delivery & send tools](/channels/delivery-and-send-tools/) | [Cron digest + native notify](/playbooks/cron-digest-proactive-notify/) |
 
 ## Channels
@@ -165,6 +166,7 @@ Built-in channels are independent JSON sections: `telegram`, `slack`, `webhook`,
 | `app.env-file` | cli | automatic; `--env-file <path>` to override | — | [Env vars](/config/env-vars/) | — |
 | `harness.failure-handling` | auto | (built into every run) | — | [Composition](/programmatic/composition/) | — |
 | `harness.external-summary-safety` | auto | public harness/webhook summaries exclude `systemPrompt`; private artifacts retain it | — | [Artifacts & traces](/observability/artifacts-and-traces/) | [Webhook automation](/playbooks/webhook-automation-sync-async/) |
+| `agent-app.blocking-ask-history` | auto | app interaction journal + configured harness history commit; no config key | — | [Assembly](/context/assembly/#conversation-history) | [Interactive long jobs](/playbooks/interactive-transcription-large-media/) |
 | `harness.request-runtime-options` | code | `createConfiguredAgentResponder({ runtimeOptionsForRequest })` | — | [Composition](/programmatic/composition/) | — |
 | `orchestrator.ask-collaborator` | code | `createCollaboratorToolRuntimeExtension` + `runtimeOptionsForRequest` | — | [Multi-agent](/programmatic/multi-agent/) | [Multi-agent orchestration](/playbooks/multi-agent-orchestration/) |
 ## Notes on coverage types

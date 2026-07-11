@@ -522,6 +522,163 @@ describe("AgentHarness", () => {
     await expect(historyStore.load("telegram:1")).resolves.toHaveLength(3);
   });
 
+  it("enriches only durable assistant history while preserving outward text and memory text", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const summaries: string[] = [];
+    const releases: Array<{ runId: string; conversationId: string }> = [];
+    const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      createRunId: () => "run-interaction-history",
+      historyStore,
+      memoryWriteMode: "append-host-summary",
+      memory: {
+        async load() {
+          return undefined;
+        },
+        async appendHostSummary(_conversationId: string, summary: string) {
+          summaries.push(summary);
+          return { conversationId: "telegram:42#today", source: "memory.md", bytesWritten: summary.length };
+        },
+      },
+      turnHistoryEnricher: {
+        enrichAssistantHistory(input) {
+          expect(input).toEqual({
+            runId: "run-interaction-history",
+            conversationId: "telegram:42#today",
+            assistantText: "Final answer",
+          });
+          return `[Interaction transcript]\nQuestion: Deploy?\nOutcome: answered\n\n${input.assistantText}`;
+        },
+        releaseRun(input) {
+          releases.push(input);
+        },
+      },
+    });
+
+    const response = await harness.run({
+      conversationId: "telegram:42#today",
+      userMessage: "Prepare the deployment.",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response.text).toBe("Final answer");
+    const history = await historyStore.load("telegram:42#today");
+    expect(history.at(-1)?.content).toBe(
+      "[Interaction transcript]\nQuestion: Deploy?\nOutcome: answered\n\nFinal answer",
+    );
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toContain("Assistant: Final answer");
+    expect(summaries[0]).not.toContain("Interaction transcript");
+    expect(releases).toEqual([{ runId: "run-interaction-history", conversationId: "telegram:42#today" }]);
+  });
+
+  it("replays an exact interaction transcript into a following cold turn", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const runIds = ["run-ask", "run-follow-up"];
+    const fake = createFakeRuntime(async () => ({ text: "Held—nothing was sent." }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      historyStore,
+      createRunId: () => runIds.shift() ?? "run-extra",
+      turnHistoryEnricher: {
+        enrichAssistantHistory(input) {
+          return input.runId === "run-ask"
+            ? `[Interaction transcript]\nTool: TelegramAskButtons\nQuestion: Send the complete bank details including BIC and email?\nOptions: Send it | Hold on\nOutcome: answered\nAnswer: Hold on\n\n${input.assistantText}`
+            : input.assistantText;
+        },
+        releaseRun() {},
+      },
+    });
+
+    await harness.run({
+      conversationId: "telegram:42#2026-07-12",
+      userMessage: "Prepare the complete message.",
+      abortSignal: new AbortController().signal,
+    });
+    await harness.run({
+      conversationId: "telegram:42#2026-07-12",
+      userMessage: "Now you also lost BIC and the email. All need to be there",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[1]?.prompt).toContain("Send the complete bank details including BIC and email?");
+    expect(fake.calls[1]?.prompt).toContain("Answer: Hold on");
+    expect(fake.calls[1]?.prompt).toContain("Held—nothing was sent.");
+  });
+
+  it("falls back to original history text when enrichment fails and still releases failed runs", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const releases: string[] = [];
+    const successfulHarness = createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "Original answer" })).runtime,
+      model,
+      cwd: dir,
+      createRunId: () => "run-enrichment-failure",
+      historyStore,
+      turnHistoryEnricher: {
+        enrichAssistantHistory() {
+          throw new Error("journal unavailable");
+        },
+        releaseRun({ runId }) {
+          releases.push(runId);
+        },
+      },
+    });
+
+    const response = await successfulHarness.run({
+      conversationId: "telegram:42",
+      userMessage: "Continue.",
+      abortSignal: new AbortController().signal,
+    });
+    expect(response.text).toBe("Original answer");
+    expect((await historyStore.load("telegram:42")).at(-1)?.content).toBe("Original answer");
+
+    const failedHarness = createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => {
+        throw new Error("provider failed");
+      }).runtime,
+      model,
+      cwd: dir,
+      createRunId: () => "run-provider-failure",
+      turnHistoryEnricher: {
+        enrichAssistantHistory(text) {
+          return text.assistantText;
+        },
+        releaseRun({ runId }) {
+          releases.push(runId);
+          throw new Error("cleanup failed");
+        },
+      },
+    });
+    const failure = await failedHarness.run({
+      conversationId: "telegram:42",
+      userMessage: "Continue.",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(failure.failure).toBeDefined();
+    expect(releases).toEqual(["run-enrichment-failure", "run-provider-failure"]);
+  });
+
   it("injects native-notify delivery guidance for a notify-enabled cron turn (and omits it otherwise)", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

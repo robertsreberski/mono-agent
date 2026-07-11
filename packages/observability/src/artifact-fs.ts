@@ -37,6 +37,15 @@ export function safeArtifactName(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9._-]+/gu, "-").replace(/^-+|-+$/gu, "") || "run";
 }
 
+/** Whether a run id satisfies the shared non-empty/path-containment guard. */
+export function isSafeRunId(runId: unknown): runId is string {
+  return typeof runId === "string"
+    && runId.trim().length > 0
+    && !runId.trim().includes("/")
+    && !runId.trim().includes("\\")
+    && !runId.trim().includes("..");
+}
+
 /**
  * Reject a run id that could traverse outside the artifact directory. Empty/
  * non-string ids raise via `raiseEmpty`; traversal-shaped ids raise via
@@ -49,7 +58,7 @@ export function normalizeRunId(runId: string, raiseTraversal: Raise, raiseEmpty:
     raiseEmpty("runId must be a non-empty string.");
   }
   const trimmed = runId.trim();
-  if (trimmed.includes("/") || trimmed.includes("\\") || trimmed.includes("..")) {
+  if (!isSafeRunId(trimmed)) {
     raiseTraversal("runId cannot contain path separators or '..'.");
   }
   return trimmed;

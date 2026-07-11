@@ -233,6 +233,35 @@ describe("recorded run reader", () => {
     expect(detail?.warnings).toEqual(["Event list was capped at 2 events."]);
   });
 
+  it("can retain the true event tail when a bounded detail read is capped", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({ runId: "long-run", conversationId: "chat-1", artifactDir: dir });
+    for (let index = 0; index < 6; index += 1) {
+      recorder.onEvent({
+        type: "assistant",
+        message: { content: [{ type: "text", text: `visible-${String(index)}` }] },
+      });
+    }
+    await recorder.finish({});
+
+    const detail = await readRecordedRun({
+      artifactDir: dir,
+      maxEventsPerRun: 4,
+      eventSelection: "head-tail",
+    }, "long-run");
+
+    expect(detail?.events.map((event) => JSON.stringify(event.payload))).toEqual([
+      expect.stringContaining("visible-0"),
+      expect.stringContaining("visible-1"),
+      expect.stringContaining("visible-4"),
+      expect.stringContaining("visible-5"),
+    ]);
+    expect(detail?.events.map((event) => event.index)).toEqual([0, 1, 4, 5]);
+    expect(detail?.warnings).toEqual([
+      "Event list was capped at 4 events using first-and-last selection.",
+    ]);
+  });
+
   it("classifies assistant thinking content blocks as thinking events", () => {
     expect(classifyRecordedRunEvent({
       type: "assistant",

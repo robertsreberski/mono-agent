@@ -94,6 +94,7 @@ it is absent; other configurations keep it outside the app dependency closure.
 | `model` / `executionMode` | `RuntimeModelReference` / `string` | Override the config's primary model / execution mode |
 | `memory` | `MemoryStore` | Supply a memory store instead of provisioning from `config.memory` |
 | `historyStore` | `ConversationHistoryStore` | Plug in durable conversation history (default is a bounded in-memory store) |
+| `turnHistoryEnricher` | `AgentHarnessTurnHistoryEnricher` | App-owned hook for adding run-scoped interaction evidence only to replay history; outward responses and memory capture keep the original assistant text |
 | `runtimeOptions` | static run options | Extra runtime options merged for every run (no `model`/`messages`/`abortSignal`/`executionMode`/`onEvent`) |
 | `runtimeOptionsForRequest` | `(input) => extension` | Per-request run options (see below) |
 

@@ -6,11 +6,11 @@ sidebar:
 
 # Tool policy
 
-The tool policy decides which tools an agent may call — built-in tools (Read, Bash, …), adapter send tools, and MCP tools. It is **allow-all by default**: an agent with no `tools` block gets every tool, and you subtract from there. You declare it under `tools.allowedTools` / `tools.disallowedTools` (coverage: `config`), with deny always winning and overlaps rejected up front.
+The tool policy decides which tools an agent may call — built-in tools (Read, Bash, …) and policy-gated app-owned MCP tools such as `RunHistory` and adapter send tools. It is **allow-all by default**: an agent with no `tools` block gets every policy-gated tool, and you subtract from there. You declare it under `tools.allowedTools` / `tools.disallowedTools` (coverage: `config`), with deny always winning and overlaps rejected up front. External MCP-server tools use server declaration as their boundary instead.
 
 ## Allow-all by default
 
-If you set no `tools` block, or omit `allowedTools`, the agent can call **every** built-in and every enabled channel's send tools. There is no allowlist to curate before an agent can do anything — you start open and remove what you don't want. `allowedTools` accepts four shapes:
+If you set no `tools` block, or omit `allowedTools`, the agent can call **every** built-in, `RunHistory` on a compatible route, and every enabled channel's send tools. There is no allowlist to curate before an agent can do anything — you start open and remove what you don't want. `allowedTools` accepts four shapes:
 
 | `tools.allowedTools` | Result |
 | --- | --- |
@@ -75,7 +75,7 @@ The example above keeps allow-all (every tool stays available) but denies `Bash`
 
 ## Deny enforcement by runtime
 
-`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …) on runtimes that expose those tools through mono-agent. The **Claude Code** CLI additionally receives `--disallowedTools`, so the denial reaches its native tools. Pi-native honors the list for built-ins and adapter tools. Direct Codex has no corresponding native denylist boundary, so configurations containing `disallowedTools` are rejected rather than partially enforced.
+`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, `RunHistory`, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …) on runtimes that expose those tools through mono-agent. The **Claude Code** CLI additionally receives `--disallowedTools`, so the denial reaches its native tools. Pi-native honors the list for built-ins and policy-gated app-owned tools. Direct Codex has no corresponding native denylist boundary, so configurations containing `disallowedTools` are rejected rather than partially enforced.
 
 :::caution
 **Known limitation — external MCP tools on pi.** Arbitrary tools advertised by an external MCP server are **not** deny-filtered on the pi-native runtime yet. Listing such a tool in `disallowedTools` has no effect there. To hard-restrict an external MCP tool on pi, **don't declare its server** in `mcp.json` / `tools.mcpServers` — server declaration, not the denylist, is what governs its availability. (The app-owned adapter send tools are exempt from this limitation: they are gated by the app, so their `disallowedTools` entries are honored everywhere.)
@@ -107,6 +107,18 @@ Under **allow-all** these are available automatically once the matching channel 
 The adapter's own allowlist (channels/chats it may post to) remains the destination boundary — allowing the tool does not widen where messages can go. See [Delivery and send tools](/channels/delivery-and-send-tools/), [Slack](/channels/slack/), and [Telegram](/channels/telegram/).
 :::
 
+## RunHistory
+
+`RunHistory` is an app-owned, read-only, request-scoped MCP tool for inspecting safe normalized evidence from completed prior runs in the exact current conversation bucket. It has no separate config key:
+
+- Under allow-all, it is available automatically on MCP-capable routes.
+- Under a specific allowlist, include `RunHistory` explicitly.
+- `disallowedTools` can remove it, with deny still winning.
+- `run_history` is accepted only as a deprecated input alias; the registered/model-facing name is `RunHistory`.
+- Direct OpenCode and other MCP-incompatible routes suppress it.
+
+The tool excludes the current/running run, other conversations or rollover buckets, system prompts, reasoning, recalled memory, and raw artifact paths. See [MCP servers](/tools/mcp/#runhistory-prior-run-evidence) for its `list` / `inspect` interface and [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory) for its evidence boundary.
+
 ## Tools not gated by allowedTools
 
 Two families are never gated by `allowedTools` and are unaffected by the allow-all / specific-list choice:
@@ -131,7 +143,7 @@ The same rules apply through the environment: an **unset** `MONO_AGENT_ALLOWED_T
 
 ## Back-compat: legacy tool names
 
-The tools were renamed to PascalCase, and the old snake_case spellings (`slack_send_message`, `telegram_ask`, `read_skill`, …) are still accepted as **deprecated input aliases** in `allowedTools` / `disallowedTools`. `telegram_send_document` and `telegram_send_photo` both now map to the single `TelegramSendFile` tool, so a `disallowedTools` entry for either legacy name denies the whole file tool. The new PascalCase names are the only ones ever registered, emitted, or recommended — update hand-written lists when convenient. See [Presets & modules](/reference/recipes/#back-compat-legacy-tool-names).
+The tools were renamed to PascalCase, and the old snake_case spellings (`slack_send_message`, `telegram_ask`, `read_skill`, `run_history`, …) are still accepted as **deprecated input aliases** in `allowedTools` / `disallowedTools`. `telegram_send_document` and `telegram_send_photo` both now map to the single `TelegramSendFile` tool, so a `disallowedTools` entry for either legacy name denies the whole file tool. The new PascalCase names are the only ones ever registered, emitted, or recommended — update hand-written lists when convenient. See [Presets & modules](/reference/recipes/#back-compat-legacy-tool-names).
 
 ## Programmatic use
 
