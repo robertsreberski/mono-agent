@@ -71,6 +71,11 @@ export interface ManagedManifestState {
   readonly sha256?: string;
 }
 
+export interface ManagedLayoutState {
+  readonly managed: { readonly dev: number; readonly ino: number };
+  readonly generations: { readonly dev: number; readonly ino: number };
+}
+
 export interface SafeSqlitePathState {
   readonly exists: boolean;
   readonly dev?: number;
@@ -80,7 +85,10 @@ export interface SafeSqlitePathState {
 export function captureManagedManifestState(root: string): ManagedManifestState {
   const canonicalRoot = canonicalMemoryRoot(root, true);
   const path = manifestPath(canonicalRoot);
-  if (!existsSync(path)) return { exists: false };
+  if (!existsSync(path)) {
+    assertSafeExistingAncestors(canonicalRoot, dirname(path));
+    return { exists: false };
+  }
   assertSafeRegularFile(canonicalRoot, path, "managed memory manifest");
   const stat = lstatSync(path);
   return {
@@ -89,6 +97,27 @@ export function captureManagedManifestState(root: string): ManagedManifestState 
     ino: stat.ino,
     sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
   };
+}
+
+/** Pin the real managed directories so later leaf checks cannot be redirected through a replaced ancestor. */
+export function captureManagedLayoutState(root: string): ManagedLayoutState {
+  const canonicalRoot = canonicalMemoryRoot(root, true);
+  ensureManagedLayout(canonicalRoot);
+  return {
+    managed: directoryIdentity(canonicalRoot, managedPath(canonicalRoot), "managed memory directory"),
+    generations: directoryIdentity(canonicalRoot, generationsPath(canonicalRoot), "memory generations directory"),
+  };
+}
+
+export function assertManagedLayoutState(root: string, expected: ManagedLayoutState): void {
+  const canonicalRoot = canonicalMemoryRoot(root, true);
+  assertDirectoryIdentity(canonicalRoot, managedPath(canonicalRoot), expected.managed, "managed memory directory");
+  assertDirectoryIdentity(
+    canonicalRoot,
+    generationsPath(canonicalRoot),
+    expected.generations,
+    "memory generations directory",
+  );
 }
 
 export function assertManagedManifestState(root: string, expected: ManagedManifestState): void {
@@ -114,7 +143,10 @@ export function resolveActiveMemoryDbPath(root: string): string {
 export function readManagedIndexManifest(root: string): ManagedIndexManifest | undefined {
   const canonicalRoot = canonicalMemoryRoot(root, true);
   const path = manifestPath(canonicalRoot);
-  if (!existsSync(path)) return undefined;
+  if (!existsSync(path)) {
+    assertSafeExistingAncestors(canonicalRoot, dirname(path));
+    return undefined;
+  }
   assertSafeRegularFile(canonicalRoot, path, "managed memory manifest");
   let parsed: unknown;
   try {
@@ -234,6 +266,7 @@ export async function activateManagedIndex(
 ): Promise<void> {
   const canonicalRoot = canonicalMemoryRoot(root, true);
   ensureManagedLayout(canonicalRoot);
+  const layoutState = captureManagedLayoutState(canonicalRoot);
   validateManifest(manifest);
   generationDbPath(canonicalRoot, manifest.active.name, true);
   if (manifest.rollback !== undefined) generationDbPath(canonicalRoot, manifest.rollback.name, true);
@@ -253,13 +286,23 @@ export async function activateManagedIndex(
     }
     await hooks.afterManifestTempFsync?.();
     hooks.beforeManifestRename?.();
+    assertManagedLayoutState(canonicalRoot, layoutState);
     renameSync(temp, path);
     renamed = true;
     await hooks.afterManifestRename?.();
+    assertManagedLayoutState(canonicalRoot, layoutState);
     fsyncDirectory(dirname(path));
     await hooks.afterManifestDirFsync?.();
+    assertManagedLayoutState(canonicalRoot, layoutState);
   } catch (error) {
-    if (!renamed && existsSync(temp)) unlinkSync(temp);
+    if (!renamed) {
+      try {
+        assertManagedLayoutState(canonicalRoot, layoutState);
+        if (existsSync(temp)) unlinkSync(temp);
+      } catch {
+        // Never follow a replaced managed ancestor merely to clean up a temp file.
+      }
+    }
     if (renamed) {
       throw new Error(`memory-rebuild: manifest activation completed but durability reporting is uncertain: ${reasonOf(error)}`);
     }
@@ -417,6 +460,28 @@ function ensureManagedDirectory(root: string, path: string, label: string): void
   assertSafeDirectory(root, path, label);
 }
 
+function directoryIdentity(
+  root: string,
+  path: string,
+  label: string,
+): { readonly dev: number; readonly ino: number } {
+  assertSafeDirectory(root, path, label);
+  const stat = lstatSync(path);
+  return { dev: stat.dev, ino: stat.ino };
+}
+
+function assertDirectoryIdentity(
+  root: string,
+  path: string,
+  expected: { readonly dev: number; readonly ino: number },
+  label: string,
+): void {
+  const actual = directoryIdentity(root, path, label);
+  if (actual.dev !== expected.dev || actual.ino !== expected.ino) {
+    throw new Error(`memory-rebuild: ${label} was replaced concurrently.`);
+  }
+}
+
 function managedPath(root: string): string {
   return join(root, MANAGED_DIR);
 }
@@ -437,6 +502,26 @@ function assertSafeAncestors(root: string, path: string): void {
   for (const component of rel.split(sep)) {
     current = join(current, component);
     const stat = lstatSync(current);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error("memory-rebuild: paths inside the canonical memory root must not contain symlinks.");
+    }
+  }
+}
+
+function assertSafeExistingAncestors(root: string, path: string): void {
+  assertInside(root, path);
+  const rel = relative(root, path);
+  if (rel === "") return;
+  let current = root;
+  for (const component of rel.split(sep)) {
+    current = join(current, component);
+    let stat: ReturnType<typeof lstatSync>;
+    try {
+      stat = lstatSync(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
     if (stat.isSymbolicLink() || !stat.isDirectory()) {
       throw new Error("memory-rebuild: paths inside the canonical memory root must not contain symlinks.");
     }
@@ -475,6 +560,7 @@ function removeProvenStaleLock(root: string, path: string): boolean {
 
 function safeLockIdentity(path: string, root: string): { readonly dev: number; readonly ino: number } | undefined {
   try {
+    assertSafeAncestors(root, dirname(path));
     const stat = lstatSync(path);
     if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600) return undefined;
     if (typeof process.getuid === "function" && stat.uid !== process.getuid()) return undefined;

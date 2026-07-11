@@ -1128,6 +1128,28 @@ describe("safe memory index rebuild", () => {
     expect(resolveActiveMemoryDbPath(root)).toBe(active);
   });
 
+  it("rejects first activation when the managed ancestors are redirected after manifest temp fsync", async () => {
+    const root = tempRoot();
+    const outside = tempRoot();
+    const managed = join(realpathSync(root), ".index");
+    const escapedManaged = join(outside, "escaped-index");
+    writeDaily(root, [bullet("M1", "The first generation must remain inside its memory root.")]);
+
+    await expect(safeRebuildMemoryIndex({
+      root,
+      tier: "lite",
+      hooks: {
+        afterManifestTempFsync: () => {
+          renameSync(managed, escapedManaged);
+          symlinkSync(escapedManaged, managed, "dir");
+        },
+      },
+    })).rejects.toThrow(/managed memory directory|memory generations directory|symlink|replaced concurrently/iu);
+
+    expect(existsSync(join(escapedManaged, "manifest.json"))).toBe(false);
+    expect(readdirSync(escapedManaged).some((name) => name.startsWith(".manifest-"))).toBe(true);
+  });
+
   it.each([
     ["journal", "bujo"],
     ["bujo", "journal"],
@@ -1417,21 +1439,69 @@ describe("safe memory index rebuild", () => {
     expect(readTexts(resolveActiveMemoryDbPath(root))).toEqual(["Old-schema rollback sentinel."]);
   });
 
-  it("preserves empty semantic identity when a changed source requires a rollback snapshot", async () => {
+  it("omits rollback when an empty semantic database cannot prove parity with changed source", async () => {
     const root = tempRoot();
     const modelA = embeddings("test:empty-a", 8);
     await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: modelA, dim: 8 });
     // Canonical-first mirror failure: source advanced, but the managed DB is
     // still truly empty, so row inference cannot recover model/dimension.
     writeDaily(root, [bullet("M1", "Source changed after empty generation activation.")]);
-    await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: embeddings("test:empty-b", 4), dim: 4 });
-    await rollbackMemoryIndex({ root, tier: "journal", embeddings: modelA, dim: 8 });
-    const db = openMemoryDb({ path: resolveActiveMemoryDbPath(root), readOnly: true, dim: 8 });
+    const rebuilt = await safeRebuildMemoryIndex({
+      root,
+      tier: "journal",
+      embeddings: embeddings("test:empty-b", 4),
+      dim: 4,
+    });
+
+    expect(rebuilt.rollback).toBeUndefined();
+    expect(readManagedIndexManifest(root)?.rollback).toBeUndefined();
+    await expect(rollbackMemoryIndex({ root, tier: "journal", embeddings: modelA, dim: 8 }))
+      .rejects.toThrow(/no retained rollback generation/iu);
+    const db = openMemoryDb({ path: resolveActiveMemoryDbPath(root), readOnly: true, dim: 4 });
     try {
-      expect(db.indexMetadata()).toMatchObject({ embeddingModel: "test:empty-a", dimension: 8 });
-      expect(db.validationSnapshot()).toMatchObject({ memories: 0, vectors: 0 });
+      expect(db.indexMetadata()).toMatchObject({ embeddingModel: "test:empty-b", dimension: 4 });
+      expect(db.validationSnapshot()).toMatchObject({ memories: 1, vectors: 1 });
     } finally {
       db.close();
+    }
+  });
+
+  it("does not mint a current Lite rollback identity for a stale source-first mirror", async () => {
+    const root = tempRoot();
+    await safeRebuildMemoryIndex({ root, tier: "lite" });
+    writeDaily(root, [bullet("M1", "Canonical source advanced before its Lite mirror.")]);
+
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: "lite" });
+
+    expect(rebuilt.rollback).toBeUndefined();
+    expect(readManagedIndexManifest(root)?.rollback).toBeUndefined();
+    expect(readTexts(rebuilt.active)).toEqual(["Canonical source advanced before its Lite mirror."]);
+    await expect(rollbackMemoryIndex({ root, tier: "lite" }))
+      .rejects.toThrow(/no retained rollback generation/iu);
+    expect(resolveActiveMemoryDbPath(root)).toBe(rebuilt.active);
+  });
+
+  it("keeps an exact Journal rollback when only its recoverable vector backlog is incomplete", async () => {
+    const root = tempRoot();
+    const oldModel = embeddings("test:journal-backlog-old", 8);
+    const newModel = embeddings("test:journal-backlog-new", 4);
+    writeDaily(root, [bullet("M1", "Journal lexical source remains exact without its vector.")]);
+    const first = await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: oldModel, dim: 8 });
+    deleteAllVectors(first.active);
+    const daily = join(root, "daily", "2026-07-11.md");
+    writeFileSync(daily, `${readFileSync(daily, "utf8")}\n`, "utf8");
+
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: newModel, dim: 4 });
+
+    expect(rebuilt.rollback).toBeDefined();
+    await rollbackMemoryIndex({ root, tier: "journal", embeddings: oldModel, dim: 8 });
+    const rolledBack = openMemoryDb({ path: resolveActiveMemoryDbPath(root), readOnly: true, dim: 8 });
+    try {
+      expect(rolledBack.validationSnapshot()).toMatchObject({ memories: 1, vectors: 0 });
+      expect(rolledBack.get(`J-${normalizedContentHash("Journal lexical source remains exact without its vector.")}`)?.text)
+        .toBe("Journal lexical source remains exact without its vector.");
+    } finally {
+      rolledBack.close();
     }
   });
 
@@ -1473,7 +1543,8 @@ describe("safe memory index rebuild", () => {
     const root = tempRoot();
     writeDaily(root, [bullet("M1", "First active generation.")]);
     await safeRebuildMemoryIndex({ root, tier: "lite" });
-    writeDaily(root, [bullet("M2", "Changed source creates a separate rollback snapshot.")]);
+    const daily = join(root, "daily", "2026-07-11.md");
+    writeFileSync(daily, `${readFileSync(daily, "utf8")}\n`, "utf8");
     const activeBefore = resolveActiveMemoryDbPath(root);
     await expect(safeRebuildMemoryIndex({
       root,

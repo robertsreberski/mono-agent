@@ -40,8 +40,10 @@ import {
   MEMORY_REBUILD_POLICY_VERSION,
   acquireMemoryWriterLease,
   activateManagedIndex,
+  assertManagedLayoutState,
   assertManagedManifestState,
   assertSafeRegularFile,
+  captureManagedLayoutState,
   captureManagedManifestState,
   createManagedGeneration,
   fsyncDirectory,
@@ -208,6 +210,7 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
   try {
     const root = lease.root;
     const rootIdentity = identityOf(root);
+    const layoutState = captureManagedLayoutState(root);
     const manifestState = captureManagedManifestState(root);
     const priorManifest = readManagedIndexManifest(root);
     assertManagedManifestState(root, manifestState);
@@ -353,6 +356,7 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
         throw new Error("memory-rebuild: rollback source domain changed concurrently; active index was not switched.");
       }
       assertSameIdentity(root, rootIdentity, "memory root");
+      assertManagedLayoutState(root, layoutState);
       assertSameIdentity(generation.dir, generationIdentity, "candidate generation");
       assertSameIdentity(generation.dbPath, candidateDbIdentity, "candidate database");
       if (fileDigest(generation.dbPath) !== candidateDigest) {
@@ -415,6 +419,7 @@ export async function rollbackMemoryIndex(options: SafeMemoryIndexOptions): Prom
     assertNoPendingMigrateDecision(root);
     assertNoPendingCaptureIntent(root);
     const rootIdentity = identityOf(root);
+    const layoutState = captureManagedLayoutState(root);
     const manifestState = captureManagedManifestState(root);
     const manifest = readManagedIndexManifest(root);
     if (manifest?.rollback === undefined) throw new Error("memory-rebuild: no retained rollback generation is available.");
@@ -440,6 +445,7 @@ export async function rollbackMemoryIndex(options: SafeMemoryIndexOptions): Prom
     };
     const assertFinalRollbackCas = (): void => {
       assertSameIdentity(root, rootIdentity, "memory root");
+      assertManagedLayoutState(root, layoutState);
       assertSameIdentity(targetPath, targetIdentity, "rollback target database");
       assertSameIdentity(currentPath, currentIdentity, "current active database");
       if (fileDigest(targetPath) !== targetDigest || fileDigest(currentPath) !== currentDigest) {
@@ -756,53 +762,119 @@ function validateCandidate(
   const db = readOnlyDb(path, descriptor);
   try {
     validateDb(db, descriptor);
-    const state = db.validationSnapshot();
-    const expectedVectors = descriptor.tier === "lite" ? 0 : plan.records.length;
-    if (state.memories !== plan.records.length || state.ftsRows !== plan.records.length || state.ftsMismatches !== 0) {
-      throw new Error("memory-rebuild: candidate memory/FTS coverage validation failed.");
+    const parityError = buildPlanParityError(db, descriptor.tier, plan, { allowReplayedLifecycle });
+    if (parityError !== undefined) throw new Error(parityError);
+  } finally {
+    db.close();
+  }
+}
+
+interface BuildPlanParityOptions {
+  readonly allowReplayedLifecycle: boolean;
+  readonly allowReplaySourceRepair?: boolean;
+  readonly allowJournalVectorBacklog?: boolean;
+}
+
+function buildPlanParityError(
+  db: MemoryDb,
+  tier: BujoTier,
+  plan: BuildPlan,
+  options: BuildPlanParityOptions,
+): string | undefined {
+  const state = db.validationSnapshot();
+  if (state.memories !== plan.records.length || state.ftsRows !== plan.records.length || state.ftsMismatches !== 0) {
+    return "memory-rebuild: candidate memory/FTS coverage validation failed.";
+  }
+  const actualMemories = plan.records.map((record) => db.get(record.id));
+  if (stableJson(actualMemories.map((record) => memoryPayload(
+    record,
+    options.allowReplayedLifecycle,
+    options.allowReplaySourceRepair === true,
+  ))) !== stableJson(plan.records.map((record) => memoryPayload(
+    record,
+    options.allowReplayedLifecycle,
+    options.allowReplaySourceRepair === true,
+  )))) {
+    return "memory-rebuild: candidate memory payload validation failed.";
+  }
+  if (options.allowReplaySourceRepair === true && actualMemories.some((record, index) => {
+    const expected = plan.records[index];
+    return record?.source.line !== undefined && record.source.line !== expected?.source.line;
+  })) {
+    return "memory-rebuild: candidate memory payload validation failed.";
+  }
+  const invalidVectorCoverage = tier === "lite"
+    ? state.vectors !== 0
+    : tier === "bujo" || options.allowJournalVectorBacklog !== true
+      ? state.vectors !== plan.records.length
+      : false;
+  if (invalidVectorCoverage || state.vectorOrphans !== 0) {
+    return "memory-rebuild: candidate vector coverage validation failed.";
+  }
+  if (state.entities !== plan.graph.entities.length || state.relations !== plan.graph.relations.length
+    || state.associations !== plan.graph.associations.length || state.relationOrphans !== 0 || state.associationOrphans !== 0) {
+    return "memory-rebuild: candidate graph coverage or endpoint validation failed.";
+  }
+  const actualEntities = plan.graph.entities.map((entity) => db.getEntity(entity.id));
+  const actualRelations = [...new Set(plan.graph.relations.map((relation) => relation.src))]
+    .flatMap((src) => db.relationsFor(src));
+  const actualAssociations = [...new Set(plan.graph.associations.map((association) => association.memoryId))]
+    .flatMap((memoryId) => db.associationsForMemory(memoryId));
+  if (stableJson(actualEntities) !== stableJson(plan.graph.entities)
+    || stableJson(actualRelations) !== stableJson(plan.graph.relations)
+    || stableJson(actualAssociations) !== stableJson(plan.graph.associations)) {
+    return "memory-rebuild: candidate graph payload validation failed.";
+  }
+  for (const support of plan.graph.collectionSupports) {
+    if (!db.edges(support.memoryId).some((edge) => edge.kind === "supports" && edge.dst === support.entityId)) {
+      return "memory-rebuild: candidate collection support validation failed.";
     }
-    const actualMemories = plan.records.map((record) => db.get(record.id));
-    if (stableJson(actualMemories.map((record) => memoryPayload(record, allowReplayedLifecycle)))
-      !== stableJson(plan.records.map((record) => memoryPayload(record, allowReplayedLifecycle)))) {
-      throw new Error("memory-rebuild: candidate memory payload validation failed.");
+  }
+  if (tier === "journal") {
+    if (state.contentHashes !== plan.contentHashes.size || state.contentHashOrphans !== 0) {
+      return "memory-rebuild: Journal content-hash bijection validation failed.";
     }
-    if (state.vectors !== expectedVectors || state.vectorOrphans !== 0) {
-      throw new Error("memory-rebuild: candidate vector coverage validation failed.");
-    }
-    if (state.entities !== plan.graph.entities.length || state.relations !== plan.graph.relations.length
-      || state.associations !== plan.graph.associations.length || state.relationOrphans !== 0 || state.associationOrphans !== 0) {
-      throw new Error("memory-rebuild: candidate graph coverage or endpoint validation failed.");
-    }
-    const actualEntities = plan.graph.entities.map((entity) => db.getEntity(entity.id));
-    const actualRelations = [...new Set(plan.graph.relations.map((relation) => relation.src))]
-      .flatMap((src) => db.relationsFor(src));
-    const actualAssociations = [...new Set(plan.graph.associations.map((association) => association.memoryId))]
-      .flatMap((memoryId) => db.associationsForMemory(memoryId));
-    if (stableJson(actualEntities) !== stableJson(plan.graph.entities)
-      || stableJson(actualRelations) !== stableJson(plan.graph.relations)
-      || stableJson(actualAssociations) !== stableJson(plan.graph.associations)) {
-      throw new Error("memory-rebuild: candidate graph payload validation failed.");
-    }
-    for (const support of plan.graph.collectionSupports) {
-      if (!db.edges(support.memoryId).some((edge) => edge.kind === "supports" && edge.dst === support.entityId)) {
-        throw new Error("memory-rebuild: candidate collection support validation failed.");
+    const actual = db.contentHashRecords();
+    for (const hash of actual) {
+      const record = db.get(hash.memoryId);
+      if (record === undefined || normalizedContentHash(record.text) !== hash.contentHash
+        || plan.contentHashes.get(hash.contentHash) !== hash.memoryId) {
+        return "memory-rebuild: Journal content-hash correctness validation failed.";
       }
     }
-    if (descriptor.tier === "journal") {
-      if (state.contentHashes !== plan.contentHashes.size || state.contentHashOrphans !== 0) {
-        throw new Error("memory-rebuild: Journal content-hash bijection validation failed.");
-      }
-      const actual = db.contentHashRecords();
-      for (const hash of actual) {
-        const record = db.get(hash.memoryId);
-        if (record === undefined || normalizedContentHash(record.text) !== hash.contentHash
-          || plan.contentHashes.get(hash.contentHash) !== hash.memoryId) {
-          throw new Error("memory-rebuild: Journal content-hash correctness validation failed.");
-        }
-      }
-    } else if (state.contentHashes !== 0) {
-      throw new Error("memory-rebuild: non-Journal candidate unexpectedly contains content hashes.");
-    }
+  } else if (state.contentHashes !== 0) {
+    return "memory-rebuild: non-Journal candidate unexpectedly contains content hashes.";
+  }
+  return undefined;
+}
+
+function hasTierExactSourceParity(
+  path: string,
+  descriptor: ManagedGeneration,
+  plan: BuildPlan,
+  allowReplaySourceRepair: boolean,
+): boolean {
+  const db = readOnlyDb(path, descriptor);
+  try {
+    return buildPlanParityError(db, descriptor.tier, plan, {
+      allowReplayedLifecycle: true,
+      allowReplaySourceRepair,
+      allowJournalVectorBacklog: true,
+    }) === undefined;
+  } finally {
+    db.close();
+  }
+}
+
+function validateRollbackSnapshot(path: string, descriptor: ManagedGeneration, plan: BuildPlan): void {
+  const db = readOnlyDb(path, descriptor);
+  try {
+    validateDb(db, descriptor);
+    const parityError = buildPlanParityError(db, descriptor.tier, plan, {
+      allowReplayedLifecycle: true,
+      allowJournalVectorBacklog: true,
+    });
+    if (parityError !== undefined) throw new Error(parityError);
   } finally {
     db.close();
   }
@@ -1029,15 +1101,15 @@ async function snapshotCurrentRollback(
   snapshot: SourceSnapshot,
 ): Promise<ManagedGeneration | undefined> {
   if (active === undefined) return await adoptLegacyRollback(root);
+  const sourcePath = managedGenerationDbPath(root, active.name, true);
+  validateRetainedGeneration(sourcePath, active);
   if (active.sourceFingerprint === snapshot.fingerprint) {
-    validateRetainedGeneration(managedGenerationDbPath(root, active.name, true), active);
     return active;
   }
   return await snapshotDatabaseForRollback(
     root,
-    managedGenerationDbPath(root, active.name, true),
+    sourcePath,
     snapshot,
-    active.tier,
     active,
   );
 }
@@ -1046,20 +1118,22 @@ async function snapshotDatabaseForRollback(
   root: string,
   sourcePath: string,
   snapshot: SourceSnapshot,
-  tier: BujoTier,
-  preservedIdentity?: ManagedGeneration,
-): Promise<ManagedGeneration> {
+  preservedIdentity: ManagedGeneration,
+): Promise<ManagedGeneration | undefined> {
+  const tier = preservedIdentity.tier;
+  const plan = buildPlan(snapshot, tier);
+  if (!hasTierExactSourceParity(sourcePath, preservedIdentity, plan, true)) return undefined;
+
   const generation = createManagedGeneration(root);
   const actualDimension = await backupRawSqlite(sourcePath, generation.dbPath);
-  const source = openMemoryDb({ path: generation.dbPath, dim: actualDimension });
-  let embeddingModel: string | undefined;
-  try {
-    const models = source.validationSnapshot().embeddingModels;
-    if (models.length > 1) throw new Error("memory-rebuild: active index contains multiple embedding model identities.");
-    embeddingModel = preservedIdentity?.embeddingModel ?? models[0];
-  } finally {
-    source.close();
-  }
+  // Re-check the online copy before changing its metadata. A concurrent source
+  // mutation may produce a structurally valid backup that no longer mirrors
+  // the canonical tier snapshot; such a copy must never be stamped as current.
+  if (!hasTierExactSourceParity(generation.dbPath, preservedIdentity, plan, true)) return undefined;
+  repairRollbackSourceProvenance(generation.dbPath, plan);
+  if (!hasTierExactSourceParity(generation.dbPath, preservedIdentity, plan, false)) return undefined;
+
+  const embeddingModel = preservedIdentity.embeddingModel;
   const createdAt = new Date().toISOString();
   const descriptor: ManagedGeneration = {
     name: generation.name,
@@ -1068,18 +1142,18 @@ async function snapshotDatabaseForRollback(
     policyVersion: MEMORY_REBUILD_POLICY_VERSION,
     createdAt,
     origin: "legacy-snapshot",
-    ...(preservedIdentity?.skippedRawRecords === undefined ? {} : { skippedRawRecords: preservedIdentity.skippedRawRecords }),
-    ...(preservedIdentity?.skippedUnstructuredRecords === undefined ? {} : { skippedUnstructuredRecords: preservedIdentity.skippedUnstructuredRecords }),
-    ...(preservedIdentity?.skippedMissingIdentityRecords === undefined ? {} : { skippedMissingIdentityRecords: preservedIdentity.skippedMissingIdentityRecords }),
-    ...(preservedIdentity?.missingIdentityLocations === undefined ? {} : { missingIdentityLocations: preservedIdentity.missingIdentityLocations }),
-    ...(preservedIdentity?.skippedLegacySourceRecords === undefined ? {} : { skippedLegacySourceRecords: preservedIdentity.skippedLegacySourceRecords }),
-    ...(preservedIdentity?.legacySourceLocations === undefined ? {} : { legacySourceLocations: preservedIdentity.legacySourceLocations }),
-    ...(preservedIdentity?.skippedJournalDuplicateRecords === undefined ? {} : { skippedJournalDuplicateRecords: preservedIdentity.skippedJournalDuplicateRecords }),
-    ...(preservedIdentity?.parsedSourceItems === undefined ? {} : { parsedSourceItems: preservedIdentity.parsedSourceItems }),
-    ...(preservedIdentity?.derivedLegacyAssociations === undefined ? {} : { derivedLegacyAssociations: preservedIdentity.derivedLegacyAssociations }),
+    skippedRawRecords: plan.skippedRawRecords,
+    skippedUnstructuredRecords: plan.skippedUnstructuredRecords,
+    skippedMissingIdentityRecords: plan.skippedMissingIdentityRecords,
+    missingIdentityLocations: plan.missingIdentityLocations,
+    skippedLegacySourceRecords: plan.skippedLegacySourceRecords,
+    legacySourceLocations: plan.legacySourceLocations,
+    skippedJournalDuplicateRecords: plan.skippedJournalDuplicateRecords,
+    parsedSourceItems: plan.parsedSourceItems,
+    derivedLegacyAssociations: plan.graph.derivedLegacyAssociations,
     ...(embeddingModel === undefined ? {} : {
       embeddingModel,
-      dimension: preservedIdentity?.dimension ?? actualDimension,
+      dimension: preservedIdentity.dimension ?? actualDimension,
     }),
   };
   const copy = openMemoryDb({ path: generation.dbPath, dim: actualDimension });
@@ -1091,18 +1165,18 @@ async function snapshotDatabaseForRollback(
       sourceFingerprint: snapshot.fingerprint,
       generation: generation.name,
       createdAt,
-      ...(preservedIdentity?.skippedRawRecords === undefined ? {} : { skippedRawRecords: preservedIdentity.skippedRawRecords }),
-      ...(preservedIdentity?.skippedUnstructuredRecords === undefined ? {} : { skippedUnstructuredRecords: preservedIdentity.skippedUnstructuredRecords }),
-      ...(preservedIdentity?.skippedMissingIdentityRecords === undefined ? {} : { skippedMissingIdentityRecords: preservedIdentity.skippedMissingIdentityRecords }),
-      ...(preservedIdentity?.missingIdentityLocations === undefined ? {} : { missingIdentityLocations: preservedIdentity.missingIdentityLocations }),
-      ...(preservedIdentity?.skippedLegacySourceRecords === undefined ? {} : { skippedLegacySourceRecords: preservedIdentity.skippedLegacySourceRecords }),
-      ...(preservedIdentity?.legacySourceLocations === undefined ? {} : { legacySourceLocations: preservedIdentity.legacySourceLocations }),
-      ...(preservedIdentity?.skippedJournalDuplicateRecords === undefined ? {} : { skippedJournalDuplicateRecords: preservedIdentity.skippedJournalDuplicateRecords }),
-      ...(preservedIdentity?.parsedSourceItems === undefined ? {} : { parsedSourceItems: preservedIdentity.parsedSourceItems }),
-      ...(preservedIdentity?.derivedLegacyAssociations === undefined ? {} : { derivedLegacyAssociations: preservedIdentity.derivedLegacyAssociations }),
+      skippedRawRecords: plan.skippedRawRecords,
+      skippedUnstructuredRecords: plan.skippedUnstructuredRecords,
+      skippedMissingIdentityRecords: plan.skippedMissingIdentityRecords,
+      missingIdentityLocations: plan.missingIdentityLocations,
+      skippedLegacySourceRecords: plan.skippedLegacySourceRecords,
+      legacySourceLocations: plan.legacySourceLocations,
+      skippedJournalDuplicateRecords: plan.skippedJournalDuplicateRecords,
+      parsedSourceItems: plan.parsedSourceItems,
+      derivedLegacyAssociations: plan.graph.derivedLegacyAssociations,
       ...(embeddingModel === undefined ? {} : {
         embeddingModel,
-        dimension: preservedIdentity?.dimension ?? actualDimension,
+        dimension: preservedIdentity.dimension ?? actualDimension,
       }),
     });
     copy.checkpoint();
@@ -1111,8 +1185,30 @@ async function snapshotDatabaseForRollback(
   }
   fsyncFile(generation.dbPath);
   fsyncDirectory(generation.dir);
-  validateRetainedGeneration(generation.dbPath, descriptor);
+  validateRollbackSnapshot(generation.dbPath, descriptor, plan);
   return descriptor;
+}
+
+function repairRollbackSourceProvenance(path: string, plan: BuildPlan): void {
+  const raw = new BetterSqlite3(path, { fileMustExist: true });
+  try {
+    const update = raw.prepare(
+      `UPDATE memories
+       SET source_session = NULL, source_file = ?, source_line = ?
+       WHERE id = ?`,
+    );
+    const repair = raw.transaction(() => {
+      for (const record of plan.records) {
+        const result = update.run(record.source.file ?? null, record.source.line ?? null, record.id);
+        if (result.changes !== 1) {
+          throw new Error("memory-rebuild: rollback source provenance repair lost a canonical memory row.");
+        }
+      }
+    });
+    repair();
+  } finally {
+    raw.close();
+  }
 }
 
 function assertConfiguredIdentity(target: ManagedGeneration, options: SafeMemoryIndexOptions): void {
@@ -1210,7 +1306,11 @@ function canonicalJsonValue(value: unknown): unknown {
   );
 }
 
-function memoryPayload(record: MemoryRecord | undefined, omitReplayedLifecycle = false): unknown {
+function memoryPayload(
+  record: MemoryRecord | undefined,
+  omitReplayedLifecycle = false,
+  omitRepairableSourceProvenance = false,
+): unknown {
   if (record === undefined) return undefined;
   return {
     id: record.id,
@@ -1227,7 +1327,9 @@ function memoryPayload(record: MemoryRecord | undefined, omitReplayedLifecycle =
     ...(record.dueAt === undefined ? {} : { dueAt: record.dueAt }),
     ...(record.collection === undefined ? {} : { collection: record.collection }),
     tags: [...record.tags],
-    source: { ...record.source },
+    source: omitRepairableSourceProvenance
+      ? { ...(record.source.file === undefined ? {} : { file: record.source.file }) }
+      : { ...record.source },
   };
 }
 
