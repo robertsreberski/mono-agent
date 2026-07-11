@@ -45,7 +45,7 @@ mono-agent memory audit --json
 mono-agent start
 ```
 
-This performs the first managed activation, builds and validates a side-by-side generation, and retains the prior generation for `mono-agent memory rollback`. The lower-level `memory-bujo rebuild|rollback <root> --tier <lite|journal|bujo>` commands are for already-managed roots; they deliberately refuse to infer tier identity or perform the first activation.
+This performs the first managed activation and builds and validates a side-by-side generation. A prior generation is retained for `mono-agent memory rollback` only when its indexed payload exactly matches the current canonical source (Journal may retain its recoverable vector backlog); a source-ahead/stale index is never relabeled as a safe rollback. The lower-level `memory-bujo rebuild|rollback <root> --tier <lite|journal|bujo>` commands are for already-managed roots; they deliberately refuse to infer tier identity or perform the first activation.
 
 ## Public API
 
