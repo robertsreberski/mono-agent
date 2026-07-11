@@ -203,7 +203,7 @@ Supermemory owns its remote index, so `mono-agent memory rebuild` and `rollback`
 
 ## Enable v1 on an existing agent
 
-After the product-v1 packages are published, this is the complete cutover for an existing local agent, with one backend-specific branch in step 5. Use the exact lockstep version named in the release announcement; “product v1” does not by itself imply npm major `1`.
+`0.7.0` is the product-v1 lockstep release. Product v1 is a product milestone, not an npm major-`1` claim. This is the complete cutover for an existing local agent, with one backend-specific branch in step 6.
 
 1. Confirm Node.js meets the supported floor. The repository `.nvmrc` pins the exact minimum; an existing agent directory may not contain that file, so select the version explicitly there:
 
@@ -216,7 +216,7 @@ After the product-v1 packages are published, this is the complete cutover for an
 2. Install the v1 CLI and confirm the exact published version:
 
    ```bash
-   VERSION="<published-v1-version>"
+   VERSION="0.7.0"
    npm i -g "create-mono-agent@$VERSION"
    mono-agent --version
    ```
@@ -258,7 +258,7 @@ After the product-v1 packages are published, this is the complete cutover for an
 
    If `memory.backend` is `supermemory`, skip both `memory rebuild` and the local index audit: Supermemory owns its remote index and those built-in maintenance commands intentionally reject it. Start/status the agent after validation instead.
 
-7. Verify both kinds of context in Telegram without restarting between messages: send `Reply exactly with this token: V1-HISTORY-<unique>`, wait for that reply, then ask `What did you send in the last message?` and confirm the token comes back. That second run should use active history and inject no durable memory. Finally ask a qualified durable-memory question such as `What did we decide about releases last month?` to exercise `MemoryRecall`.
+7. Verify both kinds of context in the TUI or an enabled conversational channel without restarting between messages. For Telegram, send `Reply exactly with this token: V1-HISTORY-<unique>`, wait for that reply, then ask `What did you send in the last message?` and confirm the token comes back. That second run should use active history and inject no durable memory. Finally ask a qualified durable-memory question such as `What did we decide about releases last month?` to exercise `MemoryRecall`.
 
 If `memory.llm.provider` is `agent-host`, Ollama is needed only for `memory.embeddings.provider: "ollama"`; you do not need an Ollama chat model. If rollback is needed, stop the agent, restore the prior tier/model/dimension if it changed, run `mono-agent memory rollback --json`, then start again.
 
