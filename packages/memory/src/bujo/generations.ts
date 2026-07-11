@@ -36,6 +36,8 @@ export interface ManagedGeneration {
   readonly embeddingModel?: string;
   readonly dimension?: number;
   readonly origin: "rebuild" | "legacy-snapshot";
+  /** Trusted logical state commitment; required before a generation can be activated as rollback. */
+  readonly integrityDigest?: string;
   readonly skippedRawRecords?: number;
   readonly skippedUnstructuredRecords?: number;
   readonly skippedMissingIdentityRecords?: number;
@@ -184,6 +186,7 @@ export function createManagedGeneration(root: string, now = new Date()): { reado
 export function acquireMemoryWriterLease(root: string, hooks: MemoryWriterLeaseHooks = {}): MemoryWriterLease {
   const canonicalRoot = canonicalMemoryRoot(root, true);
   ensureManagedLayout(canonicalRoot);
+  const layoutState = captureManagedLayoutState(canonicalRoot);
   const path = join(managedPath(canonicalRoot), WRITER_LOCK_FILE);
   const token = randomUUID();
   const payload = `${JSON.stringify({
@@ -204,6 +207,11 @@ export function acquireMemoryWriterLease(root: string, hooks: MemoryWriterLeaseH
       ownedIdentity = { dev: created.dev, ino: created.ino };
       try {
         hooks.afterCreate?.();
+        assertManagedLayoutState(canonicalRoot, layoutState);
+        const current = fileIdentity(path, canonicalRoot, "memory writer lock");
+        if (current.dev !== ownedIdentity.dev || current.ino !== ownedIdentity.ino) {
+          throw new Error("memory-rebuild: memory writer lock was replaced during acquisition.");
+        }
         writeFileSync(fd, payload, "utf8");
         fsyncSync(fd);
       } finally {
@@ -389,6 +397,8 @@ function validateGeneration(value: unknown, label: string): asserts value is Man
     || value.policyVersion !== MEMORY_REBUILD_POLICY_VERSION
     || typeof value.createdAt !== "string" || !Number.isFinite(Date.parse(value.createdAt))
     || (value.origin !== "rebuild" && value.origin !== "legacy-snapshot")
+    || (value.integrityDigest !== undefined
+      && (typeof value.integrityDigest !== "string" || !/^[a-f0-9]{64}$/u.test(value.integrityDigest)))
     || (value.embeddingModel !== undefined && typeof value.embeddingModel !== "string")
     || (value.dimension !== undefined && (!Number.isInteger(value.dimension) || Number(value.dimension) <= 0))
     || !optionalNonNegativeInteger(value.skippedRawRecords)

@@ -250,6 +250,12 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       }
       assertManagedManifestState(root, manifestState);
     }
+    // Pin the complete prior SQLite state before any model/provider or test
+    // hook await. A later rollback snapshot may trust vectors that cannot be
+    // regenerated without a paid call, so concurrent mutation must be caught.
+    const priorActiveIntegrity = hasPriorActiveDb
+      ? logicalIntegrityDigest(priorActivePath, priorManifest?.active)
+      : "";
     const snapshot = snapshotCanonicalSources(root, options.tier);
     const rollbackSnapshot = priorManifest === undefined || priorManifest.active.tier === options.tier
       ? snapshot
@@ -280,11 +286,29 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       ...(options.dim === undefined ? {} : { dimension: options.dim }),
     };
 
+    let openCandidateIdentity!: { readonly dev: number; readonly ino: number; readonly size: number };
+    const assertOpenCandidateLocation = (): void => {
+      assertManagedLayoutState(root, layoutState);
+      assertSameIdentity(generation.dir, generationIdentity, "candidate generation");
+      assertSameIdentity(generation.dbPath, openCandidateIdentity, "candidate database");
+    };
+    const guardedEmbeddings = options.embeddings === undefined ? undefined : {
+      id: options.embeddings.id,
+      embed: async (texts: readonly string[]): Promise<number[][]> => {
+        assertOpenCandidateLocation();
+        const vectors = await options.embeddings!.embed(texts);
+        // The provider is the only awaited seam between preparing user text
+        // and persisting it. Re-pin before returning vectors to MemoryDb.
+        assertOpenCandidateLocation();
+        return vectors;
+      },
+    };
     const db = openMemoryDb({
       path: generation.dbPath,
-      ...(options.embeddings === undefined ? {} : { embeddings: options.embeddings }),
+      ...(guardedEmbeddings === undefined ? {} : { embeddings: guardedEmbeddings }),
       ...(options.dim === undefined ? {} : { dim: options.dim }),
     });
+    openCandidateIdentity = identityOf(generation.dbPath);
     try {
       await db.rebuild(plan.records);
       for (const [contentHash, memoryId] of plan.contentHashes) {
@@ -336,13 +360,21 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
     validateCandidate(generation.dbPath, descriptor, plan, stagedCaptureForCandidate);
     const candidateDbIdentity = identityOf(generation.dbPath);
     const candidateDigest = fileDigest(generation.dbPath);
+    const candidateLogicalDigest = logicalIntegrityDigest(generation.dbPath, descriptor);
     await options.hooks?.afterCandidateValidated?.();
     await options.hooks?.beforeSourceCas?.();
-    const rollback = await snapshotCurrentRollback(root, priorManifest?.active, rollbackSnapshot);
+    const rollback = await snapshotCurrentRollback(
+      root,
+      priorManifest?.active,
+      rollbackSnapshot,
+      priorActiveIntegrity,
+    );
     const rollbackPath = rollback === undefined ? undefined : managedGenerationDbPath(root, rollback.name, true);
     const rollbackIdentity = rollbackPath === undefined ? undefined : identityOf(rollbackPath);
     const rollbackDigest = rollbackPath === undefined ? undefined : fileDigest(rollbackPath);
-    if (rollbackPath !== undefined && rollback !== undefined) validateRetainedGeneration(rollbackPath, rollback);
+    if (rollbackPath !== undefined && rollback !== undefined) {
+      validateRollbackSnapshot(rollbackPath, rollback, buildPlan(rollbackSnapshot, rollback.tier));
+    }
     // This is the final source/root/candidate CAS. All potentially long awaited
     // candidate and rollback work has completed; activation performs only the
     // same-directory manifest transaction after this point.
@@ -362,13 +394,16 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       if (fileDigest(generation.dbPath) !== candidateDigest) {
         throw new Error("memory-rebuild: candidate database changed after validation.");
       }
+      if (logicalIntegrityDigest(generation.dbPath, descriptor) !== candidateLogicalDigest) {
+        throw new Error("memory-rebuild: candidate logical state changed after validation.");
+      }
       validateCandidate(generation.dbPath, descriptor, plan, stagedCaptureForCandidate);
       if (rollbackPath !== undefined && rollbackIdentity !== undefined && rollbackDigest !== undefined && rollback !== undefined) {
         assertSameIdentity(rollbackPath, rollbackIdentity, "retained rollback database");
         if (fileDigest(rollbackPath) !== rollbackDigest) {
           throw new Error("memory-rebuild: retained rollback database changed after validation.");
         }
-        validateRetainedGeneration(rollbackPath, rollback);
+        validateRollbackSnapshot(rollbackPath, rollback, buildPlan(rollbackSnapshot, rollback.tier));
       }
       assertManagedManifestState(root, manifestState);
     };
@@ -436,13 +471,47 @@ export async function rollbackMemoryIndex(options: SafeMemoryIndexOptions): Prom
     const targetIdentity = identityOf(targetPath);
     const targetDigest = fileDigest(targetPath);
     const currentPath = managedGenerationDbPath(root, manifest.active.name, true);
-    validateRetainedGeneration(currentPath, manifest.active);
     const currentIdentity = identityOf(currentPath);
     const currentDigest = fileDigest(currentPath);
+    let currentIntegrity: string | undefined;
+    try {
+      currentIntegrity = logicalIntegrityDigest(currentPath, manifest.active);
+    } catch {
+      // A damaged current active must not prevent rescue to a verified target.
+      // It simply cannot be advertised as the next one-command rollback.
+    }
+    const outgoingSnapshot = snapshotCanonicalSources(root, manifest.active.tier);
+    let outgoing: ManagedGeneration | undefined;
+    if (currentIntegrity !== undefined) {
+      try {
+        outgoing = await snapshotCurrentRollback(
+          root,
+          manifest.active,
+          outgoingSnapshot,
+          currentIntegrity,
+        );
+      } catch (error) {
+        // Semantic/coverage divergence omits the outgoing snapshot. A concurrent
+        // mutation is different: preserve the original failure and do not swap.
+        assertSameIdentity(currentPath, currentIdentity, "current active database");
+        if (fileDigest(currentPath) !== currentDigest
+          || logicalIntegrityDigest(currentPath, manifest.active) !== currentIntegrity) {
+          throw error;
+        }
+        outgoing = undefined;
+      }
+    }
+    const outgoingPath = outgoing === undefined ? undefined : managedGenerationDbPath(root, outgoing.name, true);
+    const outgoingIdentity = outgoingPath === undefined ? undefined : identityOf(outgoingPath);
+    const outgoingDigest = outgoingPath === undefined ? undefined : fileDigest(outgoingPath);
+    const outgoingPlan = outgoing === undefined ? undefined : buildPlan(outgoingSnapshot, outgoing.tier);
+    if (outgoingPath !== undefined && outgoing !== undefined && outgoingPlan !== undefined) {
+      validateRollbackSnapshot(outgoingPath, outgoing, outgoingPlan);
+    }
     const next: ManagedIndexManifest = {
       schemaVersion: MANAGED_INDEX_SCHEMA_VERSION,
       active: target,
-      rollback: manifest.active,
+      ...(outgoing === undefined ? {} : { rollback: outgoing }),
     };
     const assertFinalRollbackCas = (): void => {
       assertSameIdentity(root, rootIdentity, "memory root");
@@ -452,11 +521,25 @@ export async function rollbackMemoryIndex(options: SafeMemoryIndexOptions): Prom
       if (fileDigest(targetPath) !== targetDigest || fileDigest(currentPath) !== currentDigest) {
         throw new Error("memory-rebuild: active or rollback database changed after validation.");
       }
+      if (currentIntegrity !== undefined
+        && logicalIntegrityDigest(currentPath, manifest.active) !== currentIntegrity) {
+        throw new Error("memory-rebuild: current active logical state changed during rollback.");
+      }
       if (snapshotCanonicalSources(root, target.tier).fingerprint !== target.sourceFingerprint) {
         throw new Error("memory-rebuild: canonical source changed before rollback activation.");
       }
       validateRollbackSnapshot(targetPath, target, targetPlan);
-      validateRetainedGeneration(currentPath, manifest.active);
+      if (outgoingPath !== undefined && outgoingIdentity !== undefined && outgoingDigest !== undefined
+        && outgoing !== undefined && outgoingPlan !== undefined) {
+        assertSameIdentity(outgoingPath, outgoingIdentity, "outgoing rollback database");
+        if (fileDigest(outgoingPath) !== outgoingDigest) {
+          throw new Error("memory-rebuild: outgoing rollback database changed after validation.");
+        }
+        if (snapshotCanonicalSources(root, outgoing.tier).fingerprint !== outgoing.sourceFingerprint) {
+          throw new Error("memory-rebuild: outgoing rollback source changed before activation.");
+        }
+        validateRollbackSnapshot(outgoingPath, outgoing, outgoingPlan);
+      }
       assertManagedManifestState(root, manifestState);
     };
     assertFinalRollbackCas();
@@ -473,7 +556,7 @@ export async function rollbackMemoryIndex(options: SafeMemoryIndexOptions): Prom
     }
     return {
       active: targetPath,
-      rollback: managedGenerationDbPath(root, manifest.active.name, true),
+      ...(outgoingPath === undefined ? {} : { rollback: outgoingPath }),
       indexed,
       sourceFingerprint: target.sourceFingerprint,
       generation: target.name,
@@ -763,7 +846,10 @@ function validateCandidate(
   const db = readOnlyDb(path, descriptor);
   try {
     validateDb(db, descriptor);
-    const parityError = buildPlanParityError(db, descriptor.tier, plan, { allowReplayedLifecycle });
+    const parityError = buildPlanParityError(db, descriptor.tier, plan, {
+      allowReplayedLifecycle,
+      allowNoncanonicalEdges: allowReplayedLifecycle,
+    });
     if (parityError !== undefined) throw new Error(parityError);
   } finally {
     db.close();
@@ -774,6 +860,8 @@ interface BuildPlanParityOptions {
   readonly allowReplayedLifecycle: boolean;
   readonly allowReplaySourceRepair?: boolean;
   readonly allowJournalVectorBacklog?: boolean;
+  readonly allowNoncanonicalEdges?: boolean;
+  readonly allowJournalHashRepair?: boolean;
 }
 
 function buildPlanParityError(
@@ -826,10 +914,21 @@ function buildPlanParityError(
     || stableJson(actualAssociations) !== stableJson(plan.graph.associations)) {
     return "memory-rebuild: candidate graph payload validation failed.";
   }
-  for (const support of plan.graph.collectionSupports) {
-    if (!db.edges(support.memoryId).some((edge) => edge.kind === "supports" && edge.dst === support.entityId)) {
-      return "memory-rebuild: candidate collection support validation failed.";
+  const expectedEdges = plan.graph.collectionSupports.map((support) => ({
+    src: support.memoryId,
+    dst: support.entityId,
+    kind: "supports",
+    weight: 1,
+  }));
+  const actualEdges = db.allEdges().map(({ createdAt: _createdAt, ...edge }) => edge);
+  if (options.allowNoncanonicalEdges === true) {
+    for (const expected of expectedEdges) {
+      if (!actualEdges.some((edge) => stableJson([edge]) === stableJson([expected]))) {
+        return "memory-rebuild: candidate collection support validation failed.";
+      }
     }
+  } else if (stableJson(actualEdges) !== stableJson(expectedEdges)) {
+    return "memory-rebuild: candidate edge inventory validation failed.";
   }
   if (tier === "journal") {
     if (state.contentHashes !== plan.contentHashes.size || state.contentHashOrphans !== 0) {
@@ -841,6 +940,20 @@ function buildPlanParityError(
       if (record === undefined || normalizedContentHash(record.text) !== hash.contentHash
         || plan.contentHashes.get(hash.contentHash) !== hash.memoryId) {
         return "memory-rebuild: Journal content-hash correctness validation failed.";
+      }
+    }
+    if (options.allowJournalHashRepair !== true) {
+      const expected = [...plan.contentHashes].map(([contentHash, memoryId]) => {
+        const record = plan.records.find((candidate) => candidate.id === memoryId);
+        return {
+          contentHash,
+          memoryId,
+          sourceFile: record?.source.file,
+          createdAt: record?.createdAt,
+        };
+      });
+      if (stableJson(actual) !== stableJson(expected)) {
+        return "memory-rebuild: Journal content-hash provenance validation failed.";
       }
     }
   } else if (state.contentHashes !== 0) {
@@ -858,9 +971,11 @@ function hasTierExactSourceParity(
   const db = readOnlyDb(path, descriptor);
   try {
     return buildPlanParityError(db, descriptor.tier, plan, {
-      allowReplayedLifecycle: true,
+      allowReplayedLifecycle: allowReplaySourceRepair,
       allowReplaySourceRepair,
       allowJournalVectorBacklog: true,
+      allowNoncanonicalEdges: allowReplaySourceRepair,
+      allowJournalHashRepair: allowReplaySourceRepair,
     }) === undefined;
   } finally {
     db.close();
@@ -872,11 +987,17 @@ function validateRollbackSnapshot(path: string, descriptor: ManagedGeneration, p
   try {
     validateDb(db, descriptor);
     const parityError = buildPlanParityError(db, descriptor.tier, plan, {
-      allowReplayedLifecycle: true,
+      allowReplayedLifecycle: false,
       allowJournalVectorBacklog: true,
     });
     if (parityError !== undefined) {
       throw new Error(`memory-rebuild: rollback source parity validation failed: ${parityError.replace(/^memory-rebuild: /u, "")}`);
+    }
+    if (descriptor.integrityDigest === undefined) {
+      throw new Error("memory-rebuild: rollback generation has no trusted logical integrity digest; run rebuild first.");
+    }
+    if (db.logicalIntegrityDigest() !== descriptor.integrityDigest) {
+      throw new Error("memory-rebuild: rollback logical integrity digest changed after retention.");
     }
   } finally {
     db.close();
@@ -912,6 +1033,7 @@ function validateDb(db: MemoryDb, descriptor: ManagedGeneration): void {
     || metadata.tier !== descriptor.tier
     || metadata.sourceFingerprint !== descriptor.sourceFingerprint
     || metadata.generation !== descriptor.name
+    || metadata.createdAt !== descriptor.createdAt
     || metadata.embeddingModel !== descriptor.embeddingModel
     || metadata.dimension !== descriptor.dimension
     || metadata.skippedRawRecords !== descriptor.skippedRawRecords
@@ -1029,16 +1151,23 @@ function noCallEmbeddings(id: string): EmbeddingProvider {
 
 async function adoptLegacyRollback(
   root: string,
+  expectedIntegrity?: string,
 ): Promise<ManagedGeneration | undefined> {
   const legacyPath = join(root, "memory.db");
   if (!existsSync(legacyPath)) return undefined;
   assertSafeRegularFile(root, legacyPath, "legacy memory database");
+  const legacyIntegrity = logicalIntegrityDigest(legacyPath);
+  if (expectedIntegrity !== undefined && legacyIntegrity !== expectedIntegrity) {
+    throw new Error("memory-rebuild: legacy database changed concurrently before it could be retained.");
+  }
   const generation = createManagedGeneration(root);
   const actualDimension = await backupRawSqlite(legacyPath, generation.dbPath);
+  if (logicalIntegrityDigest(legacyPath) !== legacyIntegrity) {
+    throw new Error("memory-rebuild: legacy database changed concurrently while it was being retained.");
+  }
   const copy = openMemoryDb({ path: generation.dbPath, dim: actualDimension });
   let embeddingModel: string | undefined;
-  let tier: BujoTier;
-  let sourceFingerprint: string;
+  let tier!: BujoTier;
   const createdAt = new Date().toISOString();
   try {
     const state = copy.validationSnapshot();
@@ -1068,33 +1197,67 @@ async function adoptLegacyRollback(
         "memory-rebuild: legacy semantic index has no embedding-model identity; first rebuild it under its prior configuration.",
       );
     }
-    const source = snapshotCanonicalSources(root, tier);
-    sourceFingerprint = source.fingerprint;
-    copy.setIndexMetadata({
-      schemaVersion: MANAGED_INDEX_SCHEMA_VERSION,
-      policyVersion: MEMORY_REBUILD_POLICY_VERSION,
-      tier,
-      sourceFingerprint,
-      generation: generation.name,
-      createdAt,
-      ...(embeddingModel === undefined ? {} : { embeddingModel, dimension: actualDimension }),
-    });
-    copy.checkpoint();
   } finally {
     copy.close();
   }
-  const descriptor: ManagedGeneration = {
+  const source = snapshotCanonicalSources(root, tier);
+  const plan = buildPlan(source, tier);
+  const descriptorBase: ManagedGeneration = {
     name: generation.name,
     tier,
-    sourceFingerprint,
+    sourceFingerprint: source.fingerprint,
     policyVersion: MEMORY_REBUILD_POLICY_VERSION,
     createdAt,
     origin: "legacy-snapshot",
+    skippedRawRecords: plan.skippedRawRecords,
+    skippedUnstructuredRecords: plan.skippedUnstructuredRecords,
+    skippedMissingIdentityRecords: plan.skippedMissingIdentityRecords,
+    missingIdentityLocations: plan.missingIdentityLocations,
+    skippedLegacySourceRecords: plan.skippedLegacySourceRecords,
+    legacySourceLocations: plan.legacySourceLocations,
+    skippedJournalDuplicateRecords: plan.skippedJournalDuplicateRecords,
+    parsedSourceItems: plan.parsedSourceItems,
+    derivedLegacyAssociations: plan.graph.derivedLegacyAssociations,
     ...(embeddingModel === undefined ? {} : { embeddingModel, dimension: actualDimension }),
   };
+
+  // A pre-managed database remains byte-for-byte preserved at memory.db even
+  // when it differs from canonical source, but it must not be advertised as a
+  // one-command rollback. Only an exact, repairable mirror becomes managed.
+  if (!hasTierExactSourceParity(generation.dbPath, descriptorBase, plan, true)) return undefined;
+  normalizeRollbackToPlan(generation.dbPath, plan);
+  if (!hasTierExactSourceParity(generation.dbPath, descriptorBase, plan, false)) return undefined;
+
+  const managed = openMemoryDb({ path: generation.dbPath, dim: actualDimension });
+  let integrityDigest!: string;
+  try {
+    managed.setIndexMetadata({
+      schemaVersion: MANAGED_INDEX_SCHEMA_VERSION,
+      policyVersion: MEMORY_REBUILD_POLICY_VERSION,
+      tier,
+      sourceFingerprint: source.fingerprint,
+      generation: generation.name,
+      createdAt,
+      skippedRawRecords: plan.skippedRawRecords,
+      skippedUnstructuredRecords: plan.skippedUnstructuredRecords,
+      skippedMissingIdentityRecords: plan.skippedMissingIdentityRecords,
+      missingIdentityLocations: plan.missingIdentityLocations,
+      skippedLegacySourceRecords: plan.skippedLegacySourceRecords,
+      legacySourceLocations: plan.legacySourceLocations,
+      skippedJournalDuplicateRecords: plan.skippedJournalDuplicateRecords,
+      parsedSourceItems: plan.parsedSourceItems,
+      derivedLegacyAssociations: plan.graph.derivedLegacyAssociations,
+      ...(embeddingModel === undefined ? {} : { embeddingModel, dimension: actualDimension }),
+    });
+    managed.checkpoint();
+    integrityDigest = managed.logicalIntegrityDigest();
+  } finally {
+    managed.close();
+  }
+  const descriptor: ManagedGeneration = { ...descriptorBase, integrityDigest };
   fsyncFile(generation.dbPath);
   fsyncDirectory(generation.dir);
-  validateRetainedGeneration(generation.dbPath, descriptor);
+  validateRollbackSnapshot(generation.dbPath, descriptor, plan);
   return descriptor;
 }
 
@@ -1102,23 +1265,23 @@ async function snapshotCurrentRollback(
   root: string,
   active: ManagedGeneration | undefined,
   snapshot: SourceSnapshot,
+  expectedIntegrity: string,
 ): Promise<ManagedGeneration | undefined> {
-  if (active === undefined) return await adoptLegacyRollback(root);
+  if (active === undefined) return await adoptLegacyRollback(root, expectedIntegrity);
   const sourcePath = managedGenerationDbPath(root, active.name, true);
-  validateRetainedGeneration(sourcePath, active);
-  if (active.sourceFingerprint === snapshot.fingerprint) {
-    const plan = buildPlan(snapshot, active.tier);
-    if (hasTierExactSourceParity(sourcePath, active, plan, false)) return active;
-    // A capture replay may leave otherwise exact source provenance repairable.
-    // Snapshot the DB and normalize that copy; any semantic mismatch omits the
-    // unsafe rollback instead of trusting the manifest fingerprint alone.
-    return await snapshotDatabaseForRollback(root, sourcePath, snapshot, active);
+  if (logicalIntegrityDigest(sourcePath, active) !== expectedIntegrity) {
+    throw new Error("memory-rebuild: active database changed concurrently before it could be retained.");
   }
+  validateRetainedGeneration(sourcePath, active);
+  // Never turn the formerly writable active path into an immutable rollback
+  // in place. An online backup gets its own generation, canonical repair, WAL
+  // boundary, and logical commitment before the manifest can advertise it.
   return await snapshotDatabaseForRollback(
     root,
     sourcePath,
     snapshot,
     active,
+    expectedIntegrity,
   );
 }
 
@@ -1127,6 +1290,7 @@ async function snapshotDatabaseForRollback(
   sourcePath: string,
   snapshot: SourceSnapshot,
   preservedIdentity: ManagedGeneration,
+  expectedIntegrity: string,
 ): Promise<ManagedGeneration | undefined> {
   const tier = preservedIdentity.tier;
   const plan = buildPlan(snapshot, tier);
@@ -1134,16 +1298,19 @@ async function snapshotDatabaseForRollback(
 
   const generation = createManagedGeneration(root);
   const actualDimension = await backupRawSqlite(sourcePath, generation.dbPath);
+  if (logicalIntegrityDigest(sourcePath, preservedIdentity) !== expectedIntegrity) {
+    throw new Error("memory-rebuild: active database changed concurrently while it was being retained.");
+  }
   // Re-check the online copy before changing its metadata. A concurrent source
   // mutation may produce a structurally valid backup that no longer mirrors
   // the canonical tier snapshot; such a copy must never be stamped as current.
   if (!hasTierExactSourceParity(generation.dbPath, preservedIdentity, plan, true)) return undefined;
-  repairRollbackSourceProvenance(generation.dbPath, plan);
+  normalizeRollbackToPlan(generation.dbPath, plan);
   if (!hasTierExactSourceParity(generation.dbPath, preservedIdentity, plan, false)) return undefined;
 
   const embeddingModel = preservedIdentity.embeddingModel;
   const createdAt = new Date().toISOString();
-  const descriptor: ManagedGeneration = {
+  const descriptorBase: ManagedGeneration = {
     name: generation.name,
     tier,
     sourceFingerprint: snapshot.fingerprint,
@@ -1165,6 +1332,7 @@ async function snapshotDatabaseForRollback(
     }),
   };
   const copy = openMemoryDb({ path: generation.dbPath, dim: actualDimension });
+  let integrityDigest!: string;
   try {
     copy.setIndexMetadata({
       schemaVersion: MANAGED_INDEX_SCHEMA_VERSION,
@@ -1188,32 +1356,64 @@ async function snapshotDatabaseForRollback(
       }),
     });
     copy.checkpoint();
+    integrityDigest = copy.logicalIntegrityDigest();
   } finally {
     copy.close();
   }
+  const descriptor: ManagedGeneration = { ...descriptorBase, integrityDigest };
   fsyncFile(generation.dbPath);
   fsyncDirectory(generation.dir);
   validateRollbackSnapshot(generation.dbPath, descriptor, plan);
   return descriptor;
 }
 
-function repairRollbackSourceProvenance(path: string, plan: BuildPlan): void {
+function normalizeRollbackToPlan(path: string, plan: BuildPlan): void {
   const raw = new BetterSqlite3(path, { fileMustExist: true });
   try {
     const update = raw.prepare(
       `UPDATE memories
-       SET source_session = NULL, source_file = ?, source_line = ?
+       SET valid_from = ?, valid_to = ?, superseded_by = ?, superseded_at = ?,
+           source_session = ?, source_file = ?, source_line = ?
        WHERE id = ?`,
     );
-    const repair = raw.transaction(() => {
+    const insertEdge = raw.prepare(
+      `INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, 'supports', 1.0, ?)`,
+    );
+    const insertHash = raw.prepare(
+      `INSERT INTO content_hashes (content_hash, memory_id, source_file, created_at) VALUES (?, ?, ?, ?)`,
+    );
+    const normalize = raw.transaction(() => {
       for (const record of plan.records) {
-        const result = update.run(record.source.file ?? null, record.source.line ?? null, record.id);
+        const result = update.run(
+          record.validFrom ?? null,
+          record.validTo ?? null,
+          record.supersededBy ?? null,
+          record.supersededAt ?? null,
+          record.source.session ?? null,
+          record.source.file ?? null,
+          record.source.line ?? null,
+          record.id,
+        );
         if (result.changes !== 1) {
-          throw new Error("memory-rebuild: rollback source provenance repair lost a canonical memory row.");
+          throw new Error("memory-rebuild: rollback normalization lost a canonical memory row.");
         }
       }
+      raw.prepare(`DELETE FROM edges`).run();
+      for (const support of plan.graph.collectionSupports) {
+        const record = plan.records.find((candidate) => candidate.id === support.memoryId);
+        insertEdge.run(support.memoryId, support.entityId, record?.createdAt ?? new Date(0).toISOString());
+      }
+      raw.prepare(`DELETE FROM content_hashes`).run();
+      for (const [contentHash, memoryId] of plan.contentHashes) {
+        const record = plan.records.find((candidate) => candidate.id === memoryId);
+        if (record?.source.file === undefined) {
+          throw new Error("memory-rebuild: rollback Journal normalization lost source provenance.");
+        }
+        insertHash.run(contentHash, memoryId, record.source.file, record.createdAt);
+      }
     });
-    repair();
+    normalize();
+    raw.pragma("wal_checkpoint(TRUNCATE)");
   } finally {
     raw.close();
   }
@@ -1299,6 +1499,19 @@ function fsyncFile(path: string): void {
 
 function fileDigest(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function logicalIntegrityDigest(path: string, descriptor?: ManagedGeneration): string {
+  const db = openMemoryDb({
+    path,
+    readOnly: true,
+    dim: descriptor?.dimension ?? DEFAULT_VEC_DIM,
+  });
+  try {
+    return db.logicalIntegrityDigest();
+  } finally {
+    db.close();
+  }
 }
 
 function stableJson(values: readonly unknown[]): string {

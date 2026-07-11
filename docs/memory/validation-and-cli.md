@@ -179,11 +179,11 @@ mono-agent memory audit --json
 mono-agent start
 ```
 
-`rebuild` reads the configured tier, embeddings model, and dimension; snapshots the canonical markdown/graph sources; builds a complete candidate under `.index/generations/<generation>/memory.db`; validates its schema, exact payloads, graph edges, FTS coverage, vector coverage, and model identity; then atomically switches a small manifest. The old active database is retained as the rollback generation only after tier-exact payload/source parity is proven; Journal may retain its documented recoverable missing-vector backlog. If canonical source is ahead of a stale index, rebuild still activates the correct candidate but deliberately omits that unsafe rollback instead of stamping it with a current fingerprint. The previous active index remains usable if any step fails before activation, and a legacy `memory.db` is adopted by online backup without changing its bytes.
+`rebuild` reads the configured tier, embeddings model, and dimension; snapshots the canonical markdown/graph sources; builds a complete candidate under `.index/generations/<generation>/memory.db`; validates its schema, exact payloads, complete edge inventory, Journal hash provenance, FTS coverage, vector coverage, and model identity; then atomically switches a small manifest. The old active database is retained only through a fresh immutable online-backup generation after tier-exact payload/source parity is proven; repairable lifecycle/source/edge/hash state is normalized on that copy, and Journal may retain its documented recoverable missing-vector backlog. The manifest commits the copy's complete logical state—including WAL-visible rows and vector blobs—so same-count semantic tampering cannot hide behind an unchanged main-file checksum. If canonical source is ahead of a stale index, rebuild still activates the correct candidate but deliberately omits that unsafe rollback instead of stamping it with a current fingerprint. The previous active index remains usable if any step fails before activation. A divergent legacy `memory.db` remains byte-for-byte in place but is not advertised as rollback; only a parity-compatible legacy database is adopted by online backup.
 
 The running agent must be stopped. The command refuses a matching live process, an active writer lease/SQLite transaction, concurrent source changes, symlinked source paths, or a concurrent manifest change. Journal/BuJo rebuilds can call the configured embeddings provider in bounded batches; rebuild never calls the chat LLM. Rollback swaps already-validated generations and makes no embedding or chat-model request.
 
-`rollback` is deliberately conservative: its retained generation must match the currently configured tier/model/dimension, and its canonical source fingerprint must still match. If the rebuild accompanied a tier, embeddings-model, or dimension change, restore that prior config first, then run:
+`rollback` is deliberately conservative: its retained generation must match the currently configured tier/model/dimension, its canonical source fingerprint must still match, and its persisted logical integrity commitment must verify. Rollbacks retained by an older build without that commitment fail closed; run one current `rebuild` first to create a verified snapshot. If the rebuild accompanied a tier, embeddings-model, or dimension change, restore that prior config first, then run:
 
 ```bash
 mono-agent stop
@@ -192,6 +192,8 @@ mono-agent memory rollback --json
 mono-agent memory audit --json
 mono-agent start
 ```
+
+Before switching, rollback tries to snapshot the outgoing current index under the same rules. If that outgoing index is already semantically divergent or corrupt, recovery to the verified target still succeeds but no reverse rollback is advertised.
 
 Rebuild output and `audit --json` report the generation name, indexed count, raw/unstructured/missing-identity/legacy-source/Journal-duplicate skips, source locations that require review, and legacy associations derived by exact unique whole-name matching. BuJo raw audit files are never promoted automatically into the curated index, and no command replays history through a paid chat model.
 

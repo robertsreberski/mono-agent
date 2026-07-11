@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname } from "node:path";
 
 import BetterSqlite3, { type Database } from "better-sqlite3";
@@ -730,6 +731,20 @@ export class MemoryDb {
     }[];
   }
 
+  /** Complete edge inventory for closed-candidate and rollback parity checks. */
+  allEdges(): { src: string; dst: string; kind: string; weight: number; createdAt: string }[] {
+    const rows = this.db.prepare(
+      `SELECT src, dst, kind, weight, created_at FROM edges ORDER BY src, dst, kind`,
+    ).all() as Array<{ src: string; dst: string; kind: string; weight: number; created_at: string }>;
+    return rows.map((row) => ({
+      src: row.src,
+      dst: row.dst,
+      kind: row.kind,
+      weight: row.weight,
+      createdAt: row.created_at,
+    }));
+  }
+
   addEdge(src: string, dst: string, kind: "thread" | "about" | "supports" | "supersedes", weight = 1.0): void {
     this.db.prepare(
       `INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, ?, ?, ?)
@@ -1257,6 +1272,83 @@ export class MemoryDb {
 
   integrityCheck(): string {
     return String(this.db.pragma("integrity_check", { simple: true }));
+  }
+
+  /**
+   * Commit the complete runtime-visible SQLite state to one deterministic hash.
+   *
+   * Unlike hashing only `memory.db`, this observes committed WAL pages through
+   * SQLite and includes vector blobs plus the graph, FTS, provenance, lifecycle,
+   * and metadata tables. Safe rebuild stores this digest outside an immutable
+   * rollback snapshot so later semantic tampering cannot authenticate itself.
+   */
+  logicalIntegrityDigest(): string {
+    const hash = createHash("sha256");
+    hash.update("mono-agent-memory-logical-integrity-v1\0");
+    const bytes = (marker: string, value: Uint8Array): void => {
+      hash.update(marker);
+      hash.update(String(value.byteLength));
+      hash.update("\0");
+      hash.update(value);
+    };
+    const add = (value: unknown): void => {
+      if (value === null) {
+        hash.update("N");
+      } else if (value === undefined) {
+        hash.update("U");
+      } else if (typeof value === "string") {
+        bytes("S", Buffer.from(value));
+      } else if (typeof value === "number") {
+        const encoded = Buffer.allocUnsafe(8);
+        encoded.writeDoubleBE(value);
+        bytes("D", encoded);
+      } else if (typeof value === "bigint") {
+        bytes("I", Buffer.from(value.toString()));
+      } else if (typeof value === "boolean") {
+        hash.update(value ? "T" : "F");
+      } else if (ArrayBuffer.isView(value)) {
+        bytes("B", Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+      } else if (value instanceof ArrayBuffer) {
+        bytes("B", Buffer.from(value));
+      } else if (Array.isArray(value)) {
+        hash.update("A");
+        add(value.length);
+        for (const entry of value) add(entry);
+      } else {
+        const entries = Object.entries(value as Record<string, unknown>)
+          .sort(([left], [right]) => left.localeCompare(right));
+        hash.update("O");
+        add(entries.length);
+        for (const [key, entry] of entries) {
+          add(key);
+          add(entry);
+        }
+      }
+    };
+    const section = (name: string, sql: string): void => {
+      add(name);
+      for (const row of this.db.prepare(sql).iterate()) add(row);
+    };
+
+    section(
+      "sqlite_master",
+      `SELECT type, name, tbl_name, sql FROM sqlite_master
+       WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`,
+    );
+    for (const table of [
+      "memories",
+      "edges",
+      "memories_fts",
+      "memories_vec",
+      "entities",
+      "entity_relations",
+      "memory_entities",
+      "content_hashes",
+      "index_metadata",
+    ]) {
+      if (this.tableExists(table)) section(table, `SELECT rowid, * FROM ${table} ORDER BY rowid`);
+    }
+    return hash.digest("hex");
   }
 
   vectorCount(): number {

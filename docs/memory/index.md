@@ -263,8 +263,10 @@ mono-agent memory rollback --json
 ```
 
 Rebuild never calls the chat LLM or replays historical turns through a paid model. It may
-re-embed canonical Journal/BuJo facts in bounded batches. The prior active generation is
-retained for rollback, and pre-activation failures leave it active. See [Validation & CLI](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback) for the generation layout, source accounting, safety gates, v1 cutover, and rollback procedure.
+re-embed canonical Journal/BuJo facts in bounded batches. A prior index is retained only as
+a fresh immutable, source-parity-verified backup with a logical integrity commitment;
+divergent legacy/current indexes are preserved but not advertised as safe rollback.
+Pre-activation failures leave the current active generation in place. See [Validation & CLI](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback) for the generation layout, source accounting, safety gates, v1 cutover, and rollback procedure.
 
 The lower-level `memory-bujo` binary remains for advanced root-oriented inspection and
 legacy/manual maintenance. `rebuild`/`rollback` require an explicit tier and operate only

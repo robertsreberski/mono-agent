@@ -591,7 +591,7 @@ describe("safe memory index rebuild", () => {
     expect(readFileSync(join(root, "monthly", "2026-07.md"), "utf8")).toContain("mono-agent-migrate:");
   });
 
-  it("builds beside a legacy index, activates one versioned generation, and retains a working rollback", async () => {
+  it("builds beside a divergent legacy index without advertising it as a safe rollback", async () => {
     const root = tempRoot();
     await seedLegacy(root, note("OLD", "Legacy index sentinel."));
     writeDaily(root, [bullet("NEW", "Canonical source sentinel.")]);
@@ -599,19 +599,17 @@ describe("safe memory index rebuild", () => {
     const legacyPath = await resolveActiveMemoryDbPath(root);
     expect(legacyPath).toBe(join(realpathSync(root), "memory.db"));
 
-    await safeRebuildMemoryIndex({ root, tier: "lite" });
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: "lite" });
 
     const candidatePath = await resolveActiveMemoryDbPath(root);
     expect(candidatePath).not.toBe(legacyPath);
     expect(readTexts(candidatePath)).toEqual(["Canonical source sentinel."]);
     expect(existsSync(legacyPath)).toBe(true);
-
-    await rollbackMemoryIndex({ root, tier: "lite" });
-
-    const rolledBackPath = await resolveActiveMemoryDbPath(root);
-    expect(rolledBackPath).not.toBe(candidatePath);
-    expect(readTexts(rolledBackPath)).toEqual(["Legacy index sentinel."]);
-    expect(existsSync(candidatePath)).toBe(true);
+    expect(readTexts(legacyPath)).toEqual(["Legacy index sentinel."]);
+    expect(rebuilt.rollback).toBeUndefined();
+    expect(readManagedIndexManifest(root)?.rollback).toBeUndefined();
+    await expect(rollbackMemoryIndex({ root, tier: "lite" })).rejects.toThrow(/no retained rollback/iu);
+    expect(resolveActiveMemoryDbPath(root)).toBe(candidatePath);
   });
 
   it("does not switch the active pointer when a closed candidate fails before manifest activation", async () => {
@@ -866,7 +864,7 @@ describe("safe memory index rebuild", () => {
     const firstPath = await resolveActiveMemoryDbPath(root);
     expect(readMetadata(firstPath)).toMatchObject({ embeddingModel: "test:model-a", dimension: 8, tier: "journal" });
 
-    await safeRebuildMemoryIndex({
+    const rebuilt = await safeRebuildMemoryIndex({
       root,
       tier: "journal",
       embeddings: embeddings("test:model-b", 4),
@@ -887,7 +885,12 @@ describe("safe memory index rebuild", () => {
       dim: 8,
     });
     expect(rollbackEmbed).not.toHaveBeenCalled();
-    expect(await resolveActiveMemoryDbPath(root)).toBe(firstPath);
+    expect(await resolveActiveMemoryDbPath(root)).toBe(rebuilt.rollback);
+    expect(readMetadata(resolveActiveMemoryDbPath(root))).toMatchObject({
+      embeddingModel: "test:model-a",
+      dimension: 8,
+      tier: "journal",
+    });
   });
 
   it("rejects an embedding response with the wrong vector dimension before activation", async () => {
@@ -934,9 +937,9 @@ describe("safe memory index rebuild", () => {
     const root = tempRoot();
     const provider = embeddings("test:rollback-identity", 8);
     writeDaily(root, [bullet("M1", "Rollback vector identity must stay complete.")]);
-    const first = await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 8 });
+    await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 8 });
     const second = await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 8 });
-    expect(second.rollback).toBe(first.active);
+    expect(second.rollback).toBeDefined();
     const activeBefore = resolveActiveMemoryDbPath(root);
     nullVectorIdentity(second.rollback!, "both");
 
@@ -975,30 +978,25 @@ describe("safe memory index rebuild", () => {
     expect(resolveActiveMemoryDbPath(root)).toBe(activeBefore);
   });
 
-  it("preserves Journal's recoverable missing-vector backlog across rollback", async () => {
+  it("rejects Journal vector mutation after rollback retention", async () => {
     const root = tempRoot();
     const provider = embeddings("test:journal-rollback-backlog", 8);
     writeDaily(root, [bullet("M1", "Journal can restore missing vectors after lexical rollback.")]);
-    const first = await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 8 });
+    await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 8 });
     const second = await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 8 });
-    expect(second.rollback).toBe(first.active);
+    expect(second.rollback).toBeDefined();
+    const activeBefore = resolveActiveMemoryDbPath(root);
     deleteAllVectors(second.rollback!);
 
-    await rollbackMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 8 });
-
-    expect(resolveActiveMemoryDbPath(root)).toBe(first.active);
-    const rolledBack = openMemoryDb({ path: first.active, readOnly: true, dim: 8 });
-    try {
-      expect(rolledBack.validationSnapshot()).toMatchObject({ memories: 1, vectors: 0 });
-    } finally {
-      rolledBack.close();
-    }
+    await expect(rollbackMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 8 }))
+      .rejects.toThrow(/integrity|vector coverage/iu);
+    expect(resolveActiveMemoryDbPath(root)).toBe(activeBefore);
   });
 
   it("refuses a stale rollback after canonical source changes", async () => {
     const root = tempRoot();
-    await seedLegacy(root, note("OLD", "Old retained generation."));
     writeDaily(root, [bullet("M1", "Source at activation.")]);
+    await safeRebuildMemoryIndex({ root, tier: "lite" });
     await safeRebuildMemoryIndex({ root, tier: "lite" });
     const active = await resolveActiveMemoryDbPath(root);
 
@@ -1159,16 +1157,15 @@ describe("safe memory index rebuild", () => {
     writeGraph(root, [{ kind: "entity", id: "person:morgan", name: "Morgan", createdAt: NOW }]);
     const provider = embeddings("test:cross-tier", 8);
     await safeRebuildMemoryIndex({ root, tier: from, embeddings: provider, dim: 8 });
-    const first = resolveActiveMemoryDbPath(root);
-    await safeRebuildMemoryIndex({ root, tier: to, embeddings: provider, dim: 8 });
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: to, embeddings: provider, dim: 8 });
     await rollbackMemoryIndex({ root, tier: from, embeddings: provider, dim: 8 });
-    expect(resolveActiveMemoryDbPath(root)).toBe(first);
+    expect(resolveActiveMemoryDbPath(root)).toBe(rebuilt.rollback);
   });
 
   it.each([
     [false, "journal"],
     [true, "bujo"],
-  ] as const)("infers a realizable legacy semantic rollback identity (graph=%s => %s)", async (withGraph, priorTier) => {
+  ] as const)("preserves divergent legacy semantic data without advertising rollback (graph=%s, inferred=%s)", async (withGraph, priorTier) => {
     const root = tempRoot();
     const modelA = embeddings("test:legacy-semantic-a", 8);
     const legacy = openMemoryDb({ path: join(root, "memory.db"), embeddings: modelA, dim: 8 });
@@ -1177,32 +1174,27 @@ describe("safe memory index rebuild", () => {
     writeDaily(root, [bullet("NEW", "Lite replacement source.")]);
     if (withGraph) writeGraph(root, [{ kind: "entity", id: "person:morgan", name: "Morgan", createdAt: NOW }]);
 
-    await safeRebuildMemoryIndex({ root, tier: "lite" });
-    expect(readManagedIndexManifest(root)?.rollback).toMatchObject({
-      tier: priorTier,
-      embeddingModel: modelA.id,
-      dimension: 8,
-    });
-
-    await rollbackMemoryIndex({ root, tier: priorTier, embeddings: modelA, dim: 8 });
-    expect(readTexts(resolveActiveMemoryDbPath(root))).toContain("Legacy semantic rollback sentinel.");
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: "lite" });
+    expect(rebuilt.rollback).toBeUndefined();
+    expect(readManagedIndexManifest(root)?.rollback).toBeUndefined();
+    expect(readTexts(join(root, "memory.db"))).toContain("Legacy semantic rollback sentinel.");
+    await expect(rollbackMemoryIndex({ root, tier: priorTier, embeddings: modelA, dim: 8 }))
+      .rejects.toThrow(/no retained rollback/iu);
   });
 
-  it("infers a legacy Lite identity before first activation into Journal", async () => {
+  it("preserves divergent legacy Lite data before first Journal activation without advertising rollback", async () => {
     const root = tempRoot();
     await seedLegacy(root, note("OLD", "Legacy Lite rollback sentinel."));
     writeDaily(root, [bullet("NEW", "Journal replacement source.")]);
     const model = embeddings("test:new-journal", 8);
 
-    await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: model, dim: 8 });
-    expect(readManagedIndexManifest(root)?.rollback).toMatchObject({ tier: "lite" });
-    expect(readManagedIndexManifest(root)?.rollback).not.toHaveProperty("embeddingModel");
-
-    await rollbackMemoryIndex({ root, tier: "lite" });
-    expect(readTexts(resolveActiveMemoryDbPath(root))).toContain("Legacy Lite rollback sentinel.");
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: model, dim: 8 });
+    expect(rebuilt.rollback).toBeUndefined();
+    expect(readManagedIndexManifest(root)?.rollback).toBeUndefined();
+    expect(readTexts(join(root, "memory.db"))).toContain("Legacy Lite rollback sentinel.");
   });
 
-  it("retains the actual legacy model identity across a first managed model change", async () => {
+  it("preserves divergent legacy model data across first activation without advertising rollback", async () => {
     const root = tempRoot();
     const modelA = embeddings("test:legacy-model-a", 8);
     const modelB = embeddings("test:new-model-b", 4);
@@ -1211,14 +1203,10 @@ describe("safe memory index rebuild", () => {
     legacy.close();
     writeDaily(root, [bullet("NEW", "Model B replacement source.")]);
 
-    await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: modelB, dim: 4 });
-    expect(readManagedIndexManifest(root)?.rollback).toMatchObject({
-      tier: "journal",
-      embeddingModel: modelA.id,
-      dimension: 8,
-    });
-    await rollbackMemoryIndex({ root, tier: "journal", embeddings: modelA, dim: 8 });
-    expect(readTexts(resolveActiveMemoryDbPath(root))).toContain("Legacy model A sentinel.");
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: modelB, dim: 4 });
+    expect(rebuilt.rollback).toBeUndefined();
+    expect(readManagedIndexManifest(root)?.rollback).toBeUndefined();
+    expect(readTexts(join(root, "memory.db"))).toContain("Legacy model A sentinel.");
   });
 
   it("rejects a legacy SQLite write transaction before calling embeddings", async () => {
@@ -1421,7 +1409,51 @@ describe("safe memory index rebuild", () => {
     lease.release();
   });
 
-  it("adopts a genuine old-schema database through an online copy without changing legacy bytes", async () => {
+  it("does not write a writer-lease payload after the managed directory is relocated", () => {
+    const root = tempRoot();
+    const outside = tempRoot();
+    const managed = join(realpathSync(root), ".index");
+    const escaped = join(outside, "escaped-index");
+
+    expect(() => acquireMemoryWriterLease(root, {
+      afterCreate: () => {
+        renameSync(managed, escaped);
+        symlinkSync(escaped, managed, "dir");
+      },
+    })).toThrow(/managed memory directory|symlink|replaced|acquisition/iu);
+
+    expect(readFileSync(join(escaped, "writer.lock"))).toHaveLength(0);
+  });
+
+  it("revalidates the candidate path after embeddings before persisting user text", async () => {
+    const root = tempRoot();
+    const outside = tempRoot();
+    writeDaily(root, [bullet("PATH-GUARD", "Provider relocation must not leak this memory text.")]);
+    const managed = join(realpathSync(root), ".index");
+    const escaped = join(outside, "escaped-index");
+    const provider: EmbeddingProvider = {
+      id: "test:path-relocation",
+      embed: async (texts) => {
+        renameSync(managed, escaped);
+        symlinkSync(escaped, managed, "dir");
+        return texts.map((text) => deterministicVector(text, 8));
+      },
+    };
+
+    await expect(safeRebuildMemoryIndex({ root, tier: "journal", embeddings: provider, dim: 8 }))
+      .rejects.toThrow(/managed memory directory|memory generations directory|symlink|replaced/iu);
+
+    const generation = readdirSync(join(escaped, "generations"))[0];
+    if (generation === undefined) throw new Error("expected escaped candidate generation");
+    const raw = new BetterSqlite3(join(escaped, "generations", generation, "memory.db"), { readonly: true });
+    try {
+      expect((raw.prepare("SELECT COUNT(*) AS n FROM memories").get() as { n: number }).n).toBe(0);
+    } finally {
+      raw.close();
+    }
+  });
+
+  it("preserves a divergent old-schema database without advertising an unsafe rollback", async () => {
     const root = tempRoot();
     await seedLegacy(root, note("OLD", "Old-schema rollback sentinel."));
     const legacyPath = join(root, "memory.db");
@@ -1434,9 +1466,23 @@ describe("safe memory index rebuild", () => {
 
     const result = await safeRebuildMemoryIndex({ root, tier: "lite" });
     expect(sha256(legacyPath)).toBe(legacyHash);
+    expect(result.rollback).toBeUndefined();
+    expect(readManagedIndexManifest(root)?.rollback).toBeUndefined();
+    await expect(rollbackMemoryIndex({ root, tier: "lite" })).rejects.toThrow(/no retained rollback/iu);
+    expect(readTexts(legacyPath)).toEqual(["Old-schema rollback sentinel."]);
+  });
+
+  it("adopts an exact-compatible legacy Lite database as a working rollback", async () => {
+    const root = tempRoot();
+    const item = bullet("LEGACY-EXACT", "Exact legacy and canonical source agree.");
+    writeDaily(root, [item]);
+    await seedLegacy(root, memoryRecordForBullet(item, "daily/2026-07-11.md"));
+
+    const result = await safeRebuildMemoryIndex({ root, tier: "lite" });
+
     expect(result.rollback).toBeDefined();
     await rollbackMemoryIndex({ root, tier: "lite" });
-    expect(readTexts(resolveActiveMemoryDbPath(root))).toEqual(["Old-schema rollback sentinel."]);
+    expect(readTexts(resolveActiveMemoryDbPath(root))).toEqual(["Exact legacy and canonical source agree."]);
   });
 
   it("omits rollback when an empty semantic database cannot prove parity with changed source", async () => {
