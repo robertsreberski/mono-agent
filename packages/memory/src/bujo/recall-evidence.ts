@@ -31,11 +31,22 @@ const DAY_OR_MONTH = /\b(?:mon|tues|wednes|thurs|fri|satur|sun)day\b|\b(?:januar
 const DATE_VALUE = /\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?)\b/u;
 const TIME_VALUE = /\b(?:[01]?\d|2[0-3]):[0-5]\d\b|\b\d{1,2}(?::[0-5]\d)?\s*(?:a\.?m\.?|p\.?m\.?)\b|\b(?:noon|midnight)\b/iu;
 const PHONE_VALUE = /\b(?:\+?\d[\d .()-]{5,}\d|\d{3}[- .]\d{3,})\b/u;
-const CONVERSATION_RELATIVE = /\b(?:last|previous|immediately preceding)\s+(?:message|reply|response)\b|\bwhat did you (?:send|say)\b/iu;
+const SELF_RELATIVE_MESSAGE = /\b(?:your|my)\s+(?:last|previous|most recent|immediately preceding)\s+(?:message|reply|response)\b/iu;
+const CURRENT_CONVERSATION = /\b(?:current|this)\s+(?:conversation|chat|thread)\b/iu;
+const BARE_SEND_OR_SAY = /^\s*what did you (?:just\s+)?(?:send|say)(?:\s+just now)?\s*[?!.]*\s*$/iu;
+const SEND_OR_SAY_RELATIVE = /^\s*what did you (?:send|say)\s+(?:in\s+)?(?:the\s+)?(?:last|previous|most recent|immediately preceding)\s+(?:message|reply|response)\s*[?!.]*\s*$/iu;
+const UNQUALIFIED_RELATIVE_MESSAGE = /^\s*(?:what (?:was|is)|repeat|show me)\s+(?:the\s+)?(?:last|previous|most recent|immediately preceding)\s+(?:message|reply|response)\s*[?!.]*\s*$/iu;
+const DURABLE_HISTORY_QUALIFIER = /\b(?:archive|archived|history|historical|yesterday|last\s+(?:week|month|year))\b|\b(?:in|during|from)\s+(?:19|20)\d{2}\b/iu;
 
 /** True when the answer belongs to active conversation history, never durable memory. */
 export function isConversationRelativeQuery(query: string): boolean {
-  return CONVERSATION_RELATIVE.test(query);
+  const normalized = query.normalize("NFKC");
+  if (DURABLE_HISTORY_QUALIFIER.test(normalized)) return false;
+  return SELF_RELATIVE_MESSAGE.test(normalized)
+    || CURRENT_CONVERSATION.test(normalized)
+    || BARE_SEND_OR_SAY.test(normalized)
+    || SEND_OR_SAY_RELATIVE.test(normalized)
+    || UNQUALIFIED_RELATIVE_MESSAGE.test(normalized);
 }
 
 // Ambiguous roles and relations are explicit-tool territory. In particular,

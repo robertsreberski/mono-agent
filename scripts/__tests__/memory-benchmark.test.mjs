@@ -58,7 +58,19 @@ describe("memory benchmark", () => {
       metrics: {
         multiHop: { cases: 10, baselineRecallAt5: 0, enabledRecallAt5: 1 },
         direct: { cases: 10, baselineRecallAt5: 1, enabledRecallAt5: 1 },
-        adversarial: { cases: 10, leakCount: 0, missingRequiredCount: 0 },
+        adversarial: {
+          cases: 25,
+          leakCount: 0,
+          missingRequiredCount: 0,
+          categories: expect.arrayContaining([
+            "negated-query",
+            "stored-negated-relation",
+            "stored-qualified-relation",
+            "wrong-endpoint",
+            "relation-particle-collision",
+            "relation-particle-control",
+          ]),
+        },
         efficiency: { queryEmbeddingCalls: 20, expectedQueryEmbeddingCalls: 20, llmCalls: 0 },
       },
     });

@@ -96,6 +96,8 @@ describe("expandEntityRelations", () => {
       expect(expandIds(db, ["morgan-seed"], "Where is Morgan's manager based?")).toEqual(["taylor-manager"]);
       expect(expandIds(db, ["morgan-seed"], "Who manages Morgan?")).toEqual(["taylor-manager"]);
       expect(expandIds(db, ["morgan-seed"], "Who does Morgan manage?")).toEqual(["casey-report"]);
+      expect(expandIds(db, ["morgan-seed"], "Who is not Morgan's manager?")).toEqual([]);
+      expect(expandIds(db, ["morgan-seed"], "Where is Morgan's manager not based?")).toEqual([]);
     } finally {
       db.close();
     }
@@ -117,6 +119,112 @@ describe("expandEntityRelations", () => {
       db.addEntityRelation("person:morgan", "city:amsterdam", "lives in");
 
       expect(expandIds(db, ["morgan-memory"], "What does Morgan lead?")).toEqual(["atlas-memory"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("fails closed on negated queries and negated, historical, or modal stored relations", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    try {
+      await db.upsert(note("morgan-seed", "Morgan has durable project context."));
+      await db.upsert(note("atlas-positive", "Project Atlas is currently active."));
+      await db.upsert(note("apollo-negative", "Project Apollo is not led by Morgan."));
+      await db.upsert(note("orion-historical", "Project Orion was historical context."));
+      await db.upsert(note("vega-modal", "Project Vega is uncertain context."));
+      addEntity(db, "person:morgan", "Morgan");
+      addEntity(db, "project:atlas", "Project Atlas");
+      addEntity(db, "project:apollo", "Project Apollo");
+      addEntity(db, "project:orion", "Project Orion");
+      addEntity(db, "project:vega", "Project Vega");
+      associate(db, "morgan-seed", "person:morgan");
+      associate(db, "atlas-positive", "project:atlas");
+      associate(db, "apollo-negative", "project:apollo");
+      associate(db, "orion-historical", "project:orion");
+      associate(db, "vega-modal", "project:vega");
+      db.addEntityRelation("person:morgan", "project:atlas", "leads");
+      db.addEntityRelation("person:morgan", "project:apollo", "does not lead");
+      db.addEntityRelation("person:morgan", "project:orion", "formerly led");
+      db.addEntityRelation("person:morgan", "project:vega", "might lead");
+
+      expect(expandIds(db, ["morgan-seed"], "Which project does Morgan lead?")).toEqual(["atlas-positive"]);
+      for (const query of [
+        "Which project does Morgan not lead?",
+        "Which project does Morgan no longer lead?",
+        "Morgan never leads which project?",
+        "Morgan doesn't lead which project?",
+        "Morgan can't lead which project?",
+      ]) {
+        expect(expandIds(db, ["morgan-seed"], query), query).toEqual([]);
+      }
+      expect(expandIds(db, ["atlas-positive"], "Who does not lead Atlas?")).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects a concrete endpoint that is not the stored endpoint in every direction branch", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    try {
+      await db.upsert(note("morgan-seed", "Morgan has durable project context."));
+      await db.upsert(note("atlas-target", "Project Atlas is based in Paris."));
+      addEntity(db, "person:morgan", "Morgan");
+      addEntity(db, "project:atlas", "Project Atlas");
+      addEntity(db, "project:apollo", "Project Apollo");
+      addEntity(db, "city:amsterdam", "Amsterdam");
+      associate(db, "morgan-seed", "person:morgan");
+      associate(db, "atlas-target", "project:atlas");
+      db.addEntityRelation("person:morgan", "project:atlas", "leads");
+      db.addEntityRelation("project:atlas", "person:morgan", "manages");
+
+      expect(expandIds(db, ["morgan-seed"], "Does Morgan lead Project Atlas?")).toEqual(["atlas-target"]);
+      expect(expandIds(db, ["morgan-seed"], "Does Morgan lead Project Apollo?")).toEqual([]);
+      expect(expandIds(db, ["morgan-seed"], "Does Morgan lead Amsterdam?")).toEqual([]);
+      expect(expandIds(db, ["morgan-seed"], "Does Morgan lead Project Unknown?")).toEqual([]);
+      expect(expandIds(db, ["morgan-seed"], "Does Morgan lead the garden club?")).toEqual([]);
+      expect(expandIds(db, ["morgan-seed"], "Morgan leads Unknown?")).toEqual([]);
+      expect(expandIds(db, ["morgan-seed"], "Does Atlas manage Morgan?")).toEqual(["atlas-target"]);
+      expect(expandIds(db, ["morgan-seed"], "Does Apollo manage Morgan?")).toEqual([]);
+      expect(expandIds(db, ["morgan-seed"], "Does Unknown manage Morgan?")).toEqual([]);
+      expect(expandIds(db, ["morgan-seed"], "Unknown manages Morgan?")).toEqual([]);
+      expect(expandIds(db, ["morgan-seed"], "Where is Morgan's manager Atlas based?")).toEqual(["atlas-target"]);
+      expect(expandIds(db, ["morgan-seed"], "Where is Morgan's manager Apollo based?")).toEqual([]);
+      expect(expandIds(db, ["morgan-seed"], "Where is Morgan's manager Unknown based?")).toEqual([]);
+      expect(expandIds(db, ["morgan-seed"], "Where is Morgan's manager the garden club based?")).toEqual([]);
+      expect(expandIds(db, ["morgan-seed"], "Who is Morgan's manager?")).toEqual(["atlas-target"]);
+      expect(expandIds(db, ["morgan-seed"], "Is Atlas Morgan's manager?")).toEqual(["atlas-target"]);
+      expect(expandIds(db, ["morgan-seed"], "Is Unknown Morgan's manager?")).toEqual([]);
+      expect(expandIds(db, ["morgan-seed"], "Is the garden club Morgan's manager?")).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("preserves relation-defining particles instead of collapsing near-collision phrases", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    try {
+      await db.upsert(note("acme-seed", "Acme has durable organization context."));
+      await db.upsert(note("worker-target", "Willa works with Acme."));
+      await db.upsert(note("reporter-target", "Riley reports about Acme."));
+      await db.upsert(note("talker-target", "Taylor talks about Acme."));
+      addEntity(db, "org:acme", "Acme");
+      addEntity(db, "person:willa", "Willa");
+      addEntity(db, "person:riley", "Riley");
+      addEntity(db, "person:taylor", "Taylor");
+      associate(db, "acme-seed", "org:acme");
+      associate(db, "worker-target", "person:willa");
+      associate(db, "reporter-target", "person:riley");
+      associate(db, "talker-target", "person:taylor");
+      db.addEntityRelation("person:willa", "org:acme", "works with");
+      db.addEntityRelation("person:riley", "org:acme", "reports about");
+      db.addEntityRelation("person:taylor", "org:acme", "talks about");
+
+      expect(expandIds(db, ["acme-seed"], "Who works with Acme?")).toEqual(["worker-target"]);
+      expect(expandIds(db, ["acme-seed"], "Who reports about Acme?")).toEqual(["reporter-target"]);
+      expect(expandIds(db, ["acme-seed"], "Who talks about Acme?")).toEqual(["talker-target"]);
+      expect(expandIds(db, ["acme-seed"], "Who works for Acme?")).toEqual([]);
+      expect(expandIds(db, ["acme-seed"], "Who reports to Acme?")).toEqual([]);
+      expect(expandIds(db, ["acme-seed"], "Who talks to Acme?")).toEqual([]);
     } finally {
       db.close();
     }

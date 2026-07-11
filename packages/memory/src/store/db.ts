@@ -940,6 +940,7 @@ export class MemoryDb {
     if (seedEntities.size === 0) return [];
 
     const queryTokens = relevanceTokens(options.query);
+    const queryEntityIds = this.entityIdsMentionedInQuery(options.query);
     const relatedEntities = new Map<string, number>();
     for (const entityId of seedEntities) {
       for (const relation of this.relationsTouching(entityId)) {
@@ -950,7 +951,9 @@ export class MemoryDb {
         if (seedEntity === undefined || relatedEntity === undefined) continue;
         // The seed name is deliberately excluded from path evidence. A query
         // about Morgan is not permission to traverse every relation Morgan has.
-        const relationTokens = relevanceTokens(relation.relation);
+        const relationPhrases = normalizedRelationPhrases(relation.relation);
+        if (relationPhrases.length === 0) continue;
+        const relationTokens = new Set(relationPhrases.flat());
         const relatedTokens = relevanceTokens(relatedEntity.name);
         const overlap = tokenOverlap(queryTokens, relationTokens) + tokenOverlap(queryTokens, relatedTokens);
         if (overlap === 0 || !relationDirectionMatches(
@@ -962,6 +965,7 @@ export class MemoryDb {
           entityId,
           relatedId,
           (id, words) => this.entityReferenceIsUnique(id, words),
+          queryEntityIds,
         )) continue;
         relatedEntities.set(relatedId, Math.max(relatedEntities.get(relatedId) ?? 0, overlap));
       }
@@ -1013,6 +1017,52 @@ export class MemoryDb {
     const key = words.join("\u0000");
     const owners = rows.filter((row) => entityNameVariants(row.name).some((variant) => variant.join("\u0000") === key));
     return owners.length === 1 && owners[0]?.id === entityId;
+  }
+
+  /** Resolve only capitalized/type-qualified query-local names; never scan/materialize the catalog. */
+  private entityIdsMentionedInQuery(query: string): ReadonlySet<string> {
+    const rawWords = query.normalize("NFKC").match(/[\p{L}\p{N}-]+/gu) ?? [];
+    const candidates = new Map<string, string[]>();
+    for (let index = 0; index < rawWords.length;) {
+      if (!startsUppercase(rawWords[index] ?? "")) {
+        index += 1;
+        continue;
+      }
+      const group: string[] = [];
+      while (index < rawWords.length && startsUppercase(rawWords[index] ?? "")) {
+        group.push(rawWords[index] ?? "");
+        index += 1;
+      }
+      while (group.length > 0 && QUERY_NAME_PREFIXES.has((group[0] ?? "").toLocaleLowerCase("en-US"))) group.shift();
+      const words = group.flatMap((word) => canonicalWords(word));
+      if (words.length > 0) candidates.set(words.join("\u0000"), words);
+    }
+    const canonical = canonicalWords(query);
+    for (let index = 0; index < canonical.length - 1; index += 1) {
+      if (!GENERIC_ENTITY_PREFIXES.has(canonical[index] ?? "")) continue;
+      const words = canonical.slice(index, index + 2);
+      candidates.set(words.join("\u0000"), words);
+    }
+    const ids = new Set<string>();
+    for (const words of candidates.values()) {
+      for (const id of this.entityIdsForReference(words)) ids.add(id);
+    }
+    return ids;
+  }
+
+  private entityIdsForReference(words: readonly string[]): string[] {
+    if (words.length === 0) return [];
+    const phrase = words.join(" ");
+    const rows = this.db.prepare(
+      `SELECT id, name FROM entities
+       WHERE lower(name) = ? OR lower(name) LIKE ?
+       ORDER BY id
+       LIMIT 4`,
+    ).all(phrase, `% ${phrase}`) as Array<{ id: string; name: string }>;
+    const key = words.join("\u0000");
+    return rows
+      .filter((row) => entityNameVariants(row.name).some((variant) => variant.join("\u0000") === key))
+      .map((row) => row.id);
   }
 
   orphanedAssociationCount(): number {
@@ -1219,22 +1269,33 @@ function relationDirectionMatches(
   seedId: string,
   relatedId: string,
   referenceIsUnique: (entityId: string, words: readonly string[]) => boolean,
+  queryEntityIds: ReadonlySet<string>,
 ): boolean {
+  if (DISALLOWED_RELATION_LANGUAGE.test(query.normalize("NFKC"))) return false;
   const queryWords = canonicalWords(query);
   const seedMatch = entityPhraseMatch(queryWords, seedId, seedName, referenceIsUnique);
   if (seedMatch === undefined) return false;
   const seedPosition = seedMatch.position;
-  const relationTokens = relevanceTokens(relation);
+  const relationPhrases = normalizedRelationPhrases(relation);
+  if (relationPhrases.length === 0) return false;
+  const relationTokens = new Set(relationPhrases.flat());
+  const relationMatch = firstPhraseMatch(queryWords, relationPhrases);
+  if (relationMatch === undefined) return false;
+  const relationPosition = relationMatch.position;
+  if ([...queryEntityIds].some((id) => id !== seedId && id !== relatedId)) return false;
+  const relatedPosition = entityPhrasePosition(queryWords, relatedId, relatedName, referenceIsUnique);
   const possessiveRole = possessiveRoleAfter(queryWords, seedMatch);
   if (possessiveRole !== undefined) {
     // `Morgan's manager/mentor/lead` asks for the incoming role-holder.
     // Other predicates later in the question (for example `based`) describe
     // the related memory and must not authorize an unrelated seed edge.
-    return relationTokens.has(possessiveRole) && !seedIsSource;
+    if (relatedPosition < 0 && (
+      hasMismatchedPossessiveSubject(queryWords, seedMatch)
+      || !possessiveTailIsOpen(queryWords.slice(possessiveRole.position + 1))
+    )) return false;
+    return relationTokens.has(possessiveRole.token) && !seedIsSource;
   }
-  const relationPosition = firstTokenPosition(queryWords, relationTokens);
-  if (relationPosition < 0) return false;
-  const relatedPosition = entityPhrasePosition(queryWords, relatedId, relatedName, referenceIsUnique);
+  if (relatedPosition < 0 && hasMismatchedUnresolvedEndpoint(queryWords, relationMatch, seedIsSource)) return false;
 
   if (relatedPosition >= 0) {
     return seedIsSource
@@ -1249,6 +1310,40 @@ function canonicalWords(text: string): string[] {
 }
 
 const GENERIC_ENTITY_PREFIXES = new Set(["company", "concept", "org", "organization", "person", "project", "team"]);
+const QUERY_NAME_PREFIXES = new Set([
+  "can", "could", "did", "do", "does", "how", "is", "show", "what", "when", "where", "which", "who", "why", "would",
+]);
+
+const DISALLOWED_RELATION_LANGUAGE = /\b(?:no|not|never|no\s+longer|cannot|did|former|formerly|previously|historically|once|used\s+to|may|might|could|would|should|possibly|perhaps)\b|\b(?:doesn|isn|didn|can|couldn|wouldn|shouldn|wasn|weren|hasn|haven|hadn|won|don)[’']?t\b/iu;
+const RELATION_AUXILIARIES = new Set(["a", "an", "are", "did", "do", "does", "is", "the", "was", "were"]);
+const POLAR_QUERY_AUXILIARIES = new Set(["am", "are", "do", "does", "has", "have", "is", "was", "were"]);
+const OPEN_ENDPOINT_QUESTION_WORDS = new Set(["what", "which", "who"]);
+const OPEN_ENDPOINT_WORDS = new Set([
+  "a", "an", "any", "anybody", "anyone", "company", "concept", "entity", "org", "organization", "person", "project", "somebody", "someone", "team", "the", "what", "which", "who",
+]);
+
+function normalizedRelationPhrases(relation: string): string[][] {
+  const normalized = relation.normalize("NFKC");
+  if (DISALLOWED_RELATION_LANGUAGE.test(normalized)) return [];
+  const phrase = canonicalWords(normalized).filter((word) => !RELATION_AUXILIARIES.has(word));
+  if (phrase.length === 0) return [];
+  // Location questions conventionally omit the stored preposition:
+  // `lives in` / `based in` may be queried as `Where does X live?`.
+  if (phrase.length === 2 && phrase[0] === "locate" && phrase[1] === "in") return [phrase, ["locate"]];
+  return [phrase];
+}
+
+function hasMismatchedUnresolvedEndpoint(
+  queryWords: readonly string[],
+  relation: { readonly position: number; readonly length: number },
+  seedIsSource: boolean,
+): boolean {
+  const possibleEndpoint = seedIsSource
+    ? queryWords.slice(relation.position + relation.length)
+    : queryWords.slice(POLAR_QUERY_AUXILIARIES.has(queryWords[0] ?? "") ? 1 : 0, relation.position);
+  if (possibleEndpoint.length === 0 || possibleEndpoint.some((word) => OPEN_ENDPOINT_QUESTION_WORDS.has(word))) return false;
+  return possibleEndpoint.some((word) => !OPEN_ENDPOINT_WORDS.has(word));
+}
 
 function entityPhraseMatch(
   queryWords: readonly string[],
@@ -1274,17 +1369,37 @@ function entityPhrasePosition(
 }
 
 const POSSESSIVE_INCOMING_ROLES = new Set(["lead", "manage", "mentor"]);
+const POSSESSIVE_PROPERTY_STARTERS = new Set([
+  "choose", "decide", "have", "know", "leave", "like", "locate", "need", "own", "plan", "prefer", "report", "start", "use", "want", "work",
+]);
+const POSSESSIVE_PROPERTY_MODIFIERS = new Set(["currently", "now"]);
 
 function possessiveRoleAfter(
   queryWords: readonly string[],
   seed: { readonly position: number; readonly length: number },
-): string | undefined {
+): { readonly token: string; readonly position: number } | undefined {
   const possessive = seed.position + seed.length;
   if (queryWords[possessive] !== "s") return undefined;
-  for (const token of queryWords.slice(possessive + 1, possessive + 6)) {
-    if (POSSESSIVE_INCOMING_ROLES.has(token ?? "")) return token;
+  for (let position = possessive + 1; position < Math.min(queryWords.length, possessive + 6); position += 1) {
+    const token = queryWords[position] ?? "";
+    if (POSSESSIVE_INCOMING_ROLES.has(token)) return { token, position };
   }
   return undefined;
+}
+
+function possessiveTailIsOpen(tail: readonly string[]): boolean {
+  let index = 0;
+  while (POSSESSIVE_PROPERTY_MODIFIERS.has(tail[index] ?? "")) index += 1;
+  const first = tail[index];
+  return first === undefined || POSSESSIVE_PROPERTY_STARTERS.has(first);
+}
+
+function hasMismatchedPossessiveSubject(
+  queryWords: readonly string[],
+  seed: { readonly position: number; readonly length: number },
+): boolean {
+  if (!POLAR_QUERY_AUXILIARIES.has(queryWords[0] ?? "")) return false;
+  return queryWords.slice(1, seed.position).some((word) => !OPEN_ENDPOINT_WORDS.has(word));
 }
 
 function entityNameVariants(name: string): string[][] {
@@ -1301,8 +1416,19 @@ function phrasePosition(haystack: readonly string[], needle: readonly string[]):
   return -1;
 }
 
-function firstTokenPosition(words: readonly string[], tokens: ReadonlySet<string>): number {
-  return words.findIndex((word) => tokens.has(word));
+function firstPhraseMatch(
+  words: readonly string[],
+  phrases: readonly (readonly string[])[],
+): { readonly position: number; readonly length: number } | undefined {
+  return phrases
+    .map((phrase) => ({ position: phrasePosition(words, phrase), length: phrase.length }))
+    .filter((match) => match.position >= 0)
+    .sort((left, right) => left.position - right.position || right.length - left.length)[0];
+}
+
+function startsUppercase(value: string): boolean {
+  const first = value[0];
+  return first !== undefined && first === first.toLocaleUpperCase("en-US") && first !== first.toLocaleLowerCase("en-US");
 }
 
 function lexicalEvidence(queryTokens: ReadonlySet<string>, text: string): number {

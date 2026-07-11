@@ -549,6 +549,129 @@ function graphFixture() {
     forbiddenIds: ["adv-inverse-target"],
   });
   addAdversarialCase({
+    id: "negated-query",
+    category: "negated-query",
+    query: "NegatedAnchor does not mentor which person?",
+    seed: ["adv-negated-query-seed", "NegatedAnchor", "entity:negated-anchor"],
+    targets: [["adv-negated-query-target", "NegatedTarget", "entity:negated-target", "open"]],
+    relations: [["entity:negated-anchor", "entity:negated-target", "mentors"]],
+    forbiddenIds: ["adv-negated-query-target"],
+  });
+  addAdversarialCase({
+    id: "stored-negated-relation",
+    category: "stored-negated-relation",
+    query: "StoredNegativeAnchor mentors which person?",
+    seed: ["adv-stored-negative-seed", "StoredNegativeAnchor", "entity:stored-negative-anchor"],
+    targets: [["adv-stored-negative-target", "StoredNegativeTarget", "entity:stored-negative-target", "open"]],
+    relations: [["entity:stored-negative-anchor", "entity:stored-negative-target", "does not mentor"]],
+    forbiddenIds: ["adv-stored-negative-target"],
+  });
+  addAdversarialCase({
+    id: "stored-historical-relation",
+    category: "stored-qualified-relation",
+    query: "HistoricalAnchor mentors which person?",
+    seed: ["adv-historical-seed", "HistoricalAnchor", "entity:historical-anchor"],
+    targets: [["adv-historical-target", "HistoricalTarget", "entity:historical-target", "open"]],
+    relations: [["entity:historical-anchor", "entity:historical-target", "formerly mentored"]],
+    forbiddenIds: ["adv-historical-target"],
+  });
+  addAdversarialCase({
+    id: "stored-modal-relation",
+    category: "stored-qualified-relation",
+    query: "ModalAnchor mentors which person?",
+    seed: ["adv-modal-seed", "ModalAnchor", "entity:modal-anchor"],
+    targets: [["adv-modal-target", "ModalTarget", "entity:modal-target", "open"]],
+    relations: [["entity:modal-anchor", "entity:modal-target", "might mentor"]],
+    forbiddenIds: ["adv-modal-target"],
+  });
+  addAdversarialCase({
+    id: "wrong-endpoint",
+    category: "wrong-endpoint",
+    query: "Does EndpointMorgan lead Project EndpointApollo?",
+    seed: ["adv-endpoint-seed", "EndpointMorgan", "person:endpoint-morgan"],
+    targets: [["adv-endpoint-target", "Project EndpointAtlas", "project:endpoint-atlas", "open"]],
+    relations: [["person:endpoint-morgan", "project:endpoint-atlas", "leads"]],
+    forbiddenIds: ["adv-endpoint-target"],
+  });
+  addAdversarialCase({
+    id: "wrong-endpoint-city",
+    category: "wrong-endpoint",
+    query: "Does EndpointCityMorgan lead Amsterdam?",
+    seed: ["adv-endpoint-city-seed", "EndpointCityMorgan", "person:endpoint-city-morgan"],
+    targets: [["adv-endpoint-city-target", "Project EndpointCityAtlas", "project:endpoint-city-atlas", "open"]],
+    relations: [["person:endpoint-city-morgan", "project:endpoint-city-atlas", "leads"]],
+    forbiddenIds: ["adv-endpoint-city-target"],
+  });
+  addAdversarialCase({
+    id: "wrong-endpoint-lowercase",
+    category: "wrong-endpoint",
+    query: "Does EndpointGardenMorgan lead the garden club?",
+    seed: ["adv-endpoint-garden-seed", "EndpointGardenMorgan", "person:endpoint-garden-morgan"],
+    targets: [["adv-endpoint-garden-target", "Project EndpointGardenAtlas", "project:endpoint-garden-atlas", "open"]],
+    relations: [["person:endpoint-garden-morgan", "project:endpoint-garden-atlas", "leads"]],
+    forbiddenIds: ["adv-endpoint-garden-target"],
+  });
+  addAdversarialCase({
+    id: "wrong-endpoint-possessive-unknown",
+    category: "wrong-endpoint",
+    query: "Where is PossessiveMorgan's manager Unknown based?",
+    seed: ["adv-endpoint-possessive-seed", "PossessiveMorgan", "person:endpoint-possessive-morgan"],
+    targets: [["adv-endpoint-possessive-target", "PossessiveManager", "person:endpoint-possessive-manager", "open"]],
+    relations: [["person:endpoint-possessive-manager", "person:endpoint-possessive-morgan", "manages"]],
+    forbiddenIds: ["adv-endpoint-possessive-target"],
+  });
+  addAdversarialCase({
+    id: "wrong-endpoint-possessive-lowercase",
+    category: "wrong-endpoint",
+    query: "Where is PossessiveGardenMorgan's manager the garden club based?",
+    seed: ["adv-endpoint-possessive-garden-seed", "PossessiveGardenMorgan", "person:endpoint-possessive-garden-morgan"],
+    targets: [["adv-endpoint-possessive-garden-target", "PossessiveGardenManager", "person:endpoint-possessive-garden-manager", "open"]],
+    relations: [["person:endpoint-possessive-garden-manager", "person:endpoint-possessive-garden-morgan", "manages"]],
+    forbiddenIds: ["adv-endpoint-possessive-garden-target"],
+  });
+  addAdversarialCase({
+    id: "wrong-endpoint-possessive-subject-unknown",
+    category: "wrong-endpoint",
+    query: "Is Unknown PossessiveSubjectMorgan's manager?",
+    seed: ["adv-endpoint-possessive-subject-seed", "PossessiveSubjectMorgan", "person:endpoint-possessive-subject-morgan"],
+    targets: [["adv-endpoint-possessive-subject-target", "PossessiveSubjectManager", "person:endpoint-possessive-subject-manager", "open"]],
+    relations: [["person:endpoint-possessive-subject-manager", "person:endpoint-possessive-subject-morgan", "manages"]],
+    forbiddenIds: ["adv-endpoint-possessive-subject-target"],
+  });
+  addAdversarialCase({
+    id: "wrong-endpoint-possessive-subject-lowercase",
+    category: "wrong-endpoint",
+    query: "Is the garden club PossessiveSubjectGardenMorgan's manager?",
+    seed: ["adv-endpoint-possessive-subject-garden-seed", "PossessiveSubjectGardenMorgan", "person:endpoint-possessive-subject-garden-morgan"],
+    targets: [["adv-endpoint-possessive-subject-garden-target", "PossessiveSubjectGardenManager", "person:endpoint-possessive-subject-garden-manager", "open"]],
+    relations: [["person:endpoint-possessive-subject-garden-manager", "person:endpoint-possessive-subject-garden-morgan", "manages"]],
+    forbiddenIds: ["adv-endpoint-possessive-subject-garden-target"],
+  });
+  for (const [kind, stored, queried] of [
+    ["works", "works with", "works for"],
+    ["reports", "reports about", "reports to"],
+    ["talks", "talks about", "talks to"],
+  ]) {
+    addAdversarialCase({
+      id: `relation-particle-${kind}`,
+      category: "relation-particle-collision",
+      query: `Who ${queried} ParticleAcme${kind}?`,
+      seed: [`adv-particle-${kind}-seed`, `ParticleAcme${kind}`, `org:particle-acme-${kind}`],
+      targets: [[`adv-particle-${kind}-target`, `ParticleActor${kind}`, `person:particle-actor-${kind}`, "open"]],
+      relations: [[`person:particle-actor-${kind}`, `org:particle-acme-${kind}`, stored]],
+      forbiddenIds: [`adv-particle-${kind}-target`],
+    });
+  }
+  addAdversarialCase({
+    id: "relation-particle-control",
+    category: "relation-particle-control",
+    query: "Who works with ParticleAcmeControl?",
+    seed: ["adv-particle-control-seed", "ParticleAcmeControl", "org:particle-acme-control"],
+    targets: [["adv-particle-control-target", "ParticleActorControl", "person:particle-actor-control", "open"]],
+    relations: [["person:particle-actor-control", "org:particle-acme-control", "works with"]],
+    requiredIds: ["adv-particle-control-target"],
+  });
+  addAdversarialCase({
     id: "wrong-relation",
     category: "wrong-relation",
     query: "RelationAnchor mentors which person?",

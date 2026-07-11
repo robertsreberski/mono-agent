@@ -417,7 +417,7 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     "MemoryRecall",
     {
       title: "Recall from memory",
-      description: "Read-only hybrid (keyword + semantic) search over durable long-term memory. Use it for prior preferences, facts, and decisions. Never use it to answer what was said or sent in the current, last, previous, or immediately preceding message; use the active conversation history for those questions.",
+      description: "Read-only hybrid (keyword + semantic) search over durable long-term memory. Use it for prior preferences, facts, decisions, and qualified archived history. Do not use it for unqualified questions about what you or the user just said or sent in the current or last message; use the active conversation history for those questions.",
       inputSchema: {
         query: z.string().min(1).describe("Natural-language description of what to recall."),
         limit: z.number().int().min(1).max(50).optional().describe("Max results (default 8)."),

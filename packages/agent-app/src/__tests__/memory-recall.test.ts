@@ -266,18 +266,36 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools[0]?.description).toMatch(/Never use it.*last.*message/iu);
-      const result = (await client.callTool({
-        name: "MemoryRecall",
-        arguments: { query: "What did you send in the last message?" },
-      })) as {
-        content: Array<{ type: string; text: string }>;
-        structuredContent?: { hits: unknown[]; conversationRelative?: boolean };
-      };
-
+      expect(tools.tools[0]?.description).toMatch(/Do not use it.*current or last message/iu);
+      for (const query of [
+        "What did you send in the last message?",
+        "What was your previous reply?",
+        "What was the last message?",
+        "What did you say?",
+        "What did you just send?",
+        "What happened in this conversation?",
+      ]) {
+        const result = (await client.callTool({ name: "MemoryRecall", arguments: { query } })) as {
+          content: Array<{ type: string; text: string }>;
+          structuredContent?: { hits: unknown[]; conversationRelative?: boolean };
+        };
+        expect(result.structuredContent, query).toMatchObject({ hits: [], conversationRelative: true });
+        expect(result.content[0]?.text, query).toMatch(/active conversation|current conversation history/iu);
+      }
       expect(recallCalls).toBe(0);
-      expect(result.structuredContent).toMatchObject({ hits: [], conversationRelative: true });
-      expect(result.content[0]?.text).toMatch(/active conversation|current conversation history/iu);
+
+      for (const query of [
+        "What did you send Casey for her birthday last year?",
+        "What did you say our durable deployment policy was?",
+        "What did Alice's last message say?",
+        "What was the last message from the deploy bot?",
+      ]) {
+        const result = await client.callTool({ name: "MemoryRecall", arguments: { query } });
+        expect(result.structuredContent, query).toMatchObject({
+          hits: [expect.objectContaining({ id: "old" })],
+        });
+      }
+      expect(recallCalls).toBe(4);
     } finally {
       await client.close();
       await server.close();
