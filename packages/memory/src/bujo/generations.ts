@@ -293,6 +293,13 @@ export async function activateManagedIndex(
       throw new Error("memory-rebuild: managed index manifest temporary file changed before activation.");
     }
   };
+  const assertActivatedManifest = (): void => {
+    const current = fileIdentity(path, canonicalRoot, "managed memory manifest");
+    if (current.dev !== tempIdentity.dev || current.ino !== tempIdentity.ino
+      || createHash("sha256").update(readFileSync(path)).digest("hex") !== expectedTempDigest) {
+      throw new Error("memory-rebuild: activated managed index manifest changed during durability confirmation.");
+    }
+  };
   try {
     const fd = openSync(temp, flags, 0o600);
     try {
@@ -310,11 +317,15 @@ export async function activateManagedIndex(
     assertManifestTemp();
     renameSync(temp, path);
     renamed = true;
+    assertActivatedManifest();
     await hooks.afterManifestRename?.();
     assertManagedLayoutState(canonicalRoot, layoutState);
+    assertActivatedManifest();
     fsyncDirectory(dirname(path));
+    assertActivatedManifest();
     await hooks.afterManifestDirFsync?.();
     assertManagedLayoutState(canonicalRoot, layoutState);
+    assertActivatedManifest();
   } catch (error) {
     if (!renamed) {
       try {

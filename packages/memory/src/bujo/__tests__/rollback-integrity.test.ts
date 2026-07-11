@@ -285,6 +285,30 @@ describe("managed rollback logical integrity", () => {
     expect(readManagedIndexManifest(root)).toBeUndefined();
   });
 
+  it.each(["afterManifestRename", "afterManifestDirFsync"] as const)(
+    "reports uncertain activation when %s changes the final manifest",
+    async (hook) => {
+      const root = tempRoot();
+      writeDaily(root, [bullet("FINAL-MANIFEST", "Post-rename durability must not report false success.")]);
+      const mutate = (): void => {
+        const path = manifestPath(root);
+        const manifest = JSON.parse(readFileSync(path, "utf8")) as MutableManifest & {
+          active: MutableGeneration & { createdAt?: string };
+        };
+        manifest.active.createdAt = "2000-01-01T00:00:00.000Z";
+        writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+      };
+
+      await expect(safeRebuildMemoryIndex({
+        root,
+        tier: "lite",
+        hooks: hook === "afterManifestRename"
+          ? { afterManifestRename: mutate }
+          : { afterManifestDirFsync: mutate },
+      })).rejects.toThrow(/activation completed.*durability reporting is uncertain.*manifest changed/iu);
+    },
+  );
+
   it("holds a candidate writer fence across manifest activation", async () => {
     const root = tempRoot();
     writeDaily(root, [bullet("CANDIDATE-FENCE", "No uncommitted writer may cross activation.")]);
