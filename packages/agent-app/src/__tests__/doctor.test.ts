@@ -3646,6 +3646,189 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(report.ok).toBe(true);
   });
 
+  it.each([
+    {
+      label: "Slack",
+      tools: { allowedTools: ["SlackSendMessage"] },
+      extra: {
+        slack: { enabled: true, allowedChannelIds: ["C1"] },
+        sandbox: { mode: "native", fallback: "fail-closed", network: { mode: "localhost" } },
+      },
+      env: { MONO_AGENT_SLACK_BOT_TOKEN: "xoxb-test", MONO_AGENT_SLACK_APP_TOKEN: "xapp-test" },
+      tool: "SlackSendMessage",
+      host: "slack.com",
+    },
+    {
+      label: "Telegram",
+      tools: { allowedTools: ["TelegramSendMessage"] },
+      extra: {
+        telegram: { enabled: true, allowAllChats: true },
+        sandbox: { mode: "native", fallback: "fail-closed", network: { mode: "localhost" } },
+      },
+      env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "123:env-bot-token" },
+      tool: "TelegramSendMessage",
+      host: "api.telegram.org",
+    },
+    {
+      label: "AskUser",
+      tools: { allowedTools: ["AskUser"] },
+      extra: {
+        sandbox: {
+          mode: "native",
+          fallback: "fail-closed",
+          network: { mode: "allowlist", allowlist: ["api.telegram.org"] },
+        },
+      },
+      env: {},
+      tool: "AskUser",
+      host: "127.0.0.1",
+    },
+  ])("warns when native sandbox networking blocks the $label tool endpoint", async ({ tools: policy, extra, env, tool, host }) => {
+    const configPath = await writeToolsConfig(policy, extra);
+
+    const report = await validateMonoAgentFolder({
+      env,
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: availableSandboxEngine,
+    });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("waiting");
+    expect(tools.details.join("\n")).toContain(tool);
+    expect(tools.details.join("\n")).toContain(`host "${host}"`);
+    expect(tools.details.join("\n")).toContain(`add "${host}" to sandbox.network.allowlist`);
+  });
+
+  it("passes when the native sandbox allowlist contains every enabled adapter-send endpoint", async () => {
+    const configPath = await writeToolsConfig(
+      { allowedTools: ["SlackSendMessage", "TelegramSendMessage", "AskUser"] },
+      {
+        slack: { enabled: true, allowedChannelIds: ["C1"] },
+        telegram: { enabled: true, allowAllChats: true },
+        sandbox: {
+          mode: "native",
+          fallback: "fail-closed",
+          network: { mode: "allowlist", allowlist: ["slack.com", "api.telegram.org", "127.0.0.1"] },
+        },
+      },
+    );
+
+    const report = await validateMonoAgentFolder({
+      env: {
+        MONO_AGENT_SLACK_BOT_TOKEN: "xoxb-test",
+        MONO_AGENT_SLACK_APP_TOKEN: "xapp-test",
+        MONO_AGENT_TELEGRAM_BOT_TOKEN: "123:env-bot-token",
+      },
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: availableSandboxEngine,
+    });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("ok");
+    expect(tools.details.join("\n")).not.toContain("Native sandbox network policy blocks");
+  });
+
+  it("accepts the default 127.0.0.1 AskUser bridge when localhost is explicitly allowlisted", async () => {
+    const configPath = await writeToolsConfig(
+      { allowedTools: ["AskUser"] },
+      {
+        sandbox: {
+          mode: "native",
+          fallback: "fail-closed",
+          network: { mode: "allowlist", allowlist: ["localhost"] },
+        },
+      },
+    );
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: availableSandboxEngine,
+    });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("ok");
+    expect(tools.details.join("\n")).not.toContain("Native sandbox network policy blocks");
+  });
+
+  it("recommends a valid localhost allowlist spelling for an IPv6 loopback bridge", async () => {
+    const configPath = await writeToolsConfig(
+      { allowedTools: ["AskUser"] },
+      {
+        interaction: { bridge: { host: "::1" } },
+        sandbox: {
+          mode: "native",
+          fallback: "fail-closed",
+          network: { mode: "allowlist", allowlist: ["api.telegram.org"] },
+        },
+      },
+    );
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: availableSandboxEngine,
+    });
+
+    const details = sectionById(report, "tools").details.join("\n");
+    expect(details).toContain('host "::1"');
+    expect(details).toContain('add "localhost" to sandbox.network.allowlist');
+    expect(details).not.toContain('add "::1" to sandbox.network.allowlist');
+  });
+
+  it("does not apply adapter endpoint checks when the mono-agent sandbox is off", async () => {
+    const configPath = await writeToolsConfig(
+      { allowedTools: ["TelegramSendMessage"] },
+      {
+        telegram: { enabled: true, allowAllChats: true },
+        sandbox: { mode: "off" },
+      },
+    );
+
+    const report = await validateMonoAgentFolder({
+      env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "123:env-bot-token" },
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("ok");
+    expect(tools.details.join("\n")).not.toContain("api.telegram.org");
+    expect(tools.details.join("\n")).not.toContain("sandbox.network.allowlist");
+  });
+
+  it("does not require an adapter endpoint for an explicitly denied tool", async () => {
+    const configPath = await writeToolsConfig(
+      { allowedTools: ["Read", "TelegramSendMessage"], disallowedTools: ["TelegramSendMessage"] },
+      {
+        telegram: { enabled: true, allowAllChats: true },
+        sandbox: { mode: "native", fallback: "fail-closed", network: { mode: "localhost" } },
+      },
+    );
+
+    const report = await validateMonoAgentFolder({
+      env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "123:env-bot-token" },
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: availableSandboxEngine,
+    });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("ok");
+    expect(tools.details.join("\n")).not.toContain("api.telegram.org");
+    expect(tools.details.join("\n")).not.toContain("Native sandbox network policy blocks");
+  });
+
   it("flags an unknown tool name with a did-you-mean suggestion (waiting)", async () => {
     const configPath = await writeToolsConfig({ allowedTools: ["read"] });
 

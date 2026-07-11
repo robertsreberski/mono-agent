@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { constants as fsConstants, lstatSync, realpathSync } from "node:fs";
 import { access, chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -134,6 +135,8 @@ export interface SandboxCommandSpec {
   readonly args?: readonly string[];
   readonly cwd?: string;
   readonly env?: Record<string, string | undefined>;
+  /** Trusted per-command capability; never derived from model/user tool input. */
+  readonly allowLocalBinding?: boolean;
 }
 
 export interface PreparedSandboxCommand extends SandboxCommandSpec {
@@ -342,7 +345,7 @@ export function createSrtSandboxEngine(options: SrtSandboxEngineOptions = {}): S
         );
       }
       const runtimeReadRoots = await runtimeReadRootsForCommand(spec, cwd);
-      const settings = await writeSrtSettingsFile(policy, runtimeReadRoots);
+      const settings = await writeSrtSettingsFile(policy, runtimeReadRoots, spec.allowLocalBinding === true);
       return {
         ...spec,
         command: launch.command,
@@ -467,6 +470,7 @@ export function srtSettingsForPolicy(
   policy: SandboxPolicy,
   protectedSettingsPath?: string,
   runtimeReadRoots: readonly string[] = [],
+  commandCapabilities: { readonly allowLocalBinding?: boolean } = {},
 ): SrtSettings {
   if (policy.network.mode === "all") {
     throw new SandboxPolicyError(
@@ -480,7 +484,7 @@ export function srtSettingsForPolicy(
       allowedDomains: domainsForNetworkPolicy(policy.network),
       deniedDomains: policy.network.mode === "none" ? ["*"] : [],
       strictAllowlist: true,
-      allowLocalBinding: policy.network.mode === "localhost",
+      allowLocalBinding: policy.network.mode === "localhost" || commandCapabilities.allowLocalBinding === true,
       allowAllUnixSockets: false,
     },
     filesystem: {
@@ -527,6 +531,7 @@ function normalizeCommandSpec(spec: SandboxCommandSpec, fallbackCwd: string | un
     args: normalizeArgs(spec.args ?? []),
     cwd,
     ...(spec.env === undefined ? {} : { env: { ...spec.env } }),
+    ...(spec.allowLocalBinding === true ? { allowLocalBinding: true } : {}),
     sandboxed: false,
   };
 }
@@ -705,7 +710,11 @@ function symlinkAncestorsSync(path: string): readonly string[] {
   return links;
 }
 
-async function writeSrtSettingsFile(policy: SandboxPolicy, runtimeReadRoots: readonly string[] = []): Promise<{
+async function writeSrtSettingsFile(
+  policy: SandboxPolicy,
+  runtimeReadRoots: readonly string[] = [],
+  allowLocalBinding = false,
+): Promise<{
   readonly path: string;
   readonly cleanup: () => Promise<void>;
 }> {
@@ -717,6 +726,7 @@ async function writeSrtSettingsFile(policy: SandboxPolicy, runtimeReadRoots: rea
     policy,
     settingsPath,
     expandedRuntimeReadRoots,
+    { allowLocalBinding },
   ), null, 2)}\n`;
   const noFollow = fsConstants.O_NOFOLLOW ?? 0;
   let handle;
@@ -783,7 +793,7 @@ function stripIpv6Brackets(host: string): string {
 }
 
 function isLocalhost(host: string): boolean {
-  return host === "localhost" || host === "::1" || host === "127.0.0.1" || host.startsWith("127.");
+  return host === "localhost" || host === "::1" || (isIP(host) === 4 && host.split(".")[0] === "127");
 }
 
 function domainMatches(host: string, pattern: string): boolean {
