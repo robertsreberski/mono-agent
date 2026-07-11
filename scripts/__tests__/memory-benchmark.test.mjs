@@ -11,6 +11,8 @@ describe("memory benchmark", () => {
     const report = await runMemoryBenchmark();
 
     expect(report.disposableStore).toBe(true);
+    expect(report.groups).toBe(1);
+    expect(report.store.groups).toBe(1);
     expect(report.categories).toEqual(expect.arrayContaining([
       "fact",
       "paraphrase",
@@ -48,6 +50,47 @@ describe("memory benchmark", () => {
       llm: expect.any(Object),
       queueDrainMs: expect.any(Number),
     });
+    const cleanup = report.calibrations.memoryCleanup;
+    expect(cleanup.capture).toMatchObject({
+      passed: true,
+      metrics: { candidate: { calls: 2, callReduction: 0.6, associationPrecision: 1, associationRecall: 1 } },
+    });
+    expect(cleanup.graph).toMatchObject({
+      passed: true,
+      metrics: {
+        multiHop: { cases: 10, baselineRecallAt5: 0, enabledRecallAt5: 1 },
+        direct: { cases: 10, baselineRecallAt5: 1, enabledRecallAt5: 1 },
+        adversarial: {
+          cases: 25,
+          leakCount: 0,
+          missingRequiredCount: 0,
+          categories: expect.arrayContaining([
+            "negated-query",
+            "stored-negated-relation",
+            "stored-qualified-relation",
+            "wrong-endpoint",
+            "relation-particle-collision",
+            "relation-particle-control",
+          ]),
+        },
+        efficiency: { queryEmbeddingCalls: 20, expectedQueryEmbeddingCalls: 20, llmCalls: 0 },
+      },
+    });
+    expect(report.gates.checks.memoryCleanup).toBe(true);
+    expect(report.calibrations.providerAutomaticRecall).toMatchObject({
+      provider: "deterministic",
+      disposableStore: true,
+      passed: true,
+      eligibleDirectFact: { cases: 6, coverage: 1 },
+      unsupported: { cases: 2, abstentionRate: 1 },
+      efficiency: {
+        embeddings: { calls: 9, texts: 17 },
+        llm: { calls: 0 },
+      },
+      store: { records: 9, duplicateRatio: 0, vectorCoverage: 1 },
+    });
+    expect(report.gates.checks.providerEligibleDirectFactCaseCount).toBe(true);
+    expect(report.gates.checks.providerEligibleDirectFactCoverage).toBe(true);
   });
 
   it("adapts opt-in LongMemEval session ids and LoCoMo dialogue evidence", async () => {
@@ -99,8 +142,76 @@ describe("memory benchmark", () => {
       const longReport = await runMemoryBenchmark({ suite: "longmemeval", datasetPath: longMemEval });
       const locomoReport = await runMemoryBenchmark({ suite: "locomo", datasetPath: locomo });
 
-      expect(longReport).toMatchObject({ cases: 2, quality: { answerableCases: 1, abstentionRate: 1 } });
-      expect(locomoReport).toMatchObject({ cases: 2, quality: { answerableCases: 1, abstentionRate: 1 } });
+      expect(longReport).toMatchObject({
+        groups: 2,
+        cases: 2,
+        store: { groups: 2 },
+        quality: { answerableCases: 1, abstentionRate: 1 },
+      });
+      expect(locomoReport).toMatchObject({
+        groups: 1,
+        cases: 2,
+        store: { groups: 1 },
+        quality: { answerableCases: 1, abstentionRate: 1 },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("isolates LongMemEval rows before aggregating case-weighted retrieval quality", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-memory-grouped-dataset-"));
+    const dataset = join(dir, "longmemeval-groups.json");
+    try {
+      await writeFile(dataset, JSON.stringify(Array.from({ length: 10 }, (_, index) => ({
+        question_id: `shared-${index}`,
+        question_type: "fact",
+        question: "What is the launch office code?",
+        haystack_session_ids: [`session-${index}`],
+        haystack_sessions: [[{ content: "The launch office code is cobalt." }]],
+        answer_session_ids: [`session-${index}`],
+      }))));
+
+      const report = await runMemoryBenchmark({ suite: "longmemeval", datasetPath: dataset });
+
+      expect(report).toMatchObject({
+        groups: 10,
+        cases: 10,
+        retrievalCases: 10,
+        quality: { recallAt1: 1, recallAt5: 1, mrr: 1 },
+        store: { groups: 10, records: 10, duplicateRatio: 0, vectorCoverage: 1 },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("indexes each group in provider-sized batches instead of serial record upserts", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-memory-batched-dataset-"));
+    const dataset = join(dir, "longmemeval-batch.json");
+    try {
+      const ids = Array.from({ length: 65 }, (_, index) => `session-${index}`);
+      await writeFile(dataset, JSON.stringify([{
+        question_id: "batch-target",
+        question_type: "fact",
+        question: "Which archive entry contains the unique ultramarine launch phrase?",
+        haystack_session_ids: ids,
+        haystack_sessions: ids.map((_, index) => [{
+          content: index === 64
+            ? "The unique ultramarine launch phrase is stored in archive entry sixty-five."
+            : `Routine archive filler entry ${index}.`,
+        }]),
+        answer_session_ids: ["session-64"],
+      }]));
+
+      const report = await runMemoryBenchmark({ suite: "longmemeval", datasetPath: dataset });
+
+      expect(report).toMatchObject({
+        groups: 1,
+        cases: 1,
+        store: { records: 65 },
+        efficiency: { embeddings: { calls: 4, texts: 66 } },
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -121,32 +232,84 @@ describe("memory benchmark", () => {
       staleRecallRate: 0,
       falseRecallRate: 0,
     };
+    const providerContract = {
+      eligibleDirectFact: { cases: 6, coverage: 1 },
+      unsupported: { cases: 2, abstentionRate: 1 },
+    };
 
-    expect(memoryBenchmarkGateResults({ ...base, directFactAutomaticCoverage: 0 })).toMatchObject({
+    expect(memoryBenchmarkGateResults(
+      { ...base, directFactAutomaticCoverage: 0 },
+      { passed: true },
+      providerContract,
+    )).toMatchObject({
       passed: false,
       checks: { directFactAutomaticCoverage: false },
     });
-    expect(memoryBenchmarkGateResults({ ...base, ambiguousBindingAbstentionRate: 0 })).toMatchObject({
+    expect(memoryBenchmarkGateResults(
+      { ...base, ambiguousBindingAbstentionRate: 0 },
+      { passed: true },
+      providerContract,
+    )).toMatchObject({
       passed: false,
       checks: { ambiguousBindingAbstentionRate: false },
     });
-    expect(memoryBenchmarkGateResults({ ...base, directFactCaseCount: 0 })).toMatchObject({
+    expect(memoryBenchmarkGateResults(
+      { ...base, directFactCaseCount: 0 },
+      { passed: true },
+      providerContract,
+    )).toMatchObject({
       passed: false,
       checks: { directFactCaseCount: false },
     });
-    expect(memoryBenchmarkGateResults({ ...base, ambiguousBindingCaseCount: 5 })).toMatchObject({
+    expect(memoryBenchmarkGateResults(
+      { ...base, ambiguousBindingCaseCount: 5 },
+      { passed: true },
+      providerContract,
+    )).toMatchObject({
       passed: false,
       checks: { ambiguousBindingCaseCount: false },
     });
-    expect(memoryBenchmarkGateResults({ ...base, automaticAnswerCoverage: 0 }).passed).toBe(true);
-    expect(memoryBenchmarkGateResults({ ...base, abstentionRate: 0 })).toMatchObject({
+    expect(memoryBenchmarkGateResults(
+      { ...base, automaticAnswerCoverage: 0 },
+      { passed: true },
+      providerContract,
+    ).passed).toBe(true);
+    expect(memoryBenchmarkGateResults(
+      { ...base, abstentionRate: 0 },
+      { passed: true },
+      providerContract,
+    )).toMatchObject({
       passed: false,
       checks: { abstentionRate: false },
     });
-    expect(memoryBenchmarkGateResults(base, { passed: false })).toMatchObject({
+    expect(memoryBenchmarkGateResults(base, { passed: false }, providerContract)).toMatchObject({
       passed: false,
       checks: { policyCalibration: false },
     });
+    expect(memoryBenchmarkGateResults(base, { passed: true }, {
+      eligibleDirectFact: { cases: 0, coverage: 1 },
+      unsupported: { cases: 2, abstentionRate: 1 },
+    })).toMatchObject({
+      passed: false,
+      checks: { providerEligibleDirectFactCaseCount: false },
+    });
+    expect(memoryBenchmarkGateResults(base, { passed: true }, {
+      eligibleDirectFact: { cases: 6, coverage: 0 },
+      unsupported: { cases: 2, abstentionRate: 1 },
+    })).toMatchObject({
+      passed: false,
+      checks: { providerEligibleDirectFactCoverage: false },
+    });
+    // Unsupported relational/paraphrase behavior remains informational. Zero
+    // unsupported coverage or abstention cannot make the eligible contract fail.
+    expect(memoryBenchmarkGateResults(base, { passed: true }, {
+      eligibleDirectFact: { cases: 6, coverage: 1 },
+      unsupported: { cases: 2, abstentionRate: 0 },
+    }).passed).toBe(true);
+    expect(memoryBenchmarkGateResults(base, { passed: true }, {
+      eligibleDirectFact: { cases: 6, coverage: 1 },
+      unsupported: { cases: 0, abstentionRate: 0 },
+    }).passed).toBe(true);
   });
 
   it("rejects LongMemEval answer evidence that cannot map to a haystack session", async () => {

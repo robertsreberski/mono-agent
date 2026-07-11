@@ -72,6 +72,7 @@ describe("ensureStartable (start/restart preflight gate)", () => {
         path: join(dir, "mem"),
         writeMode: "append-host-summary",
         embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "ollama", model: "nomic-embed-text:v1.5" },
       },
     });
 

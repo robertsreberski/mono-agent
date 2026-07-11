@@ -2,11 +2,18 @@ import { relative } from "node:path";
 
 import type { MemoryDb, MemoryRecord, SimilarHit } from "../store/index.js";
 
-import { appendBullet, dailyFilePath, rewriteBullet } from "./daily.js";
+import {
+  replayCaptureIntent,
+  writeCaptureIntent,
+  type CaptureIntentAction,
+} from "./capture-outbox.js";
+import { dailyFilePath, readBullet } from "./daily.js";
+import { normalizeCandidateText, type CandidateMemory } from "./distill.js";
 import { parseJsonLoose } from "./json.js";
 import type { LlmComplete } from "./llm.js";
 import { MemoryModelError } from "./model-error.js";
-import type { Bullet, CandidateMemory } from "./types.js";
+import { withSerializedBujoMutation } from "./mutation-lock.js";
+import type { Bullet } from "./types.js";
 
 /** The outcome of reconciling a single candidate against the existing index. */
 export type ReconcileAction =
@@ -21,10 +28,20 @@ export interface ReconcileDeps {
   readonly llm: LlmComplete;
   readonly nextId: () => string;
   readonly now: () => Date;
+  readonly abortSignal?: AbortSignal;
   /** Distance below which an ADD also threads a `thread` edge to the neighbour. Default 0.35. */
   readonly threadThreshold?: number;
   /** Distance below which we consult the LLM to classify; above → ADD outright (skip LLM). Default 0.5. */
   readonly dupThreshold?: number;
+  /** Capture-only durable boundary invoked after provider planning and before source mutation. */
+  readonly beforeBatchCommit?: (actions: readonly CaptureIntentAction[]) => void;
+  /**
+   * Leave persistence to the durable boundary after it publishes the prepared
+   * actions. Capture uses this so its graph-bearing intent remains the sole
+   * canonical/SQLite commit owner. Ordinary callers publish their own
+   * memory-only intent and replay it through the same durable path.
+   */
+  readonly deferBatchCommit?: boolean;
 }
 
 const VALID_ACTIONS = new Set(["add", "update", "supersede", "noop"]);
@@ -37,11 +54,19 @@ interface Classification {
 
 /**
  * Reconcile distilled candidates against the existing memory index, writing to BOTH the
- * canonical markdown daily files and the SQLite index. Each candidate is handled independently
- * (an LLM/IO failure on one does not abort the others). The LLM is consulted only for candidates
- * that are close to an existing memory; clearly-novel candidates are added without an LLM call.
+ * canonical markdown daily files and the SQLite index. Per-candidate planning/source errors are
+ * isolated, while model and durable-commit failures stop the batch. The LLM is consulted only for
+ * candidates that are close to an existing memory; clearly-novel candidates are added without an
+ * LLM call.
  */
 export async function reconcile(
+  candidates: readonly CandidateMemory[],
+  deps: ReconcileDeps,
+): Promise<ReconcileAction[]> {
+  return await withSerializedBujoMutation(deps, async () => await reconcileUnlocked(candidates, deps));
+}
+
+async function reconcileUnlocked(
   candidates: readonly CandidateMemory[],
   deps: ReconcileDeps,
 ): Promise<ReconcileAction[]> {
@@ -50,25 +75,33 @@ export async function reconcile(
   const actions: ReconcileAction[] = [];
 
   for (const candidate of candidates) {
+    let plan: Omit<BatchActionPlan, "index"> | undefined;
     try {
       // findSimilar embeds the query, so a down embedding model throws here for EVERY candidate —
       // a systemic outage, not a per-item data problem. Tag it so the catch below surfaces it.
       let similar: readonly SimilarHit[];
       try {
-        similar = await deps.db.findSimilar(candidate.text, 5);
+        similar = await deps.db.findSimilar(candidate.text, 5, {
+          ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
+        });
       } catch (cause) {
+        deps.abortSignal?.throwIfAborted();
         throw new MemoryModelError("embedding", "findSimilar", cause);
       }
+      deps.abortSignal?.throwIfAborted();
 
       // Clearly novel (nothing close enough) → ADD outright, no LLM.
       if (similar.length === 0 || (similar[0]?.distance ?? Infinity) > dupThreshold) {
-        actions.push(await add(candidate, similar, deps, threadThreshold));
-        continue;
+        plan = planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+      } else {
+        const decision = await classify(candidate, similar, deps);
+        plan = planLegacyAction(candidate, decision, similar, deps, threadThreshold);
       }
-
-      const decision = await classify(candidate, similar, deps);
-      actions.push(await apply(candidate, decision, similar, deps, threadThreshold));
     } catch (err) {
+      // Abort is a lifecycle boundary, not an isolatable candidate failure. In
+      // particular, an abort-ignoring provider may settle only after close()
+      // has already released this operation's database.
+      deps.abortSignal?.throwIfAborted();
       // A model outage (embedding or classify LLM) is systemic and must surface — every candidate
       // would hit it, so swallowing it would make a dead model look like a no-op capture.
       if (err instanceof MemoryModelError) throw err;
@@ -76,14 +109,444 @@ export async function reconcile(
       // UPDATE/SUPERSEDE) must not abort the rest of the batch. Skip it.
       continue;
     }
+
+    // Once provider planning succeeds, persistence failures are systemic. In
+    // particular, a replay fault leaves a published intent that must be
+    // recovered before another candidate can be planned against stale state.
+    actions.push(await executePlannedAction(plan, deps));
   }
 
   return actions;
 }
 
 /**
+ * Reconcile a whole captured turn with one embedding batch and at most one LLM
+ * classification call. Novel candidates bypass the second LLM call.
+ */
+export async function reconcileBatch(
+  candidates: readonly CandidateMemory[],
+  deps: ReconcileDeps,
+): Promise<Array<ReconcileAction | undefined>> {
+  return await withSerializedBujoMutation(deps, async () => await reconcileBatchUnlocked(candidates, deps));
+}
+
+async function reconcileBatchUnlocked(
+  candidates: readonly CandidateMemory[],
+  deps: ReconcileDeps,
+): Promise<Array<ReconcileAction | undefined>> {
+  const threadThreshold = deps.threadThreshold ?? 0.35;
+  const dupThreshold = deps.dupThreshold ?? 0.5;
+  let neighbours: readonly SimilarHit[][];
+  try {
+    neighbours = await deps.db.findSimilarMany(candidates.map((candidate) => candidate.text), 5, {
+      ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
+    });
+  } catch (cause) {
+    deps.abortSignal?.throwIfAborted();
+    throw new MemoryModelError("embedding", "findSimilarBatch", cause);
+  }
+  deps.abortSignal?.throwIfAborted();
+
+  const reconcileIndexes = candidates.flatMap((_candidate, index) => {
+    const similar = neighbours[index] ?? [];
+    return similar.length > 0 && (similar[0]?.distance ?? Infinity) <= dupThreshold ? [index] : [];
+  });
+  const reconcileIndexSet = new Set(reconcileIndexes);
+  const decisions = reconcileIndexes.length === 0
+    ? new Map<number, Classification>()
+    : await classifyBatch(candidates, neighbours, reconcileIndexes, deps);
+  rejectConflictingTargets(decisions);
+  deps.abortSignal?.throwIfAborted();
+  const plans: Array<BatchActionPlan | undefined> = candidates.map(() => undefined);
+  for (const [index, candidate] of candidates.entries()) {
+    const similar = neighbours[index] ?? [];
+    try {
+      if (!reconcileIndexSet.has(index)) {
+        plans[index] = { index, ...planAddWithoutIndex(candidate, similar, deps, threadThreshold) };
+      } else {
+        // A close candidate with a missing or malformed batch decision must
+        // fail closed. Leave its slot empty: synthesizing a noop would later
+        // attach this candidate's entities to a neighbour the model never
+        // selected, corrupting the precise graph.
+        const decision = decisions.get(index);
+        if (decision === undefined) continue;
+        plans[index] = { index, ...planBatchAction(candidate, decision, similar, deps, threadThreshold) };
+      }
+    } catch (error) {
+      if (error instanceof MemoryModelError) throw error;
+      // One malformed candidate cannot abort the rest of the turn.
+    }
+  }
+
+  const writes = plans.flatMap((plan) => plan?.record === undefined ? [] : [plan]);
+  let vectors: readonly (readonly number[] | undefined)[];
+  try {
+    // One persistence embedding batch for every ADD/UPDATE/SUPERSEDE. This
+    // happens before canonical mutation so a provider outage is systemic and
+    // cannot masquerade as an empty successful capture.
+    vectors = await deps.db.prepareUpsertVectors(writes.map((plan) => plan.record!));
+  } catch (cause) {
+    throw new MemoryModelError("embedding", "persistBatch", cause);
+  }
+  deps.abortSignal?.throwIfAborted();
+
+  const vectorsByIndex = new Map(writes.map((plan, index) => [plan.index, vectors[index]]));
+  const preparedActions = plans.flatMap((plan) => plan === undefined ? [] : [withPreparedVector(
+    plan.intent,
+    plan.index,
+    vectorsByIndex.get(plan.index),
+  )]);
+  if (deps.beforeBatchCommit !== undefined) deps.beforeBatchCommit(preparedActions);
+  deps.abortSignal?.throwIfAborted();
+
+  if (deps.deferBatchCommit === true) {
+    if (deps.beforeBatchCommit === undefined) {
+      throw new Error("memory-reconcile: deferred batch commit requires a durable commit boundary.");
+    }
+    return plans.map((plan) => plan?.action);
+  }
+
+  commitPreparedActionsDurably(preparedActions, deps);
+  return plans.map((plan) => plan?.action);
+}
+
+/**
+ * A batch is planned against one pre-write snapshot. Every target-bearing
+ * decision contributes candidate-specific graph evidence, including NOOP.
+ * Allowing any two candidates to share a target would either race mutations or
+ * merge unrelated entity evidence onto one row. Fail the entire target group
+ * closed before vector preflight or canonical writes.
+ */
+function rejectConflictingTargets(decisions: Map<number, Classification>): void {
+  const byTarget = new Map<string, number[]>();
+  for (const [index, decision] of decisions) {
+    if (decision.targetId === undefined) continue;
+    const indexes = byTarget.get(decision.targetId) ?? [];
+    indexes.push(index);
+    byTarget.set(decision.targetId, indexes);
+  }
+  for (const indexes of byTarget.values()) {
+    if (indexes.length < 2) continue;
+    for (const index of indexes) decisions.delete(index);
+  }
+}
+
+interface BatchActionPlan {
+  readonly index: number;
+  readonly action: ReconcileAction;
+  readonly intent: CaptureIntentAction;
+  readonly record?: MemoryRecord;
+}
+
+/** Preserve the exported legacy reconcile semantics while sharing the batch planner's fenced writes. */
+function planLegacyAction(
+  candidate: CandidateMemory,
+  decision: Classification | undefined,
+  similar: readonly SimilarHit[],
+  deps: ReconcileDeps,
+  threadThreshold: number,
+): Omit<BatchActionPlan, "index"> {
+  const resolved = decision ?? closestNoop(similar);
+  return resolved === undefined
+    ? planAddWithoutIndex(candidate, similar, deps, threadThreshold)
+    : planBatchAction(candidate, resolved, similar, deps, threadThreshold);
+}
+
+/**
+ * Finish every legacy ADD/UPDATE/SUPERSEDE with the same provider-first,
+ * durable boundary as reconcileBatch. No canonical source can be touched
+ * until both the persistence vector and its fsynced intent exist.
+ */
+async function executePlannedAction(
+  plan: Omit<BatchActionPlan, "index">,
+  deps: ReconcileDeps,
+): Promise<ReconcileAction> {
+  if (plan.record === undefined) {
+    deps.abortSignal?.throwIfAborted();
+    commitPreparedActionsDurably([withPreparedVector(plan.intent, 0, undefined)], deps);
+    return plan.action;
+  }
+
+  let vectors: readonly (readonly number[] | undefined)[];
+  try {
+    vectors = await deps.db.prepareUpsertVectors([plan.record]);
+  } catch (cause) {
+    deps.abortSignal?.throwIfAborted();
+    throw new MemoryModelError("embedding", "persist", cause);
+  }
+  deps.abortSignal?.throwIfAborted();
+
+  commitPreparedActionsDurably([withPreparedVector(plan.intent, 0, vectors[0])], deps);
+  return plan.action;
+}
+
+const MAX_ACTIONS_PER_INTENT = 8;
+
+/** Publish each bounded action group, then let exact replay own every write. */
+function commitPreparedActionsDurably(
+  actions: readonly CaptureIntentAction[],
+  deps: ReconcileDeps,
+): void {
+  deps.abortSignal?.throwIfAborted();
+  for (let offset = 0; offset < actions.length; offset += MAX_ACTIONS_PER_INTENT) {
+    const bounded = actions
+      .slice(offset, offset + MAX_ACTIONS_PER_INTENT)
+      .map((action, candidateIndex) => ({ ...action, candidateIndex } as CaptureIntentAction));
+    const handle = writeCaptureIntent(
+      deps.root,
+      bounded,
+      { entities: [], relations: [], associations: [] },
+      intentCreatedAt(bounded[0]!),
+    );
+    // Do not insert an async/abort gap after publication. Replay either
+    // completes synchronously or leaves the exact pending intent for startup.
+    replayCaptureIntent(deps.root, handle, deps.db);
+  }
+}
+
+function intentCreatedAt(action: CaptureIntentAction): string {
+  if (action.kind === "supersede") return action.at;
+  if (action.kind === "noop") return action.expected.bullet.createdAt;
+  return action.record.createdAt;
+}
+
+function planBatchAction(
+  candidate: CandidateMemory,
+  decision: Classification,
+  similar: readonly SimilarHit[],
+  deps: ReconcileDeps,
+  threadThreshold: number,
+): Omit<BatchActionPlan, "index"> {
+  switch (decision.action) {
+    case "add":
+      return planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+    case "noop":
+      return planNoop(decision, deps);
+    case "update":
+      return planUpdate(candidate, decision, deps);
+    case "supersede":
+      return planSupersede(candidate, decision, deps);
+    default:
+      throw new Error("memory-reconcile: unsupported batch action.");
+  }
+}
+
+function planAddWithoutIndex(
+  candidate: CandidateMemory,
+  similar: readonly SimilarHit[],
+  deps: ReconcileDeps,
+  threadThreshold: number,
+): Omit<BatchActionPlan, "index"> {
+  const now = deps.now();
+  const id = deps.nextId();
+  const bullet: Bullet = {
+    id,
+    type: candidate.type,
+    status: "open",
+    text: candidate.text,
+    salience: candidate.salience,
+    isInsight: candidate.isInsight,
+    createdAt: now.toISOString(),
+    refs: [],
+  };
+  const record = recordFor(bullet, deps.root, now);
+  const file = record.source.file!;
+  const threads = similar
+    .filter((hit) => hit.distance <= threadThreshold)
+    .map((hit) => ({ src: id, dst: hit.record.id, weight: 1 - hit.distance }));
+  return {
+    action: { kind: "add", id },
+    intent: {
+      candidateIndex: -1,
+      kind: "add",
+      id,
+      after: { file, bullet },
+      record,
+      threads,
+    },
+    record,
+  };
+}
+
+function planNoop(
+  decision: Classification,
+  deps: ReconcileDeps,
+): Omit<BatchActionPlan, "index"> {
+  const targetId = decision.targetId ?? "";
+  const target = deps.db.get(targetId);
+  if (target?.source.file === undefined) {
+    throw new Error(`memory-reconcile: noop target "${targetId}" is unavailable.`);
+  }
+  const bullet = requireCanonicalTarget(deps.root, target.source.file, targetId);
+  return {
+    action: { kind: "noop", id: targetId },
+    intent: {
+      candidateIndex: -1,
+      kind: "noop",
+      id: targetId,
+      expected: { file: target.source.file, bullet },
+    },
+  };
+}
+
+function planUpdate(
+  candidate: CandidateMemory,
+  decision: Classification,
+  deps: ReconcileDeps,
+): Omit<BatchActionPlan, "index"> {
+  const targetId = decision.targetId ?? "";
+  const target = deps.db.get(targetId);
+  if (target === undefined || target.source.file === undefined) {
+    throw new Error(`memory-reconcile: update target "${targetId}" is unavailable.`);
+  }
+  const before = requireCanonicalTarget(deps.root, target.source.file, targetId);
+  const mergedText = decision.text ?? candidate.text;
+  const after: Bullet = { ...before, text: mergedText };
+  return {
+    action: { kind: "update", id: targetId },
+    intent: {
+      candidateIndex: -1,
+      kind: "update",
+      id: targetId,
+      before: { file: target.source.file, bullet: before },
+      after: { file: target.source.file, bullet: after },
+      record: { ...target, text: mergedText },
+    },
+    record: { ...target, text: mergedText },
+  };
+}
+
+function planSupersede(
+  candidate: CandidateMemory,
+  decision: Classification,
+  deps: ReconcileDeps,
+): Omit<BatchActionPlan, "index"> {
+  const targetId = decision.targetId ?? "";
+  const old = deps.db.get(targetId);
+  if (old === undefined || old.source.file === undefined) {
+    throw new Error(`memory-reconcile: supersede target "${targetId}" is unavailable.`);
+  }
+  const oldSourceFile = old.source.file;
+  const beforeOld = requireCanonicalTarget(deps.root, oldSourceFile, targetId);
+  const now = deps.now();
+  const id = deps.nextId();
+  const bullet: Bullet = {
+    id,
+    type: candidate.type,
+    status: "open",
+    text: decision.text ?? candidate.text,
+    salience: candidate.salience,
+    isInsight: candidate.isInsight,
+    createdAt: now.toISOString(),
+    refs: [],
+  };
+  const record = recordFor(bullet, deps.root, now);
+  const newSourceFile = record.source.file!;
+  return {
+    action: { kind: "supersede", oldId: targetId, newId: id },
+    intent: {
+      candidateIndex: -1,
+      kind: "supersede",
+      oldId: targetId,
+      newId: id,
+      beforeOld: { file: oldSourceFile, bullet: beforeOld },
+      afterOld: { file: oldSourceFile, bullet: { ...beforeOld, status: "invalidated" } },
+      afterNew: { file: newSourceFile, bullet },
+      record,
+      at: now.toISOString(),
+    },
+    record,
+  };
+}
+
+function requireCanonicalTarget(root: string, file: string, id: string): Bullet {
+  const bullet = readBullet(root, file, id);
+  if (bullet === undefined) {
+    throw new Error(`memory-reconcile: canonical source "${file}" does not contain target "${id}".`);
+  }
+  return bullet;
+}
+
+function withPreparedVector(
+  action: CaptureIntentAction,
+  candidateIndex: number,
+  vector: readonly number[] | undefined,
+): CaptureIntentAction {
+  if (action.kind === "noop") return { ...action, candidateIndex };
+  return {
+    ...action,
+    candidateIndex,
+    ...(vector === undefined ? {} : { vector }),
+  };
+}
+
+async function classifyBatch(
+  candidates: readonly CandidateMemory[],
+  neighbours: readonly (readonly SimilarHit[])[],
+  indexes: readonly number[],
+  deps: ReconcileDeps,
+): Promise<Map<number, Classification>> {
+  const input = indexes.map((index) => ({
+    index,
+    candidate: candidates[index],
+    existing: (neighbours[index] ?? []).map((hit) => ({
+      id: hit.record.id,
+      distance: Number(hit.distance.toFixed(6)),
+      text: hit.record.text,
+    })),
+  }));
+  let raw: string;
+  try {
+    raw = await deps.llm.complete(
+      `Classify each candidate against only its supplied existing memories. Return ONLY a JSON array:
+[{"index":0,"action":"add|update|supersede|noop","targetId":"existing id when required","text":"merged/replacement text when needed"}]
+- add: genuinely new; noop: duplicate; update: refinement; supersede: contradiction.
+- Preserve every input index exactly once. targetId must come from that candidate's existing list.
+
+INPUT:
+${JSON.stringify(input)}`,
+      {
+        label: "capture:reconcile-batch",
+        ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
+      },
+    );
+  } catch (cause) {
+    throw new MemoryModelError("llm", "classify-batch", cause);
+  }
+  const parsed = parseJsonLoose<unknown[]>(raw);
+  const decisions = new Map<number, Classification>();
+  const seenIndexes = new Set<number>();
+  const duplicates = new Set<number>();
+  if (!Array.isArray(parsed)) return decisions;
+  for (const item of parsed) {
+    if (item === null || typeof item !== "object") continue;
+    const record = item as { index?: unknown; action?: unknown; targetId?: unknown; text?: unknown };
+    const index = typeof record.index === "number" && Number.isInteger(record.index) ? record.index : -1;
+    if (!indexes.includes(index) || duplicates.has(index)) continue;
+    if (seenIndexes.has(index)) {
+      decisions.delete(index);
+      duplicates.add(index);
+      continue;
+    }
+    seenIndexes.add(index);
+    if (typeof record.action !== "string" || !VALID_ACTIONS.has(record.action)) continue;
+    const targetId = typeof record.targetId === "string" ? record.targetId : undefined;
+    if (record.action !== "add" && (
+      targetId === undefined || !(neighbours[index] ?? []).some((hit) => hit.record.id === targetId)
+    )) continue;
+    const text = normalizeCandidateText(record.text);
+    decisions.set(index, {
+      action: record.action,
+      ...(targetId === undefined ? {} : { targetId }),
+      ...(text === undefined ? {} : { text }),
+    });
+  }
+  return decisions;
+}
+
+/**
  * Ask the LLM to classify the candidate against its nearest neighbours. A malformed *reply* is
- * tolerated (→ undefined → caller falls back to ADD), but a model *failure* is rethrown as a
+ * tolerated (→ undefined → caller fails closed to the nearest neighbour), but a model *failure* is rethrown as a
  * {@link MemoryModelError} so a dead model surfaces instead of silently degrading to ADD.
  */
 async function classify(
@@ -93,10 +556,15 @@ async function classify(
 ): Promise<Classification | undefined> {
   let raw: string;
   try {
-    raw = await deps.llm.complete(classifyPrompt(candidate, similar), { label: "capture:reconcile" });
+    raw = await deps.llm.complete(classifyPrompt(candidate, similar), {
+      label: "capture:reconcile",
+      ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }),
+    });
   } catch (cause) {
+    deps.abortSignal?.throwIfAborted();
     throw new MemoryModelError("llm", "classify", cause);
   }
+  deps.abortSignal?.throwIfAborted();
   const parsed = parseJsonLoose<Classification>(raw);
   if (parsed === undefined || typeof parsed !== "object") return undefined;
   const action = typeof parsed.action === "string" ? parsed.action : "";
@@ -107,10 +575,11 @@ async function classify(
   if (action !== "add") {
     if (targetId === undefined || !similar.some((h) => h.record.id === targetId)) return undefined;
   }
+  const text = normalizeCandidateText(parsed.text);
   return {
     action,
     ...(targetId !== undefined && { targetId }),
-    ...(typeof parsed.text === "string" && { text: parsed.text }),
+    ...(text === undefined ? {} : { text }),
   };
 }
 
@@ -132,112 +601,9 @@ EXISTING:
 ${neighbours}`;
 };
 
-/** Dispatch a parsed classification (or fall back to ADD when it is missing/invalid). */
-async function apply(
-  candidate: CandidateMemory,
-  decision: Classification | undefined,
-  similar: readonly SimilarHit[],
-  deps: ReconcileDeps,
-  threadThreshold: number,
-): Promise<ReconcileAction> {
-  if (decision === undefined) return add(candidate, similar, deps, threadThreshold);
-
-  switch (decision.action) {
-    case "noop":
-      // targetId is guaranteed present for non-add by classify().
-      return { kind: "noop", id: decision.targetId ?? "" };
-    case "update":
-      return update(candidate, decision, similar, deps, threadThreshold);
-    case "supersede":
-      return supersede(candidate, decision, similar, deps, threadThreshold);
-    default:
-      return add(candidate, similar, deps, threadThreshold);
-  }
-}
-
-/** ADD: append a new bullet, index it, and thread edges to near neighbours. */
-async function add(
-  candidate: CandidateMemory,
-  similar: readonly SimilarHit[],
-  deps: ReconcileDeps,
-  threadThreshold: number,
-): Promise<ReconcileAction> {
-  const now = deps.now();
-  const id = deps.nextId();
-  const bullet: Bullet = {
-    id,
-    type: candidate.type,
-    status: "open",
-    text: candidate.text,
-    salience: candidate.salience,
-    isInsight: candidate.isInsight,
-    createdAt: now.toISOString(),
-    refs: [],
-  };
-  appendBullet(deps.root, bullet, now);
-  await deps.db.upsert(recordFor(bullet, deps.root, now));
-
-  for (const hit of similar) {
-    if (hit.distance <= threadThreshold) {
-      deps.db.addEdge(id, hit.record.id, "thread", 1 - hit.distance);
-    }
-  }
-  return { kind: "add", id };
-}
-
-/** UPDATE: merge text into an existing memory (markdown + re-embedded index), keeping its id. */
-async function update(
-  candidate: CandidateMemory,
-  decision: Classification,
-  similar: readonly SimilarHit[],
-  deps: ReconcileDeps,
-  threadThreshold: number,
-): Promise<ReconcileAction> {
-  const targetId = decision.targetId ?? "";
-  const target = deps.db.get(targetId);
-  if (target === undefined || target.source.file === undefined) {
-    return add(candidate, similar, deps, threadThreshold);
-  }
-  const mergedText = decision.text ?? candidate.text;
-  rewriteBullet(deps.root, target.source.file, targetId, { text: mergedText });
-  await deps.db.upsert({ ...target, text: mergedText });
-  return { kind: "update", id: targetId };
-}
-
-/** SUPERSEDE: invalidate the old memory (markdown + index) and add the new one in its place. */
-async function supersede(
-  candidate: CandidateMemory,
-  decision: Classification,
-  similar: readonly SimilarHit[],
-  deps: ReconcileDeps,
-  threadThreshold: number,
-): Promise<ReconcileAction> {
-  const targetId = decision.targetId ?? "";
-  const old = deps.db.get(targetId);
-  if (old === undefined) {
-    return add(candidate, similar, deps, threadThreshold);
-  }
-  const now = deps.now();
-  const id = deps.nextId();
-  const newText = decision.text ?? candidate.text;
-  const bullet: Bullet = {
-    id,
-    type: candidate.type,
-    status: "open",
-    text: newText,
-    salience: candidate.salience,
-    isInsight: candidate.isInsight,
-    createdAt: now.toISOString(),
-    refs: [],
-  };
-  // Canonical-markdown first (strike old, append new), then mirror to the index. If the index step
-  // throws, a rebuild from markdown still reproduces the correct state (old invalidated, new present).
-  if (old.source.file !== undefined) {
-    rewriteBullet(deps.root, old.source.file, targetId, { status: "invalidated" });
-  }
-  appendBullet(deps.root, bullet, now);
-  await deps.db.supersede(targetId, recordFor(bullet, deps.root, now));
-  return { kind: "supersede", oldId: targetId, newId: id };
+function closestNoop(similar: readonly SimilarHit[]): Classification | undefined {
+  const id = similar[0]?.record.id;
+  return id === undefined ? undefined : { action: "noop", targetId: id };
 }
 
 /** Build an index record mirroring a freshly-appended bullet (source.file is the daily file, relative to root). */

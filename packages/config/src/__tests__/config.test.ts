@@ -10,6 +10,16 @@ const baseEnv = {
   MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
 };
 
+const journalMemoryPrerequisite = {
+  MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+};
+
+const bujoMemoryPrerequisites = {
+  ...journalMemoryPrerequisite,
+  MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama",
+  MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest",
+};
+
 describe("loadMonoAgentConfig", () => {
   it("loads required runtime, context, tools, memory, and artifact config", () => {
     const config = loadMonoAgentConfig({
@@ -840,12 +850,10 @@ describe("loadMonoAgentConfig", () => {
     });
     expect(lite.memory?.recallTool).toEqual({ enabled: true });
 
-    // A hand-authored journal without embeddings still has lexical recall.
-    const journalNoEmbeddings = loadMonoAgentConfig({
+    expect(() => loadMonoAgentConfig({
       cwd: "/repo",
       env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "memory", MONO_AGENT_MEMORY_MODE: "journal" },
-    });
-    expect(journalNoEmbeddings.memory?.recallTool).toEqual({ enabled: true });
+    })).toThrow(/requires an explicit memory\.embeddings/i);
   });
 
   it("lets MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED override the recallTool default in both directions", () => {
@@ -883,6 +891,7 @@ describe("loadMonoAgentConfig", () => {
           ...baseEnv,
           MONO_AGENT_MEMORY_PATH: "memory",
           MONO_AGENT_MEMORY_MODE: "journal",
+          ...journalMemoryPrerequisite,
           MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED: "maybe",
         },
       });
@@ -1108,18 +1117,52 @@ describe("loadMonoAgentConfig", () => {
     throw new Error("Expected config load to fail.");
   });
 
-  it("loads memory.mode bujo from env", () => {
-    const config = loadMonoAgentConfig({
+  it("rejects memory.mode bujo when either prerequisite is omitted", () => {
+    expect(() => loadMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
       },
-    });
+    })).toThrow(/requires an explicit memory\.embeddings/i);
+  });
 
-    expect(config.memory?.mode).toBe("bujo");
-    expect(config.memory?.path).toBe("/repo/memory-root");
+  it.each(["lite", "journal"] as const)(
+    "rejects a partial memory.llm block in %s mode instead of silently dropping it",
+    (mode) => {
+      expect(() => loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          ...(mode === "journal" ? journalMemoryPrerequisite : {}),
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_MODE: mode,
+          MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama",
+          MONO_AGENT_MEMORY_LLM_ENDPOINT: "http://localhost:11434",
+        },
+      })).toThrowError(expect.objectContaining({
+        code: "invalid_env",
+        details: expect.objectContaining({ env: "MONO_AGENT_MEMORY_MODE" }),
+      }));
+    },
+  );
+
+  it("rejects a partial BuJo memory.llm block when its model is missing", () => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        ...journalMemoryPrerequisite,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama",
+        MONO_AGENT_MEMORY_LLM_ENDPOINT: "http://localhost:11434",
+      },
+    })).toThrowError(expect.objectContaining({
+      code: "invalid_env",
+      details: expect.objectContaining({ env: "MONO_AGENT_MEMORY_LLM_MODEL" }),
+    }));
   });
 
   it("loads memory.llm from env when model is set", () => {
@@ -1127,6 +1170,7 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: {
         ...baseEnv,
+        ...journalMemoryPrerequisite,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
         MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama",
@@ -1147,6 +1191,7 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: {
         ...baseEnv,
+        ...journalMemoryPrerequisite,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
         MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
@@ -1166,6 +1211,7 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: {
         ...baseEnv,
+        ...journalMemoryPrerequisite,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
         MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
@@ -1186,6 +1232,7 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: {
         ...baseEnv,
+        ...journalMemoryPrerequisite,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
         MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
@@ -1295,17 +1342,16 @@ describe("loadMonoAgentConfig", () => {
     ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
   });
 
-  it("omits memory.llm when LLM model env is unset", () => {
-    const config = loadMonoAgentConfig({
+  it("rejects bujo when the memory LLM is unset", () => {
+    expect(() => loadMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
+        ...journalMemoryPrerequisite,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
       },
-    });
-
-    expect(config.memory?.llm).toBeUndefined();
+    })).toThrow(/requires an explicit memory\.llm/i);
   });
 
   it("omits memory.llm.endpoint when only provider and model are set", () => {
@@ -1313,6 +1359,7 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: {
         ...baseEnv,
+        ...journalMemoryPrerequisite,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
         MONO_AGENT_MEMORY_LLM_MODEL: "qwen3:8b",
@@ -1346,6 +1393,7 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: {
         ...baseEnv,
+        ...bujoMemoryPrerequisites,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
         MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
@@ -1362,6 +1410,7 @@ describe("loadMonoAgentConfig", () => {
       env: {
         ...baseEnv,
         MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "journal",
         MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
       },
     });
@@ -1374,6 +1423,7 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: {
         ...baseEnv,
+        ...journalMemoryPrerequisite,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
         MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest",
@@ -1462,6 +1512,7 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: {
         ...baseEnv,
+        ...bujoMemoryPrerequisites,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
         MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED: "true",
@@ -1477,6 +1528,7 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: {
         ...baseEnv,
+        ...bujoMemoryPrerequisites,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
       },
@@ -1490,6 +1542,7 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: {
         ...baseEnv,
+        ...bujoMemoryPrerequisites,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
         MONO_AGENT_MEMORY_CONSOLIDATION_CRON: "30 */4 * * *",
@@ -1505,6 +1558,7 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: {
         ...baseEnv,
+        ...bujoMemoryPrerequisites,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
         MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED: "false",
@@ -1544,6 +1598,7 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: {
         ...baseEnv,
+        ...journalMemoryPrerequisite,
         MONO_AGENT_MEMORY_PATH: "./mem",
         MONO_AGENT_MEMORY_MODE: "bujo",
         MONO_AGENT_MEMORY_WRITE_MODE: "capture",
@@ -1570,7 +1625,7 @@ describe("loadMonoAgentConfig", () => {
   it("defaults memory.backend to 'bujo' when a memory block is configured", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
-      env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "./mem", MONO_AGENT_MEMORY_MODE: "journal" },
+      env: { ...baseEnv, ...journalMemoryPrerequisite, MONO_AGENT_MEMORY_PATH: "./mem", MONO_AGENT_MEMORY_MODE: "journal" },
     });
     expect(config.memory?.backend).toBe("bujo");
     expect(config.memory?.supermemory).toBeUndefined();

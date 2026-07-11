@@ -31,6 +31,12 @@ Both `journal` and `bujo` perform hybrid recall (BM25 keyword + vector RRF). Wit
 configured `memory.embeddings` block, those tiers fail config validation — there is no
 silent fallback.
 
+Journal commits and hash-deduplicates its lexical row before scheduling semantic work. Vector
+indexing runs in a bounded background queue (up to 256 items / 2 MiB, batches of 32), so a slow
+or failed embedding request is never on the successful agent-turn critical path. The lexical row
+remains recallable and the missing-vector backlog is retried. BuJo likewise performs embedding
+work inside its bounded background curation queue rather than delaying the channel reply.
+
 ## Configuration keys
 
 | Key | Type | Required | Notes |
@@ -111,10 +117,12 @@ Every key has a `MONO_AGENT_MEMORY_EMBEDDINGS_*` override. See
 | `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` |
 
-For the standalone `memory-bujo` maintenance CLI, embeddings are opt-in: set
+For standalone read-only `memory-bujo recall`, embeddings are opt-in: set
 `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` to enable semantic recall. When enabled, the model
-defaults to `nomic-embed-text:v1.5` and `dim` to `768`. Without it, `recall`/`rebuild` run
-FTS-only and need no embedding service.
+defaults to `nomic-embed-text:v1.5` and `dim` to `768`; without it, recall is FTS-only. Safe
+`rebuild`/`rollback` are different: they require `--tier`, and the declared identity forbids
+embeddings for Lite or requires the exact model/dimension for Journal/BuJo. Use the config-aware
+`mono-agent memory rebuild` for first activation.
 
 ## Timeout and circuit-breaker behavior
 

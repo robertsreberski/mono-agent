@@ -1,14 +1,21 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
 import { openMemoryDb, type MemoryDb, type MemoryRecord } from "../../store/index.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { appendBullet, dailyFilePath } from "../daily.js";
+import { appendBullet, dailyFilePath, rewriteBullet } from "../daily.js";
+import { writeCaptureIntent } from "../capture-outbox.js";
 import { parseDailyFile } from "../grammar.js";
+import { readGraph } from "../graph.js";
 import { createIdFactory } from "../ids.js";
-import { migrate, type MigrateDeps } from "../migrate.js";
+import {
+  assertNoPendingMigrateDecision,
+  migrate,
+  recoverPendingMigrateDecision,
+  type MigrateDeps,
+} from "../migrate.js";
 import { MemoryModelError } from "../model-error.js";
 import type { Bullet } from "../types.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
@@ -35,6 +42,12 @@ function openDb(root: string): MemoryDb {
   });
   openDbs.push(db);
   return db;
+}
+
+function closeDb(db: MemoryDb): void {
+  const index = openDbs.indexOf(db);
+  if (index >= 0) openDbs.splice(index, 1);
+  db.close();
 }
 
 /** Seed an aging memory: append a bullet to the daily file and upsert with old createdAt + low salience. */
@@ -146,7 +159,11 @@ describe("migrate", () => {
     // --- cluster: collection set in db + collection entity + supports edge ---
     const clustered = db.get("MIG-CLUSTER");
     expect(clustered).toBeDefined();
+    expect(clustered!.status).toBe("migrated");
     expect(clustered!.collection).toBe("books");
+    expect(parseDailyFile(dailyContent(root, SIXTY_DAYS_AGO)).bullets.find(
+      (b) => b.id === "MIG-CLUSTER",
+    )?.status).toBe("migrated");
 
     const collectionEntity = db.getEntity("collection:books");
     expect(collectionEntity).toBeDefined();
@@ -155,6 +172,14 @@ describe("migrate", () => {
 
     const clusterEdges = db.edges("MIG-CLUSTER");
     expect(clusterEdges.some((e) => e.kind === "supports" && e.dst === "collection:books")).toBe(true);
+    expect(readGraph(root)).toMatchObject({
+      entities: [expect.objectContaining({ id: "collection:books", name: "books", type: "collection" })],
+      associations: [expect.objectContaining({
+        memoryId: "MIG-CLUSTER",
+        entityId: "collection:books",
+        provenance: "capture",
+      })],
+    });
 
     // --- forget: status dropped + validTo in db + daily line struck ---
     const forgotten = db.get("MIG-FORGET");
@@ -180,6 +205,215 @@ describe("migrate", () => {
     expect(monthlyContent).toContain("MIG-CLUSTER");
     expect(monthlyContent).toContain("forget");
     expect(monthlyContent).toContain("MIG-FORGET");
+    expect(monthlyContent).not.toContain("mono-agent-migrate:");
+  });
+
+  it("refuses a symlinked monthly directory without writing outside the memory root", async () => {
+    const root = newRoot();
+    const outside = mkdtempSync(join(tmpdir(), "bujo-migrate-outside-"));
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-LINK", "monthly path confinement sentinel");
+    symlinkSync(outside, join(root, "monthly"), "dir");
+    const llm = fakeLlm([["path confinement", JSON.stringify({ action: "promote" })]]);
+
+    await expect(migrate(makeDeps(db, root, { llm }))).rejects.toThrow(/directory.*symlink/iu);
+    expect(existsSync(join(outside, "2026-06.md"))).toBe(false);
+    expect(db.get("MIG-LINK")?.salience).toBe(0.2);
+  });
+
+  it.each(["after-decision", "after-action"] as const)(
+    "replays a durable pending decision after restart without another model call (%s)",
+    async (fault) => {
+      const root = newRoot();
+      let db = openDb(root);
+      await seedAging(db, root, "MIG-RETRY", "retry-safe monthly migration sentinel");
+      const firstLlm = vi.fn(async () => JSON.stringify({ action: "promote" }));
+
+      await expect(migrate(makeDeps(db, root, {
+        llm: { id: "first", complete: firstLlm },
+        hooks: fault === "after-decision"
+          ? { afterDecisionDurable: () => { throw new Error("fault-after-decision"); } }
+          : { afterActionCommitted: () => { throw new Error("fault-after-action"); } },
+      }))).rejects.toThrow(`fault-${fault}`);
+
+      expect(firstLlm).toHaveBeenCalledTimes(1);
+      expect(db.get("MIG-RETRY")?.salience).toBe(fault === "after-decision" ? 0.2 : 0.5);
+      const monthly = readFileSync(join(root, "monthly", "2026-06.md"), "utf8");
+      expect(monthly).toContain("mono-agent-migrate:");
+      expect(monthly).not.toContain("mono-agent-migrate:complete:");
+      expect(() => assertNoPendingMigrateDecision(root)).toThrow(/durable decision.*pending/iu);
+
+      closeDb(db);
+      db = openDb(root);
+      const retryLlm = vi.fn(async () => { throw new Error("retry must not call the LLM"); });
+      const retried = await migrate(makeDeps(db, root, { llm: { id: "retry", complete: retryLlm } }));
+
+      expect(retryLlm).not.toHaveBeenCalled();
+      expect(retried).toMatchObject({ promoted: 1, reviewed: 1 });
+      expect(db.get("MIG-RETRY")?.salience).toBe(0.5);
+      expect(parseDailyFile(dailyContent(root, SIXTY_DAYS_AGO)).bullets[0]?.salience).toBe(0.5);
+      const recoveredMonthly = readFileSync(join(root, "monthly", "2026-06.md"), "utf8");
+      expect(recoveredMonthly).toContain("- promote MIG-RETRY");
+      expect(recoveredMonthly).not.toContain("mono-agent-migrate:");
+      expect(() => assertNoPendingMigrateDecision(root)).not.toThrow();
+    },
+  );
+
+  it("recovers a paid decision without providers while preserving newer access telemetry", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-TELEMETRY", "preserve live migration access telemetry");
+    const firstLlm = vi.fn(async () => JSON.stringify({ action: "promote" }));
+    await expect(migrate(makeDeps(db, root, {
+      llm: { id: "first", complete: firstLlm },
+      hooks: { afterDecisionDurable: () => { throw new Error("fault-after-paid-decision"); } },
+    }))).rejects.toThrow("fault-after-paid-decision");
+
+    const accessedAt = new Date("2026-06-15T12:30:00.000Z");
+    db.recordAccess(["MIG-TELEMETRY"], accessedAt);
+    const provider = vi.spyOn(db, "prepareUpsertVectors");
+
+    expect(recoverPendingMigrateDecision(root, db)).toBe(true);
+
+    expect(firstLlm).toHaveBeenCalledTimes(1);
+    expect(provider).not.toHaveBeenCalled();
+    expect(db.get("MIG-TELEMETRY")).toMatchObject({
+      salience: 0.5,
+      accessCount: 1,
+      lastAccessedAt: accessedAt.toISOString(),
+    });
+    expect(readFileSync(join(root, "monthly", "2026-06.md"), "utf8")).not.toContain("mono-agent-migrate:");
+    expect(recoverPendingMigrateDecision(root, db)).toBe(false);
+  });
+
+  it("rejects duplicate canonical ids before paying providers or publishing a decision", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-DUPLICATE", "duplicate canonical migration sentinel");
+    const canonical = parseDailyFile(dailyContent(root, SIXTY_DAYS_AGO)).bullets[0]!;
+    appendBullet(root, canonical, SIXTY_DAYS_AGO);
+    const before = dailyContent(root, SIXTY_DAYS_AGO);
+    const llm = vi.fn(async () => JSON.stringify({ action: "promote" }));
+    const provider = vi.spyOn(db, "prepareUpsertVectors");
+
+    await expect(migrate(makeDeps(db, root, { llm: { id: "must-not-run", complete: llm } })))
+      .rejects.toThrow(/contains 2 bullets.*exactly one/iu);
+
+    expect(llm).not.toHaveBeenCalled();
+    expect(provider).not.toHaveBeenCalled();
+    expect(db.get("MIG-DUPLICATE")?.salience).toBe(0.2);
+    expect(dailyContent(root, SIXTY_DAYS_AGO)).toBe(before);
+    expect(existsSync(join(root, "monthly", "2026-06.md"))).toBe(false);
+  });
+
+  it("keeps a paid decision pending when its canonical id becomes duplicated", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-DUPLICATE-RETRY", "duplicate recovery migration sentinel");
+    await expect(migrate(makeDeps(db, root, {
+      llm: { id: "first", complete: async () => JSON.stringify({ action: "promote" }) },
+      hooks: { afterDecisionDurable: () => { throw new Error("fault-after-paid-decision"); } },
+    }))).rejects.toThrow("fault-after-paid-decision");
+    const canonical = parseDailyFile(dailyContent(root, SIXTY_DAYS_AGO)).bullets[0]!;
+    appendBullet(root, canonical, SIXTY_DAYS_AGO);
+    const before = dailyContent(root, SIXTY_DAYS_AGO);
+
+    expect(() => recoverPendingMigrateDecision(root, db))
+      .toThrow(/contains 2 bullets.*exactly one/iu);
+
+    expect(db.get("MIG-DUPLICATE-RETRY")?.salience).toBe(0.2);
+    expect(dailyContent(root, SIXTY_DAYS_AGO)).toBe(before);
+    expect(readFileSync(join(root, "monthly", "2026-06.md"), "utf8")).toContain("mono-agent-migrate:");
+  });
+
+  it("promotes very-low-salience memories out of the aging pool", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-LOW", "very low salience promotion sentinel", { salience: 0 });
+    const firstLlm = vi.fn(async () => JSON.stringify({ action: "promote" }));
+
+    const first = await migrate(makeDeps(db, root, { llm: { id: "first", complete: firstLlm } }));
+    expect(first.promoted).toBe(1);
+    expect(db.get("MIG-LOW")?.salience).toBe(0.5);
+
+    const retryLlm = vi.fn(async () => { throw new Error("promoted item must leave aging pool"); });
+    const retry = await migrate(makeDeps(db, root, { llm: { id: "retry", complete: retryLlm } }));
+    expect(retry.reviewed).toBe(0);
+    expect(retryLlm).not.toHaveBeenCalled();
+  });
+
+  it("recovers a clustered decision into a terminal state without a second LLM call", async () => {
+    const root = newRoot();
+    let db = openDb(root);
+    await seedAging(db, root, "MIG-CLUSTER-RETRY", "cluster retry migration sentinel");
+    await expect(migrate(makeDeps(db, root, {
+      llm: fakeLlm([["cluster retry", JSON.stringify({ action: "cluster", collection: "retries" })]]),
+      hooks: { afterDecisionDurable: () => { throw new Error("crash-after-cluster-decision"); } },
+    }))).rejects.toThrow("crash-after-cluster-decision");
+    closeDb(db);
+    db = openDb(root);
+    const retryLlm = vi.fn(async () => { throw new Error("cluster recovery must not call LLM"); });
+
+    const recovered = await migrate(makeDeps(db, root, { llm: { id: "retry", complete: retryLlm } }));
+
+    expect(retryLlm).not.toHaveBeenCalled();
+    expect(recovered).toMatchObject({ clustered: 1, reviewed: 1 });
+    expect(db.get("MIG-CLUSTER-RETRY")).toMatchObject({ status: "migrated", collection: "retries" });
+    expect(parseDailyFile(dailyContent(root, SIXTY_DAYS_AGO)).bullets.find(
+      (b) => b.id === "MIG-CLUSTER-RETRY",
+    )?.status).toBe("migrated");
+    expect(readGraph(root).associations).toEqual([
+      expect.objectContaining({
+        memoryId: "MIG-CLUSTER-RETRY",
+        entityId: "collection:retries",
+        provenance: "capture",
+      }),
+    ]);
+  });
+
+  it("fails closed when canonical source changes after a pending decision is durable", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-CONFLICT", "canonical conflict migration sentinel");
+    await expect(migrate(makeDeps(db, root, {
+      llm: fakeLlm([["canonical conflict", JSON.stringify({ action: "promote" })]]),
+      hooks: { afterDecisionDurable: () => { throw new Error("crash-after-decision"); } },
+    }))).rejects.toThrow("crash-after-decision");
+    const source = relative(root, dailyFilePath(root, SIXTY_DAYS_AGO));
+    expect(rewriteBullet(root, source, "MIG-CONFLICT", { text: "An intervening canonical edit." })).toBe(true);
+    const retryLlm = vi.fn(async () => { throw new Error("must not call model on conflict"); });
+
+    await expect(migrate(makeDeps(db, root, {
+      llm: { id: "retry", complete: retryLlm },
+    }))).rejects.toThrow(/no longer matches|canonical/iu);
+
+    expect(retryLlm).not.toHaveBeenCalled();
+    expect(db.get("MIG-CONFLICT")?.salience).toBe(0.2);
+    expect(readFileSync(join(root, "monthly", "2026-06.md"), "utf8")).toContain("mono-agent-migrate:");
+  });
+
+  it("fails closed on a corrupted pending marker instead of silently paying for another decision", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-CORRUPT", "corrupted marker migration sentinel");
+    await expect(migrate(makeDeps(db, root, {
+      llm: fakeLlm([["corrupted marker", JSON.stringify({ action: "promote" })]]),
+      hooks: { afterDecisionDurable: () => { throw new Error("crash-after-decision"); } },
+    }))).rejects.toThrow("crash-after-decision");
+    const monthlyPath = join(root, "monthly", "2026-06.md");
+    const corrupted = readFileSync(monthlyPath, "utf8").replace(
+      /<!-- mono-agent-migrate:[^\n]+ -->/u,
+      "<!-- mono-agent-migrate:not-valid-base64 -->",
+    );
+    writeFileSync(monthlyPath, corrupted, "utf8");
+    const retryLlm = vi.fn(async () => { throw new Error("must not call model on corrupt marker"); });
+
+    await expect(migrate(makeDeps(db, root, {
+      llm: { id: "retry", complete: retryLlm },
+    }))).rejects.toThrow(/malformed durable pending decision/iu);
+
+    expect(retryLlm).not.toHaveBeenCalled();
+    expect(db.get("MIG-CORRUPT")?.salience).toBe(0.2);
   });
 
   it("surfaces (rethrows) a model failure during migration instead of swallowing it per-item", async () => {
@@ -203,6 +437,28 @@ describe("migrate", () => {
     expect((err as Error).message).toMatch(/ollama unavailable/);
     // A migration failure must NOT read as a "capture" failure.
     expect((err as Error).message).not.toMatch(/capture/i);
+  });
+
+  it("surfaces an embedding outage after one paid decision instead of repeating the LLM across the batch", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-EMBED-A", "first embedding outage sentinel");
+    await seedAging(db, root, "MIG-EMBED-B", "second embedding outage sentinel");
+    vi.spyOn(db, "prepareUpsertVectors").mockRejectedValue(new Error("embedding provider unavailable"));
+    const complete = vi.fn(async () => JSON.stringify({ action: "promote" }));
+
+    const err = await migrate(makeDeps(db, root, {
+      llm: { id: "paid-decision", complete },
+    })).catch((error: unknown) => error);
+
+    expect(err).toBeInstanceOf(MemoryModelError);
+    expect((err as MemoryModelError).kind).toBe("embedding");
+    expect((err as MemoryModelError).stage).toBe("migrate");
+    expect((err as Error).message).toMatch(/embedding provider unavailable/iu);
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(db.get("MIG-EMBED-A")?.salience).toBe(0.2);
+    expect(db.get("MIG-EMBED-B")?.salience).toBe(0.2);
+    expect(existsSync(join(root, "monthly", "2026-06.md"))).toBe(false);
   });
 
   it("isolates a genuine per-item data error (missing daily file) without aborting the batch", async () => {
@@ -232,7 +488,7 @@ describe("migrate", () => {
     expect(db.get("MIG-GOOD")!.status).toBe("dropped");
   });
 
-  it("skips rewriteBullet when source.file is undefined, still mirrors index", async () => {
+  it("skips an index-only item before paying the model when no canonical bullet exists", async () => {
     const root = newRoot();
     const db = openDb(root);
 
@@ -250,15 +506,16 @@ describe("migrate", () => {
       source: {}, // no file
     });
 
-    const llm = fakeLlm([["orphaned", JSON.stringify({ action: "promote" })]]);
+    const complete = vi.fn(async () => JSON.stringify({ action: "promote" }));
 
-    // Should not throw even though there's no file to rewrite
-    const result = await migrate(makeDeps(db, root, { llm }));
+    const result = await migrate(makeDeps(db, root, { llm: { id: "must-not-run", complete } }));
 
-    expect(result.promoted).toBe(1);
+    expect(result).toMatchObject({ promoted: 0, reviewed: 1 });
+    expect(complete).not.toHaveBeenCalled();
 
     const record = db.get("MIG-NOFILE");
-    expect(record!.salience).toBeCloseTo(0.2 + 0.3, 5);
+    expect(record!.salience).toBe(0.2);
+    expect(existsSync(join(root, "monthly", "2026-06.md"))).toBe(false);
   });
 
   it("skips items with invalid/unrecognized action from LLM", async () => {
@@ -307,5 +564,36 @@ describe("migrate", () => {
     expect(result.reviewed).toBe(0);
     expect(result.promoted).toBe(0);
     expect(result.forgotten).toBe(0);
+  });
+
+  it("replays a pending capture before migration scans for new provider work", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-CAPTURE-FENCE", "capture must settle before migration", { salience: 0.8 });
+    const file = relative(root, dailyFilePath(root, SIXTY_DAYS_AGO));
+    const bullet = parseDailyFile(dailyContent(root, SIXTY_DAYS_AGO)).bullets.find(
+      (candidate) => candidate.id === "MIG-CAPTURE-FENCE",
+    )!;
+    const handle = writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "noop",
+      id: bullet.id,
+      expected: { file, bullet },
+    }], { entities: [], relations: [], associations: [] }, NOW.toISOString());
+    const originalAgingOpen = db.agingOpen.bind(db);
+    const scan = vi.spyOn(db, "agingOpen").mockImplementation((now, options) => {
+      expect(existsSync(join(root, handle.file))).toBe(false);
+      return originalAgingOpen(now, options);
+    });
+    const embeddings = vi.spyOn(db, "prepareUpsertVectors");
+    const complete = vi.fn(async () => { throw new Error("fresh migration must not call the model"); });
+
+    const result = await migrate(makeDeps(db, root, { llm: { id: "must-not-run", complete } }));
+
+    expect(result).toEqual({ promoted: 0, rescheduled: 0, clustered: 0, forgotten: 0, reviewed: 0 });
+    expect(scan).toHaveBeenCalledTimes(1);
+    expect(complete).not.toHaveBeenCalled();
+    expect(embeddings).not.toHaveBeenCalled();
+    expect(existsSync(join(root, handle.file))).toBe(false);
   });
 });

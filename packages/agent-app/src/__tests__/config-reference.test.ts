@@ -18,10 +18,18 @@ interface SchemaNode {
   readonly type?: string;
   readonly required?: readonly string[];
   readonly enum?: readonly string[];
+  readonly const?: string;
+  readonly default?: unknown;
   readonly minLength?: number;
   readonly maxLength?: number;
+  readonly minProperties?: number;
   readonly properties?: Record<string, SchemaNode>;
   readonly items?: SchemaNode;
+  readonly allOf?: readonly SchemaNode[];
+  readonly anyOf?: readonly SchemaNode[];
+  readonly if?: SchemaNode;
+  readonly then?: SchemaNode;
+  readonly not?: SchemaNode;
 }
 
 function repoRoot(): string {
@@ -99,9 +107,52 @@ describe("config reference", () => {
     expect(schemaNode(schema, "runtime", "fallbacks").items?.properties?.effort?.enum)
       .toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
     expect(schemaNode(schema, "runtime", "routeSafety").enum).toEqual(["uniform", "per-route-native"]);
+    expect(schemaNode(schema, "memory", "backend").enum).toEqual(["bujo", "supermemory"]);
+    expect(schemaNode(schema, "memory", "mode").enum).toEqual(["lite", "journal", "bujo"]);
+    expect(schemaNode(schema, "memory", "writeMode").enum).toEqual(["disabled", "append-host-summary", "capture"]);
+    expect(schemaNode(schema, "memory", "embeddings", "provider").enum).toEqual(["ollama", "openai"]);
+    expect(schemaNode(schema, "memory", "llm", "provider").enum).toEqual(["ollama", "agent-host"]);
     expect(schemaNode(schema, "sandbox", "mode").enum).toEqual(["native", "off"]);
     expect(schemaNode(schema, "sandbox", "network", "mode").enum).toEqual(["none", "localhost", "allowlist"]);
     expect(schemaNode(schema, "sandbox", "fallback").enum).toEqual(["fail-closed", "unsafe-host-process"]);
+  });
+
+  it("models the strict built-in memory tier prerequisites and incompatibilities", () => {
+    const schema = buildMonoAgentConfigSchema() as SchemaNode;
+    const memory = schemaNode(schema, "memory");
+    const lite = memoryTierRule(memory, "lite");
+    const journal = memoryTierRule(memory, "journal");
+    const bujo = memoryTierRule(memory, "bujo");
+
+    expect(lite.if?.required).toBeUndefined();
+    expect(rejectedMemoryProperties(lite)).toEqual(["embeddings", "llm", "consolidation", "capture"]);
+
+    expect(journal.then?.required).toEqual(["embeddings"]);
+    expect(journal.then?.properties?.embeddings?.minProperties).toBe(1);
+    expect(rejectedMemoryProperties(journal)).toEqual(["llm", "consolidation", "capture"]);
+
+    expect(bujo.then?.required).toEqual(["embeddings", "llm"]);
+    expect(bujo.then?.properties?.embeddings?.minProperties).toBe(1);
+    expect(bujo.then?.properties?.llm?.required).toEqual(["model"]);
+
+    const capture = memory.allOf?.find((rule) => rule.if?.properties?.writeMode?.const === "capture");
+    expect(capture?.if?.required).toEqual(["writeMode"]);
+    expect(capture?.then).toMatchObject({
+      required: ["mode"],
+      properties: { mode: { const: "bujo" } },
+    });
+  });
+
+  it("shares the runtime memory defaults with the schema and generated reference registry", () => {
+    const fields = new Map(allConfigReferenceFields().map((field) => [field.jsonPath, field]));
+    expect(fields.get("memory.mode")?.defaultValue).toBe("lite");
+    expect(fields.get("memory.writeMode")?.defaultValue).toBe("disabled");
+    expect(fields.get("memory.recallTool.enabled")?.defaultValue).toBe(true);
+
+    const schema = buildMonoAgentConfigSchema() as SchemaNode;
+    expect(schemaNode(schema, "memory", "mode").default).toBe("lite");
+    expect(schemaNode(schema, "memory", "writeMode").default).toBe("disabled");
+    expect(schemaNode(schema, "memory", "recallTool", "enabled").default).toBe(true);
   });
 
   it("uses loader-valid examples for generated complex fields", () => {
@@ -133,4 +184,25 @@ function schemaNode(schema: SchemaNode, ...path: readonly string[]): SchemaNode 
     current = next;
   }
   return current;
+}
+
+function memoryTierRule(memory: SchemaNode, mode: string): SchemaNode {
+  const rule = memory.allOf?.find((candidate) => candidate.if?.properties?.mode?.const === mode);
+  if (rule === undefined) {
+    throw new Error(`missing memory tier rule for ${mode}`);
+  }
+  expect(rule.if?.properties?.backend?.const).toBe("bujo");
+  return rule;
+}
+
+function rejectedMemoryProperties(rule: SchemaNode): readonly string[] {
+  return (rule.then?.not?.anyOf ?? []).map((candidate) => {
+    if (candidate.required?.[0] !== undefined && candidate.required[0] !== "writeMode") {
+      return candidate.required[0];
+    }
+    if (candidate.properties?.writeMode?.const === "capture") {
+      return "capture";
+    }
+    throw new Error("unknown rejected memory schema shape");
+  });
 }

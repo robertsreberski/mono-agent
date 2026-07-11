@@ -1,9 +1,16 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { appendBullet, dailyFilePath } from "../daily.js";
+import {
+  appendAuditBullet,
+  appendBullet,
+  auditFilePath,
+  dailyFilePath,
+  normalizedContentHash,
+  withJournalWriteLock,
+} from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
 import { createIdFactory } from "../ids.js";
 import type { Bullet } from "../types.js";
@@ -37,7 +44,60 @@ describe("daily file", () => {
     expect((file.match(/^# 2026-06-15$/gmu) ?? []).length).toBe(1);
     expect(parseDailyFile(file).bullets.map((b) => b.id)).toEqual(["01A", "01B"]);
   });
+
+  it("writes audit observations through a no-follow canonical file", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-audit-"));
+    const outside = mkdtempSync(join(tmpdir(), "bujo-audit-outside-"));
+    const now = new Date("2026-06-15T09:00:00.000Z");
+    mkdirSync(join(root, "audit"));
+    const outsideFile = join(outside, "audit.md");
+    writeFileSync(outsideFile, "outside\n", "utf8");
+    symlinkSync(outsideFile, auditFilePath(root, now));
+
+    expect(() => appendAuditBullet(root, note("AUDIT"), now)).toThrow(/symlink|regular/iu);
+    expect(readFileSync(outsideFile, "utf8")).toBe("outside\n");
+  });
+
+  it("normalizes Unicode/whitespace for hashes without folding case-sensitive facts", () => {
+    expect(normalizedContentHash("Token  ABC\nactive")).toBe(normalizedContentHash("Token ABC active"));
+    expect(normalizedContentHash("Token ABC active")).not.toBe(normalizedContentHash("Token abc active"));
+  });
+
+  it("never steals a live lock or unlinks an identity-replaced lock", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-lock-"));
+    expect(() => withJournalWriteLock(root, () => withJournalWriteLock(root, () => undefined))).toThrow(/held/i);
+
+    const lockPath = join(root, ".journal-write.lock");
+    withJournalWriteLock(root, () => {
+      unlinkSync(lockPath);
+      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, replacement: true }), "utf8");
+    });
+    expect(existsSync(lockPath)).toBe(true);
+  });
+
+  it("does not follow or reclaim a symlinked journal lock", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-lock-"));
+    const outside = join(mkdtempSync(join(tmpdir(), "bujo-lock-outside-")), "owner.json");
+    writeFileSync(outside, JSON.stringify({ pid: 99_999_999 }), "utf8");
+    symlinkSync(outside, join(root, ".journal-write.lock"));
+
+    expect(() => withJournalWriteLock(root, () => undefined)).toThrow(/held|unverified/iu);
+    expect(readFileSync(outside, "utf8")).toContain("99999999");
+  });
 });
+
+function note(id: string): Bullet {
+  return {
+    id,
+    type: "note",
+    status: "open",
+    text: `fact ${id}`,
+    salience: 0.5,
+    isInsight: false,
+    createdAt: "2026-06-15T09:00:00.000Z",
+    refs: [],
+  };
+}
 
 describe("createIdFactory", () => {
   it("is deterministic with injected clock+random and time-sortable", () => {

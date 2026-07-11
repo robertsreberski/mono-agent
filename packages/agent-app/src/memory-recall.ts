@@ -4,8 +4,14 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { CircuitBreakerEmbeddingOptions, EmbeddingProviderConfig } from "@mono-agent/memory/search";
+import type {
+  CircuitBreakerEmbeddingOptions,
+  EmbeddingProvider,
+  EmbeddingProviderConfig,
+} from "@mono-agent/memory/search";
 import type { MemoryStatus, MemoryType } from "@mono-agent/memory/store";
+import { isConversationRelativeQuery } from "@mono-agent/memory/bujo";
+import type { BujoTier } from "@mono-agent/memory/bujo";
 import * as z from "zod/v4";
 
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
@@ -13,7 +19,7 @@ import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 /**
  * Read-only memory recall, wired from the SINGLE `config.memory` block.
  *
- * When `config.memory.recallTool.enabled` is true, the app exposes a `MemoryRecall` MCP tool
+ * When memory is configured and `config.memory.recallTool.enabled` is not explicitly false, the app exposes a `MemoryRecall` MCP tool
  * (server name {@link MEMORY_RECALL_MCP_SERVER_NAME}) to the agent. The normal app path registers
  * the tool against the request-scoped shared retrieval service in `memory-retrieval.ts`, so
  * automatic recall and explicit tool calls use the same store and per-turn cache. Recall needs only
@@ -75,8 +81,19 @@ export interface MemoryRecallSupermemory {
 export interface MemoryRecallBujoSettings {
   /** Memory root directory (config.memory.path). */
   readonly root: string;
+  /** Configured strict tier; required to retain BuJo graph capability in read-only recall. */
+  readonly tier?: BujoTier;
+  /**
+   * Optional exact managed-generation database path. Command paths resolve this
+   * once so a semantic attempt and its FTS fallback cannot observe different
+   * active generations. The child-process env deliberately omits it and
+   * resolves the active generation after startup.
+   */
+  readonly dbPath?: string;
   /** Embeddings for semantic recall. Omitted for an FTS-only (lite) recall store. */
   readonly embeddings?: MemoryRecallEmbeddings;
+  /** Explicit degraded path used only after a configured semantic recall failure. */
+  readonly ftsOnlyFallback?: true;
 }
 
 /** supermemory recall: search the external instance over REST. */
@@ -105,6 +122,17 @@ export interface RecallCapableStore {
       readonly isInsight?: boolean;
     };
   }[]>;
+  /** Optional deterministic one-hop expansion, used only by the explicit tool. */
+  expandGraph?(
+    query: string,
+    directHits: Awaited<ReturnType<RecallCapableStore["recall"]>>,
+    options?: { readonly topK?: number },
+  ): Awaited<ReturnType<RecallCapableStore["recall"]>> | Promise<Awaited<ReturnType<RecallCapableStore["recall"]>>>;
+  /** Explicit capability check for stores whose graph method is tier-dependent. */
+  supportsGraphExpansion?(): boolean;
+  /** Record only the final hits actually served by the tool. */
+  recordAccess?(ids: readonly string[]): void;
+  flush?(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -136,7 +164,7 @@ export function resolveMemoryRecallSettings(config: MonoAgentConfig): MemoryReca
   if (memory === undefined) {
     return undefined;
   }
-  if (memory.recallTool?.enabled !== true) {
+  if (memory.recallTool?.enabled === false) {
     return undefined;
   }
   if ((memory.backend ?? "bujo") === "supermemory") {
@@ -157,11 +185,12 @@ export function resolveMemoryRecallSettings(config: MonoAgentConfig): MemoryReca
   }
   const embeddings = memory.embeddings;
   if (embeddings === undefined) {
-    // Explicit opt-in without embeddings → FTS-only recall (no embedding provider built).
-    return { root: memory.path };
+    // Default-on recall without embeddings → FTS-only recall (no embedding provider built).
+    return { root: memory.path, tier: memory.mode };
   }
   return {
     root: memory.path,
+    tier: memory.mode,
     embeddings: {
       provider: embeddings.provider,
       model: embeddings.model,
@@ -218,11 +247,16 @@ export function memoryRecallSettingsFromEnv(env: Record<string, string | undefin
   if (root === undefined) {
     throw new Error("memory-recall: missing required environment (MONO_AGENT_MEMORY_PATH).");
   }
+  const rawTier = optionalString(env.MONO_AGENT_MEMORY_MODE);
+  if (rawTier !== undefined && rawTier !== "lite" && rawTier !== "journal" && rawTier !== "bujo") {
+    throw new Error(`memory-recall: unsupported MONO_AGENT_MEMORY_MODE "${rawTier}" (expected lite, journal, or bujo).`);
+  }
+  const tier = rawTier as BujoTier | undefined;
   const provider = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER);
   const model = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL);
   if (provider === undefined && model === undefined) {
     // No embeddings configured → FTS-only recall store.
-    return { root };
+    return { root, ...(tier === undefined ? {} : { tier }) };
   }
   if (provider === undefined || model === undefined) {
     throw new Error(
@@ -257,6 +291,7 @@ export function memoryRecallSettingsFromEnv(env: Record<string, string | undefin
         };
   return {
     root,
+    ...(tier === undefined ? {} : { tier }),
     embeddings: {
       provider,
       model,
@@ -296,12 +331,16 @@ export function memoryRecallMcpEnv(settings: MemoryRecallSettings): Record<strin
   }
   const { embeddings } = settings;
   if (embeddings === undefined) {
-    return { MONO_AGENT_MEMORY_PATH: settings.root };
+    return {
+      MONO_AGENT_MEMORY_PATH: settings.root,
+      ...(settings.tier === undefined ? {} : { MONO_AGENT_MEMORY_MODE: settings.tier }),
+    };
   }
   // Forward the secret only as a last resort: prefer the env-var name passthrough.
   const forwardLiteralApiKey = embeddings.apiKeyEnv === undefined && embeddings.apiKey !== undefined;
   return {
     MONO_AGENT_MEMORY_PATH: settings.root,
+    ...(settings.tier === undefined ? {} : { MONO_AGENT_MEMORY_MODE: settings.tier }),
     MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: embeddings.provider,
     MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: embeddings.model,
     ...(embeddings.endpoint === undefined ? {} : { MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: embeddings.endpoint }),
@@ -371,12 +410,34 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
       ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
     });
   }
-  const { createBujoMemoryStore } = await import("@mono-agent/memory/bujo");
+  const { createBujoMemoryStore, resolveActiveMemoryDbPath } = await import("@mono-agent/memory/bujo");
+  const dbPath = settings.dbPath ?? await resolveActiveMemoryDbPath(settings.root);
   const { embeddings } = settings;
   if (embeddings === undefined) {
     // FTS-only recall: no embedding provider, no dim (mirrors the lite-tier store shape).
-    return createBujoMemoryStore({ root: settings.root });
+    return createBujoMemoryStore({
+      root: settings.root,
+      dbPath,
+      readOnly: true,
+      ...(settings.tier === undefined ? {} : { tier: settings.tier }),
+      ...(settings.ftsOnlyFallback === true ? { allowFtsFallback: true } : {}),
+    });
   }
+  const provider = await createMemoryEmbeddingProvider(embeddings);
+  return createBujoMemoryStore({
+    root: settings.root,
+    dbPath,
+    readOnly: true,
+    ...(settings.tier === undefined ? {} : { tier: settings.tier }),
+    embeddings: provider,
+    dim: embeddings.dim ?? 768,
+  });
+}
+
+/** Build the configured embedding provider used by recall and safe index maintenance. */
+export async function createMemoryEmbeddingProvider(
+  embeddings: MemoryRecallEmbeddings,
+): Promise<EmbeddingProvider> {
   const providerConfig: EmbeddingProviderConfig = {
     provider: embeddings.provider,
     model: embeddings.model,
@@ -391,11 +452,7 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
     ...(embeddings.circuitBreaker?.cooldownMs === undefined ? {} : { cooldownMs: embeddings.circuitBreaker.cooldownMs }),
   };
   const { createCircuitBreakerEmbeddingProvider, createEmbeddingProvider } = await import("@mono-agent/memory/search");
-  return createBujoMemoryStore({
-    root: settings.root,
-    embeddings: createCircuitBreakerEmbeddingProvider(createEmbeddingProvider(providerConfig), breakerOptions),
-    dim: embeddings.dim ?? 768,
-  });
+  return createCircuitBreakerEmbeddingProvider(createEmbeddingProvider(providerConfig), breakerOptions);
 }
 
 /** Register the single read-only `MemoryRecall` tool against a store (bujo or external backend). */
@@ -405,17 +462,36 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     "MemoryRecall",
     {
       title: "Recall from memory",
-      description: "Read-only hybrid (keyword + semantic) search over the agent's long-term memory. Call this proactively whenever you are missing context, unsure about a prior decision, or about to assume or ask the user for something that may already be recorded — recall first, then act.",
+      description: "Read-only hybrid (keyword + semantic) search over durable long-term memory. Use it for prior preferences, facts, decisions, and qualified archived history. Do not use it for unqualified questions about what you or the user just said or sent in the current or last message; use the active conversation history for those questions.",
       inputSchema: {
         query: z.string().min(1).describe("Natural-language description of what to recall."),
         limit: z.number().int().min(1).max(50).optional().describe("Max results (default 8)."),
       },
     },
     async (args) => {
+      if (isConversationRelativeQuery(args.query)) {
+        const guidance = "This question refers to the active conversation, not long-term memory. Use the current conversation history to identify the last message.";
+        return {
+          content: [{ type: "text", text: guidance }],
+          structuredContent: { hits: [], conversationRelative: true, guidance },
+        };
+      }
       const topK = clampLimit(args.limit, 8);
       let hits: Awaited<ReturnType<RecallCapableStore["recall"]>>;
       try {
-        hits = await store.recall(args.query, { topK });
+        const graphEnabled = store.expandGraph !== undefined && store.supportsGraphExpansion?.() !== false;
+        const direct = await store.recall(args.query, {
+          topK: graphEnabled ? 50 : topK,
+          // The bundled recall process opens the active generation read-only.
+          // Never ask a store to mutate access telemetry on this path.
+          trackAccess: false,
+        });
+        hits = !graphEnabled || store.expandGraph === undefined
+          ? direct.slice(0, topK)
+          : await store.expandGraph(args.query, direct, { topK });
+        // Record only the final served set. Read-only BuJo recall stores make
+        // this a no-op; shared writable stores retain their access telemetry.
+        store.recordAccess?.(hits.map((hit) => hit.record.id));
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         return {

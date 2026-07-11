@@ -97,22 +97,22 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // Memory strategy. Omit the section for no memory.
   // Three tiers over one substrate (@mono-agent/memory store + bujo subpaths):
   //   lite    — FTS keyword recall + rapid-log; no external deps.
-  //   journal — + hybrid recall (BM25+vector) + decay; needs embeddings.
-  //   bujo    — + LLM capture/reconcile + entity graph + auto-scheduled
-  //             lightweight consolidation; needs embeddings + an app-level memory.llm for capture/tier selection.
+  //   journal — hash-deduped lexical capture + bounded background semantic indexing; needs embeddings.
+  //   bujo    — raw audit + bounded LLM curation + precise entity graph + auto-scheduled
+  //             lightweight consolidation; strictly needs embeddings + an app-level memory.llm.
   "memory": {
     "mode": "bujo",                        // lite | journal | bujo
     "path": "./.mono-agent/memory",        // root directory for all tiers
     "writeMode": "capture",                // disabled | append-host-summary | capture (bujo only)
     "maxBytes": 64000,
-    "embeddings": {                        // required for journal and bujo
-      "provider": "ollama",                // ollama | openai
-      "model": "nomic-embed-text:v1.5",   // use exact :v1.5 tag (pull first with ollama pull)
+    "embeddings": {                        // block required for journal/bujo; fields below have defaults
+      "provider": "ollama",                // ollama | openai; default ollama
+      "model": "nomic-embed-text:v1.5",   // provider default; use exact :v1.5 tag (pull first with ollama pull)
       "endpoint": "http://localhost:11434",
       "apiKeyEnv": "OPENAI_API_KEY",       // or inline "apiKey"; required for openai
-      "dim": 768                           // nomic-embed-text:v1.5 output dimension
+      "dim": 768                           // default 768; must match the model output dimension
     },
-    "llm": {                               // enables bujo capture and the effective bujo tier; omit for lite/journal
+    "llm": {                               // required for strict bujo; rejected for lite/journal
       // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _EXECUTION_MODE / _ENDPOINT / _TIMEOUT_MS.
       "provider": "ollama",                // ollama | agent-host
       "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. pi:openai-codex:gpt-5.6-terra

@@ -44,6 +44,8 @@ class JsonlRunRecorder implements RunRecorder {
   private readonly isolated: boolean | undefined;
   private readonly source: string | undefined;
   private readonly sourceDetail: string | undefined;
+  private preparePromise: Promise<void> | undefined;
+  private terminalPromise: Promise<RunSummary> | undefined;
 
   constructor(options: JsonlRunRecorderOptions) {
     this.runId = normalizeId(options.runId, "runId");
@@ -77,6 +79,7 @@ class JsonlRunRecorder implements RunRecorder {
   }
 
   onEvent(event: RuntimeEventLike): void {
+    if (this.terminalPromise !== undefined) return;
     const redacted = redactJsonValue(event, this.maxStringBytes) as RuntimeEventLike;
     const timestamp = redacted.timestamp;
     const hasUsableTimestamp = typeof timestamp === "string" || typeof timestamp === "number";
@@ -85,20 +88,42 @@ class JsonlRunRecorder implements RunRecorder {
     );
   }
 
+  async prepareFinish(_result: RuntimeResultLike): Promise<void> {
+    // Keep preparation non-terminal: it may yield for filesystem setup, giving
+    // the harness a real cancellation checkpoint without exposing a succeeded
+    // run before history/memory persistence has had a chance to emit warnings.
+    this.preparePromise ??= mkdir(this.artifactDir, { recursive: true }).then(() => undefined);
+    await this.preparePromise;
+  }
+
+  async commitFinish(result: RuntimeResultLike): Promise<RunSummary> {
+    return await this.commitTerminal(() => {
+      const status = result.cancelled === true ? "cancelled" : runtimeFailureKind(result) === undefined ? "succeeded" : "failed";
+      return this.buildSummary(status, runtimeFailureKind(result), result);
+    });
+  }
+
   async finish(result: RuntimeResultLike): Promise<RunSummary> {
-    const status = result.cancelled === true ? "cancelled" : runtimeFailureKind(result) === undefined ? "succeeded" : "failed";
-    const baseSummary = this.buildSummary(status, runtimeFailureKind(result), result);
-    return await this.writeArtifacts(baseSummary);
+    await this.prepareFinish(result);
+    return await this.commitFinish(result);
   }
 
   async fail(error: unknown): Promise<RunSummary> {
-    const failureKind = errorFailureKind(error);
-    const summary = this.buildSummary("failed", failureKind, {
-      diagnostics: {
-        error: redactJsonValue(errorToJson(error), this.maxStringBytes),
-      },
+    return await this.commitTerminal(() => {
+      const failureKind = errorFailureKind(error);
+      return this.buildSummary("failed", failureKind, {
+        diagnostics: {
+          error: redactJsonValue(errorToJson(error), this.maxStringBytes),
+        },
+      });
     });
-    return await this.writeArtifacts(summary);
+  }
+
+  private async commitTerminal(build: () => RunSummary): Promise<RunSummary> {
+    // Assign before awaiting so concurrent/repeated terminal calls share one
+    // write and can never publish conflicting terminal summaries.
+    this.terminalPromise ??= this.writeArtifacts(build());
+    return await this.terminalPromise;
   }
 
   private buildSummary(status: RunSummary["status"], failureKind: string | undefined, result: RuntimeResultLike): RunSummary {

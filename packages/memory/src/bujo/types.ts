@@ -27,6 +27,12 @@ export interface BujoLogger {
 
 export interface BujoOptions {
   readonly root: string;
+  /** Pin this instance to an already-resolved generation. Used to keep fallback reads on one snapshot. */
+  readonly dbPath?: string;
+  /** Read-only recall snapshot: opens no writer lease and starts no recovery/capture writers. */
+  readonly readOnly?: boolean;
+  /** Explicit degraded read: ignore a managed semantic identity and serve FTS only. */
+  readonly allowFtsFallback?: boolean;
   /** Embedding provider. When absent, the store runs in `lite` tier (FTS-only recall). */
   readonly embeddings?: EmbeddingProvider;
   /** Vector dimension. Required when `embeddings` is provided; ignored in the `lite` tier. */
@@ -41,4 +47,6 @@ export interface BujoOptions {
   readonly tier?: BujoTier;
   /** Optional sink for caught errors in the async capture queue. Defaults to a no-op. */
   readonly logger?: BujoLogger;
+  /** Programmatic shutdown bound for background queues. Default 10000ms. */
+  readonly backgroundDrainTimeoutMs?: number;
 }

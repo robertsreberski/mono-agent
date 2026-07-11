@@ -209,6 +209,8 @@ export interface AgentHarnessOptions {
   readonly runtimeForModel?: (model: RuntimeModelReference, executionMode?: string) => MonoRuntimeLike;
   readonly memory?: MemoryStore;
   readonly memoryWriteMode?: MemoryWriteMode;
+  /** Best-effort post-provider persistence warning sink (host log/metric). */
+  readonly onMemoryWarning?: (message: string) => void;
   readonly historyStore?: ConversationHistoryStore;
   readonly toolPolicy?: ToolPolicy;
   readonly sandboxPolicy?: SandboxPolicy;

@@ -300,14 +300,24 @@
             "bujo"
           ],
           "type": "string",
-          "default": "bujo"
+          "default": "bujo",
+          "enum": [
+            "bujo",
+            "supermemory"
+          ]
         },
         "mode": {
           "description": "Configures mode for the memory section.",
           "examples": [
             "journal"
           ],
-          "type": "string"
+          "type": "string",
+          "default": "lite",
+          "enum": [
+            "lite",
+            "journal",
+            "bujo"
+          ]
         },
         "path": {
           "description": "Configures path for the memory section.",
@@ -327,10 +337,15 @@
         "writeMode": {
           "description": "Configures writeMode for the memory section.",
           "examples": [
-            "append-host-summary"
+            "disabled"
           ],
           "type": "string",
-          "default": "append-host-summary"
+          "default": "disabled",
+          "enum": [
+            "disabled",
+            "append-host-summary",
+            "capture"
+          ]
         },
         "supermemory": {
           "type": "object",
@@ -391,7 +406,11 @@
               "examples": [
                 "ollama"
               ],
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "ollama",
+                "openai"
+              ]
             },
             "model": {
               "description": "Configures embeddings.model for the memory section.",
@@ -469,7 +488,11 @@
               "examples": [
                 "agent-host"
               ],
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "ollama",
+                "agent-host"
+              ]
             },
             "model": {
               "description": "Configures llm.model for the memory section.",
@@ -519,7 +542,8 @@
               "examples": [
                 true
               ],
-              "type": "boolean"
+              "type": "boolean",
+              "default": true
             }
           }
         },
@@ -545,7 +569,178 @@
             }
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "bujo"
+              },
+              "mode": {
+                "const": "lite"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "embeddings": {}
+                  },
+                  "required": [
+                    "embeddings"
+                  ]
+                },
+                {
+                  "properties": {
+                    "llm": {}
+                  },
+                  "required": [
+                    "llm"
+                  ]
+                },
+                {
+                  "properties": {
+                    "consolidation": {}
+                  },
+                  "required": [
+                    "consolidation"
+                  ]
+                },
+                {
+                  "properties": {
+                    "writeMode": {
+                      "const": "capture"
+                    }
+                  },
+                  "required": [
+                    "writeMode"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "bujo"
+              },
+              "mode": {
+                "const": "journal"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "embeddings"
+            ],
+            "properties": {
+              "embeddings": {
+                "type": "object",
+                "minProperties": 1
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "llm": {}
+                  },
+                  "required": [
+                    "llm"
+                  ]
+                },
+                {
+                  "properties": {
+                    "consolidation": {}
+                  },
+                  "required": [
+                    "consolidation"
+                  ]
+                },
+                {
+                  "properties": {
+                    "writeMode": {
+                      "const": "capture"
+                    }
+                  },
+                  "required": [
+                    "writeMode"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "bujo"
+              },
+              "mode": {
+                "const": "bujo"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "embeddings",
+              "llm"
+            ],
+            "properties": {
+              "embeddings": {
+                "type": "object",
+                "minProperties": 1
+              },
+              "llm": {
+                "type": "object",
+                "properties": {
+                  "model": {}
+                },
+                "required": [
+                  "model"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "backend": {
+                "const": "bujo"
+              },
+              "writeMode": {
+                "const": "capture"
+              }
+            },
+            "required": [
+              "writeMode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "mode": {
+                "const": "bujo"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          }
+        }
+      ]
     },
     "tools": {
       "type": "object",

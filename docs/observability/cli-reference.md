@@ -253,16 +253,20 @@ mono-agent memory show 2026-07-06
 mono-agent memory search "deployment notes"
 mono-agent memory top --limit 20
 mono-agent memory audit --json
+mono-agent memory rebuild --json
+mono-agent memory rollback --json
 ```
 
 | Subcommand | Effect |
 | --- | --- |
-| `stats` | Shows backend, configured/effective tier, write mode, recall-tool state, local root, memory/entity counts, store sizes, last capture/access/consolidation signals, and top entities. For Supermemory it reports the known remote endpoint/container and explicitly lists fields that are not knowable locally. |
+| `stats` | Shows backend, configured tier, write mode, recall-tool state, local root, memory/entity counts, store sizes, last capture/access/consolidation signals, and top entities. For Supermemory it reports the known remote endpoint/container and explicitly lists fields that are not knowable locally. |
 | `today` | Renders today's local BuJo daily log. |
 | `show <YYYY-MM-DD>` | Renders one local BuJo daily log by date. Both current `daily/YYYY-MM-DD.md` and older root-level `YYYY-MM-DD.md` layouts are recognized. |
 | `search <query>` | Uses the same recall-store construction as `MemoryRecall`. Local BuJo/journal search returns scores plus sources; if configured embeddings are unavailable, it retries FTS-only and prints a warning. Supermemory search proxies the remote API. |
 | `top` | Shows highest-salience local BuJo/journal memories with salience, type/status, and source. Supermemory has no local salience ranking, so it tells you to use search. |
-| `audit` | Emits metadata-only health: counts, bytes, duplicate ratio, vector coverage, access concentration, backlog, and available latency/cost fields. It never emits memory text, query text, or entity names; unavailable offline fields are explicit `null` values. |
+| `audit` | Emits metadata-only health: counts, bytes, duplicate ratio, vector coverage, access concentration, active generation/source accounting, and available runtime queue/backlog/shutdown plus embedding/LLM call counts from `.index/runtime.json`. It never emits memory/query text, queue keys, or entity names; stale runtime snapshots are marked, and unknown monetary cost/tokens/latency remain explicit `null` values. |
+| `rebuild` | Built-in Lite/Journal/BuJo only. Refuses a running configured agent, builds and fully validates a side-by-side generation from canonical files, then atomically activates it. It retains the previous generation only when that index has exact canonical-source parity (a Journal vector backlog is recoverable); a source-ahead/stale index is omitted rather than mislabeled as rollback-safe. It uses configured embeddings when the tier requires them and never calls a chat LLM. |
+| `rollback` | Built-in Lite/Journal/BuJo only. Atomically swaps to the retained generation after verifying its tier/model/dimension and source fingerprint. Restore the prior config identity first when those settings changed. No embedding or chat-model request is made. |
 
 | Flag | Effect |
 | --- | --- |
@@ -270,6 +274,8 @@ mono-agent memory audit --json
 | `--json` | Prints the machine-readable result instead of the human view. |
 | `--config <path>` | Use a non-default config file. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file before resolving the config. |
+
+Stop the configured agent before `rebuild` or `rollback`. Both commands reject Supermemory because that service owns its remote index. See [Validation & CLI](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback) for the full safety model and v1 cutover checklist.
 
 ## `start`
 

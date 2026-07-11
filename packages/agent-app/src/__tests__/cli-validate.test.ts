@@ -109,7 +109,7 @@ describe("runCli validate --consumer", () => {
       runtime: { model: "codex:gpt-5.6-terra" },
       context: { identityPath: "./IDENTITY.md" },
       memory: {
-        mode: "lite",
+        mode: "journal",
         path: ".mono-agent/memory",
         writeMode: "append-host-summary",
         embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-json-secret" },

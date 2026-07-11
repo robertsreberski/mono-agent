@@ -11,14 +11,13 @@ every internal dep (including root devDependencies) to be `workspace:<version>`.
 Publishing happens in CI on tag push (`.github/workflows/npm-release.yml`) —
 local `npm publish` is NOT the normal path.
 
-**Lockstep set (2026-07, updated #165):** all **20 `publishable: true` packages**
-in `scripts/package-catalog.mjs` release together. 17 are the core app closure
-under `packages/*`; the three plugin-tier extras under `extras/*` (a2a-adapter,
-agent-orchestrator, whatsapp-adapter, marked `tier: "plugin"`) rejoined the
-lockstep in #165 and are version-bumped and published alongside core.
+**Lockstep set (2026-07, updated #198):** all **21 `publishable: true` packages**
+in `scripts/package-catalog.mjs` release together: 16 `tier: "core"` packages,
+the `create-mono-agent` alias under `packages/*`, and four plugin-tier extras
+under `extras/*` (a2a-adapter, agent-orchestrator, memory-supermemory, and
+whatsapp-adapter). Plugin extras are version-bumped and published alongside core.
 `scripts/package-catalog.mjs` (`publishable: true`) is the source of truth, and
-`release:test`'s package-count-drift check guards both the core (17) and
-plugin-tier (3) counts.
+`release:test`'s package-count-drift check guards the tier and total counts.
 
 ## 1. Bump
 
@@ -38,6 +37,7 @@ pnpm run release:test
 pnpm run release:validate -- --tag vX.Y.Z
 pnpm run check:architecture && pnpm run build && pnpm run typecheck && pnpm test
 pnpm run release:pack -- --tag vX.Y.Z
+pnpm run release:consumer -- --tag vX.Y.Z --require-minimum
 git diff --check
 ```
 

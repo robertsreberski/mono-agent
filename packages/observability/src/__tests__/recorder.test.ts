@@ -229,6 +229,31 @@ describe("JsonlRunRecorder", () => {
     expect(await readFile(final.artifactPaths[1] ?? "", "utf8")).toContain('"status": "succeeded"');
   });
 
+  it("keeps prepareFinish non-terminal and commits late warnings exactly once", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({ runId: "two-phase", conversationId: "telegram:1", artifactDir: dir });
+    const running = await recorder.start?.();
+    if (running === undefined || recorder.prepareFinish === undefined || recorder.commitFinish === undefined) {
+      throw new Error("JSONL recorder must expose the two-phase terminal lifecycle");
+    }
+
+    await recorder.prepareFinish({ text: "provider answer" });
+    expect(await readFile(running.artifactPaths[1] ?? "", "utf8")).toContain('"status": "running"');
+
+    recorder.onEvent({
+      type: "runtime_warning",
+      warning_kind: "memory_persistence_degraded",
+      message: "memory write failed",
+    });
+    const first = await recorder.commitFinish({ text: "provider answer" });
+    const second = await recorder.commitFinish({ text: "different result must not replace terminal" });
+
+    expect(second).toBe(first);
+    expect(first).toMatchObject({ status: "succeeded", eventCount: 1 });
+    const events = await readFile(first.artifactPaths[0] ?? "", "utf8");
+    expect(events).toContain("memory_persistence_degraded");
+  });
+
   it("marks runtime failures and cancellations honestly", async () => {
     const dir = await tempDir();
     const failed = createJsonlRunRecorder({ runId: "failed", conversationId: "c", artifactDir: dir });

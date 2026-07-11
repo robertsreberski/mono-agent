@@ -47,9 +47,18 @@ export function createCompositeRunRecorder(options: CompositeRunRecorderOptions)
     });
 
   const events: RuntimeEventLike[] = [];
+  let preparePromise: Promise<void> | undefined;
+  let terminalPromise: Promise<RunSummary> | undefined;
+  let terminalStarted = false;
 
   function warn(phase: string, message: string): void {
-    onWarning?.({ phase, message });
+    try {
+      onWarning?.({ phase, message });
+    } catch {
+      // Host diagnostics are untrusted/best-effort. A throwing warning sink
+      // must never turn an exporter degradation into a run failure or suppress
+      // the outer recorder's sole terminal frame.
+    }
   }
 
   async function withTimeout(fn: () => Promise<void> | void): Promise<void> {
@@ -87,29 +96,56 @@ export function createCompositeRunRecorder(options: CompositeRunRecorderOptions)
     }
   }
 
+  async function prepareFinish(result: RuntimeResultLike): Promise<void> {
+    preparePromise ??= recorder.prepareFinish?.(result) ?? Promise.resolve();
+    await preparePromise;
+  }
+
+  async function commitFinish(result: RuntimeResultLike): Promise<RunSummary> {
+    if (terminalPromise === undefined) {
+      terminalStarted = true;
+      terminalPromise = (async () => {
+        const summary = recorder.commitFinish === undefined
+          ? await recorder.finish(result)
+          : await recorder.commitFinish(result);
+        await bestEffort("finish", async () => {
+          await replayEvents();
+          await exporter.finish?.(summary, context);
+          await exporter.flush?.();
+        });
+        return summary;
+      })();
+    }
+    return await terminalPromise;
+  }
+
   const composite: RunRecorder = {
     onEvent(event: RuntimeEventLike): void {
+      if (terminalStarted) return;
       // JSONL recorder FIRST (synchronous), then buffer for batch export.
       recorder.onEvent(event);
       events.push(event);
     },
+    prepareFinish,
+    commitFinish,
     async finish(result: RuntimeResultLike): Promise<RunSummary> {
-      const summary = await recorder.finish(result);
-      await bestEffort("finish", async () => {
-        await replayEvents();
-        await exporter.finish?.(summary, context);
-        await exporter.flush?.();
-      });
-      return summary;
+      await prepareFinish(result);
+      return await commitFinish(result);
     },
     async fail(error: unknown): Promise<RunSummary> {
-      const summary = await recorder.fail(error);
-      await bestEffort("fail", async () => {
-        await replayEvents();
-        await exporter.fail?.(summary, error, context);
-        await exporter.flush?.();
-      });
-      return summary;
+      if (terminalPromise === undefined) {
+        terminalStarted = true;
+        terminalPromise = (async () => {
+          const summary = await recorder.fail(error);
+          await bestEffort("fail", async () => {
+            await replayEvents();
+            await exporter.fail?.(summary, error, context);
+            await exporter.flush?.();
+          });
+          return summary;
+        })();
+      }
+      return await terminalPromise;
     },
   };
 

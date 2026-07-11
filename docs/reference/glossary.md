@@ -30,7 +30,7 @@ The automatic 256KB truncation of oversized tool output, with the full result pe
 
 ## BuJo
 
-The richest memory tier (`memory.mode: "bujo"`), modeled on the Bullet Journal method: everything in the journal tier plus LLM capture/reconcile (ADD/UPDATE/SUPERSEDE/NOOP), an [entity graph](#entity-graph), scheduled lightweight consolidation, a living `index.md`, and a retired empty `future-log.md` stub. It needs an embeddings provider and a chat model. See [Capture and recall](/memory/capture-and-recall/).
+The richest memory tier (`memory.mode: "bujo"`), modeled on the Bullet Journal method: a raw audit outside recall, bounded LLM curation (one extraction plus at most one batch reconcile), an [entity graph](#entity-graph), scheduled lightweight consolidation, a living `index.md`, and a retired empty `future-log.md` stub. It strictly requires an embeddings provider and a chat model. See [Capture and recall](/memory/capture-and-recall/).
 
 ## Channel driver
 
@@ -42,7 +42,7 @@ When a turn approaches the model's context window, the pi bridge drives `AgentHa
 
 ## Entity graph
 
-A BuJo-tier structure that tracks the people, projects, and things referenced across captured memories and the relationships between them. It is built only in `memory.mode: "bujo"`. See [Capture and recall](/memory/capture-and-recall/#entity-graph-bujo-auto).
+A BuJo-tier structure that tracks the people, projects, and things explicitly associated with individual curated memories and their relationships. Explicit `MemoryRecall` may expand one deterministic hop; automatic recall stays direct-only. It is built only in `memory.mode: "bujo"`. See [Capture and recall](/memory/capture-and-recall/#entity-graph-bujo-auto).
 
 ## Fail-closed
 
@@ -89,7 +89,7 @@ A continuous, per-conversation session against the backend, kept warm and evicte
 
 ## Rapid-log
 
-The deterministic single-line daily capture written by the host after a completed turn in `append-host-summary` mode (all memory tiers). In BuJo `capture` mode it is the synchronous write that precedes the async distil→reconcile→entity pass. Controlled by `memory.writeMode` (`MONO_AGENT_MEMORY_WRITE_MODE`). See [Capture and recall](/memory/capture-and-recall/).
+The deterministic single-line host observation written after a completed turn. Lite/Journal store it in the canonical daily log (Journal hash-deduplicates and embeds in the background); BuJo stores it in a separate raw audit outside recall, before optional bounded curation. Controlled by `memory.writeMode` (`MONO_AGENT_MEMORY_WRITE_MODE`). See [Capture and recall](/memory/capture-and-recall/).
 
 ## Responder
 

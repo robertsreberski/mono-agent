@@ -48,12 +48,18 @@ export function selectAutomaticRecallHits<T extends {
 export async function composeRecallBlock(
   db: MemoryDb,
   query: string,
-  options: { topK?: number; maxBytes?: number } = {},
+  options: { topK?: number; maxBytes?: number; trackAccess?: boolean; abortSignal?: AbortSignal } = {},
 ): Promise<MemoryBlock | undefined> {
   const maxBytes = Math.max(1, Math.min(options.maxBytes ?? AUTO_RECALL_MAX_BYTES, AUTO_RECALL_MAX_BYTES));
   const topK = Math.max(1, Math.min(options.topK ?? AUTO_RECALL_MAX_HITS, AUTO_RECALL_MAX_HITS));
+  const backendHits = await db.recall(query, {
+    topK: Math.max(topK, 8),
+    trackAccess: false,
+    ...(options.abortSignal === undefined ? {} : { abortSignal: options.abortSignal }),
+  });
+  options.abortSignal?.throwIfAborted();
   const hits = selectAutomaticRecallHits(
-    await db.recall(query, { topK: Math.max(topK, 8), trackAccess: false }),
+    backendHits,
     { maxHits: topK, query },
   );
   // No hits → no block. A header-only block carries no signal and only adds
@@ -62,7 +68,7 @@ export async function composeRecallBlock(
   if (hits.length === 0) {
     return undefined;
   }
-  db.recordAccess(hits.map((hit) => hit.record.id));
+  if (options.trackAccess !== false) db.recordAccess(hits.map((hit) => hit.record.id));
   const lines = ["## Memory (recalled)", ""];
   for (const hit of hits) {
     const star = hit.record.isInsight ? " *" : "";

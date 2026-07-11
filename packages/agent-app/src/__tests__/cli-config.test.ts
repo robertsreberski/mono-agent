@@ -150,6 +150,8 @@ describe("runCli config", () => {
           memory: {
             mode: "bujo",
             path: "./memory",
+            embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+            llm: { provider: "ollama", model: "qwen3.6:latest" },
             reflection: { cron: "ignored-secret-cron" },
             migration: { enabled: false },
           },

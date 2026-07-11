@@ -57,6 +57,7 @@ The **Session** block (section 3) is auto-generated each turn (coverage `auto`, 
 
 - For a deliverable push destination (`telegram:` / `slack:`), it also tells the agent how to wire an **async callback**: if the agent starts a long-running external operation, it can ask the service to include `"conversationId": "<id>"` in the JSON body of its callback to an inbound webhook, and the follow-up is routed back to this same conversation. See [Webhook](/channels/webhook/).
 - For non-push conversations (cron / webhook / openai-api / a2a), it instead clarifies that this conversation cannot itself receive a proactive follow-up. Cron jobs and webhook endpoints with `notify: true` deliver their successful final answer to the resolved Telegram/Slack destination — the harness injects guidance on those turns that the final reply is delivered verbatim and how to stay silent. See [Delivery and send tools](/channels/delivery-and-send-tools/).
+- When memory is configured, it also states that persistence is host-owned: the agent acknowledges memory requests and lets post-turn capture write them, without editing memory Markdown, SQLite, manifests, generations, or indexes through tools.
 
 ## Memory recall
 

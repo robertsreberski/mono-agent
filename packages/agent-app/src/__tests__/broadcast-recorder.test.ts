@@ -105,4 +105,47 @@ describe("createBroadcastRunRecorder", () => {
     expect(JSON.stringify(frames[0])).not.toContain("secret-diagnostic-token");
     expect(JSON.stringify(frames[0])).toContain("[redacted]");
   });
+
+  it("publishes a persistence warning before exactly one idempotent terminal frame", async () => {
+    const frames: RunEventFrame[] = [];
+    const sink: RunEventSink = { publish: (frame) => { frames.push(frame); } };
+    let terminalCalls = 0;
+    const summary: RunSummary = {
+      runId: "run-two-phase",
+      conversationId: "telegram:2",
+      status: "succeeded",
+      durationMs: 1,
+      eventCount: 1,
+      artifactPaths: [],
+    };
+    const inner: RunRecorder = {
+      onEvent(): void {},
+      async prepareFinish(): Promise<void> {},
+      async commitFinish(): Promise<RunSummary> {
+        terminalCalls += 1;
+        return summary;
+      },
+      async finish(): Promise<RunSummary> { throw new Error("one-shot finish must not be used"); },
+      async fail(): Promise<RunSummary> { return { ...summary, status: "failed" }; },
+    };
+    const recorder = createBroadcastRunRecorder(inner, sink, {
+      runId: summary.runId,
+      conversationId: summary.conversationId,
+      sourceId: "src-two-phase",
+    });
+
+    await recorder.prepareFinish?.({});
+    recorder.onEvent({ type: "runtime_warning", warning_kind: "memory_persistence_degraded" });
+    await recorder.commitFinish?.({});
+    await recorder.commitFinish?.({});
+    // The terminal boundary is hard: a late event is ignored, not broadcast.
+    recorder.onEvent({ type: "runtime_warning", warning_kind: "too_late" });
+
+    expect(terminalCalls).toBe(1);
+    expect(frames.map((frame) => frame.t)).toEqual(["event", "run_finished"]);
+    expect(frames[0]).toMatchObject({
+      t: "event",
+      event: { type: "runtime_warning", warning_kind: "memory_persistence_degraded" },
+    });
+  });
 });

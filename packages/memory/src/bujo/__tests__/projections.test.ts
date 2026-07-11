@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -142,6 +142,18 @@ describe("writeFutureLog", () => {
 
     expect(() => writeFutureLog(root, db, FIXED)).not.toThrow();
   });
+
+  it("refuses a symlinked future-log target", () => {
+    const root = newRoot();
+    const outside = join(mkdtempSync(join(tmpdir(), "bujo-projections-outside-")), "future-log.md");
+    writeFileSync(outside, "outside\n", "utf8");
+    symlinkSync(outside, join(root, "future-log.md"));
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(DIM), dim: DIM });
+    openDbs.push(db);
+
+    expect(() => writeFutureLog(root, db, FIXED)).toThrow(/symlink|regular/iu);
+    expect(readFileSync(outside, "utf8")).toBe("outside\n");
+  });
 });
 
 describe("writeIndex", () => {
@@ -206,5 +218,17 @@ describe("writeIndex", () => {
 
     const content = readFileSync(join(root, "index.md"), "utf8");
     expect(content).toContain("## Overview");
+  });
+
+  it("refuses a symlinked index target", () => {
+    const root = newRoot();
+    const outside = join(mkdtempSync(join(tmpdir(), "bujo-projections-outside-")), "index.md");
+    writeFileSync(outside, "outside\n", "utf8");
+    symlinkSync(outside, join(root, "index.md"));
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(DIM), dim: DIM });
+    openDbs.push(db);
+
+    expect(() => writeIndex(root, db, FIXED)).toThrow(/symlink|regular/iu);
+    expect(readFileSync(outside, "utf8")).toBe("outside\n");
   });
 });

@@ -173,6 +173,21 @@ describe("createCompositeRunRecorder", () => {
     expect(warnings.some((w) => w.phase === "start")).toBe(true);
   });
 
+  it("does not reject terminal commit when both the exporter and warning callback throw", async () => {
+    const finishSummary = makeSummary({ status: "succeeded" });
+    const { recorder } = makeFakeRecorder({ finishSummary });
+    const { exporter } = makeFakeExporter({ throwOn: "finish" });
+    const composite = createCompositeRunRecorder({
+      recorder,
+      exporter,
+      context: makeContext(),
+      timeoutMs: 1000,
+      onWarning: () => { throw new Error("diagnostic sink failed"); },
+    });
+
+    await expect(composite.finish({})).resolves.toBe(finishSummary);
+  });
+
   it("resolves a hanging exporter.finish within timeoutMs via injected clock and emits a timeout warning", async () => {
     const finishSummary = makeSummary({ status: "succeeded" });
     const { recorder } = makeFakeRecorder({ finishSummary });
@@ -230,6 +245,38 @@ describe("createCompositeRunRecorder", () => {
     expect(onEventCalls.map((c) => c.event?.type)).toEqual(["a", "b", "c"]);
     expect(onEventCalls.map((c) => c.eventIndex)).toEqual([0, 1, 2]);
     expect(calls.find((c) => c.method === "finish")).toBeDefined();
+  });
+
+  it("keeps prepare non-terminal and exports late warnings before one idempotent terminal", async () => {
+    const order: string[] = [];
+    const summary = makeSummary({ eventCount: 1 });
+    let innerTerminalCalls = 0;
+    const recorder: RunRecorder = {
+      onEvent(): void {},
+      async prepareFinish(): Promise<void> { order.push("prepare"); },
+      async commitFinish(): Promise<RunSummary> {
+        innerTerminalCalls += 1;
+        order.push("inner-terminal");
+        return summary;
+      },
+      async finish(): Promise<RunSummary> { throw new Error("one-shot finish must not be used"); },
+      async fail(): Promise<RunSummary> { return makeSummary({ status: "failed" }); },
+    };
+    const exporter: RunExporter = {
+      onEvent(event): void { order.push(`event:${String(event.type)}`); },
+      finish(): void { order.push("export-terminal"); },
+    };
+    const composite = createCompositeRunRecorder({ recorder, exporter, context: makeContext(), timeoutMs: 1000 });
+
+    await composite.prepareFinish?.({});
+    composite.onEvent({ type: "runtime_warning", warning_kind: "memory_persistence_degraded" });
+    const first = await composite.commitFinish?.({});
+    const second = await composite.commitFinish?.({});
+
+    expect(first).toBe(summary);
+    expect(second).toBe(summary);
+    expect(innerTerminalCalls).toBe(1);
+    expect(order).toEqual(["prepare", "inner-terminal", "event:runtime_warning", "export-terminal"]);
   });
 
   it("fail path returns recorder.fail summary unchanged and exports under best-effort", async () => {
