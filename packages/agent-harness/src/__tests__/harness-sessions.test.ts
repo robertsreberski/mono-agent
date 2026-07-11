@@ -636,18 +636,18 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
   });
 
-  it("does not commit a turn cancelled DURING recorder.finish() after runRuntime succeeds (R9)", async () => {
+  it("does not commit a turn cancelled DURING recorder.prepareFinish() after runRuntime succeeds (R9)", async () => {
     const identityPath = await identityFixture();
     const history = createSpyHistoryStore();
     const memory = createSpyMemoryStore();
     const controller = new AbortController();
     // The runtime returns success cleanly (no abort during the run). The abort
-    // is injected LATER, inside recorder.finish() — simulating a live-session
+    // is injected LATER, inside recorder.prepareFinish() — simulating a live-session
     // cancel landing during the post-runtime commit path (after the line-221
-    // guard, while `await recorder.finish()` yields to the event loop). The
+    // guard, while the non-terminal prepare phase yields). The
     // pre-commit recheck (R9) must catch it before saveSession/persist.
     const fake = createSessionFakeRuntime(async () => ({ text: "done", providerSessionId: "ps-x" }));
-    // A recorder whose finish() aborts the request before resolving — the abort
+    // A recorder whose prepareFinish() aborts the request before resolving — the abort
     // lands AFTER runRuntime returned but BEFORE the commit.
     const recorderFactory = (input: { readonly runId: string; readonly conversationId: string }): RunRecorder => {
       const startedAt = Date.now();
@@ -665,11 +665,13 @@ describe("AgentHarness continuous sessions", () => {
         async start(): Promise<RunSummary> {
           return summary("running", {});
         },
-        async finish(result: RuntimeResultLike): Promise<RunSummary> {
-          // Simulate the disk-I/O yield in production finish(): flip the abort
+        async prepareFinish(): Promise<void> {
+          // Simulate pre-terminal filesystem setup yielding: flip the abort
           // before resolving so the pre-commit recheck sees it.
-          controller.abort(new Error("cancelled during finish"));
+          controller.abort(new Error("cancelled during prepare"));
           await Promise.resolve();
+        },
+        async finish(result: RuntimeResultLike): Promise<RunSummary> {
           return summary(result.cancelled === true ? "cancelled" : "succeeded", result);
         },
         async fail(): Promise<RunSummary> {
@@ -704,13 +706,13 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.disposedSessions).toContain("ps-x");
   });
 
-  it("rejects the caller and persists nothing when cancel() lands during finish() on a continuous harness (R9 e2e)", async () => {
+  it("rejects the caller and persists nothing when cancel() lands during prepareFinish() on a continuous harness (R9 e2e)", async () => {
     const identityPath = await identityFixture();
     const history = createSpyHistoryStore();
     const memory = createSpyMemoryStore();
-    // finishGate lets the test release recorder.finish() only after it has
+    // finishGate lets the test release recorder.prepareFinish() only after it has
     // observed the active turn, so cancel() and finish() are deterministically
-    // ordered: finish() begins (signalling finishStarted), the test cancels,
+    // ordered: prepareFinish() begins (signalling finishStarted), the test cancels,
     // then releases finishGate so finish() resolves.
     let signalFinishStarted!: () => void;
     const finishStartedSignal = new Promise<void>((resolve) => { signalFinishStarted = resolve; });
@@ -731,9 +733,11 @@ describe("AgentHarness continuous sessions", () => {
       return {
         onEvent(): void {},
         async start(): Promise<RunSummary> { return summary("running", {}); },
-        async finish(result: RuntimeResultLike): Promise<RunSummary> {
+        async prepareFinish(): Promise<void> {
           signalFinishStarted();
           await finishGate;
+        },
+        async finish(result: RuntimeResultLike): Promise<RunSummary> {
           return summary(result.cancelled === true ? "cancelled" : "succeeded", result);
         },
         async fail(): Promise<RunSummary> { return summary("failed", {}); },

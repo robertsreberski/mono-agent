@@ -2,10 +2,19 @@ import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReferen
 import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
 import type { RedactedSecretValue } from "@mono-agent/agent-contracts";
 
-import type { EFFORT_LEVELS, PERMISSION_MODES, ROUTE_SAFETY_MODES } from "./enums.js";
+import type {
+  EFFORT_LEVELS,
+  MEMORY_BACKENDS,
+  MEMORY_EMBEDDINGS_PROVIDERS,
+  MEMORY_LLM_PROVIDERS,
+  MEMORY_MODES,
+  MEMORY_WRITE_MODES,
+  PERMISSION_MODES,
+  ROUTE_SAFETY_MODES,
+} from "./enums.js";
 
-export type MemoryWriteMode = "disabled" | "append-host-summary" | "capture";
-export type MemoryMode = "lite" | "journal" | "bujo";
+export type MemoryWriteMode = (typeof MEMORY_WRITE_MODES)[number];
+export type MemoryMode = (typeof MEMORY_MODES)[number];
 /**
  * Which memory engine backs the store. `"bujo"` (default) is the homegrown
  * SQLite/embeddings engine selected by {@link MemoryMode}. External backends
@@ -13,7 +22,7 @@ export type MemoryMode = "lite" | "journal" | "bujo";
  * `mode`/`embeddings`/`llm` are ignored and a backend-specific block applies.
  * Extensible union: add a backend here and its config block on the memory shape.
  */
-export type MemoryBackend = "bujo" | "supermemory";
+export type MemoryBackend = (typeof MEMORY_BACKENDS)[number];
 /**
  * Supermemory external backend (https://supermemory.ai). Points at a local OSS
  * binary or the hosted cloud via `baseUrl`. Extraction/consolidation happens
@@ -38,7 +47,7 @@ export interface MemoryConsolidationConfig {
   readonly enabled?: boolean;
   readonly cron?: string;
 }
-export type MemoryEmbeddingsProvider = "ollama" | "openai";
+export type MemoryEmbeddingsProvider = (typeof MEMORY_EMBEDDINGS_PROVIDERS)[number];
 /** Circuit-breaker tuning for the embeddings provider used by journal/bujo recall. */
 export interface MemoryEmbeddingsCircuitBreakerConfig {
   /** Consecutive failures before the breaker trips OPEN (default 3). */
@@ -61,7 +70,7 @@ export interface MemoryEmbeddingsConfig {
   /** Circuit-breaker overrides; unset fields fall back to the breaker defaults. */
   readonly circuitBreaker?: MemoryEmbeddingsCircuitBreakerConfig;
 }
-export type MemoryLlmProvider = "ollama" | "agent-host";
+export type MemoryLlmProvider = (typeof MEMORY_LLM_PROVIDERS)[number];
 export interface MemoryOllamaLlmConfig {
   readonly provider: "ollama";
   readonly model: string;

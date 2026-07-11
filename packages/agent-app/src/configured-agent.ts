@@ -110,6 +110,8 @@ export interface ConfiguredAgentHarnessOptions {
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
   /** Best-effort diagnostic when the default MemoryRecall endpoint cannot start. */
   readonly onMemoryRecallUnavailable?: (error: unknown) => void;
+  /** Best-effort host diagnostic for post-provider memory write failures. */
+  readonly onMemoryWarning?: (message: string) => void;
   readonly onSessionEvent?: ConfiguredAgentSessionEventHandler;
   /**
    * Factory for a runtime bound to a per-request override model (cron/webhook
@@ -454,6 +456,7 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
     ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
+    ...(options.onMemoryWarning === undefined ? {} : { onMemoryWarning: options.onMemoryWarning }),
     historyStore: options.historyStore ?? createInMemoryHistoryStore({ maxMessages: historyMaxMessages(config.runtime.maxTurns) }),
     // Inbound channel attachments are saved here (under the artifacts dir, which
     // sits inside a sandbox-readable root) so the agent can open them by path.
@@ -578,9 +581,13 @@ export async function createConfiguredMemory(
   const bujo = await loadMemoryBujoModule();
 
   if (mode === "lite") {
+    if (embeddingsConfig !== undefined || llmConfig !== undefined || config.memory.consolidation !== undefined) {
+      throw new Error("memory.mode 'lite' is lexical-only and rejects embeddings, memory.llm, and consolidation.");
+    }
     // Lite tier: FTS-only recall, no external deps.
     return bujo.createBujoMemoryStore({
       root,
+      tier: "lite",
       ...(maxBytes !== undefined && { maxBytes }),
       ...(deps.logger !== undefined && { logger: deps.logger }),
     });
@@ -612,9 +619,16 @@ export async function createConfiguredMemory(
   const dim = embeddingsConfig?.dim ?? 768;
 
   if (mode === "journal") {
+    if (embeddingsConfig === undefined) {
+      throw new Error("memory.mode 'journal' requires memory.embeddings; configuration must not downshift tiers.");
+    }
+    if (llmConfig !== undefined || config.memory.consolidation !== undefined) {
+      throw new Error("memory.mode 'journal' rejects memory.llm and consolidation; select bujo for curated capture.");
+    }
     // Journal tier: hybrid recall + decay; no chat LLM.
     return bujo.createBujoMemoryStore({
       root,
+      tier: "journal",
       embeddings,
       dim,
       ...(maxBytes !== undefined && { maxBytes }),
@@ -622,18 +636,27 @@ export async function createConfiguredMemory(
     });
   }
 
-  // bujo tier: full stack — embeddings + optional chat LLM for capture/reflect/migrate.
+  // BuJo is a strict full-stack tier. The config loader enforces both
+  // prerequisites; keep the composition boundary defensive for programmatic
+  // callers that may construct MonoAgentConfig directly.
+  if (embeddingsConfig === undefined || llmConfig === undefined) {
+    throw new Error("memory.mode 'bujo' requires memory.embeddings and memory.llm; configuration must not downshift tiers.");
+  }
   const recording =
     deps.observability === undefined
       ? undefined
       : recorderCompositionDeps(config, deps.observability);
   const llm = configuredMemoryLlm(bujo, config, llmConfig, deps.memoryRuntime, recording);
+  if (llm === undefined) {
+    throw new Error("memory.mode 'bujo' could not construct the required memory.llm.");
+  }
   return bujo.createBujoMemoryStore({
     root,
+    tier: "bujo",
     embeddings,
     dim,
     ...(maxBytes !== undefined && { maxBytes }),
-    ...(llm === undefined ? {} : { llm }),
+    llm,
     ...(deps.logger !== undefined && { logger: deps.logger }),
   });
 }
@@ -718,7 +741,7 @@ function createAgentHostMemoryLlm(options: {
   readonly timeoutMs?: number;
   /**
    * When set, each `complete()` is recorded as one run through the shared
-   * JSONL + Phoenix pipeline. The per-call `label` (e.g. "capture:distill")
+   * JSONL + Phoenix pipeline. The per-call `label` (e.g. "capture:extract")
    * selects the run's conversation id and id slug. Omitted → bare, unrecorded run.
    */
   readonly recording?: {
@@ -729,14 +752,21 @@ function createAgentHostMemoryLlm(options: {
   const timeoutMs = options.timeoutMs ?? 60_000;
   return {
     id: `agent-host:${referenceOf(options.model)}`,
-    async complete(prompt: string, opts?: { readonly label?: string }): Promise<string> {
+    async complete(prompt: string, opts?: { readonly label?: string; readonly abortSignal?: AbortSignal }): Promise<string> {
       const ctrl = new AbortController();
+      const abort = (): void => ctrl.abort(opts?.abortSignal?.reason);
+      if (opts?.abortSignal?.aborted === true) abort();
+      else opts?.abortSignal?.addEventListener("abort", abort, { once: true });
       // Track whether OUR timeout fired vs an external abort. A provider that is slow or
       // misconfigured (e.g. a dead OAuth token whose refresh hangs) trips this timeout and the
       // runtime reports `cancelled` — without this flag the failure is mislabeled as a generic
       // "run was cancelled", which is exactly what made a 10-day memory outage hard to diagnose.
       let timedOut = false;
-      const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs);
+      const timer = setTimeout(() => {
+        if (ctrl.signal.aborted) return;
+        timedOut = true;
+        ctrl.abort();
+      }, timeoutMs);
       const memoryOperation = memoryOperationFromLabel(opts?.label);
       const recorder =
         options.recording === undefined
@@ -783,6 +813,7 @@ function createAgentHostMemoryLlm(options: {
         return textFromMemoryRuntimeResult(result, { timedOut, timeoutMs });
       } finally {
         clearTimeout(timer);
+        opts?.abortSignal?.removeEventListener("abort", abort);
       }
     },
   };
@@ -823,7 +854,7 @@ function memorySlug(label: string | undefined): string {
 
 /**
  * Memory sub-operation for the `mono.agent.memory.operation` trace attribute.
- * The ritual labels are `capture:distill` / `capture:reconcile` / `capture:entities`
+ * The capture ritual labels are `capture:extract` / `capture:reconcile-batch`
  * (take the part after the colon) and the bare `reflect` / `migrate` (verbatim).
  */
 function memoryOperationFromLabel(label: string | undefined): string | undefined {

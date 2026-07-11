@@ -71,7 +71,7 @@ describe("config view <-> loader parity", () => {
         MONO_AGENT_MODEL: "pi:ollama:qwen3:8b",
         MONO_AGENT_IDENTITY_PATH: "/repo/IDENTITY.md",
         MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS: "4",
-        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_MODE: "bujo",
         MONO_AGENT_MEMORY_PATH: "/repo/memory",
         MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
         MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "nomic-embed-text",

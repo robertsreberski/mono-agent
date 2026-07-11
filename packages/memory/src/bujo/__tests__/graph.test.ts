@@ -1,8 +1,8 @@
-import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { appendEntity, appendRelation, readGraph } from "../graph.js";
+import { appendAssociation, appendEntity, appendGraphBatch, appendRelation, readGraph } from "../graph.js";
 import type { EntityRecord, EntityRelationRecord } from "../../store/index.js";
 
 function entity(id: string, name: string): EntityRecord {
@@ -16,7 +16,7 @@ function relation(src: string, dst: string, rel: string): EntityRelationRecord {
 describe("readGraph", () => {
   it("returns empty collections when file does not exist", () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-graph-"));
-    expect(readGraph(root)).toEqual({ entities: [], relations: [] });
+    expect(readGraph(root)).toEqual({ entities: [], relations: [], associations: [] });
   });
 
   it("round-trips: appended entities and relations are readable", () => {
@@ -143,6 +143,75 @@ describe("readGraph", () => {
     expect(readGraph(root).relations).toHaveLength(1);
   });
 
+  it("appends a precise capture association over legacy evidence so last-write wins", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-"));
+    appendAssociation(root, {
+      memoryId: "memory-1",
+      entityId: "person:alice",
+      provenance: "legacy-name-match",
+      createdAt: "2026-06-15T09:00:00.000Z",
+    });
+    appendAssociation(root, {
+      memoryId: "memory-1",
+      entityId: "person:alice",
+      provenance: "capture",
+      createdAt: "2026-06-16T09:00:00.000Z",
+    });
+    appendAssociation(root, {
+      memoryId: "memory-1",
+      entityId: "person:alice",
+      provenance: "legacy-name-match",
+      createdAt: "2026-06-17T09:00:00.000Z",
+    });
+
+    expect(readGraph(root).associations).toEqual([
+      expect.objectContaining({
+        memoryId: "memory-1",
+        entityId: "person:alice",
+        provenance: "capture",
+        createdAt: "2026-06-15T09:00:00.000Z",
+      }),
+    ]);
+    expect(readFileSync(join(root, "graph.jsonl"), "utf8").trim().split("\n")).toHaveLength(2);
+  });
+
+  it("merges a maximum capture batch against a realistic graph without quadratic rereads", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-batch-"));
+    const existing = Array.from({ length: 11_000 }, (_, index) => JSON.stringify({
+      kind: "entity",
+      id: `concept:existing-${index}`,
+      name: `Existing ${index}`,
+      type: "concept",
+      createdAt: "2026-06-15T09:00:00.000Z",
+    })).join("\n");
+    appendFileSync(join(root, "graph.jsonl"), `${existing}\n`, "utf8");
+    const entities = Array.from({ length: 16 }, (_, index) => ({
+      id: `person:capture-${index}`,
+      name: `Capture ${index}`,
+      type: "person",
+      createdAt: "2026-06-16T09:00:00.000Z",
+    }));
+    const relations = entities.map((item, index) => ({
+      src: item.id,
+      dst: entities[(index + 1) % entities.length]!.id,
+      relation: "knows",
+      createdAt: "2026-06-16T09:00:00.000Z",
+    }));
+    const associations = Array.from({ length: 128 }, (_, index) => ({
+      memoryId: `memory-${Math.floor(index / 16)}`,
+      entityId: entities[index % entities.length]!.id,
+      provenance: "capture" as const,
+      createdAt: "2026-06-16T09:00:00.000Z",
+    }));
+
+    const result = appendGraphBatch(root, { entities, relations, associations });
+
+    expect(result.entities).toHaveLength(16);
+    expect(result.relations).toHaveLength(16);
+    expect(result.associations).toHaveLength(128);
+    expect(readFileSync(join(root, "graph.jsonl"), "utf8").trim().split("\n")).toHaveLength(11_160);
+  });
+
   it("skips malformed lines without throwing", () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-graph-"));
     appendEntity(root, entity("person:bob", "Bob"));
@@ -155,5 +224,26 @@ describe("readGraph", () => {
     const g = readGraph(root);
     expect(g.entities).toHaveLength(2);
     expect(g.entities.map((e) => e.id)).toContain("person:charlie");
+  });
+
+  it("rejects a symlinked graph target without reading or appending its referent", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-link-"));
+    const outside = join(mkdtempSync(join(tmpdir(), "bujo-graph-outside-")), "graph.jsonl");
+    writeFileSync(outside, '{"kind":"entity","id":"secret","name":"Secret"}\n', "utf8");
+    symlinkSync(outside, join(root, "graph.jsonl"));
+
+    expect(() => readGraph(root)).toThrow(/symlink|regular/iu);
+    expect(() => appendEntity(root, entity("person:alice", "Alice"))).toThrow(/symlink|regular/iu);
+    expect(readFileSync(outside, "utf8")).toContain('"secret"');
+  });
+
+  it("rejects a symlinked root component used as graph storage", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-link-"));
+    const outside = mkdtempSync(join(tmpdir(), "bujo-graph-outside-"));
+    mkdirSync(join(root, "container"));
+    symlinkSync(outside, join(root, "container", "memory"), "dir");
+
+    expect(() => appendEntity(join(root, "container", "memory"), entity("person:alice", "Alice"))).toThrow(/root.*symlink/iu);
+    expect(() => readGraph(join(root, "container", "memory"))).toThrow(/root.*symlink/iu);
   });
 });

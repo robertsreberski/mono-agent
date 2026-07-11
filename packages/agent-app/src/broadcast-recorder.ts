@@ -33,6 +33,8 @@ export function createBroadcastRunRecorder(
   ctx: BroadcastRunContext,
 ): RunRecorder {
   let eventIndex = 0;
+  let terminalStarted = false;
+  let terminalPromise: Promise<RunSummary> | undefined;
   const publish = (frame: RunEventFrame): void => {
     try {
       sink.publish(frame);
@@ -55,6 +57,10 @@ export function createBroadcastRunRecorder(
   };
   const recorder: RunRecorder = {
     onEvent(event: RuntimeEventLike): void {
+      // Terminal is a hard boundary in the live protocol. Events accepted after
+      // commit starts could otherwise appear after `run_finished` or be absent
+      // from the authoritative summary/export.
+      if (terminalStarted) return;
       inner.onEvent(event);
       const redactedEvent = redactJsonValue(event) as RuntimeEventLike;
       publish({
@@ -67,11 +73,28 @@ export function createBroadcastRunRecorder(
         seq: 0,
       });
     },
+    async prepareFinish(result: RuntimeResultLike): Promise<void> {
+      await inner.prepareFinish?.(result);
+    },
+    async commitFinish(result: RuntimeResultLike): Promise<RunSummary> {
+      if (terminalPromise === undefined) {
+        terminalStarted = true;
+        terminalPromise = (async () => await finished(
+          inner.commitFinish === undefined ? await inner.finish(result) : await inner.commitFinish(result),
+        ))();
+      }
+      return await terminalPromise;
+    },
     async finish(result: RuntimeResultLike): Promise<RunSummary> {
-      return await finished(await inner.finish(result));
+      await recorder.prepareFinish?.(result);
+      return await recorder.commitFinish!(result);
     },
     async fail(error: unknown): Promise<RunSummary> {
-      return await finished(await inner.fail(error));
+      if (terminalPromise === undefined) {
+        terminalStarted = true;
+        terminalPromise = (async () => await finished(await inner.fail(error)))();
+      }
+      return await terminalPromise;
     },
   };
   // `start` is optional on RunRecorder — only expose (and emit run_started) when

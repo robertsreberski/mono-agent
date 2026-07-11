@@ -1,9 +1,8 @@
-import type { LlmComplete } from "./llm.js";
+import type { LlmComplete, LlmCompleteOptions } from "./llm.js";
 
-// A capture runs several sequential LLM calls (distil → reconcile → extract entities); local Ollama
-// chat models routinely take tens of seconds per call, so the per-call timeout is generous by
-// default (and overridable). Too short a timeout aborts mid-capture, and because distil/reconcile/
-// entities swallow LLM errors (never-throw), that surfaces as a memory that silently stores nothing.
+// Capture uses one extraction and at most one reconcile call; local Ollama chat models can still
+// take tens of seconds per call, so the per-call timeout is generous and overridable. A timeout is
+// surfaced as a model failure; queued capture logs it while the synchronous raw audit remains.
 const DEFAULT_TIMEOUT_MS = 120_000;
 
 export function createOllamaLlm(opts: { model: string; endpoint?: string; timeoutMs?: number }): LlmComplete {
@@ -11,10 +10,14 @@ export function createOllamaLlm(opts: { model: string; endpoint?: string; timeou
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return {
     id: `ollama:${opts.model}`,
-    async complete(prompt: string): Promise<string> {
+    async complete(prompt: string, options?: LlmCompleteOptions): Promise<string> {
       const ctrl = new AbortController();
+      const abort = (): void => ctrl.abort(options?.abortSignal?.reason);
+      if (options?.abortSignal?.aborted === true) abort();
+      else options?.abortSignal?.addEventListener("abort", abort, { once: true });
       let timedOut = false;
       const timer = setTimeout(() => {
+        if (ctrl.signal.aborted) return;
         timedOut = true;
         ctrl.abort();
       }, timeoutMs);
@@ -35,6 +38,7 @@ export function createOllamaLlm(opts: { model: string; endpoint?: string; timeou
         throw err;
       } finally {
         clearTimeout(timer);
+        options?.abortSignal?.removeEventListener("abort", abort);
       }
     },
   };

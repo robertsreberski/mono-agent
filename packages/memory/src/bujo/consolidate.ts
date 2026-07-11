@@ -1,6 +1,5 @@
 import type { MemoryDb, MemoryRecord } from "../store/index.js";
 
-import { rewriteBullet } from "./daily.js";
 import { writeEmptyFutureLog, writeIndex } from "./projections.js";
 
 export interface ConsolidateDeps {
@@ -16,33 +15,20 @@ export interface ConsolidateResult {
   readonly markdownInvalidated: number;
 }
 
-/** Deterministic, no-LLM maintenance: decay, exact-normalized duplicate folding, projections. */
+/**
+ * Projection-only compatibility maintenance.
+ *
+ * Duplicate groups are reported, never folded: canonical Bullet fields and
+ * the rebuildable SQLite index remain untouched.
+ */
 export async function consolidateBujoMemory(deps: ConsolidateDeps): Promise<ConsolidateResult> {
-  const { decayed } = deps.db.applyDecay(deps.now);
   const liveRecords = deps.db.topSalient(Math.max(deps.db.count(), 1));
   const groups = groupByNormalizedText(liveRecords);
-  let duplicateGroups = 0;
-  let superseded = 0;
-  let markdownInvalidated = 0;
-
-  for (const group of groups.values()) {
-    if (group.length < 2) continue;
-    duplicateGroups += 1;
-    const [keeper, ...duplicates] = [...group].sort(compareNewestFirst);
-    if (keeper === undefined) continue;
-    for (const duplicate of duplicates) {
-      deps.db.markSuperseded(duplicate.id, keeper.id, deps.now.toISOString());
-      superseded += 1;
-      if (duplicate.source.file !== undefined) {
-        const rewritten = rewriteBullet(deps.root, duplicate.source.file, duplicate.id, { status: "invalidated" });
-        if (rewritten) markdownInvalidated += 1;
-      }
-    }
-  }
+  const duplicateGroups = [...groups.values()].filter((group) => group.length > 1).length;
 
   writeIndex(deps.root, deps.db, deps.now);
   writeEmptyFutureLog(deps.root);
-  return { decayed, duplicateGroups, superseded, markdownInvalidated };
+  return { decayed: 0, duplicateGroups, superseded: 0, markdownInvalidated: 0 };
 }
 
 function groupByNormalizedText(records: readonly MemoryRecord[]): Map<string, MemoryRecord[]> {
@@ -66,10 +52,4 @@ function normalizeFactText(text: string): string {
     .toLocaleLowerCase("en-US")
     .replace(/[^\p{Letter}\p{Number}]+/gu, " ")
     .trim();
-}
-
-function compareNewestFirst(a: MemoryRecord, b: MemoryRecord): number {
-  const byCreated = Date.parse(b.createdAt) - Date.parse(a.createdAt);
-  if (byCreated !== 0) return byCreated;
-  return b.id.localeCompare(a.id);
 }

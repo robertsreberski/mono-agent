@@ -3,6 +3,11 @@ import {
   ALLOW_ALL_TOOLS,
   CONFIG_ENV_KEYS,
   EFFORT_LEVELS,
+  MEMORY_BACKENDS,
+  MEMORY_EMBEDDINGS_PROVIDERS,
+  MEMORY_LLM_PROVIDERS,
+  MEMORY_MODES,
+  MEMORY_WRITE_MODES,
   ROUTE_SAFETY_MODES,
 } from "@mono-agent/config";
 import type { ConfigViewFieldId, MonoAgentConfigJson } from "@mono-agent/config";
@@ -214,6 +219,7 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
   }
   setRequired(root, ["runtime"], ["model"]);
   setRequired(root, ["context"], ["identityPath"]);
+  setMemoryTierSchema(root);
   setSchemaPath(root, ["channels", "plugins"], {
     type: "array",
     description: "External channel plugins loaded by package name.",
@@ -240,6 +246,92 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
       $schema: { type: "string" },
       ...root,
     },
+  };
+}
+
+function setMemoryTierSchema(root: Record<string, JsonSchema>): void {
+  const memory = schemaAt(root, ["memory"]);
+  if (memory === undefined) {
+    return;
+  }
+  // An omitted backend means the built-in BuJo store, so these conditions
+  // intentionally do not require `backend`. Explicit external backends bypass
+  // the tier matrix because they own extraction and capture server-side.
+  (memory as Record<string, unknown>).allOf = [
+    memoryTierRule("lite", {
+      not: {
+        anyOf: [
+          propertyPresentSchema("embeddings"),
+          propertyPresentSchema("llm"),
+          propertyPresentSchema("consolidation"),
+          captureWriteModeSchema(),
+        ],
+      },
+    }),
+    memoryTierRule("journal", {
+      required: ["embeddings"],
+      properties: {
+        embeddings: { type: "object", minProperties: 1 },
+      },
+      not: {
+        anyOf: [
+          propertyPresentSchema("llm"),
+          propertyPresentSchema("consolidation"),
+          captureWriteModeSchema(),
+        ],
+      },
+    }),
+    memoryTierRule("bujo", {
+      required: ["embeddings", "llm"],
+      properties: {
+        embeddings: { type: "object", minProperties: 1 },
+        llm: {
+          type: "object",
+          properties: { model: {} },
+          required: ["model"],
+        },
+      },
+    }),
+    {
+      if: {
+        properties: {
+          backend: { const: "bujo" },
+          writeMode: { const: "capture" },
+        },
+        required: ["writeMode"],
+      },
+      then: {
+        properties: { mode: { const: "bujo" } },
+        required: ["mode"],
+      },
+    },
+  ];
+}
+
+function memoryTierRule(mode: "lite" | "journal" | "bujo", then: JsonSchema): JsonSchema {
+  return {
+    if: {
+      properties: {
+        backend: { const: "bujo" },
+        mode: { const: mode },
+      },
+      ...(mode === "lite" ? {} : { required: ["mode"] }),
+    },
+    then,
+  };
+}
+
+function captureWriteModeSchema(): JsonSchema {
+  return {
+    properties: { writeMode: { const: "capture" } },
+    required: ["writeMode"],
+  };
+}
+
+function propertyPresentSchema(property: string): JsonSchema {
+  return {
+    properties: { [property]: {} },
+    required: [property],
   };
 }
 
@@ -432,6 +524,16 @@ function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.enum = EFFORT_LEVELS;
   } else if (field.jsonPath === "runtime.routeSafety") {
     schema.enum = ROUTE_SAFETY_MODES;
+  } else if (field.jsonPath === "memory.backend") {
+    schema.enum = MEMORY_BACKENDS;
+  } else if (field.jsonPath === "memory.mode") {
+    schema.enum = MEMORY_MODES;
+  } else if (field.jsonPath === "memory.writeMode") {
+    schema.enum = MEMORY_WRITE_MODES;
+  } else if (field.jsonPath === "memory.embeddings.provider") {
+    schema.enum = MEMORY_EMBEDDINGS_PROVIDERS;
+  } else if (field.jsonPath === "memory.llm.provider") {
+    schema.enum = MEMORY_LLM_PROVIDERS;
   } else if (field.jsonPath === "sandbox.mode") {
     schema.enum = SANDBOX_MODES;
   } else if (field.jsonPath === "sandbox.network.mode") {
@@ -557,8 +659,9 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "context.skillMaxBytes": 48_000,
     "context.skillDisclosure": "full",
     "memory.backend": "bujo",
+    "memory.mode": "lite",
     "memory.maxBytes": 64_000,
-    "memory.writeMode": "append-host-summary",
+    "memory.writeMode": "disabled",
     "memory.supermemory.timeoutMs": 10_000,
     "memory.supermemory.exposeMcpServer": false,
     "memory.embeddings.timeoutMs": 10_000,
@@ -566,6 +669,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "memory.embeddings.circuitBreaker.cooldownMs": 30_000,
     "memory.llm.trace": true,
     "memory.llm.timeoutMs": 60_000,
+    "memory.recallTool.enabled": true,
     "memory.consolidation.enabled": true,
     "memory.consolidation.cron": "0 */2 * * *",
     "tools.allowedTools": [ALLOW_ALL_TOOLS],

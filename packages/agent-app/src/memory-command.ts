@@ -1,14 +1,28 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { openMemoryDb } from "@mono-agent/memory/store";
-import type { EntityRecord, MemoryDb, MemoryRecord, MemoryStoreAudit, MemoryStoreStats } from "@mono-agent/memory/store";
-import { parseDailyFile } from "@mono-agent/memory/bujo";
-
-import { isAppCoreConfigError, loadAppCoreConfig } from "./app-config.js";
+import type { EntityRecord, IndexMetadata, MemoryDb, MemoryRecord, MemoryStoreAudit, MemoryStoreStats } from "@mono-agent/memory/store";
+import { listTraceSources } from "@mono-agent/observability";
+import type { TraceSourceListItem } from "@mono-agent/observability";
 import {
+  parseDailyFile,
+  readBujoRuntimeSnapshot,
+  resolveActiveMemoryDbPath,
+  rollbackMemoryIndex,
+  safeRebuildMemoryIndex,
+} from "@mono-agent/memory/bujo";
+
+import {
+  isAppCoreConfigError,
+  loadAppCoreConfig,
+  resolveAppTraceRegistryDir,
+  resolveGlobalTraceRegistryDir,
+} from "./app-config.js";
+import {
+  createMemoryEmbeddingProvider,
   createRecallStore,
   resolveMemoryRecallSettings,
 } from "./memory-recall.js";
@@ -34,6 +48,7 @@ export interface RunMemoryCommandInput {
 
 interface MemoryCommandContext {
   readonly cwd: string;
+  readonly env: Record<string, string | undefined>;
   readonly configPath: string;
   readonly config: MonoAgentConfig;
 }
@@ -87,10 +102,78 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       return await runTop(context, input);
     case "audit":
       return await runAudit(context, input.json);
+    case "rebuild":
+      return await runIndexTransition(context, "rebuild", input.json);
+    case "rollback":
+      return await runIndexTransition(context, "rollback", input.json);
     default:
       process.stderr.write(ui.errorLine(`Unknown memory subcommand \`${subcommand}\`.`));
-      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, or audit."));
+      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, audit, rebuild, or rollback."));
       return 2;
+  }
+}
+
+async function runIndexTransition(
+  context: MemoryCommandContext,
+  operation: "rebuild" | "rollback",
+  json: boolean,
+): Promise<number> {
+  const memory = context.config.memory;
+  if (memory === undefined) {
+    writeNoMemory(context.configPath, json);
+    return 0;
+  }
+  if ((memory.backend ?? "bujo") === "supermemory") {
+    process.stderr.write(ui.errorLine(
+      `mono-agent memory ${operation} is available only for the built-in Lite, Journal, and BuJo stores; Supermemory manages its remote index.`,
+    ));
+    return 1;
+  }
+
+  const settings = previewRecallSettings(context.config);
+  if (settings === undefined || "supermemory" in settings) {
+    process.stderr.write(ui.errorLine(`Unable to resolve the configured built-in memory store for ${operation}.`));
+    return 1;
+  }
+
+  try {
+    const configuredRegistryDir = await resolveAppTraceRegistryDir({
+      env: context.env,
+      cwd: context.cwd,
+      configPath: context.configPath,
+    });
+    const registryDirs = await dedupeRegistryDirs([
+      configuredRegistryDir,
+      resolveGlobalTraceRegistryDir(context.env),
+    ]);
+    await assertNoLiveConfiguredAgent(context.configPath, registryDirs);
+    const embeddings = settings.embeddings === undefined
+      ? undefined
+      : await createMemoryEmbeddingProvider(settings.embeddings);
+    const options = {
+      root: memory.path,
+      tier: memory.mode,
+      ...(embeddings === undefined ? {} : { embeddings, dim: settings.embeddings?.dim ?? 768 }),
+    };
+    // Re-check after provider construction so a legacy writer that started
+    // during setup cannot be raced by the destructive transition.
+    await assertNoLiveConfiguredAgent(context.configPath, registryDirs);
+    const details = operation === "rebuild"
+      ? await safeRebuildMemoryIndex(options)
+      : await rollbackMemoryIndex(options);
+    const activeDatabase = await resolveActiveMemoryDbPath(memory.path);
+    const result = {
+      configured: true,
+      backend: "bujo",
+      operation,
+      activeDatabase,
+      details,
+    };
+    write(json, result, () => renderIndexTransition(result));
+    return 0;
+  } catch (error) {
+    process.stderr.write(ui.errorLine(`memory ${operation} failed: ${reasonOf(error)}`));
+    return 1;
   }
 }
 
@@ -120,16 +203,19 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
   }
 
   const root = memory.path;
-  const dbPath = join(root, "memory.db");
+  const runtime = readBujoRuntimeSnapshot(root);
+  const dbPath = await resolveActiveMemoryDbPath(root);
   const rootExists = await exists(root);
   const size = rootExists ? await collectStoreSize(root) : emptySize();
   let audit: MemoryStoreAudit | undefined;
+  let generation: IndexMetadata | undefined;
   let metadataQueryMs: number | null = null;
   if (await exists(dbPath)) {
-    const db = openMemoryDb({ path: dbPath });
+    const db = openMemoryDb({ path: dbPath, readOnly: true });
     try {
       const started = performance.now();
       audit = db.audit();
+      generation = db.indexMetadata();
       metadataQueryMs = performance.now() - started;
     } finally {
       db.close();
@@ -138,10 +224,14 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
   const live = audit?.counts.live ?? 0;
   const liveIndexed = audit?.vectors.liveIndexed ?? 0;
   const semanticExpected = memory.embeddings !== undefined;
+  const runtimeQueues = runtime.snapshot?.queues;
+  const captureQueue = runtime.stale ? undefined : runtimeQueues?.capture;
+  const runtimeVectorBacklog = runtime.stale ? undefined : runtimeQueues?.index?.remainingBacklog;
   const result = {
     configured: true,
     backend: "bujo",
     mode: memory.mode,
+    ...(generation === undefined ? {} : { generation }),
     metadataOnly: true,
     counts: audit?.counts ?? { total: 0, live: 0, entities: 0, entityRelations: 0 },
     bytes: size,
@@ -150,8 +240,23 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
     accessConcentration: audit?.access ?? { totalCount: 0, accessedMemories: 0, topOnePercentShare: 0 },
     backlog: {
       known: true,
-      captureQueue: null,
-      vectorIndex: semanticExpected ? Math.max(0, live - liveIndexed) : 0,
+      captureQueue: captureQueue === undefined ? null : captureQueue.queued + captureQueue.inFlight,
+      vectorIndex: runtimeVectorBacklog ?? (semanticExpected ? Math.max(0, live - liveIndexed) : 0),
+    },
+    runtime: {
+      available: runtime.available,
+      stale: runtime.stale,
+      ...(runtime.reason === undefined ? {} : { reason: runtime.reason }),
+      ...(runtime.ageMs === undefined ? {} : { ageMs: runtime.ageMs }),
+      ...(runtime.processAlive === undefined ? {} : { processAlive: runtime.processAlive }),
+      ...(runtime.snapshot === undefined ? {} : {
+        pid: runtime.snapshot.pid,
+        tier: runtime.snapshot.tier,
+        state: runtime.snapshot.state,
+        startedAt: runtime.snapshot.startedAt,
+        updatedAt: runtime.snapshot.updatedAt,
+        queues: runtime.snapshot.queues,
+      }),
     },
     latency: {
       known: metadataQueryMs !== null,
@@ -161,16 +266,33 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
       indexingMs: null,
     },
     cost: {
-      known: false,
+      known: runtime.snapshot !== undefined,
       totalUsd: null,
-      embeddingCalls: null,
-      llmCalls: null,
+      embeddingCalls: runtime.snapshot?.counters.embeddingCalls ?? null,
+      embeddingTexts: runtime.snapshot?.counters.embeddingTexts ?? null,
+      llmCalls: runtime.snapshot?.counters.llmCalls ?? null,
+      llmInputChars: runtime.snapshot?.counters.llmInputChars ?? null,
       tokens: null,
     },
     notes: [
       ...(audit === undefined ? [`No SQLite index found at ${dbPath}.`] : []),
+      ...(generation === undefined ? [] : [
+        `Generation ${generation.generation}: skipped raw summaries ${generation.skippedRawRecords ?? 0}, `
+        + `unstructured source lines ${generation.skippedUnstructuredRecords ?? 0}, `
+        + `missing-identity source lines ${generation.skippedMissingIdentityRecords ?? 0} `
+        + `(${generation.missingIdentityLocations?.join(", ") || "none"}), `
+        + `legacy-source lines ${generation.skippedLegacySourceRecords ?? 0} `
+        + `(${generation.legacySourceLocations?.join(", ") || "none"}), `
+        + `Journal duplicate lines ${generation.skippedJournalDuplicateRecords ?? 0}, `
+        + `parsed source items ${generation.parsedSourceItems ?? 0}, `
+        + `derived legacy associations ${generation.derivedLegacyAssociations ?? 0}.`,
+      ]),
       "Search latency and model cost require benchmark/run telemetry and are not inferred from memory content.",
-      "captureQueue is process-local and unavailable to an offline audit.",
+      ...(!runtime.available ? [
+        `Runtime queue/call telemetry is ${runtime.reason === "invalid" ? "invalid" : "not available until the configured store starts"}.`,
+      ] : runtime.stale ? [
+        `Runtime queue/call telemetry is stale (${runtime.snapshot?.state ?? "unknown"} snapshot; last update ${runtime.snapshot?.updatedAt ?? "unknown"}).`,
+      ] : []),
     ],
   };
   write(json, result, () => renderAudit(result));
@@ -185,6 +307,7 @@ async function loadMemoryCommandContext(
   try {
     return {
       cwd,
+      env: input.env,
       configPath,
       config: await loadAppCoreConfig({ env: input.env, cwd, configPath }),
     };
@@ -195,6 +318,70 @@ async function loadMemoryCommandContext(
       return { code: 1 };
     }
     throw error;
+  }
+}
+
+async function assertNoLiveConfiguredAgent(configPath: string, registryDirs: readonly string[]): Promise<void> {
+  const canonicalConfig = await canonicalPath(configPath);
+  const listings = await Promise.all(registryDirs.map(async (registryDir) => await listTraceSources({ registryDir })));
+  const sources = dedupeTraceSources(listings.flatMap((listing) => listing.sources));
+  let live: (typeof sources)[number] | undefined;
+  for (const source of sources) {
+    if (source.configPath === undefined || source.pid === undefined || !pidIsAlive(source.pid)) continue;
+    if (await canonicalPath(source.configPath) === canonicalConfig) {
+      live = source;
+      break;
+    }
+  }
+  if (live === undefined) return;
+  throw new Error(
+    `agent process ${live.pid} (${live.sourceId}) is still alive for this config (trace health: ${live.health}); ` +
+    `stop it first with: mono-agent stop --config ${canonicalConfig}`,
+  );
+}
+
+async function dedupeRegistryDirs(registryDirs: readonly string[]): Promise<string[]> {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const registryDir of registryDirs) {
+    const canonical = await canonicalPath(registryDir);
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    deduped.push(registryDir);
+  }
+  return deduped;
+}
+
+function dedupeTraceSources(sources: readonly TraceSourceListItem[]): TraceSourceListItem[] {
+  const seen = new Set<string>();
+  const deduped: TraceSourceListItem[] = [];
+  for (const source of sources) {
+    // Primary and global registries mirror the same source/PID pair. Preserve
+    // a reused source ID with a different PID so either live process blocks.
+    const key = `${source.sourceId}\0${source.pid ?? "unknown"}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(source);
+  }
+  return deduped;
+}
+
+async function canonicalPath(path: string): Promise<string> {
+  const absolute = resolve(path);
+  try {
+    return await realpath(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
+function pidIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -211,7 +398,7 @@ async function runStats(context: MemoryCommandContext, input: RunMemoryCommandIn
   }
 
   const root = memory.path;
-  const dbPath = join(root, "memory.db");
+  const dbPath = await resolveActiveMemoryDbPath(root);
   const rootExists = await exists(root);
   const dbExists = await exists(dbPath);
   const size = rootExists ? await collectStoreSize(root) : emptySize();
@@ -221,7 +408,7 @@ async function runStats(context: MemoryCommandContext, input: RunMemoryCommandIn
   let entityCount = 0;
   let topMemories: readonly MemoryRecord[] = [];
   if (dbExists) {
-    const db = openMemoryDb({ path: dbPath });
+    const db = openMemoryDb({ path: dbPath, readOnly: true });
     try {
       stats = readLocalStats(db, input.limit ?? DEFAULT_ENTITY_LIMIT);
       entityCount = db.countEntities();
@@ -323,18 +510,23 @@ async function runSearch(
   query: string,
   input: RunMemoryCommandInput,
 ): Promise<number> {
-  const settings = previewRecallSettings(context.config);
+  let settings = previewRecallSettings(context.config);
   if (settings === undefined) {
     writeNoMemory(context.configPath, input.json);
     return 0;
   }
-  if (!("supermemory" in settings) && !(await exists(join(settings.root, "memory.db")))) {
+  if (!("supermemory" in settings)) {
+    const dbPath = await resolveActiveMemoryDbPath(settings.root);
+    settings = { ...settings, dbPath };
+  }
+  if (!("supermemory" in settings) && !(await exists(settings.dbPath ?? join(settings.root, "memory.db")))) {
+    const dbPath = settings.dbPath ?? join(settings.root, "memory.db");
     const result = {
       configured: true,
       backend: "bujo",
       query,
       hits: [],
-      notes: [`No SQLite index found at ${join(settings.root, "memory.db")}; run memory-bujo rebuild or wait for capture.`],
+      notes: [`No SQLite index found at ${dbPath}; run mono-agent memory rebuild or wait for capture.`],
     };
     write(input.json, result, () => renderSearch(result));
     return 0;
@@ -388,18 +580,18 @@ async function runTop(context: MemoryCommandContext, input: RunMemoryCommandInpu
     write(input.json, result, () => `${ui.banner("mono-agent memory", "top")}\n${result.message}\n`);
     return 0;
   }
-  const dbPath = join(memory.path, "memory.db");
+  const dbPath = await resolveActiveMemoryDbPath(memory.path);
   if (!(await exists(dbPath))) {
     const result = {
       configured: true,
       backend: "bujo",
       hits: [],
-      notes: [`No SQLite index found at ${dbPath}; run memory-bujo rebuild or wait for capture.`],
+      notes: [`No SQLite index found at ${dbPath}; run mono-agent memory rebuild or wait for capture.`],
     };
     write(input.json, result, () => renderTop(result));
     return 0;
   }
-  const db = openMemoryDb({ path: dbPath });
+  const db = openMemoryDb({ path: dbPath, readOnly: true });
   try {
     const hits = db.topSalient(input.limit ?? DEFAULT_TOP_LIMIT).map((record) => ({
       id: record.id,
@@ -443,10 +635,11 @@ function previewRecallSettings(config: MonoAgentConfig): MemoryRecallSettings | 
   }
   const embeddings = memory.embeddings;
   if (embeddings === undefined) {
-    return { root: memory.path };
+    return { root: memory.path, tier: memory.mode };
   }
   return {
     root: memory.path,
+    tier: memory.mode,
     embeddings: {
       provider: embeddings.provider,
       model: embeddings.model,
@@ -473,7 +666,12 @@ async function recallWithFtsFallback(
       throw error;
     }
     await store.close().catch(() => undefined);
-    const fallback: MemoryRecallBujoSettings = { root: settings.root };
+    const fallback: MemoryRecallBujoSettings = {
+      root: settings.root,
+      ...(settings.tier === undefined ? {} : { tier: settings.tier }),
+      ...(settings.dbPath === undefined ? {} : { dbPath: settings.dbPath }),
+      ftsOnlyFallback: true,
+    };
     const ftsStore = await createRecallStore(fallback);
     try {
       return {
@@ -512,13 +710,7 @@ function readLocalStats(db: MemoryDb, topEntitiesLimit: number): MemoryStoreStat
 }
 
 function effectiveLocalTier(memory: NonNullable<MonoAgentConfig["memory"]>): string {
-  if (memory.mode === "lite") {
-    return "lite";
-  }
-  if (memory.mode === "journal") {
-    return "journal";
-  }
-  return memory.llm === undefined ? "journal" : "bujo";
+  return memory.mode;
 }
 
 function supermemoryStats(config: MonoAgentConfig): {
@@ -719,6 +911,7 @@ function renderAudit(result: {
   readonly vectorCoverage: { readonly indexed: number; readonly liveIndexed: number; readonly liveCoverage: number } | null;
   readonly accessConcentration: { readonly totalCount: number; readonly accessedMemories: number; readonly topOnePercentShare: number } | null;
   readonly backlog: { readonly captureQueue: number | null; readonly vectorIndex: number | null };
+  readonly runtime?: { readonly available: boolean; readonly stale: boolean; readonly state?: string };
   readonly latency: { readonly metadataQueryMs?: number | null; readonly searchP50Ms: number | null; readonly searchP95Ms: number | null; readonly indexingMs: number | null };
   readonly cost: { readonly totalUsd: number | null; readonly embeddingCalls: number | null; readonly llmCalls: number | null; readonly tokens: number | null };
   readonly notes: readonly string[];
@@ -732,8 +925,13 @@ function renderAudit(result: {
     ["vector coverage", result.vectorCoverage === null ? "unknown" : formatRatio(result.vectorCoverage.liveCoverage)],
     ["top 1% access share", result.accessConcentration === null ? "unknown" : formatRatio(result.accessConcentration.topOnePercentShare)],
     ["vector backlog", result.backlog.vectorIndex === null ? "unknown" : String(result.backlog.vectorIndex)],
-    ["capture queue", result.backlog.captureQueue === null ? "unavailable offline" : String(result.backlog.captureQueue)],
+    ["capture queue", result.backlog.captureQueue === null ? "not live/available" : String(result.backlog.captureQueue)],
+    ["runtime telemetry", result.runtime === undefined || !result.runtime.available
+      ? "unavailable"
+      : `${result.runtime.state ?? "unknown"}${result.runtime.stale ? " (stale)" : " (live)"}`],
     ["metadata query", result.latency.metadataQueryMs == null ? "unknown" : `${result.latency.metadataQueryMs.toFixed(3)} ms`],
+    ["embedding calls", result.cost.embeddingCalls === null ? "unknown" : String(result.cost.embeddingCalls)],
+    ["memory LLM calls", result.cost.llmCalls === null ? "unknown" : String(result.cost.llmCalls)],
     ["recorded cost", result.cost.totalUsd === null ? "unknown" : `$${result.cost.totalUsd.toFixed(6)}`],
   ], 2);
   for (const note of result.notes) out += ui.style.yellow(`[WARN] ${note}`) + "\n";
@@ -803,6 +1001,44 @@ function renderDaily(result: { readonly date: string; readonly path: string; rea
     ui.keyValue([["source", result.path]], 2),
     "\n",
     result.content.endsWith("\n") ? result.content : `${result.content}\n`,
+  ].join("");
+}
+
+function renderIndexTransition(result: {
+  readonly operation: "rebuild" | "rollback";
+  readonly activeDatabase: string;
+  readonly details: {
+    readonly indexed: number;
+    readonly generation: string;
+    readonly skippedRawRecords: number;
+    readonly skippedUnstructuredRecords: number;
+    readonly skippedMissingIdentityRecords: number;
+    readonly missingIdentityLocations: readonly string[];
+    readonly skippedLegacySourceRecords: number;
+    readonly legacySourceLocations: readonly string[];
+    readonly skippedJournalDuplicateRecords: number;
+    readonly parsedSourceItems: number;
+    readonly derivedLegacyAssociations: number;
+  };
+}): string {
+  return [
+    ui.banner("mono-agent memory", result.operation),
+    "\n",
+    ui.keyValue([
+      ["status", "complete"],
+      ["active database", result.activeDatabase],
+      ["generation", result.details.generation],
+      ["indexed memories", String(result.details.indexed)],
+      ["skipped raw summaries", String(result.details.skippedRawRecords)],
+      ["skipped unstructured lines", String(result.details.skippedUnstructuredRecords)],
+      ["skipped missing-identity lines", String(result.details.skippedMissingIdentityRecords)],
+      ["missing-identity locations", result.details.missingIdentityLocations.join(", ") || "none"],
+      ["skipped legacy-source lines", String(result.details.skippedLegacySourceRecords)],
+      ["legacy-source locations", result.details.legacySourceLocations.join(", ") || "none"],
+      ["skipped Journal duplicates", String(result.details.skippedJournalDuplicateRecords)],
+      ["parsed source items", String(result.details.parsedSourceItems)],
+      ["derived legacy associations", String(result.details.derivedLegacyAssociations)],
+    ], 2),
   ].join("");
 }
 

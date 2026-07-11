@@ -210,6 +210,8 @@ describe("buildMonoAgentConfigView", () => {
       ...baseEnv,
       MONO_AGENT_MEMORY_MODE: "bujo",
       MONO_AGENT_MEMORY_PATH: "/repo/memory",
+      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+      MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest",
       MONO_AGENT_MEMORY_CONSOLIDATION_CRON: "0 */4 * * *",
     });
 

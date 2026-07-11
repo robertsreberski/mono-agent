@@ -54,6 +54,24 @@ export function migrations(dim: number): readonly string[] {
       created_at TEXT NOT NULL,
       PRIMARY KEY(src, dst, relation)
     )`,
+    `CREATE TABLE IF NOT EXISTS memory_entities (
+      memory_id TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      provenance TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(memory_id, entity_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_memory_entities_entity ON memory_entities(entity_id)`,
+    `CREATE TABLE IF NOT EXISTS content_hashes (
+      content_hash TEXT PRIMARY KEY,
+      memory_id TEXT NOT NULL,
+      source_file TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS index_metadata (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )`,
   ];
 }
 

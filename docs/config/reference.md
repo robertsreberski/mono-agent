@@ -70,16 +70,16 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `memory.llm.timeoutMs` | `integer` | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | 60000 | `60000` | Configures llm.timeoutMs for the memory section. |
 | `memory.llm.trace` | `boolean` | `MONO_AGENT_MEMORY_LLM_TRACE` | true | `true` | Configures llm.trace for the memory section. |
 | `memory.maxBytes` | `integer` | `MONO_AGENT_MEMORY_MAX_BYTES` | 64000 | `64000` | Configures maxBytes for the memory section. |
-| `memory.mode` | `string` | `MONO_AGENT_MEMORY_MODE` | unset | `journal` | Configures mode for the memory section. |
+| `memory.mode` | `string` | `MONO_AGENT_MEMORY_MODE` | lite | `journal` | Configures mode for the memory section. |
 | `memory.path` | `string` | `MONO_AGENT_MEMORY_PATH` | unset | `./.mono-agent/memory` | Configures path for the memory section. |
-| `memory.recallTool.enabled` | `boolean` | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | unset | `true` | Enables the memory capability. |
+| `memory.recallTool.enabled` | `boolean` | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | true | `true` | Enables the memory capability. |
 | `memory.supermemory.apiKey` | `string` | `MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY` | unset | `example` | Secret value for memory.supermemory.apiKey; prefer the env override. |
 | `memory.supermemory.apiKeyEnv` | `string` | `MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV` | unset | `example` | Secret value for memory.supermemory.apiKeyEnv; prefer the env override. |
 | `memory.supermemory.baseUrl` | `string` | `MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL` | unset | `example` | Configures supermemory.baseUrl for the memory section. |
 | `memory.supermemory.container` | `string` | `MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER` | unset | `example` | Configures supermemory.container for the memory section. |
 | `memory.supermemory.exposeMcpServer` | `boolean` | `MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER` | false | `true` | Configures supermemory.exposeMcpServer for the memory section. |
 | `memory.supermemory.timeoutMs` | `integer` | `MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS` | 10000 | `10000` | Configures supermemory.timeoutMs for the memory section. |
-| `memory.writeMode` | `string` | `MONO_AGENT_MEMORY_WRITE_MODE` | append-host-summary | `append-host-summary` | Configures writeMode for the memory section. |
+| `memory.writeMode` | `string` | `MONO_AGENT_MEMORY_WRITE_MODE` | disabled | `disabled` | Configures writeMode for the memory section. |
 | `observability.exporters` | `array` | `MONO_AGENT_OBSERVABILITY_EXPORTERS` | unset | `[]` | Configures exporters for the observability section. |
 | `openaiApi.allowNonLoopback` | `boolean` | `MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK` | false | `true` | Configures allowNonLoopback for the openaiApi section. |
 | `openaiApi.apiKey` | `string` | `MONO_AGENT_OPENAI_API_KEY` | unset | `env:MONO_AGENT_OPENAI_API_KEY` | Secret value for openaiApi.apiKey; prefer the env override. |

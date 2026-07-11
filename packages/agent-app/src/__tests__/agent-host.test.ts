@@ -332,6 +332,62 @@ describe("agent host composition helpers", () => {
     expect(frames.at(-1)).toMatchObject({ sourceId: "src-1", runId: "run-live-broadcast", status: "succeeded" });
   });
 
+  it("records and exports memory persistence degradation before one terminal live frame", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const frames: RunEventFrame[] = [];
+    const exportOrder: string[] = [];
+    const exporter: RunExporter = {
+      onEvent(event): void { exportOrder.push(`event:${String(event.type)}`); },
+      finish(): void { exportOrder.push("terminal"); },
+    };
+    const memory: MemoryStore = {
+      load: async () => undefined,
+      appendHostSummary: async () => { throw new Error("memory disk became read-only"); },
+    };
+    const responder = await createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        artifactDir,
+        memoryPath: join(dir, "memory"),
+        memoryWriteMode: "append-host-summary",
+        observability: { exporters: [{ type: "phoenix" }] },
+      }),
+      runtime: createFakeRuntime(async () => ({ text: "Provider answer survives" })).runtime,
+      memory,
+      createRunId: () => "run-memory-warning-order",
+      observabilityContext: { sourceId: "src-warning" },
+      exporterFactory: () => exporter,
+      runEventSink: { publish: (frame) => { frames.push(frame); } },
+    });
+
+    const response = await responder.respond(
+      { conversationId: "telegram:warning", text: "remember this", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(response.text).toBe("Provider answer survives");
+    const warningFrameIndex = frames.findIndex((frame) =>
+      frame.t === "event" && JSON.stringify(frame.event).includes("memory_persistence_degraded")
+    );
+    const terminalFrameIndexes = frames
+      .map((frame, index) => frame.t === "run_finished" ? index : -1)
+      .filter((index) => index >= 0);
+    expect(warningFrameIndex).toBeGreaterThan(0);
+    expect(terminalFrameIndexes).toHaveLength(1);
+    expect(warningFrameIndex).toBeLessThan(terminalFrameIndexes[0] ?? -1);
+    expect(frames.at(-1)?.t).toBe("run_finished");
+
+    const warningExportIndex = exportOrder.indexOf("event:runtime_warning");
+    expect(warningExportIndex).toBeGreaterThanOrEqual(0);
+    expect(warningExportIndex).toBeLessThan(exportOrder.indexOf("terminal"));
+    const eventArtifact = await readFile(join(artifactDir, "run-memory-warning-order.events.jsonl"), "utf8");
+    expect(eventArtifact).toContain("memory_persistence_degraded");
+  });
+
   it("uses the public agent name as the default run source label", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -445,7 +501,7 @@ describe("agent host composition helpers", () => {
     const channel = createFakeRuntime(async () => ({ text: "Harness answer" }));
     // Dedicated memory runtime (the injection seam the production path builds for
     // itself). Captures the memory LLM calls so we can assert their shape.
-    const memoryRuntime = createFakeRuntime(async () => ({ text: "[]" }));
+    const memoryRuntime = createFakeRuntime(async () => ({ text: '{"memories":[],"entities":[],"relations":[]}' }));
 
     const config = monoConfig({
       dir,
@@ -467,37 +523,40 @@ describe("agent host composition helpers", () => {
       artifactDir,
     });
     const memory = await createConfiguredMemory(config, { memoryRuntime: memoryRuntime.runtime });
+    try {
+      const responder = await createConfiguredAgentResponder({
+        config,
+        runtime: channel.runtime,
+        ...(memory === undefined ? {} : { memory }),
+      });
 
-    const responder = await createConfiguredAgentResponder({
-      config,
-      runtime: channel.runtime,
-      ...(memory === undefined ? {} : { memory }),
-    });
+      const response = await responder.respond({
+        conversationId: "channel-a",
+        text: "Remember that memory capture must use its own runtime.",
+        abortSignal: new AbortController().signal,
+      }, { append: async () => {} });
 
-    const response = await responder.respond({
-      conversationId: "channel-a",
-      text: "Remember that memory capture must use its own runtime.",
-      abortSignal: new AbortController().signal,
-    }, { append: async () => {} });
+      expect(response.text).toBe("Harness answer");
+      for (let i = 0; i < 20 && memoryRuntime.calls.length < 1; i += 1) {
+        await delay(5);
+      }
 
-    expect(response.text).toBe("Harness answer");
-    for (let i = 0; i < 20 && memoryRuntime.calls.length < 2; i += 1) {
-      await delay(5);
-    }
+      // The channel runtime served the channel turn only — the memory model never
+      // leaked onto it.
+      expect(channel.calls.every((call) => call.options.model.provider !== "openai-codex")).toBe(true);
 
-    // The channel runtime served the channel turn only — the memory model never
-    // leaked onto it.
-    expect(channel.calls.every((call) => call.options.model.provider !== "openai-codex")).toBe(true);
-
-    // The memory LLM ran on its own runtime, with the configured memory model and
-    // the locked-down per-call shape.
-    expect(memoryRuntime.calls.length).toBeGreaterThanOrEqual(2);
-    for (const call of memoryRuntime.calls) {
-      expect(call.options.model).toMatchObject({ sdk: "pi", provider: "openai-codex", model: "gpt-5.5" });
-      expect(call.options.allowedTools).toEqual([]);
-      expect(call.options.disallowedTools).toEqual([]);
-      expect(call.options.mcpServers).toEqual({});
-      expect(call.options.maxTurns).toBe(1);
+      // The memory LLM ran on its own runtime, with the configured memory model and
+      // the locked-down per-call shape.
+      expect(memoryRuntime.calls).toHaveLength(1);
+      for (const call of memoryRuntime.calls) {
+        expect(call.options.model).toMatchObject({ sdk: "pi", provider: "openai-codex", model: "gpt-5.5" });
+        expect(call.options.allowedTools).toEqual([]);
+        expect(call.options.disallowedTools).toEqual([]);
+        expect(call.options.mcpServers).toEqual({});
+        expect(call.options.maxTurns).toBe(1);
+      }
+    } finally {
+      await (memory as unknown as { close(): Promise<void> }).close();
     }
   });
 
@@ -739,12 +798,16 @@ describe("agent host composition helpers", () => {
       },
     } as MonoAgentConfig);
 
-    // First load drives an embedding request that fails and trips the breaker.
-    await expect(memory!.load("conv")).rejects.toThrow();
-    expect(requests).toBe(1);
-    // Second load fast-fails on the OPEN breaker without hitting the server again.
-    await expect(memory!.load("conv")).rejects.toThrow();
-    expect(requests).toBe(1);
+    try {
+      // First load drives an embedding request that fails and trips the breaker.
+      await expect(memory!.load("conv")).rejects.toThrow();
+      expect(requests).toBe(1);
+      // Second load fast-fails on the OPEN breaker without hitting the server again.
+      await expect(memory!.load("conv")).rejects.toThrow();
+      expect(requests).toBe(1);
+    } finally {
+      await (memory as unknown as { close(): Promise<void> }).close();
+    }
   });
 
   it("lets host runtimeOptions override config runtime flags", async () => {

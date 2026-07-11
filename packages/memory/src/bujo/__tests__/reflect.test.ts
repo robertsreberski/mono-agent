@@ -1,16 +1,17 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
 import { openMemoryDb, type MemoryDb, type MemoryRecord } from "../../store/index.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { appendBullet, dailyFilePath } from "../daily.js";
-import { createIdFactory } from "../ids.js";
-import { MemoryModelError } from "../model-error.js";
+import { writeCaptureIntent } from "../capture-outbox.js";
+import { parseDailyFile } from "../grammar.js";
+import { migrate } from "../migrate.js";
 import { reflect, type ReflectDeps } from "../reflect.js";
 import type { Bullet } from "../types.js";
-import { fakeEmbeddings, fakeLlm } from "./helpers.js";
+import { fakeEmbeddings } from "./helpers.js";
 
 const DIM = 64;
 const FIXED = new Date("2026-06-15T12:00:00.000Z");
@@ -35,184 +36,131 @@ async function seed(
   root: string,
   id: string,
   text: string,
-  opts: { salience?: number; isInsight?: boolean } = {},
-): Promise<void> {
+  overrides: Partial<MemoryRecord> = {},
+): Promise<Bullet> {
   const bullet: Bullet = {
     id,
-    type: "note",
-    status: "open",
+    type: overrides.type ?? "note",
+    status: overrides.status ?? "open",
     text,
-    salience: opts.salience ?? 0.6,
-    isInsight: opts.isInsight ?? false,
-    createdAt: FIXED.toISOString(),
+    salience: overrides.salience ?? 0.6,
+    isInsight: overrides.isInsight ?? false,
+    createdAt: overrides.createdAt ?? FIXED.toISOString(),
+    ...(overrides.dueAt === undefined ? {} : { dueAt: overrides.dueAt }),
     refs: [],
   };
   appendBullet(root, bullet, FIXED);
-  const record: MemoryRecord = {
-    id,
-    type: "note",
-    status: "open",
-    text,
-    salience: bullet.salience,
-    isInsight: bullet.isInsight,
-    createdAt: bullet.createdAt,
-    accessCount: 0,
-    tags: [],
+  await db.upsert({
+    ...bullet,
+    accessCount: overrides.accessCount ?? 0,
+    tags: overrides.tags ?? [],
     source: { file: relative(root, dailyFilePath(root, FIXED)) },
-  };
-  await db.upsert(record);
+  });
+  return bullet;
 }
 
-function makeDeps(db: MemoryDb, root: string, overrides: Partial<ReflectDeps> = {}): ReflectDeps {
+function makeDeps(db: MemoryDb, root: string, complete = vi.fn(async () => "[]")): ReflectDeps {
   return {
     db,
     root,
-    llm: fakeLlm([]),
-    nextId: createIdFactory({ clock: () => FIXED, random: () => 0 }),
+    llm: { id: "must-not-run", complete },
+    nextId: () => "MUST-NOT-BE-USED",
     now: () => FIXED,
-    ...overrides,
   };
 }
 
-describe("reflect", () => {
-  it("synthesizes one insight from ≥3 seeded memories, stores it with isInsight=true, and adds supports edges", async () => {
+describe("reflect compatibility surface", () => {
+  it("reports due count without model, canonical, graph, vector, salience, or lifecycle mutation", async () => {
     const root = newRoot();
     const db = openDb(root);
-
-    // Seed 3 non-insight memories.
-    await seed(db, root, "MEM1", "Morgan prefers quiet focused work in the mornings");
-    await seed(db, root, "MEM2", "Morgan tends to schedule deep work sessions early in the day");
-    await seed(db, root, "MEM3", "Morgan blocks calendar from 8am to noon for focus time");
-
-    // fakeLlm returns 1 insight referencing MEM1 and MEM2.
-    const insightText = "Morgan is a morning-focused worker who guards his peak hours";
-    const llm = fakeLlm([
-      [
-        "insight",
-        JSON.stringify([{ text: insightText, sourceIds: ["MEM1", "MEM2"] }]),
-      ],
-    ]);
-
-    const result = await reflect(makeDeps(db, root, { llm }));
-
-    // Should return decayed >= 0, insights: 1, due: 0 (no due items seeded).
-    expect(result.decayed).toBeGreaterThanOrEqual(0);
-    expect(result.insights).toBe(1);
-    expect(result.due).toBe(0);
-
-    // The insight memory should exist in the db with isInsight=true.
-    const allRecords = db.topSalient(50);
-    const insightRecord = allRecords.find((r) => r.isInsight);
-    expect(insightRecord).toBeDefined();
-    expect(insightRecord?.text).toBe(insightText);
-    expect(insightRecord?.isInsight).toBe(true);
-    expect(insightRecord?.salience).toBeCloseTo(0.7, 5);
-
-    // The insight should be recallable.
-    const hits = await db.recall("morning focus work", { topK: 10 });
-    expect(hits.some((h) => h.record.isInsight)).toBe(true);
-
-    // "supports" edges from the insight to MEM1 and MEM2.
-    const insightId = insightRecord?.id ?? "";
-    const edges = db.edges(insightId);
-    const supportsEdges = edges.filter((e) => e.kind === "supports");
-    const edgeDsts = supportsEdges.map((e) => e.dst);
-    expect(edgeDsts).toContain("MEM1");
-    expect(edgeDsts).toContain("MEM2");
-    // Should NOT have an edge to MEM3 (not in sourceIds).
-    expect(edgeDsts).not.toContain("MEM3");
-  });
-
-  it("surfaces (rethrows) a model failure during insight synthesis instead of returning insights:0", async () => {
-    const root = newRoot();
-    const db = openDb(root);
-
-    await seed(db, root, "MEM1", "Morgan prefers quiet focused work in the mornings");
-    await seed(db, root, "MEM2", "Morgan tends to schedule deep work sessions early");
-    await seed(db, root, "MEM3", "Morgan blocks calendar for focus time");
-
-    const throwingLlm = {
-      id: "throwing-llm",
-      complete: async (_prompt: string): Promise<string> => {
-        throw new Error("LLM unavailable");
-      },
-    };
-
-    // A dead model during the nightly reflection must surface (the scheduler logs it) — not look
-    // like a successful reflection that simply found no insights worth synthesizing.
-    const err = await reflect(makeDeps(db, root, { llm: throwingLlm })).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(MemoryModelError);
-    expect((err as MemoryModelError).kind).toBe("llm");
-    expect((err as MemoryModelError).stage).toBe("insights");
-    expect((err as Error).message).toMatch(/LLM unavailable/);
-    // The message must be scope-neutral: a reflection failure must NOT read as a "capture" failure.
-    expect((err as Error).message).not.toMatch(/capture/i);
-  });
-
-  it("returns insights:0 when fewer than 3 non-insight memories exist", async () => {
-    const root = newRoot();
-    const db = openDb(root);
-
-    // Only 2 memories.
-    await seed(db, root, "MEM1", "Morgan prefers quiet focused work");
-    await seed(db, root, "MEM2", "Morgan schedules deep work early");
-
-    const insightText = "Morgan guards his morning hours";
-    const llm = fakeLlm([
-      ["insight", JSON.stringify([{ text: insightText, sourceIds: ["MEM1"] }])],
-    ]);
-
-    const result = await reflect(makeDeps(db, root, { llm }));
-
-    expect(result.insights).toBe(0);
-    // No insight record was created.
-    const allRecords = db.topSalient(50);
-    expect(allRecords.some((r) => r.isInsight)).toBe(false);
-  });
-
-  it("counts due items correctly", async () => {
-    const root = newRoot();
-    const db = openDb(root);
-
-    await seed(db, root, "MEM1", "Write quarterly report");
-    await seed(db, root, "MEM2", "Review team feedback");
-    await seed(db, root, "MEM3", "Prepare slides for all hands");
-
-    // Manually upsert a record with a due date in the past.
-    const pastDue = new Date(FIXED.getTime() - 86_400_000).toISOString(); // yesterday
-    await db.upsert({
-      id: "DUE1",
+    await seed(db, root, "MEM1", "Morning focus", {
       type: "task",
       status: "scheduled",
-      text: "Send weekly update email",
-      salience: 0.7,
-      isInsight: false,
-      createdAt: FIXED.toISOString(),
-      accessCount: 0,
-      tags: [],
-      dueAt: pastDue,
-      source: { file: relative(root, dailyFilePath(root, FIXED)) },
+      dueAt: new Date(FIXED.getTime() - 1_000).toISOString(),
+      salience: 0.8,
     });
+    await seed(db, root, "MEM2", "Calendar blocks", { salience: 0.7 });
+    await seed(db, root, "MEM3", "No meetings before noon", { salience: 0.6 });
+    db.addEdge("MEM2", "MEM3", "supports");
+    const source = dailyFilePath(root, FIXED);
+    const sourceBefore = readFileSync(source, "utf8");
+    const recordsBefore = db.topSalient(50);
+    const edgesBefore = db.edges("MEM2");
+    const snapshotBefore = db.validationSnapshot();
+    const complete = vi.fn(async () => { throw new Error("reflection model must not run"); });
+    const decay = vi.spyOn(db, "applyDecay");
+    const prepare = vi.spyOn(db, "prepareUpsertVectors");
 
-    const llm = fakeLlm([]);
-    const result = await reflect(makeDeps(db, root, { llm }));
+    await expect(reflect(makeDeps(db, root, complete))).resolves.toEqual({ decayed: 0, insights: 0, due: 1 });
 
-    // 1 item is due (DUE1).
-    expect(result.due).toBe(1);
+    expect(complete).not.toHaveBeenCalled();
+    expect(decay).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(db.topSalient(50)).toEqual(recordsBefore);
+    expect(db.edges("MEM2")).toEqual(edgesBefore);
+    expect(db.validationSnapshot()).toEqual(snapshotBefore);
+    expect(readFileSync(source, "utf8")).toBe(sourceBefore);
+    expect(existsSync(join(root, "index.md"))).toBe(false);
+    expect(existsSync(join(root, "future-log.md"))).toBe(false);
   });
 
-  it("passes halfLifeDays and floor to applyDecay when provided", async () => {
+  it("does not replay a pending capture intent", async () => {
     const root = newRoot();
     const db = openDb(root);
+    const bullet = await seed(db, root, "PENDING-CAPTURE", "Pending capture remains operator-visible");
+    const source = dailyFilePath(root, FIXED);
+    const handle = writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "noop",
+      id: bullet.id,
+      expected: { file: relative(root, source), bullet: parseDailyFile(readFileSync(source, "utf8")).bullets[0]! },
+    }], { entities: [], relations: [], associations: [] }, FIXED.toISOString());
+    const intentPath = join(root, handle.file);
+    const intentBefore = readFileSync(intentPath, "utf8");
 
-    // Seed 1 memory — not enough for insight synthesis, but decay still runs.
-    await seed(db, root, "MEM1", "Morgan prefers focused mornings");
+    await expect(reflect(makeDeps(db, root))).resolves.toEqual({ decayed: 0, insights: 0, due: 0 });
 
-    const llm = fakeLlm([]);
-    const result = await reflect(makeDeps(db, root, { llm, halfLifeDays: 7, floor: 0.1 }));
+    expect(readFileSync(intentPath, "utf8")).toBe(intentBefore);
+    expect(db.get(bullet.id)?.status).toBe("open");
+  });
 
-    // Decay ran (we just verify it didn't throw and returns a valid number).
-    expect(result.decayed).toBeGreaterThanOrEqual(0);
-    expect(result.insights).toBe(0); // only 1 memory, skip synthesis
+  it("does not recover an already-paid migration decision", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const migrationNow = new Date("2026-08-20T12:00:00.000Z");
+    await seed(db, root, "PENDING-MIGRATION", "Paid migration remains pending", {
+      createdAt: new Date("2026-04-01T12:00:00.000Z").toISOString(),
+      salience: 0.2,
+    });
+    await expect(migrate({
+      db,
+      root,
+      llm: { id: "migration", complete: async () => JSON.stringify({ action: "promote" }) },
+      nextId: () => "unused",
+      now: () => migrationNow,
+      hooks: { afterDecisionDurable: () => { throw new Error("leave-reflect-migration-pending"); } },
+    })).rejects.toThrow("leave-reflect-migration-pending");
+    const monthly = join(root, "monthly", "2026-08.md");
+    const monthlyBefore = readFileSync(monthly, "utf8");
+
+    await expect(reflect({ ...makeDeps(db, root), now: () => migrationNow })).resolves.toEqual({
+      decayed: 0,
+      insights: 0,
+      due: 0,
+    });
+
+    expect(readFileSync(monthly, "utf8")).toBe(monthlyBefore);
+    expect(db.get("PENDING-MIGRATION")?.salience).toBe(0.2);
+  });
+
+  it("honors an already-aborted caller before reading due state", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const due = vi.spyOn(db, "dueItems");
+    const controller = new AbortController();
+    controller.abort(new Error("stop reflection"));
+
+    await expect(reflect({ ...makeDeps(db, root), abortSignal: controller.signal })).rejects.toThrow("stop reflection");
+    expect(due).not.toHaveBeenCalled();
   });
 });
