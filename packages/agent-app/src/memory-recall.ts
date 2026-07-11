@@ -19,7 +19,7 @@ import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 /**
  * Read-only memory recall, wired from the SINGLE `config.memory` block.
  *
- * When `config.memory.recallTool.enabled` is true, the app exposes a `MemoryRecall` MCP tool
+ * When memory is configured and `config.memory.recallTool.enabled` is not explicitly false, the app exposes a `MemoryRecall` MCP tool
  * (server name {@link MEMORY_RECALL_MCP_SERVER_NAME}) to the agent. The normal app path registers
  * the tool against the request-scoped shared retrieval service in `memory-retrieval.ts`, so
  * automatic recall and explicit tool calls use the same store and per-turn cache. Recall needs only
@@ -164,7 +164,7 @@ export function resolveMemoryRecallSettings(config: MonoAgentConfig): MemoryReca
   if (memory === undefined) {
     return undefined;
   }
-  if (memory.recallTool?.enabled !== true) {
+  if (memory.recallTool?.enabled === false) {
     return undefined;
   }
   if ((memory.backend ?? "bujo") === "supermemory") {
@@ -185,7 +185,7 @@ export function resolveMemoryRecallSettings(config: MonoAgentConfig): MemoryReca
   }
   const embeddings = memory.embeddings;
   if (embeddings === undefined) {
-    // Explicit opt-in without embeddings → FTS-only recall (no embedding provider built).
+    // Default-on recall without embeddings → FTS-only recall (no embedding provider built).
     return { root: memory.path, tier: memory.mode };
   }
   return {

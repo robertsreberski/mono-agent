@@ -71,6 +71,18 @@ describe("resolveMemoryRecallSettings", () => {
     expect(settings).toBeUndefined();
   });
 
+  it("defaults the recall tool on for a programmatic memory config that omits recallTool", () => {
+    const settings = resolveMemoryRecallSettings(
+      configWithMemory({
+        mode: "lite",
+        path: "/memory",
+        maxBytes: 64_000,
+        writeMode: "append-host-summary",
+      }),
+    );
+    expect(settings).toEqual({ root: "/memory", tier: "lite" });
+  });
+
   it("returns root WITHOUT embeddings when explicitly enabled on a no-embeddings (lite) store", () => {
     // F12: the operator opts in to FTS-only recall despite no embeddings default.
     const settings = resolveMemoryRecallSettings(
@@ -598,6 +610,16 @@ function supermemoryConfig(overrides: {
 }
 
 describe("supermemory backend recall", () => {
+  it("defaults recall on when a programmatic Supermemory config omits recallTool", () => {
+    const config = supermemoryConfig({ sourceId: "agent-alpha" });
+    const memory = { ...config.memory };
+    delete memory.recallTool;
+
+    expect(resolveMemoryRecallSettings({ ...config, memory } as MonoAgentConfig)).toEqual({
+      supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
+    });
+  });
+
   it("resolves supermemory recall settings with the container derived from the trace sourceId", () => {
     const settings = resolveMemoryRecallSettings(supermemoryConfig({ sourceId: "agent-alpha" }));
     expect(settings).toEqual({
