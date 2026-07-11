@@ -12,12 +12,26 @@ a normal checkout on 2026-07-06 (#148).
 
 ## Fleet map
 
+The daily tracker and the installed `com.mono-agent.*` launchd plists are the
+authoritative fleet map; do not restrict a deploy to the two historically
+documented instances. Snapshot as of 2026-07-10: nine plists are discovered —
+`activity-digest`, `deep-research`, `inner-child`, `orchestrator`, `p2-watcher`,
+`personal-agent`, `slack-sweep`, `test-agent`, and `transcription`. Eight point at
+the shared main checkout. `test-agent` points at a deleted development checkout
+and must be explicitly repaired or retired, never counted as a healthy service.
+`transcription` is loaded but intentionally stopped (last exit 0); preserve that
+stopped state unless the user explicitly asks to start it.
+
+Run `node scripts/fleet-green-check.mjs --dry-run` before changing anything and
+again after deployment. Reconcile every discovered row; a stale or invalid plist
+is a fleet blocker, not an instance to omit from the report.
+
 | Instance | Config / label | Notes |
 |---|---|---|
 | `~/personal-agent` | `mono-agent.config.json` / `com.mono-agent.personal-agent-059657c8` | Telegram (allowlist 183676192), webhook, OpenAI API :4312/v1, 4 cron jobs, bujo memory, piAuthPath `~/.pi/personal-agent/auth.json` |
 | `~/a8c-agents/orchestrator` | `mono-agent.config.json` / `com.mono-agent.orchestrator-2146e3d3` | Slack Socket Mode, OpenAI API :4311/v1, journal memory, piAuthPath `~/.pi/a8c-agent/auth.json`, working dir `.a8c-agent/` (NOT `.mono-agent/`) |
 
-**Deploy mechanism:** both plists hardcode `node <this repo>/packages/agent-app/dist/cli.js …`,
+**Deploy mechanism:** the canonical plists hardcode `node <this repo>/packages/agent-app/dist/cli.js …`,
 and the global `mono-agent` CLI is an npm-global symlink to the same package.
 **Building this repo's dist IS deploying.** Running instances keep old in-memory
 code until restarted.
@@ -65,7 +79,10 @@ Use this only while the fleet checkout has uncommitted WIP; a clean tree uses
 
 ## Restart + verify
 
-Roll one instance at a time, **orchestrator first, personal-agent last**:
+Roll every active shared-checkout instance one at a time, **orchestrator first,
+personal-agent last**. Preserve intentionally stopped instances. Discover each
+working directory and label from its plist/tracker row instead of guessing; after
+the intermediate instances, finish with:
 
 ```bash
 cd ~/a8c-agents/orchestrator && mono-agent restart   # or: npm run restart
@@ -131,7 +148,8 @@ rm ~/Library/LaunchAgents/<label>.plist
   moving agents onto the `live` channel is a separate config step.
 - Deploy = build + restart. Verify the restart actually picked up your change
   (e.g. a log line or behavior probe), not just that the service came back.
-- **Package layout is 17 packages + `extras/`** (post-consolidation). After a
+- **Package layout is 17 directories under `packages/` (16 core + the
+  `create-mono-agent` alias) and four publishable plugin extras under `extras/`.** After a
   consolidation deploy, retired packages leave behind their git-ignored `dist/`
   once their source is gone — remove those leftover dirs so nothing stale stays
   loadable, and verify the entry point still comes up
