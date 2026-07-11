@@ -1,8 +1,9 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
 import { openMemoryDb, type MemoryDb, type MemoryRecord } from "../../store/index.js";
+import type { EmbeddingProvider } from "../../search/index.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { appendBullet, dailyFilePath } from "../daily.js";
@@ -28,6 +29,39 @@ function openDb(root: string): MemoryDb {
   const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(DIM), dim: DIM });
   openDbs.push(db);
   return db;
+}
+
+function openPersistenceGatedDb(root: string): {
+  readonly db: MemoryDb;
+  readonly entered: Promise<void>;
+  readonly release: () => void;
+} {
+  const base = fakeEmbeddings(DIM);
+  let calls = 0;
+  let enter!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => { enter = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const embeddings: EmbeddingProvider = {
+    id: "legacy-reconcile-close-race:64",
+    embed: async (texts) => {
+      calls += 1;
+      if (calls === 2) {
+        enter();
+        await gate; // deliberately ignore abortSignal
+      }
+      return await base.embed(texts);
+    },
+  };
+  const db = openMemoryDb({ path: join(root, "memory.db"), embeddings, dim: DIM });
+  openDbs.push(db);
+  return { db, entered, release };
+}
+
+function closeTrackedDb(db: MemoryDb): void {
+  const index = openDbs.indexOf(db);
+  if (index >= 0) openDbs.splice(index, 1);
+  db.close();
 }
 
 /** Seed an existing memory: append a bullet to the daily file AND upsert the index record. */
@@ -274,6 +308,100 @@ describe("reconcile", () => {
       isInsight: false,
     };
     await expect(reconcile([candidate], makeDeps(db, root, throwingLlm))).rejects.toThrow(/classif/i);
+  });
+
+  it.each(["add", "update", "supersede"] as const)(
+    "preflights a legacy %s persistence vector before canonical mutation",
+    async (action) => {
+      const root = newRoot();
+      const db = openDb(root);
+      if (action !== "add") await seed(db, root, "TARGET", "Morgan prefers blue deployments");
+      const before = action === "add" ? undefined : dailyContent(root);
+      db.findSimilar = async () => action === "add"
+        ? []
+        : [{ record: db.get("TARGET")!, distance: 0.1 }];
+      db.prepareUpsertVectors = async () => { throw new Error("persistence embedding offline"); };
+      const decision = action === "add"
+        ? fakeLlm([])
+        : fakeLlm([["CLASSIFY", JSON.stringify({
+          action,
+          targetId: "TARGET",
+          text: action === "update"
+            ? "Morgan prefers reviewed blue deployments"
+            : "Morgan now prefers green deployments",
+        })]]);
+      const candidate: CandidateMemory = {
+        type: "note",
+        text: action === "add" ? "A wholly novel durable fact" : "Morgan now prefers green deployments",
+        salience: 0.7,
+        isInsight: false,
+      };
+
+      await expect(reconcile([candidate], makeDeps(db, root, decision))).rejects.toThrow(
+        /persist|persistence embedding offline/iu,
+      );
+
+      if (before === undefined) expect(existsSync(dailyFilePath(root, FIXED))).toBe(false);
+      else expect(dailyContent(root)).toBe(before);
+      expect(db.count()).toBe(action === "add" ? 0 : 1);
+      if (action !== "add") {
+        expect(db.get("TARGET")?.text).toBe("Morgan prefers blue deployments");
+        expect(db.get("TARGET")?.status).toBe("open");
+      }
+    },
+  );
+
+  it("rejects an abort-ignoring legacy persistence reply before canonical or index mutation", async () => {
+    const root = newRoot();
+    const { db, entered, release } = openPersistenceGatedDb(root);
+    const controller = new AbortController();
+    const candidate: CandidateMemory = {
+      type: "note",
+      text: "ABORTED-RECONCILE must never persist",
+      salience: 0.8,
+      isInsight: false,
+    };
+
+    const pending = reconcile(
+      [candidate],
+      makeDeps(db, root, fakeLlm([]), { abortSignal: controller.signal }),
+    );
+    await entered;
+    controller.abort(new Error("legacy reconcile aborted"));
+    const rejected = expect(pending).rejects.toThrow(/legacy reconcile aborted/iu);
+    release();
+    await rejected;
+
+    expect(db.count()).toBe(0);
+    expect(existsSync(dailyFilePath(root, FIXED))).toBe(false);
+  });
+
+  it("does not touch canonical source or a database closed after legacy reconcile abort", async () => {
+    const root = newRoot();
+    const { db, entered, release } = openPersistenceGatedDb(root);
+    const controller = new AbortController();
+    const candidate: CandidateMemory = {
+      type: "note",
+      text: "ABORTED-RECONCILE must not survive close",
+      salience: 0.8,
+      isInsight: false,
+    };
+
+    const pending = reconcile(
+      [candidate],
+      makeDeps(db, root, fakeLlm([]), { abortSignal: controller.signal }),
+    );
+    await entered;
+    controller.abort(new Error("operation drain deadline"));
+    closeTrackedDb(db);
+    const rejected = expect(pending).rejects.toThrow(/operation drain deadline/iu);
+    release();
+    await rejected;
+
+    expect(existsSync(dailyFilePath(root, FIXED))).toBe(false);
+    const inspected = openMemoryDb({ path: join(root, "memory.db"), dim: DIM, readOnly: true });
+    expect(inspected.count()).toBe(0);
+    inspected.close();
   });
 });
 

@@ -36,8 +36,11 @@ export async function loadMonoAgentConfigWithSources(
   const jsonLayer = input.jsonPath === undefined
     ? {}
     : (await readMonoAgentConfigJson(input.jsonPath)).json;
+  // Validate raw JSON before flattening it into the string-only env surface.
+  // String(...) coercion is intentional for valid numeric/boolean settings,
+  // but must never make arrays or other malformed nested values look valid.
+  validateJsonMemoryBlocks(jsonLayer, input.env);
   const layeredEnv = layerJsonOntoEnv(jsonLayer, input.env);
-  validateJsonMemoryBlocks(jsonLayer, layeredEnv);
   try {
     return loadMonoAgentConfig({ env: layeredEnv, cwd: input.cwd });
   } catch (error) {
@@ -61,6 +64,15 @@ function remapJsonMemoryTierError(
   ) {
     const path = "memory.llm.endpoint";
     const message = error.message.replaceAll("MONO_AGENT_MEMORY_LLM_ENDPOINT", path);
+    return new MonoAgentConfigError("invalid_json", message, { path, reason: message });
+  }
+  if (
+    source === "MONO_AGENT_MEMORY_BACKEND"
+    && !hasValue(env.MONO_AGENT_MEMORY_BACKEND)
+    && json.memory.backend !== undefined
+  ) {
+    const path = "memory.backend";
+    const message = error.message.replaceAll("MONO_AGENT_MEMORY_BACKEND", path);
     return new MonoAgentConfigError("invalid_json", message, { path, reason: message });
   }
   if (hasValue(env.MONO_AGENT_MEMORY_MODE)) return error;
@@ -96,14 +108,16 @@ function remapJsonMemoryTierError(
 
 function validateJsonMemoryBlocks(
   json: MonoAgentConfigJson,
-  layeredEnv: Record<string, string | undefined>,
+  env: Record<string, string | undefined>,
 ): void {
   // Strict BuJo tier blocks do not belong to external memory backends. Resolve
-  // backend precedence first (env already won in layeredEnv), then ignore stale
+  // backend precedence first (env wins directly here), then ignore stale
   // local blocks exactly as the runtime and published schema do. Unknown
   // backends are left to loadMonoAgentConfig so the authoritative invalid_env
   // diagnostic is not masked by a lower-precedence JSON detail.
-  const effectiveBackendValue: unknown = layeredEnv.MONO_AGENT_MEMORY_BACKEND;
+  const effectiveBackendValue: unknown = hasValue(env.MONO_AGENT_MEMORY_BACKEND)
+    ? env.MONO_AGENT_MEMORY_BACKEND
+    : json.memory?.backend;
   if (effectiveBackendValue !== undefined && typeof effectiveBackendValue !== "string") {
     throwInvalidJsonValue("memory.backend", "a string");
   }
@@ -124,9 +138,12 @@ function validateJsonMemoryBlocks(
   if (llm !== undefined && !isJsonObject(llm)) {
     throwInvalidJsonValue("memory.llm", "an object");
   }
+  if (llm !== undefined) validateJsonMemoryLlmFields(llm, env);
   if (llm !== undefined && Object.keys(llm).length === 0) {
     const path = "memory.llm";
-    const effectiveModeValue: unknown = layeredEnv.MONO_AGENT_MEMORY_MODE;
+    const effectiveModeValue: unknown = hasValue(env.MONO_AGENT_MEMORY_MODE)
+      ? env.MONO_AGENT_MEMORY_MODE
+      : json.memory?.mode;
     if (effectiveModeValue !== undefined && typeof effectiveModeValue !== "string") {
       throwInvalidJsonValue("memory.mode", "a string");
     }
@@ -135,6 +152,37 @@ function validateJsonMemoryBlocks(
       ? `${path} must contain a model for memory.mode "bujo".`
       : `memory.mode "${mode}" cannot configure ${path}.`;
     throw new MonoAgentConfigError("invalid_json", message, { path, reason: message });
+  }
+}
+
+function validateJsonMemoryLlmFields(
+  llm: Record<string, unknown>,
+  env: Record<string, string | undefined>,
+): void {
+  const stringFields = [
+    ["provider", "MONO_AGENT_MEMORY_LLM_PROVIDER"],
+    ["model", "MONO_AGENT_MEMORY_LLM_MODEL"],
+    ["executionMode", "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE"],
+    ["endpoint", "MONO_AGENT_MEMORY_LLM_ENDPOINT"],
+  ] as const;
+  for (const [field, envName] of stringFields) {
+    if (hasValue(env[envName]) || llm[field] === undefined) continue;
+    if (typeof llm[field] !== "string") throwInvalidJsonValue(`memory.llm.${field}`, "a string");
+  }
+
+  if (
+    !hasValue(env.MONO_AGENT_MEMORY_LLM_TRACE)
+    && llm.trace !== undefined
+    && typeof llm.trace !== "boolean"
+  ) {
+    throwInvalidJsonValue("memory.llm.trace", "a boolean");
+  }
+  if (
+    !hasValue(env.MONO_AGENT_MEMORY_LLM_TIMEOUT_MS)
+    && llm.timeoutMs !== undefined
+    && typeof llm.timeoutMs !== "number"
+  ) {
+    throwInvalidJsonValue("memory.llm.timeoutMs", "a number");
   }
 }
 
