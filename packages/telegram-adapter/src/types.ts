@@ -32,6 +32,7 @@ export interface TelegramMessage {
   photo?: TelegramPhotoSize[];
   audio?: TelegramAudio;
   video?: TelegramVideo;
+  video_note?: TelegramVideoNote;
   voice?: TelegramVoice;
   [key: string]: unknown;
 }
@@ -69,6 +70,16 @@ export interface TelegramVideo extends TelegramFileReference {
 export interface TelegramVoice extends TelegramFileReference {
   duration: number;
   mime_type?: string;
+}
+
+/**
+ * A round video message. The Bot API `VideoNote` object carries no `mime_type`
+ * or `file_name` (unlike `Video`); `length` is the width/height of the square
+ * video in pixels and `duration` is its length in seconds.
+ */
+export interface TelegramVideoNote extends TelegramFileReference {
+  duration: number;
+  length: number;
 }
 
 export interface TelegramUpdate {

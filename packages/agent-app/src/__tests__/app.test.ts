@@ -968,6 +968,50 @@ describe("startMonoAgentApp", () => {
     await running.stop();
   });
 
+  it("forwards transcription config from telegram config into the adapter start options", async () => {
+    let captured: TelegramAdapterStartOptions | undefined;
+    const driver = createTelegramChannelDriver({
+      startAdapter: async (options) => {
+        captured = options;
+        return {
+          stop: async () => undefined,
+          notify: async () => ({ delivered: true }),
+          post: async () => undefined,
+          postStatus: async () => undefined,
+        };
+      },
+    });
+
+    const running = await driver.start({
+      config: {
+        enabled: true,
+        botToken: "test-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        transcription: {
+          endpoint: "http://localhost:50060/v1/audio/transcriptions",
+          model: "large-v3",
+          language: "en",
+        },
+      },
+      coreConfig: baseConfig() as never,
+      responder: { respond: async () => ({ text: "" }) },
+      cwd: dir,
+      onFailure: vi.fn(),
+    });
+
+    // Transcription rides on the same download-path attachments option so the
+    // adapter builds a default transcriber from it at the single download choke point.
+    expect(captured?.attachments).toEqual({
+      transcription: {
+        endpoint: "http://localhost:50060/v1/audio/transcriptions",
+        model: "large-v3",
+        language: "en",
+      },
+    });
+    await running.stop();
+  });
+
   it("wires the interaction hub into the Telegram adapter and registers an allowlist-enforcing sink", async () => {
     let captured: TelegramAdapterStartOptions | undefined;
     const post = vi.fn(async () => undefined);

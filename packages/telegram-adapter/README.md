@@ -10,7 +10,19 @@ Telegram communication adapter for agent hosts. It provides a Bot API client, lo
 
 The adapter is opt-in: `telegram.enabled` / `MONO_AGENT_TELEGRAM_ENABLED` defaults to `false`. While disabled the loader skips credential validation and the channel reports `disabled` rather than `waiting_for_config`. Set `enabled: true` to turn it on; a missing bot token or allowlist then surfaces as a real `waiting_for_config` reason.
 
-Inbound Telegram document, photo, audio, video, and voice messages are downloaded (subject to the MIME allowlist and ~20 MB cap) and delivered to the responder as transport-agnostic `AgentAttachment` bytes on the shared `AgentRequestBase.attachments` contract (decoded `mimeType` + base64 `data` + `name`). Captions remain the request text; media-only messages still get a concise text summary so existing text-only responder paths can reason about what arrived. The original Telegram file metadata (file id, sizes, kind) is preserved under `metadata.telegram.attachments`.
+Inbound Telegram document, photo, audio, video, round video (video note), and voice messages are downloaded (subject to the MIME allowlist and ~20 MB cap) and delivered to the responder as transport-agnostic `AgentAttachment` bytes on the shared `AgentRequestBase.attachments` contract (decoded `mimeType` + base64 `data` + `name`). Captions remain the request text; media-only messages still get a concise text summary so existing text-only responder paths can reason about what arrived. The original Telegram file metadata (file id, sizes, kind) is preserved under `metadata.telegram.attachments`.
+
+### Voice transcription (optional)
+
+Set `telegram.transcription` to auto-transcribe inbound audio (voice / audio / video note) so a caption-less clip reaches the model as words, not just an on-disk file path. The transcript is inlined into the attachment's `text` field; the audio file is still saved, so if transcription fails the `text` falls back to a note pointing at the saved file (the run never fails on a transcription error).
+
+| Field | Env | Required | Description |
+| --- | --- | --- | --- |
+| `telegram.transcription.endpoint` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT` | when transcription is used | Full URL of an OpenAI-compatible `POST /v1/audio/transcriptions` route (e.g. a local WhisperKit server: `http://localhost:50060/v1/audio/transcriptions`). Must be http(s); not a secret. |
+| `telegram.transcription.model` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL` | when `endpoint` is set | Model name sent as the multipart `model` part (e.g. `large-v3`). A missing model when the endpoint is set is a hard config error. |
+| `telegram.transcription.language` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_LANGUAGE` | no | Optional ISO-639 language hint. |
+
+The request is `multipart/form-data` with parts `file`, `model`, and optional `language`, using only native `fetch`/`FormData`/`Blob` (no added dependencies). Each call is bounded by the same `telegram.attachments.downloadTimeoutMs` (default 30s).
 
 Downloads are gated by the configured allowlist and size cap, and a download failure skips the attachment without failing the run. Whether the model actually consumes the images/documents depends on the host runtime's vision/document support — the adapter forwards bytes but does not itself guarantee model-level understanding.
 
