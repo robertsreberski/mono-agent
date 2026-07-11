@@ -1481,6 +1481,33 @@ describe("safe memory index rebuild", () => {
     expect(resolveActiveMemoryDbPath(root)).toBe(rebuilt.active);
   });
 
+  it("does not retain a matching-fingerprint generation whose payload diverged from canonical source", async () => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("PARITY-1", "Canonical rollback truth.")]);
+    const first = await safeRebuildMemoryIndex({ root, tier: "lite" });
+    overwriteMemoryText(first.active, "PARITY-1", "Stale database payload.");
+
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: "lite" });
+
+    expect(rebuilt.rollback).toBeUndefined();
+    expect(readManagedIndexManifest(root)?.rollback).toBeUndefined();
+    expect(readTexts(rebuilt.active)).toEqual(["Canonical rollback truth."]);
+  });
+
+  it("refuses a retained rollback whose payload changed after retention", async () => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("PARITY-2", "Retained rollback truth.")]);
+    await safeRebuildMemoryIndex({ root, tier: "lite" });
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: "lite" });
+    if (rebuilt.rollback === undefined) throw new Error("expected an exact retained rollback");
+    overwriteMemoryText(rebuilt.rollback, "PARITY-2", "Mutated retained rollback.");
+
+    await expect(rollbackMemoryIndex({ root, tier: "lite" }))
+      .rejects.toThrow(/rollback source parity validation failed.*memory payload/iu);
+    expect(resolveActiveMemoryDbPath(root)).toBe(rebuilt.active);
+    expect(readTexts(rebuilt.active)).toEqual(["Retained rollback truth."]);
+  });
+
   it("keeps an exact Journal rollback when only its recoverable vector backlog is incomplete", async () => {
     const root = tempRoot();
     const oldModel = embeddings("test:journal-backlog-old", 8);
@@ -1600,6 +1627,18 @@ function writeGraph(root: string, records: readonly Record<string, unknown>[]): 
 
 function sha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function overwriteMemoryText(path: string, id: string, text: string): void {
+  const db = openMemoryDb({ path });
+  try {
+    const record = db.get(id);
+    if (record === undefined) throw new Error(`missing memory ${id}`);
+    db.upsertLexical({ ...record, text });
+    db.checkpoint();
+  } finally {
+    db.close();
+  }
 }
 
 function note(id: string, text: string): MemoryRecord {

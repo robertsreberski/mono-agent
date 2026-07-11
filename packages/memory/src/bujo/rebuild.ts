@@ -431,7 +431,8 @@ export async function rollbackMemoryIndex(options: SafeMemoryIndexOptions): Prom
       throw new Error("memory-rebuild: canonical source changed after the retained generation; stale rollback refused.");
     }
     const targetPath = managedGenerationDbPath(root, target.name, true);
-    validateRetainedGeneration(targetPath, target);
+    const targetPlan = buildPlan(snapshot, target.tier);
+    validateRollbackSnapshot(targetPath, target, targetPlan);
     const targetIdentity = identityOf(targetPath);
     const targetDigest = fileDigest(targetPath);
     const currentPath = managedGenerationDbPath(root, manifest.active.name, true);
@@ -454,7 +455,7 @@ export async function rollbackMemoryIndex(options: SafeMemoryIndexOptions): Prom
       if (snapshotCanonicalSources(root, target.tier).fingerprint !== target.sourceFingerprint) {
         throw new Error("memory-rebuild: canonical source changed before rollback activation.");
       }
-      validateRetainedGeneration(targetPath, target);
+      validateRollbackSnapshot(targetPath, target, targetPlan);
       validateRetainedGeneration(currentPath, manifest.active);
       assertManagedManifestState(root, manifestState);
     };
@@ -874,7 +875,9 @@ function validateRollbackSnapshot(path: string, descriptor: ManagedGeneration, p
       allowReplayedLifecycle: true,
       allowJournalVectorBacklog: true,
     });
-    if (parityError !== undefined) throw new Error(parityError);
+    if (parityError !== undefined) {
+      throw new Error(`memory-rebuild: rollback source parity validation failed: ${parityError.replace(/^memory-rebuild: /u, "")}`);
+    }
   } finally {
     db.close();
   }
@@ -1104,7 +1107,12 @@ async function snapshotCurrentRollback(
   const sourcePath = managedGenerationDbPath(root, active.name, true);
   validateRetainedGeneration(sourcePath, active);
   if (active.sourceFingerprint === snapshot.fingerprint) {
-    return active;
+    const plan = buildPlan(snapshot, active.tier);
+    if (hasTierExactSourceParity(sourcePath, active, plan, false)) return active;
+    // A capture replay may leave otherwise exact source provenance repairable.
+    // Snapshot the DB and normalize that copy; any semantic mismatch omits the
+    // unsafe rollback instead of trusting the manifest fingerprint alone.
+    return await snapshotDatabaseForRollback(root, sourcePath, snapshot, active);
   }
   return await snapshotDatabaseForRollback(
     root,
