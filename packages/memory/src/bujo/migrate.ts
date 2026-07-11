@@ -11,6 +11,7 @@ import {
 } from "./path-safety.js";
 import type { ReflectDeps } from "./reflect.js";
 import { readBullet, rewriteBullet } from "./daily.js";
+import { appendGraphBatch } from "./graph.js";
 
 export interface MigrateDeps extends ReflectDeps {
   /** Fault-injection seams used to prove the durable decision boundary. */
@@ -128,7 +129,13 @@ export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
         : undefined;
       if (action === "cluster" && (collection === undefined || collection.length === 0)) continue;
       const updated = updatedRecord(item, action, now, parsed.dueAt, collection);
-      const [vector] = await deps.db.prepareUpsertVectors([updated]);
+      let vector: readonly number[] | undefined;
+      try {
+        [vector] = await deps.db.prepareUpsertVectors([updated]);
+      } catch (cause) {
+        deps.abortSignal?.throwIfAborted();
+        throw new MemoryModelError("embedding", "migrate", cause);
+      }
       deps.abortSignal?.throwIfAborted();
       assertCanonicalDecisionState(deps.root, item);
       decision = durableDecision(item, updated, action, now, vector, collection);
@@ -264,13 +271,28 @@ function applyDurableDecision(
   if (!dbAfter) deps.db.commitPreparedUpserts([decision.updated], [decision.vector]);
   if (decision.action === "cluster") {
     const collection = decision.collection!;
-    deps.db.upsertEntity({
+    const entity = {
       id: `collection:${collection}`,
       name: collection,
       type: "collection",
       createdAt: decision.at,
+    };
+    const association = {
+      memoryId: decision.id,
+      entityId: entity.id,
+      provenance: "capture" as const,
+      createdAt: decision.at,
+    };
+    // Collection membership is canonical graph evidence, not SQLite-only
+    // ritual state. A graph failure leaves the durable marker in place; replay
+    // then reuses the exact decision and appendGraphBatch's idempotent merge.
+    const canonical = appendGraphBatch(deps.root, {
+      entities: [entity],
+      associations: [association],
     });
-    deps.db.addEdge(decision.id, `collection:${collection}`, "supports");
+    deps.db.upsertEntity(canonical.entities[0]!);
+    deps.db.associateMemory(canonical.associations[0]!);
+    deps.db.addEdge(decision.id, entity.id, "supports");
   }
   const after = deps.db.get(decision.id);
   if (after === undefined || !sameDecisionState(after, decision.updated)) {
@@ -371,6 +393,17 @@ function readPendingDecision(
   }
   if (pending.length > 1) throw new Error("memory-migrate: multiple pending monthly decisions require operator repair.");
   return pending[0];
+}
+
+/** Refuse maintenance that cannot carry a paid pending migration transaction. */
+export function assertNoPendingMigrateDecision(root: string): void {
+  const pending = readPendingDecision(root);
+  if (pending !== undefined) {
+    throw new Error(
+      `memory-migrate: durable decision ${pending.decision.decisionId} is pending; `
+      + "restart the writable memory store or run migration recovery before rebuilding.",
+    );
+  }
 }
 
 function parseDurableDecision(encoded: string): DurableMigrateDecision {

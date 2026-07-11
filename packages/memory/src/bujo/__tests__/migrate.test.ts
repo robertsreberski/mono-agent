@@ -7,8 +7,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { appendBullet, dailyFilePath, rewriteBullet } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
+import { readGraph } from "../graph.js";
 import { createIdFactory } from "../ids.js";
-import { migrate, type MigrateDeps } from "../migrate.js";
+import { assertNoPendingMigrateDecision, migrate, type MigrateDeps } from "../migrate.js";
 import { MemoryModelError } from "../model-error.js";
 import type { Bullet } from "../types.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
@@ -165,6 +166,14 @@ describe("migrate", () => {
 
     const clusterEdges = db.edges("MIG-CLUSTER");
     expect(clusterEdges.some((e) => e.kind === "supports" && e.dst === "collection:books")).toBe(true);
+    expect(readGraph(root)).toMatchObject({
+      entities: [expect.objectContaining({ id: "collection:books", name: "books", type: "collection" })],
+      associations: [expect.objectContaining({
+        memoryId: "MIG-CLUSTER",
+        entityId: "collection:books",
+        provenance: "capture",
+      })],
+    });
 
     // --- forget: status dropped + validTo in db + daily line struck ---
     const forgotten = db.get("MIG-FORGET");
@@ -226,6 +235,7 @@ describe("migrate", () => {
       const monthly = readFileSync(join(root, "monthly", "2026-06.md"), "utf8");
       expect(monthly).toContain("mono-agent-migrate:");
       expect(monthly).not.toContain("mono-agent-migrate:complete:");
+      expect(() => assertNoPendingMigrateDecision(root)).toThrow(/durable decision.*pending/iu);
 
       closeDb(db);
       db = openDb(root);
@@ -239,6 +249,7 @@ describe("migrate", () => {
       const recoveredMonthly = readFileSync(join(root, "monthly", "2026-06.md"), "utf8");
       expect(recoveredMonthly).toContain("- promote MIG-RETRY");
       expect(recoveredMonthly).not.toContain("mono-agent-migrate:");
+      expect(() => assertNoPendingMigrateDecision(root)).not.toThrow();
     },
   );
 
@@ -278,6 +289,13 @@ describe("migrate", () => {
     expect(parseDailyFile(dailyContent(root, SIXTY_DAYS_AGO)).bullets.find(
       (b) => b.id === "MIG-CLUSTER-RETRY",
     )?.status).toBe("migrated");
+    expect(readGraph(root).associations).toEqual([
+      expect.objectContaining({
+        memoryId: "MIG-CLUSTER-RETRY",
+        entityId: "collection:retries",
+        provenance: "capture",
+      }),
+    ]);
   });
 
   it("fails closed when canonical source changes after a pending decision is durable", async () => {
@@ -346,6 +364,28 @@ describe("migrate", () => {
     expect((err as Error).message).toMatch(/ollama unavailable/);
     // A migration failure must NOT read as a "capture" failure.
     expect((err as Error).message).not.toMatch(/capture/i);
+  });
+
+  it("surfaces an embedding outage after one paid decision instead of repeating the LLM across the batch", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-EMBED-A", "first embedding outage sentinel");
+    await seedAging(db, root, "MIG-EMBED-B", "second embedding outage sentinel");
+    vi.spyOn(db, "prepareUpsertVectors").mockRejectedValue(new Error("embedding provider unavailable"));
+    const complete = vi.fn(async () => JSON.stringify({ action: "promote" }));
+
+    const err = await migrate(makeDeps(db, root, {
+      llm: { id: "paid-decision", complete },
+    })).catch((error: unknown) => error);
+
+    expect(err).toBeInstanceOf(MemoryModelError);
+    expect((err as MemoryModelError).kind).toBe("embedding");
+    expect((err as MemoryModelError).stage).toBe("migrate");
+    expect((err as Error).message).toMatch(/embedding provider unavailable/iu);
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(db.get("MIG-EMBED-A")?.salience).toBe(0.2);
+    expect(db.get("MIG-EMBED-B")?.salience).toBe(0.2);
+    expect(existsSync(join(root, "monthly", "2026-06.md"))).toBe(false);
   });
 
   it("isolates a genuine per-item data error (missing daily file) without aborting the batch", async () => {
