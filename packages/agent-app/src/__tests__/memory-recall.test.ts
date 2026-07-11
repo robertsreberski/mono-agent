@@ -4,10 +4,15 @@ import { join } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
+import {
+  createBujoMemoryStore,
+  resolveActiveMemoryDbPath,
+  safeRebuildMemoryIndex,
+} from "@mono-agent/memory/bujo";
 import type { BujoMemoryStore } from "@mono-agent/memory/bujo";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { SupermemoryMemoryStore } from "@mono-agent/memory-supermemory";
+import { openMemoryDb } from "@mono-agent/memory/store";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -376,7 +381,7 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
     await client.connect(clientTransport);
     try {
       await client.callTool({ name: "MemoryRecall", arguments: { query: "Morgan preference", limit: 3 } });
-      expect(recalls).toEqual([{ topK: 3 }]);
+      expect(recalls).toEqual([{ topK: 3, trackAccess: false }]);
       expect(expansions).toBe(0);
     } finally {
       await client.close();
@@ -388,12 +393,37 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
 describe("createRecallStore", () => {
   it("builds an FTS-only store when settings carry no embeddings (F12)", async () => {
     // No embeddings → lite tier → FTS recall answers without any Ollama/OpenAI backend.
+    await seedRecallMemory(dir, "The deploy pipeline uses blue-green releases on Fridays.");
     const store = (await createRecallStore({ root: dir })) as unknown as BujoMemoryStore;
     try {
       expect(store.tier()).toBe("lite");
-      await store.appendHostSummary("conv-1", "The deploy pipeline uses blue-green releases on Fridays.");
       const hits = await store.recall("deploy pipeline releases");
       expect(hits.some((hit) => hit.record.text.includes("blue-green releases"))).toBe(true);
+      await expect(store.appendHostSummary("conv-2", "Recall must not write.")).rejects.toThrow(/read.?only/iu);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("opens the managed active generation instead of a stale legacy database", async () => {
+    await seedRecallMemory(dir, "The active generation contains the cobalt launch plan.");
+    await safeRebuildMemoryIndex({ root: dir, tier: "lite" });
+    const activePath = await resolveActiveMemoryDbPath(dir);
+    expect(activePath).not.toBe(join(dir, "memory.db"));
+
+    const legacy = openMemoryDb({ path: join(dir, "memory.db") });
+    try {
+      legacy.upsertLexical(memoryRecord("LEGACY-ONLY", "Stale legacy database sentinel."));
+    } finally {
+      legacy.close();
+    }
+
+    const store = await createRecallStore({ root: dir });
+    try {
+      const activeHits = await store.recall("cobalt launch plan", { trackAccess: false });
+      expect(activeHits.some((hit) => hit.record.text.includes("cobalt launch plan"))).toBe(true);
+      const staleHits = await store.recall("stale legacy database sentinel", { trackAccess: false });
+      expect(staleHits).toEqual([]);
     } finally {
       await store.close();
     }
@@ -402,6 +432,7 @@ describe("createRecallStore", () => {
   it("applies the embeddings timeout + circuit breaker so a dead backend fast-fails (F11)", async () => {
     // Unreachable endpoint + tiny timeout + a one-failure breaker: the first embed fails and trips
     // the breaker OPEN, so a subsequent recall fast-fails (no 30s hang, no inner provider call).
+    await seedRecallMemory(dir, "Anything that needs an embedding.");
     const store = await createRecallStore({
       root: dir,
       embeddings: {
@@ -413,16 +444,39 @@ describe("createRecallStore", () => {
       },
     }) as unknown as BujoMemoryStore;
     try {
-      // Append is now lexical/durable and returns before the background embedding fails.
-      await expect(store.appendHostSummary("conv-1", "Anything that needs an embedding.")).resolves.toBeDefined();
-      await store.flush?.();
-      // With the breaker OPEN, recall fast-fails without re-hitting the dead backend.
+      // The recall-only store never writes; the first lookup trips the breaker.
+      await expect(store.recall("anything")).rejects.toThrow();
+      // With the breaker OPEN, a subsequent recall fast-fails without re-hitting the dead backend.
       await expect(store.recall("anything")).rejects.toThrow(/circuit is open/u);
     } finally {
       await store.close();
     }
   });
 });
+
+async function seedRecallMemory(root: string, text: string): Promise<void> {
+  const store = createBujoMemoryStore({ root });
+  try {
+    await store.appendHostSummary("conv-1", text);
+  } finally {
+    await store.close();
+  }
+}
+
+function memoryRecord(id: string, text: string) {
+  return {
+    id,
+    type: "note" as const,
+    status: "open" as const,
+    text,
+    salience: 0.5,
+    isInsight: false,
+    createdAt: "2026-07-11T09:00:00.000Z",
+    accessCount: 0,
+    tags: [] as readonly string[],
+    source: {},
+  };
+}
 
 function supermemoryConfig(overrides: {
   readonly recallEnabled?: boolean;

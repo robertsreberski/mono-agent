@@ -1,14 +1,25 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { openMemoryDb } from "@mono-agent/memory/store";
 import type { EntityRecord, MemoryDb, MemoryRecord, MemoryStoreAudit, MemoryStoreStats } from "@mono-agent/memory/store";
-import { parseDailyFile } from "@mono-agent/memory/bujo";
-
-import { isAppCoreConfigError, loadAppCoreConfig } from "./app-config.js";
+import { listTraceSources } from "@mono-agent/observability";
 import {
+  parseDailyFile,
+  resolveActiveMemoryDbPath,
+  rollbackMemoryIndex,
+  safeRebuildMemoryIndex,
+} from "@mono-agent/memory/bujo";
+
+import {
+  isAppCoreConfigError,
+  loadAppCoreConfig,
+  resolveAppTraceRegistryDir,
+} from "./app-config.js";
+import {
+  createMemoryEmbeddingProvider,
   createRecallStore,
   resolveMemoryRecallSettings,
 } from "./memory-recall.js";
@@ -34,6 +45,7 @@ export interface RunMemoryCommandInput {
 
 interface MemoryCommandContext {
   readonly cwd: string;
+  readonly env: Record<string, string | undefined>;
   readonly configPath: string;
   readonly config: MonoAgentConfig;
 }
@@ -87,10 +99,74 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       return await runTop(context, input);
     case "audit":
       return await runAudit(context, input.json);
+    case "rebuild":
+      return await runIndexTransition(context, "rebuild", input.json);
+    case "rollback":
+      return await runIndexTransition(context, "rollback", input.json);
     default:
       process.stderr.write(ui.errorLine(`Unknown memory subcommand \`${subcommand}\`.`));
-      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, or audit."));
+      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, audit, rebuild, or rollback."));
       return 2;
+  }
+}
+
+async function runIndexTransition(
+  context: MemoryCommandContext,
+  operation: "rebuild" | "rollback",
+  json: boolean,
+): Promise<number> {
+  const memory = context.config.memory;
+  if (memory === undefined) {
+    writeNoMemory(context.configPath, json);
+    return 0;
+  }
+  if ((memory.backend ?? "bujo") === "supermemory") {
+    process.stderr.write(ui.errorLine(
+      `mono-agent memory ${operation} is available only for the built-in Lite, Journal, and BuJo stores; Supermemory manages its remote index.`,
+    ));
+    return 1;
+  }
+
+  const settings = previewRecallSettings(context.config);
+  if (settings === undefined || "supermemory" in settings) {
+    process.stderr.write(ui.errorLine(`Unable to resolve the configured built-in memory store for ${operation}.`));
+    return 1;
+  }
+
+  try {
+    const registryDir = await resolveAppTraceRegistryDir({
+      env: context.env,
+      cwd: context.cwd,
+      configPath: context.configPath,
+    });
+    await assertNoLiveConfiguredAgent(context.configPath, registryDir);
+    const embeddings = settings.embeddings === undefined
+      ? undefined
+      : await createMemoryEmbeddingProvider(settings.embeddings);
+    const options = {
+      root: memory.path,
+      tier: memory.mode,
+      ...(embeddings === undefined ? {} : { embeddings, dim: settings.embeddings?.dim ?? 768 }),
+    };
+    // Re-check after provider construction so a legacy writer that started
+    // during setup cannot be raced by the destructive transition.
+    await assertNoLiveConfiguredAgent(context.configPath, registryDir);
+    const details = operation === "rebuild"
+      ? await safeRebuildMemoryIndex(options)
+      : await rollbackMemoryIndex(options);
+    const activeDatabase = await resolveActiveMemoryDbPath(memory.path);
+    const result = {
+      configured: true,
+      backend: "bujo",
+      operation,
+      activeDatabase,
+      details,
+    };
+    write(json, result, () => renderIndexTransition(result));
+    return 0;
+  } catch (error) {
+    process.stderr.write(ui.errorLine(`memory ${operation} failed: ${reasonOf(error)}`));
+    return 1;
   }
 }
 
@@ -120,7 +196,7 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
   }
 
   const root = memory.path;
-  const dbPath = join(root, "memory.db");
+  const dbPath = await resolveActiveMemoryDbPath(root);
   const rootExists = await exists(root);
   const size = rootExists ? await collectStoreSize(root) : emptySize();
   let audit: MemoryStoreAudit | undefined;
@@ -185,6 +261,7 @@ async function loadMemoryCommandContext(
   try {
     return {
       cwd,
+      env: input.env,
       configPath,
       config: await loadAppCoreConfig({ env: input.env, cwd, configPath }),
     };
@@ -195,6 +272,43 @@ async function loadMemoryCommandContext(
       return { code: 1 };
     }
     throw error;
+  }
+}
+
+async function assertNoLiveConfiguredAgent(configPath: string, registryDir: string): Promise<void> {
+  const canonicalConfig = await canonicalPath(configPath);
+  const { sources } = await listTraceSources({ registryDir });
+  let live: (typeof sources)[number] | undefined;
+  for (const source of sources) {
+    if (source.configPath === undefined || source.pid === undefined || !pidIsAlive(source.pid)) continue;
+    if (await canonicalPath(source.configPath) === canonicalConfig) {
+      live = source;
+      break;
+    }
+  }
+  if (live === undefined) return;
+  throw new Error(
+    `agent process ${live.pid} is still alive for this config (trace health: ${live.health}); ` +
+    `stop it first with: mono-agent stop --config ${canonicalConfig}`,
+  );
+}
+
+async function canonicalPath(path: string): Promise<string> {
+  const absolute = resolve(path);
+  try {
+    return await realpath(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
+function pidIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -211,7 +325,7 @@ async function runStats(context: MemoryCommandContext, input: RunMemoryCommandIn
   }
 
   const root = memory.path;
-  const dbPath = join(root, "memory.db");
+  const dbPath = await resolveActiveMemoryDbPath(root);
   const rootExists = await exists(root);
   const dbExists = await exists(dbPath);
   const size = rootExists ? await collectStoreSize(root) : emptySize();
@@ -323,18 +437,23 @@ async function runSearch(
   query: string,
   input: RunMemoryCommandInput,
 ): Promise<number> {
-  const settings = previewRecallSettings(context.config);
+  let settings = previewRecallSettings(context.config);
   if (settings === undefined) {
     writeNoMemory(context.configPath, input.json);
     return 0;
   }
-  if (!("supermemory" in settings) && !(await exists(join(settings.root, "memory.db")))) {
+  if (!("supermemory" in settings)) {
+    const dbPath = await resolveActiveMemoryDbPath(settings.root);
+    settings = { ...settings, dbPath };
+  }
+  if (!("supermemory" in settings) && !(await exists(settings.dbPath ?? join(settings.root, "memory.db")))) {
+    const dbPath = settings.dbPath ?? join(settings.root, "memory.db");
     const result = {
       configured: true,
       backend: "bujo",
       query,
       hits: [],
-      notes: [`No SQLite index found at ${join(settings.root, "memory.db")}; run memory-bujo rebuild or wait for capture.`],
+      notes: [`No SQLite index found at ${dbPath}; run mono-agent memory rebuild or wait for capture.`],
     };
     write(input.json, result, () => renderSearch(result));
     return 0;
@@ -388,13 +507,13 @@ async function runTop(context: MemoryCommandContext, input: RunMemoryCommandInpu
     write(input.json, result, () => `${ui.banner("mono-agent memory", "top")}\n${result.message}\n`);
     return 0;
   }
-  const dbPath = join(memory.path, "memory.db");
+  const dbPath = await resolveActiveMemoryDbPath(memory.path);
   if (!(await exists(dbPath))) {
     const result = {
       configured: true,
       backend: "bujo",
       hits: [],
-      notes: [`No SQLite index found at ${dbPath}; run memory-bujo rebuild or wait for capture.`],
+      notes: [`No SQLite index found at ${dbPath}; run mono-agent memory rebuild or wait for capture.`],
     };
     write(input.json, result, () => renderTop(result));
     return 0;
@@ -473,7 +592,10 @@ async function recallWithFtsFallback(
       throw error;
     }
     await store.close().catch(() => undefined);
-    const fallback: MemoryRecallBujoSettings = { root: settings.root };
+    const fallback: MemoryRecallBujoSettings = {
+      root: settings.root,
+      ...(settings.dbPath === undefined ? {} : { dbPath: settings.dbPath }),
+    };
     const ftsStore = await createRecallStore(fallback);
     try {
       return {
@@ -797,6 +919,21 @@ function renderDaily(result: { readonly date: string; readonly path: string; rea
     ui.keyValue([["source", result.path]], 2),
     "\n",
     result.content.endsWith("\n") ? result.content : `${result.content}\n`,
+  ].join("");
+}
+
+function renderIndexTransition(result: {
+  readonly operation: "rebuild" | "rollback";
+  readonly activeDatabase: string;
+  readonly details: unknown;
+}): string {
+  return [
+    ui.banner("mono-agent memory", result.operation),
+    "\n",
+    ui.keyValue([
+      ["status", "complete"],
+      ["active database", result.activeDatabase],
+    ], 2),
   ].join("");
 }
 

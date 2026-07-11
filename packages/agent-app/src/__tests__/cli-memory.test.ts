@@ -1,13 +1,21 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
+import {
+  createBujoMemoryStore,
+  resolveActiveMemoryDbPath,
+  rollbackMemoryIndex,
+  safeRebuildMemoryIndex,
+} from "@mono-agent/memory/bujo";
+import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import { openMemoryDb } from "@mono-agent/memory/store";
+import { listTraceSources } from "@mono-agent/observability";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { resolveAppTraceRegistryDir } from "../app-config.js";
 import { parseCliArgs, renderHelp, runCli } from "../cli.js";
 
 const tempDirs: string[] = [];
@@ -112,6 +120,194 @@ describe("runCli memory", () => {
     expect(search.stdout).toContain("Deploy pipeline uses blue green releases.");
   });
 
+  it("rebuilds and rolls back the configured built-in store without an LLM", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({ memory: { mode: "lite", path: memoryRoot, writeMode: "append-host-summary" } });
+    await seedLocalStore(memoryRoot);
+    const legacyPath = await resolveActiveMemoryDbPath(memoryRoot);
+
+    const rebuild = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "rebuild", "--json"]))));
+    expect(rebuild.code).toBe(0);
+    expect(rebuild.stderr).toBe("");
+    const rebuilt = JSON.parse(rebuild.stdout) as { operation: string; activeDatabase: string };
+    expect(rebuilt.operation).toBe("rebuild");
+    expect(rebuilt.activeDatabase).not.toBe(legacyPath);
+    expect(await resolveActiveMemoryDbPath(memoryRoot)).toBe(rebuilt.activeDatabase);
+
+    const rollback = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "rollback", "--json"]))));
+    expect(rollback.code).toBe(0);
+    expect(rollback.stderr).toBe("");
+    const rolledBack = JSON.parse(rollback.stdout) as { operation: string; activeDatabase: string };
+    expect(rolledBack.operation).toBe("rollback");
+    expect(rolledBack.activeDatabase).not.toBe(rebuilt.activeDatabase);
+    expect(await resolveActiveMemoryDbPath(memoryRoot)).toBe(rolledBack.activeDatabase);
+  });
+
+  it("refuses a stale-trace live legacy writer before embeddings and leaves the index unchanged", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const server = await failingEmbeddingServer(async () => {});
+    try {
+      const dir = await agentDir({
+        memory: {
+          mode: "journal",
+          path: memoryRoot,
+          writeMode: "append-host-summary",
+          embeddings: {
+            provider: "ollama",
+            model: "test-embed",
+            endpoint: server.baseUrl,
+            dim: 8,
+          },
+        },
+        traceability: { registryDir: ".trace-registry" },
+      });
+      await seedLocalStore(memoryRoot);
+      const before = await resolveActiveMemoryDbPath(memoryRoot);
+      const registryDir = join(dir, ".trace-registry");
+      const stale = "2020-01-01T00:00:00.000Z";
+      await mkdir(registryDir, { recursive: true });
+      await writeFile(join(registryDir, "legacy-writer.json"), `${JSON.stringify({
+        schema: "agent-runtime.trace-source.v1",
+        sourceId: "legacy-writer",
+        label: "Legacy writer",
+        artifactDir: join(dir, ".mono-agent", "artifacts"),
+        pid: process.pid,
+        status: "running",
+        startedAt: stale,
+        updatedAt: stale,
+        configPath: join(dir, "mono-agent.config.json"),
+      }, null, 2)}\n`, "utf8");
+      expect((await listTraceSources({ registryDir })).sources).toEqual([
+        expect.objectContaining({
+          sourceId: "legacy-writer",
+          pid: process.pid,
+          health: "stale",
+          configPath: join(dir, "mono-agent.config.json"),
+        }),
+      ]);
+      await expect(withCleanMonoAgentEnv(() => resolveAppTraceRegistryDir({
+        env: process.env,
+        cwd: dir,
+        configPath: join(dir, "mono-agent.config.json"),
+      }))).resolves.toBe(registryDir);
+      expect(() => process.kill(process.pid, 0)).not.toThrow();
+
+      const rebuild = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+        "memory", "rebuild",
+      ]))));
+
+      expect(rebuild.code).toBe(1);
+      expect(rebuild.stdout).toBe("");
+      expect(rebuild.stderr).toContain("trace health: stale");
+      expect(rebuild.stderr).toContain(`mono-agent stop --config ${await realpath(join(dir, "mono-agent.config.json"))}`);
+      expect(server.requests).toBe(0);
+      expect(await resolveActiveMemoryDbPath(memoryRoot)).toBe(before);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("reads stats, audit, search, and top from the managed active generation", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({ memory: { mode: "lite", path: memoryRoot, writeMode: "append-host-summary" } });
+    await seedLocalStore(memoryRoot);
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "lite" });
+    const activePath = await resolveActiveMemoryDbPath(memoryRoot);
+    expect(activePath).not.toBe(join(memoryRoot, "memory.db"));
+
+    const legacy = openMemoryDb({ path: join(memoryRoot, "memory.db") });
+    try {
+      legacy.upsertLexical(record("LEGACY-ONLY", "Stale legacy split brain sentinel."));
+    } finally {
+      legacy.close();
+    }
+
+    const stats = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "stats", "--json"]))));
+    expect(stats.code).toBe(0);
+    expect(JSON.parse(stats.stdout)).toMatchObject({ database: activePath, counts: { total: 2, live: 2 } });
+
+    const audit = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "audit", "--json"]))));
+    expect(audit.code).toBe(0);
+    expect(JSON.parse(audit.stdout)).toMatchObject({ counts: { total: 2, live: 2 } });
+
+    const search = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "search", "stale", "legacy", "sentinel", "--json"]))));
+    expect(search.code).toBe(0);
+    expect(JSON.parse(search.stdout)).toMatchObject({ hits: [] });
+
+    const top = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "top", "--json"]))));
+    expect(top.code).toBe(0);
+    expect(top.stdout).not.toContain("Stale legacy split brain sentinel.");
+  });
+
+  it("pins semantic search and its FTS fallback to one active generation", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    await seedLocalStore(memoryRoot);
+    const embeddings = deterministicEmbeddings("ollama:test-embed", 8);
+
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "journal", embeddings, dim: 8 });
+    const rollbackPath = await resolveActiveMemoryDbPath(memoryRoot);
+    await upsertIndexed(rollbackPath, embeddings, 8, record("ROLLBACK-SENTINEL", "Rollback generation alpha sentinel."));
+
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: "journal", embeddings, dim: 8 });
+    const activePath = await resolveActiveMemoryDbPath(memoryRoot);
+    expect(activePath).not.toBe(rollbackPath);
+    await upsertIndexed(activePath, embeddings, 8, record("ACTIVE-SENTINEL", "Pinned active beta sentinel."));
+
+    let switched = false;
+    const server = await failingEmbeddingServer(async () => {
+      if (switched) return;
+      switched = true;
+      await rollbackMemoryIndex({ root: memoryRoot, tier: "journal", embeddings, dim: 8 });
+    });
+    try {
+      const dir = await agentDir({
+        memory: {
+          mode: "journal",
+          path: memoryRoot,
+          writeMode: "append-host-summary",
+          embeddings: {
+            provider: "ollama",
+            model: "test-embed",
+            endpoint: server.baseUrl,
+            dim: 8,
+            timeoutMs: 2_000,
+          },
+        },
+      });
+
+      const search = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+        "memory", "search", "pinned", "active", "beta", "sentinel",
+      ]))));
+
+      expect(search.code).toBe(0);
+      expect(search.stdout).toContain("[WARN] Semantic embeddings unavailable");
+      expect(search.stdout).toContain("Pinned active beta sentinel.");
+      expect(search.stdout).not.toContain("Rollback generation alpha sentinel.");
+      expect(server.requests).toBe(1);
+      expect(await resolveActiveMemoryDbPath(memoryRoot)).toBe(rollbackPath);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("rejects rebuild and rollback for Supermemory", async () => {
+    const dir = await agentDir({
+      memory: {
+        backend: "supermemory",
+        mode: "lite",
+        writeMode: "capture",
+        supermemory: { baseUrl: "https://memory.invalid", container: "agent-alpha" },
+      },
+    });
+
+    for (const operation of ["rebuild", "rollback"]) {
+      const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", operation]))));
+      expect(result.code, operation).toBe(1);
+      expect(result.stdout, operation).toBe("");
+      expect(result.stderr, operation).toMatch(/Supermemory.*remote index/iu);
+    }
+  });
+
   it("proxies Supermemory search and marks local stats unavailable", async () => {
     const server = await supermemoryServer();
     try {
@@ -180,7 +376,49 @@ function accessSnapshot(root: string): readonly {
   }
 }
 
-async function agentDir(input: { readonly memory: unknown }): Promise<string> {
+function record(id: string, text: string) {
+  return {
+    id,
+    type: "note" as const,
+    status: "open" as const,
+    text,
+    salience: 0.5,
+    isInsight: false,
+    createdAt: "2026-07-11T09:00:00.000Z",
+    accessCount: 0,
+    tags: [] as readonly string[],
+    source: {},
+  };
+}
+
+function deterministicEmbeddings(id: string, dim: number): EmbeddingProvider {
+  return {
+    id,
+    embed: async (texts) => texts.map((text) => {
+      const vector = new Array<number>(dim).fill(0);
+      for (const [index, byte] of Buffer.from(text).entries()) {
+        vector[index % dim] = (vector[index % dim] ?? 0) + byte / 255;
+      }
+      return vector;
+    }),
+  };
+}
+
+async function upsertIndexed(
+  path: string,
+  embeddings: EmbeddingProvider,
+  dim: number,
+  item: ReturnType<typeof record>,
+): Promise<void> {
+  const db = openMemoryDb({ path, embeddings, dim });
+  try {
+    await db.upsert(item);
+  } finally {
+    db.close();
+  }
+}
+
+async function agentDir(input: { readonly memory: unknown; readonly traceability?: unknown }): Promise<string> {
   const dir = await tempDir();
   await writeFile(join(dir, "IDENTITY.md"), "# Test Agent\n", "utf8");
   const config: Record<string, unknown> = {
@@ -189,6 +427,9 @@ async function agentDir(input: { readonly memory: unknown }): Promise<string> {
   };
   if (input.memory !== undefined) {
     config.memory = input.memory;
+  }
+  if (input.traceability !== undefined) {
+    config.traceability = input.traceability;
   }
   await writeFile(join(dir, "mono-agent.config.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
   return dir;
@@ -293,6 +534,41 @@ async function supermemoryServer(): Promise<{
         } else {
           resolve();
         }
+      });
+    }),
+  };
+}
+
+async function failingEmbeddingServer(beforeFailure: () => Promise<void>): Promise<{
+  readonly baseUrl: string;
+  readonly requests: number;
+  readonly close: () => Promise<void>;
+}> {
+  let requests = 0;
+  const server = createServer((req, res) => {
+    void (async () => {
+      requests += 1;
+      await beforeFailure();
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "forced embedding failure" }));
+    })().catch((error) => {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address() as AddressInfo;
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    get requests() {
+      return requests;
+    },
+    close: () => new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) reject(error);
+        else resolve();
       });
     }),
   };

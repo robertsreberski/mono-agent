@@ -4,7 +4,11 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { CircuitBreakerEmbeddingOptions, EmbeddingProviderConfig } from "@mono-agent/memory/search";
+import type {
+  CircuitBreakerEmbeddingOptions,
+  EmbeddingProvider,
+  EmbeddingProviderConfig,
+} from "@mono-agent/memory/search";
 import type { MemoryStatus, MemoryType } from "@mono-agent/memory/store";
 import { isConversationRelativeQuery } from "@mono-agent/memory/bujo";
 import * as z from "zod/v4";
@@ -76,6 +80,13 @@ export interface MemoryRecallSupermemory {
 export interface MemoryRecallBujoSettings {
   /** Memory root directory (config.memory.path). */
   readonly root: string;
+  /**
+   * Optional exact managed-generation database path. Command paths resolve this
+   * once so a semantic attempt and its FTS fallback cannot observe different
+   * active generations. The child-process env deliberately omits it and
+   * resolves the active generation after startup.
+   */
+  readonly dbPath?: string;
   /** Embeddings for semantic recall. Omitted for an FTS-only (lite) recall store. */
   readonly embeddings?: MemoryRecallEmbeddings;
 }
@@ -383,12 +394,27 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
       ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
     });
   }
-  const { createBujoMemoryStore } = await import("@mono-agent/memory/bujo");
+  const { createBujoMemoryStore, resolveActiveMemoryDbPath } = await import("@mono-agent/memory/bujo");
+  const dbPath = settings.dbPath ?? await resolveActiveMemoryDbPath(settings.root);
   const { embeddings } = settings;
   if (embeddings === undefined) {
     // FTS-only recall: no embedding provider, no dim (mirrors the lite-tier store shape).
-    return createBujoMemoryStore({ root: settings.root });
+    return createBujoMemoryStore({ root: settings.root, dbPath, readOnly: true });
   }
+  const provider = await createMemoryEmbeddingProvider(embeddings);
+  return createBujoMemoryStore({
+    root: settings.root,
+    dbPath,
+    readOnly: true,
+    embeddings: provider,
+    dim: embeddings.dim ?? 768,
+  });
+}
+
+/** Build the configured embedding provider used by recall and safe index maintenance. */
+export async function createMemoryEmbeddingProvider(
+  embeddings: MemoryRecallEmbeddings,
+): Promise<EmbeddingProvider> {
   const providerConfig: EmbeddingProviderConfig = {
     provider: embeddings.provider,
     model: embeddings.model,
@@ -403,11 +429,7 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
     ...(embeddings.circuitBreaker?.cooldownMs === undefined ? {} : { cooldownMs: embeddings.circuitBreaker.cooldownMs }),
   };
   const { createCircuitBreakerEmbeddingProvider, createEmbeddingProvider } = await import("@mono-agent/memory/search");
-  return createBujoMemoryStore({
-    root: settings.root,
-    embeddings: createCircuitBreakerEmbeddingProvider(createEmbeddingProvider(providerConfig), breakerOptions),
-    dim: embeddings.dim ?? 768,
-  });
+  return createCircuitBreakerEmbeddingProvider(createEmbeddingProvider(providerConfig), breakerOptions);
 }
 
 /** Register the single read-only `MemoryRecall` tool against a store (bujo or external backend). */
@@ -437,12 +459,16 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
         const graphEnabled = store.expandGraph !== undefined && store.supportsGraphExpansion?.() !== false;
         const direct = await store.recall(args.query, {
           topK: graphEnabled ? 50 : topK,
-          ...(graphEnabled ? { trackAccess: false } : {}),
+          // The bundled recall process opens the active generation read-only.
+          // Never ask a store to mutate access telemetry on this path.
+          trackAccess: false,
         });
         hits = !graphEnabled || store.expandGraph === undefined
           ? direct.slice(0, topK)
           : await store.expandGraph(args.query, direct, { topK });
-        if (graphEnabled) store.recordAccess?.(hits.map((hit) => hit.record.id));
+        // Record only the final served set. Read-only BuJo recall stores make
+        // this a no-op; shared writable stores retain their access telemetry.
+        store.recordAccess?.(hits.map((hit) => hit.record.id));
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         return {
