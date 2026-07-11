@@ -10,6 +10,11 @@ import {
   type AgentMessageStream,
   type TelegramMessageStreamLogger,
 } from "./message-stream.js";
+import {
+  createOpenAiTranscriber,
+  type TelegramTranscriber,
+  type TelegramTranscriptionConfig,
+} from "./transcription.js";
 import type {
   TelegramChatId,
   TelegramAudio,
@@ -19,10 +24,17 @@ import type {
   TelegramUpdate,
   TelegramUser,
   TelegramVideo,
+  TelegramVideoNote,
   TelegramVoice,
 } from "./types.js";
 
-export type TelegramAttachmentKind = "document" | "photo" | "audio" | "video" | "voice";
+export type TelegramAttachmentKind =
+  | "document"
+  | "photo"
+  | "audio"
+  | "video"
+  | "video_note"
+  | "voice";
 
 export interface TelegramAttachmentBase {
   kind: TelegramAttachmentKind;
@@ -74,11 +86,19 @@ export interface TelegramVoiceAttachment extends TelegramAttachmentBase {
   mimeType?: string;
 }
 
+export interface TelegramVideoNoteAttachment extends TelegramAttachmentBase {
+  kind: "video_note";
+  duration: number;
+  /** Diameter (width == height) of the square round video, in pixels. */
+  length: number;
+}
+
 export type TelegramAttachment =
   | TelegramDocumentAttachment
   | TelegramPhotoAttachment
   | TelegramAudioAttachment
   | TelegramVideoAttachment
+  | TelegramVideoNoteAttachment
   | TelegramVoiceAttachment;
 
 export interface TelegramAgentMessageInput {
@@ -186,12 +206,12 @@ export const DEFAULT_MESSAGES: Required<TelegramAdapterMessages> = {
   welcomeText:
     "Hello! Send text or Telegram media. I pass your caption and download allowed attachments to share with the configured agent.",
   helpText:
-    "Send text, documents, photos, audio, video, or voice messages. I forward your caption and download supported attachments (within size/type limits) for the agent. Use /cancel to stop the current response.",
+    "Send text, documents, photos, audio, video, round videos (video notes), or voice messages. I forward your caption and download supported attachments (within size/type limits) for the agent. Use /cancel to stop the current response.",
   busyText: "I am still working on your previous message. Use /cancel to stop it.",
   unauthorizedText: "This Telegram chat is not authorized to use this bot.",
   cancelledText: "Cancelled.",
   errorText: DEFAULT_ERROR_TEXT,
-  unsupportedText: "I can handle text and Telegram document, photo, audio, video, or voice metadata in this adapter.",
+  unsupportedText: "I can handle text and Telegram document, photo, audio, video, round video, or voice metadata in this adapter.",
 };
 
 /**
@@ -343,6 +363,10 @@ function extractTelegramAttachments(message: TelegramMessage): readonly Telegram
   if (video !== undefined) {
     attachments.push(video);
   }
+  const videoNote = attachmentFromVideoNote(message.video_note);
+  if (videoNote !== undefined) {
+    attachments.push(videoNote);
+  }
   const voice = attachmentFromVoice(message.voice);
   if (voice !== undefined) {
     attachments.push(voice);
@@ -432,6 +456,23 @@ function attachmentFromVideo(video: TelegramVideo | undefined): TelegramVideoAtt
   if (video.mime_type !== undefined) {
     attachment.mimeType = video.mime_type;
   }
+  return attachment;
+}
+
+function attachmentFromVideoNote(
+  videoNote: TelegramVideoNote | undefined,
+): TelegramVideoNoteAttachment | undefined {
+  if (videoNote === undefined) {
+    return undefined;
+  }
+  const attachment: TelegramVideoNoteAttachment = {
+    kind: "video_note",
+    fileId: videoNote.file_id,
+    fileUniqueId: videoNote.file_unique_id,
+    duration: videoNote.duration,
+    length: videoNote.length,
+  };
+  addFileSize(attachment, videoNote.file_size);
   return attachment;
 }
 
@@ -579,9 +620,23 @@ export interface DownloadTelegramAttachmentsOptions {
   /**
    * Per-file download timeout (ms) for the default downloader, composed with the
    * run abort signal. Defaults to 30000. Only consulted by the built-in
-   * downloader; custom downloaders manage their own timeouts.
+   * downloader; custom downloaders manage their own timeouts. Also bounds each
+   * auto-transcription call (below).
    */
   readonly downloadTimeoutMs?: number;
+  /**
+   * Auto-transcription config for inbound audio (voice / audio / video_note). When
+   * set (and no {@link transcriber} seam is supplied), a default OpenAI-compatible
+   * transcriber is built from it once and used to fill each audio attachment's
+   * `text` with the transcript. Omit to leave audio as an on-disk file only.
+   */
+  readonly transcription?: TelegramTranscriptionConfig;
+  /**
+   * Test/override seam for the transcriber (mirrors the downloader seam). When
+   * present it wins over {@link transcription}; when absent the config builds the
+   * default transcriber. With neither, audio is never transcribed.
+   */
+  readonly transcriber?: TelegramTranscriber;
   readonly logger?: TelegramAdapterLogger;
 }
 
@@ -611,6 +666,15 @@ export async function downloadTelegramAttachments(
     (options?.mimeAllowlist ?? DEFAULT_ATTACHMENT_MIME_ALLOWLIST).map((mime) => mime.toLowerCase()),
   );
   const logger = options?.logger;
+  // Build the transcriber once (not per attachment): the seam wins, else the
+  // config builds a default OpenAI-compatible transcriber, else none.
+  const transcriber =
+    options?.transcriber ??
+    (options?.transcription === undefined ? undefined : createOpenAiTranscriber(options.transcription));
+  // Independent of downloadTimeoutMs: download latency scales with file size,
+  // transcription latency with audio duration (a multi-minute note can take
+  // minutes on a local whisper server).
+  const transcribeTimeoutMs = options?.transcription?.timeoutMs ?? DEFAULT_TRANSCRIBE_TIMEOUT_MS;
   const resolved: AgentAttachment[] = [];
 
   for (const attachment of attachments) {
@@ -653,7 +717,21 @@ export async function downloadTelegramAttachments(
         });
         continue;
       }
-      resolved.push(buildAgentAttachment(source, mimeType, bytes));
+      // Audio kinds (voice / audio / video_note) get an inlined transcript so a
+      // caption-less clip reaches the model as words. The file is still saved,
+      // so the fallback note can point at it when transcription fails.
+      const transcript =
+        transcriber !== undefined && isTranscribableKind(attachment.kind)
+          ? await transcribeAttachment({
+              transcriber,
+              bytes,
+              source,
+              abortSignal,
+              timeoutMs: transcribeTimeoutMs,
+              logger,
+            })
+          : undefined;
+      resolved.push(buildAgentAttachment(source, mimeType, bytes, transcript));
     } catch (error) {
       // Download failures never fail the run — skip the attachment and continue.
       logger?.warn?.("Failed to download Telegram attachment; skipping it.", {
@@ -671,6 +749,7 @@ function buildAgentAttachment(
   source: ResolvedTelegramAttachmentSource,
   mimeType: string,
   bytes: Uint8Array,
+  transcript?: string,
 ): AgentAttachment {
   const kind: AgentAttachment["kind"] = mimeType.startsWith("image/") ? "image" : "document";
   const attachment: { -readonly [K in keyof AgentAttachment]?: AgentAttachment[K] } = {
@@ -685,10 +764,66 @@ function buildAgentAttachment(
   if (source.durationSeconds !== undefined) {
     attachment.durationSeconds = source.durationSeconds;
   }
-  if (mimeType.startsWith("text/")) {
+  if (transcript !== undefined) {
+    // Audio transcript (or the fallback note) inlined so the model sees words.
+    attachment.text = transcript;
+  } else if (mimeType.startsWith("text/")) {
     attachment.text = Buffer.from(bytes).toString("utf8");
   }
   return attachment as AgentAttachment;
+}
+
+/** The three Telegram audio-bearing kinds whose bytes we auto-transcribe. */
+function isTranscribableKind(kind: TelegramAttachmentKind): boolean {
+  return kind === "voice" || kind === "audio" || kind === "video_note";
+}
+
+/** Default per-call transcription timeout when `transcription.timeoutMs` is unset (120s). */
+const DEFAULT_TRANSCRIBE_TIMEOUT_MS = 120_000;
+
+/** The text inlined when transcription fails, pointing at the saved audio file. */
+export const TELEGRAM_TRANSCRIPTION_UNAVAILABLE_NOTE =
+  "[automatic transcription unavailable — audio saved at the path above]";
+
+/**
+ * Transcribe one audio attachment, bounding the call by `timeoutMs` composed with
+ * the run signal. Any failure logs a single warn line and returns the fallback
+ * note (never throws), so a flaky transcriber degrades to "audio saved" rather
+ * than failing the whole download.
+ */
+async function transcribeAttachment(input: {
+  readonly transcriber: TelegramTranscriber;
+  readonly bytes: Uint8Array;
+  readonly source: ResolvedTelegramAttachmentSource;
+  readonly abortSignal: AbortSignal;
+  readonly timeoutMs: number;
+  readonly logger: TelegramAdapterLogger | undefined;
+}): Promise<string> {
+  const useTimeout = Number.isFinite(input.timeoutMs) && input.timeoutMs > 0;
+  const signal = useTimeout
+    ? AbortSignal.any([input.abortSignal, AbortSignal.timeout(input.timeoutMs)])
+    : input.abortSignal;
+  try {
+    const transcript = await input.transcriber.transcribe(
+      {
+        bytes: input.bytes,
+        mimeType: input.source.mimeType,
+        ...(input.source.name === undefined ? {} : { filename: input.source.name }),
+      },
+      signal,
+    );
+    if (transcript.trim().length === 0) {
+      throw new Error("Transcriber returned empty text.");
+    }
+    return transcript;
+  } catch (error) {
+    input.logger?.warn?.("Failed to transcribe Telegram audio; inlining the fallback note.", {
+      fileId: input.source.fileId,
+      name: input.source.name,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return TELEGRAM_TRANSCRIPTION_UNAVAILABLE_NOTE;
+  }
 }
 
 function attachmentSource(attachment: TelegramAttachment): ResolvedTelegramAttachmentSource {
@@ -717,7 +852,7 @@ function attachmentMimeType(attachment: TelegramAttachment): string {
   if (attachment.kind === "audio") {
     return "audio/mpeg";
   }
-  if (attachment.kind === "video") {
+  if (attachment.kind === "video" || attachment.kind === "video_note") {
     return "video/mp4";
   }
   return "application/octet-stream";

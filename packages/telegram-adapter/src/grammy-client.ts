@@ -229,6 +229,9 @@ function buildEditOther(params: TelegramEditMessageTextParams): EditOther {
   if (params.disable_web_page_preview !== undefined) {
     other.link_preview_options = { is_disabled: params.disable_web_page_preview };
   }
+  if (params.reply_markup !== undefined) {
+    other.reply_markup = params.reply_markup as NonNullable<EditOther["reply_markup"]>;
+  }
   return other;
 }
 

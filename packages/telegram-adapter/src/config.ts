@@ -17,6 +17,8 @@ import type {
   SettingsJson,
 } from "@mono-agent/agent-contracts";
 
+import type { TelegramTranscriptionConfig } from "./transcription.js";
+
 /**
  * A daily window during which proactive notifications (cron/webhook deliveries)
  * are posted silently (`disable_notification`). `start`/`end` are 24-hour `HH:MM`
@@ -86,6 +88,12 @@ export interface TelegramAdapterConfig {
   readonly commands?: readonly TelegramCommandConfig[];
   /** Per-state lifecycle reactions (👀/👍/👎). Omit (or all-off) to disable reactions. */
   readonly reactions?: TelegramReactionsConfig;
+  /**
+   * Optional speech-to-text for inbound audio (voice / audio / video_note): the
+   * full URL of an OpenAI-compatible `/v1/audio/transcriptions` route plus a
+   * required model. Omit to leave audio as an on-disk file only. Not a secret.
+   */
+  readonly transcription?: TelegramTranscriptionConfig;
 }
 
 export interface RedactedTelegramAdapterConfig {
@@ -100,6 +108,7 @@ export interface RedactedTelegramAdapterConfig {
   readonly quietHours?: TelegramQuietHours;
   readonly commands?: { readonly count: number };
   readonly reactions?: TelegramReactionsConfig;
+  readonly transcription?: TelegramTranscriptionConfig;
 }
 
 export type TelegramAdapterConfigErrorCode =
@@ -200,6 +209,7 @@ export async function loadTelegramAdapterConfig(
   const reactions = readTelegramReactions(json, env);
   const apiRoot = readTelegramApiRoot(env.MONO_AGENT_TELEGRAM_API_ROOT);
   const attachments = readTelegramAttachments(env);
+  const transcription = readTelegramTranscription(env);
 
   return {
     enabled: true,
@@ -213,6 +223,60 @@ export async function loadTelegramAdapterConfig(
     ...(quietHours === undefined ? {} : { quietHours }),
     ...(commands.length === 0 ? {} : { commands }),
     ...(reactions === undefined ? {} : { reactions }),
+    ...(transcription === undefined ? {} : { transcription }),
+  };
+}
+
+/**
+ * Read `telegram.transcription`. Absent endpoint → feature off. When the endpoint
+ * is set it must be a valid http(s) URL (validated like {@link readTelegramApiRoot},
+ * but the full transcriptions-route path is preserved verbatim — no trailing-slash
+ * stripping) and `model` becomes REQUIRED (a hard config error otherwise so a
+ * half-configured endpoint fails loudly). `language` is optional.
+ */
+function readTelegramTranscription(
+  env: Record<string, string | undefined>,
+): TelegramTranscriptionConfig | undefined {
+  const endpoint = normalizeOptionalString(env.MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT);
+  const model = normalizeOptionalString(env.MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL);
+  const language = normalizeOptionalString(env.MONO_AGENT_TELEGRAM_TRANSCRIPTION_LANGUAGE);
+  const timeoutRaw = normalizeOptionalString(env.MONO_AGENT_TELEGRAM_TRANSCRIPTION_TIMEOUT_MS);
+  if (endpoint === undefined) {
+    return undefined;
+  }
+  const timeoutMs =
+    timeoutRaw === undefined
+      ? undefined
+      : readInteger(timeoutRaw, "MONO_AGENT_TELEGRAM_TRANSCRIPTION_TIMEOUT_MS", 1, invalidConfig, {
+          min: 1,
+          max: 3_600_000,
+        });
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw invalidConfig(
+      "MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT (telegram.transcription.endpoint) must be a valid http(s) URL.",
+      { env: "MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT" },
+    );
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw invalidConfig(
+      "MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT (telegram.transcription.endpoint) must use http or https.",
+      { env: "MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT" },
+    );
+  }
+  if (model === undefined) {
+    throw missingRequiredConfig(
+      "Telegram transcription requires MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL (telegram.transcription.model) when the endpoint is set.",
+      { env: "MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL" },
+    );
+  }
+  return {
+    endpoint,
+    model,
+    ...(language === undefined ? {} : { language }),
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
   };
 }
 
@@ -513,6 +577,8 @@ export function redactTelegramAdapterConfig(
     ...(config.quietHours === undefined ? {} : { quietHours: config.quietHours }),
     ...(config.commands === undefined ? {} : { commands: { count: config.commands.length } }),
     ...(config.reactions === undefined ? {} : { reactions: config.reactions }),
+    // The endpoint/model are not secrets, so they pass through verbatim.
+    ...(config.transcription === undefined ? {} : { transcription: config.transcription }),
   };
 }
 
@@ -533,6 +599,10 @@ export const TELEGRAM_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "telegram.attachments.maxBytes", env: "MONO_AGENT_TELEGRAM_ATTACHMENT_MAX_BYTES", kind: "integer", fromJson: (s) => readRecord(s.attachments).maxBytes },
   { id: "telegram.attachments.downloadTimeoutMs", env: "MONO_AGENT_TELEGRAM_ATTACHMENT_DOWNLOAD_TIMEOUT_MS", kind: "integer", fromJson: (s) => readRecord(s.attachments).downloadTimeoutMs },
   { id: "telegram.attachments.maxUploadBytes", env: "MONO_AGENT_TELEGRAM_UPLOAD_MAX_BYTES", kind: "integer", fromJson: (s) => readRecord(s.attachments).maxUploadBytes },
+  { id: "telegram.transcription.endpoint", env: "MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT", fromJson: (s) => readRecord(s.transcription).endpoint },
+  { id: "telegram.transcription.model", env: "MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL", fromJson: (s) => readRecord(s.transcription).model },
+  { id: "telegram.transcription.language", env: "MONO_AGENT_TELEGRAM_TRANSCRIPTION_LANGUAGE", fromJson: (s) => readRecord(s.transcription).language },
+  { id: "telegram.transcription.timeoutMs", env: "MONO_AGENT_TELEGRAM_TRANSCRIPTION_TIMEOUT_MS", kind: "integer", fromJson: (s) => readRecord(s.transcription).timeoutMs },
 ];
 
 function layerTelegramJsonOntoEnv(
