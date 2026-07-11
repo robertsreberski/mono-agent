@@ -15,7 +15,7 @@ import {
   writeFileSync,
   type Stats,
 } from "node:fs";
-import { basename, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 
 const DEFAULT_DIRECTORY_MODE = 0o700;
 const DEFAULT_FILE_MODE = 0o600;
@@ -61,7 +61,7 @@ export function canonicalMemoryRootPath(root: string, create: boolean): string {
   assertNoRootSymlinkAncestors(absolute);
   if (cached !== undefined && cached.dev === stat!.dev && cached.ino === stat!.ino) return cached.canonical;
   if (stat === undefined && create) {
-    mkdirSync(absolute, { recursive: true, mode: DEFAULT_DIRECTORY_MODE });
+    createDirectoryTreeDurably(absolute);
     stat = lstatSync(absolute);
   }
   if (stat === undefined) {
@@ -369,7 +369,8 @@ function canonicalLocation(
   const fileName = parts.pop()!;
   let parent = canonicalRoot;
   for (const component of parts) {
-    parent = join(parent, component);
+    const containingDirectory = parent;
+    parent = join(containingDirectory, component);
     let stat = optionalLstat(parent);
     if (stat === undefined && createParents) {
       try {
@@ -378,6 +379,10 @@ function canonicalLocation(
         if (!isAlreadyExists(error)) throw error;
       }
       stat = lstatSync(parent);
+      // The child directory's own later fsync cannot publish its name in the
+      // containing directory. Persist the new directory entry immediately so
+      // a first daily/monthly/outbox file cannot outlive a lost parent name.
+      fsyncDirectory(containingDirectory);
     }
     if (stat === undefined) lstatSync(parent);
     if (stat!.isSymbolicLink() || !stat!.isDirectory()) {
@@ -388,6 +393,40 @@ function canonicalLocation(
   const path = join(parent, fileName);
   assertInside(canonicalRoot, path);
   return { path, parent, directories };
+}
+
+/** Create every missing root component and durably publish each directory name. */
+function createDirectoryTreeDurably(absolute: string): void {
+  const missing: string[] = [];
+  let existing = absolute;
+  while (optionalLstat(existing) === undefined) {
+    missing.push(existing);
+    const parent = dirname(existing);
+    if (parent === existing) throw new Error("memory-bujo: could not find an existing memory-root ancestor.");
+    existing = parent;
+  }
+  const existingStat = lstatSync(existing);
+  if (existingStat.isSymbolicLink() && !isDarwinSystemAlias(existing)) {
+    throw new Error("memory-bujo: memory root ancestor must resolve to a real directory.");
+  }
+  let parent = realpathSync(existing);
+  if (!lstatSync(parent).isDirectory()) {
+    throw new Error("memory-bujo: memory root ancestor must be a directory.");
+  }
+  for (const missingPath of missing.reverse()) {
+    const next = join(parent, basename(missingPath));
+    try {
+      mkdirSync(next, { mode: DEFAULT_DIRECTORY_MODE });
+    } catch (error) {
+      if (!isAlreadyExists(error)) throw error;
+    }
+    const created = lstatSync(next);
+    if (created.isSymbolicLink() || !created.isDirectory()) {
+      throw new Error("memory-bujo: newly created memory root component is unsafe.");
+    }
+    fsyncDirectory(parent);
+    parent = next;
+  }
 }
 
 function assertStableDirectories(directories: readonly DirectoryIdentity[]): void {

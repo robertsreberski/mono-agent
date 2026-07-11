@@ -399,10 +399,22 @@ function optionalRegularFileState(path: string, label: string): SafeSqlitePathSt
 function ensureManagedLayout(root: string): void {
   const managed = managedPath(root);
   const generations = generationsPath(root);
-  mkdirSync(managed, { recursive: true, mode: 0o700 });
-  assertSafeDirectory(root, managed, "managed memory directory");
-  mkdirSync(generations, { recursive: true, mode: 0o700 });
-  assertSafeDirectory(root, generations, "memory generations directory");
+  ensureManagedDirectory(root, managed, "managed memory directory");
+  ensureManagedDirectory(root, generations, "memory generations directory");
+}
+
+function ensureManagedDirectory(root: string, path: string, label: string): void {
+  if (!existsSync(path)) {
+    try {
+      mkdirSync(path, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    // Persist the directory entry in its parent before any lock, generation,
+    // or manifest inside this directory is treated as a durable boundary.
+    fsyncDirectory(dirname(path));
+  }
+  assertSafeDirectory(root, path, label);
 }
 
 function managedPath(root: string): string {
