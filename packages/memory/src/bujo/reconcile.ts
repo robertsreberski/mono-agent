@@ -2,13 +2,18 @@ import { relative } from "node:path";
 
 import type { MemoryDb, MemoryRecord, SimilarHit } from "../store/index.js";
 
-import { appendBullet, dailyFilePath, readBullet, rewriteBullet } from "./daily.js";
+import {
+  replayCaptureIntent,
+  replayCaptureOutbox,
+  writeCaptureIntent,
+  type CaptureIntentAction,
+} from "./capture-outbox.js";
+import { dailyFilePath, readBullet } from "./daily.js";
 import { normalizeCandidateText, type CandidateMemory } from "./distill.js";
 import { parseJsonLoose } from "./json.js";
 import type { LlmComplete } from "./llm.js";
 import { MemoryModelError } from "./model-error.js";
 import type { Bullet } from "./types.js";
-import type { CaptureIntentAction } from "./capture-outbox.js";
 
 /** The outcome of reconciling a single candidate against the existing index. */
 export type ReconcileAction =
@@ -32,8 +37,9 @@ export interface ReconcileDeps {
   readonly beforeBatchCommit?: (actions: readonly CaptureIntentAction[]) => void;
   /**
    * Leave persistence to the durable boundary after it publishes the prepared
-   * actions. Capture uses this so intent replay is the sole canonical/SQLite
-   * commit owner; ordinary reconcileBatch callers retain the direct path.
+   * actions. Capture uses this so its graph-bearing intent remains the sole
+   * canonical/SQLite commit owner. Ordinary callers publish their own
+   * memory-only intent and replay it through the same durable path.
    */
   readonly deferBatchCommit?: boolean;
 }
@@ -48,19 +54,22 @@ interface Classification {
 
 /**
  * Reconcile distilled candidates against the existing memory index, writing to BOTH the
- * canonical markdown daily files and the SQLite index. Each candidate is handled independently
- * (an LLM/IO failure on one does not abort the others). The LLM is consulted only for candidates
- * that are close to an existing memory; clearly-novel candidates are added without an LLM call.
+ * canonical markdown daily files and the SQLite index. Per-candidate planning/source errors are
+ * isolated, while model and durable-commit failures stop the batch. The LLM is consulted only for
+ * candidates that are close to an existing memory; clearly-novel candidates are added without an
+ * LLM call.
  */
 export async function reconcile(
   candidates: readonly CandidateMemory[],
   deps: ReconcileDeps,
 ): Promise<ReconcileAction[]> {
+  prepareDurableReconcile(deps);
   const threadThreshold = deps.threadThreshold ?? 0.35;
   const dupThreshold = deps.dupThreshold ?? 0.5;
   const actions: ReconcileAction[] = [];
 
   for (const candidate of candidates) {
+    let plan: Omit<BatchActionPlan, "index"> | undefined;
     try {
       // findSimilar embeds the query, so a down embedding model throws here for EVERY candidate —
       // a systemic outage, not a per-item data problem. Tag it so the catch below surfaces it.
@@ -77,18 +86,11 @@ export async function reconcile(
 
       // Clearly novel (nothing close enough) → ADD outright, no LLM.
       if (similar.length === 0 || (similar[0]?.distance ?? Infinity) > dupThreshold) {
-        actions.push(await executePlannedAction(
-          planAddWithoutIndex(candidate, similar, deps, threadThreshold),
-          deps,
-        ));
-        continue;
+        plan = planAddWithoutIndex(candidate, similar, deps, threadThreshold);
+      } else {
+        const decision = await classify(candidate, similar, deps);
+        plan = planLegacyAction(candidate, decision, similar, deps, threadThreshold);
       }
-
-      const decision = await classify(candidate, similar, deps);
-      actions.push(await executePlannedAction(
-        planLegacyAction(candidate, decision, similar, deps, threadThreshold),
-        deps,
-      ));
     } catch (err) {
       // Abort is a lifecycle boundary, not an isolatable candidate failure. In
       // particular, an abort-ignoring provider may settle only after close()
@@ -101,6 +103,11 @@ export async function reconcile(
       // UPDATE/SUPERSEDE) must not abort the rest of the batch. Skip it.
       continue;
     }
+
+    // Once provider planning succeeds, persistence failures are systemic. In
+    // particular, a replay fault leaves a published intent that must be
+    // recovered before another candidate can be planned against stale state.
+    actions.push(await executePlannedAction(plan, deps));
   }
 
   return actions;
@@ -114,6 +121,7 @@ export async function reconcileBatch(
   candidates: readonly CandidateMemory[],
   deps: ReconcileDeps,
 ): Promise<Array<ReconcileAction | undefined>> {
+  prepareDurableReconcile(deps);
   const threadThreshold = deps.threadThreshold ?? 0.35;
   const dupThreshold = deps.dupThreshold ?? 0.5;
   let neighbours: readonly SimilarHit[][];
@@ -170,14 +178,13 @@ export async function reconcileBatch(
   }
   deps.abortSignal?.throwIfAborted();
 
-  if (deps.beforeBatchCommit !== undefined) {
-    const vectorsByIndex = new Map(writes.map((plan, index) => [plan.index, vectors[index]]));
-    deps.beforeBatchCommit(plans.flatMap((plan) => plan === undefined ? [] : [withPreparedVector(
-      plan.intent,
-      plan.index,
-      vectorsByIndex.get(plan.index),
-    )]));
-  }
+  const vectorsByIndex = new Map(writes.map((plan, index) => [plan.index, vectors[index]]));
+  const preparedActions = plans.flatMap((plan) => plan === undefined ? [] : [withPreparedVector(
+    plan.intent,
+    plan.index,
+    vectorsByIndex.get(plan.index),
+  )]);
+  if (deps.beforeBatchCommit !== undefined) deps.beforeBatchCommit(preparedActions);
   deps.abortSignal?.throwIfAborted();
 
   if (deps.deferBatchCommit === true) {
@@ -187,30 +194,8 @@ export async function reconcileBatch(
     return plans.map((plan) => plan?.action);
   }
 
-  const accepted: BatchActionPlan[] = [];
-  const acceptedVectors: Array<readonly number[] | undefined> = [];
-  for (const [index, plan] of writes.entries()) {
-    deps.abortSignal?.throwIfAborted();
-    try {
-      plan.writeCanonical();
-      accepted.push(plan);
-      acceptedVectors.push(vectors[index]);
-    } catch {
-      // Preserve per-item source isolation. A partial canonical write is
-      // precision-safe and remains recoverable by the explicit safe rebuild.
-    }
-  }
-  if (accepted.length > 0) {
-    deps.db.commitPreparedUpserts(accepted.map((plan) => plan.record!), acceptedVectors);
-  }
-  for (const plan of accepted) plan.finalizeIndex();
-
-  const acceptedIndexes = new Set(accepted.map((plan) => plan.index));
-  return plans.map((plan) => {
-    if (plan === undefined) return undefined;
-    if (plan.record !== undefined && !acceptedIndexes.has(plan.index)) return undefined;
-    return plan.action;
-  });
+  commitPreparedActionsDurably(preparedActions, deps);
+  return plans.map((plan) => plan?.action);
 }
 
 /**
@@ -239,8 +224,6 @@ interface BatchActionPlan {
   readonly action: ReconcileAction;
   readonly intent: CaptureIntentAction;
   readonly record?: MemoryRecord;
-  writeCanonical(): void;
-  finalizeIndex(): void;
 }
 
 /** Preserve the exported legacy reconcile semantics while sharing the batch planner's fenced writes. */
@@ -259,10 +242,8 @@ function planLegacyAction(
 
 /**
  * Finish every legacy ADD/UPDATE/SUPERSEDE with the same provider-first,
- * synchronous-commit boundary as reconcileBatch. No canonical source can be
- * touched until the persistence vector exists and the lifecycle signal is
- * still live; after that check there is no async gap in which close() can
- * release SQLite between source mutation and index commit.
+ * durable boundary as reconcileBatch. No canonical source can be touched
+ * until both the persistence vector and its fsynced intent exist.
  */
 async function executePlannedAction(
   plan: Omit<BatchActionPlan, "index">,
@@ -270,6 +251,7 @@ async function executePlannedAction(
 ): Promise<ReconcileAction> {
   if (plan.record === undefined) {
     deps.abortSignal?.throwIfAborted();
+    commitPreparedActionsDurably([withPreparedVector(plan.intent, 0, undefined)], deps);
     return plan.action;
   }
 
@@ -282,10 +264,49 @@ async function executePlannedAction(
   }
   deps.abortSignal?.throwIfAborted();
 
-  plan.writeCanonical();
-  deps.db.commitPreparedUpserts([plan.record], vectors);
-  plan.finalizeIndex();
+  commitPreparedActionsDurably([withPreparedVector(plan.intent, 0, vectors[0])], deps);
   return plan.action;
+}
+
+/**
+ * Recover any previously-published result before provider planning. This is a
+ * synchronous lifecycle fence: a public caller can never stack a new intent
+ * behind an unresolved canonical/SQLite outcome.
+ */
+function prepareDurableReconcile(deps: ReconcileDeps): void {
+  deps.abortSignal?.throwIfAborted();
+  replayCaptureOutbox(deps.root, deps.db);
+  deps.abortSignal?.throwIfAborted();
+}
+
+const MAX_ACTIONS_PER_INTENT = 8;
+
+/** Publish each bounded action group, then let exact replay own every write. */
+function commitPreparedActionsDurably(
+  actions: readonly CaptureIntentAction[],
+  deps: ReconcileDeps,
+): void {
+  deps.abortSignal?.throwIfAborted();
+  for (let offset = 0; offset < actions.length; offset += MAX_ACTIONS_PER_INTENT) {
+    const bounded = actions
+      .slice(offset, offset + MAX_ACTIONS_PER_INTENT)
+      .map((action, candidateIndex) => ({ ...action, candidateIndex } as CaptureIntentAction));
+    const handle = writeCaptureIntent(
+      deps.root,
+      bounded,
+      { entities: [], relations: [], associations: [] },
+      intentCreatedAt(bounded[0]!),
+    );
+    // Do not insert an async/abort gap after publication. Replay either
+    // completes synchronously or leaves the exact pending intent for startup.
+    replayCaptureIntent(deps.root, handle, deps.db);
+  }
+}
+
+function intentCreatedAt(action: CaptureIntentAction): string {
+  if (action.kind === "supersede") return action.at;
+  if (action.kind === "noop") return action.expected.bullet.createdAt;
+  return action.record.createdAt;
 }
 
 function planBatchAction(
@@ -343,10 +364,6 @@ function planAddWithoutIndex(
       threads,
     },
     record,
-    writeCanonical: () => { appendBullet(deps.root, bullet, now); },
-    finalizeIndex: () => {
-      for (const edge of threads) deps.db.addEdge(edge.src, edge.dst, "thread", edge.weight);
-    },
   };
 }
 
@@ -368,8 +385,6 @@ function planNoop(
       id: targetId,
       expected: { file: target.source.file, bullet },
     },
-    writeCanonical: () => {},
-    finalizeIndex: () => {},
   };
 }
 
@@ -397,10 +412,6 @@ function planUpdate(
       record: { ...target, text: mergedText },
     },
     record: { ...target, text: mergedText },
-    writeCanonical: () => {
-      requireBulletRewrite(deps.root, target.source.file!, targetId, { text: mergedText });
-    },
-    finalizeIndex: () => {},
   };
 }
 
@@ -444,11 +455,6 @@ function planSupersede(
       at: now.toISOString(),
     },
     record,
-    writeCanonical: () => {
-      appendBullet(deps.root, bullet, now);
-      requireBulletRewrite(deps.root, oldSourceFile, targetId, { status: "invalidated" });
-    },
-    finalizeIndex: () => { deps.db.markSuperseded(targetId, id, now.toISOString()); },
   };
 }
 
@@ -458,17 +464,6 @@ function requireCanonicalTarget(root: string, file: string, id: string): Bullet 
     throw new Error(`memory-reconcile: canonical source "${file}" does not contain target "${id}".`);
   }
   return bullet;
-}
-
-function requireBulletRewrite(
-  root: string,
-  file: string,
-  id: string,
-  patch: Parameters<typeof rewriteBullet>[3],
-): void {
-  if (!rewriteBullet(root, file, id, patch)) {
-    throw new Error(`memory-reconcile: canonical source "${file}" does not contain target "${id}".`);
-  }
 }
 
 function withPreparedVector(

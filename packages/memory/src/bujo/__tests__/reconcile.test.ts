@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
@@ -10,6 +10,7 @@ import { appendBullet, dailyFilePath } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
 import { createIdFactory } from "../ids.js";
 import { reconcile, reconcileBatch, type ReconcileDeps } from "../reconcile.js";
+import { createBujoMemoryStore } from "../store.js";
 import type { Bullet, CandidateMemory } from "../types.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 
@@ -403,9 +404,206 @@ describe("reconcile", () => {
     expect(inspected.count()).toBe(0);
     inspected.close();
   });
+
+  it("publishes a durable legacy intent before committing its prepared row", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    let commits = 0;
+    const durableDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "commitPreparedUpserts") {
+          return (...args: Parameters<MemoryDb["commitPreparedUpserts"]>) => {
+            commits += 1;
+            const files = readdirSync(join(root, ".capture-outbox"));
+            expect(files).toHaveLength(1);
+            const intent = JSON.parse(readFileSync(join(root, ".capture-outbox", files[0]!), "utf8")) as {
+              actions: Array<{ kind: string }>;
+              state: string;
+            };
+            expect(intent).toMatchObject({ state: "pending", actions: [{ kind: "add" }] });
+            return target.commitPreparedUpserts(...args);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as MemoryDb;
+
+    const actions = await reconcile(
+      [{ type: "note", text: "A durable legacy reconciliation fact", salience: 0.8, isInsight: false }],
+      makeDeps(durableDb, root, fakeLlm([])),
+    );
+
+    expect(actions).toEqual([{ kind: "add", id: expect.any(String) }]);
+    expect(commits).toBe(1);
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+  });
 });
 
 describe("reconcileBatch", () => {
+  it("publishes ADD/UPDATE/SUPERSEDE/NOOP together and commits prepared rows once", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "UPDATE", "Morgan prefers blue deployments");
+    await seed(db, root, "OLD", "Atlas launches in July");
+    await seed(db, root, "NOOP", "Paola prefers quiet mornings");
+    const candidates: CandidateMemory[] = [
+      { type: "note", text: "Aster uses quarterly red-team reviews", salience: 0.7, isInsight: false },
+      { type: "note", text: "Morgan prefers reviewed blue deployments", salience: 0.8, isInsight: false },
+      { type: "note", text: "Atlas launches in August", salience: 0.8, isInsight: false },
+      { type: "note", text: "Paola prefers quiet mornings", salience: 0.7, isInsight: false },
+    ];
+    let searchBatches = 0;
+    db.findSimilarMany = async () => {
+      searchBatches += 1;
+      return [
+        [],
+        [{ record: db.get("UPDATE")!, distance: 0.1 }],
+        [{ record: db.get("OLD")!, distance: 0.1 }],
+        [{ record: db.get("NOOP")!, distance: 0.1 }],
+      ];
+    };
+    let persistenceBatches = 0;
+    let commits = 0;
+    let committedRows = 0;
+    let durableKinds: string[] = [];
+    const durableDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "prepareUpsertVectors") {
+          return async (...args: Parameters<MemoryDb["prepareUpsertVectors"]>) => {
+            persistenceBatches += 1;
+            return await target.prepareUpsertVectors(...args);
+          };
+        }
+        if (prop === "commitPreparedUpserts") {
+          return (...args: Parameters<MemoryDb["commitPreparedUpserts"]>) => {
+            commits += 1;
+            committedRows += args[0].length;
+            const files = readdirSync(join(root, ".capture-outbox"));
+            expect(files).toHaveLength(1);
+            const intent = JSON.parse(readFileSync(join(root, ".capture-outbox", files[0]!), "utf8")) as {
+              actions: Array<{ kind: string }>;
+              state: string;
+            };
+            expect(intent.state).toBe("pending");
+            durableKinds = intent.actions.map((action) => action.kind);
+            return target.commitPreparedUpserts(...args);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as MemoryDb;
+    let llmCalls = 0;
+    const llm: ReconcileDeps["llm"] = {
+      id: "ordinary-batch",
+      complete: async () => {
+        llmCalls += 1;
+        return JSON.stringify([
+          { index: 1, action: "update", targetId: "UPDATE", text: candidates[1]!.text },
+          { index: 2, action: "supersede", targetId: "OLD", text: candidates[2]!.text },
+          { index: 3, action: "noop", targetId: "NOOP" },
+        ]);
+      },
+    };
+
+    let nextId = 0;
+    const actions = await reconcileBatch(candidates, makeDeps(durableDb, root, llm, {
+      nextId: () => `BATCH${String(++nextId).padStart(4, "0")}`,
+    }));
+
+    expect(actions.map((action) => action?.kind)).toEqual(["add", "update", "supersede", "noop"]);
+    expect(searchBatches).toBe(1);
+    expect(llmCalls).toBe(1);
+    expect(persistenceBatches).toBe(1);
+    expect(commits).toBe(1);
+    expect(committedRows).toBe(3);
+    expect(durableKinds).toEqual(["add", "update", "supersede", "noop"]);
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+  });
+
+  it("leaves a supersede intent recoverable when its target disappears after vector preparation", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "OLD", "Atlas launches in July");
+    const originalCanonical = dailyContent(root);
+    const candidate: CandidateMemory = {
+      type: "note",
+      text: "Atlas launches in August",
+      salience: 0.8,
+      isInsight: false,
+    };
+    db.findSimilarMany = async () => [[{ record: db.get("OLD")!, distance: 0.1 }]];
+    const reply = JSON.stringify([{
+      index: 0,
+      action: "supersede",
+      targetId: "OLD",
+      text: candidate.text,
+    }]);
+
+    await expect(reconcileBatch(
+      [candidate],
+      makeDeps(db, root, fakeLlm([["Classify each candidate", reply]]), {
+        beforeBatchCommit: (actions) => {
+          expect(actions).toHaveLength(1);
+          expect(actions[0]).toMatchObject({ kind: "supersede", oldId: "OLD", vector: expect.any(Array) });
+          unlinkSync(dailyFilePath(root, FIXED));
+        },
+      }),
+    )).rejects.toThrow(/pending intent.*conflicts/iu);
+
+    const pendingFiles = readdirSync(join(root, ".capture-outbox"));
+    expect(pendingFiles).toHaveLength(1);
+    const pending = JSON.parse(readFileSync(join(root, ".capture-outbox", pendingFiles[0]!), "utf8")) as {
+      actions: Array<{ kind: string; oldId: string; newId: string }>;
+    };
+    expect(pending.actions).toEqual([
+      expect.objectContaining({ kind: "supersede", oldId: "OLD", newId: expect.any(String) }),
+    ]);
+    const newId = pending.actions[0]!.newId;
+    expect(db.get("OLD")?.status).toBe("open");
+    expect(db.get(newId)).toBeUndefined();
+    expect(existsSync(dailyFilePath(root, FIXED))).toBe(false);
+
+    let followupSearches = 0;
+    db.findSimilarMany = async () => {
+      followupSearches += 1;
+      return [[]];
+    };
+    await expect(reconcileBatch(
+      [{ type: "note", text: "A later fact must not stack", salience: 0.6, isInsight: false }],
+      makeDeps(db, root, fakeLlm([])),
+    )).rejects.toThrow(/pending intent.*conflicts/iu);
+    expect(followupSearches).toBe(0);
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
+
+    writeFileSync(dailyFilePath(root, FIXED), originalCanonical, "utf8");
+    closeTrackedDb(db);
+    const base = fakeEmbeddings(DIM);
+    let startupEmbeddingCalls = 0;
+    const store = createBujoMemoryStore({
+      root,
+      tier: "journal",
+      embeddings: {
+        id: base.id,
+        embed: async (texts) => {
+          startupEmbeddingCalls += 1;
+          return await base.embed(texts);
+        },
+      },
+      dim: DIM,
+      clock: () => FIXED,
+    });
+    expect(startupEmbeddingCalls).toBe(0);
+    await store.close();
+
+    const inspected = openMemoryDb({ path: join(root, "memory.db"), dim: DIM, readOnly: true });
+    openDbs.push(inspected);
+    expect(inspected.get("OLD")).toMatchObject({ status: "invalidated", supersededBy: newId });
+    expect(inspected.get(newId)).toMatchObject({ status: "open", text: candidate.text });
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+  });
+
   it("preflights persistence embeddings for add/update/supersede before any canonical mutation", async () => {
     const root = newRoot();
     const db = openDb(root);
