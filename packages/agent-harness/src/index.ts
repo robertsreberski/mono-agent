@@ -31,6 +31,7 @@ export type {
   AgentHarnessSessionEventKind,
   AgentHarnessSessionSnapshot,
   AgentHarnessSessionOptions,
+  AgentHarnessTurnHistoryEnricher,
   AgentSessionMode,
   ConversationHistoryStore,
   ExternalRunSummary,

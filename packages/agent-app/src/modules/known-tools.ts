@@ -21,6 +21,11 @@ export const BUILTIN_TOOL_NAMES = [
   "WebSearch",
 ] as const;
 
+/** App-owned tools injected by the configured host and governed by tool policy. */
+export const APP_TOOL_NAMES = [
+  "RunHistory",
+] as const;
+
 /** Adapter send tools — require BOTH an `allowedTools` entry AND an enabled channel. */
 export const ADAPTER_SEND_TOOL_NAMES = [
   "SlackSendMessage",
@@ -45,6 +50,7 @@ export const LEGACY_TOOL_ALIASES: Record<string, string> = {
   telegram_send_document: "TelegramSendFile",
   telegram_send_photo: "TelegramSendFile",
   ask_user: "AskUser",
+  run_history: "RunHistory",
   memory_recall: "MemoryRecall",
   read_skill: "ReadSkill",
   ask_collaborator: "AskCollaborator",
@@ -59,6 +65,7 @@ export function canonicalToolName(name: string): string {
 export const DEFAULT_SAFE_TOOLS = ["Read", "Glob", "Grep"] as const;
 
 export type BuiltinToolName = (typeof BUILTIN_TOOL_NAMES)[number];
+export type AppToolName = (typeof APP_TOOL_NAMES)[number];
 export type AdapterSendToolName = (typeof ADAPTER_SEND_TOOL_NAMES)[number];
 
 /**
@@ -69,7 +76,12 @@ export type AdapterSendToolName = (typeof ADAPTER_SEND_TOOL_NAMES)[number];
  * config listing `ReadSkill` must validate as cleanly as one listing `read_skill`.
  */
 const KNOWN_TOOL_NAMES: readonly string[] = [
-  ...new Set<string>([...BUILTIN_TOOL_NAMES, ...ADAPTER_SEND_TOOL_NAMES, ...Object.values(LEGACY_TOOL_ALIASES)]),
+  ...new Set<string>([
+    ...BUILTIN_TOOL_NAMES,
+    ...APP_TOOL_NAMES,
+    ...ADAPTER_SEND_TOOL_NAMES,
+    ...Object.values(LEGACY_TOOL_ALIASES),
+  ]),
 ];
 
 /**

@@ -1,5 +1,7 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { open, readdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
+import { createInterface } from "node:readline";
 
 import {
   artifactDirForKind,
@@ -51,6 +53,7 @@ interface NormalizedReaderOptions {
   readonly scopeProvided: boolean;
   readonly maxRuns: number;
   readonly maxEventsPerRun: number;
+  readonly eventSelection: "head" | "head-tail";
   readonly maxStringBytes: number;
 }
 
@@ -61,6 +64,8 @@ interface ParsedSummaryFile {
   readonly updatedAt: string;
   readonly mtimeMs: number;
 }
+
+const MAX_HEAD_TAIL_EVENT_ARTIFACT_BYTES = 16 * 1_024 * 1_024;
 
 export type ObservabilityReadErrorCode = "invalid_reader_options" | "invalid_run_id";
 export type ObservabilityReadErrorDetails = Record<string, unknown> & { readonly code: ObservabilityReadErrorCode };
@@ -313,6 +318,9 @@ async function readEventsFile(
   normalized: NormalizedReaderOptions,
   warnings: string[],
 ): Promise<readonly RecordedRunEvent[]> {
+  if (normalized.eventSelection === "head-tail") {
+    return await readEventsFileHeadTail(filePath, normalized, warnings);
+  }
   let raw: string;
   try {
     raw = await readFile(filePath, "utf8");
@@ -341,6 +349,101 @@ async function readEventsFile(
       events.push(toRecordedEvent(parsed, events.length, normalized.maxStringBytes));
     } catch (error) {
       warnings.push(`Skipping malformed event line ${i + 1}: ${errorMessage(error)}.`);
+    }
+  }
+  return events;
+}
+
+interface SelectedEventLine {
+  readonly line: string;
+  readonly lineNumber: number;
+  readonly eventIndex: number;
+}
+
+async function readEventsFileHeadTail(
+  filePath: string,
+  normalized: NormalizedReaderOptions,
+  warnings: string[],
+): Promise<readonly RecordedRunEvent[]> {
+  let file;
+  try {
+    file = await open(filePath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) {
+      warnings.push("Event artifact is missing for this run.");
+      return [];
+    }
+    warnings.push(`Unable to read event artifact: ${errorMessage(error)}.`);
+    return [];
+  }
+
+  const firstCount = Math.ceil(normalized.maxEventsPerRun / 2);
+  const lastCount = normalized.maxEventsPerRun - firstCount;
+  const head: SelectedEventLine[] = [];
+  const tail: SelectedEventLine[] = [];
+  let tailCursor = 0;
+  let eventCount = 0;
+  let lineNumber = 0;
+  let exceededReadBound = false;
+  try {
+    const stats = await file.stat();
+    if (!stats.isFile() || stats.size > MAX_HEAD_TAIL_EVENT_ARTIFACT_BYTES) {
+      warnings.push("Event artifact exceeds the safe head-tail read bound.");
+      return [];
+    }
+    // `end` is inclusive and constrains raw reads before readline can buffer an
+    // unterminated/growing line. Re-stat the same open descriptor afterward to
+    // turn concurrent growth beyond the bound into an explicit omission.
+    const input = file.createReadStream({
+      encoding: "utf8",
+      autoClose: false,
+      start: 0,
+      end: MAX_HEAD_TAIL_EVENT_ARTIFACT_BYTES - 1,
+    });
+    const lines = createInterface({ input, crlfDelay: Infinity });
+    for await (const line of lines) {
+      lineNumber += 1;
+      if (line.trim().length === 0) continue;
+      const selected = { line, lineNumber, eventIndex: eventCount };
+      eventCount += 1;
+      if (head.length < firstCount) {
+        head.push(selected);
+      } else if (lastCount > 0 && tail.length < lastCount) {
+        tail.push(selected);
+      } else if (lastCount > 0) {
+        tail[tailCursor] = selected;
+        tailCursor = (tailCursor + 1) % lastCount;
+      }
+    }
+    exceededReadBound = (await file.stat()).size > MAX_HEAD_TAIL_EVENT_ARTIFACT_BYTES;
+  } catch (error) {
+    warnings.push(`Unable to read event artifact: ${errorMessage(error)}.`);
+    return [];
+  } finally {
+    await file.close().catch(() => undefined);
+  }
+  if (exceededReadBound) {
+    warnings.push("Event artifact exceeds the safe head-tail read bound.");
+    return [];
+  }
+
+  const capped = eventCount > normalized.maxEventsPerRun;
+  const orderedTail = capped && tail.length === lastCount && lastCount > 0
+    ? [...tail.slice(tailCursor), ...tail.slice(0, tailCursor)]
+    : tail;
+  if (capped) {
+    warnings.push(
+      `Event list was capped at ${normalized.maxEventsPerRun} events using first-and-last selection.`,
+    );
+  }
+
+  const events: RecordedRunEvent[] = [];
+  for (const selected of [...head, ...orderedTail]) {
+    try {
+      const parsed = JSON.parse(selected.line) as unknown;
+      events.push(toRecordedEvent(parsed, selected.eventIndex, normalized.maxStringBytes));
+    } catch (error) {
+      warnings.push(`Skipping malformed event line ${selected.lineNumber}: ${errorMessage(error)}.`);
     }
   }
   return events;
@@ -481,6 +584,11 @@ function normalizeReaderOptions(options: JsonlRunReaderOptions): NormalizedReade
     scopeProvided: options.scope !== undefined,
     maxRuns: positiveInteger(options.maxRuns, DEFAULT_MAX_RUNS, "maxRuns", raiseOptions),
     maxEventsPerRun: positiveInteger(options.maxEventsPerRun, DEFAULT_MAX_EVENTS_PER_RUN, "maxEventsPerRun", raiseOptions),
+    eventSelection: options.eventSelection === undefined || options.eventSelection === "head"
+      ? "head"
+      : options.eventSelection === "head-tail"
+        ? "head-tail"
+        : raiseOptions("eventSelection must be 'head' or 'head-tail'.", "eventSelection"),
     maxStringBytes: minInteger(options.maxStringBytes, DEFAULT_MAX_STRING_BYTES, 64, "maxStringBytes", raiseOptions),
   };
 }

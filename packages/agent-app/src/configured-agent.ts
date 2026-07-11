@@ -101,6 +101,8 @@ export interface ConfiguredAgentHarnessOptions {
   readonly executionMode?: string;
   readonly memory?: MemoryStore;
   readonly historyStore?: ConversationHistoryStore;
+  /** App-owned run-scoped interaction details to add only to replay history. */
+  readonly turnHistoryEnricher?: AgentHarnessOptions["turnHistoryEnricher"];
   readonly createRunId?: AgentHarnessOptions["createRunId"];
   readonly now?: AgentHarnessOptions["now"];
   readonly runtimeOptions?: AgentHarnessOptions["runtimeOptions"];
@@ -458,6 +460,7 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
     ...(options.onMemoryWarning === undefined ? {} : { onMemoryWarning: options.onMemoryWarning }),
     historyStore: options.historyStore ?? createInMemoryHistoryStore({ maxMessages: historyMaxMessages(config.runtime.maxTurns) }),
+    ...(options.turnHistoryEnricher === undefined ? {} : { turnHistoryEnricher: options.turnHistoryEnricher }),
     // Inbound channel attachments are saved here (under the artifacts dir, which
     // sits inside a sandbox-readable root) so the agent can open them by path.
     attachmentsDir: resolvePath(config.artifacts.dir, "attachments"),

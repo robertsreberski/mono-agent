@@ -21,6 +21,11 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   composition
   (including canonical `runtime.fallbacks` routes and legacy
   `runtime.fallbackModels` compatibility).
+- Preserve completed blocking `AskUser` / `TelegramAskButtons` question,
+  options, and outcome in the assistant history copy so cold/stateless provider
+  replay does not lose the out-of-band exchange.
+- Expose the request-scoped read-only `RunHistory` tool for safe normalized
+  evidence from completed prior runs in the current conversation bucket.
 - Drive each channel through a uniform driver contract with per-channel
   `disabled` / `waiting_for_config` / `running` / `failed` status.
 - Register the host as a traceability source. Config edits are made directly in
@@ -162,6 +167,26 @@ direct Codex/OpenCode use provider-native safety plus exact allow-all. No route
 silently drops a required capability. Pi `pi:opencode-go:*` remains a Pi route.
 Direct OpenCode also requires exact allow-all; restrictive static policies fail
 validation/runtime and an incompatible dynamic override is warned and ignored.
+
+`RunHistory` requires no config key. It is automatically available under
+allow-all on MCP-capable routes; a restrictive `tools.allowedTools` must name
+`RunHistory` explicitly (`run_history` remains a deprecated input alias), and
+`disallowedTools` can remove it. Direct OpenCode and other MCP-incompatible
+routes suppress it. Its `list` and `inspect` actions can read only completed
+prior runs in the exact current conversation bucket and return bounded,
+redacted, normalized evidence. They exclude the current/running run, other
+conversations or rollover buckets, system prompts, reasoning, recalled memory,
+turn-context payloads, and raw artifact paths; historical text is marked
+untrusted.
+
+For missing context, the agent should use active conversation history first,
+`MemoryRecall` for intentionally captured durable facts, and `RunHistory` for
+exact prior-run/tool evidence. Completed blocking `AskUser` and
+`TelegramAskButtons` exchanges are written into the assistant history copy
+before the final response, explicitly labelled as untrusted historical data and
+bounded by newest whole interactions, without changing the outward message or
+long-term memory capture. `TelegramAskButtons` with `wait: false` continues to produce a
+synthetic next turn when the user taps later.
 
 Programmatic:
 

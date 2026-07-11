@@ -85,6 +85,12 @@ Coverage: `auto`. History is kept in an **in-memory store**. The default retains
 - `runtime.maxTurns` (`MONO_AGENT_MAX_TURNS`) is `0` or omitted for an **unlimited provider run**; set `1`–`100` to cap turns per run. This does not disable history: unlimited runs use the bounded 12-message history default.
 - History is keyed per conversation. Channels reuse a stable conversation id; for cron, share one with `cron.jobs[].conversationId` so ticks accumulate the same history (see [Cron](/channels/cron/)).
 
+Completed blocking `AskUser` and `TelegramAskButtons` interactions are also preserved in the assistant-side history copy. The compact interaction transcript records the question, button options when present, the outcome, and the user's typed answer or selected label when present, before the final assistant text. It is explicitly labelled untrusted historical data, normalizes structural line separators, and retains the newest complete entries when bounded. That means a later cold/stateless provider call can replay what happened instead of seeing only the trigger and final response.
+
+This history-only copy does not change the message delivered to the user, and it is not added to long-term memory capture. `TelegramAskButtons` with `wait: false` keeps its existing behavior: the tool returns immediately and a later tap becomes a separate synthetic user turn rather than an in-turn interaction transcript.
+
+Use active conversation history first for the current exchange. Use `MemoryRecall` for durable facts that were intentionally captured, and use the read-only [`RunHistory`](/tools/mcp/#runhistory-prior-run-evidence) tool when the exact tool calls, results, warnings, or final output from a prior run are needed.
+
 ```json
 {
   "runtime": { "model": "claude:claude-sonnet-4-6", "maxTurns": 24 }

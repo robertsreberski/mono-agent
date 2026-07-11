@@ -38,6 +38,7 @@ Hosts that need request-scoped runtime setup can provide `runtimeOptionsForReque
 - Selected skill helpers: `loadSelectedSkills`, `createSkillsCache`, `SkillActivationError`
 - Tool policy helpers: `createToolPolicy`, `failClosedToolPolicy`, `loadToolPolicyFromJsonFile`, `loadToolPolicyFromJsonFileSync`, `toolPolicyToRuntimeOptions`, `ToolPolicyError`
 - Harness, shared responder, runtime, request-scoped runtime option, memory, history, and session types from `types.ts`
+- `AgentHarnessTurnHistoryEnricher`, an optional app-owned hook that enriches only the replayed assistant history copy and releases run-scoped state after every outcome; delivered text and memory capture remain unchanged
 
 With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation: resumed runs pass `sessionId`/`sessionKeepAlive` to the runtime and omit history from the prompt, stale sessions are evicted and retried once with history, rotated provider session ids are tracked, and `dispose()` retires everything on shutdown. History is still appended after every successful turn so post-expiry runs replay it as before.
 

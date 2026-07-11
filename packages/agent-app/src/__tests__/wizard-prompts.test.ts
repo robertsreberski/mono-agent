@@ -14,7 +14,7 @@ vi.mock("@clack/prompts", async (importOriginal) => {
   return { ...actual, isCancel: (value: unknown): value is symbol => value === CANCEL };
 });
 
-import { BUILTIN_TOOL_NAMES } from "../modules/known-tools.js";
+import { APP_TOOL_NAMES, BUILTIN_TOOL_NAMES } from "../modules/known-tools.js";
 import {
   assertConcreteWizardModelRef,
   channelSelectOptions,
@@ -271,11 +271,12 @@ describe("wizard prompt builders", () => {
       .toBe("Run readiness checks, then create agent");
   });
 
-  it("toolMultiselectOptions appends a channel's send tools then AskUser after the built-ins", () => {
+  it("toolMultiselectOptions appends app and channel tools then AskUser after the built-ins", () => {
     const options = toolMultiselectOptions(["channel:telegram"]);
     const values = options.map((option) => option.value);
     expect(values.slice(0, BUILTIN_TOOL_NAMES.length)).toEqual([...BUILTIN_TOOL_NAMES]);
     expect(values.slice(BUILTIN_TOOL_NAMES.length)).toEqual([
+      "RunHistory",
       "TelegramSendMessage",
       "TelegramAskButtons",
       "AskUser",
@@ -286,11 +287,12 @@ describe("wizard prompt builders", () => {
     expect(ask?.hint).toContain("tappable buttons");
     const send = options.find((option) => option.value === "TelegramSendMessage");
     expect(send?.hint).toBe("proactive send (Telegram)");
+    expect(options.find((option) => option.value === "RunHistory")?.hint).toContain("prior runs");
   });
 
   it("toolMultiselectOptions offers the built-ins plus channel-agnostic AskUser with no channel", () => {
     const options = toolMultiselectOptions([]);
-    expect(options.map((option) => option.value)).toEqual([...BUILTIN_TOOL_NAMES, "AskUser"]);
+    expect(options.map((option) => option.value)).toEqual([...BUILTIN_TOOL_NAMES, ...APP_TOOL_NAMES, "AskUser"]);
     const ask = options.find((option) => option.value === "AskUser");
     expect(ask?.hint).toContain("any channel");
   });
