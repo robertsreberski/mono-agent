@@ -1,5 +1,6 @@
 import {
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -32,7 +33,7 @@ import {
 } from "../index.js";
 import { acquireMemoryWriterLease } from "../generations.js";
 import { writeCaptureIntent } from "../capture-outbox.js";
-import { appendBullet, dailyFilePath } from "../daily.js";
+import { appendBullet, dailyFilePath, normalizedContentHash } from "../daily.js";
 import type { Bullet } from "../types.js";
 
 const NOW = "2026-07-11T09:00:00.000Z";
@@ -120,7 +121,6 @@ describe("safe memory index rebuild", () => {
   it("replays an exact pending capture intent before taking the rebuild source snapshot", async () => {
     const root = tempRoot();
     const item = bullet("PENDING", "Morgan owns safe rebuild replay.");
-    writeDaily(root, [item]);
     const record: MemoryRecord = {
       ...note(item.id, item.text),
       salience: item.salience,
@@ -162,7 +162,7 @@ describe("safe memory index rebuild", () => {
     }
   });
 
-  it("keeps an after-snapshot failure repairable by current-identity startup", async () => {
+  it("retires current-identity capture recovery before a later snapshot failure", async () => {
     const root = tempRoot();
     const model = embeddings("test:after-snapshot", 8);
     writeDaily(root, [bullet("BASE", "The current generation remains active.")]);
@@ -197,7 +197,7 @@ describe("safe memory index rebuild", () => {
     })).rejects.toThrow("fault-after-retained-snapshot");
 
     expect(resolveActiveMemoryDbPath(root)).toBe(activeBefore);
-    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
     const repaired = openMemoryDb({ path: activeBefore, readOnly: true, dim: 8 });
     try {
       expect(repaired.get(item.id)?.text).toBe(item.text);
@@ -279,7 +279,212 @@ describe("safe memory index rebuild", () => {
     }
   });
 
-  it("keeps a post-activation crash startup-repairable without replaying the stored vector", async () => {
+  it.each(["journal", "lite"] as const)(
+    "retires a pending BuJo capture under the old identity before rebuilding into %s",
+    async (tier) => {
+      const root = tempRoot();
+      const oldModel = embeddings("test:tier-old", 8);
+      writeDaily(root, [bullet("BASE-TIER", "Base record before the tier change.")]);
+      await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: oldModel, dim: 8 });
+      const item = bullet("BUJO-PENDING", "Pending BuJo fact crosses a tier boundary.");
+      const file = "daily/2026-07-11.md";
+      writeCaptureIntent(root, [{
+        candidateIndex: 0,
+        kind: "add",
+        id: item.id,
+        after: { file, bullet: item },
+        record: memoryRecordForBullet(item, file),
+        vector: deterministicVector(item.text, 8),
+        threads: [],
+      }], {
+        entities: [{ id: "concept:tier", name: "Tier", type: "concept", createdAt: NOW }],
+        associations: [{
+          memoryId: item.id,
+          entityId: "concept:tier",
+          provenance: "capture",
+          createdAt: NOW,
+        }],
+      }, NOW);
+
+      const result = tier === "journal"
+        ? await safeRebuildMemoryIndex({
+          root,
+          tier,
+          embeddings: embeddings("test:tier-journal", 4),
+          dim: 4,
+        })
+        : await safeRebuildMemoryIndex({ root, tier });
+      const db = openMemoryDb({ path: result.active, readOnly: true, ...(tier === "journal" ? { dim: 4 } : {}) });
+      try {
+        const expectedId = tier === "journal" ? `J-${normalizedContentHash(item.text)}` : item.id;
+        expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+        expect(db.count()).toBe(2);
+        expect(db.get(expectedId)?.text).toBe(item.text);
+        if (tier === "journal") expect(db.get(item.id)).toBeUndefined();
+        expect(db.validationSnapshot()).toMatchObject({ entities: 0, relations: 0, associations: 0 });
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it("retires a pending BuJo NOOP before Journal canonicalizes its memory id", async () => {
+    const root = tempRoot();
+    const item = bullet("BUJO-NOOP", "A pending NOOP must not brick the Journal transition.");
+    const oldModel = embeddings("test:noop-old", 8);
+    writeDaily(root, [item]);
+    await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: oldModel, dim: 8 });
+    const file = "daily/2026-07-11.md";
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "noop",
+      id: item.id,
+      expected: { file, bullet: item },
+    }], {}, NOW);
+
+    const model = embeddings("test:noop-journal", 4);
+    const result = await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: model, dim: 4 });
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+    const db = openMemoryDb({ path: result.active, readOnly: true, dim: 4 });
+    try {
+      expect(db.get(item.id)).toBeUndefined();
+      expect(db.get(`J-${normalizedContentHash(item.text)}`)?.text).toBe(item.text);
+    } finally {
+      db.close();
+    }
+    const startup = createBujoMemoryStore({ root, tier: "journal", embeddings: model, dim: 4 });
+    await startup.close();
+  });
+
+  it.each(["journal", "lite"] as const)(
+    "rejects a pending capture without an active DB before staging source into %s",
+    async (tier) => {
+      const root = tempRoot();
+      const item = bullet("NO-ACTIVE-TIER", "No active DB exists for this capture.");
+      const file = "daily/2026-07-11.md";
+      writeCaptureIntent(root, [{
+        candidateIndex: 0,
+        kind: "add",
+        id: item.id,
+        after: { file, bullet: item },
+        record: memoryRecordForBullet(item, file),
+        vector: deterministicVector(item.text, 8),
+        threads: [],
+      }], {}, NOW);
+
+      const rebuild = tier === "journal"
+        ? safeRebuildMemoryIndex({ root, tier, embeddings: embeddings("test:no-active-journal", 4), dim: 4 })
+        : safeRebuildMemoryIndex({ root, tier });
+      await expect(rebuild).rejects.toThrow(/without an active index.*only recover into BuJo|only recover into BuJo/iu);
+
+      expect(existsSync(join(root, file))).toBe(false);
+      expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
+      expect(readManagedIndexManifest(root)).toBeUndefined();
+    },
+  );
+
+  it("completes a no-active NOOP through the candidate before activation", async () => {
+    const root = tempRoot();
+    const item = bullet("NO-ACTIVE-NOOP", "The canonical NOOP target already exists.");
+    writeDaily(root, [item]);
+    const file = "daily/2026-07-11.md";
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "noop",
+      id: item.id,
+      expected: { file, bullet: item },
+    }], {}, NOW);
+
+    const result = await safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: embeddings("test:no-active-noop", 8),
+      dim: 8,
+    });
+
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+    const db = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
+    try {
+      expect(db.get(item.id)?.text).toBe(item.text);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("completes a no-active SUPERSEDE lifecycle through the candidate before activation", async () => {
+    const root = tempRoot();
+    const old = bullet("NO-ACTIVE-OLD", "The old canonical claim.");
+    const replacement = bullet("NO-ACTIVE-NEW", "The replacement canonical claim.");
+    writeDaily(root, [old]);
+    const file = "daily/2026-07-11.md";
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "supersede",
+      oldId: old.id,
+      newId: replacement.id,
+      beforeOld: { file, bullet: old },
+      afterOld: { file, bullet: { ...old, status: "invalidated" } },
+      afterNew: { file, bullet: replacement },
+      record: memoryRecordForBullet(replacement, file),
+      vector: deterministicVector(replacement.text, 8),
+      at: NOW,
+    }], {}, NOW);
+
+    const result = await safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: embeddings("test:no-active-supersede", 8),
+      dim: 8,
+    });
+
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+    const db = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
+    try {
+      expect(db.get(old.id)).toMatchObject({
+        status: "invalidated",
+        supersededBy: replacement.id,
+        supersededAt: NOW,
+        validTo: NOW,
+      });
+      expect(db.get(replacement.id)?.text).toBe(replacement.text);
+      expect(db.edges(old.id)).toEqual([
+        expect.objectContaining({ dst: replacement.id, kind: "supersedes" }),
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("validates managed metadata and actual vector DDL before replay can mutate source", async () => {
+    const root = tempRoot();
+    const model = embeddings("test:ddl-preflight", 8);
+    writeDaily(root, [bullet("DDL-BASE", "The active DB has an eight-dimensional vector table.")]);
+    await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: model, dim: 8 });
+    const manifestPath = join(root, ".index", "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { active: { dimension: number } };
+    manifest.active.dimension = 4;
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    const item = bullet("DDL-PENDING", "This source must remain unstaged after identity failure.");
+    const file = "daily/2026-07-11.md";
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: item.id,
+      after: { file, bullet: item },
+      record: memoryRecordForBullet(item, file),
+      vector: deterministicVector(item.text, 4),
+      threads: [],
+    }], {}, NOW);
+
+    await expect(safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: model, dim: 8 }))
+      .rejects.toThrow(/metadata|dimension|vector DDL/iu);
+
+    const canonical = readFileSync(join(root, file), "utf8");
+    expect(canonical).not.toContain(item.id);
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
+  });
+
+  it("has no fallible capture replay tail after manifest activation", async () => {
     const root = tempRoot();
     const model = embeddings("test:post-activation", 8);
     writeDaily(root, [bullet("BASE", "Base record before uncertain activation.")]);
@@ -306,7 +511,7 @@ describe("safe memory index rebuild", () => {
     })).rejects.toThrow(/crash-after-activation|activation.*uncertain/iu);
 
     expect(resolveActiveMemoryDbPath(root)).not.toBe(before);
-    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
     const startup = createBujoMemoryStore({
       root,
       tier: "bujo",
@@ -624,6 +829,27 @@ describe("safe memory index rebuild", () => {
 
     await expect(safeRebuildMemoryIndex({ root, tier: "lite" })).rejects.toThrow(/symlink|symbolic|source/iu);
     expect(await resolveActiveMemoryDbPath(root)).toBe(before);
+  });
+
+  it("rejects hard-linked canonical source files without changing the active index", async () => {
+    const root = tempRoot();
+    const outside = tempRoot();
+    writeDaily(root, [bullet("HARDLINK-BASE", "The prior generation remains active.")]);
+    await safeRebuildMemoryIndex({ root, tier: "lite" });
+    const before = resolveActiveMemoryDbPath(root);
+    const dailyPath = join(root, "daily", "2026-07-11.md");
+    const outsidePath = join(outside, "shared-daily.md");
+    rmSync(dailyPath);
+    writeFileSync(
+      outsidePath,
+      `# 2026-07-11\n\n${serializeBullet(bullet("HARDLINK-NEW", "Must not be indexed through a hard link."))}\n`,
+      "utf8",
+    );
+    linkSync(outsidePath, dailyPath);
+
+    await expect(safeRebuildMemoryIndex({ root, tier: "lite" }))
+      .rejects.toThrow(/hard link|single-link|exactly one/iu);
+    expect(resolveActiveMemoryDbPath(root)).toBe(before);
   });
 
   it("uses the same safe path for model and dimension changes, retaining the old generation", async () => {

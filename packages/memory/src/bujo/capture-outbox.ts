@@ -149,7 +149,12 @@ export function replayCaptureIntent(
   options: CaptureIntentReplayOptions = {},
 ): CaptureIntentReplayResult {
   assertReplayMode(db, options);
-  const replay = loadReplay(root, handle.file);
+  const files = captureIntentFiles(root);
+  if (files.length > MAX_INTENTS) throw new Error("memory-capture: capture outbox exceeds its bounded intent count.");
+  const replays = files.map((name) => loadReplay(root, `${OUTBOX_DIR}/${name}`));
+  assertDistinctQueuedMemoryIds(replays);
+  const replay = replays.find((candidate) => candidate.file === handle.file);
+  if (replay === undefined) throw new Error(`memory-capture: pending intent "${handle.file}" disappeared.`);
   const plan = preflightReplay(root, replay, db);
   return applyReplay(root, plan, db, options);
 }
@@ -164,6 +169,7 @@ export function replayCaptureOutbox(
   const files = captureIntentFiles(root);
   if (files.length > MAX_INTENTS) throw new Error("memory-capture: capture outbox exceeds its bounded intent count.");
   const replays = files.map((name) => loadReplay(root, `${OUTBOX_DIR}/${name}`));
+  assertDistinctQueuedMemoryIds(replays);
   // Validate every queued action and every vector against the current DB before
   // the first Markdown or graph append. A bad later intent cannot leave an
   // earlier intent half-applied merely because filenames sort first.
@@ -203,8 +209,13 @@ interface LoadedReplay {
 }
 
 interface ReplayPlan extends LoadedReplay {
-  readonly writes: readonly Exclude<CaptureIntentAction, { readonly kind: "noop" }>[];
+  readonly writes: readonly ReplayWrite[];
   readonly appliedMemoryIds: ReadonlySet<string>;
+}
+
+interface ReplayWrite {
+  readonly action: Exclude<CaptureIntentAction, { readonly kind: "noop" }>;
+  readonly record: MemoryRecord;
 }
 
 function captureIntentFiles(root: string): string[] {
@@ -235,23 +246,14 @@ function preflightReplay(root: string, replay: LoadedReplay, db: MemoryDb | unde
     appliedMemoryIds.add(memoryIdFor(action));
   }
 
-  const writes = intent.actions.flatMap((action) => {
-    if (action.kind === "noop" || (db !== undefined && dbHasCanonicalOutcome(db, action))) return [];
-    return [action];
-  });
+  const writes = db === undefined
+    ? intent.actions.flatMap((action) => action.kind === "noop" ? [] : [{ action, record: action.record }])
+    : intent.actions.flatMap((action) => preflightDbAction(db, action));
   if (db !== undefined) {
     db.assertPreparedUpserts(
-      writes.map((action) => action.record),
-      writes.map((action) => action.vector),
+      writes.map((write) => write.record),
+      writes.map((write) => write.action.vector),
     );
-    for (const action of intent.actions) {
-      if (action.kind === "noop" && !dbHasCanonicalOutcome(db, action)) {
-        throw new Error(`memory-capture: pending NOOP target ${action.id} is missing from the active index.`);
-      }
-      if (action.kind === "supersede" && db.get(action.oldId) === undefined) {
-        throw new Error(`memory-capture: pending supersede target ${action.oldId} is missing from the active index.`);
-      }
-    }
   }
 
   return { ...replay, writes, appliedMemoryIds };
@@ -278,8 +280,8 @@ function applyReplay(
   if (db !== undefined) {
     if (writes.length > 0) {
       db.commitPreparedUpserts(
-        writes.map((action) => action.record),
-        writes.map((action) => action.vector),
+        writes.map((write) => write.record),
+        writes.map((write) => write.action.vector),
       );
     }
     for (const action of intent.actions) {
@@ -320,6 +322,123 @@ function applyReplay(
   if (completeSnapshot === undefined) throw new Error(`memory-capture: completed intent "${file}" disappeared.`);
   removeCanonicalFile(root, file, completeSnapshot.identity);
   return { ...canonical, appliedMemoryIds: [...appliedMemoryIds] };
+}
+
+function assertDistinctQueuedMemoryIds(replays: readonly LoadedReplay[]): void {
+  const owners = new Map<string, string>();
+  for (const replay of replays) {
+    if (replay.intent.state === "complete") continue;
+    for (const action of replay.intent.actions) {
+      for (const id of touchedMemoryIds(action)) {
+        const owner = owners.get(id);
+        if (owner !== undefined) {
+          throw new Error(
+            `memory-capture: queued intents ${owner} and ${replay.intent.id} overlap on memory ${id}.`,
+          );
+        }
+        owners.set(id, replay.intent.id);
+      }
+    }
+  }
+}
+
+function touchedMemoryIds(action: CaptureIntentAction): readonly string[] {
+  return action.kind === "supersede" ? [action.oldId, action.newId] : [action.id];
+}
+
+function preflightDbAction(db: MemoryDb, action: CaptureIntentAction): ReplayWrite[] {
+  if (action.kind === "noop") {
+    const current = db.get(action.id);
+    if (current === undefined || !recordMatchesCanonicalState(current, action.expected)
+      || !hasUnsupersededLifecycle(db, current)) {
+      throw new Error(`memory-capture: pending NOOP target ${action.id} does not match the active index.`);
+    }
+    return [];
+  }
+
+  if (action.kind === "add") {
+    const current = db.get(action.id);
+    if (current !== undefined && (!recordMatchesCanonicalState(current, action.after)
+      || !hasUnsupersededLifecycle(db, current))) {
+      throw new Error(`memory-capture: pending ADD target ${action.id} conflicts with the active index.`);
+    }
+    if (current !== undefined && dbHasCanonicalOutcome(db, action)) return [];
+    return [{ action, record: mergeLiveRecordState(action.record, current) }];
+  }
+
+  if (action.kind === "update") {
+    const current = db.get(action.id);
+    if (current === undefined
+      || (!recordMatchesCanonicalState(current, action.before)
+        && !recordMatchesCanonicalState(current, action.after))
+      || !hasUnsupersededLifecycle(db, current)) {
+      throw new Error(`memory-capture: pending UPDATE target ${action.id} matches neither allowed active-index state.`);
+    }
+    if (recordMatchesCanonicalState(current, action.after) && dbHasCanonicalOutcome(db, action)) return [];
+    return [{ action, record: mergeLiveRecordState(action.record, current) }];
+  }
+
+  const old = db.get(action.oldId);
+  if (old === undefined) {
+    throw new Error(`memory-capture: pending supersede target ${action.oldId} is missing from the active index.`);
+  }
+  const oldBefore = recordMatchesCanonicalState(old, action.beforeOld)
+    && old.supersededBy === undefined
+    && old.supersededAt === undefined
+    && old.validTo === undefined;
+  const oldAfter = recordMatchesCanonicalState(old, action.afterOld)
+    && old.supersededBy === action.newId
+    && old.supersededAt === action.at
+    && old.validTo === action.at
+    && db.edges(action.oldId).some((edge) => edge.kind === "supersedes" && edge.dst === action.newId);
+  const oldAwaitingFinalize = recordMatchesCanonicalState(old, action.afterOld)
+    && old.supersededBy === undefined
+    && old.supersededAt === undefined
+    && old.validTo === undefined
+    && !db.edges(action.oldId).some((edge) => edge.kind === "supersedes");
+  if (!oldBefore && !oldAfter && !oldAwaitingFinalize) {
+    throw new Error(`memory-capture: pending supersede target ${action.oldId} conflicts with the active index.`);
+  }
+  const replacement = db.get(action.newId);
+  if (replacement !== undefined && !recordMatchesCanonicalState(replacement, action.afterNew)) {
+    throw new Error(`memory-capture: pending supersede replacement ${action.newId} conflicts with the active index.`);
+  }
+  if (replacement !== undefined && dbHasCanonicalOutcome(db, action)) return [];
+  return [{ action, record: mergeLiveRecordState(action.record, replacement) }];
+}
+
+function hasUnsupersededLifecycle(db: MemoryDb, record: MemoryRecord): boolean {
+  return record.supersededBy === undefined
+    && record.supersededAt === undefined
+    && record.validTo === undefined
+    && !db.edges(record.id).some((edge) => edge.kind === "supersedes");
+}
+
+/** Preserve SQLite-only state that may advance after the intent is published. */
+function mergeLiveRecordState(intended: MemoryRecord, current: MemoryRecord | undefined): MemoryRecord {
+  if (current === undefined) return intended;
+  const {
+    id: _id,
+    type: _type,
+    status: _status,
+    text: _text,
+    salience: _salience,
+    isInsight: _isInsight,
+    createdAt: _createdAt,
+    dueAt: _dueAt,
+    source: currentSource,
+    ...live
+  } = current;
+  return {
+    ...intended,
+    ...live,
+    tags: [...current.tags],
+    source: {
+      ...intended.source,
+      ...currentSource,
+      ...(intended.source.file === undefined ? {} : { file: intended.source.file }),
+    },
+  };
 }
 
 function canonicalActionCanApply(root: string, action: CaptureIntentAction): boolean {
@@ -387,7 +506,7 @@ function assertDbReplayOutcome(
     } else if (action.kind === "supersede") {
       const old = db.get(action.oldId);
       if (old === undefined || !recordMatchesCanonicalState(old, action.afterOld)
-        || old.supersededBy !== action.newId || old.supersededAt !== action.at
+        || old.supersededBy !== action.newId || old.supersededAt !== action.at || old.validTo !== action.at
         || !db.edges(action.oldId).some((edge) => edge.kind === "supersedes" && edge.dst === action.newId)) {
         throw new Error(`memory-capture: active index did not reach supersede outcome for ${action.oldId}.`);
       }

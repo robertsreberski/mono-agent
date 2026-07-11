@@ -5,8 +5,6 @@ import {
   lstatSync,
   openSync,
   readFileSync,
-  readdirSync,
-  rmSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -31,6 +29,11 @@ import {
   replayCaptureOutbox,
 } from "./capture-outbox.js";
 import { assertNoPendingMigrateDecision } from "./migrate.js";
+import {
+  listCanonicalFileNames,
+  listCanonicalRootFileNames,
+  readCanonicalFileSnapshot,
+} from "./path-safety.js";
 import type { BujoTier, Bullet } from "./types.js";
 import {
   MANAGED_INDEX_SCHEMA_VERSION,
@@ -38,15 +41,12 @@ import {
   acquireMemoryWriterLease,
   activateManagedIndex,
   assertManagedManifestState,
-  assertSafeDirectory,
   assertSafeRegularFile,
-  canonicalMemoryRoot,
   captureManagedManifestState,
   createManagedGeneration,
   fsyncDirectory,
   managedGenerationDbPath,
   readManagedIndexManifest,
-  resolveActiveMemoryDbPath,
   type ManagedGeneration,
   type ManagedIndexManifest,
 } from "./generations.js";
@@ -59,19 +59,15 @@ import {
  * and are intentionally NOT rebuilt here. This is documented and deferred to P3+.
  */
 export async function rebuildFromMarkdown(root: string, db: MemoryDb): Promise<{ indexed: number }> {
-  const dailyDir = join(root, "daily");
-  let files: string[];
-  try {
-    files = readdirSync(dailyDir).filter((f) => f.endsWith(".md")).sort();
-  } catch (err) {
-    // Only a missing directory means "empty". Re-throw permission/IO errors (EACCES, EIO, …) so a
-    // transient fault can't silently produce an empty rebuild — db.rebuild() deletes every row first.
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    files = [];
-  }
+  const files = listCanonicalFileNames(root, "daily", {
+    allowMissing: true,
+    include: (name) => name.endsWith(".md"),
+  });
   const records: MemoryRecord[] = [];
   for (const file of files) {
-    const parsed = parseDailyFile(readFileSync(join(dailyDir, file), "utf8"));
+    const snapshot = readCanonicalFileSnapshot(root, `daily/${file}`);
+    if (snapshot === undefined) throw new Error(`memory-rebuild: canonical source daily/${file} disappeared.`);
+    const parsed = parseDailyFile(snapshot.content);
     // Use the real 1-based file line number (not the bullet ordinal) so source.line points at the
     // actual markdown line for provenance / jump-to-source.
     parsed.lines.forEach((line) => {
@@ -214,25 +210,42 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
     const rootIdentity = identityOf(root);
     const manifestState = captureManagedManifestState(root);
     const priorManifest = readManagedIndexManifest(root);
-    const priorActivePath = resolveActiveMemoryDbPath(root);
+    assertManagedManifestState(root, manifestState);
+    const priorActivePath = activeDbPathFromManifest(root, priorManifest);
+    const hasPriorActiveDb = existsSync(priorActivePath);
     assertNoActiveSqliteWriter(priorActivePath);
     // A paid migration decision is a separate transaction whose vector and
     // source outcome must be recovered by migrate() under the current identity.
     // Refuse before capture replay can touch canonical Markdown or graph data.
     assertNoPendingMigrateDecision(root);
-    // Repair the current active DB and canonical sources together, but retain
-    // the intent. This preflights its stored vector against the old identity,
-    // gives any retained rollback full parity, and leaves every later rebuild
-    // failure startup-repairable.
+    let stagedCaptureForCandidate = false;
     if (hasPendingCaptureIntent(root)) {
-      const priorReplay = openCurrentReplayDb(root, priorManifest, options);
-      try {
-        replayCaptureOutbox(root, priorReplay.db, { retainIntent: true });
-        priorReplay.db.checkpoint();
-      } finally {
-        priorReplay.db.close();
+      assertManagedManifestState(root, manifestState);
+      if (hasPriorActiveDb) {
+        // A current index gives the durable action its original provider and
+        // lifecycle identity. Validate it before any source write, finish the
+        // transaction there, and retire it before the rebuild snapshot.
+        validateCurrentReplayDb(priorActivePath, priorManifest?.active);
+        const priorReplay = openCurrentReplayDb(priorActivePath, priorManifest);
+        try {
+          replayCaptureOutbox(root, priorReplay);
+          priorReplay.checkpoint();
+        } finally {
+          priorReplay.close();
+        }
+        fsyncFile(priorActivePath);
+      } else {
+        if (options.tier !== "bujo") {
+          throw new Error(
+            `memory-rebuild: pending capture without an active index can only recover into BuJo, not ${options.tier}.`,
+          );
+        }
+        // With no index, stage only rebuildable BuJo source. The candidate
+        // completes and retires the intent before manifest activation.
+        replayCaptureOutbox(root, undefined, { retainIntent: true });
+        stagedCaptureForCandidate = true;
       }
-      if (priorReplay.path !== undefined) fsyncFile(priorReplay.path);
+      assertManagedManifestState(root, manifestState);
     }
     const snapshot = snapshotCanonicalSources(root, options.tier);
     const rollbackSnapshot = priorManifest === undefined || priorManifest.active.tier === options.tier
@@ -308,6 +321,7 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
         ...(options.embeddings === undefined ? {} : { embeddingModel: options.embeddings.id }),
         ...(options.dim === undefined ? {} : { dimension: options.dim }),
       });
+      if (stagedCaptureForCandidate) replayCaptureOutbox(root, db);
       await options.hooks?.afterCandidateBuilt?.();
       db.checkpoint();
     } finally {
@@ -316,7 +330,7 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
     await options.hooks?.afterCandidateClosed?.();
     fsyncFile(generation.dbPath);
     fsyncDirectory(generation.dir);
-    validateCandidate(generation.dbPath, descriptor, plan);
+    validateCandidate(generation.dbPath, descriptor, plan, stagedCaptureForCandidate);
     const candidateDbIdentity = identityOf(generation.dbPath);
     const candidateDigest = fileDigest(generation.dbPath);
     await options.hooks?.afterCandidateValidated?.();
@@ -344,7 +358,7 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       if (fileDigest(generation.dbPath) !== candidateDigest) {
         throw new Error("memory-rebuild: candidate database changed after validation.");
       }
-      validateCandidate(generation.dbPath, descriptor, plan);
+      validateCandidate(generation.dbPath, descriptor, plan, stagedCaptureForCandidate);
       if (rollbackPath !== undefined && rollbackIdentity !== undefined && rollbackDigest !== undefined && rollback !== undefined) {
         assertSameIdentity(rollbackPath, rollbackIdentity, "retained rollback database");
         if (fileDigest(rollbackPath) !== rollbackDigest) {
@@ -365,22 +379,6 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       beforeManifestRename: assertFinalCas,
     });
     activated = true;
-    // The candidate was rebuilt from the retained intent's canonical outcome,
-    // so replay verifies its new-model vector instead of writing the stale
-    // stored vector. Retirement happens only after both active and rollback
-    // generations are parity-safe.
-    const activeDb = openMemoryDb({
-      path: generation.dbPath,
-      ...(options.embeddings === undefined ? {} : { embeddings: options.embeddings }),
-      ...(options.dim === undefined ? {} : { dim: options.dim }),
-    });
-    try {
-      replayCaptureOutbox(root, activeDb);
-      activeDb.checkpoint();
-    } finally {
-      activeDb.close();
-    }
-    fsyncFile(generation.dbPath);
     return {
       active: generation.dbPath,
       ...(rollback === undefined ? {} : { rollback: managedGenerationDbPath(root, rollback.name, true) }),
@@ -488,32 +486,27 @@ export async function rollbackMemoryIndex(options: SafeMemoryIndexOptions): Prom
 }
 
 function snapshotCanonicalSources(root: string, tier: BujoTier): SourceSnapshot {
-  const canonicalRoot = canonicalMemoryRoot(root, false);
-  const dailyDir = join(canonicalRoot, "daily");
   const files: SourceFileSnapshot[] = [];
-  const dailyNames = new Set<string>();
-  if (existsSync(dailyDir)) {
-    assertSafeDirectory(canonicalRoot, dailyDir, "canonical daily source directory");
-    for (const name of readdirSync(dailyDir).filter((file) => file.endsWith(".md")).sort()) {
-      dailyNames.add(name);
-    }
-  }
+  const dailyNames = new Set(listCanonicalFileNames(root, "daily", {
+    allowMissing: true,
+    include: (name) => name.endsWith(".md"),
+  }));
   // Older stores placed dated logs at the root. A canonical daily/<date>.md
   // wins when both layouts contain the same date, matching operator preview.
-  for (const name of readdirSync(canonicalRoot).filter((file) => LEGACY_DAILY_FILE.test(file)).sort()) {
+  for (const name of listCanonicalRootFileNames(root, { include: (file) => LEGACY_DAILY_FILE.test(file) })) {
     if (dailyNames.has(name)) continue;
-    const path = join(canonicalRoot, name);
-    files.push(readStableSourceFile(canonicalRoot, path, name));
+    files.push(readStableSourceFile(root, name));
   }
-  if (existsSync(dailyDir)) {
-    for (const name of [...dailyNames].sort()) {
-      const path = join(dailyDir, name);
-      files.push(readStableSourceFile(canonicalRoot, path, `daily/${name}`));
-    }
+  for (const name of [...dailyNames].sort()) {
+    files.push(readStableSourceFile(root, `daily/${name}`));
   }
   let graph: SourceFileSnapshot | undefined;
-  const graphPath = join(canonicalRoot, "graph.jsonl");
-  if (tier === "bujo" && existsSync(graphPath)) graph = readStableSourceFile(canonicalRoot, graphPath, "graph.jsonl");
+  if (tier === "bujo") {
+    const graphSnapshot = readCanonicalFileSnapshot(root, "graph.jsonl", { allowMissing: true });
+    if (graphSnapshot !== undefined) {
+      graph = { relativePath: "graph.jsonl", bytes: Buffer.from(graphSnapshot.content, "utf8") };
+    }
+  }
   const hash = createHash("sha256");
   for (const file of [...files, ...(graph === undefined ? [] : [graph])]) {
     hash.update(String(Buffer.byteLength(file.relativePath)));
@@ -527,15 +520,10 @@ function snapshotCanonicalSources(root: string, tier: BujoTier): SourceSnapshot 
   return { fingerprint: hash.digest("hex"), daily: files, ...(graph === undefined ? {} : { graph }) };
 }
 
-function readStableSourceFile(root: string, path: string, relativePath: string): SourceFileSnapshot {
-  assertSafeRegularFile(root, path, `canonical source ${relativePath}`);
-  const before = identityOf(path);
-  const bytes = readFileSync(path);
-  const after = identityOf(path);
-  if (!sameIdentity(before, after) || bytes.length !== after.size) {
-    throw new Error(`memory-rebuild: canonical source ${relativePath} changed while it was read.`);
-  }
-  return { relativePath, bytes };
+function readStableSourceFile(root: string, relativePath: string): SourceFileSnapshot {
+  const snapshot = readCanonicalFileSnapshot(root, relativePath);
+  if (snapshot === undefined) throw new Error(`memory-rebuild: canonical source ${relativePath} disappeared.`);
+  return { relativePath, bytes: Buffer.from(snapshot.content, "utf8") };
 }
 
 function buildPlan(snapshot: SourceSnapshot, tier: BujoTier): BuildPlan {
@@ -759,7 +747,12 @@ function strictAssociation(value: Record<string, unknown>, line: number): Memory
   };
 }
 
-function validateCandidate(path: string, descriptor: ManagedGeneration, plan: BuildPlan): void {
+function validateCandidate(
+  path: string,
+  descriptor: ManagedGeneration,
+  plan: BuildPlan,
+  allowReplayedLifecycle = false,
+): void {
   const db = readOnlyDb(path, descriptor);
   try {
     validateDb(db, descriptor);
@@ -769,7 +762,8 @@ function validateCandidate(path: string, descriptor: ManagedGeneration, plan: Bu
       throw new Error("memory-rebuild: candidate memory/FTS coverage validation failed.");
     }
     const actualMemories = plan.records.map((record) => db.get(record.id));
-    if (stableJson(actualMemories.map(memoryPayload)) !== stableJson(plan.records.map(memoryPayload))) {
+    if (stableJson(actualMemories.map((record) => memoryPayload(record, allowReplayedLifecycle)))
+      !== stableJson(plan.records.map((record) => memoryPayload(record, allowReplayedLifecycle)))) {
       throw new Error("memory-rebuild: candidate memory payload validation failed.");
     }
     if (state.vectors !== expectedVectors || state.vectorOrphans !== 0) {
@@ -864,36 +858,17 @@ function validateDb(db: MemoryDb, descriptor: ManagedGeneration): void {
   }
 }
 
-interface CurrentReplayDb {
-  readonly db: MemoryDb;
-  readonly path?: string;
-}
-
 function openCurrentReplayDb(
-  root: string,
+  path: string,
   manifest: ManagedIndexManifest | undefined,
-  target: SafeMemoryIndexOptions,
-): CurrentReplayDb {
-  const path = resolveActiveMemoryDbPath(root);
-  if (!existsSync(path)) {
-    return {
-      db: openMemoryDb({
-        path: ":memory:",
-        ...(target.embeddings === undefined ? {} : { embeddings: noCallEmbeddings(target.embeddings.id) }),
-        ...(target.dim === undefined ? {} : { dim: target.dim }),
-      }),
-    };
-  }
+): MemoryDb {
   if (manifest !== undefined) {
     const active = manifest.active;
-    return {
+    return openMemoryDb({
       path,
-      db: openMemoryDb({
-        path,
-        ...(active.embeddingModel === undefined ? {} : { embeddings: noCallEmbeddings(active.embeddingModel) }),
-        ...(active.dimension === undefined ? {} : { dim: active.dimension }),
-      }),
-    };
+      ...(active.embeddingModel === undefined ? {} : { embeddings: noCallEmbeddings(active.embeddingModel) }),
+      ...(active.dimension === undefined ? {} : { dim: active.dimension }),
+    });
   }
 
   // A pre-managed database has no manifest descriptor. Read its actual vec DDL
@@ -917,14 +892,49 @@ function openCurrentReplayDb(
   } finally {
     probe.close();
   }
-  return {
+  return openMemoryDb({
     path,
-    db: openMemoryDb({
-      path,
-      dim: dimension,
-      ...(embeddingModel === undefined ? {} : { embeddings: noCallEmbeddings(embeddingModel) }),
-    }),
-  };
+    dim: dimension,
+    ...(embeddingModel === undefined ? {} : { embeddings: noCallEmbeddings(embeddingModel) }),
+  });
+}
+
+function activeDbPathFromManifest(root: string, manifest: ManagedIndexManifest | undefined): string {
+  if (manifest !== undefined) return managedGenerationDbPath(root, manifest.active.name, true);
+  const path = join(root, "memory.db");
+  if (existsSync(path)) assertSafeRegularFile(root, path, "legacy memory database");
+  return path;
+}
+
+function validateCurrentReplayDb(path: string, descriptor: ManagedGeneration | undefined): void {
+  if (descriptor !== undefined) {
+    validateRetainedGeneration(path, descriptor);
+    return;
+  }
+  const db = openMemoryDb({ path, readOnly: true });
+  try {
+    if (db.integrityCheck().toLowerCase() !== "ok") {
+      throw new Error("memory-rebuild: active legacy SQLite integrity check failed.");
+    }
+    const actualDimension = db.vectorDimension();
+    const metadata = db.indexMetadata();
+    const state = db.validationSnapshot();
+    if (state.ftsRows !== state.memories || state.ftsMismatches !== 0 || state.vectorOrphans !== 0
+      || state.vectorIdentityMissing !== 0 || state.contentHashOrphans !== 0
+      || state.relationOrphans !== 0 || state.associationOrphans !== 0) {
+      throw new Error("memory-rebuild: active legacy index failed replay coverage validation.");
+    }
+    if (state.embeddingModels.length > 1 || state.embeddingDimensions.length > 1
+      || state.embeddingDimensions.some((dimension) => dimension !== actualDimension)
+      || (state.vectors > 0 && (state.embeddingModels.length !== 1 || state.embeddingDimensions.length !== 1))
+      || (metadata?.dimension !== undefined && metadata.dimension !== actualDimension)
+      || (metadata?.embeddingModel !== undefined
+        && state.embeddingModels.some((model) => model !== metadata.embeddingModel))) {
+      throw new Error("memory-rebuild: active legacy embedding identity does not match its actual vector DDL.");
+    }
+  } finally {
+    db.close();
+  }
 }
 
 function noCallEmbeddings(id: string): EmbeddingProvider {
@@ -1194,7 +1204,7 @@ function canonicalJsonValue(value: unknown): unknown {
   );
 }
 
-function memoryPayload(record: MemoryRecord | undefined): unknown {
+function memoryPayload(record: MemoryRecord | undefined, omitReplayedLifecycle = false): unknown {
   if (record === undefined) return undefined;
   return {
     id: record.id,
@@ -1205,9 +1215,9 @@ function memoryPayload(record: MemoryRecord | undefined): unknown {
     isInsight: record.isInsight,
     createdAt: record.createdAt,
     ...(record.validFrom === undefined ? {} : { validFrom: record.validFrom }),
-    ...(record.validTo === undefined ? {} : { validTo: record.validTo }),
-    ...(record.supersededBy === undefined ? {} : { supersededBy: record.supersededBy }),
-    ...(record.supersededAt === undefined ? {} : { supersededAt: record.supersededAt }),
+    ...(omitReplayedLifecycle || record.validTo === undefined ? {} : { validTo: record.validTo }),
+    ...(omitReplayedLifecycle || record.supersededBy === undefined ? {} : { supersededBy: record.supersededBy }),
+    ...(omitReplayedLifecycle || record.supersededAt === undefined ? {} : { supersededAt: record.supersededAt }),
     ...(record.dueAt === undefined ? {} : { dueAt: record.dueAt }),
     ...(record.collection === undefined ? {} : { collection: record.collection }),
     tags: [...record.tags],

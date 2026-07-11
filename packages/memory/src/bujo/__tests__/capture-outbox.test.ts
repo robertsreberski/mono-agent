@@ -322,6 +322,103 @@ describe("capture outbox", () => {
     expect(existsSync(dailyFilePath(root, NOW))).toBe(false);
     expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
   });
+
+  it("rejects memory-id overlap across queued intents before applying either intent", () => {
+    const root = tempRoot();
+    const item = bullet("OVERLAP", "Only one durable intent may own a memory id.");
+    const file = relative(root, dailyFilePath(root, NOW));
+    const action: CaptureIntentAction = {
+      candidateIndex: 0,
+      kind: "add",
+      id: item.id,
+      after: { file, bullet: item },
+      record: memoryRecord(item, file),
+      threads: [],
+    };
+    writeCaptureIntent(root, [action], {}, NOW.toISOString());
+    writeCaptureIntent(root, [action], {}, NOW.toISOString());
+
+    expect(() => replayCaptureOutbox(root, undefined, { retainIntent: true })).toThrow(/queued intents.*overlap/iu);
+    expect(existsSync(dailyFilePath(root, NOW))).toBe(false);
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(2);
+  });
+
+  it("rejects a divergent supersede DB target before changing canonical source", () => {
+    const root = tempRoot();
+    const old = bullet("OLD-POISON", "The canonical old value.");
+    const replacement = bullet("NEW-POISON", "The replacement value.");
+    appendBullet(root, old, NOW);
+    const file = relative(root, dailyFilePath(root, NOW));
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "supersede",
+      oldId: old.id,
+      newId: replacement.id,
+      beforeOld: { file, bullet: old },
+      afterOld: { file, bullet: { ...old, status: "invalidated" } },
+      afterNew: { file, bullet: replacement },
+      record: memoryRecord(replacement, file),
+      at: NOW.toISOString(),
+    }], {}, NOW.toISOString());
+    const db = openMemoryDb({ path: join(root, "memory.db") });
+    try {
+      db.upsertLexical({ ...memoryRecord(old, file), text: "A divergent SQLite value." });
+
+      expect(() => replayCaptureOutbox(root, db)).toThrow(/supersede target.*conflicts.*active index/iu);
+
+      const canonical = parseDailyFile(readFileSync(dailyFilePath(root, NOW), "utf8")).bullets;
+      expect(canonical).toEqual([old]);
+      expect(db.get(old.id)?.text).toBe("A divergent SQLite value.");
+      expect(db.get(replacement.id)).toBeUndefined();
+      expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("preserves live access and SQLite-only state while replaying an UPDATE", () => {
+    const root = tempRoot();
+    const before = bullet("LIVE-UPDATE", "Before durable replay.");
+    const after = { ...before, text: "After durable replay." };
+    appendBullet(root, before, NOW);
+    const file = relative(root, dailyFilePath(root, NOW));
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "update",
+      id: before.id,
+      before: { file, bullet: before },
+      after: { file, bullet: after },
+      record: memoryRecord(after, file),
+    }], {}, NOW.toISOString());
+    const db = openMemoryDb({ path: join(root, "memory.db") });
+    const lastAccessedAt = "2026-07-11T09:30:00.000Z";
+    try {
+      db.upsertLexical({
+        ...memoryRecord(before, file),
+        accessCount: 5,
+        lastAccessedAt,
+        validFrom: "2026-07-01T00:00:00.000Z",
+        collection: "live-state",
+        tags: ["latest"],
+        source: { file, line: 3, session: "live-session" },
+      });
+
+      replayCaptureOutbox(root, db);
+
+      expect(db.get(before.id)).toMatchObject({
+        text: after.text,
+        accessCount: 5,
+        lastAccessedAt,
+        validFrom: "2026-07-01T00:00:00.000Z",
+        collection: "live-state",
+        tags: ["latest"],
+        source: { file, line: 3, session: "live-session" },
+      });
+      expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 function tempRoot(): string {
