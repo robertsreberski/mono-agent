@@ -279,13 +279,17 @@ export class MemoryDb {
     ).get(id) !== undefined;
   }
 
-  recordsMissingVectors(limit = 512): MemoryRecord[] {
+  recordsMissingVectors(limit = 512, excludeIds: readonly string[] = []): MemoryRecord[] {
     const normalized = Math.max(0, Math.min(Math.trunc(limit), 4_096));
+    const excluded = [...new Set(excludeIds)].slice(0, 256);
+    const exclusion = excluded.length === 0
+      ? ""
+      : ` AND m.id NOT IN (${excluded.map(() => "?").join(",")})`;
     const rows = this.db.prepare(
       `SELECT m.* FROM memories m LEFT JOIN memories_vec v ON v.rowid = m.seq
-       WHERE v.rowid IS NULL AND m.status NOT IN ('invalidated','dropped')
+       WHERE v.rowid IS NULL AND m.status NOT IN ('invalidated','dropped')${exclusion}
        ORDER BY m.seq ASC LIMIT ?`,
-    ).all(normalized) as Record<string, unknown>[];
+    ).all(...excluded, normalized) as Record<string, unknown>[];
     return rows.map((row) => this.fromRow(row));
   }
 
@@ -321,6 +325,52 @@ export class MemoryDb {
     this.db.prepare(
       `INSERT OR IGNORE INTO content_hashes (content_hash, memory_id, source_file, created_at) VALUES (?, ?, ?, ?)`,
     ).run(record.contentHash, record.memoryId, record.sourceFile, record.createdAt);
+  }
+
+  /**
+   * Canonicalize one legacy Journal bullet onto its content-derived id without
+   * rewriting the Markdown source. The lexicographically earliest source
+   * location is the deterministic representative, independent of scan/process
+   * ordering; any old source id is retained only as a dropped, non-recallable
+   * row when it already existed in an older index.
+   */
+  recoverJournalLexical(record: MemoryRecord, contentHash: string, sourceId: string): void {
+    if (record.source.file === undefined || record.source.line === undefined) {
+      throw new Error("memory-store: Journal recovery requires source file and line provenance.");
+    }
+    const tx = this.db.transaction(() => {
+      const existing = this.get(record.id);
+      const sourceKey = journalSourceKey(record);
+      const existingSourceKey = existing === undefined ? undefined : journalSourceKey(existing);
+      if (
+        existing === undefined
+        || existingSourceKey === undefined
+        || sourceKey < existingSourceKey
+        || (sourceKey === existingSourceKey && journalRecordChanged(existing, record))
+      ) {
+        this.persistRecordsUnsafe([record], [undefined], true);
+      }
+      const priorAtSource = this.db.prepare(
+        `SELECT id FROM memories WHERE source_file = ? AND source_line = ? AND id <> ?`,
+      ).all(record.source.file, record.source.line, record.id) as { id: string }[];
+      for (const prior of priorAtSource) {
+        this.db.prepare(`UPDATE memories SET status = 'dropped' WHERE id = ?`).run(prior.id);
+        this.db.prepare(`DELETE FROM content_hashes WHERE memory_id = ?`).run(prior.id);
+      }
+      this.db.prepare(
+        `INSERT INTO content_hashes (content_hash, memory_id, source_file, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(content_hash) DO UPDATE SET
+           memory_id = excluded.memory_id,
+           source_file = excluded.source_file,
+           created_at = excluded.created_at`,
+      ).run(contentHash, record.id, record.source.file, record.createdAt);
+      if (sourceId !== record.id) {
+        this.db.prepare(`UPDATE memories SET status = 'dropped' WHERE id = ?`).run(sourceId);
+        this.db.prepare(`DELETE FROM content_hashes WHERE memory_id = ? AND content_hash <> ?`).run(sourceId, contentHash);
+      }
+    });
+    tx();
   }
 
   deleteContentHashesForMemory(memoryId: string): void {
@@ -1058,6 +1108,21 @@ export class MemoryDb {
   close(): void {
     this.db.close();
   }
+}
+
+function journalSourceKey(record: MemoryRecord): string {
+  const file = record.source.file ?? "\uffff";
+  const line = String(record.source.line ?? Number.MAX_SAFE_INTEGER).padStart(12, "0");
+  return `${file}\u0000${line}`;
+}
+
+function journalRecordChanged(current: MemoryRecord, next: MemoryRecord): boolean {
+  return current.text !== next.text
+    || current.status !== next.status
+    || current.type !== next.type
+    || current.salience !== next.salience
+    || current.isInsight !== next.isInsight
+    || current.dueAt !== next.dueAt;
 }
 
 function relevanceTokens(text: string): ReadonlySet<string> {

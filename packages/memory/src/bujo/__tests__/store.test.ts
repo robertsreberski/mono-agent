@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 import { createBujoMemoryStore } from "../store.js";
-import { appendBullet, dailyFilePath } from "../daily.js";
+import { appendBullet, dailyFilePath, normalizedContentHash } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
 import type { Bullet } from "../types.js";
 
@@ -573,7 +573,115 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
       completed: 65,
       remainingBacklog: 0,
       highWaterItems: 65,
+      coalesced: 0,
     });
+    await store.close();
+  });
+
+  it("pages overflow recovery without rescanning active queue rows", async () => {
+    const root = tmpRoot();
+    const calls: number[] = [];
+    const embeddings: EmbeddingProvider = {
+      id: "paged:64",
+      async embed(texts) {
+        calls.push(texts.length);
+        return texts.map(() => Array.from({ length: 64 }, (_, index) => index === 0 ? 1 : 0));
+      },
+    };
+    const store = createBujoMemoryStore({ root, tier: "journal", embeddings, dim: 64 });
+    await Promise.all(Array.from({ length: 300 }, (_, index) =>
+      store.appendHostSummary(`overflow-${index}`, `Overflow recovery fact ${index}.`)));
+
+    await store.flush();
+    expect(calls).toHaveLength(Math.ceil(300 / 32));
+    expect(store.queueSnapshot().index).toMatchObject({
+      completed: 300,
+      dropped: 44,
+      coalesced: 0,
+      remainingBacklog: 0,
+      recoveryRowsScanned: 44,
+      highWaterItems: 256,
+    });
+    await store.close();
+  });
+
+  it("canonicalizes whitespace-equivalent legacy bullets to one recallable Journal row", async () => {
+    const root = tmpRoot();
+    const now = new Date("2026-01-02T09:00:00.000Z");
+    appendBullet(root, journalBullet("legacy-a", "Project Atlas ships Friday.", now), now);
+    appendBullet(root, journalBullet("legacy-b", "Project   Atlas ships Friday.", now), now);
+
+    const store = createBujoMemoryStore({ root, tier: "journal", embeddings: fakeEmbeddings(64), dim: 64 });
+    await store.flush();
+    const hits = await store.recall("Project Atlas ships Friday", { topK: 10, trackAccess: false });
+
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.record.id).toBe(`J-${normalizedContentHash("Project Atlas ships Friday.")}`);
+    expect(readFileSync(dailyFilePath(root, now), "utf8")).toContain("legacy-a");
+    expect(readFileSync(dailyFilePath(root, now), "utf8")).toContain("legacy-b");
+    await store.close();
+  });
+
+  it("does not gate a first Journal write on startup recovery", async () => {
+    const root = tmpRoot();
+    for (let day = 1; day <= 3; day += 1) {
+      const when = new Date(`2026-01-0${day}T09:00:00.000Z`);
+      appendBullet(root, journalBullet(`legacy-${day}`, `Legacy fact ${day}.`, when), when);
+    }
+    const store = createBujoMemoryStore({ root, tier: "journal", embeddings: fakeEmbeddings(64), dim: 64 });
+
+    const write = await store.appendHostSummary("new", "A new turn stays off the recovery path.");
+
+    expect(write.bytesWritten).toBeGreaterThan(0);
+    expect(store.queueSnapshot().index?.recoveryFilesRemaining).toBeGreaterThan(0);
+    await store.flush();
+    await store.close();
+  });
+
+  it("keeps one recall row when an immediate append races a fresh legacy hash migration", async () => {
+    const root = tmpRoot();
+    const legacyDay = new Date("2026-01-01T09:00:00.000Z");
+    const writeDay = new Date("2026-01-02T09:00:00.000Z");
+    appendBullet(root, journalBullet("legacy-atlas", "Project Atlas ships Friday.", legacyDay), legacyDay);
+    const store = createBujoMemoryStore({
+      root,
+      tier: "journal",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      clock: () => writeDay,
+    });
+
+    // A fresh old index has no hash manifest yet. Preserve the append-only source
+    // rather than waiting on all history; recovery still collapses the index.
+    const write = await store.appendHostSummary("migration-window", "Project Atlas ships Friday.");
+    await store.flush();
+    const hits = await store.recall("Project Atlas ships Friday", { topK: 10, trackAccess: false });
+
+    expect(write.bytesWritten).toBeGreaterThan(0);
+    expect(hits).toHaveLength(1);
+    expect(existsSync(dailyFilePath(root, legacyDay))).toBe(true);
+    expect(existsSync(dailyFilePath(root, writeDay))).toBe(true);
+    await store.close();
+  });
+
+  it("waits through a live cross-process lock for the SQLite writer budget", async () => {
+    const root = tmpRoot();
+    const store = createBujoMemoryStore({ root, tier: "journal", embeddings: fakeEmbeddings(64), dim: 64 });
+    const lockPath = join(root, ".journal-write.lock");
+    writeFileSync(lockPath, `${JSON.stringify({ pid: process.pid, token: "test-owner" })}\n`, { mode: 0o600 });
+    const release = setTimeout(() => {
+      if (existsSync(lockPath)) unlinkSync(lockPath);
+    }, 650);
+    const started = Date.now();
+    try {
+      const write = await store.appendHostSummary("contended", "The contended write remains durable.");
+      expect(write.bytesWritten).toBeGreaterThan(0);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(600);
+    } finally {
+      clearTimeout(release);
+      if (existsSync(lockPath)) unlinkSync(lockPath);
+    }
+    await store.flush();
     await store.close();
   });
 
@@ -604,7 +712,13 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
     });
     await first.appendHostSummary("c", "The restart backlog fact is durable.");
     await first.flush();
-    expect(first.queueSnapshot().index).toMatchObject({ failed: 1, remainingBacklog: 1, recoveryPaused: true });
+    expect(first.queueSnapshot().index).toMatchObject({
+      failed: 1,
+      remainingBacklog: 1,
+      recoveryPaused: true,
+      retryDelayMs: 1_000,
+      nextRetryDelayMs: 2_000,
+    });
     expect(warnings.join(" ")).toContain("embedding offline");
     await first.close();
 
@@ -676,6 +790,19 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
     await store.close();
   });
 });
+
+function journalBullet(id: string, text: string, when: Date): Bullet {
+  return {
+    id,
+    type: "note",
+    status: "open",
+    text,
+    salience: 0.5,
+    isInsight: false,
+    createdAt: when.toISOString(),
+    refs: [],
+  };
+}
 
 async function waitUntil(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {

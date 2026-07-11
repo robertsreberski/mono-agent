@@ -51,7 +51,14 @@ export interface BujoQueueSnapshot {
     readonly remainingBacklog: number;
     readonly recoveryFilesRemaining: number;
     readonly recoveryPaused: boolean;
+    /** Delay of the retry that is currently scheduled; zero when none is scheduled. */
     readonly retryDelayMs: number;
+    /** Delay the following failure would schedule after the current retry. */
+    readonly nextRetryDelayMs: number;
+    /** Rows materialized by bounded missing-vector refill queries. */
+    readonly recoveryRowsScanned: number;
+    /** Missing-vector refill queries issued since startup. */
+    readonly recoveryRefillQueries: number;
     readonly nextRetryAt?: string;
   };
   readonly capture?: BackgroundQueueSnapshot;
@@ -75,7 +82,10 @@ export class BujoMemoryStore implements MemoryStore {
   private resolveJournalRecovery: (() => void) | undefined;
   private journalRetryTimer: ReturnType<typeof setTimeout> | undefined;
   private journalRetryAttempt = 0;
+  private currentJournalRetryDelayMs = 0;
   private nextJournalRetryAt: Date | undefined;
+  private journalRecoveryRowsScanned = 0;
+  private journalRecoveryRefillQueries = 0;
   private closing = false;
 
   constructor(options: BujoOptions) {
@@ -180,25 +190,29 @@ export class BujoMemoryStore implements MemoryStore {
       source: { session: conversationId, file: relative(this.root, path) },
     };
     if (this._tier === "journal") {
-      // Finish the bounded, file-at-a-time legacy hash scan before accepting a
-      // write, otherwise an immediate duplicate could beat its old reservation.
-      await this.journalRecoveryPromise;
-      return await serializeJournalWrite(this.root, async () => await withJournalWriteLockRetry(this.root, () => {
-        const reserved = this.db.contentHashRecord(hash);
-        if (reserved !== undefined) {
-          const existing = this.db.get(reserved.memoryId);
-          if (existing !== undefined && !this.db.hasVector(existing.id)) this.enqueueIndex(existing);
-          return { conversationId, source: path, bytesWritten: 0 };
-        }
-        appendBullet(this.root, bullet, now);
-        const outcome = this.db.insertJournalLexical(record, hash);
-        if (outcome.inserted) this.enqueueIndex(record);
-        return {
-          conversationId,
-          source: path,
-          bytesWritten: Buffer.byteLength(`${serializeBullet(bullet)}\n`, "utf8"),
-        };
-      }));
+      // Recovery is deliberately off the successful-turn path. Both new writes
+      // and legacy backfill converge on J-<content-hash>, so whichever runs first
+      // reserves the same canonical representation without waiting for history.
+      return await serializeJournalWrite(this.root, async () => await withJournalWriteLockRetry(
+        this.root,
+        this.db.busyTimeoutMs(),
+        () => {
+          const reserved = this.db.contentHashRecord(hash);
+          if (reserved !== undefined) {
+            const existing = this.db.get(reserved.memoryId);
+            if (existing !== undefined && !this.db.hasVector(existing.id)) this.enqueueIndex(existing);
+            return { conversationId, source: path, bytesWritten: 0 };
+          }
+          appendBullet(this.root, bullet, now);
+          const outcome = this.db.insertJournalLexical(record, hash);
+          if (outcome.inserted) this.enqueueIndex(record);
+          return {
+            conversationId,
+            source: path,
+            bytesWritten: Buffer.byteLength(`${serializeBullet(bullet)}\n`, "utf8"),
+          };
+        },
+      ));
     }
 
     appendBullet(this.root, bullet, now);
@@ -279,7 +293,10 @@ export class BujoMemoryStore implements MemoryStore {
           remainingBacklog: this.db.countMissingVectors(),
           recoveryFilesRemaining: Math.max(0, this.journalRecoveryFiles.length - this.journalRecoveryCursor),
           recoveryPaused: this.journalRecoveryPaused,
-          retryDelayMs: retryDelayMs(this.journalRetryAttempt),
+          retryDelayMs: this.currentJournalRetryDelayMs,
+          nextRetryDelayMs: this.currentJournalRetryDelayMs === 0 ? 0 : retryDelayMs(this.journalRetryAttempt),
+          recoveryRowsScanned: this.journalRecoveryRowsScanned,
+          recoveryRefillQueries: this.journalRecoveryRefillQueries,
           ...(this.nextJournalRetryAt === undefined ? {} : { nextRetryAt: this.nextJournalRetryAt.toISOString() }),
         },
       }),
@@ -347,6 +364,7 @@ export class BujoMemoryStore implements MemoryStore {
           await this.db.indexVectors(jobs.map((job) => job.record), { batchSize: 32 });
           this.journalRecoveryPaused = false;
           this.journalRetryAttempt = 0;
+          this.currentJournalRetryDelayMs = 0;
           this.nextJournalRetryAt = undefined;
         } catch (error) {
           this.journalRecoveryPaused = true;
@@ -385,7 +403,18 @@ export class BujoMemoryStore implements MemoryStore {
 
   private refillJournalQueue(): void {
     if (this.indexQueue === undefined || this.journalRecoveryPaused) return;
-    for (const record of this.db.recordsMissingVectors(1_024)) {
+    const before = this.indexQueue.snapshot();
+    const availableItems = before.capacity.items - before.queued - before.inFlight;
+    const availableBytes = before.capacity.bytes - before.queuedBytes - before.inFlightBytes;
+    if (availableItems <= 0 || availableBytes <= 0) return;
+    this.journalRecoveryRefillQueries += 1;
+    const records = this.db.recordsMissingVectors(availableItems, this.indexQueue.activeKeyList());
+    this.journalRecoveryRowsScanned += records.length;
+    for (const record of records) {
+      // Internal recovery polling is not a duplicate user enqueue. Skip active
+      // ids before calling enqueue so `coalesced` remains truthful and we avoid
+      // repeatedly cycling queued records through queue accounting.
+      if (this.indexQueue.hasKey(record.id)) continue;
       const snapshot = this.indexQueue.snapshot();
       const bytes = Buffer.byteLength(record.text, "utf8");
       if (
@@ -426,8 +455,11 @@ export class BujoMemoryStore implements MemoryStore {
       for (const line of parsed.lines) {
         const bullet = line.bullet;
         if (bullet === undefined) continue;
+        const hash = normalizedContentHash(bullet.text);
         const record: MemoryRecord = {
-          id: bullet.id,
+          // Journal's canonical index identity is content-derived. Legacy ids
+          // remain untouched in Markdown but cannot create competing recall rows.
+          id: `J-${hash}`,
           type: bullet.type,
           status: bullet.status,
           text: bullet.text,
@@ -439,23 +471,7 @@ export class BujoMemoryStore implements MemoryStore {
           source: { file: `daily/${file}`, line: line.lineNumber },
           ...(bullet.dueAt === undefined ? {} : { dueAt: bullet.dueAt }),
         };
-        const hash = normalizedContentHash(record.text);
-        const current = this.db.get(record.id);
-        if (
-          current === undefined
-          || current.text !== record.text
-          || current.status !== record.status
-          || current.type !== record.type
-        ) {
-          this.db.upsertLexical(record);
-          this.db.deleteContentHashesForMemory(record.id);
-        }
-        this.db.recordContentHash({
-          contentHash: hash,
-          memoryId: record.id,
-          sourceFile: record.source.file!,
-          createdAt: record.createdAt,
-        });
+        this.db.recoverJournalLexical(record, hash, bullet.id);
       }
     } catch (error) {
       this.safeWarn(`journal startup recovery skipped ${file}: ${reasonOf(error)}`);
@@ -469,11 +485,13 @@ export class BujoMemoryStore implements MemoryStore {
   private scheduleJournalRetry(): void {
     if (this.closing || this.journalRetryTimer !== undefined) return;
     const delay = retryDelayMs(this.journalRetryAttempt);
+    this.currentJournalRetryDelayMs = delay;
     this.journalRetryAttempt += 1;
     this.nextJournalRetryAt = new Date(Date.now() + delay);
     this.journalRetryTimer = setTimeout(() => {
       this.journalRetryTimer = undefined;
       this.nextJournalRetryAt = undefined;
+      this.currentJournalRetryDelayMs = 0;
       if (this.closing) return;
       this.journalRecoveryPaused = false;
       this.refillJournalQueue();
@@ -534,16 +552,16 @@ async function serializeJournalWrite<T>(root: string, write: () => T | Promise<T
   }
 }
 
-async function withJournalWriteLockRetry<T>(root: string, write: () => T): Promise<T> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+async function withJournalWriteLockRetry<T>(root: string, timeoutMs: number, write: () => T): Promise<T> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  for (;;) {
     try {
       return withJournalWriteLock(root, write);
     } catch (error) {
-      if (!/journal write lock is held/iu.test(reasonOf(error)) || attempt === 49) throw error;
-      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      if (!/journal write lock is held/iu.test(reasonOf(error)) || Date.now() >= deadline) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
     }
   }
-  throw new Error("memory-bujo: journal write lock retry budget exhausted.");
 }
 
 function retryDelayMs(attempt: number): number {

@@ -68,6 +68,16 @@ export class BoundedBatchQueue<T extends QueueJob> {
     return "enqueued";
   }
 
+  /** True when a key is queued or currently being processed. Does not mutate telemetry. */
+  hasKey(key: string): boolean {
+    return this.activeKeys.has(key);
+  }
+
+  /** Stable copy used to exclude queued/in-flight rows in a recovery query. */
+  activeKeyList(): readonly string[] {
+    return [...this.activeKeys];
+  }
+
   snapshot(): BackgroundQueueSnapshot {
     return {
       capacity: {

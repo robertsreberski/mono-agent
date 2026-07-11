@@ -32,7 +32,40 @@ export async function loadMonoAgentConfigWithSources(
     ? {}
     : (await readMonoAgentConfigJson(input.jsonPath)).json;
   const layeredEnv = layerJsonOntoEnv(jsonLayer, input.env);
-  return loadMonoAgentConfig({ env: layeredEnv, cwd: input.cwd });
+  try {
+    return loadMonoAgentConfig({ env: layeredEnv, cwd: input.cwd });
+  } catch (error) {
+    throw remapJsonMemoryTierError(error, jsonLayer, input.env);
+  }
+}
+
+/** Preserve the operator's real source surface when strict memory-tier validation fails. */
+function remapJsonMemoryTierError(
+  error: unknown,
+  json: MonoAgentConfigJson,
+  env: Record<string, string | undefined>,
+): unknown {
+  if (
+    !(error instanceof MonoAgentConfigError)
+    || error.code !== "invalid_env"
+    || hasValue(env.MONO_AGENT_MEMORY_MODE)
+    || json.memory === undefined
+  ) return error;
+
+  const source = error.details.env;
+  let path: string | undefined;
+  if (source === "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL") path = "memory.embeddings";
+  else if (source === "MONO_AGENT_MEMORY_LLM_MODEL") path = "memory.llm";
+  else if (source === "MONO_AGENT_MEMORY_MODE") path = "memory.mode";
+  if (path === undefined) return error;
+
+  const mode = json.memory.mode ?? "lite";
+  const message = source === "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL"
+    ? `memory.mode "${mode}" requires an explicit memory.embeddings block.`
+    : source === "MONO_AGENT_MEMORY_LLM_MODEL"
+      ? `memory.mode "${mode}" requires an explicit memory.llm block.`
+      : error.message.replaceAll("MONO_AGENT_MEMORY_MODE", "memory.mode");
+  return new MonoAgentConfigError("invalid_json", message, { path, reason: message });
 }
 
 /**

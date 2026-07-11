@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { MonoAgentConfigError } from "../config.js";
 import { loadMonoAgentConfigWithSources, layerJsonOntoEnv } from "../layered-loader.js";
 
 let dir: string;
@@ -604,6 +605,61 @@ describe("layerJsonOntoEnv", () => {
 });
 
 describe("loadMonoAgentConfigWithSources", () => {
+  it("attributes strict Journal prerequisites to the JSON path that needs repair", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: { mode: "journal", path: ".mono-agent/memory" },
+    }), "utf8");
+
+    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_json",
+      message: expect.stringContaining("memory.embeddings"),
+      details: { path: "memory.embeddings", code: "invalid_json" },
+    });
+  });
+
+  it("attributes strict BuJo LLM prerequisites to the JSON path that needs repair", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: { mode: "bujo", path: ".mono-agent/memory", embeddings: { provider: "ollama" } },
+    }), "utf8");
+
+    await expect(loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_json",
+      message: expect.stringContaining("memory.llm"),
+      details: { path: "memory.llm", code: "invalid_json" },
+    });
+  });
+
+  it("retains env attribution when the strict memory tier came from env", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: { path: ".mono-agent/memory" },
+    }), "utf8");
+
+    try {
+      await loadMonoAgentConfigWithSources({
+        env: { MONO_AGENT_MEMORY_MODE: "journal" },
+        cwd: dir,
+        jsonPath: path,
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonoAgentConfigError);
+      expect(error).toMatchObject({
+        code: "invalid_env",
+        details: { env: "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL", code: "invalid_env" },
+      });
+      return;
+    }
+    throw new Error("Expected the env-selected Journal tier to fail.");
+  });
+
   it("resolves an omitted tools block to the allow-all default (['*'])", async () => {
     const path = join(dir, "config.json");
     await writeFile(
