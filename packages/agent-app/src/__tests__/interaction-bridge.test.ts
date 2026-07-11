@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -106,6 +107,57 @@ describe("interaction bridge", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(handle.tryResolveAsk("telegram:42", "Alice and Bob, in Polish")).toBe(true);
     expect(await pending).toEqual({ status: "answered", answer: "Alice and Bob, in Polish" });
+  });
+
+  it("removes an ask when its create request closes before the response is acknowledged", async () => {
+    const handle = await startBridge({ askTimeoutMs: 5_000 });
+    let finishPosting: (() => void) | undefined;
+    const posting = new Promise<void>((resolve) => {
+      finishPosting = resolve;
+    });
+    handle.registerSink("telegram", {
+      postQuestion: async () => await posting,
+      postStatus: async () => {},
+    });
+    let cancelCreateRequest: (() => void) | undefined;
+    const creating = new Promise<never>((_resolve, reject) => {
+      const request = httpRequest(new URL("/v1/asks", handle.url), {
+        method: "POST",
+        headers: headers(handle),
+        agent: false,
+      });
+      request.once("response", (response) => {
+        response.resume();
+        reject(new Error(`unexpected create response ${String(response.statusCode)}`));
+      });
+      request.once("error", reject);
+      request.end(JSON.stringify({ conversationId: "telegram:create-race", question: "Still there?" }));
+      cancelCreateRequest = () => request.destroy(new Error("create request cancelled"));
+    });
+
+    await expect.poll(() => handle.hasPendingAsk("telegram:create-race")).toBe(true);
+    cancelCreateRequest?.();
+    await expect(creating).rejects.toThrow("create request cancelled");
+    await expect.poll(() => handle.hasPendingAsk("telegram:create-race")).toBe(false);
+
+    finishPosting?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(handle.hasPendingAsk("telegram:create-race")).toBe(false);
+  });
+
+  it("keeps an acknowledged ask pending after the completed create response closes", async () => {
+    const handle = await startBridge();
+    handle.registerSink("telegram", recordingSink().sink);
+
+    const created = await createAsk(handle, {
+      conversationId: "telegram:acknowledged",
+      question: "Wait for me?",
+    });
+    expect(created.status).toBe(201);
+    await created.json();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(handle.hasPendingAsk("telegram:acknowledged")).toBe(true);
   });
 
   it("registers a callback-only pending ask without posting through the sink when postQuestion is false", async () => {

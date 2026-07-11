@@ -2,6 +2,7 @@ import { isIP } from "node:net";
 
 import {
   Agent,
+  Dispatcher,
   EnvHttpProxyAgent,
   fetch as undiciFetch,
   type RequestInfo as UndiciRequestInfo,
@@ -78,8 +79,22 @@ export function createAdapterSendProxy(
     httpsProxy: httpsProxy ?? "",
     noProxy,
   });
-  const directLoopbackHosts = collectDirectLoopbackHosts(options.directLoopbackUrls ?? []);
-  const directDispatcher = directLoopbackHosts.size === 0 ? undefined : new Agent();
+  // Managed SRT's NO_PROXY always includes loopback. Keep that behavior for
+  // configured endpoints, but retain a dispatcher that cannot silently bypass
+  // the policy proxy when a redirect changes to an unconfigured loopback origin.
+  const forcedProxyDispatcher = new EnvHttpProxyAgent({
+    httpProxy: httpProxy ?? "",
+    httpsProxy: httpsProxy ?? "",
+    noProxy: "",
+  });
+  const directLoopbackOrigins = collectDirectLoopbackOrigins(options.directLoopbackUrls ?? []);
+  const directDispatcher = directLoopbackOrigins.size === 0 ? undefined : new Agent();
+  const requestDispatcher = new DirectLoopbackRoutingDispatcher(
+    proxyDispatcher,
+    forcedProxyDispatcher,
+    directDispatcher,
+    directLoopbackOrigins,
+  );
   let closePromise: Promise<void> | undefined;
   let destroyPromise: Promise<void> | undefined;
 
@@ -88,9 +103,10 @@ export function createAdapterSendProxy(
     try {
       return await undiciFetch(input as UndiciRequestInfo, {
         ...requestInit,
-        dispatcher: shouldUseDirectLoopback(input, directLoopbackHosts)
-          ? (directDispatcher ?? proxyDispatcher)
-          : proxyDispatcher,
+        // Undici invokes this dispatcher again for every redirect hop. The
+        // wrapper therefore evaluates the actual dispatch origin instead of
+        // granting the initial URL's direct capability to the whole chain.
+        dispatcher: requestDispatcher,
       }) as unknown as Response;
     } finally {
       detachAbortListener();
@@ -102,12 +118,14 @@ export function createAdapterSendProxy(
     close(): Promise<void> {
       return closePromise ??= Promise.all([
         proxyDispatcher.close(),
+        forcedProxyDispatcher.close(),
         ...(directDispatcher === undefined ? [] : [directDispatcher.close()]),
       ]).then(() => undefined);
     },
     destroy(error?: Error): Promise<void> {
       return destroyPromise ??= Promise.all([
         error === undefined ? proxyDispatcher.destroy() : proxyDispatcher.destroy(error),
+        error === undefined ? forcedProxyDispatcher.destroy() : forcedProxyDispatcher.destroy(error),
         ...(directDispatcher === undefined
           ? []
           : [error === undefined ? directDispatcher.destroy() : directDispatcher.destroy(error)]),
@@ -127,33 +145,60 @@ function normalizeNoProxyValue(value: string | undefined): string {
   return entries.join(",");
 }
 
-function collectDirectLoopbackHosts(urls: readonly string[]): ReadonlySet<string> {
-  const hosts = new Set<string>();
+function collectDirectLoopbackOrigins(urls: readonly string[]): ReadonlySet<string> {
+  const origins = new Set<string>();
   for (const value of urls) {
     try {
-      const host = stripIpv6Brackets(new URL(value).hostname.toLowerCase());
-      if (isLoopbackHost(host)) hosts.add(host);
+      const url = new URL(value);
+      const host = stripIpv6Brackets(url.hostname.toLowerCase());
+      if (isLoopbackHost(host)) origins.add(url.origin);
     } catch {
       // The config loader owns URL diagnostics; an invalid endpoint must not
       // accidentally become a direct-routing exception here.
     }
   }
-  return hosts;
+  return origins;
 }
 
-function shouldUseDirectLoopback(
-  input: Parameters<typeof fetch>[0],
-  directLoopbackHosts: ReadonlySet<string>,
-): boolean {
-  if (directLoopbackHosts.size === 0) return false;
+function loopbackOriginForDispatch(
+  origin: string | URL | undefined,
+): string | undefined {
   try {
-    const value = typeof input === "string" || input instanceof URL
-      ? String(input)
-      : input.url;
-    const host = stripIpv6Brackets(new URL(value).hostname.toLowerCase());
-    return directLoopbackHosts.has(host);
+    if (origin === undefined) return undefined;
+    const url = new URL(String(origin));
+    const host = stripIpv6Brackets(url.hostname.toLowerCase());
+    return isLoopbackHost(host) ? url.origin : undefined;
   } catch {
-    return false;
+    return undefined;
+  }
+}
+
+class DirectLoopbackRoutingDispatcher extends Dispatcher {
+  constructor(
+    private readonly proxyDispatcher: Dispatcher,
+    private readonly forcedProxyDispatcher: Dispatcher,
+    private readonly directDispatcher: Dispatcher | undefined,
+    private readonly directLoopbackOrigins: ReadonlySet<string>,
+  ) {
+    super();
+  }
+
+  override dispatch(options: Dispatcher.DispatchOptions, handler: Dispatcher.DispatchHandler): boolean {
+    const loopbackOrigin = loopbackOriginForDispatch(options.origin);
+    if (
+      loopbackOrigin !== undefined
+      && this.directDispatcher !== undefined
+      && this.directLoopbackOrigins.has(loopbackOrigin)
+    ) {
+      return this.directDispatcher.dispatch(options, handler);
+    }
+    // An unconfigured loopback origin must not inherit SRT's broad NO_PROXY
+    // exception. Send it to the authenticated policy proxy, which applies the
+    // actual sandbox destination allowlist. Non-loopback origins retain the
+    // caller's complete NO_PROXY semantics through `proxyDispatcher`.
+    return loopbackOrigin === undefined
+      ? this.proxyDispatcher.dispatch(options, handler)
+      : this.forcedProxyDispatcher.dispatch(options, handler);
   }
 }
 

@@ -32,6 +32,8 @@ const loadSlackModule = async (): Promise<SlackAdapterModule> =>
 const loadTelegramModule = async (): Promise<TelegramAdapterModule> =>
   (telegramModule ??= await import("@mono-agent/telegram-adapter"));
 const SLACK_SEND_MESSAGE_MAX_CHARS = 40_000;
+/** Keep cancellation responsive even when the loopback bridge is wedged. */
+const ASK_BRIDGE_CLEANUP_TIMEOUT_MS = 1_000;
 
 /**
  * Model-visible send tools for explicitly allowed, already-enabled communication adapters.
@@ -519,10 +521,43 @@ async function awaitBridgeAsk(
     }
   } catch (error) {
     // A cancelled MCP call must not leave a bridge ask pending until its full
-    // human timeout. Use a fresh request (not the aborted call signal) so the
-    // parent registry is cleared best-effort before propagating the failure.
-    await askBridgeRequest(settings, fetchImpl, "DELETE", `/v1/asks/${encodeURIComponent(askId)}`).catch(() => undefined);
+    // human timeout. Cleanup gets its own bounded signal (not the aborted call
+    // signal), and its failure must never replace the primary tool failure.
+    await cleanupBridgeAskBestEffort(settings, fetchImpl, askId);
     throw error;
+  }
+}
+
+async function cleanupBridgeAskBestEffort(
+  settings: AskUserToolSettings,
+  fetchImpl: typeof fetch,
+  askId: string,
+): Promise<void> {
+  const controller = new AbortController();
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((resolve) => {
+    deadlineTimer = setTimeout(() => {
+      controller.abort(new Error("interaction bridge ask cleanup timed out"));
+      resolve();
+    }, ASK_BRIDGE_CLEANUP_TIMEOUT_MS);
+    deadlineTimer.unref?.();
+  });
+  // Attach the rejection handler before racing. If a test seam or nonstandard
+  // fetch ignores abort and rejects later, it cannot become an unhandled error.
+  const cleanup = askBridgeRequest(
+    settings,
+    fetchImpl,
+    "DELETE",
+    `/v1/asks/${encodeURIComponent(askId)}`,
+    undefined,
+    controller.signal,
+  ).then(() => undefined, () => undefined);
+  try {
+    await Promise.race([cleanup, deadline]);
+  } finally {
+    if (deadlineTimer !== undefined) {
+      clearTimeout(deadlineTimer);
+    }
   }
 }
 
@@ -767,7 +802,7 @@ function registerTelegramAskTool(
           { signal: extra.signal },
         );
       } catch (error) {
-        await askBridgeRequest(bridge, fetchImpl, "DELETE", `/v1/asks/${encodeURIComponent(askId)}`);
+        await cleanupBridgeAskBestEffort(bridge, fetchImpl, askId);
         throw error;
       }
       return await awaitBridgeAsk(bridge, askId, "TelegramAskButtons", extra, fetchImpl, extra.signal, {

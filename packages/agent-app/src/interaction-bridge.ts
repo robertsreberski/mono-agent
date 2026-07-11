@@ -253,21 +253,50 @@ export async function startInteractionBridge(
     // never more, than the operator allowed.
     const timeoutMs = Math.min(requested ?? askTimeoutMs, askTimeoutMs);
     const ask = registerAsk(conversationId, question, timeoutMs, answerKind);
+    let createResponseCompleted = false;
+    let createRequestAbandoned = false;
+    const abandonUnacknowledgedAsk = (): void => {
+      if (createResponseCompleted || createRequestAbandoned) {
+        return;
+      }
+      createRequestAbandoned = true;
+      request.removeListener("aborted", abandonUnacknowledgedAsk);
+      response.removeListener("close", abandonUnacknowledgedAsk);
+      settleAsk(ask, "cancelled");
+      asksById.delete(ask.askId);
+    };
+    request.once("aborted", abandonUnacknowledgedAsk);
+    response.once("close", abandonUnacknowledgedAsk);
+    const completeCreateResponse = (statusCode: number, payload: unknown): void => {
+      if (createRequestAbandoned) {
+        return;
+      }
+      sendJson(response, statusCode, payload);
+      // `sendJson` calls `response.end()` synchronously. Mark ownership released
+      // only after that succeeds, then detach the premature-close guards so the
+      // normal response lifecycle cannot delete an acknowledged pending ask.
+      createResponseCompleted = true;
+      request.removeListener("aborted", abandonUnacknowledgedAsk);
+      response.removeListener("close", abandonUnacknowledgedAsk);
+    };
     if (postQuestion) {
       try {
         await sink.postQuestion(conversationId, question);
       } catch (error) {
+        if (createRequestAbandoned) {
+          return;
+        }
         settleAsk(ask, "cancelled");
         asksById.delete(ask.askId);
         options.logger?.warn?.("interaction bridge: posting the ask question failed.", {
           conversationId,
           error: error instanceof Error ? error.message : String(error),
         });
-        sendJson(response, 502, { error: "posting the question to the channel failed." });
+        completeCreateResponse(502, { error: "posting the question to the channel failed." });
         return;
       }
     }
-    sendJson(response, 201, { askId: ask.askId, timeoutMs });
+    completeCreateResponse(201, { askId: ask.askId, timeoutMs });
   }
 
   function handleAwaitAsk(request: IncomingMessage, response: ServerResponse, askId: string, url: URL): void {
