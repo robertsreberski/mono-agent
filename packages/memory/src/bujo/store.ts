@@ -653,6 +653,10 @@ export class BujoMemoryStore implements MemoryStore {
       maxItems: JOURNAL_QUEUE_MAX_ITEMS,
       maxBytes: JOURNAL_QUEUE_MAX_BYTES,
       batchSize: 32,
+      // Lexical rows are already durable. After one provider failure, defer
+      // every queued vector job to the missing-vector recovery pass so one
+      // outage attempt cannot amplify into eight sequential provider calls.
+      discardQueuedOnError: true,
       process: async (jobs) => {
         const controller = new AbortController();
         this.activeIndexController = controller;

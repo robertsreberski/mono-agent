@@ -1537,6 +1537,43 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
     await second.close();
   });
 
+  it("pauses queued Journal batches after the first provider failure", async () => {
+    const root = tmpRoot();
+    const calls: number[] = [];
+    const warnings: string[] = [];
+    const failing: EmbeddingProvider = {
+      id: "offline-batch:64",
+      async embed(texts) {
+        calls.push(texts.length);
+        throw new Error("batch embedding offline");
+      },
+    };
+    const store = createBujoMemoryStore({
+      root,
+      tier: "journal",
+      embeddings: failing,
+      dim: 64,
+      logger: { warn: (message) => warnings.push(message) },
+    });
+    await Promise.all(Array.from({ length: 65 }, (_, index) =>
+      store.appendHostSummary(`offline-${index}`, `Offline batch fact ${index} stays durable.`)));
+
+    await store.flush();
+
+    expect(calls).toEqual([32]);
+    expect(warnings.filter((message) => message.includes("batch embedding offline"))).toHaveLength(1);
+    expect(store.queueSnapshot().index).toMatchObject({
+      failed: 32,
+      discarded: 33,
+      queued: 0,
+      inFlight: 0,
+      remainingBacklog: 65,
+      recoveryPaused: true,
+      retryDelayMs: 1_000,
+    });
+    await store.close();
+  });
+
   it("keeps BuJo compact raw audit outside curated daily recall on capture failure", async () => {
     const root = tmpRoot();
     const warnings: string[] = [];

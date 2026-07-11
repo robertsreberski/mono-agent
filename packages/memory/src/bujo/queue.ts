@@ -46,6 +46,8 @@ export class BoundedBatchQueue<T extends QueueJob> {
     readonly maxBytes: number;
     readonly batchSize: number;
     readonly process: (jobs: readonly T[]) => Promise<void>;
+    /** Stop the current drain after one failed batch and discard queued jobs. */
+    readonly discardQueuedOnError?: boolean;
     readonly onBatchSettled?: () => void;
     readonly onError?: (error: unknown) => void;
     readonly onChange?: () => void;
@@ -178,6 +180,7 @@ export class BoundedBatchQueue<T extends QueueJob> {
           } catch {
             // Diagnostics are best-effort and cannot poison future batches.
           }
+          if (this.options.discardQueuedOnError === true) this.discardQueued();
         } finally {
           for (const job of batch) this.activeKeys.delete(job.key);
           this.inFlight = 0;
