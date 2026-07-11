@@ -477,10 +477,11 @@ export class MemoryDb {
     const entityRelations = (
       this.db.prepare(`SELECT COUNT(*) AS n FROM entity_relations`).get() as { n: number }
     ).n;
-    const memoryEntityAssociations = (
-      this.db.prepare(`SELECT COUNT(*) AS n FROM memory_entities`).get() as { n: number }
-    ).n;
-    const orphanedAssociations = this.orphanedAssociationCount();
+    const hasMemoryEntities = this.tableExists("memory_entities");
+    const memoryEntityAssociations = hasMemoryEntities
+      ? (this.db.prepare(`SELECT COUNT(*) AS n FROM memory_entities`).get() as { n: number }).n
+      : 0;
+    const orphanedAssociations = hasMemoryEntities ? this.orphanedAssociationCount() : 0;
     const live = counts.live ?? 0;
     const totalAccess = counts.total_access ?? 0;
     const concentrationRows = this.db.prepare(
@@ -868,10 +869,10 @@ export class MemoryDb {
     return rows.map((r) => this.entityFromRow(r));
   }
 
-  addEntityRelation(src: string, dst: string, relation: string): void {
+  addEntityRelation(src: string, dst: string, relation: string, createdAt = this.clock().toISOString()): void {
     this.db.prepare(
       `INSERT OR IGNORE INTO entity_relations (src, dst, relation, created_at) VALUES (?, ?, ?, ?)`,
-    ).run(src, dst, relation, this.clock().toISOString());
+    ).run(src, dst, relation, createdAt);
   }
 
   relationsFor(src: string): EntityRelationRecord[] {
@@ -1086,6 +1087,15 @@ export class MemoryDb {
       ["createdAt", metadata.createdAt],
       ...(metadata.embeddingModel === undefined ? [] : [["embeddingModel", metadata.embeddingModel] as [string, string]]),
       ...(metadata.dimension === undefined ? [] : [["dimension", String(metadata.dimension)] as [string, string]]),
+      ...(metadata.skippedRawRecords === undefined ? [] : [["skippedRawRecords", String(metadata.skippedRawRecords)] as [string, string]]),
+      ...(metadata.skippedUnstructuredRecords === undefined ? [] : [["skippedUnstructuredRecords", String(metadata.skippedUnstructuredRecords)] as [string, string]]),
+      ...(metadata.skippedMissingIdentityRecords === undefined ? [] : [["skippedMissingIdentityRecords", String(metadata.skippedMissingIdentityRecords)] as [string, string]]),
+      ...(metadata.missingIdentityLocations === undefined ? [] : [["missingIdentityLocations", JSON.stringify(metadata.missingIdentityLocations)] as [string, string]]),
+      ...(metadata.skippedLegacySourceRecords === undefined ? [] : [["skippedLegacySourceRecords", String(metadata.skippedLegacySourceRecords)] as [string, string]]),
+      ...(metadata.legacySourceLocations === undefined ? [] : [["legacySourceLocations", JSON.stringify(metadata.legacySourceLocations)] as [string, string]]),
+      ...(metadata.skippedJournalDuplicateRecords === undefined ? [] : [["skippedJournalDuplicateRecords", String(metadata.skippedJournalDuplicateRecords)] as [string, string]]),
+      ...(metadata.parsedSourceItems === undefined ? [] : [["parsedSourceItems", String(metadata.parsedSourceItems)] as [string, string]]),
+      ...(metadata.derivedLegacyAssociations === undefined ? [] : [["derivedLegacyAssociations", String(metadata.derivedLegacyAssociations)] as [string, string]]),
     ];
     const statement = this.db.prepare(
       `INSERT INTO index_metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -1098,6 +1108,7 @@ export class MemoryDb {
   }
 
   indexMetadata(): IndexMetadata | undefined {
+    if (!this.tableExists("index_metadata")) return undefined;
     const rows = this.db.prepare(`SELECT key, value FROM index_metadata`).all() as Array<{ key: string; value: string }>;
     if (rows.length === 0) return undefined;
     const values = new Map(rows.map((row) => [row.key, row.value]));
@@ -1118,6 +1129,42 @@ export class MemoryDb {
     if (dimension !== undefined && (!Number.isInteger(dimension) || dimension <= 0)) {
       throw new Error("memory-store: index metadata dimension is invalid.");
     }
+    const optionalCount = (key: string): number | undefined => {
+      const raw = values.get(key);
+      if (raw === undefined) return undefined;
+      const count = Number(raw);
+      if (!Number.isInteger(count) || count < 0) throw new Error(`memory-store: index metadata ${key} is invalid.`);
+      return count;
+    };
+    const skippedRawRecords = optionalCount("skippedRawRecords");
+    const skippedUnstructuredRecords = optionalCount("skippedUnstructuredRecords");
+    const skippedMissingIdentityRecords = optionalCount("skippedMissingIdentityRecords");
+    let missingIdentityLocations: string[] | undefined;
+    const missingIdentityLocationsRaw = values.get("missingIdentityLocations");
+    if (missingIdentityLocationsRaw !== undefined) {
+      try {
+        const parsed = JSON.parse(missingIdentityLocationsRaw) as unknown;
+        if (!Array.isArray(parsed) || parsed.some((location) => typeof location !== "string")) throw new Error();
+        missingIdentityLocations = parsed;
+      } catch {
+        throw new Error("memory-store: index metadata missingIdentityLocations is invalid.");
+      }
+    }
+    const skippedLegacySourceRecords = optionalCount("skippedLegacySourceRecords");
+    let legacySourceLocations: string[] | undefined;
+    const legacySourceLocationsRaw = values.get("legacySourceLocations");
+    if (legacySourceLocationsRaw !== undefined) {
+      try {
+        const parsed = JSON.parse(legacySourceLocationsRaw) as unknown;
+        if (!Array.isArray(parsed) || parsed.some((location) => typeof location !== "string")) throw new Error();
+        legacySourceLocations = parsed;
+      } catch {
+        throw new Error("memory-store: index metadata legacySourceLocations is invalid.");
+      }
+    }
+    const skippedJournalDuplicateRecords = optionalCount("skippedJournalDuplicateRecords");
+    const parsedSourceItems = optionalCount("parsedSourceItems");
+    const derivedLegacyAssociations = optionalCount("derivedLegacyAssociations");
     return {
       schemaVersion,
       policyVersion,
@@ -1127,6 +1174,15 @@ export class MemoryDb {
       createdAt,
       ...(embeddingModel === undefined ? {} : { embeddingModel }),
       ...(dimension === undefined ? {} : { dimension }),
+      ...(skippedRawRecords === undefined ? {} : { skippedRawRecords }),
+      ...(skippedUnstructuredRecords === undefined ? {} : { skippedUnstructuredRecords }),
+      ...(skippedMissingIdentityRecords === undefined ? {} : { skippedMissingIdentityRecords }),
+      ...(missingIdentityLocations === undefined ? {} : { missingIdentityLocations }),
+      ...(skippedLegacySourceRecords === undefined ? {} : { skippedLegacySourceRecords }),
+      ...(legacySourceLocations === undefined ? {} : { legacySourceLocations }),
+      ...(skippedJournalDuplicateRecords === undefined ? {} : { skippedJournalDuplicateRecords }),
+      ...(parsedSourceItems === undefined ? {} : { parsedSourceItems }),
+      ...(derivedLegacyAssociations === undefined ? {} : { derivedLegacyAssociations }),
     };
   }
 
@@ -1223,6 +1279,12 @@ export class MemoryDb {
 
   async backupTo(path: string): Promise<void> {
     await this.db.backup(path);
+  }
+
+  private tableExists(name: string): boolean {
+    return this.db.prepare(
+      `SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?`,
+    ).get(name) !== undefined;
   }
 
   assertEmbeddingIdentity(): void {

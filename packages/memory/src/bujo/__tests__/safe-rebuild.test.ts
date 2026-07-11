@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import BetterSqlite3 from "better-sqlite3";
@@ -25,6 +26,7 @@ import {
   safeRebuildMemoryIndex,
   serializeBullet,
 } from "../index.js";
+import { acquireMemoryWriterLease } from "../generations.js";
 
 const NOW = "2026-07-11T09:00:00.000Z";
 const roots: string[] = [];
@@ -290,16 +292,23 @@ describe("safe memory index rebuild", () => {
     writeGraph(root, [
       { kind: "entity", id: "person:morgan", name: "Morgan", type: "person", createdAt: NOW },
       { kind: "entity", id: "person:ann", name: "Ann", type: "person", createdAt: NOW },
+      { kind: "relation", src: "person:morgan", dst: "person:ann", relation: "mentors", createdAt: "2025-01-02T03:04:05.000Z" },
     ]);
 
     const result = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: embeddings("test:bujo", 8), dim: 8 });
-    expect(result).toMatchObject({ indexed: 1, skippedRawRecords: 1, derivedLegacyAssociations: 1 });
+    expect(result).toMatchObject({ indexed: 1, skippedRawRecords: 1, parsedSourceItems: 2, derivedLegacyAssociations: 1 });
     const db = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
     try {
       expect(db.get("RAW")).toBeUndefined();
       expect(db.associationsForMemory("M1")).toEqual([
         expect.objectContaining({ entityId: "person:morgan", provenance: "legacy-name-match" }),
       ]);
+      expect(db.relationsFor("person:morgan")).toEqual([{
+        src: "person:morgan",
+        dst: "person:ann",
+        relation: "mentors",
+        createdAt: "2025-01-02T03:04:05.000Z",
+      }]);
     } finally {
       db.close();
     }
@@ -342,6 +351,31 @@ describe("safe memory index rebuild", () => {
         },
       },
     })).rejects.toThrow(/candidate|database|changed|replaced/iu);
+    expect(resolveActiveMemoryDbPath(root)).toBe(before);
+  });
+
+  it("rejects a same-count candidate memory payload mutation after close", async () => {
+    const root = tempRoot();
+    await seedLegacy(root, note("OLD", "Payload mutation sentinel."));
+    writeDaily(root, [bullet("NEW", "Expected candidate payload.")]);
+    const before = resolveActiveMemoryDbPath(root);
+    await expect(safeRebuildMemoryIndex({
+      root,
+      tier: "lite",
+      hooks: {
+        afterCandidateClosed: () => {
+          const generations = join(realpathSync(root), ".index", "generations");
+          const candidate = join(generations, readdirSync(generations)[0] ?? "missing", "memory.db");
+          const db = openMemoryDb({ path: candidate });
+          db.upsertLexical({
+            ...note("NEW", "Rogue replacement with the same row count."),
+            status: "done",
+            source: { file: "daily/2026-07-11.md", line: 3 },
+          });
+          db.close();
+        },
+      },
+    })).rejects.toThrow(/memory payload validation/iu);
     expect(resolveActiveMemoryDbPath(root)).toBe(before);
   });
 
@@ -458,7 +492,7 @@ describe("safe memory index rebuild", () => {
       embeddings: embeddings("test:journal", 8),
       dim: 8,
     });
-    expect(result.indexed).toBe(1);
+    expect(result).toMatchObject({ indexed: 1, skippedJournalDuplicateRecords: 1, parsedSourceItems: 2 });
     const db = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
     try {
       const state = db.validationSnapshot();
@@ -467,6 +501,146 @@ describe("safe memory index rebuild", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("preserves and counts legacy visible lines without metadata instead of inventing identity", async () => {
+    const root = tempRoot();
+    const daily = join(root, "daily");
+    mkdirSync(daily, { recursive: true });
+    writeFileSync(join(daily, "2026-07-11.md"), [
+      "# 2026-07-11",
+      "",
+      "- ◦ Legacy hand-written event without structured metadata.",
+      serializeBullet(bullet("M1", "Structured fact remains indexed.")),
+      "",
+    ].join("\n"));
+    const sourceHash = sha256(join(daily, "2026-07-11.md"));
+    const result = await safeRebuildMemoryIndex({ root, tier: "lite" });
+    expect(result).toMatchObject({ indexed: 1, skippedUnstructuredRecords: 1 });
+    expect(sha256(join(daily, "2026-07-11.md"))).toBe(sourceHash);
+    expect(readTexts(result.active)).toEqual(["Structured fact remains indexed."]);
+  });
+
+  it("preserves metadata-backed legacy lines missing only identity, but rejects any other incomplete metadata", async () => {
+    const root = tempRoot();
+    const daily = join(root, "daily");
+    mkdirSync(daily, { recursive: true });
+    writeFileSync(join(daily, "2026-07-11.md"), [
+      "# 2026-07-11",
+      "",
+      "- – Legacy automation record.  <!--mem type=note status=open salience=0.6 isInsight=0 created=2026-07-11T09:00:00.000Z refs=-->",
+      "",
+    ].join("\n"));
+    const before = sha256(join(daily, "2026-07-11.md"));
+    const result = await safeRebuildMemoryIndex({ root, tier: "lite" });
+    expect(result).toMatchObject({
+      indexed: 0,
+      skippedMissingIdentityRecords: 1,
+      missingIdentityLocations: ["daily/2026-07-11.md:3"],
+    });
+    expect(sha256(join(daily, "2026-07-11.md"))).toBe(before);
+
+    const malformed = tempRoot();
+    mkdirSync(join(malformed, "daily"), { recursive: true });
+    writeFileSync(
+      join(malformed, "daily", "2026-07-11.md"),
+      "- – Missing timestamp.  <!--mem type=note status=open salience=0.6 isInsight=0 refs=-->\n",
+    );
+    await expect(safeRebuildMemoryIndex({ root: malformed, tier: "lite" })).rejects.toThrow(/malformed memory bullet/iu);
+
+    const legacySource = tempRoot();
+    mkdirSync(join(legacySource, "daily"), { recursive: true });
+    writeFileSync(
+      join(legacySource, "daily", "2026-07-11.md"),
+      "- Focus scan legacy schema. <!--mem type=note status=open salience=0.5 source=focus-scan-hourly-->\n",
+    );
+    const legacySourceResult = await safeRebuildMemoryIndex({ root: legacySource, tier: "lite" });
+    expect(legacySourceResult).toMatchObject({
+      indexed: 0,
+      parsedSourceItems: 1,
+      skippedLegacySourceRecords: 1,
+      legacySourceLocations: ["daily/2026-07-11.md:1"],
+    });
+  });
+
+  it("rejects writable pinned DB paths so retained generations stay immutable", async () => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("M1", "First generation sentinel.")]);
+    await safeRebuildMemoryIndex({ root, tier: "lite" });
+    const retained = resolveActiveMemoryDbPath(root);
+    const before = sha256(retained);
+    expect(() => createBujoMemoryStore({ root, tier: "lite", dbPath: retained })).toThrow(/dbPath.*read-only|writable/iu);
+    expect(sha256(retained)).toBe(before);
+  });
+
+  it("removes its owned writer lock when acquisition fails after O_EXCL creation", () => {
+    const root = tempRoot();
+    expect(() => acquireMemoryWriterLease(root, {
+      afterCreate: () => { throw new Error("post-create-fault"); },
+    })).toThrow("post-create-fault");
+    expect(existsSync(join(realpathSync(root), ".index", "writer.lock"))).toBe(false);
+    const lease = acquireMemoryWriterLease(root);
+    lease.release();
+  });
+
+  it("adopts a genuine old-schema database through an online copy without changing legacy bytes", async () => {
+    const root = tempRoot();
+    await seedLegacy(root, note("OLD", "Old-schema rollback sentinel."));
+    const legacyPath = join(root, "memory.db");
+    const raw = new BetterSqlite3(legacyPath);
+    raw.exec("DROP TABLE memory_entities; DROP TABLE content_hashes; DROP TABLE index_metadata;");
+    raw.pragma("wal_checkpoint(TRUNCATE)");
+    raw.close();
+    const legacyHash = sha256(legacyPath);
+    writeDaily(root, [bullet("NEW", "Candidate from canonical source.")]);
+
+    const result = await safeRebuildMemoryIndex({ root, tier: "lite" });
+    expect(sha256(legacyPath)).toBe(legacyHash);
+    expect(result.rollback).toBeDefined();
+    await rollbackMemoryIndex({ root, tier: "lite" });
+    expect(readTexts(resolveActiveMemoryDbPath(root))).toEqual(["Old-schema rollback sentinel."]);
+  });
+
+  it("preserves empty semantic identity when a changed source requires a rollback snapshot", async () => {
+    const root = tempRoot();
+    const modelA = embeddings("test:empty-a", 8);
+    await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: modelA, dim: 8 });
+    // Canonical-first mirror failure: source advanced, but the managed DB is
+    // still truly empty, so row inference cannot recover model/dimension.
+    writeDaily(root, [bullet("M1", "Source changed after empty generation activation.")]);
+    await safeRebuildMemoryIndex({ root, tier: "journal", embeddings: embeddings("test:empty-b", 4), dim: 4 });
+    await rollbackMemoryIndex({ root, tier: "journal", embeddings: modelA, dim: 8 });
+    const db = openMemoryDb({ path: resolveActiveMemoryDbPath(root), readOnly: true, dim: 8 });
+    try {
+      expect(db.indexMetadata()).toMatchObject({ embeddingModel: "test:empty-a", dimension: 8 });
+      expect(db.validationSnapshot()).toMatchObject({ memories: 0, vectors: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("detects retained rollback replacement after manifest temp fsync", async () => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("M1", "First active generation.")]);
+    await safeRebuildMemoryIndex({ root, tier: "lite" });
+    writeDaily(root, [bullet("M2", "Changed source creates a separate rollback snapshot.")]);
+    const activeBefore = resolveActiveMemoryDbPath(root);
+    await expect(safeRebuildMemoryIndex({
+      root,
+      tier: "lite",
+      hooks: {
+        afterManifestTempFsync: () => {
+          const managed = join(realpathSync(root), ".index");
+          const temp = readdirSync(managed).find((name) => name.startsWith(".manifest-") && name.endsWith(".tmp"));
+          if (temp === undefined) throw new Error("missing manifest temp");
+          const manifest = JSON.parse(readFileSync(join(managed, temp), "utf8")) as { rollback: { name: string } };
+          const rollbackDb = join(managed, "generations", manifest.rollback.name, "memory.db");
+          renameSync(rollbackDb, `${rollbackDb}.replaced`);
+          writeFileSync(rollbackDb, "not sqlite", { mode: 0o600 });
+        },
+      },
+    })).rejects.toThrow(/rollback database changed|retained rollback|replaced/iu);
+    expect(resolveActiveMemoryDbPath(root)).toBe(activeBefore);
   });
 });
 
@@ -501,6 +675,10 @@ function writeDaily(root: string, bullets: readonly ReturnType<typeof bullet>[])
 
 function writeGraph(root: string, records: readonly Record<string, unknown>[]): void {
   writeFileSync(join(root, "graph.jsonl"), `${records.map((record) => JSON.stringify(record)).join("\n")}\n`, "utf8");
+}
+
+function sha256(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
 function note(id: string, text: string): MemoryRecord {

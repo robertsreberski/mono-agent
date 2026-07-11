@@ -147,6 +147,13 @@ export interface SafeMemoryIndexResult {
   readonly sourceFingerprint: string;
   readonly generation: string;
   readonly skippedRawRecords: number;
+  readonly skippedUnstructuredRecords: number;
+  readonly skippedMissingIdentityRecords: number;
+  readonly missingIdentityLocations: readonly string[];
+  readonly skippedLegacySourceRecords: number;
+  readonly legacySourceLocations: readonly string[];
+  readonly skippedJournalDuplicateRecords: number;
+  readonly parsedSourceItems: number;
   readonly derivedLegacyAssociations: number;
 }
 
@@ -173,6 +180,13 @@ interface BuildPlan {
   readonly contentHashes: ReadonlyMap<string, string>;
   readonly graph: StrictGraph;
   readonly skippedRawRecords: number;
+  readonly skippedUnstructuredRecords: number;
+  readonly skippedMissingIdentityRecords: number;
+  readonly missingIdentityLocations: readonly string[];
+  readonly skippedLegacySourceRecords: number;
+  readonly legacySourceLocations: readonly string[];
+  readonly skippedJournalDuplicateRecords: number;
+  readonly parsedSourceItems: number;
 }
 
 /**
@@ -207,6 +221,15 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       policyVersion: MEMORY_REBUILD_POLICY_VERSION,
       createdAt,
       origin: "rebuild",
+      skippedRawRecords: plan.skippedRawRecords,
+      skippedUnstructuredRecords: plan.skippedUnstructuredRecords,
+      skippedMissingIdentityRecords: plan.skippedMissingIdentityRecords,
+      missingIdentityLocations: plan.missingIdentityLocations,
+      skippedLegacySourceRecords: plan.skippedLegacySourceRecords,
+      legacySourceLocations: plan.legacySourceLocations,
+      skippedJournalDuplicateRecords: plan.skippedJournalDuplicateRecords,
+      parsedSourceItems: plan.parsedSourceItems,
+      derivedLegacyAssociations: plan.graph.derivedLegacyAssociations,
       ...(options.embeddings === undefined ? {} : { embeddingModel: options.embeddings.id }),
       ...(options.dim === undefined ? {} : { dimension: options.dim }),
     };
@@ -229,7 +252,9 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
         });
       }
       for (const entity of plan.graph.entities) db.upsertEntity(entity);
-      for (const relation of plan.graph.relations) db.addEntityRelation(relation.src, relation.dst, relation.relation);
+      for (const relation of plan.graph.relations) {
+        db.addEntityRelation(relation.src, relation.dst, relation.relation, relation.createdAt);
+      }
       for (const association of plan.graph.associations) db.associateMemory(association);
       db.setIndexMetadata({
         schemaVersion: MANAGED_INDEX_SCHEMA_VERSION,
@@ -238,6 +263,15 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
         sourceFingerprint: snapshot.fingerprint,
         generation: generation.name,
         createdAt,
+        skippedRawRecords: plan.skippedRawRecords,
+        skippedUnstructuredRecords: plan.skippedUnstructuredRecords,
+        skippedMissingIdentityRecords: plan.skippedMissingIdentityRecords,
+        missingIdentityLocations: plan.missingIdentityLocations,
+        skippedLegacySourceRecords: plan.skippedLegacySourceRecords,
+        legacySourceLocations: plan.legacySourceLocations,
+        skippedJournalDuplicateRecords: plan.skippedJournalDuplicateRecords,
+        parsedSourceItems: plan.parsedSourceItems,
+        derivedLegacyAssociations: plan.graph.derivedLegacyAssociations,
         ...(options.embeddings === undefined ? {} : { embeddingModel: options.embeddings.id }),
         ...(options.dim === undefined ? {} : { dimension: options.dim }),
       });
@@ -254,7 +288,11 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
     const candidateDigest = fileDigest(generation.dbPath);
     await options.hooks?.afterCandidateValidated?.();
     await options.hooks?.beforeSourceCas?.();
-    const rollback = await snapshotCurrentRollback(root, priorManifest?.active, rollbackSnapshot, options.tier);
+    const rollback = await snapshotCurrentRollback(root, priorManifest?.active, rollbackSnapshot, options);
+    const rollbackPath = rollback === undefined ? undefined : managedGenerationDbPath(root, rollback.name, true);
+    const rollbackIdentity = rollbackPath === undefined ? undefined : identityOf(rollbackPath);
+    const rollbackDigest = rollbackPath === undefined ? undefined : fileDigest(rollbackPath);
+    if (rollbackPath !== undefined && rollback !== undefined) validateRetainedGeneration(rollbackPath, rollback);
     // This is the final source/root/candidate CAS. All potentially long awaited
     // candidate and rollback work has completed; activation performs only the
     // same-directory manifest transaction after this point.
@@ -274,6 +312,13 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
         throw new Error("memory-rebuild: candidate database changed after validation.");
       }
       validateCandidate(generation.dbPath, descriptor, plan);
+      if (rollbackPath !== undefined && rollbackIdentity !== undefined && rollbackDigest !== undefined && rollback !== undefined) {
+        assertSameIdentity(rollbackPath, rollbackIdentity, "retained rollback database");
+        if (fileDigest(rollbackPath) !== rollbackDigest) {
+          throw new Error("memory-rebuild: retained rollback database changed after validation.");
+        }
+        validateRetainedGeneration(rollbackPath, rollback);
+      }
       assertManagedManifestState(root, manifestState);
     };
     assertFinalCas();
@@ -294,6 +339,13 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       sourceFingerprint: snapshot.fingerprint,
       generation: generation.name,
       skippedRawRecords: plan.skippedRawRecords,
+      skippedUnstructuredRecords: plan.skippedUnstructuredRecords,
+      skippedMissingIdentityRecords: plan.skippedMissingIdentityRecords,
+      missingIdentityLocations: plan.missingIdentityLocations,
+      skippedLegacySourceRecords: plan.skippedLegacySourceRecords,
+      legacySourceLocations: plan.legacySourceLocations,
+      skippedJournalDuplicateRecords: plan.skippedJournalDuplicateRecords,
+      parsedSourceItems: plan.parsedSourceItems,
       derivedLegacyAssociations: plan.graph.derivedLegacyAssociations,
     };
   } catch (error) {
@@ -369,8 +421,15 @@ export async function rollbackMemoryIndex(options: SafeMemoryIndexOptions): Prom
       indexed,
       sourceFingerprint: target.sourceFingerprint,
       generation: target.name,
-      skippedRawRecords: 0,
-      derivedLegacyAssociations: 0,
+      skippedRawRecords: target.skippedRawRecords ?? 0,
+      skippedUnstructuredRecords: target.skippedUnstructuredRecords ?? 0,
+      skippedMissingIdentityRecords: target.skippedMissingIdentityRecords ?? 0,
+      missingIdentityLocations: target.missingIdentityLocations ?? [],
+      skippedLegacySourceRecords: target.skippedLegacySourceRecords ?? 0,
+      legacySourceLocations: target.legacySourceLocations ?? [],
+      skippedJournalDuplicateRecords: target.skippedJournalDuplicateRecords ?? 0,
+      parsedSourceItems: target.parsedSourceItems ?? indexed,
+      derivedLegacyAssociations: target.derivedLegacyAssociations ?? 0,
     };
   } finally {
     lease.release();
@@ -417,14 +476,26 @@ function readStableSourceFile(root: string, path: string, relativePath: string):
 
 function buildPlan(snapshot: SourceSnapshot, tier: BujoTier): BuildPlan {
   const rawRecords: MemoryRecord[] = [];
+  let skippedUnstructuredRecords = 0;
+  const missingIdentityLocations: string[] = [];
+  const legacySourceLocations: string[] = [];
   for (const source of snapshot.daily) {
     const content = source.bytes.toString("utf8");
     const parsed = parseDailyFile(content);
     for (const line of parsed.lines) {
       if (line.bullet === undefined) {
-        if (line.raw.includes("<!--mem") || CANONICAL_VISIBLE_BULLET.test(line.raw)) {
+        if (line.raw.includes("<!--mem")) {
+          if (isMissingOnlyIdentity(line.raw)) {
+            missingIdentityLocations.push(`${source.relativePath}:${line.lineNumber}`);
+            continue;
+          }
+          if (isLegacySourceRecord(line.raw)) {
+            legacySourceLocations.push(`${source.relativePath}:${line.lineNumber}`);
+            continue;
+          }
           throw new Error(`memory-rebuild: malformed memory bullet at ${source.relativePath}:${line.lineNumber}.`);
         }
+        if (CANONICAL_VISIBLE_BULLET.test(line.raw)) skippedUnstructuredRecords += 1;
         continue;
       }
       assertStrictBulletRaw(line.raw, source.relativePath, line.lineNumber);
@@ -438,6 +509,7 @@ function buildPlan(snapshot: SourceSnapshot, tier: BujoTier): BuildPlan {
   const records = new Map<string, MemoryRecord>();
   const contentHashes = new Map<string, string>();
   let skippedRawRecords = 0;
+  let skippedJournalDuplicateRecords = 0;
   for (const record of rawRecords) {
     if (tier === "bujo" && isLegacyHostObservation(record.text)) {
       skippedRawRecords += 1;
@@ -445,7 +517,10 @@ function buildPlan(snapshot: SourceSnapshot, tier: BujoTier): BuildPlan {
     }
     if (tier === "journal") {
       const hash = normalizedContentHash(record.text);
-      if (contentHashes.has(hash)) continue;
+      if (contentHashes.has(hash)) {
+        skippedJournalDuplicateRecords += 1;
+        continue;
+      }
       const canonical = { ...record, id: `J-${hash}` };
       records.set(canonical.id, canonical);
       contentHashes.set(hash, canonical.id);
@@ -459,7 +534,26 @@ function buildPlan(snapshot: SourceSnapshot, tier: BujoTier): BuildPlan {
   }
 
   const graph = tier === "bujo" ? parseStrictGraph(snapshot.graph, records) : emptyGraph();
-  return { records: [...records.values()], contentHashes, graph, skippedRawRecords };
+  const parsedSourceItems = rawRecords.length + skippedUnstructuredRecords
+    + missingIdentityLocations.length + legacySourceLocations.length;
+  const accountedSourceItems = records.size + skippedRawRecords + skippedUnstructuredRecords
+    + missingIdentityLocations.length + legacySourceLocations.length + skippedJournalDuplicateRecords;
+  if (accountedSourceItems !== parsedSourceItems) {
+    throw new Error(`memory-rebuild: source accounting mismatch (${accountedSourceItems}/${parsedSourceItems}).`);
+  }
+  return {
+    records: [...records.values()],
+    contentHashes,
+    graph,
+    skippedRawRecords,
+    skippedUnstructuredRecords,
+    skippedMissingIdentityRecords: missingIdentityLocations.length,
+    missingIdentityLocations,
+    skippedLegacySourceRecords: legacySourceLocations.length,
+    legacySourceLocations,
+    skippedJournalDuplicateRecords,
+    parsedSourceItems,
+  };
 }
 
 function parseStrictGraph(source: SourceFileSnapshot | undefined, memories: ReadonlyMap<string, MemoryRecord>): StrictGraph {
@@ -586,12 +680,26 @@ function validateCandidate(path: string, descriptor: ManagedGeneration, plan: Bu
     if (state.memories !== plan.records.length || state.ftsRows !== plan.records.length || state.ftsMismatches !== 0) {
       throw new Error("memory-rebuild: candidate memory/FTS coverage validation failed.");
     }
+    const actualMemories = plan.records.map((record) => db.get(record.id));
+    if (stableJson(actualMemories.map(memoryPayload)) !== stableJson(plan.records.map(memoryPayload))) {
+      throw new Error("memory-rebuild: candidate memory payload validation failed.");
+    }
     if (state.vectors !== expectedVectors || state.vectorOrphans !== 0) {
       throw new Error("memory-rebuild: candidate vector coverage validation failed.");
     }
     if (state.entities !== plan.graph.entities.length || state.relations !== plan.graph.relations.length
       || state.associations !== plan.graph.associations.length || state.relationOrphans !== 0 || state.associationOrphans !== 0) {
       throw new Error("memory-rebuild: candidate graph coverage or endpoint validation failed.");
+    }
+    const actualEntities = plan.graph.entities.map((entity) => db.getEntity(entity.id));
+    const actualRelations = [...new Set(plan.graph.relations.map((relation) => relation.src))]
+      .flatMap((src) => db.relationsFor(src));
+    const actualAssociations = [...new Set(plan.graph.associations.map((association) => association.memoryId))]
+      .flatMap((memoryId) => db.associationsForMemory(memoryId));
+    if (stableJson(actualEntities) !== stableJson(plan.graph.entities)
+      || stableJson(actualRelations) !== stableJson(plan.graph.relations)
+      || stableJson(actualAssociations) !== stableJson(plan.graph.associations)) {
+      throw new Error("memory-rebuild: candidate graph payload validation failed.");
     }
     if (descriptor.tier === "journal") {
       if (state.contentHashes !== plan.contentHashes.size || state.contentHashOrphans !== 0) {
@@ -637,7 +745,16 @@ function validateDb(db: MemoryDb, descriptor: ManagedGeneration): void {
     || metadata.sourceFingerprint !== descriptor.sourceFingerprint
     || metadata.generation !== descriptor.name
     || metadata.embeddingModel !== descriptor.embeddingModel
-    || metadata.dimension !== descriptor.dimension) {
+    || metadata.dimension !== descriptor.dimension
+    || metadata.skippedRawRecords !== descriptor.skippedRawRecords
+    || metadata.skippedUnstructuredRecords !== descriptor.skippedUnstructuredRecords
+    || metadata.skippedMissingIdentityRecords !== descriptor.skippedMissingIdentityRecords
+    || stableJson(metadata.missingIdentityLocations ?? []) !== stableJson(descriptor.missingIdentityLocations ?? [])
+    || metadata.skippedLegacySourceRecords !== descriptor.skippedLegacySourceRecords
+    || stableJson(metadata.legacySourceLocations ?? []) !== stableJson(descriptor.legacySourceLocations ?? [])
+    || metadata.skippedJournalDuplicateRecords !== descriptor.skippedJournalDuplicateRecords
+    || metadata.parsedSourceItems !== descriptor.parsedSourceItems
+    || metadata.derivedLegacyAssociations !== descriptor.derivedLegacyAssociations) {
     throw new Error("memory-rebuild: candidate metadata does not match its manifest generation.");
   }
   const expectedDimension = descriptor.dimension ?? DEFAULT_VEC_DIM;
@@ -651,40 +768,24 @@ function validateDb(db: MemoryDb, descriptor: ManagedGeneration): void {
 async function adoptLegacyRollback(
   root: string,
   snapshot: SourceSnapshot,
-  tier: BujoTier,
+  options: SafeMemoryIndexOptions,
 ): Promise<ManagedGeneration | undefined> {
   const legacyPath = join(root, "memory.db");
   if (!existsSync(legacyPath)) return undefined;
   assertSafeRegularFile(root, legacyPath, "legacy memory database");
   const generation = createManagedGeneration(root);
-  const source = openMemoryDb({ path: legacyPath, readOnly: true });
-  let actualDimension: number;
-  let embeddingModel: string | undefined;
-  try {
-    actualDimension = source.vectorDimension();
-    const models = source.validationSnapshot().embeddingModels;
-    if (models.length > 1) throw new Error("memory-rebuild: legacy index contains multiple embedding model identities.");
-    embeddingModel = models[0];
-    await source.backupTo(generation.dbPath);
-  } finally {
-    source.close();
-  }
-  const createdAt = new Date().toISOString();
-  const descriptor: ManagedGeneration = {
-    name: generation.name,
-    tier,
-    sourceFingerprint: snapshot.fingerprint,
-    policyVersion: MEMORY_REBUILD_POLICY_VERSION,
-    createdAt,
-    origin: "legacy-snapshot",
-    ...(embeddingModel === undefined ? {} : { embeddingModel, dimension: actualDimension }),
-  };
+  const actualDimension = await backupRawSqlite(legacyPath, generation.dbPath);
   const copy = openMemoryDb({ path: generation.dbPath, dim: actualDimension });
+  let embeddingModel: string | undefined;
+  const createdAt = new Date().toISOString();
   try {
+    const models = copy.validationSnapshot().embeddingModels;
+    if (models.length > 1) throw new Error("memory-rebuild: legacy index contains multiple embedding model identities.");
+    embeddingModel = models[0] ?? (options.tier === "lite" ? undefined : options.embeddings?.id);
     copy.setIndexMetadata({
       schemaVersion: MANAGED_INDEX_SCHEMA_VERSION,
       policyVersion: MEMORY_REBUILD_POLICY_VERSION,
-      tier,
+      tier: options.tier,
       sourceFingerprint: snapshot.fingerprint,
       generation: generation.name,
       createdAt,
@@ -694,6 +795,15 @@ async function adoptLegacyRollback(
   } finally {
     copy.close();
   }
+  const descriptor: ManagedGeneration = {
+    name: generation.name,
+    tier: options.tier,
+    sourceFingerprint: snapshot.fingerprint,
+    policyVersion: MEMORY_REBUILD_POLICY_VERSION,
+    createdAt,
+    origin: "legacy-snapshot",
+    ...(embeddingModel === undefined ? {} : { embeddingModel, dimension: actualDimension }),
+  };
   fsyncFile(generation.dbPath);
   fsyncDirectory(generation.dir);
   validateRetainedGeneration(generation.dbPath, descriptor);
@@ -704,9 +814,9 @@ async function snapshotCurrentRollback(
   root: string,
   active: ManagedGeneration | undefined,
   snapshot: SourceSnapshot,
-  tier: BujoTier,
+  options: SafeMemoryIndexOptions,
 ): Promise<ManagedGeneration | undefined> {
-  if (active === undefined) return await adoptLegacyRollback(root, snapshot, tier);
+  if (active === undefined) return await adoptLegacyRollback(root, snapshot, options);
   if (active.sourceFingerprint === snapshot.fingerprint) {
     validateRetainedGeneration(managedGenerationDbPath(root, active.name, true), active);
     return active;
@@ -716,6 +826,7 @@ async function snapshotCurrentRollback(
     managedGenerationDbPath(root, active.name, true),
     snapshot,
     active.tier,
+    active,
   );
 }
 
@@ -724,17 +835,16 @@ async function snapshotDatabaseForRollback(
   sourcePath: string,
   snapshot: SourceSnapshot,
   tier: BujoTier,
+  preservedIdentity?: ManagedGeneration,
 ): Promise<ManagedGeneration> {
   const generation = createManagedGeneration(root);
-  const source = openMemoryDb({ path: sourcePath, readOnly: true });
-  let actualDimension: number;
+  const actualDimension = await backupRawSqlite(sourcePath, generation.dbPath);
+  const source = openMemoryDb({ path: generation.dbPath, dim: actualDimension });
   let embeddingModel: string | undefined;
   try {
-    actualDimension = source.vectorDimension();
     const models = source.validationSnapshot().embeddingModels;
     if (models.length > 1) throw new Error("memory-rebuild: active index contains multiple embedding model identities.");
-    embeddingModel = models[0];
-    await source.backupTo(generation.dbPath);
+    embeddingModel = preservedIdentity?.embeddingModel ?? models[0];
   } finally {
     source.close();
   }
@@ -746,7 +856,19 @@ async function snapshotDatabaseForRollback(
     policyVersion: MEMORY_REBUILD_POLICY_VERSION,
     createdAt,
     origin: "legacy-snapshot",
-    ...(embeddingModel === undefined ? {} : { embeddingModel, dimension: actualDimension }),
+    ...(preservedIdentity?.skippedRawRecords === undefined ? {} : { skippedRawRecords: preservedIdentity.skippedRawRecords }),
+    ...(preservedIdentity?.skippedUnstructuredRecords === undefined ? {} : { skippedUnstructuredRecords: preservedIdentity.skippedUnstructuredRecords }),
+    ...(preservedIdentity?.skippedMissingIdentityRecords === undefined ? {} : { skippedMissingIdentityRecords: preservedIdentity.skippedMissingIdentityRecords }),
+    ...(preservedIdentity?.missingIdentityLocations === undefined ? {} : { missingIdentityLocations: preservedIdentity.missingIdentityLocations }),
+    ...(preservedIdentity?.skippedLegacySourceRecords === undefined ? {} : { skippedLegacySourceRecords: preservedIdentity.skippedLegacySourceRecords }),
+    ...(preservedIdentity?.legacySourceLocations === undefined ? {} : { legacySourceLocations: preservedIdentity.legacySourceLocations }),
+    ...(preservedIdentity?.skippedJournalDuplicateRecords === undefined ? {} : { skippedJournalDuplicateRecords: preservedIdentity.skippedJournalDuplicateRecords }),
+    ...(preservedIdentity?.parsedSourceItems === undefined ? {} : { parsedSourceItems: preservedIdentity.parsedSourceItems }),
+    ...(preservedIdentity?.derivedLegacyAssociations === undefined ? {} : { derivedLegacyAssociations: preservedIdentity.derivedLegacyAssociations }),
+    ...(embeddingModel === undefined ? {} : {
+      embeddingModel,
+      dimension: preservedIdentity?.dimension ?? actualDimension,
+    }),
   };
   const copy = openMemoryDb({ path: generation.dbPath, dim: actualDimension });
   try {
@@ -757,7 +879,19 @@ async function snapshotDatabaseForRollback(
       sourceFingerprint: snapshot.fingerprint,
       generation: generation.name,
       createdAt,
-      ...(embeddingModel === undefined ? {} : { embeddingModel, dimension: actualDimension }),
+      ...(preservedIdentity?.skippedRawRecords === undefined ? {} : { skippedRawRecords: preservedIdentity.skippedRawRecords }),
+      ...(preservedIdentity?.skippedUnstructuredRecords === undefined ? {} : { skippedUnstructuredRecords: preservedIdentity.skippedUnstructuredRecords }),
+      ...(preservedIdentity?.skippedMissingIdentityRecords === undefined ? {} : { skippedMissingIdentityRecords: preservedIdentity.skippedMissingIdentityRecords }),
+      ...(preservedIdentity?.missingIdentityLocations === undefined ? {} : { missingIdentityLocations: preservedIdentity.missingIdentityLocations }),
+      ...(preservedIdentity?.skippedLegacySourceRecords === undefined ? {} : { skippedLegacySourceRecords: preservedIdentity.skippedLegacySourceRecords }),
+      ...(preservedIdentity?.legacySourceLocations === undefined ? {} : { legacySourceLocations: preservedIdentity.legacySourceLocations }),
+      ...(preservedIdentity?.skippedJournalDuplicateRecords === undefined ? {} : { skippedJournalDuplicateRecords: preservedIdentity.skippedJournalDuplicateRecords }),
+      ...(preservedIdentity?.parsedSourceItems === undefined ? {} : { parsedSourceItems: preservedIdentity.parsedSourceItems }),
+      ...(preservedIdentity?.derivedLegacyAssociations === undefined ? {} : { derivedLegacyAssociations: preservedIdentity.derivedLegacyAssociations }),
+      ...(embeddingModel === undefined ? {} : {
+        embeddingModel,
+        dimension: preservedIdentity?.dimension ?? actualDimension,
+      }),
     });
     copy.checkpoint();
   } finally {
@@ -851,6 +985,40 @@ function fileDigest(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+function stableJson(values: readonly unknown[]): string {
+  return JSON.stringify(values.map(canonicalJsonValue).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))));
+}
+
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, canonicalJsonValue(entry)]),
+  );
+}
+
+function memoryPayload(record: MemoryRecord | undefined): unknown {
+  if (record === undefined) return undefined;
+  return {
+    id: record.id,
+    type: record.type,
+    status: record.status,
+    text: record.text,
+    salience: record.salience,
+    isInsight: record.isInsight,
+    createdAt: record.createdAt,
+    ...(record.validFrom === undefined ? {} : { validFrom: record.validFrom }),
+    ...(record.validTo === undefined ? {} : { validTo: record.validTo }),
+    ...(record.supersededBy === undefined ? {} : { supersededBy: record.supersededBy }),
+    ...(record.supersededAt === undefined ? {} : { supersededAt: record.supersededAt }),
+    ...(record.dueAt === undefined ? {} : { dueAt: record.dueAt }),
+    ...(record.collection === undefined ? {} : { collection: record.collection }),
+    tags: [...record.tags],
+    source: { ...record.source },
+  };
+}
+
 function requiredString(value: unknown, label: string, line: number): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(`memory-rebuild: missing ${label} at graph.jsonl:${line}.`);
@@ -905,6 +1073,49 @@ function assertStrictBulletRaw(raw: string, file: string, line: number): void {
   }
 }
 
+function isMissingOnlyIdentity(raw: string): boolean {
+  if (!CANONICAL_VISIBLE_BULLET.test(raw)) return false;
+  const match = /<!--mem\s+(.+?)-->/u.exec(raw);
+  if (match === null) return false;
+  const fields = new Map<string, string>();
+  for (const pair of (match[1] ?? "").trim().split(/\s+/u)) {
+    const separator = pair.indexOf("=");
+    if (separator <= 0) return false;
+    const key = pair.slice(0, separator);
+    if (fields.has(key)) return false;
+    fields.set(key, pair.slice(separator + 1));
+  }
+  if ((fields.get("id") ?? "") !== "") return false;
+  const requiredWithoutIdentity = ["type", "status", "salience", "isInsight", "created", "refs"];
+  if (requiredWithoutIdentity.some((key) => !fields.has(key))) return false;
+  if (!VALID_BULLET_TYPES.has(fields.get("type") ?? "") || !VALID_BULLET_STATUSES.has(fields.get("status") ?? "")) return false;
+  if (!Number.isFinite(Number(fields.get("salience")))) return false;
+  if (fields.get("isInsight") !== "0" && fields.get("isInsight") !== "1") return false;
+  if (!Number.isFinite(Date.parse(fields.get("created") ?? ""))) return false;
+  const due = fields.get("due");
+  return due === undefined || Number.isFinite(Date.parse(due));
+}
+
+function isLegacySourceRecord(raw: string): boolean {
+  if (raw.includes("\n") || !raw.startsWith("- ")) return false;
+  if ((raw.match(/<!--mem/gu) ?? []).length !== 1 || (raw.match(/-->/gu) ?? []).length !== 1) return false;
+  const match = /<!--mem\s+(.+?)-->\s*$/u.exec(raw);
+  if (match === null) return false;
+  const fields = new Map<string, string>();
+  for (const pair of (match[1] ?? "").trim().split(/\s+/u)) {
+    const separator = pair.indexOf("=");
+    if (separator <= 0) return false;
+    const key = pair.slice(0, separator);
+    if (fields.has(key)) return false;
+    fields.set(key, pair.slice(separator + 1));
+  }
+  const keys = [...fields.keys()].sort();
+  if (stableJson(keys) !== stableJson(["salience", "source", "status", "type"])) return false;
+  if (!VALID_BULLET_TYPES.has(fields.get("type") ?? "") || !VALID_BULLET_STATUSES.has(fields.get("status") ?? "")) return false;
+  if (!Number.isFinite(Number(fields.get("salience")))) return false;
+  return (fields.get("source") ?? "").length > 0;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -918,6 +1129,23 @@ function assertNoActiveSqliteWriter(path: string): void {
   } catch (error) {
     if (db.inTransaction) db.exec("ROLLBACK");
     throw new Error(`memory-rebuild: active legacy SQLite writer detected; stop the configured agent first. ${reasonOf(error)}`);
+  } finally {
+    db.close();
+  }
+}
+
+async function backupRawSqlite(sourcePath: string, destinationPath: string): Promise<number> {
+  const db = new BetterSqlite3(sourcePath, { readonly: true, fileMustExist: true });
+  try {
+    const row = db.prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memories_vec'`,
+    ).get() as { sql: string } | undefined;
+    const dimension = Number(row?.sql.match(/embedding\s+float\[(\d+)\]/iu)?.[1] ?? DEFAULT_VEC_DIM);
+    if (!Number.isInteger(dimension) || dimension <= 0) {
+      throw new Error("memory-rebuild: legacy vector table has an invalid dimension.");
+    }
+    await db.backup(destinationPath);
+    return dimension;
   } finally {
     db.close();
   }

@@ -107,6 +107,9 @@ export class BujoMemoryStore implements MemoryStore {
     const tier = options.tier ?? derivedTier;
     // Pure validation precedes every filesystem/lease side effect.
     assertTierPrerequisites(tier, options);
+    if (options.dbPath !== undefined && options.readOnly !== true) {
+      throw new Error("memory-bujo: dbPath may pin only a read-only snapshot; writable stores always use the managed active generation.");
+    }
     this.readOnly = options.readOnly === true;
     const writerLease = this.readOnly ? undefined : acquireMemoryWriterLease(options.root);
     this.writerLease = writerLease;

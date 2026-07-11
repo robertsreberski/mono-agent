@@ -2,6 +2,7 @@ import {
   closeSync,
   constants,
   existsSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -34,6 +35,15 @@ export interface ManagedGeneration {
   readonly embeddingModel?: string;
   readonly dimension?: number;
   readonly origin: "rebuild" | "legacy-snapshot";
+  readonly skippedRawRecords?: number;
+  readonly skippedUnstructuredRecords?: number;
+  readonly skippedMissingIdentityRecords?: number;
+  readonly missingIdentityLocations?: readonly string[];
+  readonly skippedLegacySourceRecords?: number;
+  readonly legacySourceLocations?: readonly string[];
+  readonly skippedJournalDuplicateRecords?: number;
+  readonly parsedSourceItems?: number;
+  readonly derivedLegacyAssociations?: number;
 }
 
 export interface ManagedIndexManifest {
@@ -46,6 +56,11 @@ export interface MemoryWriterLease {
   readonly root: string;
   readonly path: string;
   release(): void;
+}
+
+export interface MemoryWriterLeaseHooks {
+  /** Test-only seam for a post-O_EXCL write/fsync failure. */
+  readonly afterCreate?: () => void;
 }
 
 export interface ManagedManifestState {
@@ -123,7 +138,7 @@ export function createManagedGeneration(root: string, now = new Date()): { reado
  * Acquire the long-lived configured-writer lease before resolving/opening the DB.
  * Safe rebuild and rollback use the same lease, so they fail before constructing providers.
  */
-export function acquireMemoryWriterLease(root: string): MemoryWriterLease {
+export function acquireMemoryWriterLease(root: string, hooks: MemoryWriterLeaseHooks = {}): MemoryWriterLease {
   const canonicalRoot = canonicalMemoryRoot(root, true);
   ensureManagedLayout(canonicalRoot);
   const path = join(managedPath(canonicalRoot), WRITER_LOCK_FILE);
@@ -137,14 +152,20 @@ export function acquireMemoryWriterLease(root: string): MemoryWriterLease {
   })}\n`;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    let fd: number | undefined;
+    let ownedIdentity: { readonly dev: number; readonly ino: number } | undefined;
     try {
       const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0);
-      const fd = openSync(path, flags, 0o600);
+      fd = openSync(path, flags, 0o600);
+      const created = fstatSync(fd);
+      ownedIdentity = { dev: created.dev, ino: created.ino };
       try {
+        hooks.afterCreate?.();
         writeFileSync(fd, payload, "utf8");
         fsyncSync(fd);
       } finally {
         closeSync(fd);
+        fd = undefined;
       }
       fsyncDirectory(dirname(path));
       const identity = fileIdentity(path, canonicalRoot, "memory writer lock");
@@ -164,7 +185,25 @@ export function acquireMemoryWriterLease(root: string): MemoryWriterLease {
         },
       };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const cleanupErrors: unknown[] = [];
+      if (fd !== undefined) {
+        try { closeSync(fd); } catch (closeError) { cleanupErrors.push(closeError); }
+      }
+      if (ownedIdentity !== undefined) {
+        try {
+          const current = safeLockIdentity(path, canonicalRoot);
+          if (current !== undefined && current.dev === ownedIdentity.dev && current.ino === ownedIdentity.ino) {
+            unlinkSync(path);
+            fsyncDirectory(dirname(path));
+          }
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+      }
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError([error, ...cleanupErrors], "memory-rebuild: writer lease acquisition and cleanup failed.");
+      }
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST" || ownedIdentity !== undefined) throw error;
       if (attempt === 0 && removeProvenStaleLock(canonicalRoot, path)) continue;
       throw new Error("memory-rebuild: an active memory writer or rebuild owns this root; stop it and retry.");
     }
@@ -274,9 +313,28 @@ function validateGeneration(value: unknown, label: string): asserts value is Man
     || typeof value.createdAt !== "string" || !Number.isFinite(Date.parse(value.createdAt))
     || (value.origin !== "rebuild" && value.origin !== "legacy-snapshot")
     || (value.embeddingModel !== undefined && typeof value.embeddingModel !== "string")
-    || (value.dimension !== undefined && (!Number.isInteger(value.dimension) || Number(value.dimension) <= 0))) {
+    || (value.dimension !== undefined && (!Number.isInteger(value.dimension) || Number(value.dimension) <= 0))
+    || !optionalNonNegativeInteger(value.skippedRawRecords)
+    || !optionalNonNegativeInteger(value.skippedUnstructuredRecords)
+    || !optionalNonNegativeInteger(value.skippedMissingIdentityRecords)
+    || (value.missingIdentityLocations !== undefined && (!Array.isArray(value.missingIdentityLocations)
+      || value.missingIdentityLocations.some((location) => typeof location !== "string" || !/^daily\/[^/]+\.md:\d+$/u.test(location))))
+    || (Array.isArray(value.missingIdentityLocations) && value.skippedMissingIdentityRecords !== undefined
+      && value.missingIdentityLocations.length !== value.skippedMissingIdentityRecords)
+    || !optionalNonNegativeInteger(value.skippedLegacySourceRecords)
+    || (value.legacySourceLocations !== undefined && (!Array.isArray(value.legacySourceLocations)
+      || value.legacySourceLocations.some((location) => typeof location !== "string" || !/^daily\/[^/]+\.md:\d+$/u.test(location))))
+    || (Array.isArray(value.legacySourceLocations) && value.skippedLegacySourceRecords !== undefined
+      && value.legacySourceLocations.length !== value.skippedLegacySourceRecords)
+    || !optionalNonNegativeInteger(value.skippedJournalDuplicateRecords)
+    || !optionalNonNegativeInteger(value.parsedSourceItems)
+    || !optionalNonNegativeInteger(value.derivedLegacyAssociations)) {
     throw new Error(`memory-rebuild: managed index manifest ${label} generation is malformed.`);
   }
+}
+
+function optionalNonNegativeInteger(value: unknown): boolean {
+  return value === undefined || (Number.isInteger(value) && Number(value) >= 0);
 }
 
 function generationDbPath(root: string, name: string, requireExisting: boolean): string {

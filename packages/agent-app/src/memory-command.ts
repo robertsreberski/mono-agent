@@ -4,7 +4,7 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { openMemoryDb } from "@mono-agent/memory/store";
-import type { EntityRecord, MemoryDb, MemoryRecord, MemoryStoreAudit, MemoryStoreStats } from "@mono-agent/memory/store";
+import type { EntityRecord, IndexMetadata, MemoryDb, MemoryRecord, MemoryStoreAudit, MemoryStoreStats } from "@mono-agent/memory/store";
 import { listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 import {
@@ -206,12 +206,14 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
   const rootExists = await exists(root);
   const size = rootExists ? await collectStoreSize(root) : emptySize();
   let audit: MemoryStoreAudit | undefined;
+  let generation: IndexMetadata | undefined;
   let metadataQueryMs: number | null = null;
   if (await exists(dbPath)) {
     const db = openMemoryDb({ path: dbPath, readOnly: true });
     try {
       const started = performance.now();
       audit = db.audit();
+      generation = db.indexMetadata();
       metadataQueryMs = performance.now() - started;
     } finally {
       db.close();
@@ -224,6 +226,7 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
     configured: true,
     backend: "bujo",
     mode: memory.mode,
+    ...(generation === undefined ? {} : { generation }),
     metadataOnly: true,
     counts: audit?.counts ?? { total: 0, live: 0, entities: 0, entityRelations: 0 },
     bytes: size,
@@ -251,6 +254,17 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
     },
     notes: [
       ...(audit === undefined ? [`No SQLite index found at ${dbPath}.`] : []),
+      ...(generation === undefined ? [] : [
+        `Generation ${generation.generation}: skipped raw summaries ${generation.skippedRawRecords ?? 0}, `
+        + `unstructured source lines ${generation.skippedUnstructuredRecords ?? 0}, `
+        + `missing-identity source lines ${generation.skippedMissingIdentityRecords ?? 0} `
+        + `(${generation.missingIdentityLocations?.join(", ") || "none"}), `
+        + `legacy-source lines ${generation.skippedLegacySourceRecords ?? 0} `
+        + `(${generation.legacySourceLocations?.join(", ") || "none"}), `
+        + `Journal duplicate lines ${generation.skippedJournalDuplicateRecords ?? 0}, `
+        + `parsed source items ${generation.parsedSourceItems ?? 0}, `
+        + `derived legacy associations ${generation.derivedLegacyAssociations ?? 0}.`,
+      ]),
       "Search latency and model cost require benchmark/run telemetry and are not inferred from memory content.",
       "captureQueue is process-local and unavailable to an offline audit.",
     ],
@@ -958,7 +972,19 @@ function renderDaily(result: { readonly date: string; readonly path: string; rea
 function renderIndexTransition(result: {
   readonly operation: "rebuild" | "rollback";
   readonly activeDatabase: string;
-  readonly details: unknown;
+  readonly details: {
+    readonly indexed: number;
+    readonly generation: string;
+    readonly skippedRawRecords: number;
+    readonly skippedUnstructuredRecords: number;
+    readonly skippedMissingIdentityRecords: number;
+    readonly missingIdentityLocations: readonly string[];
+    readonly skippedLegacySourceRecords: number;
+    readonly legacySourceLocations: readonly string[];
+    readonly skippedJournalDuplicateRecords: number;
+    readonly parsedSourceItems: number;
+    readonly derivedLegacyAssociations: number;
+  };
 }): string {
   return [
     ui.banner("mono-agent memory", result.operation),
@@ -966,6 +992,17 @@ function renderIndexTransition(result: {
     ui.keyValue([
       ["status", "complete"],
       ["active database", result.activeDatabase],
+      ["generation", result.details.generation],
+      ["indexed memories", String(result.details.indexed)],
+      ["skipped raw summaries", String(result.details.skippedRawRecords)],
+      ["skipped unstructured lines", String(result.details.skippedUnstructuredRecords)],
+      ["skipped missing-identity lines", String(result.details.skippedMissingIdentityRecords)],
+      ["missing-identity locations", result.details.missingIdentityLocations.join(", ") || "none"],
+      ["skipped legacy-source lines", String(result.details.skippedLegacySourceRecords)],
+      ["legacy-source locations", result.details.legacySourceLocations.join(", ") || "none"],
+      ["skipped Journal duplicates", String(result.details.skippedJournalDuplicateRecords)],
+      ["parsed source items", String(result.details.parsedSourceItems)],
+      ["derived legacy associations", String(result.details.derivedLegacyAssociations)],
     ], 2),
   ].join("");
 }

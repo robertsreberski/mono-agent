@@ -101,6 +101,15 @@ export interface IndexMetadata {
   readonly sourceFingerprint: string;
   readonly generation: string;
   readonly createdAt: string;
+  readonly skippedRawRecords?: number;
+  readonly skippedUnstructuredRecords?: number;
+  readonly skippedMissingIdentityRecords?: number;
+  readonly missingIdentityLocations?: readonly string[];
+  readonly skippedLegacySourceRecords?: number;
+  readonly legacySourceLocations?: readonly string[];
+  readonly skippedJournalDuplicateRecords?: number;
+  readonly parsedSourceItems?: number;
+  readonly derivedLegacyAssociations?: number;
 }
 
 export interface RecallWeights {

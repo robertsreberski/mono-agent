@@ -74,7 +74,12 @@ async function main(): Promise<void> {
       ? await safeRebuildMemoryIndex(options)
       : await rollbackMemoryIndex(options);
     process.stdout.write(
-      `${command === "rebuild" ? "rebuilt" : "rolled back"}: generation ${result.generation}, ${result.indexed} memories at ${result.active}\n`,
+      `${command === "rebuild" ? "rebuilt" : "rolled back"}: generation ${result.generation}, ${result.indexed} memories at ${result.active}; `
+      + `skipped raw=${result.skippedRawRecords}, unstructured=${result.skippedUnstructuredRecords}, `
+      + `missing identity=${result.skippedMissingIdentityRecords} (${result.missingIdentityLocations.join(", ") || "none"}), `
+      + `legacy source=${result.skippedLegacySourceRecords} (${result.legacySourceLocations.join(", ") || "none"}), `
+      + `journal duplicates=${result.skippedJournalDuplicateRecords}, source items=${result.parsedSourceItems}, `
+      + `derived legacy associations=${result.derivedLegacyAssociations}\n`,
     );
     return;
   }
@@ -118,7 +123,7 @@ async function main(): Promise<void> {
         `migrated: promoted ${m.promoted}, rescheduled ${m.rescheduled}, clustered ${m.clustered}, forgotten ${m.forgotten}, reviewed ${m.reviewed}\n`,
       );
     } else {
-      const hits = await db.recall(query, { topK: 8 });
+      const hits = await db.recall(query, { topK: 8, trackAccess: false });
       for (const hit of hits) process.stdout.write(`${hit.score.toFixed(3)}  ${hit.record.text}\n`);
     }
   } finally {
