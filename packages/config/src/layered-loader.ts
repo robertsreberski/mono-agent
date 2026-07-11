@@ -72,7 +72,7 @@ function remapJsonMemoryError(
   if (hasValue(env.MONO_AGENT_MEMORY_MODE)) return error;
 
   if (error.details.env === "MONO_AGENT_MEMORY_MODE") {
-    const mode = json.memory.mode ?? "lite";
+    const mode = normalizeJsonEnum(json.memory.mode) ?? "lite";
     const jsonPath = incompatibleJsonMemoryPath(mode, json.memory);
     if (jsonPath !== undefined) {
       const message = `memory.mode "${mode}" cannot configure ${jsonPath}.`;
@@ -91,7 +91,7 @@ function remapJsonMemoryError(
   else if (source === "MONO_AGENT_MEMORY_MODE") path = "memory.mode";
   if (path === undefined) return error;
 
-  const mode = json.memory.mode ?? "lite";
+  const mode = normalizeJsonEnum(json.memory.mode) ?? "lite";
   const message = source === "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL"
     ? `memory.mode "${mode}" requires an explicit memory.embeddings block.`
     : source === "MONO_AGENT_MEMORY_LLM_MODEL"
@@ -254,7 +254,9 @@ function jsonMemoryPathForSource(
   if (typeof source !== "string" || !Object.hasOwn(MEMORY_JSON_SOURCES, source)) return undefined;
   const envName = source as keyof typeof MEMORY_JSON_SOURCES;
   const mapping = MEMORY_JSON_SOURCES[envName];
-  const effectiveBackend = env.MONO_AGENT_MEMORY_BACKEND?.trim() || memory.backend || "bujo";
+  const effectiveBackend = env.MONO_AGENT_MEMORY_BACKEND?.trim()
+    || normalizeJsonEnum(memory.backend)
+    || "bujo";
   if (
     hasValue(env[envName])
     || (mapping.backend !== undefined && mapping.backend !== effectiveBackend)
@@ -267,7 +269,10 @@ function jsonSupermemoryRequiresBaseUrl(
   memory: MemoryJson,
   env: Record<string, string | undefined>,
 ): boolean {
-  if (!hasValue(env.MONO_AGENT_MEMORY_BACKEND) && memory.backend === "supermemory") return true;
+  if (
+    !hasValue(env.MONO_AGENT_MEMORY_BACKEND)
+    && normalizeJsonEnum(memory.backend) === "supermemory"
+  ) return true;
   const supermemory = memory.supermemory;
   if (supermemory === undefined) return false;
   const activatingStringLeaves = [
@@ -298,7 +303,7 @@ function jsonEmbeddingsCredentialPath(
     && !hasValue(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV)
   ) return "memory.embeddings.apiKeyEnv";
   if (
-    embeddings.provider === "openai"
+    normalizeJsonEnum(embeddings.provider) === "openai"
     && !hasValue(env.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER)
     && !hasValue(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV)
     && !hasJsonString(embeddings.apiKey)
@@ -496,7 +501,7 @@ function shouldDropJsonMemoryLlmEndpoint(
   env: Record<string, string | undefined>,
 ): boolean {
   return env.MONO_AGENT_MEMORY_LLM_PROVIDER?.trim() === "agent-host"
-    && llm?.provider !== "agent-host"
+    && normalizeJsonEnum(llm?.provider) !== "agent-host"
     && !hasValue(env.MONO_AGENT_MEMORY_LLM_ENDPOINT);
 }
 
@@ -534,30 +539,38 @@ const MEMORY_LLM_ENV_KEYS = [
 ] as const;
 
 function incompatibleJsonMemoryPath(
-  mode: "lite" | "journal" | "bujo",
+  mode: string,
   memory: NonNullable<MonoAgentConfigJson["memory"]>,
 ): string | undefined {
-  if (mode === "lite" && jsonEmbeddingsActive(memory.embeddings)) return "memory.embeddings";
-  if ((mode === "lite" || mode === "journal") && jsonLlmActive(memory.llm)) return "memory.llm";
-  if ((mode === "lite" || mode === "journal") && jsonConsolidationActive(memory.consolidation)) {
+  const normalizedMode = normalizeJsonEnum(mode) ?? "lite";
+  if (normalizedMode === "lite" && jsonEmbeddingsActive(memory.embeddings)) return "memory.embeddings";
+  if (
+    (normalizedMode === "lite" || normalizedMode === "journal")
+    && jsonLlmActive(memory.llm)
+  ) return "memory.llm";
+  if (
+    (normalizedMode === "lite" || normalizedMode === "journal")
+    && jsonConsolidationActive(memory.consolidation)
+  ) {
     return "memory.consolidation";
   }
   return undefined;
 }
 
 function envCapabilityActivator(
-  mode: "lite" | "journal" | "bujo",
+  mode: string,
   env: Record<string, string | undefined>,
 ): string | undefined {
-  if (mode === "lite") {
+  const normalizedMode = normalizeJsonEnum(mode) ?? "lite";
+  if (normalizedMode === "lite") {
     const embeddings = firstConfiguredEnv(env, MEMORY_EMBEDDINGS_ENV_KEYS);
     if (embeddings !== undefined) return embeddings;
   }
-  if (mode === "lite" || mode === "journal") {
+  if (normalizedMode === "lite" || normalizedMode === "journal") {
     const llm = firstConfiguredEnv(env, MEMORY_LLM_ENV_KEYS);
     if (llm !== undefined) return llm;
   }
-  if (mode === "lite" || mode === "journal") {
+  if (normalizedMode === "lite" || normalizedMode === "journal") {
     return firstConfiguredEnv(env, MEMORY_CONSOLIDATION_ENV_KEYS);
   }
   return undefined;
@@ -594,6 +607,13 @@ function jsonLlmActive(value: MonoAgentMemoryLlmJson | undefined): boolean {
 
 function hasJsonString(value: unknown): boolean {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+/** Mirror normalizeOptionalString before comparing enum-like JSON values. */
+function normalizeJsonEnum(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized.length === 0 ? undefined : normalized;
 }
 
 function firstConfiguredEnv(
