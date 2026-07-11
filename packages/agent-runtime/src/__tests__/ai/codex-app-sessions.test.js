@@ -94,6 +94,31 @@ describe("codex-app persistent sessions", () => {
     expect(result.model).toBe(`codex:${modelId}`);
   });
 
+  it("clamps effort max to xhigh across the app-server thread and turn payloads", async () => {
+    const factory = stubClientFactory({ threadId: "thread-effort" });
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, { effort: "max" }));
+
+    expect(result.error).toBeNull();
+    const client = factory.clients[0];
+    const threadStart = client.requests.find((request) => request.method === "thread/start");
+    const turnStart = client.requests.find((request) => request.method === "turn/start");
+    expect(threadStart?.params.config?.model_reasoning_effort).toBe("xhigh");
+    expect(threadStart?.params.config?.model_reasoning_summary).toBe("auto");
+    expect(turnStart?.params.effort).toBe("xhigh");
+    expect(turnStart?.params.summary).toBe("auto");
+  });
+
+  it("passes effort xhigh through unchanged to the app-server", async () => {
+    const factory = stubClientFactory({ threadId: "thread-effort-xhigh" });
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, { effort: "xhigh" }));
+
+    expect(result.error).toBeNull();
+    const turnStart = factory.clients[0].requests.find((request) => request.method === "turn/start");
+    expect(turnStart?.params.effort).toBe("xhigh");
+  });
+
   it.each([
     ["default (unset)", undefined, "workspace-write", "workspaceWrite"],
     ["default", "default", "workspace-write", "workspaceWrite"],

@@ -2,10 +2,13 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { LocalProviderDefinition, RuntimeModelReference, SandboxPolicy } from "@mono-agent/runtime-adapter";
 import { describe, expect, it, vi } from "vitest";
 
+import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness";
+
 import { createRequestModelOverrideRuntimeExtension } from "../request-model-override.js";
+import { composeRuntimeOptionExtensions } from "../runtime-option-extensions.js";
 
 interface RunOptions {
-  readonly logger?: { warn: ReturnType<typeof vi.fn> };
+  readonly logger?: { warn: ReturnType<typeof vi.fn>; info?: ReturnType<typeof vi.fn> };
   readonly localProviders?: readonly LocalProviderDefinition[];
   readonly baseModel?: RuntimeModelReference;
   readonly fallbackModels?: readonly RuntimeModelReference[];
@@ -20,7 +23,7 @@ interface RunOptions {
   };
 }
 
-function run(metadata: Record<string, unknown> | undefined, options: RunOptions = {}) {
+function run(metadata: Record<string, unknown> | undefined, options: RunOptions = {}, userMessage?: string) {
   const extension = createRequestModelOverrideRuntimeExtension({
     ...(options.logger === undefined ? {} : { logger: options.logger }),
     ...(options.localProviders === undefined ? {} : { localProviders: options.localProviders }),
@@ -33,7 +36,12 @@ function run(metadata: Record<string, unknown> | undefined, options: RunOptions 
     ...(options.sandboxPolicy === undefined ? {} : { sandboxPolicy: options.sandboxPolicy }),
     ...(options.toolPolicy === undefined ? {} : { toolPolicy: options.toolPolicy }),
   });
-  return extension({ request: { ...(metadata === undefined ? {} : { metadata }) } });
+  return extension({
+    request: {
+      ...(metadata === undefined ? {} : { metadata }),
+      ...(userMessage === undefined ? {} : { userMessage }),
+    },
+  });
 }
 
 const LMSTUDIO_PROVIDER: LocalProviderDefinition = {
@@ -486,5 +494,138 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
       expect.stringContaining("local-provider endpoint"),
       expect.objectContaining({ model: "pi:gateway:gpt-oss" }),
     );
+  });
+
+  describe("effort keyword escalation", () => {
+    it("escalates a plain interactive turn containing 'think' to high", async () => {
+      const result = await run(undefined, {}, "think about this bug");
+      expect(result.runtimeOptions.effort).toBe("high");
+      expect(result.runtimeOptions.model).toBeUndefined();
+    });
+
+    it("escalates 'ultrathink' to max and 'extra think' to xhigh", async () => {
+      expect((await run(undefined, {}, "ultrathink: what is 2+2")).runtimeOptions.effort).toBe("max");
+      expect((await run(undefined, {}, "please extra think about it")).runtimeOptions.effort).toBe("xhigh");
+    });
+
+    it("escalates above the configured base effort", async () => {
+      const result = await run(undefined, { baseEffort: "medium" }, "ultra think");
+      expect(result.runtimeOptions.effort).toBe("max");
+    });
+
+    it("is a no-op when the base effort already meets the keyword level", async () => {
+      const result = await run(undefined, { baseEffort: "xhigh" }, "think about this");
+      expect(result.runtimeOptions.effort).toBeUndefined();
+    });
+
+    it("is a no-op without a trigger phrase or with word fragments", async () => {
+      expect((await run(undefined, {}, "keep thinking about it")).runtimeOptions.effort).toBeUndefined();
+      expect((await run(undefined, {}, "rethink the approach")).runtimeOptions.effort).toBeUndefined();
+      expect((await run(undefined, {})).runtimeOptions.effort).toBeUndefined();
+    });
+
+    it("never downgrades a higher metadata effort override", async () => {
+      const result = await run({ webhook: { effort: "max" } }, {}, "think about this");
+      expect(result.runtimeOptions.effort).toBe("max");
+    });
+
+    it("outranks a lower metadata effort override", async () => {
+      const result = await run({ webhook: { effort: "low" } }, {}, "ultra think through it");
+      expect(result.runtimeOptions.effort).toBe("max");
+    });
+
+    it("escalates over the base effort when the metadata effort was invalid (warned and ignored)", async () => {
+      const logger = { warn: vi.fn(), info: vi.fn() };
+      const result = await run({ webhook: { effort: "turbo" } }, { logger, baseEffort: "low" }, "think it over");
+      expect(result.runtimeOptions.effort).toBe("high");
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("invalid per-request effort"),
+        expect.objectContaining({ effort: "turbo" }),
+      );
+    });
+
+    it("skips escalation when a configured fallback is direct OpenCode", async () => {
+      const logger = { warn: vi.fn(), info: vi.fn() };
+      const result = await run(
+        undefined,
+        {
+          logger,
+          baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+          fallbackModels: [parseMonoRuntimeModelReference("opencode:github-copilot:gpt-5.1")],
+        },
+        "ultra think about it",
+      );
+      expect(result.runtimeOptions.effort).toBeUndefined();
+      expect(logger.info).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("keyword effort escalation for direct OpenCode"),
+        expect.objectContaining({
+          keyword: "ultra think",
+          effort: "max",
+          directOpenCodeModels: ["opencode:github-copilot:gpt-5.1"],
+        }),
+      );
+    });
+
+    it("skips escalation when the accepted model override is direct OpenCode", async () => {
+      const logger = { warn: vi.fn(), info: vi.fn() };
+      const result = await run(
+        { tui: { model: "opencode:github-copilot:gpt-5.1" } },
+        { logger },
+        "ultra think about it",
+      );
+      expect(result.runtimeOptions.model).toEqual(expect.objectContaining({ sdk: "opencode" }));
+      expect(result.runtimeOptions.effort).toBeUndefined();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("keyword effort escalation for direct OpenCode"),
+        expect.objectContaining({ keyword: "ultra think", effort: "max" }),
+      );
+    });
+
+    it("logs the matched keyword and the from/to efforts via logger.info", async () => {
+      const logger = { warn: vi.fn(), info: vi.fn() };
+      await run(undefined, { logger, baseEffort: "medium" }, "Ultra Think this through");
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.stringContaining("Escalating per-turn effort"),
+        expect.objectContaining({ keyword: "Ultra Think", from: "medium", to: "max" }),
+      );
+    });
+  });
+});
+
+// Mirrors the app.ts wiring shape: sibling extensions composed BEFORE the
+// model-override extension, merged later-wins — escalation must survive the
+// merge and sibling keys must not be dropped.
+describe("composeRuntimeOptionExtensions with keyword escalation", () => {
+  it("escalates from the harness request userMessage and preserves sibling runtime options", async () => {
+    const sibling = async () => ({
+      runtimeOptions: {
+        mcpServers: { memo: { url: "http://127.0.0.1:1" } },
+        allowedTools: ["memo_tool"],
+      },
+      cleanup: async () => {},
+    });
+    const overrideExtension = createRequestModelOverrideRuntimeExtension({ baseEffort: "medium" });
+    const composed = composeRuntimeOptionExtensions([
+      sibling,
+      async (input) => overrideExtension({ request: input.request }),
+    ]);
+    expect(composed).toBeDefined();
+
+    const input = {
+      request: {
+        conversationId: "conv-1",
+        userMessage: "please ultrathink this",
+        abortSignal: new AbortController().signal,
+      },
+      runId: "run-1",
+      context: {},
+    } as unknown as AgentHarnessRuntimeOptionsInput;
+    const result = await composed!(input);
+
+    expect(result.runtimeOptions?.effort).toBe("max");
+    expect(result.runtimeOptions?.mcpServers).toEqual({ memo: { url: "http://127.0.0.1:1" } });
+    expect(result.runtimeOptions?.allowedTools).toContain("memo_tool");
+    await result.cleanup?.();
   });
 });

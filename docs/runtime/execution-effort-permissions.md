@@ -58,6 +58,20 @@ Several other features key off the backend implied by execution mode — most no
 }
 ```
 
+### Per-turn keyword escalation
+
+Every inbound message is scanned for effort trigger phrases, always on with no configuration:
+
+| Phrase | Effort |
+|--------|--------|
+| `think` | `high` |
+| `extra think` / `extrathink` | `xhigh` |
+| `ultra think` / `ultrathink` | `max` |
+
+Matching is case-insensitive on word boundaries anywhere in the message ("what do you *think*?" triggers; "thinking" and "rethink" do not), and the strongest matching phrase wins. Escalation is one-directional: the turn runs at the **higher** of the otherwise-resolved effort (configured default or a per-trigger override) and the keyword's level, so a bare `think` never lowers a `xhigh` agent and an equal-or-lower keyword changes nothing. The trigger words stay in the message text.
+
+`max` degrades gracefully to each route's ceiling — the Pi and Codex backends clamp it to `xhigh`; Claude keeps native `max`. A direct OpenCode model anywhere in the effective chain skips escalation entirely (no runtime effort control, same rule as explicit effort overrides). The escalated effort is visible in the run's `run_config` event with `overridden: true`, and only the single turn is affected — the session and configured default stay unchanged. The trigger list is exported as `EFFORT_KEYWORD_TRIGGERS` from `@mono-agent/config`.
+
 ## Permission mode
 
 `runtime.permissionMode` sets the tool-permission posture for **CLI backends only** (Claude Code / Codex / OpenCode). It mirrors the underlying CLI's permission flags and has no effect on `sdk` execution mode.
