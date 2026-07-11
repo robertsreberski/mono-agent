@@ -164,19 +164,7 @@ describe("runCli memory", () => {
       await seedLocalStore(memoryRoot);
       const before = await resolveActiveMemoryDbPath(memoryRoot);
       const registryDir = join(dir, ".trace-registry");
-      const stale = "2020-01-01T00:00:00.000Z";
-      await mkdir(registryDir, { recursive: true });
-      await writeFile(join(registryDir, "legacy-writer.json"), `${JSON.stringify({
-        schema: "agent-runtime.trace-source.v1",
-        sourceId: "legacy-writer",
-        label: "Legacy writer",
-        artifactDir: join(dir, ".mono-agent", "artifacts"),
-        pid: process.pid,
-        status: "running",
-        startedAt: stale,
-        updatedAt: stale,
-        configPath: join(dir, "mono-agent.config.json"),
-      }, null, 2)}\n`, "utf8");
+      await writeLiveTraceManifest(registryDir, dir, "legacy-writer");
       expect((await listTraceSources({ registryDir })).sources).toEqual([
         expect.objectContaining({
           sourceId: "legacy-writer",
@@ -199,6 +187,46 @@ describe("runCli memory", () => {
       expect(rebuild.code).toBe(1);
       expect(rebuild.stdout).toBe("");
       expect(rebuild.stderr).toContain("trace health: stale");
+      expect(rebuild.stderr).toContain(`mono-agent stop --config ${await realpath(join(dir, "mono-agent.config.json"))}`);
+      expect(server.requests).toBe(0);
+      expect(await resolveActiveMemoryDbPath(memoryRoot)).toBe(before);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("finds a live writer in the global mirror when the current CLI registry env differs", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const server = await failingEmbeddingServer(async () => {});
+    try {
+      const dir = await agentDir({
+        memory: {
+          mode: "journal",
+          path: memoryRoot,
+          writeMode: "append-host-summary",
+          embeddings: {
+            provider: "ollama",
+            model: "test-embed",
+            endpoint: server.baseUrl,
+            dim: 8,
+          },
+        },
+      });
+      await seedLocalStore(memoryRoot);
+      const before = await resolveActiveMemoryDbPath(memoryRoot);
+      const globalRegistryDir = join(dir, ".global-trace-registry");
+      const currentCliRegistryDir = join(dir, ".different-current-cli-registry");
+      await writeLiveTraceManifest(globalRegistryDir, dir, "globally-mirrored-writer");
+
+      const rebuild = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(async () => {
+        process.env.MONO_AGENT_TRACE_REGISTRY_DIR = currentCliRegistryDir;
+        process.env.MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR = globalRegistryDir;
+        return await runCli(["memory", "rebuild"]);
+      })));
+
+      expect(rebuild.code).toBe(1);
+      expect(rebuild.stdout).toBe("");
+      expect(rebuild.stderr).toContain("globally-mirrored-writer");
       expect(rebuild.stderr).toContain(`mono-agent stop --config ${await realpath(join(dir, "mono-agent.config.json"))}`);
       expect(server.requests).toBe(0);
       expect(await resolveActiveMemoryDbPath(memoryRoot)).toBe(before);
@@ -416,6 +444,22 @@ async function upsertIndexed(
   } finally {
     db.close();
   }
+}
+
+async function writeLiveTraceManifest(registryDir: string, dir: string, sourceId: string): Promise<void> {
+  const stale = "2020-01-01T00:00:00.000Z";
+  await mkdir(registryDir, { recursive: true });
+  await writeFile(join(registryDir, `${sourceId}.json`), `${JSON.stringify({
+    schema: "agent-runtime.trace-source.v1",
+    sourceId,
+    label: "Legacy writer",
+    artifactDir: join(dir, ".mono-agent", "artifacts"),
+    pid: process.pid,
+    status: "running",
+    startedAt: stale,
+    updatedAt: stale,
+    configPath: join(dir, "mono-agent.config.json"),
+  }, null, 2)}\n`, "utf8");
 }
 
 async function agentDir(input: { readonly memory: unknown; readonly traceability?: unknown }): Promise<string> {

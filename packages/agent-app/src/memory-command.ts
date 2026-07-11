@@ -6,6 +6,7 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import { openMemoryDb } from "@mono-agent/memory/store";
 import type { EntityRecord, MemoryDb, MemoryRecord, MemoryStoreAudit, MemoryStoreStats } from "@mono-agent/memory/store";
 import { listTraceSources } from "@mono-agent/observability";
+import type { TraceSourceListItem } from "@mono-agent/observability";
 import {
   parseDailyFile,
   resolveActiveMemoryDbPath,
@@ -17,6 +18,7 @@ import {
   isAppCoreConfigError,
   loadAppCoreConfig,
   resolveAppTraceRegistryDir,
+  resolveGlobalTraceRegistryDir,
 } from "./app-config.js";
 import {
   createMemoryEmbeddingProvider,
@@ -134,12 +136,16 @@ async function runIndexTransition(
   }
 
   try {
-    const registryDir = await resolveAppTraceRegistryDir({
+    const configuredRegistryDir = await resolveAppTraceRegistryDir({
       env: context.env,
       cwd: context.cwd,
       configPath: context.configPath,
     });
-    await assertNoLiveConfiguredAgent(context.configPath, registryDir);
+    const registryDirs = await dedupeRegistryDirs([
+      configuredRegistryDir,
+      resolveGlobalTraceRegistryDir(context.env),
+    ]);
+    await assertNoLiveConfiguredAgent(context.configPath, registryDirs);
     const embeddings = settings.embeddings === undefined
       ? undefined
       : await createMemoryEmbeddingProvider(settings.embeddings);
@@ -150,7 +156,7 @@ async function runIndexTransition(
     };
     // Re-check after provider construction so a legacy writer that started
     // during setup cannot be raced by the destructive transition.
-    await assertNoLiveConfiguredAgent(context.configPath, registryDir);
+    await assertNoLiveConfiguredAgent(context.configPath, registryDirs);
     const details = operation === "rebuild"
       ? await safeRebuildMemoryIndex(options)
       : await rollbackMemoryIndex(options);
@@ -202,7 +208,7 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
   let audit: MemoryStoreAudit | undefined;
   let metadataQueryMs: number | null = null;
   if (await exists(dbPath)) {
-    const db = openMemoryDb({ path: dbPath });
+    const db = openMemoryDb({ path: dbPath, readOnly: true });
     try {
       const started = performance.now();
       audit = db.audit();
@@ -275,9 +281,10 @@ async function loadMemoryCommandContext(
   }
 }
 
-async function assertNoLiveConfiguredAgent(configPath: string, registryDir: string): Promise<void> {
+async function assertNoLiveConfiguredAgent(configPath: string, registryDirs: readonly string[]): Promise<void> {
   const canonicalConfig = await canonicalPath(configPath);
-  const { sources } = await listTraceSources({ registryDir });
+  const listings = await Promise.all(registryDirs.map(async (registryDir) => await listTraceSources({ registryDir })));
+  const sources = dedupeTraceSources(listings.flatMap((listing) => listing.sources));
   let live: (typeof sources)[number] | undefined;
   for (const source of sources) {
     if (source.configPath === undefined || source.pid === undefined || !pidIsAlive(source.pid)) continue;
@@ -288,9 +295,35 @@ async function assertNoLiveConfiguredAgent(configPath: string, registryDir: stri
   }
   if (live === undefined) return;
   throw new Error(
-    `agent process ${live.pid} is still alive for this config (trace health: ${live.health}); ` +
+    `agent process ${live.pid} (${live.sourceId}) is still alive for this config (trace health: ${live.health}); ` +
     `stop it first with: mono-agent stop --config ${canonicalConfig}`,
   );
+}
+
+async function dedupeRegistryDirs(registryDirs: readonly string[]): Promise<string[]> {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const registryDir of registryDirs) {
+    const canonical = await canonicalPath(registryDir);
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    deduped.push(registryDir);
+  }
+  return deduped;
+}
+
+function dedupeTraceSources(sources: readonly TraceSourceListItem[]): TraceSourceListItem[] {
+  const seen = new Set<string>();
+  const deduped: TraceSourceListItem[] = [];
+  for (const source of sources) {
+    // Primary and global registries mirror the same source/PID pair. Preserve
+    // a reused source ID with a different PID so either live process blocks.
+    const key = `${source.sourceId}\0${source.pid ?? "unknown"}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(source);
+  }
+  return deduped;
 }
 
 async function canonicalPath(path: string): Promise<string> {
@@ -335,7 +368,7 @@ async function runStats(context: MemoryCommandContext, input: RunMemoryCommandIn
   let entityCount = 0;
   let topMemories: readonly MemoryRecord[] = [];
   if (dbExists) {
-    const db = openMemoryDb({ path: dbPath });
+    const db = openMemoryDb({ path: dbPath, readOnly: true });
     try {
       stats = readLocalStats(db, input.limit ?? DEFAULT_ENTITY_LIMIT);
       entityCount = db.countEntities();
@@ -518,7 +551,7 @@ async function runTop(context: MemoryCommandContext, input: RunMemoryCommandInpu
     write(input.json, result, () => renderTop(result));
     return 0;
   }
-  const db = openMemoryDb({ path: dbPath });
+  const db = openMemoryDb({ path: dbPath, readOnly: true });
   try {
     const hits = db.topSalient(input.limit ?? DEFAULT_TOP_LIMIT).map((record) => ({
       id: record.id,
