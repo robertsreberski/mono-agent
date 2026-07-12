@@ -454,6 +454,8 @@ export class SlackAdapter {
    * responder.cancel).
    */
   private readonly activeControllers = new Map<string, Set<AbortController>>();
+  /** The same controllers indexed by resolved conversation for cross-thread aliases. */
+  private readonly activeControllersByConversation = new Map<string, Set<AbortController>>();
   /**
    * Per-conversation admission queue. Socket Mode dispatches envelopes
    * concurrently, and pre-submit work (status + file download) is variable
@@ -593,10 +595,10 @@ export class SlackAdapter {
     const conversationId = await this.resolveConversationId(event);
     if (command?.name === "cancel") {
       const reason = createChannelUserCancelReason("Slack");
-      // Clear any queued follow-ups for the conversation (the harness owns the
-      // queue) and abort every in-flight controller for this thread.
+      // Clear queued follow-ups and abort every controller for the resolved
+      // conversation, including other physical Slack threads aliased to it.
       this.responder.cancel?.(conversationId, reason);
-      const controllers = this.activeControllers.get(runKey);
+      const controllers = this.activeControllersByConversation.get(conversationId);
       if (controllers !== undefined) {
         for (const controller of controllers) {
           controller.abort(reason);
@@ -625,7 +627,7 @@ export class SlackAdapter {
     // respondToEvent's first abort check then makes the queued-then-cancelled run
     // bail before responder.respond and post only the cancelled terminal.
     const controller = new AbortController();
-    this.registerController(runKey, controller);
+    this.registerController(runKey, conversationId, controller);
     let queue = this.admissionQueues.get(conversationId);
     if (queue === undefined) {
       queue = new SerialQueue();
@@ -639,7 +641,7 @@ export class SlackAdapter {
         // respondToEvent (and its finally) never ran. Unregister the eagerly
         // created controller here so it does not leak in activeControllers, then
         // answer with the busy terminal instead of admitting an unbounded backlog.
-        this.unregisterController(runKey, controller);
+        this.unregisterController(runKey, conversationId, controller);
         await this.api.chatPostMessage({
           channel: event.channelId,
           text: this.messages.busyText,
@@ -677,7 +679,7 @@ export class SlackAdapter {
     // inbound /cancel target, so it keeps its own proactive key.
     const runKey = threadTs === undefined ? `proactive:${conversationId}` : `${channelId}:${threadTs}`;
     const controller = new AbortController();
-    this.registerController(runKey, controller);
+    this.registerController(runKey, conversationId, controller);
     let queue = this.admissionQueues.get(conversationId);
     if (queue === undefined) {
       queue = new SerialQueue();
@@ -691,7 +693,7 @@ export class SlackAdapter {
       );
     } catch (error) {
       if (isSerialQueueFullError(error)) {
-        this.unregisterController(runKey, controller);
+        this.unregisterController(runKey, conversationId, controller);
         this.logger?.warn?.("Slack proactive notify dropped: conversation is at its concurrency cap.", {
           conversationId,
         });
@@ -978,7 +980,7 @@ export class SlackAdapter {
       }
       return { delivered: true };
     } finally {
-      this.unregisterController(runKey, controller);
+      this.unregisterController(runKey, conversationId, controller);
     }
   }
 
@@ -1047,7 +1049,7 @@ export class SlackAdapter {
       }
       return { delivered: true };
     } finally {
-      this.unregisterController(runKey, controller);
+      this.unregisterController(runKey, conversationId, controller);
     }
   }
 
@@ -1167,7 +1169,7 @@ export class SlackAdapter {
       await finishSafely(stream, this.messages.errorText, this.logger);
       return { kind: "error", eventId: event.eventId, channelId: event.channelId, error };
     } finally {
-      this.unregisterController(runKey, controller);
+      this.unregisterController(runKey, conversationId, controller);
     }
   }
 
@@ -1257,24 +1259,14 @@ export class SlackAdapter {
     return attachments;
   }
 
-  private registerController(runKey: string, controller: AbortController): void {
-    let controllers = this.activeControllers.get(runKey);
-    if (controllers === undefined) {
-      controllers = new Set<AbortController>();
-      this.activeControllers.set(runKey, controllers);
-    }
-    controllers.add(controller);
+  private registerController(runKey: string, conversationId: string, controller: AbortController): void {
+    addController(this.activeControllers, runKey, controller);
+    addController(this.activeControllersByConversation, conversationId, controller);
   }
 
-  private unregisterController(runKey: string, controller: AbortController): void {
-    const controllers = this.activeControllers.get(runKey);
-    if (controllers === undefined) {
-      return;
-    }
-    controllers.delete(controller);
-    if (controllers.size === 0) {
-      this.activeControllers.delete(runKey);
-    }
+  private unregisterController(runKey: string, conversationId: string, controller: AbortController): void {
+    removeController(this.activeControllers, runKey, controller);
+    removeController(this.activeControllersByConversation, conversationId, controller);
   }
 
   private normalizeEventCallback(
@@ -1523,6 +1515,30 @@ async function finishSafely(
 
 function runKeyFor(event: SlackTextEvent): string {
   return `${event.channelId}:${event.threadTs}`;
+}
+
+function addController(
+  index: Map<string, Set<AbortController>>,
+  key: string,
+  controller: AbortController,
+): void {
+  let controllers = index.get(key);
+  if (controllers === undefined) {
+    controllers = new Set<AbortController>();
+    index.set(key, controllers);
+  }
+  controllers.add(controller);
+}
+
+function removeController(
+  index: Map<string, Set<AbortController>>,
+  key: string,
+  controller: AbortController,
+): void {
+  const controllers = index.get(key);
+  if (controllers === undefined) return;
+  controllers.delete(controller);
+  if (controllers.size === 0) index.delete(key);
 }
 
 /**

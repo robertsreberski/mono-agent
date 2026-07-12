@@ -1411,8 +1411,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       // crash is "degraded, recovering" to the host — never terminal.
       pollingDegraded = true;
     }
-    options.onPollingError?.(redactTelegramError(error, [options.botToken]));
     scheduleRestart();
+    try {
+      options.onPollingError?.(redactTelegramError(error, [options.botToken]));
+    } catch {
+      // Host diagnostics are untrusted; polling recovery is already scheduled.
+    }
   }
 
   /** Schedule a single backoff restart, growing the backoff for the next attempt. */

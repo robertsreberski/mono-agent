@@ -6,6 +6,7 @@ import type {
   AgentResponse,
   AgentStreamEvent,
 } from "@mono-agent/agent-contracts";
+import { AgentResponseCancelledError } from "@mono-agent/agent-contracts";
 
 export class AgentHarnessFailureError extends Error {
   readonly failure: AgentHarnessFailure;
@@ -53,15 +54,27 @@ export function createAgentResponder(options: {
     bucketConversationId(conversationId, options.rollover, options.rolloverTimezone, now);
   const lastBucketByBaseConversation = new Map<string, string>();
   const responseTailsByBaseConversation = new Map<string, Promise<void>>();
+  const cancellationGenerationByBaseConversation = new Map<string, number>();
+  const cancellationReasonByBaseConversation = new Map<string, { generation: number; reason?: unknown }>();
+  const activeBucketByBaseConversation = new Map<string, string>();
 
   return {
     async dispose(): Promise<void> {
       await options.harness.dispose?.();
     },
     cancel(conversationId: string, reason?: unknown): void {
-      // Bucket identically to respond() so the cancel targets the same queue/
-      // session key the in-flight turn is using.
-      options.harness.cancel?.(bucket(conversationId), reason);
+      const serializationKey = responseSerializationKey(conversationId, options.rollover);
+      // Prefer the bucket captured when the active turn started. Recomputing a
+      // daily bucket after midnight would otherwise leave yesterday's run alive.
+      options.harness.cancel?.(
+        activeBucketByBaseConversation.get(serializationKey) ?? bucket(conversationId),
+        reason,
+      );
+      if (responseTailsByBaseConversation.has(serializationKey)) {
+        const generation = (cancellationGenerationByBaseConversation.get(serializationKey) ?? 0) + 1;
+        cancellationGenerationByBaseConversation.set(serializationKey, generation);
+        cancellationReasonByBaseConversation.set(serializationKey, { generation, reason });
+      }
     },
     async deliverVerbatim(conversationId: string, text: string): Promise<void> {
       // Bucket identically to respond() so the verbatim post lands under the same
@@ -69,17 +82,48 @@ export function createAgentResponder(options: {
       await options.harness.appendVerbatimTurn?.(bucket(conversationId), text);
     },
     async respond(request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> {
-      return await serializeByKey(
-        responseTailsByBaseConversation,
-        responseSerializationKey(request.conversationId, options.rollover),
-        async () => respondOnce(request, stream),
-      );
+      const serializationKey = responseSerializationKey(request.conversationId, options.rollover);
+      const admittedGeneration = cancellationGenerationByBaseConversation.get(serializationKey) ?? 0;
+      try {
+        return await serializeByKey(
+          responseTailsByBaseConversation,
+          serializationKey,
+          async () => {
+            const currentGeneration = cancellationGenerationByBaseConversation.get(serializationKey) ?? 0;
+            if (currentGeneration !== admittedGeneration) {
+              const cancellation = cancellationReasonByBaseConversation.get(serializationKey);
+              throw new AgentResponseCancelledError("Cancelled while queued before the harness.", {
+                ...(cancellation?.generation === currentGeneration && cancellation.reason !== undefined
+                  ? { reason: cancellation.reason }
+                  : {}),
+              });
+            }
+            const activeBucket = bucket(request.conversationId);
+            activeBucketByBaseConversation.set(serializationKey, activeBucket);
+            try {
+              return await respondOnce(request, stream, activeBucket);
+            } finally {
+              if (activeBucketByBaseConversation.get(serializationKey) === activeBucket) {
+                activeBucketByBaseConversation.delete(serializationKey);
+              }
+            }
+          },
+        );
+      } finally {
+        if (!responseTailsByBaseConversation.has(serializationKey)) {
+          cancellationGenerationByBaseConversation.delete(serializationKey);
+          cancellationReasonByBaseConversation.delete(serializationKey);
+        }
+      }
     },
   };
 
-  async function respondOnce(request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> {
+  async function respondOnce(
+    request: AgentRequestBase,
+    stream: AgentMessageStream,
+    bucketed: string,
+  ): Promise<AgentResponse> {
     const runtimeEventStream = createRuntimeEventStream(stream);
-    const bucketed = bucketConversationId(request.conversationId, options.rollover, options.rolloverTimezone, now);
     const boundary = rolloverBoundaryForRequest({
       conversationId: request.conversationId,
       bucketedConversationId: bucketed,

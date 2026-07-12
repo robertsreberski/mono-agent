@@ -1648,6 +1648,52 @@ describe("createTelegramBot", () => {
     await controller.stop();
   });
 
+  it("still schedules polling recovery when redaction inputs and the host callback are hostile", async () => {
+    vi.useFakeTimers();
+    try {
+      let runnerFactories = 0;
+      const failure = new Error("polling crashed");
+      Object.defineProperty(failure, "throwing", {
+        enumerable: true,
+        get: () => { throw new Error("getter failed"); },
+      });
+      const controller = createTelegramBot({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: responderFrom(async () => ({ text: "ok" })),
+        onPollingError: () => { throw new Error("host callback failed"); },
+        logger: { error: () => { throw new Error("logger failed"); } },
+        botFactory: () => {
+          const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
+          bot.api.config.use(async () => ok(true));
+          return bot;
+        },
+        runnerFactory: () => {
+          runnerFactories += 1;
+          const first = runnerFactories === 1;
+          return {
+            start: () => undefined,
+            stop: () => Promise.resolve(),
+            size: () => 0,
+            isRunning: () => true,
+            task: () => first ? Promise.reject(failure) : new Promise<void>(() => {}),
+          };
+        },
+      });
+
+      await controller.start();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(runnerFactories).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(runnerFactories).toBe(2);
+      await controller.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("re-arms message handling after stop() + start() (a message after restart IS handled)", async () => {
     const received: string[] = [];
     const sent: unknown[] = [];

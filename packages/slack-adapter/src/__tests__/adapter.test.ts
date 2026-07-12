@@ -825,6 +825,48 @@ describe("SlackAdapter", () => {
     expect(api.postMessageCalls.filter((call) => call.text === "Cancelled.")).toHaveLength(1);
   });
 
+  it("/cancel aborts another physical thread queued under the same resolved conversation", async () => {
+    const api = new FakeSlackApi();
+    const firstRelease = createDeferred<{ text: string }>();
+    const responderStarted = createDeferred<void>();
+    const requests: string[] = [];
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      resolvePostIndex: async () => "slack:D123",
+      responder: {
+        respond: async (request) => {
+          requests.push(request.text);
+          if (requests.length === 1) {
+            responderStarted.resolve(undefined);
+            return await firstRelease.promise;
+          }
+          return { text: "must not run" };
+        },
+        cancel: () => undefined,
+      },
+    });
+
+    const threadA = adapter.handleEventCallback(
+      directMessage("thread A", { eventId: "EvA", ts: "171.000010", threadTs: "171.000001" }),
+    );
+    await responderStarted.promise;
+    const threadB = adapter.handleEventCallback(
+      directMessage("thread B", { eventId: "EvB", ts: "172.000010", threadTs: "172.000001" }),
+    );
+
+    await expect(adapter.handleEventCallback(
+      directMessage("/cancel", { eventId: "EvCancel", ts: "171.000011", threadTs: "171.000001" }),
+    )).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
+    firstRelease.resolve({ text: "must not deliver" });
+
+    await expect(threadA).resolves.toMatchObject({ kind: "cancelled" });
+    await expect(threadB).resolves.toMatchObject({ kind: "cancelled" });
+    expect(requests).toEqual(["thread A"]);
+    expect(api.postMessageCalls.filter((call) => call.text === "Cancelled.")).toHaveLength(1);
+  });
+
   it("does not require a responder.cancel to handle /cancel", async () => {
     const api = new FakeSlackApi();
     let capturedSignal: AbortSignal | undefined;
