@@ -53,7 +53,10 @@ run id with different payload bytes fails closed. Pending work retries with
 bounded exponential backoff for more than 24 hours before dead-lettering.
 Model output on this path is strict and all-or-nothing: malformed extraction or
 reconciliation JSON remains pending for retry rather than becoming a partial
-capture or a successful empty result.
+capture or a successful empty result. The extraction prompt states the validator's
+exact field, `0..1` salience, identifier, reference, and relation contracts. The
+strict parser remains authoritative and never clamps, rescales, or coerces model
+values.
 
 `@mono-agent/memory/bujo` also exposes a synchronous provider-free strict health
 audit. It takes a snapshot-coherent view of managed identity, SQLite and
