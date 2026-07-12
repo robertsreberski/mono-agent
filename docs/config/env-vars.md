@@ -245,14 +245,14 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_OPENAI_API_ENABLED` | `openaiApi.enabled` | |
-| `MONO_AGENT_OPENAI_API_KEY` | `openaiApi.apiKey` | Optional bearer required from clients (`sk-...`). |
+| `MONO_AGENT_OPENAI_API_KEY` | `openaiApi.apiKey` | Optional on loopback; required for any enabled non-loopback bind. Clients send it as a bearer (`sk-...`). |
 | `MONO_AGENT_OPENAI_API_MODEL_ID` | `openaiApi.modelId` | Advertised model id. See [../channels/openai-api.md](/channels/openai-api/). |
 
 ### Session web CLI
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_WEB_AUTH_TOKEN` | — (CLI-only) | Stable bearer token used by `mono-agent web` for an explicit non-loopback bind. Ignored for the default loopback-only server. When absent, the command generates a one-run token. Configured values stay redacted unless `--show-auth-url` is explicitly used in an interactive terminal. Store this secret in the CLI invocation folder's owner-only `.env` or the file selected by `--env-file`. |
+| `MONO_AGENT_WEB_AUTH_TOKEN` | — (CLI-only) | Stable bearer token used by `mono-agent web` for an explicit non-loopback bind. Ignored for the default loopback-only server. It is required for non-interactive/service startup; an interactive command may generate a one-run token. Configured values stay redacted unless `--show-auth-url` is explicitly used in an interactive terminal. Store this secret in the CLI invocation folder's owner-only `.env` or the file selected by `--env-file`. |
 
 ### TUI stream endpoint
 

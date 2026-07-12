@@ -48,7 +48,7 @@ All three are `config` coverage — no code required.
 ```
 
 :::caution
-Binding to a non-loopback host (`0.0.0.0`) requires `allowNonLoopback: true` — the server refuses public binds otherwise. Always set `apiKey` when the endpoint is reachable off-host; clients must then send `Authorization: Bearer sk-...`.
+Binding to a non-loopback host (`0.0.0.0`) requires both `allowNonLoopback: true` and `apiKey` — the server refuses to start if either guard is missing. Clients must send `Authorization: Bearer sk-...`.
 :::
 
 The same settings can be supplied via environment variables (`MONO_AGENT_*`); see [Environment variables](/config/env-vars/) for the full mapping.

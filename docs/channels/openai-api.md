@@ -38,7 +38,7 @@ Coverage: `config` (the entire surface is enabled and tuned from the `openaiApi`
 
 :::caution
 :::
-Binding to a non-loopback `host` (anything other than `127.0.0.1`/`localhost`) requires `allowNonLoopback: true`. Exposing the endpoint off-host without also setting an `apiKey` leaves the agent open to anyone who can reach the port — set both together, and prefer a reverse proxy with TLS.
+Binding to a non-loopback `host` (anything other than `127.0.0.1`/`localhost`) requires both `allowNonLoopback: true` and a non-empty `apiKey`. Startup fails closed if either guard is missing. Prefer a reverse proxy with TLS when the endpoint crosses an untrusted network.
 
 ## Environment variables
 

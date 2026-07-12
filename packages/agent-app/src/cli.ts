@@ -840,9 +840,10 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "--include-memory also shows memory-maintenance runs. --max-runs (default",
       "200) bounds the in-memory working set; the UI still pages the full",
       "on-disk history via \"Load older\".",
-      "Non-loopback mode uses MONO_AGENT_WEB_AUTH_TOKEN when set; otherwise",
-      "it generates a token. --show-auth-url reveals a configured token only",
-      "to an interactive terminal.",
+      "Non-loopback service use requires MONO_AGENT_WEB_AUTH_TOKEN; an",
+      "interactive run may generate one. --show-auth-url reveals a configured",
+      "token only to an interactive terminal. Authenticated URLs are not",
+      "auto-opened through process arguments.",
     ],
   },
   {

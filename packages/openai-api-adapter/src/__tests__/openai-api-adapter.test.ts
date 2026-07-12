@@ -936,6 +936,18 @@ describe("OpenAI API adapter", () => {
     ).rejects.toMatchObject({ code: "unsafe_host" });
   });
 
+  it("rejects an explicitly allowed non-loopback bind without bearer auth", async () => {
+    await expect(
+      startOpenAIApiAdapter({
+        host: "0.0.0.0",
+        port: 0,
+        allowNonLoopback: true,
+        modelId: "agent",
+        responder: echoResponder(),
+      }),
+    ).rejects.toMatchObject({ code: "missing_required_config" });
+  });
+
   describe("conversation session continuity", () => {
     it("derives the conversation id from x-openwebui-chat-id and sends only the latest user message", async () => {
       const capture = capturingResponder();

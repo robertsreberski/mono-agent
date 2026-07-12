@@ -16,6 +16,7 @@ import {
   bearerTokensEqual,
   close,
   hostForUrl,
+  isLoopbackHost,
   listen,
   readAuthorizationBearer,
 } from "@mono-agent/agent-contracts";
@@ -162,6 +163,13 @@ export async function startOpenAIApiAdapter(
       "OpenAI API adapter refuses to bind a non-loopback host unless allowNonLoopback is true.",
       { host: boundHost },
     ));
+  if (!isLoopbackHost(host) && apiKey === undefined) {
+    throw new OpenAIApiAdapterError(
+      "missing_required_config",
+      "OpenAI API adapter requires an API key for every non-loopback bind.",
+      { host },
+    );
+  }
 
   const app = express();
   const server = createServer(app);

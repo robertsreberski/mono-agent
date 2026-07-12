@@ -64,6 +64,7 @@ describe("runWeb", () => {
         startServer,
         waitForShutdown: async () => undefined,
         stdout: { write: (text) => (output += text) },
+        interactive: true,
       },
     );
 
@@ -172,6 +173,7 @@ describe("runWeb", () => {
         startServer,
         waitForShutdown: async () => undefined,
         stdout: { write: (text) => (output += text) },
+        interactive: true,
       },
     );
 
@@ -202,6 +204,7 @@ describe("runWeb", () => {
         openUrl,
         waitForShutdown: async () => undefined,
         stdout: { write: (text) => (output += text) },
+        interactive: true,
         discoverNetworkAddresses: () => [
           { address: "100.64.103.59", kind: "tailscale" },
           { address: "192.168.178.103", kind: "lan" },
@@ -215,7 +218,8 @@ describe("runWeb", () => {
     expect(output).toContain(`LAN       →  http://192.168.178.103:4599/?token=${token}`);
     expect(output).toContain(`Tailscale →  http://100.64.103.59:4599/?token=${token}`);
     expect(output).not.toContain("0.0.0.0");
-    expect(openUrl).toHaveBeenCalledWith(`http://127.0.0.1:4599/?token=${token}`);
+    expect(output).toContain("bearer token never enters process arguments");
+    expect(openUrl).not.toHaveBeenCalled();
   });
 
   it("uses a stable environment token without printing it", async () => {
@@ -255,7 +259,37 @@ describe("runWeb", () => {
     expect(output).toContain("MONO_AGENT_WEB_AUTH_TOKEN is configured (token redacted)");
     expect(output).not.toContain(stableToken);
     expect(output).not.toContain("?token=");
-    expect(openUrl).toHaveBeenCalledWith(`http://127.0.0.1:4599/?token=${stableToken}`);
+    expect(output).toContain("bearer token never enters process arguments");
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("refuses non-interactive non-loopback serving without a configured token", async () => {
+    const configPath = await testConfig();
+    let errors = "";
+    const startServer = vi.fn(async (): Promise<SessionWebServerHandle> => {
+      return { url: "http://0.0.0.0:4599/", stop: vi.fn(async () => undefined) };
+    });
+
+    const code = await runWeb(
+      {
+        configPath,
+        cwd: dir!,
+        env: { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: join(dir!, "global-trace-sources") },
+        host: "0.0.0.0",
+        allowNonLoopback: true,
+      },
+      {
+        startServer,
+        waitForShutdown: async () => undefined,
+        stderr: { write: (text) => (errors += text) },
+        interactive: false,
+      },
+    );
+
+    expect(code).toBe(1);
+    expect(startServer).not.toHaveBeenCalled();
+    expect(errors).toContain("MONO_AGENT_WEB_AUTH_TOKEN");
+    expect(errors).toContain("refusing to generate a bearer secret into logs");
   });
 
   it("reveals a configured token only with explicit interactive opt-in", async () => {

@@ -56,6 +56,16 @@ describe("loadOpenAIApiAdapterConfig", () => {
       modelId: "env-model",
     });
   });
+
+  it("fails closed when an enabled non-loopback endpoint has no API key", async () => {
+    await expect(loadOpenAIApiAdapterConfig({
+      env: {
+        MONO_AGENT_OPENAI_API_ENABLED: "true",
+        MONO_AGENT_OPENAI_API_HOST: "0.0.0.0",
+        MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK: "true",
+      },
+    })).rejects.toMatchObject({ code: "invalid_config" });
+  });
 });
 
 describe("redactOpenAIApiAdapterConfig", () => {

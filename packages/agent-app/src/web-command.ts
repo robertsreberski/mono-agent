@@ -76,9 +76,16 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
   const registryDirs = dedupePaths([configuredRegistryDir, globalRegistryDir]);
   await Promise.all(registryDirs.map((registryDir) => pruneTraceSources({ registryDir })));
   const authRequired = requiresServerAuth(options.host);
+  const interactive = deps.interactive ?? process.stdout.isTTY === true;
   const configuredAuthToken = authRequired
     ? normalizeOptionalString(options.env.MONO_AGENT_WEB_AUTH_TOKEN)
     : undefined;
+  if (authRequired && configuredAuthToken === undefined && !interactive) {
+    stderr.write(
+      `Non-interactive non-loopback web serving requires ${WEB_AUTH_TOKEN_ENV}; refusing to generate a bearer secret into logs.\n`,
+    );
+    return 1;
+  }
   const authToken = authRequired ? configuredAuthToken ?? generateBearerToken() : undefined;
   const generatedAuthToken = authToken !== undefined && configuredAuthToken === undefined;
   const port = options.port ?? DEFAULT_WEB_PORT;
@@ -106,10 +113,9 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
     : [];
   const advertisedUrls = resolveAdvertisedUrls(handle.url, networkAddresses);
   const primaryUrl = advertisedUrls[0]?.url ?? handle.url;
-  const browserUrl = authToken === undefined ? primaryUrl : withAuthToken(primaryUrl, authToken);
   const mayPrintConfiguredToken = configuredAuthToken !== undefined
     && options.showAuthUrl === true
-    && (deps.interactive ?? process.stdout.isTTY === true);
+    && interactive;
   const printableToken = generatedAuthToken || mayPrintConfiguredToken ? authToken : undefined;
   printAdvertisedUrls(stdout, advertisedUrls, printableToken);
   if (configuredAuthToken !== undefined && printableToken === undefined) {
@@ -124,12 +130,14 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
   stdout.write(`${reverseProxyHint(primaryUrl)}\n`);
   stdout.write(`${reachabilityHint(handle.url)}\n`);
 
-  if (options.open ?? true) {
+  if ((options.open ?? true) && authToken === undefined) {
     try {
-      (deps.openUrl ?? openInBrowser)(browserUrl);
+      (deps.openUrl ?? openInBrowser)(primaryUrl);
     } catch {
       // Best-effort: a headless host without a browser is fine — the URL is printed.
     }
+  } else if ((options.open ?? true) && authToken !== undefined) {
+    stdout.write("Browser launch skipped in authenticated mode so the bearer token never enters process arguments.\n");
   }
 
   deps.onReady?.(handle);
