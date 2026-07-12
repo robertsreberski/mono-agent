@@ -35,6 +35,18 @@ export type {
   BujoRuntimeSnapshot,
   BujoRuntimeSnapshotObservation,
 } from "./runtime-snapshot.js";
+export {
+  auditBujoMemoryHealth,
+  BUJO_MEMORY_HEALTH_SCHEMA_VERSION,
+  MEMORY_HEALTH_ISSUE_CODES,
+} from "./audit.js";
+export type {
+  BujoMemoryHealthOptions,
+  BujoMemoryHealthReport,
+  MemoryHealthCounts,
+  MemoryHealthIssueCode,
+  MemoryHealthStatus,
+} from "./audit.js";
 export { MARKER_FOR, parseBullet, serializeBullet, parseDailyFile, serializeDailyFile } from "./grammar.js";
 export { appendBullet, dailyFilePath } from "./daily.js";
 export { createIdFactory } from "./ids.js";

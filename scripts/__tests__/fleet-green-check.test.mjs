@@ -1,19 +1,72 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildLaunchdProbeEnvironment,
   buildFleetReport,
   deriveRepoFromCliPath,
+  evaluateMemory,
+  evaluateRuntime,
   evaluateRuns,
   instanceName,
   parseArgs,
+  parseLaunchdProgramArguments,
+  parseLaunchdPathEnvironment,
   parseLaunchctlList,
+  parseMemoryAudit,
   reduceMetrics,
+  runCommandSync,
   runFleetGreenCheck,
   shortSha,
 } from "../fleet-green-check.mjs";
 
 const DATE = "2026-07-07";
 const SHA = "0e35c86d1122334455667788990011223344abcd";
+const NODE = "/opt/node-24.15.0/bin/node";
+const CLI = "/Users/example/mono-agent/packages/agent-app/dist/cli.js";
+const MEMORY_CHECKED_AT = "2026-07-12T08:00:00.000Z";
+const EMPTY_MEMORY_COUNTS = Object.freeze({
+  pending: 0,
+  due: 0,
+  dead: 0,
+  outbox: 0,
+  temporary: 0,
+  memories: 0,
+  vectors: 0,
+  missingVectors: 0,
+});
+
+function strictMemoryReport({
+  backend = "bujo",
+  mode = backend === "bujo" ? "lite" : undefined,
+  status = backend === "none" ? "not_configured" : backend === "supermemory" ? "unknown" : "healthy",
+  checkedAt = MEMORY_CHECKED_AT,
+  issues = [],
+  counts = EMPTY_MEMORY_COUNTS,
+} = {}) {
+  return {
+    schemaVersion: 1,
+    backend,
+    ...(mode === undefined ? {} : { mode }),
+    status,
+    checkedAt,
+    issues,
+    counts: { ...counts },
+  };
+}
+
+function strictMemoryJson(status) {
+  if (status === "not_configured") {
+    return JSON.stringify(strictMemoryReport({ backend: "none", status }));
+  }
+  const issues = {
+    healthy: [],
+    in_progress: ["mutation_in_progress"],
+    degraded: ["runtime_stale"],
+    unhealthy: ["manifest_missing"],
+    unknown: ["health_check_failed"],
+  }[status];
+  return JSON.stringify(strictMemoryReport({ status, issues }));
+}
 
 function service({ found = true, pid = 4242, lastExitStatus = 0 } = {}) {
   return { found, pid, lastExitStatus };
@@ -28,19 +81,21 @@ function greenInstance(label = "com.mono-agent.orchestrator-2146e3d3") {
     label,
     dir: "/Users/example/agents/orchestrator",
     service: service(),
-    validate: { ran: true, exitCode: 0, tail: "" },
+    runtime: { ran: true, node: "24.15.0", abi: "137" },
+    validate: { ran: true, exitCode: 0, validJson: true, ok: true },
+    memory: { ran: true, status: "healthy" },
     metrics: metrics({ totalRuns: 110, failedRuns: 1, failureKinds: [{ kind: "provider_unavailable", count: 1 }] }),
   };
 }
 
 describe("parseArgs", () => {
   it("parses flags and value options", () => {
-    expect(parseArgs(["--dry-run", "--strict-runs", "--labels", "a, b ,c", "--expect-sha", "abc123", "--min-runs", "5", "--repo", "/r"]))
-      .toEqual({ dryRun: true, strictRuns: true, help: false, labels: ["a", "b", "c"], expectSha: "abc123", minRuns: 5, repo: "/r" });
+    expect(parseArgs(["--dry-run", "--strict-runs", "--labels", "a, b ,c", "--expect-sha", "abc123", "--expect-node", "24.16.0", "--expect-abi", "138", "--min-runs", "5", "--repo", "/r"]))
+      .toEqual({ dryRun: true, strictRuns: true, help: false, labels: ["a", "b", "c"], expectSha: "abc123", expectNode: "24.16.0", expectAbi: "138", minRuns: 5, repo: "/r" });
   });
 
   it("defaults to a posting, lenient run", () => {
-    expect(parseArgs([])).toEqual({ dryRun: false, strictRuns: false, help: false });
+    expect(parseArgs([])).toEqual({ dryRun: false, strictRuns: false, help: false, expectNode: "24.15.0", expectAbi: "137" });
   });
 
   it("rejects unknown args and missing/invalid values", () => {
@@ -48,6 +103,8 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--labels"])).toThrow(/--labels requires a value/u);
     expect(() => parseArgs(["--min-runs", "-1"])).toThrow(/--min-runs requires a non-negative integer/u);
     expect(() => parseArgs(["--min-runs", "abc"])).toThrow(/--min-runs requires a non-negative integer/u);
+    expect(() => parseArgs(["--expect-node", "24"])).toThrow(/--expect-node requires/u);
+    expect(() => parseArgs(["--expect-abi", "abi137"])).toThrow(/--expect-abi requires/u);
   });
 });
 
@@ -77,6 +134,84 @@ describe("deriveRepoFromCliPath", () => {
   });
 });
 
+describe("parseLaunchdProgramArguments", () => {
+  const config = "/Users/example/agents/orchestrator/custom.config.json";
+  const envFile = "/Users/example/agents/orchestrator/.env.production";
+
+  it("retains only the exact absolute config and env-file used by the service", () => {
+    expect(parseLaunchdProgramArguments([
+      NODE, CLI, "start", "--foreground", "--config", config, "--env-file", envFile,
+    ])).toEqual({
+      nodePath: NODE,
+      cliPath: CLI,
+      probeArgs: ["--config", config, "--env-file", envFile],
+    });
+  });
+
+  it("accepts an older cwd-default service without fabricating config flags", () => {
+    expect(parseLaunchdProgramArguments([NODE, CLI, "start", "--foreground"])).toEqual({
+      nodePath: NODE,
+      cliPath: CLI,
+      probeArgs: [],
+    });
+  });
+
+  it.each([
+    ["missing config value", [NODE, CLI, "start", "--config"]],
+    ["relative config", [NODE, CLI, "start", "--config", "relative.json"]],
+    ["duplicate config", [NODE, CLI, "start", "--config", config, "--config", config]],
+    ["duplicate env file", [NODE, CLI, "start", "--env-file", envFile, "--env-file", envFile]],
+    ["unknown flag", [NODE, CLI, "start", "--token", "private-value"]],
+    ["wrong command", [NODE, CLI, "validate", "--config", config]],
+    ["relative runtime", ["node", CLI, "start", "--config", config]],
+    ["NUL runtime", [`${NODE}\0private-runtime`, CLI, "start", "--config", config]],
+    ["NUL cli", [NODE, `${CLI}\0private-cli`, "start", "--config", config]],
+    ["non-string argument", [NODE, CLI, "start", "--config", 7]],
+  ])("rejects %s", (_label, args) => {
+    expect(parseLaunchdProgramArguments(args)).toBeNull();
+  });
+});
+
+describe("parseLaunchdPathEnvironment", () => {
+  it("retains the exact non-secret PATH emitted by the managed plist", () => {
+    expect(parseLaunchdPathEnvironment({ PATH: "/managed/bin:/usr/bin:/bin" }))
+      .toBe("/managed/bin:/usr/bin:/bin");
+  });
+
+  it.each([
+    ["missing environment", undefined],
+    ["missing PATH", {}],
+    ["empty PATH", { PATH: "" }],
+    ["non-string PATH", { PATH: 7 }],
+    ["NUL PATH", { PATH: "/usr/bin\0/private" }],
+    ["additional variable", { PATH: "/usr/bin:/bin", PRIVATE_TOKEN: "must-not-retain" }],
+  ])("rejects %s", (_label, environment) => {
+    expect(parseLaunchdPathEnvironment(environment)).toBeNull();
+  });
+});
+
+describe("buildLaunchdProbeEnvironment", () => {
+  it("keeps only the exact PATH and launchd-safe operational values", () => {
+    expect(buildLaunchdProbeEnvironment("/managed/bin:/usr/bin:/bin", {
+      PATH: "/interactive/bin",
+      HOME: "/Users/example",
+      USER: "example",
+      LANG: "en_US.UTF-8",
+      MONO_AGENT_MEMORY_PATH: "/private/wrong-memory",
+      MONO_AGENT_MODEL: "wrong-model",
+      OPENAI_API_KEY: "private-provider-credential",
+      ANTHROPIC_API_KEY: "private-provider-credential",
+      NODE_OPTIONS: "--require=/private/inject.js",
+      HTTPS_PROXY: "http://private-proxy.invalid",
+    })).toEqual({
+      PATH: "/managed/bin:/usr/bin:/bin",
+      HOME: "/Users/example",
+      USER: "example",
+      LANG: "en_US.UTF-8",
+    });
+  });
+});
+
 describe("reduceMetrics", () => {
   it("extracts the overall bucket fields", () => {
     const report = {
@@ -92,6 +227,221 @@ describe("reduceMetrics", () => {
       failedRuns: 1,
       failureKinds: [{ kind: "provider_unavailable", count: 1 }],
     });
+  });
+
+  it("rejects malformed aggregate JSON instead of fabricating zero runs", () => {
+    expect(() => reduceMetrics({ overall: { totalRuns: "secret", failureKindRates: [] } })).toThrow(/invalid metrics/u);
+    expect(() => reduceMetrics({ overall: { totalRuns: 1, statusCounts: { failed: 0 } } })).toThrow(/invalid metrics/u);
+  });
+});
+
+describe("runtime health", () => {
+  it("passes only the expected exact Node version and modules ABI", () => {
+    expect(evaluateRuntime({ ran: true, node: "24.15.0", abi: "137" })).toEqual({
+      status: "pass",
+      note: "24.15.0/abi137",
+    });
+    expect(evaluateRuntime({ ran: true, node: "24.15.1", abi: "137" }).status).toBe("fail");
+    expect(evaluateRuntime({ ran: true, node: "24.15.0", abi: "127" }).status).toBe("fail");
+    expect(evaluateRuntime({ ran: false }).status).toBe("fail");
+  });
+});
+
+describe("strict memory health", () => {
+  it.each([
+    ["healthy", 0, "pass"],
+    ["in_progress", 0, "warn"],
+    ["not_configured", 0, "skip"],
+    ["degraded", 1, "fail"],
+    ["unhealthy", 1, "fail"],
+    ["unknown", 1, "fail"],
+  ])("classifies %s from its contract exit", (status, exitCode, expected) => {
+    const parsed = parseMemoryAudit(strictMemoryJson(status), exitCode);
+    expect(parsed).toEqual({ ran: true, status });
+    expect(evaluateMemory(parsed).status).toBe(expected);
+    expect(evaluateMemory(parsed).memoryStatus).toBe(status);
+  });
+
+  it.each([
+    [strictMemoryReport({ mode: "lite" }), 0, "healthy"],
+    [strictMemoryReport({ mode: "journal", status: "in_progress", issues: ["mutation_in_progress"] }), 0, "in_progress"],
+    [strictMemoryReport({ mode: "bujo", status: "degraded", issues: ["runtime_stale"] }), 1, "degraded"],
+    [strictMemoryReport({ backend: "none" }), 0, "not_configured"],
+    [strictMemoryReport({ backend: "supermemory" }), 1, "unknown"],
+  ])("accepts the complete closed backend report %#", (report, exitCode, status) => {
+    expect(parseMemoryAudit(JSON.stringify(report), exitCode)).toEqual({ ran: true, status });
+  });
+
+  it("accepts a real ISO instant with an explicit offset", () => {
+    const report = strictMemoryReport({ checkedAt: "2026-07-12T10:00:00+02:00" });
+    expect(parseMemoryAudit(JSON.stringify(report), 0)).toEqual({ ran: true, status: "healthy" });
+  });
+
+  it.each([
+    ["non-JSON", 1],
+    [JSON.stringify({ schemaVersion: 1 }), 0],
+    [JSON.stringify({ ...strictMemoryReport(), status: "invented" }), 1],
+    [JSON.stringify({ ...strictMemoryReport(), schemaVersion: 2 }), 0],
+    [strictMemoryJson("degraded"), 0],
+    [strictMemoryJson("healthy"), 1],
+    [strictMemoryJson("healthy"), 2],
+  ])("fails closed on malformed output/exit %#", (json, exitCode) => {
+    const parsed = parseMemoryAudit(json, exitCode);
+    expect(parsed).toEqual({ ran: true, malformed: true });
+    expect(evaluateMemory(parsed)).toMatchObject({ status: "fail", memoryStatus: "malformed" });
+  });
+
+  it.each(["schemaVersion", "backend", "mode", "status", "checkedAt", "issues", "counts"])(
+    "rejects a built-in report missing %s",
+    (field) => {
+      const report = strictMemoryReport();
+      delete report[field];
+      expect(parseMemoryAudit(JSON.stringify(report), 0)).toEqual({ ran: true, malformed: true });
+    },
+  );
+
+  it("rejects extra top-level fields and never retains their secret-bearing values", () => {
+    const secret = "ya29.extra-field-secret";
+    const parsed = parseMemoryAudit(JSON.stringify({ ...strictMemoryReport(), diagnostics: { token: secret } }), 0);
+    expect(parsed).toEqual({ ran: true, malformed: true });
+    expect(JSON.stringify(parsed)).not.toContain(secret);
+  });
+
+  it.each([
+    ["unknown backend", { backend: "unknown" }, 1],
+    ["invalid bujo mode", { mode: "full" }, 0],
+    ["not-configured bujo", { status: "not_configured" }, 0],
+    ["none with a mode", { backend: "none", mode: "lite", status: "not_configured" }, 0],
+    ["healthy none", { backend: "none", mode: undefined, status: "healthy" }, 0],
+    ["supermemory with a mode", { backend: "supermemory", mode: "lite", status: "unknown" }, 1],
+    ["not-configured supermemory", { backend: "supermemory", mode: undefined, status: "not_configured" }, 0],
+  ])("rejects invalid backend/status/mode combination: %s", (_label, values, exitCode) => {
+    expect(parseMemoryAudit(JSON.stringify(strictMemoryReport(values)), exitCode)).toEqual({ ran: true, malformed: true });
+  });
+
+  it("rejects a built-in report without its required mode", () => {
+    const report = strictMemoryReport();
+    delete report.mode;
+    expect(parseMemoryAudit(JSON.stringify(report), 0)).toEqual({ ran: true, malformed: true });
+  });
+
+  it.each([
+    ["not a timestamp", "not-a-timestamp"],
+    ["date only", "2026-07-12"],
+    ["impossible day", "2026-02-30T08:00:00.000Z"],
+    ["non-leap February", "2025-02-29T08:00:00.000Z"],
+    ["invalid hour", "2026-07-12T24:00:00.000Z"],
+    ["invalid offset", "2026-07-12T08:00:00+24:00"],
+  ])("rejects invalid checkedAt: %s", (_label, checkedAt) => {
+    const report = strictMemoryReport({ checkedAt });
+    expect(parseMemoryAudit(JSON.stringify(report), 0)).toEqual({ ran: true, malformed: true });
+  });
+
+  it.each([
+    ["not an array", "manifest_missing"],
+    ["unknown code", ["secret_provider_error"]],
+    ["non-string code", [1]],
+    ["duplicate code", ["manifest_missing", "manifest_missing"]],
+    ["non-canonical order", ["database_missing", "manifest_missing"]],
+  ])("rejects an invalid issues field: %s", (_label, issues) => {
+    const report = strictMemoryReport({ issues });
+    expect(parseMemoryAudit(JSON.stringify(report), 0)).toEqual({ ran: true, malformed: true });
+  });
+
+  it("accepts the complete issue vocabulary in canonical producer order", () => {
+    const issues = [
+      "manifest_missing",
+      "manifest_invalid",
+      "configured_identity_mismatch",
+      "database_missing",
+      "database_unavailable",
+      "native_module_unavailable",
+      "health_check_failed",
+      "sqlite_integrity_failed",
+      "metadata_mismatch",
+      "fts_mismatch",
+      "vector_mismatch",
+      "orphaned_rows",
+      "canonical_mismatch",
+      "canonical_invalid",
+      "mutation_in_progress",
+      "intake_invalid",
+      "intake_pending",
+      "dead_letters",
+      "outbox_invalid",
+      "outbox_pending",
+      "work_stalled",
+      "temporary_artifacts",
+      "runtime_missing",
+      "runtime_stale",
+      "runtime_invalid",
+    ];
+    const counts = {
+      ...EMPTY_MEMORY_COUNTS,
+      pending: 1,
+      due: 1,
+      dead: 1,
+      outbox: 1,
+      temporary: 1,
+    };
+    expect(parseMemoryAudit(JSON.stringify(strictMemoryReport({ status: "unknown", issues, counts })), 1))
+      .toEqual({ ran: true, status: "unknown" });
+  });
+
+  it.each([
+    ["healthy with a fatal issue", { status: "healthy", issues: ["manifest_missing"] }, 0],
+    ["degraded with an unknown issue", { status: "degraded", issues: ["health_check_failed"] }, 1],
+    ["unknown with only stalled work", { status: "unknown", issues: ["work_stalled"] }, 1],
+  ])("rejects status/issue contradictions: %s", (_label, values, exitCode) => {
+    expect(parseMemoryAudit(JSON.stringify(strictMemoryReport(values)), exitCode))
+      .toEqual({ ran: true, malformed: true });
+  });
+
+  it("accepts the new closed status mappings", () => {
+    expect(parseMemoryAudit(JSON.stringify(strictMemoryReport({
+      status: "unknown",
+      issues: ["health_check_failed"],
+    })), 1)).toEqual({ ran: true, status: "unknown" });
+    expect(parseMemoryAudit(JSON.stringify(strictMemoryReport({
+      status: "degraded",
+      issues: ["work_stalled"],
+    })), 1)).toEqual({ ran: true, status: "degraded" });
+  });
+
+  it.each([
+    ["due exceeds pending", { counts: { ...EMPTY_MEMORY_COUNTS, due: 1 } }, 0],
+    ["pending lacks issue", { counts: { ...EMPTY_MEMORY_COUNTS, pending: 1 } }, 0],
+    ["pending issue lacks count", { status: "in_progress", issues: ["intake_pending"] }, 0],
+    ["dead count lacks issue", { counts: { ...EMPTY_MEMORY_COUNTS, dead: 1 } }, 0],
+    ["outbox lacks mutation issue", { status: "in_progress", issues: ["outbox_pending"], counts: { ...EMPTY_MEMORY_COUNTS, outbox: 1 } }, 0],
+    ["temporary count lacks issue", { counts: { ...EMPTY_MEMORY_COUNTS, temporary: 1 } }, 0],
+    ["none backend has counts", { backend: "none", status: "not_configured", counts: { ...EMPTY_MEMORY_COUNTS, memories: 1 } }, 0],
+    ["supermemory backend has counts", { backend: "supermemory", status: "unknown", counts: { ...EMPTY_MEMORY_COUNTS, memories: 1 } }, 1],
+  ])("rejects count/issue contradictions: %s", (_label, values, exitCode) => {
+    expect(parseMemoryAudit(JSON.stringify(strictMemoryReport(values)), exitCode))
+      .toEqual({ ran: true, malformed: true });
+  });
+
+  it("accepts Journal vector backlog as in-progress without overconstraining queue counts", () => {
+    const report = strictMemoryReport({
+      mode: "journal",
+      status: "in_progress",
+      issues: ["mutation_in_progress"],
+      counts: { ...EMPTY_MEMORY_COUNTS, memories: 3, vectors: 2, missingVectors: 1 },
+    });
+    expect(parseMemoryAudit(JSON.stringify(report), 0)).toEqual({ ran: true, status: "in_progress" });
+  });
+
+  it.each([
+    ["missing count", ({ missingVectors: _omitted, ...counts }) => counts],
+    ["extra count", (counts) => ({ ...counts, secretBytes: 1 })],
+    ["negative count", (counts) => ({ ...counts, pending: -1 })],
+    ["fractional count", (counts) => ({ ...counts, due: 0.5 })],
+    ["unsafe count", (counts) => ({ ...counts, memories: Number.MAX_SAFE_INTEGER + 1 })],
+    ["numeric string", (counts) => ({ ...counts, vectors: "0" })],
+  ])("rejects invalid closed counts: %s", (_label, mutate) => {
+    const report = strictMemoryReport({ counts: mutate(EMPTY_MEMORY_COUNTS) });
+    expect(parseMemoryAudit(JSON.stringify(report), 0)).toEqual({ ran: true, malformed: true });
   });
 });
 
@@ -191,7 +541,8 @@ describe("buildFleetReport", () => {
     expect(report.reason).toBeNull();
     expect(report.exitCode).toBe(0);
     expect(report.verdictLine).toBe(`VERDICT: GREEN ${DATE} sha 0e35c86`);
-    expect(report.table).toContain("| orchestrator-2146e3d3 | ok | ok | ok |");
+    expect(report.table).toContain("| instance | service | runtime | validate | memory | runs-24h | notes |");
+    expect(report.table).toContain("| orchestrator-2146e3d3 | ok | ok | ok | healthy | ok |");
     expect(report.body).toContain(`### Fleet green-check ${DATE}`);
   });
 
@@ -205,12 +556,44 @@ describe("buildFleetReport", () => {
     expect(report.verdictLine).toBe(`VERDICT: RED ${DATE} — personal-agent-059657c8: not running (last exit 1)`);
   });
 
-  it("RED-validate-fail: surfaces the validate tail line", () => {
+  it("RED-validate-fail: reports failure without possibly-secret validation details", () => {
     const broken = greenInstance();
-    broken.validate = { ran: true, exitCode: 1, tail: "ERROR channel telegram missing bot token" };
+    broken.validate = { ran: true, exitCode: 1, validJson: true, ok: false };
     const report = buildFleetReport({ date: DATE, deployedSha: SHA, instances: [broken] });
     expect(report.verdict).toBe("RED");
-    expect(report.reason).toContain("validate failed — ERROR channel telegram missing bot token");
+    expect(report.reason).toContain("validate reported errors");
+  });
+
+  it("RED-runtime-mismatch: the exact plist runtime must match Node and ABI", () => {
+    const broken = greenInstance();
+    broken.runtime = { ran: true, node: "22.19.0", abi: "127" };
+    const report = buildFleetReport({ date: DATE, deployedSha: SHA, instances: [broken] });
+    expect(report.verdict).toBe("RED");
+    expect(report.reason).toBe("orchestrator-2146e3d3: runtime 22.19.0/abi127 != expected 24.15.0/abi137");
+  });
+
+  it.each([
+    ["healthy", "GREEN"],
+    ["in_progress", "GREEN"],
+    ["not_configured", "GREEN"],
+    ["degraded", "RED"],
+    ["unhealthy", "RED"],
+    ["unknown", "RED"],
+  ])("renders memory status %s and applies its verdict policy", (status, verdict) => {
+    const instance = greenInstance();
+    instance.memory = { ran: true, status };
+    const report = buildFleetReport({ date: DATE, deployedSha: SHA, instances: [instance] });
+    expect(report.verdict).toBe(verdict);
+    expect(report.table).toContain(`| ${status} |`);
+  });
+
+  it("RED-memory-malformed: a missing strict result cannot masquerade as not configured", () => {
+    const instance = greenInstance();
+    instance.memory = { ran: true, malformed: true };
+    const report = buildFleetReport({ date: DATE, deployedSha: SHA, instances: [instance] });
+    expect(report.verdict).toBe("RED");
+    expect(report.reason).toContain("strict memory audit malformed");
+    expect(report.table).toContain("| malformed |");
   });
 
   it("RED-runs-new-kind: an untolerated failure kind drives RED", () => {
@@ -230,11 +613,11 @@ describe("buildFleetReport", () => {
   });
 
   it("RED-unreadable-plist: a plist that failed conversion is a RED row, not dropped", () => {
-    const broken = { label: "com.mono-agent.corrupt-plist", discoveryError: "unparseable plist json (Unexpected token)" };
+    const broken = { label: "com.mono-agent.corrupt-plist", discoveryError: "plist JSON invalid" };
     const report = buildFleetReport({ date: DATE, deployedSha: SHA, instances: [greenInstance(), broken] });
     expect(report.verdict).toBe("RED");
-    expect(report.reason).toBe("corrupt-plist: plist unreadable — unparseable plist json (Unexpected token)");
-    expect(report.table).toContain("| corrupt-plist | FAIL | — | — |");
+    expect(report.reason).toBe("corrupt-plist: plist unreadable");
+    expect(report.table).toContain("| corrupt-plist | FAIL | — | — | malformed | — |");
   });
 
   it("idle instance: zero runs shows a non-RED warn cell", () => {
@@ -242,7 +625,7 @@ describe("buildFleetReport", () => {
     idle.metrics = metrics({ totalRuns: 0, failedRuns: 0 });
     const report = buildFleetReport({ date: DATE, deployedSha: SHA, instances: [idle] });
     expect(report.verdict).toBe("GREEN");
-    expect(report.table).toContain("| deep-research-cd0b9a0d | ok | ok | warn | 0 runs (idle?) |");
+    expect(report.table).toContain("| deep-research-cd0b9a0d | ok | ok | ok | healthy | warn | 0 runs (idle?) |");
   });
 
   it("a lifecycle cancellation keeps the fleet GREEN with a visible cancelled note", () => {
@@ -250,7 +633,7 @@ describe("buildFleetReport", () => {
     cancelled.metrics = metrics({ totalRuns: 25, failedRuns: 0, failureKinds: [{ kind: "cancelled_stale", count: 1 }] });
     const report = buildFleetReport({ date: DATE, deployedSha: SHA, instances: [greenInstance(), cancelled] });
     expect(report.verdict).toBe("GREEN");
-    expect(report.table).toContain("| personal-agent-059657c8 | ok | ok | ok | 25 runs, 0 failed, 1 cancelled |");
+    expect(report.table).toContain("| personal-agent-059657c8 | ok | ok | ok | healthy | ok | 25 runs, 0 failed, 1 cancelled |");
   });
 
   it("--min-runs escalates a too-quiet instance to RED", () => {
@@ -274,11 +657,11 @@ describe("buildFleetReport", () => {
   });
 
   it("bogus-label: a label with no plist/dir yields a RED row, not a crash", () => {
-    const bogus = { label: "com.mono-agent.bogus-does-not-exist", dir: null, service: { found: false, pid: null, lastExitStatus: null }, validate: { ran: false }, metrics: { ran: false } };
+    const bogus = { label: "com.mono-agent.bogus-does-not-exist", dir: null, service: { found: false, pid: null, lastExitStatus: null }, runtime: { ran: false }, validate: { ran: false }, memory: { ran: false }, metrics: { ran: false } };
     const report = buildFleetReport({ date: DATE, deployedSha: SHA, instances: [bogus] });
     expect(report.verdict).toBe("RED");
     expect(report.reason).toBe("bogus-does-not-exist: service not found");
-    expect(report.table).toContain("| bogus-does-not-exist | FAIL | — | — |");
+    expect(report.table).toContain("| bogus-does-not-exist | FAIL | FAIL | FAIL | malformed | — |");
   });
 
   it("RED when no instances were discovered", () => {
@@ -298,25 +681,57 @@ describe("helpers", () => {
     expect(shortSha(SHA)).toBe("0e35c86");
     expect(shortSha(null)).toBe("unknown");
   });
+
+  it("hard-kills a timeout child that ignores SIGTERM and drops all captured output", () => {
+    const secret = "private-timeout-child-output";
+    const childSource = [
+      "process.on('SIGTERM', () => {});",
+      `process.stdout.write(${JSON.stringify(secret)});`,
+      `process.stderr.write(${JSON.stringify(secret)});`,
+      "setInterval(() => {}, 1_000);",
+    ].join("\n");
+    const startedAt = Date.now();
+
+    const result = runCommandSync(process.execPath, ["-e", childSource], { timeout: 100 });
+
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(result).toEqual({ status: 124, stdout: "", stderr: "", timedOut: true });
+    expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
+  it("collapses synchronously rejected hostile process arguments to a generic failure", () => {
+    const secret = "private-nul-command";
+    expect(runCommandSync(`/managed/node\0${secret}`, [])).toEqual({
+      status: 127,
+      stdout: "",
+      stderr: "",
+    });
+  });
 });
 
 describe("runFleetGreenCheck (orchestration)", () => {
+  const configPath = "/Users/example/agents/orchestrator/custom.config.json";
+  const envFile = "/Users/example/agents/orchestrator/.env.production";
+  const launchdPath = "/managed/node/bin:/usr/bin:/bin";
   const plistJson = JSON.stringify({
     Label: "com.mono-agent.orchestrator-2146e3d3",
     WorkingDirectory: "/Users/example/agents/orchestrator",
-    ProgramArguments: ["/bin/node", "/Users/example/mono-agent/packages/agent-app/dist/cli.js", "start"],
+    ProgramArguments: [NODE, CLI, "start", "--foreground", "--config", configPath, "--env-file", envFile],
+    EnvironmentVariables: { PATH: launchdPath },
   });
   const metricsJson = JSON.stringify({ overall: { totalRuns: 10, statusCounts: { succeeded: 10, failed: 0 }, failureKindRates: [] } });
 
   function fakeRunner(overrides = {}) {
     const calls = [];
-    const runCommand = (command, args) => {
-      calls.push({ command, args });
-      if (command === "plutil") return { status: 0, stdout: plistJson, stderr: "" };
-      if (command === "launchctl") return { status: 0, stdout: '{\n\t"PID" = 100;\n\t"LastExitStatus" = 0;\n};', stderr: "" };
-      if (command === "git") return { status: 0, stdout: `${SHA}\n`, stderr: "" };
-      if (command === "node" && args.includes("validate")) return { status: 0, stdout: "ok\n", stderr: "" };
-      if (command === "node" && args.includes("metrics")) return { status: 0, stdout: metricsJson, stderr: "" };
+    const runCommand = (command, args, options) => {
+      calls.push({ command, args, options });
+      if (command === "plutil") return overrides.plist ?? { status: 0, stdout: plistJson, stderr: "" };
+      if (command === "launchctl") return overrides.service ?? { status: 0, stdout: '{\n\t"PID" = 100;\n\t"LastExitStatus" = 0;\n};', stderr: "" };
+      if (command === "git") return overrides.git ?? { status: 0, stdout: `${SHA}\n`, stderr: "" };
+      if (command === NODE && args[0] === "-p") return overrides.runtime ?? { status: 0, stdout: '{"node":"24.15.0","abi":"137"}\n', stderr: "" };
+      if (command === NODE && args.includes("validate")) return overrides.validate ?? { status: 0, stdout: '{"ok":true}\n', stderr: "" };
+      if (command === NODE && args.includes("memory")) return overrides.memory ?? { status: 0, stdout: `${strictMemoryJson("healthy")}\n`, stderr: "" };
+      if (command === NODE && args.includes("metrics")) return overrides.metrics ?? { status: 0, stdout: metricsJson, stderr: "" };
       if (command === "gh") return overrides.gh ?? { status: 0, stdout: "https://github.com/comment/1\n", stderr: "" };
       return { status: 1, stdout: "", stderr: "unexpected" };
     };
@@ -338,14 +753,123 @@ describe("runFleetGreenCheck (orchestration)", () => {
     expect(result.exitCode).toBe(0);
     expect(out.text).toContain("VERDICT: GREEN 2026-07-07 sha 0e35c86");
     expect(calls.some((c) => c.command === "gh")).toBe(false);
-    // Strictly read-only against the fleet: the ONLY cli.js subcommands ever
-    // issued are the two read-only reporters, validate and metrics (allowlist —
-    // never restart/stop/start or any mutating verb).
+    expect(calls.every((call) => Number.isInteger(call.options?.timeout) && call.options.timeout > 0)).toBe(true);
+    // Strictly read-only against the fleet: every runtime/CLI probe uses the
+    // exact plist Node/config/env-file, and the only cli.js subcommands are allowlisted reads.
+    expect(calls.some((c) => c.command === "node")).toBe(false);
+    const runtimeAndCliCalls = calls.filter((call) => call.command === NODE);
+    expect(runtimeAndCliCalls).toHaveLength(4);
+    expect(runtimeAndCliCalls.every((call) => call.options.pathEnv === launchdPath)).toBe(true);
+    expect(calls.find((c) => c.command === NODE && c.args[0] === "-p")?.args).toEqual([
+      "-p",
+      "JSON.stringify({node:process.versions.node,abi:process.versions.modules})",
+    ]);
     const cliSubcommands = calls
-      .filter((c) => c.command === "node" && typeof c.args[0] === "string" && c.args[0].endsWith("cli.js"))
+      .filter((c) => c.command === NODE && c.args[0] === CLI)
       .map((c) => c.args[1]);
     expect(cliSubcommands.length).toBeGreaterThan(0);
-    expect(new Set(cliSubcommands)).toEqual(new Set(["validate", "metrics"]));
+    expect(new Set(cliSubcommands)).toEqual(new Set(["validate", "memory", "metrics"]));
+    expect(calls.find((c) => c.command === NODE && c.args.includes("validate"))?.args).toEqual([
+      CLI, "validate", "--json", "--config", configPath, "--env-file", envFile,
+    ]);
+    expect(calls.find((c) => c.command === NODE && c.args.includes("memory"))?.args).toEqual([
+      CLI, "memory", "audit", "--strict", "--json", "--config", configPath, "--env-file", envFile,
+    ]);
+    expect(calls.find((c) => c.command === NODE && c.args.includes("metrics"))?.args).toEqual([
+      CLI,
+      "metrics",
+      "--since",
+      "2026-07-06T12:00:00.000Z",
+      "--json",
+      "--config",
+      configPath,
+      "--env-file",
+      envFile,
+    ]);
+  });
+
+  it.each([
+    ["missing flag value", [NODE, CLI, "start", "--foreground", "--config"]],
+    ["duplicate config", [NODE, CLI, "start", "--config", configPath, "--config", configPath]],
+    ["hostile unknown flag", [NODE, CLI, "start", "--config", configPath, "--token", "private-plist-token"]],
+  ])("fails a %s plist closed without running any CLI probe or leaking values", async (_label, programArguments) => {
+    const hostilePlist = JSON.stringify({
+      Label: "com.mono-agent.orchestrator-2146e3d3",
+      WorkingDirectory: "/Users/example/agents/orchestrator",
+      ProgramArguments: programArguments,
+      EnvironmentVariables: { PATH: launchdPath },
+    });
+    const { calls, runCommand } = fakeRunner({
+      plist: { status: 0, stdout: hostilePlist, stderr: "" },
+    });
+    const out = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: out,
+      stderr: sink(),
+      runCommand,
+      launchAgentsDir: "/fake/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain("plist unreadable");
+    expect(out.text).not.toContain("private-plist-token");
+    expect(calls.some((call) => call.command === NODE)).toBe(false);
+  });
+
+  it("fails a hostile plist environment closed without running probes or leaking values", async () => {
+    const secret = "private-plist-environment-value";
+    const hostilePlist = JSON.stringify({
+      Label: "com.mono-agent.orchestrator-2146e3d3",
+      WorkingDirectory: "/Users/example/agents/orchestrator",
+      ProgramArguments: [NODE, CLI, "start", "--config", configPath],
+      EnvironmentVariables: { PATH: launchdPath, PRIVATE_TOKEN: secret },
+    });
+    const { calls, runCommand } = fakeRunner({
+      plist: { status: 0, stdout: hostilePlist, stderr: "" },
+    });
+    const out = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: out,
+      stderr: sink(),
+      runCommand,
+      launchAgentsDir: "/fake/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain("plist unreadable");
+    expect(out.text).not.toContain(secret);
+    expect(calls.some((call) => call.command === NODE)).toBe(false);
+  });
+
+  it("fails a NUL working directory closed without throwing or leaking its value", async () => {
+    const secret = "private-nul-working-directory";
+    const hostilePlist = JSON.stringify({
+      Label: "com.mono-agent.orchestrator-2146e3d3",
+      WorkingDirectory: `/Users/example/agents/orchestrator\0${secret}`,
+      ProgramArguments: [NODE, CLI, "start", "--config", configPath],
+      EnvironmentVariables: { PATH: launchdPath },
+    });
+    const { calls, runCommand } = fakeRunner({
+      plist: { status: 0, stdout: hostilePlist, stderr: "" },
+    });
+    const out = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: out,
+      stderr: sink(),
+      runCommand,
+      launchAgentsDir: "/fake/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain("plist unreadable");
+    expect(out.text).not.toContain(secret);
+    expect(calls.some((call) => call.command === NODE)).toBe(false);
   });
 
   it("default run posts the comment to #119 and exits on the verdict", async () => {
@@ -363,6 +887,132 @@ describe("runFleetGreenCheck (orchestration)", () => {
     const gh = calls.find((c) => c.command === "gh");
     expect(gh.args.slice(0, 4)).toEqual(["issue", "comment", "119", "--repo"]);
     expect(gh.args[gh.args.length - 1]).toContain("VERDICT: GREEN");
+    expect(gh.options.timeout).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ["plist", "plist probe timed out"],
+    ["service", "service probe timed out"],
+    ["runtime", "runtime probe timed out"],
+    ["validate", "validate command timed out"],
+    ["memory", "memory audit timed out"],
+    ["metrics", "metrics command timed out"],
+    ["git", "deployed sha probe timed out"],
+  ])("fails closed on a %s timeout without retaining command output", async (probe, expected) => {
+    const secret = `private-${probe}-timeout-output`;
+    const timedOut = { status: 124, stdout: secret, stderr: secret, timedOut: true };
+    const { runCommand } = fakeRunner({ [probe]: timedOut });
+    const out = sink();
+    const err = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: out,
+      stderr: err,
+      runCommand,
+      launchAgentsDir: "/fake/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain(expected);
+    expect(`${out.text}${err.text}`).not.toContain(secret);
+  });
+
+  it("parses an exit-1 strict memory report and renders the closed degraded status", async () => {
+    const { runCommand } = fakeRunner({
+      memory: {
+        status: 1,
+        stdout: JSON.stringify(strictMemoryReport({ status: "degraded", issues: ["runtime_stale"] })),
+        stderr: "provider-specific diagnostic intentionally ignored",
+      },
+    });
+    const out = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: out,
+      stderr: sink(),
+      runCommand,
+      launchAgentsDir: "/fake/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain("| degraded |");
+  });
+
+  it("rejects a secret-bearing extra memory field without emitting its value", async () => {
+    const secret = "ya29.should-never-appear";
+    const { runCommand } = fakeRunner({
+      memory: {
+        status: 0,
+        stdout: JSON.stringify({ ...strictMemoryReport(), diagnostic: { accessToken: secret } }),
+        stderr: `provider token ${secret}`,
+      },
+    });
+    const out = sink();
+    const err = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: out,
+      stderr: err,
+      runCommand,
+      launchAgentsDir: "/fake/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain("| malformed |");
+    expect(`${out.text}${err.text}`).not.toContain(secret);
+  });
+
+  it("fails runtime mismatch by default and accepts explicit expected runtime flags", async () => {
+    const runtime = { status: 0, stdout: '{"node":"24.16.0","abi":"138"}', stderr: "" };
+    const mismatch = fakeRunner({ runtime });
+    const red = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: sink(),
+      stderr: sink(),
+      runCommand: mismatch.runCommand,
+      launchAgentsDir: "/fake/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(red.exitCode).toBe(1);
+
+    const matching = fakeRunner({ runtime });
+    const green = await runFleetGreenCheck({
+      argv: ["--dry-run", "--expect-node", "24.16.0", "--expect-abi", "138"],
+      stdout: sink(),
+      stderr: sink(),
+      runCommand: matching.runCommand,
+      launchAgentsDir: "/fake/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(green.exitCode).toBe(0);
+  });
+
+  it("fails closed on malformed/nonzero probes without echoing command output", async () => {
+    const secret = "ya29.super-secret-token";
+    const { runCommand } = fakeRunner({
+      validate: { status: 7, stdout: secret, stderr: secret },
+      memory: { status: 2, stdout: secret, stderr: secret },
+      metrics: { status: 1, stdout: secret, stderr: secret },
+    });
+    const out = sink();
+    const err = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: out,
+      stderr: err,
+      runCommand,
+      launchAgentsDir: "/fake/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(`${out.text}${err.text}`).not.toContain(secret);
+    expect(out.text).toContain("validate returned malformed JSON");
   });
 
   it("a bogus --labels override yields RED and still queries the sha, without crashing", async () => {
@@ -401,6 +1051,22 @@ describe("runFleetGreenCheck (orchestration)", () => {
     });
     expect(result.exitCode).toBe(1);
     expect(out.text).toContain("VERDICT: RED");
+    expect(out.text).toContain("plist unreadable");
+  });
+
+  it("a plist whose converted JSON is not an object becomes a RED row", async () => {
+    const { runCommand } = fakeRunner({ plist: { status: 0, stdout: "null", stderr: "" } });
+    const out = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: out,
+      stderr: sink(),
+      runCommand,
+      launchAgentsDir: "/fake/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
     expect(out.text).toContain("plist unreadable");
   });
 

@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { resolveActiveMemoryDbPath, safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
+
 import { runCli } from "../cli.js";
 
 let dir: string;
@@ -52,6 +54,22 @@ async function writeConsumerConfig(
   const configPath = join(consumerDir, fileName);
   await writeFile(configPath, JSON.stringify(json, null, 2), "utf8");
   return configPath;
+}
+
+async function seedManagedMemory(root: string, tier: "journal" | "bujo", embeddingModel: string): Promise<void> {
+  await safeRebuildMemoryIndex({
+    root,
+    tier,
+    embeddings: {
+      id: embeddingModel,
+      embed: async (texts) => texts.map(() => {
+        const vector = new Array<number>(768).fill(0);
+        vector[0] = 1;
+        return vector;
+      }),
+    },
+    dim: 768,
+  });
 }
 
 async function captureRunCli(argv: readonly string[]): Promise<{ readonly code: number; readonly stdout: string; readonly stderr: string }> {
@@ -103,7 +121,7 @@ describe("runCli validate --consumer", () => {
 
   it("does not describe a generic waiting section as ready", async () => {
     const memoryDir = join(dir, ".mono-agent", "memory");
-    await mkdir(memoryDir, { recursive: true });
+    await seedManagedMemory(memoryDir, "journal", "openai:text-embedding-3-small");
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
     await writeConsumerConfig(dir, "mono-agent.config.json", {
       runtime: { model: "codex:gpt-5.6-terra" },
@@ -193,5 +211,51 @@ describe("runCli validate --consumer", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("Consumer validation is read-only and did not create it");
     expect(await pathExists(memoryDir)).toBe(false);
+  });
+
+  it("fails closed when the configured managed database is corrupt", async () => {
+    const memoryDir = join(dir, ".mono-agent", "memory");
+    await seedManagedMemory(memoryDir, "journal", "openai:text-embedding-3-small");
+    const activeDatabase = resolveActiveMemoryDbPath(memoryDir);
+    const privateSentinel = "private corrupt database sentinel";
+    const apiKeySentinel = "test-openai-key-sentinel";
+    process.env.MONO_AGENT_TEST_OPENAI_API_KEY = apiKeySentinel;
+    await writeFile(activeDatabase, privateSentinel, "utf8");
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
+    await writeConsumerConfig(dir, "mono-agent.config.json", {
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      memory: {
+        mode: "journal",
+        path: ".mono-agent/memory",
+        writeMode: "append-host-summary",
+        embeddings: {
+          provider: "openai",
+          model: "text-embedding-3-small",
+          apiKeyEnv: "MONO_AGENT_TEST_OPENAI_API_KEY",
+        },
+      },
+    });
+    process.chdir(dir);
+
+    const result = await captureRunCli(["validate", "--json"]);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe("");
+    const report = JSON.parse(result.stdout) as {
+      readonly ok: boolean;
+      readonly sections: readonly { readonly id: string; readonly status: string; readonly details: readonly string[] }[];
+    };
+    expect(report).toMatchObject({
+      ok: false,
+      sections: expect.arrayContaining([
+        expect.objectContaining({ id: "memory", status: "error" }),
+      ]),
+    });
+    expect(report.sections.find((section) => section.id === "memory")?.details.join("\n"))
+      .toContain("mono-agent memory rebuild");
+    expect(result.stdout).not.toContain(activeDatabase);
+    expect(result.stdout).not.toContain(privateSentinel);
+    expect(result.stdout).not.toContain(apiKeySentinel);
   });
 });

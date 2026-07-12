@@ -263,12 +263,31 @@ builds a validated generation beside the active database, and switches it atomic
 ```bash
 mono-agent stop
 mono-agent memory rebuild --json
-mono-agent memory audit --json
+mono-agent validate
 mono-agent start
+mono-agent memory audit --strict --json
 
 # If needed: stop, restore the prior tier/model/dim config, then swap generations
 mono-agent memory rollback --json
 ```
+
+The strict audit is a provider-free, closed JSON health gate over managed identity,
+SQLite/canonical consistency, durable intake/outbox state, and the runtime snapshot. It
+publishes only a status, closed issue codes, and the eight counts `pending`, `due`, `dead`,
+`outbox`, `temporary`, `memories`, `vectors`, and `missingVectors`; it never publishes
+paths, ids, payloads, memory/model text, or raw errors. `healthy`, `in_progress`, and
+`not_configured` exit 0; `degraded`, `unhealthy`, and `unknown` exit 1. See the
+[strict health contract](/memory/validation-and-cli/#strict-provider-free-health-gate) for
+the exact schema and issue vocabulary. Because that contract includes live runtime telemetry,
+a stopped store is expected to report `runtime_missing` or `runtime_stale`; use `validate` as the
+stopped pre-start gate and run the strict audit after `start`.
+
+When strict health reports pending/dead intake, `mono-agent memory inspect [<id>] --json`
+shows metadata only. With the matching agent stopped, `memory retry [<id>]` makes selected
+work due for the next store start; `memory resolve <id> <reason-slug>` explicitly abandons
+one item without claiming capture succeeded. Mutations acquire the writer lease and fail if
+the trace registry shows the configured agent still running. See
+[intake recovery](/memory/validation-and-cli/#completed-turn-intake-inspection-and-recovery).
 
 Rebuild never calls the chat LLM or replays historical turns through a paid model. It may
 re-embed canonical Journal/BuJo facts in bounded batches. A prior index is retained only as
@@ -313,13 +332,17 @@ by binary**: the standalone `memory-bujo migrate` CLI defaults to `120000`, whil
 **in-app** memory LLM (per-turn capture) reads `memory.llm.timeoutMs` — the same env var maps
 to it — and defaults to `60000`. A capture runs one extraction call and at most one reconcile
 call; a timeout is recorded and warned without failing the user's reply. The raw audit survives,
-but that turn produces no curated fact. Raise the timeout for slow models. See
+and the admitted turn remains pending for durable retry rather than being declared captured or
+lost. Raise the timeout for slow models. See
 [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts).
 
 ## Liveness Check — `mono-agent validate`
 
-`mono-agent validate` (the agent-app doctor) runs a memory liveness check that scales
-with the configured tier:
+`mono-agent validate` (the agent-app doctor) first dynamically loads the built-in memory
+implementation and validates managed identity. Journal and BuJo require a valid managed
+`.index/manifest.json`; only Lite may remain unmanaged. Missing/corrupt managed metadata,
+a tier/model/dimension mismatch, or native-module/ABI failure is an `error` with stop,
+rebuild, and revalidate remediation. It then runs liveness checks that scale with the tier:
 
 **lite:** confirms the memory root is creatable and writable.
 
@@ -339,11 +362,13 @@ with the configured tier:
 5. **Consolidation cadence** — reports the consolidation cron expression and whether
    the scheduler will run (tier is bujo with an llm configured).
 
-Any failure emits a loud `[warn]` in the validate report's Memory section (status
-`waiting`, so warnings do not flip the overall result to `error` — run `validate` and
-read the Memory section). There is **no silent fallback**: the host never downgrades the
-configured tier. Run `mono-agent validate` before cutover (and after pulling models) to
-confirm the tier is live.
+Provider reachability or missing pulled models emit a loud `[warn]` in the validate report's
+Memory section (status `waiting`, so those operational warnings do not flip the overall
+result to `error`). Structural/managed/native failures are errors. There is **no silent
+fallback**: the host never downgrades the configured tier. Run `mono-agent validate` before
+cutover (and after pulling models) to confirm the tier is live. For automation,
+`mono-agent validate --json` emits one prose/ANSI-free `{ok, sections, ...}` object and exits
+0 exactly when `ok` is true.
 
 ## Composer Integration
 

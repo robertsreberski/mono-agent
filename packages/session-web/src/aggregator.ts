@@ -21,7 +21,13 @@ import { join } from "node:path";
 
 import type { RunEventFrame } from "@mono-agent/agent-contracts";
 import { mapRunToSession } from "@mono-agent/observability";
-import type { RunSummary, RunSummaryStatus, RuntimeEventLike } from "@mono-agent/observability";
+import type {
+  RunSummary,
+  RunSummaryStatus,
+  RuntimeEventLike,
+  TraceSourceMemoryCounts,
+  TraceSourceMemoryHealth,
+} from "@mono-agent/observability";
 
 import { discoverWebInstances, resolveLiveApiKey } from "./discovery.js";
 import type { DiscoveredWebInstance } from "./discovery.js";
@@ -144,6 +150,10 @@ export class SessionAggregator {
   private readonly registryWatchers: FSWatcher[] = [];
   private reconcileTimer: ReturnType<typeof setInterval> | undefined;
   private reconcileDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+  private reconcileInFlight: Promise<void> | undefined;
+  private reconcileDirty = false;
+  /** Test-only seam for a trigger at the owner-to-idle handoff. */
+  private reconcileHandoffHook: (() => void) | undefined;
   private instancesEmitTimer: ReturnType<typeof setTimeout> | undefined;
   private lifecycleGeneration = 0;
   private stopped = false;
@@ -294,6 +304,7 @@ export class SessionAggregator {
   async stop(): Promise<void> {
     this.stopped = true;
     this.lifecycleGeneration += 1;
+    this.reconcileDirty = false;
     if (this.reconcileTimer !== undefined) {
       clearInterval(this.reconcileTimer);
       this.reconcileTimer = undefined;
@@ -779,14 +790,55 @@ export class SessionAggregator {
     this.reconcileDebounceTimer.unref?.();
   }
 
-  private async reconcile(): Promise<void> {
+  private reconcile(): Promise<void> {
     if (this.stopped) {
-      return;
+      return Promise.resolve();
     }
+    const existing = this.reconcileInFlight;
+    if (existing !== undefined) {
+      // One bit represents every overlapping periodic/watcher request. The
+      // owner performs one latest-state replay after its current discovery;
+      // callers share the same bounded promise instead of starting stale work.
+      this.reconcileDirty = true;
+      return existing;
+    }
+    const generation = this.lifecycleGeneration;
+    let pending!: Promise<void>;
+    // Enter on a microtask so `reconcileInFlight` is installed before the owner
+    // can reach its first await. At each handoff, the dirty check and clearing
+    // the owner happen in one synchronous continuation: a trigger before the
+    // clear gets a trailing replay; a trigger after it starts a fenced successor.
+    pending = Promise.resolve().then(async () => {
+      for (;;) {
+        this.reconcileDirty = false;
+        try {
+          await this.reconcileOnce(generation);
+        } catch (error) {
+          try {
+            this.logger?.warn?.("Registry reconcile failed.", { error: errorMessage(error) });
+          } catch {
+            // A diagnostic sink must not strand the single-flight owner.
+          }
+        }
+        const handoffHook = this.reconcileHandoffHook;
+        this.reconcileHandoffHook = undefined;
+        handoffHook?.();
+        if (this.reconcileDirty && this.isActive(generation)) continue;
+        if (this.reconcileInFlight === pending) {
+          this.reconcileInFlight = undefined;
+          this.reconcileDirty = false;
+        }
+        return;
+      }
+    });
+    this.reconcileInFlight = pending;
+    return pending;
+  }
+
+  private async reconcileOnce(generation: number): Promise<void> {
     for (const state of this.states.values()) {
       this.refreshStaleRunningSessionsForState(state, { emit: true });
     }
-    const generation = this.lifecycleGeneration;
     let discovered: readonly DiscoveredWebInstance[];
     try {
       discovered = await this.discover();
@@ -852,7 +904,8 @@ export class SessionAggregator {
       previous.instance.label !== discovered.instance.label ||
       previous.instance.cwd !== discovered.instance.cwd ||
       previous.instance.timeZone !== discovered.instance.timeZone ||
-      previous.instance.timezone !== discovered.instance.timezone;
+      previous.instance.timezone !== discovered.instance.timezone ||
+      !memoryHealthEquals(previous.instance.memoryHealth, discovered.instance.memoryHealth);
     let liveReconnected = false;
 
     if (previous.instance.artifactDir !== discovered.instance.artifactDir) {
@@ -958,6 +1011,7 @@ export class SessionAggregator {
       health: base.health,
       ...(base.timeZone === undefined ? {} : { timeZone: base.timeZone }),
       ...(base.timezone === undefined ? {} : { timezone: base.timezone }),
+      ...(base.memoryHealth === undefined ? {} : { memoryHealth: base.memoryHealth }),
       liveConnected: state.liveConnected,
       counts: { runs: state.sessions.size },
     };
@@ -1078,6 +1132,55 @@ export class SessionAggregator {
       this.scheduleInstancesEmit();
     }
   }
+}
+
+const MEMORY_COUNT_KEYS = [
+  "pending",
+  "due",
+  "dead",
+  "outbox",
+  "temporary",
+  "memories",
+  "vectors",
+  "missingVectors",
+] as const satisfies readonly (keyof TraceSourceMemoryCounts)[];
+
+function memoryHealthEquals(
+  left: TraceSourceMemoryHealth | undefined,
+  right: TraceSourceMemoryHealth | undefined,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left === undefined || right === undefined) {
+    return false;
+  }
+  return left.backend === right.backend &&
+    left.mode === right.mode &&
+    left.status === right.status &&
+    left.checkedAt === right.checkedAt &&
+    stringArraysEqual(left.issues, right.issues) &&
+    memoryCountsEqual(left.counts, right.counts);
+}
+
+function stringArraysEqual(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
+  if (left === right) {
+    return true;
+  }
+  return left !== undefined && right !== undefined &&
+    left.length === right.length &&
+    left.every((value, index) => value === right[index]);
+}
+
+function memoryCountsEqual(
+  left: TraceSourceMemoryCounts | undefined,
+  right: TraceSourceMemoryCounts | undefined,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  return left !== undefined && right !== undefined &&
+    MEMORY_COUNT_KEYS.every((key) => left[key] === right[key]);
 }
 
 class BoundedStringFifoSet {

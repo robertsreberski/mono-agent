@@ -1,7 +1,13 @@
 import { useMemo } from "react";
-import type { Session, WebInstance } from "../lib/types";
+import type {
+  Session,
+  TraceSourceMemoryHealth,
+  TraceSourceMemoryIssue,
+  TraceSourceMemoryMode,
+  WebInstance,
+} from "../lib/types";
 import { dateStr, timeStr, fmtCost, fmtTok, channelOf, channelColor, channelLabel } from "../lib/format";
-import { FONT_MONO, TEXT, MUTED, DIM, AMBER, BLUE, TEAL, VIOLET, CHANNEL_ORDER } from "../lib/tokens";
+import { FONT_MONO, TEXT, MUTED, DIM, AMBER, BLUE, TEAL, VIOLET, OK, ERROR, CHANNEL_ORDER } from "../lib/tokens";
 
 interface Props {
   instances: WebInstance[];
@@ -20,6 +26,10 @@ export interface InstanceCard {
   liveConnected: boolean;
   healthLabel: string;
   healthColor: string;
+  memoryStatus: string;
+  memoryLabel: string;
+  memoryColor: string;
+  memoryTitle: string;
   stats: { label: string; value: string; color: string }[];
   chSegs: { label: string; color: string; n: number }[];
   statusBadges: { label: string; n: number; color: string }[];
@@ -27,6 +37,185 @@ export interface InstanceCard {
   sil: number;
   last: string;
   ariaSummary: string;
+}
+
+const MEMORY_ISSUE_CODES = [
+  "manifest_missing",
+  "manifest_invalid",
+  "configured_identity_mismatch",
+  "database_missing",
+  "database_unavailable",
+  "native_module_unavailable",
+  "health_check_failed",
+  "sqlite_integrity_failed",
+  "metadata_mismatch",
+  "fts_mismatch",
+  "vector_mismatch",
+  "orphaned_rows",
+  "canonical_mismatch",
+  "canonical_invalid",
+  "mutation_in_progress",
+  "intake_invalid",
+  "intake_pending",
+  "dead_letters",
+  "outbox_invalid",
+  "outbox_pending",
+  "work_stalled",
+  "temporary_artifacts",
+  "runtime_missing",
+  "runtime_stale",
+  "runtime_invalid",
+] as const satisfies readonly TraceSourceMemoryIssue[];
+const MEMORY_ISSUE_INDEX = new Map<string, number>(
+  MEMORY_ISSUE_CODES.map((issue, index) => [issue, index]),
+);
+const MEMORY_COUNT_KEYS = [
+  "pending", "due", "dead", "outbox", "temporary", "memories", "vectors", "missingVectors",
+] as const;
+
+const MEMORY_UNKNOWN_ISSUES = new Set<TraceSourceMemoryIssue>([
+  "database_unavailable", "native_module_unavailable", "health_check_failed",
+]);
+const MEMORY_UNHEALTHY_ISSUES = new Set<TraceSourceMemoryIssue>([
+  "manifest_missing", "manifest_invalid", "configured_identity_mismatch", "database_missing",
+  "sqlite_integrity_failed", "metadata_mismatch", "fts_mismatch", "vector_mismatch",
+  "orphaned_rows", "canonical_mismatch", "canonical_invalid", "intake_invalid",
+  "outbox_invalid", "temporary_artifacts",
+]);
+const MEMORY_DEGRADED_ISSUES = new Set<TraceSourceMemoryIssue>([
+  "dead_letters", "runtime_missing", "runtime_stale", "runtime_invalid", "work_stalled",
+]);
+
+export function memoryInfo(memoryHealth: TraceSourceMemoryHealth | undefined): {
+  status: string;
+  label: string;
+  color: string;
+  title: string;
+} {
+  const normalizedIssues = normalizeRuntimeMemoryIssues(memoryHealth);
+  const stableIssues = normalizedIssues ?? [];
+  const status = safeMemoryStatus(memoryHealth, normalizedIssues);
+  const presentation = status === "healthy"
+    ? { label: "memory healthy", color: OK }
+    : status === "in_progress"
+      ? { label: "memory in progress", color: TEAL }
+      : status === "degraded"
+        ? { label: "memory degraded", color: AMBER }
+        : status === "unhealthy"
+          ? { label: "memory unhealthy", color: ERROR }
+          : status === "not_configured"
+            ? { label: "memory off", color: DIM }
+            : { label: "memory unknown", color: DIM };
+  return {
+    status,
+    ...presentation,
+    title: stableIssues.length === 0 ? presentation.label : `${presentation.label}: ${stableIssues.join(", ")}`,
+  };
+}
+
+function safeMemoryStatus(
+  health: TraceSourceMemoryHealth | undefined,
+  issues: readonly TraceSourceMemoryIssue[] | undefined,
+): string {
+  if (!isRuntimeRecord(health)) return "unknown";
+  if (health.backend === "supermemory") return "unknown";
+  if (health.backend === "none") {
+    if (health.mode !== undefined || health.issues !== undefined || health.counts !== undefined) return "unknown";
+    return health.status === "not_configured" || health.status === "unknown" ? health.status as string : "unknown";
+  }
+  if (health.backend !== "bujo" || !isMemoryMode(health.mode) || issues === undefined) {
+    return "unknown";
+  }
+  const expected = issues.some((issue) => MEMORY_UNKNOWN_ISSUES.has(issue))
+    ? "unknown"
+    : issues.some((issue) => MEMORY_UNHEALTHY_ISSUES.has(issue))
+      ? "unhealthy"
+      : issues.some((issue) => MEMORY_DEGRADED_ISSUES.has(issue))
+        ? "degraded"
+        : issues.length === 0
+          ? "healthy"
+          : "in_progress";
+  return health.status === expected && memoryCountsMatchIssues(health.mode, health.counts, issues)
+    ? health.status as string
+    : "unknown";
+}
+
+function normalizeRuntimeMemoryIssues(
+  health: TraceSourceMemoryHealth | undefined,
+): readonly TraceSourceMemoryIssue[] | undefined {
+  if (!isRuntimeRecord(health) || health.backend !== "bujo" || !Array.isArray(health.issues)) {
+    return undefined;
+  }
+  const issues: TraceSourceMemoryIssue[] = [];
+  let previousIndex = -1;
+  for (const issue of health.issues) {
+    if (typeof issue !== "string") return undefined;
+    const index = MEMORY_ISSUE_INDEX.get(issue);
+    if (index === undefined || index <= previousIndex) return undefined;
+    issues.push(issue as TraceSourceMemoryIssue);
+    previousIndex = index;
+  }
+  return issues;
+}
+
+function memoryCountsMatchIssues(
+  mode: TraceSourceMemoryMode,
+  value: unknown,
+  issues: readonly TraceSourceMemoryIssue[],
+): boolean {
+  if (value === undefined) return true;
+  if (!isRuntimeRecord(value)) return false;
+  const counts: Partial<Record<(typeof MEMORY_COUNT_KEYS)[number], number>> = {};
+  for (const key of MEMORY_COUNT_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    const count = value[key];
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) return false;
+    counts[key] = count;
+  }
+  const present = new Set(issues);
+  const hasIntakePending = present.has("intake_pending");
+  const hasMutation = present.has("mutation_in_progress");
+  const hasVectorMismatch = present.has("vector_mismatch");
+  if (counts.pending !== undefined && hasIntakePending !== (counts.pending > 0)) return false;
+  if (counts.due !== undefined) {
+    if (counts.due > 0 && !hasIntakePending) return false;
+    if (counts.pending !== undefined && counts.due > counts.pending) return false;
+  }
+  if (counts.dead !== undefined && present.has("dead_letters") !== (counts.dead > 0)) return false;
+  if (counts.outbox !== undefined) {
+    if (present.has("outbox_pending") !== (counts.outbox > 0)) return false;
+    if (counts.outbox > 0 && !hasMutation) return false;
+  }
+  if (counts.temporary !== undefined
+    && present.has("temporary_artifacts") !== (counts.temporary > 0)) return false;
+  if (mode === "lite") {
+    if (counts.missingVectors !== undefined && counts.missingVectors !== 0) return false;
+    if (counts.vectors !== undefined && counts.vectors !== 0 && !hasVectorMismatch) return false;
+  }
+  if (mode === "journal" && counts.missingVectors !== undefined
+    && counts.missingVectors > 0 && !hasMutation) return false;
+  if (mode === "journal" && counts.memories !== undefined && counts.vectors !== undefined
+    && counts.memories > counts.vectors && !hasMutation) return false;
+  if (mode === "bujo") {
+    if (counts.memories !== undefined && counts.vectors !== undefined
+      && counts.vectors !== counts.memories && !hasVectorMismatch) return false;
+    if (counts.missingVectors !== undefined && counts.missingVectors > 0 && !hasVectorMismatch) return false;
+  }
+  if (counts.memories !== undefined && counts.vectors !== undefined
+    && counts.vectors > counts.memories && !hasVectorMismatch) return false;
+  if (counts.memories !== undefined && counts.vectors !== undefined && counts.missingVectors !== undefined) {
+    const expectedMissingVectors = mode === "lite" ? 0 : Math.max(0, counts.memories - counts.vectors);
+    if (counts.missingVectors !== expectedMissingVectors) return false;
+  }
+  return true;
+}
+
+function isMemoryMode(value: unknown): value is TraceSourceMemoryMode {
+  return value === "lite" || value === "journal" || value === "bujo";
+}
+
+function isRuntimeRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function healthInfo(instance: Pick<WebInstance, "health" | "liveConnected">): { label: string; color: string } {
@@ -104,6 +293,7 @@ export function buildInstanceCards(instances: readonly WebInstance[], sessions: 
       const times = arr.map((s) => +new Date(s.startTs));
       const last = times.length > 0 ? Math.max(...times) : undefined;
       const health = healthInfo(instance);
+      const memory = memoryInfo(instance.memoryHealth);
       const orderedChannels = [
         ...chOrder.filter((c) => chCount[c]),
         ...Object.keys(chCount).filter((c) => !chOrder.includes(c as (typeof chOrder)[number])).sort(),
@@ -137,13 +327,17 @@ export function buildInstanceCards(instances: readonly WebInstance[], sessions: 
         liveConnected: instance.liveConnected,
         healthLabel: health.label,
         healthColor: health.color,
+        memoryStatus: memory.status,
+        memoryLabel: memory.label,
+        memoryColor: memory.color,
+        memoryTitle: memory.title,
         stats,
         chSegs,
         statusBadges,
         noti,
         sil,
         last: lastLabel,
-        ariaSummary: `${instance.label}: ${arr.length} runs, ${health.label}. ${stats.map((s) => `${s.label} ${s.value}`).join(", ")}. ${channelSummary}. ${statusSummary}. ${noti} replied, ${sil} silent. Last ${lastLabel}.`,
+        ariaSummary: `${instance.label}: ${arr.length} runs, ${health.label}, ${memory.title}. ${stats.map((s) => `${s.label} ${s.value}`).join(", ")}. ${channelSummary}. ${statusSummary}. ${noti} replied, ${sil} silent. Last ${lastLabel}.`,
       };
     });
 }
@@ -235,6 +429,24 @@ export function InstancesView({ instances, sessions, onOpenInstance }: Props) {
                 }}
               >
                 {ic.healthLabel}
+              </span>
+              <span
+                title={ic.memoryTitle}
+                aria-label={ic.memoryTitle}
+                data-memory-status={ic.memoryStatus}
+                style={{
+                  fontFamily: FONT_MONO,
+                  fontSize: 10,
+                  color: ic.memoryColor,
+                  background: "rgba(255,255,255,.04)",
+                  border: `1px solid ${ic.memoryColor}55`,
+                  padding: "3px 7px",
+                  borderRadius: 6,
+                  textTransform: "uppercase",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {ic.memoryLabel}
               </span>
             </div>
             <div

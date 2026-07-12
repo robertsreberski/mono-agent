@@ -1,4 +1,14 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,6 +19,8 @@ import {
   auditFilePath,
   dailyFilePath,
   normalizedContentHash,
+  inspectJournalWriteLock,
+  JOURNAL_WRITE_LOCK_STALE_AFTER_MS,
   withJournalWriteLock,
 } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
@@ -83,6 +95,39 @@ describe("daily file", () => {
 
     expect(() => withJournalWriteLock(root, () => undefined)).toThrow(/held|unverified/iu);
     expect(readFileSync(outside, "utf8")).toContain("99999999");
+  });
+
+  it("classifies live, fresh-acquisition, stale, and unsafe journal locks from one read-only contract", () => {
+    const now = Date.now();
+    const token = "00000000-0000-4000-8000-000000000000";
+
+    const liveRoot = mkdtempSync(join(tmpdir(), "bujo-lock-live-"));
+    writeFileSync(join(liveRoot, ".journal-write.lock"), `${JSON.stringify({
+      schemaVersion: 1,
+      pid: process.pid,
+      ...(typeof process.getuid === "function" ? { uid: process.getuid() } : {}),
+      token,
+    })}\n`, { mode: 0o600 });
+    expect(inspectJournalWriteLock(liveRoot, now)).toBe("active");
+
+    const freshRoot = mkdtempSync(join(tmpdir(), "bujo-lock-fresh-"));
+    const freshPath = join(freshRoot, ".journal-write.lock");
+    writeFileSync(freshPath, "{}\n", { mode: 0o600 });
+    utimesSync(freshPath, new Date(now), new Date(now));
+    expect(inspectJournalWriteLock(freshRoot, now)).toBe("active");
+
+    const staleRoot = mkdtempSync(join(tmpdir(), "bujo-lock-stale-"));
+    const stalePath = join(staleRoot, ".journal-write.lock");
+    writeFileSync(stalePath, "{}\n", { mode: 0o600 });
+    const staleAt = now - JOURNAL_WRITE_LOCK_STALE_AFTER_MS;
+    utimesSync(stalePath, new Date(staleAt), new Date(staleAt));
+    expect(inspectJournalWriteLock(staleRoot, now)).toBe("stale");
+
+    const unsafeRoot = mkdtempSync(join(tmpdir(), "bujo-lock-unsafe-"));
+    const unsafePath = join(unsafeRoot, ".journal-write.lock");
+    writeFileSync(unsafePath, "{}\n", { mode: 0o600 });
+    chmodSync(unsafePath, 0o644);
+    expect(inspectJournalWriteLock(unsafeRoot, now)).toBe("unsafe");
   });
 });
 

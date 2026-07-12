@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { RUNS_HEALTH_STALE_RUNNING_MS } from "@mono-agent/observability";
+import { registerTraceSource, RUNS_HEALTH_STALE_RUNNING_MS } from "@mono-agent/observability";
 
 import { SessionAggregator } from "../aggregator.js";
 import { startSessionWebServer } from "../server.js";
@@ -117,6 +117,69 @@ describe("startSessionWebServer", () => {
     expect(instances.instances).toEqual([
       expect.objectContaining({ sourceId: "tz-agent", timeZone: "Europe/Amsterdam", timezone: "Europe/Amsterdam" }),
     ]);
+  });
+
+  it("serves memory health through the instances API and initial and replacement SSE frames", async () => {
+    const registryDir = await tmp("reg-memory-health");
+    const artifactDir = join(await tmp("agent-memory-health"), "runs");
+    const staticDir = await tmp("static-memory-health");
+    await mkdir(artifactDir, { recursive: true });
+    await writeFile(join(staticDir, "index.html"), "<!doctype html><title>session-web</title>", "utf8");
+    const source = await registerTraceSource({
+      registryDir,
+      sourceId: "memory-agent",
+      label: "Memory Agent",
+      artifactDir,
+      metadata: { privateNote: "not-for-the-browser" },
+      memoryHealth: {
+        backend: "bujo",
+        mode: "bujo",
+        status: "healthy",
+        checkedAt: "2026-07-12T08:00:00.000Z",
+        issues: [],
+      },
+    });
+
+    server = await startSessionWebServer({ registryDirs: [registryDir], port: 0, staticDir });
+
+    const api = (await (await fetch(`${server.url}api/instances`)).json()) as {
+      instances: { sourceId: string; memoryHealth?: { status: string }; metadata?: unknown }[];
+    };
+    expect(api.instances).toEqual([
+      expect.objectContaining({ sourceId: "memory-agent", memoryHealth: expect.objectContaining({ status: "healthy" }) }),
+    ]);
+    expect(api.instances[0]?.metadata).toBeUndefined();
+
+    // Let the startup-time coalesced instance emission expire before attaching,
+    // so frame two is guaranteed to be the registry update below.
+    await sleep(150);
+    const framesPromise = readSseFrames(`${server.url}api/stream`, 2) as Promise<{
+      t: "instances";
+      instances: { sourceId: string; memoryHealth?: { status: string; issues?: string[] } }[];
+    }[]>;
+    await sleep(50);
+    await source.update({
+      memoryHealth: {
+        backend: "bujo",
+        mode: "bujo",
+        status: "degraded",
+        checkedAt: "2026-07-12T08:01:00.000Z",
+        issues: ["intake_pending", "work_stalled"],
+        counts: { pending: 1 },
+      },
+    });
+    const frames = await Promise.race([
+      framesPromise,
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("timed out waiting for memory-health replacement SSE frame")), 5_000).unref?.();
+      }),
+    ]);
+
+    expect(frames[0]?.instances[0]?.memoryHealth?.status).toBe("healthy");
+    expect(frames[1]?.instances[0]?.memoryHealth).toMatchObject({
+      status: "degraded",
+      issues: ["intake_pending", "work_stalled"],
+    });
   });
 
   it("reports stale running sessions as stalled without rewriting artifacts", async () => {

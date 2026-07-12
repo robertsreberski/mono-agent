@@ -17,7 +17,7 @@ export type {
   SessionTotals,
 } from "@mono-agent/observability";
 
-import type { Session } from "@mono-agent/observability";
+import type { Session, TraceSourceMemoryHealth } from "@mono-agent/observability";
 
 /**
  * One discovered agent instance, projected for the browser. `sourceId` is the
@@ -38,6 +38,8 @@ export interface WebInstance {
   readonly timeZone?: string;
   /** Back-compat spelling for clients that already probe `timezone`. */
   readonly timezone?: string;
+  /** Content-free, registry-normalized memory health; no arbitrary manifest metadata crosses this boundary. */
+  readonly memoryHealth?: TraceSourceMemoryHealth;
   readonly liveConnected: boolean;
   readonly counts: { readonly runs: number };
 }

@@ -27,6 +27,7 @@ import {
   inspectCompletedTurnIntake,
   resolveCompletedTurnIntake,
   retryCompletedTurnIntake,
+  type CompletedTurnIntakeSnapshot,
 } from "../capture-intake.js";
 import { parseDailyFile } from "../grammar.js";
 import { createBujoMemoryStore } from "../store.js";
@@ -94,6 +95,143 @@ describe("completed-turn durable intake", () => {
     expect(lstatSync(join(memoryRoot, ".capture-intake-v1")).mode & 0o777).toBe(0o600);
     expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({ pending: 1, due: 1 });
     intake.abortForShutdown(false);
+  });
+
+  it("notifies metadata-only observers across admission, processing, and shutdown transitions", async () => {
+    const memoryRoot = root();
+    const observations: Array<{
+      readonly pending: number;
+      readonly resolved: number;
+      readonly retrying: number;
+      readonly shutdown: string;
+    }> = [];
+    let intake: CompletedTurnIntakeManager | undefined;
+    intake = manager(memoryRoot, {
+      onChange: () => {
+        const snapshot = intake?.snapshot();
+        if (snapshot !== undefined) observations.push(snapshot);
+      },
+    });
+
+    intake.admit(turn({ runId: "metadata-notifications" }));
+    await intake.flush();
+    intake.finishShutdown();
+
+    expect(observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pending: 1, resolved: 0, retrying: 0, shutdown: "running" }),
+      expect.objectContaining({ pending: 1, resolved: 0, retrying: 1, shutdown: "running" }),
+      expect.objectContaining({ pending: 0, resolved: 1, shutdown: "running" }),
+      expect.objectContaining({ pending: 0, resolved: 1, retrying: 0, shutdown: "drained" }),
+    ]));
+    expect(observations.length).toBeGreaterThanOrEqual(7);
+  });
+
+  it("keeps 4,096-entry runtime snapshots disk-free across provider-separated transitions", async () => {
+    const memoryRoot = root();
+    let releaseSummary!: () => void;
+    const summaryGate = new Promise<void>((resolve) => { releaseSummary = resolve; });
+    let summaryStarted!: () => void;
+    const summaryEntered = new Promise<void>((resolve) => { summaryStarted = resolve; });
+    let releaseCapture!: () => void;
+    const captureGate = new Promise<void>((resolve) => { releaseCapture = resolve; });
+    let captureStarted!: () => void;
+    const captureEntered = new Promise<void>((resolve) => { captureStarted = resolve; });
+    const observations: CompletedTurnIntakeSnapshot[] = [];
+    let intake!: CompletedTurnIntakeManager;
+    intake = manager(memoryRoot, {
+      resolvedRetention: 4_096,
+      writeSummary: async () => {
+        summaryStarted();
+        await summaryGate;
+      },
+      capture: async () => {
+        captureStarted();
+        await captureGate;
+        return "captured";
+      },
+      onChange: () => observations.push(intake.snapshot()),
+    });
+    const internals = intake as unknown as {
+      runtimeRecords: Map<string, {
+        state: "resolved";
+        admittedAt: string;
+        resolvedAt: string;
+      }>;
+      refreshRuntimeCacheFromDisk(): void;
+    };
+    for (let index = 0; index < 4_095; index += 1) {
+      const id = String(index).padStart(64, "0");
+      internals.runtimeRecords.set(id, {
+        state: "resolved",
+        admittedAt: FIXED.toISOString(),
+        resolvedAt: new Date(FIXED.getTime() + index).toISOString(),
+      });
+    }
+    const refresh = vi.spyOn(internals, "refreshRuntimeCacheFromDisk");
+
+    intake.admit(turn({ runId: "runtime-cache-4096" }));
+    await summaryEntered;
+    expect(intake.snapshot()).toMatchObject({ pending: 1, resolved: 4_095, retrying: 1 });
+    releaseSummary();
+    await captureEntered;
+    expect(intake.snapshot()).toMatchObject({ pending: 1, resolved: 4_095, retrying: 1 });
+    releaseCapture();
+    await intake.flush();
+    expect(intake.snapshot()).toMatchObject({ pending: 0, resolved: 4_096, retrying: 0 });
+
+    const intakePath = join(memoryRoot, ".capture-intake");
+    const hiddenPath = join(memoryRoot, ".capture-intake-hidden");
+    renameSync(intakePath, hiddenPath);
+    try {
+      for (let index = 0; index < 1_000; index += 1) {
+        expect(intake.snapshot().resolved).toBe(4_096);
+      }
+    } finally {
+      renameSync(hiddenPath, intakePath);
+    }
+    expect(refresh).not.toHaveBeenCalled();
+    expect(observations.length).toBeLessThanOrEqual(7);
+    intake.finishShutdown();
+  });
+
+  it("notifies observers when exhausted work becomes a durable dead letter", async () => {
+    const memoryRoot = root();
+    const observations: Array<{ readonly pending: number; readonly dead: number }> = [];
+    let intake: CompletedTurnIntakeManager | undefined;
+    intake = manager(memoryRoot, {
+      maxAttempts: 1,
+      capture: async () => { throw new Error("provider unavailable"); },
+      onChange: () => {
+        const snapshot = intake?.snapshot();
+        if (snapshot !== undefined) observations.push(snapshot);
+      },
+    });
+
+    intake.admit(turn({ runId: "dead-letter-notification" }));
+    await intake.flush();
+
+    expect(observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pending: 1, dead: 0 }),
+      expect.objectContaining({ pending: 0, dead: 1 }),
+    ]));
+    intake.finishShutdown();
+  });
+
+  it("keeps durable intake authoritative when a change observer throws", async () => {
+    const memoryRoot = root();
+    const warnings: string[] = [];
+    const intake = manager(memoryRoot, {
+      onChange: () => { throw new Error("private observer failure"); },
+      warn: (message) => warnings.push(message),
+    });
+
+    intake.admit(turn({ runId: "throwing-observer" }));
+    await intake.flush();
+
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({ pending: 0, resolved: 1 });
+    expect(warnings).toContain("completed-turn intake state notification failed; durable state remains authoritative.");
+    expect(warnings.join(" ")).not.toContain("private observer failure");
+    intake.finishShutdown();
   });
 
   it("deduplicates exact run payloads and rejects conflicting reuse", () => {
@@ -233,6 +371,7 @@ describe("completed-turn durable intake", () => {
       now = new Date(now.getTime() + 1);
     }
     expect(inspectCompletedTurnIntake(memoryRoot, now).snapshot.resolved).toBe(2);
+    expect(intake.snapshot().resolved).toBe(2);
     expect(intake.admit(turn({ runId: "retained-2" }))).toMatchObject({ admissionStatus: "duplicate" });
     expect(existsSync(join(memoryRoot, ".capture-intake", "resolved", `${admissions[0]!.id}.json`))).toBe(false);
     expect(intake.admit(turn({ runId: "retained-0" }))).toMatchObject({ admissionStatus: "duplicate" });
@@ -551,7 +690,10 @@ describe("completed-turn durable intake", () => {
       ".ledger-v1.catalog-00000000-0000-4000-8000-000000000000.tmp",
     );
     writeFileSync(temp, "partial catalog", { mode: 0o600 });
-    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED)).toMatchObject({
+      valid: false,
+      counts: { pending: 1, temporary: 1 },
+    });
 
     const recovered = manager(memoryRoot);
     expect(existsSync(temp)).toBe(false);
@@ -625,6 +767,68 @@ describe("completed-turn durable intake", () => {
     expect(existsSync(admitted.source)).toBe(false);
     expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({ pending: 0, resolved: 1 });
     recovered.finishShutdown();
+  });
+
+  it("retires a lower pending transition before later pruning can expose it on restart", async () => {
+    const memoryRoot = root();
+    const captures: string[] = [];
+    let firstId = "";
+    let failRetirement = true;
+    const first = manager(memoryRoot, {
+      resolvedRetention: 1,
+      capture: async (input) => {
+        captures.push(input.runId);
+        return "captured";
+      },
+      beforeStateSourceRetirement: (id, state) => {
+        if (failRetirement && id === firstId && state === "resolved") {
+          failRetirement = false;
+          throw new Error("simulated source-retirement fault");
+        }
+      },
+    });
+    const firstTurn = turn({ runId: "transition-prune-a" });
+    const admitted = first.admit(firstTurn);
+    firstId = admitted.id;
+    await first.flush();
+
+    expect(captures.filter((runId) => runId === firstTurn.runId)).toHaveLength(1);
+    expect(first.snapshot()).toMatchObject({ pending: 0, resolved: 1, transitioning: 1 });
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({
+      pending: 0,
+      resolved: 1,
+      transitioning: 1,
+    });
+
+    const secondTurn = turn({ runId: "transition-prune-b" });
+    first.admit(secondTurn);
+    await first.flush();
+    expect(first.snapshot()).toMatchObject({ pending: 0, resolved: 1, transitioning: 0 });
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({
+      pending: 0,
+      resolved: 1,
+      transitioning: 0,
+    });
+    expect(existsSync(admitted.source)).toBe(false);
+    first.finishShutdown();
+
+    const restarted = manager(memoryRoot, {
+      resolvedRetention: 1,
+      capture: async (input) => {
+        captures.push(input.runId);
+        return "captured";
+      },
+    });
+    expect(restarted.admit(firstTurn)).toMatchObject({ admissionStatus: "duplicate" });
+    await restarted.flush();
+    expect(captures.filter((runId) => runId === firstTurn.runId)).toHaveLength(1);
+    expect(restarted.snapshot()).toMatchObject({ pending: 0, resolved: 1, transitioning: 0 });
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({
+      pending: 0,
+      resolved: 1,
+      transitioning: 0,
+    });
+    restarted.finishShutdown();
   });
 
   it("recovers a crash after dead-letter retry publication by keeping the newer pending revision", async () => {
@@ -733,7 +937,10 @@ describe("completed-turn durable intake", () => {
       }
       if (kind === "hardlink") linkSync(admitted.source, join(memoryRoot, "outside-hardlink.json"));
 
-      expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+      expect(auditCompletedTurnIntake(memoryRoot, FIXED)).toMatchObject({
+        valid: false,
+        counts: { pending: 1 },
+      });
     },
   );
 
@@ -771,7 +978,11 @@ describe("completed-turn durable intake", () => {
       ".0000000000000000000000000000000000000000000000000000000000000000.json-00000000-0000-4000-8000-000000000000.tmp",
     );
     writeFileSync(temp, '{"partial":', { mode: 0o600 });
-    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(true);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED)).toMatchObject({
+      valid: false,
+      counts: { pending: 1, temporary: 1 },
+      issues: ["invalid_record"],
+    });
 
     const recovered = manager(memoryRoot);
     expect(existsSync(temp)).toBe(false);
@@ -835,6 +1046,28 @@ describe("BujoMemoryStore completed-turn integration", () => {
       await store.close();
     },
   );
+
+  it("publishes admission immediately while coalescing ordinary transition snapshots", async () => {
+    const memoryRoot = root();
+    const store = createBujoMemoryStore({ root: memoryRoot, clock: () => FIXED });
+    const runtime = store as unknown as {
+      publishRuntimeSnapshot(state: "running" | "closed"): void;
+    };
+    const writes = vi.spyOn(runtime, "publishRuntimeSnapshot");
+
+    await store.persistCompletedTurn({
+      runId: "bounded-runtime-publications",
+      conversationId: "conversation-0001",
+      summary: "Runtime publication remains bounded.",
+    });
+    expect(writes).toHaveBeenCalledTimes(1);
+
+    await store.flush();
+    expect(writes).toHaveBeenCalledTimes(2);
+
+    await store.close();
+    expect(writes).toHaveBeenCalledTimes(3);
+  });
 
   it("drains an admitted Journal turn into its vector before immediate close", async () => {
     const memoryRoot = root();

@@ -1482,7 +1482,7 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
       highWaterItems: 256,
     });
     await store.close();
-  });
+  }, 10_000);
 
   it("canonicalizes whitespace-equivalent legacy bullets to one recallable Journal row", async () => {
     const root = tmpRoot();

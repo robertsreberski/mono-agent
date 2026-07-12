@@ -7,6 +7,7 @@ import { parseEnv } from "node:util";
 
 import type { ValidationReport } from "./doctor.js";
 import { validateMonoAgentFolder } from "./doctor.js";
+import { initializeFirstRunManagedMemory } from "./first-run-managed-memory.js";
 import type { SecretPersistenceOutcome } from "./init.js";
 import { piAuthPathForSetup } from "./provider-setup.js";
 import type { WizardPlan } from "./wizard/answers.js";
@@ -900,6 +901,13 @@ export async function validateWizardPlanInStaging(
         ...(options.abortSignal === undefined ? {} : { signal: options.abortSignal }),
       });
     }
+    throwIfStagingAborted(options.abortSignal);
+    await initializeFirstRunManagedMemory({
+      agentRoot: dir,
+      plan: options.plan,
+      env: options.env,
+      ...(options.abortSignal === undefined ? {} : { abortSignal: options.abortSignal }),
+    });
     throwIfStagingAborted(options.abortSignal);
     const validation = await (options.validate ?? validateMonoAgentFolder)({
       cwd: dir,

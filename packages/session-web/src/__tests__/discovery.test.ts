@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { registerTraceSource } from "@mono-agent/observability";
 
 import {
   defaultTraceRegistryDir,
@@ -74,6 +75,44 @@ describe("discoverWebInstances", () => {
     expect(only?.instance.liveConnected).toBe(false);
     expect(only?.instance.counts.runs).toBe(0);
     expect(only?.liveBaseUrl).toBe("http://127.0.0.1:52789/live");
+  });
+
+  it("projects only normalized memory health and never arbitrary manifest metadata", async () => {
+    const registryDir = await tmp("reg-memory-health");
+    const agentDir = await tmp("agent-memory-health");
+    const artifactDir = join(agentDir, "runs");
+    await registerTraceSource({
+      registryDir,
+      sourceId: "agent-memory",
+      label: "Agent Memory",
+      artifactDir,
+      metadata: {
+        privateNote: "must-not-cross-browser-boundary",
+        nested: { secret: "also-private" },
+      },
+      memoryHealth: {
+        backend: "bujo",
+        mode: "bujo",
+        status: "degraded",
+        checkedAt: "2026-07-12T08:00:00.000Z",
+        issues: ["mutation_in_progress", "dead_letters", "outbox_pending"],
+        counts: { dead: 2, outbox: 1 },
+      },
+    });
+
+    const [discovered] = await discoverWebInstances({ registryDirs: [registryDir] });
+
+    expect(discovered?.instance.memoryHealth).toEqual({
+      backend: "bujo",
+      mode: "bujo",
+      status: "degraded",
+      checkedAt: "2026-07-12T08:00:00.000Z",
+      issues: ["mutation_in_progress", "dead_letters", "outbox_pending"],
+      counts: { dead: 2, outbox: 1 },
+    });
+    expect(Object.keys(discovered?.instance ?? {})).not.toContain("metadata");
+    expect(JSON.stringify(discovered?.instance)).not.toContain("must-not-cross-browser-boundary");
+    expect(JSON.stringify(discovered?.instance)).not.toContain("also-private");
   });
 
   it("falls back to the artifact dir's parent for cwd when no config path is recorded", async () => {

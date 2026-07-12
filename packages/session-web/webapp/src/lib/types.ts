@@ -205,7 +205,86 @@ export interface WebInstance {
   liveConnected: boolean;
   counts: { runs: number };
   timeZone?: string;
+  memoryHealth?: TraceSourceMemoryHealth;
 }
+
+export type TraceSourceMemoryBackend = "bujo" | "supermemory" | "none";
+export type TraceSourceMemoryMode = "lite" | "journal" | "bujo";
+export type TraceSourceMemoryStatus =
+  | "healthy"
+  | "in_progress"
+  | "degraded"
+  | "unhealthy"
+  | "unknown"
+  | "not_configured";
+export type TraceSourceMemoryIssue =
+  | "manifest_missing"
+  | "manifest_invalid"
+  | "configured_identity_mismatch"
+  | "database_missing"
+  | "database_unavailable"
+  | "native_module_unavailable"
+  | "health_check_failed"
+  | "sqlite_integrity_failed"
+  | "metadata_mismatch"
+  | "fts_mismatch"
+  | "vector_mismatch"
+  | "orphaned_rows"
+  | "canonical_mismatch"
+  | "canonical_invalid"
+  | "mutation_in_progress"
+  | "intake_invalid"
+  | "intake_pending"
+  | "dead_letters"
+  | "outbox_invalid"
+  | "outbox_pending"
+  | "work_stalled"
+  | "temporary_artifacts"
+  | "runtime_missing"
+  | "runtime_stale"
+  | "runtime_invalid";
+
+interface TraceSourceMemoryHealthBase {
+  checkedAt: string;
+}
+
+export interface TraceSourceBujoMemoryHealth extends TraceSourceMemoryHealthBase {
+  backend: "bujo";
+  mode: TraceSourceMemoryMode;
+  status: Exclude<TraceSourceMemoryStatus, "not_configured">;
+  issues: TraceSourceMemoryIssue[];
+  counts?: {
+    pending?: number;
+    due?: number;
+    dead?: number;
+    outbox?: number;
+    temporary?: number;
+    memories?: number;
+    vectors?: number;
+    missingVectors?: number;
+  };
+}
+
+export interface TraceSourceSupermemoryMemoryHealth extends TraceSourceMemoryHealthBase {
+  backend: "supermemory";
+  status: "unknown";
+  mode?: never;
+  issues?: never;
+  counts?: never;
+}
+
+export interface TraceSourceNoMemoryHealth extends TraceSourceMemoryHealthBase {
+  backend: "none";
+  status: "not_configured" | "unknown";
+  mode?: never;
+  issues?: never;
+  counts?: never;
+}
+
+export type TraceSourceMemoryHealth =
+  | TraceSourceBujoMemoryHealth
+  | TraceSourceSupermemoryMemoryHealth
+  | TraceSourceNoMemoryHealth;
 
 // SSE stream envelope (each `data:` line is one of these).
 export type StreamMessage =
