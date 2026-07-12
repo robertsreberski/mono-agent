@@ -45,6 +45,32 @@ describe("loadTelegramAdapterConfig", () => {
     });
   });
 
+  it("parses strict app-owned send-tool scopes and rejects unknown values", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(path, JSON.stringify({
+      telegram: {
+        enabled: true,
+        botToken: "123456:json-token",
+        allowedChatIds: ["111"],
+        sendTools: { scope: "producing-conversation", pathScope: "run-output" },
+      },
+    }), "utf8");
+
+    await expect(loadTelegramAdapterConfig({ env: {}, jsonPath: path })).resolves.toMatchObject({
+      sendTools: { scope: "producing-conversation", pathScope: "run-output" },
+    });
+
+    await writeFile(path, JSON.stringify({
+      telegram: {
+        enabled: true,
+        botToken: "123456:json-token",
+        allowedChatIds: ["111"],
+        sendTools: { scope: "any-allowed-chat" },
+      },
+    }), "utf8");
+    await expect(loadTelegramAdapterConfig({ env: {}, jsonPath: path })).rejects.toThrow(/sendTools\.scope/u);
+  });
+
   it("lets env override JSON and supports explicit allow-all", async () => {
     const path = join(dir, "mono-agent.config.json");
     await writeFile(

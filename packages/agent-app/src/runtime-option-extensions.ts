@@ -33,6 +33,7 @@ export function composeRuntimeOptionExtensions(
       await Promise.all(settled.map(async (result) => {
         if (result.status === "fulfilled") {
           await Promise.resolve(result.value.cleanup?.()).catch(() => undefined);
+          await Promise.resolve(result.value.settleCleanup?.()).catch(() => undefined);
         }
       }));
       throw failures[0]!.reason;
@@ -70,6 +71,9 @@ export function composeRuntimeOptionExtensions(
       ...(toolPolicyOverride === undefined ? {} : { toolPolicyOverride }),
       cleanup: async () => {
         await Promise.all(results.map(async (result) => result.cleanup?.()));
+      },
+      settleCleanup: async () => {
+        await Promise.all(results.map(async (result) => result.settleCleanup?.()));
       },
     };
   };

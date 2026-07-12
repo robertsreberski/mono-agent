@@ -268,6 +268,12 @@ export interface MonoAgentConfig {
     readonly allowedTools: readonly string[];
     readonly disallowedTools: readonly string[];
     readonly mcpConfigPath?: string;
+    /**
+     * Names of configured stdio MCP servers that receive trusted per-request
+     * producing-conversation, run, output-directory, and progress capability
+     * context. Unlisted servers preserve the legacy static environment.
+     */
+    readonly mcpRequestContextServers?: readonly string[];
     /** Inactivity timeout per MCP tool call; progress notifications reset it. Runtime default: 120s. */
     readonly mcpCallTimeoutMs?: number;
     /** Hard wall clock per MCP tool call that progress cannot extend. Runtime default: 45 min. */

@@ -139,12 +139,15 @@ They are tolerated so stale environments do not break startup, but they are igno
 | `MONO_AGENT_ALLOWED_TOOLS` | `tools.allowedTools` | Allowlist. **Unset** keeps the allow-all default; `*` is allow-all; an empty value (`""`) is the explicit chat-only `[]`. See [../tools/policy.md](/tools/policy/). |
 | `MONO_AGENT_DISALLOWED_TOOLS` | `tools.disallowedTools` | Denylist (deny wins; overlap rejected). |
 | `MONO_AGENT_MCP_CONFIG_PATH` | `tools.mcpConfigPath` | Path to `mcp.json`. See [../tools/mcp.md](/tools/mcp/). |
+| `MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS` | `tools.mcpRequestContextServers` | Comma-separated stdio MCP server names that receive trusted request-scoped context and progress capabilities. |
 | `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | `tools.mcpCallTimeoutMs` | Inactivity timeout per MCP tool call; tool progress notifications reset it. Default 120000. |
 | `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | `tools.mcpCallMaxTotalTimeoutMs` | Hard wall clock per MCP tool call that progress cannot extend. Default 2700000 (45 min). |
 
 ## Interaction (AskUser + tool progress)
 
-The interaction bridge starts automatically when `AskUser` is allowed (under the allow-all default, or listed in a specific `tools.allowedTools`) or the `interaction` block is present. It exports `MONO_AGENT_INTERACTION_BRIDGE_URL`/`MONO_AGENT_INTERACTION_BRIDGE_TOKEN` into the process environment for tool children (do not set those two yourself).
+The interaction bridge starts automatically when `AskUser` is allowed (under the allow-all default, or listed in a specific `tools.allowedTools`) or the `interaction` block is present. `MONO_AGENT_INTERACTION_BRIDGE_URL` / `MONO_AGENT_INTERACTION_BRIDGE_TOKEN` are an app-owned master capability forwarded only to the trusted adapter-tool child; do not set or pass them to project tools. Opted project stdio MCPs receive a separate run-scoped `MONO_AGENT_INTERACTION_PROGRESS_URL` / `MONO_AGENT_INTERACTION_PROGRESS_TOKEN` pair, and their master-capability env keys are overwritten with empty strings.
+
+Opted project stdio MCPs also receive host-owned filesystem context after all MCP option layers are merged: `MONO_AGENT_MCP_RUN_OUTPUT_DIR`, `MONO_AGENT_MCP_ATTACHMENTS_ROOT`, `MONO_AGENT_MCP_ALLOWED_ATTACHMENT_PATHS`, and `MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES`. The path value is a JSON array containing only lexical paths saved successfully for the current request; the identity value contains matching `{ "path", "dev", "ino" }` objects captured from the writer descriptors. Empty arrays are authoritative and configured values cannot override them. These are runtime-injected context keys, not operator configuration variables.
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |

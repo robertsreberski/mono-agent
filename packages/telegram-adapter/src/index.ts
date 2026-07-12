@@ -117,4 +117,5 @@ export type {
   TelegramCommandConfig,
   TelegramQuietHours,
   TelegramReactionsConfig,
+  TelegramSendToolsConfig,
 } from "./config.js";

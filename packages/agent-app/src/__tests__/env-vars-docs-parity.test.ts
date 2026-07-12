@@ -35,6 +35,9 @@ function codeEnvKeys(root: string): Set<string> {
     join(root, "packages/agent-app/src/interaction-bridge.ts"),
     join(root, "packages/agent-app/src/adapter-send-tools.ts"),
     join(root, "packages/agent-app/src/web-command.ts"),
+    // Harness-owned request capability keys are injected into opted stdio MCPs;
+    // they are real runtime env, although operators do not configure them.
+    join(root, "packages/agent-harness/src/harness.ts"),
   ];
   for (const workspaceRoot of ["packages", "extras"]) {
     const workspaceDir = join(root, workspaceRoot);

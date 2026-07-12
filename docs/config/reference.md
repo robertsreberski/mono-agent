@@ -145,6 +145,8 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `telegram.pollWatchdogMs` | `integer` | `MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS` | unset | `1` | Configures pollWatchdogMs for the telegram section. |
 | `telegram.quietHours` | `object` | `--` | unset | `{"timezone":"Europe/Amsterdam","start":"22:00","end":"07:00"}` | Quiet-hours rules for Telegram notifications. |
 | `telegram.reactions` | `object` | `MONO_AGENT_TELEGRAM_REACTIONS` | unset | `{"working":true,"done":true,"error":true}` | Telegram lifecycle reactions. The env override is boolean and toggles all states. |
+| `telegram.sendTools.pathScope` | `string` | `--` | unset | `run-output` | Confine Telegram path uploads to the current run output directory. |
+| `telegram.sendTools.scope` | `string` | `--` | unset | `producing-conversation` | Bind Telegram send tools to the chat that produced the current run. |
 | `telegram.transcription.endpoint` | `string` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT` | unset | `example` | Configures transcription.endpoint for the telegram section. |
 | `telegram.transcription.language` | `string` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_LANGUAGE` | unset | `example` | Configures transcription.language for the telegram section. |
 | `telegram.transcription.model` | `string` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL` | unset | `example` | Configures transcription.model for the telegram section. |
@@ -155,6 +157,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `tools.mcpCallMaxTotalTimeoutMs` | `integer` | `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | 2700000 | `2700000` | Configures mcpCallMaxTotalTimeoutMs for the tools section. |
 | `tools.mcpCallTimeoutMs` | `integer` | `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | 120000 | `120000` | Configures mcpCallTimeoutMs for the tools section. |
 | `tools.mcpConfigPath` | `string` | `MONO_AGENT_MCP_CONFIG_PATH` | unset | `example` | Configures mcpConfigPath for the tools section. |
+| `tools.mcpRequestContextServers` | `string[]` | `MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS` | [] | `["transcribe"]` | Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context. |
 | `traceability.globalDiscovery` | `boolean` | `MONO_AGENT_TRACE_GLOBAL_DISCOVERY` | true | `true` | Configures globalDiscovery for the traceability section. |
 | `traceability.heartbeatMs` | `integer` | `MONO_AGENT_TRACE_HEARTBEAT_MS` | 10000 | `10000` | Configures heartbeatMs for the traceability section. |
 | `traceability.registryDir` | `string` | `MONO_AGENT_TRACE_REGISTRY_DIR` | .mono-agent/trace-sources | `.mono-agent/trace-sources` | Configures registryDir for the traceability section. |

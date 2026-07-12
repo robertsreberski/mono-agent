@@ -688,7 +688,7 @@ describe("startMonoAgentApp", () => {
     await running.stop();
   });
 
-  it("starts the interaction bridge when AskUser is allowed, exports its env, and hands the hub to channels", async () => {
+  it("starts the interaction bridge for AskUser without exporting its master bearer and hands the hub to channels", async () => {
     await writeConfig({
       ...baseConfig(),
       tools: { allowedTools: ["AskUser"], disallowedTools: [] },
@@ -710,16 +710,14 @@ describe("startMonoAgentApp", () => {
 
     const app = await startMonoAgentApp({ cwd: dir, env, drivers: [driver] });
     try {
-      // The bridge env is exported so settings resolution and spawned tool
-      // children can reach it.
-      expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
-      expect(env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN).toBeDefined();
+      expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
+      expect(env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN).toBeUndefined();
       // The channel received the hub (visible as the bot's pendingAsks seam).
       expect(captured?.pendingAsks).toBeDefined();
     } finally {
       await app.stop();
     }
-    // Stop tears the bridge down and cleans the exported env.
+    // Stop tears the bridge down without ever having mutated the caller env.
     expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
   });
 
@@ -745,7 +743,7 @@ describe("startMonoAgentApp", () => {
 
     const app = await startMonoAgentApp({ cwd: dir, env, drivers: [driver] });
     try {
-      expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+      expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
       expect(captured?.pendingAsks).toBeDefined();
       expect(captured?.callbacksEnabled).toBe(true);
     } finally {
@@ -776,6 +774,73 @@ describe("startMonoAgentApp", () => {
     try {
       expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
       expect(captured?.pendingAsks).toBeUndefined();
+    } finally {
+      await app.stop();
+    }
+  });
+
+  it("threads scoped request context from config into only the opted project stdio MCP", async () => {
+    await writeFile(join(dir, ".mcp.json"), JSON.stringify({
+      mcpServers: {
+        transcribe: {
+          type: "stdio",
+          command: "transcribe-mcp",
+          env: { MONO_AGENT_MCP_PRODUCING_CONVERSATION_ID: "spoofed" },
+        },
+        remote: { type: "http", url: "https://mcp.example.test" },
+      },
+    }), "utf8");
+    await writeConfig({
+      ...baseConfig(),
+      tools: {
+        allowedTools: ["*"],
+        disallowedTools: [],
+        mcpConfigPath: "./.mcp.json",
+        mcpRequestContextServers: ["transcribe"],
+      },
+    });
+    const calls: RuntimeRunOptions[] = [];
+    let outputExistedDuringRun = false;
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        calls.push(options);
+        const servers = options.mcpServers as Record<string, { env?: Record<string, string> }>;
+        outputExistedDuringRun = existsSync(servers.transcribe?.env?.MONO_AGENT_MCP_RUN_OUTPUT_DIR ?? "missing");
+        return { text: "ok" };
+      },
+    };
+    const driver: ChannelDriver = {
+      id: "probe" as never,
+      label: "Probe",
+      async loadConfig() { return { enabled: true }; },
+      isConfigError() { return false; },
+      async start(input) {
+        await input.responder.respond({
+          conversationId: "telegram:42#2026-07-12",
+          text: "refine",
+          abortSignal: new AbortController().signal,
+        }, { append: async () => undefined });
+        return { summary: {}, stop: async () => undefined };
+      },
+    };
+    const env: Record<string, string | undefined> = {};
+
+    const app = await startMonoAgentApp({ cwd: dir, env, drivers: [driver], runtime });
+    try {
+      const servers = calls[0]?.mcpServers as Record<string, { env?: Record<string, string> }>;
+      expect(servers.remote).toEqual({ type: "http", url: "https://mcp.example.test" });
+      expect(servers.transcribe?.env).toMatchObject({
+        MONO_AGENT_MCP_PRODUCING_CONVERSATION_ID: "telegram:42#2026-07-12",
+        MONO_AGENT_INTERACTION_BRIDGE_TOKEN: "",
+        MONO_AGENT_MCP_ALLOWED_ATTACHMENT_PATHS: "[]",
+        MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES: "[]",
+      });
+      expect(servers.transcribe?.env?.MONO_AGENT_MCP_PRODUCING_RUN_ID).toBeTruthy();
+      expect(servers.transcribe?.env?.MONO_AGENT_INTERACTION_PROGRESS_TOKEN).toBeTruthy();
+      expect(servers.transcribe?.env?.MONO_AGENT_MCP_ATTACHMENTS_ROOT).toBeTruthy();
+      expect(outputExistedDuringRun).toBe(true);
+      expect(existsSync(servers.transcribe?.env?.MONO_AGENT_MCP_RUN_OUTPUT_DIR ?? "missing")).toBe(false);
+      expect(env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN).toBeUndefined();
     } finally {
       await app.stop();
     }
@@ -826,7 +891,7 @@ describe("startMonoAgentApp", () => {
         tools: { allowedTools: ["*"], disallowedTools: [] },
       }, null, 2));
       expect((await app.applyConfigChange("switch-to-pi")).kind).toBe("applied");
-      expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+      expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
 
       await responder?.respond(
         { conversationId: "pi", text: "ping", abortSignal: new AbortController().signal },
@@ -838,6 +903,7 @@ describe("startMonoAgentApp", () => {
         | undefined;
       expect(server).toBeDefined();
       expect(JSON.parse(server?.env?.MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS ?? "[]")).toContain("AskUser");
+      expect(server?.env?.MONO_AGENT_INTERACTION_BRIDGE_TOKEN).toBeDefined();
       expect(runtimeCalls[1]?.mcpServers?.[RUN_HISTORY_MCP_SERVER_NAME]).toBeDefined();
     } finally {
       await app.stop();
