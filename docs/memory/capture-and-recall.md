@@ -65,6 +65,13 @@ and records/ledger shards are `0600`; symlinks, ownership changes, conflicting p
 records, partial ledger writes, and unsafe crash transitions are rejected or deterministically
 recovered before admission.
 
+A safe rebuild may change the BuJo embedding provider or dimension while a run-owned semantic
+plan is retained: the candidate is rebuilt from canonical source with the new embedding identity,
+and the exact plan remains available until intake resolution. Rebuilding that retained plan into
+Lite or Journal is refused before source mutation, because those tiers cannot preserve the same
+BuJo run-derived ids and provider-bound replay contract. Start the current BuJo configuration to
+finish the durable intake before changing tiers.
+
 External `MemoryStore` implementations can opt into the same contract with
 `persistCompletedTurn`. Stores without it retain the legacy `appendHostSummary` plus optional
 `scheduleCapture` behavior. The bundled Supermemory backend implements the strong method as one
