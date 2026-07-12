@@ -56,6 +56,33 @@ describe("strict completed-turn extraction", () => {
     });
   });
 
+  it("states the strict salience and entity-id contract that the validator enforces", async () => {
+    let extractionPrompt = "";
+    const plan = await extractCapturePlanStrict("completed turn", {
+      id: "range-aware",
+      complete: async (receivedPrompt) => {
+        extractionPrompt = receivedPrompt;
+        return JSON.stringify({
+          ...validPlan,
+          memories: [{
+            ...validPlan.memories[0],
+            // Reproduce the live model's former scale choice unless the prompt
+            // explicitly states the validator's 0..1 contract.
+            salience: receivedPrompt.includes("from 0 to 1 inclusive") ? 0.8 : 80,
+          }],
+        });
+      },
+    });
+
+    expect(plan.candidates[0]?.salience).toBe(0.8);
+    expect(extractionPrompt).toContain("Never use a 0-10, 0-100, or percentage scale");
+    expect(extractionPrompt).toContain("All three root arrays are required");
+    expect(extractionPrompt).toContain("including the colon");
+    expect(extractionPrompt).toContain("the prefix before : exactly matches type");
+    expect(extractionPrompt).toContain("copied byte-for-byte from entities[].id");
+    expect(extractionPrompt).toContain("relation is lowercase words");
+  });
+
   it.each([
     ["prose wrapper", `result: ${JSON.stringify(validPlan)}`],
     ["duplicate root key", '{"memories":[],"memories":[],"entities":[],"relations":[]}'],
@@ -66,6 +93,10 @@ describe("strict completed-turn extraction", () => {
     ["missing memory field", JSON.stringify({ ...validPlan, memories: [{ type: "note", text: "fact", salience: 0.5, entityIds: [] }] })],
     ["unknown memory field", JSON.stringify({ ...validPlan, memories: [{ ...validPlan.memories[0], surprise: true }] })],
     ["wrong memory field type", JSON.stringify({ ...validPlan, memories: [{ ...validPlan.memories[0], isInsight: "false" }] })],
+    ["negative salience", JSON.stringify({ ...validPlan, memories: [{ ...validPlan.memories[0], salience: -0.1 }] })],
+    ["salience above one", JSON.stringify({ ...validPlan, memories: [{ ...validPlan.memories[0], salience: 1.1 }] })],
+    ["0-10 salience", JSON.stringify({ ...validPlan, memories: [{ ...validPlan.memories[0], salience: 7 }] })],
+    ["0-100 salience", JSON.stringify({ ...validPlan, memories: [{ ...validPlan.memories[0], salience: 80 }] })],
     ["control character", JSON.stringify({ ...validPlan, memories: [{ ...validPlan.memories[0], text: "bad\u0001text" }] })],
     ["Unicode line separator", JSON.stringify({ ...validPlan, memories: [{ ...validPlan.memories[0], text: "bad\u2028text" }] })],
     ["bidi formatting control", JSON.stringify({ ...validPlan, memories: [{ ...validPlan.memories[0], text: "bad\u202etext" }] })],

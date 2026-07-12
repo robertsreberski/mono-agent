@@ -21,15 +21,22 @@ interface RawCapturePlan {
 }
 
 const prompt = (text: string): string => `Extract one bounded, durable memory plan from the completed turn below.
-Return ONLY JSON:
-{"memories":[{"type":"task|event|note","text":"one atomic sentence","salience":0,"isInsight":false,"entityIds":["person:name"]}],"entities":[{"id":"type:name-kebab","name":"display name","type":"person|project|org|concept"}],"relations":[{"src":"entity-id","dst":"entity-id","relation":"verb phrase"}]}
+Return ONLY one exact JSON object with exactly these root keys:
+{"memories":[{"type":"note","text":"one atomic sentence","salience":0.8,"isInsight":false,"entityIds":["person:name"]}],"entities":[{"id":"person:name","name":"display name","type":"person"},{"id":"project:example","name":"example project","type":"project"}],"relations":[{"src":"person:name","dst":"project:example","relation":"works on"}]}
 
 Rules:
 - At most ${MAX_CAPTURE_MEMORIES} memories, ${MAX_CAPTURE_ENTITIES} entities, and ${MAX_CAPTURE_RELATIONS} relations.
 - Omit chit-chat and transient tool output.
-- Every memory is one durable fact, <=160 characters.
-- A memory.entityIds list contains ONLY entities directly stated in that same fact.
-- Relations and entityIds reference ids in this response. Never associate every memory with every turn entity.
+- All three root arrays are required, even when empty. Every shown object field is required; emit no other fields.
+- Every memory object has exactly type, text, salience, isInsight, and entityIds. type is task, event, or note; isInsight is a JSON boolean.
+- salience MUST be a finite JSON number from 0 to 1 inclusive, such as 0.8. Never use a 0-10, 0-100, or percentage scale.
+- Every memory is one distinct durable fact, <=160 characters, with no leading or trailing whitespace.
+- Every entity object has exactly id, name, and type. id is lowercase ASCII type:name-kebab including the colon, and the prefix before : exactly matches type.
+- Every relation object has exactly src, dst, and relation. relation is lowercase words separated only by single spaces or hyphens.
+- A memory.entityIds list contains ONLY entities directly stated in that same fact, copied byte-for-byte from entities[].id; otherwise use [].
+- Relations and entityIds reference exact entity ids in this response. Never associate every memory with every turn entity.
+- Do not emit duplicate entity ids, duplicate relations, duplicate memories, near-duplicate memories, extra keys, comments, or prose.
+- Use empty arrays when there are no durable memories, entities, or relations.
 
 TURN:
 ${text}`;
