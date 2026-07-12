@@ -28,6 +28,109 @@ export function parseJsonLoose<T>(text: string): T | undefined {
   return parseJsonLooseWithDiagnostics<T>(text).value;
 }
 
+/**
+ * Parse one exact bounded JSON value while rejecting duplicate object keys and
+ * pathological nesting. Used only by strong model-output contracts; legacy
+ * compatibility surfaces retain the loose decoder below.
+ */
+export function parseJsonExact<T>(text: string): T {
+  if (text.length > MAX_MODEL_JSON_CHARS) throw new Error("JSON exceeds the model-output bound");
+  let cursor = 0;
+  const skipWhitespace = (): void => {
+    while (cursor < text.length && /[\t\n\r ]/u.test(text[cursor] ?? "")) cursor += 1;
+  };
+  const parseStringToken = (): string => {
+    if (text[cursor] !== '"') throw new Error("expected a JSON string");
+    const start = cursor;
+    cursor += 1;
+    let escaped = false;
+    while (cursor < text.length) {
+      const char = text[cursor]!;
+      cursor += 1;
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        return JSON.parse(text.slice(start, cursor)) as string;
+      }
+      if (char.charCodeAt(0) < 0x20) throw new Error("unescaped control in JSON string");
+    }
+    throw new Error("unterminated JSON string");
+  };
+  const parseValue = (depth: number): void => {
+    if (depth > 64) throw new Error("JSON nesting exceeds the model-output bound");
+    skipWhitespace();
+    const char = text[cursor];
+    if (char === '"') {
+      parseStringToken();
+      return;
+    }
+    if (char === "{") {
+      cursor += 1;
+      skipWhitespace();
+      const keys = new Set<string>();
+      if (text[cursor] === "}") {
+        cursor += 1;
+        return;
+      }
+      for (;;) {
+        skipWhitespace();
+        const key = parseStringToken();
+        if (keys.has(key)) throw new Error("duplicate JSON object key");
+        keys.add(key);
+        skipWhitespace();
+        if (text[cursor] !== ":") throw new Error("expected a JSON object colon");
+        cursor += 1;
+        parseValue(depth + 1);
+        skipWhitespace();
+        if (text[cursor] === "}") {
+          cursor += 1;
+          return;
+        }
+        if (text[cursor] !== ",") throw new Error("expected a JSON object comma");
+        cursor += 1;
+      }
+    }
+    if (char === "[") {
+      cursor += 1;
+      skipWhitespace();
+      if (text[cursor] === "]") {
+        cursor += 1;
+        return;
+      }
+      for (;;) {
+        parseValue(depth + 1);
+        skipWhitespace();
+        if (text[cursor] === "]") {
+          cursor += 1;
+          return;
+        }
+        if (text[cursor] !== ",") throw new Error("expected a JSON array comma");
+        cursor += 1;
+      }
+    }
+    for (const literal of ["true", "false", "null"]) {
+      if (text.startsWith(literal, cursor)) {
+        cursor += literal.length;
+        return;
+      }
+    }
+    const number = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/u.exec(text.slice(cursor))?.[0];
+    if (number === undefined) throw new Error("invalid JSON value");
+    cursor += number.length;
+  };
+
+  parseValue(0);
+  skipWhitespace();
+  if (cursor !== text.length) throw new Error("trailing data after JSON value");
+  return JSON.parse(text) as T;
+}
+
 /** Internal-module diagnostic surface used to prove bounded linear scan work without wall-clock assertions. */
 export function parseJsonLooseWithDiagnostics<T>(text: string): JsonLooseScanDiagnostics<T> {
   // Reject before fence discovery, slicing, or JSON.parse. Model output is an

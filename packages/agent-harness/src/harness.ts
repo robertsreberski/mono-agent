@@ -63,6 +63,7 @@ export class AgentHarnessError extends Error {
  * delivered text for a later reply.
  */
 const VERBATIM_DELIVERY_STIMULUS = "[A scheduled or triggered task produced the message below, delivered to you proactively.]";
+const MEMORY_PERSISTENCE_WARNING = "Memory persistence was not confirmed after the provider answer; the provider response was preserved.";
 
 export class MonoAgentHarness implements AgentHarness {
   private readonly options: AgentHarnessOptions;
@@ -1038,20 +1039,36 @@ export class MonoAgentHarness implements AgentHarness {
       if (shouldSkipMemoryPersistence(userMessage, assistantText, options)) {
         return;
       }
-      // Always write the deterministic rapid-log line (sync, durable).
+      const memory = this.options.memory;
+      const summary = deterministicHostSummary(userMessage, assistantText, options);
       try {
-        await this.options.memory.appendHostSummary(
-          conversationId,
-          deterministicHostSummary(userMessage, assistantText, options),
-        );
-        // 'capture' additionally enqueues a best-effort intelligent capture (async, non-blocking).
-        if (mode === "capture") {
-          this.options.memory.scheduleCapture?.(conversationId, captureTurnText(userMessage, assistantText, options));
+        const persistCompletedTurn = memory.persistCompletedTurn;
+        if (persistCompletedTurn !== undefined) {
+          // A strong store owns the entire write. Its stable run id makes a
+          // retry idempotent, and awaiting it keeps successful completion behind
+          // the store's admission boundary without replaying either legacy call.
+          await persistCompletedTurn.call(memory, {
+            runId: options.runId,
+            conversationId,
+            summary,
+            ...(mode === "capture"
+              ? { captureText: captureTurnText(userMessage, assistantText, options) }
+              : {}),
+          });
+        } else {
+          // Legacy stores retain the deterministic rapid log plus optional
+          // best-effort curation queue exactly as before.
+          await memory.appendHostSummary(conversationId, summary);
+          if (mode === "capture") {
+            memory.scheduleCapture?.(conversationId, captureTurnText(userMessage, assistantText, options));
+          }
         }
-      } catch (error) {
+      } catch {
         // The provider answer already succeeded. Memory is additive and must
-        // never retroactively turn that answer into a failed turn.
-        const message = `Memory persistence failed after the provider answer; continuing. ${errorMessageText(error)}`;
+        // never retroactively turn that answer into a failed turn. Keep this
+        // diagnostic constant: backend errors can contain secrets, paths,
+        // model content, hostile accessors, or control characters.
+        const message = MEMORY_PERSISTENCE_WARNING;
         try {
           options.emit?.({
             type: "runtime_warning",

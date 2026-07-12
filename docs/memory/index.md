@@ -43,16 +43,16 @@ running Ollama. Host summaries can be appended after each run
 Adds hybrid recall (BM25 + vector RRF) on top of the lite tier. Salience remains
 static canonical Markdown metadata; the scheduler does not decay it over time.
 Requires a configured embeddings provider, either Ollama or OpenAI. No chat model needed.
-The host commits a new lexical observation first, using a stable content-hash identity to
-deduplicate repeated summaries, then queues vector indexing in bounded batches. A slow or
-temporarily unavailable embedding provider therefore does not delay an otherwise successful
-agent reply; the lexical memory remains durable and the vector backlog is retried.
+The host first fsyncs the completed turn into run-id-keyed durable intake, then projects a lexical
+observation using a stable content-hash identity and queues vector indexing in bounded batches. A
+slow or temporarily unavailable embedding provider therefore does not delay terminal reporting;
+the admitted turn survives restart and its lexical/vector projections retry.
 
 ### `bujo` (BuJo — Bullet Journal memory)
 
 The full tier: hybrid recall plus bounded LLM curation, an entity graph, and lightweight
-consolidation. The host first preserves a compact immutable observation in `audit/`, outside
-curated recall. `writeMode: "capture"` then uses one batched memory/graph extraction and at
+consolidation. The host first fsyncs a run-id-keyed completed-turn record, then projects a compact
+immutable observation in `audit/`, outside curated recall. `writeMode: "capture"` then uses one batched memory/graph extraction and at
 most one batched reconcile call to promote durable facts into daily notes, classifying close
 entries as ADD / UPDATE / SUPERSEDE / NOOP. Each fact retains only its explicitly extracted
 entity associations. The raw audit is never automatically treated as curated truth.
@@ -173,8 +173,16 @@ runtimes cannot yet guarantee a no-tools/no-external-actions memory turn.
 How the **host** persists each completed turn (independent of the tier's recall):
 
 - `disabled` — never write.
-- `append-host-summary` — persist a deterministic single-line observation with no chat LLM. Lite/Journal put it in the canonical daily log; Journal queues semantic indexing after the lexical commit. BuJo puts it in the separate raw audit and does not promote it to curated recall.
-- `capture` — **bujo only.** Preserve the raw audit synchronously, then enqueue bounded curation in the background. One extraction call plus at most one batch-reconcile call writes canonical facts and precise graph evidence. Accepted jobs are serialized and get a 10-second shutdown drain deadline; after it, queued work is discarded and cooperative in-flight work is aborted so stop cannot hang forever. A failure, overflow, or deadline keeps the raw audit but does not contaminate curated recall. Because it needs a chat LLM, `writeMode: "capture"` requires `mode: "bujo"` and fails config validation otherwise.
+- `append-host-summary` — fsync a deterministic observation by stable provider run id, then project it without a chat LLM. Lite/Journal put it in the canonical daily log; Journal queues semantic indexing after the lexical commit. BuJo puts it in the separate raw audit and does not promote it to curated recall.
+- `capture` — **bujo only.** Fsync the summary and full capture text by stable provider run id, then project the raw audit and run serialized curation in the background. One strict extraction call plus at most one strict batch-reconcile call writes canonical facts and precise graph evidence. A normal stop drains for up to 10 seconds; a timed-out active attempt remains pending for restart. Provider/model failures retry with bounded exponential backoff for more than 24 hours, then remain as a durable dead letter rather than claiming success. Because it needs a chat LLM, `writeMode: "capture"` requires `mode: "bujo"` and fails config validation otherwise.
+
+The strong built-in write returns only after the owner-only `.capture-intake/pending` record and
+directory entry plus its compact content-free admission commitment are durable. Repeating the same
+run and payload remains idempotent after bounded rich-receipt pruning; a conflicting payload fails
+closed. Projection/capture transitions use monotonic receipts and run-derived fact
+ids, so restart after canonical/SQLite commit cannot duplicate the audit or semantic fact. Invalid
+or partial model JSON remains retryable and never counts as a successful empty capture. An intake
+admission failure leaves the provider answer intact but reports explicit memory degradation.
 
 Low-signal successful turns are skipped in every write mode: the `NOTHING_TO_REPORT` no-op sentinel and tiny explicit test/ping probes such as `test` / `test ok`. Cron and webhook writes are assistant-answer-only, so trigger prompts and webhook pre-instructions do not enter memory.
 

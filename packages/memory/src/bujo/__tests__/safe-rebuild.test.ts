@@ -349,6 +349,94 @@ describe("safe memory index rebuild", () => {
     }
   });
 
+  it("refuses a retained completed-turn capture before a BuJo-to-Journal dimension change", async () => {
+    const root = tempRoot();
+    const oldModel = embeddings("test:retained-tier-old", 8);
+    writeDaily(root, [bullet("BASE-RETAINED", "The active BuJo generation remains unchanged.")]);
+    await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: oldModel, dim: 8 });
+    const activeBefore = resolveActiveMemoryDbPath(root);
+    const sourceBefore = readFileSync(join(root, "daily", "2026-07-11.md"), "utf8");
+    const item = bullet("C-RETAINED", "A retained run-owned capture cannot cross into Journal.");
+    const file = "daily/2026-07-11.md";
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: item.id,
+      after: { file, bullet: item },
+      record: memoryRecordForBullet(item, file),
+      vector: deterministicVector(item.text, 8),
+      threads: [],
+    }], {}, NOW, { retentionKey: "a".repeat(64) });
+
+    await expect(safeRebuildMemoryIndex({
+      root,
+      tier: "journal",
+      embeddings: embeddings("test:retained-tier-journal", 4),
+      dim: 4,
+    })).rejects.toThrow(/retained completed-turn capture intent requires BuJo.*finish.*intake/iu);
+    await expect(safeRebuildMemoryIndex({ root, tier: "lite" }))
+      .rejects.toThrow(/retained completed-turn capture intent requires BuJo.*finish.*intake/iu);
+
+    expect(resolveActiveMemoryDbPath(root)).toBe(activeBefore);
+    expect(readFileSync(join(root, "daily", "2026-07-11.md"), "utf8")).toBe(sourceBefore);
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
+  });
+
+  it("keeps a retained completed-turn capture replayable across a compatible BuJo dimension change", async () => {
+    const root = tempRoot();
+    const oldModel = embeddings("test:retained-dimension-old", 8);
+    const newModel = embeddings("test:retained-dimension-new", 4);
+    writeDaily(root, [bullet("BASE-RETAINED-DIM", "The compatible BuJo rebuild has a base row.")]);
+    await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: oldModel, dim: 8 });
+    const item = bullet("C-RETAINED-DIM", "A retained run-owned capture is re-embedded safely.");
+    const file = "daily/2026-07-11.md";
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: item.id,
+      after: { file, bullet: item },
+      record: memoryRecordForBullet(item, file),
+      vector: deterministicVector(item.text, 8),
+      threads: [],
+    }], {
+      entities: [{ id: "concept:retained", name: "Retained", type: "concept", createdAt: NOW }],
+      associations: [{
+        memoryId: item.id,
+        entityId: "concept:retained",
+        provenance: "capture",
+        createdAt: NOW,
+      }],
+    }, NOW, { retentionKey: "b".repeat(64) });
+
+    const rebuilt = await safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: newModel,
+      dim: 4,
+    });
+
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
+    const db = openMemoryDb({ path: rebuilt.active, readOnly: true, dim: 4 });
+    try {
+      expect(db.get(item.id)).toMatchObject({ text: item.text, embeddingModel: newModel.id, dim: 4 });
+      expect(db.associationsForMemory(item.id)).toEqual([
+        expect.objectContaining({ entityId: "concept:retained", provenance: "capture" }),
+      ]);
+    } finally {
+      db.close();
+    }
+
+    const startup = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings: newModel,
+      dim: 4,
+      llm: { id: "must-not-run", complete: async () => { throw new Error("startup replay called LLM"); } },
+    });
+    await startup.close();
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
+  });
+
   it.each(["journal", "lite"] as const)(
     "retires a pending BuJo capture under the old identity before rebuilding into %s",
     async (tier) => {
