@@ -9,17 +9,16 @@ import type {
 import { hasPendingCaptureIntent } from "./capture-outbox.js";
 import {
   CanonicalGraphValidationError,
-  emptyCanonicalGraphProjection,
-  projectCanonicalGraph,
-  readCanonicalGraphStrictSnapshot,
   type CanonicalGraphIssueCode,
-  type CanonicalGraphProjection,
-  type StrictCanonicalGraphSnapshot,
 } from "./graph.js";
 import { hasPendingMigrateDecision } from "./migrate.js";
+import {
+  readCanonicalGraphAuditSourceSnapshot,
+  type CanonicalGraphAuditSourceSnapshot,
+} from "./rebuild.js";
 import type { BujoTier } from "./types.js";
 
-const MAX_AUDIT_ATTEMPTS = 2;
+const MAX_AUDIT_ATTEMPTS = 3;
 
 /** Aggregate-only parity counters. No memory or entity content is returned. */
 export interface CanonicalGraphParitySection {
@@ -68,6 +67,7 @@ export interface CanonicalGraphParityResult {
   readonly entities: CanonicalGraphParitySection;
   readonly relations: CanonicalGraphParitySection;
   readonly associations: CanonicalGraphParitySection;
+  readonly supports: CanonicalGraphParitySection;
 }
 
 /**
@@ -82,20 +82,29 @@ export function auditCanonicalGraphParity(
   db: MemoryDb,
   options: CanonicalGraphParityOptions = {},
 ): CanonicalGraphParityResult {
-  const resolvedTier = resolveTier(db, options);
-  if (resolvedTier.issue !== undefined) {
-    return invalidResult(resolvedTier.tier, resolvedTier.issue);
-  }
-  const tier = resolvedTier.tier;
+  let tier = options.tier ?? "bujo";
 
   for (let attempt = 1; attempt <= MAX_AUDIT_ATTEMPTS; attempt += 1) {
     const mutationBefore = inspectMutation(root);
     if (mutationBefore.issue !== undefined) return invalidResult(tier, mutationBefore.issue);
     if (mutationInProgress(mutationBefore.state)) return inProgressResult(tier, mutationBefore.state);
 
-    let canonicalBefore: StrictCanonicalGraphSnapshot;
+    let activeProbe: CanonicalGraphSnapshot;
     try {
-      canonicalBefore = canonicalSnapshotForTier(root, tier);
+      activeProbe = db.canonicalGraphSnapshot();
+    } catch {
+      return invalidResult(tier, { code: "active-index-invalid" });
+    }
+
+    const resolvedTier = resolveTier(activeProbe, options);
+    tier = resolvedTier.tier;
+    if (resolvedTier.issue !== undefined) {
+      return invalidResult(tier, resolvedTier.issue);
+    }
+
+    let canonicalBefore: CanonicalGraphAuditSourceSnapshot;
+    try {
+      canonicalBefore = readCanonicalGraphAuditSourceSnapshot(root, tier);
     } catch (error) {
       const transient = inspectMutation(root);
       if (transient.issue !== undefined) return invalidResult(tier, transient.issue);
@@ -110,10 +119,18 @@ export function auditCanonicalGraphParity(
     } catch {
       return invalidResult(tier, { code: "active-index-invalid" });
     }
+    const activeTier = resolveTier(active, options);
+    if (activeTier.issue !== undefined) {
+      return invalidResult(activeTier.tier, activeTier.issue);
+    }
+    if (activeTier.tier !== tier) {
+      if (attempt < MAX_AUDIT_ATTEMPTS) continue;
+      return inProgressResult(activeTier.tier, { ...noMutation(), sourceChanged: true });
+    }
 
-    let canonicalAfter: StrictCanonicalGraphSnapshot;
+    let canonicalAfter: CanonicalGraphAuditSourceSnapshot;
     try {
-      canonicalAfter = canonicalSnapshotForTier(root, tier);
+      canonicalAfter = readCanonicalGraphAuditSourceSnapshot(root, tier);
     } catch (error) {
       const transient = inspectMutation(root);
       if (transient.issue !== undefined) return invalidResult(tier, transient.issue);
@@ -130,20 +147,16 @@ export function auditCanonicalGraphParity(
       return inProgressResult(tier, { ...mutationAfter.state, sourceChanged: true });
     }
 
-    let expected: CanonicalGraphProjection;
-    try {
-      expected = tier === "bujo"
-        ? projectCanonicalGraph(canonicalAfter.records, active.memories)
-        : emptyCanonicalGraphProjection();
-    } catch (error) {
-      if (attempt < MAX_AUDIT_ATTEMPTS) continue;
-      return invalidResult(tier, issueFromCanonicalError(error));
-    }
+    const expected = canonicalAfter.graph;
 
     const entities = compareEntities(expected.entities, active.entities);
     const relations = compareRelations(expected.relations, active.relations);
     const associations = compareAssociations(expected.associations, active.associations);
-    const matches = sectionMatches(entities) && sectionMatches(relations) && sectionMatches(associations);
+    const supports = compareSupports(expected.collectionSupports, active);
+    const matches = sectionMatches(entities)
+      && sectionMatches(relations)
+      && sectionMatches(associations)
+      && sectionMatches(supports);
     if (!matches && attempt < MAX_AUDIT_ATTEMPTS) continue;
     return {
       status: matches ? "match" : "mismatch",
@@ -154,6 +167,7 @@ export function auditCanonicalGraphParity(
       entities,
       relations,
       associations,
+      supports,
     };
   }
 
@@ -174,26 +188,19 @@ function inspectMutation(root: string): MutationInspection {
         sourceChanged: false,
       },
     };
-  } catch {
+  } catch (error) {
+    if (isTransientMutationReadError(error)) {
+      return { state: { ...noMutation(), sourceChanged: true } };
+    }
     return { state: noMutation(), issue: { code: "durable-state-invalid" } };
   }
 }
 
-function canonicalSnapshotForTier(root: string, tier: BujoTier): StrictCanonicalGraphSnapshot {
-  if (tier === "bujo") return readCanonicalGraphStrictSnapshot(root);
-  return { fingerprint: `ignored:${tier}`, records: emptyCanonicalGraphProjection() };
-}
-
 function resolveTier(
-  db: MemoryDb,
+  active: CanonicalGraphSnapshot,
   options: CanonicalGraphParityOptions,
 ): { readonly tier: BujoTier; readonly issue?: CanonicalGraphParityIssue } {
-  let managedTier: BujoTier | undefined;
-  try {
-    managedTier = db.indexMetadata()?.tier;
-  } catch {
-    return { tier: options.tier ?? "bujo", issue: { code: "active-index-invalid" } };
-  }
+  const managedTier = active.metadata?.tier;
   if (managedTier !== undefined && options.tier !== undefined && managedTier !== options.tier) {
     return { tier: managedTier, issue: { code: "tier-conflict" } };
   }
@@ -210,6 +217,7 @@ function invalidResult(tier: BujoTier, issue: CanonicalGraphParityIssue): Canoni
     entities: emptySection(),
     relations: emptySection(),
     associations: emptySection(),
+    supports: emptySection(),
   };
 }
 
@@ -223,6 +231,7 @@ function inProgressResult(tier: BujoTier, mutation: CanonicalGraphMutationState)
     entities: emptySection(),
     relations: emptySection(),
     associations: emptySection(),
+    supports: emptySection(),
   };
 }
 
@@ -291,6 +300,50 @@ function compareAssociations(
   }));
 }
 
+interface CollectionSupportRecord {
+  readonly memoryId: string;
+  readonly entityId: string;
+  readonly collection?: string;
+  readonly collectionOnly?: boolean;
+}
+
+function compareSupports(
+  canonical: readonly { readonly memoryId: string; readonly entityId: string; readonly collection: string }[],
+  active: CanonicalGraphSnapshot,
+): CanonicalGraphParitySection {
+  const memories = new Map(active.memories.map((memory) => [memory.id, memory]));
+  const activeRecords: CollectionSupportRecord[] = active.supports.map((edge) => ({
+    memoryId: edge.src,
+    entityId: edge.dst,
+    ...(memories.get(edge.src)?.collection === undefined
+      ? {}
+      : { collection: memories.get(edge.src)!.collection }),
+  }));
+  const memoriesWithSupportEdges = new Set(active.supports.map((edge) => edge.src));
+  for (const memory of active.memories) {
+    if (memory.collection !== undefined && !memoriesWithSupportEdges.has(memory.id)) {
+      activeRecords.push({
+        memoryId: memory.id,
+        entityId: "",
+        collection: memory.collection,
+        collectionOnly: true,
+      });
+    }
+  }
+  return compareByKey<CollectionSupportRecord>(
+    canonical,
+    activeRecords,
+    supportKey,
+    (left, right) => ({
+      payload: left.memoryId !== right.memoryId
+        || left.entityId !== right.entityId
+        || left.collection !== right.collection,
+      timestamp: false,
+      provenance: false,
+    }),
+  );
+}
+
 interface RecordMismatch {
   readonly payload: boolean;
   readonly timestamp: boolean;
@@ -349,9 +402,24 @@ function sectionMatches(section: CanonicalGraphParitySection): boolean {
 }
 
 function relationKey(record: EntityRelationRecord): string {
-  return `${record.src}\0${record.dst}\0${record.relation}`;
+  return JSON.stringify([record.src, record.dst, record.relation]);
 }
 
 function associationKey(record: MemoryEntityAssociation): string {
-  return `${record.memoryId}\0${record.entityId}`;
+  return JSON.stringify([record.memoryId, record.entityId]);
+}
+
+function supportKey(record: CollectionSupportRecord): string {
+  return record.collectionOnly === true
+    ? JSON.stringify(["collection-only", record.memoryId])
+    : JSON.stringify(["support", record.memoryId, record.entityId]);
+}
+
+function isTransientMutationReadError(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : "";
+  if (code === "ENOENT") return true;
+  const message = error instanceof Error ? error.message : "";
+  return /(?:disappeared|changed while it was read|changed during file access|was replaced during access)/iu.test(message);
 }

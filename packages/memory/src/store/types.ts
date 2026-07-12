@@ -86,14 +86,21 @@ export interface MemoryEntityAssociation {
 }
 
 /** Memory fields used by the deterministic legacy graph projection. */
-export type CanonicalGraphMemoryRecord = Pick<MemoryRecord, "id" | "status" | "text" | "createdAt">;
+export type CanonicalGraphMemoryRecord = Pick<MemoryRecord, "id" | "status" | "text" | "createdAt" | "collection">;
+
+export interface CanonicalGraphSupportEdge {
+  readonly src: string;
+  readonly dst: string;
+}
 
 /** One transactionally consistent graph/parity snapshot from the rebuildable index. */
 export interface CanonicalGraphSnapshot {
+  readonly metadata?: IndexMetadata;
   readonly memories: readonly CanonicalGraphMemoryRecord[];
   readonly entities: readonly EntityRecord[];
   readonly relations: readonly EntityRelationRecord[];
   readonly associations: readonly MemoryEntityAssociation[];
+  readonly supports: readonly CanonicalGraphSupportEdge[];
 }
 
 export interface ContentHashRecord {

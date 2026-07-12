@@ -1058,17 +1058,19 @@ export class MemoryDb {
   canonicalGraphSnapshot(): CanonicalGraphSnapshot {
     return this.db.transaction((): CanonicalGraphSnapshot => {
       const memories = (this.db.prepare(
-        `SELECT id, status, text, created_at FROM memories ORDER BY id`,
+        `SELECT id, status, text, created_at, collection FROM memories ORDER BY id`,
       ).all() as Array<{
         id: string;
         status: MemoryRecord["status"];
         text: string;
         created_at: string;
+        collection: string | null;
       }>).map((row) => ({
         id: row.id,
         status: row.status,
         text: row.text,
         createdAt: row.created_at,
+        ...(row.collection === null ? {} : { collection: row.collection }),
       }));
       const entities = (this.db.prepare(
         `SELECT id, name, type, summary, created_at, updated_at FROM entities ORDER BY id`,
@@ -1095,7 +1097,18 @@ export class MemoryDb {
         provenance: row.provenance,
         createdAt: row.created_at,
       }));
-      return { memories, entities, relations, associations };
+      const supports = this.db.prepare(
+        `SELECT src, dst FROM edges WHERE kind = 'supports' ORDER BY src, dst`,
+      ).all() as Array<{ src: string; dst: string }>;
+      const metadata = this.indexMetadata();
+      return {
+        ...(metadata === undefined ? {} : { metadata }),
+        memories,
+        entities,
+        relations,
+        associations,
+        supports,
+      };
     })();
   }
 

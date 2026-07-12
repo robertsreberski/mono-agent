@@ -190,6 +190,24 @@ interface BuildPlan {
   readonly parsedSourceItems: number;
 }
 
+/** Content-free handle to the exact graph projection a safe rebuild would write. */
+export interface CanonicalGraphAuditSourceSnapshot {
+  readonly fingerprint: string;
+  readonly graph: CanonicalGraphProjection;
+}
+
+/** Read the same identity-stable canonical daily+graph projection used by safe rebuild. */
+export function readCanonicalGraphAuditSourceSnapshot(
+  root: string,
+  tier: BujoTier,
+): CanonicalGraphAuditSourceSnapshot {
+  if (tier !== "bujo") {
+    return { fingerprint: `ignored:${tier}`, graph: emptyCanonicalGraphProjection() };
+  }
+  const snapshot = snapshotCanonicalSources(root, tier);
+  return { fingerprint: snapshot.fingerprint, graph: buildPlan(snapshot, tier).graph };
+}
+
 /**
  * Build and validate a new generation beside the active index, then atomically switch one manifest.
  * This path never accepts an LLM and never reads BuJo audit files.

@@ -4,10 +4,12 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { openMemoryDb } from "../../store/index.js";
+import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
 import { writeCaptureIntent } from "../capture-outbox.js";
+import { appendBullet } from "../daily.js";
 import { auditCanonicalGraphParity } from "../graph-parity.js";
 import { appendEntity, appendGraphBatch, readGraph } from "../graph.js";
+import { readCanonicalGraphAuditSourceSnapshot } from "../rebuild.js";
 
 const CANONICAL_AT = "2026-01-01T00:00:00.000Z";
 const DRIFTED_AT = "2026-06-01T00:00:00.000Z";
@@ -15,6 +17,7 @@ const DRIFTED_AT = "2026-06-01T00:00:00.000Z";
 describe("canonical graph parity", () => {
   it("reports aggregate payload, timestamp, provenance, missing, and extra drift without providers", () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-graph-parity-"));
+    appendCanonicalMemory(root, memory("M1"));
     appendGraphBatch(root, {
       entities: [
         { id: "person:morgan", name: "Morgan", type: "person", createdAt: CANONICAL_AT },
@@ -104,13 +107,15 @@ describe("canonical graph parity", () => {
         timestampMismatches: 1,
         provenanceMismatches: 1,
       },
+      supports: emptySection(),
     });
-    expect(snapshots).toBe(2);
+    expect(snapshots).toBe(6);
     db.close();
   });
 
   it("reports exact parity after canonical projection mirroring", () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-graph-parity-exact-"));
+    appendCanonicalMemory(root, memory("M1"));
     const graph = appendGraphBatch(root, {
       entities: [
         { id: "person:morgan", name: "Morgan", type: "person", createdAt: CANONICAL_AT },
@@ -141,6 +146,7 @@ describe("canonical graph parity", () => {
     expect(parity.entities.matched).toBe(2);
     expect(parity.relations.matched).toBe(1);
     expect(parity.associations.matched).toBe(1);
+    expect(parity.supports).toEqual(emptySection());
     db.close();
   });
 
@@ -157,6 +163,25 @@ describe("canonical graph parity", () => {
       status: "invalid",
       matches: false,
       issues: [{ code, line: 1 }],
+    });
+    db.close();
+  });
+
+  it("rejects control characters even when the compatibility reader preserves them", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-parity-control-"));
+    writeFileSync(join(root, "graph.jsonl"), `${JSON.stringify({
+      kind: "entity",
+      id: "person:morgan\0collision",
+      name: "Morgan",
+      createdAt: CANONICAL_AT,
+    })}\n`, "utf8");
+    const db = openMemoryDb({ path: ":memory:" });
+
+    expect(readGraph(root).entities).toHaveLength(1);
+    expect(auditCanonicalGraphParity(root, db)).toMatchObject({
+      status: "invalid",
+      matches: false,
+      issues: [{ code: "invalid-record", line: 1 }],
     });
     db.close();
   });
@@ -189,12 +214,13 @@ describe("canonical graph parity", () => {
         if (property === "canonicalGraphSnapshot") {
           return () => {
             snapshots += 1;
-            if (inject) {
+            const snapshot = target.canonicalGraphSnapshot();
+            if (inject && snapshots === 2) {
               inject = false;
               appendEntity(root, entity);
               target.mirrorCanonicalEntity(entity);
             }
-            return target.canonicalGraphSnapshot();
+            return snapshot;
           };
         }
         const value = Reflect.get(target, property, receiver) as unknown;
@@ -207,7 +233,64 @@ describe("canonical graph parity", () => {
       matches: true,
       entities: { canonical: 1, active: 1, matched: 1 },
     });
-    expect(snapshots).toBe(2);
+    expect(snapshots).toBe(4);
+    db.close();
+  });
+
+  it("derives legacy associations from canonical Markdown instead of stale SQLite text", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-parity-canonical-memory-"));
+    appendCanonicalMemory(root, { ...memory("M1"), text: "Alice maintains mono-agent." });
+    const graph = appendGraphBatch(root, {
+      entities: [{ id: "person:morgan", name: "Morgan", type: "person", createdAt: CANONICAL_AT }],
+    });
+    const db = openMemoryDb({ path: ":memory:" });
+    db.upsertLexical(memory("M1"));
+    db.mirrorCanonicalEntity(graph.entities[0]!);
+    db.mirrorCanonicalAssociation({
+      memoryId: "M1",
+      entityId: "person:morgan",
+      provenance: "legacy-name-match",
+      createdAt: CANONICAL_AT,
+    });
+
+    expect(readCanonicalGraphAuditSourceSnapshot(root, "bujo").graph.associations).toEqual([]);
+    expect(auditCanonicalGraphParity(root, db)).toMatchObject({
+      status: "mismatch",
+      matches: false,
+      associations: { canonical: 0, active: 1, extra: 1 },
+    });
+    db.close();
+  });
+
+  it.each([
+    ["missing edge", false, "projects"],
+    ["missing collection", true, undefined],
+  ] as const)("fails parity for migrated collection support with %s", (_label, addEdge, collection) => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-parity-support-"));
+    const canonical = { ...memory("M1"), status: "migrated" as const, text: "Project archive." };
+    appendCanonicalMemory(root, canonical);
+    const graph = appendGraphBatch(root, {
+      entities: [{ id: "collection:projects", name: "Projects", type: "collection", createdAt: CANONICAL_AT }],
+      associations: [{
+        memoryId: "M1",
+        entityId: "collection:projects",
+        provenance: "capture",
+        createdAt: CANONICAL_AT,
+      }],
+    });
+    const db = openMemoryDb({ path: ":memory:" });
+    db.upsertLexical({ ...canonical, ...(collection === undefined ? {} : { collection }) });
+    db.mirrorCanonicalEntity(graph.entities[0]!);
+    db.mirrorCanonicalAssociation(graph.associations[0]!);
+    if (addEdge) db.addEdge("M1", "collection:projects", "supports");
+
+    expect(auditCanonicalGraphParity(root, db)).toMatchObject({
+      status: "mismatch",
+      matches: false,
+      supports: addEdge
+        ? { canonical: 1, active: 1, mismatched: 1, payloadMismatches: 1 }
+        : { canonical: 1, active: 1, missing: 1, extra: 1 },
+    });
     db.close();
   });
 });
@@ -224,5 +307,32 @@ function memory(id: string) {
     accessCount: 0,
     tags: [],
     source: { file: "daily/2026-01-01.md", line: 3 },
+  };
+}
+
+function appendCanonicalMemory(root: string, record: MemoryRecord): void {
+  appendBullet(root, {
+    id: record.id,
+    type: record.type,
+    status: record.status,
+    text: record.text,
+    salience: record.salience,
+    isInsight: record.isInsight,
+    createdAt: record.createdAt,
+    refs: [],
+  }, new Date(record.createdAt));
+}
+
+function emptySection() {
+  return {
+    canonical: 0,
+    active: 0,
+    matched: 0,
+    missing: 0,
+    extra: 0,
+    mismatched: 0,
+    payloadMismatches: 0,
+    timestampMismatches: 0,
+    provenanceMismatches: 0,
   };
 }

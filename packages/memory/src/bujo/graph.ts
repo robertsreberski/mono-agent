@@ -9,6 +9,7 @@ import type {
 import { appendCanonicalFile, readCanonicalFileSnapshot } from "./path-safety.js";
 
 const GRAPH_FILE = "graph.jsonl";
+const INVALID_GRAPH_STRING = /[\u0000-\u001f\u007f-\u009f\uD800-\uDFFF]/u;
 
 type GraphLine =
   | ({ readonly kind: "entity" } & EntityRecord)
@@ -288,8 +289,7 @@ export function readGraph(root: string): {
         typeof relation.dst === "string" &&
         typeof relation.relation === "string"
       ) {
-        const key = `${relation.src}|${relation.dst}|${relation.relation}`;
-        relationMap.set(key, relation);
+        relationMap.set(relationKey(relation), relation);
       }
     } else if (rec["kind"] === "association") {
       const { kind: _kind, ...rest } = rec;
@@ -303,7 +303,7 @@ export function readGraph(root: string): {
         && typeof association.createdAt === "string"
         && association.createdAt.length > 0
       ) {
-        associationMap.set(`${association.memoryId}|${association.entityId}`, association);
+        associationMap.set(associationKey(association), association);
       }
     }
   }
@@ -396,11 +396,11 @@ export function appendRelation(root: string, record: EntityRelationRecord): void
 }
 
 function relationKey(record: Pick<EntityRelationRecord, "src" | "dst" | "relation">): string {
-  return `${record.src}|${record.dst}|${record.relation}`;
+  return JSON.stringify([record.src, record.dst, record.relation]);
 }
 
 function associationKey(record: Pick<MemoryEntityAssociation, "memoryId" | "entityId">): string {
-  return `${record.memoryId}|${record.entityId}`;
+  return JSON.stringify([record.memoryId, record.entityId]);
 }
 
 function entityRecordsEqual(a: EntityRecord, b: EntityRecord): boolean {
@@ -482,7 +482,7 @@ function strictAssociation(value: Record<string, unknown>, line: number): Memory
 }
 
 function requiredString(value: unknown, label: string, line: number): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
+  if (typeof value !== "string" || value.trim().length === 0 || INVALID_GRAPH_STRING.test(value)) {
     throw graphValidationError(
       "invalid-record",
       `memory-rebuild: missing ${label} at graph.jsonl:${line}.`,
@@ -494,7 +494,7 @@ function requiredString(value: unknown, label: string, line: number): string {
 
 function optionalString(value: unknown, label: string, line: number): string | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== "string" || value.length === 0) {
+  if (typeof value !== "string" || value.length === 0 || INVALID_GRAPH_STRING.test(value)) {
     throw graphValidationError(
       "invalid-record",
       `memory-rebuild: invalid ${label} at graph.jsonl:${line}.`,
@@ -525,11 +525,11 @@ function graphValidationError(
 }
 
 function strictRelationKey(record: Pick<EntityRelationRecord, "src" | "dst" | "relation">): string {
-  return `${record.src}\0${record.dst}\0${record.relation}`;
+  return JSON.stringify([record.src, record.dst, record.relation]);
 }
 
 function strictAssociationKey(record: Pick<MemoryEntityAssociation, "memoryId" | "entityId">): string {
-  return `${record.memoryId}\0${record.entityId}`;
+  return JSON.stringify([record.memoryId, record.entityId]);
 }
 
 function normalizedNameWords(text: string): string[] {
