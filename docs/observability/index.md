@@ -99,11 +99,16 @@ See the [TUI page](/observability/tui/) for details, including the embedded `--r
 ```bash
 mono-agent web
 mono-agent web --port 4599 --no-open
+mono-agent web --host 0.0.0.0 --allow-non-loopback
 mono-agent web --include-memory
 mono-agent web --max-runs 500
 ```
 
-The backend binds loopback on the stable default port `4599`. Startup prints the exact URL for reverse proxies plus a Tailscale serve hint. Run lists and the initial browser stream are summary-only; a run's full timeline is loaded lazily from its detail endpoint when opened. Memory-maintenance runs are hidden by default; pass `--include-memory` to inspect them. `--allow-non-loopback` generates a tokenized URL and protects `/api/*` plus `/api/stream`; use it only on a trusted network boundary.
+The backend binds loopback on the stable default port `4599`. Run lists and the initial browser stream are summary-only; a run's full timeline is loaded lazily from its detail endpoint when opened. Memory-maintenance runs are hidden by default; pass `--include-memory` to inspect them.
+
+For direct LAN and Tailscale access, bind `0.0.0.0` with `--allow-non-loopback`. Startup prints concrete loopback, private LAN, and Tailscale IPv4 URLs instead of `0.0.0.0`. The read-only `/api/*` and `/api/stream` surfaces require a bearer token: set stable `MONO_AGENT_WEB_AUTH_TOKEN` in the invocation folder's owner-only `.env` (or `--env-file`), or let the command generate a one-run token. Configured tokens are redacted from ordinary output; `--show-auth-url` reveals one only through an explicit interactive-terminal invocation.
+
+Direct authenticated HTTP does not depend on Tailscale Serve. Serve is optional; use it (or another HTTPS reverse proxy) only for browser capabilities such as installing the PWA and using it offline. Use a strong token and a trusted network boundary; plain LAN HTTP itself is not encrypted.
 
 A run's detail view includes a **Context (this turn)** section showing what each
 provider call was actually driven with: any recalled long-term memory (with its
