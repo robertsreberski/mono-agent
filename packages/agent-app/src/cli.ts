@@ -216,6 +216,8 @@ interface ParsedCliArgs {
   readonly open?: boolean;
   /** web: `--allow-non-loopback` permits a non-loopback bind. */
   readonly allowNonLoopback?: boolean;
+  /** web: reveal a configured auth token only to an interactive terminal. */
+  readonly showAuthUrl?: boolean;
   /** web: `--max-runs` caps the per-instance in-memory working set (default 200). */
   readonly maxRunsPerInstance?: number;
 }
@@ -297,6 +299,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let port: number | undefined;
   let open: boolean | undefined;
   let allowNonLoopback: boolean | undefined;
+  let showAuthUrl: boolean | undefined;
   let maxRunsPerInstance: number | undefined;
 
   for (let i = 0; i < rest.length; i += 1) {
@@ -400,6 +403,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--allow-non-loopback":
         allowNonLoopback = true;
+        break;
+      case "--show-auth-url":
+        showAuthUrl = true;
         break;
       case "--max-runs": {
         const raw = requireValue(rest, ++i, flag);
@@ -582,10 +588,17 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   }
 
   if (
-    (host !== undefined || port !== undefined || open !== undefined || allowNonLoopback !== undefined || maxRunsPerInstance !== undefined) &&
+    (
+      host !== undefined
+      || port !== undefined
+      || open !== undefined
+      || allowNonLoopback !== undefined
+      || showAuthUrl !== undefined
+      || maxRunsPerInstance !== undefined
+    ) &&
     cmd !== "web"
   ) {
-    throw new Error("--host, --port, --no-open, --allow-non-loopback, and --max-runs are only supported for `mono-agent web`.");
+    throw new Error("--host, --port, --no-open, --allow-non-loopback, --show-auth-url, and --max-runs are only supported for `mono-agent web`.");
   }
   if (includeMemory && cmd !== "audit-runs" && cmd !== "metrics" && cmd !== "backfill" && cmd !== "web") {
     throw new Error("--include-memory is only supported for `mono-agent audit-runs`, `mono-agent metrics`, `mono-agent backfill`, and `mono-agent web`.");
@@ -664,6 +677,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(port === undefined ? {} : { port }),
     ...(open === undefined ? {} : { open }),
     ...(allowNonLoopback === undefined ? {} : { allowNonLoopback }),
+    ...(showAuthUrl === undefined ? {} : { showAuthUrl }),
     ...(maxRunsPerInstance === undefined ? {} : { maxRunsPerInstance }),
   };
 }
@@ -817,7 +831,7 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    signature: "mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback] [--include-memory] [--max-runs <n>]",
+    signature: "mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback] [--show-auth-url] [--include-memory] [--max-runs <n>]",
     lines: [
       "Serve the read-only Session Recorder web PWA from any directory: a live",
       "flight-recorder over every agent's runs (prompt, reasoning, tools, cost).",
@@ -826,6 +840,9 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "--include-memory also shows memory-maintenance runs. --max-runs (default",
       "200) bounds the in-memory working set; the UI still pages the full",
       "on-disk history via \"Load older\".",
+      "Non-loopback mode uses MONO_AGENT_WEB_AUTH_TOKEN when set; otherwise",
+      "it generates a token. --show-auth-url reveals a configured token only",
+      "to an interactive terminal.",
     ],
   },
   {
@@ -1031,6 +1048,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.port === undefined ? {} : { port: args.port }),
         ...(args.open === undefined ? {} : { open: args.open }),
         ...(args.allowNonLoopback === undefined ? {} : { allowNonLoopback: args.allowNonLoopback }),
+        ...(args.showAuthUrl === undefined ? {} : { showAuthUrl: args.showAuthUrl }),
         includeMemory: args.includeMemory,
         ...(args.maxRunsPerInstance === undefined ? {} : { maxRunsPerInstance: args.maxRunsPerInstance }),
       });
