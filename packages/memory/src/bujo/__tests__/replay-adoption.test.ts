@@ -703,6 +703,82 @@ describe("explicit legacy replay adoption", () => {
     expect(() => adoptLegacyReplayProjection(adoptionOptions(root))).not.toThrow();
   });
 
+  it("repairs legacy association drift alongside canonical non-normalized timestamps", async () => {
+    const root = tempRoot();
+    const nonNormalized = "2026-07-12T08:30:00+00:00";
+    writeDaily(root, [
+      bullet("LEGACY-TIMESTAMP", "open", nonNormalized),
+      bullet("LEGACY-DRIFT", "open", NEW_AT),
+    ]);
+    appendGraphBatch(root, {
+      entities: [{ id: "person:private", name: "Private", type: "person", createdAt: OLD_AT }],
+    });
+    const provider = fakeEmbeddings(4);
+    const rebuilt = await safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: provider,
+      dim: 4,
+    });
+    unlinkSync(join(root, REPLAY_PROJECTION_FILE));
+    const db = openMemoryDb({ path: rebuilt.active, dim: 4 });
+    try {
+      const raw = new BetterSqlite3(rebuilt.active);
+      try {
+        raw.prepare(
+          "DELETE FROM memory_entities WHERE memory_id = ? AND entity_id = ? AND provenance = 'legacy-name-match'",
+        ).run("LEGACY-DRIFT", "person:private");
+      } finally {
+        raw.close();
+      }
+      db.addEdge("LEGACY-DRIFT", "LEGACY-TIMESTAMP", "thread", 0.75, NEW_AT);
+      db.checkpoint();
+    } finally {
+      db.close();
+    }
+
+    expect(() => adoptLegacyReplayProjection(adoptionOptions(root))).not.toThrow();
+    await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+    const normalized = openMemoryDb({ path: resolveActiveMemoryDbPath(root), readOnly: true, dim: 4 });
+    try {
+      expect(normalized.allMemoryAssociations()).toEqual(expect.arrayContaining([
+        {
+          memoryId: "LEGACY-TIMESTAMP",
+          entityId: "person:private",
+          provenance: "legacy-name-match",
+          createdAt: nonNormalized,
+        },
+        {
+          memoryId: "LEGACY-DRIFT",
+          entityId: "person:private",
+          provenance: "legacy-name-match",
+          createdAt: NEW_AT,
+        },
+      ]));
+    } finally {
+      normalized.close();
+    }
+  });
+
+  it("rejects non-normalized legacy timestamps that do not preserve the canonical memory spelling", async () => {
+    const fixture = await managedFixture({ replay: true, graph: true });
+    const raw = new BetterSqlite3(fixture.active);
+    try {
+      raw.prepare(
+        `UPDATE memory_entities
+         SET created_at = ?
+         WHERE memory_id = ? AND entity_id = ? AND provenance = 'legacy-name-match'`,
+      ).run("2026-07-12T08:30:00+00:00", "TARGET", "person:private");
+      raw.pragma("wal_checkpoint(TRUNCATE)");
+    } finally {
+      raw.close();
+    }
+
+    expect(() => adoptLegacyReplayProjection(adoptionOptions(fixture.root)))
+      .toThrow(/base parity failed.*graph payload validation/iu);
+    expect(readReplayProjectionStrict(fixture.root).state.kind).toBe("missing");
+  });
+
   it("still rejects canonical memory-field drift when live-state tolerance is enabled", async () => {
     const fixture = await managedFixture({ replay: true });
     const db = new BetterSqlite3(fixture.active);
