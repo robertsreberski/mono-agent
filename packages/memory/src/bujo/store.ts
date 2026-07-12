@@ -1,6 +1,12 @@
 import { relative } from "node:path";
 
-import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";
+import type {
+  MemoryBlock,
+  MemoryCompletedTurn,
+  MemoryCompletedTurnResult,
+  MemoryStore,
+  MemoryWriteResult,
+} from "@mono-agent/agent-contracts";
 import type { RecallHit } from "../store/index.js";
 import { openMemoryDb, type MemoryDb, type MemoryRecord } from "../store/index.js";
 
@@ -17,7 +23,17 @@ import { serializeBullet } from "./grammar.js";
 import { createIdFactory } from "./ids.js";
 import type { LlmComplete } from "./llm.js";
 import type { EmbeddingProvider } from "../search/index.js";
-import { captureTurn } from "./capture.js";
+import { captureTurn, captureTurnStrict } from "./capture.js";
+import {
+  findRetainedCaptureIntent,
+  listRetainedCaptureIntentKeys,
+  removeRetainedCaptureIntent,
+  replayCaptureIntent,
+} from "./capture-outbox.js";
+import {
+  CompletedTurnIntakeManager,
+  type CompletedTurnIntakeSnapshot,
+} from "./capture-intake.js";
 import { composeRecallBlock } from "./recall.js";
 import { recoverDurableMutationState, withSerializedBujoMutation } from "./mutation-lock.js";
 import { reflect as reflectFn, type ReflectResult } from "./reflect.js";
@@ -89,6 +105,8 @@ export interface BujoQueueSnapshot {
     readonly nextRetryAt?: string;
   };
   readonly capture?: BackgroundQueueSnapshot;
+  /** Metadata-only durable completed-turn intake state. */
+  readonly intake?: CompletedTurnIntakeSnapshot;
   readonly shutdown: {
     readonly drainTimeoutMs: number;
     readonly discarded: number;
@@ -110,6 +128,7 @@ export class BujoMemoryStore implements MemoryStore {
   private readonly backgroundDrainTimeoutMs: number;
   private indexQueue?: BoundedBatchQueue<IndexJob>;
   private captureQueue?: BoundedBatchQueue<CaptureJob>;
+  private completedTurnIntake?: CompletedTurnIntakeManager;
   private journalRecoveryPaused = false;
   private journalRecoveryFiles: string[] = [];
   private journalRecoveryCursor = 0;
@@ -231,11 +250,13 @@ export class BujoMemoryStore implements MemoryStore {
         // mismatched/ambiguous state before queues and runtime writes exist.
         recoverDurableMutationState(this.root, opened, this._tier);
       }
+      if (!this.readOnly) this.initializeCompletedTurnIntake();
       if (!this.readOnly && this._tier === "journal") this.initializeJournalIndexing();
       if (!this.readOnly && this._tier === "bujo") this.initializeCaptureQueue();
       if (!this.readOnly) this.initializeRuntimeSnapshot();
     } catch (error) {
       const cleanupErrors: unknown[] = [];
+      try { this.completedTurnIntake?.abortForShutdown(false); } catch (closeError) { cleanupErrors.push(closeError); }
       try { opened?.close(); } catch (closeError) { cleanupErrors.push(closeError); }
       try { writerLease?.release(); } catch (releaseError) { cleanupErrors.push(releaseError); }
       throw withCleanupErrors(error, cleanupErrors, "memory-bujo initialization failed");
@@ -342,6 +363,137 @@ export class BujoMemoryStore implements MemoryStore {
     return this._tier === "bujo"
       ? await this.runAdmittedWrite("appendHostSummary", run)
       : await this.runAdmittedMutation("appendHostSummary", run);
+  }
+
+  /**
+   * Admit one provider-completed turn at the durable run-id boundary. Provider
+   * curation is explicitly downstream of this fsynced, idempotent publication.
+   */
+  async persistCompletedTurn(turn: MemoryCompletedTurn): Promise<MemoryCompletedTurnResult> {
+    this.assertWritable("persistCompletedTurn");
+    const intake = this.completedTurnIntake;
+    if (intake === undefined) throw new Error("memory-bujo: completed-turn intake is unavailable.");
+    const result = intake.admit(turn);
+    return {
+      id: result.id,
+      runId: turn.runId,
+      conversationId: turn.conversationId,
+      source: result.source,
+      bytesWritten: result.bytesWritten,
+      admissionStatus: result.admissionStatus,
+    };
+  }
+
+  /** Idempotently project a durable intake record into the tier's compact host summary. */
+  private async appendCompletedTurnSummary(
+    turn: MemoryCompletedTurn,
+    intakeId: string,
+    admittedAt: string,
+    abortSignal: AbortSignal,
+  ): Promise<void> {
+    abortSignal.throwIfAborted();
+    const now = new Date(admittedAt);
+    // Admission already rejected reserved/control/format characters. Preserve
+    // every remaining code point; only the host summary's documented layout
+    // whitespace is projected to the one-line bullet grammar.
+    const text = turn.summary.trim().replace(/[\t\r\n ]+/gu, " ");
+    if (text.length === 0) throw new Error("memory-bujo: completed-turn summary normalizes to empty text.");
+    const hash = normalizedContentHash(text);
+    const bullet: Bullet = {
+      id: `R-${intakeId}`,
+      type: "note",
+      status: "open",
+      text,
+      salience: 0.5,
+      isInsight: false,
+      createdAt: admittedAt,
+      refs: [`run-sha256:${intakeId}`, `sha256:${hash}`],
+    };
+    const relativePath = this._tier === "bujo"
+      ? relative(this.root, auditFilePath(this.root, now))
+      : relative(this.root, dailyFilePath(this.root, now));
+    await serializeJournalWrite(this.root, abortSignal, async () => await withJournalWriteLockRetry(
+      this.root,
+      this.db.busyTimeoutMs(),
+      abortSignal,
+      () => {
+        abortSignal.throwIfAborted();
+        const snapshot = readCanonicalFileSnapshot(this.root, relativePath, { allowMissing: true });
+        const matches = snapshot === undefined
+          ? []
+          : parseDailyFile(snapshot.content).bullets.filter((candidate) => candidate.id === bullet.id);
+        if (matches.length > 1) {
+          throw new Error("memory-bujo: completed-turn canonical summary id is duplicated.");
+        }
+        if (matches.length === 1) {
+          const existing = matches[0]!;
+          if (existing.text !== bullet.text || existing.createdAt !== bullet.createdAt
+            || existing.refs.join("\u0000") !== bullet.refs.join("\u0000")) {
+            throw new Error("memory-bujo: completed-turn canonical summary conflicts with its run id.");
+          }
+        } else if (this._tier === "bujo") {
+          appendAuditBullet(this.root, bullet, now);
+        } else {
+          appendBullet(this.root, bullet, now);
+        }
+        abortSignal.throwIfAborted();
+        if (this._tier === "bujo") return;
+
+        const recordId = this._tier === "journal" ? `J-${hash}` : bullet.id;
+        const record: MemoryRecord = {
+          id: recordId,
+          type: bullet.type,
+          status: bullet.status,
+          text: bullet.text,
+          salience: bullet.salience,
+          isInsight: bullet.isInsight,
+          createdAt: bullet.createdAt,
+          accessCount: 0,
+          tags: [],
+          source: { session: turn.conversationId, file: relativePath },
+        };
+        if (this._tier === "journal") {
+          const outcome = this.db.insertJournalLexical(record, hash);
+          if (outcome.inserted || !this.db.hasVector(record.id)) this.enqueueIndex(record);
+        } else {
+          this.db.upsertLexical(record);
+        }
+      },
+    ));
+  }
+
+  private async captureCompletedTurn(
+    turn: MemoryCompletedTurn,
+    intakeId: string,
+    admittedAt: string,
+    abortSignal: AbortSignal,
+  ): Promise<"captured" | "summary_only"> {
+    return await withSerializedBujoMutation({
+      root: this.root,
+      db: this.db,
+      tier: this._tier,
+      abortSignal,
+    }, async () => {
+      const retained = findRetainedCaptureIntent(this.root, intakeId);
+      if (retained !== undefined) {
+        replayCaptureIntent(this.root, retained, this.db, { retainIntent: true });
+        return "captured";
+      }
+      const text = turn.captureText;
+      if (this._tier !== "bujo" || this.llm === undefined || text === undefined || text.trim().length === 0) {
+        return "summary_only";
+      }
+      await captureTurnStrict(text, {
+        db: this.db,
+        root: this.root,
+        llm: this.llm!,
+        nextId: completedTurnCaptureIdFactory(intakeId),
+        now: () => new Date(admittedAt),
+        abortSignal,
+        captureRetentionKey: intakeId,
+      });
+      return "captured";
+    });
   }
 
   /** Run a direct write that was admitted before close() stopped new mutation. */
@@ -493,6 +645,9 @@ export class BujoMemoryStore implements MemoryStore {
   /** Await all captures queued before this call (graceful shutdown / one-shot exit). */
   async flush(): Promise<void> {
     await this.journalRecoveryPromise;
+    // Intake may enqueue Journal vectors, so its durable projection must run
+    // before the index queue's drain barrier.
+    await this.completedTurnIntake?.flush();
     await this.indexQueue?.flush();
     await this.captureQueue?.flush();
     if (!this.closing) this.publishRuntimeSnapshot("running");
@@ -514,6 +669,7 @@ export class BujoMemoryStore implements MemoryStore {
         },
       }),
       ...(this.captureQueue === undefined ? {} : { capture: this.captureQueue.snapshot() }),
+      ...(this.completedTurnIntake === undefined ? {} : { intake: this.completedTurnIntake.snapshot() }),
       shutdown: {
         drainTimeoutMs: this.backgroundDrainTimeoutMs,
         discarded: this.shutdownDiscarded,
@@ -618,6 +774,7 @@ export class BujoMemoryStore implements MemoryStore {
         for (const operation of this.admittedOperations) operation.controller.abort(timeoutReason);
         this.activeIndexController?.abort(new Error("memory background drain deadline exceeded"));
         this.activeCaptureController?.abort(new Error("memory background drain deadline exceeded"));
+        this.completedTurnIntake?.abortForShutdown(true);
         this.safeWarn(
           `memory operation/background drain exceeded ${this.backgroundDrainTimeoutMs}ms; pending work was abandoned before further canonical or SQLite access while durable source remains.`,
         );
@@ -628,6 +785,7 @@ export class BujoMemoryStore implements MemoryStore {
       const cleanupErrors: unknown[] = [];
       this.indexQueue?.stopAccepting();
       this.captureQueue?.stopAccepting();
+      if (!this.shutdownTimedOut) this.completedTurnIntake?.finishShutdown();
       this.publishRuntimeSnapshot("closed");
       this.runtimeSnapshotEnabled = false;
       this.disableRuntimeTimers();
@@ -645,6 +803,7 @@ export class BujoMemoryStore implements MemoryStore {
     await Promise.all([...this.admittedOperations].map(async (operation) => await operation.settled));
     this.indexQueue?.stopAccepting();
     this.captureQueue?.stopAccepting();
+    this.completedTurnIntake?.stopAccepting();
     await this.flush();
   }
 
@@ -704,6 +863,34 @@ export class BujoMemoryStore implements MemoryStore {
       },
       onError: (error) => this.safeWarn(`bujo capture failed: ${reasonOf(error)}`),
       onChange: () => this.scheduleRuntimeSnapshot(),
+    });
+  }
+
+  private initializeCompletedTurnIntake(): void {
+    this.completedTurnIntake = new CompletedTurnIntakeManager({
+      root: this.root,
+      clock: this.clock,
+      writeSummary: async (turn, id, admittedAt, signal) => {
+        await this.appendCompletedTurnSummary(turn, id, admittedAt, signal);
+      },
+      capture: async (turn, id, admittedAt, signal) => await this.captureCompletedTurn(
+        turn,
+        id,
+        admittedAt,
+        signal,
+      ),
+      afterResolved: async (id) => await withSerializedBujoMutation({
+        root: this.root,
+        db: this.db,
+        tier: this._tier,
+      }, async () => { removeRetainedCaptureIntent(this.root, id); }),
+      cleanupResolved: (ids) => {
+        const resolved = new Set(ids);
+        for (const key of listRetainedCaptureIntentKeys(this.root)) {
+          if (resolved.has(key)) removeRetainedCaptureIntent(this.root, key);
+        }
+      },
+      warn: (message) => this.safeWarn(message),
     });
   }
 
@@ -1035,6 +1222,16 @@ async function withJournalWriteLockRetry<T>(
 
 function retryDelayMs(attempt: number): number {
   return Math.min(JOURNAL_RETRY_MAX_DELAY_MS, JOURNAL_RETRY_DELAY_MS * (2 ** Math.min(attempt, 10)));
+}
+
+/** Stable per-run ids make semantic ADD/SUPERSEDE replay converge after a post-commit crash. */
+function completedTurnCaptureIdFactory(intakeId: string): () => string {
+  let index = 0;
+  return () => {
+    const id = `C-${intakeId}-${String(index).padStart(2, "0")}`;
+    index += 1;
+    return id;
+  };
 }
 
 async function waitForDrain(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {

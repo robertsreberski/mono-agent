@@ -1,8 +1,8 @@
 import { normalizeCandidate, type CandidateMemory } from "./distill.js";
 import { normalizeExtraction, type ExtractedEntity, type ExtractedRelation } from "./entities.js";
-import { parseJsonLoose } from "./json.js";
+import { parseJsonExact, parseJsonLoose } from "./json.js";
 import type { LlmComplete } from "./llm.js";
-import { MemoryModelError } from "./model-error.js";
+import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 
 export const MAX_CAPTURE_MEMORIES = 8;
 export const MAX_CAPTURE_ENTITIES = 16;
@@ -69,6 +69,153 @@ export async function extractCapturePlan(text: string, llm: LlmComplete, abortSi
   });
   const candidates = dedupeCaptureCandidates(normalizedCandidates);
   return { candidates, entities, relations };
+}
+
+/**
+ * Strict completed-turn extraction. Every item is accepted as a whole or the
+ * whole attempt fails; no coercion, truncation, filtering, or partial success.
+ */
+export async function extractCapturePlanStrict(
+  text: string,
+  llm: LlmComplete,
+  abortSignal?: AbortSignal,
+): Promise<CapturePlan> {
+  if (text.trim().length === 0) return { candidates: [], entities: [], relations: [] };
+  let raw: string;
+  try {
+    raw = await llm.complete(prompt(text), {
+      label: "capture:extract",
+      ...(abortSignal === undefined ? {} : { abortSignal }),
+    });
+  } catch (cause) {
+    throw new MemoryModelError("llm", "capture-extract", cause);
+  }
+  abortSignal?.throwIfAborted();
+  let parsed: unknown;
+  try {
+    parsed = parseJsonExact<unknown>(raw);
+  } catch {
+    throw outputError("capture-extract", "completion is not exact JSON");
+  }
+  if (!isRecord(parsed) || !hasExactKeys(parsed, ["memories", "entities", "relations"])) {
+    throw outputError("capture-extract", "root must contain only memories, entities, and relations");
+  }
+  if (!Array.isArray(parsed.memories) || !Array.isArray(parsed.entities) || !Array.isArray(parsed.relations)) {
+    throw outputError("capture-extract", "all three root arrays are required");
+  }
+  if (parsed.memories.length > MAX_CAPTURE_MEMORIES
+    || parsed.entities.length > MAX_CAPTURE_ENTITIES
+    || parsed.relations.length > MAX_CAPTURE_RELATIONS) {
+    throw outputError("capture-extract", "one or more arrays exceed their item bound");
+  }
+
+  const entities = parsed.entities.map((value, index) => strictEntity(value, index));
+  const entityIds = new Set<string>();
+  for (const entity of entities) {
+    if (entityIds.has(entity.id)) throw outputError("capture-extract", "entity ids must be unique");
+    entityIds.add(entity.id);
+  }
+  const relations = parsed.relations.map((value, index) => strictRelation(value, index, entityIds));
+  const relationKeys = new Set<string>();
+  for (const relation of relations) {
+    const key = `${relation.src}\u0000${relation.dst}\u0000${relation.relation}`;
+    if (relationKeys.has(key)) throw outputError("capture-extract", "relations must be unique");
+    relationKeys.add(key);
+  }
+  const candidates = parsed.memories.map((value, index) => strictCandidate(value, index, entityIds));
+  const candidateTokenSets: string[][] = [];
+  for (const candidate of candidates) {
+    const tokens = candidateTokens(candidate.text);
+    const key = tokens.join("\u0000");
+    if (candidateTokenSets.some((prior) => prior.join("\u0000") === key
+      || isAmbiguousNearDuplicate(prior, tokens))) {
+      throw outputError("capture-extract", "memories must be distinct and non-ambiguous");
+    }
+    candidateTokenSets.push(tokens);
+  }
+  return { candidates, entities, relations };
+}
+
+const STRICT_ENTITY_ID = /^[a-z][a-z0-9-]{0,31}:[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const STRICT_ENTITY_TYPE = /^[a-z][a-z0-9-]{0,47}$/u;
+const STRICT_RELATION = /^[a-z0-9]+(?:[ -][a-z0-9]+)*$/u;
+
+function strictCandidate(value: unknown, index: number, entityIds: ReadonlySet<string>): CandidateMemory {
+  if (!isRecord(value) || !hasExactKeys(value, ["type", "text", "salience", "isInsight", "entityIds"])) {
+    throw outputError("capture-extract", `memory ${index} has missing or unknown fields`);
+  }
+  if (value.type !== "task" && value.type !== "event" && value.type !== "note") {
+    throw outputError("capture-extract", `memory ${index} has an unknown type`);
+  }
+  const text = strictText(value.text, 160, `memory ${index} text`);
+  if (text.includes("<!--mem")) throw outputError("capture-extract", `memory ${index} text contains a reserved delimiter`);
+  if (typeof value.salience !== "number" || !Number.isFinite(value.salience)
+    || value.salience < 0 || value.salience > 1) {
+    throw outputError("capture-extract", `memory ${index} salience is invalid`);
+  }
+  if (typeof value.isInsight !== "boolean" || !Array.isArray(value.entityIds)
+    || value.entityIds.length > MAX_CAPTURE_ENTITIES) {
+    throw outputError("capture-extract", `memory ${index} flags or entityIds are invalid`);
+  }
+  const associated = value.entityIds.map((id, entityIndex) => {
+    const exact = strictText(id, 96, `memory ${index} entityIds ${entityIndex}`);
+    if (!entityIds.has(exact)) throw outputError("capture-extract", `memory ${index} references an unknown entity`);
+    return exact;
+  });
+  if (new Set(associated).size !== associated.length) {
+    throw outputError("capture-extract", `memory ${index} repeats an entity id`);
+  }
+  return { type: value.type, text, salience: value.salience, isInsight: value.isInsight, entityIds: associated };
+}
+
+function strictEntity(value: unknown, index: number): ExtractedEntity {
+  if (!isRecord(value) || !hasExactKeys(value, ["id", "name", "type"])) {
+    throw outputError("capture-extract", `entity ${index} has missing or unknown fields`);
+  }
+  const id = strictText(value.id, 96, `entity ${index} id`);
+  const name = strictText(value.name, 160, `entity ${index} name`);
+  const type = strictText(value.type, 48, `entity ${index} type`);
+  if (!STRICT_ENTITY_ID.test(id) || !STRICT_ENTITY_TYPE.test(type) || id.slice(0, id.indexOf(":")) !== type) {
+    throw outputError("capture-extract", `entity ${index} has an invalid id or type`);
+  }
+  return { id, name, type };
+}
+
+function strictRelation(value: unknown, index: number, entityIds: ReadonlySet<string>): ExtractedRelation {
+  if (!isRecord(value) || !hasExactKeys(value, ["src", "dst", "relation"])) {
+    throw outputError("capture-extract", `relation ${index} has missing or unknown fields`);
+  }
+  const src = strictText(value.src, 96, `relation ${index} src`);
+  const dst = strictText(value.dst, 96, `relation ${index} dst`);
+  const relation = strictText(value.relation, 96, `relation ${index} relation`);
+  if (!entityIds.has(src) || !entityIds.has(dst) || !STRICT_RELATION.test(relation)) {
+    throw outputError("capture-extract", `relation ${index} references invalid graph data`);
+  }
+  return { src, dst, relation };
+}
+
+function strictText(value: unknown, maxCodePoints: number, label: string): string {
+  if (typeof value !== "string" || value.length === 0 || value.trim().length === 0
+    || value !== value.trim() || [...value].length > maxCodePoints
+    || Buffer.byteLength(value, "utf8") > maxCodePoints * 4
+    || /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(value)) {
+    throw outputError("capture-extract", `${label} is invalid or exceeds its bound`);
+  }
+  return value;
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function outputError(stage: string, detail: string): MemoryModelOutputError {
+  return new MemoryModelOutputError(stage, detail);
 }
 
 /**

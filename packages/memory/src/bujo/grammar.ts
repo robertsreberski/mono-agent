@@ -78,7 +78,7 @@ export function parseBullet(line: string): Bullet | undefined {
 }
 
 export function serializeBullet(bullet: Bullet): string {
-  if (bullet.text.includes("\n") || bullet.text.includes("<!--mem")) {
+  if (/[\r\n\p{Zl}\p{Zp}]/u.test(bullet.text) || bullet.text.includes("<!--mem")) {
     throw new Error("memory-bujo: bullet text must not contain a newline or the '<!--mem' delimiter.");
   }
   const marker = MARKER_FOR(bullet.type, bullet.status);

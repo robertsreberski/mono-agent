@@ -89,6 +89,8 @@ interface CaptureIntent {
   readonly state: "pending" | "complete";
   readonly id: string;
   readonly createdAt: string;
+  /** Run-keyed owner that keeps this exact plan replayable until intake resolves. */
+  readonly retentionKey?: string;
   readonly actions: readonly CaptureIntentAction[];
   readonly graph: {
     readonly entities: readonly EntityRecord[];
@@ -99,6 +101,10 @@ interface CaptureIntent {
 
 export interface CaptureIntentHandle {
   readonly file: string;
+}
+
+export interface CaptureIntentWriteOptions {
+  readonly retentionKey?: string;
 }
 
 export interface CaptureIntentReplayResult extends GraphBatchResult {
@@ -116,6 +122,7 @@ export function writeCaptureIntent(
   actions: readonly CaptureIntentAction[],
   graph: GraphBatchInput,
   createdAt: string,
+  options: CaptureIntentWriteOptions = {},
 ): CaptureIntentHandle {
   if (actions.length > MAX_ACTIONS) throw new Error("memory-capture: prepared action batch exceeds the outbox bound.");
   const files = listCanonicalFileNames(root, OUTBOX_DIR, {
@@ -123,12 +130,19 @@ export function writeCaptureIntent(
     include: (name) => INTENT_FILE_RE.test(name),
   });
   if (files.length >= MAX_INTENTS) throw new Error("memory-capture: pending capture outbox is full; restart recovery before capturing more.");
+  if (options.retentionKey !== undefined) {
+    assertRetentionKey(options.retentionKey);
+    if (findRetainedCaptureIntent(root, options.retentionKey) !== undefined) {
+      throw new Error("memory-capture: retained run already owns a durable capture intent.");
+    }
+  }
   const id = randomUUID();
   const intent: CaptureIntent = {
     schemaVersion: 1,
     state: "pending",
     id,
     createdAt,
+    ...(options.retentionKey === undefined ? {} : { retentionKey: options.retentionKey }),
     actions,
     graph: {
       entities: [...(graph.entities ?? [])],
@@ -144,6 +158,38 @@ export function writeCaptureIntent(
   const file = `${OUTBOX_DIR}/intent-${id}.json`;
   writeCanonicalFileAtomic(root, file, data);
   return { file };
+}
+
+/** Find one exact run-owned intent without exposing its payload. */
+export function findRetainedCaptureIntent(root: string, retentionKey: string): CaptureIntentHandle | undefined {
+  assertRetentionKey(retentionKey);
+  const matches = captureIntentFiles(root)
+    .map((name) => loadReplay(root, `${OUTBOX_DIR}/${name}`))
+    .filter(({ intent }) => intent.retentionKey === retentionKey);
+  if (matches.length > 1) throw new Error("memory-capture: retained run owns multiple capture intents.");
+  return matches[0] === undefined ? undefined : { file: matches[0].file };
+}
+
+/** Content-free keys for bounded startup cleanup after intake resolution. */
+export function listRetainedCaptureIntentKeys(root: string): string[] {
+  return captureIntentFiles(root)
+    .map((name) => loadReplay(root, `${OUTBOX_DIR}/${name}`).intent.retentionKey)
+    .filter((key): key is string => key !== undefined)
+    .sort();
+}
+
+/** Remove a run-owned exact-plan receipt only after its intake resolution is durable. */
+export function removeRetainedCaptureIntent(root: string, retentionKey: string): boolean {
+  const handle = findRetainedCaptureIntent(root, retentionKey);
+  if (handle === undefined) return false;
+  const snapshot = readCanonicalFileSnapshot(root, handle.file, { maxBytes: MAX_INTENT_BYTES });
+  if (snapshot === undefined) return false;
+  const intent = parseIntent(snapshot.content);
+  if (intent.retentionKey !== retentionKey) {
+    throw new Error("memory-capture: retained intent ownership changed before cleanup.");
+  }
+  removeCanonicalFile(root, handle.file, snapshot.identity);
+  return true;
 }
 
 /** Replay one just-written intent through the same exact-match path used at startup. */
@@ -272,6 +318,7 @@ function applyReplay(
 ): CaptureIntentReplayResult {
   const { file, snapshot, intent, writes, appliedMemoryIds } = plan;
   if (intent.state === "complete") {
+    if (intent.retentionKey !== undefined) return emptyReplay();
     removeCanonicalFile(root, file, snapshot.identity);
     return emptyReplay();
   }
@@ -315,7 +362,7 @@ function applyReplay(
     assertDbReplayOutcome(db, intent.actions, canonical);
   }
 
-  if (options.retainIntent === true) {
+  if (options.retainIntent === true || intent.retentionKey !== undefined) {
     return { ...canonical, appliedMemoryIds: [...appliedMemoryIds] };
   }
 
@@ -694,6 +741,8 @@ function parseIntent(raw: string): CaptureIntent {
     || (value.state !== "pending" && value.state !== "complete")
     || typeof value.id !== "string" || !/^[a-f0-9-]{36}$/u.test(value.id)
     || typeof value.createdAt !== "string" || !Number.isFinite(Date.parse(value.createdAt))
+    || (value.retentionKey !== undefined && (typeof value.retentionKey !== "string"
+      || !/^[a-f0-9]{64}$/u.test(value.retentionKey)))
     || !Array.isArray(value.actions) || value.actions.length > MAX_ACTIONS
     || !isRecord(value.graph)
     || !Array.isArray(value.graph.entities) || value.graph.entities.length > MAX_ENTITIES
@@ -733,6 +782,10 @@ function parseIntent(raw: string): CaptureIntent {
     throw new Error("memory-capture: outbox relation has an unknown entity endpoint.");
   }
   return intent;
+}
+
+function assertRetentionKey(value: string): void {
+  if (!/^[a-f0-9]{64}$/u.test(value)) throw new Error("memory-capture: retention key is invalid.");
 }
 
 function validateAction(action: CaptureIntentAction): void {
