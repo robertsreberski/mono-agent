@@ -28,4 +28,5 @@ docs/superpowers/
 
 # Local-only agent notes + git hooks (never commit; keep personal identity/policy off the public repo)
 AGENTS.local.md
+.claude/settings.local.json
 .githooks/
