@@ -1,7 +1,7 @@
 import { useMemo } from "react";
-import type { Session, WebInstance } from "../lib/types";
+import type { Session, TraceSourceMemoryHealth, TraceSourceMemoryIssue, WebInstance } from "../lib/types";
 import { dateStr, timeStr, fmtCost, fmtTok, channelOf, channelColor, channelLabel } from "../lib/format";
-import { FONT_MONO, TEXT, MUTED, DIM, AMBER, BLUE, TEAL, VIOLET, CHANNEL_ORDER } from "../lib/tokens";
+import { FONT_MONO, TEXT, MUTED, DIM, AMBER, BLUE, TEAL, VIOLET, OK, ERROR, CHANNEL_ORDER } from "../lib/tokens";
 
 interface Props {
   instances: WebInstance[];
@@ -20,6 +20,10 @@ export interface InstanceCard {
   liveConnected: boolean;
   healthLabel: string;
   healthColor: string;
+  memoryStatus: string;
+  memoryLabel: string;
+  memoryColor: string;
+  memoryTitle: string;
   stats: { label: string; value: string; color: string }[];
   chSegs: { label: string; color: string; n: number }[];
   statusBadges: { label: string; n: number; color: string }[];
@@ -27,6 +31,60 @@ export interface InstanceCard {
   sil: number;
   last: string;
   ariaSummary: string;
+}
+
+const MEMORY_ISSUE_CODES = new Set<TraceSourceMemoryIssue>([
+  "manifest_missing",
+  "manifest_invalid",
+  "configured_identity_mismatch",
+  "database_missing",
+  "database_unavailable",
+  "native_module_unavailable",
+  "sqlite_integrity_failed",
+  "metadata_mismatch",
+  "fts_mismatch",
+  "vector_mismatch",
+  "orphaned_rows",
+  "canonical_mismatch",
+  "canonical_invalid",
+  "mutation_in_progress",
+  "intake_invalid",
+  "intake_pending",
+  "dead_letters",
+  "outbox_invalid",
+  "outbox_pending",
+  "temporary_artifacts",
+  "runtime_missing",
+  "runtime_stale",
+  "runtime_invalid",
+]);
+
+export function memoryInfo(memoryHealth: TraceSourceMemoryHealth | undefined): {
+  status: string;
+  label: string;
+  color: string;
+  title: string;
+} {
+  const status = memoryHealth?.status ?? "unknown";
+  const presentation = status === "healthy"
+    ? { label: "memory healthy", color: OK }
+    : status === "in_progress"
+      ? { label: "memory in progress", color: TEAL }
+      : status === "degraded"
+        ? { label: "memory degraded", color: AMBER }
+        : status === "unhealthy"
+          ? { label: "memory unhealthy", color: ERROR }
+          : status === "not_configured"
+            ? { label: "memory off", color: DIM }
+            : { label: "memory unknown", color: DIM };
+  const stableIssues = (memoryHealth?.issues ?? []).filter(
+    (issue): issue is TraceSourceMemoryIssue => MEMORY_ISSUE_CODES.has(issue),
+  );
+  return {
+    status,
+    ...presentation,
+    title: stableIssues.length === 0 ? presentation.label : `${presentation.label}: ${stableIssues.join(", ")}`,
+  };
 }
 
 export function healthInfo(instance: Pick<WebInstance, "health" | "liveConnected">): { label: string; color: string } {
@@ -104,6 +162,7 @@ export function buildInstanceCards(instances: readonly WebInstance[], sessions: 
       const times = arr.map((s) => +new Date(s.startTs));
       const last = times.length > 0 ? Math.max(...times) : undefined;
       const health = healthInfo(instance);
+      const memory = memoryInfo(instance.memoryHealth);
       const orderedChannels = [
         ...chOrder.filter((c) => chCount[c]),
         ...Object.keys(chCount).filter((c) => !chOrder.includes(c as (typeof chOrder)[number])).sort(),
@@ -137,13 +196,17 @@ export function buildInstanceCards(instances: readonly WebInstance[], sessions: 
         liveConnected: instance.liveConnected,
         healthLabel: health.label,
         healthColor: health.color,
+        memoryStatus: memory.status,
+        memoryLabel: memory.label,
+        memoryColor: memory.color,
+        memoryTitle: memory.title,
         stats,
         chSegs,
         statusBadges,
         noti,
         sil,
         last: lastLabel,
-        ariaSummary: `${instance.label}: ${arr.length} runs, ${health.label}. ${stats.map((s) => `${s.label} ${s.value}`).join(", ")}. ${channelSummary}. ${statusSummary}. ${noti} replied, ${sil} silent. Last ${lastLabel}.`,
+        ariaSummary: `${instance.label}: ${arr.length} runs, ${health.label}, ${memory.title}. ${stats.map((s) => `${s.label} ${s.value}`).join(", ")}. ${channelSummary}. ${statusSummary}. ${noti} replied, ${sil} silent. Last ${lastLabel}.`,
       };
     });
 }
@@ -235,6 +298,24 @@ export function InstancesView({ instances, sessions, onOpenInstance }: Props) {
                 }}
               >
                 {ic.healthLabel}
+              </span>
+              <span
+                title={ic.memoryTitle}
+                aria-label={ic.memoryTitle}
+                data-memory-status={ic.memoryStatus}
+                style={{
+                  fontFamily: FONT_MONO,
+                  fontSize: 10,
+                  color: ic.memoryColor,
+                  background: "rgba(255,255,255,.04)",
+                  border: `1px solid ${ic.memoryColor}55`,
+                  padding: "3px 7px",
+                  borderRadius: 6,
+                  textTransform: "uppercase",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {ic.memoryLabel}
               </span>
             </div>
             <div

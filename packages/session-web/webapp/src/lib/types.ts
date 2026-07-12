@@ -205,6 +205,59 @@ export interface WebInstance {
   liveConnected: boolean;
   counts: { runs: number };
   timeZone?: string;
+  memoryHealth?: TraceSourceMemoryHealth;
+}
+
+export type TraceSourceMemoryBackend = "bujo" | "supermemory" | "none";
+export type TraceSourceMemoryMode = "lite" | "journal" | "bujo";
+export type TraceSourceMemoryStatus =
+  | "healthy"
+  | "in_progress"
+  | "degraded"
+  | "unhealthy"
+  | "unknown"
+  | "not_configured";
+export type TraceSourceMemoryIssue =
+  | "manifest_missing"
+  | "manifest_invalid"
+  | "configured_identity_mismatch"
+  | "database_missing"
+  | "database_unavailable"
+  | "native_module_unavailable"
+  | "sqlite_integrity_failed"
+  | "metadata_mismatch"
+  | "fts_mismatch"
+  | "vector_mismatch"
+  | "orphaned_rows"
+  | "canonical_mismatch"
+  | "canonical_invalid"
+  | "mutation_in_progress"
+  | "intake_invalid"
+  | "intake_pending"
+  | "dead_letters"
+  | "outbox_invalid"
+  | "outbox_pending"
+  | "temporary_artifacts"
+  | "runtime_missing"
+  | "runtime_stale"
+  | "runtime_invalid";
+
+export interface TraceSourceMemoryHealth {
+  backend: TraceSourceMemoryBackend;
+  mode?: TraceSourceMemoryMode;
+  status: TraceSourceMemoryStatus;
+  checkedAt: string;
+  issues?: TraceSourceMemoryIssue[];
+  counts?: {
+    pending?: number;
+    due?: number;
+    dead?: number;
+    outbox?: number;
+    temporary?: number;
+    memories?: number;
+    vectors?: number;
+    missingVectors?: number;
+  };
 }
 
 // SSE stream envelope (each `data:` line is one of these).

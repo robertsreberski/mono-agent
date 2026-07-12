@@ -21,7 +21,13 @@ import { join } from "node:path";
 
 import type { RunEventFrame } from "@mono-agent/agent-contracts";
 import { mapRunToSession } from "@mono-agent/observability";
-import type { RunSummary, RunSummaryStatus, RuntimeEventLike } from "@mono-agent/observability";
+import type {
+  RunSummary,
+  RunSummaryStatus,
+  RuntimeEventLike,
+  TraceSourceMemoryCounts,
+  TraceSourceMemoryHealth,
+} from "@mono-agent/observability";
 
 import { discoverWebInstances, resolveLiveApiKey } from "./discovery.js";
 import type { DiscoveredWebInstance } from "./discovery.js";
@@ -852,7 +858,8 @@ export class SessionAggregator {
       previous.instance.label !== discovered.instance.label ||
       previous.instance.cwd !== discovered.instance.cwd ||
       previous.instance.timeZone !== discovered.instance.timeZone ||
-      previous.instance.timezone !== discovered.instance.timezone;
+      previous.instance.timezone !== discovered.instance.timezone ||
+      !memoryHealthEquals(previous.instance.memoryHealth, discovered.instance.memoryHealth);
     let liveReconnected = false;
 
     if (previous.instance.artifactDir !== discovered.instance.artifactDir) {
@@ -958,6 +965,7 @@ export class SessionAggregator {
       health: base.health,
       ...(base.timeZone === undefined ? {} : { timeZone: base.timeZone }),
       ...(base.timezone === undefined ? {} : { timezone: base.timezone }),
+      ...(base.memoryHealth === undefined ? {} : { memoryHealth: base.memoryHealth }),
       liveConnected: state.liveConnected,
       counts: { runs: state.sessions.size },
     };
@@ -1078,6 +1086,55 @@ export class SessionAggregator {
       this.scheduleInstancesEmit();
     }
   }
+}
+
+const MEMORY_COUNT_KEYS = [
+  "pending",
+  "due",
+  "dead",
+  "outbox",
+  "temporary",
+  "memories",
+  "vectors",
+  "missingVectors",
+] as const satisfies readonly (keyof TraceSourceMemoryCounts)[];
+
+function memoryHealthEquals(
+  left: TraceSourceMemoryHealth | undefined,
+  right: TraceSourceMemoryHealth | undefined,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left === undefined || right === undefined) {
+    return false;
+  }
+  return left.backend === right.backend &&
+    left.mode === right.mode &&
+    left.status === right.status &&
+    left.checkedAt === right.checkedAt &&
+    stringArraysEqual(left.issues, right.issues) &&
+    memoryCountsEqual(left.counts, right.counts);
+}
+
+function stringArraysEqual(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
+  if (left === right) {
+    return true;
+  }
+  return left !== undefined && right !== undefined &&
+    left.length === right.length &&
+    left.every((value, index) => value === right[index]);
+}
+
+function memoryCountsEqual(
+  left: TraceSourceMemoryCounts | undefined,
+  right: TraceSourceMemoryCounts | undefined,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  return left !== undefined && right !== undefined &&
+    MEMORY_COUNT_KEYS.every((key) => left[key] === right[key]);
 }
 
 class BoundedStringFifoSet {
