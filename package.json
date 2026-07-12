@@ -10,7 +10,7 @@
   },
   "scripts": {
     "preinstall": "node scripts/node-version.mjs",
-    "build": "pnpm -r --sort run build && pnpm run build:demo",
+    "build": "node scripts/build-with-provenance.mjs",
     "check:node": "node scripts/node-version.mjs",
     "check:secrets": "node scripts/check-secrets.mjs",
     "check:oss-hygiene": "node scripts/check-oss-hygiene.mjs",

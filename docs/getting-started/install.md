@@ -159,7 +159,20 @@ pnpm install --frozen-lockfile
 pnpm run build
 ```
 
-`pnpm run build` builds every package (and the demos) in dependency order. After the build, the CLI entry point is `packages/agent-app/dist/cli.js`. For a literal source-build smoke test from a clean folder, call that entry directly:
+`pnpm run build` builds every package (and the demos) in dependency order. On supported POSIX/macOS
+hosts it first acquires the ignored exclusive `.mono-agent-build.lock`, removes the prior
+`.mono-agent-build.json`, syncs the completed deploy outputs, and atomically publishes a canonical
+owner-only marker. The marker records the full source SHA and state, Node version and ABI, completion
+time, and a deterministic digest of the actual deploy outputs. Fleet deployment checks require the
+checkout to remain clean on both reads, recompute the current output digest, and bind every running
+instance to the full expected SHA. The marker and lock are operational state, not files to commit or
+copy between checkouts. A concurrent build fails closed; remove a stale lock only after proving no
+root build is still active, then rerun the complete build. Windows and unsupported hosts still run the
+normal build commands but do not publish this POSIX/macOS deploy proof. On a managed launchd fleet,
+`--expect-labels <csv>` additionally pins the exact host topology; auto-discovery alone cannot detect a
+plist that was removed. After the build, the CLI entry point is
+`packages/agent-app/dist/cli.js`. For a literal source-build smoke test from a clean folder, call that
+entry directly:
 
 ```bash
 repo=/absolute/path/to/mono-agent
