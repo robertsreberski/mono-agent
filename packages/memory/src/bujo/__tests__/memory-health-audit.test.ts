@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -84,6 +85,27 @@ describe("strict BuJo memory health", () => {
       expect(result.status).toBe("healthy");
       expect(result.issues).toEqual([]);
       expect(JSON.stringify(result)).not.toContain("private-conversation");
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("reports a just-admitted real Lite turn as in progress without runtime drift", async () => {
+    const root = tempRoot();
+    const store = createBujoMemoryStore({ root, clock: () => NOW });
+    try {
+      await store.persistCompletedTurn({
+        runId: "immediate-health-admission",
+        conversationId: "private-conversation",
+        summary: "A newly admitted turn is still being projected.",
+      });
+
+      const result = auditBujoMemoryHealth({ root, mode: "lite", now: new Date() });
+
+      expect(result.status).toBe("in_progress");
+      expect(result.issues).toEqual(["intake_pending"]);
+      expect(result.counts.pending).toBe(1);
+      expect(result.issues).not.toContain("runtime_invalid");
     } finally {
       await store.close();
     }
@@ -323,6 +345,34 @@ describe("strict BuJo memory health", () => {
     expect(result.status).toBe("unhealthy");
     expect(result.issues).toContain("sqlite_integrity_failed");
     expect(result.issues).not.toContain("manifest_invalid");
+  });
+
+  it("rejects rollback descriptor metadata tampering even when its database digest is unchanged", async () => {
+    const root = tempRoot();
+    const provider = fakeEmbeddings(4);
+    await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+    const second = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+    expect(second.rollback).toBeDefined();
+    const manifestPath = join(root, ".index", "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      rollback?: { createdAt: string };
+    };
+    expect(manifest.rollback).toBeDefined();
+    manifest.rollback!.createdAt = "2026-07-12T09:00:00.000Z";
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+    publishRuntime(root, "bujo");
+
+    const result = auditBujoMemoryHealth({
+      root,
+      mode: "bujo",
+      configuredEmbeddingModel: provider.id,
+      configuredDimension: 4,
+      now: NOW,
+    });
+
+    expect(result.status).toBe("unhealthy");
+    expect(result.issues).toContain("metadata_mismatch");
+    expect(result.issues).not.toContain("sqlite_integrity_failed");
   });
 
   it("detects stable canonical divergence through the rebuild parity rules", () => {

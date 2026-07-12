@@ -1051,27 +1051,75 @@ function validateRetainedGeneration(path: string, descriptor: ManagedGeneration)
   }
 }
 
+export const MANAGED_GENERATION_DB_VALIDATION_ISSUE_CODES = [
+  "sqlite_integrity_failed",
+  "metadata_mismatch",
+  "fts_mismatch",
+  "vector_mismatch",
+  "orphaned_rows",
+] as const;
+
+export type ManagedGenerationDbValidationIssue =
+  (typeof MANAGED_GENERATION_DB_VALIDATION_ISSUE_CODES)[number];
+
+/**
+ * Provider-free validation shared by rebuild/rollback and strict health.
+ *
+ * The caller chooses the SQLite snapshot boundary. The result is deliberately
+ * closed and content-free so health surfaces never need to classify exception
+ * text or expose descriptor/database payloads.
+ */
+export function validateManagedGenerationDb(
+  db: MemoryDb,
+  descriptor: ManagedGeneration,
+): readonly ManagedGenerationDbValidationIssue[] {
+  const issues = new Set<ManagedGenerationDbValidationIssue>();
+  if (db.integrityCheck().toLowerCase() !== "ok") {
+    return ["sqlite_integrity_failed"];
+  }
+
+  let metadata: ReturnType<MemoryDb["indexMetadata"]>;
+  try {
+    metadata = db.indexMetadata();
+  } catch {
+    metadata = undefined;
+  }
+  if (!metadataMatchesManagedGeneration(metadata, descriptor)) {
+    issues.add("metadata_mismatch");
+  }
+
+  const expectedDimension = descriptor.dimension ?? DEFAULT_VEC_DIM;
+  try {
+    if (db.vectorDimension() !== expectedDimension) issues.add("vector_mismatch");
+  } catch {
+    issues.add("vector_mismatch");
+  }
+
+  const state = db.validationSnapshot();
+  if (state.ftsRows !== state.memories || state.ftsMismatches !== 0) issues.add("fts_mismatch");
+  if (state.vectorOrphans !== 0 || state.contentHashOrphans !== 0
+    || state.relationOrphans !== 0 || state.associationOrphans !== 0) {
+    issues.add("orphaned_rows");
+  }
+
+  const invalidVectorCoverage = descriptor.tier === "lite"
+    ? state.vectors !== 0
+    : descriptor.tier === "bujo"
+      ? state.vectors !== state.memories
+      : state.vectors > state.memories;
+  const invalidHashCoverage = descriptor.tier === "journal"
+    ? state.contentHashes !== state.memories
+    : state.contentHashes !== 0;
+  const invalidVectorIdentity = vectorIdentityMismatch(state, descriptor);
+  if (invalidVectorCoverage || invalidHashCoverage || invalidVectorIdentity) issues.add("vector_mismatch");
+
+  return MANAGED_GENERATION_DB_VALIDATION_ISSUE_CODES.filter((issue) => issues.has(issue));
+}
+
 function validateDb(db: MemoryDb, descriptor: ManagedGeneration): void {
   if (db.integrityCheck().toLowerCase() !== "ok") throw new Error("memory-rebuild: SQLite integrity check failed.");
   const metadata = db.indexMetadata();
-  if (metadata === undefined
-    || metadata.schemaVersion !== MANAGED_INDEX_SCHEMA_VERSION
-    || metadata.policyVersion !== descriptor.policyVersion
-    || metadata.tier !== descriptor.tier
-    || metadata.sourceFingerprint !== descriptor.sourceFingerprint
-    || metadata.generation !== descriptor.name
-    || metadata.createdAt !== descriptor.createdAt
-    || metadata.embeddingModel !== descriptor.embeddingModel
-    || metadata.dimension !== descriptor.dimension
-    || metadata.skippedRawRecords !== descriptor.skippedRawRecords
-    || metadata.skippedUnstructuredRecords !== descriptor.skippedUnstructuredRecords
-    || metadata.skippedMissingIdentityRecords !== descriptor.skippedMissingIdentityRecords
-    || stableJson(metadata.missingIdentityLocations ?? []) !== stableJson(descriptor.missingIdentityLocations ?? [])
-    || metadata.skippedLegacySourceRecords !== descriptor.skippedLegacySourceRecords
-    || stableJson(metadata.legacySourceLocations ?? []) !== stableJson(descriptor.legacySourceLocations ?? [])
-    || metadata.skippedJournalDuplicateRecords !== descriptor.skippedJournalDuplicateRecords
-    || metadata.parsedSourceItems !== descriptor.parsedSourceItems
-    || metadata.derivedLegacyAssociations !== descriptor.derivedLegacyAssociations) {
+  if (!metadataMatchesManagedGeneration(metadata, descriptor)) {
     throw new Error("memory-rebuild: candidate metadata does not match its manifest generation.");
   }
   const expectedDimension = descriptor.dimension ?? DEFAULT_VEC_DIM;
@@ -1080,12 +1128,44 @@ function validateDb(db: MemoryDb, descriptor: ManagedGeneration): void {
   if (state.vectorIdentityMissing !== 0) {
     throw new Error("memory-rebuild: vector rows have incomplete embedding model/dimension identity.");
   }
-  if (descriptor.embeddingModel === undefined
-    ? state.embeddingModels.length !== 0 || state.embeddingDimensions.length !== 0
-    : state.embeddingModels.some((model) => model !== descriptor.embeddingModel)
-      || state.embeddingDimensions.some((dimension) => dimension !== descriptor.dimension)) {
+  if (vectorIdentityMismatch(state, descriptor)) {
     throw new Error("memory-rebuild: embedding model/dimension identity validation failed.");
   }
+}
+
+function metadataMatchesManagedGeneration(
+  metadata: ReturnType<MemoryDb["indexMetadata"]>,
+  descriptor: ManagedGeneration,
+): boolean {
+  return metadata !== undefined
+    && metadata.schemaVersion === MANAGED_INDEX_SCHEMA_VERSION
+    && metadata.policyVersion === descriptor.policyVersion
+    && metadata.tier === descriptor.tier
+    && metadata.sourceFingerprint === descriptor.sourceFingerprint
+    && metadata.generation === descriptor.name
+    && metadata.createdAt === descriptor.createdAt
+    && metadata.embeddingModel === descriptor.embeddingModel
+    && metadata.dimension === descriptor.dimension
+    && metadata.skippedRawRecords === descriptor.skippedRawRecords
+    && metadata.skippedUnstructuredRecords === descriptor.skippedUnstructuredRecords
+    && metadata.skippedMissingIdentityRecords === descriptor.skippedMissingIdentityRecords
+    && stableJson(metadata.missingIdentityLocations ?? []) === stableJson(descriptor.missingIdentityLocations ?? [])
+    && metadata.skippedLegacySourceRecords === descriptor.skippedLegacySourceRecords
+    && stableJson(metadata.legacySourceLocations ?? []) === stableJson(descriptor.legacySourceLocations ?? [])
+    && metadata.skippedJournalDuplicateRecords === descriptor.skippedJournalDuplicateRecords
+    && metadata.parsedSourceItems === descriptor.parsedSourceItems
+    && metadata.derivedLegacyAssociations === descriptor.derivedLegacyAssociations;
+}
+
+function vectorIdentityMismatch(
+  state: ReturnType<MemoryDb["validationSnapshot"]>,
+  descriptor: ManagedGeneration,
+): boolean {
+  return state.vectorIdentityMissing !== 0
+    || (descriptor.embeddingModel === undefined
+      ? state.embeddingModels.length !== 0 || state.embeddingDimensions.length !== 0
+      : state.embeddingModels.some((model) => model !== descriptor.embeddingModel)
+        || state.embeddingDimensions.some((dimension) => dimension !== descriptor.dimension));
 }
 
 function openCurrentReplayDb(

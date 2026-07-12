@@ -7,6 +7,7 @@ import {
 } from "../store/index.js";
 import {
   auditCanonicalIndexHealth,
+  validateManagedGenerationDb,
   type CanonicalIndexHealthAudit,
 } from "./rebuild.js";
 import {
@@ -408,12 +409,11 @@ function inspectManagedReferences(
     db = openMemoryDb({ path, readOnly: true });
     assertSafeSqlitePathState(root, path, pathState, "memory health rollback database");
     const result = db.withAuditSnapshot(() => {
-      if (db!.integrityCheck().toLowerCase() !== "ok") return { integrityOk: false } as const;
-      return { integrityOk: true, digest: db!.logicalIntegrityDigest() } as const;
+      const validationIssues = validateManagedGenerationDb(db!, descriptor);
+      return { validationIssues, digest: db!.logicalIntegrityDigest() };
     });
-    if (!result.integrityOk || result.digest !== descriptor.integrityDigest) {
-      issues.add("sqlite_integrity_failed");
-    }
+    for (const issue of result.validationIssues) issues.add(issue);
+    if (result.digest !== descriptor.integrityDigest) issues.add("sqlite_integrity_failed");
   } catch (error) {
     issues.add(isNativeModuleError(error) ? "native_module_unavailable" : "database_unavailable");
   } finally {

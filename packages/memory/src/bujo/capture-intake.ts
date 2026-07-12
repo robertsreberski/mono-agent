@@ -192,6 +192,8 @@ export interface CompletedTurnIntakeManagerOptions {
   readonly afterResolved?: (id: string) => void | Promise<void>;
   /** Startup cleanup for receipts published before a crash interrupted plan retirement. */
   readonly cleanupResolved?: (ids: readonly string[]) => void;
+  /** Content-free notification after intake runtime or durable metadata changes. */
+  readonly onChange?: () => void;
   readonly warn?: (message: string) => void;
   readonly maxAttempts?: number;
   readonly retryBaseMs?: number;
@@ -219,6 +221,7 @@ export class CompletedTurnIntakeManager {
   private readonly warn: (message: string) => void;
   private readonly afterResolved: ((id: string) => void | Promise<void>) | undefined;
   private readonly cleanupResolved: ((ids: readonly string[]) => void) | undefined;
+  private readonly onChange: () => void;
   private readonly maxAttempts: number;
   private readonly retryBaseMs: number;
   private readonly retryMaxMs: number;
@@ -240,6 +243,7 @@ export class CompletedTurnIntakeManager {
     this.warn = options.warn ?? (() => {});
     this.afterResolved = options.afterResolved;
     this.cleanupResolved = options.cleanupResolved;
+    this.onChange = options.onChange ?? (() => {});
     this.maxAttempts = positiveInteger(options.maxAttempts, DEFAULT_MAX_ATTEMPTS, "maxAttempts");
     this.retryBaseMs = positiveInteger(options.retryBaseMs, DEFAULT_RETRY_BASE_MS, "retryBaseMs");
     this.retryMaxMs = positiveInteger(options.retryMaxMs, DEFAULT_RETRY_MAX_MS, "retryMaxMs");
@@ -271,6 +275,7 @@ export class CompletedTurnIntakeManager {
         inspection.items.filter((item) => item.state === "resolved").map((item) => item.id),
       );
       this.scheduleWorker();
+      this.notifyChange();
     } else if (readIntakeSchemaMarker(this.root) !== undefined) {
       throw new Error("memory-bujo: initialized completed-turn intake layout is missing.");
     }
@@ -293,6 +298,7 @@ export class CompletedTurnIntakeManager {
       const preferred = preferredRecord(existing)!;
       ensureLedgerEntry(this.root, id, payloadHash);
       if (preferred.record.state === "pending") this.scheduleWorker();
+      this.notifyChange();
       return {
         id,
         source: join(this.root, preferred.relativePath),
@@ -306,6 +312,7 @@ export class CompletedTurnIntakeManager {
       if (ledger.payloadHash !== payloadHash) {
         throw new Error("memory-bujo: completed-turn run id conflicts with the permanent admission ledger.");
       }
+      this.notifyChange();
       return {
         id,
         source: join(this.root, ledger.relativePath),
@@ -349,6 +356,7 @@ export class CompletedTurnIntakeManager {
       const preferred = preferredRecord(raced)!;
       ensureLedgerEntry(this.root, id, payloadHash);
       if (preferred.record.state === "pending") this.scheduleWorker();
+      this.notifyChange();
       return {
         id,
         source: join(this.root, preferred.relativePath),
@@ -361,6 +369,7 @@ export class CompletedTurnIntakeManager {
     // repaired from the pending record on startup; a crash after this append
     // can never make the run id admissible again after rich receipt pruning.
     ensureLedgerEntry(this.root, id, payloadHash);
+    this.notifyChange();
     this.scheduleWorker();
     return {
       id,
@@ -381,6 +390,7 @@ export class CompletedTurnIntakeManager {
   stopAccepting(): void {
     this.accepting = false;
     this.clearWakeTimer();
+    this.notifyChange();
   }
 
   abortForShutdown(timedOut: boolean): void {
@@ -389,12 +399,14 @@ export class CompletedTurnIntakeManager {
     this.timedOut = timedOut;
     this.clearWakeTimer();
     this.activeController?.abort(new Error("completed-turn intake shutdown"));
+    this.notifyChange();
   }
 
   finishShutdown(): void {
     this.accepting = false;
     this.stopped = true;
     this.clearWakeTimer();
+    this.notifyChange();
   }
 
   snapshot(): CompletedTurnIntakeSnapshot {
@@ -436,7 +448,14 @@ export class CompletedTurnIntakeManager {
   }
 
   private async runWorker(): Promise<void> {
-    recoverStateConflicts(this.root);
+    try {
+      recoverStateConflicts(this.root);
+    } finally {
+      // Recovery may have retired one safely superseded source before a later
+      // malformed record pauses the worker. Publish the resulting metadata in
+      // both the complete and partial-recovery cases.
+      this.notifyChange();
+    }
     for (;;) {
       if (this.stopped) return;
       const due = listRecords(this.root, "pending")
@@ -451,6 +470,7 @@ export class CompletedTurnIntakeManager {
   private async processOne(initial: LocatedRecord<PendingRecord>): Promise<void> {
     const controller = new AbortController();
     this.activeController = controller;
+    this.notifyChange();
     let current = initial;
     try {
       const turn = payloadOf(current.record);
@@ -460,12 +480,15 @@ export class CompletedTurnIntakeManager {
         this.afterSummaryPersisted?.(current.record.id);
         const advanced: PendingRecord = { ...current.record, summaryWritten: true };
         current = replaceRecord(this.root, current, advanced);
+        this.notifyChange();
       }
       const outcome = await this.capture(turn, current.record.id, current.record.admittedAt, controller.signal);
       controller.signal.throwIfAborted();
       resolvePending(this.root, current, outcome, canonicalNow(this.clock));
+      this.notifyChange();
       await this.afterResolved?.(current.record.id);
       pruneResolved(this.root, this.resolvedRetention, current.record.id);
+      this.notifyChange();
     } catch (error) {
       if (controller.signal.aborted || this.stopped) return;
       const logical = preferredRecord(locateById(this.root, current.record.id));
@@ -474,6 +497,7 @@ export class CompletedTurnIntakeManager {
       // logical turn and the lower pending source must never be rewritten to
       // the same revision.
       if (logical === undefined || logical.record.state !== "pending") {
+        this.notifyChange();
         safeWarn(this.warn, "completed-turn intake transition published; deferred cleanup remains for startup.");
         throw error;
       }
@@ -482,6 +506,7 @@ export class CompletedTurnIntakeManager {
       const lastError = failureCode(error);
       if (attempt >= this.maxAttempts) {
         moveToDead(this.root, latest, attempt, lastError, canonicalNow(this.clock));
+        this.notifyChange();
         safeWarn(this.warn, "completed-turn capture reached its retry limit; a durable dead letter remains.");
       } else {
         const now = this.clock();
@@ -496,10 +521,12 @@ export class CompletedTurnIntakeManager {
           nextAttemptAt,
           lastError,
         });
+        this.notifyChange();
         safeWarn(this.warn, "completed-turn capture failed; a durable retry is scheduled.");
       }
     } finally {
       if (this.activeController === controller) this.activeController = undefined;
+      this.notifyChange();
     }
   }
 
@@ -520,6 +547,14 @@ export class CompletedTurnIntakeManager {
   private clearWakeTimer(): void {
     if (this.wakeTimer !== undefined) clearTimeout(this.wakeTimer);
     this.wakeTimer = undefined;
+  }
+
+  private notifyChange(): void {
+    try {
+      this.onChange();
+    } catch {
+      safeWarn(this.warn, "completed-turn intake state notification failed; durable state remains authoritative.");
+    }
   }
 }
 

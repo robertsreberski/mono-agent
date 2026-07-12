@@ -96,6 +96,75 @@ describe("completed-turn durable intake", () => {
     intake.abortForShutdown(false);
   });
 
+  it("notifies metadata-only observers across admission, processing, and shutdown transitions", async () => {
+    const memoryRoot = root();
+    const observations: Array<{
+      readonly pending: number;
+      readonly resolved: number;
+      readonly retrying: number;
+      readonly shutdown: string;
+    }> = [];
+    let intake: CompletedTurnIntakeManager | undefined;
+    intake = manager(memoryRoot, {
+      onChange: () => {
+        const snapshot = intake?.snapshot();
+        if (snapshot !== undefined) observations.push(snapshot);
+      },
+    });
+
+    intake.admit(turn({ runId: "metadata-notifications" }));
+    await intake.flush();
+    intake.finishShutdown();
+
+    expect(observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pending: 1, resolved: 0, retrying: 0, shutdown: "running" }),
+      expect.objectContaining({ pending: 1, resolved: 0, retrying: 1, shutdown: "running" }),
+      expect.objectContaining({ pending: 0, resolved: 1, shutdown: "running" }),
+      expect.objectContaining({ pending: 0, resolved: 1, retrying: 0, shutdown: "drained" }),
+    ]));
+    expect(observations.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it("notifies observers when exhausted work becomes a durable dead letter", async () => {
+    const memoryRoot = root();
+    const observations: Array<{ readonly pending: number; readonly dead: number }> = [];
+    let intake: CompletedTurnIntakeManager | undefined;
+    intake = manager(memoryRoot, {
+      maxAttempts: 1,
+      capture: async () => { throw new Error("provider unavailable"); },
+      onChange: () => {
+        const snapshot = intake?.snapshot();
+        if (snapshot !== undefined) observations.push(snapshot);
+      },
+    });
+
+    intake.admit(turn({ runId: "dead-letter-notification" }));
+    await intake.flush();
+
+    expect(observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pending: 1, dead: 0 }),
+      expect.objectContaining({ pending: 0, dead: 1 }),
+    ]));
+    intake.finishShutdown();
+  });
+
+  it("keeps durable intake authoritative when a change observer throws", async () => {
+    const memoryRoot = root();
+    const warnings: string[] = [];
+    const intake = manager(memoryRoot, {
+      onChange: () => { throw new Error("private observer failure"); },
+      warn: (message) => warnings.push(message),
+    });
+
+    intake.admit(turn({ runId: "throwing-observer" }));
+    await intake.flush();
+
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({ pending: 0, resolved: 1 });
+    expect(warnings).toContain("completed-turn intake state notification failed; durable state remains authoritative.");
+    expect(warnings.join(" ")).not.toContain("private observer failure");
+    intake.finishShutdown();
+  });
+
   it("deduplicates exact run payloads and rejects conflicting reuse", () => {
     const memoryRoot = root();
     const intake = manager(memoryRoot);

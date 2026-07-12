@@ -898,6 +898,10 @@ export class BujoMemoryStore implements MemoryStore {
           if (resolved.has(key)) removeRetainedCaptureIntent(this.root, key);
         }
       },
+      // Admission is synchronous and health is allowed to run immediately
+      // after it returns, so intake metadata publishes without the queue
+      // coalescing delay. Provider work remains entirely downstream.
+      onChange: () => this.publishRuntimeSnapshot("running"),
       warn: (message) => this.safeWarn(message),
     });
   }
