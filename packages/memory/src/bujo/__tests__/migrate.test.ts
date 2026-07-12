@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -7,11 +8,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { appendBullet, dailyFilePath, rewriteBullet } from "../daily.js";
 import { writeCaptureIntent } from "../capture-outbox.js";
+import { auditCanonicalGraphParity, type CanonicalGraphParityResult } from "../graph-parity.js";
 import { parseDailyFile } from "../grammar.js";
 import { readGraph } from "../graph.js";
 import { createIdFactory } from "../ids.js";
 import {
   assertNoPendingMigrateDecision,
+  hasPendingMigrateDecision,
   migrate,
   recoverPendingMigrateDecision,
   type MigrateDeps,
@@ -221,6 +224,77 @@ describe("migrate", () => {
     expect(db.get("MIG-LINK")?.salience).toBe(0.2);
   });
 
+  it("normalizes a bounded ASCII collection slug before durable publication", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-SLUG", "normalized collection migration sentinel");
+
+    const result = await migrate(makeDeps(db, root, {
+      llm: { id: "slug", complete: async () => JSON.stringify({ action: "cluster", collection: " Project_Notes " }) },
+    }));
+
+    expect(result).toMatchObject({ clustered: 1, reviewed: 1 });
+    expect(db.get("MIG-SLUG")).toMatchObject({ status: "migrated", collection: "project-notes" });
+    expect(readGraph(root)).toMatchObject({
+      entities: [expect.objectContaining({ id: "collection:project-notes", name: "project-notes" })],
+      associations: [expect.objectContaining({
+        memoryId: "MIG-SLUG",
+        entityId: "collection:project-notes",
+      })],
+    });
+    expect(auditCanonicalGraphParity(root, db)).toMatchObject({ status: "match", matches: true });
+  });
+
+  it.each([
+    ["C0", "bad\0collection"],
+    ["format", "bad\u202Ecollection"],
+    ["surrogate", "bad\uD800collection"],
+  ])("rejects %s controls in collection output before embedding or publication", async (_label, collection) => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, `MIG-CONTROL-${_label}`, "invalid collection migration sentinel");
+    const provider = vi.spyOn(db, "prepareUpsertVectors");
+
+    const result = await migrate(makeDeps(db, root, {
+      llm: { id: "invalid-collection", complete: async () => JSON.stringify({ action: "cluster", collection }) },
+    }));
+
+    expect(result).toEqual({ promoted: 0, rescheduled: 0, clustered: 0, forgotten: 0, reviewed: 1 });
+    expect(provider).not.toHaveBeenCalled();
+    expect(db.get(`MIG-CONTROL-${_label}`)).toMatchObject({ status: "open" });
+    expect(readGraph(root)).toEqual({ entities: [], relations: [], associations: [] });
+    expect(existsSync(join(root, "monthly", "2026-06.md"))).toBe(false);
+    expect(auditCanonicalGraphParity(root, db)).toMatchObject({ status: "match", matches: true });
+  });
+
+  it("rejects a rebound durable cluster decision whose collection is not canonical", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-SLUG-MARKER", "durable collection marker sentinel");
+    await expect(migrate(makeDeps(db, root, {
+      llm: { id: "slug-marker", complete: async () => JSON.stringify({ action: "cluster", collection: "projects" }) },
+      hooks: { afterDecisionDurable: () => { throw new Error("leave-cluster-marker"); } },
+    }))).rejects.toThrow("leave-cluster-marker");
+    const monthlyPath = join(root, "monthly", "2026-06.md");
+    const monthly = readFileSync(monthlyPath, "utf8");
+    const marker = /<!-- mono-agent-migrate:([^\n ]+) -->/u.exec(monthly);
+    expect(marker).not.toBeNull();
+    const decision = JSON.parse(Buffer.from(marker![1]!, "base64url").toString("utf8")) as {
+      decisionId: string;
+      collection: string;
+      updated: { collection: string };
+      [key: string]: unknown;
+    };
+    decision.collection = "Project Notes";
+    decision.updated.collection = "Project Notes";
+    const { decisionId: _decisionId, ...payload } = decision;
+    decision.decisionId = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+    const rebound = Buffer.from(JSON.stringify(decision), "utf8").toString("base64url");
+    writeFileSync(monthlyPath, monthly.replace(marker![0], `<!-- mono-agent-migrate:${rebound} -->`), "utf8");
+
+    expect(() => hasPendingMigrateDecision(root)).toThrow(/binding.*invalid/iu);
+  });
+
   it.each(["after-decision", "after-action"] as const)(
     "replays a durable pending decision after restart without another model call (%s)",
     async (fault) => {
@@ -258,6 +332,33 @@ describe("migrate", () => {
       expect(() => assertNoPendingMigrateDecision(root)).not.toThrow();
     },
   );
+
+  it("reports an admitted durable migration as in_progress instead of graph divergence", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-PARITY", "migration parity transaction sentinel");
+    let observed: CanonicalGraphParityResult | undefined;
+
+    await expect(migrate(makeDeps(db, root, {
+      llm: { id: "migration-parity", complete: async () => JSON.stringify({ action: "promote" }) },
+      hooks: {
+        afterDecisionDurable: () => {
+          observed = auditCanonicalGraphParity(root, db);
+          throw new Error("leave-parity-migration-pending");
+        },
+      },
+    }))).rejects.toThrow("leave-parity-migration-pending");
+
+    expect(observed).toMatchObject({
+      status: "in_progress",
+      matches: false,
+      mutation: {
+        capturePending: false,
+        migrationPending: true,
+        sourceChanged: false,
+      },
+    });
+  });
 
   it("recovers a paid decision without providers while preserving newer access telemetry", async () => {
     const root = newRoot();

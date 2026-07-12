@@ -452,7 +452,7 @@ describe("captureTurn", () => {
     // means graph.jsonl is written before the mirror, so the data survives a mirror failure.
     const failingDb = new Proxy(db, {
       get(target, prop, receiver) {
-        if (prop === "upsertEntity" || prop === "addEntityRelation") {
+        if (prop === "mirrorCanonicalEntity" || prop === "mirrorCanonicalRelation") {
           return () => { throw new Error("index mirror down"); };
         }
         const value = Reflect.get(target, prop, receiver) as unknown;
@@ -569,7 +569,7 @@ describe("captureTurn", () => {
     const db = openDb(root);
     const failingDb = new Proxy(db, {
       get(target, prop, receiver) {
-        if (prop === "associateMemory") return () => { throw new Error("association mirror fault"); };
+        if (prop === "mirrorCanonicalAssociation") return () => { throw new Error("association mirror fault"); };
         const value = Reflect.get(target, prop, receiver) as unknown;
         return typeof value === "function" ? value.bind(target) : value;
       },

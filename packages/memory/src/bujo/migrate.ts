@@ -71,6 +71,10 @@ class CanonicalMigrationMultiplicityError extends Error {}
 
 const MIGRATE_MARKER = "mono-agent-migrate:";
 const MAX_MONTHLY_AUDIT_BYTES = 8 * 1024 * 1024;
+const MAX_COLLECTION_INPUT_CHARS = 128;
+const MAX_COLLECTION_SLUG_CHARS = 64;
+const COLLECTION_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const INVALID_COLLECTION_CONTROL = /[\p{Cc}\p{Cf}\p{Cs}]/u;
 
 const VALID_ACTIONS = new Set<string>(["promote", "reschedule", "cluster", "forget"]);
 
@@ -152,8 +156,8 @@ async function migrateUnlocked(
       }
 
       const action = parsed.action;
-      const collection = action === "cluster" && typeof parsed.collection === "string"
-        ? parsed.collection.trim()
+      const collection = action === "cluster"
+        ? normalizeCollectionSlug(parsed.collection)
         : undefined;
       if (action === "cluster" && (collection === undefined || collection.length === 0)) continue;
       const updated = updatedRecord(item, action, now, parsed.dueAt, collection);
@@ -223,6 +227,23 @@ function updatedRecord(
   }
   if (action === "cluster") return { ...item, status: "migrated", collection: collection! };
   return { ...item, status: "dropped", validTo: now.toISOString() };
+}
+
+function normalizeCollectionSlug(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0
+    || [...value].length > MAX_COLLECTION_INPUT_CHARS
+    || INVALID_COLLECTION_CONTROL.test(value)) {
+    return undefined;
+  }
+  const normalized = value.normalize("NFKC")
+    .trim()
+    .toLocaleLowerCase("en-US")
+    .replace(/[ _]+/gu, "-");
+  if (normalized.length === 0 || normalized.length > MAX_COLLECTION_SLUG_CHARS
+    || !COLLECTION_SLUG.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
 }
 
 function durableDecision(
@@ -340,8 +361,8 @@ function applyClusterOutcome(root: string, db: MemoryDb, decision: DurableMigrat
   if (canonicalEntity === undefined || canonicalAssociation === undefined) {
     throw new Error(`memory-migrate: canonical collection graph outcome for ${decision.id} is incomplete.`);
   }
-  db.upsertEntity(canonicalEntity);
-  db.associateMemory(canonicalAssociation);
+  db.mirrorCanonicalEntity(canonicalEntity);
+  db.mirrorCanonicalAssociation(canonicalAssociation);
   db.addEdge(decision.id, canonicalEntity.id, "supports");
   assertClusterOutcome(root, db, decision.id, canonicalEntity, canonicalAssociation);
 }
@@ -592,6 +613,11 @@ export function recoverPendingMigrateDecisionWithMetadata(
   return { action: pending.decision.action };
 }
 
+/** Read-only, provider-free probe for an admitted durable migration mutation. */
+export function hasPendingMigrateDecision(root: string): boolean {
+  return readPendingDecision(root) !== undefined;
+}
+
 /** Refuse maintenance that cannot carry a paid pending migration transaction. */
 export function assertNoPendingMigrateDecision(root: string): void {
   const pending = readPendingDecision(root);
@@ -640,11 +666,12 @@ function decisionHash(decision: Omit<DurableMigrateDecision, "decisionId">): str
 }
 
 function validDecisionTransition(decision: DurableMigrateDecision): boolean {
+  const canonicalCollection = normalizeCollectionSlug(decision.collection);
   if (decision.text !== decision.before.text
     || decision.updated.id !== decision.before.id
     || decision.updated.source.file !== decision.before.source.file
     || (decision.action === "cluster"
-      ? decision.collection === undefined || decision.collection.length === 0
+      ? canonicalCollection === undefined || canonicalCollection !== decision.collection
         || decision.updated.collection !== decision.collection
       : decision.collection !== undefined)) {
     return false;

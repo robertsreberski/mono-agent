@@ -37,6 +37,19 @@ export interface CanonicalFileSnapshot {
   readonly identity: CanonicalFileIdentity;
 }
 
+/**
+ * A regular canonical file was unlinked after it became addressable/opened.
+ *
+ * This is deliberately narrower than the generic unsafe-file error below:
+ * symlinks, non-files, and multiply-linked files remain durable corruption.
+ */
+export class CanonicalFileRetiredError extends Error {
+  constructor(label: string) {
+    super(`memory-bujo: canonical file "${label}" was retired during access.`);
+    this.name = "CanonicalFileRetiredError";
+  }
+}
+
 interface DirectoryIdentity {
   readonly path: string;
   readonly dev: number;
@@ -494,6 +507,9 @@ function assertPathMatchesDirectoryIdentity(path: string, expected: Stats, label
 }
 
 function assertSafeRegularFile(stat: Stats, label: string): void {
+  if (stat.isFile() && stat.nlink === 0) {
+    throw new CanonicalFileRetiredError(label);
+  }
   if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
     throw new Error(`memory-bujo: canonical file "${label}" must be regular, single-link, and not a symlink.`);
   }
