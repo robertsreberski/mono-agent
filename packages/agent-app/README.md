@@ -35,8 +35,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   preset): `start`/`status` report the configured endpoint and a note that JSONL
   artifacts remain local; `validate` performs the live reachability probe. Export
   is best-effort and never changes a run outcome.
-- Preview the configured memory backend from the same config/env resolution path
-  via `mono-agent memory` (`stats`, `today`, `show`, `search`, `top`, metadata-only `audit`).
+- Preview, strictly audit, and safely maintain the configured memory backend
+  from the same config/env resolution path via `mono-agent memory` (including
+  provider-free strict health and payload-free intake inspect/retry/resolve).
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
   folders non-destructively.
 
@@ -188,6 +189,46 @@ bounded by newest whole interactions, without changing the outward message or
 long-term memory capture. `TelegramAskButtons` with `wait: false` continues to produce a
 synthetic next turn when the user taps later.
 
+The app publishes a cached, content-free `memoryHealth` snapshot in the primary
+trace-source heartbeat and any enabled best-effort global mirror. Built-in
+health is computed through a dynamic memory import so a native SQLite ABI
+failure becomes sanitized `unknown` health
+instead of crashing unrelated CLI startup. Concurrent refreshes coalesce, the
+periodic timer is unreferenced and cleaned up on stop/reconfigure, and the same
+snapshot is used for both registries. The shape is limited to backend/mode,
+closed status and issue vocabularies, ISO check time, and eight whitelisted
+counts—never paths, ids, content, payloads, or raw errors.
+
+Operator automation should use:
+
+```bash
+# One prose/ANSI-free {ok:boolean, sections, ...} object; exit 0 iff ok.
+mono-agent validate --json
+
+# Provider-free closed health; healthy/in_progress/not_configured exit 0.
+mono-agent memory audit --strict --json
+
+# Payload-free inventory; mutations require the matching agent to be stopped.
+mono-agent memory inspect --json
+mono-agent memory retry --json
+mono-agent memory retry <64-character-id> --json
+mono-agent memory resolve <64-character-id> <reason-slug> --json
+```
+
+Journal and BuJo always require a valid managed `.index/manifest.json`; only
+Lite may remain unmanaged. Missing/corrupt authority, active/configured
+tier-model-dimension mismatch, and native-module/ABI failure are validation
+errors with stop/rebuild/revalidate remediation. Provider reachability remains
+an operational `waiting` state. `retry` makes dead/delayed intake due for the
+next store start; `resolve` explicitly abandons one item without claiming
+capture succeeded, keeps permanent duplicate protection, and refuses a retained
+semantic plan.
+
+For launchd fleet verification, invoke the deployed CLI with each plist's exact
+`ProgramArguments[0]` Node and `[1]` CLI paths. The current fleet contract is
+Node `24.15.0`, modules ABI `137`; an ambient shell Node is not evidence that
+the service can load the native memory modules.
+
 Programmatic:
 
 ```ts
@@ -200,8 +241,8 @@ await app.stop();
 
 ## Public API
 
-- `startMonoAgentApp(options)` → `MonoAgentApp` (statuses, `applyConfigChange`,
-  `startChannelIfConfigured`, `stop`).
+- `startMonoAgentApp(options)` → `MonoAgentApp` (statuses, cached typed
+  `memoryHealth`, `applyConfigChange`, `startChannelIfConfigured`, `stop`).
 - `defaultChannelDrivers(overrides)` plus built-in per-channel
   `create<Channel>ChannelDriver(overrides)` factories with test seams.
 - `createConfiguredAgentRuntime`, `createConfiguredAgentHarness`,

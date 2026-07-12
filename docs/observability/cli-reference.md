@@ -19,9 +19,9 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `presets` | List the built-in setup presets or show a preset's generated config, `.env.example`, and checklist. Replaces `recipes` (still an alias). | `list`, `show <id>` |
 | `auth login` | Run direct Codex browser/device login, Pi OAuth for Anthropic/GitHub Copilot/OpenAI Codex, or the OpenCode-Go API-key flow. OpenCode-Go uses masked TTY input by default; `--api-key-stdin` is the explicit headless input mode. Pi credentials are promoted under an owner-only lock with stale-lock repair only when safely proven. | `<provider\|codex>`, `--pi-auth-path <path>`, `--api-key-stdin`, `--codex-auth browser\|device`, `--config <path>` |
 | `sandbox` | Inspect, install, or functionally prove the pinned SRT runtime. Managed setup is private-cache and macOS-only. | `status`, `setup`, `check` |
-| `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias). With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>` |
+| `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias). With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>`, `--json` |
 | `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>` |
-| `memory` | Preview the configured memory store from an agent folder: stats, daily logs, search, and top salient memories. | `stats`, `today`, `show <date>`, `search <query>`, `top`, `--limit <n>`, `--json`, `--config <path>`, `--env-file <path>` |
+| `memory` | Preview, strictly audit, and safely maintain the configured memory store and its durable completed-turn intake. | `stats`, `today`, `show`, `search`, `top`, `audit`, `inspect`, `retry`, `resolve`, `rebuild`, `rollback`; `--strict`, `--limit`, `--json` |
 | `start` | Start the agent as a background launchd service (or foreground worker). | `--config <path>`, `--env-file <path>`, `--foreground` / `-f` |
 | `restart` | Restart the background instance for this config (starts it if stopped). | `--config <path>`, `--force` |
 | `stop` | Stop the background instance and remove its LaunchAgent. | `--config <path>` |
@@ -173,6 +173,7 @@ Loads every config section and prints a status report. It exits `0` when the con
 ```bash
 mono-agent validate
 mono-agent validate --preset code-sandbox
+mono-agent validate --json
 mono-agent validate --config ./agents/support.config.json --env-file ./.env.staging
 mono-agent validate --consumer ../local-agent-alpha
 ```
@@ -183,6 +184,7 @@ mono-agent validate --consumer ../local-agent-alpha
 | `--consumer <path>` | Validate another agent folder read-only. Relative `--config` and `--env-file` paths resolve inside that folder. |
 | `--config <path>` | Use a non-default config file. With `--consumer`, relative paths are inside the consumer folder. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file. With `--consumer`, relative paths are inside the consumer folder. |
+| `--json` | Write exactly one top-level JSON object with `ok: boolean` and `sections` (plus `preset` when requested), with no ANSI or human prose on stdout. Exit `0` exactly when `ok` is true. |
 
 Each section prints a status badge, a label, and its details. The statuses are:
 
@@ -194,6 +196,12 @@ Each section prints a status badge, a label, and its details. The statuses are:
 | `error` | A structural problem that must be fixed; any `error` section fails the run. |
 
 `validate` runs liveness probes, so it can show `waiting` for unreachable network dependencies. The Phoenix exporter check additionally POSTs an empty protobuf to confirm export compatibility, not just reachability — see [Phoenix & backfill](/observability/phoenix-and-backfill/).
+
+For built-in memory, Journal and BuJo require a valid managed `.index/manifest.json`; only Lite
+may remain unmanaged. A missing/corrupt manifest, configured-versus-active tier/model/dimension
+mismatch, or native SQLite module/ABI failure is an `error`, not a provider-liveness `waiting`
+state. Stop the agent, run `mono-agent memory rebuild`, then validate again. Ollama/provider
+reachability and missing pulled models remain operational `waiting` conditions.
 
 The **Tools & MCP** section reports the tool policy: allow-all (the default) shows `All tools allowed.` (or `All tools allowed (except: …)` when a `disallowedTools` list is present). On Pi/Claude SDK, an **explicit empty** `tools.allowedTools: []` flags the no-tools trap as `waiting` because the agent could chat but cannot act. Direct Codex/OpenCode and Claude Code CLI reject that unenforceable empty policy as `error` before provider startup. Direct OpenCode also rejects every effective MCP source—`tools.mcpConfigPath`, `memory.recallTool`, hosted Supermemory MCP, and adapter send tools—and index skill disclosure; validation reports those combinations before a run. For a specific allowlist it also flags an unknown tool name with a "did you mean" hint (pi silently drops unknown names) and cross-checks adapter send tools against enabled channels. Under a native sandbox it additionally checks the enabled send tools' HTTP hosts against `sandbox.network`: Slack, Telegram (including a custom `apiRoot`), and the loopback interaction bridge for blocking ask tools. A missing host is `waiting` with the exact allowlist entry to add; an explicitly denied tool creates no endpoint requirement. See [Presets & capability modules](/reference/recipes/#the-tools-step-and-the-no-tools-guardrail) for the full contract.
 
@@ -253,6 +261,12 @@ mono-agent memory show 2026-07-06
 mono-agent memory search "deployment notes"
 mono-agent memory top --limit 20
 mono-agent memory audit --json
+mono-agent memory audit --strict --json
+mono-agent memory inspect --json
+mono-agent memory inspect <64-character-id> --json
+mono-agent memory retry --json
+mono-agent memory retry <64-character-id> --json
+mono-agent memory resolve <64-character-id> <reason-slug> --json
 mono-agent memory rebuild --json
 mono-agent memory rollback --json
 ```
@@ -264,18 +278,22 @@ mono-agent memory rollback --json
 | `show <YYYY-MM-DD>` | Renders one local BuJo daily log by date. Both current `daily/YYYY-MM-DD.md` and older root-level `YYYY-MM-DD.md` layouts are recognized. |
 | `search <query>` | Uses the same recall-store construction as `MemoryRecall`. Local BuJo/journal search returns scores plus sources; if configured embeddings are unavailable, it retries FTS-only and prints a warning. Supermemory search proxies the remote API. |
 | `top` | Shows highest-salience local BuJo/journal memories with salience, type/status, and source. Supermemory has no local salience ranking, so it tells you to use search. |
-| `audit` | Emits metadata-only health: counts, bytes, duplicate ratio, vector coverage, access concentration, active generation/source accounting, and available runtime queue/backlog/shutdown plus embedding/LLM call counts from `.index/runtime.json`. It never emits memory/query text, queue keys, or entity names; stale runtime snapshots are marked, and unknown monetary cost/tokens/latency remain explicit `null` values. |
+| `audit` | Without `--strict`, emits detailed local operator telemetry: counts, bytes, duplicate ratio, vector coverage, access concentration, active generation/source accounting, configured paths/source locations, and available runtime queue/backlog/shutdown plus embedding/LLM call counts. With `--strict`, emits the exact provider-free content-free health schema: `schemaVersion`, `backend`, built-in `mode`, `status`, `checkedAt`, closed `issues`, and all eight closed `counts`. |
+| `inspect [<id>]` | Reads built-in completed-turn intake metadata. It returns ids, state/timestamps, attempt/revision, due flags, bounded failure categories, and aggregate counts—never run/conversation ids, payload hashes, summary/capture text, paths, or raw errors. The optional id is exactly 64 lowercase hex characters. |
+| `retry [<id>]` | With the configured agent stopped, moves selected dead letters back to pending and/or makes delayed pending work due. Omitting the id selects all eligible items. It does not process the work; start the store afterward. Check JSON `changed`/`retried`, because a successful no-op exits `0`. |
+| `resolve <id> <reason>` | With the agent stopped, explicitly retires one pending/dead item as `operator_resolved` without claiming capture succeeded. The lowercase 1–64 character slug starts with a letter/digit, then permits letters/digits/underscores/hyphens. Permanent duplicate protection remains, retained semantic plans are refused, and a missing/already-resolved id is a successful `changed: false` no-op. |
 | `rebuild` | Built-in Lite/Journal/BuJo only. Refuses a running configured agent, builds and fully validates a side-by-side generation from canonical files, then atomically activates it. It retains the previous generation only when that index has exact canonical-source parity (a Journal vector backlog is recoverable); a source-ahead/stale index is omitted rather than mislabeled as rollback-safe. It uses configured embeddings when the tier requires them and never calls a chat LLM. |
 | `rollback` | Built-in Lite/Journal/BuJo only. Atomically swaps to the retained generation after verifying its tier/model/dimension and source fingerprint. Restore the prior config identity first when those settings changed. No embedding or chat-model request is made. |
 
 | Flag | Effect |
 | --- | --- |
 | `--limit <n>` | Limits search hits, top memories, and stats entity preview rows (1-100). |
+| `--strict` | Supported only with `memory audit`. `healthy`, `in_progress`, and `not_configured` exit `0`; `degraded`, `unhealthy`, and `unknown` exit `1`; flag/argument misuse exits `2`. |
 | `--json` | Prints the machine-readable result instead of the human view. |
 | `--config <path>` | Use a non-default config file. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file before resolving the config. |
 
-Stop the configured agent before `rebuild` or `rollback`. Both commands reject Supermemory because that service owns its remote index. See the [safe generation model](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback) for the full integrity contract and the separate [product-v1 cutover checklist](/memory/validation-and-cli/#enable-v1-on-an-existing-agent) for an existing agent.
+Stop the configured agent before `retry`, `resolve`, `rebuild`, or `rollback`; each mutation also acquires the memory writer lease. `inspect` is read-only and can run live. Intake commands and index transitions reject Supermemory because that service owns its remote state. The strict audit itself makes no embedding/chat/provider request and never emits paths, filenames, ids, payloads, model text, raw errors, or arbitrary extras. See the [strict health and recovery contract](/memory/validation-and-cli/#strict-provider-free-health-gate), the [safe generation model](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback), and the separate [product-v1 cutover checklist](/memory/validation-and-cli/#enable-v1-on-an-existing-agent).
 
 ## `start`
 
@@ -401,6 +419,12 @@ owner-only `.env` (`chmod 600 .env`), then run the non-loopback command above.
 | `--config <path>` | Resolve a custom `traceability.registryDir` from this config, in addition to the global registry. |
 
 Run history and live updates default to agent runs only; memory-maintenance runs are hidden plumbing unless you pass `--include-memory`. Loopback remains the default. With `--host 0.0.0.0 --allow-non-loopback`, startup prints usable loopback plus discovered private LAN and Tailscale IPv4 URLs instead of advertising `0.0.0.0`. Put a stable `MONO_AGENT_WEB_AUTH_TOKEN` in the invocation folder's owner-only `.env` (or the file selected by `--env-file`) for bookmarks and long-running services; a configured token is honored on loopback too. Non-interactive non-loopback startup refuses to generate a secret that would land in logs. Authenticated mode sends API and stream credentials only in the `Authorization` header. Explicitly revealed bootstrap URLs put the token in the URL fragment, which browsers do not send in HTTP requests or access logs, and the PWA removes it after capture.
+
+Each discovered instance also carries an independent memory-health badge: healthy (green), in
+progress (teal), degraded (amber), unhealthy (red), unknown/off (gray). Its accessible label and
+tooltip contain only the status and stable closed issue codes. A memory-only registry change emits
+an `instances` SSE frame, so the badge updates without requiring a process-health change or a new
+run.
 
 Direct authenticated HTTP over LAN or Tailscale does **not** require `tailscale serve`. Serve is optional; use it (or another HTTPS reverse proxy) only when you want HTTPS-dependent browser capabilities such as an installable/offline PWA. Non-loopback mode remains read-only but exposes prompts, cwd/artifact paths, tool events, and run text to anyone with the bearer token, so use a strong token and a trusted network boundary. Plain LAN HTTP is not transport-encrypted; direct access through Tailscale remains protected by the tailnet transport.
 

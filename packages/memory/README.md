@@ -55,6 +55,23 @@ Model output on this path is strict and all-or-nothing: malformed extraction or
 reconciliation JSON remains pending for retry rather than becoming a partial
 capture or a successful empty result.
 
+`@mono-agent/memory/bujo` also exposes a synchronous provider-free strict health
+audit. It takes a snapshot-coherent view of managed identity, SQLite and
+canonical parity, durable intake/outbox state, temporary artifacts, and runtime
+metadata. Its closed result contains no paths, filenames, ids, memory/model
+text, payloads, or raw errors:
+
+```ts
+import { auditBujoMemoryHealth } from "@mono-agent/memory/bujo";
+
+const health = auditBujoMemoryHealth({
+  root: "./memory",
+  mode: "journal",
+  configuredEmbeddingModel: "ollama:nomic-embed-text:v1.5",
+  configuredDimension: 768,
+});
+```
+
 ```bash
 memory-bujo recall ./memory "what did we decide about releases?"
 ```
@@ -64,9 +81,16 @@ Normal index maintenance is config-aware and owned by `@mono-agent/agent-app`:
 ```bash
 mono-agent stop
 mono-agent memory rebuild --json
-mono-agent memory audit --json
+mono-agent memory audit --strict --json
 mono-agent start
 ```
+
+The app CLI additionally exposes payload-free intake inspection and stopped-store
+recovery: `memory inspect [<id>]`, `memory retry [<id>]`, and
+`memory resolve <id> <reason-slug>`. Retry makes dead/delayed work due for a
+future store start. Resolve explicitly records operator abandonment without
+claiming capture succeeded, keeps permanent duplicate protection, and refuses
+recoverable retained semantic plans.
 
 This performs the first managed activation and builds and validates a side-by-side generation. A prior index is retained for `mono-agent memory rollback` only as a fresh immutable online-backup generation whose indexed payload exactly matches the current canonical source (Journal may retain its recoverable vector backlog). Its manifest commits the full WAL-visible logical state, including vectors, lifecycle, edges, hashes, graph, FTS, and metadata; same-source/provider rebuilds also compare every retained vector with the newly embedded candidate. SQLite writer fences cover source snapshotting and the final manifest rename; staged and final manifest bytes/identity are checked through durability confirmation. A source-ahead/stale index is never relabeled as safe; a divergent legacy `memory.db` remains byte-for-byte in place but is not advertised as rollback. The lower-level `memory-bujo rebuild|rollback <root> --tier <lite|journal|bujo>` commands are for already-managed roots; they deliberately refuse to infer tier identity or perform the first activation.
 
@@ -74,7 +98,7 @@ This performs the first managed activation and builds and validates a side-by-si
 
 - `@mono-agent/memory/store`: `openMemoryDb`, `MemoryDb`, `DEFAULT_VEC_DIM`, `MEMORY_TYPES`, `MEMORY_STATUSES`, local record/entity/recall/stats/audit types, and re-exported `MemoryBlock`, `MemoryLoadOptions`, `MemoryStore`, `MemoryWriteResult`
 - `@mono-agent/memory/search`: `createEmbeddingProvider`, `createCircuitBreakerEmbeddingProvider`, `createVectorMemoryIndex`, `gatherMemoryChunks`, embedding/search provider classes and types
-- `@mono-agent/memory/bujo`: `createBujoMemoryStore`, `BujoMemoryStore`, `composeRecallBlock`, `safeRebuildMemoryIndex`, `rollbackMemoryIndex`, `resolveActiveMemoryDbPath`, managed-generation helpers, privacy-safe runtime-snapshot reader/types, strict completed-turn capture, content-free intake `inspect`/`audit` helpers, stopped-store `retry`/explicit `resolve` helpers, markdown grammar helpers, batched capture/reconcile/reflection/migration helpers, `createOllamaLlm`, and related BuJo/LLM types
+- `@mono-agent/memory/bujo`: `createBujoMemoryStore`, `BujoMemoryStore`, `composeRecallBlock`, `auditBujoMemoryHealth` and its closed schema/status/issue/count types, `safeRebuildMemoryIndex`, `rollbackMemoryIndex`, `resolveActiveMemoryDbPath`, managed-generation helpers, privacy-safe runtime-snapshot reader/types, strict completed-turn capture, content-free intake `inspect`/`audit` helpers, stopped-store `retry`/explicit `resolve` helpers, markdown grammar helpers, batched capture/reconcile/reflection/migration helpers, `createOllamaLlm`, and related BuJo/LLM types
 - CLI: `memory-bujo`
 
 ## Dependency Boundary

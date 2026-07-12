@@ -6,7 +6,7 @@ Category: `observability`
 
 ## Responsibility
 
-Local JSONL run observability and host trace source discovery. It records runtime events and compact summaries, redacts sensitive payload fields by default, lists recorded runs, reads selected run detail for local operator surfaces, and lets running agent processes register their artifact directories in a file-backed trace registry.
+Local JSONL run observability and host trace source discovery. It records runtime events and compact summaries, redacts sensitive payload fields by default, lists recorded runs, reads selected run detail for local operator surfaces, and lets running agent processes register their artifact directories plus optional content-free memory health in a file-backed trace registry.
 
 ## Install / Usage
 
@@ -40,7 +40,7 @@ import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 - `auditRecordedRuns`
 - `listRecordedRuns`, `readRecordedRun`, `pruneRunArtifacts`, `classifyRecordedRunEvent`, `isSafeRunId`
 - `combineRecordedRunEvents`
-- `registerTraceSource`, `listTraceSources`, `listTraceRuns`, `readTraceRun`
+- `registerTraceSource`, `listTraceSources`, `listTraceRuns`, `readTraceRun`, and the closed `TraceSourceMemoryHealth` backend/mode/status/issue/count types
 - `redactJsonValue`
 - `createCompositeRunRecorder` plus the `RunExporter` / `RunExportContext` / `RunExportEventContext` contracts
 - `buildRootSpanAttributes`, `buildEventSpanAttributes`, `countRuntimeWarnings`, `spanKindHint` and the exporter-config types (`PhoenixExporterConfig`, `ObservabilityExporterConfig`)
@@ -77,6 +77,15 @@ Raw `.events.jsonl` artifacts stay append-only and one event per line. UI surfac
 ## Trace Registry
 
 The trace registry is a directory of `agent-runtime.trace-source.v1` manifest JSON files. A running host registers one source with a stable `sourceId`, label, artifact directory, process id, status, and heartbeat timestamp. The registry only discovers agents and their artifact locations; run summaries and event JSONL files remain in each source's artifact directory.
+
+A manifest may include `memoryHealth` independently of process health. The typed
+shape is backend (`bujo|supermemory|none`), optional built-in mode, status
+(`healthy|in_progress|degraded|unhealthy|unknown|not_configured`), ISO
+`checkedAt`, closed issue codes, and whitelisted counts (`pending`, `due`,
+`dead`, `outbox`, `temporary`, `memories`, `vectors`, `missingVectors`). Readers
+normalize this untrusted field, discard malformed/unknown extras, and merge a
+duplicate source's freshest valid memory snapshot independently by `checkedAt`.
+The contract contains no paths, ids, text, payloads, or raw errors.
 
 Running sources become `stale` when their heartbeat is older than the configured stale interval. Stopped and failed sources remain listed so the dashboard can distinguish a clean shutdown from a crashed or misconfigured host. The registry reader validates source/run ids against path traversal, ignores malformed manifests with warnings, and reuses the recorded-run reader's redaction and bounded-read limits.
 

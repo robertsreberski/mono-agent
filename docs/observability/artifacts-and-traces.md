@@ -156,6 +156,29 @@ When `registryDir` is a config-local override (as `mono-agent init` scaffolds), 
 | `traceability.staleAfterMs` | `30000` | `MONO_AGENT_TRACE_STALE_AFTER_MS` | Age after which `status` marks a source stale. |
 | `traceability.globalDiscovery` | `true` | `MONO_AGENT_TRACE_GLOBAL_DISCOVERY` | When `registryDir` differs from the global default, also mirror this agent's manifest there. Set `false` to keep registration local-only. |
 
+### Content-free memory health
+
+An `agent-runtime.trace-source.v1` manifest may carry a typed `memoryHealth` snapshot alongside
+process health. The host computes it at trace registration and refreshes it on the trace heartbeat,
+coalescing concurrent refreshes and publishing the same value to the primary registry and any
+enabled best-effort global mirror. Memory health is independent of process health: a source can be `running` while its
+memory is `degraded`, or have memory `in_progress` while durable work drains normally.
+
+The nested contract contains `backend` (`bujo`, `supermemory`, or `none`), optional built-in
+`mode` (`lite`, `journal`, `bujo`), `status` (`healthy`, `in_progress`, `degraded`, `unhealthy`,
+`unknown`, or `not_configured`), ISO `checkedAt`, closed issue codes, and only these count keys:
+`pending`, `due`, `dead`, `outbox`, `temporary`, `memories`, `vectors`, and `missingVectors`.
+Registry readers normalize this as untrusted input: malformed snapshots are dropped, unknown issue
+codes/count keys and arbitrary extras are discarded, and a duplicate local/global source keeps the
+independently freshest valid `memoryHealth.checkedAt` rather than coupling it to whichever process
+manifest won the ordinary source merge.
+
+The snapshot is safe for discovery surfaces: it contains no paths, filenames, record/run ids,
+memory or model text, payloads, or raw provider/native errors. `none/not_configured` and
+`supermemory/unknown` omit `mode`; the latter is unknown because a local trace registry cannot
+assert health of the remote index. For the exact strict CLI schema and exit contract, see
+[Memory validation & CLI](/memory/validation-and-cli/#strict-provider-free-health-gate).
+
 Keep `staleAfterMs` comfortably larger than `heartbeatMs` (the defaults give a 3× margin) so a single missed write does not flap a healthy agent into the stale state. Registries also self-prune: manifests whose heartbeat is older than 7 days AND whose process is no longer running are deleted automatically the next time an agent starts or `mono-agent tui` runs.
 
 :::note
@@ -165,5 +188,12 @@ Keep `staleAfterMs` comfortably larger than `heartbeatMs` (the defaults give a 3
 ## How `start` and `status` use this
 
 `mono-agent start` prints the active traceability source — Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts — and `mono-agent status` reads the registry to report each known source as live or stale. See the [CLI reference](/observability/cli-reference/) for the full command surface, and [Phoenix export & backfill](/observability/phoenix-and-backfill/) for sending these same events to a trace viewer.
+
+The launchd fleet green check does not trust the interactive shell runtime. For each service it
+reads the plist's exact `ProgramArguments[0]` Node executable and `ProgramArguments[1]` CLI path,
+then uses that exact pair for the Node/ABI probe, `validate --json`,
+`memory audit --strict --json`, and `metrics --json`. The current fleet contract is Node `24.15.0`
+and modules ABI `137`; running those probes with ambient `node` cannot prove that the deployed
+service can load its native SQLite modules.
 
 To wire any of this up from code rather than config (custom hosts, embedding the runtime), see [Programmatic usage](/programmatic/).

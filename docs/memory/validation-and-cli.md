@@ -4,9 +4,9 @@ sidebar:
   order: 5
 ---
 
-This page covers how `mono-agent validate` verifies memory liveness (writable root, Ollama reachability, consolidation cadence), how `mono-agent memory` inspects and safely rebuilds the configured backend from an agent folder, and how the standalone `memory-bujo` CLI runs advanced out-of-band maintenance against a memory root. It also explains the `memory.llm` provider choices (`ollama` vs `agent-host`) that the validator inspects.
+This page covers how `mono-agent validate` verifies memory configuration and liveness, how `mono-agent memory` audits and safely repairs the configured backend from an agent folder, and how the standalone `memory-bujo` CLI runs advanced out-of-band maintenance against a memory root. It also explains the `memory.llm` provider choices (`ollama` vs `agent-host`) that the validator inspects.
 
-The memory subsystem **never silently downshifts**: invalid tier prerequisites fail configuration, while operational liveness or index-identity problems appear explicitly as `waiting` in the Memory section. Run `mono-agent validate` before cutover, after changing the tier/model/dimension, and after pulling any model.
+The memory subsystem **never silently downshifts**: invalid tier prerequisites and managed index-identity problems fail validation, while operational provider liveness problems appear explicitly as `waiting` in the Memory section. Run `mono-agent validate` before cutover, after changing the tier/model/dimension, and after pulling any model.
 
 ## `mono-agent memory` — config-aware preview
 
@@ -28,8 +28,21 @@ mono-agent memory search "release checklist"
 # Highest-salience local memories
 mono-agent memory top --limit 10
 
-# Aggregate health only: never prints memory text or entity names
+# Detailed local operator telemetry (may include local paths/source locations)
 mono-agent memory audit --json
+
+# Closed, content-free health contract for automation/fleet checks
+mono-agent memory audit --strict --json
+
+# Inspect durable completed-turn intake without printing its payloads
+mono-agent memory inspect --json
+mono-agent memory inspect <64-character-id> --json
+
+# With the matching agent stopped: make all or one selected item due
+mono-agent memory retry --json
+mono-agent memory retry <64-character-id> --json
+# Explicitly abandon one item
+mono-agent memory resolve <64-character-id> <reason-slug> --json
 
 # Build and atomically activate a fresh index from canonical files
 mono-agent memory rebuild --json
@@ -43,15 +56,92 @@ mono-agent memory stats --json
 
 If memory is disabled or missing from config, the command exits successfully and says no memory backend is configured. For local BuJo/journal/lite memory, `stats` reports the configured tier, write mode, recall-tool state, memory root and active database paths, daily-file counts, markdown/database sizes, record/status/type counts, latest capture/access timestamps, and top entities. `today` / `show <date>` print daily markdown when present, and `top` ranks local memories by salience.
 
-`audit` is the safe automation surface: its JSON contains counts, store bytes, exact-duplicate ratio, vector coverage, access concentration, vector backlog, active-generation identity, rebuild policy/source fingerprint, and explicit source-migration accounting. The latter distinguishes indexed items from raw-audit records, unstructured records, missing-identity records (with source locations), recognized legacy-source records (with source locations), and Journal duplicates. It never includes memory text, query text, entity names, queue keys, or source content.
+Plain `audit` is the detailed local operator report: its JSON contains counts, store bytes, exact-duplicate ratio, vector coverage, access concentration, vector backlog, active-generation identity, rebuild policy/source fingerprint, and explicit source-migration accounting. The latter distinguishes indexed items from raw-audit records, unstructured records, missing-identity records (with source locations), recognized legacy-source records (with source locations), and Journal duplicates. It never includes memory text, query text, entity names, queue keys, or source content, but it can include configured filesystem paths and source locations. Use the strict audit below—not plain `audit`—as a closed fleet or monitoring contract.
 
 While the configured store runs, it atomically publishes a coalesced metadata-only snapshot at `.index/runtime.json` (plus a 30-second heartbeat). `audit` uses that snapshot for queue capacity/backlog/high-water/drain/failure/discard counts and embedding/LLM call counts since that store start. It marks a closed, dead-process, invalid, or older-than-90-seconds snapshot as stale. Monetary cost, tokens, and search percentiles remain `null` unless another telemetry surface records them; audit does not guess them from memory content.
 
 `search` uses the same recall path as the `MemoryRecall` tool. When local semantic embeddings are configured but unavailable, it prints a warning and falls back to FTS-only recall instead of pretending semantic search succeeded. For Supermemory-backed agents, `search` queries Supermemory and `stats` reports the known configured container/base URL while marking local SQLite-only counts as unknown.
 
+### Strict provider-free health gate
+
+`mono-agent memory audit --strict --json` is the closed, provider-free health contract. It makes no embedding, chat-model, Ollama, OpenAI, or Supermemory request. For the built-in backend it takes a bounded, snapshot-coherent view of managed identity, SQLite integrity and metadata, FTS/vector coverage, canonical source parity, durable completed-turn intake, capture outbox, temporary artifacts, and the runtime snapshot. SQLite still requires the native modules built for the Node runtime that invokes the command; an unavailable native module reports `unknown` rather than leaking the loader error.
+
+The JSON object has exactly these fields (the `mode` field exists only for `backend: "bujo"`):
+
+| Field | Contract |
+| --- | --- |
+| `schemaVersion` | Integer `1`. |
+| `backend` | `bujo`, `supermemory`, or `none`. |
+| `mode` | For `bujo` only: `lite`, `journal`, or `bujo`. |
+| `status` | `healthy`, `in_progress`, `degraded`, `unhealthy`, `unknown`, or `not_configured`. |
+| `checkedAt` | ISO-8601 instant for this audit. |
+| `issues` | Canonically ordered subset of the closed issue-code list below. |
+| `counts` | Exact non-negative integer keys: `pending`, `due`, `dead`, `outbox`, `temporary`, `memories`, `vectors`, `missingVectors`. |
+
+The statuses and process exit codes are deliberately different dimensions:
+
+| Status | Meaning | Exit |
+| --- | --- | --- |
+| `healthy` | No issue code is present. | `0` |
+| `in_progress` | Durable or snapshot-coherent work is actively pending, with no degraded/unhealthy/unknown condition. | `0` |
+| `degraded` | Dead letters or missing, stale, or invalid runtime telemetry needs attention. | `1` |
+| `unhealthy` | Managed identity, database/index, canonical source, intake/outbox, or temporary-artifact integrity failed. | `1` |
+| `unknown` | The built-in database/native module could not be inspected, or a remote Supermemory index cannot be inspected locally. | `1` |
+| `not_configured` | No memory backend is configured (`backend: "none"`; no `mode`). | `0` |
+
+For `backend: "bujo"`, classification uses this exact precedence:
+
+1. `database_unavailable` or `native_module_unavailable` → `unknown`.
+2. Any of `manifest_missing`, `manifest_invalid`, `configured_identity_mismatch`,
+   `database_missing`, `sqlite_integrity_failed`, `metadata_mismatch`, `fts_mismatch`,
+   `vector_mismatch`, `orphaned_rows`, `canonical_mismatch`, `canonical_invalid`,
+   `intake_invalid`, `outbox_invalid`, or `temporary_artifacts` → `unhealthy`.
+3. `dead_letters`, `runtime_missing`, `runtime_stale`, or `runtime_invalid` → `degraded`.
+4. Otherwise, `mutation_in_progress`, `intake_pending`, or `outbox_pending` → `in_progress`.
+5. No issues → `healthy`.
+
+CLI misuse—including using `--strict` on any subcommand except `memory audit`—exits `2`. The complete closed issue vocabulary is:
+
+```text
+manifest_missing manifest_invalid configured_identity_mismatch
+database_missing database_unavailable native_module_unavailable
+sqlite_integrity_failed metadata_mismatch fts_mismatch vector_mismatch
+orphaned_rows canonical_mismatch canonical_invalid mutation_in_progress
+intake_invalid intake_pending dead_letters outbox_invalid outbox_pending
+temporary_artifacts runtime_missing runtime_stale runtime_invalid
+```
+
+The strict report is metadata-only by construction. It never publishes paths, filenames, record or run ids, model text, payloads, raw provider/native errors, or arbitrary extra fields. `backend: "supermemory"` therefore reports `unknown` with empty issues and zeroed counts instead of pretending to know remote health; an absent backend reports `not_configured` with the same closed empty shape.
+
+### Completed-turn intake inspection and recovery
+
+The config-aware intake commands operate only on the built-in Lite/Journal/BuJo intake; Supermemory rejects them. `inspect` is read-only and may be used while the agent is running. It returns only the stable 64-character item id, state, admission timestamp, attempt/revision, due flag, and bounded failure category (`model_output`, `provider`, or `processing`), plus aggregate state counts. It never returns `runId`, `conversationId`, summary/capture text, payload hash, filesystem path, or raw model/provider error.
+
+`retry` and `resolve` acquire the memory writer lease and refuse to run while the trace registries show a live process for the same canonical config. Stop the agent first:
+
+```bash
+mono-agent stop
+
+# With no id, retry all dead letters and make all delayed pending items due now.
+mono-agent memory retry --json
+# Or retry one item selected from `inspect`.
+mono-agent memory retry <64-character-id> --json
+
+# Explicitly retire one pending/dead item without claiming capture succeeded.
+mono-agent memory resolve <64-character-id> operator_discarded --json
+
+mono-agent start
+```
+
+`retry` resets selected dead letters to pending and makes selected delayed pending work immediately due; processing resumes after the store starts. A successful no-op still exits `0`, so inspect `changed`/`retried` in JSON. `resolve` is an explicit abandonment: it writes an `operator_resolved` receipt and preserves the permanent id/payload commitment so the same completed run cannot be admitted as new work later. Its reason must be a 1–64 character lowercase slug that begins with a letter/digit and then uses only letters, digits, underscores, or hyphens. It refuses an item with a retained semantic plan because that recoverable commit must finish first. A missing/already-resolved id returns `changed: false`, so automation must check the field rather than the exit code alone.
+
 ## `mono-agent validate` — memory liveness
 
-`mono-agent validate` (the agent-app doctor) checks both the configured identity and liveness. A managed generation whose tier, embeddings model, or dimension differs from the current config reports `waiting` immediately—before any Ollama/network probe—with the exact active and configured identities plus the stop/rebuild/validate sequence. Operational failures also report `waiting`, so they do not flip the overall result; malformed managed metadata and invalid config remain errors. Read the Memory section. When validating a downstream folder with `mono-agent validate --consumer <path>`, missing memory roots warn instead of being created because consumer validation is read-only.
+`mono-agent validate` (the agent-app doctor) checks both the configured identity and liveness. A managed generation whose tier, embeddings model, or dimension differs from the current config is an `error` immediately—before any Ollama/network probe—with the exact active and configured identities plus the stop/rebuild/validate sequence. Invalid/unavailable native SQLite bindings and malformed or missing managed metadata are also errors. Operational provider failures remain `waiting`, so they do not flip the overall result. Read the Memory section. Downstream validation with `mono-agent validate --consumer <path>` never creates a memory root: a missing Lite root is a warning, while missing Journal/BuJo managed authority is an error.
+
+Only Lite may remain unmanaged. Journal and BuJo always require the managed `.index/manifest.json` authority; a manifestless, deleted, or corrupt managed identity is an error and never falls back to a legacy `memory.db`. Stop the agent, run `mono-agent memory rebuild`, and validate again to establish or repair the managed generation.
+
+For scripting, `mono-agent validate --json` writes exactly one top-level JSON object with `ok: boolean` and `sections` (plus `preset` when requested). It emits no ANSI or human prose on stdout and exits `0` exactly when `ok` is `true`; errors exit `1`.
 
 Coverage: cli.
 
@@ -63,13 +153,17 @@ Coverage: cli.
 
 The checks run in this order:
 
-1. **Managed generation identity** — if `.index/manifest.json` exists, compares its active tier/model/dimension with the configured identity. A mismatch tells you to `mono-agent stop`, run `mono-agent memory rebuild`, and validate again.
+1. **Managed generation identity and native availability** — dynamically loads the built-in memory implementation, rejects ABI/native-loading failures, validates managed manifest authority, and compares the active tier/model/dimension with the configured identity. A mismatch tells you to `mono-agent stop`, run `mono-agent memory rebuild`, and validate again.
 2. **Memory root writable** — confirms `memory.path` is creatable and writable.
 3. **Ollama embeddings reachable** — only when `memory.embeddings.provider` is `ollama`; probes the embedding endpoint's `GET /api/tags` with a short timeout.
 4. **Embeddings model pulled** — for Ollama embeddings only, confirms `nomic-embed-text:v1.5` (or whichever `memory.embeddings.model` you set) appears in that endpoint's `/api/tags`. If absent it emits:
    `⚠  memory embeddings model "nomic-embed-text:v1.5" not found — run: ollama pull nomic-embed-text:v1.5`
 5. **Chat model pulled** (bujo only) — only when `memory.llm.provider` is `ollama`; probes the chat endpoint and checks the chat model against its `/api/tags`. `agent-host` chat LLMs are **not** checked against Ollama.
 6. **Consolidation cadence** (bujo only) — reports the consolidation cron expression and whether the scheduler will run for the configured `bujo` tier.
+
+:::caution
+For launchd fleet proof, the invoking runtime is part of the result. The fleet checker reads each plist's exact `ProgramArguments[0]` Node executable and `ProgramArguments[1]` `cli.js`, then uses that pair for the runtime/ABI probe, `validate --json`, `memory audit --strict --json`, and `metrics --json`. The current fleet contract is exact Node `24.15.0` with modules ABI `137`; the ambient shell's `node` or a CLI from another checkout is not evidence that the service can load `better-sqlite3`/`sqlite-vec`.
+:::
 
 A healthy bujo report looks like:
 
@@ -165,7 +259,7 @@ There are **two** per-call memory-LLM timeouts. They share the env var name `MON
 
 So in the app, raise `memory.llm.timeoutMs` (config) when a slow local memory model trips the cap on extraction or reconcile — its default is **`60000`**, not the CLI's `120000`. The value is bounded `1000`–`600000` ms.
 
-When the in-app memory LLM does exceed its timeout, the run reports it explicitly — `agent-host memory LLM timed out after 60000ms (provider too slow or unavailable)` — rather than the generic `cancelled` it used to surface, so a slow or dead provider is diagnosable from the run record. (Capture still swallows the error and stores nothing for that turn rather than failing the user's turn — see [Capture & recall](/memory/capture-and-recall/).)
+When the in-app memory LLM does exceed its timeout, the run reports it explicitly — `agent-host memory LLM timed out after 60000ms (provider too slow or unavailable)` — rather than the generic `cancelled` it used to surface, so a slow or dead provider is diagnosable from the run record. The provider answer still succeeds, while the already-admitted turn remains pending for durable retry instead of being reported as captured or lost; see [Capture & recall](/memory/capture-and-recall/).
 
 ## Safe index generations: rebuild and rollback
 
@@ -175,7 +269,10 @@ Use the config-aware commands for normal operation:
 cd /path/to/agent
 mono-agent stop
 mono-agent memory rebuild --json
+# Optional detailed local accounting (may include paths/source locations)
 mono-agent memory audit --json
+# Closed automation gate
+mono-agent memory audit --strict --json
 mono-agent start
 ```
 
@@ -189,7 +286,7 @@ The running agent must be stopped. The command refuses a matching live process, 
 mono-agent stop
 # restore the prior memory.mode / embeddings model / dimension in mono-agent.config.json
 mono-agent memory rollback --json
-mono-agent memory audit --json
+mono-agent memory audit --strict --json
 mono-agent start
 ```
 
@@ -259,6 +356,7 @@ Supermemory owns its remote index, so `mono-agent memory rebuild` and `rollback`
    ```bash
    mono-agent memory rebuild --json
    mono-agent memory audit --json
+   mono-agent memory audit --strict --json
    mono-agent start
    mono-agent status
    ```
