@@ -260,7 +260,7 @@ describe("managed rollback logical integrity", () => {
     rewriteRollbackDigest(root);
 
     await expect(rollbackMemoryIndex({ root, tier: "lite" }))
-      .rejects.toThrow(/rollback source parity.*edge inventory/iu);
+      .rejects.toThrow(/rollback source parity.*(?:edge inventory|replay projection)/iu);
   });
 
   it("rejects changed manifest-temp bytes before the activation rename", async () => {

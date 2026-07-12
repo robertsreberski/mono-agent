@@ -23,6 +23,25 @@ function note(id: string, text: string, over: Partial<MemoryRecord> = {}): Memor
 }
 
 describe("addEdge/expand", () => {
+  it("persists a validated explicit timestamp and deterministically repairs an existing edge", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    await db.upsert(note("a", "memory a"));
+    await db.upsert(note("b", "memory b"));
+    db.addEdge("a", "b", "thread", 0.5, "2099-01-01T00:00:00.000Z");
+    db.addEdge("a", "b", "thread", 0.8, "2099-01-02T00:00:00.000Z");
+
+    expect(db.allEdges()).toEqual([{
+      src: "a",
+      dst: "b",
+      kind: "thread",
+      weight: 0.8,
+      createdAt: "2099-01-02T00:00:00.000Z",
+    }]);
+    expect(() => db.addEdge("a", "b", "thread", 0.8, "2099-01-02T00:00:00Z"))
+      .toThrow(/exact ISO timestamp/iu);
+    db.close();
+  });
+
   it("expands one hop along thread/about edges, excluding the seed ids", async () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
     for (const id of ["a", "b", "c", "d"]) await db.upsert(note(id, `memory ${id}`));

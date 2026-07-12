@@ -19,7 +19,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import BetterSqlite3 from "better-sqlite3";
 
 import type { EmbeddingProvider } from "../../search/index.js";
-import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
+import { openMemoryDb, type MemoryDb, type MemoryRecord } from "../../store/index.js";
 import { loadVec } from "../../store/vec.js";
 import {
   createBujoMemoryStore,
@@ -34,8 +34,14 @@ import {
   serializeBullet,
 } from "../index.js";
 import { acquireMemoryWriterLease } from "../generations.js";
-import { writeCaptureIntent } from "../capture-outbox.js";
+import { replayCaptureOutbox, writeCaptureIntent } from "../capture-outbox.js";
 import { appendBullet, dailyFilePath, normalizedContentHash } from "../daily.js";
+import { assertCanonicalGraphRepairBaseParity, auditCanonicalIndexHealth } from "../rebuild.js";
+import {
+  REPLAY_PROJECTION_FILE,
+  initializeReplayProjection,
+  readReplayProjectionStrict,
+} from "../replay-projection.js";
 import type { Bullet } from "../types.js";
 
 const NOW = "2026-07-11T09:00:00.000Z";
@@ -71,6 +77,7 @@ describe("safe memory index rebuild", () => {
 
   it("keeps live canonical graph timestamps identical after safe rebuild", async () => {
     const root = tempRoot();
+    initializeReplayProjection(root);
     writeDaily(root, [bullet("M1", "Morgan maintains the memory graph.")]);
     const live = openMemoryDb({ path: join(root, "memory.db"), embeddings: embeddings("test:graph-parity", 8), dim: 8 });
     await live.upsert({ ...note("M1", "Morgan maintains the memory graph."), source: { file: "daily/2026-07-11.md", line: 3 } });
@@ -685,7 +692,152 @@ describe("safe memory index rebuild", () => {
     } finally {
       db.close();
     }
+
+    const healthDb = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
+    try {
+      expect(auditCanonicalIndexHealth(root, "bujo", healthDb)).toEqual({ status: "match" });
+    } finally {
+      healthDb.close();
+    }
   });
+
+  it("keeps a no-active ADD thread edge healthy after its replay intent is retired", async () => {
+    const root = tempRoot();
+    const target = bullet("NO-ACTIVE-THREAD-TARGET", "The established canonical thread target.");
+    const added = bullet("NO-ACTIVE-THREAD-ADD", "The new canonical memory links to its neighbour.");
+    writeDaily(root, [target]);
+    const file = "daily/2026-07-11.md";
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: added.id,
+      after: { file, bullet: added },
+      record: memoryRecordForBullet(added, file),
+      vector: deterministicVector(added.text, 8),
+      threads: [{ src: added.id, dst: target.id, weight: 0.8 }],
+    }], {}, NOW);
+
+    const result = await safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: embeddings("test:no-active-thread", 8),
+      dim: 8,
+    });
+
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+    const db = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
+    try {
+      expect(db.edges(added.id)).toEqual([
+        expect.objectContaining({ dst: target.id, kind: "thread", weight: 0.8 }),
+      ]);
+      expect(auditCanonicalIndexHealth(root, "bujo", db)).toEqual({ status: "match" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("uses the later endpoint timestamp when replaying a no-active ADD against a future-clock target", async () => {
+    const root = tempRoot();
+    const sourceAt = new Date("2099-01-01T00:00:00.000Z");
+    const targetAt = new Date("2099-01-02T00:00:00.000Z");
+    const target = {
+      ...bullet("FUTURE-THREAD-TARGET", "The established target has a future-clock timestamp."),
+      createdAt: targetAt.toISOString(),
+    };
+    const added = {
+      ...bullet("FUTURE-THREAD-ADD", "The new memory must not inherit the host wall clock."),
+      createdAt: sourceAt.toISOString(),
+    };
+    appendBullet(root, target, targetAt);
+    const file = relative(root, dailyFilePath(root, sourceAt));
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: added.id,
+      after: { file, bullet: added },
+      record: memoryRecordForBullet(added, file),
+      vector: deterministicVector(added.text, 8),
+      threads: [{ src: added.id, dst: target.id, weight: 0.8 }],
+    }], {}, sourceAt.toISOString());
+
+    const result = await safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: embeddings("test:no-active-future-thread", 8),
+      dim: 8,
+    });
+
+    const db = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
+    try {
+      expect(db.allEdges()).toContainEqual({
+        src: added.id,
+        dst: target.id,
+        kind: "thread",
+        weight: 0.8,
+        createdAt: targetAt.toISOString(),
+      });
+      expect(auditCanonicalIndexHealth(root, "bujo", db)).toEqual({ status: "match" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("refuses a managed legacy replay inventory when its sidecar is missing", async () => {
+    const root = tempRoot();
+    const source = bullet("LEGACY-REPLAY-SOURCE", "Legacy replay source remains canonical.");
+    const target = bullet("LEGACY-REPLAY-TARGET", "Legacy replay target remains canonical.");
+    writeDaily(root, [source, target]);
+    const provider = embeddings("test:legacy-replay-refusal", 8);
+    const first = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 8 });
+    const before = readFileSync(join(root, "daily", "2026-07-11.md"), "utf8");
+    const db = openMemoryDb({ path: first.active, dim: 8 });
+    try {
+      db.addEdge(source.id, target.id, "thread", 0.8, NOW);
+      db.checkpoint();
+    } finally {
+      db.close();
+    }
+    rmSync(join(root, REPLAY_PROJECTION_FILE));
+
+    await expect(safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 8 }))
+      .rejects.toThrow(/sidecar.*missing.*replay|explicit.*adoption/iu);
+
+    expect(readFileSync(join(root, "daily", "2026-07-11.md"), "utf8")).toBe(before);
+    expect(existsSync(join(root, REPLAY_PROJECTION_FILE))).toBe(false);
+  });
+
+  it.each(["lite", "journal"] as const)(
+    "does not retain replay-only lifecycle or edges as a repairable %s rollback",
+    async (tier) => {
+      const root = tempRoot();
+      const old = { ...bullet("NON-BUJO-OLD", "The non-BuJo prior claim."), status: "invalidated" as const };
+      const replacement = bullet("NON-BUJO-NEW", "The non-BuJo replacement claim.");
+      writeDaily(root, [old, replacement]);
+      const model = embeddings(`test:${tier}-replay-rejection`, 8);
+      const first = tier === "journal"
+        ? await safeRebuildMemoryIndex({ root, tier, embeddings: model, dim: 8 })
+        : await safeRebuildMemoryIndex({ root, tier });
+      const db = openMemoryDb({ path: first.active, ...(tier === "journal" ? { dim: 8 } : {}) });
+      try {
+        const records = db.allMemories();
+        const oldId = records.find((record) => record.text === old.text)?.id;
+        const replacementId = records.find((record) => record.text === replacement.text)?.id;
+        expect(oldId).toBeDefined();
+        expect(replacementId).toBeDefined();
+        db.markSuperseded(oldId!, replacementId!, NOW);
+        db.addEdge(replacementId!, oldId!, "thread", 0.8);
+        db.checkpoint();
+      } finally {
+        db.close();
+      }
+
+      const rebuilt = tier === "journal"
+        ? await safeRebuildMemoryIndex({ root, tier, embeddings: model, dim: 8 })
+        : await safeRebuildMemoryIndex({ root, tier });
+
+      expect(rebuilt.rollback).toBeUndefined();
+    },
+  );
 
   it("validates managed metadata and actual vector DDL before replay can mutate source", async () => {
     const root = tempRoot();
@@ -786,7 +938,7 @@ describe("safe memory index rebuild", () => {
     expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
   });
 
-  it("refuses rebuild before source mutation when a paid migration decision is pending", async () => {
+  it("recovers a paid migration decision provider-free before the rebuild snapshot", async () => {
     const root = tempRoot();
     const model = embeddings("test:migration-pending", 8);
     const createdAt = "2026-01-01T09:00:00.000Z";
@@ -810,16 +962,89 @@ describe("safe memory index rebuild", () => {
     const before = readFileSync(dailyFilePath(root, created), "utf8");
     const embed = vi.fn(model.embed);
 
-    await expect(safeRebuildMemoryIndex({
+    const rebuilt = await safeRebuildMemoryIndex({
       root,
       tier: "bujo",
       embeddings: { id: model.id, embed },
       dim: 8,
-    })).rejects.toThrow(/durable decision.*pending/iu);
+      hooks: {
+        afterSnapshot: () => {
+          expect(embed).not.toHaveBeenCalled();
+          expect(readFileSync(dailyFilePath(root, created), "utf8")).not.toBe(before);
+          expect(readFileSync(join(root, "monthly", "2026-07.md"), "utf8"))
+            .not.toContain("mono-agent-migrate:");
+        },
+      },
+    });
 
-    expect(embed).not.toHaveBeenCalled();
-    expect(readFileSync(dailyFilePath(root, created), "utf8")).toBe(before);
-    expect(readFileSync(join(root, "monthly", "2026-07.md"), "utf8")).toContain("mono-agent-migrate:");
+    expect(embed).toHaveBeenCalled();
+    expect(readFileSync(join(root, "monthly", "2026-07.md"), "utf8")).not.toContain("mono-agent-migrate:");
+    const current = openMemoryDb({ path: rebuilt.active, readOnly: true, dim: 8 });
+    try {
+      expect(current.get(item.id)?.salience).toBe(0.5);
+    } finally {
+      current.close();
+    }
+  });
+
+  it("recovers a DB-before forget migration before verifying a coexisting complete receipt", async () => {
+    const root = tempRoot();
+    const model = embeddings("test:receipt-before-forget", 8);
+    const createdAt = "2026-01-01T09:00:00.000Z";
+    const item = { ...bullet("MIG-RECEIPT-FORGET", "A later forget owns replay state."), createdAt, salience: 0.2 };
+    appendBullet(root, item, new Date(createdAt));
+    const initial = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: model, dim: 8 });
+    const db = openMemoryDb({ path: initial.active, embeddings: model, dim: 8 });
+    const receipt = writeCaptureIntent(root, [], {}, NOW, { retentionKey: "9".repeat(64) });
+    replayCaptureOutbox(root, db, {
+      canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+    });
+    expect((JSON.parse(readFileSync(join(root, receipt.file), "utf8")) as { state: string }).state)
+      .toBe("complete");
+    const failingDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === "commitPreparedUpserts") {
+          return () => { throw new Error("crash-before-forget-db"); };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as MemoryDb;
+    await expect(migrate({
+      db: failingDb,
+      root,
+      llm: { id: "forget", complete: async () => JSON.stringify({ action: "forget" }) },
+      nextId: () => "unused",
+      now: () => new Date(NOW),
+      canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+    })).rejects.toThrow("crash-before-forget-db");
+    expect(readReplayProjectionStrict(root).projection.terminals).toEqual([
+      expect.objectContaining({ id: item.id, at: NOW, authorityKind: "migration" }),
+    ]);
+    expect(db.get(item.id)).toMatchObject({ status: "open" });
+    expect(db.get(item.id)).not.toHaveProperty("validTo");
+    db.close();
+
+    const rebuilt = await safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: model,
+      dim: 8,
+      hooks: {
+        afterSnapshot: () => {
+          expect(readFileSync(join(root, "monthly", "2026-07.md"), "utf8"))
+            .not.toContain("mono-agent-migrate:");
+        },
+      },
+    });
+    const current = openMemoryDb({ path: rebuilt.active, readOnly: true, dim: 8 });
+    try {
+      expect(current.get(item.id)).toMatchObject({ status: "dropped", validTo: NOW });
+    } finally {
+      current.close();
+    }
+    expect((JSON.parse(readFileSync(join(root, receipt.file), "utf8")) as { state: string }).state)
+      .toBe("complete");
   });
 
   it("builds beside a divergent legacy index without advertising it as a safe rollback", async () => {
@@ -1461,6 +1686,56 @@ describe("safe memory index rebuild", () => {
     }
   });
 
+  it("holds a BEGIN IMMEDIATE fence across empty replay proof and cleans only safe replay temps", async () => {
+    const root = tempRoot();
+    const provider = embeddings("test:empty-replay-fence", 4);
+    const legacy = openMemoryDb({ path: join(root, "memory.db"), embeddings: provider, dim: 4 });
+    legacy.setIndexMetadata({
+      schemaVersion: 1,
+      policyVersion: "legacy-test",
+      tier: "bujo",
+      embeddingModel: provider.id,
+      dimension: 4,
+      sourceFingerprint: "legacy-test",
+      generation: "legacy-test",
+      createdAt: NOW,
+    });
+    legacy.close();
+    const temporary = join(
+      root,
+      "..replay-projection-v1.json-00000000-0000-4000-8000-000000000003.tmp",
+    );
+    writeFileSync(temporary, "partial", { mode: 0o600 });
+    let writerBlocked = false;
+
+    await safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: provider,
+      dim: 4,
+      hooks: {
+        beforeReplayProjectionInitialization: () => {
+          const raw = new BetterSqlite3(join(root, "memory.db"));
+          try {
+            raw.pragma("busy_timeout = 0");
+            try {
+              raw.exec("BEGIN IMMEDIATE");
+            } catch (error) {
+              writerBlocked = /locked|busy/iu.test(String(error));
+            }
+          } finally {
+            if (raw.inTransaction) raw.exec("ROLLBACK");
+            raw.close();
+          }
+        },
+      },
+    });
+
+    expect(writerBlocked).toBe(true);
+    expect(existsSync(temporary)).toBe(false);
+    expect(readFileSync(join(root, REPLAY_PROJECTION_FILE), "utf8")).toContain('"schemaVersion":1');
+  });
+
   it("releases leases on invalid tier, post-open initialization failure, and flush failure", async () => {
     const invalidRoot = tempRoot();
     expect(() => createBujoMemoryStore({ root: invalidRoot, tier: "journal" })).toThrow(/requires embeddings/iu);
@@ -1841,6 +2116,135 @@ describe("safe memory index rebuild", () => {
       dim: 8,
     });
     await matching.close();
+  });
+
+  it("accepts exact sidecar-backed replay in read-only BuJo, including explicit FTS fallback", async () => {
+    const root = tempRoot();
+    const target = bullet("READONLY-TARGET", "Read-only replay target.");
+    const source = bullet("READONLY-SOURCE", "Read-only replay source.");
+    writeDaily(root, [target]);
+    const file = "daily/2026-07-11.md";
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: source.id,
+      after: { file, bullet: source },
+      record: memoryRecordForBullet(source, file),
+      vector: deterministicVector(source.text, 8),
+      threads: [{ src: source.id, dst: target.id, weight: 0.8 }],
+    }], {}, NOW);
+    const provider = embeddings("test:read-only-replay", 8);
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 8 });
+
+    const matching = createBujoMemoryStore({
+      root,
+      dbPath: rebuilt.active,
+      readOnly: true,
+      tier: "bujo",
+      embeddings: provider,
+      dim: 8,
+    });
+    await matching.close();
+
+    const fallback = createBujoMemoryStore({
+      root,
+      dbPath: rebuilt.active,
+      readOnly: true,
+      allowFtsFallback: true,
+    });
+    await expect(fallback.recall("Read-only replay", { trackAccess: false })).resolves.not.toEqual([]);
+    await fallback.close();
+  });
+
+  it("rejects a plausible raw thread from read-only BuJo, including FTS fallback", async () => {
+    const root = tempRoot();
+    const source = bullet("READONLY-RAW-SOURCE", "Raw read-only source.");
+    const target = bullet("READONLY-RAW-TARGET", "Raw read-only target.");
+    writeDaily(root, [source, target]);
+    const provider = embeddings("test:read-only-raw-replay", 8);
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 8 });
+    const raw = new BetterSqlite3(rebuilt.active, { fileMustExist: true });
+    try {
+      raw.prepare(
+        "INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, 'thread', 0.8, ?)",
+      ).run(source.id, target.id, NOW);
+      raw.pragma("wal_checkpoint(TRUNCATE)");
+    } finally {
+      raw.close();
+    }
+
+    expect(() => createBujoMemoryStore({
+      root,
+      dbPath: rebuilt.active,
+      readOnly: true,
+      tier: "bujo",
+      embeddings: provider,
+      dim: 8,
+    })).toThrow(/replay projection|replay.*DB|thread/iu);
+    expect(() => createBujoMemoryStore({
+      root,
+      dbPath: rebuilt.active,
+      readOnly: true,
+      allowFtsFallback: true,
+    })).toThrow(/replay projection|replay.*DB|thread/iu);
+  });
+
+  it("rejects stale graph-owned about drift in read-only BuJo and heals it on writable startup", async () => {
+    const root = tempRoot();
+    const item = bullet("READONLY-STALE-ABOUT", "Alice owns the stale graph projection.");
+    writeDaily(root, [item]);
+    appendGraphBatch(root, {
+      entities: [{ id: "person:alice", name: "Alice", type: "person", createdAt: NOW }],
+    });
+    const provider = embeddings("test:read-only-stale-about", 8);
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 8 });
+    const raw = new BetterSqlite3(rebuilt.active, { fileMustExist: true });
+    try {
+      raw.prepare(
+        "INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, 'about', 0.8, ?)",
+      ).run(item.id, "person:alice", NOW);
+      raw.pragma("wal_checkpoint(TRUNCATE)");
+    } finally {
+      raw.close();
+    }
+
+    const audited = openMemoryDb({ path: rebuilt.active, readOnly: true, dim: 8 });
+    try {
+      expect(auditCanonicalIndexHealth(root, "bujo", audited)).toEqual({ status: "mismatch" });
+    } finally {
+      audited.close();
+    }
+    expect(() => createBujoMemoryStore({
+      root,
+      dbPath: rebuilt.active,
+      readOnly: true,
+      tier: "bujo",
+      embeddings: provider,
+      dim: 8,
+    })).toThrow(/exact canonical memory, graph, and replay parity/iu);
+    expect(() => createBujoMemoryStore({
+      root,
+      dbPath: rebuilt.active,
+      readOnly: true,
+      allowFtsFallback: true,
+    })).toThrow(/exact canonical memory, graph, and replay parity/iu);
+
+    const writable = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings: provider,
+      dim: 8,
+      llm: { id: "test:read-only-stale-about", complete: async () => "{}" },
+    });
+    await writable.close();
+
+    const healed = openMemoryDb({ path: rebuilt.active, readOnly: true, dim: 8 });
+    try {
+      expect(healed.allEdges().some((edge) => edge.kind === "about")).toBe(false);
+      expect(auditCanonicalIndexHealth(root, "bujo", healed)).toEqual({ status: "match" });
+    } finally {
+      healed.close();
+    }
   });
 
   it("detects retained rollback replacement after manifest temp fsync", async () => {

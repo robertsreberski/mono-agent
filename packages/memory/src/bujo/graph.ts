@@ -3,11 +3,16 @@ import { createHash } from "node:crypto";
 import type {
   EntityRecord,
   EntityRelationRecord,
+  MemoryDb,
   MemoryEntityAssociation,
   MemoryRecord,
 } from "../store/index.js";
 import { withManagedRollbackRetirement } from "./generations.js";
-import { appendCanonicalFile, readCanonicalFileSnapshot } from "./path-safety.js";
+import {
+  appendCanonicalFile,
+  readCanonicalFileSnapshot,
+  type CanonicalFileIdentity,
+} from "./path-safety.js";
 
 const GRAPH_FILE = "graph.jsonl";
 const INVALID_GRAPH_STRING = /[\p{Cc}\p{Cf}\p{Cs}]/u;
@@ -46,6 +51,15 @@ export interface CanonicalGraphProjection extends CanonicalGraphRecords {
   readonly derivedLegacyAssociations: number;
 }
 
+/**
+ * Synchronous, read-only proof that SQLite memory/replay state is safe input
+ * for a total canonical graph repair. Graph inventory is intentionally outside
+ * this proof because it is the state being repaired. The guard must throw
+ * unless canonical memory and replay parity are exact; returning a value
+ * (including a Promise) is rejected fail-closed.
+ */
+export type CanonicalGraphRepairGuard = (root: string, db: MemoryDb) => void;
+
 export type CanonicalGraphIssueCode =
   | "malformed-json"
   | "unknown-kind"
@@ -67,6 +81,8 @@ export class CanonicalGraphValidationError extends Error {
 
 export interface StrictCanonicalGraphSnapshot {
   readonly fingerprint: string;
+  /** Exact physical identity paired with the fingerprint; absent when graph.jsonl is absent. */
+  readonly identity?: CanonicalFileIdentity;
   readonly records: CanonicalGraphRecords;
 }
 
@@ -82,6 +98,7 @@ export function readCanonicalGraphStrictSnapshot(root: string): StrictCanonicalG
   }
   return {
     fingerprint: hash.digest("hex"),
+    ...(snapshot === undefined ? {} : { identity: snapshot.identity }),
     records: parseCanonicalGraphStrict(snapshot?.content),
   };
 }
@@ -227,6 +244,122 @@ export function projectCanonicalGraph(
     collectionSupports,
     derivedLegacyAssociations,
   };
+}
+
+/**
+ * Replace SQLite's total canonical graph projection bracketed by an exact
+ * memory/replay parity guard. Guard execution is deliberately the first
+ * operation: canonical graph and SQLite memory are not read on a missing,
+ * throwing, or asynchronous guard. The same guard runs again after derivation
+ * immediately before the transactional DB replacement, then once more after
+ * the existing graph source and DB replacement fences. The middle proof plus
+ * SQLite CAS prevents a raced DB snapshot from becoming graph input; the last
+ * proof keeps canonical daily/replay or SQLite memory races across the mutation
+ * visible to the caller.
+ *
+ * The memory snapshot is both the deterministic legacy-name derivation input
+ * and the compare-and-swap fence used by MemoryDb. The guard establishes that
+ * the snapshot may be trusted; the existing source identity and SQLite CAS
+ * fences still reject races during projection replacement.
+ */
+export function replaceDbCanonicalGraphProjectionWithParity(
+  root: string,
+  db: MemoryDb,
+  guard: CanonicalGraphRepairGuard,
+): CanonicalGraphProjection {
+  if (typeof guard !== "function") {
+    throw new Error("memory-graph: canonical graph repair requires an exact synchronous parity guard.");
+  }
+  assertCanonicalGraphRepairGuard(root, db, guard);
+  const projection = replaceDbCanonicalGraphProjectionUnchecked(
+    root,
+    db,
+    () => assertCanonicalGraphRepairGuard(root, db, guard),
+  );
+  assertCanonicalGraphRepairGuard(root, db, guard);
+  return projection;
+}
+
+function assertCanonicalGraphRepairGuard(
+  root: string,
+  db: MemoryDb,
+  guard: CanonicalGraphRepairGuard,
+): void {
+  const result: unknown = guard(root, db);
+  if (result !== undefined) {
+    throw new Error("memory-graph: canonical graph repair parity guard must complete synchronously.");
+  }
+}
+
+/** Internal projection engine; only the guarded public boundary can invoke it. */
+function replaceDbCanonicalGraphProjectionUnchecked(
+  root: string,
+  db: MemoryDb,
+  assertSafeBeforeReplace: () => void,
+): CanonicalGraphProjection {
+  const source = readCanonicalGraphStrictSnapshot(root);
+  const memorySnapshot = db.canonicalGraphSnapshot().memories;
+  const projection = projectCanonicalGraph(source.records, memorySnapshot);
+  const memoryById = new Map(memorySnapshot.map((memory) => [memory.id, memory]));
+  const associationByKey = new Map(
+    projection.associations.map((association) => [strictAssociationKey(association), association]),
+  );
+  const supports = projection.collectionSupports.map((support) => {
+    const memory = memoryById.get(support.memoryId);
+    if (memory === undefined) {
+      throw graphValidationError(
+        "orphan-endpoint",
+        `memory-graph: collection support lost memory endpoint ${support.memoryId}.`,
+      );
+    }
+    const association = associationByKey.get(strictAssociationKey({
+      memoryId: support.memoryId,
+      entityId: support.entityId,
+    }));
+    if (association === undefined) {
+      throw graphValidationError(
+        "invalid-projection",
+        `memory-graph: collection support lost canonical association ${support.memoryId} -> ${support.entityId}.`,
+      );
+    }
+    return {
+      ...support,
+      weight: 1,
+      createdAt: association.createdAt,
+    };
+  });
+  // Re-prove the derived memory snapshot immediately before the transaction.
+  // MemoryDb's compare-and-swap then fences the remaining guard-to-write gap.
+  assertSafeBeforeReplace();
+  db.replaceCanonicalGraphProjection(memorySnapshot, {
+    entities: projection.entities,
+    relations: projection.relations,
+    associations: projection.associations,
+    supports,
+  });
+  const confirmed = readCanonicalGraphStrictSnapshot(root);
+  if (!sameCanonicalGraphSourceSnapshot(source, confirmed)) {
+    throw new Error("memory-graph: canonical graph source changed during DB projection replacement.");
+  }
+  return projection;
+}
+
+function sameCanonicalGraphSourceSnapshot(
+  left: StrictCanonicalGraphSnapshot,
+  right: StrictCanonicalGraphSnapshot,
+): boolean {
+  if (left.fingerprint !== right.fingerprint) return false;
+  if (left.identity === undefined || right.identity === undefined) {
+    return left.identity === undefined && right.identity === undefined;
+  }
+  return left.identity.dev === right.identity.dev
+    && left.identity.ino === right.identity.ino
+    && left.identity.size === right.identity.size
+    && left.identity.mtimeMs === right.identity.mtimeMs
+    && left.identity.ctimeMs === right.identity.ctimeMs
+    && left.identity.mode === right.identity.mode
+    && left.identity.nlink === right.identity.nlink
+    && left.identity.uid === right.identity.uid;
 }
 
 export function emptyCanonicalGraphProjection(): CanonicalGraphProjection {

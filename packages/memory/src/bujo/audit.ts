@@ -34,6 +34,10 @@ import {
 import { inspectJournalWriteLock } from "./daily.js";
 import { canonicalMemoryRootPath } from "./path-safety.js";
 import {
+  auditReplayProjectionTemporaryArtifacts,
+  type ReplayProjectionTemporaryAudit,
+} from "./replay-projection.js";
+import {
   BUJO_RUNTIME_SNAPSHOT_STALE_AFTER_MS,
   readBujoRuntimeSnapshot,
   type BujoRuntimeSnapshotObservation,
@@ -194,11 +198,13 @@ function auditAttempt(options: BujoMemoryHealthOptions, now: Date): AuditAttempt
 
   const intakeHealthBefore = auditCompletedTurnIntakeHealthState(root, now);
   const outboxHealthBefore = auditCaptureOutboxHealthState(root);
+  const replayTemporaryBefore = auditReplayProjectionTemporaryArtifacts(root);
   const intakeBefore = intakeHealthBefore.audit;
   const runtimeBefore = readBujoRuntimeSnapshot(root, now);
   applyDurableQueueHealth(
     intakeHealthBefore,
     outboxHealthBefore,
+    replayTemporaryBefore,
     runtimeShowsActiveIntakeRetry(options.mode, runtimeBefore, intakeBefore),
     now,
     issues,
@@ -231,14 +237,15 @@ function auditAttempt(options: BujoMemoryHealthOptions, now: Date): AuditAttempt
   }
   const intakeHealthAfter = auditCompletedTurnIntakeHealthState(root, now);
   const outboxHealthAfter = auditCaptureOutboxHealthState(root);
+  const replayTemporaryAfter = auditReplayProjectionTemporaryArtifacts(root);
   const runtimeAfter = readBujoRuntimeSnapshot(root, now);
   const journalMutationAfter = inspectJournalWriteMutation(root, options.mode, now);
   const rollbackSourceAfter = manifest === undefined
     ? { status: "absent" } as const
     : inspectRollbackSource(root, manifest.rollback);
   const unstable = !manifestStable
-    || durableQueueSignature(intakeHealthBefore, outboxHealthBefore)
-      !== durableQueueSignature(intakeHealthAfter, outboxHealthAfter)
+    || durableQueueSignature(intakeHealthBefore, outboxHealthBefore, replayTemporaryBefore)
+      !== durableQueueSignature(intakeHealthAfter, outboxHealthAfter, replayTemporaryAfter)
     || runtimeQueueSignature(runtimeBefore) !== runtimeQueueSignature(runtimeAfter)
     || journalMutationBefore !== journalMutationAfter
     || rollbackSourceSignature(rollbackSourceBefore) !== rollbackSourceSignature(rollbackSourceAfter);
@@ -477,6 +484,7 @@ function applyRollbackSourceHealth(
 function applyDurableQueueHealth(
   intakeHealth: CompletedTurnIntakeHealthAudit,
   outboxHealth: CaptureOutboxHealthAudit,
+  replayTemporary: ReplayProjectionTemporaryAudit,
   activeIntakeRetry: boolean,
   now: Date,
   issues: Set<MemoryHealthIssueCode>,
@@ -488,7 +496,7 @@ function applyDurableQueueHealth(
   counts.due = intake.counts.due;
   counts.dead = intake.counts.dead;
   counts.outbox = outbox.pending;
-  counts.temporary = intake.counts.temporary + outbox.temporary;
+  counts.temporary = intake.counts.temporary + outbox.temporary + replayTemporary.temporary;
   if (!intake.valid) issues.add("intake_invalid");
   if (intake.counts.pending > 0) issues.add("intake_pending");
   if (intake.counts.dead > 0) issues.add("dead_letters");
@@ -639,6 +647,7 @@ function sameStrings(left: readonly string[] | undefined, right: readonly string
 function durableQueueSignature(
   intakeHealth: CompletedTurnIntakeHealthAudit,
   outboxHealth: CaptureOutboxHealthAudit,
+  replayTemporary: ReplayProjectionTemporaryAudit,
 ): string {
   const intake = intakeHealth.audit;
   const outbox = outboxHealth.audit;
@@ -654,6 +663,7 @@ function durableQueueSignature(
       },
     },
     outbox,
+    replayTemporary,
     privateState: {
       intake: intakeHealth.privateState,
       outbox: outboxHealth.privateState,

@@ -12,12 +12,32 @@ import {
 } from "./path-safety.js";
 import type { ReflectDeps } from "./reflect.js";
 import { parseDailyFile, serializeDailyFile, type DailyFile } from "./grammar.js";
-import { appendGraphBatch, readGraph } from "./graph.js";
+import {
+  appendGraphBatch,
+  readGraph,
+  replaceDbCanonicalGraphProjectionWithParity,
+  type CanonicalGraphRepairGuard,
+} from "./graph.js";
 import { withManagedRollbackRetirement } from "./generations.js";
+import {
+  assertReplayDbStateSubsetOfProjection,
+  assertProjectionContainsDelta,
+  assertReplayProjectionMatchesDb,
+  emptyReplayProjection,
+  mergeReplayProjectionDelta,
+  prepareReplayProjectionDelta,
+  publishPreparedReplayProjection,
+  readBujoCanonicalSourceFingerprint,
+  readReplayProjectionStrict,
+  replayProjectionAuthorityId,
+  replayProjectionDbReplacement,
+  type ReplayProjectionDelta,
+} from "./replay-projection.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
 
 export interface MigrateDeps extends ReflectDeps {
+  readonly canonicalGraphRepairGuard?: CanonicalGraphRepairGuard;
   /** Fault-injection seams used to prove the durable decision boundary. */
   readonly hooks?: {
     readonly afterDecisionDurable?: (decisionId: string) => void;
@@ -39,6 +59,17 @@ export interface PendingMigrateRecovery {
   readonly action: MigrateAction;
 }
 
+/** Provider-free, content-hidden authority preview for explicit stopped-store adoption. */
+export interface PendingMigrateReplayAdoptionPreview {
+  readonly action: MigrateAction;
+  readonly projection: ReturnType<typeof emptyReplayProjection>;
+  readonly ownedLifecycleSources: readonly string[];
+  readonly pendingMemoryIds: readonly string[];
+  readonly graphEntityIds: readonly string[];
+  readonly graphAssociationKeys: readonly string[];
+  readonly commitment: string;
+}
+
 interface LlmDecision {
   readonly action: MigrateAction;
   readonly dueAt?: string;
@@ -58,7 +89,7 @@ interface DurableMigrateDecision {
   readonly collection?: string;
 }
 
-type DurableMigrateApplyDeps = Pick<MigrateDeps, "db" | "root" | "hooks">;
+type DurableMigrateApplyDeps = Pick<MigrateDeps, "db" | "root" | "hooks" | "canonicalGraphRepairGuard">;
 
 interface CanonicalMigrationState {
   readonly file: string;
@@ -303,31 +334,42 @@ function applyDurableDecision(
   file: string,
   decision: DurableMigrateDecision,
 ): void {
-  const current = deps.db.get(decision.id);
-  const dbBefore = current !== undefined && sameDecisionState(current, decision.before);
-  const dbAfter = current !== undefined && sameDecisionState(current, decision.updated);
-  const canonical = readCanonicalMigrationState(deps.root, decision.updated);
-  const canonicalBefore = bulletMatchesRecord(canonical.bullet, decision.before);
-  const canonicalAfter = bulletMatchesRecord(canonical.bullet, decision.updated);
-  if (current === undefined || (!dbBefore && !dbAfter) || (!canonicalBefore && !canonicalAfter)) {
-    throw new Error(`memory-migrate: durable decision ${decision.decisionId} no longer matches memory ${decision.id}.`);
+  if (decision.action === "cluster" && deps.canonicalGraphRepairGuard === undefined) {
+    throw new Error("memory-migrate: clustered durable replay requires a canonical graph repair parity guard.");
   }
-
-  const expectedDb = dbAfter ? current : withLatestLiveState(decision.updated, current!);
-  if (!dbAfter) {
-    // Stored vectors and the active DB identity must agree before canonical
-    // Markdown is rewritten. Recovery is provider-free and cannot repair an
-    // identity mismatch by paying for a fresh vector.
-    deps.db.assertPreparedUpserts([expectedDb], [decision.vector]);
+  const preflight = preflightDurableDecision(deps.root, deps.db, decision);
+  const { replayDelta, dbAfter, expectedDb, canonical, canonicalAfter } = preflight;
+  const preparedReplay = prepareReplayProjectionDelta(deps.root, replayDelta);
+  if (preparedReplay.prior.state.kind === "missing") {
+    assertReplayDbStateSubsetOfProjection(deps.db, preparedReplay.projection);
   }
-
   if (!canonicalAfter) rewriteCanonicalDecision(deps.root, canonical, decision);
   if (!canonicalDecisionStateMatches(deps.root, decision.updated)) {
     throw new Error(`memory-migrate: canonical outcome for ${decision.id} did not match its durable decision.`);
   }
+  const cluster = decision.action === "cluster"
+    ? applyCanonicalClusterOutcome(deps.root, decision)
+    : undefined;
+  const publishedReplay = preparedReplay.changed
+    ? withManagedRollbackRetirement(
+        deps.root,
+        "replay",
+        () => publishPreparedReplayProjection(deps.root, preparedReplay),
+      )
+    : publishPreparedReplayProjection(deps.root, preparedReplay);
+  assertProjectionContainsDelta(publishedReplay.projection, replayDelta);
+  const committedSourceFingerprint = readBujoCanonicalSourceFingerprint(deps.root);
+
   if (!dbAfter) deps.db.commitPreparedUpserts([expectedDb], [decision.vector]);
-  if (decision.action === "cluster") {
-    applyClusterOutcome(deps.root, deps.db, decision);
+  deps.db.replaceReplayProjection(replayProjectionDbReplacement(publishedReplay.projection));
+  assertReplayProjectionMatchesDb(deps.db, publishedReplay.projection);
+  if (cluster !== undefined) {
+    replaceDbCanonicalGraphProjectionWithParity(
+      deps.root,
+      deps.db,
+      deps.canonicalGraphRepairGuard!,
+    );
+    assertClusterOutcome(deps.root, deps.db, decision.id, cluster.entity, cluster.association);
   }
   const after = deps.db.get(decision.id);
   if (after === undefined || !sameMemoryRecord(after, expectedDb)) {
@@ -336,11 +378,51 @@ function applyDurableDecision(
   if (!canonicalDecisionStateMatches(deps.root, decision.updated)) {
     throw new Error(`memory-migrate: canonical outcome for ${decision.id} changed before completion.`);
   }
+  if (readBujoCanonicalSourceFingerprint(deps.root) !== committedSourceFingerprint) {
+    throw new Error("memory-migrate: canonical source changed during durable replay projection commit.");
+  }
   deps.hooks?.afterActionCommitted?.(decision.decisionId);
+  assertProjectionContainsDelta(readReplayProjectionStrict(deps.root).projection, replayDelta);
   removePendingDecision(deps.root, file, decision);
 }
 
-function applyClusterOutcome(root: string, db: MemoryDb, decision: DurableMigrateDecision): void {
+interface DurableDecisionPreflight {
+  readonly replayDelta: ReplayProjectionDelta;
+  readonly dbAfter: boolean;
+  readonly expectedDb: MemoryRecord;
+  readonly canonical: CanonicalMigrationState;
+  readonly canonicalAfter: boolean;
+}
+
+/** Exact provider-free before/after validation shared by recovery and adoption. */
+function preflightDurableDecision(
+  root: string,
+  db: MemoryDb,
+  decision: DurableMigrateDecision,
+): DurableDecisionPreflight {
+  const replayDelta = migrationReplayDelta(decision);
+  const current = db.get(decision.id);
+  const dbBefore = current !== undefined && sameDecisionState(current, decision.before);
+  const dbAfter = current !== undefined && sameDecisionState(current, decision.updated);
+  const canonical = readCanonicalMigrationState(root, decision.updated);
+  const canonicalBefore = bulletMatchesRecord(canonical.bullet, decision.before);
+  const canonicalAfter = bulletMatchesRecord(canonical.bullet, decision.updated);
+  if (current === undefined || (!dbBefore && !dbAfter) || (!canonicalBefore && !canonicalAfter)) {
+    throw new Error(`memory-migrate: durable decision ${decision.decisionId} no longer matches memory ${decision.id}.`);
+  }
+  const expectedDb = dbAfter ? current : withLatestLiveState(decision.updated, current);
+  if (!dbAfter) {
+    // Stored vectors and the active DB identity must agree before any source
+    // or authority publication. This assertion consumes only durable bytes.
+    db.assertPreparedUpserts([expectedDb], [decision.vector]);
+  }
+  return { replayDelta, dbAfter, expectedDb, canonical, canonicalAfter };
+}
+
+function applyCanonicalClusterOutcome(
+  root: string,
+  decision: DurableMigrateDecision,
+): { readonly entity: EntityRecord; readonly association: MemoryEntityAssociation } {
   const collection = decision.collection!;
   const entity: EntityRecord = {
     id: `collection:${collection}`,
@@ -362,10 +444,7 @@ function applyClusterOutcome(root: string, db: MemoryDb, decision: DurableMigrat
   if (canonicalEntity === undefined || canonicalAssociation === undefined) {
     throw new Error(`memory-migrate: canonical collection graph outcome for ${decision.id} is incomplete.`);
   }
-  db.mirrorCanonicalEntity(canonicalEntity);
-  db.mirrorCanonicalAssociation(canonicalAssociation);
-  db.addEdge(decision.id, canonicalEntity.id, "supports");
-  assertClusterOutcome(root, db, decision.id, canonicalEntity, canonicalAssociation);
+  return { entity: canonicalEntity, association: canonicalAssociation };
 }
 
 function assertClusterOutcome(
@@ -573,12 +652,20 @@ function sameAssociation(
 
 function readPendingDecision(
   root: string,
-): { readonly file: string; readonly decision: DurableMigrateDecision } | undefined {
+): {
+  readonly file: string;
+  readonly snapshot: NonNullable<ReturnType<typeof readCanonicalFileSnapshot>>;
+  readonly decision: DurableMigrateDecision;
+} | undefined {
   const files = listCanonicalFileNames(root, "monthly", {
     allowMissing: true,
     include: (name) => /^\d{4}-\d{2}\.md$/u.test(name),
   });
-  const pending: Array<{ readonly file: string; readonly decision: DurableMigrateDecision }> = [];
+  const pending: Array<{
+    readonly file: string;
+    readonly snapshot: NonNullable<ReturnType<typeof readCanonicalFileSnapshot>>;
+    readonly decision: DurableMigrateDecision;
+  }> = [];
   for (const name of files) {
     const file = `monthly/${name}`;
     const snapshot = readCanonicalFileSnapshot(root, file, { maxBytes: MAX_MONTHLY_AUDIT_BYTES });
@@ -592,7 +679,7 @@ function readPendingDecision(
       }
       const payload = line.slice(prefix.length, -4);
       const decision = parseDurableDecision(payload);
-      pending.push({ file, decision });
+      pending.push({ file, snapshot, decision });
     }
   }
   if (pending.length > 1) throw new Error("memory-migrate: multiple pending monthly decisions require operator repair.");
@@ -603,24 +690,86 @@ function readPendingDecision(
  * Finish one already-paid migration transaction synchronously from its stored
  * vector and exact before/after states. No LLM or embedding provider is called.
  */
-export function recoverPendingMigrateDecision(root: string, db: MemoryDb): boolean {
-  return recoverPendingMigrateDecisionWithMetadata(root, db) !== undefined;
+export function recoverPendingMigrateDecision(
+  root: string,
+  db: MemoryDb,
+  canonicalGraphRepairGuard?: CanonicalGraphRepairGuard,
+): boolean {
+  return recoverPendingMigrateDecisionWithMetadata(root, db, canonicalGraphRepairGuard) !== undefined;
 }
 
 /** Provider-free recovery metadata used by the shared per-root mutation fence. */
 export function recoverPendingMigrateDecisionWithMetadata(
   root: string,
   db: MemoryDb,
+  canonicalGraphRepairGuard?: CanonicalGraphRepairGuard,
 ): PendingMigrateRecovery | undefined {
   const pending = readPendingDecision(root);
   if (pending === undefined) return undefined;
-  applyDurableDecision({ root, db }, pending.file, pending.decision);
+  applyDurableDecision({
+    root,
+    db,
+    ...(canonicalGraphRepairGuard === undefined ? {} : { canonicalGraphRepairGuard }),
+  }, pending.file, pending.decision);
   return { action: pending.decision.action };
 }
 
 /** Read-only, provider-free probe for an admitted durable migration mutation. */
 export function hasPendingMigrateDecision(root: string): boolean {
   return readPendingDecision(root) !== undefined;
+}
+
+/** Validate a durable migration marker in any supported before/after crash phase without writing. */
+export function previewPendingMigrateReplayAdoption(
+  root: string,
+  db: MemoryDb,
+): PendingMigrateReplayAdoptionPreview | undefined {
+  const pending = readPendingDecision(root);
+  if (pending === undefined) return undefined;
+  const preflight = preflightDurableDecision(root, db, pending.decision);
+  const projection = mergeReplayProjectionDelta(emptyReplayProjection(), preflight.replayDelta);
+  const ownedLifecycleSources = pending.decision.action === "forget" ? [pending.decision.id] : [];
+  const pendingMemoryIds = [pending.decision.id];
+  const graphEntityIds = pending.decision.action === "cluster"
+    ? [`collection:${pending.decision.collection!}`]
+    : [];
+  const graphAssociationKeys = pending.decision.action === "cluster"
+    ? [`${pending.decision.id}\0collection:${pending.decision.collection!}`]
+    : [];
+  const commitment = replayProjectionAuthorityId({
+    schemaVersion: 1,
+    kind: "pending-migration-adoption-preview",
+    file: pending.file,
+    sha256: createHash("sha256").update(pending.snapshot.content).digest("hex"),
+    identity: pending.snapshot.identity,
+    decisionId: pending.decision.decisionId,
+    action: pending.decision.action,
+    projection,
+    ownedLifecycleSources,
+    pendingMemoryIds,
+    graphEntityIds,
+    graphAssociationKeys,
+  });
+  return {
+    action: pending.decision.action,
+    projection,
+    ownedLifecycleSources,
+    pendingMemoryIds,
+    graphEntityIds,
+    graphAssociationKeys,
+    commitment,
+  };
+}
+
+export function assertPendingMigrateReplayAdoptionPreview(
+  root: string,
+  db: MemoryDb,
+  expectedCommitment: string,
+): void {
+  const current = previewPendingMigrateReplayAdoption(root, db);
+  if (current === undefined || current.commitment !== expectedCommitment) {
+    throw new Error("memory-migrate: durable adoption preview changed before replay authority publication.");
+  }
 }
 
 /** Refuse maintenance that cannot carry a paid pending migration transaction. */
@@ -668,6 +817,21 @@ function parseDurableDecision(encoded: string): DurableMigrateDecision {
 
 function decisionHash(decision: Omit<DurableMigrateDecision, "decisionId">): string {
   return createHash("sha256").update(JSON.stringify(decision)).digest("hex");
+}
+
+function migrationReplayDelta(decision: DurableMigrateDecision): ReplayProjectionDelta {
+  return decision.action === "forget"
+    ? {
+        terminals: [{
+          id: decision.id,
+          at: decision.at,
+          authorityKind: "migration",
+          authorityId: decision.decisionId,
+        }],
+        supersedes: [],
+        threads: [],
+      }
+    : { terminals: [], supersedes: [], threads: [] };
 }
 
 function validDecisionTransition(decision: DurableMigrateDecision): boolean {

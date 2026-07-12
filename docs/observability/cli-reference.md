@@ -21,7 +21,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `sandbox` | Inspect, install, or functionally prove the pinned SRT runtime. Managed setup is private-cache and macOS-only. | `status`, `setup`, `check` |
 | `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias). With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>`, `--json` |
 | `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>` |
-| `memory` | Preview, strictly audit, and safely maintain the configured memory store and its durable completed-turn intake. | `stats`, `today`, `show`, `search`, `top`, `audit`, `inspect`, `retry`, `resolve`, `rebuild`, `rollback`; `--strict`, `--limit`, `--json` |
+| `memory` | Preview, strictly audit, and safely maintain the configured memory store and its durable completed-turn intake. | `stats`, `today`, `show`, `search`, `top`, `audit`, `inspect`, `retry`, `resolve`, `rebuild`, `rollback`, `adopt-replay`; `--strict`, `--limit`, `--json` |
 | `start` | Start the agent as a background launchd service (or foreground worker). | `--config <path>`, `--env-file <path>`, `--foreground` / `-f` |
 | `restart` | Restart the background instance for this config (starts it if stopped). | `--config <path>`, `--force` |
 | `stop` | Stop the background instance and remove its LaunchAgent. | `--config <path>` |
@@ -271,6 +271,7 @@ mono-agent memory retry <64-character-id> --json
 mono-agent memory resolve <64-character-id> <reason-slug> --json
 mono-agent memory rebuild --json
 mono-agent memory rollback --json
+mono-agent memory adopt-replay --json
 ```
 
 | Subcommand | Effect |
@@ -284,8 +285,9 @@ mono-agent memory rollback --json
 | `inspect [<id>]` | Reads built-in completed-turn intake metadata. It returns ids, state/timestamps, attempt/revision, due flags, bounded failure categories, and aggregate counts—never run/conversation ids, payload hashes, summary/capture text, paths, or raw errors. The optional id is exactly 64 lowercase hex characters. |
 | `retry [<id>]` | With the configured agent stopped, moves selected dead letters back to pending and/or makes delayed pending work due. Omitting the id selects all eligible items. It does not process the work; start the store afterward. Check JSON `changed`/`retried`, because a successful no-op exits `0`. |
 | `resolve <id> <reason>` | With the agent stopped, explicitly retires one pending/dead item as `operator_resolved` without claiming capture succeeded. The lowercase 1–64 character slug starts with a letter/digit, then permits letters/digits/underscores/hyphens. Permanent duplicate protection remains, retained semantic plans are refused, and a missing/already-resolved id is a successful `changed: false` no-op. |
-| `rebuild` | Built-in Lite/Journal/BuJo only. Refuses a running configured agent, builds and fully validates a side-by-side generation from canonical files, then atomically activates it. It retains the previous generation only when that index has exact canonical-source parity (a Journal vector backlog is recoverable); a source-ahead/stale index is omitted rather than mislabeled as rollback-safe. It uses configured embeddings when the tier requires them and never calls a chat LLM. |
-| `rollback` | Built-in Lite/Journal/BuJo only. Atomically swaps to the retained generation after verifying its tier/model/dimension and source fingerprint. Restore the prior config identity first when those settings changed. No embedding or chat-model request is made. |
+| `rebuild` | Built-in Lite/Journal/BuJo only. Refuses a running configured agent, builds and fully validates a side-by-side generation from canonical files, then atomically activates it. BuJo fingerprints and preserves the exact replay sidecar and refuses to infer a nonempty projection from SQLite. It retains the previous generation only when that index has exact canonical-source parity (a Journal vector backlog is recoverable); a source-ahead/stale index is omitted rather than mislabeled as rollback-safe. It uses configured embeddings when the tier requires them and never calls a chat LLM. |
+| `rollback` | Built-in Lite/Journal/BuJo only. Atomically swaps to the retained generation after verifying its tier/model/dimension and full source fingerprint, including BuJo replay authority. Restore the prior config identity first when those settings changed. No embedding or chat-model request is made. Replay-source changes retire an advertised BuJo rollback before publication; Lite/Journal rollbacks do not fingerprint that source domain. |
+| `adopt-replay` | Explicit SSH-safe one-time trust-on-first-use for a stopped managed generation or legacy unmanaged built-in BuJo `memory.db` whose replay-owned SQLite lifecycle/edges legitimately predate `.replay-projection-v1.json`. It verifies semantic identity, the exact non-replay canonical base, an owner-only (`0600`) SQLite database/WAL family, and a root lease plus SQLite writer fence/logical digest. A bounded set of disjoint capture intents/receipts and at most one migration marker can attest already-applied replay rows. Mutable pending capture and a pending migration are mutually exclusive; immutable completed receipts may coexist with the migration, and retained receipts remain until intake resolves. Unexplained state, overlapping mutable capture plans, malformed state, an existing sidecar, or any live writer fails closed. Replay publication retires only an advertised BuJo rollback. Success is metadata-only with `rebuildRequired: true`; failures are fixed code/message objects with no paths, ids, payloads, DB/marker details, or raw errors. Not available for Lite, Journal, Supermemory, empty roots, or ordinary repair. |
 
 | Flag | Effect |
 | --- | --- |
@@ -295,7 +297,22 @@ mono-agent memory rollback --json
 | `--config <path>` | Use a non-default config file. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file before resolving the config. |
 
-Stop the configured agent before `retry`, `resolve`, `rebuild`, or `rollback`; each mutation also acquires the memory writer lease. `inspect` is read-only and can run live. Intake commands and index transitions reject Supermemory because that service owns its remote state. The strict audit itself makes no embedding/chat/provider request and never emits paths, filenames, ids, payloads, model text, raw errors, or arbitrary extras. See the [strict health and recovery contract](/memory/validation-and-cli/#strict-provider-free-health-gate), the [safe generation model](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback), and the separate [product-v1 cutover checklist](/memory/validation-and-cli/#enable-v1-on-an-existing-agent).
+Stop the configured agent before `retry`, `resolve`, `rebuild`, `rollback`, or `adopt-replay`; each mutation also acquires the memory writer lease. After adoption, run `memory rebuild` immediately before any restart or other writer. Rebuild finishes mutable attested capture/migration work without repeating paid provider work and removes retireable markers; a retained completed capture receipt remains until its intake item resolves. The replacement semantic generation still uses the configured embeddings provider before activation. `inspect` is read-only and can run live. Intake commands and index transitions reject Supermemory because that service owns its remote state. The strict audit itself makes no embedding/chat/provider request and never emits paths, filenames, ids, payloads, model text, raw errors, or arbitrary extras. Orphaned replay-sidecar publication temps are counted and report `temporary_artifacts`.
+
+If a stopped legacy managed generation or unmanaged BuJo index is specifically diagnosed as having a
+missing sidecar beside nonempty replay state, the complete SSH-only flow is:
+
+```bash
+mono-agent stop
+mono-agent memory adopt-replay --json
+mono-agent memory rebuild --json
+mono-agent start
+mono-agent memory audit --strict --json
+```
+
+This is an explicit operator trust decision over existing metadata, not an
+automatic migration; never use it merely to make a RED audit green. See the
+[strict health and replay-adoption contract](/memory/validation-and-cli/#bujo-replay-projection-and-explicit-legacy-adoption), the [safe generation model](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback), and the separate [product-v1 cutover checklist](/memory/validation-and-cli/#enable-v1-on-an-existing-agent).
 
 ## `start`
 

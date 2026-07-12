@@ -12,7 +12,9 @@ import BetterSqlite3 from "better-sqlite3";
 
 import { DEFAULT_VEC_DIM, openMemoryDb } from "../store/index.js";
 import type {
+  EntityRecord,
   MemoryDb,
+  MemoryEntityAssociation,
   MemoryRecord,
 } from "../store/index.js";
 import type { EmbeddingProvider } from "../search/index.js";
@@ -30,16 +32,35 @@ import {
 import {
   assertNoPendingCaptureIntent,
   hasPendingCaptureIntent,
+  hasMutablePendingCaptureIntent,
   listRetainedCaptureIntentKeys,
   replayCaptureOutbox,
 } from "./capture-outbox.js";
-import { assertNoPendingMigrateDecision, hasPendingMigrateDecision } from "./migrate.js";
+import {
+  assertNoPendingMigrateDecision,
+  hasPendingMigrateDecision,
+  recoverPendingMigrateDecisionWithMetadata,
+} from "./migrate.js";
 import {
   CanonicalFileRetiredError,
   listCanonicalFileNames,
   listCanonicalRootFileNames,
   readCanonicalFileSnapshot,
 } from "./path-safety.js";
+import {
+  REPLAY_PROJECTION_FILE,
+  assertReplayProjectionMatchesDb,
+  cleanupReplayProjectionTemporaryArtifacts,
+  emptyReplayProjection,
+  initializeReplayProjection,
+  legacyReplayProjectionFromDb,
+  parseReplayProjectionStrict,
+  readBujoCanonicalSourceFingerprint,
+  readReplayProjectionStrict,
+  replayProjectionDbReplacement,
+  replayProjectionDbSnapshot,
+  type ReplayProjectionV1,
+} from "./replay-projection.js";
 import type { BujoTier, Bullet } from "./types.js";
 import {
   MANAGED_INDEX_SCHEMA_VERSION,
@@ -55,6 +76,7 @@ import {
   fsyncDirectory,
   managedGenerationDbPath,
   readManagedIndexManifest,
+  withManagedRollbackRetirement,
   type ManagedGeneration,
   type ManagedIndexManifest,
   type ManagedManifestState,
@@ -138,6 +160,8 @@ export interface SafeMemoryRebuildHooks {
   readonly afterCandidateClosed?: () => void | Promise<void>;
   readonly afterCandidateValidated?: () => void | Promise<void>;
   readonly beforeSourceCas?: () => void | Promise<void>;
+  /** Test-only race seam while the prior active BEGIN IMMEDIATE fence is held. */
+  readonly beforeReplayProjectionInitialization?: () => void;
   readonly afterManifestTempFsync?: () => void | Promise<void>;
   readonly afterManifestRename?: () => void | Promise<void>;
   readonly afterManifestDirFsync?: () => void | Promise<void>;
@@ -177,12 +201,14 @@ interface SourceSnapshot {
   readonly fingerprint: string;
   readonly daily: readonly SourceFileSnapshot[];
   readonly graph?: SourceFileSnapshot;
+  readonly replay?: SourceFileSnapshot;
 }
 
 interface BuildPlan {
   readonly records: readonly MemoryRecord[];
   readonly contentHashes: ReadonlyMap<string, string>;
   readonly graph: CanonicalGraphProjection;
+  readonly replay: ReplayProjectionV1;
   readonly skippedRawRecords: number;
   readonly skippedUnstructuredRecords: number;
   readonly skippedMissingIdentityRecords: number;
@@ -208,7 +234,87 @@ export function readCanonicalGraphAuditSourceSnapshot(
     return { fingerprint: `ignored:${tier}`, graph: emptyCanonicalGraphProjection() };
   }
   const snapshot = snapshotCanonicalSources(root, tier);
-  return { fingerprint: snapshot.fingerprint, graph: buildPlan(snapshot, tier).graph };
+  // This surface audits only graph projection. Replay absence is independently
+  // owned by strict index health and must not turn an otherwise exact graph
+  // comparison into a graph parse failure.
+  return { fingerprint: snapshot.fingerprint, graph: buildPlan(snapshot, tier, emptyReplayProjection()).graph };
+}
+
+/**
+ * Prove the canonical base beneath a legacy replay projection without writing.
+ *
+ * This is deliberately narrower than normal health: it is available only
+ * while the replay sidecar is absent, validates every non-replay payload
+ * exactly, and admits replay-only lifecycle/edges only through the core's
+ * structural legacy extractor. The adoption command may then bind that exact
+ * projection to an explicit operator-approved authority.
+ */
+export function assertLegacyReplayAdoptionBaseParity(
+  root: string,
+  db: MemoryDb,
+  options: {
+    readonly pendingMemoryIds?: readonly string[];
+    readonly pendingGraphEntityIds?: readonly string[];
+    readonly pendingGraphRelationKeys?: readonly string[];
+    readonly pendingGraphAssociationKeys?: readonly string[];
+  } = {},
+): { readonly sourceFingerprint: string } {
+  if (readReplayProjectionStrict(root).state.kind !== "missing") {
+    throw new Error("memory-rebuild: replay projection adoption requires the canonical sidecar to be absent.");
+  }
+  const before = snapshotCanonicalSources(root, "bujo");
+  const parityError = db.withAuditSnapshot(() => {
+    const legacy = legacyReplayProjectionFromDb(db, "0".repeat(64));
+    const plan = buildPlan(before, "bujo", legacy);
+    return buildPlanParityError(db, "bujo", plan, {
+      allowCanonicalGraphProjectionRepair: true,
+      omitMutableLiveState: true,
+      pendingMemoryIds: new Set(options.pendingMemoryIds ?? []),
+      pendingGraphEntityIds: new Set(options.pendingGraphEntityIds ?? []),
+      pendingGraphRelationKeys: new Set(options.pendingGraphRelationKeys ?? []),
+      pendingGraphAssociationKeys: new Set(options.pendingGraphAssociationKeys ?? []),
+    });
+  });
+  if (parityError !== undefined) {
+    throw new Error(
+      `memory-rebuild: legacy replay adoption base parity failed: ${parityError.replace(/^memory-rebuild: /u, "")}`,
+    );
+  }
+  const after = snapshotCanonicalSources(root, "bujo");
+  if (after.fingerprint !== before.fingerprint) {
+    throw new Error("memory-rebuild: canonical source changed during legacy replay adoption preflight.");
+  }
+  return { sourceFingerprint: before.fingerprint };
+}
+
+/**
+ * Required pre/post guard for total graph replacement in a live BuJo index.
+ * It proves only the complete canonical memory/FTS/vector/replay base; graph
+ * rows and the derived collection cache are intentionally allowed to lag.
+ */
+export function assertCanonicalGraphRepairBaseParity(root: string, db: MemoryDb): void {
+  assertCanonicalGraphRepairBaseParityForTier(root, db, "bujo");
+}
+
+/** Cross-tier recovery variant used only while safe rebuild still owns the stopped prior index. */
+export function assertCanonicalGraphRepairBaseParityForTier(
+  root: string,
+  db: MemoryDb,
+  currentTier: BujoTier,
+): void {
+  const before = snapshotCanonicalSources(root, "bujo");
+  const plan = buildPlan(before, "bujo");
+  const parityError = db.withAuditSnapshot(() => buildPlanCanonicalMemoryParityError(
+    db,
+    currentTier,
+    plan,
+    { omitMutableLiveState: true, omitDerivedCollection: true },
+  ));
+  if (parityError !== undefined) throw new Error(parityError);
+  const after = snapshotCanonicalSources(root, "bujo");
+  if (after.fingerprint !== before.fingerprint) {
+    throw new Error("memory-rebuild: canonical source changed during graph-repair base parity.");
+  }
 }
 
 export type CanonicalIndexHealthStatus = "match" | "mismatch" | "in_progress" | "invalid";
@@ -255,12 +361,14 @@ export function auditCanonicalIndexHealth(
     }
 
     const parityError = buildPlanParityError(db, tier, plan, {
-      allowReplayedLifecycle: false,
+      // Replay-owned lifecycle and edges are canonical in the bounded sidecar;
+      // only transient source provenance remains repairable at runtime.
       // Live append records may carry a session instead of a line until a
       // restart/rebuild repairs provenance. Existing explicit line numbers
       // still have to match the canonical source exactly.
       allowReplaySourceRepair: true,
       allowJournalVectorBacklog: true,
+      omitMutableLiveState: true,
     });
 
     let after: SourceSnapshot;
@@ -312,6 +420,7 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
   let activated = false;
   try {
     const root = lease.root;
+    cleanupReplayProjectionTemporaryArtifacts(root);
     const rootIdentity = identityOf(root);
     const layoutState = captureManagedLayoutState(root);
     let manifestState = captureManagedManifestState(root);
@@ -319,11 +428,22 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
     assertManagedManifestState(root, manifestState);
     const priorActivePath = activeDbPathFromManifest(root, priorManifest);
     const hasPriorActiveDb = existsSync(priorActivePath);
+    const priorGraphRepairGuard = (guardRoot: string, guardDb: MemoryDb): void => {
+      assertCanonicalGraphRepairBaseParityForTier(
+        guardRoot,
+        guardDb,
+        priorManifest?.active.tier ?? (hasPriorActiveDb ? "bujo" : options.tier),
+      );
+    };
     assertNoActiveSqliteWriter(priorActivePath);
-    // A paid migration decision is a separate transaction whose vector and
-    // source outcome must be recovered by migrate() under the current identity.
-    // Refuse before capture replay can touch canonical Markdown or graph data.
-    assertNoPendingMigrateDecision(root);
+    const captureQueued = hasPendingCaptureIntent(root);
+    const capturePending = hasMutablePendingCaptureIntent(root);
+    const migrationPending = hasPendingMigrateDecision(root);
+    if (capturePending && migrationPending) {
+      throw new Error(
+        "memory-rebuild: capture and migration protocols are both pending; refusing ambiguous recovery.",
+      );
+    }
     // A completed-turn intent remains deliberately pending after its canonical
     // and current-index outcome commits, until the owning intake receipt is
     // durable. BuJo rebuilds can safely re-embed that canonical outcome under a
@@ -338,7 +458,7 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       );
     }
     let stagedCaptureForCandidate = false;
-    if (hasPendingCaptureIntent(root)) {
+    const recoverCaptureQueue = (): void => {
       assertManagedManifestState(root, manifestState);
       if (hasPriorActiveDb) {
         // A current index gives the durable action its original provider and
@@ -347,7 +467,9 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
         validateCurrentReplayDb(priorActivePath, priorManifest?.active);
         const priorReplay = openCurrentReplayDb(priorActivePath, priorManifest);
         try {
-          replayCaptureOutbox(root, priorReplay);
+          replayCaptureOutbox(root, priorReplay, {
+            canonicalGraphRepairGuard: priorGraphRepairGuard,
+          });
           priorReplay.checkpoint();
         } finally {
           priorReplay.close();
@@ -385,11 +507,93 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
         manifestState = postReplayManifestState;
       }
       assertManagedManifestState(root, manifestState);
+    };
+    if (captureQueued && !migrationPending) recoverCaptureQueue();
+    if (migrationPending) {
+      if (!hasPriorActiveDb) {
+        throw new Error("memory-rebuild: pending migration recovery requires its pinned current database.");
+      }
+      if (readReplayProjectionStrict(root).state.kind === "missing") {
+        throw new Error(
+          `memory-rebuild: ${REPLAY_PROJECTION_FILE} is missing while migration is pending; `
+          + "run explicit stopped-store replay projection adoption first.",
+        );
+      }
+      assertManagedManifestState(root, manifestState);
+      validateCurrentReplayDb(priorActivePath, priorManifest?.active);
+      const priorReplay = openCurrentReplayDb(priorActivePath, priorManifest);
+      try {
+        if (recoverPendingMigrateDecisionWithMetadata(
+          root,
+          priorReplay,
+          priorGraphRepairGuard,
+        ) === undefined) {
+          throw new Error("memory-rebuild: pending migration disappeared during provider-free recovery.");
+        }
+        priorReplay.checkpoint();
+      } finally {
+        priorReplay.close();
+      }
+      fsyncFile(priorActivePath);
+      const postRecoveryManifestState = captureManagedManifestState(root);
+      if (!sameManagedManifestState(postRecoveryManifestState, manifestState)) {
+        const currentManifest = readManagedIndexManifest(root);
+        const expectedRetirement = priorManifest?.rollback === undefined
+          ? undefined
+          : {
+              schemaVersion: MANAGED_INDEX_SCHEMA_VERSION,
+              active: priorManifest.active,
+            } satisfies ManagedIndexManifest;
+        if (expectedRetirement === undefined
+          || JSON.stringify(currentManifest) !== JSON.stringify(expectedRetirement)) {
+          throw new Error("memory-rebuild: managed index manifest changed unexpectedly during migration recovery.");
+        }
+        manifestState = postRecoveryManifestState;
+      }
+      assertManagedManifestState(root, manifestState);
     }
-    // Pin and fence the complete prior SQLite state before any model/provider
-    // or test-hook await. The configured process is stopped, so any competing
-    // SQLite writer is a violation rather than useful concurrency.
+    // A complete-only receipt may coexist with a later migration. Recover the
+    // migration first because its sidecar delta can legitimately be DB-before;
+    // only then may the receipt perform global replay equality verification.
+    if (captureQueued && migrationPending) recoverCaptureQueue();
+    // The configured process is stopped. Hold the prior active BEGIN IMMEDIATE
+    // fence across every missing-sidecar proof/publication and all later
+    // snapshot/provider/activation work so raw SQLite writers cannot cross the
+    // trust boundary.
     sourceFence = hasPriorActiveDb ? acquireSqliteWriterFences([priorActivePath]) : undefined;
+    if (options.tier === "bujo" || priorManifest?.active.tier === "bujo") {
+      const manifestBeforeReplayInitialization = readManagedIndexManifest(root);
+      const initialized = ensureReplayProjectionForSafeRebuild(
+        root,
+        hasPriorActiveDb ? priorActivePath : undefined,
+        priorManifest?.active,
+        options.hooks,
+      );
+      if (initialized) {
+        const postInitializationManifestState = captureManagedManifestState(root);
+        if (!sameManagedManifestState(postInitializationManifestState, manifestState)) {
+          const expectedRetirement = manifestBeforeReplayInitialization?.rollback === undefined
+            ? undefined
+            : {
+                schemaVersion: MANAGED_INDEX_SCHEMA_VERSION,
+                active: manifestBeforeReplayInitialization.active,
+              } satisfies ManagedIndexManifest;
+          if (expectedRetirement === undefined
+            || JSON.stringify(readManagedIndexManifest(root)) !== JSON.stringify(expectedRetirement)) {
+            throw new Error(
+              "memory-rebuild: managed index manifest changed unexpectedly during replay projection initialization.",
+            );
+          }
+          manifestState = postInitializationManifestState;
+        }
+        assertManagedManifestState(root, manifestState);
+      }
+    } else if (priorManifest === undefined && hasPriorActiveDb
+      && readReplayProjectionStrict(root).state.kind === "missing") {
+      // A non-BuJo first rebuild must discover legacy replay before any paid
+      // provider work instead of failing only while trying to retain rollback.
+      assertMissingReplayProjectionHasEmptyDb(root, priorActivePath, undefined);
+    }
     // Pin the complete prior SQLite state before any model/provider or test
     // hook await. A later rollback snapshot may trust vectors that cannot be
     // regenerated without a paid call, so concurrent mutation must be caught.
@@ -397,9 +601,10 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       ? logicalIntegrityDigest(priorActivePath, priorManifest?.active)
       : "";
     const snapshot = snapshotCanonicalSources(root, options.tier);
-    const rollbackSnapshot = priorManifest === undefined || priorManifest.active.tier === options.tier
+    const priorTier = priorManifest?.active.tier ?? (hasPriorActiveDb ? "bujo" : options.tier);
+    const rollbackSnapshot = priorTier === options.tier
       ? snapshot
-      : snapshotCanonicalSources(root, priorManifest.active.tier);
+      : snapshotCanonicalSources(root, priorTier);
     await options.hooks?.afterSnapshot?.();
     const plan = buildPlan(snapshot, options.tier);
     const generation = createManagedGeneration(root);
@@ -467,8 +672,16 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       for (const relation of plan.graph.relations) db.mirrorCanonicalRelation(relation);
       for (const association of plan.graph.associations) db.mirrorCanonicalAssociation(association);
       for (const support of plan.graph.collectionSupports) {
-        db.addEdge(support.memoryId, support.entityId, "supports");
+        db.addEdge(
+          support.memoryId,
+          support.entityId,
+          "supports",
+          1,
+          canonicalSupportCreatedAt(plan.graph, support.memoryId, support.entityId),
+        );
       }
+      db.replaceReplayProjection(replayProjectionDbReplacement(plan.replay));
+      assertReplayProjectionMatchesDb(db, plan.replay);
       db.setIndexMetadata({
         schemaVersion: MANAGED_INDEX_SCHEMA_VERSION,
         policyVersion: MEMORY_REBUILD_POLICY_VERSION,
@@ -489,7 +702,9 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
         ...(options.dim === undefined ? {} : { dimension: options.dim }),
       });
       if (stagedCaptureForCandidate) {
-        replayCaptureOutbox(root, db);
+        replayCaptureOutbox(root, db, {
+          canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+        });
         // The durable intent is the exact authority for the lifecycle/thread
         // state that canonical Markdown cannot reconstruct. Pin that known-good
         // replay result before exposing any hook or other asynchronous seam.
@@ -507,7 +722,7 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
     }
     fsyncFile(generation.dbPath);
     fsyncDirectory(generation.dir);
-    validateCandidate(generation.dbPath, descriptor, plan, stagedCaptureForCandidate);
+    validateCandidate(generation.dbPath, descriptor, plan);
     const candidateDbIdentity = identityOf(generation.dbPath);
     const candidateDigest = fileDigest(generation.dbPath);
     const candidateLogicalDigest = logicalIntegrityDigest(generation.dbPath, descriptor);
@@ -551,7 +766,7 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       if (logicalIntegrityDigest(generation.dbPath, descriptor) !== candidateLogicalDigest) {
         throw new Error("memory-rebuild: candidate logical state changed after validation.");
       }
-      validateCandidate(generation.dbPath, descriptor, plan, stagedCaptureForCandidate);
+      validateCandidate(generation.dbPath, descriptor, plan);
       if (rollbackPath !== undefined && rollbackIdentity !== undefined && rollbackDigest !== undefined && rollback !== undefined) {
         assertSameIdentity(rollbackPath, rollbackIdentity, "retained rollback database");
         if (fileDigest(rollbackPath) !== rollbackDigest) {
@@ -616,6 +831,49 @@ function sameManagedManifestState(left: ManagedManifestState, right: ManagedMani
     && left.dev === right.dev
     && left.ino === right.ino
     && left.sha256 === right.sha256;
+}
+
+/**
+ * Bootstrap only the provably empty legacy case. Historical replay rows are
+ * not provenance: a stopped operator must explicitly adopt them after the
+ * dedicated canonical-base check instead of having rebuild bless them.
+ */
+function ensureReplayProjectionForSafeRebuild(
+  root: string,
+  activePath: string | undefined,
+  descriptor: ManagedGeneration | undefined,
+  hooks: SafeMemoryRebuildHooks | undefined,
+): boolean {
+  const current = readReplayProjectionStrict(root);
+  if (current.state.kind === "present") return false;
+  assertMissingReplayProjectionHasEmptyDb(root, activePath, descriptor);
+  hooks?.beforeReplayProjectionInitialization?.();
+  withManagedRollbackRetirement(root, "replay", () => initializeReplayProjection(root));
+  return true;
+}
+
+function assertMissingReplayProjectionHasEmptyDb(
+  root: string,
+  activePath: string | undefined,
+  descriptor: ManagedGeneration | undefined,
+): void {
+  if (readReplayProjectionStrict(root).state.kind === "present") return;
+  if (activePath !== undefined) {
+    const db = descriptor === undefined
+      ? openMemoryDb({ path: activePath, readOnly: true })
+      : readOnlyDb(activePath, descriptor);
+    try {
+      const replay = replayProjectionDbSnapshot(db);
+      if (replay.terminals.length > 0 || replay.supersedes.length > 0 || replay.threads.length > 0) {
+        throw new Error(
+          `memory-rebuild: ${REPLAY_PROJECTION_FILE} is missing while the active index contains replay-owned state; `
+          + "automatic adoption is unsafe. Stop the store and run explicit replay projection adoption, then retry.",
+        );
+      }
+    } finally {
+      db.close();
+    }
+  }
 }
 
 /** Atomically swap active/rollback after validating the retained target. No provider call is made. */
@@ -778,14 +1036,27 @@ function snapshotCanonicalSources(root: string, tier: BujoTier): SourceSnapshot 
     files.push(readStableSourceFile(root, `daily/${name}`));
   }
   let graph: SourceFileSnapshot | undefined;
+  let replay: SourceFileSnapshot | undefined;
   if (tier === "bujo") {
     const graphSnapshot = readCanonicalFileSnapshot(root, "graph.jsonl", { allowMissing: true });
     if (graphSnapshot !== undefined) {
       graph = { relativePath: "graph.jsonl", bytes: Buffer.from(graphSnapshot.content, "utf8") };
     }
+    const replaySnapshot = readCanonicalFileSnapshot(root, REPLAY_PROJECTION_FILE, { allowMissing: true });
+    if (replaySnapshot !== undefined) {
+      // Parse the exact bytes that participate in the source fingerprint. A
+      // second live read here would let a rename pair one file's digest with
+      // another file's semantic plan.
+      parseReplayProjectionStrict(replaySnapshot.content);
+      replay = { relativePath: REPLAY_PROJECTION_FILE, bytes: Buffer.from(replaySnapshot.content, "utf8") };
+    }
   }
   const hash = createHash("sha256");
-  for (const file of [...files, ...(graph === undefined ? [] : [graph])]) {
+  for (const file of [
+    ...files,
+    ...(graph === undefined ? [] : [graph]),
+    ...(replay === undefined ? [] : [replay]),
+  ]) {
     hash.update(String(Buffer.byteLength(file.relativePath)));
     hash.update("\0");
     hash.update(file.relativePath);
@@ -794,11 +1065,17 @@ function snapshotCanonicalSources(root: string, tier: BujoTier): SourceSnapshot 
     hash.update("\0");
     hash.update(file.bytes);
   }
-  return { fingerprint: hash.digest("hex"), daily: files, ...(graph === undefined ? {} : { graph }) };
+  return {
+    fingerprint: hash.digest("hex"),
+    daily: files,
+    ...(graph === undefined ? {} : { graph }),
+    ...(replay === undefined ? {} : { replay }),
+  };
 }
 
 /** Provider-free fingerprint of the exact canonical source set for one tier. */
 export function readCanonicalSourceFingerprint(root: string, tier: BujoTier): string {
+  if (tier === "bujo") return readBujoCanonicalSourceFingerprint(root);
   return snapshotCanonicalSources(root, tier).fingerprint;
 }
 
@@ -808,7 +1085,11 @@ function readStableSourceFile(root: string, relativePath: string): SourceFileSna
   return { relativePath, bytes: Buffer.from(snapshot.content, "utf8") };
 }
 
-function buildPlan(snapshot: SourceSnapshot, tier: BujoTier): BuildPlan {
+function buildPlan(
+  snapshot: SourceSnapshot,
+  tier: BujoTier,
+  replayOverride?: ReplayProjectionV1,
+): BuildPlan {
   const rawRecords: MemoryRecord[] = [];
   let skippedUnstructuredRecords = 0;
   const missingIdentityLocations: string[] = [];
@@ -875,6 +1156,18 @@ function buildPlan(snapshot: SourceSnapshot, tier: BujoTier): BuildPlan {
     if (record === undefined) throw new Error("memory-rebuild: collection support lost its memory endpoint.");
     records.set(record.id, { ...record, collection: support.collection });
   }
+  const replay = replayOverride ?? (tier === "bujo"
+    ? snapshot.replay === undefined
+      ? (() => {
+          throw new Error(
+            `memory-rebuild: ${REPLAY_PROJECTION_FILE} is missing; `
+            + "refusing to infer replay-owned lifecycle or edges from SQLite. "
+            + "Run explicit stopped-store replay projection adoption for a legacy nonempty index.",
+          );
+        })()
+      : parseReplayProjectionStrict(snapshot.replay.bytes.toString("utf8"))
+    : emptyReplayProjection());
+  applyReplayProjectionToPlan(records, replay, tier);
   const parsedSourceItems = rawRecords.length + skippedUnstructuredRecords
     + missingIdentityLocations.length + legacySourceLocations.length;
   const accountedSourceItems = records.size + skippedRawRecords + skippedUnstructuredRecords
@@ -886,6 +1179,7 @@ function buildPlan(snapshot: SourceSnapshot, tier: BujoTier): BuildPlan {
     records: [...records.values()],
     contentHashes,
     graph,
+    replay,
     skippedRawRecords,
     skippedUnstructuredRecords,
     skippedMissingIdentityRecords: missingIdentityLocations.length,
@@ -897,18 +1191,115 @@ function buildPlan(snapshot: SourceSnapshot, tier: BujoTier): BuildPlan {
   };
 }
 
+/** Bind the exact replay authority to the canonical memory inventory. */
+function applyReplayProjectionToPlan(
+  records: Map<string, MemoryRecord>,
+  replay: ReplayProjectionV1,
+  tier: BujoTier,
+): void {
+  if (tier !== "bujo") {
+    if (replay.terminals.length > 0 || replay.supersedes.length > 0 || replay.threads.length > 0) {
+      throw new Error(`memory-rebuild: ${tier} cannot carry a BuJo replay projection.`);
+    }
+    return;
+  }
+
+  const lifecycleOwners = new Set<string>();
+  for (const terminal of replay.terminals) {
+    const record = records.get(terminal.id);
+    if (record === undefined || record.status !== "dropped"
+      || record.validTo !== undefined || record.supersededBy !== undefined || record.supersededAt !== undefined
+      || timestampMillis(terminal.at) < timestampMillis(record.createdAt)
+      || lifecycleOwners.has(terminal.id)) {
+      throw new Error(`memory-rebuild: replay terminal does not match canonical memory ${terminal.id}.`);
+    }
+    lifecycleOwners.add(terminal.id);
+    records.set(record.id, { ...record, validTo: terminal.at });
+  }
+
+  const successors = new Map<string, string>();
+  const predecessors = new Set<string>();
+  for (const supersede of replay.supersedes) {
+    const source = records.get(supersede.src);
+    const target = records.get(supersede.dst);
+    if (source === undefined || target === undefined || source.status !== "invalidated"
+      || source.validTo !== undefined || source.supersededBy !== undefined || source.supersededAt !== undefined
+      || supersede.src === supersede.dst || lifecycleOwners.has(supersede.src)
+      || predecessors.has(supersede.dst)
+      || timestampMillis(supersede.at) < timestampMillis(source.createdAt)
+      || timestampMillis(supersede.at) !== timestampMillis(target.createdAt)) {
+      throw new Error(`memory-rebuild: replay supersede does not match canonical memories ${supersede.src} -> ${supersede.dst}.`);
+    }
+    lifecycleOwners.add(supersede.src);
+    predecessors.add(supersede.dst);
+    successors.set(supersede.src, supersede.dst);
+    records.set(source.id, {
+      ...source,
+      validTo: supersede.at,
+      supersededBy: supersede.dst,
+      supersededAt: supersede.at,
+    });
+  }
+  assertNoReplaySuccessorCycle(successors);
+
+  const threadCounts = new Map<string, number>();
+  for (const thread of replay.threads) {
+    const source = records.get(thread.src);
+    const target = records.get(thread.dst);
+    const count = (threadCounts.get(thread.src) ?? 0) + 1;
+    if (source === undefined || target === undefined || thread.src === thread.dst
+      || timestampMillis(thread.at) < timestampMillis(source.createdAt)
+      || timestampMillis(thread.at) < timestampMillis(target.createdAt)
+      || count > 5) {
+      throw new Error(`memory-rebuild: replay thread does not match canonical memories ${thread.src} -> ${thread.dst}.`);
+    }
+    threadCounts.set(thread.src, count);
+  }
+}
+
+function assertNoReplaySuccessorCycle(successors: ReadonlyMap<string, string>): void {
+  const finished = new Set<string>();
+  for (const start of successors.keys()) {
+    const path = new Set<string>();
+    let current: string | undefined = start;
+    while (current !== undefined && !finished.has(current)) {
+      if (path.has(current)) throw new Error("memory-rebuild: replay supersession graph contains a cycle.");
+      path.add(current);
+      current = successors.get(current);
+    }
+    for (const id of path) finished.add(id);
+  }
+}
+
+function timestampMillis(value: string): number {
+  const millis = Date.parse(value);
+  if (!Number.isFinite(millis)) throw new Error("memory-rebuild: replay projection contains an invalid timestamp.");
+  return millis;
+}
+
+function canonicalSupportCreatedAt(
+  graph: CanonicalGraphProjection,
+  memoryId: string,
+  entityId: string,
+): string {
+  const association = graph.associations.find((candidate) => (
+    candidate.memoryId === memoryId && candidate.entityId === entityId
+  ));
+  if (association === undefined) {
+    throw new Error(`memory-rebuild: collection support ${memoryId} -> ${entityId} has no canonical association.`);
+  }
+  return association.createdAt;
+}
+
 function validateCandidate(
   path: string,
   descriptor: ManagedGeneration,
   plan: BuildPlan,
-  allowReplayedLifecycle = false,
 ): void {
   const db = readOnlyDb(path, descriptor);
   try {
     validateDb(db, descriptor);
     const parityError = buildPlanParityError(db, descriptor.tier, plan, {
-      allowReplayedLifecycle,
-      allowNoncanonicalEdges: allowReplayedLifecycle,
     });
     if (parityError !== undefined) throw new Error(parityError);
   } finally {
@@ -917,11 +1308,29 @@ function validateCandidate(
 }
 
 interface BuildPlanParityOptions {
-  readonly allowReplayedLifecycle: boolean;
   readonly allowReplaySourceRepair?: boolean;
   readonly allowJournalVectorBacklog?: boolean;
-  readonly allowNoncanonicalEdges?: boolean;
   readonly allowJournalHashRepair?: boolean;
+  /**
+   * Stopped legacy adoption only. Canonical entities, relations, and capture
+   * associations remain exact; only deterministic legacy associations,
+   * collection fields, and their safe supports/about mirrors may drift until
+   * the mandatory rebuild normalizes them.
+   */
+  readonly allowCanonicalGraphProjectionRepair?: boolean;
+  readonly omitDerivedCollection?: boolean;
+  /**
+   * Runtime/graph-repair parity ignores state intentionally preserved outside
+   * canonical Markdown: live interval start, tags, transient source
+   * provenance. Graph-repair guards opt out of the separately derived
+   * collection cache; runtime health keeps collection exact. Rebuild
+   * candidates and immutable rollback validation remain fully strict.
+   */
+  readonly omitMutableLiveState?: boolean;
+  readonly pendingMemoryIds?: ReadonlySet<string>;
+  readonly pendingGraphEntityIds?: ReadonlySet<string>;
+  readonly pendingGraphRelationKeys?: ReadonlySet<string>;
+  readonly pendingGraphAssociationKeys?: ReadonlySet<string>;
 }
 
 function buildPlanParityError(
@@ -930,77 +1339,87 @@ function buildPlanParityError(
   plan: BuildPlan,
   options: BuildPlanParityOptions,
 ): string | undefined {
+  const memoryParityError = buildPlanCanonicalMemoryParityError(db, tier, plan, options);
+  if (memoryParityError !== undefined) return memoryParityError;
   const state = db.validationSnapshot();
-  if (state.memories !== plan.records.length || state.ftsRows !== plan.records.length || state.ftsMismatches !== 0) {
-    return "memory-rebuild: candidate memory/FTS coverage validation failed.";
-  }
   const memoryInventory = db.allMemories();
   const actualMemoryById = new Map(memoryInventory.map((record) => [record.id, record]));
   const expectedMemoryById = new Map(plan.records.map((record) => [record.id, record]));
-  const actualMemories = plan.records.map((record) => actualMemoryById.get(record.id));
-  if (actualMemoryById.size !== expectedMemoryById.size || plan.records.some((expected) => !sameCanonicalValue(
-    memoryPayload(
-      actualMemoryById.get(expected.id),
-      options.allowReplayedLifecycle,
-      options.allowReplaySourceRepair === true,
-    ),
-    memoryPayload(
-      expected,
-      options.allowReplayedLifecycle,
-      options.allowReplaySourceRepair === true,
-    ),
-  ))) {
-    return "memory-rebuild: candidate memory payload validation failed.";
-  }
-  if (options.allowReplaySourceRepair === true && actualMemories.some((record, index) => {
-    const expected = plan.records[index];
-    return record?.source.line !== undefined && record.source.line !== expected?.source.line;
-  })) {
-    return "memory-rebuild: candidate memory payload validation failed.";
-  }
-  const invalidVectorCoverage = tier === "lite"
-    ? state.vectors !== 0
-    : tier === "bujo" || options.allowJournalVectorBacklog !== true
-      ? state.vectors !== plan.records.length
-      : false;
-  if (invalidVectorCoverage || state.vectorOrphans !== 0) {
-    return "memory-rebuild: candidate vector coverage validation failed.";
-  }
-  if (state.entities !== plan.graph.entities.length || state.relations !== plan.graph.relations.length
-    || state.associations !== plan.graph.associations.length || state.relationOrphans !== 0 || state.associationOrphans !== 0) {
+  const allowGraphProjectionRepair = options.allowCanonicalGraphProjectionRepair === true;
+  const pendingEntityIds = options.pendingGraphEntityIds ?? new Set<string>();
+  const pendingRelationKeys = options.pendingGraphRelationKeys ?? new Set<string>();
+  const pendingAssociationKeys = options.pendingGraphAssociationKeys ?? new Set<string>();
+  if (state.relationOrphans !== 0 || state.associationOrphans !== 0) {
     return "memory-rebuild: candidate graph coverage or endpoint validation failed.";
   }
   const actualEntities = db.allEntities();
   const actualRelations = db.allEntityRelations();
   const actualAssociations = db.allMemoryAssociations();
-  if (!sameKeyedInventory(actualEntities, plan.graph.entities, (entity) => entity.id, (entity) => entity.id)
+  const comparedActualEntities = actualEntities.filter((entity) => !pendingEntityIds.has(entity.id));
+  const comparedExpectedEntities = plan.graph.entities.filter((entity) => !pendingEntityIds.has(entity.id));
+  const comparedActualRelations = actualRelations.filter((relation) => !pendingRelationKeys.has(relationKey(relation)));
+  const comparedExpectedRelations = plan.graph.relations.filter((relation) => !pendingRelationKeys.has(relationKey(relation)));
+  const comparedActualAssociations = actualAssociations.filter((association) => !pendingAssociationKeys.has(associationKey(association)));
+  const comparedExpectedAssociations = plan.graph.associations.filter((association) => !pendingAssociationKeys.has(associationKey(association)));
+  if (!sameKeyedInventory(comparedActualEntities, comparedExpectedEntities, (entity) => entity.id, (entity) => entity.id)
     || !sameKeyedInventory(
-      actualRelations,
-      plan.graph.relations,
+      comparedActualRelations,
+      comparedExpectedRelations,
       relationKey,
       relationKey,
-    )
-    || !sameKeyedInventory(
-      actualAssociations,
-      plan.graph.associations,
-      associationKey,
-      associationKey,
     )) {
     return "memory-rebuild: candidate graph payload validation failed.";
   }
-  const expectedEdges = plan.graph.collectionSupports.map((support) => ({
-    src: support.memoryId,
-    dst: support.entityId,
-    kind: "supports",
-    weight: 1,
-  }));
-  const actualEdges = db.allEdges().map(({ createdAt: _createdAt, ...edge }) => edge);
-  if (options.allowNoncanonicalEdges === true) {
-    const actualEdgeInventory = new Map(actualEdges.map((edge) => [edgeKey(edge), canonicalJson(edge)]));
-    if (expectedEdges.some((edge) => actualEdgeInventory.get(edgeKey(edge)) !== canonicalJson(edge))) {
-      return "memory-rebuild: candidate collection support validation failed.";
-    }
-  } else if (!sameKeyedInventory(actualEdges, expectedEdges, edgeKey, edgeKey)) {
+  const associationsExact = sameKeyedInventory(
+    comparedActualAssociations,
+    comparedExpectedAssociations,
+    associationKey,
+    associationKey,
+  );
+  if (!associationsExact && (!allowGraphProjectionRepair || !safeRepairableAssociationInventory(
+      comparedActualAssociations,
+      comparedExpectedAssociations,
+      actualMemoryById,
+      new Map(actualEntities.map((entity) => [entity.id, entity])),
+    ))) {
+    return "memory-rebuild: candidate graph payload validation failed.";
+  }
+  const expectedEdges = [
+    ...plan.graph.collectionSupports.map((support) => ({
+      src: support.memoryId,
+      dst: support.entityId,
+      kind: "supports",
+      weight: 1,
+      createdAt: canonicalSupportCreatedAt(plan.graph, support.memoryId, support.entityId),
+    })),
+    ...plan.replay.supersedes.map((entry) => ({
+      src: entry.src,
+      dst: entry.dst,
+      kind: "supersedes",
+      weight: 1,
+      createdAt: entry.at,
+    })),
+    ...plan.replay.threads.map((entry) => ({
+      src: entry.src,
+      dst: entry.dst,
+      kind: "thread",
+      weight: entry.weight,
+      createdAt: entry.at,
+    })),
+  ];
+  const actualEdges = db.allEdges();
+  if (actualEdges.some((edge) => edge.kind !== "supports" && edge.kind !== "about"
+    && edge.kind !== "thread" && edge.kind !== "supersedes")) {
+    return "memory-rebuild: candidate contains an unknown edge kind.";
+  }
+  const edgesExact = sameKeyedInventory(actualEdges, expectedEdges, edgeKey, edgeKey);
+  if (!edgesExact && (!allowGraphProjectionRepair || !safeRepairableEdgeInventory(
+      actualEdges,
+      actualAssociations,
+      plan.graph.associations,
+      actualMemoryById,
+      new Map(actualEntities.map((entity) => [entity.id, entity])),
+    ))) {
     return "memory-rebuild: candidate edge inventory validation failed.";
   }
   if (tier === "journal") {
@@ -1040,6 +1459,73 @@ function buildPlanParityError(
   return undefined;
 }
 
+function buildPlanCanonicalMemoryParityError(
+  db: MemoryDb,
+  tier: BujoTier,
+  plan: BuildPlan,
+  options: BuildPlanParityOptions,
+): string | undefined {
+  const state = db.validationSnapshot();
+  if (state.ftsRows !== state.memories || state.ftsMismatches !== 0) {
+    return "memory-rebuild: candidate memory/FTS coverage validation failed.";
+  }
+  const memoryInventory = db.allMemories();
+  const pendingMemoryIds = options.pendingMemoryIds ?? new Set<string>();
+  const comparedRecords = plan.records.filter((record) => !pendingMemoryIds.has(record.id));
+  const comparedActual = memoryInventory.filter((record) => !pendingMemoryIds.has(record.id));
+  const comparedActualById = new Map(comparedActual.map((record) => [record.id, record]));
+  const actualMemories = comparedRecords.map((record) => comparedActualById.get(record.id));
+  const omitDerivedCollection = options.omitDerivedCollection === true
+    || options.allowCanonicalGraphProjectionRepair === true;
+  const omitRepairableSourceProvenance = options.allowReplaySourceRepair === true
+    || options.omitMutableLiveState === true;
+  if (comparedActualById.size !== comparedRecords.length || comparedRecords.some((expected) => !sameCanonicalValue(
+    memoryPayload(
+      comparedActualById.get(expected.id),
+      omitRepairableSourceProvenance,
+      omitDerivedCollection,
+      options.omitMutableLiveState === true,
+    ),
+    memoryPayload(
+      expected,
+      omitRepairableSourceProvenance,
+      omitDerivedCollection,
+      options.omitMutableLiveState === true,
+    ),
+  ))) {
+    return "memory-rebuild: candidate memory payload validation failed.";
+  }
+  if (options.allowReplaySourceRepair === true && options.omitMutableLiveState !== true
+    && actualMemories.some((record, index) => {
+    const expected = comparedRecords[index];
+    return record?.source.line !== undefined && record.source.line !== expected?.source.line;
+  })) {
+    return "memory-rebuild: candidate memory payload validation failed.";
+  }
+  const invalidVectorCoverage = tier === "lite"
+    ? state.vectors !== 0
+    : tier === "bujo" || options.allowJournalVectorBacklog !== true
+      ? state.vectors !== state.memories
+      : false;
+  if (invalidVectorCoverage || state.vectorOrphans !== 0 || state.vectorIdentityMissing !== 0) {
+    return "memory-rebuild: candidate vector coverage validation failed.";
+  }
+  if (tier !== "lite" && state.vectors > 0
+    && (state.embeddingModels.length !== 1 || state.embeddingDimensions.length !== 1
+      || state.embeddingDimensions[0] !== db.vectorDimension())) {
+    return "memory-rebuild: candidate vector identity validation failed.";
+  }
+  if (tier !== "journal" && (state.contentHashes !== 0 || state.contentHashOrphans !== 0)) {
+    return "memory-rebuild: non-Journal candidate unexpectedly contains content hashes.";
+  }
+  try {
+    assertReplayProjectionMatchesDb(db, plan.replay);
+  } catch {
+    return "memory-rebuild: candidate replay projection validation failed.";
+  }
+  return undefined;
+}
+
 function hasTierExactSourceParity(
   path: string,
   descriptor: ManagedGeneration,
@@ -1049,10 +1535,8 @@ function hasTierExactSourceParity(
   const db = readOnlyDb(path, descriptor);
   try {
     return buildPlanParityError(db, descriptor.tier, plan, {
-      allowReplayedLifecycle: allowReplaySourceRepair,
       allowReplaySourceRepair,
       allowJournalVectorBacklog: true,
-      allowNoncanonicalEdges: allowReplaySourceRepair,
       allowJournalHashRepair: allowReplaySourceRepair,
     }) === undefined;
   } finally {
@@ -1065,7 +1549,6 @@ function validateRollbackSnapshot(path: string, descriptor: ManagedGeneration, p
   try {
     validateDb(db, descriptor);
     const parityError = buildPlanParityError(db, descriptor.tier, plan, {
-      allowReplayedLifecycle: false,
       allowJournalVectorBacklog: true,
     });
     if (parityError !== undefined) {
@@ -1361,6 +1844,23 @@ async function adoptLegacyRollback(
   } finally {
     copy.close();
   }
+  if (tier === "bujo" && readReplayProjectionStrict(root).state.kind === "missing") {
+    const legacy = openMemoryDb({ path: generation.dbPath, readOnly: true, dim: actualDimension });
+    try {
+      const replay = replayProjectionDbSnapshot(legacy);
+      if (replay.terminals.length > 0 || replay.supersedes.length > 0 || replay.threads.length > 0) {
+        throw new Error(
+          `memory-rebuild: ${REPLAY_PROJECTION_FILE} is missing while the legacy BuJo index contains replay state; `
+          + "explicit stopped-store replay projection adoption is required.",
+        );
+      }
+    } finally {
+      legacy.close();
+    }
+    // The caller is not performing a BuJo rebuild, so do not invent a BuJo
+    // source authority merely to advertise this legacy DB as rollback.
+    return undefined;
+  }
   const source = snapshotCanonicalSources(root, tier);
   const plan = buildPlan(source, tier);
   const descriptorBase: ManagedGeneration = {
@@ -1542,7 +2042,7 @@ function normalizeRollbackToPlan(path: string, plan: BuildPlan): void {
        WHERE id = ?`,
     );
     const insertEdge = raw.prepare(
-      `INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, 'supports', 1.0, ?)`,
+      `INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, ?, ?, ?)`,
     );
     const insertHash = raw.prepare(
       `INSERT INTO content_hashes (content_hash, memory_id, source_file, created_at) VALUES (?, ?, ?, ?)`,
@@ -1565,8 +2065,19 @@ function normalizeRollbackToPlan(path: string, plan: BuildPlan): void {
       }
       raw.prepare(`DELETE FROM edges`).run();
       for (const support of plan.graph.collectionSupports) {
-        const record = recordsById.get(support.memoryId);
-        insertEdge.run(support.memoryId, support.entityId, record?.createdAt ?? new Date(0).toISOString());
+        insertEdge.run(
+          support.memoryId,
+          support.entityId,
+          "supports",
+          1,
+          canonicalSupportCreatedAt(plan.graph, support.memoryId, support.entityId),
+        );
+      }
+      for (const supersede of plan.replay.supersedes) {
+        insertEdge.run(supersede.src, supersede.dst, "supersedes", 1, supersede.at);
+      }
+      for (const thread of plan.replay.threads) {
+        insertEdge.run(thread.src, thread.dst, "thread", thread.weight, thread.at);
       }
       raw.prepare(`DELETE FROM content_hashes`).run();
       for (const [contentHash, memoryId] of plan.contentHashes) {
@@ -1719,6 +2230,65 @@ function edgeKey(value: { readonly src: string; readonly dst: string; readonly k
   return `${value.src}\0${value.dst}\0${value.kind}`;
 }
 
+/**
+ * Legacy-name-match rows are a deterministic cache and may be stale on the
+ * one explicit adoption boundary. Model-produced capture evidence remains an
+ * exact bidirectional commitment.
+ */
+function safeRepairableAssociationInventory(
+  actual: readonly MemoryEntityAssociation[],
+  expected: readonly MemoryEntityAssociation[],
+  memories: ReadonlyMap<string, MemoryRecord>,
+  entities: ReadonlyMap<string, EntityRecord>,
+): boolean {
+  const actualCapture = actual.filter((association) => association.provenance === "capture");
+  const expectedCapture = expected.filter((association) => association.provenance === "capture");
+  if (!sameKeyedInventory(actualCapture, expectedCapture, associationKey, associationKey)) return false;
+  return actual.every((association) => (
+    (association.provenance === "capture" || association.provenance === "legacy-name-match")
+    && memories.has(association.memoryId)
+    && entities.has(association.entityId)
+    && isExactIsoTimestamp(association.createdAt)
+  ));
+}
+
+/**
+ * Pre-projection databases may retain graph-owned supports/about mirrors.
+ * They are safe to normalize only when their canonical endpoints and an
+ * active or canonical association independently attest the pair.
+ */
+function safeRepairableEdgeInventory(
+  actual: readonly { src: string; dst: string; kind: string; weight: number; createdAt: string }[],
+  actualAssociations: readonly MemoryEntityAssociation[],
+  expectedAssociations: readonly MemoryEntityAssociation[],
+  memories: ReadonlyMap<string, MemoryRecord>,
+  entities: ReadonlyMap<string, EntityRecord>,
+): boolean {
+  const associatedPairs = new Set([
+    ...actualAssociations.map(associationKey),
+    ...expectedAssociations.map(associationKey),
+  ]);
+  return actual.every((edge) => {
+    if (edge.kind === "thread" || edge.kind === "supersedes") return true;
+    if (edge.kind !== "supports" && edge.kind !== "about") return false;
+    const memory = memories.get(edge.src);
+    const entity = entities.get(edge.dst);
+    if (memory === undefined || entity === undefined
+      || !associatedPairs.has(associationKey({ memoryId: edge.src, entityId: edge.dst }))
+      || !Number.isFinite(edge.weight) || edge.weight <= 0 || edge.weight > 1
+      || !isExactIsoTimestamp(edge.createdAt)) return false;
+    if (edge.kind === "supports") {
+      return edge.weight === 1 && memory.status === "migrated" && entity.type === "collection";
+    }
+    return true;
+  });
+}
+
+function isExactIsoTimestamp(value: string): boolean {
+  const millis = Date.parse(value);
+  return Number.isFinite(millis) && new Date(millis).toISOString() === value;
+}
+
 function sameCanonicalValue(left: unknown, right: unknown): boolean {
   return canonicalJson(left) === canonicalJson(right);
 }
@@ -1742,8 +2312,9 @@ function canonicalJsonValue(value: unknown): unknown {
 
 function memoryPayload(
   record: MemoryRecord | undefined,
-  omitReplayedLifecycle = false,
   omitRepairableSourceProvenance = false,
+  omitDerivedCollection = false,
+  omitMutableLiveState = false,
 ): unknown {
   if (record === undefined) return undefined;
   return {
@@ -1754,13 +2325,13 @@ function memoryPayload(
     salience: record.salience,
     isInsight: record.isInsight,
     createdAt: record.createdAt,
-    ...(record.validFrom === undefined ? {} : { validFrom: record.validFrom }),
-    ...(omitReplayedLifecycle || record.validTo === undefined ? {} : { validTo: record.validTo }),
-    ...(omitReplayedLifecycle || record.supersededBy === undefined ? {} : { supersededBy: record.supersededBy }),
-    ...(omitReplayedLifecycle || record.supersededAt === undefined ? {} : { supersededAt: record.supersededAt }),
+    ...(omitMutableLiveState || record.validFrom === undefined ? {} : { validFrom: record.validFrom }),
+    ...(record.validTo === undefined ? {} : { validTo: record.validTo }),
+    ...(record.supersededBy === undefined ? {} : { supersededBy: record.supersededBy }),
+    ...(record.supersededAt === undefined ? {} : { supersededAt: record.supersededAt }),
     ...(record.dueAt === undefined ? {} : { dueAt: record.dueAt }),
-    ...(record.collection === undefined ? {} : { collection: record.collection }),
-    tags: [...record.tags],
+    ...(omitDerivedCollection || record.collection === undefined ? {} : { collection: record.collection }),
+    ...(omitMutableLiveState ? {} : { tags: [...record.tags] }),
     source: omitRepairableSourceProvenance
       ? { ...(record.source.file === undefined ? {} : { file: record.source.file }) }
       : { ...record.source },

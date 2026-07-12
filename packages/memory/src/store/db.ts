@@ -15,6 +15,7 @@ import {
   DEFAULT_WEIGHTS,
   MEMORY_STATUSES,
   MEMORY_TYPES,
+  type CanonicalGraphMemoryRecord,
   type EntityRecord,
   type EntityRelationRecord,
   type MemoryEntityAssociation,
@@ -36,6 +37,52 @@ import type { EmbeddingProvider } from "../search/index.js";
 const MIN_SEMANTIC_SIMILARITY = 0.5;
 const VECTOR_CANDIDATE_SCAN_CAP = 4_096;
 export const DEFAULT_EMBEDDING_BATCH_SIZE = 32;
+
+export interface CanonicalGraphReplacementSupport {
+  readonly memoryId: string;
+  readonly entityId: string;
+  readonly collection: string;
+  readonly weight: number;
+  readonly createdAt: string;
+}
+
+export interface CanonicalGraphReplacement {
+  readonly entities: readonly EntityRecord[];
+  readonly relations: readonly EntityRelationRecord[];
+  readonly associations: readonly MemoryEntityAssociation[];
+  readonly supports: readonly CanonicalGraphReplacementSupport[];
+}
+
+/** Store-local shape used by the BuJo replay-projection authority. */
+export interface ReplayProjectionDbReplacement {
+  readonly terminals: readonly { readonly id: string; readonly at: string }[];
+  readonly supersedes: readonly { readonly src: string; readonly dst: string; readonly at: string }[];
+  readonly threads: readonly {
+    readonly src: string;
+    readonly dst: string;
+    readonly weight: number;
+    readonly at: string;
+  }[];
+}
+
+export interface ReplayProjectionDbSnapshot {
+  readonly memories: readonly {
+    readonly id: string;
+    readonly status: MemoryRecord["status"];
+    readonly createdAt: string;
+    readonly validTo?: string;
+    readonly supersededBy?: string;
+    readonly supersededAt?: string;
+  }[];
+  readonly edges: readonly {
+    readonly src: string;
+    readonly dst: string;
+    readonly kind: "thread" | "about" | "supports" | "supersedes";
+    readonly weight: number;
+    readonly createdAt: string;
+  }[];
+}
+
 const RECALL_STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "did", "do", "does", "for", "from",
   "how", "i", "in", "is", "it", "me", "my", "of", "on", "or", "our", "that", "the",
@@ -125,6 +172,24 @@ export class MemoryDb {
       sourceFile: record.source.file,
       createdAt: record.createdAt,
     });
+  }
+
+  /**
+   * Normalize the one SQLite-only field mutated by historical decay releases.
+   * The expected-current predicate is a compare-and-swap fence; this deliberately
+   * leaves the lexical row, vector, telemetry, provenance, and lifecycle untouched.
+   */
+  repairLegacySalience(id: string, expectedCurrent: number, canonical: number): void {
+    if (id.length === 0 || !Number.isFinite(expectedCurrent) || !Number.isFinite(canonical)
+      || expectedCurrent === canonical) {
+      throw new Error("memory-store: invalid legacy salience repair request.");
+    }
+    const result = this.db.prepare(
+      `UPDATE memories SET salience = ? WHERE id = ? AND salience = ?`,
+    ).run(canonical, id, expectedCurrent);
+    if (result.changes !== 1) {
+      throw new Error(`memory-store: legacy salience repair lost compare-and-swap for "${id}".`);
+    }
   }
 
   /**
@@ -752,11 +817,114 @@ export class MemoryDb {
     }));
   }
 
-  addEdge(src: string, dst: string, kind: "thread" | "about" | "supports" | "supersedes", weight = 1.0): void {
-    this.db.prepare(
-      `INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(src, dst, kind) DO UPDATE SET weight = excluded.weight`,
-    ).run(src, dst, kind, weight, this.clock().toISOString());
+  /** One provider-free snapshot of every field governed or checked by replay projection. */
+  replayProjectionSnapshot(): ReplayProjectionDbSnapshot {
+    return this.db.transaction((): ReplayProjectionDbSnapshot => {
+      const memories = (this.db.prepare(
+        `SELECT id, status, created_at, valid_to, superseded_by, superseded_at
+         FROM memories ORDER BY id`,
+      ).all() as Array<{
+        id: string;
+        status: MemoryRecord["status"];
+        created_at: string;
+        valid_to: string | null;
+        superseded_by: string | null;
+        superseded_at: string | null;
+      }>).map((row) => ({
+        id: row.id,
+        status: row.status,
+        createdAt: row.created_at,
+        ...(row.valid_to === null ? {} : { validTo: row.valid_to }),
+        ...(row.superseded_by === null ? {} : { supersededBy: row.superseded_by }),
+        ...(row.superseded_at === null ? {} : { supersededAt: row.superseded_at }),
+      }));
+      const edges = (this.db.prepare(
+        `SELECT src, dst, kind, weight, created_at FROM edges ORDER BY kind, src, dst`,
+      ).all() as Array<{
+        src: string;
+        dst: string;
+        kind: "thread" | "about" | "supports" | "supersedes";
+        weight: number;
+        created_at: string;
+      }>).map((row) => ({
+        src: row.src,
+        dst: row.dst,
+        kind: row.kind,
+        weight: row.weight,
+        createdAt: row.created_at,
+      }));
+      return { memories, edges };
+    })();
+  }
+
+  /**
+   * Atomically replace only SQLite state that cannot be reconstructed from
+   * canonical BuJo Markdown. Supports/about graph evidence and all telemetry,
+   * vectors, text, provenance, and canonical status fields are left untouched.
+   */
+  replaceReplayProjection(projection: ReplayProjectionDbReplacement): boolean {
+    const tx = this.db.transaction((): boolean => {
+      const snapshot = this.replayProjectionSnapshot();
+      const normalized = validateReplayProjectionReplacement(snapshot.memories, projection);
+      if (replayProjectionDbStateMatches(snapshot, normalized)) return false;
+
+      this.db.prepare(`DELETE FROM edges WHERE kind IN ('thread','supersedes')`).run();
+      this.db.prepare(
+        `UPDATE memories SET valid_to = NULL, superseded_by = NULL, superseded_at = NULL
+         WHERE valid_to IS NOT NULL OR superseded_by IS NOT NULL OR superseded_at IS NOT NULL`,
+      ).run();
+
+      const setTerminal = this.db.prepare(`UPDATE memories SET valid_to = ? WHERE id = ?`);
+      for (const terminal of normalized.terminals) {
+        if (setTerminal.run(terminal.at, terminal.id).changes !== 1) {
+          throw new Error(`memory-store: replay terminal endpoint "${terminal.id}" disappeared.`);
+        }
+      }
+
+      const setSuperseded = this.db.prepare(
+        `UPDATE memories SET valid_to = ?, superseded_by = ?, superseded_at = ? WHERE id = ?`,
+      );
+      const insertSupersedes = this.db.prepare(
+        `INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, 'supersedes', 1, ?)`,
+      );
+      for (const supersede of normalized.supersedes) {
+        if (setSuperseded.run(supersede.at, supersede.dst, supersede.at, supersede.src).changes !== 1) {
+          throw new Error(`memory-store: replay supersede endpoint "${supersede.src}" disappeared.`);
+        }
+        insertSupersedes.run(supersede.src, supersede.dst, supersede.at);
+      }
+
+      const insertThread = this.db.prepare(
+        `INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, 'thread', ?, ?)`,
+      );
+      for (const thread of normalized.threads) {
+        insertThread.run(thread.src, thread.dst, thread.weight, thread.at);
+      }
+      return true;
+    });
+    return tx();
+  }
+
+  addEdge(
+    src: string,
+    dst: string,
+    kind: "thread" | "about" | "supports" | "supersedes",
+    weight = 1.0,
+    createdAt?: string,
+  ): void {
+    const edgeCreatedAt = createdAt ?? this.clock().toISOString();
+    const millis = Date.parse(edgeCreatedAt);
+    if (!Number.isFinite(millis) || new Date(millis).toISOString() !== edgeCreatedAt) {
+      throw new Error("memory-store: edge createdAt must be an exact ISO timestamp.");
+    }
+    this.db.prepare(createdAt === undefined
+      ? `INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(src, dst, kind) DO UPDATE SET weight = excluded.weight`
+      : `INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(src, dst, kind) DO UPDATE SET
+           weight = excluded.weight,
+           created_at = excluded.created_at`)
+      .run(src, dst, kind, weight, edgeCreatedAt);
   }
 
   expand(seedIds: readonly string[], hops = 1): MemoryRecord[] {
@@ -1096,6 +1264,99 @@ export class MemoryDb {
       provenance: row.provenance,
       createdAt: row.created_at,
     }));
+  }
+
+  /**
+   * Atomically replace the complete graph projection derived from canonical
+   * source while retaining only replay-owned thread/supersedes edges.
+   *
+   * `expectedMemories` is the exact provider-free SQLite snapshot used by the
+   * caller to derive legacy associations and collection membership. The
+   * transaction re-reads and compare-and-swaps that projection before its first
+   * graph write, so a concurrent memory change fails closed. Canonical graph
+   * `about` edges are intentionally empty in v1 and are retired together with
+   * stale `supports` rows. Returns false when every projected field is already
+   * exact and no write was needed.
+   */
+  replaceCanonicalGraphProjection(
+    expectedMemories: readonly CanonicalGraphMemoryRecord[],
+    projection: CanonicalGraphReplacement,
+  ): boolean {
+    const normalized = validateCanonicalGraphReplacement(expectedMemories, projection);
+    const tx = this.db.transaction((): boolean => {
+      const current = this.canonicalGraphSnapshot();
+      if (!sameCanonicalGraphMemories(current.memories, normalized.memories)) {
+        throw new Error("memory-store: canonical graph replacement lost memory projection compare-and-swap.");
+      }
+
+      const ownedEdges = (this.db.prepare(
+        `SELECT src, dst, kind, weight, created_at
+         FROM edges WHERE kind IN ('supports','about') ORDER BY kind, src, dst`,
+      ).all() as Array<{
+        src: string;
+        dst: string;
+        kind: "supports" | "about";
+        weight: number;
+        created_at: string;
+      }>).map((row) => ({
+        src: row.src,
+        dst: row.dst,
+        kind: row.kind,
+        weight: row.weight,
+        createdAt: row.created_at,
+      }));
+      if (sameCanonicalGraphReplacement(current, ownedEdges, normalized)) return false;
+
+      this.db.prepare(`DELETE FROM memory_entities`).run();
+      this.db.prepare(`DELETE FROM entity_relations`).run();
+      this.db.prepare(`DELETE FROM entities`).run();
+      this.db.prepare(`DELETE FROM edges WHERE kind IN ('supports','about')`).run();
+      this.db.prepare(`UPDATE memories SET collection = NULL WHERE collection IS NOT NULL`).run();
+
+      const insertEntity = this.db.prepare(
+        `INSERT INTO entities (id, name, type, summary, created_at, updated_at)
+         VALUES (@id, @name, @type, @summary, @created_at, @updated_at)`,
+      );
+      for (const entity of normalized.entities) {
+        insertEntity.run({
+          id: entity.id,
+          name: entity.name,
+          type: entity.type ?? null,
+          summary: entity.summary ?? null,
+          created_at: entity.createdAt,
+          updated_at: entity.updatedAt ?? null,
+        });
+      }
+      const insertRelation = this.db.prepare(
+        `INSERT INTO entity_relations (src, dst, relation, created_at) VALUES (?, ?, ?, ?)`,
+      );
+      for (const relation of normalized.relations) {
+        insertRelation.run(relation.src, relation.dst, relation.relation, relation.createdAt);
+      }
+      const insertAssociation = this.db.prepare(
+        `INSERT INTO memory_entities (memory_id, entity_id, provenance, created_at) VALUES (?, ?, ?, ?)`,
+      );
+      for (const association of normalized.associations) {
+        insertAssociation.run(
+          association.memoryId,
+          association.entityId,
+          association.provenance,
+          association.createdAt,
+        );
+      }
+      const insertSupport = this.db.prepare(
+        `INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, 'supports', ?, ?)`,
+      );
+      const setCollection = this.db.prepare(`UPDATE memories SET collection = ? WHERE id = ?`);
+      for (const support of normalized.supports) {
+        insertSupport.run(support.memoryId, support.entityId, support.weight, support.createdAt);
+        if (setCollection.run(support.collection, support.memoryId).changes !== 1) {
+          throw new Error(`memory-store: canonical graph replacement lost memory endpoint "${support.memoryId}".`);
+        }
+      }
+      return true;
+    });
+    return tx();
   }
 
   /** Provider-free graph inventory and derivation inputs from one SQLite read transaction. */
@@ -1728,6 +1989,470 @@ export class MemoryDb {
 
   close(): void {
     this.db.close();
+  }
+}
+
+const MAX_REPLAY_PROJECTION_ENTRIES = 131_072;
+const INVALID_REPLAY_PROJECTION_ID = /[\p{Cc}\p{Cf}\p{Cs}]/u;
+
+function validateReplayProjectionReplacement(
+  memories: ReplayProjectionDbSnapshot["memories"],
+  projection: ReplayProjectionDbReplacement,
+): ReplayProjectionDbReplacement {
+  if (!isExactObjectKeys(projection, ["supersedes", "terminals", "threads"])
+    || !Array.isArray(projection.terminals)
+    || !Array.isArray(projection.supersedes)
+    || !Array.isArray(projection.threads)
+    || projection.terminals.length + projection.supersedes.length + projection.threads.length
+      > MAX_REPLAY_PROJECTION_ENTRIES) {
+    throw new Error("memory-store: invalid replay projection replacement.");
+  }
+
+  const terminals = projection.terminals.map((entry) => {
+    if (!isExactObjectKeys(entry, ["at", "id"])) {
+      throw new Error("memory-store: invalid replay terminal entry.");
+    }
+    assertReplayProjectionId(entry.id, "terminal id");
+    assertExactReplayTimestamp(entry.at, "terminal timestamp");
+    return { id: entry.id, at: entry.at };
+  }).sort((left, right) => left.id.localeCompare(right.id));
+  const supersedes = projection.supersedes.map((entry) => {
+    if (!isExactObjectKeys(entry, ["at", "dst", "src"])) {
+      throw new Error("memory-store: invalid replay supersede entry.");
+    }
+    assertReplayProjectionId(entry.src, "supersede source");
+    assertReplayProjectionId(entry.dst, "supersede destination");
+    assertExactReplayTimestamp(entry.at, "supersede timestamp");
+    if (entry.src === entry.dst) throw new Error("memory-store: replay supersede cannot be self-referential.");
+    return { src: entry.src, dst: entry.dst, at: entry.at };
+  }).sort((left, right) => replayPairKey(left).localeCompare(replayPairKey(right)));
+  const threads = projection.threads.map((entry) => {
+    if (!isExactObjectKeys(entry, ["at", "dst", "src", "weight"])) {
+      throw new Error("memory-store: invalid replay thread entry.");
+    }
+    assertReplayProjectionId(entry.src, "thread source");
+    assertReplayProjectionId(entry.dst, "thread destination");
+    assertExactReplayTimestamp(entry.at, "thread timestamp");
+    const weight = entry.weight;
+    if (entry.src === entry.dst || typeof weight !== "number" || !Number.isFinite(weight)
+      || weight <= 0 || weight > 1) {
+      throw new Error("memory-store: invalid replay thread topology or weight.");
+    }
+    return { src: entry.src, dst: entry.dst, weight, at: entry.at };
+  }).sort((left, right) => replayPairKey(left).localeCompare(replayPairKey(right)));
+
+  assertUniqueReplayKeys(terminals, (entry) => entry.id, "terminal id");
+  assertUniqueReplayKeys(supersedes, (entry) => entry.src, "supersede source");
+  assertUniqueReplayKeys(supersedes, (entry) => entry.dst, "supersede destination");
+  assertUniqueReplayKeys(threads, replayPairKey, "thread edge");
+
+  const terminalById = new Map(terminals.map((entry) => [entry.id, entry]));
+  for (const entry of supersedes) {
+    if (terminalById.has(entry.src)) {
+      throw new Error("memory-store: replay terminal conflicts with supersede topology.");
+    }
+  }
+  if (hasReplaySupersedeCycle(new Map(supersedes.map((entry) => [entry.src, entry.dst])))) {
+    throw new Error("memory-store: replay supersede topology contains a cycle.");
+  }
+  const threadCounts = new Map<string, number>();
+  for (const thread of threads) {
+    const count = (threadCounts.get(thread.src) ?? 0) + 1;
+    if (count > 5) throw new Error(`memory-store: replay thread source "${thread.src}" exceeds five edges.`);
+    threadCounts.set(thread.src, count);
+  }
+
+  const memoryById = new Map(memories.map((memory) => [memory.id, memory]));
+  for (const terminal of terminals) {
+    const memory = memoryById.get(terminal.id);
+    if (memory === undefined || memory.status !== "dropped"
+      || exactTimestampMillis(terminal.at) < replayMemoryTimestamp(memory, "terminal")) {
+      throw new Error(`memory-store: invalid replay terminal endpoint "${terminal.id}".`);
+    }
+  }
+  for (const supersede of supersedes) {
+    const source = memoryById.get(supersede.src);
+    const destination = memoryById.get(supersede.dst);
+    const destinationTerminal = terminalById.get(supersede.dst);
+    const at = exactTimestampMillis(supersede.at);
+    if (source === undefined || destination === undefined || source.status !== "invalidated"
+      || (destination.status === "dropped" && destinationTerminal === undefined)
+      || at < replayMemoryTimestamp(source, "supersede source")
+      || at !== replayMemoryTimestamp(destination, "supersede destination")
+      || (destinationTerminal !== undefined && exactTimestampMillis(destinationTerminal.at) < at)) {
+      throw new Error(`memory-store: invalid replay supersede endpoints (${supersede.src} -> ${supersede.dst}).`);
+    }
+  }
+  for (const thread of threads) {
+    const source = memoryById.get(thread.src);
+    const destination = memoryById.get(thread.dst);
+    const at = exactTimestampMillis(thread.at);
+    if (source === undefined || destination === undefined
+      || at < replayMemoryTimestamp(source, "thread source")
+      || at < replayMemoryTimestamp(destination, "thread destination")) {
+      throw new Error(`memory-store: invalid replay thread endpoints (${thread.src} -> ${thread.dst}).`);
+    }
+  }
+  return { terminals, supersedes, threads };
+}
+
+function replayProjectionDbStateMatches(
+  snapshot: ReplayProjectionDbSnapshot,
+  expected: ReplayProjectionDbReplacement,
+): boolean {
+  const terminalById = new Map(expected.terminals.map((entry) => [entry.id, entry]));
+  const supersedeById = new Map(expected.supersedes.map((entry) => [entry.src, entry]));
+  for (const memory of snapshot.memories) {
+    const terminal = terminalById.get(memory.id);
+    const supersede = supersedeById.get(memory.id);
+    if (terminal !== undefined) {
+      if (memory.validTo !== terminal.at || memory.supersededBy !== undefined
+        || memory.supersededAt !== undefined) return false;
+    } else if (supersede !== undefined) {
+      if (memory.validTo !== supersede.at || memory.supersededBy !== supersede.dst
+        || memory.supersededAt !== supersede.at) return false;
+    } else if (memory.validTo !== undefined || memory.supersededBy !== undefined
+      || memory.supersededAt !== undefined) return false;
+  }
+
+  const actualEdges = snapshot.edges.filter((edge) => edge.kind === "thread" || edge.kind === "supersedes")
+    .map((edge) => ({
+      src: edge.src,
+      dst: edge.dst,
+      kind: edge.kind,
+      weight: edge.weight,
+      at: edge.createdAt,
+    }))
+    .sort((left, right) => `${left.kind}\0${replayPairKey(left)}`.localeCompare(`${right.kind}\0${replayPairKey(right)}`));
+  const expectedEdges = [
+    ...expected.supersedes.map((edge) => ({
+      src: edge.src,
+      dst: edge.dst,
+      kind: "supersedes" as const,
+      weight: 1,
+      at: edge.at,
+    })),
+    ...expected.threads.map((edge) => ({
+      src: edge.src,
+      dst: edge.dst,
+      kind: "thread" as const,
+      weight: edge.weight,
+      at: edge.at,
+    })),
+  ].sort((left, right) => `${left.kind}\0${replayPairKey(left)}`.localeCompare(`${right.kind}\0${replayPairKey(right)}`));
+  return JSON.stringify(actualEdges) === JSON.stringify(expectedEdges);
+}
+
+function assertUniqueReplayKeys<T>(
+  values: readonly T[],
+  keyOf: (value: T) => string,
+  label: string,
+): void {
+  const keys = new Set<string>();
+  for (const value of values) {
+    const key = keyOf(value);
+    if (keys.has(key)) throw new Error(`memory-store: duplicate replay ${label} "${key}".`);
+    keys.add(key);
+  }
+}
+
+function assertReplayProjectionId(value: unknown, label: string): asserts value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 512
+    || INVALID_REPLAY_PROJECTION_ID.test(value)) {
+    throw new Error(`memory-store: invalid replay ${label}.`);
+  }
+}
+
+function assertExactReplayTimestamp(value: unknown, label: string): asserts value is string {
+  if (typeof value !== "string") throw new Error(`memory-store: invalid replay ${label}.`);
+  exactTimestampMillis(value);
+}
+
+function exactTimestampMillis(value: string): number {
+  const millis = Date.parse(value);
+  if (!Number.isFinite(millis) || new Date(millis).toISOString() !== value) {
+    throw new Error("memory-store: replay timestamp must be an exact ISO timestamp.");
+  }
+  return millis;
+}
+
+function replayMemoryTimestamp(
+  memory: ReplayProjectionDbSnapshot["memories"][number],
+  label: string,
+): number {
+  const millis = Date.parse(memory.createdAt);
+  if (!Number.isFinite(millis)) {
+    throw new Error(`memory-store: replay ${label} has an invalid memory createdAt.`);
+  }
+  return millis;
+}
+
+function replayPairKey(value: { readonly src: string; readonly dst: string }): string {
+  return `${value.src}\0${value.dst}`;
+}
+
+function hasReplaySupersedeCycle(successors: ReadonlyMap<string, string>): boolean {
+  const complete = new Set<string>();
+  for (const start of successors.keys()) {
+    if (complete.has(start)) continue;
+    const path = new Set<string>();
+    let current: string | undefined = start;
+    while (current !== undefined && !complete.has(current)) {
+      if (path.has(current)) return true;
+      path.add(current);
+      current = successors.get(current);
+    }
+    for (const id of path) complete.add(id);
+  }
+  return false;
+}
+
+function isExactObjectKeys(value: unknown, expected: readonly string[]): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value).sort();
+  return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+}
+
+interface NormalizedCanonicalGraphReplacement extends CanonicalGraphReplacement {
+  readonly memories: readonly CanonicalGraphMemoryRecord[];
+}
+
+interface CanonicalGraphOwnedEdge {
+  readonly src: string;
+  readonly dst: string;
+  readonly kind: "supports" | "about";
+  readonly weight: number;
+  readonly createdAt: string;
+}
+
+const INVALID_CANONICAL_GRAPH_VALUE = /[\p{Cc}\p{Cf}\p{Cs}]/u;
+
+function validateCanonicalGraphReplacement(
+  expectedMemories: readonly CanonicalGraphMemoryRecord[],
+  projection: CanonicalGraphReplacement,
+): NormalizedCanonicalGraphReplacement {
+  if (!Array.isArray(expectedMemories) || projection === null || typeof projection !== "object"
+    || !Array.isArray(projection.entities) || !Array.isArray(projection.relations)
+    || !Array.isArray(projection.associations) || !Array.isArray(projection.supports)) {
+    throw new Error("memory-store: invalid canonical graph replacement.");
+  }
+  const memories = [...expectedMemories].sort((left, right) => left.id.localeCompare(right.id));
+  const entities = [...projection.entities].sort((left, right) => left.id.localeCompare(right.id));
+  const relations = [...projection.relations].sort((left, right) => (
+    canonicalRelationKey(left).localeCompare(canonicalRelationKey(right))
+  ));
+  const associations = [...projection.associations].sort((left, right) => (
+    canonicalAssociationKey(left).localeCompare(canonicalAssociationKey(right))
+  ));
+  const supports = [...projection.supports].sort((left, right) => (
+    canonicalSupportKey(left).localeCompare(canonicalSupportKey(right))
+  ));
+
+  assertUniqueCanonicalKeys(memories, (memory) => memory.id, "memory");
+  assertUniqueCanonicalKeys(entities, (entity) => entity.id, "entity");
+  assertUniqueCanonicalKeys(relations, canonicalRelationKey, "relation");
+  assertUniqueCanonicalKeys(associations, canonicalAssociationKey, "association");
+  assertUniqueCanonicalKeys(supports, canonicalSupportKey, "support");
+  assertUniqueCanonicalKeys(supports, (support) => support.memoryId, "support memory endpoint");
+
+  const memoryById = new Map(memories.map((memory) => [memory.id, memory]));
+  const entityById = new Map(entities.map((entity) => [entity.id, entity]));
+  const associationByKey = new Map(
+    associations.map((association) => [canonicalAssociationKey(association), association]),
+  );
+  for (const memory of memories) {
+    assertCanonicalGraphValue(memory.id, "memory id");
+    if (typeof memory.text !== "string" || !MEMORY_STATUSES.includes(memory.status)) {
+      throw new Error("memory-store: canonical graph memory projection is invalid.");
+    }
+    assertCanonicalGraphTimestamp(memory.createdAt, "memory createdAt");
+    if (memory.collection !== undefined) assertCanonicalGraphValue(memory.collection, "memory collection");
+  }
+  for (const entity of entities) {
+    assertCanonicalGraphValue(entity.id, "entity id");
+    assertCanonicalGraphValue(entity.name, "entity name");
+    if (entity.type !== undefined) assertCanonicalGraphValue(entity.type, "entity type");
+    if (entity.summary !== undefined) assertCanonicalGraphValue(entity.summary, "entity summary");
+    assertCanonicalGraphTimestamp(entity.createdAt, "entity createdAt");
+    if (entity.updatedAt !== undefined) assertCanonicalGraphTimestamp(entity.updatedAt, "entity updatedAt");
+  }
+  for (const relation of relations) {
+    if (!entityById.has(relation.src) || !entityById.has(relation.dst)) {
+      throw new Error(`memory-store: canonical graph relation has an orphan endpoint (${relation.src} -> ${relation.dst}).`);
+    }
+    assertCanonicalGraphValue(relation.relation, "relation label");
+    assertCanonicalGraphTimestamp(relation.createdAt, "relation createdAt");
+  }
+  for (const association of associations) {
+    if (!memoryById.has(association.memoryId) || !entityById.has(association.entityId)) {
+      throw new Error(
+        `memory-store: canonical graph association has an orphan endpoint (${association.memoryId} -> ${association.entityId}).`,
+      );
+    }
+    if (association.provenance !== "capture" && association.provenance !== "legacy-name-match") {
+      throw new Error("memory-store: canonical graph association has invalid provenance.");
+    }
+    assertCanonicalGraphTimestamp(association.createdAt, "association createdAt");
+  }
+  for (const support of supports) {
+    const memory = memoryById.get(support.memoryId);
+    const entity = entityById.get(support.entityId);
+    if (memory === undefined || entity === undefined) {
+      throw new Error(
+        `memory-store: canonical graph support has an orphan endpoint (${support.memoryId} -> ${support.entityId}).`,
+      );
+    }
+    if (memory.status !== "migrated" || entity.type !== "collection"
+      || support.entityId !== `collection:${support.collection}`) {
+      throw new Error("memory-store: canonical graph support is not an exact migrated collection projection.");
+    }
+    if (support.weight !== 1) {
+      throw new Error("memory-store: canonical graph support weight must be exactly 1.");
+    }
+    assertCanonicalGraphValue(support.collection, "support collection");
+    assertCanonicalGraphTimestamp(support.createdAt, "support createdAt");
+    const association = associationByKey.get(canonicalAssociationKey({
+      memoryId: support.memoryId,
+      entityId: support.entityId,
+    }));
+    if (association === undefined) {
+      throw new Error("memory-store: canonical graph support has no exact association.");
+    }
+    if (support.createdAt !== association.createdAt) {
+      throw new Error("memory-store: canonical graph support timestamp is not deterministic.");
+    }
+  }
+  return { memories, entities, relations, associations, supports };
+}
+
+function sameCanonicalGraphReplacement(
+  current: CanonicalGraphSnapshot,
+  ownedEdges: readonly CanonicalGraphOwnedEdge[],
+  expected: NormalizedCanonicalGraphReplacement,
+): boolean {
+  const desiredCollections = new Map(expected.supports.map((support) => [support.memoryId, support.collection]));
+  if (current.memories.some((memory) => memory.collection !== desiredCollections.get(memory.id))) return false;
+  const expectedEdges: CanonicalGraphOwnedEdge[] = expected.supports.map((support) => ({
+    src: support.memoryId,
+    dst: support.entityId,
+    kind: "supports",
+    weight: support.weight,
+    createdAt: support.createdAt,
+  }));
+  return sameEntities(current.entities, expected.entities)
+    && sameRelations(current.relations, expected.relations)
+    && sameAssociations(current.associations, expected.associations)
+    && sameOwnedEdges(ownedEdges, expectedEdges);
+}
+
+function sameCanonicalGraphMemories(
+  current: readonly CanonicalGraphMemoryRecord[],
+  expected: readonly CanonicalGraphMemoryRecord[],
+): boolean {
+  const left = [...current].sort((a, b) => a.id.localeCompare(b.id));
+  const right = [...expected].sort((a, b) => a.id.localeCompare(b.id));
+  return left.length === right.length && left.every((memory, index) => {
+    const candidate = right[index];
+    return candidate !== undefined
+      && memory.id === candidate.id
+      && memory.status === candidate.status
+      && memory.text === candidate.text
+      && memory.createdAt === candidate.createdAt
+      && memory.collection === candidate.collection;
+  });
+}
+
+function sameEntities(left: readonly EntityRecord[], right: readonly EntityRecord[]): boolean {
+  const sortedLeft = [...left].sort((a, b) => a.id.localeCompare(b.id));
+  const sortedRight = [...right].sort((a, b) => a.id.localeCompare(b.id));
+  return sortedLeft.length === sortedRight.length && sortedLeft.every((entity, index) => {
+    const candidate = sortedRight[index];
+    return candidate !== undefined
+      && entity.id === candidate.id
+      && entity.name === candidate.name
+      && entity.type === candidate.type
+      && entity.summary === candidate.summary
+      && entity.createdAt === candidate.createdAt
+      && entity.updatedAt === candidate.updatedAt;
+  });
+}
+
+function sameRelations(left: readonly EntityRelationRecord[], right: readonly EntityRelationRecord[]): boolean {
+  const sortedLeft = [...left].sort((a, b) => canonicalRelationKey(a).localeCompare(canonicalRelationKey(b)));
+  const sortedRight = [...right].sort((a, b) => canonicalRelationKey(a).localeCompare(canonicalRelationKey(b)));
+  return sortedLeft.length === sortedRight.length && sortedLeft.every((relation, index) => {
+    const candidate = sortedRight[index];
+    return candidate !== undefined
+      && canonicalRelationKey(relation) === canonicalRelationKey(candidate)
+      && relation.createdAt === candidate.createdAt;
+  });
+}
+
+function sameAssociations(
+  left: readonly MemoryEntityAssociation[],
+  right: readonly MemoryEntityAssociation[],
+): boolean {
+  const sortedLeft = [...left].sort((a, b) => canonicalAssociationKey(a).localeCompare(canonicalAssociationKey(b)));
+  const sortedRight = [...right].sort((a, b) => canonicalAssociationKey(a).localeCompare(canonicalAssociationKey(b)));
+  return sortedLeft.length === sortedRight.length && sortedLeft.every((association, index) => {
+    const candidate = sortedRight[index];
+    return candidate !== undefined
+      && canonicalAssociationKey(association) === canonicalAssociationKey(candidate)
+      && association.provenance === candidate.provenance
+      && association.createdAt === candidate.createdAt;
+  });
+}
+
+function sameOwnedEdges(left: readonly CanonicalGraphOwnedEdge[], right: readonly CanonicalGraphOwnedEdge[]): boolean {
+  const key = (edge: CanonicalGraphOwnedEdge): string => JSON.stringify([edge.kind, edge.src, edge.dst]);
+  const sortedLeft = [...left].sort((a, b) => key(a).localeCompare(key(b)));
+  const sortedRight = [...right].sort((a, b) => key(a).localeCompare(key(b)));
+  return sortedLeft.length === sortedRight.length && sortedLeft.every((edge, index) => {
+    const candidate = sortedRight[index];
+    return candidate !== undefined
+      && edge.src === candidate.src
+      && edge.dst === candidate.dst
+      && edge.kind === candidate.kind
+      && edge.weight === candidate.weight
+      && edge.createdAt === candidate.createdAt;
+  });
+}
+
+function assertUniqueCanonicalKeys<T>(
+  records: readonly T[],
+  keyFor: (record: T) => string,
+  label: string,
+): void {
+  const keys = new Set<string>();
+  for (const record of records) {
+    const key = keyFor(record);
+    if (keys.has(key)) throw new Error(`memory-store: duplicate canonical graph ${label} key.`);
+    keys.add(key);
+  }
+}
+
+function canonicalRelationKey(record: Pick<EntityRelationRecord, "src" | "dst" | "relation">): string {
+  return JSON.stringify([record.src, record.dst, record.relation]);
+}
+
+function canonicalAssociationKey(record: Pick<MemoryEntityAssociation, "memoryId" | "entityId">): string {
+  return JSON.stringify([record.memoryId, record.entityId]);
+}
+
+function canonicalSupportKey(record: Pick<CanonicalGraphReplacementSupport, "memoryId" | "entityId">): string {
+  return JSON.stringify([record.memoryId, record.entityId]);
+}
+
+function assertCanonicalGraphValue(value: string, label: string): void {
+  if (typeof value !== "string" || value.trim().length === 0 || INVALID_CANONICAL_GRAPH_VALUE.test(value)) {
+    throw new Error(`memory-store: canonical graph ${label} is invalid.`);
+  }
+}
+
+function assertCanonicalGraphTimestamp(value: string, label: string): void {
+  assertCanonicalGraphValue(value, label);
+  if (!Number.isFinite(Date.parse(value))) {
+    throw new Error(`memory-store: canonical graph ${label} is invalid.`);
   }
 }
 

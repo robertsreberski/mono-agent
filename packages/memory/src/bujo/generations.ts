@@ -78,7 +78,7 @@ export interface ManagedLayoutState {
   readonly generations: { readonly dev: number; readonly ino: number };
 }
 
-export type ManagedCanonicalSourceDomain = "daily" | "graph";
+export type ManagedCanonicalSourceDomain = "daily" | "graph" | "replay";
 
 export interface ManagedRollbackRetirementHooks {
   /** Test-only seam after the replacement is durable but before publication. */
@@ -338,8 +338,9 @@ export function registerManagedRollbackRuntime(
  * cross-process discipline; exact manifest/layout checks additionally prevent
  * a stale caller from overwriting a concurrently changed managed identity.
  *
- * Every tier fingerprints daily Markdown. Only BuJo fingerprints graph.jsonl,
- * so a graph-only mutation deliberately preserves Lite/Journal rollback.
+ * Every tier fingerprints daily Markdown. Only BuJo fingerprints graph.jsonl
+ * and the exact replay projection, so graph/replay-only mutations deliberately
+ * preserve Lite/Journal rollback.
  */
 export function retireManagedRollback(
   root: string,
@@ -352,13 +353,13 @@ export function retireManagedRollback(
   // itself still performs its normal path-safety validation.
   const registered = MANAGED_ROLLBACK_RUNTIMES.get(root);
   if (registered !== undefined
-    && (registered.rollbackTier === undefined || (domain === "graph" && registered.rollbackTier !== "bujo"))) {
+    && (registered.rollbackTier === undefined || (domain !== "daily" && registered.rollbackTier !== "bujo"))) {
     return false;
   }
   const canonicalRoot = canonicalMemoryRoot(root, true);
   const runtime = registered ?? MANAGED_ROLLBACK_RUNTIMES.get(canonicalRoot);
   if (runtime !== undefined
-    && (runtime.rollbackTier === undefined || (domain === "graph" && runtime.rollbackTier !== "bujo"))) {
+    && (runtime.rollbackTier === undefined || (domain !== "daily" && runtime.rollbackTier !== "bujo"))) {
     return false;
   }
   const manifestState = captureManagedManifestState(canonicalRoot);
@@ -368,7 +369,7 @@ export function retireManagedRollback(
   // advertised rollback immediately before the caller's source commit.
   assertManagedManifestState(canonicalRoot, manifestState);
   const rollback = manifest?.rollback;
-  if (manifest === undefined || rollback === undefined || (domain === "graph" && rollback.tier !== "bujo")) {
+  if (manifest === undefined || rollback === undefined || (domain !== "daily" && rollback.tier !== "bujo")) {
     if (runtime !== undefined && rollback === undefined) runtime.rollbackTier = undefined;
     return false;
   }

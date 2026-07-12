@@ -89,6 +89,41 @@ create/read result that lets mono-agent distinguish a new document from a retry.
 - **Journal:** projects the admitted observation with a case-preserving, NFKC/whitespace-normalized SHA-256 identity, then makes it available to FTS. Semantic indexing is queued in batches of up to 32, so Ollama/OpenAI embedding latency is not on the provider-success critical path. Repeated content converges on one markdown/index identity.
 - **BuJo:** projects each admitted compact host observation to `audit/YYYY-MM-DD.md`, outside curated recall. Only `writeMode: "capture"` asks the memory model to promote durable facts into canonical `daily/` notes and the graph. A model outage therefore cannot turn an uncurated raw transcript into recalled fact.
 
+### Exact BuJo replay projection
+
+BuJo capture can also create replay-owned state that canonical daily markdown
+and `graph.jsonl` cannot reconstruct by themselves: thread edges, supersession
+lifecycle/edges, and terminal timestamps from an explicit migration forget.
+The owner-only `memory.path/.replay-projection-v1.json` is the exact canonical
+authority for that state. It contains only metadata—memory ids, timestamps,
+thread weights, authority kinds, and content-free SHA-256 authority digests;
+it contains no memory text or model output.
+
+Capture and migration publish their exact projection delta while the durable
+capture intent or migration marker still exists, prove that SQLite matches it,
+and only then retire that durable authority. A crash at any boundary therefore
+leaves enough state for an idempotent replay. Strict health compares the full
+sidecar and SQLite projection exactly; structurally plausible lifecycle or
+edges written directly to SQLite are `canonical_mismatch`, not trusted history.
+The sidecar itself is strict canonical JSON, an owner-owned single-link regular
+file with mode `0600`, and is bounded to 32 MiB / 131,072 entries.
+
+Lite and Journal do not consume the BuJo sidecar and reject replay-owned
+lifecycle or edges in their SQLite index. BuJo also never infers a nonempty
+projection from SQLite: if a legacy managed generation or unmanaged `memory.db`
+has replay state but no sidecar, keep the agent stopped and use the explicit
+metadata-only `mono-agent memory adopt-replay --json` trust-on-first-use flow
+before rebuild. Adoption can safely attest multiple disjoint capture
+intents/receipts and at most one migration marker. Mutable pending capture work
+and a pending migration are mutually exclusive; immutable completed capture
+receipts may coexist with the later migration, and retained receipts remain
+until intake resolves.
+Rebuild must immediately follow adoption and completes any attested protocol
+without repeating provider work. Building the replacement semantic generation
+still uses the configured embeddings provider before activation. Never start
+the service between those steps.
+See [Validation & CLI](/memory/validation-and-cli/#bujo-replay-projection-and-explicit-legacy-adoption).
+
 The durable intake and both downstream paths are bounded and observable. Intake admits at most
 4,096 active pending/dead records of at most 640 KiB each and retains at most 4,096 resolved
 receipts. Its permanent content-free ledger grows by one fixed 129-byte entry per distinct run id
@@ -135,7 +170,7 @@ Key properties:
 - **Bounded shutdown without admitted-work loss.** A normal stop drains accepted work with a 10-second safety deadline. If a provider ignores cancellation, stop still returns and the durable pending record resumes on restart.
 - **Strict model contracts.** Extraction and reconciliation accept one exact, bounded JSON value with complete arrays/decisions and no duplicate keys, unknown fields, partial filtering, unsafe text, or ambiguous target collisions. Invalid output retries and never counts as successful capture.
 - **Reconcile is intelligent**, not append-only: the pipeline classifies each observation as `ADD` / `UPDATE` / `SUPERSEDE` / `NOOP` against existing memories to avoid duplication.
-- **Crash-idempotent semantic commit.** Run-derived fact ids and a retained semantic plan make a post-commit/pre-receipt replay converge without another model call or duplicate fact.
+- **Crash-idempotent semantic commit.** Run-derived fact ids, a retained semantic plan, and the exact replay projection make a post-commit/pre-receipt replay converge without another model call, duplicate fact, or unattested lifecycle/edge.
 - **Associations are precise.** Each curated fact carries only the entity IDs explicitly extracted for that fact; the implementation never creates a turn-wide memory/entity Cartesian product.
 
 Because it uses a chat LLM, `writeMode: "capture"` **requires `mode: "bujo"`** and fails config validation otherwise — there is no silent fallback or tier downshift.

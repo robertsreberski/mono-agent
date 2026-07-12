@@ -11,6 +11,7 @@ import { dailyFilePath, readBullet } from "./daily.js";
 import { normalizeCandidateText, type CandidateMemory } from "./distill.js";
 import { parseJsonExact, parseJsonLoose } from "./json.js";
 import type { LlmComplete } from "./llm.js";
+import type { CanonicalGraphRepairGuard } from "./graph.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
@@ -46,6 +47,7 @@ export interface ReconcileDeps {
   readonly strictModelOutput?: boolean;
   /** Run-owned capture plans remain replayable until durable intake resolution. */
   readonly captureRetentionKey?: string;
+  readonly canonicalGraphRepairGuard?: CanonicalGraphRepairGuard;
 }
 
 const VALID_ACTIONS = new Set(["add", "update", "supersede", "noop"]);
@@ -306,7 +308,11 @@ function commitPreparedActionsDurably(
     );
     // Do not insert an async/abort gap after publication. Replay either
     // completes synchronously or leaves the exact pending intent for startup.
-    replayCaptureIntent(deps.root, handle, deps.db);
+    replayCaptureIntent(deps.root, handle, deps.db, {
+      ...(deps.canonicalGraphRepairGuard === undefined
+        ? {}
+        : { canonicalGraphRepairGuard: deps.canonicalGraphRepairGuard }),
+    });
   }
 }
 
@@ -357,9 +363,13 @@ function planAddWithoutIndex(
   };
   const record = recordFor(bullet, deps.root, now);
   const file = record.source.file!;
-  const threads = similar
-    .filter((hit) => hit.record.id !== id && hit.distance <= threadThreshold)
-    .map((hit) => ({ src: id, dst: hit.record.id, weight: 1 - hit.distance }));
+  const threads = similar.flatMap((hit) => {
+    if (hit.record.id === id || hit.distance > threadThreshold) return [];
+    const weight = 1 - hit.distance;
+    return Number.isFinite(weight) && weight > 0 && weight <= 1
+      ? [{ src: id, dst: hit.record.id, weight }]
+      : [];
+  }).slice(0, 5);
   return {
     action: { kind: "add", id },
     intent: {

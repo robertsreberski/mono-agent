@@ -19,6 +19,11 @@ export type {
   SafeMemoryIndexResult,
   SafeMemoryRebuildHooks,
 } from "./rebuild.js";
+export { adoptLegacyReplayProjection } from "./replay-adoption.js";
+export type {
+  LegacyReplayAdoptionOptions,
+  LegacyReplayAdoptionResult,
+} from "./replay-adoption.js";
 export {
   MEMORY_REBUILD_POLICY_VERSION,
   readManagedIndexManifest,

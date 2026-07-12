@@ -9,6 +9,7 @@ import type { TraceSourceListItem } from "@mono-agent/observability";
 import type {
   BujoMemoryHealthReport,
   CompletedTurnIntakeInspection,
+  LegacyReplayAdoptionResult,
 } from "@mono-agent/memory/bujo";
 
 import {
@@ -30,6 +31,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
 const INTAKE_ID_RE = /^[a-f0-9]{64}$/u;
 const INTAKE_REASON_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 const MEMORY_HEALTH_SCHEMA_VERSION = 1;
+const REPLAY_ADOPTION_SCHEMA_VERSION = 1;
 const EMPTY_HEALTH_COUNTS = Object.freeze({
   pending: 0,
   due: 0,
@@ -72,6 +74,10 @@ interface PreviewRecallHit {
 export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<number> {
   const usageError = memoryCommandUsageError(input);
   if (usageError !== undefined) {
+    if (input.positionals[0] === "adopt-replay") {
+      writeReplayAdoptionCliFailure(input.json, "replay_adoption_usage");
+      return 2;
+    }
     process.stderr.write(ui.errorLine(usageError));
     return 2;
   }
@@ -87,6 +93,10 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       const result = notConfiguredHealthReport();
       write(input.json, result, () => renderStrictAudit(result));
       return strictHealthExitCode(result.status);
+    }
+    if (subcommand === "adopt-replay") {
+      writeReplayAdoptionCliFailure(input.json, "replay_adoption_requires_bujo");
+      return 1;
     }
     writeNoMemory(context.configPath, input.json);
     return 0;
@@ -129,9 +139,11 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       return await runIndexTransition(context, "rebuild", input.json);
     case "rollback":
       return await runIndexTransition(context, "rollback", input.json);
+    case "adopt-replay":
+      return await runReplayAdoption(context, input.json);
     default:
       process.stderr.write(ui.errorLine(`Unknown memory subcommand \`${subcommand}\`.`));
-      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, audit, inspect [id], retry [id], resolve <id> <reason>, rebuild, or rollback."));
+      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, audit, inspect [id], retry [id], resolve <id> <reason>, rebuild, rollback, or adopt-replay."));
       return 2;
   }
 }
@@ -152,6 +164,7 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
     case "audit":
     case "rebuild":
     case "rollback":
+    case "adopt-replay":
       return rest.length === 0 ? undefined : `Usage: mono-agent memory ${subcommand}.`;
     case "show":
       return rest.length === 1 && DATE_RE.test(rest[0] ?? "")
@@ -179,6 +192,106 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
     default:
       return undefined;
   }
+}
+
+async function runReplayAdoption(
+  context: MemoryCommandContext,
+  json: boolean,
+): Promise<number> {
+  const memory = context.config.memory;
+  if (memory === undefined || (memory.backend ?? "bujo") === "supermemory"
+    || memory.mode !== "bujo" || memory.embeddings === undefined) {
+    writeReplayAdoptionCliFailure(json, "replay_adoption_requires_bujo");
+    return 1;
+  }
+
+  try {
+    const registryDirs = await memoryRegistryDirs(context);
+    if (await hasLiveConfiguredAgent(context.configPath, registryDirs)) {
+      writeReplayAdoptionCliFailure(json, "replay_adoption_agent_running");
+      return 1;
+    }
+    const { adoptLegacyReplayProjection } = await loadBujoModule();
+    // Re-check after the lazy module load so a configured process cannot race
+    // the SSH-only stopped-store precondition during setup. The package also
+    // takes the memory-root writer lease and SQLite writer fence.
+    if (await hasLiveConfiguredAgent(context.configPath, registryDirs)) {
+      writeReplayAdoptionCliFailure(json, "replay_adoption_agent_running");
+      return 1;
+    }
+    const adopted = await adoptLegacyReplayProjection({
+      root: memory.path,
+      mode: "bujo",
+      embeddingModel: `${memory.embeddings.provider}:${memory.embeddings.model}`,
+      dimension: memory.embeddings.dim ?? 768,
+    });
+    const result = publicReplayAdoptionResult(adopted);
+    write(json, result, () => renderReplayAdoption(result));
+    return 0;
+  } catch {
+    // Adoption is a privacy boundary. Do not classify or interpolate the
+    // package/native error: it may contain paths, record ids, marker bytes, or
+    // model-owned text. Operators get a stable remediation contract instead.
+    writeReplayAdoptionCliFailure(json, "replay_adoption_failed");
+    return 1;
+  }
+}
+
+type ReplayAdoptionFailureCode =
+  | "replay_adoption_usage"
+  | "replay_adoption_config_invalid"
+  | "replay_adoption_requires_bujo"
+  | "replay_adoption_agent_running"
+  | "replay_adoption_failed";
+
+const REPLAY_ADOPTION_FAILURE_MESSAGES: Readonly<Record<ReplayAdoptionFailureCode, string>> = Object.freeze({
+  replay_adoption_usage: "Usage: mono-agent memory adopt-replay [--json] [--config <path>] [--env-file <path>].",
+  replay_adoption_config_invalid: "Replay adoption requires a valid mono-agent configuration.",
+  replay_adoption_requires_bujo: "Replay adoption requires a configured built-in BuJo memory store with embeddings.",
+  replay_adoption_agent_running: "Replay adoption requires the configured agent to be stopped. Stop it and retry.",
+  replay_adoption_failed: "Replay adoption failed. Keep the agent stopped, inspect strict memory health, resolve the reported condition, and retry.",
+});
+
+export function writeReplayAdoptionCliFailure(json: boolean, code: ReplayAdoptionFailureCode): void {
+  const result = {
+    schemaVersion: REPLAY_ADOPTION_SCHEMA_VERSION,
+    operation: "adopt-replay" as const,
+    status: "failed" as const,
+    code,
+    message: REPLAY_ADOPTION_FAILURE_MESSAGES[code],
+  };
+  if (json) {
+    write(true, result, () => "");
+    return;
+  }
+  process.stderr.write(ui.errorLine(`[${result.code}] ${result.message}`));
+}
+
+function publicReplayAdoptionResult(result: LegacyReplayAdoptionResult): LegacyReplayAdoptionResult {
+  const counts = result.counts;
+  if (result.backend !== "bujo" || result.mode !== "bujo" || result.status !== "adopted"
+    || result.rebuildRequired !== true || !/^[a-f0-9]{64}$/u.test(result.authorityDigest)
+    || !isSafeAggregateCount(counts.terminals)
+    || !isSafeAggregateCount(counts.supersedes)
+    || !isSafeAggregateCount(counts.threads)) {
+    throw new Error("invalid private adoption result");
+  }
+  return {
+    backend: "bujo",
+    mode: "bujo",
+    status: "adopted",
+    counts: {
+      terminals: counts.terminals,
+      supersedes: counts.supersedes,
+      threads: counts.threads,
+    },
+    authorityDigest: result.authorityDigest,
+    rebuildRequired: true,
+  };
+}
+
+function isSafeAggregateCount(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0;
 }
 
 type PublishedMemoryHealthStatus = BujoMemoryHealthReport["status"] | "not_configured";
@@ -570,6 +683,12 @@ async function loadMemoryCommandContext(
       config: await loadAppCoreConfig({ env: input.env, cwd, configPath }),
     };
   } catch (error) {
+    if (input.positionals[0] === "adopt-replay") {
+      // Config/native failures can contain the config path or invalid private
+      // values. Adoption always exposes the same closed error contract.
+      writeReplayAdoptionCliFailure(input.json, "replay_adoption_config_invalid");
+      return { code: 1 };
+    }
     if (isAppCoreConfigError(error)) {
       process.stderr.write(ui.errorLine(error.message));
       process.stderr.write(ui.hint(`Fix ${configPath}, then re-run \`mono-agent memory\`.`));
@@ -580,6 +699,23 @@ async function loadMemoryCommandContext(
 }
 
 async function assertNoLiveConfiguredAgent(configPath: string, registryDirs: readonly string[]): Promise<void> {
+  const live = await findLiveConfiguredAgent(configPath, registryDirs);
+  if (live === undefined) return;
+  const canonicalConfig = await canonicalPath(configPath);
+  throw new Error(
+    `agent process ${live.pid} (${live.sourceId}) is still alive for this config (trace health: ${live.health}); ` +
+    `stop it first with: mono-agent stop --config ${canonicalConfig}`,
+  );
+}
+
+async function hasLiveConfiguredAgent(configPath: string, registryDirs: readonly string[]): Promise<boolean> {
+  return await findLiveConfiguredAgent(configPath, registryDirs) !== undefined;
+}
+
+async function findLiveConfiguredAgent(
+  configPath: string,
+  registryDirs: readonly string[],
+): Promise<TraceSourceListItem | undefined> {
   const canonicalConfig = await canonicalPath(configPath);
   const listings = await Promise.all(registryDirs.map(async (registryDir) => await listTraceSources({ registryDir })));
   const sources = dedupeTraceSources(listings.flatMap((listing) => listing.sources));
@@ -591,11 +727,7 @@ async function assertNoLiveConfiguredAgent(configPath: string, registryDirs: rea
       break;
     }
   }
-  if (live === undefined) return;
-  throw new Error(
-    `agent process ${live.pid} (${live.sourceId}) is still alive for this config (trace health: ${live.health}); ` +
-    `stop it first with: mono-agent stop --config ${canonicalConfig}`,
-  );
+  return live;
 }
 
 async function dedupeRegistryDirs(registryDirs: readonly string[]): Promise<string[]> {
@@ -1358,6 +1490,30 @@ function renderIndexTransition(result: {
       ["skipped Journal duplicates", String(result.details.skippedJournalDuplicateRecords)],
       ["parsed source items", String(result.details.parsedSourceItems)],
       ["derived legacy associations", String(result.details.derivedLegacyAssociations)],
+    ], 2),
+  ].join("");
+}
+
+function renderReplayAdoption(result: {
+  readonly status: "adopted";
+  readonly counts: {
+    readonly terminals: number;
+    readonly supersedes: number;
+    readonly threads: number;
+  };
+  readonly authorityDigest: string;
+  readonly rebuildRequired: true;
+}): string {
+  return [
+    ui.banner("mono-agent memory", "adopt replay"),
+    "\n",
+    ui.keyValue([
+      ["status", result.status],
+      ["terminal lifecycles", String(result.counts.terminals)],
+      ["supersedes", String(result.counts.supersedes)],
+      ["threads", String(result.counts.threads)],
+      ["authority digest", result.authorityDigest],
+      ["rebuild required", result.rebuildRequired ? "yes" : "no"],
     ], 2),
   ].join("");
 }

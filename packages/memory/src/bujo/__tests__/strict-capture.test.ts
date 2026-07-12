@@ -7,11 +7,17 @@ import { describe, expect, it } from "vitest";
 import { openMemoryDb } from "../../store/index.js";
 import { extractCapturePlanStrict, MAX_CAPTURE_MEMORIES } from "../capture-batch.js";
 import { appendBullet } from "../daily.js";
-import { reconcileBatch } from "../reconcile.js";
+import { reconcileBatch as reconcileBatchImpl } from "../reconcile.js";
+import { assertCanonicalGraphRepairBaseParity } from "../rebuild.js";
 import type { Bullet, CandidateMemory } from "../types.js";
 import { fakeEmbeddings } from "./helpers.js";
 
 const FIXED = new Date("2026-07-12T09:00:00.000Z");
+
+const reconcileBatch: typeof reconcileBatchImpl = async (candidates, deps) => await reconcileBatchImpl(candidates, {
+  ...deps,
+  canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+});
 
 const validPlan = {
   memories: [{

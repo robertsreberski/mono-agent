@@ -5,12 +5,18 @@ import { join, relative } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import {
+  appendGraphBatch,
   appendBullet,
   captureTurn,
   createBujoMemoryStore,
   dailyFilePath,
   readGraph,
 } from "../../packages/memory/dist/bujo/index.js";
+import { assertCanonicalGraphRepairBaseParity } from "../../packages/memory/dist/bujo/rebuild.js";
+import {
+  prepareAndPublishReplayProjectionDelta,
+  replayProjectionAuthorityId,
+} from "../../packages/memory/dist/bujo/replay-projection.js";
 import { openMemoryDb } from "../../packages/memory/dist/store/index.js";
 
 const FIXED_NOW = new Date("2026-07-11T00:00:00.000Z");
@@ -143,6 +149,7 @@ async function runCaptureCalibration() {
       llm,
       nextId: () => `new-${++sequence}`,
       now: () => FIXED_NOW,
+      canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
     });
     const graph = readGraph(root);
     const actualAssociations = graph.associations
@@ -261,8 +268,32 @@ async function runGraphCalibration() {
   let store;
   try {
     const fixture = graphFixture();
+    for (const item of fixture.records) {
+      appendBullet(root, {
+        id: item.id,
+        type: item.type,
+        status: item.status,
+        text: item.text,
+        salience: item.salience,
+        isInsight: item.isInsight,
+        createdAt: item.createdAt,
+        refs: [],
+      }, new Date(item.createdAt));
+    }
+    appendGraphBatch(root, fixture.graph);
     await db.upsertMany(fixture.records, { batchSize: 32 });
     seedGraph(db, fixture.graph);
+    prepareAndPublishReplayProjectionDelta(root, {
+      terminals: [{
+        id: "adv-stale-target",
+        at: "2026-07-10T00:00:00.000Z",
+        authorityKind: "migration",
+        authorityId: replayProjectionAuthorityId({
+          benchmark: "memory-cleanup",
+          terminal: "adv-stale-target",
+        }),
+      }],
+    });
     const auditBefore = db.audit();
     const indexingEmbeddingCalls = embeddingMetrics.calls;
     db.close();
@@ -742,7 +773,12 @@ function graphFixture() {
       const overrides = targetState === "invalidated"
         ? { status: "invalidated" }
         : targetState === "stale"
-          ? { validTo: "2026-07-10T00:00:00.000Z" }
+          ? {
+              status: "dropped",
+              createdAt: "2026-07-09T00:00:00.000Z",
+              validTo: "2026-07-10T00:00:00.000Z",
+              source: { file: "daily/2026-07-09.md" },
+            }
           : {};
       addRecord(record(targetId, `${targetName} contains forbidden or required graph evidence.`, overrides));
       entities.push(entity(targetEntityId, targetName));
@@ -829,7 +865,7 @@ function record(id, text, overrides = {}) {
     createdAt: FIXED_NOW.toISOString(),
     accessCount: 0,
     tags: [],
-    source: { file: "fixture.md" },
+    source: { file: "daily/2026-07-11.md" },
     ...overrides,
   };
 }

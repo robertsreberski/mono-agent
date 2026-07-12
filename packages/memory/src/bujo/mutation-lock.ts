@@ -1,15 +1,28 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { MemoryDb } from "../store/index.js";
+import type { CanonicalGraphRepairGuard } from "./graph.js";
 
-import { hasPendingCaptureIntent, replayCaptureOutbox } from "./capture-outbox.js";
-import { canonicalMemoryRoot } from "./generations.js";
+import {
+  hasMutablePendingCaptureIntent,
+  hasPendingCaptureIntent,
+  replayCaptureOutbox,
+} from "./capture-outbox.js";
+import { canonicalMemoryRoot, readManagedIndexManifest } from "./generations.js";
 import {
   assertNoPendingMigrateDecision,
+  hasPendingMigrateDecision,
   recoverPendingMigrateDecisionWithMetadata,
   type MigrateAction,
 } from "./migrate.js";
 import type { BujoTier } from "./types.js";
+import {
+  REPLAY_PROJECTION_FILE,
+  assertReplayProjectionMatchesDb,
+  initializeReplayProjection,
+  readReplayProjectionStrict,
+  replayProjectionDbSnapshot,
+} from "./replay-projection.js";
 
 interface MutationContext {
   readonly roots: ReadonlyMap<string, MutationLease>;
@@ -31,6 +44,7 @@ export interface SerializedBujoMutation {
   readonly db: MemoryDb;
   readonly tier?: BujoTier;
   readonly abortSignal?: AbortSignal;
+  readonly canonicalGraphRepairGuard?: CanonicalGraphRepairGuard;
 }
 
 const MUTATION_CONTEXT = new AsyncLocalStorage<MutationContext>();
@@ -72,7 +86,12 @@ export async function withSerializedBujoMutation<T>(
     roots.set(root, lease);
     return await MUTATION_CONTEXT.run({ roots }, async () => {
       try {
-        lease.recovery = recoverDurableMutationState(root, options.db, options.tier ?? "bujo");
+        lease.recovery = recoverDurableMutationState(
+          root,
+          options.db,
+          options.tier ?? "bujo",
+          options.canonicalGraphRepairGuard,
+        );
         options.abortSignal?.throwIfAborted();
         return await run(lease.recovery);
       } finally {
@@ -95,30 +114,76 @@ export function recoverDurableMutationState(
   root: string,
   db: MemoryDb,
   tier: BujoTier,
+  canonicalGraphRepairGuard?: CanonicalGraphRepairGuard,
 ): DurableMutationRecovery {
+  const authorityBefore = tier === "bujo" ? readReplayProjectionStrict(root) : undefined;
+  const managedBefore = tier === "bujo" ? readManagedIndexManifest(root) : undefined;
+  const missingManagedAuthorityBefore = authorityBefore?.state.kind === "missing" && managedBefore !== undefined;
+  const dbReplayBefore = authorityBefore?.state.kind === "missing" ? replayProjectionDbSnapshot(db) : undefined;
   // Older processes could publish these independent protocols concurrently.
   // Neither protocol carries a shared sequence, so mutating either one first
   // can make the other unreplayable. Detect the dual-pending state entirely
   // through bounded, non-mutating probes and require operator repair.
-  if (hasPendingCaptureIntent(root)) {
-    try {
-      assertNoPendingMigrateDecision(root);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        "memory-bujo: capture and migration durable state are both pending; "
-        + `refusing unordered recovery before any mutation. ${reason}`,
-      );
-    }
+  const captureQueued = hasPendingCaptureIntent(root);
+  const capturePending = hasMutablePendingCaptureIntent(root);
+  const migrationPending = tier === "bujo" ? hasPendingMigrateDecision(root) : false;
+  if (capturePending && migrationPending) {
+    throw new Error(
+      "memory-bujo: capture and migration durable state are both pending; "
+      + "refusing unordered recovery before any mutation.",
+    );
+  }
+  if (authorityBefore?.state.kind === "missing" && dbReplayBefore !== undefined
+    && hasReplayProjectionState(dbReplayBefore) && !captureQueued && !migrationPending) {
+    throw new Error(
+      `memory-bujo: ${REPLAY_PROJECTION_FILE} is missing while SQLite contains historical replay state; `
+      + "no durable mutation explains it. Run explicit stopped-store adoption.",
+    );
+  }
+  if (authorityBefore?.state.kind === "missing" && managedBefore === undefined
+    && !captureQueued && !migrationPending) {
+    // A fresh/unmanaged empty DB has no historical replay state or manifest
+    // source identity to bless. Establish the empty authority only after the
+    // dual-protocol non-mutating probe; managed upgrades use safe rebuild.
+    initializeReplayProjection(root);
   }
   const migration = tier === "bujo"
-    ? recoverPendingMigrateDecisionWithMetadata(root, db)
+    ? recoverPendingMigrateDecisionWithMetadata(root, db, canonicalGraphRepairGuard)
     : (assertNoPendingMigrateDecision(root), undefined);
-  const captureReplayed = replayCaptureOutbox(root, db).length;
+  const captureReplayed = replayCaptureOutbox(root, db, {
+    ...(canonicalGraphRepairGuard === undefined ? {} : { canonicalGraphRepairGuard }),
+  }).length;
+  if (missingManagedAuthorityBefore) {
+    throw new Error(
+      `memory-bujo: managed index was missing ${REPLAY_PROJECTION_FILE}; durable recovery completed but `
+      + "the managed source fingerprint is stale. Stop the store and run safe rebuild before restart.",
+    );
+  }
+  if (tier === "bujo") {
+    const replay = readReplayProjectionStrict(root);
+    if (replay.state.kind === "missing") {
+      throw new Error(
+        `memory-bujo: ${REPLAY_PROJECTION_FILE} is missing after durable recovery; `
+        + "unattested replay-owned SQLite state is not accepted.",
+      );
+    }
+    assertReplayProjectionMatchesDb(db, replay.projection);
+  } else {
+    const replay = replayProjectionDbSnapshot(db);
+    if (hasReplayProjectionState(replay)) {
+      throw new Error(`memory-bujo: ${tier} rejects BuJo replay-owned lifecycle and edges.`);
+    }
+  }
   return {
     ...(migration === undefined ? {} : { migrationAction: migration.action }),
     captureReplayed,
   };
+}
+
+function hasReplayProjectionState(
+  replay: ReturnType<typeof replayProjectionDbSnapshot>,
+): boolean {
+  return replay.terminals.length > 0 || replay.supersedes.length > 0 || replay.threads.length > 0;
 }
 
 async function waitForPredecessor(
