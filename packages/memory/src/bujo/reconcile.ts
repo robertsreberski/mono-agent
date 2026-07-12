@@ -514,10 +514,21 @@ async function classifyBatch(
   let raw: string;
   try {
     raw = await deps.llm.complete(
-      `Classify each candidate against only its supplied existing memories. Return ONLY a JSON array:
-[{"index":0,"action":"add|update|supersede|noop","targetId":"existing id when required","text":"merged/replacement text when needed"}]
-- add: genuinely new; noop: duplicate; update: refinement; supersede: contradiction.
-- Preserve every input index exactly once. targetId must come from that candidate's existing list.
+      `Classify each candidate against only its supplied existing memories. Return ONLY one exact JSON array with one object per offered index.
+
+Use exactly one of these object shapes:
+- add: {"index":N,"action":"add"}
+- noop: {"index":N,"action":"noop","targetId":"existing-id"}
+- update: {"index":N,"action":"update","targetId":"existing-id","text":"complete merged memory"}
+- supersede: {"index":N,"action":"supersede","targetId":"existing-id","text":"complete replacement memory"}
+
+Rules:
+- add means genuinely new; noop means duplicate; update means refinement; supersede means contradiction.
+- Preserve every input index exactly once. N is the exact JSON integer from that input item.
+- For noop, update, and supersede, targetId is REQUIRED and copied byte-for-byte from that candidate's existing[].id. add MUST omit targetId.
+- A targetId may be selected by at most one decision in the whole batch.
+- add and noop MUST omit text. update and supersede REQUIRE one complete, non-empty replacement text with no leading/trailing whitespace, at most 280 Unicode code points, no control, formatting, surrogate, line-separator, or paragraph-separator characters, and no reserved <!--mem delimiter.
+- Every object contains exactly the keys shown for its action. Do not emit duplicate object keys, nulls, extra keys, comments, or prose.
 
 INPUT:
 ${JSON.stringify(input)}`,

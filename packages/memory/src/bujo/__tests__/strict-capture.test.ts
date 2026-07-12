@@ -78,9 +78,13 @@ describe("strict completed-turn extraction", () => {
     expect(extractionPrompt).toContain("Never use a 0-10, 0-100, or percentage scale");
     expect(extractionPrompt).toContain("All three root arrays are required");
     expect(extractionPrompt).toContain("including the colon");
-    expect(extractionPrompt).toContain("the prefix before : exactly matches type");
+    expect(extractionPrompt).toContain("prefix before : exactly matches type");
     expect(extractionPrompt).toContain("copied byte-for-byte from entities[].id");
-    expect(extractionPrompt).toContain("relation is lowercase words");
+    expect(extractionPrompt).toContain("relation is non-empty");
+    expect(extractionPrompt).toContain("lowercase ASCII letters/digits");
+    expect(extractionPrompt).toContain("at most 160 Unicode code points");
+    expect(extractionPrompt).toContain("no reserved <!--mem delimiter");
+    expect(extractionPrompt).toContain("Do not emit duplicate JSON object keys");
   });
 
   it.each([
@@ -137,6 +141,9 @@ describe("strict completed-turn reconciliation", () => {
     ])],
     ["unknown action", JSON.stringify([{ index: 0, action: "merge", targetId: "TARGET" }])],
     ["unknown target", JSON.stringify([{ index: 0, action: "noop", targetId: "OTHER" }])],
+    ["add with target", JSON.stringify([{ index: 0, action: "add", targetId: "TARGET" }])],
+    ["noop without target", JSON.stringify([{ index: 0, action: "noop" }])],
+    ["noop with text", JSON.stringify([{ index: 0, action: "noop", targetId: "TARGET", text: "duplicate" }])],
     ["unexpected field", JSON.stringify([{ index: 0, action: "noop", targetId: "TARGET", confidence: 1 }])],
     ["partial update", JSON.stringify([{ index: 0, action: "update", targetId: "TARGET" }])],
     ["control replacement", JSON.stringify([{ index: 0, action: "update", targetId: "TARGET", text: "bad\u0001text" }])],
@@ -151,6 +158,41 @@ describe("strict completed-turn reconciliation", () => {
       })).rejects.toMatchObject({ name: "MemoryModelOutputError" });
       expect(fixture.db.count()).toBe(1);
       expect(fixture.db.get("TARGET")?.status).toBe("open");
+    } finally {
+      fixture.db.close();
+    }
+  });
+
+  it("states the exact per-action object contract that strict reconciliation enforces", async () => {
+    const fixture = await reconcileFixture();
+    let reconcilePrompt = "";
+    try {
+      const actions = await reconcileBatch(fixture.candidates, {
+        ...fixture.deps,
+        strictModelOutput: true,
+        llm: {
+          id: "shape-aware",
+          complete: async (receivedPrompt) => {
+            reconcilePrompt = receivedPrompt;
+            const targetRequired = receivedPrompt.includes("targetId is REQUIRED");
+            return JSON.stringify([targetRequired
+              ? { index: 0, action: "noop", targetId: "TARGET" }
+              : { index: 0, action: "noop" }]);
+          },
+        },
+      });
+
+      expect(actions.map((action) => action?.kind)).toEqual(["noop", "add"]);
+      expect(reconcilePrompt).toContain('add: {"index":N,"action":"add"}');
+      expect(reconcilePrompt).toContain('noop: {"index":N,"action":"noop","targetId":"existing-id"}');
+      expect(reconcilePrompt).toContain('update: {"index":N,"action":"update","targetId":"existing-id","text":"complete merged memory"}');
+      expect(reconcilePrompt).toContain('supersede: {"index":N,"action":"supersede","targetId":"existing-id","text":"complete replacement memory"}');
+      expect(reconcilePrompt).toContain("targetId is REQUIRED");
+      expect(reconcilePrompt).toContain("selected by at most one decision");
+      expect(reconcilePrompt).toContain("complete, non-empty replacement text");
+      expect(reconcilePrompt).toContain("at most 280 Unicode code points");
+      expect(reconcilePrompt).toContain("Do not emit duplicate object keys");
+      expect(reconcilePrompt).toContain("Every object contains exactly the keys shown");
     } finally {
       fixture.db.close();
     }
