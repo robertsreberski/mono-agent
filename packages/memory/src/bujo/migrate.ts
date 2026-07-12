@@ -592,6 +592,11 @@ export function recoverPendingMigrateDecisionWithMetadata(
   return { action: pending.decision.action };
 }
 
+/** Read-only, provider-free probe for an admitted durable migration mutation. */
+export function hasPendingMigrateDecision(root: string): boolean {
+  return readPendingDecision(root) !== undefined;
+}
+
 /** Refuse maintenance that cannot carry a paid pending migration transaction. */
 export function assertNoPendingMigrateDecision(root: string): void {
   const pending = readPendingDecision(root);

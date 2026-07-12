@@ -1054,34 +1054,49 @@ export class MemoryDb {
     }));
   }
 
-  /** Provider-free, complete graph inventory for canonical parity checks. */
+  /** Provider-free graph inventory and derivation inputs from one SQLite read transaction. */
   canonicalGraphSnapshot(): CanonicalGraphSnapshot {
-    const entities = (this.db.prepare(
-      `SELECT id, name, type, summary, created_at, updated_at FROM entities ORDER BY id`,
-    ).all() as Record<string, unknown>[]).map((row) => this.entityFromRow(row));
-    const relations = (this.db.prepare(
-      `SELECT src, dst, relation, created_at FROM entity_relations ORDER BY src, dst, relation`,
-    ).all() as Array<{ src: string; dst: string; relation: string; created_at: string }>).map((row) => ({
-      src: row.src,
-      dst: row.dst,
-      relation: row.relation,
-      createdAt: row.created_at,
-    }));
-    const associations = (this.db.prepare(
-      `SELECT memory_id, entity_id, provenance, created_at
-       FROM memory_entities ORDER BY memory_id, entity_id`,
-    ).all() as Array<{
-      memory_id: string;
-      entity_id: string;
-      provenance: MemoryEntityAssociation["provenance"];
-      created_at: string;
-    }>).map((row) => ({
-      memoryId: row.memory_id,
-      entityId: row.entity_id,
-      provenance: row.provenance,
-      createdAt: row.created_at,
-    }));
-    return { entities, relations, associations };
+    return this.db.transaction((): CanonicalGraphSnapshot => {
+      const memories = (this.db.prepare(
+        `SELECT id, status, text, created_at FROM memories ORDER BY id`,
+      ).all() as Array<{
+        id: string;
+        status: MemoryRecord["status"];
+        text: string;
+        created_at: string;
+      }>).map((row) => ({
+        id: row.id,
+        status: row.status,
+        text: row.text,
+        createdAt: row.created_at,
+      }));
+      const entities = (this.db.prepare(
+        `SELECT id, name, type, summary, created_at, updated_at FROM entities ORDER BY id`,
+      ).all() as Record<string, unknown>[]).map((row) => this.entityFromRow(row));
+      const relations = (this.db.prepare(
+        `SELECT src, dst, relation, created_at FROM entity_relations ORDER BY src, dst, relation`,
+      ).all() as Array<{ src: string; dst: string; relation: string; created_at: string }>).map((row) => ({
+        src: row.src,
+        dst: row.dst,
+        relation: row.relation,
+        createdAt: row.created_at,
+      }));
+      const associations = (this.db.prepare(
+        `SELECT memory_id, entity_id, provenance, created_at
+         FROM memory_entities ORDER BY memory_id, entity_id`,
+      ).all() as Array<{
+        memory_id: string;
+        entity_id: string;
+        provenance: MemoryEntityAssociation["provenance"];
+        created_at: string;
+      }>).map((row) => ({
+        memoryId: row.memory_id,
+        entityId: row.entity_id,
+        provenance: row.provenance,
+        createdAt: row.created_at,
+      }));
+      return { memories, entities, relations, associations };
+    })();
   }
 
   /**

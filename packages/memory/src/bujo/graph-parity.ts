@@ -1,11 +1,25 @@
 import type {
+  CanonicalGraphSnapshot,
   EntityRecord,
   EntityRelationRecord,
   MemoryDb,
   MemoryEntityAssociation,
 } from "../store/index.js";
 
-import { readGraph } from "./graph.js";
+import { hasPendingCaptureIntent } from "./capture-outbox.js";
+import {
+  CanonicalGraphValidationError,
+  emptyCanonicalGraphProjection,
+  projectCanonicalGraph,
+  readCanonicalGraphStrictSnapshot,
+  type CanonicalGraphIssueCode,
+  type CanonicalGraphProjection,
+  type StrictCanonicalGraphSnapshot,
+} from "./graph.js";
+import { hasPendingMigrateDecision } from "./migrate.js";
+import type { BujoTier } from "./types.js";
+
+const MAX_AUDIT_ATTEMPTS = 2;
 
 /** Aggregate-only parity counters. No memory or entity content is returned. */
 export interface CanonicalGraphParitySection {
@@ -20,31 +34,227 @@ export interface CanonicalGraphParitySection {
   readonly provenanceMismatches: number;
 }
 
-/** Exact canonical graph.jsonl versus active SQLite projection parity. */
+export type CanonicalGraphParityStatus = "match" | "mismatch" | "in_progress" | "invalid";
+
+export type CanonicalGraphParityIssueCode = CanonicalGraphIssueCode
+  | "canonical-read-failed"
+  | "durable-state-invalid"
+  | "active-index-invalid"
+  | "tier-conflict";
+
+export interface CanonicalGraphParityIssue {
+  readonly code: CanonicalGraphParityIssueCode;
+  readonly line?: number;
+}
+
+export interface CanonicalGraphMutationState {
+  readonly capturePending: boolean;
+  readonly migrationPending: boolean;
+  readonly sourceChanged: boolean;
+}
+
+export interface CanonicalGraphParityOptions {
+  /** Explicit tier for an unmanaged index; managed metadata must agree when both are present. */
+  readonly tier?: BujoTier;
+}
+
+/** Exact tier-aware canonical graph projection versus active SQLite parity. */
 export interface CanonicalGraphParityResult {
+  readonly status: CanonicalGraphParityStatus;
+  readonly tier: BujoTier;
   readonly matches: boolean;
+  readonly issues: readonly CanonicalGraphParityIssue[];
+  readonly mutation: CanonicalGraphMutationState;
   readonly entities: CanonicalGraphParitySection;
   readonly relations: CanonicalGraphParitySection;
   readonly associations: CanonicalGraphParitySection;
 }
 
 /**
- * Compare canonical graph.jsonl with an already-open active index.
+ * Compare the active tier's canonical graph projection with an already-open index.
  *
- * This is provider-free and content-free: it performs local reads only and
- * returns aggregate mismatch counts suitable for health/CLI surfaces.
+ * The audit is provider-free and content-free. It fails closed on invalid
+ * canonical graph records, distinguishes admitted durable mutation from stable
+ * divergence, and retries one torn source/index observation before reporting.
  */
-export function auditCanonicalGraphParity(root: string, db: MemoryDb): CanonicalGraphParityResult {
-  const canonical = readGraph(root);
-  const active = db.canonicalGraphSnapshot();
-  const entities = compareEntities(canonical.entities, active.entities);
-  const relations = compareRelations(canonical.relations, active.relations);
-  const associations = compareAssociations(canonical.associations, active.associations);
+export function auditCanonicalGraphParity(
+  root: string,
+  db: MemoryDb,
+  options: CanonicalGraphParityOptions = {},
+): CanonicalGraphParityResult {
+  const resolvedTier = resolveTier(db, options);
+  if (resolvedTier.issue !== undefined) {
+    return invalidResult(resolvedTier.tier, resolvedTier.issue);
+  }
+  const tier = resolvedTier.tier;
+
+  for (let attempt = 1; attempt <= MAX_AUDIT_ATTEMPTS; attempt += 1) {
+    const mutationBefore = inspectMutation(root);
+    if (mutationBefore.issue !== undefined) return invalidResult(tier, mutationBefore.issue);
+    if (mutationInProgress(mutationBefore.state)) return inProgressResult(tier, mutationBefore.state);
+
+    let canonicalBefore: StrictCanonicalGraphSnapshot;
+    try {
+      canonicalBefore = canonicalSnapshotForTier(root, tier);
+    } catch (error) {
+      const transient = inspectMutation(root);
+      if (transient.issue !== undefined) return invalidResult(tier, transient.issue);
+      if (mutationInProgress(transient.state)) return inProgressResult(tier, transient.state);
+      if (attempt < MAX_AUDIT_ATTEMPTS) continue;
+      return invalidResult(tier, issueFromCanonicalError(error));
+    }
+
+    let active: CanonicalGraphSnapshot;
+    try {
+      active = db.canonicalGraphSnapshot();
+    } catch {
+      return invalidResult(tier, { code: "active-index-invalid" });
+    }
+
+    let canonicalAfter: StrictCanonicalGraphSnapshot;
+    try {
+      canonicalAfter = canonicalSnapshotForTier(root, tier);
+    } catch (error) {
+      const transient = inspectMutation(root);
+      if (transient.issue !== undefined) return invalidResult(tier, transient.issue);
+      if (mutationInProgress(transient.state)) return inProgressResult(tier, transient.state);
+      if (attempt < MAX_AUDIT_ATTEMPTS) continue;
+      return invalidResult(tier, issueFromCanonicalError(error));
+    }
+
+    const mutationAfter = inspectMutation(root);
+    if (mutationAfter.issue !== undefined) return invalidResult(tier, mutationAfter.issue);
+    if (mutationInProgress(mutationAfter.state)) return inProgressResult(tier, mutationAfter.state);
+    if (canonicalBefore.fingerprint !== canonicalAfter.fingerprint) {
+      if (attempt < MAX_AUDIT_ATTEMPTS) continue;
+      return inProgressResult(tier, { ...mutationAfter.state, sourceChanged: true });
+    }
+
+    let expected: CanonicalGraphProjection;
+    try {
+      expected = tier === "bujo"
+        ? projectCanonicalGraph(canonicalAfter.records, active.memories)
+        : emptyCanonicalGraphProjection();
+    } catch (error) {
+      if (attempt < MAX_AUDIT_ATTEMPTS) continue;
+      return invalidResult(tier, issueFromCanonicalError(error));
+    }
+
+    const entities = compareEntities(expected.entities, active.entities);
+    const relations = compareRelations(expected.relations, active.relations);
+    const associations = compareAssociations(expected.associations, active.associations);
+    const matches = sectionMatches(entities) && sectionMatches(relations) && sectionMatches(associations);
+    if (!matches && attempt < MAX_AUDIT_ATTEMPTS) continue;
+    return {
+      status: matches ? "match" : "mismatch",
+      tier,
+      matches,
+      issues: [],
+      mutation: noMutation(),
+      entities,
+      relations,
+      associations,
+    };
+  }
+
+  return inProgressResult(tier, { ...noMutation(), sourceChanged: true });
+}
+
+interface MutationInspection {
+  readonly state: CanonicalGraphMutationState;
+  readonly issue?: CanonicalGraphParityIssue;
+}
+
+function inspectMutation(root: string): MutationInspection {
+  try {
+    return {
+      state: {
+        capturePending: hasPendingCaptureIntent(root),
+        migrationPending: hasPendingMigrateDecision(root),
+        sourceChanged: false,
+      },
+    };
+  } catch {
+    return { state: noMutation(), issue: { code: "durable-state-invalid" } };
+  }
+}
+
+function canonicalSnapshotForTier(root: string, tier: BujoTier): StrictCanonicalGraphSnapshot {
+  if (tier === "bujo") return readCanonicalGraphStrictSnapshot(root);
+  return { fingerprint: `ignored:${tier}`, records: emptyCanonicalGraphProjection() };
+}
+
+function resolveTier(
+  db: MemoryDb,
+  options: CanonicalGraphParityOptions,
+): { readonly tier: BujoTier; readonly issue?: CanonicalGraphParityIssue } {
+  let managedTier: BujoTier | undefined;
+  try {
+    managedTier = db.indexMetadata()?.tier;
+  } catch {
+    return { tier: options.tier ?? "bujo", issue: { code: "active-index-invalid" } };
+  }
+  if (managedTier !== undefined && options.tier !== undefined && managedTier !== options.tier) {
+    return { tier: managedTier, issue: { code: "tier-conflict" } };
+  }
+  return { tier: managedTier ?? options.tier ?? "bujo" };
+}
+
+function invalidResult(tier: BujoTier, issue: CanonicalGraphParityIssue): CanonicalGraphParityResult {
   return {
-    matches: sectionMatches(entities) && sectionMatches(relations) && sectionMatches(associations),
-    entities,
-    relations,
-    associations,
+    status: "invalid",
+    tier,
+    matches: false,
+    issues: [issue],
+    mutation: noMutation(),
+    entities: emptySection(),
+    relations: emptySection(),
+    associations: emptySection(),
+  };
+}
+
+function inProgressResult(tier: BujoTier, mutation: CanonicalGraphMutationState): CanonicalGraphParityResult {
+  return {
+    status: "in_progress",
+    tier,
+    matches: false,
+    issues: [],
+    mutation,
+    entities: emptySection(),
+    relations: emptySection(),
+    associations: emptySection(),
+  };
+}
+
+function issueFromCanonicalError(error: unknown): CanonicalGraphParityIssue {
+  if (error instanceof CanonicalGraphValidationError) {
+    return {
+      code: error.code,
+      ...(error.line === undefined ? {} : { line: error.line }),
+    };
+  }
+  return { code: "canonical-read-failed" };
+}
+
+function mutationInProgress(state: CanonicalGraphMutationState): boolean {
+  return state.capturePending || state.migrationPending || state.sourceChanged;
+}
+
+function noMutation(): CanonicalGraphMutationState {
+  return { capturePending: false, migrationPending: false, sourceChanged: false };
+}
+
+function emptySection(): CanonicalGraphParitySection {
+  return {
+    canonical: 0,
+    active: 0,
+    matched: 0,
+    missing: 0,
+    extra: 0,
+    mismatched: 0,
+    payloadMismatches: 0,
+    timestampMismatches: 0,
+    provenanceMismatches: 0,
   };
 }
 

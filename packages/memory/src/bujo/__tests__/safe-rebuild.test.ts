@@ -134,6 +134,60 @@ describe("safe memory index rebuild", () => {
     }
   });
 
+  it("audits deterministic legacy-name associations as part of the BuJo projection", async () => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("M1", "Morgan owns the project.")]);
+    appendGraphBatch(root, {
+      entities: [{ id: "person:morgan", name: "Morgan", type: "person", createdAt: NOW }],
+    });
+
+    const result = await safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: embeddings("test:derived-graph-parity", 8),
+      dim: 8,
+    });
+    expect(result.derivedLegacyAssociations).toBe(1);
+    const db = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
+    try {
+      expect(auditCanonicalGraphParity(root, db)).toMatchObject({
+        status: "match",
+        tier: "bujo",
+        matches: true,
+        associations: { canonical: 1, active: 1, matched: 1, extra: 0 },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(["lite", "journal"] as const)("expects an empty graph projection for managed %s", async (tier) => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("M1", "Tier-specific graph projection.")]);
+    appendGraphBatch(root, {
+      entities: [{ id: "person:morgan", name: "Morgan", type: "person", createdAt: NOW }],
+    });
+
+    const result = await safeRebuildMemoryIndex({
+      root,
+      tier,
+      ...(tier === "journal"
+        ? { embeddings: embeddings("test:empty-tier-graph", 8), dim: 8 }
+        : {}),
+    });
+    const db = openMemoryDb({ path: result.active, readOnly: true, ...(tier === "journal" ? { dim: 8 } : {}) });
+    try {
+      expect(auditCanonicalGraphParity(root, db)).toMatchObject({
+        status: "match",
+        tier,
+        matches: true,
+        entities: { canonical: 0, active: 0, matched: 0, missing: 0 },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("replays an exact pending capture intent before taking the rebuild source snapshot", async () => {
     const root = tempRoot();
     const item = bullet("PENDING", "Morgan owns safe rebuild replay.");

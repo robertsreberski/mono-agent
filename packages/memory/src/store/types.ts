@@ -85,8 +85,12 @@ export interface MemoryEntityAssociation {
   readonly createdAt: string;
 }
 
-/** Complete canonical graph projection stored in the rebuildable index. */
+/** Memory fields used by the deterministic legacy graph projection. */
+export type CanonicalGraphMemoryRecord = Pick<MemoryRecord, "id" | "status" | "text" | "createdAt">;
+
+/** One transactionally consistent graph/parity snapshot from the rebuildable index. */
 export interface CanonicalGraphSnapshot {
+  readonly memories: readonly CanonicalGraphMemoryRecord[];
   readonly entities: readonly EntityRecord[];
   readonly relations: readonly EntityRelationRecord[];
   readonly associations: readonly MemoryEntityAssociation[];

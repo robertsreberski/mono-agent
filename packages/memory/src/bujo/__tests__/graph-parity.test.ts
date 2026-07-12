@@ -1,12 +1,13 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { openMemoryDb } from "../../store/index.js";
+import { writeCaptureIntent } from "../capture-outbox.js";
 import { auditCanonicalGraphParity } from "../graph-parity.js";
-import { appendGraphBatch } from "../graph.js";
+import { appendEntity, appendGraphBatch, readGraph } from "../graph.js";
 
 const CANONICAL_AT = "2026-01-01T00:00:00.000Z";
 const DRIFTED_AT = "2026-06-01T00:00:00.000Z";
@@ -47,8 +48,29 @@ describe("canonical graph parity", () => {
       createdAt: DRIFTED_AT,
     });
 
-    expect(auditCanonicalGraphParity(root, db)).toEqual({
+    let snapshots = 0;
+    const inspected = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === "canonicalGraphSnapshot") {
+          return () => {
+            snapshots += 1;
+            return target.canonicalGraphSnapshot();
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    expect(auditCanonicalGraphParity(root, inspected)).toEqual({
+      status: "mismatch",
+      tier: "bujo",
       matches: false,
+      issues: [],
+      mutation: {
+        capturePending: false,
+        migrationPending: false,
+        sourceChanged: false,
+      },
       entities: {
         canonical: 3,
         active: 3,
@@ -83,6 +105,7 @@ describe("canonical graph parity", () => {
         provenanceMismatches: 1,
       },
     });
+    expect(snapshots).toBe(2);
     db.close();
   });
 
@@ -114,9 +137,77 @@ describe("canonical graph parity", () => {
 
     const parity = auditCanonicalGraphParity(root, db);
     expect(parity.matches).toBe(true);
+    expect(parity.status).toBe("match");
     expect(parity.entities.matched).toBe(2);
     expect(parity.relations.matched).toBe(1);
     expect(parity.associations.matched).toBe(1);
+    db.close();
+  });
+
+  it.each([
+    ["malformed-json" as const, "{not-json}\n"],
+    ["unknown-kind" as const, `${JSON.stringify({ kind: "future-record", id: "x" })}\n`],
+  ])("fails closed with %s while compatibility reads remain permissive", (code, graph) => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-parity-invalid-"));
+    writeFileSync(join(root, "graph.jsonl"), graph, "utf8");
+    const db = openMemoryDb({ path: ":memory:" });
+
+    expect(readGraph(root)).toEqual({ entities: [], relations: [], associations: [] });
+    expect(auditCanonicalGraphParity(root, db)).toMatchObject({
+      status: "invalid",
+      matches: false,
+      issues: [{ code, line: 1 }],
+    });
+    db.close();
+  });
+
+  it("returns in_progress for an admitted durable capture instead of divergence", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-parity-pending-"));
+    writeCaptureIntent(root, [], {}, CANONICAL_AT);
+    const db = openMemoryDb({ path: ":memory:" });
+
+    expect(auditCanonicalGraphParity(root, db)).toMatchObject({
+      status: "in_progress",
+      matches: false,
+      mutation: {
+        capturePending: true,
+        migrationPending: false,
+        sourceChanged: false,
+      },
+    });
+    db.close();
+  });
+
+  it("retries a completed source/index interleaving instead of false-failing", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-parity-race-"));
+    const db = openMemoryDb({ path: ":memory:" });
+    const entity = { id: "person:morgan", name: "Morgan", createdAt: CANONICAL_AT };
+    let inject = true;
+    let snapshots = 0;
+    const interleaved = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === "canonicalGraphSnapshot") {
+          return () => {
+            snapshots += 1;
+            if (inject) {
+              inject = false;
+              appendEntity(root, entity);
+              target.mirrorCanonicalEntity(entity);
+            }
+            return target.canonicalGraphSnapshot();
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    expect(auditCanonicalGraphParity(root, interleaved)).toMatchObject({
+      status: "match",
+      matches: true,
+      entities: { canonical: 1, active: 1, matched: 1 },
+    });
+    expect(snapshots).toBe(2);
     db.close();
   });
 });

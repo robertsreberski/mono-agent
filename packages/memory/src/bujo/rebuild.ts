@@ -12,17 +12,21 @@ import BetterSqlite3 from "better-sqlite3";
 
 import { DEFAULT_VEC_DIM, openMemoryDb } from "../store/index.js";
 import type {
-  EntityRecord,
-  EntityRelationRecord,
   MemoryDb,
-  MemoryEntityAssociation,
   MemoryRecord,
 } from "../store/index.js";
 import type { EmbeddingProvider } from "../search/index.js";
 
 import { normalizedContentHash } from "./daily.js";
 import { parseDailyFile } from "./grammar.js";
-import { readGraph } from "./graph.js";
+import {
+  emptyCanonicalGraphProjection,
+  isLegacyHostObservation,
+  parseCanonicalGraphStrict,
+  projectCanonicalGraph,
+  readGraph,
+  type CanonicalGraphProjection,
+} from "./graph.js";
 import {
   assertNoPendingCaptureIntent,
   hasPendingCaptureIntent,
@@ -172,22 +176,10 @@ interface SourceSnapshot {
   readonly graph?: SourceFileSnapshot;
 }
 
-interface StrictGraph {
-  readonly entities: readonly EntityRecord[];
-  readonly relations: readonly EntityRelationRecord[];
-  readonly associations: readonly MemoryEntityAssociation[];
-  readonly collectionSupports: readonly {
-    readonly memoryId: string;
-    readonly entityId: string;
-    readonly collection: string;
-  }[];
-  readonly derivedLegacyAssociations: number;
-}
-
 interface BuildPlan {
   readonly records: readonly MemoryRecord[];
   readonly contentHashes: ReadonlyMap<string, string>;
-  readonly graph: StrictGraph;
+  readonly graph: CanonicalGraphProjection;
   readonly skippedRawRecords: number;
   readonly skippedUnstructuredRecords: number;
   readonly skippedMissingIdentityRecords: number;
@@ -719,7 +711,9 @@ function buildPlan(snapshot: SourceSnapshot, tier: BujoTier): BuildPlan {
     records.set(record.id, record);
   }
 
-  const graph = tier === "bujo" ? parseStrictGraph(snapshot.graph, records) : emptyGraph();
+  const graph = tier === "bujo"
+    ? projectCanonicalGraph(parseCanonicalGraphStrict(snapshot.graph?.bytes.toString("utf8")), [...records.values()])
+    : emptyCanonicalGraphProjection();
   for (const support of graph.collectionSupports) {
     const record = records.get(support.memoryId);
     if (record === undefined) throw new Error("memory-rebuild: collection support lost its memory endpoint.");
@@ -744,140 +738,6 @@ function buildPlan(snapshot: SourceSnapshot, tier: BujoTier): BuildPlan {
     legacySourceLocations,
     skippedJournalDuplicateRecords,
     parsedSourceItems,
-  };
-}
-
-function parseStrictGraph(source: SourceFileSnapshot | undefined, memories: ReadonlyMap<string, MemoryRecord>): StrictGraph {
-  if (source === undefined) return emptyGraph();
-  const entities = new Map<string, EntityRecord>();
-  const relations = new Map<string, EntityRelationRecord>();
-  const associations = new Map<string, MemoryEntityAssociation>();
-  const lines = source.bytes.toString("utf8").split("\n");
-  for (let index = 0; index < lines.length; index += 1) {
-    const raw = lines[index]?.trim() ?? "";
-    if (raw.length === 0) continue;
-    let value: unknown;
-    try {
-      value = JSON.parse(raw);
-    } catch {
-      throw new Error(`memory-rebuild: malformed graph JSON at graph.jsonl:${index + 1}.`);
-    }
-    if (!isRecord(value)) throw new Error(`memory-rebuild: graph record at line ${index + 1} is not an object.`);
-    if (value.kind === "entity") {
-      const entity = strictEntity(value, index + 1);
-      // graph.jsonl is an append log: validated later records update earlier
-      // names/types/summaries for the same stable entity id.
-      entities.set(entity.id, entity);
-    } else if (value.kind === "relation") {
-      const relation = strictRelation(value, index + 1);
-      relations.set(`${relation.src}\0${relation.dst}\0${relation.relation}`, relation);
-    } else if (value.kind === "association") {
-      const association = strictAssociation(value, index + 1);
-      associations.set(`${association.memoryId}\0${association.entityId}`, association);
-    } else {
-      throw new Error(`memory-rebuild: unknown graph kind at graph.jsonl:${index + 1}.`);
-    }
-  }
-  for (const relation of relations.values()) {
-    if (!entities.has(relation.src) || !entities.has(relation.dst)) {
-      throw new Error(`memory-rebuild: graph relation has an orphan endpoint (${relation.src} -> ${relation.dst}).`);
-    }
-  }
-  for (const association of associations.values()) {
-    if (!memories.has(association.memoryId) || !entities.has(association.entityId)) {
-      throw new Error(`memory-rebuild: graph association has an orphan endpoint (${association.memoryId} -> ${association.entityId}).`);
-    }
-  }
-  const collectionSupports: Array<{ memoryId: string; entityId: string; collection: string }> = [];
-  for (const memory of memories.values()) {
-    if (memory.status !== "migrated") continue;
-    const collectionAssociations = [...associations.values()].filter((association) => {
-      if (association.memoryId !== memory.id) return false;
-      return entities.get(association.entityId)?.type === "collection";
-    });
-    if (collectionAssociations.length > 1) {
-      throw new Error(`memory-rebuild: migrated memory ${memory.id} has ambiguous collection associations.`);
-    }
-    if (collectionAssociations.length === 0) continue;
-    const entityId = collectionAssociations[0]!.entityId;
-    const collection = entityId.startsWith("collection:") ? entityId.slice("collection:".length) : "";
-    if (collection.length === 0) {
-      throw new Error(`memory-rebuild: migrated memory ${memory.id} has an invalid collection entity.`);
-    }
-    collectionSupports.push({ memoryId: memory.id, entityId, collection });
-  }
-  let derivedLegacyAssociations = 0;
-  const uniqueNames = new Map<string, EntityRecord | undefined>();
-  for (const entity of entities.values()) {
-    const key = normalizedNameWords(entity.name).join("\0");
-    if (key.length === 0) continue;
-    uniqueNames.set(key, uniqueNames.has(key) ? undefined : entity);
-  }
-  const memoriesWithCanonicalAssociations = new Set(
-    [...associations.values()].map((association) => association.memoryId),
-  );
-  for (const memory of memories.values()) {
-    if (memoriesWithCanonicalAssociations.has(memory.id)) continue;
-    const memoryWords = normalizedNameWords(memory.text);
-    for (const [key, entity] of uniqueNames) {
-      if (entity === undefined) continue;
-      const words = key.split("\0");
-      if (!containsPhrase(memoryWords, words)) continue;
-      const associationKey = `${memory.id}\0${entity.id}`;
-      if (associations.has(associationKey)) continue;
-      associations.set(associationKey, {
-        memoryId: memory.id,
-        entityId: entity.id,
-        provenance: "legacy-name-match",
-        createdAt: memory.createdAt,
-      });
-      derivedLegacyAssociations += 1;
-    }
-  }
-  return {
-    entities: [...entities.values()],
-    relations: [...relations.values()],
-    associations: [...associations.values()],
-    collectionSupports,
-    derivedLegacyAssociations,
-  };
-}
-
-function strictEntity(value: Record<string, unknown>, line: number): EntityRecord {
-  const id = requiredString(value.id, "entity id", line);
-  const name = requiredString(value.name, "entity name", line);
-  const createdAt = requiredTimestamp(value.createdAt, "entity createdAt", line);
-  const type = optionalString(value.type);
-  const summary = optionalString(value.summary);
-  return {
-    id,
-    name,
-    createdAt,
-    ...(type === undefined ? {} : { type }),
-    ...(summary === undefined ? {} : { summary }),
-    ...(value.updatedAt === undefined ? {} : { updatedAt: requiredTimestamp(value.updatedAt, "entity updatedAt", line) }),
-  };
-}
-
-function strictRelation(value: Record<string, unknown>, line: number): EntityRelationRecord {
-  return {
-    src: requiredString(value.src, "relation src", line),
-    dst: requiredString(value.dst, "relation dst", line),
-    relation: requiredString(value.relation, "relation label", line),
-    createdAt: requiredTimestamp(value.createdAt, "relation createdAt", line),
-  };
-}
-
-function strictAssociation(value: Record<string, unknown>, line: number): MemoryEntityAssociation {
-  const provenance = value.provenance;
-  if (provenance !== "capture" && provenance !== "legacy-name-match") {
-    throw new Error(`memory-rebuild: invalid association provenance at graph.jsonl:${line}.`);
-  }
-  return {
-    memoryId: requiredString(value.memoryId, "association memoryId", line),
-    entityId: requiredString(value.entityId, "association entityId", line),
-    provenance,
-    createdAt: requiredTimestamp(value.createdAt, "association createdAt", line),
   };
 }
 
@@ -1496,27 +1356,6 @@ function readOnlyDb(path: string, descriptor: ManagedGeneration): MemoryDb {
   return openMemoryDb({ path, readOnly: true, dim: descriptor.dimension ?? DEFAULT_VEC_DIM });
 }
 
-function emptyGraph(): StrictGraph {
-  return { entities: [], relations: [], associations: [], collectionSupports: [], derivedLegacyAssociations: 0 };
-}
-
-function isLegacyHostObservation(text: string): boolean {
-  return text.startsWith("Host-observed completed turn.")
-    || text.startsWith("Host-observed completed trigger turn.");
-}
-
-function normalizedNameWords(text: string): string[] {
-  return text.normalize("NFKC").toLocaleLowerCase("en-US").match(/[\p{L}\p{N}]+/gu) ?? [];
-}
-
-function containsPhrase(haystack: readonly string[], needle: readonly string[]): boolean {
-  if (needle.length === 0 || needle.length > haystack.length) return false;
-  for (let index = 0; index <= haystack.length - needle.length; index += 1) {
-    if (needle.every((word, offset) => haystack[index + offset] === word)) return true;
-  }
-  return false;
-}
-
 function identityOf(path: string): { readonly dev: number; readonly ino: number; readonly size: number } {
   const stat = lstatSync(path);
   if (stat.isSymbolicLink()) throw new Error("memory-rebuild: identity target became a symlink.");
@@ -1630,23 +1469,6 @@ function memoryPayload(
       ? { ...(record.source.file === undefined ? {} : { file: record.source.file }) }
       : { ...record.source },
   };
-}
-
-function requiredString(value: unknown, label: string, line: number): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`memory-rebuild: missing ${label} at graph.jsonl:${line}.`);
-  }
-  return value;
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function requiredTimestamp(value: unknown, label: string, line: number): string {
-  const timestamp = requiredString(value, label, line);
-  if (!Number.isFinite(Date.parse(timestamp))) throw new Error(`memory-rebuild: invalid ${label} at graph.jsonl:${line}.`);
-  return timestamp;
 }
 
 const LEGACY_DAILY_FILE = /^\d{4}-\d{2}-\d{2}\.md$/u;

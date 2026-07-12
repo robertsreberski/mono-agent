@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { appendBullet, dailyFilePath, rewriteBullet } from "../daily.js";
 import { writeCaptureIntent } from "../capture-outbox.js";
+import { auditCanonicalGraphParity, type CanonicalGraphParityResult } from "../graph-parity.js";
 import { parseDailyFile } from "../grammar.js";
 import { readGraph } from "../graph.js";
 import { createIdFactory } from "../ids.js";
@@ -258,6 +259,33 @@ describe("migrate", () => {
       expect(() => assertNoPendingMigrateDecision(root)).not.toThrow();
     },
   );
+
+  it("reports an admitted durable migration as in_progress instead of graph divergence", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "MIG-PARITY", "migration parity transaction sentinel");
+    let observed: CanonicalGraphParityResult | undefined;
+
+    await expect(migrate(makeDeps(db, root, {
+      llm: { id: "migration-parity", complete: async () => JSON.stringify({ action: "promote" }) },
+      hooks: {
+        afterDecisionDurable: () => {
+          observed = auditCanonicalGraphParity(root, db);
+          throw new Error("leave-parity-migration-pending");
+        },
+      },
+    }))).rejects.toThrow("leave-parity-migration-pending");
+
+    expect(observed).toMatchObject({
+      status: "in_progress",
+      matches: false,
+      mutation: {
+        capturePending: false,
+        migrationPending: true,
+        sourceChanged: false,
+      },
+    });
+  });
 
   it("recovers a paid decision without providers while preserving newer access telemetry", async () => {
     const root = newRoot();
