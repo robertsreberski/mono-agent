@@ -54,6 +54,54 @@ const MEMORY_STATUSES = new Set([
   ...MEMORY_SKIP_STATUSES,
   ...MEMORY_FAIL_STATUSES,
 ]);
+const BUJO_MEMORY_STATUSES = new Set([
+  ...MEMORY_PASS_STATUSES,
+  ...MEMORY_WARN_STATUSES,
+  ...MEMORY_FAIL_STATUSES,
+]);
+const MEMORY_MODES = new Set(["lite", "journal", "bujo"]);
+const MEMORY_REPORT_KEYS = ["schemaVersion", "backend", "mode", "status", "checkedAt", "issues", "counts"];
+const MEMORY_REPORT_KEYS_WITHOUT_MODE = MEMORY_REPORT_KEYS.filter((key) => key !== "mode");
+const MEMORY_COUNT_KEYS = [
+  "pending",
+  "due",
+  "dead",
+  "outbox",
+  "temporary",
+  "memories",
+  "vectors",
+  "missingVectors",
+];
+// Frozen by packages/memory/src/bujo/audit.ts. The producer emits issue codes
+// in this order, so accepting a reordered or duplicated list would widen the
+// supposedly closed fleet boundary beyond the CLI contract.
+const MEMORY_ISSUE_CODES = [
+  "manifest_missing",
+  "manifest_invalid",
+  "configured_identity_mismatch",
+  "database_missing",
+  "database_unavailable",
+  "native_module_unavailable",
+  "sqlite_integrity_failed",
+  "metadata_mismatch",
+  "fts_mismatch",
+  "vector_mismatch",
+  "orphaned_rows",
+  "canonical_mismatch",
+  "canonical_invalid",
+  "mutation_in_progress",
+  "intake_invalid",
+  "intake_pending",
+  "dead_letters",
+  "outbox_invalid",
+  "outbox_pending",
+  "temporary_artifacts",
+  "runtime_missing",
+  "runtime_stale",
+  "runtime_invalid",
+];
+const MEMORY_ISSUE_INDEX = new Map(MEMORY_ISSUE_CODES.map((code, index) => [code, index]));
+const ISO_INSTANT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/u;
 
 // The ONLY failure kind treated as fleet-normal: a transient provider failover
 // (this is #136's "healthy failover" resilience evidence). Every OTHER kind in
@@ -325,10 +373,10 @@ function evaluateValidate(validate) {
   return { status: "fail", note: "validate reported errors" };
 }
 
-/** Parse the strict memory result even on exit 1, then enforce the frozen status/exit contract. */
+/** Parse the strict memory result even on exit 1, then enforce the full frozen contract. */
 export function parseMemoryAudit(text, exitCode) {
   const report = parseJsonObject(text);
-  if (report === null || report.schemaVersion !== 1 || typeof report.status !== "string" || !MEMORY_STATUSES.has(report.status)) {
+  if (report === null || !isStrictMemoryReport(report)) {
     return { ran: true, malformed: true };
   }
   const expectedExit = MEMORY_FAIL_STATUSES.has(report.status) ? 1 : 0;
@@ -336,6 +384,98 @@ export function parseMemoryAudit(text, exitCode) {
     return { ran: true, malformed: true };
   }
   return { ran: true, status: report.status };
+}
+
+function isStrictMemoryReport(report) {
+  if (report.schemaVersion !== 1
+    || typeof report.backend !== "string"
+    || typeof report.status !== "string"
+    || !MEMORY_STATUSES.has(report.status)
+    || !isValidIsoInstant(report.checkedAt)
+    || !isClosedIssueList(report.issues)
+    || !isClosedMemoryCounts(report.counts)) {
+    return false;
+  }
+
+  if (report.backend === "bujo") {
+    return hasExactKeys(report, MEMORY_REPORT_KEYS)
+      && typeof report.mode === "string"
+      && MEMORY_MODES.has(report.mode)
+      && BUJO_MEMORY_STATUSES.has(report.status);
+  }
+  if (report.backend === "none") {
+    return hasExactKeys(report, MEMORY_REPORT_KEYS_WITHOUT_MODE)
+      && report.status === "not_configured"
+      && report.issues.length === 0;
+  }
+  if (report.backend === "supermemory") {
+    return hasExactKeys(report, MEMORY_REPORT_KEYS_WITHOUT_MODE)
+      && report.status === "unknown"
+      && report.issues.length === 0;
+  }
+  return false;
+}
+
+function hasExactKeys(record, expectedKeys) {
+  const actualKeys = Object.keys(record);
+  return actualKeys.length === expectedKeys.length
+    && expectedKeys.every((key) => Object.hasOwn(record, key));
+}
+
+function isClosedIssueList(value) {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  let previousIndex = -1;
+  for (const issue of value) {
+    if (typeof issue !== "string") {
+      return false;
+    }
+    const index = MEMORY_ISSUE_INDEX.get(issue);
+    if (index === undefined || index <= previousIndex) {
+      return false;
+    }
+    previousIndex = index;
+  }
+  return true;
+}
+
+function isClosedMemoryCounts(value) {
+  return isRecord(value)
+    && hasExactKeys(value, MEMORY_COUNT_KEYS)
+    && MEMORY_COUNT_KEYS.every((key) => Number.isSafeInteger(value[key]) && value[key] >= 0);
+}
+
+function isValidIsoInstant(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const match = ISO_INSTANT_PATTERN.exec(value);
+  if (match === null) {
+    return false;
+  }
+  const year = Number.parseInt(match[1], 10);
+  const month = Number.parseInt(match[2], 10);
+  const day = Number.parseInt(match[3], 10);
+  const hour = Number.parseInt(match[4], 10);
+  const minute = Number.parseInt(match[5], 10);
+  const second = Number.parseInt(match[6], 10);
+  const offsetHour = match[9] === undefined ? 0 : Number.parseInt(match[9], 10);
+  const offsetMinute = match[10] === undefined ? 0 : Number.parseInt(match[10], 10);
+  if (month < 1 || month > 12
+    || day < 1 || day > daysInMonth(year, month)
+    || hour > 23 || minute > 59 || second > 59
+    || offsetHour > 23 || offsetMinute > 59) {
+    return false;
+  }
+  return Number.isFinite(Date.parse(value));
+}
+
+function daysInMonth(year, month) {
+  if (month === 2) {
+    return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28;
+  }
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
 }
 
 export function evaluateMemory(memory) {

@@ -19,6 +19,42 @@ const DATE = "2026-07-07";
 const SHA = "0e35c86d1122334455667788990011223344abcd";
 const NODE = "/opt/node-24.15.0/bin/node";
 const CLI = "/Users/example/mono-agent/packages/agent-app/dist/cli.js";
+const MEMORY_CHECKED_AT = "2026-07-12T08:00:00.000Z";
+const EMPTY_MEMORY_COUNTS = Object.freeze({
+  pending: 0,
+  due: 0,
+  dead: 0,
+  outbox: 0,
+  temporary: 0,
+  memories: 0,
+  vectors: 0,
+  missingVectors: 0,
+});
+
+function strictMemoryReport({
+  backend = "bujo",
+  mode = backend === "bujo" ? "lite" : undefined,
+  status = backend === "none" ? "not_configured" : backend === "supermemory" ? "unknown" : "healthy",
+  checkedAt = MEMORY_CHECKED_AT,
+  issues = [],
+  counts = EMPTY_MEMORY_COUNTS,
+} = {}) {
+  return {
+    schemaVersion: 1,
+    backend,
+    ...(mode === undefined ? {} : { mode }),
+    status,
+    checkedAt,
+    issues,
+    counts: { ...counts },
+  };
+}
+
+function strictMemoryJson(status) {
+  return JSON.stringify(strictMemoryReport(status === "not_configured"
+    ? { backend: "none", status }
+    : { status }));
+}
 
 function service({ found = true, pid = 4242, lastExitStatus = 0 } = {}) {
   return { found, pid, lastExitStatus };
@@ -122,8 +158,6 @@ describe("runtime health", () => {
 });
 
 describe("strict memory health", () => {
-  const valid = (status) => JSON.stringify({ schemaVersion: 1, status });
-
   it.each([
     ["healthy", 0, "pass"],
     ["in_progress", 0, "warn"],
@@ -132,24 +166,138 @@ describe("strict memory health", () => {
     ["unhealthy", 1, "fail"],
     ["unknown", 1, "fail"],
   ])("classifies %s from its contract exit", (status, exitCode, expected) => {
-    const parsed = parseMemoryAudit(valid(status), exitCode);
+    const parsed = parseMemoryAudit(strictMemoryJson(status), exitCode);
     expect(parsed).toEqual({ ran: true, status });
     expect(evaluateMemory(parsed).status).toBe(expected);
     expect(evaluateMemory(parsed).memoryStatus).toBe(status);
   });
 
   it.each([
+    [strictMemoryReport({ mode: "lite" }), 0, "healthy"],
+    [strictMemoryReport({ mode: "journal", status: "in_progress", issues: ["mutation_in_progress"] }), 0, "in_progress"],
+    [strictMemoryReport({ mode: "bujo", status: "degraded", issues: ["runtime_stale"] }), 1, "degraded"],
+    [strictMemoryReport({ backend: "none" }), 0, "not_configured"],
+    [strictMemoryReport({ backend: "supermemory" }), 1, "unknown"],
+  ])("accepts the complete closed backend report %#", (report, exitCode, status) => {
+    expect(parseMemoryAudit(JSON.stringify(report), exitCode)).toEqual({ ran: true, status });
+  });
+
+  it("accepts a real ISO instant with an explicit offset", () => {
+    const report = strictMemoryReport({ checkedAt: "2026-07-12T10:00:00+02:00" });
+    expect(parseMemoryAudit(JSON.stringify(report), 0)).toEqual({ ran: true, status: "healthy" });
+  });
+
+  it.each([
     ["non-JSON", 1],
     [JSON.stringify({ schemaVersion: 1 }), 0],
-    [JSON.stringify({ schemaVersion: 1, status: "invented" }), 1],
-    [JSON.stringify({ schemaVersion: 2, status: "healthy" }), 0],
-    [valid("degraded"), 0],
-    [valid("healthy"), 1],
-    [valid("healthy"), 2],
+    [JSON.stringify({ ...strictMemoryReport(), status: "invented" }), 1],
+    [JSON.stringify({ ...strictMemoryReport(), schemaVersion: 2 }), 0],
+    [strictMemoryJson("degraded"), 0],
+    [strictMemoryJson("healthy"), 1],
+    [strictMemoryJson("healthy"), 2],
   ])("fails closed on malformed output/exit %#", (json, exitCode) => {
     const parsed = parseMemoryAudit(json, exitCode);
     expect(parsed).toEqual({ ran: true, malformed: true });
     expect(evaluateMemory(parsed)).toMatchObject({ status: "fail", memoryStatus: "malformed" });
+  });
+
+  it.each(["schemaVersion", "backend", "mode", "status", "checkedAt", "issues", "counts"])(
+    "rejects a built-in report missing %s",
+    (field) => {
+      const report = strictMemoryReport();
+      delete report[field];
+      expect(parseMemoryAudit(JSON.stringify(report), 0)).toEqual({ ran: true, malformed: true });
+    },
+  );
+
+  it("rejects extra top-level fields and never retains their secret-bearing values", () => {
+    const secret = "ya29.extra-field-secret";
+    const parsed = parseMemoryAudit(JSON.stringify({ ...strictMemoryReport(), diagnostics: { token: secret } }), 0);
+    expect(parsed).toEqual({ ran: true, malformed: true });
+    expect(JSON.stringify(parsed)).not.toContain(secret);
+  });
+
+  it.each([
+    ["unknown backend", { backend: "unknown" }, 1],
+    ["invalid bujo mode", { mode: "full" }, 0],
+    ["not-configured bujo", { status: "not_configured" }, 0],
+    ["none with a mode", { backend: "none", mode: "lite", status: "not_configured" }, 0],
+    ["healthy none", { backend: "none", mode: undefined, status: "healthy" }, 0],
+    ["supermemory with a mode", { backend: "supermemory", mode: "lite", status: "unknown" }, 1],
+    ["not-configured supermemory", { backend: "supermemory", mode: undefined, status: "not_configured" }, 0],
+  ])("rejects invalid backend/status/mode combination: %s", (_label, values, exitCode) => {
+    expect(parseMemoryAudit(JSON.stringify(strictMemoryReport(values)), exitCode)).toEqual({ ran: true, malformed: true });
+  });
+
+  it("rejects a built-in report without its required mode", () => {
+    const report = strictMemoryReport();
+    delete report.mode;
+    expect(parseMemoryAudit(JSON.stringify(report), 0)).toEqual({ ran: true, malformed: true });
+  });
+
+  it.each([
+    ["not a timestamp", "not-a-timestamp"],
+    ["date only", "2026-07-12"],
+    ["impossible day", "2026-02-30T08:00:00.000Z"],
+    ["non-leap February", "2025-02-29T08:00:00.000Z"],
+    ["invalid hour", "2026-07-12T24:00:00.000Z"],
+    ["invalid offset", "2026-07-12T08:00:00+24:00"],
+  ])("rejects invalid checkedAt: %s", (_label, checkedAt) => {
+    const report = strictMemoryReport({ checkedAt });
+    expect(parseMemoryAudit(JSON.stringify(report), 0)).toEqual({ ran: true, malformed: true });
+  });
+
+  it.each([
+    ["not an array", "manifest_missing"],
+    ["unknown code", ["secret_provider_error"]],
+    ["non-string code", [1]],
+    ["duplicate code", ["manifest_missing", "manifest_missing"]],
+    ["non-canonical order", ["database_missing", "manifest_missing"]],
+  ])("rejects an invalid issues field: %s", (_label, issues) => {
+    const report = strictMemoryReport({ issues });
+    expect(parseMemoryAudit(JSON.stringify(report), 0)).toEqual({ ran: true, malformed: true });
+  });
+
+  it("accepts the complete issue vocabulary in canonical producer order", () => {
+    const issues = [
+      "manifest_missing",
+      "manifest_invalid",
+      "configured_identity_mismatch",
+      "database_missing",
+      "database_unavailable",
+      "native_module_unavailable",
+      "sqlite_integrity_failed",
+      "metadata_mismatch",
+      "fts_mismatch",
+      "vector_mismatch",
+      "orphaned_rows",
+      "canonical_mismatch",
+      "canonical_invalid",
+      "mutation_in_progress",
+      "intake_invalid",
+      "intake_pending",
+      "dead_letters",
+      "outbox_invalid",
+      "outbox_pending",
+      "temporary_artifacts",
+      "runtime_missing",
+      "runtime_stale",
+      "runtime_invalid",
+    ];
+    expect(parseMemoryAudit(JSON.stringify(strictMemoryReport({ status: "unhealthy", issues })), 1))
+      .toEqual({ ran: true, status: "unhealthy" });
+  });
+
+  it.each([
+    ["missing count", ({ missingVectors: _omitted, ...counts }) => counts],
+    ["extra count", (counts) => ({ ...counts, secretBytes: 1 })],
+    ["negative count", (counts) => ({ ...counts, pending: -1 })],
+    ["fractional count", (counts) => ({ ...counts, due: 0.5 })],
+    ["unsafe count", (counts) => ({ ...counts, memories: Number.MAX_SAFE_INTEGER + 1 })],
+    ["numeric string", (counts) => ({ ...counts, vectors: "0" })],
+  ])("rejects invalid closed counts: %s", (_label, mutate) => {
+    const report = strictMemoryReport({ counts: mutate(EMPTY_MEMORY_COUNTS) });
+    expect(parseMemoryAudit(JSON.stringify(report), 0)).toEqual({ ran: true, malformed: true });
   });
 });
 
@@ -408,7 +556,7 @@ describe("runFleetGreenCheck (orchestration)", () => {
       if (command === "git") return { status: 0, stdout: `${SHA}\n`, stderr: "" };
       if (command === NODE && args[0] === "-p") return overrides.runtime ?? { status: 0, stdout: '{"node":"24.15.0","abi":"137"}\n', stderr: "" };
       if (command === NODE && args.includes("validate")) return overrides.validate ?? { status: 0, stdout: '{"ok":true}\n', stderr: "" };
-      if (command === NODE && args.includes("memory")) return overrides.memory ?? { status: 0, stdout: '{"schemaVersion":1,"status":"healthy"}\n', stderr: "" };
+      if (command === NODE && args.includes("memory")) return overrides.memory ?? { status: 0, stdout: `${strictMemoryJson("healthy")}\n`, stderr: "" };
       if (command === NODE && args.includes("metrics")) return overrides.metrics ?? { status: 0, stdout: metricsJson, stderr: "" };
       if (command === "gh") return overrides.gh ?? { status: 0, stdout: "https://github.com/comment/1\n", stderr: "" };
       return { status: 1, stdout: "", stderr: "unexpected" };
@@ -472,12 +620,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
   });
 
   it("parses an exit-1 strict memory report and renders the closed degraded status", async () => {
-    const secret = "should-never-appear";
     const { runCommand } = fakeRunner({
       memory: {
         status: 1,
-        stdout: JSON.stringify({ schemaVersion: 1, status: "degraded", arbitrary: secret }),
-        stderr: `provider token ${secret}`,
+        stdout: JSON.stringify(strictMemoryReport({ status: "degraded", issues: ["runtime_stale"] })),
+        stderr: "provider-specific diagnostic intentionally ignored",
       },
     });
     const out = sink();
@@ -492,7 +639,31 @@ describe("runFleetGreenCheck (orchestration)", () => {
     });
     expect(result.exitCode).toBe(1);
     expect(out.text).toContain("| degraded |");
-    expect(out.text).not.toContain(secret);
+  });
+
+  it("rejects a secret-bearing extra memory field without emitting its value", async () => {
+    const secret = "ya29.should-never-appear";
+    const { runCommand } = fakeRunner({
+      memory: {
+        status: 0,
+        stdout: JSON.stringify({ ...strictMemoryReport(), diagnostic: { accessToken: secret } }),
+        stderr: `provider token ${secret}`,
+      },
+    });
+    const out = sink();
+    const err = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: out,
+      stderr: err,
+      runCommand,
+      launchAgentsDir: "/fake/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain("| malformed |");
+    expect(`${out.text}${err.text}`).not.toContain(secret);
   });
 
   it("fails runtime mismatch by default and accepts explicit expected runtime flags", async () => {
