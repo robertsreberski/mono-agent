@@ -27,6 +27,7 @@ import type {
   TelegramVideoNote,
   TelegramVoice,
 } from "./types.js";
+import { redactTelegramErrorMessage } from "./log-redaction.js";
 
 export type TelegramAttachmentKind =
   | "document"
@@ -737,7 +738,7 @@ export async function downloadTelegramAttachments(
       logger?.warn?.("Failed to download Telegram attachment; skipping it.", {
         fileId: source.fileId,
         name: source.name,
-        error: error instanceof Error ? error.message : String(error),
+        error: redactTelegramErrorMessage(error),
       });
     }
   }
@@ -820,7 +821,7 @@ async function transcribeAttachment(input: {
     input.logger?.warn?.("Failed to transcribe Telegram audio; inlining the fallback note.", {
       fileId: input.source.fileId,
       name: input.source.name,
-      error: error instanceof Error ? error.message : String(error),
+      error: redactTelegramErrorMessage(error),
     });
     return TELEGRAM_TRANSCRIPTION_UNAVAILABLE_NOTE;
   }
@@ -899,7 +900,7 @@ export async function finishSafely(
     await stream.finish(text, { format: false });
   } catch (error) {
     logger?.error?.("Failed to send Telegram terminal stream message.", {
-      error: error instanceof Error ? error.message : String(error),
+      error: redactTelegramErrorMessage(error),
     });
   }
 }
@@ -925,7 +926,7 @@ export async function resolveErrorText(input: {
     input.logger?.warn?.("Telegram adapter error text callback returned empty text.");
   } catch (error) {
     input.logger?.error?.("Telegram adapter error text callback failed.", {
-      error: error instanceof Error ? error.message : String(error),
+      error: redactTelegramErrorMessage(error),
     });
   }
 

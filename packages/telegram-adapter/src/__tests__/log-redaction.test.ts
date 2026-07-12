@@ -1,0 +1,54 @@
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  createSecretSafeTelegramLogger,
+  redactTelegramError,
+  redactTelegramSecretText,
+} from "../log-redaction.js";
+
+const TOKEN = "123456789:AAExampleSecret_0123456789abcdef";
+const API_URL = `https://api.telegram.org/bot${TOKEN}/getUpdates`;
+const FILE_URL = `https://api.telegram.org/file/bot${TOKEN}/voice/file.ogg`;
+
+describe("Telegram log redaction", () => {
+  it("redacts configured tokens and Bot API URL tokens", () => {
+    expect(redactTelegramSecretText(`token=${TOKEN} api=${API_URL} file=${FILE_URL}`, [TOKEN]))
+      .not.toContain(TOKEN);
+  });
+
+  it("sanitizes nested errors, causes, request objects, URLs, and stacks before logging", () => {
+    const error = Object.assign(new Error(`poll failed at ${API_URL}`, {
+      cause: {
+        request: { url: new URL(FILE_URL), authorization: `Bearer ${TOKEN}` },
+      },
+    }), {
+      request: { url: API_URL, token: TOKEN },
+    });
+    const sink = vi.fn();
+    const logger = createSecretSafeTelegramLogger({ error: sink }, [TOKEN]);
+
+    logger?.error?.(`Telegram polling failed for ${TOKEN}`, { error, url: FILE_URL });
+
+    const serialized = JSON.stringify(sink.mock.calls);
+    expect(serialized).not.toContain(TOKEN);
+    expect(serialized).toContain("[REDACTED_TELEGRAM_BOT_TOKEN]");
+    expect(serialized).toContain("poll failed");
+  });
+
+  it("returns a secret-safe Error for host callbacks", () => {
+    const failure = Object.assign(new Error(`poll failed at ${API_URL}`, {
+      cause: { url: FILE_URL, token: TOKEN },
+    }), {
+      request: { url: API_URL },
+    });
+
+    const safe = redactTelegramError(failure, [TOKEN]);
+
+    expect(safe).toBeInstanceOf(Error);
+    expect(safe.message).toContain("poll failed");
+    expect(safe.message).not.toContain(TOKEN);
+    expect(safe.stack).not.toContain(TOKEN);
+    expect(JSON.stringify(safe)).not.toContain(TOKEN);
+    expect(JSON.stringify((safe as Error & { cause?: unknown }).cause)).not.toContain(TOKEN);
+  });
+});

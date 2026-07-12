@@ -1,5 +1,7 @@
 import {
+  createChannelUserCancelReason,
   isAgentResponseCancelledError,
+  isChannelUserCancelReason,
   type AgentAttachment,
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
@@ -590,13 +592,14 @@ export class SlackAdapter {
     // slack: thread id.
     const conversationId = await this.resolveConversationId(event);
     if (command?.name === "cancel") {
+      const reason = createChannelUserCancelReason("Slack");
       // Clear any queued follow-ups for the conversation (the harness owns the
       // queue) and abort every in-flight controller for this thread.
-      this.responder.cancel?.(conversationId, new Error("Cancelled by Slack user."));
+      this.responder.cancel?.(conversationId, reason);
       const controllers = this.activeControllers.get(runKey);
       if (controllers !== undefined) {
         for (const controller of controllers) {
-          controller.abort(new Error("Cancelled by Slack user."));
+          controller.abort(reason);
         }
       }
       await this.api.chatPostMessage({
@@ -1113,13 +1116,13 @@ export class SlackAdapter {
     try {
       await stream.status(this.streamOptions.initialStatusText ?? "Thinking...");
       if (controller.signal.aborted) {
-        await stream.finish(this.messages.cancelledText);
+        await this.finishCancelledUnlessAcknowledged(stream, controller.signal);
         return { kind: "cancelled", eventId: event.eventId, channelId: event.channelId };
       }
 
       const attachments = await this.downloadAttachments(event.files, controller.signal);
       if (controller.signal.aborted) {
-        await stream.finish(this.messages.cancelledText);
+        await this.finishCancelledUnlessAcknowledged(stream, controller.signal);
         return { kind: "cancelled", eventId: event.eventId, channelId: event.channelId };
       }
 
@@ -1136,7 +1139,7 @@ export class SlackAdapter {
       const response = await this.responder.respond(request, stream);
 
       if (controller.signal.aborted) {
-        await stream.finish(this.messages.cancelledText);
+        await this.finishCancelledUnlessAcknowledged(stream, controller.signal);
         return { kind: "cancelled", eventId: event.eventId, channelId: event.channelId };
       }
 
@@ -1154,7 +1157,7 @@ export class SlackAdapter {
       return result;
     } catch (error) {
       if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
-        await finishSafely(stream, this.messages.cancelledText, this.logger);
+        await this.finishCancelledUnlessAcknowledged(stream, controller.signal, error);
         return { kind: "cancelled", eventId: event.eventId, channelId: event.channelId };
       }
 
@@ -1165,6 +1168,19 @@ export class SlackAdapter {
       return { kind: "error", eventId: event.eventId, channelId: event.channelId, error };
     } finally {
       this.unregisterController(runKey, controller);
+    }
+  }
+
+  private async finishCancelledUnlessAcknowledged(
+    stream: SlackMessageStream,
+    signal: AbortSignal,
+    error?: unknown,
+  ): Promise<void> {
+    const acknowledgedByCommand =
+      isChannelUserCancelReason(signal.reason) ||
+      (isAgentResponseCancelledError(error) && isChannelUserCancelReason(error.reason));
+    if (!acknowledgedByCommand) {
+      await finishSafely(stream, this.messages.cancelledText, this.logger);
     }
   }
 
