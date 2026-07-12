@@ -1096,11 +1096,12 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     ? options.sessionId
     : null;
   const prompt = promptFromMessages(options.messages);
-  // Effort is expected to be pre-normalized by core/ai.js#generateResponse
-  // before reaching this provider. We trust options.effort verbatim.
-  const normalizedEffort = typeof options.effort === "string" && options.effort.trim()
+  // Effort arrives pre-normalized; codex has no "max" reasoning tier, so clamp
+  // to its ceiling here instead of failing the app-server turn.
+  const requestedEffort = typeof options.effort === "string" && options.effort.trim()
     ? options.effort
     : null;
+  const normalizedEffort = requestedEffort === "max" ? "xhigh" : requestedEffort;
   const events = [];
   const texts = [];
   const agentTextByItem = new Map();

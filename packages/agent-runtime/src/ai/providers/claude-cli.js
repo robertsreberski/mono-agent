@@ -427,9 +427,8 @@ export function buildCliCommand({
   nativeSubagents,
   contextWindow,
 }) {
-  // Effort is expected to be pre-normalized by core/ai.js#generateResponse
-  // before reaching this provider. Direct callers of buildCliCommand must
-  // pass an already-normalized reasoning level (low/medium/high/xhigh/none).
+  // Effort arrives pre-normalized (low/medium/high/xhigh/max/none); per-CLI
+  // ceilings are clamped below rather than by callers.
   const normalizedEffort = typeof effort === "string" && effort.trim() ? effort : null;
   if (sdk === "claude-code") {
     const nativeAgents = claudeNativeAgentDefinitions(nativeSubagents);
@@ -491,8 +490,10 @@ export function buildCliCommand({
   if (permissionMode === "bypassPermissions") args.push("--dangerously-bypass-approvals-and-sandbox");
   else if (permissionMode === "acceptEdits" || permissionMode === "auto") args.push("--full-auto");
   else if (permissionMode === "plan") args.push("--sandbox", "read-only");
-  if (normalizedEffort) args.push("--config", `model_reasoning_effort=${normalizedEffort}`);
-  if (normalizedEffort !== "none") args.push("--config", `model_reasoning_summary=${tomlValue("auto")}`);
+  // codex has no "max" reasoning tier; clamp to its ceiling instead of crashing the CLI.
+  const codexEffort = normalizedEffort === "max" ? "xhigh" : normalizedEffort;
+  if (codexEffort) args.push("--config", `model_reasoning_effort=${codexEffort}`);
+  if (codexEffort !== "none") args.push("--config", `model_reasoning_summary=${tomlValue("auto")}`);
   if (hasEntries(mcpServers)) args.push(...codexMcpConfigArgs(mcpServers));
   args.push([systemPrompt, prompt].filter((part) => String(part || "").trim()).join("\n\n"));
   return { command: "codex", args, cwd };
