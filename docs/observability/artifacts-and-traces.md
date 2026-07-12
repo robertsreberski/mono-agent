@@ -193,14 +193,37 @@ Keep `staleAfterMs` comfortably larger than `heartbeatMs` (the defaults give a 3
 
 `mono-agent start` prints the active traceability source — Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts — and `mono-agent status` reads the registry to report each known source as live or stale. See the [CLI reference](/observability/cli-reference/) for the full command surface, and [Phoenix export & backfill](/observability/phoenix-and-backfill/) for sending these same events to a trace viewer.
 
-The launchd fleet green check does not trust the interactive shell runtime. For each service it
-reads the plist's exact Node executable, CLI path, absolute `--config`/`--env-file` arguments,
-and managed `PATH`, then uses those values for the Node/ABI probe, `validate --json`,
-`memory audit --strict --json`, and `metrics --json`. Probe children retain only non-secret,
-launchd-safe operational environment values; shell-only `MONO_AGENT_*`, provider credentials,
-`NODE_OPTIONS`, and proxy overrides cannot make the check pass. Probes have hard timeouts and
-their closed memory status/issue/count relationships are validated before a fleet verdict. The
-current fleet contract is Node `24.15.0` and modules ABI `137`; running those probes with ambient
-Node, config, or credentials cannot prove that the deployed service can load its native SQLite modules.
+The launchd fleet green check does not trust the interactive shell runtime. Generic mode discovers
+every matching plist present; a host gate can pass `--expect-labels <csv>` to require an exact
+duplicate-free set, so a removed or added fleet plist drives RED. Discovery requires a canonical
+filename/`Label` match, whitespace-free `ProgramArguments`, and absolute executable/config paths. It
+invokes `/usr/bin/plutil` and `/bin/launchctl` with a closed system environment, then reads each
+service's exact Node executable, CLI path, absolute `--config`/`--env-file` arguments, and managed `PATH` for
+the Node/ABI, build-marker, `validate --json`, `memory audit --strict --json`, and `metrics --json`
+probes. It also requires a running PID whose actual argv and cwd exactly match the plist contract.
+On supported POSIX/macOS hosts, the root build holds an exclusive lock from before clearing the old
+marker through package/demo build, output sync, deterministic output-digest calculation, and atomic
+owner-only marker publication.
+
+For every running PID, the check requires the build lock to be absent, the checkout to be clean and
+stable across both reads, and the marker's full SHA to match both that checkout and the full
+per-instance expected SHA. Marker Node/ABI must match the runtime, its output digest must match a
+fresh digest of the current deploy outputs, and the process must have started after build completion.
+It repeats the marker, digest, and checkout-state probes, then performs a global final launchd
+PID/state pass after every expensive row completes. This closes build, mutation, checkout, and
+early-row restart races. Every expected fleet service must be running; a clean prior exit is not
+green.
+
+Probe children retain only non-secret, launchd-safe operational environment values; shell-only
+`MONO_AGENT_*`, provider credentials, `NODE_OPTIONS`, and proxy overrides cannot make the check
+pass. Probes have hard timeouts, marker failures collapse to closed diagnostics, and closed memory
+status/issue/count relationships are validated before a fleet verdict. The current fleet contract
+is Node `24.15.0` and modules ABI `137`; running those probes with ambient Node, config, credentials,
+or a checkout HEAD alone cannot prove that the deployed process loaded the current native build.
+Reports expose only closed states and counts: they never include marker bytes, absolute paths,
+process arguments, working directories, or other raw probe output. A multi-checkout warning states
+only how many deploy checkouts were found. The marker is POSIX/macOS deploy proof; builds on
+unsupported hosts complete normally without publishing it. A stale lock may be removed only after
+an operator confirms that no root build remains active.
 
 To wire any of this up from code rather than config (custom hosts, embedding the runtime), see [Programmatic usage](/programmatic/).
