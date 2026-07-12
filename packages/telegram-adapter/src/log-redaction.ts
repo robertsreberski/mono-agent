@@ -1,6 +1,17 @@
 const REDACTED_TELEGRAM_TOKEN = "[REDACTED_TELEGRAM_BOT_TOKEN]";
+const REDACTED_BEARER = "[REDACTED_BEARER_CREDENTIAL]";
 const TELEGRAM_URL_TOKEN_PATTERN = /(\/file\/bot|\/bot)([^/?#\s]+)/giu;
 const TELEGRAM_TOKEN_PATTERN = /\b\d{5,}:[A-Za-z0-9_-]{8,}\b/gu;
+const BEARER_CREDENTIAL_PATTERN = /\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/giu;
+const SECRET_QUERY_PATTERN = /([?&](?:access_token|auth_token|api_key|token)=)[^&#\s]+/giu;
+const SENSITIVE_LOG_KEYS = new Set([
+  "authorization",
+  "proxy-authorization",
+  "x-api-key",
+  "api-key",
+  "cookie",
+  "set-cookie",
+]);
 
 export interface TelegramLogSink {
   debug?(message: string, metadata?: Record<string, unknown>): void;
@@ -23,7 +34,9 @@ export function redactTelegramSecretText(
   }
   return redacted
     .replace(TELEGRAM_URL_TOKEN_PATTERN, `$1${REDACTED_TELEGRAM_TOKEN}`)
-    .replace(TELEGRAM_TOKEN_PATTERN, REDACTED_TELEGRAM_TOKEN);
+    .replace(TELEGRAM_TOKEN_PATTERN, REDACTED_TELEGRAM_TOKEN)
+    .replace(BEARER_CREDENTIAL_PATTERN, `$1${REDACTED_BEARER}`)
+    .replace(SECRET_QUERY_PATTERN, `$1${REDACTED_BEARER}`);
 }
 
 /** Render one error message without allowing Telegram credentials into logs. */
@@ -90,7 +103,9 @@ export function redactTelegramError(
       Object.defineProperty(safe, key, {
         configurable: true,
         enumerable: true,
-        value: sanitizeTelegramLogValue(value, knownSecrets, new WeakSet<object>()),
+        value: sensitiveLogKey(key)
+          ? REDACTED_BEARER
+          : sanitizeTelegramLogValue(value, knownSecrets, new WeakSet<object>()),
       });
     }
   }
@@ -138,7 +153,9 @@ function sanitizeTelegramLogValue(
     }
     for (const [key, nested] of Object.entries(value)) {
       if (!(key in safe)) {
-        safe[key] = sanitizeTelegramLogValue(nested, knownSecrets, seen);
+        safe[key] = sensitiveLogKey(key)
+          ? REDACTED_BEARER
+          : sanitizeTelegramLogValue(nested, knownSecrets, seen);
       }
     }
     return safe;
@@ -149,9 +166,15 @@ function sanitizeTelegramLogValue(
 
   const safe: Record<string, unknown> = {};
   for (const [key, nested] of Object.entries(value)) {
-    safe[key] = sanitizeTelegramLogValue(nested, knownSecrets, seen);
+    safe[key] = sensitiveLogKey(key)
+      ? REDACTED_BEARER
+      : sanitizeTelegramLogValue(nested, knownSecrets, seen);
   }
   return safe;
+}
+
+function sensitiveLogKey(key: string): boolean {
+  return SENSITIVE_LOG_KEYS.has(key.toLocaleLowerCase("en-US"));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

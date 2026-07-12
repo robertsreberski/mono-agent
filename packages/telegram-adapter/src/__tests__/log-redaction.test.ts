@@ -9,20 +9,30 @@ import {
 const TOKEN = "123456789:AAExampleSecret_0123456789abcdef";
 const API_URL = `https://api.telegram.org/bot${TOKEN}/getUpdates`;
 const FILE_URL = `https://api.telegram.org/file/bot${TOKEN}/voice/file.ogg`;
+const OTHER_BEARER = "opaque-service-bearer-credential-abcdef";
 
 describe("Telegram log redaction", () => {
   it("redacts configured tokens and Bot API URL tokens", () => {
-    expect(redactTelegramSecretText(`token=${TOKEN} api=${API_URL} file=${FILE_URL}`, [TOKEN]))
-      .not.toContain(TOKEN);
+    const redacted = redactTelegramSecretText(
+      `token=${TOKEN} api=${API_URL} file=${FILE_URL} Authorization: Bearer ${OTHER_BEARER} https://host.invalid/?access_token=${OTHER_BEARER}`,
+      [TOKEN],
+    );
+    expect(redacted).not.toContain(TOKEN);
+    expect(redacted).not.toContain(OTHER_BEARER);
+    expect(redacted).toContain("[REDACTED_BEARER_CREDENTIAL]");
   });
 
   it("sanitizes nested errors, causes, request objects, URLs, and stacks before logging", () => {
     const error = Object.assign(new Error(`poll failed at ${API_URL}`, {
       cause: {
-        request: { url: new URL(FILE_URL), authorization: `Bearer ${TOKEN}` },
+        request: { url: new URL(FILE_URL), authorization: `Bearer ${OTHER_BEARER}` },
       },
     }), {
-      request: { url: API_URL, token: TOKEN },
+      request: {
+        url: API_URL,
+        token: TOKEN,
+        headers: { Authorization: `Bearer ${OTHER_BEARER}`, "x-api-key": OTHER_BEARER },
+      },
     });
     const sink = vi.fn();
     const logger = createSecretSafeTelegramLogger({ error: sink }, [TOKEN]);
@@ -31,6 +41,7 @@ describe("Telegram log redaction", () => {
 
     const serialized = JSON.stringify(sink.mock.calls);
     expect(serialized).not.toContain(TOKEN);
+    expect(serialized).not.toContain(OTHER_BEARER);
     expect(serialized).toContain("[REDACTED_TELEGRAM_BOT_TOKEN]");
     expect(serialized).toContain("poll failed");
   });
