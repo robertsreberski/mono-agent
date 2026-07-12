@@ -245,6 +245,10 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_OPENAI_API_ENABLED` | `openaiApi.enabled` | |
+| `MONO_AGENT_OPENAI_API_HOST` | `openaiApi.host` | Bind host; default `127.0.0.1`. |
+| `MONO_AGENT_OPENAI_API_PORT` | `openaiApi.port` | Bind port; default `0` selects a free port. |
+| `MONO_AGENT_OPENAI_API_BASE_PATH` | `openaiApi.basePath` | API prefix; default `/v1`. |
+| `MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK` | `openaiApi.allowNonLoopback` | Must be `true` for an enabled non-loopback bind. |
 | `MONO_AGENT_OPENAI_API_KEY` | `openaiApi.apiKey` | Optional on loopback; required for any enabled non-loopback bind. Clients send it as a bearer (`sk-...`). |
 | `MONO_AGENT_OPENAI_API_MODEL_ID` | `openaiApi.modelId` | Advertised model id. See [../channels/openai-api.md](/channels/openai-api/). |
 
@@ -252,7 +256,7 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_WEB_AUTH_TOKEN` | — (CLI-only) | Stable bearer token used by `mono-agent web` for an explicit non-loopback bind. Ignored for the default loopback-only server. It is required for non-interactive/service startup; an interactive command may generate a one-run token. Configured values stay redacted unless `--show-auth-url` is explicitly used in an interactive terminal. Store this secret in the CLI invocation folder's owner-only `.env` or the file selected by `--env-file`. |
+| `MONO_AGENT_WEB_AUTH_TOKEN` | — (CLI-only) | Stable bearer honored on loopback and non-loopback binds. It is required for non-interactive non-loopback startup; an interactive non-loopback command may generate a one-run token. Configured values stay redacted unless `--show-auth-url` is explicitly used in an interactive terminal. Store this secret in the CLI invocation folder's owner-only `.env` or the file selected by `--env-file`. |
 
 ### TUI stream endpoint
 

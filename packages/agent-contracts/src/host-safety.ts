@@ -6,25 +6,66 @@
  * safe-bind guard was missing entirely in others.
  */
 import type { Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { isIP, type AddressInfo } from "node:net";
 
 /**
- * True when the host is a loopback address. Matches `localhost`, `127.0.0.1`,
- * `::1`, the full `127.0.0.0/8` range, and bracketed IPv6 forms.
+ * True only when the host is an exact loopback literal (or the exact conventional
+ * `localhost` name). Hostname prefixes such as `127.attacker.example` are never
+ * treated as loopback. Bracketed IPv6 and IPv4-mapped IPv6 literals are
+ * normalized before classification.
  */
 export function isLoopbackHost(host: string): boolean {
-  const normalized = host.toLowerCase().replace(/^\[/u, "").replace(/\]$/u, "");
-  return (
-    normalized === "localhost" ||
-    normalized === "127.0.0.1" ||
-    normalized === "::1" ||
-    normalized.startsWith("127.")
-  );
+  const normalized = normalizeHostForBind(host).toLowerCase();
+  if (normalized === "localhost") {
+    return true;
+  }
+  const family = isIP(normalized);
+  if (family === 4) {
+    return normalized.split(".")[0] === "127";
+  }
+  if (family !== 6) {
+    return false;
+  }
+  const canonical = canonicalIpv6(normalized);
+  if (canonical === "::1") {
+    return true;
+  }
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/u.exec(canonical);
+  if (mapped === null) {
+    return false;
+  }
+  const highWord = Number.parseInt(mapped[1] ?? "", 16);
+  return Number.isInteger(highWord) && (highWord >>> 8) === 127;
+}
+
+/** Remove URL-only brackets from an IPv6 bind host. Mismatched brackets remain invalid. */
+export function normalizeHostForBind(host: string): string {
+  if (host.startsWith("[") && host.endsWith("]") && host.length > 2) {
+    const inner = host.slice(1, -1);
+    return isIP(inner) === 6 ? inner : host;
+  }
+  return host;
+}
+
+/** True for the IPv4 and IPv6 unspecified addresses used to bind all interfaces. */
+export function isWildcardHost(host: string): boolean {
+  const normalized = normalizeHostForBind(host).toLowerCase();
+  return normalized === "0.0.0.0"
+    || (isIP(normalized) === 6 && canonicalIpv6(normalized) === "::");
 }
 
 /** Wrap a bare IPv6 host in brackets so it is safe to embed in a URL. */
 export function hostForUrl(host: string): string {
-  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  const normalized = normalizeHostForBind(host);
+  return normalized.includes(":") ? `[${normalized}]` : normalized;
+}
+
+function canonicalIpv6(host: string): string {
+  try {
+    return new URL(`http://[${host}]/`).hostname.slice(1, -1);
+  } catch {
+    return host;
+  }
 }
 
 /**

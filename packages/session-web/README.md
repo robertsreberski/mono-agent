@@ -43,7 +43,10 @@ The `mono-agent web` CLI command wraps this with registry resolution + browser o
 Loopback on port `4599` is the default. Startup prints the exact URL to target
 from reverse proxies. A non-loopback bind requires `allowNonLoopback: true`
 and an `authToken`; `/api/*` and `/api/stream` require `Authorization: Bearer
-<token>` (or `?token=<token>` for browser `EventSource`).
+<token>`. The PWA consumes SSE with authenticated `fetch`, so the bearer never
+appears in the stream URL. CLI bootstrap URLs use a fragment that is not sent
+to the server and is removed from browser history after capture. A configured
+token is also enforced when the server binds loopback.
 
 Run lists and the initial browser SSE snapshot are summary-only and step-less.
 Full run timelines are read lazily from `/api/sessions/:sourceId/:runId` when a

@@ -15,6 +15,7 @@ import {
   hostForUrl,
   isLoopbackHost,
   listen,
+  normalizeHostForBind,
   normalizeOptionalString,
   readAuthorizationBearer,
 } from "@mono-agent/agent-contracts";
@@ -76,7 +77,7 @@ class SessionWebServerError extends Error {
 export async function startSessionWebServer(
   options: StartSessionWebServerOptions,
 ): Promise<SessionWebServerHandle> {
-  const host = options.host ?? DEFAULT_HOST;
+  const host = normalizeHostForBind(options.host ?? DEFAULT_HOST);
   const port = options.port ?? DEFAULT_PORT;
   const maxRunsPerInstance = options.maxRunsPerInstance ?? DEFAULT_MAX_RUNS_PER_INSTANCE;
   const staticDir = options.staticDir ?? defaultStaticDir();
@@ -190,6 +191,13 @@ export async function startSessionWebServer(
       listenFailed: (reason) => new SessionWebServerError("start_failed", `Session web server failed to listen: ${reason}`),
       noAddress: () => new SessionWebServerError("start_failed", "Session web server did not receive a TCP address."),
     });
+    if (options.allowNonLoopback !== true && !isLoopbackHost(address.address)) {
+      await close(server);
+      throw new SessionWebServerError(
+        "unsafe_host",
+        `Session web server resolved a loopback host to a non-loopback bind address (${address.address}).`,
+      );
+    }
     const url = `http://${hostForUrl(host)}:${address.port}/`;
     return {
       url,
@@ -418,7 +426,7 @@ function parseOffset(value: string | undefined): number {
 
 function requireApiAuth(authToken: string): (req: Request, res: Response, next: NextFunction) => void {
   return (req, res, next) => {
-    const supplied = readAuthorizationBearer(req.headers.authorization) ?? firstString(req.query.token);
+    const supplied = readAuthorizationBearer(req.headers.authorization);
     if (supplied !== undefined && bearerTokensEqual(supplied, authToken)) {
       next();
       return;

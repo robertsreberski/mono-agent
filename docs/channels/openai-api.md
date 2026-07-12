@@ -20,8 +20,7 @@ Coverage: `config` (the entire surface is enabled and tuned from the `openaiApi`
     "port": 4040,
     "basePath": "/v1",
     "allowNonLoopback": false,
-    "modelId": "my-agent",
-    "apiKey": "sk-..."
+    "modelId": "my-agent"
   }
 }
 ```
@@ -30,15 +29,22 @@ Coverage: `config` (the entire surface is enabled and tuned from the `openaiApi`
 | --- | --- | --- | --- |
 | `enabled` | boolean | `false` | Opt-in. When `false` the HTTP server is not started. |
 | `host` | string | `127.0.0.1` | Bind address. Loopback by default. |
-| `port` | integer | `4040` | TCP port (0–65535). |
+| `port` | integer | `0` | TCP port (0–65535); `0` selects a free port. |
 | `basePath` | string | `/v1` | Path prefix; serves `<basePath>/models` and `<basePath>/chat/completions`. Must be an absolute path with no query or hash. |
 | `allowNonLoopback` | boolean | `false` | Required guard before binding a non-loopback `host`. See the warning below. |
 | `modelId` | string | `agent` | The model id advertised in `/v1/models` and accepted in the request `model` field. |
-| `apiKey` | string | _unset_ | Optional bearer token clients must present as `Authorization: Bearer <apiKey>`. When unset, no auth is enforced. |
+| `apiKey` | string | _unset_ | Optional bearer token clients must present as `Authorization: Bearer <apiKey>`. Prefer `MONO_AGENT_OPENAI_API_KEY` in an owner-only `.env`; when unset, no auth is enforced. |
 
 :::caution
-:::
 Binding to a non-loopback `host` (anything other than `127.0.0.1`/`localhost`) requires both `allowNonLoopback: true` and a non-empty `apiKey`. Startup fails closed if either guard is missing. Prefer a reverse proxy with TLS when the endpoint crosses an untrusted network.
+:::
+
+Keep the bearer outside committed JSON. Create the invocation folder's `.env`
+with owner-only permissions (`chmod 600 .env`) and add:
+
+```dotenv
+MONO_AGENT_OPENAI_API_KEY=<strong-client-bearer>
+```
 
 ## Environment variables
 
@@ -108,11 +114,11 @@ Because only the latest turn is forwarded, the agent's [memory](/memory/capture-
 1. Start your agent with `openaiApi.enabled: true` (e.g. `host: 127.0.0.1`, `port: 4040`).
 2. In Open WebUI, go to **Settings → Connections → OpenAI API** and add a connection:
    - **API Base URL**: `http://127.0.0.1:4040/v1`
-   - **API Key**: the value of `openaiApi.apiKey` (any non-empty string if you left `apiKey` unset).
+   - **API Key**: the value of `MONO_AGENT_OPENAI_API_KEY`; when the loopback-only endpoint has no key, use any non-empty client placeholder.
 3. Save. Open WebUI calls `/v1/models` and your `modelId` appears in the model picker — select it.
 4. To preserve multi-turn continuity, enable `ENABLE_FORWARD_USER_INFO_HEADERS=true` in Open WebUI so it forwards `X-OpenWebUI-Chat-Id`. Each Open WebUI chat then maps to one persistent agent conversation.
 
-If Open WebUI and the agent run on different hosts, set `allowNonLoopback: true`, bind a reachable `host`, and protect the port with an `apiKey` (and ideally a TLS-terminating proxy).
+If Open WebUI and the agent run on different hosts, set `allowNonLoopback: true`, bind a reachable `host`, and protect the port with `MONO_AGENT_OPENAI_API_KEY` (and ideally a TLS-terminating proxy). Wildcard binds report concrete loopback, private-LAN, and Tailscale base URLs; use one of those rather than `0.0.0.0` as a client URL.
 
 For an end-to-end walkthrough, see the playbook [OpenAI endpoint with Open WebUI](/playbooks/openai-endpoint-open-webui/).
 

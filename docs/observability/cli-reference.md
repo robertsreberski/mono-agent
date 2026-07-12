@@ -381,10 +381,13 @@ Serves the read-only [Session Recorder web PWA](/observability/) from any direct
 mono-agent web
 mono-agent web --port 4599 --no-open
 mono-agent web --host 0.0.0.0 --allow-non-loopback
-MONO_AGENT_WEB_AUTH_TOKEN='<strong-stable-token>' mono-agent web --host 0.0.0.0 --allow-non-loopback
 mono-agent web --include-memory
 mono-agent web --max-runs 500
 ```
+
+For stable authenticated startup, put
+`MONO_AGENT_WEB_AUTH_TOKEN=<strong-stable-token>` in the invocation folder's
+owner-only `.env` (`chmod 600 .env`), then run the non-loopback command above.
 
 | Flag | Effect |
 | --- | --- |
@@ -392,12 +395,12 @@ mono-agent web --max-runs 500
 | `--port <n>` | Bind port (default `4599`, printed on start for reverse-proxy targets). |
 | `--no-open` | Do not launch the browser after the backend starts. |
 | `--allow-non-loopback` | Permit a non-loopback bind. `/api/*` and `/api/stream` require a bearer token: `MONO_AGENT_WEB_AUTH_TOKEN` for non-interactive/service use, or an interactively generated one-run token. |
-| `--show-auth-url` | Reveal a configured token in the printed URLs. This opt-in works only when stdout is an interactive terminal; redirected/service output stays redacted. |
+| `--show-auth-url` | Reveal a configured token in the printed URL fragment. This opt-in works only when stdout is an interactive terminal; redirected/service output stays redacted. |
 | `--include-memory` | Include memory-maintenance runs from both the `memory/` artifact namespace and legacy mixed directories. Defaults to agent runs only. |
 | `--max-runs <n>` | Cap the per-instance in-memory working set and the initial browser snapshot (positive integer, default `200`). Disk paging via "Load older" still reaches the full on-disk history, so this only bounds memory — not history reachability. |
 | `--config <path>` | Resolve a custom `traceability.registryDir` from this config, in addition to the global registry. |
 
-Run history and live updates default to agent runs only; memory-maintenance runs are hidden plumbing unless you pass `--include-memory`. Loopback remains the default. With `--host 0.0.0.0 --allow-non-loopback`, startup prints usable loopback plus discovered private LAN and Tailscale IPv4 URLs instead of advertising `0.0.0.0`. Put a stable `MONO_AGENT_WEB_AUTH_TOKEN` in the invocation folder's owner-only `.env` (or the file selected by `--env-file`) for bookmarks and long-running services. Non-interactive startup refuses to generate a secret that would land in logs. Authenticated mode does not auto-open a browser because query-token URLs would expose the bearer in process arguments; use an explicitly revealed interactive URL instead.
+Run history and live updates default to agent runs only; memory-maintenance runs are hidden plumbing unless you pass `--include-memory`. Loopback remains the default. With `--host 0.0.0.0 --allow-non-loopback`, startup prints usable loopback plus discovered private LAN and Tailscale IPv4 URLs instead of advertising `0.0.0.0`. Put a stable `MONO_AGENT_WEB_AUTH_TOKEN` in the invocation folder's owner-only `.env` (or the file selected by `--env-file`) for bookmarks and long-running services; a configured token is honored on loopback too. Non-interactive non-loopback startup refuses to generate a secret that would land in logs. Authenticated mode sends API and stream credentials only in the `Authorization` header. Explicitly revealed bootstrap URLs put the token in the URL fragment, which browsers do not send in HTTP requests or access logs, and the PWA removes it after capture.
 
 Direct authenticated HTTP over LAN or Tailscale does **not** require `tailscale serve`. Serve is optional; use it (or another HTTPS reverse proxy) only when you want HTTPS-dependent browser capabilities such as an installable/offline PWA. Non-loopback mode remains read-only but exposes prompts, cwd/artifact paths, tool events, and run text to anyone with the bearer token, so use a strong token and a trusted network boundary. Plain LAN HTTP is not transport-encrypted; direct access through Tailscale remains protected by the tailnet transport.
 

@@ -181,6 +181,36 @@ describe("runWeb", () => {
     expect(output).toContain("Tailscale Serve is optional");
   });
 
+  it("normalizes an IPv6 wildcard advertisement to a usable bracketed loopback URL", async () => {
+    const configPath = await testConfig();
+    let output = "";
+    const startServer = vi.fn(async (): Promise<SessionWebServerHandle> => ({
+      url: "http://[::]:4599/",
+      stop: vi.fn(async () => undefined),
+    }));
+
+    await runWeb(
+      {
+        configPath,
+        cwd: dir!,
+        env: { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: join(dir!, "global-trace-sources") },
+        host: "[::]",
+        allowNonLoopback: true,
+        open: false,
+      },
+      {
+        startServer,
+        waitForShutdown: async () => undefined,
+        stdout: { write: (text) => (output += text) },
+        interactive: true,
+        discoverNetworkAddresses: () => [],
+      },
+    );
+
+    expect(output).toContain("mono-agent web  →  http://[::1]:4599/");
+    expect(output).not.toContain("http://[::]:4599/");
+  });
+
   it("generates auth and prints concrete tokenized loopback, LAN, and Tailscale URLs", async () => {
     const configPath = await testConfig();
     let output = "";
@@ -214,9 +244,9 @@ describe("runWeb", () => {
 
     expect(capturedOptions?.authToken).toMatch(/^[a-f0-9]{64}$/u);
     const token = capturedOptions?.authToken ?? "";
-    expect(output).toContain(`mono-agent web  →  http://127.0.0.1:4599/?token=${token}`);
-    expect(output).toContain(`LAN       →  http://192.168.178.103:4599/?token=${token}`);
-    expect(output).toContain(`Tailscale →  http://100.64.103.59:4599/?token=${token}`);
+    expect(output).toContain(`mono-agent web  →  http://127.0.0.1:4599/#token=${token}`);
+    expect(output).toContain(`LAN       →  http://192.168.178.103:4599/#token=${token}`);
+    expect(output).toContain(`Tailscale →  http://100.64.103.59:4599/#token=${token}`);
     expect(output).not.toContain("0.0.0.0");
     expect(output).toContain("bearer token never enters process arguments");
     expect(openUrl).not.toHaveBeenCalled();
@@ -258,7 +288,7 @@ describe("runWeb", () => {
     expect(output).toContain("LAN       →  http://192.168.178.103:4599/");
     expect(output).toContain("MONO_AGENT_WEB_AUTH_TOKEN is configured (token redacted)");
     expect(output).not.toContain(stableToken);
-    expect(output).not.toContain("?token=");
+    expect(output).not.toContain("#token=");
     expect(output).toContain("bearer token never enters process arguments");
     expect(openUrl).not.toHaveBeenCalled();
   });
@@ -322,7 +352,7 @@ describe("runWeb", () => {
       },
     );
 
-    expect(output).toContain(`http://127.0.0.1:4599/?token=${stableToken}`);
+    expect(output).toContain(`http://127.0.0.1:4599/#token=${stableToken}`);
     expect(output).not.toContain("token redacted");
   });
 
@@ -363,9 +393,12 @@ describe("runWeb", () => {
     expect(errors).toContain("ignored because stdout is not an interactive terminal");
   });
 
-  it("ignores MONO_AGENT_WEB_AUTH_TOKEN for the default loopback-only server", async () => {
+  it("honors MONO_AGENT_WEB_AUTH_TOKEN for the default loopback-only server", async () => {
     const configPath = await testConfig();
+    const stableToken = "loopback-stable-token";
+    let output = "";
     let capturedOptions: StartSessionWebServerOptions | undefined;
+    const openUrl = vi.fn();
     const startServer = vi.fn(async (options: StartSessionWebServerOptions): Promise<SessionWebServerHandle> => {
       capturedOptions = options;
       return { url: "http://127.0.0.1:4599/", stop: vi.fn(async () => undefined) };
@@ -377,18 +410,22 @@ describe("runWeb", () => {
         cwd: dir!,
         env: {
           MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: join(dir!, "global-trace-sources"),
-          MONO_AGENT_WEB_AUTH_TOKEN: "loopback-token-is-unused",
+          MONO_AGENT_WEB_AUTH_TOKEN: stableToken,
         },
         open: false,
       },
       {
         startServer,
+        openUrl,
         waitForShutdown: async () => undefined,
-        stdout: { write: () => undefined },
+        stdout: { write: (text) => (output += text) },
       },
     );
 
-    expect(capturedOptions?.authToken).toBeUndefined();
+    expect(capturedOptions?.authToken).toBe(stableToken);
+    expect(output).toContain("MONO_AGENT_WEB_AUTH_TOKEN is configured (token redacted)");
+    expect(output).not.toContain(stableToken);
+    expect(openUrl).not.toHaveBeenCalled();
   });
 
   it("prunes stale manifests from configured and global registries before serving", async () => {

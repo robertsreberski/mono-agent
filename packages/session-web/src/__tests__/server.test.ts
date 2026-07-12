@@ -417,6 +417,16 @@ describe("startSessionWebServer", () => {
     ).rejects.toThrow(/non-loopback/u);
   });
 
+  it.each(["127.attacker.example", "127.0.0.1.attacker.example", "localhost.attacker.example"])(
+    "does not trust a loopback-looking hostname (%s)",
+    async (host) => {
+      const fix = await fixture();
+      await expect(
+        startSessionWebServer({ registryDirs: [fix.registryDir], host, port: 0, staticDir: fix.staticDir }),
+      ).rejects.toThrow(/non-loopback/u);
+    },
+  );
+
   it("requires an auth token before binding a non-loopback host", async () => {
     const fix = await fixture();
     await expect(
@@ -452,7 +462,7 @@ describe("startSessionWebServer", () => {
     expect(authedApi.status).toBe(200);
 
     const queryAuthedApi = await fetch(localLoopbackUrl(server.url, "api/instances?token=session-secret"));
-    expect(queryAuthedApi.status).toBe(200);
+    expect(queryAuthedApi.status).toBe(401);
 
     const unauthStream = await fetch(localLoopbackUrl(server.url, "api/stream"));
     const unauthStreamStatus = unauthStream.status;
@@ -465,6 +475,23 @@ describe("startSessionWebServer", () => {
     const authedStreamStatus = authedStream.status;
     await authedStream.body?.cancel().catch(() => undefined);
     expect(authedStreamStatus).toBe(200);
+  });
+
+  it("honors an explicitly configured token on loopback", async () => {
+    const fix = await fixture();
+    server = await startSessionWebServer({
+      registryDirs: [fix.registryDir],
+      host: "[::1]",
+      port: 0,
+      staticDir: fix.staticDir,
+      authToken: "loopback-secret",
+    });
+
+    expect(server.url).toMatch(/^http:\/\/\[::1\]:\d+\/$/u);
+    expect((await fetch(`${server.url}api/instances`)).status).toBe(401);
+    expect((await fetch(`${server.url}api/instances`, {
+      headers: { authorization: "Bearer loopback-secret" },
+    })).status).toBe(200);
   });
 });
 

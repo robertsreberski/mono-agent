@@ -53,6 +53,10 @@ export async function loadOpenAIApiAdapterConfig(
   const apiKey = normalizeOptionalString(env.MONO_AGENT_OPENAI_API_KEY);
   const enabled = readBoolean(env.MONO_AGENT_OPENAI_API_ENABLED, "MONO_AGENT_OPENAI_API_ENABLED", DEFAULT_ENABLED, invalidConfig);
   const host = readString(env.MONO_AGENT_OPENAI_API_HOST, DEFAULT_HOST);
+  const allowNonLoopback = readBoolean(env.MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK, "MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK", false, invalidConfig);
+  if (enabled && !isLoopbackHost(host) && !allowNonLoopback) {
+    throw invalidConfig("MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK must be true when the enabled OpenAI API binds a non-loopback host.", { host });
+  }
   if (enabled && !isLoopbackHost(host) && apiKey === undefined) {
     throw invalidConfig("MONO_AGENT_OPENAI_API_KEY is required when the enabled OpenAI API binds a non-loopback host.", { host });
   }
@@ -61,7 +65,7 @@ export async function loadOpenAIApiAdapterConfig(
     host,
     port: readInteger(env.MONO_AGENT_OPENAI_API_PORT, "MONO_AGENT_OPENAI_API_PORT", DEFAULT_PORT, invalidConfig, { min: 0, max: 65535 }),
     basePath: readBasePath(env.MONO_AGENT_OPENAI_API_BASE_PATH),
-    allowNonLoopback: readBoolean(env.MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK, "MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK", false, invalidConfig),
+    allowNonLoopback,
     ...(apiKey === undefined ? {} : { apiKey }),
     modelId: readString(env.MONO_AGENT_OPENAI_API_MODEL_ID, DEFAULT_MODEL_ID),
   };

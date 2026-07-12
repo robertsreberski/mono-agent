@@ -82,8 +82,8 @@ afterEach(() => {
 });
 
 describe("session-web API auth", () => {
-  test("keeps bearer tokens out of JSON request URLs", async () => {
-    installWindow("?token=session-secret");
+  test("bootstraps auth from a URL fragment and keeps bearer tokens out of request URLs", async () => {
+    const replaceState = installWindow("#token=session-secret");
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ instances: [], sessions: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -94,6 +94,7 @@ describe("session-web API auth", () => {
     expect(headersFrom(fetchMock.mock.calls[0] ?? []).authorization).toBe("Bearer session-secret");
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/sessions?instance=agent+one&limit=10");
     expect(headersFrom(fetchMock.mock.calls[1] ?? []).authorization).toBe("Bearer session-secret");
+    expect(replaceState).toHaveBeenCalledWith(undefined, "", "/");
   });
 
   test("requests paged session history with offset metadata", async () => {
@@ -122,26 +123,33 @@ describe("session-web API auth", () => {
     expect(fetchMock.mock.calls.map((call) => headersFrom(call).authorization)).toEqual(["Bearer url-secret", "Bearer url-secret"]);
   });
 
-  test("uses query-token auth only for the EventSource stream", () => {
+  test("streams with Authorization fetch headers and never puts the token in the URL", async () => {
     installWindow();
-    class MockEventSource {
-      static urls: string[] = [];
-      onerror: EventSource["onerror"] = null;
-      onmessage: EventSource["onmessage"] = null;
-      onopen: EventSource["onopen"] = null;
-
-      constructor(url: string | URL) {
-        MockEventSource.urls.push(String(url));
-      }
-
-      close(): void {}
-    }
-    vi.stubGlobal("EventSource", MockEventSource);
+    const frame = { t: "instances", instances: [] };
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`));
+      },
+    });
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(body, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
     saveAuthToken("stream-secret");
+    const onMessage = vi.fn();
+    const onOpen = vi.fn();
 
-    const close = openStream({ onMessage: vi.fn() });
+    const close = openStream({ onMessage, onOpen });
+    await vi.waitFor(() => {
+      expect(onOpen).toHaveBeenCalledOnce();
+      expect(onMessage).toHaveBeenCalledWith(frame);
+    });
 
-    expect(MockEventSource.urls).toEqual(["/api/stream?token=stream-secret"]);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/stream");
+    expect(headersFrom(fetchMock.mock.calls[0] ?? []).authorization).toBe("Bearer stream-secret");
+    expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain("stream-secret");
     close();
   });
 });

@@ -25,7 +25,7 @@ const adapter = await startOpenAIApiAdapter({
 });
 ```
 
-Point OpenWebUI at the printed base URL, for example `http://127.0.0.1:4311/v1`. If OpenWebUI runs in Docker while the host agent runs locally, use `http://host.docker.internal:4311/v1`. Configure the same API key in OpenWebUI when `openaiApi.apiKey` or `MONO_AGENT_OPENAI_API_KEY` is set. A non-loopback bind fails closed unless that key is present.
+Point OpenWebUI at the printed base URL, for example `http://127.0.0.1:4311/v1`. If OpenWebUI runs in Docker while the host agent runs locally, use `http://host.docker.internal:4311/v1`. Configure the same API key in OpenWebUI when `openaiApi.apiKey` or `MONO_AGENT_OPENAI_API_KEY` is set. A non-loopback bind fails closed unless both `allowNonLoopback` and that key are present. Wildcard binds expose concrete usable loopback/private-LAN/Tailscale entries through `baseUrls`; `baseUrl` is the concrete loopback entry rather than `0.0.0.0`.
 
 ## Conversation Sessions (Open WebUI)
 

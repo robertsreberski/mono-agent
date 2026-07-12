@@ -4,7 +4,13 @@ import { resolve } from "node:path";
 import { pruneTraceSources } from "@mono-agent/observability";
 import { startSessionWebServer } from "@mono-agent/session-web";
 import type { SessionWebServerHandle } from "@mono-agent/session-web";
-import { generateBearerToken, isLoopbackHost, normalizeOptionalString } from "@mono-agent/agent-contracts";
+import {
+  generateBearerToken,
+  hostForUrl,
+  isLoopbackHost,
+  isWildcardHost,
+  normalizeOptionalString,
+} from "@mono-agent/agent-contracts";
 
 import { resolveAppTraceRegistryDir, resolveGlobalTraceRegistryDir } from "./app-config.js";
 
@@ -77,16 +83,14 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
   await Promise.all(registryDirs.map((registryDir) => pruneTraceSources({ registryDir })));
   const authRequired = requiresServerAuth(options.host);
   const interactive = deps.interactive ?? process.stdout.isTTY === true;
-  const configuredAuthToken = authRequired
-    ? normalizeOptionalString(options.env.MONO_AGENT_WEB_AUTH_TOKEN)
-    : undefined;
+  const configuredAuthToken = normalizeOptionalString(options.env.MONO_AGENT_WEB_AUTH_TOKEN);
   if (authRequired && configuredAuthToken === undefined && !interactive) {
     stderr.write(
       `Non-interactive non-loopback web serving requires ${WEB_AUTH_TOKEN_ENV}; refusing to generate a bearer secret into logs.\n`,
     );
     return 1;
   }
-  const authToken = authRequired ? configuredAuthToken ?? generateBearerToken() : undefined;
+  const authToken = configuredAuthToken ?? (authRequired ? generateBearerToken() : undefined);
   const generatedAuthToken = authToken !== undefined && configuredAuthToken === undefined;
   const port = options.port ?? DEFAULT_WEB_PORT;
 
@@ -188,7 +192,9 @@ function requiresServerAuth(host: string | undefined): boolean {
 
 function withAuthToken(url: string, token: string): string {
   const parsed = new URL(url);
-  parsed.searchParams.set("token", token);
+  const fragment = new URLSearchParams(parsed.hash.startsWith("#") ? parsed.hash.slice(1) : parsed.hash);
+  fragment.set("token", token);
+  parsed.hash = fragment.toString();
   return parsed.toString();
 }
 
@@ -215,7 +221,9 @@ function resolveAdvertisedUrls(url: string, networkAddresses: readonly WebNetwor
   if (!isWildcardUrl(url)) {
     return [{ label: isLoopbackUrl(url) ? "Loopback" : "Web", url }];
   }
-  const urls: AdvertisedUrl[] = [{ label: "Loopback", url: replaceUrlHost(url, "127.0.0.1") }];
+  const wildcardHost = new URL(url).hostname;
+  const loopbackHost = wildcardHost.includes(":") ? "::1" : "127.0.0.1";
+  const urls: AdvertisedUrl[] = [{ label: "Loopback", url: replaceUrlHost(url, loopbackHost) }];
   for (const entry of networkAddresses) {
     urls.push({
       label: entry.kind === "tailscale" ? "Tailscale" : "LAN",
@@ -227,14 +235,14 @@ function resolveAdvertisedUrls(url: string, networkAddresses: readonly WebNetwor
 
 function replaceUrlHost(url: string, host: string): string {
   const parsed = new URL(url);
-  parsed.hostname = host;
+  parsed.hostname = hostForUrl(host);
   return parsed.toString();
 }
 
 function isWildcardUrl(url: string): boolean {
   try {
     const host = new URL(url).hostname;
-    return host === "0.0.0.0" || host === "[::]" || host === "::";
+    return isWildcardHost(host);
   } catch {
     return false;
   }

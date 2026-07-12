@@ -925,6 +925,47 @@ describe("OpenAI API adapter", () => {
     }
   });
 
+  it("aborts active requests and bounds shutdown even when a streaming responder hangs", async () => {
+    let requestStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      requestStarted = resolve;
+    });
+    let requestSignal: AbortSignal | undefined;
+    const responder: AgentResponder = {
+      async respond(request) {
+        requestSignal = request.abortSignal;
+        requestStarted();
+        await new Promise<never>(() => undefined);
+        return {};
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      responder,
+    });
+
+    const response = await fetch(`${server.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "agent",
+        stream: true,
+        messages: [{ role: "user", content: "hang forever" }],
+      }),
+    });
+    await started;
+
+    const outcome = await Promise.race([
+      server.stop().then(() => "stopped" as const),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 1_000)),
+    ]);
+    expect(outcome).toBe("stopped");
+    expect(requestSignal?.aborted).toBe(true);
+    await response.body?.cancel().catch(() => undefined);
+  });
+
   it("rejects non-loopback binds unless explicitly allowed", async () => {
     await expect(
       startOpenAIApiAdapter({
@@ -936,6 +977,20 @@ describe("OpenAI API adapter", () => {
     ).rejects.toMatchObject({ code: "unsafe_host" });
   });
 
+  it.each(["127.attacker.example", "127.0.0.1.attacker.example", "localhost.attacker.example"])(
+    "rejects loopback-looking hostnames before DNS resolution (%s)",
+    async (host) => {
+      await expect(
+        startOpenAIApiAdapter({
+          host,
+          port: 0,
+          modelId: "agent",
+          responder: echoResponder(),
+        }),
+      ).rejects.toMatchObject({ code: "unsafe_host" });
+    },
+  );
+
   it("rejects an explicitly allowed non-loopback bind without bearer auth", async () => {
     await expect(
       startOpenAIApiAdapter({
@@ -946,6 +1001,30 @@ describe("OpenAI API adapter", () => {
         responder: echoResponder(),
       }),
     ).rejects.toMatchObject({ code: "missing_required_config" });
+  });
+
+  it("advertises concrete usable URLs instead of a wildcard bind address", async () => {
+    const server = await startOpenAIApiAdapter({
+      host: "0.0.0.0",
+      port: 0,
+      allowNonLoopback: true,
+      apiKey: "test-key",
+      modelId: "agent",
+      responder: echoResponder(),
+    });
+
+    try {
+      expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+      expect(server.baseUrl).toBe(server.baseUrls[0]);
+      expect(server.baseUrls.length).toBeGreaterThan(0);
+      expect(server.baseUrls.every((url) => !url.includes("0.0.0.0"))).toBe(true);
+      const models = await fetch(`${server.baseUrl}/models`, {
+        headers: { authorization: "Bearer test-key" },
+      });
+      expect(models.status).toBe(200);
+    } finally {
+      await server.stop();
+    }
   });
 
   describe("conversation session continuity", () => {
