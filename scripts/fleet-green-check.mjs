@@ -42,6 +42,7 @@ import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const ISSUE_NUMBER = "119";
@@ -55,7 +56,7 @@ const BUILD_PROVENANCE_PROBE = fileURLToPath(new URL("./build-provenance-probe.m
 const COMMAND_TIMEOUT_MS = Object.freeze({
   plist: 5_000,
   service: 5_000,
-  loaded: 5_000,
+  loaded: 30_000,
   process: 5_000,
   runtime: 5_000,
   validate: 30_000,
@@ -193,6 +194,7 @@ const BUILD_MARKER_KEYS = Object.freeze([
   "nodeAbi",
   "sourceState",
   "outputDigest",
+  "dependencyDigest",
 ]);
 const BUILD_MARKER_SHA_PATTERN = /^[0-9a-f]{40,64}$/u;
 const BUILD_MARKER_FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/u;
@@ -382,7 +384,7 @@ function parseJsonObject(text) {
 
 export function parseBuildProvenanceProbe(text, exitCode) {
   const report = parseJsonObject(text);
-  if (report === null || report.schemaVersion !== 1 || typeof report.status !== "string") {
+  if (report === null || report.schemaVersion !== 2 || typeof report.status !== "string") {
     return { status: "malformed" };
   }
   if (report.status === "missing" || report.status === "unsafe" || report.status === "malformed") {
@@ -392,18 +394,20 @@ export function parseBuildProvenanceProbe(text, exitCode) {
   }
   if (report.status !== "ok"
     || exitCode !== 0
-    || !hasExactKeys(report, ["schemaVersion", "status", "marker", "fingerprint", "outputDigest"])
+    || !hasExactKeys(report, ["schemaVersion", "status", "marker", "fingerprint", "outputDigest", "dependencyDigest"])
     || typeof report.fingerprint !== "string"
     || !BUILD_MARKER_FINGERPRINT_PATTERN.test(report.fingerprint)
     || typeof report.outputDigest !== "string"
     || !BUILD_MARKER_FINGERPRINT_PATTERN.test(report.outputDigest)
+    || typeof report.dependencyDigest !== "string"
+    || !BUILD_MARKER_FINGERPRINT_PATTERN.test(report.dependencyDigest)
     || !isRecord(report.marker)
     || !hasExactKeys(report.marker, BUILD_MARKER_KEYS)) {
     return { status: "malformed" };
   }
   const marker = report.marker;
   const completedAtMs = Date.parse(marker.completedAt);
-  if (marker.schemaVersion !== 1
+  if (marker.schemaVersion !== 2
     || typeof marker.gitSha !== "string"
     || !BUILD_MARKER_SHA_PATTERN.test(marker.gitSha)
     || typeof marker.completedAt !== "string"
@@ -415,21 +419,25 @@ export function parseBuildProvenanceProbe(text, exitCode) {
     || !/^\d+$/u.test(marker.nodeAbi)
     || (marker.sourceState !== "clean" && marker.sourceState !== "dirty")
     || typeof marker.outputDigest !== "string"
-    || !BUILD_MARKER_FINGERPRINT_PATTERN.test(marker.outputDigest)) {
+    || !BUILD_MARKER_FINGERPRINT_PATTERN.test(marker.outputDigest)
+    || typeof marker.dependencyDigest !== "string"
+    || !BUILD_MARKER_FINGERPRINT_PATTERN.test(marker.dependencyDigest)) {
     return { status: "malformed" };
   }
   return {
     status: "ok",
     fingerprint: report.fingerprint,
     outputDigest: report.outputDigest,
+    dependencyDigest: report.dependencyDigest,
     marker: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       gitSha: marker.gitSha,
       completedAt: marker.completedAt,
       nodeVersion: marker.nodeVersion,
       nodeAbi: marker.nodeAbi,
       sourceState: marker.sourceState,
       outputDigest: marker.outputDigest,
+      dependencyDigest: marker.dependencyDigest,
     },
   };
 }
@@ -490,7 +498,12 @@ export function evaluateLoaded(loaded, service, runtime, expected = {}) {
   if (typeof loaded.checkoutInitial?.error === "string" || typeof loaded.checkoutFinal?.error === "string") {
     const timedOut = loaded.checkoutInitial?.error === "checkout probe timed out"
       || loaded.checkoutFinal?.error === "checkout probe timed out";
-    return { status: "fail", note: timedOut ? "checkout probe timed out" : "checkout probe unavailable" };
+    const changed = loaded.checkoutInitial?.error === "checkout changed during probe"
+      || loaded.checkoutFinal?.error === "checkout changed during probe";
+    return {
+      status: "fail",
+      note: timedOut ? "checkout probe timed out" : changed ? "checkout changed during probe" : "checkout probe unavailable",
+    };
   }
   const initialMarker = loaded.markerInitial;
   const finalMarker = loaded.markerFinal;
@@ -498,7 +511,8 @@ export function evaluateLoaded(loaded, service, runtime, expected = {}) {
     || initialMarker.status !== finalMarker.status
     || (initialMarker.status === "ok"
       && (initialMarker.fingerprint !== finalMarker.fingerprint
-        || initialMarker.outputDigest !== finalMarker.outputDigest))) {
+        || initialMarker.outputDigest !== finalMarker.outputDigest
+        || initialMarker.dependencyDigest !== finalMarker.dependencyDigest))) {
     return { status: "fail", note: "build changed during probe" };
   }
   if (initialMarker.status !== "ok") {
@@ -527,6 +541,18 @@ export function evaluateLoaded(loaded, service, runtime, expected = {}) {
   if (initialMarker.outputDigest !== initialMarker.marker.outputDigest
     || finalMarker.outputDigest !== finalMarker.marker.outputDigest) {
     return { status: "fail", note: "build output digest mismatch" };
+  }
+  if (initialMarker.dependencyDigest !== initialMarker.marker.dependencyDigest
+    || finalMarker.dependencyDigest !== finalMarker.marker.dependencyDigest) {
+    return { status: "fail", note: "build dependency digest mismatch" };
+  }
+  if (loaded.plistRecheck?.timedOut === true) {
+    return { status: "fail", note: "plist recheck timed out" };
+  }
+  if (loaded.plistRecheck?.status !== "ok"
+    || loaded.plistRecheck.fingerprint !== loaded.plistFingerprint
+    || loaded.plistRecheck.shapeFingerprint !== loaded.plistShapeFingerprint) {
+    return { status: "fail", note: "launchd plist changed during probe" };
   }
   if (typeof expected.expectSha === "string"
     && (loaded.checkoutInitial.sha !== expected.expectSha
@@ -990,6 +1016,48 @@ function renderTable(rows) {
   return [header, divider, ...lines].join("\n");
 }
 
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function managedPlistTopologyFingerprint(entries) {
+  if (!Array.isArray(entries)) return null;
+  const managed = entries
+    .filter((entry) => typeof entry === "string" && entry.startsWith(LABEL_PREFIX) && entry.endsWith(".plist"))
+    .toSorted();
+  return sha256(JSON.stringify(managed));
+}
+
+function readValidatedLaunchdPlist(plistPath, filenameLabel, runCommand) {
+  const result = runCommand(PLUTIL, ["-convert", "json", "-o", "-", plistPath], {
+    timeout: COMMAND_TIMEOUT_MS.plist,
+    environment: CLOSED_SYSTEM_ENVIRONMENT,
+  });
+  if (result.timedOut === true) return { status: "unavailable", timedOut: true };
+  if (result.status !== 0 || typeof result.stdout !== "string") return { status: "unavailable" };
+
+  const plist = parseJsonObject(result.stdout);
+  if (plist === null || typeof plist.Label !== "string" || plist.Label !== filenameLabel) {
+    return { status: "unavailable" };
+  }
+  const dir = typeof plist.WorkingDirectory === "string"
+    && !plist.WorkingDirectory.includes("\0")
+    && isAbsolute(plist.WorkingDirectory)
+    ? plist.WorkingDirectory
+    : null;
+  const program = parseLaunchdProgramArguments(plist.ProgramArguments);
+  const pathEnv = parseLaunchdPathEnvironment(plist.EnvironmentVariables);
+  if (program === null || pathEnv === null || dir === null) return { status: "unavailable" };
+
+  const closedShape = { label: filenameLabel, dir, pathEnv, ...program };
+  return {
+    status: "ok",
+    fingerprint: sha256(result.stdout),
+    shapeFingerprint: sha256(JSON.stringify(closedShape)),
+    entry: closedShape,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Impure layer (thin, untested-live).
 // ---------------------------------------------------------------------------
@@ -1001,7 +1069,7 @@ function discoverInstances(launchAgentsDir, runCommand, readdir) {
   try {
     entries = readdir(launchAgentsDir);
   } catch {
-    return byLabel;
+    return { byLabel, topologyFingerprint: null };
   }
   const reservedLabels = new Set(entries
     .filter((entry) => typeof entry === "string" && entry.endsWith(".plist"))
@@ -1028,61 +1096,29 @@ function discoverInstances(launchAgentsDir, runCommand, readdir) {
       });
       continue;
     }
-    const result = runCommand(PLUTIL, ["-convert", "json", "-o", "-", plistPath], {
-      timeout: COMMAND_TIMEOUT_MS.plist,
-      environment: CLOSED_SYSTEM_ENVIRONMENT,
-    });
-    if (result.timedOut === true) {
+    const validated = readValidatedLaunchdPlist(plistPath, filenameLabel, runCommand);
+    if (validated.timedOut === true) {
       byLabel.set(filenameLabel, { label: filenameLabel, dir: null, nodePath: null, cliPath: null, discoveryError: "plist probe timed out" });
       continue;
     }
-    if (result.status !== 0) {
-      byLabel.set(filenameLabel, { label: filenameLabel, dir: null, nodePath: null, cliPath: null, discoveryError: "plist conversion failed" });
-      continue;
-    }
-    let plist;
-    try {
-      plist = JSON.parse(result.stdout);
-    } catch {
-      byLabel.set(filenameLabel, { label: filenameLabel, dir: null, nodePath: null, cliPath: null, discoveryError: "plist JSON invalid" });
-      continue;
-    }
-    if (!isRecord(plist)) {
-      byLabel.set(filenameLabel, { label: filenameLabel, dir: null, nodePath: null, cliPath: null, discoveryError: "plist JSON invalid" });
-      continue;
-    }
-    if (typeof plist.Label !== "string" || plist.Label !== filenameLabel) {
-      byLabel.set(filenameLabel, {
-        label: filenameLabel,
-        dir: null,
-        nodePath: null,
-        cliPath: null,
-        discoveryError: "plist label mismatch",
-      });
-      continue;
-    }
-    const label = filenameLabel;
-    const dir = typeof plist.WorkingDirectory === "string"
-      && !plist.WorkingDirectory.includes("\0")
-      && isAbsolute(plist.WorkingDirectory)
-      ? plist.WorkingDirectory
-      : null;
-    const program = parseLaunchdProgramArguments(plist.ProgramArguments);
-    const pathEnv = parseLaunchdPathEnvironment(plist.EnvironmentVariables);
-    if (program === null || pathEnv === null || dir === null) {
+    if (validated.status !== "ok") {
       byLabel.set(filenameLabel, {
         label: filenameLabel,
         dir: null,
         nodePath: null,
         cliPath: null,
         probeArgs: [],
-        discoveryError: "plist arguments invalid",
+        discoveryError: "plist invalid",
       });
       continue;
     }
-    byLabel.set(label, { label, dir, pathEnv, ...program });
+    byLabel.set(filenameLabel, {
+      ...validated.entry,
+      plistFingerprint: validated.fingerprint,
+      plistShapeFingerprint: validated.shapeFingerprint,
+    });
   }
-  return byLabel;
+  return { byLabel, topologyFingerprint: managedPlistTopologyFingerprint(entries) };
 }
 
 /**
@@ -1147,7 +1183,7 @@ export function parseLaunchdPathEnvironment(value) {
     : null;
 }
 
-function collectInstance(entry, since, runCommand) {
+function collectInstance(entry, since, runCommand, initialMarkerProbes) {
   if (typeof entry.discoveryError === "string") {
     const service = launchctlList(entry.label, runCommand);
     return {
@@ -1164,14 +1200,25 @@ function collectInstance(entry, since, runCommand) {
   }
   const service = launchctlList(entry.label, runCommand);
   const repo = deriveRepoFromCliPath(entry.cliPath);
-  let loaded = { ran: false };
+  const persistedPlist = {
+    plistFingerprint: entry.plistFingerprint,
+    plistShapeFingerprint: entry.plistShapeFingerprint,
+  };
+  let loaded = { ran: false, ...persistedPlist };
   if (typeof service.pid === "number") {
     if (repo === null || entry.nodePath === null || typeof entry.pathEnv !== "string") {
-      loaded = { ran: true, checkoutUnavailable: true };
+      loaded = { ran: true, checkoutUnavailable: true, ...persistedPlist };
     } else {
       loaded = {
         ran: true,
-        markerInitial: runBuildMarkerProbe(entry.nodePath, repo, entry.pathEnv, runCommand),
+        ...persistedPlist,
+        markerInitial: runCachedBuildMarkerProbe(
+          initialMarkerProbes,
+          entry.nodePath,
+          repo,
+          entry.pathEnv,
+          runCommand,
+        ),
         checkoutInitial: readDeployCheckout(repo, runCommand),
         processStart: runProcessStartProbe(service.pid, runCommand),
         processIdentity: runProcessIdentityProbe(
@@ -1215,9 +1262,22 @@ function runBuildMarkerProbe(nodePath, repo, pathEnv, runCommand) {
     pathEnv,
   });
   if (result.timedOut === true) {
-    return { status: "malformed", timedOut: true };
+    return Object.freeze({ status: "malformed", timedOut: true });
   }
-  return parseBuildProvenanceProbe(result.stdout ?? "", result.status);
+  const parsed = parseBuildProvenanceProbe(result.stdout ?? "", result.status);
+  return Object.freeze({
+    ...parsed,
+    ...(isRecord(parsed.marker) ? { marker: Object.freeze({ ...parsed.marker }) } : {}),
+  });
+}
+
+function runCachedBuildMarkerProbe(cache, nodePath, repo, pathEnv, runCommand) {
+  const key = JSON.stringify([nodePath, repo, pathEnv]);
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+  const probe = runBuildMarkerProbe(nodePath, repo, pathEnv, runCommand);
+  cache.set(key, probe);
+  return probe;
 }
 
 function runProcessStartProbe(pid, runCommand) {
@@ -1363,17 +1423,10 @@ function readDeployCheckout(repo, runCommand) {
   if (repo === null) {
     return { sha: null, clean: false, error: null };
   }
-  const head = runCommand("/usr/bin/git", ["-C", repo, "rev-parse", "HEAD"], {
+  const headInitial = runCommand("/usr/bin/git", ["-C", repo, "rev-parse", "HEAD"], {
     timeout: COMMAND_TIMEOUT_MS.git,
     environment: CLOSED_GIT_ENVIRONMENT,
   });
-  if (head.timedOut === true) {
-    return { sha: null, clean: false, error: "checkout probe timed out" };
-  }
-  const sha = head.status === 0 ? (head.stdout ?? "").trim() : "";
-  if (!BUILD_MARKER_SHA_PATTERN.test(sha)) {
-    return { sha: null, clean: false, error: "checkout probe unavailable" };
-  }
   const status = runCommand("/usr/bin/git", [
     "-C",
     repo,
@@ -1384,13 +1437,25 @@ function readDeployCheckout(repo, runCommand) {
     timeout: COMMAND_TIMEOUT_MS.git,
     environment: CLOSED_GIT_ENVIRONMENT,
   });
-  if (status.timedOut === true) {
+  const headFinal = runCommand("/usr/bin/git", ["-C", repo, "rev-parse", "HEAD"], {
+    timeout: COMMAND_TIMEOUT_MS.git,
+    environment: CLOSED_GIT_ENVIRONMENT,
+  });
+  if (headInitial.timedOut === true || status.timedOut === true || headFinal.timedOut === true) {
     return { sha: null, clean: false, error: "checkout probe timed out" };
   }
-  if (status.status !== 0 || typeof status.stdout !== "string") {
+  const initialSha = headInitial.status === 0 ? (headInitial.stdout ?? "").trim() : "";
+  const finalSha = headFinal.status === 0 ? (headFinal.stdout ?? "").trim() : "";
+  if (!BUILD_MARKER_SHA_PATTERN.test(initialSha)
+    || !BUILD_MARKER_SHA_PATTERN.test(finalSha)
+    || status.status !== 0
+    || typeof status.stdout !== "string") {
     return { sha: null, clean: false, error: "checkout probe unavailable" };
   }
-  return { sha, clean: status.stdout.length === 0, error: null };
+  if (initialSha !== finalSha) {
+    return { sha: null, clean: false, error: "checkout changed during probe" };
+  }
+  return { sha: finalSha, clean: status.stdout.length === 0, error: null };
 }
 
 export function runCommandSync(command, args, options = {}) {
@@ -1461,22 +1526,25 @@ export async function runFleetGreenCheck(options = {}) {
     return { exitCode: 0 };
   }
 
-  const discovered = discoverInstances(launchAgentsDir, runCommand, readdir);
+  const discovery = discoverInstances(launchAgentsDir, runCommand, readdir);
+  const discovered = discovery.byLabel;
   const selectedLabels = args.labels ?? args.expectLabels ?? [...discovered.keys()];
-  const fleetLabelError = evaluateExpectedLabels(discovered.keys(), args.expectLabels);
+  const initialFleetLabelError = evaluateExpectedLabels(discovered.keys(), args.expectLabels);
   const { repo: deployRepo, warning: repoWarning } = resolveDeployRepo(discovered, args.repo);
   const deployed = readDeployCheckout(deployRepo, runCommand);
   const since = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
   const date = now.toISOString().slice(0, 10);
+  const initialMarkerProbes = new Map();
 
   const selected = selectedLabels.map((label) => {
     const entry = discovered.get(label) ?? { label, dir: null, nodePath: null, cliPath: null };
-    return { entry, instance: collectInstance(entry, since, runCommand) };
+    return { entry, instance: collectInstance(entry, since, runCommand, initialMarkerProbes) };
   });
   const instances = selected.map(({ instance }) => instance);
-  // Close checkout/output/identity races only after every expensive row has
-  // completed. The raw plist metadata remains local to this collection seam;
-  // only closed probe results enter the report.
+  // Refresh every per-instance process identity only after all expensive rows
+  // complete. Provenance and checkout remain open until the terminal phases;
+  // no shared cache weakens these instance-specific checks.
+  const provenanceSelections = [];
   for (const { entry, instance } of selected) {
     if (instance.loaded.ran !== true
       || instance.loaded.checkoutUnavailable === true
@@ -1487,17 +1555,67 @@ export async function runFleetGreenCheck(options = {}) {
     }
     const repo = deriveRepoFromCliPath(entry.cliPath);
     if (repo === null) continue;
-    instance.loaded.markerFinal = runBuildMarkerProbe(entry.nodePath, repo, entry.pathEnv, runCommand);
-    instance.loaded.checkoutFinal = readDeployCheckout(repo, runCommand);
     instance.loaded.processIdentity = runProcessIdentityProbe(
       instance.service.pid,
       entry.programArguments,
       entry.dir,
       runCommand,
     );
+    provenanceSelections.push({ entry, instance, repo });
   }
-  // Launchd state is the last fleet-wide snapshot, after every provenance and
-  // identity refresh, so an early service cannot restart behind later rows.
+  // The persisted launchd definition is proof, not merely discovery input.
+  // Re-convert the canonical filename after every expensive/runtime probe and
+  // compare both its exact converted bytes and its accepted closed shape.
+  for (const { entry, instance } of selected) {
+    if (typeof entry.plistFingerprint !== "string" || typeof entry.plistShapeFingerprint !== "string") continue;
+    const rechecked = readValidatedLaunchdPlist(
+      join(launchAgentsDir, `${entry.label}.plist`),
+      entry.label,
+      runCommand,
+    );
+    instance.loaded.plistRecheck = rechecked.status === "ok"
+      ? {
+          status: "ok",
+          fingerprint: rechecked.fingerprint,
+          shapeFingerprint: rechecked.shapeFingerprint,
+        }
+      : { status: "unavailable", ...(rechecked.timedOut === true ? { timedOut: true } : {}) };
+  }
+  let finalTopologyFingerprint = null;
+  try {
+    finalTopologyFingerprint = managedPlistTopologyFingerprint(readdir(launchAgentsDir));
+  } catch {
+    // Closed below without retaining filesystem details.
+  }
+  const topologyError = discovery.topologyFingerprint === null || finalTopologyFingerprint === null
+    ? "fleet plist topology unavailable"
+    : discovery.topologyFingerprint === finalTopologyFingerprint
+      ? null
+      : "fleet plist topology changed during probe";
+  const fleetLabelError = initialFleetLabelError ?? topologyError;
+
+  // Terminal dependency/output proof is shared only by exact deployment
+  // identity and occurs after all row, identity, plist, and topology work.
+  const finalMarkerProbes = new Map();
+  for (const { entry, instance, repo } of provenanceSelections) {
+    instance.loaded.markerFinal = runCachedBuildMarkerProbe(
+      finalMarkerProbes,
+      entry.nodePath,
+      repo,
+      entry.pathEnv,
+      runCommand,
+    );
+  }
+
+  // Bind every instance to the checkout state observed after terminal build
+  // provenance. Each read brackets status with HEAD to reject an internal
+  // checkout switch, while remaining independent across instances.
+  for (const { instance, repo } of provenanceSelections) {
+    instance.loaded.checkoutFinal = readDeployCheckout(repo, runCommand);
+  }
+
+  // Launchd state is the actual final external fleet probe. Nothing may read
+  // plist, topology, process identity, provenance, or checkout after this pass.
   for (const instance of instances) {
     instance.loaded.serviceRecheck = launchctlList(instance.label, runCommand);
   }

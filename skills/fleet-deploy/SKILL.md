@@ -35,7 +35,9 @@ and the global `mono-agent` CLI is an npm-global symlink to the same package.
 also atomically publishes the ignored, owner-only `.mono-agent-build.json`
 completion marker on supported POSIX/macOS deploy hosts. The marker binds that
 build to the full checkout SHA, source state, Node version, modules ABI,
-completion instant, and a deterministic digest of every deploy output. The
+completion instant, a deterministic digest of every deploy output, and a
+separate digest of the installed root/workspace dependency topology, modes, and bytes
+(including native addons). The
 wrapper holds the exclusive `.mono-agent-build.lock` from before it clears the
 old marker through output sync and marker publication. A failed, interrupted, or
 overlapping build therefore cannot leave stale dist certified. Running instances
@@ -44,20 +46,18 @@ keep old in-memory code until restarted.
 ## Standard deploy (main = normal checkout)
 
 Run from the fleet checkout (`cd "$(git rev-parse --show-toplevel)"`), working
-tree clean. Do steps 1–5 in one uninterrupted pass:
+tree clean. Do steps 1–4 in one uninterrupted pass:
 
 ```bash
 git fetch origin main && git reset --hard <sha>   # 1. or: git pull --ff-only; tree MUST be clean first
 pnpm install --frozen-lockfile                     # 2.
-pnpm run build                                     # 3. builds dist, then publishes the build marker
-chmod +x packages/agent-app/dist/cli.js \
-         packages/tui/dist/bin/mono-agent-tui.js   # 4. tsc output isn't executable; the mono-agent symlink needs it
-# 5. rolling restart, orchestrator FIRST, personal-agent LAST (see "Restart + verify")
+pnpm run build                                     # 3. builds dist, finalizes executable modes, then publishes the marker
+# 4. rolling restart, orchestrator FIRST, personal-agent LAST (see "Restart + verify")
 ```
 
 **Never leave the tree between install and restart.** `pnpm install` rewrites
 `node_modules` symlinks, so the old dist the running instances still exec can
-break the moment step 2 lands — rebuild (3–4) and restart (5) before walking away.
+break the moment step 2 lands — rebuild (3) and restart (4) before walking away.
 Do not replace step 3 with `pnpm -r --sort run build`: that command is useful for
 a development-worktree dist baseline, but it deliberately does not publish the
 root deployment marker.
@@ -106,10 +106,13 @@ for every service, checks loaded-code provenance, exact launchd Node
 version/modules ABI, deployed `validate --json`, strict memory health, and
 last-24h run health, then prints
 `instance | service | loaded | runtime | validate | memory | runs-24h | notes`
-plus `VERDICT: GREEN|RED`. Run it from any checkout of this repo — every runtime,
-marker, and CLI probe uses that instance plist's exact `ProgramArguments[0]`
-Node and every CLI probe uses `ProgramArguments[1]` cli.js, never the ambient
-shell's `node` or this checkout's CLI:
+plus `VERDICT: GREEN|RED`. Run the authoritative gate from the deployed checkout
+(or an exact checkout that implements the same build-marker schema). Runtime
+and CLI probes use each instance plist's exact `ProgramArguments[0]` Node and
+`ProgramArguments[1]` cli.js, never the ambient shell's `node` or the checker's
+CLI. The build-provenance probe belongs to the checker checkout, so a newer
+checker intentionally fails closed on an older marker schema instead of
+claiming cross-version proof:
 
 ```bash
 FLEET_LABELS='com.mono-agent.activity-digest-0680cd0b,com.mono-agent.deep-research-cd0b9a0d,com.mono-agent.finances-e9c073d7,com.mono-agent.inner-child-fdfc3392,com.mono-agent.orchestrator-2146e3d3,com.mono-agent.p2-watcher-e537b146,com.mono-agent.personal-agent-059657c8,com.mono-agent.slack-sweep-aa87c1b8,com.mono-agent.transcription-f4a742c8'
@@ -149,12 +152,14 @@ PID, `loaded` requires its actual argv and cwd to match that canonical plist
 contract exactly, an absent build lock, and an exact owner-only build marker.
 The checkout must be clean and remain on the same full SHA across both reads;
 the marker SHA must equal that SHA and the expected SHA, its Node/ABI must equal
-the running runtime, its recorded output digest must equal a fresh digest of the
-current deploy outputs, and the process must start after build completion. The
-checker repeats the marker, digest, and checkout-state probes, then performs one
-global final launchd PID/state pass only after every expensive fleet row has
-finished. A concurrent build, output mutation, checkout change, or early-row PID
-restart fails closed instead of blessing either side of the race. The memory
+the running runtime, and its recorded output and dependency digests must equal
+fresh digests of the current deploy outputs and installed dependency tree. The
+process must start after build completion. The checker repeats the marker,
+digests, and checkout-state probes, revalidates the exact selected plist
+fingerprint, then performs one global final launchd PID/state pass only after
+every expensive fleet row has finished. A concurrent build, output/dependency
+mutation, persisted-plist replacement, checkout change, or early-row PID restart
+fails closed instead of blessing either side of the race. The memory
 probe is `memory audit --strict --json`.
 `healthy` passes, `in_progress` warns without making the verdict red,
 `not_configured` skips, and `degraded`, `unhealthy`, `unknown`, malformed JSON,

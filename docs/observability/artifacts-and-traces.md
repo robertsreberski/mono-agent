@@ -202,17 +202,23 @@ service's exact Node executable, CLI path, absolute `--config`/`--env-file` argu
 the Node/ABI, build-marker, `validate --json`, `memory audit --strict --json`, and `metrics --json`
 probes. It also requires a running PID whose actual argv and cwd exactly match the plist contract.
 On supported POSIX/macOS hosts, the root build holds an exclusive lock from before clearing the old
-marker through package/demo build, output sync, deterministic output-digest calculation, and atomic
-owner-only marker publication.
+marker through package/demo build, required CLI/TUI executable-mode finalization, output sync,
+deterministic output-digest calculation, installed
+root/workspace dependency-tree calculation, and atomic owner-only marker publication. The dependency
+digest covers file bytes, modes, and canonical symlink topology without following links, so rebuilding a
+native addon, removing an executable bit, or rewriting installed JavaScript invalidates the proof even
+when the lockfile and source SHA are unchanged. Links may resolve only within an attested dependency
+root or to an exact workspace package root; arbitrary ignored in-repository referents fail closed.
 
 For every running PID, the check requires the build lock to be absent, the checkout to be clean and
 stable across both reads, and the marker's full SHA to match both that checkout and the full
-per-instance expected SHA. Marker Node/ABI must match the runtime, its output digest must match a
-fresh digest of the current deploy outputs, and the process must have started after build completion.
-It repeats the marker, digest, and checkout-state probes, then performs a global final launchd
-PID/state pass after every expensive row completes. This closes build, mutation, checkout, and
-early-row restart races. Every expected fleet service must be running; a clean prior exit is not
-green.
+per-instance expected SHA. Marker Node/ABI must match the runtime, its output and dependency digests
+must match fresh digests of the current deploy outputs and installed dependency tree, and the process
+must have started after build completion. It repeats the marker, digests, and checkout-state probes,
+reconverts each selected canonical plist and requires its fingerprint to remain unchanged, then
+performs a global final launchd PID/state pass after every expensive row completes. This closes build,
+dependency mutation, persisted-launch-contract replacement, checkout, and early-row restart races.
+Every expected fleet service must be running; a clean prior exit is not green.
 
 Probe children retain only non-secret, launchd-safe operational environment values; shell-only
 `MONO_AGENT_*`, provider credentials, `NODE_OPTIONS`, and proxy overrides cannot make the check
