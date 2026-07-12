@@ -639,8 +639,12 @@ export function createOpenAIApiChannelDriver(
         responder: input.responder,
         ...(input.logger === undefined ? {} : { logger: input.logger }),
       });
+      const baseUrls = adapter.baseUrls ?? [adapter.baseUrl];
       return {
-        summary: { baseUrl: adapter.baseUrl },
+        summary: {
+          baseUrl: adapter.baseUrl,
+          ...(baseUrls.length > 1 ? { baseUrls } : {}),
+        },
         stop: () => adapter.stop(),
       };
     },

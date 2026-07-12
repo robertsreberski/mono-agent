@@ -5,20 +5,69 @@ import {
   bearerTokensEqual,
   hostForUrl,
   isLoopbackHost,
+  isWildcardHost,
+  normalizeHostForBind,
   readAuthorizationBearer,
 } from "../index.js";
 
 describe("isLoopbackHost", () => {
-  it("recognizes loopback forms including the 127/8 range and IPv6", () => {
-    for (const host of ["localhost", "127.0.0.1", "127.5.5.5", "::1", "[::1]", "LOCALHOST"]) {
+  it("recognizes exact loopback forms including mapped IPv6", () => {
+    for (const host of [
+      "localhost",
+      "LOCALHOST",
+      "127.0.0.1",
+      "127.5.5.5",
+      "::1",
+      "[::1]",
+      "::ffff:127.0.0.1",
+      "[::ffff:7f05:505]",
+    ]) {
       expect(isLoopbackHost(host)).toBe(true);
     }
   });
 
-  it("rejects public hosts", () => {
-    for (const host of ["0.0.0.0", "10.0.0.1", "example.com", "192.168.1.1"]) {
+  it("rejects public, malformed, and loopback-looking hostnames", () => {
+    for (const host of [
+      "0.0.0.0",
+      "10.0.0.1",
+      "example.com",
+      "192.168.1.1",
+      "127.attacker.example",
+      "127.0.0.1.attacker.example",
+      "127.0.0.1:80",
+      "127.1",
+      "127.00.00.01",
+      "[127.0.0.1]",
+      "[::1",
+      "::1]",
+      "::ffff:126.255.255.255",
+      "::ffff:128.0.0.1",
+      "::ffff:example.com",
+      "localhost.attacker.example",
+      " localhost",
+    ]) {
       expect(isLoopbackHost(host)).toBe(false);
     }
+  });
+});
+
+describe("bind-host normalization", () => {
+  it("removes matched IPv6 brackets without accepting malformed pairs", () => {
+    expect(normalizeHostForBind("[::1]")).toBe("::1");
+    expect(normalizeHostForBind("::1")).toBe("::1");
+    expect(normalizeHostForBind("[::1")).toBe("[::1");
+  });
+
+  it("recognizes exact wildcard forms", () => {
+    expect(isWildcardHost("0.0.0.0")).toBe(true);
+    expect(isWildcardHost("::")).toBe(true);
+    expect(isWildcardHost("[::]")).toBe(true);
+    expect(isWildcardHost("0:0:0:0:0:0:0:0")).toBe(true);
+    expect(isWildcardHost("::ffff:0.0.0.0")).toBe(true);
+    expect(isWildcardHost("[::ffff:0.0.0.0]")).toBe(true);
+    expect(isWildcardHost("0:0:0:0:0:ffff:0:0")).toBe(true);
+    expect(isWildcardHost("::ffff:0.0.0.1")).toBe(false);
+    expect(isWildcardHost("0.0.0.0.example")).toBe(false);
   });
 });
 

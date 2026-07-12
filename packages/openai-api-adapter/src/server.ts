@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import { networkInterfaces } from "node:os";
 
 import {
   BufferedMessageStream,
@@ -16,7 +17,10 @@ import {
   bearerTokensEqual,
   close,
   hostForUrl,
+  isLoopbackHost,
+  isWildcardHost,
   listen,
+  normalizeHostForBind,
   readAuthorizationBearer,
 } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
@@ -105,8 +109,11 @@ export interface OpenAIApiAdapterOptions {
 }
 
 export interface OpenAIApiAdapterStartResult {
+  /** Primary usable origin (loopback for wildcard binds), never an unspecified address. */
   readonly url: string;
   readonly baseUrl: string;
+  /** Every concrete loopback/private-LAN/Tailscale base URL discovered for this bind. */
+  readonly baseUrls: readonly string[];
   readonly modelsUrl: string;
   readonly chatCompletionsUrl: string;
   readonly host: string;
@@ -130,6 +137,7 @@ interface ChatCompletionChunkInput {
 }
 
 const OPENAI_OWNED_BY = "host";
+const FORCE_CLOSE_AFTER_MS = 250;
 const SENSITIVE_REQUEST_HEADERS = new Set([
   "authorization",
   "cookie",
@@ -151,7 +159,7 @@ export async function startOpenAIApiAdapter(
   options: OpenAIApiAdapterOptions,
 ): Promise<OpenAIApiAdapterStartResult> {
   validateOptions(options);
-  const host = options.host ?? DEFAULT_HOST;
+  const host = normalizeHostForBind(options.host ?? DEFAULT_HOST);
   const port = options.port ?? DEFAULT_PORT;
   const basePath = normalizeBasePath(options.basePath ?? DEFAULT_BASE_PATH);
   const modelId = normalizeOptionalString(options.modelId) ?? DEFAULT_MODEL_ID;
@@ -162,9 +170,19 @@ export async function startOpenAIApiAdapter(
       "OpenAI API adapter refuses to bind a non-loopback host unless allowNonLoopback is true.",
       { host: boundHost },
     ));
+  if (!isLoopbackHost(host) && apiKey === undefined) {
+    throw new OpenAIApiAdapterError(
+      "missing_required_config",
+      "OpenAI API adapter requires an API key for every non-loopback bind.",
+      { host },
+    );
+  }
 
   const app = express();
   const server = createServer(app);
+  const activeRequests = new Set<AbortController>();
+  let stopping = false;
+  let stopPromise: Promise<void> | undefined;
   const modelsPath = `${basePath}/models`;
   const chatCompletionsPath = `${basePath}/chat/completions`;
   const basePostPath = basePath.length === 0 ? "/" : basePath;
@@ -222,13 +240,13 @@ export async function startOpenAIApiAdapter(
       new OpenAIApiAdapterError("start_failed", "OpenAI API adapter did not receive a TCP address."),
   });
   const boundPort = address.port;
-  const url = `http://${hostForUrl(host)}:${boundPort}`;
 
   async function handleChatCompletion(req: Request, res: Response): Promise<void> {
     const requestId = randomUUID();
     const receivedAt = new Date().toISOString();
     const body = normalizeChatBody(req.body, req.headers, requestId, modelId);
     const controller = new AbortController();
+    activeRequests.add(controller);
     // Inline base64 data: image_url parts into the shared attachments contract so
     // they reach the agent through the generic responder/harness path (the
     // imageAttachments field alone is not forwarded). Remote/file URL images are
@@ -262,25 +280,156 @@ export async function startOpenAIApiAdapter(
       }
     });
 
-    if (body.stream) {
-      await runStreamingResponder({ request, response: res, requestId, model: body.model, options });
-      return;
-    }
+    try {
+      if (stopping) {
+        controller.abort(new Error("OpenAI API adapter is stopping."));
+      }
+      if (body.stream) {
+        await runStreamingResponder({ request, response: res, requestId, model: body.model, options });
+        return;
+      }
 
-    await runJsonResponder({ request, response: res, requestId, model: body.model, options });
+      await runJsonResponder({ request, response: res, requestId, model: body.model, options });
+    } finally {
+      activeRequests.delete(controller);
+    }
   }
+
+  async function closeRejectedServer(): Promise<void> {
+    stopping = true;
+    for (const controller of activeRequests) {
+      controller.abort(new Error("OpenAI API adapter rejected its actual bound address."));
+    }
+    await closeServerBounded(server);
+    activeRequests.clear();
+  }
+
+  const boundNonLoopback = !isLoopbackHost(address.address);
+  if (boundNonLoopback && options.allowNonLoopback !== true) {
+    await closeRejectedServer();
+    throw new OpenAIApiAdapterError(
+      "unsafe_host",
+      "OpenAI API adapter resolved a loopback host to a non-loopback bind address.",
+      { host, boundAddress: address.address },
+    );
+  }
+  if (boundNonLoopback && apiKey === undefined) {
+    await closeRejectedServer();
+    throw new OpenAIApiAdapterError(
+      "missing_required_config",
+      "OpenAI API adapter requires an API key when the actual bound address is non-loopback.",
+      { host, boundAddress: address.address },
+    );
+  }
+
+  const origins = advertisedOrigins(host, address.address, boundPort);
+  const url = origins[0] ?? `http://${hostForUrl(host)}:${boundPort}`;
+  const baseUrls = origins.map((origin) => `${origin}${basePath}`);
 
   return {
     url,
     baseUrl: `${url}${basePath}`,
+    baseUrls,
     modelsUrl: `${url}${modelsPath}`,
     chatCompletionsUrl: `${url}${chatCompletionsPath}`,
     host,
     port: boundPort,
-    async stop() {
-      await close(server);
+    stop() {
+      stopPromise ??= (async () => {
+        stopping = true;
+        for (const controller of activeRequests) {
+          controller.abort(new Error("OpenAI API adapter stopped."));
+        }
+        await closeServerBounded(server);
+        activeRequests.clear();
+      })();
+      return stopPromise;
     },
   };
+}
+
+function advertisedOrigins(host: string, boundAddress: string, port: number): readonly string[] {
+  const wildcardHost = isWildcardHost(host)
+    ? host
+    : isWildcardHost(boundAddress)
+      ? boundAddress
+      : undefined;
+  const hosts = wildcardHost !== undefined
+    ? [loopbackForWildcardHost(wildcardHost), ...discoverPrivateIpv4Addresses()]
+    : [host];
+  return [...new Set(hosts)].map((entry) => `http://${hostForUrl(entry)}:${port}`);
+}
+
+function loopbackForWildcardHost(host: string): "127.0.0.1" | "::1" {
+  const normalized = normalizeHostForBind(host).toLowerCase();
+  if (normalized === "0.0.0.0") {
+    return "127.0.0.1";
+  }
+  try {
+    const canonical = new URL(`http://[${normalized}]/`).hostname.slice(1, -1);
+    if (canonical === "::ffff:0:0") {
+      return "127.0.0.1";
+    }
+  } catch {
+    // isWildcardHost already validated the caller; fall through defensively.
+  }
+  return "::1";
+}
+
+function discoverPrivateIpv4Addresses(): readonly string[] {
+  const addresses: string[] = [];
+  try {
+    for (const entries of Object.values(networkInterfaces())) {
+      for (const entry of entries ?? []) {
+        if (!entry.internal && entry.family === "IPv4" && isLanOrTailscaleIpv4(entry.address)) {
+          addresses.push(entry.address);
+        }
+      }
+    }
+  } catch {
+    return [];
+  }
+  return addresses.sort((left, right) => left.localeCompare(right));
+}
+
+function isLanOrTailscaleIpv4(address: string): boolean {
+  const octets = address.split(".").map((part) => Number.parseInt(part, 10));
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  const [first = -1, second = -1] = octets;
+  return first === 10
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168)
+    || (first === 100 && second >= 64 && second <= 127);
+}
+
+async function closeServerBounded(server: ReturnType<typeof createServer>): Promise<void> {
+  const closePromise = close(server);
+  void closePromise.catch(() => undefined);
+  server.closeIdleConnections();
+  let forceTimer: ReturnType<typeof setTimeout> | undefined;
+  const force = new Promise<"forced">((resolvePromise) => {
+    forceTimer = setTimeout(() => {
+      server.closeAllConnections();
+      resolvePromise("forced");
+    }, FORCE_CLOSE_AFTER_MS);
+    forceTimer.unref?.();
+  });
+  const outcome = await Promise.race([closePromise.then(() => "closed" as const), force]);
+  if (outcome === "closed") {
+    if (forceTimer !== undefined) {
+      clearTimeout(forceTimer);
+    }
+    return;
+  }
+  await Promise.race([
+    closePromise.catch(() => undefined),
+    new Promise<void>((resolvePromise) => {
+      const timer = setTimeout(resolvePromise, FORCE_CLOSE_AFTER_MS);
+      timer.unref?.();
+    }),
+  ]);
 }
 
 async function runJsonResponder(input: {

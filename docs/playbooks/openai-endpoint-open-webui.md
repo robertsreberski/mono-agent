@@ -41,22 +41,27 @@ All three are `config` coverage — no code required.
     "port": 4040,
     "basePath": "/v1",
     "allowNonLoopback": true,
-    "modelId": "my-agent",
-    "apiKey": "sk-secret"
+    "modelId": "my-agent"
   }
 }
 ```
 
 :::caution
-Binding to a non-loopback host (`0.0.0.0`) requires `allowNonLoopback: true` — the server refuses public binds otherwise. Always set `apiKey` when the endpoint is reachable off-host; clients must then send `Authorization: Bearer sk-...`.
+Binding to a non-loopback host (`0.0.0.0`) requires both `allowNonLoopback: true` and `MONO_AGENT_OPENAI_API_KEY` — validation and startup refuse the configuration if either guard is missing. Clients send the key as an `Authorization: Bearer ...` header.
 :::
+
+Create an owner-only `.env` in the invocation folder (`chmod 600 .env`) and add:
+
+```dotenv
+MONO_AGENT_OPENAI_API_KEY=<strong-client-bearer>
+```
 
 The same settings can be supplied via environment variables (`MONO_AGENT_*`); see [Environment variables](/config/env-vars/) for the full mapping.
 
 ## Steps
 
 1. `mono-agent init --model claude:claude-sonnet-4-6`
-2. Add the `openaiApi` section; set `allowNonLoopback: true` for a non-loopback bind, set `apiKey` and `modelId`, and enable continuous session mode under `runtime.session`.
+2. Add the `openaiApi` section; set `allowNonLoopback: true` for a non-loopback bind, put `MONO_AGENT_OPENAI_API_KEY` in the owner-only `.env`, set `modelId`, and enable continuous session mode under `runtime.session`.
 3. `mono-agent validate`, then `mono-agent start` and confirm the status line reports `openaiApi` `running` with its endpoint.
 4. In Open WebUI, add an OpenAI connection pointing at `http://host:4040/v1` with the bearer key.
 5. Send two consecutive messages in one Open WebUI chat and confirm continuity (only the latest user turn is forwarded per conversation; prior context comes from the continuous session keyed by the chat id header).
