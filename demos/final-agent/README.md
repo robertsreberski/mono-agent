@@ -194,13 +194,12 @@ Enable the OpenAI API adapter with a real runtime configuration:
     "host": "127.0.0.1",
     "port": 4311,
     "basePath": "/v1",
-    "modelId": "agent",
-    "apiKey": "demo-key"
+    "modelId": "agent"
   }
 }
 ```
 
-Start the demo and use the printed OpenAI API base URL in OpenWebUI. If OpenWebUI runs in local Docker while the demo runs on the host, keep the adapter bound to host loopback (`127.0.0.1`) and use `http://host.docker.internal:4311/v1` from OpenWebUI instead of `http://127.0.0.1:4311/v1`. Only bind a non-loopback/public host when `allowNonLoopback` is explicitly enabled; that setup should configure an `apiKey` and sit behind appropriate network protection such as a firewall, VPN, TLS-terminating reverse proxy, or private network. Set OpenWebUI's API key to the same `apiKey` only when one is configured; otherwise leave the adapter key unset for loopback-only local use.
+Put `MONO_AGENT_OPENAI_API_KEY=demo-key` in the demo invocation folder's owner-only `.env` (`chmod 600 .env`) when client authentication is desired. Start the demo and use the printed OpenAI API base URL in OpenWebUI. If OpenWebUI runs in local Docker while the demo runs on the host, keep the adapter bound to host loopback (`127.0.0.1`) and use `http://host.docker.internal:4311/v1` from OpenWebUI instead of `http://127.0.0.1:4311/v1`. Only bind a non-loopback/public host when `allowNonLoopback` is explicitly enabled; that setup requires `MONO_AGENT_OPENAI_API_KEY` and should sit behind appropriate network protection such as a firewall, VPN, TLS-terminating reverse proxy, or private network. Set OpenWebUI's API key to the same environment value only when one is configured; otherwise leave the adapter key unset for loopback-only local use.
 
 Terminal smoke:
 
@@ -337,6 +336,7 @@ MONO_AGENT_OPENAI_API_HOST=127.0.0.1
 MONO_AGENT_OPENAI_API_PORT=4311
 MONO_AGENT_OPENAI_API_BASE_PATH=/v1
 MONO_AGENT_OPENAI_API_MODEL_ID=mono-agent
+# Keep this .env owner-only (chmod 600); use a strong value outside demos.
 MONO_AGENT_OPENAI_API_KEY=demo-key
 MONO_AGENT_CRON_ENABLED=true
 MONO_AGENT_CRON_EXPRESSION="0 * * * *"

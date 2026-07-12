@@ -228,8 +228,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "port": 4040,
     "basePath": "/v1",                     // serves /v1/models + /v1/chat/completions (SSE)
     "allowNonLoopback": false,
-    "modelId": "my-agent",                 // model id advertised to API clients
-    "apiKey": "sk-..."                     // optional bearer required from clients
+    "modelId": "my-agent"                  // model id advertised to API clients
   },
 
   // Telegram & Slack deliver only the FINAL answer by default (no streamed

@@ -1,10 +1,14 @@
+import dns from "node:dns";
 import { mkdir, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { createConnection, type AddressInfo } from "node:net";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RUNS_HEALTH_STALE_RUNNING_MS } from "@mono-agent/observability";
 
+import { SessionAggregator } from "../aggregator.js";
 import { startSessionWebServer } from "../server.js";
 import type { SessionWebServerHandle } from "../server.js";
 import { makeTmpDir, readSseFrames, registerSource, removeDir, seedRun, seedRunningRun } from "./helpers.js";
@@ -394,6 +398,60 @@ describe("startSessionWebServer", () => {
     }
   });
 
+  it("stops the aggregator exactly once across repeated stop calls", async () => {
+    const stopAggregator = vi.spyOn(SessionAggregator.prototype, "stop");
+    try {
+      const fix = await fixture();
+      server = await startSessionWebServer({ registryDirs: [fix.registryDir], port: 0, staticDir: fix.staticDir });
+
+      const firstStop = server.stop();
+      const repeatedStop = server.stop();
+      expect(repeatedStop).toBe(firstStop);
+      await firstStop;
+      server = undefined;
+
+      expect(stopAggregator).toHaveBeenCalledTimes(1);
+    } finally {
+      stopAggregator.mockRestore();
+    }
+  });
+
+  it.each([undefined, "session-secret"])(
+    "bounds repeated shutdown with a partial HTTP header (auth token: %s)",
+    async (authToken) => {
+      const fix = await fixture();
+      server = await startSessionWebServer({
+        registryDirs: [fix.registryDir],
+        port: 0,
+        staticDir: fix.staticDir,
+        ...(authToken === undefined ? {} : { authToken }),
+      });
+      const url = new URL(server.url);
+      const port = Number.parseInt(url.port, 10);
+      const socket = createConnection({ host: "127.0.0.1", port });
+      await new Promise<void>((resolvePromise, rejectPromise) => {
+        socket.once("connect", resolvePromise);
+        socket.once("error", rejectPromise);
+      });
+      socket.write("GET /api/instances HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer");
+      await sleep(20);
+
+      const firstStop = server.stop();
+      const repeatedStop = server.stop();
+      expect(repeatedStop).toBe(firstStop);
+      server = undefined;
+      try {
+        await expect(
+          Promise.race([firstStop.then(() => "stopped" as const), sleep(1_000).then(() => "timeout" as const)]),
+        ).resolves.toBe("stopped");
+      } finally {
+        socket.destroy();
+        await firstStop.catch(() => undefined);
+      }
+      await expectPortReusable(port);
+    },
+  );
+
   it("serves the SPA index.html for the root and unknown client routes", async () => {
     const fix = await fixture();
     server = await startSessionWebServer({ registryDirs: [fix.registryDir], port: 0, staticDir: fix.staticDir });
@@ -417,6 +475,16 @@ describe("startSessionWebServer", () => {
     ).rejects.toThrow(/non-loopback/u);
   });
 
+  it.each(["127.attacker.example", "127.0.0.1.attacker.example", "localhost.attacker.example"])(
+    "does not trust a loopback-looking hostname (%s)",
+    async (host) => {
+      const fix = await fixture();
+      await expect(
+        startSessionWebServer({ registryDirs: [fix.registryDir], host, port: 0, staticDir: fix.staticDir }),
+      ).rejects.toThrow(/non-loopback/u);
+    },
+  );
+
   it("requires an auth token before binding a non-loopback host", async () => {
     const fix = await fixture();
     await expect(
@@ -428,6 +496,27 @@ describe("startSessionWebServer", () => {
         staticDir: fix.staticDir,
       }),
     ).rejects.toThrow(/auth token/u);
+  });
+
+  it("requires auth when localhost resolves non-loopback after exposure consent", async () => {
+    const fix = await fixture();
+    const port = await reserveLoopbackPort();
+    const originalLookup = dns.lookup;
+    dns.lookup = wildcardLocalhostLookup as typeof dns.lookup;
+    try {
+      await expect(
+        startSessionWebServer({
+          registryDirs: [fix.registryDir],
+          staticDir: fix.staticDir,
+          host: "localhost",
+          port,
+          allowNonLoopback: true,
+        }),
+      ).rejects.toThrow(/actual bound address is non-loopback/u);
+      await expectPortReusable(port);
+    } finally {
+      dns.lookup = originalLookup;
+    }
   });
 
   it("requires bearer auth on API and stream routes for non-loopback binds", async () => {
@@ -452,7 +541,7 @@ describe("startSessionWebServer", () => {
     expect(authedApi.status).toBe(200);
 
     const queryAuthedApi = await fetch(localLoopbackUrl(server.url, "api/instances?token=session-secret"));
-    expect(queryAuthedApi.status).toBe(200);
+    expect(queryAuthedApi.status).toBe(401);
 
     const unauthStream = await fetch(localLoopbackUrl(server.url, "api/stream"));
     const unauthStreamStatus = unauthStream.status;
@@ -466,10 +555,65 @@ describe("startSessionWebServer", () => {
     await authedStream.body?.cancel().catch(() => undefined);
     expect(authedStreamStatus).toBe(200);
   });
+
+  it("honors an explicitly configured token on loopback", async () => {
+    const fix = await fixture();
+    server = await startSessionWebServer({
+      registryDirs: [fix.registryDir],
+      host: "[::1]",
+      port: 0,
+      staticDir: fix.staticDir,
+      authToken: "loopback-secret",
+    });
+
+    expect(server.url).toMatch(/^http:\/\/\[::1\]:\d+\/$/u);
+    expect((await fetch(`${server.url}api/instances`)).status).toBe(401);
+    expect((await fetch(`${server.url}api/instances`, {
+      headers: { authorization: "Bearer loopback-secret" },
+    })).status).toBe(200);
+  });
 });
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function reserveLoopbackPort(): Promise<number> {
+  const probe = createServer();
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.once("error", rejectPromise);
+    probe.listen(0, "127.0.0.1", () => resolvePromise());
+  });
+  const address = probe.address() as AddressInfo;
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.close((error) => error === undefined ? resolvePromise() : rejectPromise(error));
+  });
+  return address.port;
+}
+
+async function expectPortReusable(port: number): Promise<void> {
+  const probe = createServer();
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.once("error", rejectPromise);
+    probe.listen(port, "127.0.0.1", () => resolvePromise());
+  });
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.close((error) => error === undefined ? resolvePromise() : rejectPromise(error));
+  });
+}
+
+function wildcardLocalhostLookup(
+  _hostname: string,
+  options: unknown,
+  callback?: unknown,
+): void {
+  const done = typeof options === "function" ? options : callback;
+  if (typeof done !== "function") {
+    throw new TypeError("dns.lookup callback is required");
+  }
+  queueMicrotask(() => {
+    (done as (error: null, address: string, family: number) => void)(null, "0.0.0.0", 4);
+  });
 }
 
 function localLoopbackUrl(serverUrl: string, path: string): string {

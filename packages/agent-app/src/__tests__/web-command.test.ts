@@ -64,6 +64,7 @@ describe("runWeb", () => {
         startServer,
         waitForShutdown: async () => undefined,
         stdout: { write: (text) => (output += text) },
+        interactive: true,
       },
     );
 
@@ -172,13 +173,123 @@ describe("runWeb", () => {
         startServer,
         waitForShutdown: async () => undefined,
         stdout: { write: (text) => (output += text) },
+        interactive: true,
       },
     );
 
     expect(output).toContain("Bound non-loopback");
+    expect(output).toContain("Tailscale Serve is optional");
   });
 
-  it("passes an auth token to non-loopback servers and prints a tokenized URL", async () => {
+  it("normalizes an IPv6 wildcard advertisement to a usable bracketed loopback URL", async () => {
+    const configPath = await testConfig();
+    let output = "";
+    const startServer = vi.fn(async (): Promise<SessionWebServerHandle> => ({
+      url: "http://[::]:4599/",
+      stop: vi.fn(async () => undefined),
+    }));
+
+    await runWeb(
+      {
+        configPath,
+        cwd: dir!,
+        env: { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: join(dir!, "global-trace-sources") },
+        host: "[::]",
+        allowNonLoopback: true,
+        open: false,
+      },
+      {
+        startServer,
+        waitForShutdown: async () => undefined,
+        stdout: { write: (text) => (output += text) },
+        interactive: true,
+        discoverNetworkAddresses: () => [],
+      },
+    );
+
+    expect(output).toContain("mono-agent web  →  http://[::1]:4599/");
+    expect(output).not.toContain("http://[::]:4599/");
+  });
+
+  it("uses the actual wildcard bind to replace an IPv4-mapped unspecified URL", async () => {
+    const configPath = await testConfig();
+    let output = "";
+    const startServer = vi.fn(async (): Promise<SessionWebServerHandle> => ({
+      url: "http://[::ffff:0.0.0.0]:4599/",
+      boundAddress: "::",
+      stop: vi.fn(async () => undefined),
+    }));
+
+    await runWeb(
+      {
+        configPath,
+        cwd: dir!,
+        env: {
+          MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: join(dir!, "global-trace-sources"),
+          MONO_AGENT_WEB_AUTH_TOKEN: "stable-test-token",
+        },
+        host: "[::ffff:0.0.0.0]",
+        allowNonLoopback: true,
+        open: false,
+      },
+      {
+        startServer,
+        waitForShutdown: async () => undefined,
+        stdout: { write: (text) => (output += text) },
+        discoverNetworkAddresses: () => [
+          { address: "192.168.178.103", kind: "lan" },
+          { address: "100.64.103.59", kind: "tailscale" },
+        ],
+      },
+    );
+
+    expect(output).toContain("mono-agent web  →  http://127.0.0.1:4599/");
+    expect(output).toContain("LAN       →  http://192.168.178.103:4599/");
+    expect(output).toContain("Tailscale →  http://100.64.103.59:4599/");
+    expect(output).not.toContain("::ffff:0");
+    expect(output).not.toContain("stable-test-token");
+  });
+
+  it("reports actual non-loopback reachability when localhost resolves to a wildcard", async () => {
+    const configPath = await testConfig();
+    let output = "";
+    const startServer = vi.fn(async (): Promise<SessionWebServerHandle> => ({
+      url: "http://localhost:4599/",
+      boundAddress: "0.0.0.0",
+      stop: vi.fn(async () => undefined),
+    }));
+
+    await runWeb(
+      {
+        configPath,
+        cwd: dir!,
+        env: {
+          MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: join(dir!, "global-trace-sources"),
+          MONO_AGENT_WEB_AUTH_TOKEN: "stable-test-token",
+        },
+        host: "localhost",
+        allowNonLoopback: true,
+        open: false,
+      },
+      {
+        startServer,
+        waitForShutdown: async () => undefined,
+        stdout: { write: (text) => (output += text) },
+        discoverNetworkAddresses: () => [
+          { address: "192.168.178.103", kind: "lan" },
+          { address: "100.64.103.59", kind: "tailscale" },
+        ],
+      },
+    );
+
+    expect(output).toContain("mono-agent web  →  http://127.0.0.1:4599/");
+    expect(output).toContain("LAN       →  http://192.168.178.103:4599/");
+    expect(output).toContain("Tailscale →  http://100.64.103.59:4599/");
+    expect(output).toContain("Bound non-loopback: direct HTTP is available");
+    expect(output).not.toContain("Loopback only.");
+  });
+
+  it("generates auth and prints concrete tokenized loopback, LAN, and Tailscale URLs", async () => {
     const configPath = await testConfig();
     let output = "";
     let capturedOptions: StartSessionWebServerOptions | undefined;
@@ -201,12 +312,198 @@ describe("runWeb", () => {
         openUrl,
         waitForShutdown: async () => undefined,
         stdout: { write: (text) => (output += text) },
+        interactive: true,
+        discoverNetworkAddresses: () => [
+          { address: "100.64.103.59", kind: "tailscale" },
+          { address: "192.168.178.103", kind: "lan" },
+        ],
       },
     );
 
     expect(capturedOptions?.authToken).toMatch(/^[a-f0-9]{64}$/u);
-    expect(output).toContain(`token=${capturedOptions?.authToken}`);
-    expect(openUrl).toHaveBeenCalledWith(expect.stringContaining(`token=${capturedOptions?.authToken}`));
+    const token = capturedOptions?.authToken ?? "";
+    expect(output).toContain(`mono-agent web  →  http://127.0.0.1:4599/#token=${token}`);
+    expect(output).toContain(`LAN       →  http://192.168.178.103:4599/#token=${token}`);
+    expect(output).toContain(`Tailscale →  http://100.64.103.59:4599/#token=${token}`);
+    expect(output).not.toContain("0.0.0.0");
+    expect(output).toContain("bearer token never enters process arguments");
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("uses a stable environment token without printing it", async () => {
+    const configPath = await testConfig();
+    const stableToken = "stable-environment-token";
+    let output = "";
+    let capturedOptions: StartSessionWebServerOptions | undefined;
+    const openUrl = vi.fn();
+    const startServer = vi.fn(async (options: StartSessionWebServerOptions): Promise<SessionWebServerHandle> => {
+      capturedOptions = options;
+      return { url: "http://0.0.0.0:4599/", stop: vi.fn(async () => undefined) };
+    });
+
+    await runWeb(
+      {
+        configPath,
+        cwd: dir!,
+        env: {
+          MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: join(dir!, "global-trace-sources"),
+          MONO_AGENT_WEB_AUTH_TOKEN: stableToken,
+        },
+        host: "0.0.0.0",
+        allowNonLoopback: true,
+      },
+      {
+        startServer,
+        openUrl,
+        waitForShutdown: async () => undefined,
+        stdout: { write: (text) => (output += text) },
+        discoverNetworkAddresses: () => [{ address: "192.168.178.103", kind: "lan" }],
+      },
+    );
+
+    expect(capturedOptions?.authToken).toBe(stableToken);
+    expect(output).toContain("mono-agent web  →  http://127.0.0.1:4599/");
+    expect(output).toContain("LAN       →  http://192.168.178.103:4599/");
+    expect(output).toContain("MONO_AGENT_WEB_AUTH_TOKEN is configured (token redacted)");
+    expect(output).not.toContain(stableToken);
+    expect(output).not.toContain("#token=");
+    expect(output).toContain("bearer token never enters process arguments");
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("refuses non-interactive non-loopback serving without a configured token", async () => {
+    const configPath = await testConfig();
+    let errors = "";
+    const startServer = vi.fn(async (): Promise<SessionWebServerHandle> => {
+      return { url: "http://0.0.0.0:4599/", stop: vi.fn(async () => undefined) };
+    });
+
+    const code = await runWeb(
+      {
+        configPath,
+        cwd: dir!,
+        env: { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: join(dir!, "global-trace-sources") },
+        host: "0.0.0.0",
+        allowNonLoopback: true,
+      },
+      {
+        startServer,
+        waitForShutdown: async () => undefined,
+        stderr: { write: (text) => (errors += text) },
+        interactive: false,
+      },
+    );
+
+    expect(code).toBe(1);
+    expect(startServer).not.toHaveBeenCalled();
+    expect(errors).toContain("MONO_AGENT_WEB_AUTH_TOKEN");
+    expect(errors).toContain("refusing to generate a bearer secret into logs");
+  });
+
+  it("reveals a configured token only with explicit interactive opt-in", async () => {
+    const configPath = await testConfig();
+    const stableToken = "interactive-stable-token";
+    let output = "";
+    const startServer = vi.fn(async (): Promise<SessionWebServerHandle> => {
+      return { url: "http://0.0.0.0:4599/", stop: vi.fn(async () => undefined) };
+    });
+
+    await runWeb(
+      {
+        configPath,
+        cwd: dir!,
+        env: {
+          MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: join(dir!, "global-trace-sources"),
+          MONO_AGENT_WEB_AUTH_TOKEN: stableToken,
+        },
+        host: "0.0.0.0",
+        allowNonLoopback: true,
+        showAuthUrl: true,
+        open: false,
+      },
+      {
+        startServer,
+        waitForShutdown: async () => undefined,
+        stdout: { write: (text) => (output += text) },
+        interactive: true,
+        discoverNetworkAddresses: () => [],
+      },
+    );
+
+    expect(output).toContain(`http://127.0.0.1:4599/#token=${stableToken}`);
+    expect(output).not.toContain("token redacted");
+  });
+
+  it("refuses to reveal a configured token to non-interactive output", async () => {
+    const configPath = await testConfig();
+    const stableToken = "do-not-log-this-token";
+    let output = "";
+    let errors = "";
+    const startServer = vi.fn(async (): Promise<SessionWebServerHandle> => {
+      return { url: "http://0.0.0.0:4599/", stop: vi.fn(async () => undefined) };
+    });
+
+    await runWeb(
+      {
+        configPath,
+        cwd: dir!,
+        env: {
+          MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: join(dir!, "global-trace-sources"),
+          MONO_AGENT_WEB_AUTH_TOKEN: stableToken,
+        },
+        host: "0.0.0.0",
+        allowNonLoopback: true,
+        showAuthUrl: true,
+        open: false,
+      },
+      {
+        startServer,
+        waitForShutdown: async () => undefined,
+        stdout: { write: (text) => (output += text) },
+        stderr: { write: (text) => (errors += text) },
+        interactive: false,
+        discoverNetworkAddresses: () => [],
+      },
+    );
+
+    expect(output).not.toContain(stableToken);
+    expect(errors).not.toContain(stableToken);
+    expect(errors).toContain("ignored because stdout is not an interactive terminal");
+  });
+
+  it("honors MONO_AGENT_WEB_AUTH_TOKEN for the default loopback-only server", async () => {
+    const configPath = await testConfig();
+    const stableToken = "loopback-stable-token";
+    let output = "";
+    let capturedOptions: StartSessionWebServerOptions | undefined;
+    const openUrl = vi.fn();
+    const startServer = vi.fn(async (options: StartSessionWebServerOptions): Promise<SessionWebServerHandle> => {
+      capturedOptions = options;
+      return { url: "http://127.0.0.1:4599/", stop: vi.fn(async () => undefined) };
+    });
+
+    await runWeb(
+      {
+        configPath,
+        cwd: dir!,
+        env: {
+          MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: join(dir!, "global-trace-sources"),
+          MONO_AGENT_WEB_AUTH_TOKEN: stableToken,
+        },
+        open: false,
+      },
+      {
+        startServer,
+        openUrl,
+        waitForShutdown: async () => undefined,
+        stdout: { write: (text) => (output += text) },
+      },
+    );
+
+    expect(capturedOptions?.authToken).toBe(stableToken);
+    expect(output).toContain("MONO_AGENT_WEB_AUTH_TOKEN is configured (token redacted)");
+    expect(output).not.toContain(stableToken);
+    expect(openUrl).not.toHaveBeenCalled();
   });
 
   it("prunes stale manifests from configured and global registries before serving", async () => {

@@ -1,5 +1,5 @@
 // App data store — a small React context. Loads instances + sessions, opens the
-// /api/stream EventSource and folds upserts into state, and lazy-loads full run
+// /api/stream fetch-SSE connection and folds upserts into state, and lazy-loads full run
 // detail when a card is opened. Falls back to the bundled fixture when the
 // backend isn't reachable (standalone `vite dev` / `preview`).
 
@@ -471,7 +471,7 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
   const pagedKeys = useRef<Set<string>>(new Set());
 
   // Batch SSE folds: the connect snapshot is N separate `session_upsert` frames
-  // (one per run, ~477 today) and each EventSource onmessage is its own task, so
+  // (one per run, ~477 today) and each streamed message is its own task, so
   // React 19 does NOT batch them — applying each individually would be N full
   // setState + re-sort + list re-renders on every connect/reconnect. Coalesce
   // incoming ops by runId and apply them in ONE setSessions per microtask.

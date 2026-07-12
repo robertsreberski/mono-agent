@@ -8,6 +8,7 @@ import type { Session, WebInstance, StreamMessage } from "./types";
 const AUTH_TOKEN_PARAM = "token";
 const AUTH_TOKEN_STORAGE_KEY = "mono-agent.session-web.authToken";
 const AUTH_TOKEN_PERSIST_KEY = "mono-agent.session-web.authToken.persisted";
+const STREAM_RECONNECT_DELAY_MS = 1_000;
 let cachedAuthToken: string | undefined;
 
 export class ApiError extends Error {
@@ -100,48 +101,188 @@ export interface StreamHandlers {
 }
 
 /**
- * Open the browser SSE stream. Returns a disposer that closes the connection.
- * EventSource auto-reconnects; `onError` fires on transient drops too.
+ * Open the browser SSE stream over fetch so bearer authentication stays in the
+ * Authorization header instead of a query string. Returns a disposer that
+ * aborts the active read; transient failures reconnect automatically.
  */
 export function openStream({ onMessage, onOpen, onError }: StreamHandlers): () => void {
-  let es: EventSource | null = null;
-  try {
-    es = new EventSource(withQueryAuthToken("/api/stream"));
-  } catch {
-    onError?.();
-    return () => {};
-  }
-  es.onopen = () => onOpen?.();
-  es.onerror = () => onError?.();
-  es.onmessage = (ev) => {
+  let disposed = false;
+  let controller: AbortController | undefined;
+  let cancelActiveStream: (() => Promise<void>) | undefined;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const notifyError = (): void => {
     try {
-      onMessage(JSON.parse(ev.data) as StreamMessage);
+      onError?.();
     } catch {
-      /* ignore malformed frames */
+      /* consumer callbacks must not reject the fire-and-forget connection loop */
     }
   };
-  return () => es?.close();
+
+  const connect = async (): Promise<void> => {
+    controller = new AbortController();
+    let cancelOwnedStream: (() => Promise<void>) | undefined;
+    let ownedReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let readerCompleted = false;
+    try {
+      const headers: Record<string, string> = { accept: "text/event-stream" };
+      const token = currentAuthToken();
+      if (token !== undefined) {
+        headers.authorization = `Bearer ${token}`;
+      }
+      const response = await fetch("/api/stream", {
+        headers,
+        signal: controller.signal,
+        cache: "no-store",
+      });
+      const responseBody = response.body;
+      if (responseBody === null) {
+        throw new ApiError("/api/stream", String(response.status), {
+          status: response.status,
+          contentType: response.headers.get("content-type") || undefined,
+        });
+      }
+      // The successful Response body remains the cancellation owner until
+      // getReader() succeeds. This covers callback/getReader failures without
+      // leaving an unread fetch body alive across the reconnect delay.
+      const cancelBody = cancellationOnce(() => responseBody.cancel());
+      cancelOwnedStream = cancelBody;
+      cancelActiveStream = cancelBody;
+      if (!response.ok) {
+        await cancelBody();
+        throw new ApiError("/api/stream", String(response.status), {
+          status: response.status,
+          contentType: response.headers.get("content-type") || undefined,
+        });
+      }
+      if (disposed) {
+        await cancelBody();
+        return;
+      }
+      onOpen?.();
+      if (disposed) {
+        await cancelBody();
+        return;
+      }
+      const responseReader = responseBody.getReader();
+      ownedReader = responseReader;
+      // getReader() transfers stream ownership: from here on disposal and
+      // exceptional reads cancel the reader, never its former body owner.
+      const cancelReader = cancellationOnce(() => responseReader.cancel());
+      cancelOwnedStream = cancelReader;
+      cancelActiveStream = cancelReader;
+      await consumeSseStream(responseReader, onMessage);
+      readerCompleted = true;
+      if (!disposed) {
+        notifyError();
+      }
+    } catch {
+      if (!disposed) {
+        notifyError();
+      }
+    } finally {
+      if (!readerCompleted) {
+        await cancelOwnedStream?.();
+      }
+      try {
+        ownedReader?.releaseLock();
+      } catch {
+        /* cancellation/read completion owns cleanup; lock release is best-effort */
+      }
+      if (cancelActiveStream === cancelOwnedStream) {
+        cancelActiveStream = undefined;
+      }
+      controller = undefined;
+      if (!disposed) {
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = undefined;
+          void connect();
+        }, STREAM_RECONNECT_DELAY_MS);
+      }
+    }
+  };
+  void connect();
+
+  return () => {
+    disposed = true;
+    if (reconnectTimer !== undefined) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
+    }
+    controller?.abort();
+    void cancelActiveStream?.();
+  };
 }
 
-function withQueryAuthToken(path: string): string {
-  const token = currentAuthToken();
-  if (token === undefined || typeof window === "undefined") {
-    return path;
+function cancellationOnce(cancel: () => Promise<unknown>): () => Promise<void> {
+  let cancellation: Promise<void> | undefined;
+  return () => {
+    cancellation ??= Promise.resolve()
+      .then(cancel)
+      .then(
+        () => undefined,
+        () => undefined,
+      );
+    return cancellation;
+  };
+}
+
+async function consumeSseStream(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  onMessage: (message: StreamMessage) => void,
+): Promise<void> {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+    let boundary = nextSseBoundary(buffer);
+    while (boundary !== undefined) {
+      const block = buffer.slice(0, boundary.index);
+      buffer = buffer.slice(boundary.index + boundary.length);
+      const data = block
+        .split(/\r?\n/u)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice("data:".length).replace(/^ /u, ""))
+        .join("\n");
+      if (data.length > 0) {
+        try {
+          onMessage(JSON.parse(data) as StreamMessage);
+        } catch {
+          /* ignore malformed frames */
+        }
+      }
+      boundary = nextSseBoundary(buffer);
+    }
+    if (done) {
+      return;
+    }
   }
-  const url = new URL(path, window.location.origin);
-  url.searchParams.set(AUTH_TOKEN_PARAM, token);
-  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function nextSseBoundary(buffer: string): { index: number; length: number } | undefined {
+  const match = /\r?\n\r?\n/u.exec(buffer);
+  return match === null ? undefined : { index: match.index, length: match[0].length };
 }
 
 function currentAuthToken(): string | undefined {
   if (typeof window === "undefined") {
     return undefined;
   }
-  const fromUrl = new URLSearchParams(window.location.search).get(AUTH_TOKEN_PARAM)?.trim();
+  const fragment = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
+  const fragmentParams = new URLSearchParams(fragment);
+  const queryParams = new URLSearchParams(window.location.search);
+  const fromUrl = fragmentParams.get(AUTH_TOKEN_PARAM)?.trim();
   if (fromUrl !== undefined && fromUrl.length > 0) {
     saveAuthToken(fromUrl);
     stripAuthTokenFromUrl();
     return fromUrl;
+  }
+  // Query credentials have already crossed the HTTP request target before the
+  // PWA can inspect them. Never consume them as authentication; remove legacy
+  // or empty token parameters while preserving unrelated query/hash state.
+  if (fragmentParams.has(AUTH_TOKEN_PARAM) || queryParams.has(AUTH_TOKEN_PARAM)) {
+    stripAuthTokenFromUrl();
   }
   if (cachedAuthToken !== undefined) return cachedAuthToken;
   try {
@@ -200,9 +341,12 @@ function stripAuthTokenFromUrl(): void {
   if (typeof window === "undefined") return;
   try {
     const url = new URL(window.location.href);
-    if (!url.searchParams.has(AUTH_TOKEN_PARAM)) return;
+    const fragment = new URLSearchParams(url.hash.startsWith("#") ? url.hash.slice(1) : url.hash);
+    if (!url.searchParams.has(AUTH_TOKEN_PARAM) && !fragment.has(AUTH_TOKEN_PARAM)) return;
     url.searchParams.delete(AUTH_TOKEN_PARAM);
-    const next = `${url.pathname}${url.search}${url.hash}`;
+    fragment.delete(AUTH_TOKEN_PARAM);
+    const nextHash = fragment.toString();
+    const next = `${url.pathname}${url.search}${nextHash.length === 0 ? "" : `#${nextHash}`}`;
     window.history.replaceState(window.history.state, "", next);
   } catch {
     /* ignore history failures; storage fallback still works */
