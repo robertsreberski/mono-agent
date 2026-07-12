@@ -86,6 +86,12 @@ Accessible labels/tooltips contain only the status and stable closed issue
 codes. The aggregator compares typed `memoryHealth` values during discovery;
 a memory-only registry change emits an `instances` browser SSE frame, so the
 badge refreshes without a new run or process-health transition.
+Backend-discriminated normalization prevents impossible remote/absent combinations
+from rendering green, and overlapping registry reconciles are single-flight with
+one bounded trailing replay so an older read cannot replace newer health.
+The browser also revalidates the closed, canonical issue list and partial count
+relationships so malformed raw runtime data fails closed to `unknown` without
+surfacing provider text or unknown keys.
 
 ## Public API
 

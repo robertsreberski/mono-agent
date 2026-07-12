@@ -87,15 +87,15 @@ describe("buildInstanceCards", () => {
   });
 
   test("maps every memory status to an independent label and color", () => {
-    expect(memoryInfo({ backend: "bujo", status: "healthy", checkedAt: "2026-07-12T08:00:00Z" }))
+    expect(memoryInfo({ backend: "bujo", mode: "bujo", status: "healthy", checkedAt: "2026-07-12T08:00:00Z", issues: [] }))
       .toMatchObject({ label: "memory healthy", color: OK });
-    expect(memoryInfo({ backend: "bujo", status: "in_progress", checkedAt: "2026-07-12T08:00:00Z" }))
+    expect(memoryInfo({ backend: "bujo", mode: "bujo", status: "in_progress", checkedAt: "2026-07-12T08:00:00Z", issues: ["intake_pending"] }))
       .toMatchObject({ label: "memory in progress", color: TEAL });
-    expect(memoryInfo({ backend: "bujo", status: "degraded", checkedAt: "2026-07-12T08:00:00Z" }))
+    expect(memoryInfo({ backend: "bujo", mode: "bujo", status: "degraded", checkedAt: "2026-07-12T08:00:00Z", issues: ["work_stalled"] }))
       .toMatchObject({ label: "memory degraded", color: AMBER });
-    expect(memoryInfo({ backend: "bujo", status: "unhealthy", checkedAt: "2026-07-12T08:00:00Z" }))
+    expect(memoryInfo({ backend: "bujo", mode: "bujo", status: "unhealthy", checkedAt: "2026-07-12T08:00:00Z", issues: ["manifest_missing"] }))
       .toMatchObject({ label: "memory unhealthy", color: ERROR });
-    expect(memoryInfo({ backend: "bujo", status: "unknown", checkedAt: "2026-07-12T08:00:00Z" }))
+    expect(memoryInfo({ backend: "bujo", mode: "bujo", status: "unknown", checkedAt: "2026-07-12T08:00:00Z", issues: ["health_check_failed"] }))
       .toMatchObject({ label: "memory unknown", color: DIM });
     expect(memoryInfo({ backend: "none", status: "not_configured", checkedAt: "2026-07-12T08:00:00Z" }))
       .toMatchObject({ label: "memory off", color: DIM });
@@ -104,6 +104,7 @@ describe("buildInstanceCards", () => {
   test("keeps process health independent and limits memory title and aria content to stable issue codes", () => {
     const hostile = {
       backend: "bujo",
+      mode: "bujo",
       status: "degraded",
       checkedAt: "2026-07-12T08:00:00Z",
       issues: ["dead_letters", "arbitrary provider message", "outbox_pending"],
@@ -116,12 +117,106 @@ describe("buildInstanceCards", () => {
     expect(card).toMatchObject({
       healthLabel: "live",
       healthColor: OK,
-      memoryLabel: "memory degraded",
-      memoryColor: AMBER,
-      memoryTitle: "memory degraded: dead_letters, outbox_pending",
+      memoryLabel: "memory unknown",
+      memoryColor: DIM,
+      memoryTitle: "memory unknown",
     });
-    expect(card?.ariaSummary).toContain("memory degraded: dead_letters, outbox_pending");
+    expect(card?.ariaSummary).toContain("memory unknown");
     expect(card?.ariaSummary).not.toContain("arbitrary provider message");
+  });
+
+  test("fails contradictory runtime memory input closed instead of rendering green", () => {
+    const contradictory = {
+      backend: "bujo",
+      mode: "bujo",
+      status: "healthy",
+      checkedAt: "2026-07-12T08:00:00Z",
+      issues: ["manifest_missing"],
+    } as unknown as NonNullable<WebInstance["memoryHealth"]>;
+
+    expect(memoryInfo(contradictory)).toMatchObject({
+      status: "unknown",
+      label: "memory unknown",
+      color: DIM,
+    });
+    expect(memoryInfo({
+      backend: "bujo",
+      mode: "bujo",
+      status: "healthy",
+      checkedAt: "2026-07-12T08:01:00Z",
+      issues: [],
+      counts: { pending: 1 },
+    })).toMatchObject({ status: "unknown", label: "memory unknown", color: DIM });
+  });
+
+  test("rejects unknown, non-string, duplicate, and noncanonical runtime issues without leaking them", () => {
+    const candidates = [
+      { status: "healthy", issues: ["secret_provider_issue"] },
+      { status: "healthy", issues: [{ token: "secret_issue_object" }] },
+      { status: "unhealthy", issues: ["manifest_missing", "manifest_missing"] },
+      { status: "unhealthy", issues: ["database_missing", "manifest_missing"] },
+    ];
+
+    for (const candidate of candidates) {
+      const info = memoryInfo({
+        backend: "bujo",
+        mode: "bujo",
+        checkedAt: "2026-07-12T08:00:00Z",
+        ...candidate,
+      } as unknown as NonNullable<WebInstance["memoryHealth"]>);
+      expect(info).toMatchObject({ status: "unknown", label: "memory unknown", color: DIM, title: "memory unknown" });
+      expect(JSON.stringify(info)).not.toMatch(/secret_provider_issue|secret_issue_object/u);
+    }
+  });
+
+  test("mirrors fleet implications for partial runtime counts", () => {
+    const contradictions = [
+      { mode: "bujo", status: "in_progress", issues: ["intake_pending"], counts: { pending: 0 } },
+      { mode: "bujo", status: "healthy", issues: [], counts: { due: 1 } },
+      { mode: "bujo", status: "degraded", issues: ["dead_letters"], counts: { dead: 0 } },
+      { mode: "bujo", status: "in_progress", issues: ["outbox_pending"], counts: { outbox: 0 } },
+      { mode: "bujo", status: "unhealthy", issues: ["temporary_artifacts"], counts: { temporary: 0 } },
+      { mode: "lite", status: "unhealthy", issues: ["vector_mismatch"], counts: { missingVectors: 1 } },
+      { mode: "lite", status: "healthy", issues: [], counts: { vectors: 1 } },
+      { mode: "journal", status: "healthy", issues: [], counts: { missingVectors: 1 } },
+      { mode: "journal", status: "healthy", issues: [], counts: { memories: 3, vectors: 2 } },
+      { mode: "bujo", status: "healthy", issues: [], counts: { memories: 3, vectors: 2 } },
+      { mode: "bujo", status: "healthy", issues: [], counts: { missingVectors: 1 } },
+      { mode: "journal", status: "healthy", issues: [], counts: { memories: 2, vectors: 3 } },
+      {
+        mode: "journal",
+        status: "in_progress",
+        issues: ["mutation_in_progress"],
+        counts: { memories: 3, vectors: 2, missingVectors: 0 },
+      },
+      { mode: "bujo", status: "healthy", issues: [], counts: "bad" },
+      { mode: "bujo", status: "healthy", issues: [], counts: { pending: -1 } },
+    ];
+
+    for (const contradiction of contradictions) {
+      expect(memoryInfo({
+        backend: "bujo",
+        checkedAt: "2026-07-12T08:00:00Z",
+        ...contradiction,
+      } as unknown as NonNullable<WebInstance["memoryHealth"]>)).toMatchObject({
+        status: "unknown",
+        label: "memory unknown",
+        color: DIM,
+      });
+    }
+
+    expect(memoryInfo({
+      backend: "bujo",
+      mode: "journal",
+      status: "in_progress",
+      checkedAt: "2026-07-12T08:01:00Z",
+      issues: ["mutation_in_progress", "intake_pending"],
+      counts: { due: 1, memories: 3, vectors: 2, secretCount: "not-rendered" },
+    } as unknown as NonNullable<WebInstance["memoryHealth"]>)).toMatchObject({
+      status: "in_progress",
+      label: "memory in progress",
+      color: TEAL,
+    });
   });
 
   test("ships fixture instances for both configured and disabled memory", () => {

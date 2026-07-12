@@ -200,7 +200,9 @@ Each section prints a status badge, a label, and its details. The statuses are:
 For built-in memory, Journal and BuJo require a valid managed `.index/manifest.json`; only Lite
 may remain unmanaged. A missing/corrupt manifest, configured-versus-active tier/model/dimension
 mismatch, or native SQLite module/ABI failure is an `error`, not a provider-liveness `waiting`
-state. Stop the agent, run `mono-agent memory rebuild`, then validate again. Ollama/provider
+state. Fresh init creates an empty managed Journal/BuJo generation provider-free; it never changes
+a pre-existing memory root. For an existing or damaged root, stop the agent, run
+`mono-agent memory rebuild`, then validate again. Ollama/provider
 reachability and missing pulled models remain operational `waiting` conditions.
 
 The **Tools & MCP** section reports the tool policy: allow-all (the default) shows `All tools allowed.` (or `All tools allowed (except: …)` when a `disallowedTools` list is present). On Pi/Claude SDK, an **explicit empty** `tools.allowedTools: []` flags the no-tools trap as `waiting` because the agent could chat but cannot act. Direct Codex/OpenCode and Claude Code CLI reject that unenforceable empty policy as `error` before provider startup. Direct OpenCode also rejects every effective MCP source—`tools.mcpConfigPath`, `memory.recallTool`, hosted Supermemory MCP, and adapter send tools—and index skill disclosure; validation reports those combinations before a run. For a specific allowlist it also flags an unknown tool name with a "did you mean" hint (pi silently drops unknown names) and cross-checks adapter send tools against enabled channels. Under a native sandbox it additionally checks the enabled send tools' HTTP hosts against `sandbox.network`: Slack, Telegram (including a custom `apiRoot`), and the loopback interaction bridge for blocking ask tools. A missing host is `waiting` with the exact allowlist entry to add; an explicitly denied tool creates no endpoint requirement. See [Presets & capability modules](/reference/recipes/#the-tools-step-and-the-no-tools-guardrail) for the full contract.

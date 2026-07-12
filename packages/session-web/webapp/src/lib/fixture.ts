@@ -17,6 +17,7 @@ export const FIXTURE_INSTANCES: WebInstance[] = [
       mode: "bujo",
       status: "healthy",
       checkedAt: "2026-07-04T07:18:00.000Z",
+      issues: [],
     },
     liveConnected: true,
     counts: { runs: 4 },

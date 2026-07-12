@@ -150,6 +150,10 @@ export class SessionAggregator {
   private readonly registryWatchers: FSWatcher[] = [];
   private reconcileTimer: ReturnType<typeof setInterval> | undefined;
   private reconcileDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+  private reconcileInFlight: Promise<void> | undefined;
+  private reconcileDirty = false;
+  /** Test-only seam for a trigger at the owner-to-idle handoff. */
+  private reconcileHandoffHook: (() => void) | undefined;
   private instancesEmitTimer: ReturnType<typeof setTimeout> | undefined;
   private lifecycleGeneration = 0;
   private stopped = false;
@@ -300,6 +304,7 @@ export class SessionAggregator {
   async stop(): Promise<void> {
     this.stopped = true;
     this.lifecycleGeneration += 1;
+    this.reconcileDirty = false;
     if (this.reconcileTimer !== undefined) {
       clearInterval(this.reconcileTimer);
       this.reconcileTimer = undefined;
@@ -785,14 +790,55 @@ export class SessionAggregator {
     this.reconcileDebounceTimer.unref?.();
   }
 
-  private async reconcile(): Promise<void> {
+  private reconcile(): Promise<void> {
     if (this.stopped) {
-      return;
+      return Promise.resolve();
     }
+    const existing = this.reconcileInFlight;
+    if (existing !== undefined) {
+      // One bit represents every overlapping periodic/watcher request. The
+      // owner performs one latest-state replay after its current discovery;
+      // callers share the same bounded promise instead of starting stale work.
+      this.reconcileDirty = true;
+      return existing;
+    }
+    const generation = this.lifecycleGeneration;
+    let pending!: Promise<void>;
+    // Enter on a microtask so `reconcileInFlight` is installed before the owner
+    // can reach its first await. At each handoff, the dirty check and clearing
+    // the owner happen in one synchronous continuation: a trigger before the
+    // clear gets a trailing replay; a trigger after it starts a fenced successor.
+    pending = Promise.resolve().then(async () => {
+      for (;;) {
+        this.reconcileDirty = false;
+        try {
+          await this.reconcileOnce(generation);
+        } catch (error) {
+          try {
+            this.logger?.warn?.("Registry reconcile failed.", { error: errorMessage(error) });
+          } catch {
+            // A diagnostic sink must not strand the single-flight owner.
+          }
+        }
+        const handoffHook = this.reconcileHandoffHook;
+        this.reconcileHandoffHook = undefined;
+        handoffHook?.();
+        if (this.reconcileDirty && this.isActive(generation)) continue;
+        if (this.reconcileInFlight === pending) {
+          this.reconcileInFlight = undefined;
+          this.reconcileDirty = false;
+        }
+        return;
+      }
+    });
+    this.reconcileInFlight = pending;
+    return pending;
+  }
+
+  private async reconcileOnce(generation: number): Promise<void> {
     for (const state of this.states.values()) {
       this.refreshStaleRunningSessionsForState(state, { emit: true });
     }
-    const generation = this.lifecycleGeneration;
     let discovered: readonly DiscoveredWebInstance[];
     try {
       discovered = await this.discover();

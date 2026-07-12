@@ -136,6 +136,7 @@ describe("startSessionWebServer", () => {
         mode: "bujo",
         status: "healthy",
         checkedAt: "2026-07-12T08:00:00.000Z",
+        issues: [],
       },
     });
 
@@ -163,7 +164,7 @@ describe("startSessionWebServer", () => {
         mode: "bujo",
         status: "degraded",
         checkedAt: "2026-07-12T08:01:00.000Z",
-        issues: ["intake_pending"],
+        issues: ["intake_pending", "work_stalled"],
         counts: { pending: 1 },
       },
     });
@@ -177,7 +178,7 @@ describe("startSessionWebServer", () => {
     expect(frames[0]?.instances[0]?.memoryHealth?.status).toBe("healthy");
     expect(frames[1]?.instances[0]?.memoryHealth).toMatchObject({
       status: "degraded",
-      issues: ["intake_pending"],
+      issues: ["intake_pending", "work_stalled"],
     });
   });
 

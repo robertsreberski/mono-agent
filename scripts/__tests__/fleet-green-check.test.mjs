@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildLaunchdProbeEnvironment,
   buildFleetReport,
   deriveRepoFromCliPath,
   evaluateMemory,
@@ -8,9 +9,12 @@ import {
   evaluateRuns,
   instanceName,
   parseArgs,
+  parseLaunchdProgramArguments,
+  parseLaunchdPathEnvironment,
   parseLaunchctlList,
   parseMemoryAudit,
   reduceMetrics,
+  runCommandSync,
   runFleetGreenCheck,
   shortSha,
 } from "../fleet-green-check.mjs";
@@ -51,9 +55,17 @@ function strictMemoryReport({
 }
 
 function strictMemoryJson(status) {
-  return JSON.stringify(strictMemoryReport(status === "not_configured"
-    ? { backend: "none", status }
-    : { status }));
+  if (status === "not_configured") {
+    return JSON.stringify(strictMemoryReport({ backend: "none", status }));
+  }
+  const issues = {
+    healthy: [],
+    in_progress: ["mutation_in_progress"],
+    degraded: ["runtime_stale"],
+    unhealthy: ["manifest_missing"],
+    unknown: ["health_check_failed"],
+  }[status];
+  return JSON.stringify(strictMemoryReport({ status, issues }));
 }
 
 function service({ found = true, pid = 4242, lastExitStatus = 0 } = {}) {
@@ -119,6 +131,84 @@ describe("deriveRepoFromCliPath", () => {
   it("returns null for non-matching paths", () => {
     expect(deriveRepoFromCliPath(null)).toBeNull();
     expect(deriveRepoFromCliPath("/usr/local/bin/node")).toBeNull();
+  });
+});
+
+describe("parseLaunchdProgramArguments", () => {
+  const config = "/Users/example/agents/orchestrator/custom.config.json";
+  const envFile = "/Users/example/agents/orchestrator/.env.production";
+
+  it("retains only the exact absolute config and env-file used by the service", () => {
+    expect(parseLaunchdProgramArguments([
+      NODE, CLI, "start", "--foreground", "--config", config, "--env-file", envFile,
+    ])).toEqual({
+      nodePath: NODE,
+      cliPath: CLI,
+      probeArgs: ["--config", config, "--env-file", envFile],
+    });
+  });
+
+  it("accepts an older cwd-default service without fabricating config flags", () => {
+    expect(parseLaunchdProgramArguments([NODE, CLI, "start", "--foreground"])).toEqual({
+      nodePath: NODE,
+      cliPath: CLI,
+      probeArgs: [],
+    });
+  });
+
+  it.each([
+    ["missing config value", [NODE, CLI, "start", "--config"]],
+    ["relative config", [NODE, CLI, "start", "--config", "relative.json"]],
+    ["duplicate config", [NODE, CLI, "start", "--config", config, "--config", config]],
+    ["duplicate env file", [NODE, CLI, "start", "--env-file", envFile, "--env-file", envFile]],
+    ["unknown flag", [NODE, CLI, "start", "--token", "private-value"]],
+    ["wrong command", [NODE, CLI, "validate", "--config", config]],
+    ["relative runtime", ["node", CLI, "start", "--config", config]],
+    ["NUL runtime", [`${NODE}\0private-runtime`, CLI, "start", "--config", config]],
+    ["NUL cli", [NODE, `${CLI}\0private-cli`, "start", "--config", config]],
+    ["non-string argument", [NODE, CLI, "start", "--config", 7]],
+  ])("rejects %s", (_label, args) => {
+    expect(parseLaunchdProgramArguments(args)).toBeNull();
+  });
+});
+
+describe("parseLaunchdPathEnvironment", () => {
+  it("retains the exact non-secret PATH emitted by the managed plist", () => {
+    expect(parseLaunchdPathEnvironment({ PATH: "/managed/bin:/usr/bin:/bin" }))
+      .toBe("/managed/bin:/usr/bin:/bin");
+  });
+
+  it.each([
+    ["missing environment", undefined],
+    ["missing PATH", {}],
+    ["empty PATH", { PATH: "" }],
+    ["non-string PATH", { PATH: 7 }],
+    ["NUL PATH", { PATH: "/usr/bin\0/private" }],
+    ["additional variable", { PATH: "/usr/bin:/bin", PRIVATE_TOKEN: "must-not-retain" }],
+  ])("rejects %s", (_label, environment) => {
+    expect(parseLaunchdPathEnvironment(environment)).toBeNull();
+  });
+});
+
+describe("buildLaunchdProbeEnvironment", () => {
+  it("keeps only the exact PATH and launchd-safe operational values", () => {
+    expect(buildLaunchdProbeEnvironment("/managed/bin:/usr/bin:/bin", {
+      PATH: "/interactive/bin",
+      HOME: "/Users/example",
+      USER: "example",
+      LANG: "en_US.UTF-8",
+      MONO_AGENT_MEMORY_PATH: "/private/wrong-memory",
+      MONO_AGENT_MODEL: "wrong-model",
+      OPENAI_API_KEY: "private-provider-credential",
+      ANTHROPIC_API_KEY: "private-provider-credential",
+      NODE_OPTIONS: "--require=/private/inject.js",
+      HTTPS_PROXY: "http://private-proxy.invalid",
+    })).toEqual({
+      PATH: "/managed/bin:/usr/bin:/bin",
+      HOME: "/Users/example",
+      USER: "example",
+      LANG: "en_US.UTF-8",
+    });
   });
 });
 
@@ -266,6 +356,7 @@ describe("strict memory health", () => {
       "database_missing",
       "database_unavailable",
       "native_module_unavailable",
+      "health_check_failed",
       "sqlite_integrity_failed",
       "metadata_mismatch",
       "fts_mismatch",
@@ -279,13 +370,66 @@ describe("strict memory health", () => {
       "dead_letters",
       "outbox_invalid",
       "outbox_pending",
+      "work_stalled",
       "temporary_artifacts",
       "runtime_missing",
       "runtime_stale",
       "runtime_invalid",
     ];
-    expect(parseMemoryAudit(JSON.stringify(strictMemoryReport({ status: "unhealthy", issues })), 1))
-      .toEqual({ ran: true, status: "unhealthy" });
+    const counts = {
+      ...EMPTY_MEMORY_COUNTS,
+      pending: 1,
+      due: 1,
+      dead: 1,
+      outbox: 1,
+      temporary: 1,
+    };
+    expect(parseMemoryAudit(JSON.stringify(strictMemoryReport({ status: "unknown", issues, counts })), 1))
+      .toEqual({ ran: true, status: "unknown" });
+  });
+
+  it.each([
+    ["healthy with a fatal issue", { status: "healthy", issues: ["manifest_missing"] }, 0],
+    ["degraded with an unknown issue", { status: "degraded", issues: ["health_check_failed"] }, 1],
+    ["unknown with only stalled work", { status: "unknown", issues: ["work_stalled"] }, 1],
+  ])("rejects status/issue contradictions: %s", (_label, values, exitCode) => {
+    expect(parseMemoryAudit(JSON.stringify(strictMemoryReport(values)), exitCode))
+      .toEqual({ ran: true, malformed: true });
+  });
+
+  it("accepts the new closed status mappings", () => {
+    expect(parseMemoryAudit(JSON.stringify(strictMemoryReport({
+      status: "unknown",
+      issues: ["health_check_failed"],
+    })), 1)).toEqual({ ran: true, status: "unknown" });
+    expect(parseMemoryAudit(JSON.stringify(strictMemoryReport({
+      status: "degraded",
+      issues: ["work_stalled"],
+    })), 1)).toEqual({ ran: true, status: "degraded" });
+  });
+
+  it.each([
+    ["due exceeds pending", { counts: { ...EMPTY_MEMORY_COUNTS, due: 1 } }, 0],
+    ["pending lacks issue", { counts: { ...EMPTY_MEMORY_COUNTS, pending: 1 } }, 0],
+    ["pending issue lacks count", { status: "in_progress", issues: ["intake_pending"] }, 0],
+    ["dead count lacks issue", { counts: { ...EMPTY_MEMORY_COUNTS, dead: 1 } }, 0],
+    ["outbox lacks mutation issue", { status: "in_progress", issues: ["outbox_pending"], counts: { ...EMPTY_MEMORY_COUNTS, outbox: 1 } }, 0],
+    ["temporary count lacks issue", { counts: { ...EMPTY_MEMORY_COUNTS, temporary: 1 } }, 0],
+    ["none backend has counts", { backend: "none", status: "not_configured", counts: { ...EMPTY_MEMORY_COUNTS, memories: 1 } }, 0],
+    ["supermemory backend has counts", { backend: "supermemory", status: "unknown", counts: { ...EMPTY_MEMORY_COUNTS, memories: 1 } }, 1],
+  ])("rejects count/issue contradictions: %s", (_label, values, exitCode) => {
+    expect(parseMemoryAudit(JSON.stringify(strictMemoryReport(values)), exitCode))
+      .toEqual({ ran: true, malformed: true });
+  });
+
+  it("accepts Journal vector backlog as in-progress without overconstraining queue counts", () => {
+    const report = strictMemoryReport({
+      mode: "journal",
+      status: "in_progress",
+      issues: ["mutation_in_progress"],
+      counts: { ...EMPTY_MEMORY_COUNTS, memories: 3, vectors: 2, missingVectors: 1 },
+    });
+    expect(parseMemoryAudit(JSON.stringify(report), 0)).toEqual({ ran: true, status: "in_progress" });
   });
 
   it.each([
@@ -537,13 +681,43 @@ describe("helpers", () => {
     expect(shortSha(SHA)).toBe("0e35c86");
     expect(shortSha(null)).toBe("unknown");
   });
+
+  it("hard-kills a timeout child that ignores SIGTERM and drops all captured output", () => {
+    const secret = "private-timeout-child-output";
+    const childSource = [
+      "process.on('SIGTERM', () => {});",
+      `process.stdout.write(${JSON.stringify(secret)});`,
+      `process.stderr.write(${JSON.stringify(secret)});`,
+      "setInterval(() => {}, 1_000);",
+    ].join("\n");
+    const startedAt = Date.now();
+
+    const result = runCommandSync(process.execPath, ["-e", childSource], { timeout: 100 });
+
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(result).toEqual({ status: 124, stdout: "", stderr: "", timedOut: true });
+    expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
+  it("collapses synchronously rejected hostile process arguments to a generic failure", () => {
+    const secret = "private-nul-command";
+    expect(runCommandSync(`/managed/node\0${secret}`, [])).toEqual({
+      status: 127,
+      stdout: "",
+      stderr: "",
+    });
+  });
 });
 
 describe("runFleetGreenCheck (orchestration)", () => {
+  const configPath = "/Users/example/agents/orchestrator/custom.config.json";
+  const envFile = "/Users/example/agents/orchestrator/.env.production";
+  const launchdPath = "/managed/node/bin:/usr/bin:/bin";
   const plistJson = JSON.stringify({
     Label: "com.mono-agent.orchestrator-2146e3d3",
     WorkingDirectory: "/Users/example/agents/orchestrator",
-    ProgramArguments: [NODE, CLI, "start"],
+    ProgramArguments: [NODE, CLI, "start", "--foreground", "--config", configPath, "--env-file", envFile],
+    EnvironmentVariables: { PATH: launchdPath },
   });
   const metricsJson = JSON.stringify({ overall: { totalRuns: 10, statusCounts: { succeeded: 10, failed: 0 }, failureKindRates: [] } });
 
@@ -552,8 +726,8 @@ describe("runFleetGreenCheck (orchestration)", () => {
     const runCommand = (command, args, options) => {
       calls.push({ command, args, options });
       if (command === "plutil") return overrides.plist ?? { status: 0, stdout: plistJson, stderr: "" };
-      if (command === "launchctl") return { status: 0, stdout: '{\n\t"PID" = 100;\n\t"LastExitStatus" = 0;\n};', stderr: "" };
-      if (command === "git") return { status: 0, stdout: `${SHA}\n`, stderr: "" };
+      if (command === "launchctl") return overrides.service ?? { status: 0, stdout: '{\n\t"PID" = 100;\n\t"LastExitStatus" = 0;\n};', stderr: "" };
+      if (command === "git") return overrides.git ?? { status: 0, stdout: `${SHA}\n`, stderr: "" };
       if (command === NODE && args[0] === "-p") return overrides.runtime ?? { status: 0, stdout: '{"node":"24.15.0","abi":"137"}\n', stderr: "" };
       if (command === NODE && args.includes("validate")) return overrides.validate ?? { status: 0, stdout: '{"ok":true}\n', stderr: "" };
       if (command === NODE && args.includes("memory")) return overrides.memory ?? { status: 0, stdout: `${strictMemoryJson("healthy")}\n`, stderr: "" };
@@ -579,9 +753,13 @@ describe("runFleetGreenCheck (orchestration)", () => {
     expect(result.exitCode).toBe(0);
     expect(out.text).toContain("VERDICT: GREEN 2026-07-07 sha 0e35c86");
     expect(calls.some((c) => c.command === "gh")).toBe(false);
+    expect(calls.every((call) => Number.isInteger(call.options?.timeout) && call.options.timeout > 0)).toBe(true);
     // Strictly read-only against the fleet: every runtime/CLI probe uses the
-    // exact plist Node, and the only cli.js subcommands are allowlisted reads.
+    // exact plist Node/config/env-file, and the only cli.js subcommands are allowlisted reads.
     expect(calls.some((c) => c.command === "node")).toBe(false);
+    const runtimeAndCliCalls = calls.filter((call) => call.command === NODE);
+    expect(runtimeAndCliCalls).toHaveLength(4);
+    expect(runtimeAndCliCalls.every((call) => call.options.pathEnv === launchdPath)).toBe(true);
     expect(calls.find((c) => c.command === NODE && c.args[0] === "-p")?.args).toEqual([
       "-p",
       "JSON.stringify({node:process.versions.node,abi:process.versions.modules})",
@@ -591,15 +769,107 @@ describe("runFleetGreenCheck (orchestration)", () => {
       .map((c) => c.args[1]);
     expect(cliSubcommands.length).toBeGreaterThan(0);
     expect(new Set(cliSubcommands)).toEqual(new Set(["validate", "memory", "metrics"]));
-    expect(calls.find((c) => c.command === NODE && c.args.includes("validate"))?.args).toEqual([CLI, "validate", "--json"]);
-    expect(calls.find((c) => c.command === NODE && c.args.includes("memory"))?.args).toEqual([CLI, "memory", "audit", "--strict", "--json"]);
+    expect(calls.find((c) => c.command === NODE && c.args.includes("validate"))?.args).toEqual([
+      CLI, "validate", "--json", "--config", configPath, "--env-file", envFile,
+    ]);
+    expect(calls.find((c) => c.command === NODE && c.args.includes("memory"))?.args).toEqual([
+      CLI, "memory", "audit", "--strict", "--json", "--config", configPath, "--env-file", envFile,
+    ]);
     expect(calls.find((c) => c.command === NODE && c.args.includes("metrics"))?.args).toEqual([
       CLI,
       "metrics",
       "--since",
       "2026-07-06T12:00:00.000Z",
       "--json",
+      "--config",
+      configPath,
+      "--env-file",
+      envFile,
     ]);
+  });
+
+  it.each([
+    ["missing flag value", [NODE, CLI, "start", "--foreground", "--config"]],
+    ["duplicate config", [NODE, CLI, "start", "--config", configPath, "--config", configPath]],
+    ["hostile unknown flag", [NODE, CLI, "start", "--config", configPath, "--token", "private-plist-token"]],
+  ])("fails a %s plist closed without running any CLI probe or leaking values", async (_label, programArguments) => {
+    const hostilePlist = JSON.stringify({
+      Label: "com.mono-agent.orchestrator-2146e3d3",
+      WorkingDirectory: "/Users/example/agents/orchestrator",
+      ProgramArguments: programArguments,
+      EnvironmentVariables: { PATH: launchdPath },
+    });
+    const { calls, runCommand } = fakeRunner({
+      plist: { status: 0, stdout: hostilePlist, stderr: "" },
+    });
+    const out = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: out,
+      stderr: sink(),
+      runCommand,
+      launchAgentsDir: "/fake/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain("plist unreadable");
+    expect(out.text).not.toContain("private-plist-token");
+    expect(calls.some((call) => call.command === NODE)).toBe(false);
+  });
+
+  it("fails a hostile plist environment closed without running probes or leaking values", async () => {
+    const secret = "private-plist-environment-value";
+    const hostilePlist = JSON.stringify({
+      Label: "com.mono-agent.orchestrator-2146e3d3",
+      WorkingDirectory: "/Users/example/agents/orchestrator",
+      ProgramArguments: [NODE, CLI, "start", "--config", configPath],
+      EnvironmentVariables: { PATH: launchdPath, PRIVATE_TOKEN: secret },
+    });
+    const { calls, runCommand } = fakeRunner({
+      plist: { status: 0, stdout: hostilePlist, stderr: "" },
+    });
+    const out = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: out,
+      stderr: sink(),
+      runCommand,
+      launchAgentsDir: "/fake/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain("plist unreadable");
+    expect(out.text).not.toContain(secret);
+    expect(calls.some((call) => call.command === NODE)).toBe(false);
+  });
+
+  it("fails a NUL working directory closed without throwing or leaking its value", async () => {
+    const secret = "private-nul-working-directory";
+    const hostilePlist = JSON.stringify({
+      Label: "com.mono-agent.orchestrator-2146e3d3",
+      WorkingDirectory: `/Users/example/agents/orchestrator\0${secret}`,
+      ProgramArguments: [NODE, CLI, "start", "--config", configPath],
+      EnvironmentVariables: { PATH: launchdPath },
+    });
+    const { calls, runCommand } = fakeRunner({
+      plist: { status: 0, stdout: hostilePlist, stderr: "" },
+    });
+    const out = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: out,
+      stderr: sink(),
+      runCommand,
+      launchAgentsDir: "/fake/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain("plist unreadable");
+    expect(out.text).not.toContain(secret);
+    expect(calls.some((call) => call.command === NODE)).toBe(false);
   });
 
   it("default run posts the comment to #119 and exits on the verdict", async () => {
@@ -617,6 +887,35 @@ describe("runFleetGreenCheck (orchestration)", () => {
     const gh = calls.find((c) => c.command === "gh");
     expect(gh.args.slice(0, 4)).toEqual(["issue", "comment", "119", "--repo"]);
     expect(gh.args[gh.args.length - 1]).toContain("VERDICT: GREEN");
+    expect(gh.options.timeout).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ["plist", "plist probe timed out"],
+    ["service", "service probe timed out"],
+    ["runtime", "runtime probe timed out"],
+    ["validate", "validate command timed out"],
+    ["memory", "memory audit timed out"],
+    ["metrics", "metrics command timed out"],
+    ["git", "deployed sha probe timed out"],
+  ])("fails closed on a %s timeout without retaining command output", async (probe, expected) => {
+    const secret = `private-${probe}-timeout-output`;
+    const timedOut = { status: 124, stdout: secret, stderr: secret, timedOut: true };
+    const { runCommand } = fakeRunner({ [probe]: timedOut });
+    const out = sink();
+    const err = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: out,
+      stderr: err,
+      runCommand,
+      launchAgentsDir: "/fake/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain(expected);
+    expect(`${out.text}${err.text}`).not.toContain(secret);
   });
 
   it("parses an exit-1 strict memory report and renders the closed degraded status", async () => {

@@ -402,6 +402,7 @@ export type TraceSourceMemoryIssue =
   | "database_missing"
   | "database_unavailable"
   | "native_module_unavailable"
+  | "health_check_failed"
   | "sqlite_integrity_failed"
   | "metadata_mismatch"
   | "fts_mismatch"
@@ -415,6 +416,7 @@ export type TraceSourceMemoryIssue =
   | "dead_letters"
   | "outbox_invalid"
   | "outbox_pending"
+  | "work_stalled"
   | "temporary_artifacts"
   | "runtime_missing"
   | "runtime_stale"
@@ -431,16 +433,43 @@ export interface TraceSourceMemoryCounts {
   readonly missingVectors?: number;
 }
 
-/** Content-free memory health safe to publish in a trace-source manifest. */
-export interface TraceSourceMemoryHealth {
-  readonly backend: TraceSourceMemoryBackend;
-  readonly mode?: TraceSourceMemoryMode;
-  readonly status: TraceSourceMemoryStatus;
+interface TraceSourceMemoryHealthBase {
   /** ISO-8601 instant for the audit that produced this health snapshot. */
   readonly checkedAt: string;
-  readonly issues?: readonly TraceSourceMemoryIssue[];
+}
+
+/** Strict built-in health. Status is the deterministic projection of `issues`. */
+export interface TraceSourceBujoMemoryHealth extends TraceSourceMemoryHealthBase {
+  readonly backend: "bujo";
+  readonly mode: TraceSourceMemoryMode;
+  readonly status: Exclude<TraceSourceMemoryStatus, "not_configured">;
+  readonly issues: readonly TraceSourceMemoryIssue[];
   readonly counts?: TraceSourceMemoryCounts;
 }
+
+/** Remote Supermemory cannot be inspected by the local trace registry. */
+export interface TraceSourceSupermemoryMemoryHealth extends TraceSourceMemoryHealthBase {
+  readonly backend: "supermemory";
+  readonly status: "unknown";
+  readonly mode?: never;
+  readonly issues?: never;
+  readonly counts?: never;
+}
+
+/** No configured backend, or configuration could not be loaded safely. */
+export interface TraceSourceNoMemoryHealth extends TraceSourceMemoryHealthBase {
+  readonly backend: "none";
+  readonly status: "not_configured" | "unknown";
+  readonly mode?: never;
+  readonly issues?: never;
+  readonly counts?: never;
+}
+
+/** Content-free memory health safe to publish in a trace-source manifest. */
+export type TraceSourceMemoryHealth =
+  | TraceSourceBujoMemoryHealth
+  | TraceSourceSupermemoryMemoryHealth
+  | TraceSourceNoMemoryHealth;
 
 export interface TraceSourceManifest {
   readonly schema: "agent-runtime.trace-source.v1";

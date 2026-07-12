@@ -150,6 +150,7 @@ export type {
   TraceRunListResult,
   TraceSourceHandle,
   TraceSourceHealth,
+  TraceSourceBujoMemoryHealth,
   TraceSourceListItem,
   TraceSourceListResult,
   TraceSourceManifest,
@@ -159,7 +160,9 @@ export type {
   TraceSourceMemoryIssue,
   TraceSourceMemoryMode,
   TraceSourceMemoryStatus,
+  TraceSourceNoMemoryHealth,
   TraceSourceRegistryOptions,
   TraceSourceStatus,
+  TraceSourceSupermemoryMemoryHealth,
   UpdateTraceSourceOptions,
 } from "./types.js";

@@ -23,10 +23,12 @@
 //               is a non-RED "idle?" warning. `--strict-runs` fails on ANY
 //               failed run; `--min-runs <n>` fails a too-quiet instance.
 //
-// Each probe retains and uses ProgramArguments[0] (Node) and [1] (cli.js) from
-// that instance's plist. Neither the ambient `node` nor a cli.js inferred from
-// this script's checkout is proof of the launchd runtime. With --expect-sha it
-// fails on a mismatch (window mode); without it the sha is informational only.
+// Each probe retains and uses ProgramArguments[0] (Node), [1] (cli.js), the
+// service's exact absolute --config/--env-file values, and its PATH from that
+// instance's plist. Neither the ambient `node`, a cli.js inferred from this
+// checkout, cwd-default configuration, nor the checker's ambient PATH is proof
+// of the launchd runtime. With --expect-sha it fails on a mismatch (window mode);
+// without it the sha is informational only.
 //
 // Verdict: `VERDICT: GREEN <date> sha <short>` or `VERDICT: RED <date> — <reason>`.
 // Exits non-zero on RED so a wrapper can alert. No comment posted = not a green
@@ -34,7 +36,7 @@
 
 import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -44,6 +46,28 @@ const LABEL_PREFIX = "com.mono-agent.";
 const CLI_MARKER = "/packages/agent-app/";
 const DEFAULT_EXPECT_NODE = "24.15.0";
 const DEFAULT_EXPECT_ABI = "137";
+const COMMAND_TIMEOUT_MS = Object.freeze({
+  plist: 5_000,
+  service: 5_000,
+  runtime: 5_000,
+  validate: 30_000,
+  memory: 60_000,
+  metrics: 30_000,
+  git: 5_000,
+  github: 30_000,
+});
+const LAUNCHD_PROBE_ENV_KEYS = Object.freeze([
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "__CF_USER_TEXT_ENCODING",
+]);
 const MEMORY_PASS_STATUSES = new Set(["healthy"]);
 const MEMORY_WARN_STATUSES = new Set(["in_progress"]);
 const MEMORY_SKIP_STATUSES = new Set(["not_configured"]);
@@ -82,6 +106,7 @@ const MEMORY_ISSUE_CODES = [
   "database_missing",
   "database_unavailable",
   "native_module_unavailable",
+  "health_check_failed",
   "sqlite_integrity_failed",
   "metadata_mismatch",
   "fts_mismatch",
@@ -95,12 +120,41 @@ const MEMORY_ISSUE_CODES = [
   "dead_letters",
   "outbox_invalid",
   "outbox_pending",
+  "work_stalled",
   "temporary_artifacts",
   "runtime_missing",
   "runtime_stale",
   "runtime_invalid",
 ];
 const MEMORY_ISSUE_INDEX = new Map(MEMORY_ISSUE_CODES.map((code, index) => [code, index]));
+const MEMORY_UNKNOWN_ISSUES = new Set([
+  "database_unavailable",
+  "native_module_unavailable",
+  "health_check_failed",
+]);
+const MEMORY_UNHEALTHY_ISSUES = new Set([
+  "manifest_missing",
+  "manifest_invalid",
+  "configured_identity_mismatch",
+  "database_missing",
+  "sqlite_integrity_failed",
+  "metadata_mismatch",
+  "fts_mismatch",
+  "vector_mismatch",
+  "orphaned_rows",
+  "canonical_mismatch",
+  "canonical_invalid",
+  "intake_invalid",
+  "outbox_invalid",
+  "temporary_artifacts",
+]);
+const MEMORY_DEGRADED_ISSUES = new Set([
+  "dead_letters",
+  "work_stalled",
+  "runtime_missing",
+  "runtime_stale",
+  "runtime_invalid",
+]);
 const ISO_INSTANT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/u;
 
 // The ONLY failure kind treated as fleet-normal: a transient provider failover
@@ -333,6 +387,9 @@ export function shortSha(sha) {
 }
 
 export function evaluateRuntime(runtime, expected = {}) {
+  if (runtime?.timedOut === true) {
+    return { status: "fail", note: "runtime probe timed out" };
+  }
   if (!runtime || runtime.ran !== true) {
     return { status: "fail", note: "runtime probe unavailable" };
   }
@@ -348,6 +405,9 @@ export function evaluateRuntime(runtime, expected = {}) {
 }
 
 function evaluateService(service) {
+  if (service?.timedOut === true) {
+    return { status: "fail", note: "service probe timed out" };
+  }
   if (!service || service.found !== true) {
     return { status: "fail", note: "service not found" };
   }
@@ -361,6 +421,9 @@ function evaluateService(service) {
 }
 
 function evaluateValidate(validate) {
+  if (validate?.timedOut === true) {
+    return { status: "fail", note: "validate command timed out" };
+  }
   if (!validate || validate.ran !== true) {
     return { status: "fail", note: "validate probe unavailable" };
   }
@@ -401,17 +464,21 @@ function isStrictMemoryReport(report) {
     return hasExactKeys(report, MEMORY_REPORT_KEYS)
       && typeof report.mode === "string"
       && MEMORY_MODES.has(report.mode)
-      && BUJO_MEMORY_STATUSES.has(report.status);
+      && BUJO_MEMORY_STATUSES.has(report.status)
+      && report.status === deriveBuiltInMemoryStatus(report.issues)
+      && hasValidBuiltInCountSemantics(report.mode, report.issues, report.counts);
   }
   if (report.backend === "none") {
     return hasExactKeys(report, MEMORY_REPORT_KEYS_WITHOUT_MODE)
       && report.status === "not_configured"
-      && report.issues.length === 0;
+      && report.issues.length === 0
+      && hasOnlyZeroMemoryCounts(report.counts);
   }
   if (report.backend === "supermemory") {
     return hasExactKeys(report, MEMORY_REPORT_KEYS_WITHOUT_MODE)
       && report.status === "unknown"
-      && report.issues.length === 0;
+      && report.issues.length === 0
+      && hasOnlyZeroMemoryCounts(report.counts);
   }
   return false;
 }
@@ -444,6 +511,37 @@ function isClosedMemoryCounts(value) {
   return isRecord(value)
     && hasExactKeys(value, MEMORY_COUNT_KEYS)
     && MEMORY_COUNT_KEYS.every((key) => Number.isSafeInteger(value[key]) && value[key] >= 0);
+}
+
+function hasOnlyZeroMemoryCounts(counts) {
+  return MEMORY_COUNT_KEYS.every((key) => counts[key] === 0);
+}
+
+function deriveBuiltInMemoryStatus(issues) {
+  if (issues.some((issue) => MEMORY_UNKNOWN_ISSUES.has(issue))) return "unknown";
+  if (issues.some((issue) => MEMORY_UNHEALTHY_ISSUES.has(issue))) return "unhealthy";
+  if (issues.some((issue) => MEMORY_DEGRADED_ISSUES.has(issue))) return "degraded";
+  return issues.length === 0 ? "healthy" : "in_progress";
+}
+
+function hasValidBuiltInCountSemantics(mode, issues, counts) {
+  const has = (issue) => issues.includes(issue);
+  if (counts.due > counts.pending
+    || has("intake_pending") !== (counts.pending > 0)
+    || has("dead_letters") !== (counts.dead > 0)
+    || has("outbox_pending") !== (counts.outbox > 0)
+    || has("temporary_artifacts") !== (counts.temporary > 0)) {
+    return false;
+  }
+  if (counts.outbox > 0 && !has("mutation_in_progress")) return false;
+
+  const expectedMissingVectors = mode === "lite" ? 0 : Math.max(0, counts.memories - counts.vectors);
+  if (counts.missingVectors !== expectedMissingVectors) return false;
+  if (mode === "journal" && counts.missingVectors > 0 && !has("mutation_in_progress")) return false;
+  if (mode === "bujo" && counts.vectors !== counts.memories && !has("vector_mismatch")) return false;
+  if (mode === "lite" && counts.vectors !== 0 && !has("vector_mismatch")) return false;
+  if (counts.vectors > counts.memories && !has("vector_mismatch")) return false;
+  return true;
 }
 
 function isValidIsoInstant(value) {
@@ -479,6 +577,9 @@ function daysInMonth(year, month) {
 }
 
 export function evaluateMemory(memory) {
+  if (memory?.timedOut === true) {
+    return { status: "fail", memoryStatus: "malformed", note: "memory audit timed out" };
+  }
   if (!memory || memory.ran !== true) {
     return { status: "fail", memoryStatus: "malformed", note: "memory audit unavailable" };
   }
@@ -504,13 +605,16 @@ const CELL = { pass: "ok", warn: "warn", fail: "FAIL", skip: "—" };
 
 // The verdict + table. Pure: takes already-collected structured data.
 export function buildFleetReport(input) {
-  const { date, deployedSha, expectSha, expectNode, expectAbi, strictRuns, minRuns } = input;
+  const { date, deployedSha, deployedShaError, expectSha, expectNode, expectAbi, strictRuns, minRuns } = input;
   const rows = input.instances.map((instance) => {
     const name = instanceName(instance.label);
     // A plist that matched the prefix but could not be read is an unknown
     // config the fleet may be running blind — RED, never silently dropped.
     if (typeof instance.discoveryError === "string") {
-      const service = { status: "fail", note: "plist unreadable" };
+      const service = {
+        status: "fail",
+        note: instance.discoveryError === "plist probe timed out" ? "plist probe timed out" : "plist unreadable",
+      };
       const skipped = { status: "skip", note: "" };
       return {
         name,
@@ -565,6 +669,9 @@ export function buildFleetReport(input) {
   }
 
   const shaKnown = typeof deployedSha === "string" && deployedSha.length >= 7;
+  if (reason === null && typeof deployedShaError === "string") {
+    reason = deployedShaError;
+  }
   if (reason === null && typeof expectSha === "string" && expectSha.length > 0) {
     if (!shaKnown || !deployedSha.startsWith(expectSha)) {
       reason = `deployed sha ${shortSha(deployedSha)} != expected ${shortSha(expectSha)}`;
@@ -624,7 +731,13 @@ function discoverInstances(launchAgentsDir, runCommand, readdir) {
     }
     const plistPath = join(launchAgentsDir, entry);
     const filenameLabel = entry.slice(0, -".plist".length);
-    const result = runCommand("plutil", ["-convert", "json", "-o", "-", plistPath]);
+    const result = runCommand("plutil", ["-convert", "json", "-o", "-", plistPath], {
+      timeout: COMMAND_TIMEOUT_MS.plist,
+    });
+    if (result.timedOut === true) {
+      byLabel.set(filenameLabel, { label: filenameLabel, dir: null, nodePath: null, cliPath: null, discoveryError: "plist probe timed out" });
+      continue;
+    }
     if (result.status !== 0) {
       byLabel.set(filenameLabel, { label: filenameLabel, dir: null, nodePath: null, cliPath: null, discoveryError: "plist conversion failed" });
       continue;
@@ -640,14 +753,90 @@ function discoverInstances(launchAgentsDir, runCommand, readdir) {
       byLabel.set(filenameLabel, { label: filenameLabel, dir: null, nodePath: null, cliPath: null, discoveryError: "plist JSON invalid" });
       continue;
     }
-    const label = typeof plist.Label === "string" ? plist.Label : filenameLabel;
-    const dir = typeof plist.WorkingDirectory === "string" ? plist.WorkingDirectory : null;
-    const args = Array.isArray(plist.ProgramArguments) ? plist.ProgramArguments : [];
-    const nodePath = typeof args[0] === "string" ? args[0] : null;
-    const cliPath = typeof args[1] === "string" && args[1].endsWith("cli.js") ? args[1] : null;
-    byLabel.set(label, { label, dir, nodePath, cliPath });
+    const label = typeof plist.Label === "string" && !plist.Label.includes("\0")
+      ? plist.Label
+      : filenameLabel;
+    const dir = typeof plist.WorkingDirectory === "string"
+      && !plist.WorkingDirectory.includes("\0")
+      && isAbsolute(plist.WorkingDirectory)
+      ? plist.WorkingDirectory
+      : null;
+    const program = parseLaunchdProgramArguments(plist.ProgramArguments);
+    const pathEnv = parseLaunchdPathEnvironment(plist.EnvironmentVariables);
+    if (program === null || pathEnv === null || dir === null) {
+      byLabel.set(filenameLabel, {
+        label: filenameLabel,
+        dir: null,
+        nodePath: null,
+        cliPath: null,
+        probeArgs: [],
+        discoveryError: "plist arguments invalid",
+      });
+      continue;
+    }
+    byLabel.set(label, { label, dir, pathEnv, ...program });
   }
   return byLabel;
+}
+
+/**
+ * Accept only the launchd shape emitted by buildPlistXml (plus older default-
+ * config plists). Unknown, duplicate, relative, or value-less flags fail the
+ * whole instance closed; none of their values are retained in the report.
+ */
+export function parseLaunchdProgramArguments(value) {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) return null;
+  const [nodePath, cliPath, command, ...tail] = value;
+  if (typeof nodePath !== "string" || nodePath.includes("\0") || !isAbsolute(nodePath)
+    || typeof cliPath !== "string" || cliPath.includes("\0")
+    || !isAbsolute(cliPath) || !cliPath.endsWith("cli.js")
+    || command !== "start") {
+    return null;
+  }
+
+  let foreground = false;
+  let configPath;
+  let envFile;
+  for (let index = 0; index < tail.length; index += 1) {
+    const flag = tail[index];
+    if (flag === "--foreground") {
+      if (foreground) return null;
+      foreground = true;
+      continue;
+    }
+    if (flag !== "--config" && flag !== "--env-file") return null;
+    const path = tail[index + 1];
+    if (typeof path !== "string" || !isAbsolute(path) || path.includes("\0")) return null;
+    index += 1;
+    if (flag === "--config") {
+      if (configPath !== undefined) return null;
+      configPath = path;
+    } else {
+      if (envFile !== undefined) return null;
+      envFile = path;
+    }
+  }
+
+  return {
+    nodePath,
+    cliPath,
+    probeArgs: [
+      ...(configPath === undefined ? [] : ["--config", configPath]),
+      ...(envFile === undefined ? [] : ["--env-file", envFile]),
+    ],
+  };
+}
+
+/**
+ * Managed plists intentionally expose only PATH. Reject any other environment
+ * shape without retaining or rendering its values, then apply the exact PATH
+ * to every runtime/CLI probe.
+ */
+export function parseLaunchdPathEnvironment(value) {
+  if (!isRecord(value) || !hasExactKeys(value, ["PATH"])) return null;
+  return typeof value.PATH === "string" && value.PATH.length > 0 && !value.PATH.includes("\0")
+    ? value.PATH
+    : null;
 }
 
 function collectInstance(entry, since, runCommand) {
@@ -663,31 +852,38 @@ function collectInstance(entry, since, runCommand) {
       metrics: { ran: false },
     };
   }
-  const service = parseLaunchctlList(...launchctlList(entry.label, runCommand));
-  const runtime = entry.nodePath === null
+  const service = launchctlList(entry.label, runCommand);
+  const runtime = entry.nodePath === null || typeof entry.pathEnv !== "string"
     ? { ran: false }
-    : runRuntimeProbe(entry.nodePath, runCommand);
+    : runRuntimeProbe(entry.nodePath, entry.pathEnv, runCommand);
   let validate = { ran: false };
   let memory = { ran: false };
   let metrics = { ran: false };
-  if (entry.dir !== null && entry.nodePath !== null && entry.cliPath !== null) {
-    validate = runValidate(entry.nodePath, entry.cliPath, entry.dir, runCommand);
-    memory = runMemoryAudit(entry.nodePath, entry.cliPath, entry.dir, runCommand);
-    metrics = runMetrics(entry.nodePath, entry.cliPath, entry.dir, since, runCommand);
+  if (entry.dir !== null && entry.nodePath !== null && entry.cliPath !== null && typeof entry.pathEnv === "string") {
+    const probeArgs = Array.isArray(entry.probeArgs) ? entry.probeArgs : [];
+    validate = runValidate(entry.nodePath, entry.cliPath, entry.dir, entry.pathEnv, probeArgs, runCommand);
+    memory = runMemoryAudit(entry.nodePath, entry.cliPath, entry.dir, entry.pathEnv, probeArgs, runCommand);
+    metrics = runMetrics(entry.nodePath, entry.cliPath, entry.dir, entry.pathEnv, probeArgs, since, runCommand);
   }
   return { label: entry.label, dir: entry.dir, service, runtime, validate, memory, metrics };
 }
 
 function launchctlList(label, runCommand) {
-  const result = runCommand("launchctl", ["list", label]);
-  return [result.stdout ?? "", result.status];
+  const result = runCommand("launchctl", ["list", label], { timeout: COMMAND_TIMEOUT_MS.service });
+  if (result.timedOut === true) {
+    return { found: false, pid: null, lastExitStatus: null, timedOut: true };
+  }
+  return parseLaunchctlList(result.stdout ?? "", result.status);
 }
 
-function runRuntimeProbe(nodePath, runCommand) {
+function runRuntimeProbe(nodePath, pathEnv, runCommand) {
   const result = runCommand(nodePath, [
     "-p",
     "JSON.stringify({node:process.versions.node,abi:process.versions.modules})",
-  ]);
+  ], { timeout: COMMAND_TIMEOUT_MS.runtime, pathEnv });
+  if (result.timedOut === true) {
+    return { ran: false, timedOut: true };
+  }
   if (result.status !== 0) {
     return { ran: false };
   }
@@ -699,8 +895,15 @@ function runRuntimeProbe(nodePath, runCommand) {
   return { ran: true, node: parsed.node, abi: parsed.abi };
 }
 
-function runValidate(nodePath, cliPath, dir, runCommand) {
-  const result = runCommand(nodePath, [cliPath, "validate", "--json"], { cwd: dir });
+function runValidate(nodePath, cliPath, dir, pathEnv, probeArgs, runCommand) {
+  const result = runCommand(nodePath, [cliPath, "validate", "--json", ...probeArgs], {
+    cwd: dir,
+    timeout: COMMAND_TIMEOUT_MS.validate,
+    pathEnv,
+  });
+  if (result.timedOut === true) {
+    return { ran: false, timedOut: true };
+  }
   const parsed = parseJsonObject(result.stdout ?? "");
   if (parsed === null || typeof parsed.ok !== "boolean") {
     return { ran: true, exitCode: result.status, validJson: false };
@@ -708,13 +911,27 @@ function runValidate(nodePath, cliPath, dir, runCommand) {
   return { ran: true, exitCode: result.status, validJson: true, ok: parsed.ok };
 }
 
-function runMemoryAudit(nodePath, cliPath, dir, runCommand) {
-  const result = runCommand(nodePath, [cliPath, "memory", "audit", "--strict", "--json"], { cwd: dir });
+function runMemoryAudit(nodePath, cliPath, dir, pathEnv, probeArgs, runCommand) {
+  const result = runCommand(nodePath, [cliPath, "memory", "audit", "--strict", "--json", ...probeArgs], {
+    cwd: dir,
+    timeout: COMMAND_TIMEOUT_MS.memory,
+    pathEnv,
+  });
+  if (result.timedOut === true) {
+    return { ran: false, timedOut: true };
+  }
   return parseMemoryAudit(result.stdout ?? "", result.status);
 }
 
-function runMetrics(nodePath, cliPath, dir, since, runCommand) {
-  const result = runCommand(nodePath, [cliPath, "metrics", "--since", since, "--json"], { cwd: dir });
+function runMetrics(nodePath, cliPath, dir, pathEnv, probeArgs, since, runCommand) {
+  const result = runCommand(nodePath, [cliPath, "metrics", "--since", since, "--json", ...probeArgs], {
+    cwd: dir,
+    timeout: COMMAND_TIMEOUT_MS.metrics,
+    pathEnv,
+  });
+  if (result.timedOut === true) {
+    return { ran: false, error: "metrics command timed out" };
+  }
   if (result.status !== 0) {
     return { ran: false, error: "metrics command failed" };
   }
@@ -745,25 +962,61 @@ function resolveDeployRepo(discovered, override) {
 
 function readDeployedSha(repo, runCommand) {
   if (repo === null) {
-    return null;
+    return { sha: null, error: null };
   }
-  const result = runCommand("git", ["-C", repo, "rev-parse", "HEAD"]);
+  const result = runCommand("git", ["-C", repo, "rev-parse", "HEAD"], { timeout: COMMAND_TIMEOUT_MS.git });
+  if (result.timedOut === true) {
+    return { sha: null, error: "deployed sha probe timed out" };
+  }
   const sha = result.status === 0 ? (result.stdout ?? "").trim() : "";
-  return /^[0-9a-f]{40,64}$/iu.test(sha) ? sha.toLowerCase() : null;
+  return { sha: /^[0-9a-f]{40,64}$/iu.test(sha) ? sha.toLowerCase() : null, error: null };
 }
 
-function runCommandSync(command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    cwd: options.cwd,
-    encoding: "utf8",
-    maxBuffer: 32 * 1024 * 1024,
-    env: process.env,
-  });
+export function runCommandSync(command, args, options = {}) {
+  let result;
+  try {
+    result = spawnSync(command, args, {
+      cwd: options.cwd,
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+      env: typeof options.pathEnv === "string"
+        ? buildLaunchdProbeEnvironment(options.pathEnv)
+        : process.env,
+      timeout: options.timeout,
+      killSignal: "SIGKILL",
+    });
+  } catch {
+    // Invalid/hostile argv or cwd values must become a generic closed probe
+    // failure, never a thrown diagnostic that can echo the input.
+    return { status: 127, stdout: "", stderr: "" };
+  }
+  const timedOut = result.error?.code === "ETIMEDOUT";
+  if (timedOut) {
+    return { status: 124, stdout: "", stderr: "", timedOut: true };
+  }
   return {
     status: result.status ?? (result.error ? 127 : 1),
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? (result.error ? String(result.error) : ""),
   };
+}
+
+/**
+ * Recreate the non-secret user-launchd baseline needed by Node and filesystem
+ * probes. In particular, never inherit shell-only MONO_AGENT_* overrides,
+ * provider credentials, NODE_OPTIONS, proxy variables, or credential-store
+ * selectors that are absent from the managed plist. The CLI loads the exact
+ * plist --env-file itself.
+ */
+export function buildLaunchdProbeEnvironment(pathEnv, ambientEnv = process.env) {
+  const environment = { PATH: pathEnv };
+  for (const key of LAUNCHD_PROBE_ENV_KEYS) {
+    const value = ambientEnv[key];
+    if (typeof value === "string" && value.length > 0 && !value.includes("\0")) {
+      environment[key] = value;
+    }
+  }
+  return environment;
 }
 
 export async function runFleetGreenCheck(options = {}) {
@@ -790,7 +1043,7 @@ export async function runFleetGreenCheck(options = {}) {
   const discovered = discoverInstances(launchAgentsDir, runCommand, readdir);
   const selectedLabels = args.labels ?? [...discovered.keys()];
   const { repo: deployRepo, warning: repoWarning } = resolveDeployRepo(discovered, args.repo);
-  const deployedSha = readDeployedSha(deployRepo, runCommand);
+  const deployed = readDeployedSha(deployRepo, runCommand);
   const since = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
   const date = now.toISOString().slice(0, 10);
 
@@ -801,7 +1054,8 @@ export async function runFleetGreenCheck(options = {}) {
 
   const report = buildFleetReport({
     date,
-    deployedSha,
+    deployedSha: deployed.sha,
+    ...(deployed.error === null ? {} : { deployedShaError: deployed.error }),
     expectSha: args.expectSha,
     expectNode: args.expectNode,
     expectAbi: args.expectAbi,
@@ -818,7 +1072,9 @@ export async function runFleetGreenCheck(options = {}) {
   stdout.write(`${body}\n`);
 
   if (!args.dryRun) {
-    const result = runCommand("gh", ["issue", "comment", ISSUE_NUMBER, "--repo", REPO, "--body", body]);
+    const result = runCommand("gh", ["issue", "comment", ISSUE_NUMBER, "--repo", REPO, "--body", body], {
+      timeout: COMMAND_TIMEOUT_MS.github,
+    });
     if (result.status !== 0) {
       stderr.write(`Failed to post comment to #${ISSUE_NUMBER}.\n`);
       return { exitCode: report.exitCode === 0 ? 1 : report.exitCode };

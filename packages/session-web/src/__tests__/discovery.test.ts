@@ -95,7 +95,7 @@ describe("discoverWebInstances", () => {
         mode: "bujo",
         status: "degraded",
         checkedAt: "2026-07-12T08:00:00.000Z",
-        issues: ["dead_letters", "outbox_pending"],
+        issues: ["mutation_in_progress", "dead_letters", "outbox_pending"],
         counts: { dead: 2, outbox: 1 },
       },
     });
@@ -107,7 +107,7 @@ describe("discoverWebInstances", () => {
       mode: "bujo",
       status: "degraded",
       checkedAt: "2026-07-12T08:00:00.000Z",
-      issues: ["dead_letters", "outbox_pending"],
+      issues: ["mutation_in_progress", "dead_letters", "outbox_pending"],
       counts: { dead: 2, outbox: 1 },
     });
     expect(Object.keys(discovered?.instance ?? {})).not.toContain("metadata");

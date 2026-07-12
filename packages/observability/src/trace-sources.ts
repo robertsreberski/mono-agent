@@ -46,18 +46,10 @@ const DEFAULT_STALE_AFTER_MS = 30_000;
 const MANIFEST_SUFFIX = ".json";
 const SOURCE_ID_PATTERN = /^[A-Za-z0-9._-]+$/u;
 const DEFAULT_MAX_RUNS = 100;
-const ISO_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u;
+const ISO_INSTANT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/u;
 
 const MEMORY_BACKENDS = ["bujo", "supermemory", "none"] as const satisfies readonly TraceSourceMemoryBackend[];
 const MEMORY_MODES = ["lite", "journal", "bujo"] as const satisfies readonly TraceSourceMemoryMode[];
-const MEMORY_STATUSES = [
-  "healthy",
-  "in_progress",
-  "degraded",
-  "unhealthy",
-  "unknown",
-  "not_configured",
-] as const satisfies readonly TraceSourceMemoryStatus[];
 const MEMORY_ISSUES = [
   "manifest_missing",
   "manifest_invalid",
@@ -65,6 +57,7 @@ const MEMORY_ISSUES = [
   "database_missing",
   "database_unavailable",
   "native_module_unavailable",
+  "health_check_failed",
   "sqlite_integrity_failed",
   "metadata_mismatch",
   "fts_mismatch",
@@ -78,11 +71,15 @@ const MEMORY_ISSUES = [
   "dead_letters",
   "outbox_invalid",
   "outbox_pending",
+  "work_stalled",
   "temporary_artifacts",
   "runtime_missing",
   "runtime_stale",
   "runtime_invalid",
 ] as const satisfies readonly TraceSourceMemoryIssue[];
+const MEMORY_ISSUE_INDEX = new Map<string, number>(
+  MEMORY_ISSUES.map((issue, index) => [issue, index]),
+);
 const MEMORY_COUNT_KEYS = [
   "pending",
   "due",
@@ -93,6 +90,35 @@ const MEMORY_COUNT_KEYS = [
   "vectors",
   "missingVectors",
 ] as const satisfies readonly (keyof TraceSourceMemoryCounts)[];
+
+const MEMORY_UNKNOWN_ISSUES = new Set<TraceSourceMemoryIssue>([
+  "database_unavailable",
+  "native_module_unavailable",
+  "health_check_failed",
+]);
+const MEMORY_UNHEALTHY_ISSUES = new Set<TraceSourceMemoryIssue>([
+  "manifest_missing",
+  "manifest_invalid",
+  "configured_identity_mismatch",
+  "database_missing",
+  "sqlite_integrity_failed",
+  "metadata_mismatch",
+  "fts_mismatch",
+  "vector_mismatch",
+  "orphaned_rows",
+  "canonical_mismatch",
+  "canonical_invalid",
+  "intake_invalid",
+  "outbox_invalid",
+  "temporary_artifacts",
+]);
+const MEMORY_DEGRADED_ISSUES = new Set<TraceSourceMemoryIssue>([
+  "dead_letters",
+  "runtime_missing",
+  "runtime_stale",
+  "runtime_invalid",
+  "work_stalled",
+]);
 
 /** Default retention window for {@link pruneTraceSources}: 7 days. */
 export const DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS = 7 * 24 * 60 * 60 * 1000;
@@ -122,6 +148,12 @@ export async function registerTraceSource(options: RegisterTraceSourceOptions): 
   const label = normalizeNonEmpty(options.label, "label");
   const artifactDir = resolvePath(options.artifactDir, "artifactDir");
   const startedAt = options.startedAt ?? isoNow(normalized.clock);
+  const heartbeatMs = options.heartbeatMs;
+  if (heartbeatMs !== undefined && (!Number.isInteger(heartbeatMs) || heartbeatMs < 250)) {
+    throw new TraceSourceRegistryError("invalid_registry_options", "heartbeatMs must be an integer of at least 250.", {
+      field: "heartbeatMs",
+    });
+  }
   let manifest = buildManifest({
     sourceId,
     label,
@@ -138,32 +170,54 @@ export async function registerTraceSource(options: RegisterTraceSourceOptions): 
 
   await writeManifest(normalized.registryDir, manifest);
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-  const heartbeatMs = options.heartbeatMs;
-  const writePatch = async (patch: UpdateTraceSourceOptions): Promise<TraceSourceManifest> => {
+  let timerWritePending = false;
+  let terminal = false;
+  let terminalWrite: Promise<TraceSourceManifest> | undefined;
+  // Every admitted write captures one immutable manifest and joins this one
+  // serialized tail. Rejections remain visible to their caller but are absorbed
+  // by the tail so a later stop can still publish the terminal state.
+  let writeTail: Promise<void> = Promise.resolve();
+  const enqueueManifest = (snapshot: TraceSourceManifest): Promise<TraceSourceManifest> => {
+    const operation = writeTail.then(async () => {
+      await writeManifest(normalized.registryDir, snapshot);
+      return snapshot;
+    });
+    writeTail = operation.then(() => undefined, () => undefined);
+    return operation;
+  };
+  const terminalResult = (): Promise<TraceSourceManifest> =>
+    terminalWrite === undefined
+      ? Promise.resolve(manifest)
+      : terminalWrite.then(() => manifest, () => manifest);
+  const nextManifest = (patch: UpdateTraceSourceOptions): TraceSourceManifest => {
     const { memoryHealth: memoryHealthInput, ...otherPatch } = patch;
     const nextMemoryHealth = freshestMemoryHealth(
       manifest.memoryHealth,
       normalizeMemoryHealth(memoryHealthInput),
       "candidate",
     );
-    manifest = buildManifest({
+    return buildManifest({
       ...manifest,
       ...otherPatch,
       updatedAt: isoNow(normalized.clock),
       ...(nextMemoryHealth === undefined ? {} : { memoryHealth: nextMemoryHealth }),
     });
-    await writeManifest(normalized.registryDir, manifest);
-    return manifest;
+  };
+  const writePatch = (patch: UpdateTraceSourceOptions): Promise<TraceSourceManifest> => {
+    if (terminal) return terminalResult();
+    manifest = nextManifest(patch);
+    return enqueueManifest(manifest);
   };
 
   if (heartbeatMs !== undefined) {
-    if (!Number.isInteger(heartbeatMs) || heartbeatMs < 250) {
-      throw new TraceSourceRegistryError("invalid_registry_options", "heartbeatMs must be an integer of at least 250.", {
-        field: "heartbeatMs",
-      });
-    }
     heartbeatTimer = setInterval(() => {
-      void writePatch({});
+      // At most one timer-owned write may wait behind explicit updates. A slow
+      // filesystem therefore cannot turn interval ticks into an unbounded tail.
+      if (terminal || timerWritePending) return;
+      timerWritePending = true;
+      void writePatch({}).catch(() => undefined).finally(() => {
+        timerWritePending = false;
+      });
     }, heartbeatMs);
     heartbeatTimer.unref?.();
   }
@@ -176,12 +230,18 @@ export async function registerTraceSource(options: RegisterTraceSourceOptions): 
     async heartbeat() {
       return await writePatch({});
     },
-    async stop(patch = {}) {
+    stop(patch = {}) {
+      if (terminal) return terminalWrite ?? Promise.resolve(manifest);
+      // Terminal admission is synchronous: no update/heartbeat can enter after
+      // this point. Its write is queued after every operation that already did.
+      terminal = true;
       if (heartbeatTimer !== undefined) {
         clearInterval(heartbeatTimer);
         heartbeatTimer = undefined;
       }
-      return await writePatch({ ...patch, status: patch.status ?? "stopped" });
+      manifest = nextManifest({ ...patch, status: patch.status ?? "stopped" });
+      terminalWrite = enqueueManifest(manifest);
+      return terminalWrite;
     },
   };
 }
@@ -413,8 +473,10 @@ async function readManifestFiles(normalized: NormalizedRegistryOptions): Promise
       if (manifest !== undefined) {
         manifests.push(manifest);
       }
-    } catch (error) {
-      warnings.push(`Skipping ${entry.name}: invalid JSON (${errorMessage(error)}).`);
+    } catch {
+      // JSON.parse diagnostics can include excerpts of the hostile input on
+      // current Node releases. Registry warnings are a content-free surface.
+      warnings.push(`Skipping ${entry.name}: invalid JSON.`);
     }
   }
   return { manifests, warnings };
@@ -588,22 +650,51 @@ function normalizeMemoryHealth(value: unknown): TraceSourceMemoryHealth | undefi
   if (!isRecord(value)) {
     return undefined;
   }
-  const backend = enumValue(value.backend, MEMORY_BACKENDS);
-  const status = enumValue(value.status, MEMORY_STATUSES);
   const checkedAt = normalizeIsoInstant(value.checkedAt);
-  if (backend === undefined || status === undefined || checkedAt === undefined) {
+  if (checkedAt === undefined) {
     return undefined;
   }
 
+  const backend = enumValue(value.backend, MEMORY_BACKENDS);
+  if (backend === "none") {
+    const status = enumValue(value.status, ["not_configured", "unknown"] as const);
+    if (status !== undefined && value.mode === undefined && value.issues === undefined && value.counts === undefined) {
+      return { backend, status, checkedAt };
+    }
+    return { backend, status: "unknown", checkedAt };
+  }
+  if (backend === "supermemory") {
+    if (value.status === "unknown" && value.mode === undefined
+      && value.issues === undefined && value.counts === undefined) {
+      return { backend, status: "unknown", checkedAt };
+    }
+    return { backend, status: "unknown", checkedAt };
+  }
+  if (backend !== "bujo") {
+    // A well-formed timestamp must supersede stale green data even when the
+    // producer's backend discriminator is unknown or missing.
+    return { backend: "none", status: "unknown", checkedAt };
+  }
+
   const mode = enumValue(value.mode, MEMORY_MODES);
+  if (mode === undefined) {
+    return { backend: "none", status: "unknown", checkedAt };
+  }
+  const status = enumValue(value.status, ["healthy", "in_progress", "degraded", "unhealthy", "unknown"] as const);
   const issues = normalizeMemoryIssues(value.issues);
+  if (status === undefined || issues === undefined || status !== statusForMemoryIssues(issues)) {
+    return unknownBujoMemoryHealth(mode, checkedAt);
+  }
   const counts = normalizeMemoryCounts(value.counts);
+  if (counts === null || (counts !== undefined && !memoryCountsMatchIssues(mode, counts, issues))) {
+    return unknownBujoMemoryHealth(mode, checkedAt);
+  }
   return {
     backend,
-    ...(mode === undefined ? {} : { mode }),
+    mode,
     status,
     checkedAt,
-    ...(issues === undefined ? {} : { issues }),
+    issues,
     ...(counts === undefined ? {} : { counts }),
   };
 }
@@ -643,21 +734,106 @@ function normalizeMemoryIssues(value: unknown): readonly TraceSourceMemoryIssue[
   if (!Array.isArray(value)) {
     return undefined;
   }
-  const present = new Set(value.filter((issue): issue is TraceSourceMemoryIssue => enumValue(issue, MEMORY_ISSUES) !== undefined));
-  const issues = MEMORY_ISSUES.filter((issue) => present.has(issue));
-  return issues.length === 0 ? undefined : issues;
+  const issues: TraceSourceMemoryIssue[] = [];
+  let previousIndex = -1;
+  for (const issue of value) {
+    if (typeof issue !== "string") {
+      return undefined;
+    }
+    const index = MEMORY_ISSUE_INDEX.get(issue);
+    if (index === undefined || index <= previousIndex) {
+      return undefined;
+    }
+    issues.push(issue as TraceSourceMemoryIssue);
+    previousIndex = index;
+  }
+  return issues;
 }
 
-function normalizeMemoryCounts(value: unknown): TraceSourceMemoryCounts | undefined {
-  if (!isRecord(value)) {
+function statusForMemoryIssues(
+  issues: readonly TraceSourceMemoryIssue[],
+): Exclude<TraceSourceMemoryStatus, "not_configured"> {
+  if (issues.some((issue) => MEMORY_UNKNOWN_ISSUES.has(issue))) return "unknown";
+  if (issues.some((issue) => MEMORY_UNHEALTHY_ISSUES.has(issue))) return "unhealthy";
+  if (issues.some((issue) => MEMORY_DEGRADED_ISSUES.has(issue))) return "degraded";
+  return issues.length === 0 ? "healthy" : "in_progress";
+}
+
+function unknownBujoMemoryHealth(
+  mode: TraceSourceMemoryMode,
+  checkedAt: string,
+): TraceSourceMemoryHealth {
+  return {
+    backend: "bujo",
+    mode,
+    status: "unknown",
+    checkedAt,
+    issues: ["health_check_failed"],
+  };
+}
+
+function memoryCountsMatchIssues(
+  mode: TraceSourceMemoryMode,
+  counts: TraceSourceMemoryCounts,
+  issues: readonly TraceSourceMemoryIssue[],
+): boolean {
+  const present = new Set(issues);
+  const hasIntakePending = present.has("intake_pending");
+  const hasMutation = present.has("mutation_in_progress");
+  const hasVectorMismatch = present.has("vector_mismatch");
+
+  if (counts.pending !== undefined && hasIntakePending !== (counts.pending > 0)) return false;
+  if (counts.due !== undefined) {
+    if (counts.due > 0 && !hasIntakePending) return false;
+    if (counts.pending !== undefined && counts.due > counts.pending) return false;
+  }
+  if (counts.dead !== undefined && present.has("dead_letters") !== (counts.dead > 0)) return false;
+  if (counts.outbox !== undefined) {
+    if (present.has("outbox_pending") !== (counts.outbox > 0)) return false;
+    if (counts.outbox > 0 && !hasMutation) return false;
+  }
+  if (counts.temporary !== undefined
+    && present.has("temporary_artifacts") !== (counts.temporary > 0)) return false;
+
+  if (mode === "lite") {
+    if (counts.missingVectors !== undefined && counts.missingVectors !== 0) return false;
+    if (counts.vectors !== undefined && counts.vectors !== 0 && !hasVectorMismatch) return false;
+  }
+  if (mode === "journal" && counts.missingVectors !== undefined
+    && counts.missingVectors > 0 && !hasMutation) return false;
+  if (mode === "journal" && counts.memories !== undefined && counts.vectors !== undefined
+    && counts.memories > counts.vectors && !hasMutation) return false;
+  if (mode === "bujo") {
+    if (counts.memories !== undefined && counts.vectors !== undefined
+      && counts.vectors !== counts.memories && !hasVectorMismatch) return false;
+    if (counts.missingVectors !== undefined && counts.missingVectors > 0 && !hasVectorMismatch) return false;
+  }
+  if (counts.memories !== undefined && counts.vectors !== undefined
+    && counts.vectors > counts.memories && !hasVectorMismatch) return false;
+  if (counts.memories !== undefined && counts.vectors !== undefined && counts.missingVectors !== undefined) {
+    const expectedMissingVectors = mode === "lite" ? 0 : Math.max(0, counts.memories - counts.vectors);
+    if (counts.missingVectors !== expectedMissingVectors) return false;
+  }
+  return true;
+}
+
+function normalizeMemoryCounts(value: unknown): TraceSourceMemoryCounts | null | undefined {
+  if (value === undefined) {
     return undefined;
+  }
+  if (!isRecord(value)) {
+    return null;
   }
   const counts: Partial<Record<keyof TraceSourceMemoryCounts, number>> = {};
   for (const key of MEMORY_COUNT_KEYS) {
-    const count = value[key];
-    if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) {
-      counts[key] = count;
+    if (!Object.prototype.hasOwnProperty.call(value, key)) {
+      continue;
     }
+    const count = value[key];
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+      return null;
+    }
+    counts[key] = count;
   }
   return Object.keys(counts).length === 0 ? undefined : counts;
 }
@@ -669,11 +845,34 @@ function enumValue<const Values extends readonly string[]>(value: unknown, value
 }
 
 function normalizeIsoInstant(value: unknown): string | undefined {
-  if (typeof value !== "string" || !ISO_INSTANT_PATTERN.test(value)) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const match = ISO_INSTANT_PATTERN.exec(value);
+  if (match === null) return undefined;
+  const year = Number.parseInt(match[1] ?? "", 10);
+  const month = Number.parseInt(match[2] ?? "", 10);
+  const day = Number.parseInt(match[3] ?? "", 10);
+  const hour = Number.parseInt(match[4] ?? "", 10);
+  const minute = Number.parseInt(match[5] ?? "", 10);
+  const second = Number.parseInt(match[6] ?? "", 10);
+  const offsetHour = match[9] === undefined ? 0 : Number.parseInt(match[9], 10);
+  const offsetMinute = match[10] === undefined ? 0 : Number.parseInt(match[10], 10);
+  if (month < 1 || month > 12
+    || day < 1 || day > daysInMonth(year, month)
+    || hour > 23 || minute > 59 || second > 59
+    || offsetHour > 23 || offsetMinute > 59) {
     return undefined;
   }
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28;
+  }
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
 }
 
 function compareSources(a: TraceSourceListItem, b: TraceSourceListItem): number {

@@ -224,6 +224,7 @@ export type TraceSourceMemoryIssue =
   | "database_missing"
   | "database_unavailable"
   | "native_module_unavailable"
+  | "health_check_failed"
   | "sqlite_integrity_failed"
   | "metadata_mismatch"
   | "fts_mismatch"
@@ -237,17 +238,21 @@ export type TraceSourceMemoryIssue =
   | "dead_letters"
   | "outbox_invalid"
   | "outbox_pending"
+  | "work_stalled"
   | "temporary_artifacts"
   | "runtime_missing"
   | "runtime_stale"
   | "runtime_invalid";
 
-export interface TraceSourceMemoryHealth {
-  backend: TraceSourceMemoryBackend;
-  mode?: TraceSourceMemoryMode;
-  status: TraceSourceMemoryStatus;
+interface TraceSourceMemoryHealthBase {
   checkedAt: string;
-  issues?: TraceSourceMemoryIssue[];
+}
+
+export interface TraceSourceBujoMemoryHealth extends TraceSourceMemoryHealthBase {
+  backend: "bujo";
+  mode: TraceSourceMemoryMode;
+  status: Exclude<TraceSourceMemoryStatus, "not_configured">;
+  issues: TraceSourceMemoryIssue[];
   counts?: {
     pending?: number;
     due?: number;
@@ -259,6 +264,27 @@ export interface TraceSourceMemoryHealth {
     missingVectors?: number;
   };
 }
+
+export interface TraceSourceSupermemoryMemoryHealth extends TraceSourceMemoryHealthBase {
+  backend: "supermemory";
+  status: "unknown";
+  mode?: never;
+  issues?: never;
+  counts?: never;
+}
+
+export interface TraceSourceNoMemoryHealth extends TraceSourceMemoryHealthBase {
+  backend: "none";
+  status: "not_configured" | "unknown";
+  mode?: never;
+  issues?: never;
+  counts?: never;
+}
+
+export type TraceSourceMemoryHealth =
+  | TraceSourceBujoMemoryHealth
+  | TraceSourceSupermemoryMemoryHealth
+  | TraceSourceNoMemoryHealth;
 
 // SSE stream envelope (each `data:` line is one of these).
 export type StreamMessage =
