@@ -27,6 +27,7 @@ import type { Bullet } from "./types.js";
 
 const OUTBOX_DIR = ".capture-outbox";
 const INTENT_FILE_RE = /^intent-[a-f0-9-]{36}\.json$/u;
+const INTENT_TEMP_RE = /^\.intent-[a-f0-9-]{36}\.json-[a-f0-9-]{36}\.tmp$/u;
 const MAX_INTENTS = 32;
 const MAX_INTENT_BYTES = 2 * 1024 * 1024;
 const MAX_ACTIONS = 8;
@@ -114,6 +115,13 @@ export interface CaptureIntentReplayResult extends GraphBatchResult {
 export interface CaptureIntentReplayOptions {
   /** Apply/verify canonical and DB outcomes but leave the durable intent pending. */
   readonly retainIntent?: boolean;
+}
+
+/** Content-free physical inventory for strict health. */
+export interface CaptureOutboxAudit {
+  readonly valid: boolean;
+  readonly pending: number;
+  readonly temporary: number;
 }
 
 /** Atomically publish one bounded, fsynced capture intent before source mutation. */
@@ -251,6 +259,44 @@ export function hasPendingCaptureIntent(root: string): boolean {
   if (files.length > MAX_INTENTS) throw new Error("memory-capture: capture outbox exceeds its bounded intent count.");
   for (const name of files) loadReplay(root, `${OUTBOX_DIR}/${name}`);
   return files.length > 0;
+}
+
+/**
+ * Validate every physical outbox entry without exposing an intent id or body.
+ * Unknown names, malformed intents, and abandoned atomic-write temps all fail
+ * closed while their aggregate file counts remain visible.
+ */
+export function auditCaptureOutbox(root: string): CaptureOutboxAudit {
+  let pending = 0;
+  let temporary = 0;
+  try {
+    const names = listCanonicalFileNames(root, OUTBOX_DIR, { allowMissing: true });
+    let validNames = true;
+    const intentNames: string[] = [];
+    for (const name of names) {
+      if (INTENT_TEMP_RE.test(name)) {
+        temporary += 1;
+        continue;
+      }
+      pending += 1;
+      if (!INTENT_FILE_RE.test(name)) {
+        validNames = false;
+        continue;
+      }
+      intentNames.push(name);
+    }
+    // Count the entire physical inventory before parsing any bounded payload.
+    // Invalid names, temps, and over-capacity queues already fail closed and
+    // must not force up to 2 MiB of JSON allocation per entry.
+    if (!validNames || temporary > 0 || pending > MAX_INTENTS) {
+      return { valid: false, pending, temporary };
+    }
+    const replays = intentNames.map((name) => loadReplay(root, `${OUTBOX_DIR}/${name}`));
+    assertDistinctQueuedMemoryIds(replays);
+    return { valid: true, pending, temporary };
+  } catch {
+    return { valid: false, pending, temporary };
+  }
 }
 
 interface LoadedReplay {

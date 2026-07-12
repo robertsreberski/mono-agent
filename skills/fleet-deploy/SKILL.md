@@ -105,17 +105,30 @@ mono-agent status 2>&1 | sed -E 's/[0-9]{6,}:[A-Za-z0-9_-]{20,}/<BOT_TOKEN>/g'
 
 `scripts/fleet-green-check.mjs` is the read-only daily tracker for the v1 7-day
 window (#168 → #119). It discovers the launchd instances, checks each one's
-service (running pid or last exit 0), deployed-`validate`, and last-24h run
-health, then prints a markdown table + `VERDICT: GREEN|RED`. Run it from any
-checkout of this repo — it reads the deployed sha and `cli.js` from the plists,
-not from the tree it runs in:
+service (running pid or last exit 0), exact launchd Node version/modules ABI,
+deployed `validate --json`, strict memory health, and last-24h run health, then
+prints `instance | service | runtime | validate | memory | runs-24h | notes`
+plus `VERDICT: GREEN|RED`. Run it from any checkout of this repo — every runtime
+and CLI probe uses that instance plist's exact `ProgramArguments[0]` Node and
+`ProgramArguments[1]` cli.js, never the ambient shell's `node` or this checkout's
+CLI:
 
 ```bash
 node scripts/fleet-green-check.mjs --dry-run                    # print only
 node scripts/fleet-green-check.mjs                              # also posts to #119
 node scripts/fleet-green-check.mjs --expect-sha <sha>           # window mode: fail on drift
+node scripts/fleet-green-check.mjs --expect-node 24.15.0 --expect-abi 137
 node scripts/fleet-green-check.mjs --labels com.mono-agent.bogus  # simulate RED (never break a live instance)
 ```
+
+The expected runtime defaults are Node `24.15.0` and modules ABI `137`; keep
+them explicit in deploy evidence and update them deliberately during a fleet
+runtime migration. The memory probe is `memory audit --strict --json`.
+`healthy` passes, `in_progress` warns without making the verdict red,
+`not_configured` skips, and `degraded`, `unhealthy`, `unknown`, malformed JSON,
+or a status/exit mismatch drive RED. Exit `1` is still parsed because it is the
+strict command's valid degraded/unhealthy/unknown result, not an excuse to drop
+the structured report.
 
 Its only write is the `gh issue comment 119`; it never restarts or reconfigures
 an instance. No comment on a given day = not a green day (the counter resets).
@@ -125,6 +138,9 @@ or a tolerated kind that dominates the window (all runs failed, or >50% over
 >=5 runs) drives RED. `--strict-runs` fails on any failed run; `--min-runs <n>`
 fails a too-quiet instance; zero runs shows a non-RED `idle?` warning. A
 prefix-matching `.plist` that fails conversion is a RED row, never a silent drop.
+Probe stderr, provider/native errors, paths from memory results, payloads, and
+arbitrary JSON fields are never copied into the report; fleet output is limited
+to closed health states and aggregate run counts.
 
 Dates and the 24h window are **UTC-anchored** (the verdict date is `toISOString`
 UTC). The 7-day counter is audited from these dates, so run the check at a

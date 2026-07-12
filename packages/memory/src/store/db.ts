@@ -1379,6 +1379,24 @@ export class MemoryDb {
   }
 
   /**
+   * Hold one provider-free SQLite read snapshot across the strict health probes.
+   *
+   * The callback can use only MemoryDb's typed read surface; the underlying
+   * better-sqlite3 handle remains private. Nested callers share an existing
+   * transaction so rebuild/parity helpers can compose without changing the
+   * observed database point in time.
+   */
+  withAuditSnapshot<T>(read: () => T): T {
+    const ownsSnapshot = !this.db.inTransaction;
+    if (ownsSnapshot) this.db.exec("BEGIN");
+    try {
+      return read();
+    } finally {
+      if (ownsSnapshot && this.db.inTransaction) this.db.exec("ROLLBACK");
+    }
+  }
+
+  /**
    * Commit the complete runtime-visible SQLite state to one deterministic hash.
    *
    * Unlike hashing only `memory.db`, this observes committed WAL pages through

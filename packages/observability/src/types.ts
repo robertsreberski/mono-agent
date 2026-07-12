@@ -386,6 +386,62 @@ export interface JsonlRunReaderOptions {
 export type TraceSourceStatus = "running" | "stopped" | "failed";
 export type TraceSourceHealth = "running" | "stale" | "stopped" | "failed";
 
+export type TraceSourceMemoryBackend = "bujo" | "supermemory" | "none";
+export type TraceSourceMemoryMode = "lite" | "journal" | "bujo";
+export type TraceSourceMemoryStatus =
+  | "healthy"
+  | "in_progress"
+  | "degraded"
+  | "unhealthy"
+  | "unknown"
+  | "not_configured";
+export type TraceSourceMemoryIssue =
+  | "manifest_missing"
+  | "manifest_invalid"
+  | "configured_identity_mismatch"
+  | "database_missing"
+  | "database_unavailable"
+  | "native_module_unavailable"
+  | "sqlite_integrity_failed"
+  | "metadata_mismatch"
+  | "fts_mismatch"
+  | "vector_mismatch"
+  | "orphaned_rows"
+  | "canonical_mismatch"
+  | "canonical_invalid"
+  | "mutation_in_progress"
+  | "intake_invalid"
+  | "intake_pending"
+  | "dead_letters"
+  | "outbox_invalid"
+  | "outbox_pending"
+  | "temporary_artifacts"
+  | "runtime_missing"
+  | "runtime_stale"
+  | "runtime_invalid";
+
+export interface TraceSourceMemoryCounts {
+  readonly pending?: number;
+  readonly due?: number;
+  readonly dead?: number;
+  readonly outbox?: number;
+  readonly temporary?: number;
+  readonly memories?: number;
+  readonly vectors?: number;
+  readonly missingVectors?: number;
+}
+
+/** Content-free memory health safe to publish in a trace-source manifest. */
+export interface TraceSourceMemoryHealth {
+  readonly backend: TraceSourceMemoryBackend;
+  readonly mode?: TraceSourceMemoryMode;
+  readonly status: TraceSourceMemoryStatus;
+  /** ISO-8601 instant for the audit that produced this health snapshot. */
+  readonly checkedAt: string;
+  readonly issues?: readonly TraceSourceMemoryIssue[];
+  readonly counts?: TraceSourceMemoryCounts;
+}
+
 export interface TraceSourceManifest {
   readonly schema: "agent-runtime.trace-source.v1";
   readonly sourceId: string;
@@ -398,6 +454,7 @@ export interface TraceSourceManifest {
   readonly transports?: readonly string[];
   readonly configPath?: string;
   readonly metadata?: Record<string, unknown>;
+  readonly memoryHealth?: TraceSourceMemoryHealth;
 }
 
 export interface TraceSourceListItem extends TraceSourceManifest {
@@ -437,6 +494,7 @@ export interface RegisterTraceSourceOptions extends TraceSourceRegistryOptions {
   readonly transports?: readonly string[];
   readonly configPath?: string;
   readonly metadata?: Record<string, unknown>;
+  readonly memoryHealth?: TraceSourceMemoryHealth;
 }
 
 export interface UpdateTraceSourceOptions {
@@ -445,6 +503,7 @@ export interface UpdateTraceSourceOptions {
   readonly transports?: readonly string[];
   readonly configPath?: string;
   readonly metadata?: Record<string, unknown>;
+  readonly memoryHealth?: TraceSourceMemoryHealth;
 }
 
 export interface TraceSourceHandle {

@@ -5,9 +5,13 @@
 // effect is one dated checkpoint comment on issue #119 (skipped with --dry-run).
 // It never restarts an instance, writes a config, or touches an artifact dir.
 //
-// Per instance it checks three things and surfaces a compact markdown table:
+// Per instance it checks five things and surfaces a compact markdown table:
 //   service   — `launchctl list <label>`: a running pid OR last exit 0 = pass.
-//   validate  — deployed `cli.js validate` (cwd = instance dir), exit 0 = pass.
+//   runtime   — the exact plist Node executable reports the expected version + ABI.
+//   validate  — exact plist Node + cli.js `validate --json`, exit 0 = pass.
+//   memory    — exact plist Node + cli.js `memory audit --strict --json`:
+//               healthy passes, in_progress warns, not_configured skips, and
+//               every degraded/unhealthy/unknown/malformed result fails.
 //   runs-24h  — deployed `cli.js metrics --since <24h-ago> --json` (cwd = dir):
 //               surfaces run/failure counts and FAILS on any failure kind other
 //               than a transient provider_unavailable failover (#136's expected
@@ -19,10 +23,10 @@
 //               is a non-RED "idle?" warning. `--strict-runs` fails on ANY
 //               failed run; `--min-runs <n>` fails a too-quiet instance.
 //
-// The deployed sha and the cli.js used for validate/metrics come from the plist
-// ProgramArguments — i.e. the checkout the fleet actually execs — NOT from
-// whatever checkout this script happens to run in. With --expect-sha it fails on
-// a mismatch (window mode); without it the sha is informational only.
+// Each probe retains and uses ProgramArguments[0] (Node) and [1] (cli.js) from
+// that instance's plist. Neither the ambient `node` nor a cli.js inferred from
+// this script's checkout is proof of the launchd runtime. With --expect-sha it
+// fails on a mismatch (window mode); without it the sha is informational only.
 //
 // Verdict: `VERDICT: GREEN <date> sha <short>` or `VERDICT: RED <date> — <reason>`.
 // Exits non-zero on RED so a wrapper can alert. No comment posted = not a green
@@ -38,6 +42,18 @@ const ISSUE_NUMBER = "119";
 const REPO = "robertsreberski/mono-agent";
 const LABEL_PREFIX = "com.mono-agent.";
 const CLI_MARKER = "/packages/agent-app/";
+const DEFAULT_EXPECT_NODE = "24.15.0";
+const DEFAULT_EXPECT_ABI = "137";
+const MEMORY_PASS_STATUSES = new Set(["healthy"]);
+const MEMORY_WARN_STATUSES = new Set(["in_progress"]);
+const MEMORY_SKIP_STATUSES = new Set(["not_configured"]);
+const MEMORY_FAIL_STATUSES = new Set(["degraded", "unhealthy", "unknown"]);
+const MEMORY_STATUSES = new Set([
+  ...MEMORY_PASS_STATUSES,
+  ...MEMORY_WARN_STATUSES,
+  ...MEMORY_SKIP_STATUSES,
+  ...MEMORY_FAIL_STATUSES,
+]);
 
 // The ONLY failure kind treated as fleet-normal: a transient provider failover
 // (this is #136's "healthy failover" resilience evidence). Every OTHER kind in
@@ -65,7 +81,13 @@ const CANCELLED_KIND_PATTERN = /^cancelled(_|$)/u;
 // ---------------------------------------------------------------------------
 
 export function parseArgs(argv) {
-  const parsed = { dryRun: false, strictRuns: false, help: false };
+  const parsed = {
+    dryRun: false,
+    strictRuns: false,
+    help: false,
+    expectNode: DEFAULT_EXPECT_NODE,
+    expectAbi: DEFAULT_EXPECT_ABI,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") {
@@ -81,6 +103,18 @@ export function parseArgs(argv) {
         .filter((label) => label.length > 0);
     } else if (arg === "--expect-sha") {
       parsed.expectSha = requireValue(argv, (i += 1), arg);
+    } else if (arg === "--expect-node") {
+      const value = requireValue(argv, (i += 1), arg);
+      if (!/^\d+\.\d+\.\d+$/u.test(value)) {
+        throw new Error("--expect-node requires an exact semantic version (for example 24.15.0).");
+      }
+      parsed.expectNode = value;
+    } else if (arg === "--expect-abi") {
+      const value = requireValue(argv, (i += 1), arg);
+      if (!/^\d+$/u.test(value)) {
+        throw new Error("--expect-abi requires a numeric Node modules ABI (for example 137).");
+      }
+      parsed.expectAbi = value;
     } else if (arg === "--min-runs") {
       const value = Number.parseInt(requireValue(argv, (i += 1), arg), 10);
       if (!Number.isInteger(value) || value < 0) {
@@ -132,16 +166,47 @@ export function deriveRepoFromCliPath(cliPath) {
 
 // Reduce a `metrics --json` report's overall bucket to the fields we track.
 export function reduceMetrics(report) {
-  const overall = report?.overall ?? {};
-  const failureKinds = Array.isArray(overall.failureKindRates)
-    ? overall.failureKindRates.map((entry) => ({ kind: String(entry.failureKind), count: Number(entry.count) }))
-    : [];
+  const overall = report?.overall;
+  if (!isRecord(overall)) {
+    throw new Error("invalid metrics report");
+  }
+  const totalRuns = Number(overall.totalRuns);
+  const failedRuns = Number(overall.statusCounts?.failed ?? 0);
+  if (!Number.isInteger(totalRuns) || totalRuns < 0 || !Number.isInteger(failedRuns) || failedRuns < 0 || failedRuns > totalRuns) {
+    throw new Error("invalid metrics counts");
+  }
+  if (!Array.isArray(overall.failureKindRates)) {
+    throw new Error("invalid metrics failure kinds");
+  }
+  const failureKinds = overall.failureKindRates.map((entry) => {
+    const kind = isRecord(entry) && typeof entry.failureKind === "string" && /^[a-z][a-z0-9_]{0,63}$/u.test(entry.failureKind)
+      ? entry.failureKind
+      : "unknown";
+    const count = isRecord(entry) ? Number(entry.count) : Number.NaN;
+    if (!Number.isInteger(count) || count < 0) {
+      throw new Error("invalid metrics failure count");
+    }
+    return { kind, count };
+  });
   return {
     ran: true,
-    totalRuns: Number(overall.totalRuns ?? 0),
-    failedRuns: Number(overall.statusCounts?.failed ?? 0),
+    totalRuns,
+    failedRuns,
     failureKinds,
   };
+}
+
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseJsonObject(text) {
+  try {
+    const value = JSON.parse(text);
+    return isRecord(value) ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 // Classify the runs-24h check. `metrics` is a reduced object, an { error }, or
@@ -219,6 +284,21 @@ export function shortSha(sha) {
   return typeof sha === "string" && sha.length >= 7 ? sha.slice(0, 7) : "unknown";
 }
 
+export function evaluateRuntime(runtime, expected = {}) {
+  if (!runtime || runtime.ran !== true) {
+    return { status: "fail", note: "runtime probe unavailable" };
+  }
+  const expectNode = expected.expectNode ?? DEFAULT_EXPECT_NODE;
+  const expectAbi = expected.expectAbi ?? DEFAULT_EXPECT_ABI;
+  if (runtime.node !== expectNode || runtime.abi !== expectAbi) {
+    return {
+      status: "fail",
+      note: `runtime ${runtime.node}/abi${runtime.abi} != expected ${expectNode}/abi${expectAbi}`,
+    };
+  }
+  return { status: "pass", note: `${runtime.node}/abi${runtime.abi}` };
+}
+
 function evaluateService(service) {
   if (!service || service.found !== true) {
     return { status: "fail", note: "service not found" };
@@ -234,36 +314,90 @@ function evaluateService(service) {
 
 function evaluateValidate(validate) {
   if (!validate || validate.ran !== true) {
-    return { status: "skip", note: "not run" };
+    return { status: "fail", note: "validate probe unavailable" };
   }
-  if (validate.exitCode === 0) {
+  if (validate.validJson === true && validate.ok === true && validate.exitCode === 0) {
     return { status: "pass", note: "" };
   }
-  const tail = typeof validate.tail === "string" && validate.tail.length > 0 ? validate.tail : "non-zero exit";
-  return { status: "fail", note: `validate failed — ${tail}` };
+  if (validate.validJson !== true) {
+    return { status: "fail", note: "validate returned malformed JSON" };
+  }
+  return { status: "fail", note: "validate reported errors" };
+}
+
+/** Parse the strict memory result even on exit 1, then enforce the frozen status/exit contract. */
+export function parseMemoryAudit(text, exitCode) {
+  const report = parseJsonObject(text);
+  if (report === null || report.schemaVersion !== 1 || typeof report.status !== "string" || !MEMORY_STATUSES.has(report.status)) {
+    return { ran: true, malformed: true };
+  }
+  const expectedExit = MEMORY_FAIL_STATUSES.has(report.status) ? 1 : 0;
+  if (exitCode !== expectedExit) {
+    return { ran: true, malformed: true };
+  }
+  return { ran: true, status: report.status };
+}
+
+export function evaluateMemory(memory) {
+  if (!memory || memory.ran !== true) {
+    return { status: "fail", memoryStatus: "malformed", note: "memory audit unavailable" };
+  }
+  if (memory.malformed === true || typeof memory.status !== "string") {
+    return { status: "fail", memoryStatus: "malformed", note: "strict memory audit malformed" };
+  }
+  if (MEMORY_PASS_STATUSES.has(memory.status)) {
+    return { status: "pass", memoryStatus: memory.status, note: "" };
+  }
+  if (MEMORY_WARN_STATUSES.has(memory.status)) {
+    return { status: "warn", memoryStatus: memory.status, note: "memory mutation in progress" };
+  }
+  if (MEMORY_SKIP_STATUSES.has(memory.status)) {
+    return { status: "skip", memoryStatus: memory.status, note: "memory not configured" };
+  }
+  if (MEMORY_FAIL_STATUSES.has(memory.status)) {
+    return { status: "fail", memoryStatus: memory.status, note: `memory ${memory.status}` };
+  }
+  return { status: "fail", memoryStatus: "malformed", note: "strict memory audit malformed" };
 }
 
 const CELL = { pass: "ok", warn: "warn", fail: "FAIL", skip: "—" };
 
 // The verdict + table. Pure: takes already-collected structured data.
 export function buildFleetReport(input) {
-  const { date, deployedSha, expectSha, strictRuns, minRuns } = input;
+  const { date, deployedSha, expectSha, expectNode, expectAbi, strictRuns, minRuns } = input;
   const rows = input.instances.map((instance) => {
     const name = instanceName(instance.label);
     // A plist that matched the prefix but could not be read is an unknown
     // config the fleet may be running blind — RED, never silently dropped.
     if (typeof instance.discoveryError === "string") {
-      const service = { status: "fail", note: `plist unreadable — ${instance.discoveryError}` };
+      const service = { status: "fail", note: "plist unreadable" };
       const skipped = { status: "skip", note: "" };
-      return { name, label: instance.label, service, validate: skipped, runs: skipped, notes: service.note };
+      return {
+        name,
+        label: instance.label,
+        service,
+        runtime: skipped,
+        validate: skipped,
+        memory: { ...skipped, memoryStatus: "malformed" },
+        runs: skipped,
+        notes: service.note,
+      };
     }
     const service = evaluateService(instance.service);
+    const runtime = evaluateRuntime(instance.runtime, { expectNode, expectAbi });
     const validate = evaluateValidate(instance.validate);
+    const memory = evaluateMemory(instance.memory);
     const runs = evaluateRuns(instance.metrics, { strictRuns, minRuns });
-    const notes = [service.status !== "pass" ? service.note : null, validate.note || null, runs.note || null]
+    const notes = [
+      service.status !== "pass" ? service.note : null,
+      runtime.status !== "pass" ? runtime.note : null,
+      validate.status !== "pass" ? validate.note : null,
+      memory.status !== "pass" ? memory.note : null,
+      runs.note || null,
+    ]
       .filter((note) => note !== null && note !== "")
       .join("; ");
-    return { name, label: instance.label, service, validate, runs, notes };
+    return { name, label: instance.label, service, runtime, validate, memory, runs, notes };
   });
 
   let reason = null;
@@ -272,8 +406,16 @@ export function buildFleetReport(input) {
       reason = `${row.name}: ${row.service.note}`;
       break;
     }
+    if (row.runtime.status === "fail") {
+      reason = `${row.name}: ${row.runtime.note}`;
+      break;
+    }
     if (row.validate.status === "fail") {
       reason = `${row.name}: ${row.validate.note}`;
+      break;
+    }
+    if (row.memory.status === "fail") {
+      reason = `${row.name}: ${row.memory.note}`;
       break;
     }
     if (row.runs.status === "fail") {
@@ -315,11 +457,11 @@ export function buildFleetReport(input) {
 }
 
 function renderTable(rows) {
-  const header = "| instance | service | validate | runs-24h | notes |";
-  const divider = "| --- | --- | --- | --- | --- |";
+  const header = "| instance | service | runtime | validate | memory | runs-24h | notes |";
+  const divider = "| --- | --- | --- | --- | --- | --- | --- |";
   const lines = rows.map((row) => {
     const notes = row.notes.length > 0 ? row.notes.replace(/\|/gu, "\\|") : "";
-    return `| ${row.name} | ${CELL[row.service.status]} | ${CELL[row.validate.status]} | ${CELL[row.runs.status]} | ${notes} |`;
+    return `| ${row.name} | ${CELL[row.service.status]} | ${CELL[row.runtime.status]} | ${CELL[row.validate.status]} | ${row.memory.memoryStatus} | ${CELL[row.runs.status]} | ${notes} |`;
   });
   return [header, divider, ...lines].join("\n");
 }
@@ -344,37 +486,56 @@ function discoverInstances(launchAgentsDir, runCommand, readdir) {
     const filenameLabel = entry.slice(0, -".plist".length);
     const result = runCommand("plutil", ["-convert", "json", "-o", "-", plistPath]);
     if (result.status !== 0) {
-      byLabel.set(filenameLabel, { label: filenameLabel, dir: null, cliPath: null, discoveryError: `plutil failed (${(result.stderr ?? "").trim().split("\n").pop() ?? `exit ${result.status}`})` });
+      byLabel.set(filenameLabel, { label: filenameLabel, dir: null, nodePath: null, cliPath: null, discoveryError: "plist conversion failed" });
       continue;
     }
     let plist;
     try {
       plist = JSON.parse(result.stdout);
-    } catch (error) {
-      byLabel.set(filenameLabel, { label: filenameLabel, dir: null, cliPath: null, discoveryError: `unparseable plist json (${error instanceof Error ? error.message : String(error)})` });
+    } catch {
+      byLabel.set(filenameLabel, { label: filenameLabel, dir: null, nodePath: null, cliPath: null, discoveryError: "plist JSON invalid" });
+      continue;
+    }
+    if (!isRecord(plist)) {
+      byLabel.set(filenameLabel, { label: filenameLabel, dir: null, nodePath: null, cliPath: null, discoveryError: "plist JSON invalid" });
       continue;
     }
     const label = typeof plist.Label === "string" ? plist.Label : filenameLabel;
     const dir = typeof plist.WorkingDirectory === "string" ? plist.WorkingDirectory : null;
     const args = Array.isArray(plist.ProgramArguments) ? plist.ProgramArguments : [];
-    const cliPath = args.find((arg) => typeof arg === "string" && arg.endsWith("cli.js")) ?? null;
-    byLabel.set(label, { label, dir, cliPath });
+    const nodePath = typeof args[0] === "string" ? args[0] : null;
+    const cliPath = typeof args[1] === "string" && args[1].endsWith("cli.js") ? args[1] : null;
+    byLabel.set(label, { label, dir, nodePath, cliPath });
   }
   return byLabel;
 }
 
-function collectInstance(entry, cliPath, since, runCommand) {
+function collectInstance(entry, since, runCommand) {
   if (typeof entry.discoveryError === "string") {
-    return { label: entry.label, dir: null, discoveryError: entry.discoveryError, service: { found: false, pid: null, lastExitStatus: null }, validate: { ran: false }, metrics: { ran: false } };
+    return {
+      label: entry.label,
+      dir: null,
+      discoveryError: entry.discoveryError,
+      service: { found: false, pid: null, lastExitStatus: null },
+      runtime: { ran: false },
+      validate: { ran: false },
+      memory: { ran: false },
+      metrics: { ran: false },
+    };
   }
   const service = parseLaunchctlList(...launchctlList(entry.label, runCommand));
+  const runtime = entry.nodePath === null
+    ? { ran: false }
+    : runRuntimeProbe(entry.nodePath, runCommand);
   let validate = { ran: false };
+  let memory = { ran: false };
   let metrics = { ran: false };
-  if (entry.dir !== null && cliPath !== null) {
-    validate = runValidate(cliPath, entry.dir, runCommand);
-    metrics = runMetrics(cliPath, entry.dir, since, runCommand);
+  if (entry.dir !== null && entry.nodePath !== null && entry.cliPath !== null) {
+    validate = runValidate(entry.nodePath, entry.cliPath, entry.dir, runCommand);
+    memory = runMemoryAudit(entry.nodePath, entry.cliPath, entry.dir, runCommand);
+    metrics = runMetrics(entry.nodePath, entry.cliPath, entry.dir, since, runCommand);
   }
-  return { label: entry.label, dir: entry.dir, service, validate, metrics };
+  return { label: entry.label, dir: entry.dir, service, runtime, validate, memory, metrics };
 }
 
 function launchctlList(label, runCommand) {
@@ -382,23 +543,45 @@ function launchctlList(label, runCommand) {
   return [result.stdout ?? "", result.status];
 }
 
-function runValidate(cliPath, dir, runCommand) {
-  const result = runCommand("node", [cliPath, "validate"], { cwd: dir });
-  const combined = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  const lines = combined.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
-  return { ran: true, exitCode: result.status, tail: lines.length > 0 ? lines[lines.length - 1] : "" };
+function runRuntimeProbe(nodePath, runCommand) {
+  const result = runCommand(nodePath, [
+    "-p",
+    "JSON.stringify({node:process.versions.node,abi:process.versions.modules})",
+  ]);
+  if (result.status !== 0) {
+    return { ran: false };
+  }
+  const parsed = parseJsonObject(result.stdout ?? "");
+  if (parsed === null || typeof parsed.node !== "string" || !/^\d+\.\d+\.\d+$/u.test(parsed.node)
+    || typeof parsed.abi !== "string" || !/^\d+$/u.test(parsed.abi)) {
+    return { ran: false };
+  }
+  return { ran: true, node: parsed.node, abi: parsed.abi };
 }
 
-function runMetrics(cliPath, dir, since, runCommand) {
-  const result = runCommand("node", [cliPath, "metrics", "--since", since, "--json"], { cwd: dir });
+function runValidate(nodePath, cliPath, dir, runCommand) {
+  const result = runCommand(nodePath, [cliPath, "validate", "--json"], { cwd: dir });
+  const parsed = parseJsonObject(result.stdout ?? "");
+  if (parsed === null || typeof parsed.ok !== "boolean") {
+    return { ran: true, exitCode: result.status, validJson: false };
+  }
+  return { ran: true, exitCode: result.status, validJson: true, ok: parsed.ok };
+}
+
+function runMemoryAudit(nodePath, cliPath, dir, runCommand) {
+  const result = runCommand(nodePath, [cliPath, "memory", "audit", "--strict", "--json"], { cwd: dir });
+  return parseMemoryAudit(result.stdout ?? "", result.status);
+}
+
+function runMetrics(nodePath, cliPath, dir, since, runCommand) {
+  const result = runCommand(nodePath, [cliPath, "metrics", "--since", since, "--json"], { cwd: dir });
   if (result.status !== 0) {
-    const err = (result.stderr ?? "").trim().split("\n").pop() ?? "non-zero exit";
-    return { ran: false, error: err.length > 0 ? err : "non-zero exit" };
+    return { ran: false, error: "metrics command failed" };
   }
   try {
     return reduceMetrics(JSON.parse(result.stdout));
-  } catch (error) {
-    return { ran: false, error: `unparseable metrics json (${error instanceof Error ? error.message : String(error)})` };
+  } catch {
+    return { ran: false, error: "metrics JSON malformed" };
   }
 }
 
@@ -425,7 +608,8 @@ function readDeployedSha(repo, runCommand) {
     return null;
   }
   const result = runCommand("git", ["-C", repo, "rev-parse", "HEAD"]);
-  return result.status === 0 ? (result.stdout ?? "").trim() : null;
+  const sha = result.status === 0 ? (result.stdout ?? "").trim() : "";
+  return /^[0-9a-f]{40,64}$/iu.test(sha) ? sha.toLowerCase() : null;
 }
 
 function runCommandSync(command, args, options = {}) {
@@ -471,15 +655,16 @@ export async function runFleetGreenCheck(options = {}) {
   const date = now.toISOString().slice(0, 10);
 
   const instances = selectedLabels.map((label) => {
-    const entry = discovered.get(label) ?? { label, dir: null, cliPath: null };
-    const cliPath = entry.cliPath ?? (deployRepo !== null ? join(deployRepo, "packages", "agent-app", "dist", "cli.js") : null);
-    return collectInstance(entry, cliPath, since, runCommand);
+    const entry = discovered.get(label) ?? { label, dir: null, nodePath: null, cliPath: null };
+    return collectInstance(entry, since, runCommand);
   });
 
   const report = buildFleetReport({
     date,
     deployedSha,
     expectSha: args.expectSha,
+    expectNode: args.expectNode,
+    expectAbi: args.expectAbi,
     strictRuns: args.strictRuns,
     ...(args.minRuns === undefined ? {} : { minRuns: args.minRuns }),
     instances,
@@ -495,10 +680,10 @@ export async function runFleetGreenCheck(options = {}) {
   if (!args.dryRun) {
     const result = runCommand("gh", ["issue", "comment", ISSUE_NUMBER, "--repo", REPO, "--body", body]);
     if (result.status !== 0) {
-      stderr.write(`Failed to post comment to #${ISSUE_NUMBER}: ${(result.stderr ?? "").trim()}\n`);
+      stderr.write(`Failed to post comment to #${ISSUE_NUMBER}.\n`);
       return { exitCode: report.exitCode === 0 ? 1 : report.exitCode };
     }
-    stdout.write(`Posted checkpoint to #${ISSUE_NUMBER}: ${(result.stdout ?? "").trim()}\n`);
+    stdout.write(`Posted checkpoint to #${ISSUE_NUMBER}.\n`);
   }
 
   return { exitCode: report.exitCode };
@@ -508,6 +693,7 @@ function usage() {
   return [
     "Usage:",
     "  node scripts/fleet-green-check.mjs [--dry-run] [--labels <csv>] [--expect-sha <sha>]",
+    "                                     [--expect-node <version>] [--expect-abi <abi>]",
     "                                     [--strict-runs] [--min-runs <n>] [--repo <path>]",
     "",
     "Read-only daily green-check of the launchd mono-agent fleet. Prints a markdown",
@@ -523,9 +709,11 @@ function usage() {
     "  --labels <csv>  Check these launchd labels instead of auto-discovering plists",
     "                  (a bogus label yields a RED row — used to simulate RED).",
     "  --expect-sha    Fail if the deployed sha does not match (v1 window mode).",
+    `  --expect-node   Require each plist Node to report this version (default ${DEFAULT_EXPECT_NODE}).`,
+    `  --expect-abi    Require each plist Node to report this modules ABI (default ${DEFAULT_EXPECT_ABI}).`,
     "  --strict-runs   Fail runs-24h on ANY failed run, not just untolerated ones.",
     "  --min-runs <n>  Fail an instance with fewer than n runs in the window.",
-    "  --repo <path>   Override the deploy checkout used for sha + validate/metrics.",
+    "  --repo <path>   Override only the deploy checkout used for the sha probe.",
   ].join("\n");
 }
 

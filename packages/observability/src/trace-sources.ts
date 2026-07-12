@@ -31,6 +31,12 @@ import type {
   TraceSourceListItem,
   TraceSourceListResult,
   TraceSourceManifest,
+  TraceSourceMemoryBackend,
+  TraceSourceMemoryCounts,
+  TraceSourceMemoryHealth,
+  TraceSourceMemoryIssue,
+  TraceSourceMemoryMode,
+  TraceSourceMemoryStatus,
   TraceSourceRegistryOptions,
   TraceSourceStatus,
   UpdateTraceSourceOptions,
@@ -40,6 +46,53 @@ const DEFAULT_STALE_AFTER_MS = 30_000;
 const MANIFEST_SUFFIX = ".json";
 const SOURCE_ID_PATTERN = /^[A-Za-z0-9._-]+$/u;
 const DEFAULT_MAX_RUNS = 100;
+const ISO_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u;
+
+const MEMORY_BACKENDS = ["bujo", "supermemory", "none"] as const satisfies readonly TraceSourceMemoryBackend[];
+const MEMORY_MODES = ["lite", "journal", "bujo"] as const satisfies readonly TraceSourceMemoryMode[];
+const MEMORY_STATUSES = [
+  "healthy",
+  "in_progress",
+  "degraded",
+  "unhealthy",
+  "unknown",
+  "not_configured",
+] as const satisfies readonly TraceSourceMemoryStatus[];
+const MEMORY_ISSUES = [
+  "manifest_missing",
+  "manifest_invalid",
+  "configured_identity_mismatch",
+  "database_missing",
+  "database_unavailable",
+  "native_module_unavailable",
+  "sqlite_integrity_failed",
+  "metadata_mismatch",
+  "fts_mismatch",
+  "vector_mismatch",
+  "orphaned_rows",
+  "canonical_mismatch",
+  "canonical_invalid",
+  "mutation_in_progress",
+  "intake_invalid",
+  "intake_pending",
+  "dead_letters",
+  "outbox_invalid",
+  "outbox_pending",
+  "temporary_artifacts",
+  "runtime_missing",
+  "runtime_stale",
+  "runtime_invalid",
+] as const satisfies readonly TraceSourceMemoryIssue[];
+const MEMORY_COUNT_KEYS = [
+  "pending",
+  "due",
+  "dead",
+  "outbox",
+  "temporary",
+  "memories",
+  "vectors",
+  "missingVectors",
+] as const satisfies readonly (keyof TraceSourceMemoryCounts)[];
 
 /** Default retention window for {@link pruneTraceSources}: 7 days. */
 export const DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS = 7 * 24 * 60 * 60 * 1000;
@@ -80,16 +133,24 @@ export async function registerTraceSource(options: RegisterTraceSourceOptions): 
     ...(options.transports === undefined ? {} : { transports: options.transports }),
     ...(options.configPath === undefined ? {} : { configPath: options.configPath }),
     ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
+    ...(options.memoryHealth === undefined ? {} : { memoryHealth: options.memoryHealth }),
   });
 
   await writeManifest(normalized.registryDir, manifest);
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   const heartbeatMs = options.heartbeatMs;
   const writePatch = async (patch: UpdateTraceSourceOptions): Promise<TraceSourceManifest> => {
+    const { memoryHealth: memoryHealthInput, ...otherPatch } = patch;
+    const nextMemoryHealth = freshestMemoryHealth(
+      manifest.memoryHealth,
+      normalizeMemoryHealth(memoryHealthInput),
+      "candidate",
+    );
     manifest = buildManifest({
       ...manifest,
-      ...patch,
+      ...otherPatch,
       updatedAt: isoNow(normalized.clock),
+      ...(nextMemoryHealth === undefined ? {} : { memoryHealth: nextMemoryHealth }),
     });
     await writeManifest(normalized.registryDir, manifest);
     return manifest;
@@ -140,10 +201,12 @@ export async function listTraceSources(options: TraceSourceRegistryOptions): Pro
  * agent's own config-local registry plus the machine-wide global one) by
  * `sourceId`: a source unique to any list is kept as-is, and a source present
  * in more than one keeps whichever copy has the fresher `updatedAt` heartbeat
- * (earlier lists win ties). Object identity is preserved — a winner is the
- * exact item from the list it came from, so callers can attribute it back to
- * its origin registry, and its absolute `artifactDir`/`configPath` ride
- * along. The union is sorted like `listTraceSources` output (fresher first).
+ * (earlier lists win ties). Memory health is selected independently by its
+ * `checkedAt` instant, with the manifest winner's health winning a timestamp
+ * tie. All other fields come from the manifest winner. Object identity is
+ * preserved when no memory health needs normalization or overlay; otherwise
+ * the winner is shallow-cloned. The union is sorted like `listTraceSources`
+ * output (fresher first).
  */
 export function mergeTraceSources(
   ...lists: ReadonlyArray<readonly TraceSourceListItem[]>
@@ -159,7 +222,24 @@ export function mergeTraceSources(
       }
     }
   }
-  return [...bySourceId.values()].sort(compareSources);
+
+  const freshestHealthBySourceId = new Map<string, TraceSourceMemoryHealth>();
+  for (const list of lists) {
+    for (const source of list) {
+      const candidate = normalizeMemoryHealth(source.memoryHealth);
+      if (candidate === undefined) {
+        continue;
+      }
+      const existing = freshestHealthBySourceId.get(source.sourceId);
+      if (existing === undefined || Date.parse(candidate.checkedAt) > Date.parse(existing.checkedAt)) {
+        freshestHealthBySourceId.set(source.sourceId, candidate);
+      }
+    }
+  }
+
+  return [...bySourceId.values()]
+    .map((source) => mergeSourceMemoryHealth(source, freshestHealthBySourceId.get(source.sourceId)))
+    .sort(compareSources);
 }
 
 /**
@@ -286,7 +366,9 @@ function buildManifest(input: {
   readonly transports?: readonly string[];
   readonly configPath?: string;
   readonly metadata?: Record<string, unknown>;
+  readonly memoryHealth?: TraceSourceMemoryHealth;
 }): TraceSourceManifest {
+  const memoryHealth = normalizeMemoryHealth(input.memoryHealth);
   return {
     schema: "agent-runtime.trace-source.v1",
     sourceId: normalizeSourceId(input.sourceId),
@@ -299,6 +381,7 @@ function buildManifest(input: {
     ...(input.transports === undefined ? {} : { transports: input.transports.map((transport) => transport.trim()).filter(Boolean) }),
     ...(input.configPath === undefined ? {} : { configPath: resolve(input.configPath) }),
     ...(input.metadata === undefined ? {} : { metadata: redactJsonValue(input.metadata) as Record<string, unknown> }),
+    ...(memoryHealth === undefined ? {} : { memoryHealth }),
   };
 }
 
@@ -368,6 +451,7 @@ function coerceManifest(value: unknown, fileName: string, warnings: string[]): T
     const transports = Array.isArray(value.transports) ? value.transports.filter((item): item is string => typeof item === "string") : undefined;
     const configPath = stringField(value, "configPath");
     const metadata = isRecord(value.metadata) ? value.metadata : undefined;
+    const memoryHealth = normalizeMemoryHealth(value.memoryHealth);
     return buildManifest({
       sourceId,
       label,
@@ -379,6 +463,7 @@ function coerceManifest(value: unknown, fileName: string, warnings: string[]): T
       ...(transports === undefined ? {} : { transports }),
       ...(configPath === undefined ? {} : { configPath }),
       ...(metadata === undefined ? {} : { metadata }),
+      ...(memoryHealth === undefined ? {} : { memoryHealth }),
     });
   } catch (error) {
     warnings.push(`Skipping ${fileName}: ${errorMessage(error)}.`);
@@ -497,6 +582,98 @@ function sourceIdFromLabel(label: string): string {
 
 function sourceStatus(value: unknown): TraceSourceStatus | undefined {
   return value === "running" || value === "stopped" || value === "failed" ? value : undefined;
+}
+
+function normalizeMemoryHealth(value: unknown): TraceSourceMemoryHealth | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const backend = enumValue(value.backend, MEMORY_BACKENDS);
+  const status = enumValue(value.status, MEMORY_STATUSES);
+  const checkedAt = normalizeIsoInstant(value.checkedAt);
+  if (backend === undefined || status === undefined || checkedAt === undefined) {
+    return undefined;
+  }
+
+  const mode = enumValue(value.mode, MEMORY_MODES);
+  const issues = normalizeMemoryIssues(value.issues);
+  const counts = normalizeMemoryCounts(value.counts);
+  return {
+    backend,
+    ...(mode === undefined ? {} : { mode }),
+    status,
+    checkedAt,
+    ...(issues === undefined ? {} : { issues }),
+    ...(counts === undefined ? {} : { counts }),
+  };
+}
+
+function mergeSourceMemoryHealth(
+  source: TraceSourceListItem,
+  freshest: TraceSourceMemoryHealth | undefined,
+): TraceSourceListItem {
+  const winnerHealth = normalizeMemoryHealth(source.memoryHealth);
+  const memoryHealth = freshestMemoryHealth(freshest, winnerHealth, "candidate");
+  if (source.memoryHealth === undefined && memoryHealth === undefined) {
+    return source;
+  }
+  const { memoryHealth: _untrustedMemoryHealth, ...sourceWithoutMemoryHealth } = source;
+  return {
+    ...sourceWithoutMemoryHealth,
+    ...(memoryHealth === undefined ? {} : { memoryHealth }),
+  };
+}
+
+function freshestMemoryHealth(
+  current: TraceSourceMemoryHealth | undefined,
+  candidate: TraceSourceMemoryHealth | undefined,
+  tieWinner: "current" | "candidate",
+): TraceSourceMemoryHealth | undefined {
+  if (candidate === undefined) {
+    return current;
+  }
+  if (current === undefined) {
+    return candidate;
+  }
+  const delta = Date.parse(candidate.checkedAt) - Date.parse(current.checkedAt);
+  return delta > 0 || (delta === 0 && tieWinner === "candidate") ? candidate : current;
+}
+
+function normalizeMemoryIssues(value: unknown): readonly TraceSourceMemoryIssue[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const present = new Set(value.filter((issue): issue is TraceSourceMemoryIssue => enumValue(issue, MEMORY_ISSUES) !== undefined));
+  const issues = MEMORY_ISSUES.filter((issue) => present.has(issue));
+  return issues.length === 0 ? undefined : issues;
+}
+
+function normalizeMemoryCounts(value: unknown): TraceSourceMemoryCounts | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const counts: Partial<Record<keyof TraceSourceMemoryCounts, number>> = {};
+  for (const key of MEMORY_COUNT_KEYS) {
+    const count = value[key];
+    if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) {
+      counts[key] = count;
+    }
+  }
+  return Object.keys(counts).length === 0 ? undefined : counts;
+}
+
+function enumValue<const Values extends readonly string[]>(value: unknown, values: Values): Values[number] | undefined {
+  return typeof value === "string" && (values as readonly string[]).includes(value)
+    ? value as Values[number]
+    : undefined;
+}
+
+function normalizeIsoInstant(value: unknown): string | undefined {
+  if (typeof value !== "string" || !ISO_INSTANT_PATTERN.test(value)) {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
 }
 
 function compareSources(a: TraceSourceListItem, b: TraceSourceListItem): number {

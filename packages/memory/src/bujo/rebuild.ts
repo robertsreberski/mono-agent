@@ -33,8 +33,9 @@ import {
   listRetainedCaptureIntentKeys,
   replayCaptureOutbox,
 } from "./capture-outbox.js";
-import { assertNoPendingMigrateDecision } from "./migrate.js";
+import { assertNoPendingMigrateDecision, hasPendingMigrateDecision } from "./migrate.js";
 import {
+  CanonicalFileRetiredError,
   listCanonicalFileNames,
   listCanonicalRootFileNames,
   readCanonicalFileSnapshot,
@@ -207,6 +208,96 @@ export function readCanonicalGraphAuditSourceSnapshot(
   }
   const snapshot = snapshotCanonicalSources(root, tier);
   return { fingerprint: snapshot.fingerprint, graph: buildPlan(snapshot, tier).graph };
+}
+
+export type CanonicalIndexHealthStatus = "match" | "mismatch" | "in_progress" | "invalid";
+
+/** Content-free result from the same canonical plan/parity rules used by rebuild. */
+export interface CanonicalIndexHealthAudit {
+  readonly status: CanonicalIndexHealthStatus;
+}
+
+/**
+ * Compare canonical Markdown/graph state to an already-open provider-free DB.
+ *
+ * The caller holds MemoryDb.withAuditSnapshot so every SQLite query observes
+ * one WAL-visible point in time. Canonical sources are fingerprinted on both
+ * sides and retried to avoid reporting a source rewrite as stable divergence.
+ */
+export function auditCanonicalIndexHealth(
+  root: string,
+  tier: BujoTier,
+  db: MemoryDb,
+): CanonicalIndexHealthAudit {
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const mutationBefore = inspectCanonicalIndexMutation(root);
+    if (mutationBefore === "invalid") return { status: "invalid" };
+    if (mutationBefore === "pending") return { status: "in_progress" };
+    if (mutationBefore === "changed") {
+      if (attempt < maxAttempts) continue;
+      return { status: "in_progress" };
+    }
+
+    let before: SourceSnapshot;
+    let plan: BuildPlan;
+    try {
+      before = snapshotCanonicalSources(root, tier);
+      plan = buildPlan(before, tier);
+    } catch (error) {
+      const mutation = inspectCanonicalIndexMutation(root);
+      if (mutation === "invalid") return { status: "invalid" };
+      if (mutation === "pending") return { status: "in_progress" };
+      if ((mutation === "changed" || error instanceof CanonicalFileRetiredError) && attempt < maxAttempts) continue;
+      if (mutation === "changed" || error instanceof CanonicalFileRetiredError) return { status: "in_progress" };
+      return { status: "invalid" };
+    }
+
+    const parityError = buildPlanParityError(db, tier, plan, {
+      allowReplayedLifecycle: false,
+      // Live append records may carry a session instead of a line until a
+      // restart/rebuild repairs provenance. Existing explicit line numbers
+      // still have to match the canonical source exactly.
+      allowReplaySourceRepair: true,
+      allowJournalVectorBacklog: true,
+    });
+
+    let after: SourceSnapshot;
+    try {
+      after = snapshotCanonicalSources(root, tier);
+    } catch (error) {
+      const mutation = inspectCanonicalIndexMutation(root);
+      if (mutation === "invalid") return { status: "invalid" };
+      if (mutation === "pending") return { status: "in_progress" };
+      if ((mutation === "changed" || error instanceof CanonicalFileRetiredError) && attempt < maxAttempts) continue;
+      if (mutation === "changed" || error instanceof CanonicalFileRetiredError) return { status: "in_progress" };
+      return { status: "invalid" };
+    }
+
+    const mutationAfter = inspectCanonicalIndexMutation(root);
+    if (mutationAfter === "invalid") return { status: "invalid" };
+    if (mutationAfter === "pending") return { status: "in_progress" };
+    if (mutationAfter === "changed") {
+      if (attempt < maxAttempts) continue;
+      return { status: "in_progress" };
+    }
+    if (before.fingerprint !== after.fingerprint) {
+      if (attempt < maxAttempts) continue;
+      return { status: "in_progress" };
+    }
+    if (parityError !== undefined && attempt < maxAttempts) continue;
+    return { status: parityError === undefined ? "match" : "mismatch" };
+  }
+  return { status: "in_progress" };
+}
+
+function inspectCanonicalIndexMutation(root: string): "clear" | "pending" | "changed" | "invalid" {
+  try {
+    return hasPendingCaptureIntent(root) || hasPendingMigrateDecision(root) ? "pending" : "clear";
+  } catch (error) {
+    if (error instanceof CanonicalFileRetiredError) return "changed";
+    return "invalid";
+  }
 }
 
 /**

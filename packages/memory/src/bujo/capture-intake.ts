@@ -154,12 +154,21 @@ export interface CompletedTurnIntakeSnapshot {
 export interface CompletedTurnIntakeInspection {
   readonly schemaVersion: typeof COMPLETED_TURN_INTAKE_SCHEMA_VERSION;
   readonly items: readonly CompletedTurnIntakeItem[];
+  /** Valid atomic-write remnants. Their presence still requires recovery. */
+  readonly temporary: number;
   readonly snapshot: Omit<CompletedTurnIntakeSnapshot, "accepting" | "shutdown" | "retrying">;
 }
 
 export interface CompletedTurnIntakeAudit {
   readonly valid: boolean;
   readonly inspection?: CompletedTurnIntakeInspection;
+  /** Physical metadata remains available even when one record is malformed. */
+  readonly counts: {
+    readonly pending: number;
+    readonly due: number;
+    readonly dead: number;
+    readonly temporary: number;
+  };
   /** Metadata-only codes. Paths, payloads, model text, and provider errors are never exposed. */
   readonly issues: readonly ("invalid_layout" | "invalid_record" | "capacity_exceeded" | "state_conflict")[];
 }
@@ -527,11 +536,14 @@ export function inspectCompletedTurnIntake(
     return {
       schemaVersion: COMPLETED_TURN_INTAKE_SCHEMA_VERSION,
       items: [],
+      temporary: 0,
       snapshot: { pending: 0, dead: 0, resolved: 0, due: 0, transitioning: 0 },
     };
   }
   ensureLayout(canonicalRoot, false);
-  const physical = STATES.flatMap((state) => listRecords(canonicalRoot, state));
+  const listed = STATES.map((state) => listRecordsWithTemporary(canonicalRoot, state));
+  const physical = listed.flatMap((entry) => entry.records);
+  const temporary = listed.reduce((sum, entry) => sum + entry.temporary, 0);
   const { located, transitioning } = logicalRecords(physical);
   const items = located.map(({ record }) => ({
     id: record.id,
@@ -545,6 +557,7 @@ export function inspectCompletedTurnIntake(
   return {
     schemaVersion: COMPLETED_TURN_INTAKE_SCHEMA_VERSION,
     items,
+    temporary,
     snapshot: {
       pending: items.filter((item) => item.state === "pending").length,
       dead: items.filter((item) => item.state === "dead").length,
@@ -569,15 +582,19 @@ function intakeLayoutExists(root: string): boolean {
 export function auditCompletedTurnIntake(root: string, now = new Date()): CompletedTurnIntakeAudit {
   try {
     const inspection = inspectCompletedTurnIntake(root, now);
+    const counts = countsFromInspection(inspection);
+    if (inspection.temporary > 0) {
+      return { valid: false, inspection, counts, issues: ["invalid_record"] };
+    }
     if (inspection.snapshot.pending + inspection.snapshot.dead > DEFAULT_MAX_ACTIVE_RECORDS) {
-      return { valid: false, inspection, issues: ["capacity_exceeded"] };
+      return { valid: false, inspection, counts, issues: ["capacity_exceeded"] };
     }
     if (intakeLayoutExists(canonicalMemoryRootPath(root, false))) {
       const canonicalRoot = canonicalMemoryRootPath(root, false);
       const materialized = logicalRecords(STATES.flatMap((state) => listRecords(canonicalRoot, state))).located;
       validateAdmissionLedger(canonicalRoot, materialized);
     }
-    return { valid: true, inspection, issues: [] };
+    return { valid: true, inspection, counts, issues: [] };
   } catch (error) {
     const message = reasonOf(error);
     const issue = /capacity|bounded file count/iu.test(message)
@@ -587,8 +604,37 @@ export function auditCompletedTurnIntake(root: string, now = new Date()): Comple
       : /directory|layout/iu.test(message)
         ? "invalid_layout"
         : "invalid_record";
-    return { valid: false, issues: [issue] };
+    return { valid: false, counts: physicalIntakeCounts(root), issues: [issue] };
   }
+}
+
+function countsFromInspection(inspection: CompletedTurnIntakeInspection): CompletedTurnIntakeAudit["counts"] {
+  return {
+    pending: inspection.snapshot.pending,
+    due: inspection.snapshot.due,
+    dead: inspection.snapshot.dead,
+    temporary: inspection.temporary,
+  };
+}
+
+function physicalIntakeCounts(root: string): CompletedTurnIntakeAudit["counts"] {
+  const counts = { pending: 0, due: 0, dead: 0, temporary: 0 };
+  try {
+    const canonicalRoot = canonicalMemoryRootPath(root, false);
+    if (!intakeLayoutExists(canonicalRoot)) return counts;
+    counts.temporary += listLedgerCatalogTempNames(canonicalRoot).length;
+    for (const state of STATES) {
+      for (const name of listStateNames(canonicalRoot, state)) {
+        if (ORPHAN_TEMP_NAME.test(name)) counts.temporary += 1;
+        else if (state === "pending") counts.pending += 1;
+        else if (state === "dead") counts.dead += 1;
+      }
+    }
+  } catch {
+    // Unsafe directory metadata is itself an invalid audit. Keep the bounded
+    // zero/partial inventory without exposing filesystem details.
+  }
+  return counts;
 }
 
 /** Retry selected dead letters (or make selected pending work due) while no store owns the root. */
@@ -733,6 +779,16 @@ interface LedgerCatalogSnapshot {
 }
 
 function retireOrphanLedgerCatalogTemps(root: string): void {
+  for (const name of listLedgerCatalogTempNames(root)) {
+    const relativePath = `${INTAKE_ROOT}/${name}`;
+    const snapshot = readCanonicalFileSnapshot(root, relativePath, { maxBytes: LEDGER_CATALOG_MAX_BYTES });
+    if (snapshot === undefined) throw new Error("memory-bujo: completed-turn ledger catalog temp disappeared.");
+    assertSecureLedgerFile(snapshot.identity);
+    removeCanonicalFile(root, relativePath, snapshot.identity);
+  }
+}
+
+function listLedgerCatalogTempNames(root: string): string[] {
   const path = join(root, INTAKE_ROOT);
   const before = lstatSync(path);
   assertSecureDirectory(before, INTAKE_ROOT);
@@ -745,13 +801,7 @@ function retireOrphanLedgerCatalogTemps(root: string): void {
   } finally {
     closeSync(fd);
   }
-  for (const name of names) {
-    const relativePath = `${INTAKE_ROOT}/${name}`;
-    const snapshot = readCanonicalFileSnapshot(root, relativePath, { maxBytes: LEDGER_CATALOG_MAX_BYTES });
-    if (snapshot === undefined) throw new Error("memory-bujo: completed-turn ledger catalog temp disappeared.");
-    assertSecureLedgerFile(snapshot.identity);
-    removeCanonicalFile(root, relativePath, snapshot.identity);
-  }
+  return names;
 }
 
 function ensureLedgerCatalog(root: string, create: boolean): LedgerCatalogSnapshot {
@@ -1191,14 +1241,28 @@ function ensureDirectory(parent: string, path: string, create: boolean, label: s
 }
 
 function listRecords(root: string, state: IntakeState): LocatedRecord[] {
-  return listStateNames(root, state).flatMap((name) => {
-    if (FILE_NAME.test(name)) return [readRecord(root, state, name.slice(0, -5))];
+  return listRecordsWithTemporary(root, state).records;
+}
+
+function listRecordsWithTemporary(
+  root: string,
+  state: IntakeState,
+): { readonly records: LocatedRecord[]; readonly temporary: number } {
+  const records: LocatedRecord[] = [];
+  let temporary = 0;
+  for (const name of listStateNames(root, state)) {
+    if (FILE_NAME.test(name)) {
+      records.push(readRecord(root, state, name.slice(0, -5)));
+      continue;
+    }
     if (ORPHAN_TEMP_NAME.test(name)) {
       validateOrphanTemp(root, state, name);
-      return [];
+      temporary += 1;
+      continue;
     }
     throw new Error("memory-bujo: completed-turn intake has an invalid record name.");
-  });
+  }
+  return { records, temporary };
 }
 
 function listStateNames(root: string, state: IntakeState): string[] {

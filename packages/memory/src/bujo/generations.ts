@@ -144,6 +144,26 @@ export function resolveActiveMemoryDbPath(root: string): string {
 
 export function readManagedIndexManifest(root: string): ManagedIndexManifest | undefined {
   const canonicalRoot = canonicalMemoryRoot(root, true);
+  const manifest = readManagedIndexManifestFile(canonicalRoot);
+  if (manifest === undefined) return undefined;
+  generationDbPath(canonicalRoot, manifest.active.name, true);
+  if (manifest.rollback !== undefined) generationDbPath(canonicalRoot, manifest.rollback.name, true);
+  return manifest;
+}
+
+/**
+ * Parse the managed identity without requiring the referenced SQLite files.
+ *
+ * Strict health uses this read-only form so a valid manifest with a missing
+ * active database is classified as `database_missing`, not conflated with a
+ * malformed manifest. Unlike normal startup this never creates the root or
+ * managed layout.
+ */
+export function readManagedIndexManifestForAudit(root: string): ManagedIndexManifest | undefined {
+  return readManagedIndexManifestFile(canonicalMemoryRoot(root, false));
+}
+
+function readManagedIndexManifestFile(canonicalRoot: string): ManagedIndexManifest | undefined {
   const path = manifestPath(canonicalRoot);
   if (!existsSync(path)) {
     assertSafeExistingAncestors(canonicalRoot, dirname(path));
@@ -156,10 +176,7 @@ export function readManagedIndexManifest(root: string): ManagedIndexManifest | u
   } catch (error) {
     throw new Error(`memory-rebuild: managed index manifest is malformed: ${reasonOf(error)}`);
   }
-  const manifest = parseManifest(parsed);
-  generationDbPath(canonicalRoot, manifest.active.name, true);
-  if (manifest.rollback !== undefined) generationDbPath(canonicalRoot, manifest.rollback.name, true);
-  return manifest;
+  return parseManifest(parsed);
 }
 
 export function managedGenerationDbPath(root: string, name: string, requireExisting = false): string {

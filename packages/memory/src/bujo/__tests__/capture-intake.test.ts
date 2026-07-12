@@ -551,7 +551,10 @@ describe("completed-turn durable intake", () => {
       ".ledger-v1.catalog-00000000-0000-4000-8000-000000000000.tmp",
     );
     writeFileSync(temp, "partial catalog", { mode: 0o600 });
-    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED)).toMatchObject({
+      valid: false,
+      counts: { pending: 1, temporary: 1 },
+    });
 
     const recovered = manager(memoryRoot);
     expect(existsSync(temp)).toBe(false);
@@ -733,7 +736,10 @@ describe("completed-turn durable intake", () => {
       }
       if (kind === "hardlink") linkSync(admitted.source, join(memoryRoot, "outside-hardlink.json"));
 
-      expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+      expect(auditCompletedTurnIntake(memoryRoot, FIXED)).toMatchObject({
+        valid: false,
+        counts: { pending: 1 },
+      });
     },
   );
 
@@ -771,7 +777,11 @@ describe("completed-turn durable intake", () => {
       ".0000000000000000000000000000000000000000000000000000000000000000.json-00000000-0000-4000-8000-000000000000.tmp",
     );
     writeFileSync(temp, '{"partial":', { mode: 0o600 });
-    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(true);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED)).toMatchObject({
+      valid: false,
+      counts: { pending: 1, temporary: 1 },
+      issues: ["invalid_record"],
+    });
 
     const recovered = manager(memoryRoot);
     expect(existsSync(temp)).toBe(false);

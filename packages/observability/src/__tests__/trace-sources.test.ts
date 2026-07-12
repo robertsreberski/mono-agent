@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -89,6 +89,189 @@ describe("trace source registry", () => {
     await sourceA.stop({ status: "stopped" });
     const stopped = await listTraceSources({ registryDir, clock });
     expect(stopped.sources.find((source) => source.sourceId === "agent-a")).toMatchObject({ health: "stopped" });
+  });
+
+  it("round-trips canonical content-free memory health and preserves it across heartbeat updates", async () => {
+    const dir = await tempDir();
+    const registryDir = join(dir, "registry");
+    let now = Date.parse("2026-07-12T12:00:00.000Z");
+    const source = await registerTraceSource({
+      registryDir,
+      sourceId: "agent-memory-health",
+      label: "Agent Memory Health",
+      artifactDir: join(dir, "artifacts"),
+      clock: () => now,
+      memoryHealth: {
+        backend: "bujo",
+        mode: "journal",
+        status: "degraded",
+        checkedAt: "2026-07-12T14:15:16+02:00",
+        issues: ["runtime_stale", "manifest_missing", "runtime_stale", "private_issue"],
+        counts: {
+          missingVectors: 3,
+          pending: 0,
+          due: -1,
+          dead: 1.5,
+          outbox: 2,
+          temporary: 4,
+          memories: 5,
+          vectors: 5,
+          path: "/private/memory.sqlite",
+          token: "secret-token",
+        },
+        path: "/private/agent",
+        error: "provider-secret",
+        recordIds: ["private-id"],
+        text: "private memory text",
+      } as never,
+    });
+
+    const expected = {
+      backend: "bujo",
+      mode: "journal",
+      status: "degraded",
+      checkedAt: "2026-07-12T12:15:16.000Z",
+      issues: ["manifest_missing", "runtime_stale"],
+      counts: {
+        pending: 0,
+        outbox: 2,
+        temporary: 4,
+        memories: 5,
+        vectors: 5,
+        missingVectors: 3,
+      },
+    };
+    expect(source.manifest.memoryHealth).toEqual(expected);
+
+    const raw = await readFile(join(registryDir, "agent-memory-health.json"), "utf8");
+    const parsed = JSON.parse(raw) as { memoryHealth: { counts: object } };
+    expect(parsed).toMatchObject({ memoryHealth: expected });
+    expect(Object.keys(parsed.memoryHealth)).toEqual([
+      "backend",
+      "mode",
+      "status",
+      "checkedAt",
+      "issues",
+      "counts",
+    ]);
+    expect(Object.keys(parsed.memoryHealth.counts)).toEqual([
+      "pending",
+      "outbox",
+      "temporary",
+      "memories",
+      "vectors",
+      "missingVectors",
+    ]);
+    expect(raw).not.toMatch(/private|secret-token|provider-secret/u);
+
+    now += 1_000;
+    await source.heartbeat();
+    expect(source.manifest.memoryHealth).toEqual(expected);
+
+    now += 1_000;
+    await source.update({
+      metadata: { reason: "refresh" },
+      memoryHealth: {
+        backend: "invalid-backend",
+        status: "healthy",
+        checkedAt: "not-a-timestamp",
+        token: "must-not-leak",
+      } as never,
+    });
+    expect(source.manifest.memoryHealth).toEqual(expected);
+
+    now += 1_000;
+    await source.update({
+      memoryHealth: {
+        backend: "none",
+        status: "not_configured",
+        checkedAt: "2026-07-12T12:15:15.000Z",
+      },
+    });
+    expect(source.manifest.memoryHealth).toEqual(expected);
+
+    now += 1_000;
+    await source.update({
+      memoryHealth: {
+        backend: "supermemory",
+        status: "healthy",
+        checkedAt: "2026-07-12T12:15:17.000Z",
+      },
+    });
+    expect(source.manifest.memoryHealth).toEqual({
+      backend: "supermemory",
+      status: "healthy",
+      checkedAt: "2026-07-12T12:15:17.000Z",
+    });
+  });
+
+  it("normalizes hostile memory-health data read from manifests and drops invalid required fields", async () => {
+    const dir = await tempDir();
+    const registryDir = join(dir, "registry");
+    await mkdir(registryDir, { recursive: true });
+    const baseManifest = {
+      schema: "agent-runtime.trace-source.v1",
+      label: "Hostile Source",
+      artifactDir: join(dir, "artifacts"),
+      status: "running",
+      startedAt: "2026-07-12T12:00:00.000Z",
+      updatedAt: "2026-07-12T12:00:00.000Z",
+    };
+    await writeFile(join(registryDir, "hostile.json"), JSON.stringify({
+      ...baseManifest,
+      sourceId: "hostile",
+      memoryHealth: {
+        backend: "bujo",
+        mode: "invalid-mode",
+        status: "unhealthy",
+        checkedAt: "2026-07-12T12:00:00Z",
+        issues: ["runtime_invalid", "private_issue", "manifest_invalid"],
+        counts: {
+          pending: 2,
+          due: -3,
+          dead: 1.25,
+          outbox: 1,
+          temporary: "4",
+          memories: Number.MAX_SAFE_INTEGER + 1,
+          vectors: 0,
+          missingVectors: 0,
+          path: "/private/db",
+        },
+        path: "/private/db",
+        error: "raw native failure",
+        token: "credential",
+        ids: ["record-id"],
+        text: "memory content",
+      },
+    }), "utf8");
+
+    for (const [sourceId, memoryHealth] of [
+      ["invalid-backend", { backend: "remote", status: "healthy", checkedAt: "2026-07-12T12:00:00.000Z" }],
+      ["invalid-status", { backend: "bujo", status: "broken", checkedAt: "2026-07-12T12:00:00.000Z" }],
+      ["invalid-time", { backend: "bujo", status: "healthy", checkedAt: "yesterday" }],
+    ] as const) {
+      await writeFile(join(registryDir, `${sourceId}.json`), JSON.stringify({
+        ...baseManifest,
+        sourceId,
+        label: sourceId,
+        memoryHealth,
+      }), "utf8");
+    }
+
+    const result = await listTraceSources({ registryDir });
+    expect(result.warnings).toEqual([]);
+    expect(result.sources.find((source) => source.sourceId === "hostile")?.memoryHealth).toEqual({
+      backend: "bujo",
+      status: "unhealthy",
+      checkedAt: "2026-07-12T12:00:00.000Z",
+      issues: ["manifest_invalid", "runtime_invalid"],
+      counts: { pending: 2, outbox: 1, vectors: 0, missingVectors: 0 },
+    });
+    expect(result.sources.filter((source) => source.sourceId.startsWith("invalid-"))).toHaveLength(3);
+    expect(result.sources.filter((source) => source.sourceId.startsWith("invalid-")).every(
+      (source) => source.memoryHealth === undefined,
+    )).toBe(true);
+    expect(JSON.stringify(result)).not.toMatch(/private|native failure|credential|record-id|memory content|remote|broken|yesterday/u);
   });
 
   it("preserves a run's persisted channel `source` alongside its `traceSource` on TraceRunListItem", async () => {
@@ -362,5 +545,66 @@ describe("mergeTraceSources", () => {
     const merged = mergeTraceSources([oldest], [middle], [newest]);
 
     expect(merged.map((entry) => entry.sourceId)).toEqual(["a-newest", "b-middle", "c-oldest"]);
+  });
+
+  it("keeps the manifest winner but independently carries the freshest normalized memory health", () => {
+    const manifestWinner = item({
+      sourceId: "both",
+      label: "manifest-winner",
+      updatedAt: "2026-07-03T00:00:00.000Z",
+      memoryHealth: {
+        backend: "bujo",
+        status: "degraded",
+        checkedAt: "2026-07-01T00:00:00.000Z",
+        issues: ["runtime_stale"],
+      },
+    });
+    const healthWinner = item({
+      sourceId: "both",
+      label: "health-winner",
+      updatedAt: "2026-07-02T00:00:00.000Z",
+      memoryHealth: {
+        backend: "supermemory",
+        mode: "invalid-mode",
+        status: "healthy",
+        checkedAt: "2026-07-04T00:00:00Z",
+        issues: ["runtime_invalid", "private_issue"],
+        counts: { pending: 1, due: -1, token: "secret" },
+        path: "/private/memory",
+      } as never,
+    });
+
+    const [merged] = mergeTraceSources([manifestWinner], [healthWinner]);
+
+    expect(merged?.label).toBe("manifest-winner");
+    expect(merged?.updatedAt).toBe("2026-07-03T00:00:00.000Z");
+    expect(merged?.memoryHealth).toEqual({
+      backend: "supermemory",
+      status: "healthy",
+      checkedAt: "2026-07-04T00:00:00.000Z",
+      issues: ["runtime_invalid"],
+      counts: { pending: 1 },
+    });
+    expect(JSON.stringify(merged)).not.toMatch(/invalid-mode|private|secret/u);
+  });
+
+  it("prefers the manifest winner's memory health when checkedAt ties", () => {
+    const checkedAt = "2026-07-04T00:00:00.000Z";
+    const manifestWinner = item({
+      sourceId: "both",
+      label: "manifest-winner",
+      updatedAt: "2026-07-03T00:00:00.000Z",
+      memoryHealth: { backend: "bujo", status: "degraded", checkedAt },
+    });
+    const other = item({
+      sourceId: "both",
+      label: "other",
+      updatedAt: "2026-07-02T00:00:00.000Z",
+      memoryHealth: { backend: "supermemory", status: "healthy", checkedAt },
+    });
+
+    const [merged] = mergeTraceSources([manifestWinner], [other]);
+
+    expect(merged?.memoryHealth).toEqual({ backend: "bujo", status: "degraded", checkedAt });
   });
 });
