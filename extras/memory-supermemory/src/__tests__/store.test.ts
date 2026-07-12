@@ -130,6 +130,96 @@ describe("SupermemoryMemoryStore.appendHostSummary", () => {
   });
 });
 
+describe("SupermemoryMemoryStore.persistCompletedTurn", () => {
+  it("awaits one clear remote document and returns its stable admission id", async () => {
+    const client = new FakeClient();
+    const { store } = makeStore(client);
+
+    const result = await store.persistCompletedTurn({
+      runId: "run-strong-1",
+      conversationId: "telegram:private-conversation",
+      summary: "Host-observed completed turn.",
+      captureText: "User: Remember cobalt.\nAssistant: I will remember cobalt.",
+    });
+
+    expect(client.added).toHaveLength(1);
+    expect(client.added[0]?.content).toBe([
+      "Completed turn summary:",
+      "Host-observed completed turn.",
+      "",
+      "Completed turn capture:",
+      "User: Remember cobalt.",
+      "Assistant: I will remember cobalt.",
+    ].join("\n"));
+    expect(client.added[0]?.customId).toMatch(/^completed-turn-[a-f0-9]{32}$/u);
+    expect(client.added[0]?.metadata).toEqual({
+      kind: "completed-turn",
+      schemaVersion: 1,
+      hasCapture: true,
+    });
+    expect(JSON.stringify(client.added[0]?.metadata)).not.toContain("private-conversation");
+    expect(result).toMatchObject({
+      id: client.added[0]?.customId,
+      runId: "run-strong-1",
+      conversationId: "telegram:private-conversation",
+      source: "supermemory",
+      admissionStatus: "admitted",
+    });
+    expect(result.bytesWritten).toBe(Buffer.byteLength(client.added[0]?.content ?? "", "utf8"));
+  });
+
+  it("uses the identical run-id-only custom id for an idempotent retry", async () => {
+    const client = new FakeClient();
+    const { store } = makeStore(client);
+
+    await store.persistCompletedTurn({
+      runId: "run-retry",
+      conversationId: "conversation-a",
+      summary: "First deterministic summary.",
+    });
+    await store.persistCompletedTurn({
+      runId: "run-retry",
+      conversationId: "conversation-b",
+      summary: "Retry payload may be reconstructed.",
+      captureText: "User: full turn\nAssistant: full answer",
+    });
+
+    expect(client.added).toHaveLength(2);
+    expect(client.added[0]?.customId).toBe(client.added[1]?.customId);
+    expect(client.added[0]?.customId).toMatch(/^completed-turn-[a-f0-9]{32}$/u);
+  });
+
+  it("logs and propagates remote admission failure", async () => {
+    const client = new FakeClient();
+    client.failAdd = true;
+    const { store, warnings } = makeStore(client);
+
+    await expect(store.persistCompletedTurn({
+      runId: "run-failure",
+      conversationId: "conversation",
+      summary: "Deterministic summary.",
+    })).rejects.toThrow("boom-add");
+
+    expect(client.added).toHaveLength(1);
+    expect(warnings).toEqual([expect.stringContaining("persistCompletedTurn failed: boom-add")]);
+  });
+
+  it("rejects an oversized turn instead of truncating its full capture", async () => {
+    const client = new FakeClient();
+    const { store, warnings } = makeStore(client);
+
+    await expect(store.persistCompletedTurn({
+      runId: "run-too-large",
+      conversationId: "conversation",
+      summary: "Deterministic summary.",
+      captureText: "x".repeat(1_000_001),
+    })).rejects.toThrow(/admission limit/u);
+
+    expect(client.added).toEqual([]);
+    expect(warnings).toHaveLength(1);
+  });
+});
+
 describe("SupermemoryMemoryStore.scheduleCapture", () => {
   it("posts the full turn as a capture and drains via flush", async () => {
     const client = new FakeClient();

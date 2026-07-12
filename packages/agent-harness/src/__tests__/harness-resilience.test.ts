@@ -82,7 +82,8 @@ describe("AgentHarness resilience + caching", () => {
     let terminalCalls = 0;
     const memory: MemoryStore = {
       load: async () => undefined,
-      appendHostSummary: async () => { throw new Error("disk became read-only"); },
+      appendHostSummary: async () => { throw new Error("legacy append must not run"); },
+      persistCompletedTurn: async () => { throw new Error("disk became read-only"); },
     };
     const recorderFactory = (input: { readonly runId: string; readonly conversationId: string }): RunRecorder => {
       const events: RuntimeEventLike[] = [];
@@ -118,7 +119,10 @@ describe("AgentHarness resilience + caching", () => {
       executionMode: "sdk",
       memory,
       memoryWriteMode: "append-host-summary",
-      onMemoryWarning: (message) => warnings.push(message),
+      onMemoryWarning: (message) => {
+        warnings.push(message);
+        throw new Error("warning callback failed");
+      },
       recorderFactory,
     });
 

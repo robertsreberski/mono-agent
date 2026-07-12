@@ -26,6 +26,12 @@ import {
 Hosts wire identity/context paths, runtime, model, execution mode, tool policy, sandbox policy, history, memory, skills, and recorder factory explicitly.
 Hosts that need request-scoped runtime setup can provide `runtimeOptionsForRequest`; the harness merges those options into the runtime call, keeps configured sandbox policy monotonic, and runs the returned cleanup after execution.
 
+For `append-host-summary` and `capture` write modes, a memory store that implements
+`persistCompletedTurn` receives one awaited, run-idempotent admission before the successful turn
+returns. The provider answer remains successful if admission rejects; the harness emits
+`memory_persistence_degraded` and invokes the configured warning sink. Stores without the strong
+method keep the legacy awaited `appendHostSummary` plus optional best-effort `scheduleCapture` path.
+
 ## Public API
 
 - `createAgentHarness`, `AgentHarnessError`

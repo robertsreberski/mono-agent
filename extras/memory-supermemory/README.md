@@ -39,14 +39,26 @@ const store = createSupermemoryStore({
   maxBytes: 64_000,
 });
 
-await store.appendHostSummary("conv-1", "User prefers dark mode.");
+await store.persistCompletedTurn({
+  runId: "run-018f...",
+  conversationId: "conv-1",
+  summary: "User prefers dark mode.",
+  captureText: "User: Use dark mode.\nAssistant: Done.",
+});
 const block = await store.load("conv-1", "preferences");
 ```
 
 - `load(query)` → `POST /v4/search` (cached `/v3` fallback), formats ranked hits into a
   markdown block capped at `maxBytes`. Degrades to `undefined` on any error.
-- `appendHostSummary` / `scheduleCapture` → `POST /v3/documents` (one-liner / full turn,
-  async server-side extraction). Writes never throw.
+- `persistCompletedTurn` → one awaited `POST /v3/documents` containing the deterministic
+  summary and optional full capture text. A SHA-256-derived custom id keyed only by `runId`
+  makes retries idempotent; success returns the stable custom id after remote admission,
+  while any failure is logged and thrown so the harness can report degradation. Raw run and
+  conversation ids are not placed in remote metadata. Documents over 1,000,000 bytes are
+  rejected rather than partially captured.
+- Legacy `appendHostSummary` / `scheduleCapture` remain compatible best-effort writes (one-liner /
+  full turn, async server-side extraction) and never throw. The harness does not call them when
+  the strong method is present.
 - `recall(query)` → hits shaped for the in-app `MemoryRecall` MCP tool.
 
 ## Public API

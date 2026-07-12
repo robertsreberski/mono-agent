@@ -1,12 +1,20 @@
 import { createHash } from "node:crypto";
 
-import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";
+import type {
+  MemoryBlock,
+  MemoryCompletedTurn,
+  MemoryCompletedTurnResult,
+  MemoryStore,
+  MemoryWriteResult,
+} from "@mono-agent/agent-contracts";
 
 import type { SupermemoryClient } from "./client.js";
 import { formatHitsAsBlock, SUPERMEMORY_SOURCE } from "./format.js";
 
 /** Default per-turn recall budget (bytes) — mirrors the host's DEFAULT_MEMORY_MAX_BYTES. */
 const DEFAULT_MAX_BYTES = 64_000;
+/** Refuse oversized remote writes instead of silently dropping part of a completed turn. */
+const MAX_COMPLETED_TURN_BYTES = 1_000_000;
 
 export interface SupermemoryStoreOptions {
   /** Hard cap on the bytes a single `load` may return. */
@@ -27,11 +35,12 @@ const NOOP_LOGGER = { warn: (_message: string): void => {} };
 /**
  * MemoryStore backed by an external Supermemory instance (local OSS binary or hosted cloud).
  *
- * Writes are best-effort and NEVER throw — a memory failure must not break a reply. `appendHostSummary`
- * is a bounded await that returns `bytesWritten: 0` on failure; `scheduleCapture` is fire-and-forget,
- * serialized through a single chain (like the bujo store) so captures can't overlap or reject the
- * chain. Supermemory does extraction/consolidation server-side, so capture just posts the raw turn —
- * note that ingestion is async, so a just-captured turn is not immediately searchable.
+ * The strong `persistCompletedTurn` path awaits one idempotent remote admission and propagates
+ * failure so the harness can report degradation without changing the provider answer. Legacy
+ * writes remain best-effort and NEVER throw: `appendHostSummary` returns `bytesWritten: 0` on
+ * failure; `scheduleCapture` is fire-and-forget, serialized through a single chain so captures
+ * cannot overlap or reject the chain. Supermemory does extraction/consolidation server-side, so
+ * ingestion is async and a just-admitted turn may not be immediately searchable.
  *
  * `load` degrades to `undefined` on any client error (mirroring how the harness treats empty recall),
  * so a slow/down backend yields no context rather than a failed turn.
@@ -83,6 +92,48 @@ export class SupermemoryMemoryStore implements MemoryStore {
     }
   }
 
+  /**
+   * Strong, awaited completed-turn admission. The remote custom id is derived
+   * only from the stable run id, so a retry upserts the same logical document.
+   * Unlike the legacy write methods, any failure is logged and propagated for
+   * the harness to surface as memory degradation.
+   */
+  async persistCompletedTurn(turn: MemoryCompletedTurn): Promise<MemoryCompletedTurnResult> {
+    try {
+      assertCompletedTurn(turn);
+      const content = completedTurnDocument(turn);
+      const bytesWritten = Buffer.byteLength(content, "utf8");
+      if (bytesWritten > MAX_COMPLETED_TURN_BYTES) {
+        throw new Error(`completed turn exceeds the ${MAX_COMPLETED_TURN_BYTES}-byte Supermemory admission limit`);
+      }
+      const runIdHash = safeHash(turn.runId);
+      const customId = `completed-turn-${runIdHash}`;
+      await this.client.add({
+        content,
+        customId,
+        // Keep remote indexing metadata flat and free of raw channel/run ids.
+        metadata: {
+          kind: "completed-turn",
+          schemaVersion: 1,
+          hasCapture: turn.captureText !== undefined,
+        },
+      });
+      return {
+        id: customId,
+        runId: turn.runId,
+        conversationId: turn.conversationId,
+        source: SUPERMEMORY_SOURCE,
+        bytesWritten,
+        // The documents endpoint exposes successful upsert admission but does
+        // not distinguish a newly created document from an idempotent retry.
+        admissionStatus: "admitted",
+      };
+    } catch (error) {
+      this.logger.warn(`supermemory persistCompletedTurn failed: ${message(error)}`);
+      throw error;
+    }
+  }
+
   scheduleCapture(conversationId: string, text: string): void {
     this.captureChain = this.captureChain
       .then(async () => {
@@ -122,6 +173,35 @@ export class SupermemoryMemoryStore implements MemoryStore {
 
 function stableId(input: string): string {
   return createHash("sha1").update(input).digest("hex").slice(0, 24);
+}
+
+function safeHash(input: string): string {
+  return createHash("sha256").update(input).digest("hex").slice(0, 32);
+}
+
+function completedTurnDocument(turn: MemoryCompletedTurn): string {
+  return [
+    "Completed turn summary:",
+    turn.summary,
+    ...(turn.captureText === undefined
+      ? []
+      : ["", "Completed turn capture:", turn.captureText]),
+  ].join("\n");
+}
+
+function assertCompletedTurn(turn: MemoryCompletedTurn): void {
+  for (const [field, value] of [
+    ["runId", turn.runId],
+    ["conversationId", turn.conversationId],
+    ["summary", turn.summary],
+  ] as const) {
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new TypeError(`completed turn ${field} must be a non-empty string`);
+    }
+  }
+  if (turn.captureText !== undefined && typeof turn.captureText !== "string") {
+    throw new TypeError("completed turn captureText must be a string when provided");
+  }
 }
 
 function message(error: unknown): string {
