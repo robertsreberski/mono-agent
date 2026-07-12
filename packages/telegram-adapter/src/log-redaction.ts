@@ -27,6 +27,10 @@ const SENSITIVE_LOG_KEYS = new Set([
   "refresh_token",
   "id-token",
   "id_token",
+  "token",
+  "code",
+  "secret",
+  "password",
   "cookie",
   "set-cookie",
 ]);
@@ -180,7 +184,19 @@ function sanitizeTelegramLogValue(
     return safe;
   }
   if (Array.isArray(value)) {
-    return value.map((entry) => sanitizeTelegramLogValue(entry, knownSecrets, seen));
+    if (typeof value[0] === "string" && sensitiveLogKey(value[0])) {
+      return [redactTelegramSecretText(value[0], knownSecrets), REDACTED_BEARER];
+    }
+    return value.map((entry) => {
+      if (
+        Array.isArray(entry)
+        && typeof entry[0] === "string"
+        && sensitiveLogKey(entry[0])
+      ) {
+        return [redactTelegramSecretText(entry[0], knownSecrets), REDACTED_BEARER];
+      }
+      return sanitizeTelegramLogValue(entry, knownSecrets, seen);
+    });
   }
 
   const safe: Record<string, unknown> = {};

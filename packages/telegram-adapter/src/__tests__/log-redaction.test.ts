@@ -40,6 +40,8 @@ describe("Telegram log redaction", () => {
           "x-auth-token": OTHER_BEARER,
           "x-client-secret": OTHER_BEARER,
         },
+        headerPairs: [["x-auth-token", OTHER_BEARER]],
+        query: { token: OTHER_BEARER, code: SHORT_BEARER },
       },
     });
     const sink = vi.fn();
