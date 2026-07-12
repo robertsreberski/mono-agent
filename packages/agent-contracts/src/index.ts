@@ -1,6 +1,14 @@
 export type AgentRequestMetadata = Record<string, unknown>;
 export type AgentResponseMetadata = Record<string, unknown>;
-export type { MemoryBlock, MemoryLoadOptions, MemoryStore, MemoryWriteResult } from "./memory.js";
+export type {
+  MemoryBlock,
+  MemoryCompletedTurn,
+  MemoryCompletedTurnAdmissionStatus,
+  MemoryCompletedTurnResult,
+  MemoryLoadOptions,
+  MemoryStore,
+  MemoryWriteResult,
+} from "./memory.js";
 
 /**
  * Reserved final-text token a notify-enabled cron/webhook turn emits to suppress

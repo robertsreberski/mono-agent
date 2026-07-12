@@ -15,8 +15,8 @@ For tier selection (lite / journal / bujo) and embeddings setup, start at the [M
 | Mode | What it does | Tiers | LLM |
 |------|--------------|-------|-----|
 | `disabled` | Never persist turns. Recall still works over whatever is already on disk. | all | no |
-| `append-host-summary` | Persist one deterministic, single-line host observation. Lite/Journal write the canonical daily log; BuJo writes the separate immutable raw audit. | all (lite/journal/bujo) | no |
-| `capture` | **bujo only.** Preserve the raw audit synchronously, then curate durable facts and graph evidence in the background. | bujo | yes (chat model) |
+| `append-host-summary` | Durably admit one deterministic host observation by provider run id, then project it to the Lite/Journal canonical daily log or BuJo immutable raw audit. | all (lite/journal/bujo) | no |
+| `capture` | **bujo only.** Durably admit the host summary and full capture text by provider run id, then curate facts and graph evidence in the background. | bujo | yes (chat model) |
 
 The host deliberately skips memory writes for two low-signal successful turns, in every write mode: final answers equal to `NOTHING_TO_REPORT` (the cron/webhook no-op sentinel) and tiny explicit test/ping probes such as `test` / `test ok`. Short contextual acknowledgements are not skipped by this default.
 
@@ -38,24 +38,85 @@ Memory persistence is **host-owned**. When a user says “remember this,” the 
 MONO_AGENT_MEMORY_WRITE_MODE=append-host-summary
 ```
 
+### Durable completed-turn admission
+
+The built-in store implements the harness's strong completed-turn write. Before a successful
+turn reaches terminal reporting, the harness awaits an owner-only, fsynced record under
+`memory.path/.capture-intake/pending/`. The filename is the SHA-256 hash of the stable provider
+run id; retrying the same run and payload is a successful duplicate, while reusing that run id
+with different bytes fails closed. An admission failure does not replace the provider's answer,
+but it emits an explicit memory-degradation warning instead of pretending the turn was saved.
+
+The admitted record is the restart boundary. It contains the bounded deterministic summary and,
+for `writeMode: "capture"`, the bounded host-approved capture text. Projection and BuJo curation
+may run after the reply, but a process restart resumes them from the durable record. Pending work
+uses 16 bounded exponential-backoff attempts (one minute initially, capped at six hours, spanning
+more than 24 hours) before moving to a durable dead letter. Resolved receipts are retained in a
+bounded rich set, while an exact content-free `id + payload-hash` commitment remains permanently
+in one of 256 cataloged compact append-only ledger shards. A sibling owner-only integrity catalog
+commits every shard's byte high-water mark and SHA-256 after the shard append is fsynced. Missing,
+truncated, or valid-looking replacement shards therefore fail closed. A crash between shard append
+and catalog commit can advance the catalog only when every suffix entry still has an exact
+materialized intake receipt and after the exact shard inode is fsynced again. A separate
+owner-only schema marker at the memory root proves that the catalog has existed, so deleting both
+the ledger and catalog cannot masquerade as a pre-ledger upgrade. Receipt pruning therefore cannot make an old run
+admissible again or create another raw-audit line/curated fact. The intake directories are `0700`
+and records/ledger shards are `0600`; symlinks, ownership changes, conflicting payloads, malformed
+records, partial ledger writes, and unsafe crash transitions are rejected or deterministically
+recovered before admission.
+
+A safe rebuild may change the BuJo embedding provider or dimension while a run-owned semantic
+plan is retained: the candidate is rebuilt from canonical source with the new embedding identity,
+and the exact plan remains available until intake resolution. Rebuilding that retained plan into
+Lite or Journal is refused before source mutation, because those tiers cannot preserve the same
+BuJo run-derived ids and provider-bound replay contract. Start the current BuJo configuration to
+finish the durable intake before changing tiers.
+
+External `MemoryStore` implementations can opt into the same contract with
+`persistCompletedTurn`. Stores without it retain the legacy `appendHostSummary` plus optional
+`scheduleCapture` behavior. The bundled Supermemory backend implements the strong method as one
+awaited, run-id-keyed remote upsert and propagates admission failure to the harness warning path.
+Within one store lifetime, exact retries are returned as duplicates without a second request and a
+run id reused with different payload bytes fails before any request. The exact check keeps two
+SHA-256 digests per distinct run for that process lifetime, without retaining raw ids or content.
+Across process restarts, the
+remote API's stable custom id preserves one logical upsert, but it does not expose a conditional
+create/read result that lets mono-agent distinguish a new document from a retry.
+
 ### Strict tier write behavior
 
-- **Lite:** appends the normalized host observation to `daily/YYYY-MM-DD.md` and indexes it for FTS synchronously. It never embeds and never calls a chat model.
-- **Journal:** reserves a case-preserving, NFKC/whitespace-normalized SHA-256 identity, appends only a new canonical observation, and makes it available to FTS synchronously. Semantic indexing is queued after the successful turn in batches of up to 32, so Ollama/OpenAI embedding latency is not on the provider-success critical path. Repeated content converges on one markdown/index identity.
-- **BuJo:** appends every compact host observation to `audit/YYYY-MM-DD.md`, outside curated recall. Only `writeMode: "capture"` asks the memory model to promote durable facts into canonical `daily/` notes and the graph. A model outage or queue overflow therefore cannot turn an uncurated raw transcript into recalled fact.
+- **Lite:** projects the admitted normalized host observation to `daily/YYYY-MM-DD.md` and indexes it for FTS. It never embeds and never calls a chat model.
+- **Journal:** projects the admitted observation with a case-preserving, NFKC/whitespace-normalized SHA-256 identity, then makes it available to FTS. Semantic indexing is queued in batches of up to 32, so Ollama/OpenAI embedding latency is not on the provider-success critical path. Repeated content converges on one markdown/index identity.
+- **BuJo:** projects each admitted compact host observation to `audit/YYYY-MM-DD.md`, outside curated recall. Only `writeMode: "capture"` asks the memory model to promote durable facts into canonical `daily/` notes and the graph. A model outage therefore cannot turn an uncurated raw transcript into recalled fact.
 
-Both background paths are bounded and observable. Journal indexing holds at most 256 items / 2 MiB; BuJo curation holds at most 32 turns / 1 MiB. Each capture-model completion is rejected before JSON parsing when it exceeds 262,144 JavaScript characters. Queue snapshots report capacity, queued/in-flight/high-water counts and bytes, completed/failed/dropped/coalesced/discarded work, and recovery backlog. Shutdown gives accepted work up to 10 seconds to drain; after that deadline it discards queued best-effort work and aborts cooperative in-flight work instead of hanging indefinitely. Overflow or deadline loss preserves the lexical Journal row or BuJo raw audit and emits a warning.
+The durable intake and both downstream paths are bounded and observable. Intake admits at most
+4,096 active pending/dead records of at most 640 KiB each and retains at most 4,096 resolved
+receipts. Its permanent content-free ledger grows by one fixed 129-byte entry per distinct run id
+across up to 256 lazily created shard files plus one fixed-size 256-slot integrity catalog. Journal
+indexing holds at most 256 items / 2 MiB. Each capture-model completion is
+rejected before parsing when it exceeds 262,144 JavaScript characters. Runtime snapshots report
+content-free intake pending/dead/resolved/due/transition counts alongside downstream queue and
+shutdown state. Shutdown gives work up to 10 seconds to drain; after that deadline it aborts the
+cooperative active attempt and returns while the intake record remains pending for restart.
 
 ### `capture` — per-turn intelligent capture (bujo)
 
-`capture` writes the compact raw audit **synchronously**, then enqueues one bounded curation plan in the background, except for the low-signal skipped turns described above. The plan uses exactly one chat-LLM call to extract up to eight atomic memories plus their precise entities/relations, then at most one additional batched call to classify close existing candidates as `ADD` / `UPDATE` / `SUPERSEDE` / `NOOP`. Clearly novel candidates skip the second call. Entity extraction is part of the first call, not a third pass.
+`capture` fsyncs the completed turn into durable intake, then projects its compact raw audit and
+runs curation in the background, except for the low-signal skipped turns described above. The plan
+uses exactly one chat-LLM call to extract up to eight atomic memories plus their precise
+entities/relations, then at most one additional batched call to classify close existing candidates
+as `ADD` / `UPDATE` / `SUPERSEDE` / `NOOP`. Clearly novel candidates skip the second call. Entity
+extraction is part of the first call, not a third pass.
 
 Key properties:
 
-- **Async and non-blocking.** Reply latency is unchanged; the capture runs after the turn returns.
+- **Local admission before terminal status.** The provider call is already complete; terminal reporting waits only for the bounded filesystem admission, never for embeddings or the chat model.
+- **Restartable background work.** Raw-audit projection and curation resume from pending intake after restart or provider recovery.
 - **Serialized per store.** Captures do not race each other against the same memory root.
-- **Bounded shutdown.** A normal stop drains accepted work, with a 10-second safety deadline. If a provider ignores cancellation, stop still returns; queued curation may be discarded, while the synchronous raw audit remains outside recall.
+- **Bounded shutdown without admitted-work loss.** A normal stop drains accepted work with a 10-second safety deadline. If a provider ignores cancellation, stop still returns and the durable pending record resumes on restart.
+- **Strict model contracts.** Extraction and reconciliation accept one exact, bounded JSON value with complete arrays/decisions and no duplicate keys, unknown fields, partial filtering, unsafe text, or ambiguous target collisions. Invalid output retries and never counts as successful capture.
 - **Reconcile is intelligent**, not append-only: the pipeline classifies each observation as `ADD` / `UPDATE` / `SUPERSEDE` / `NOOP` against existing memories to avoid duplication.
+- **Crash-idempotent semantic commit.** Run-derived fact ids and a retained semantic plan make a post-commit/pre-receipt replay converge without another model call or duplicate fact.
 - **Associations are precise.** Each curated fact carries only the entity IDs explicitly extracted for that fact; the implementation never creates a turn-wide memory/entity Cartesian product.
 
 Because it uses a chat LLM, `writeMode: "capture"` **requires `mode: "bujo"`** and fails config validation otherwise — there is no silent fallback or tier downshift.
@@ -78,7 +139,7 @@ MONO_AGENT_MEMORY_WRITE_MODE=capture
 ```
 
 :::caution
-The capture pipeline never fails the user's reply. An LLM/embedding timeout leaves the raw audit intact, emits a memory warning/run failure, and stores no curated facts for that turn. Raise the in-app per-call timeout — `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`), **default `60000`** — for a slow model. The standalone advanced `memory-bujo migrate` path reads the same env var but defaults to `120000`; see [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts).
+The capture pipeline never replaces the user's successful provider answer. An LLM/embedding timeout emits a memory warning, leaves the admitted turn pending, and retries it durably; only exhaustion moves it to a dead letter. Raise the in-app per-call timeout — `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`), **default `60000`** — for a slow model. The standalone advanced `memory-bujo migrate` path reads the same env var but defaults to `120000`; see [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts).
 :::
 
 The BuJo chat model used by capture comes from the tier's required `memory.llm` block. [Scheduled consolidation](/memory/rituals/) keeps that strict tier contract but is projection-only and makes no LLM call. With `memory.llm.provider: "agent-host"`, capture can point at an SDK runtime model reference (e.g. `pi:openai-codex:gpt-5.6-terra`). Standalone `migrate` remains Ollama-only; legacy `reflect` is a read-only due-state report and needs no model.
@@ -142,7 +203,7 @@ memory-bujo recall ./.mono-agent/memory "what did we decide about the rollout?"
 
 The BuJo tier also maintains a lightweight entity graph beside the curated daily notes. During `writeMode: "capture"`, the first bounded extraction plan records people, projects, organizations, concepts, precise per-memory associations, and directed relationships in `graph.jsonl` under `memory.path`.
 
-There is no separate config switch. The graph is built only for a valid configured `bujo` tier: `memory.mode: "bujo"` plus embeddings and `memory.llm`. The `lite` and `journal` tiers do not build it. Capture is async and serialized per store, so graph extraction never blocks the user's reply; if the memory LLM fails or times out, that capture stores nothing for the turn rather than throwing.
+There is no separate config switch. The graph is built only for a valid configured `bujo` tier: `memory.mode: "bujo"` plus embeddings and `memory.llm`. The `lite` and `journal` tiers do not build it. Capture is serialized per store and runs after durable local admission, so graph extraction never blocks on the provider-success path; if the memory LLM fails or times out, the pending intake retries without publishing partial graph state.
 
 Only an explicit `MemoryRecall` call uses the graph, and expansion is deterministic and limited to one hop: direct BM25/vector seeds contribute their associated entities, and one directly related entity may pull in neighboring memories. Automatic prompt injection stays direct-only and never synthesizes a graph answer in the background. Lite and Journal never expand the graph. The living `index.md`, regenerated by consolidation or `memory-bujo index`, includes a top-entities table so the graph is inspectable as plain markdown.
 

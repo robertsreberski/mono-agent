@@ -40,14 +40,33 @@ export { appendBullet, dailyFilePath } from "./daily.js";
 export { createIdFactory } from "./ids.js";
 export type { Bullet, BujoOptions, BujoTier } from "./types.js";
 export type { LlmComplete, LlmCompleteOptions } from "./llm.js";
-export { MemoryModelError } from "./model-error.js";
+export { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 export type { MemoryModelKind } from "./model-error.js";
 
 // Phase 2 capture pipeline
-export { captureTurn } from "./capture.js";
+export { captureTurn, captureTurnStrict } from "./capture.js";
 export type { CaptureTurnResult } from "./capture.js";
-export { extractCapturePlan, MAX_CAPTURE_ENTITIES, MAX_CAPTURE_MEMORIES, MAX_CAPTURE_RELATIONS } from "./capture-batch.js";
+export {
+  extractCapturePlan,
+  extractCapturePlanStrict,
+  MAX_CAPTURE_ENTITIES,
+  MAX_CAPTURE_MEMORIES,
+  MAX_CAPTURE_RELATIONS,
+} from "./capture-batch.js";
 export type { CapturePlan } from "./capture-batch.js";
+export {
+  auditCompletedTurnIntake,
+  inspectCompletedTurnIntake,
+  resolveCompletedTurnIntake,
+  retryCompletedTurnIntake,
+  COMPLETED_TURN_INTAKE_SCHEMA_VERSION,
+} from "./capture-intake.js";
+export type {
+  CompletedTurnIntakeAudit,
+  CompletedTurnIntakeInspection,
+  CompletedTurnIntakeItem,
+  CompletedTurnIntakeSnapshot,
+} from "./capture-intake.js";
 export { distill } from "./distill.js";
 export type { CandidateMemory } from "./distill.js";
 export { reconcile } from "./reconcile.js";

@@ -91,10 +91,11 @@ function validateSnapshot(value: unknown): asserts value is BujoRuntimeSnapshot 
 }
 
 function validQueues(value: unknown): boolean {
-  if (!isRecord(value) || !hasOnlyKeys(value, ["index", "capture", "shutdown"]) || !validShutdown(value.shutdown)) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["index", "capture", "intake", "shutdown"]) || !validShutdown(value.shutdown)) {
     return false;
   }
   if (value.capture !== undefined && !validBackgroundQueue(value.capture, [])) return false;
+  if (value.intake !== undefined && !validIntake(value.intake)) return false;
   return value.index === undefined || validBackgroundQueue(value.index, [
     "remainingBacklog",
     "recoveryFilesRemaining",
@@ -113,6 +114,20 @@ function validQueues(value: unknown): boolean {
     && nonNegativeInteger(value.index.recoveryRowsScanned)
     && nonNegativeInteger(value.index.recoveryRefillQueries)
     && (value.index.nextRetryAt === undefined || validDate(value.index.nextRetryAt));
+}
+
+function validIntake(value: unknown): boolean {
+  return isRecord(value)
+    && hasOnlyKeys(value, ["pending", "dead", "resolved", "due", "transitioning", "retrying", "accepting", "shutdown"])
+    && nonNegativeInteger(value.pending)
+    && nonNegativeInteger(value.dead)
+    && nonNegativeInteger(value.resolved)
+    && nonNegativeInteger(value.due)
+    && nonNegativeInteger(value.transitioning)
+    && nonNegativeInteger(value.retrying)
+    && typeof value.accepting === "boolean"
+    && (value.shutdown === "running" || value.shutdown === "drained"
+      || value.shutdown === "pending" || value.shutdown === "timed_out");
 }
 
 const BACKGROUND_QUEUE_KEYS = [

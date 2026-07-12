@@ -5,6 +5,11 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createChannelUserCancelReason } from "@mono-agent/agent-contracts";
+import type {
+  MemoryCompletedTurn,
+  MemoryCompletedTurnResult,
+  MemoryStore,
+} from "@mono-agent/agent-contracts";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
@@ -1020,6 +1025,180 @@ describe("AgentHarness", () => {
       ].join("\n"),
     );
   });
+
+  it("admits a capture-mode turn once through the strong store with the stable run id", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const admissions: MemoryCompletedTurn[] = [];
+    const legacyCalls: string[] = [];
+    const memory: MemoryStore = {
+      load: async () => undefined,
+      appendHostSummary: async (conversationId) => {
+        legacyCalls.push(`append:${conversationId}`);
+        return { conversationId, source: "legacy", bytesWritten: 0 };
+      },
+      scheduleCapture: (conversationId) => { legacyCalls.push(`capture:${conversationId}`); },
+      async persistCompletedTurn(turn): Promise<MemoryCompletedTurnResult> {
+        admissions.push(turn);
+        return {
+          id: "completed-turn-stable",
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          source: "strong",
+          bytesWritten: Buffer.byteLength(turn.summary + (turn.captureText ?? ""), "utf8"),
+          admissionStatus: "admitted",
+        };
+      },
+    };
+
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "The build is green." })).runtime,
+      model,
+      executionMode: "sdk",
+      memory,
+      memoryWriteMode: "capture",
+      createRunId: () => "run-stable-idempotency-key",
+    }).run({
+      conversationId: "telegram:9",
+      userMessage: "Is the build ok?",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response.text).toBe("The build is green.");
+    expect(admissions).toEqual([{
+      runId: "run-stable-idempotency-key",
+      conversationId: "telegram:9",
+      summary: [
+        "Host-observed completed turn.",
+        "User: Is the build ok?",
+        "Assistant: The build is green.",
+      ].join("\n"),
+      captureText: "User: Is the build ok?\nAssistant: The build is green.",
+    }]);
+    expect(legacyCalls).toEqual([]);
+  });
+
+  it("omits capture text from a strong append-host-summary admission", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const admissions: MemoryCompletedTurn[] = [];
+    const memory: MemoryStore = {
+      load: async () => undefined,
+      appendHostSummary: async () => { throw new Error("legacy append must not run"); },
+      scheduleCapture: () => { throw new Error("legacy capture must not run"); },
+      async persistCompletedTurn(turn) {
+        admissions.push(turn);
+        return {
+          id: "completed-turn-summary",
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          source: "strong",
+          bytesWritten: Buffer.byteLength(turn.summary, "utf8"),
+          admissionStatus: "admitted",
+        };
+      },
+    };
+
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "Done." })).runtime,
+      model,
+      executionMode: "sdk",
+      memory,
+      memoryWriteMode: "append-host-summary",
+      createRunId: () => "run-summary-admission",
+    }).run({ conversationId: "c1", userMessage: "Summarize build status", abortSignal: new AbortController().signal });
+
+    expect(response.failure).toBeUndefined();
+    expect(admissions).toHaveLength(1);
+    expect(admissions[0]).not.toHaveProperty("captureText");
+  });
+
+  it("waits for strong admission before returning the successful provider answer", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let enterAdmission!: () => void;
+    const admissionEntered = new Promise<void>((resolve) => { enterAdmission = resolve; });
+    let finishAdmission!: () => void;
+    const admissionPending = new Promise<void>((resolve) => { finishAdmission = resolve; });
+    const memory: MemoryStore = {
+      load: async () => undefined,
+      appendHostSummary: async () => { throw new Error("legacy append must not run"); },
+      persistCompletedTurn: async (turn) => {
+        enterAdmission();
+        await admissionPending;
+        return {
+          id: "completed-turn-awaited",
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          source: "strong",
+          bytesWritten: 1,
+          admissionStatus: "admitted" as const,
+        };
+      },
+    };
+    const responsePending = createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "Provider answer." })).runtime,
+      model,
+      memory,
+      memoryWriteMode: "append-host-summary",
+      createRunId: () => "run-awaited",
+    }).run({ conversationId: "c-awaited", userMessage: "Remember this", abortSignal: new AbortController().signal });
+    let settled = false;
+    void responsePending.then(() => { settled = true; });
+
+    await admissionEntered;
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    finishAdmission();
+    const response = await responsePending;
+    expect(response.text).toBe("Provider answer.");
+    expect(response.failure).toBeUndefined();
+  });
+
+  for (const [label, userMessage, assistantText] of [
+    ["nothing sentinel", "Run scan", "NOTHING_TO_REPORT"],
+    ["trivial probe", "ping", "pong"],
+  ] as const) {
+    it(`keeps the strong admission boundary untouched for a skipped ${label}`, async () => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      let admissions = 0;
+      const memory: MemoryStore = {
+        load: async () => undefined,
+        appendHostSummary: async (conversationId) => ({ conversationId, source: "legacy", bytesWritten: 0 }),
+        persistCompletedTurn: async (turn) => {
+          admissions += 1;
+          return {
+            id: "unexpected",
+            runId: turn.runId,
+            conversationId: turn.conversationId,
+            source: "strong",
+            bytesWritten: 0,
+            admissionStatus: "admitted",
+          };
+        },
+      };
+
+      const response = await createAgentHarness({
+        identityPath,
+        runtime: createFakeRuntime(async () => ({ text: assistantText })).runtime,
+        model,
+        memory,
+        memoryWriteMode: "capture",
+        createRunId: () => `run-skip-${label}`,
+      }).run({ conversationId: "c-skip", userMessage, abortSignal: new AbortController().signal });
+
+      expect(response.text).toBe(assistantText);
+      expect(admissions).toBe(0);
+    });
+  }
 
   it("does not write a host summary when memoryWriteMode is omitted", async () => {
     const dir = await tempDir();

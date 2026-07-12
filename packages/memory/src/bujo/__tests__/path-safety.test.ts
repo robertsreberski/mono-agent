@@ -122,6 +122,37 @@ describe("canonical memory path safety", () => {
     expect(readFileSync(target, "utf8")).toBe("replacement\n");
   });
 
+  it("compare-and-swap append rejects replacement and exclusive append rejects an existing name", () => {
+    const root = tempRoot();
+    appendCanonicalFile(root, "ledger/aa.log", "first\n", { requireMissing: true });
+    expect(() => appendCanonicalFile(root, "ledger/aa.log", "duplicate\n", { requireMissing: true }))
+      .toThrow(/already exists|EEXIST/iu);
+    const snapshot = readCanonicalFileSnapshot(root, "ledger/aa.log")!;
+    const target = join(root, "ledger/aa.log");
+    renameSync(target, join(root, "ledger/old.log"));
+    writeFileSync(target, "replacement\n", { mode: 0o600 });
+
+    expect(() => appendCanonicalFile(root, "ledger/aa.log", "unsafe\n", {
+      expectedIdentity: snapshot.identity,
+    })).toThrow(/changed before append/iu);
+    expect(readFileSync(target, "utf8")).toBe("replacement\n");
+  });
+
+  it("rejects a canonical append whose target is replaced after opening but before return", () => {
+    const root = tempRoot();
+    appendCanonicalFile(root, "ledger/aa.log", "first\n", { requireMissing: true });
+    const snapshot = readCanonicalFileSnapshot(root, "ledger/aa.log")!;
+    const target = join(root, "ledger/aa.log");
+    const retired = join(root, "ledger/retired.log");
+
+    expect(() => appendCanonicalFile(root, "ledger/aa.log", () => {
+      renameSync(target, retired);
+      writeFileSync(target, "replacement\n", { mode: 0o600 });
+      return "unsafe\n";
+    }, { expectedIdentity: snapshot.identity })).toThrow(/replaced during access/iu);
+    expect(readFileSync(target, "utf8")).toBe("replacement\n");
+  });
+
   it("atomic replacement refuses a symlink target", () => {
     const root = tempRoot();
     const outside = join(tempRoot("bujo-path-outside-"), "index.md");

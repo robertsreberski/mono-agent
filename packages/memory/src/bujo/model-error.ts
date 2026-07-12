@@ -21,3 +21,14 @@ export class MemoryModelError extends Error {
     this.stage = stage;
   }
 }
+
+/** Transport succeeded, but strict completed-turn model output was invalid. */
+export class MemoryModelOutputError extends Error {
+  readonly stage: string;
+
+  constructor(stage: string, detail: string) {
+    super(`memory model output failure at ${stage}: ${detail}`);
+    this.name = "MemoryModelOutputError";
+    this.stage = stage;
+  }
+}

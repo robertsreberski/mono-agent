@@ -3,7 +3,14 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import type { MemoryBlock, MemoryLoadOptions, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";
+import type {
+  MemoryBlock,
+  MemoryCompletedTurn,
+  MemoryCompletedTurnResult,
+  MemoryLoadOptions,
+  MemoryStore,
+  MemoryWriteResult,
+} from "@mono-agent/agent-contracts";
 import {
   AUTO_RECALL_BACKEND_HITS,
   AUTO_RECALL_MAX_BYTES,
@@ -66,6 +73,7 @@ export class MemoryRetrievalService implements MemoryStore {
   private readonly maxBytes: number;
   private readonly source: string;
   private readonly turns = new Map<string, TurnCache>();
+  readonly persistCompletedTurn?: (turn: MemoryCompletedTurn) => Promise<MemoryCompletedTurnResult>;
 
   constructor(
     private readonly store: SharedRecallStore,
@@ -73,6 +81,12 @@ export class MemoryRetrievalService implements MemoryStore {
   ) {
     this.maxBytes = Math.min(options.maxBytes ?? AUTO_RECALL_MAX_BYTES, AUTO_RECALL_MAX_BYTES);
     this.source = options.source ?? "memory";
+    const persistCompletedTurn = store.persistCompletedTurn;
+    if (persistCompletedTurn !== undefined) {
+      // Preserve capability detection: stores without the strong method leave
+      // this property absent so the harness takes its legacy fallback.
+      this.persistCompletedTurn = (turn) => persistCompletedTurn.call(store, turn);
+    }
   }
 
   async load(

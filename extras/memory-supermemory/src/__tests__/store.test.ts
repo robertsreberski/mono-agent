@@ -9,9 +9,11 @@ class FakeClient implements SupermemoryClient {
   hits: SupermemoryHit[] = [];
   failAdd = false;
   failSearch = false;
+  addGate: Promise<void> | undefined;
 
   async add(params: SupermemoryAddParams): Promise<void> {
     this.added.push(params);
+    await this.addGate;
     if (this.failAdd) {
       throw new Error("boom-add");
     }
@@ -127,6 +129,138 @@ describe("SupermemoryMemoryStore.appendHostSummary", () => {
 
     expect(result.bytesWritten).toBe(0);
     expect(warnings.some((w) => w.includes("appendHostSummary failed"))).toBe(true);
+  });
+});
+
+describe("SupermemoryMemoryStore.persistCompletedTurn", () => {
+  it("awaits one clear remote document and returns its stable admission id", async () => {
+    const client = new FakeClient();
+    const { store } = makeStore(client);
+
+    const result = await store.persistCompletedTurn({
+      runId: "run-strong-1",
+      conversationId: "telegram:private-conversation",
+      summary: "Host-observed completed turn.",
+      captureText: "User: Remember cobalt.\nAssistant: I will remember cobalt.",
+    });
+
+    expect(client.added).toHaveLength(1);
+    expect(client.added[0]?.content).toBe([
+      "Completed turn summary:",
+      "Host-observed completed turn.",
+      "",
+      "Completed turn capture:",
+      "User: Remember cobalt.",
+      "Assistant: I will remember cobalt.",
+    ].join("\n"));
+    expect(client.added[0]?.customId).toMatch(/^completed-turn-[a-f0-9]{32}$/u);
+    expect(client.added[0]?.metadata).toEqual({
+      kind: "completed-turn",
+      schemaVersion: 1,
+      hasCapture: true,
+    });
+    expect(JSON.stringify(client.added[0]?.metadata)).not.toContain("private-conversation");
+    expect(result).toMatchObject({
+      id: client.added[0]?.customId,
+      runId: "run-strong-1",
+      conversationId: "telegram:private-conversation",
+      source: "supermemory",
+      admissionStatus: "admitted",
+    });
+    expect(result.bytesWritten).toBe(Buffer.byteLength(client.added[0]?.content ?? "", "utf8"));
+  });
+
+  it("returns an exact same-process retry as a duplicate without another request", async () => {
+    const client = new FakeClient();
+    const { store } = makeStore(client);
+
+    const input = {
+      runId: "run-retry",
+      conversationId: "conversation-a",
+      summary: "First deterministic summary.",
+    };
+    const admitted = await store.persistCompletedTurn(input);
+    const duplicate = await store.persistCompletedTurn(input);
+
+    expect(client.added).toHaveLength(1);
+    expect(admitted.admissionStatus).toBe("admitted");
+    expect(duplicate).toMatchObject({
+      id: admitted.id,
+      admissionStatus: "duplicate",
+      bytesWritten: 0,
+    });
+  });
+
+  it("rejects conflicting reuse of a run id before a second request", async () => {
+    const client = new FakeClient();
+    const { store } = makeStore(client);
+
+    await store.persistCompletedTurn({
+      runId: "run-retry",
+      conversationId: "conversation-a",
+      summary: "First deterministic summary.",
+    });
+    await expect(store.persistCompletedTurn({
+      runId: "run-retry",
+      conversationId: "conversation-b",
+      summary: "Conflicting payload.",
+    })).rejects.toThrow(/conflicts/iu);
+
+    expect(client.added).toHaveLength(1);
+  });
+
+  it("coalesces concurrent exact retries and rejects an in-flight conflict", async () => {
+    const client = new FakeClient();
+    let release!: () => void;
+    client.addGate = new Promise<void>((resolve) => { release = resolve; });
+    const { store } = makeStore(client);
+    const input = {
+      runId: "run-concurrent",
+      conversationId: "conversation",
+      summary: "One exact payload.",
+    };
+
+    const first = store.persistCompletedTurn(input);
+    const duplicate = store.persistCompletedTurn(input);
+    await expect(store.persistCompletedTurn({ ...input, summary: "Different payload." })).rejects.toThrow(/conflicts/iu);
+    expect(client.added).toHaveLength(1);
+    release();
+    const [admitted, repeated] = await Promise.all([first, duplicate]);
+
+    expect(admitted.admissionStatus).toBe("admitted");
+    expect(repeated).toMatchObject({ admissionStatus: "duplicate", bytesWritten: 0 });
+    expect(client.added).toHaveLength(1);
+  });
+
+  it("logs and propagates remote admission failure", async () => {
+    const client = new FakeClient();
+    client.failAdd = true;
+    const { store, warnings } = makeStore(client);
+
+    await expect(store.persistCompletedTurn({
+      runId: "run-failure",
+      conversationId: "conversation",
+      summary: "Deterministic summary.",
+    })).rejects.toThrow("boom-add");
+
+    expect(client.added).toHaveLength(1);
+    expect(warnings).toEqual(["supermemory persistCompletedTurn failed; the provider response remains valid."]);
+    expect(warnings.join(" ")).not.toContain("boom-add");
+  });
+
+  it("rejects an oversized turn instead of truncating its full capture", async () => {
+    const client = new FakeClient();
+    const { store, warnings } = makeStore(client);
+
+    await expect(store.persistCompletedTurn({
+      runId: "run-too-large",
+      conversationId: "conversation",
+      summary: "Deterministic summary.",
+      captureText: "x".repeat(1_000_001),
+    })).rejects.toThrow(/admission limit/u);
+
+    expect(client.added).toEqual([]);
+    expect(warnings).toHaveLength(1);
   });
 });
 

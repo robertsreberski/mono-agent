@@ -30,6 +30,7 @@ import {
 import {
   assertNoPendingCaptureIntent,
   hasPendingCaptureIntent,
+  listRetainedCaptureIntentKeys,
   replayCaptureOutbox,
 } from "./capture-outbox.js";
 import { assertNoPendingMigrateDecision } from "./migrate.js";
@@ -232,6 +233,19 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
     // source outcome must be recovered by migrate() under the current identity.
     // Refuse before capture replay can touch canonical Markdown or graph data.
     assertNoPendingMigrateDecision(root);
+    // A completed-turn intent remains deliberately pending after its canonical
+    // and current-index outcome commits, until the owning intake receipt is
+    // durable. BuJo rebuilds can safely re-embed that canonical outcome under a
+    // new provider identity, but Journal remaps canonical ids to J-<hash> and a
+    // non-BuJo startup would otherwise replay the retained C-... action/vector
+    // beside that row (or fail on the old vector dimension). Refuse before the
+    // prior intent can mutate canonical source under an incompatible tier.
+    if (options.tier !== "bujo" && listRetainedCaptureIntentKeys(root).length > 0) {
+      throw new Error(
+        "memory-rebuild: a retained completed-turn capture intent requires BuJo; "
+        + `finish its durable intake before rebuilding into ${options.tier}.`,
+      );
+    }
     let stagedCaptureForCandidate = false;
     if (hasPendingCaptureIntent(root)) {
       assertManagedManifestState(root, manifestState);

@@ -9,9 +9,9 @@ import {
 } from "./capture-outbox.js";
 import { dailyFilePath, readBullet } from "./daily.js";
 import { normalizeCandidateText, type CandidateMemory } from "./distill.js";
-import { parseJsonLoose } from "./json.js";
+import { parseJsonExact, parseJsonLoose } from "./json.js";
 import type { LlmComplete } from "./llm.js";
-import { MemoryModelError } from "./model-error.js";
+import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
 
@@ -42,6 +42,10 @@ export interface ReconcileDeps {
    * memory-only intent and replay it through the same durable path.
    */
   readonly deferBatchCommit?: boolean;
+  /** Strong completed-turn mode: every model decision is exact and all-or-nothing. */
+  readonly strictModelOutput?: boolean;
+  /** Run-owned capture plans remain replayable until durable intake resolution. */
+  readonly captureRetentionKey?: string;
 }
 
 const VALID_ACTIONS = new Set(["add", "update", "supersede", "noop"]);
@@ -155,7 +159,7 @@ async function reconcileBatchUnlocked(
   const decisions = reconcileIndexes.length === 0
     ? new Map<number, Classification>()
     : await classifyBatch(candidates, neighbours, reconcileIndexes, deps);
-  rejectConflictingTargets(decisions);
+  rejectConflictingTargets(decisions, deps.strictModelOutput === true);
   deps.abortSignal?.throwIfAborted();
   const plans: Array<BatchActionPlan | undefined> = candidates.map(() => undefined);
   for (const [index, candidate] of candidates.entries()) {
@@ -174,6 +178,7 @@ async function reconcileBatchUnlocked(
       }
     } catch (error) {
       if (error instanceof MemoryModelError) throw error;
+      if (deps.strictModelOutput === true) throw error;
       // One malformed candidate cannot abort the rest of the turn.
     }
   }
@@ -217,7 +222,7 @@ async function reconcileBatchUnlocked(
  * merge unrelated entity evidence onto one row. Fail the entire target group
  * closed before vector preflight or canonical writes.
  */
-function rejectConflictingTargets(decisions: Map<number, Classification>): void {
+function rejectConflictingTargets(decisions: Map<number, Classification>, strict: boolean): void {
   const byTarget = new Map<string, number[]>();
   for (const [index, decision] of decisions) {
     if (decision.targetId === undefined) continue;
@@ -227,6 +232,7 @@ function rejectConflictingTargets(decisions: Map<number, Classification>): void 
   }
   for (const indexes of byTarget.values()) {
     if (indexes.length < 2) continue;
+    if (strict) throw new MemoryModelOutputError("classify-batch", "multiple candidates selected one target");
     for (const index of indexes) decisions.delete(index);
   }
 }
@@ -352,7 +358,7 @@ function planAddWithoutIndex(
   const record = recordFor(bullet, deps.root, now);
   const file = record.source.file!;
   const threads = similar
-    .filter((hit) => hit.distance <= threadThreshold)
+    .filter((hit) => hit.record.id !== id && hit.distance <= threadThreshold)
     .map((hit) => ({ src: id, dst: hit.record.id, weight: 1 - hit.distance }));
   return {
     action: { kind: "add", id },
@@ -513,6 +519,9 @@ ${JSON.stringify(input)}`,
   } catch (cause) {
     throw new MemoryModelError("llm", "classify-batch", cause);
   }
+  if (deps.strictModelOutput === true) {
+    return parseStrictBatchClassifications(raw, indexes, neighbours);
+  }
   const parsed = parseJsonLoose<unknown[]>(raw);
   const decisions = new Map<number, Classification>();
   const seenIndexes = new Set<number>();
@@ -542,6 +551,78 @@ ${JSON.stringify(input)}`,
     });
   }
   return decisions;
+}
+
+function parseStrictBatchClassifications(
+  raw: string,
+  indexes: readonly number[],
+  neighbours: readonly (readonly SimilarHit[])[],
+): Map<number, Classification> {
+  let parsed: unknown;
+  try {
+    parsed = parseJsonExact<unknown>(raw);
+  } catch {
+    throw new MemoryModelOutputError("classify-batch", "completion is not exact JSON");
+  }
+  if (!Array.isArray(parsed) || parsed.length !== indexes.length) {
+    throw new MemoryModelOutputError("classify-batch", "one decision per offered candidate is required");
+  }
+  const offered = new Set(indexes);
+  const decisions = new Map<number, Classification>();
+  for (const [position, value] of parsed.entries()) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new MemoryModelOutputError("classify-batch", `decision ${position} is not an object`);
+    }
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record);
+    if (keys.some((key) => !["index", "action", "targetId", "text"].includes(key))) {
+      throw new MemoryModelOutputError("classify-batch", `decision ${position} has unknown fields`);
+    }
+    const index = record.index;
+    const action = record.action;
+    if (!Number.isInteger(index) || !offered.has(Number(index)) || decisions.has(Number(index))
+      || typeof action !== "string" || !VALID_ACTIONS.has(action)) {
+      throw new MemoryModelOutputError("classify-batch", `decision ${position} has an invalid index or action`);
+    }
+    const targetId = record.targetId;
+    const text = record.text;
+    if (action === "add") {
+      if (targetId !== undefined || text !== undefined || keys.length !== 2) {
+        throw new MemoryModelOutputError("classify-batch", "add decisions contain only index and action");
+      }
+      decisions.set(Number(index), { action });
+      continue;
+    }
+    if (typeof targetId !== "string"
+      || !(neighbours[Number(index)] ?? []).some((hit) => hit.record.id === targetId)) {
+      throw new MemoryModelOutputError("classify-batch", "decision target was not offered for that candidate");
+    }
+    if (action === "noop") {
+      if (text !== undefined || keys.length !== 3) {
+        throw new MemoryModelOutputError("classify-batch", "noop decisions must not contain text");
+      }
+      decisions.set(Number(index), { action, targetId });
+      continue;
+    }
+    const exactText = strictClassificationText(text);
+    if (keys.length !== 4) {
+      throw new MemoryModelOutputError("classify-batch", "update and supersede require exact text");
+    }
+    decisions.set(Number(index), { action, targetId, text: exactText });
+  }
+  if (decisions.size !== offered.size || [...offered].some((index) => !decisions.has(index))) {
+    throw new MemoryModelOutputError("classify-batch", "every offered index must appear exactly once");
+  }
+  return decisions;
+}
+
+function strictClassificationText(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0 || value !== value.trim()
+    || [...value].length > 280 || Buffer.byteLength(value, "utf8") > 1_120
+    || /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(value) || value.includes("<!--mem")) {
+    throw new MemoryModelOutputError("classify-batch", "replacement text is invalid or exceeds its bound");
+  }
+  return value;
 }
 
 /**

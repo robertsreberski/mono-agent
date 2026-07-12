@@ -32,6 +32,29 @@ const store: MemoryStore = createBujoMemoryStore({
 await store.appendHostSummary("conv-1", "User prefers concise answers.");
 ```
 
+Hosts that have a stable provider-run id should use the strong completed-turn
+boundary. It resolves only after an owner-only, fsynced intake record exists;
+summary projection and optional model curation resume from that record after a
+process restart:
+
+```ts
+await store.persistCompletedTurn?.({
+  runId: "provider-run-123",
+  conversationId: "conv-1",
+  summary: "Host-observed completed turn.\nUser: Be concise.\nAssistant: Understood.",
+  captureText: "User: Be concise.\nAssistant: Understood.",
+});
+```
+
+The built-in store keeps `.capture-intake/{pending,dead,resolved}` private
+(`0700` directories, `0600` files). Filenames are SHA-256 run keys and contain
+no conversation or memory text. Exact retries return `duplicate`; reusing one
+run id with different payload bytes fails closed. Pending work retries with
+bounded exponential backoff for more than 24 hours before dead-lettering.
+Model output on this path is strict and all-or-nothing: malformed extraction or
+reconciliation JSON remains pending for retry rather than becoming a partial
+capture or a successful empty result.
+
 ```bash
 memory-bujo recall ./memory "what did we decide about releases?"
 ```
@@ -51,7 +74,7 @@ This performs the first managed activation and builds and validates a side-by-si
 
 - `@mono-agent/memory/store`: `openMemoryDb`, `MemoryDb`, `DEFAULT_VEC_DIM`, `MEMORY_TYPES`, `MEMORY_STATUSES`, local record/entity/recall/stats/audit types, and re-exported `MemoryBlock`, `MemoryLoadOptions`, `MemoryStore`, `MemoryWriteResult`
 - `@mono-agent/memory/search`: `createEmbeddingProvider`, `createCircuitBreakerEmbeddingProvider`, `createVectorMemoryIndex`, `gatherMemoryChunks`, embedding/search provider classes and types
-- `@mono-agent/memory/bujo`: `createBujoMemoryStore`, `BujoMemoryStore`, `composeRecallBlock`, `safeRebuildMemoryIndex`, `rollbackMemoryIndex`, `resolveActiveMemoryDbPath`, managed-generation helpers, privacy-safe runtime-snapshot reader/types, markdown grammar helpers, batched capture/reconcile/reflection/migration helpers, `createOllamaLlm`, and related BuJo/LLM types
+- `@mono-agent/memory/bujo`: `createBujoMemoryStore`, `BujoMemoryStore`, `composeRecallBlock`, `safeRebuildMemoryIndex`, `rollbackMemoryIndex`, `resolveActiveMemoryDbPath`, managed-generation helpers, privacy-safe runtime-snapshot reader/types, strict completed-turn capture, content-free intake `inspect`/`audit` helpers, stopped-store `retry`/explicit `resolve` helpers, markdown grammar helpers, batched capture/reconcile/reflection/migration helpers, `createOllamaLlm`, and related BuJo/LLM types
 - CLI: `memory-bujo`
 
 ## Dependency Boundary

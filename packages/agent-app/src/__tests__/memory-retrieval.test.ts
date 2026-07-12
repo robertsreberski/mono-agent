@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { MemoryWriteResult } from "@mono-agent/agent-contracts";
+import type { MemoryCompletedTurn, MemoryWriteResult } from "@mono-agent/agent-contracts";
 import { createAgentHarness } from "@mono-agent/agent-harness";
 import { openMemoryDb, type MemoryRecord } from "@mono-agent/memory/store";
 import { describe, expect, it } from "vitest";
@@ -56,6 +56,38 @@ function fakeStore(options: { readonly fail?: boolean } = {}): SharedRecallStore
 }
 
 describe("MemoryRetrievalService", () => {
+  it("exposes and delegates strong completed-turn admission only when the backend supports it", async () => {
+    const admissions: MemoryCompletedTurn[] = [];
+    const store = fakeStore();
+    store.persistCompletedTurn = async (turn) => {
+      admissions.push(turn);
+      return {
+        id: "stable-store-id",
+        runId: turn.runId,
+        conversationId: turn.conversationId,
+        source: "fake",
+        bytesWritten: Buffer.byteLength(turn.summary, "utf8"),
+        admissionStatus: "admitted",
+      };
+    };
+    const service = new MemoryRetrievalService(store);
+    const turn = {
+      runId: "run-strong",
+      conversationId: "conversation",
+      summary: "Host-observed completed turn.",
+    };
+
+    await expect(service.persistCompletedTurn?.(turn)).resolves.toMatchObject({
+      id: "stable-store-id",
+      runId: "run-strong",
+      admissionStatus: "admitted",
+    });
+    expect(admissions).toEqual([turn]);
+
+    const legacyService = new MemoryRetrievalService(fakeStore());
+    expect(legacyService.persistCompletedTurn).toBeUndefined();
+  });
+
   it("shares one normalized backend lookup between automatic and tool recall in a turn", async () => {
     const store = fakeStore();
     const service = new MemoryRetrievalService(store);

@@ -1,4 +1,4 @@
-import { extractCapturePlan } from "./capture-batch.js";
+import { extractCapturePlan, extractCapturePlanStrict } from "./capture-batch.js";
 import {
   replayCaptureIntent,
   writeCaptureIntent,
@@ -27,14 +27,25 @@ export interface CaptureTurnResult {
  * Returns the action and graph-write counts.
  */
 export async function captureTurn(text: string, deps: ReconcileDeps): Promise<CaptureTurnResult> {
-  return await withSerializedBujoMutation(deps, async () => await captureTurnUnlocked(text, deps));
+  return await withSerializedBujoMutation(deps, async () => await captureTurnUnlocked(text, deps, false));
 }
 
-async function captureTurnUnlocked(text: string, deps: ReconcileDeps): Promise<CaptureTurnResult> {
+/** Strong completed-turn capture: strict all-or-nothing extraction and reconciliation. */
+export async function captureTurnStrict(text: string, deps: ReconcileDeps): Promise<CaptureTurnResult> {
+  return await withSerializedBujoMutation(deps, async () => await captureTurnUnlocked(text, deps, true));
+}
+
+async function captureTurnUnlocked(
+  text: string,
+  deps: ReconcileDeps,
+  strictModelOutput: boolean,
+): Promise<CaptureTurnResult> {
   deps.abortSignal?.throwIfAborted();
   // One batched extraction call yields candidates + their precise entity ids;
   // one optional batched reconcile call classifies every near neighbour.
-  const extraction = await extractCapturePlan(text, deps.llm, deps.abortSignal);
+  const extraction = strictModelOutput
+    ? await extractCapturePlanStrict(text, deps.llm, deps.abortSignal)
+    : await extractCapturePlan(text, deps.llm, deps.abortSignal);
   deps.abortSignal?.throwIfAborted();
   const now = deps.now();
   const createdAt = now.toISOString();
@@ -42,13 +53,20 @@ async function captureTurnUnlocked(text: string, deps: ReconcileDeps): Promise<C
   let preparedActions: readonly CaptureIntentAction[] = [];
   await reconcileBatch(extraction.candidates, {
     ...deps,
+    strictModelOutput,
     // Once the intent exists it is the single commit owner. Writing the same
     // records directly here and then replaying the intent would duplicate the
     // SQLite/canonical transaction without improving durability.
     deferBatchCommit: true,
     beforeBatchCommit: (prepared) => {
       const graph = graphForPreparedActions(extraction, prepared, createdAt);
-      intentHandle = writeCaptureIntent(deps.root, prepared, graph, createdAt);
+      intentHandle = writeCaptureIntent(
+        deps.root,
+        prepared,
+        graph,
+        createdAt,
+        deps.captureRetentionKey === undefined ? {} : { retentionKey: deps.captureRetentionKey },
+      );
       preparedActions = prepared;
     },
   });
