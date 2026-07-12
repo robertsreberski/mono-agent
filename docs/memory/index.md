@@ -263,8 +263,9 @@ builds a validated generation beside the active database, and switches it atomic
 ```bash
 mono-agent stop
 mono-agent memory rebuild --json
-mono-agent memory audit --strict --json
+mono-agent validate
 mono-agent start
+mono-agent memory audit --strict --json
 
 # If needed: stop, restore the prior tier/model/dim config, then swap generations
 mono-agent memory rollback --json
@@ -277,7 +278,9 @@ publishes only a status, closed issue codes, and the eight counts `pending`, `du
 paths, ids, payloads, memory/model text, or raw errors. `healthy`, `in_progress`, and
 `not_configured` exit 0; `degraded`, `unhealthy`, and `unknown` exit 1. See the
 [strict health contract](/memory/validation-and-cli/#strict-provider-free-health-gate) for
-the exact schema and issue vocabulary.
+the exact schema and issue vocabulary. Because that contract includes live runtime telemetry,
+a stopped store is expected to report `runtime_missing` or `runtime_stale`; use `validate` as the
+stopped pre-start gate and run the strict audit after `start`.
 
 When strict health reports pending/dead intake, `mono-agent memory inspect [<id>] --json`
 shows metadata only. With the matching agent stopped, `memory retry [<id>]` makes selected

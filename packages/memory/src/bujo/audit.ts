@@ -7,16 +7,18 @@ import {
 } from "../store/index.js";
 import {
   auditCanonicalIndexHealth,
+  readCanonicalSourceFingerprint,
   validateManagedGenerationDb,
   type CanonicalIndexHealthAudit,
 } from "./rebuild.js";
 import {
-  auditCompletedTurnIntake,
+  auditCompletedTurnIntakeHealthState,
   type CompletedTurnIntakeAudit,
+  type CompletedTurnIntakeHealthAudit,
 } from "./capture-intake.js";
 import {
-  auditCaptureOutbox,
-  type CaptureOutboxAudit,
+  auditCaptureOutboxHealthState,
+  type CaptureOutboxHealthAudit,
 } from "./capture-outbox.js";
 import {
   assertSafeSqlitePathState,
@@ -29,8 +31,10 @@ import {
   type ManagedManifestState,
   type SafeSqlitePathState,
 } from "./generations.js";
-import { canonicalMemoryRootPath, readCanonicalFileSnapshot } from "./path-safety.js";
+import { inspectJournalWriteLock } from "./daily.js";
+import { canonicalMemoryRootPath } from "./path-safety.js";
 import {
+  BUJO_RUNTIME_SNAPSHOT_STALE_AFTER_MS,
   readBujoRuntimeSnapshot,
   type BujoRuntimeSnapshotObservation,
 } from "./runtime-snapshot.js";
@@ -47,6 +51,7 @@ export const MEMORY_HEALTH_ISSUE_CODES = [
   "database_missing",
   "database_unavailable",
   "native_module_unavailable",
+  "health_check_failed",
   "sqlite_integrity_failed",
   "metadata_mismatch",
   "fts_mismatch",
@@ -60,6 +65,7 @@ export const MEMORY_HEALTH_ISSUE_CODES = [
   "dead_letters",
   "outbox_invalid",
   "outbox_pending",
+  "work_stalled",
   "temporary_artifacts",
   "runtime_missing",
   "runtime_stale",
@@ -112,7 +118,11 @@ interface AuditAttempt {
   readonly issues: ReadonlySet<MemoryHealthIssueCode>;
   readonly counts: MemoryHealthCounts;
   readonly unstable: boolean;
-  readonly retryable: boolean;
+}
+
+interface RollbackSourceObservation {
+  readonly status: "absent" | "match" | "mismatch" | "invalid";
+  readonly fingerprint?: string;
 }
 
 const MAX_STABILITY_ATTEMPTS = 3;
@@ -125,7 +135,7 @@ export function auditBujoMemoryHealth(options: BujoMemoryHealthOptions): BujoMem
   let last: AuditAttempt | undefined;
   for (let attempt = 1; attempt <= MAX_STABILITY_ATTEMPTS; attempt += 1) {
     last = auditAttempt(options, now);
-    if (!last.unstable && !last.retryable) return report(options.mode, checkedAt, last.issues, last.counts);
+    if (!last.unstable) return report(options.mode, checkedAt, last.issues, last.counts);
   }
   if (last !== undefined && !last.unstable) {
     return report(options.mode, checkedAt, last.issues, last.counts);
@@ -135,7 +145,8 @@ export function auditBujoMemoryHealth(options: BujoMemoryHealthOptions): BujoMem
     for (const issue of last.issues) {
       if (issue === "intake_pending" || issue === "dead_letters" || issue === "outbox_pending"
         || issue === "runtime_missing" || issue === "runtime_stale" || issue === "runtime_invalid"
-        || issue === "intake_invalid" || issue === "outbox_invalid" || issue === "temporary_artifacts") {
+        || issue === "intake_invalid" || issue === "outbox_invalid" || issue === "work_stalled"
+        || issue === "temporary_artifacts") {
         issues.add(issue);
       }
     }
@@ -154,7 +165,7 @@ function auditAttempt(options: BujoMemoryHealthOptions, now: Date): AuditAttempt
     if (options.mode !== "lite") issues.add("manifest_missing");
     issues.add(missing ? "database_missing" : "database_unavailable");
     issues.add("runtime_missing");
-    return { issues, counts, unstable: false, retryable: false };
+    return { issues, counts, unstable: false };
   }
 
   let manifestStateBefore: ManagedManifestState | undefined;
@@ -173,16 +184,27 @@ function auditAttempt(options: BujoMemoryHealthOptions, now: Date): AuditAttempt
     issues.add("manifest_invalid");
   }
   if (manifestValid && manifest === undefined && options.mode !== "lite") issues.add("manifest_missing");
+  let rollbackSourceBefore: RollbackSourceObservation = { status: "absent" };
   if (manifest !== undefined) {
     inspectConfiguredIdentity(options, manifest.active, issues);
     inspectManagedReferences(root, manifest, issues);
+    rollbackSourceBefore = inspectRollbackSource(root, manifest.rollback);
+    applyRollbackSourceHealth(rollbackSourceBefore, issues);
   }
 
-  const intakeBefore = auditCompletedTurnIntake(root, now);
-  const outboxBefore = auditCaptureOutbox(root);
-  applyDurableQueueHealth(intakeBefore, outboxBefore, issues, counts);
+  const intakeHealthBefore = auditCompletedTurnIntakeHealthState(root, now);
+  const outboxHealthBefore = auditCaptureOutboxHealthState(root);
+  const intakeBefore = intakeHealthBefore.audit;
   const runtimeBefore = readBujoRuntimeSnapshot(root, now);
-  const journalMutationBefore = inspectJournalWriteMutation(root, options.mode);
+  applyDurableQueueHealth(
+    intakeHealthBefore,
+    outboxHealthBefore,
+    runtimeShowsActiveIntakeRetry(options.mode, runtimeBefore, intakeBefore),
+    now,
+    issues,
+    counts,
+  );
+  const journalMutationBefore = inspectJournalWriteMutation(root, options.mode, now);
   if (journalMutationBefore === "active") issues.add("mutation_in_progress");
   else if (journalMutationBefore === "invalid") issues.add("canonical_invalid");
 
@@ -193,7 +215,7 @@ function auditAttempt(options: BujoMemoryHealthOptions, now: Date): AuditAttempt
       manifest,
       issues,
       counts,
-      journalMutationBefore !== "clear" || runtimeIndicatesCanonicalMutation(options.mode, runtimeBefore),
+      journalMutationBefore === "active" || runtimeIndicatesCanonicalMutation(options.mode, runtimeBefore),
     );
   }
   inspectRuntime(options.mode, runtimeBefore, intakeBefore, counts, issues);
@@ -207,15 +229,20 @@ function auditAttempt(options: BujoMemoryHealthOptions, now: Date): AuditAttempt
       manifestStable = false;
     }
   }
-  const intakeAfter = auditCompletedTurnIntake(root, now);
-  const outboxAfter = auditCaptureOutbox(root);
+  const intakeHealthAfter = auditCompletedTurnIntakeHealthState(root, now);
+  const outboxHealthAfter = auditCaptureOutboxHealthState(root);
   const runtimeAfter = readBujoRuntimeSnapshot(root, now);
-  const journalMutationAfter = inspectJournalWriteMutation(root, options.mode);
+  const journalMutationAfter = inspectJournalWriteMutation(root, options.mode, now);
+  const rollbackSourceAfter = manifest === undefined
+    ? { status: "absent" } as const
+    : inspectRollbackSource(root, manifest.rollback);
   const unstable = !manifestStable
-    || durableQueueSignature(intakeBefore, outboxBefore) !== durableQueueSignature(intakeAfter, outboxAfter)
+    || durableQueueSignature(intakeHealthBefore, outboxHealthBefore)
+      !== durableQueueSignature(intakeHealthAfter, outboxHealthAfter)
     || runtimeQueueSignature(runtimeBefore) !== runtimeQueueSignature(runtimeAfter)
-    || journalMutationBefore !== journalMutationAfter;
-  return { issues, counts, unstable, retryable: issues.has("canonical_mismatch") };
+    || journalMutationBefore !== journalMutationAfter
+    || rollbackSourceSignature(rollbackSourceBefore) !== rollbackSourceSignature(rollbackSourceAfter);
+  return { issues, counts, unstable };
 }
 
 function inspectDatabase(
@@ -423,12 +450,40 @@ function inspectManagedReferences(
   }
 }
 
+function inspectRollbackSource(
+  root: string,
+  descriptor: ManagedGeneration | undefined,
+): RollbackSourceObservation {
+  if (descriptor === undefined) return { status: "absent" };
+  try {
+    const fingerprint = readCanonicalSourceFingerprint(root, descriptor.tier);
+    return {
+      status: fingerprint === descriptor.sourceFingerprint ? "match" : "mismatch",
+      fingerprint,
+    };
+  } catch {
+    return { status: "invalid" };
+  }
+}
+
+function applyRollbackSourceHealth(
+  observation: RollbackSourceObservation,
+  issues: Set<MemoryHealthIssueCode>,
+): void {
+  if (observation.status === "mismatch") issues.add("canonical_mismatch");
+  else if (observation.status === "invalid") issues.add("canonical_invalid");
+}
+
 function applyDurableQueueHealth(
-  intake: CompletedTurnIntakeAudit,
-  outbox: CaptureOutboxAudit,
+  intakeHealth: CompletedTurnIntakeHealthAudit,
+  outboxHealth: CaptureOutboxHealthAudit,
+  activeIntakeRetry: boolean,
+  now: Date,
   issues: Set<MemoryHealthIssueCode>,
   counts: Mutable<MemoryHealthCounts>,
 ): void {
+  const intake = intakeHealth.audit;
+  const outbox = outboxHealth.audit;
   counts.pending = intake.counts.pending;
   counts.due = intake.counts.due;
   counts.dead = intake.counts.dead;
@@ -442,7 +497,35 @@ function applyDurableQueueHealth(
     issues.add("outbox_pending");
     issues.add("mutation_in_progress");
   }
+  const oldestDueAt = intakeHealth.privateState.oldestDueAt;
+  const intakeStalled = oldestDueAt !== undefined
+    && now.getTime() - Date.parse(oldestDueAt) >= BUJO_RUNTIME_SNAPSHOT_STALE_AFTER_MS
+    && !activeIntakeRetry;
+  const oldestPublishedAt = outboxHealth.privateState.oldestPublishedAt;
+  const outboxStalled = oldestPublishedAt !== undefined
+    && now.getTime() - Date.parse(oldestPublishedAt) >= BUJO_RUNTIME_SNAPSHOT_STALE_AFTER_MS;
+  if (intakeStalled || outboxStalled) issues.add("work_stalled");
   if (counts.temporary > 0) issues.add("temporary_artifacts");
+}
+
+function runtimeShowsActiveIntakeRetry(
+  mode: BujoTier,
+  runtime: BujoRuntimeSnapshotObservation,
+  intake: CompletedTurnIntakeAudit,
+): boolean {
+  if (!runtime.available || runtime.stale || runtime.snapshot?.tier !== mode
+    || runtime.snapshot.state !== "running"
+    || runtime.snapshot.queues.shutdown.timedOut
+    || runtime.snapshot.queues.shutdown.discarded !== 0) return false;
+  const snapshot = runtime.snapshot.queues.intake;
+  return snapshot !== undefined
+    && snapshot.retrying === 1
+    && snapshot.pending === intake.counts.pending
+    && snapshot.dead === intake.counts.dead
+    && snapshot.due === intake.counts.due
+    && snapshot.transitioning === (intake.inspection?.snapshot.transitioning ?? 0)
+    && snapshot.accepting
+    && snapshot.shutdown === "running";
 }
 
 function inspectRuntime(
@@ -519,22 +602,11 @@ function runtimeIndicatesCanonicalMutation(
     && (runtime.snapshot?.queues.index?.recoveryFilesRemaining ?? 0) > 0;
 }
 
-function inspectJournalWriteMutation(root: string, mode: BujoTier): "clear" | "active" | "invalid" {
+function inspectJournalWriteMutation(root: string, mode: BujoTier, now: Date): "clear" | "active" | "invalid" {
   if (mode !== "journal") return "clear";
   try {
-    const snapshot = readCanonicalFileSnapshot(root, ".journal-write.lock", {
-      allowMissing: true,
-      maxBytes: 4_096,
-    });
-    if (snapshot === undefined) return "clear";
-    if ((snapshot.identity.mode & 0o777) !== 0o600
-      || snapshot.identity.nlink !== 1
-      || (typeof process.getuid === "function" && snapshot.identity.uid !== process.getuid())) {
-      return "invalid";
-    }
-    // Acquisition publishes the owner bytes after O_EXCL creation. The safe
-    // owner-only file itself is sufficient evidence during that tiny window.
-    return "active";
+    const status = inspectJournalWriteLock(root, now.getTime());
+    return status === "clear" || status === "active" ? status : "invalid";
   } catch {
     return "invalid";
   }
@@ -564,7 +636,12 @@ function sameStrings(left: readonly string[] | undefined, right: readonly string
   return JSON.stringify(left ?? []) === JSON.stringify(right ?? []);
 }
 
-function durableQueueSignature(intake: CompletedTurnIntakeAudit, outbox: CaptureOutboxAudit): string {
+function durableQueueSignature(
+  intakeHealth: CompletedTurnIntakeHealthAudit,
+  outboxHealth: CaptureOutboxHealthAudit,
+): string {
+  const intake = intakeHealth.audit;
+  const outbox = outboxHealth.audit;
   return JSON.stringify({
     intake: {
       valid: intake.valid,
@@ -577,7 +654,15 @@ function durableQueueSignature(intake: CompletedTurnIntakeAudit, outbox: Capture
       },
     },
     outbox,
+    privateState: {
+      intake: intakeHealth.privateState,
+      outbox: outboxHealth.privateState,
+    },
   });
+}
+
+function rollbackSourceSignature(observation: RollbackSourceObservation): string {
+  return JSON.stringify(observation);
 }
 
 function runtimeQueueSignature(runtime: BujoRuntimeSnapshotObservation): string {
@@ -615,10 +700,11 @@ function report(
 }
 
 function statusFor(issues: readonly MemoryHealthIssueCode[]): MemoryHealthStatus {
-  if (issues.some((issue) => issue === "database_unavailable" || issue === "native_module_unavailable")) return "unknown";
+  if (issues.some((issue) => issue === "database_unavailable" || issue === "native_module_unavailable"
+    || issue === "health_check_failed")) return "unknown";
   if (issues.some((issue) => UNHEALTHY_ISSUES.has(issue))) return "unhealthy";
   if (issues.some((issue) => issue === "dead_letters" || issue === "runtime_missing"
-    || issue === "runtime_stale" || issue === "runtime_invalid")) return "degraded";
+    || issue === "runtime_stale" || issue === "runtime_invalid" || issue === "work_stalled")) return "degraded";
   if (issues.length > 0) return "in_progress";
   return "healthy";
 }

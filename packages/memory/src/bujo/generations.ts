@@ -78,6 +78,28 @@ export interface ManagedLayoutState {
   readonly generations: { readonly dev: number; readonly ino: number };
 }
 
+export type ManagedCanonicalSourceDomain = "daily" | "graph";
+
+export interface ManagedRollbackRetirementHooks {
+  /** Test-only seam after the replacement is durable but before publication. */
+  readonly afterManifestTempFsync?: () => void;
+  /** Test-only seam immediately before the final manifest identity/CAS checks. */
+  readonly beforeManifestRename?: () => void;
+  /** Test-only seam after publication but before directory durability. */
+  readonly afterManifestRename?: () => void;
+}
+
+export interface ManagedRollbackRuntimeLease {
+  release(): void;
+}
+
+interface ManagedRollbackRuntimeState {
+  readonly token: string;
+  rollbackTier: BujoTier | undefined;
+}
+
+const MANAGED_ROLLBACK_RUNTIMES = new Map<string, ManagedRollbackRuntimeState>();
+
 export interface SafeSqlitePathState {
   readonly exists: boolean;
   readonly dev?: number;
@@ -277,6 +299,156 @@ export function acquireMemoryWriterLease(root: string, hooks: MemoryWriterLeaseH
     }
   }
   throw new Error("memory-rebuild: could not acquire the memory writer lease.");
+}
+
+/**
+ * Cache rollback presence only for the lifetime of an already-acquired
+ * configured-writer lease. That lease prevents rebuild/rollback publication,
+ * so ordinary high-volume appends avoid repeatedly parsing the immutable
+ * manifest while still taking the strict disk path outside a live store.
+ */
+export function registerManagedRollbackRuntime(
+  root: string,
+  manifest: ManagedIndexManifest | undefined,
+): ManagedRollbackRuntimeLease {
+  const canonicalRoot = canonicalMemoryRoot(root, true);
+  if (MANAGED_ROLLBACK_RUNTIMES.has(canonicalRoot)) {
+    throw new Error("memory-bujo: managed rollback runtime is already registered for this root.");
+  }
+  const token = randomUUID();
+  MANAGED_ROLLBACK_RUNTIMES.set(canonicalRoot, {
+    token,
+    rollbackTier: manifest?.rollback?.tier,
+  });
+  let released = false;
+  return {
+    release: () => {
+      if (released) return;
+      released = true;
+      if (MANAGED_ROLLBACK_RUNTIMES.get(canonicalRoot)?.token === token) {
+        MANAGED_ROLLBACK_RUNTIMES.delete(canonicalRoot);
+      }
+    },
+  };
+}
+
+/**
+ * Atomically stop advertising a rollback before a normal canonical mutation
+ * invalidates its source fingerprint. The configured writer lease is the
+ * cross-process discipline; exact manifest/layout checks additionally prevent
+ * a stale caller from overwriting a concurrently changed managed identity.
+ *
+ * Every tier fingerprints daily Markdown. Only BuJo fingerprints graph.jsonl,
+ * so a graph-only mutation deliberately preserves Lite/Journal rollback.
+ */
+export function retireManagedRollback(
+  root: string,
+  domain: ManagedCanonicalSourceDomain,
+  hooks: ManagedRollbackRetirementHooks = {},
+): boolean {
+  // Live stores pass the canonical root recorded by their writer lease. Take
+  // the lease-scoped no-rollback fast path before repeating realpath/ancestor
+  // validation for every high-volume Journal append; the canonical file write
+  // itself still performs its normal path-safety validation.
+  const registered = MANAGED_ROLLBACK_RUNTIMES.get(root);
+  if (registered !== undefined
+    && (registered.rollbackTier === undefined || (domain === "graph" && registered.rollbackTier !== "bujo"))) {
+    return false;
+  }
+  const canonicalRoot = canonicalMemoryRoot(root, true);
+  const runtime = registered ?? MANAGED_ROLLBACK_RUNTIMES.get(canonicalRoot);
+  if (runtime !== undefined
+    && (runtime.rollbackTier === undefined || (domain === "graph" && runtime.rollbackTier !== "bujo"))) {
+    return false;
+  }
+  const manifestState = captureManagedManifestState(canonicalRoot);
+  const manifest = readManagedIndexManifest(canonicalRoot);
+  // Even a no-op decision is based on a pinned manifest observation. A
+  // concurrent publisher must not turn "no affected rollback" into a stale
+  // advertised rollback immediately before the caller's source commit.
+  assertManagedManifestState(canonicalRoot, manifestState);
+  const rollback = manifest?.rollback;
+  if (manifest === undefined || rollback === undefined || (domain === "graph" && rollback.tier !== "bujo")) {
+    if (runtime !== undefined && rollback === undefined) runtime.rollbackTier = undefined;
+    return false;
+  }
+
+  const layoutState = captureManagedLayoutState(canonicalRoot);
+  const replacement: ManagedIndexManifest = {
+    schemaVersion: MANAGED_INDEX_SCHEMA_VERSION,
+    active: manifest.active,
+  };
+  validateManifest(replacement);
+  generationDbPath(canonicalRoot, replacement.active.name, true);
+
+  const path = manifestPath(canonicalRoot);
+  const temp = join(managedPath(canonicalRoot), `.manifest-retire-${randomUUID()}.tmp`);
+  const data = `${JSON.stringify(replacement, null, 2)}\n`;
+  const digest = createHash("sha256").update(data).digest("hex");
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0);
+  let renamed = false;
+  let tempIdentity!: { readonly dev: number; readonly ino: number };
+  const assertExactFile = (candidate: string, label: string): void => {
+    const identity = fileIdentity(candidate, canonicalRoot, label);
+    if (identity.dev !== tempIdentity.dev || identity.ino !== tempIdentity.ino
+      || createHash("sha256").update(readFileSync(candidate)).digest("hex") !== digest) {
+      throw new Error(`memory-bujo: ${label} changed during rollback retirement.`);
+    }
+  };
+
+  try {
+    const fd = openSync(temp, flags, 0o600);
+    try {
+      writeFileSync(fd, data, "utf8");
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    tempIdentity = fileIdentity(temp, canonicalRoot, "rollback-retirement manifest temporary file");
+    hooks.afterManifestTempFsync?.();
+    hooks.beforeManifestRename?.();
+    assertManagedLayoutState(canonicalRoot, layoutState);
+    assertManagedManifestState(canonicalRoot, manifestState);
+    assertExactFile(temp, "rollback-retirement manifest temporary file");
+    // The configured writer lease excludes rebuild/rollback. No JavaScript
+    // yield remains between the final CAS/identity checks and this rename.
+    renameSync(temp, path);
+    renamed = true;
+    assertExactFile(path, "retired managed memory manifest");
+    hooks.afterManifestRename?.();
+    assertManagedLayoutState(canonicalRoot, layoutState);
+    assertExactFile(path, "retired managed memory manifest");
+    fsyncDirectory(dirname(path));
+    assertExactFile(path, "retired managed memory manifest");
+    if (runtime !== undefined) runtime.rollbackTier = undefined;
+    return true;
+  } catch (error) {
+    if (!renamed) {
+      try {
+        assertManagedLayoutState(canonicalRoot, layoutState);
+        if (existsSync(temp)) unlinkSync(temp);
+      } catch {
+        // Never follow a replaced managed ancestor to clean up a temp file.
+      }
+    }
+    if (renamed) {
+      throw new Error(
+        `memory-bujo: rollback retirement completed but durability reporting is uncertain: ${reasonOf(error)}`,
+      );
+    }
+    throw error;
+  }
+}
+
+/** Run one already-planned canonical commit only after rollback retirement succeeds. */
+export function withManagedRollbackRetirement<T>(
+  root: string,
+  domain: ManagedCanonicalSourceDomain,
+  mutation: () => T,
+  hooks: ManagedRollbackRetirementHooks = {},
+): T {
+  retireManagedRollback(root, domain, hooks);
+  return mutation();
 }
 
 export async function activateManagedIndex(

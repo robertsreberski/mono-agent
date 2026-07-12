@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { relative } from "node:path";
 
 import type {
@@ -90,6 +90,8 @@ interface CaptureIntent {
   readonly state: "pending" | "complete";
   readonly id: string;
   readonly createdAt: string;
+  /** Actual durable publication time; legacy intents fall back to pinned file mtime. */
+  readonly publishedAt?: string;
   /** Run-keyed owner that keeps this exact plan replayable until intake resolves. */
   readonly retentionKey?: string;
   readonly actions: readonly CaptureIntentAction[];
@@ -124,6 +126,18 @@ export interface CaptureOutboxAudit {
   readonly temporary: number;
 }
 
+/** Internal-only, content-free stability metadata consumed by strict health. */
+export interface CaptureOutboxPrivateHealthState {
+  readonly oldestPublishedAt?: string;
+  readonly digest: string;
+}
+
+/** Internal module contract; intentionally not exported from the package subpath. */
+export interface CaptureOutboxHealthAudit {
+  readonly audit: CaptureOutboxAudit;
+  readonly privateState: CaptureOutboxPrivateHealthState;
+}
+
 /** Atomically publish one bounded, fsynced capture intent before source mutation. */
 export function writeCaptureIntent(
   root: string,
@@ -150,6 +164,7 @@ export function writeCaptureIntent(
     state: "pending",
     id,
     createdAt,
+    publishedAt: new Date().toISOString(),
     ...(options.retentionKey === undefined ? {} : { retentionKey: options.retentionKey }),
     actions,
     graph: {
@@ -267,6 +282,11 @@ export function hasPendingCaptureIntent(root: string): boolean {
  * closed while their aggregate file counts remain visible.
  */
 export function auditCaptureOutbox(root: string): CaptureOutboxAudit {
+  return auditCaptureOutboxHealthState(root).audit;
+}
+
+/** Strict health audit plus private content-free queue stability metadata. */
+export function auditCaptureOutboxHealthState(root: string): CaptureOutboxHealthAudit {
   let pending = 0;
   let temporary = 0;
   try {
@@ -289,14 +309,36 @@ export function auditCaptureOutbox(root: string): CaptureOutboxAudit {
     // Invalid names, temps, and over-capacity queues already fail closed and
     // must not force up to 2 MiB of JSON allocation per entry.
     if (!validNames || temporary > 0 || pending > MAX_INTENTS) {
-      return { valid: false, pending, temporary };
+      return invalidOutboxHealth(pending, temporary);
     }
     const replays = intentNames.map((name) => loadReplay(root, `${OUTBOX_DIR}/${name}`));
     assertDistinctQueuedMemoryIds(replays);
-    return { valid: true, pending, temporary };
+    const publications = replays.map((replay) => replay.intent.publishedAt
+      ?? new Date(replay.snapshot.identity.mtimeMs).toISOString()).sort();
+    const digest = createHash("sha256").update(JSON.stringify(replays.map((replay) => ({
+      id: replay.intent.id,
+      state: replay.intent.state,
+      publishedAt: replay.intent.publishedAt ?? new Date(replay.snapshot.identity.mtimeMs).toISOString(),
+    })).sort((left, right) => left.id.localeCompare(right.id)))).digest("hex");
+    return {
+      audit: { valid: true, pending, temporary },
+      privateState: {
+        ...(publications.length === 0 ? {} : { oldestPublishedAt: publications[0]! }),
+        digest,
+      },
+    };
   } catch {
-    return { valid: false, pending, temporary };
+    return invalidOutboxHealth(pending, temporary);
   }
+}
+
+function invalidOutboxHealth(pending: number, temporary: number): CaptureOutboxHealthAudit {
+  return {
+    audit: { valid: false, pending, temporary },
+    privateState: {
+      digest: createHash("sha256").update(JSON.stringify({ invalid: true, pending, temporary })).digest("hex"),
+    },
+  };
 }
 
 interface LoadedReplay {
@@ -787,6 +829,8 @@ function parseIntent(raw: string): CaptureIntent {
     || (value.state !== "pending" && value.state !== "complete")
     || typeof value.id !== "string" || !/^[a-f0-9-]{36}$/u.test(value.id)
     || typeof value.createdAt !== "string" || !Number.isFinite(Date.parse(value.createdAt))
+    || (value.publishedAt !== undefined
+      && (typeof value.publishedAt !== "string" || !Number.isFinite(Date.parse(value.publishedAt))))
     || (value.retentionKey !== undefined && (typeof value.retentionKey !== "string"
       || !/^[a-f0-9]{64}$/u.test(value.retentionKey)))
     || !Array.isArray(value.actions) || value.actions.length > MAX_ACTIONS

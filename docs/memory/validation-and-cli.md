@@ -64,7 +64,9 @@ While the configured store runs, it atomically publishes a coalesced metadata-on
 
 ### Strict provider-free health gate
 
-`mono-agent memory audit --strict --json` is the closed, provider-free health contract. It makes no embedding, chat-model, Ollama, OpenAI, or Supermemory request. For the built-in backend it takes a bounded, snapshot-coherent view of managed identity, SQLite integrity and metadata, FTS/vector coverage, canonical source parity, durable completed-turn intake, capture outbox, temporary artifacts, and the runtime snapshot. SQLite still requires the native modules built for the Node runtime that invokes the command; an unavailable native module reports `unknown` rather than leaking the loader error.
+`mono-agent memory audit --strict --json` is the closed, provider-free health contract. It makes no embedding, chat-model, Ollama, OpenAI, or Supermemory request. For the built-in backend it takes a bounded, snapshot-coherent view of managed identity, SQLite integrity and metadata, FTS/vector coverage, canonical source parity, rollback-source freshness, durable completed-turn intake, capture outbox, temporary artifacts, and the runtime snapshot. SQLite still requires the native modules built for the Node runtime that invokes the command; an unavailable native module reports `unknown` rather than leaking the loader error.
+
+Fresh durable work is `in_progress`, but it cannot remain successful forever after its owner disappears. A due intake item with no active retry, or a published capture intent awaiting replay, becomes `work_stalled` after the same 90-second grace used for runtime staleness. The timestamps and stability digests used for that decision remain private; the public report carries only the stable issue and aggregate counts. A live/fresh Journal write lock is similarly distinguished from a stale or malformed owner without mutating the lock during audit.
 
 The JSON object has exactly these fields (the `mode` field exists only for `backend: "bujo"`):
 
@@ -84,19 +86,19 @@ The statuses and process exit codes are deliberately different dimensions:
 | --- | --- | --- |
 | `healthy` | No issue code is present. | `0` |
 | `in_progress` | Durable or snapshot-coherent work is actively pending, with no degraded/unhealthy/unknown condition. | `0` |
-| `degraded` | Dead letters or missing, stale, or invalid runtime telemetry needs attention. | `1` |
+| `degraded` | Dead letters, stalled durable work, or missing, stale, or invalid runtime telemetry needs attention. | `1` |
 | `unhealthy` | Managed identity, database/index, canonical source, intake/outbox, or temporary-artifact integrity failed. | `1` |
-| `unknown` | The built-in database/native module could not be inspected, or a remote Supermemory index cannot be inspected locally. | `1` |
+| `unknown` | The built-in database/native module or health check could not be inspected, or a remote Supermemory index cannot be inspected locally. | `1` |
 | `not_configured` | No memory backend is configured (`backend: "none"`; no `mode`). | `0` |
 
 For `backend: "bujo"`, classification uses this exact precedence:
 
-1. `database_unavailable` or `native_module_unavailable` → `unknown`.
+1. `database_unavailable`, `native_module_unavailable`, or `health_check_failed` → `unknown`.
 2. Any of `manifest_missing`, `manifest_invalid`, `configured_identity_mismatch`,
    `database_missing`, `sqlite_integrity_failed`, `metadata_mismatch`, `fts_mismatch`,
    `vector_mismatch`, `orphaned_rows`, `canonical_mismatch`, `canonical_invalid`,
    `intake_invalid`, `outbox_invalid`, or `temporary_artifacts` → `unhealthy`.
-3. `dead_letters`, `runtime_missing`, `runtime_stale`, or `runtime_invalid` → `degraded`.
+3. `dead_letters`, `work_stalled`, `runtime_missing`, `runtime_stale`, or `runtime_invalid` → `degraded`.
 4. Otherwise, `mutation_in_progress`, `intake_pending`, or `outbox_pending` → `in_progress`.
 5. No issues → `healthy`.
 
@@ -104,11 +106,11 @@ CLI misuse—including using `--strict` on any subcommand except `memory audit`�
 
 ```text
 manifest_missing manifest_invalid configured_identity_mismatch
-database_missing database_unavailable native_module_unavailable
+database_missing database_unavailable native_module_unavailable health_check_failed
 sqlite_integrity_failed metadata_mismatch fts_mismatch vector_mismatch
 orphaned_rows canonical_mismatch canonical_invalid mutation_in_progress
 intake_invalid intake_pending dead_letters outbox_invalid outbox_pending
-temporary_artifacts runtime_missing runtime_stale runtime_invalid
+work_stalled temporary_artifacts runtime_missing runtime_stale runtime_invalid
 ```
 
 The strict report is metadata-only by construction. It never publishes paths, filenames, record or run ids, model text, payloads, raw provider/native errors, or arbitrary extra fields. `backend: "supermemory"` therefore reports `unknown` with empty issues and zeroed counts instead of pretending to know remote health; an absent backend reports `not_configured` with the same closed empty shape.
@@ -139,7 +141,7 @@ mono-agent start
 
 `mono-agent validate` (the agent-app doctor) checks both the configured identity and liveness. A managed generation whose tier, embeddings model, or dimension differs from the current config is an `error` immediately—before any Ollama/network probe—with the exact active and configured identities plus the stop/rebuild/validate sequence. Invalid/unavailable native SQLite bindings and malformed or missing managed metadata are also errors. Operational provider failures remain `waiting`, so they do not flip the overall result. Read the Memory section. Downstream validation with `mono-agent validate --consumer <path>` never creates a memory root: a missing Lite root is a warning, while missing Journal/BuJo managed authority is an error.
 
-Only Lite may remain unmanaged. Journal and BuJo always require the managed `.index/manifest.json` authority; a manifestless, deleted, or corrupt managed identity is an error and never falls back to a legacy `memory.db`. Stop the agent, run `mono-agent memory rebuild`, and validate again to establish or repair the managed generation.
+Only Lite may remain unmanaged. Journal and BuJo always require the managed `.index/manifest.json` authority; a manifestless, deleted, or corrupt managed identity is an error and never falls back to a legacy `memory.db`. Fresh guided, preset, and flag-based init creates one empty managed Journal/BuJo generation provider-free, but deliberately leaves every pre-existing memory root untouched. For an existing or damaged root, stop the agent, run `mono-agent memory rebuild`, and validate again to establish or repair the managed generation.
 
 For scripting, `mono-agent validate --json` writes exactly one top-level JSON object with `ok: boolean` and `sections` (plus `preset` when requested). It emits no ANSI or human prose on stdout and exits `0` exactly when `ok` is `true`; errors exit `1`.
 
@@ -162,7 +164,7 @@ The checks run in this order:
 6. **Consolidation cadence** (bujo only) — reports the consolidation cron expression and whether the scheduler will run for the configured `bujo` tier.
 
 :::caution
-For launchd fleet proof, the invoking runtime is part of the result. The fleet checker reads each plist's exact `ProgramArguments[0]` Node executable and `ProgramArguments[1]` `cli.js`, then uses that pair for the runtime/ABI probe, `validate --json`, `memory audit --strict --json`, and `metrics --json`. The current fleet contract is exact Node `24.15.0` with modules ABI `137`; the ambient shell's `node` or a CLI from another checkout is not evidence that the service can load `better-sqlite3`/`sqlite-vec`.
+For launchd fleet proof, the invoking runtime and durable configuration are part of the result. The fleet checker reads each plist's exact Node executable, `cli.js`, absolute `--config`/`--env-file` arguments, and managed `PATH`, then uses them for the runtime/ABI probe, `validate --json`, `memory audit --strict --json`, and `metrics --json`. Probe children keep only launchd-safe operational environment values: shell-only `MONO_AGENT_*`, provider credentials, `NODE_OPTIONS`, and proxy overrides are deliberately scrubbed so the exact env file remains authoritative. Every subprocess has a hard timeout, and the checker rejects status/issue/count combinations that contradict the producer contract instead of trusting a green status string. The current fleet contract is exact Node `24.15.0` with modules ABI `137`; the ambient shell's Node, config, CLI, or credentials are not evidence that the service can load `better-sqlite3`/`sqlite-vec`.
 :::
 
 A healthy bujo report looks like:
@@ -271,12 +273,14 @@ mono-agent stop
 mono-agent memory rebuild --json
 # Optional detailed local accounting (may include paths/source locations)
 mono-agent memory audit --json
-# Closed automation gate
-mono-agent memory audit --strict --json
+# Stopped pre-start gate
+mono-agent validate
 mono-agent start
+# Closed automation gate, including live runtime telemetry
+mono-agent memory audit --strict --json
 ```
 
-`rebuild` reads the configured tier, embeddings model, and dimension; snapshots the canonical markdown/graph sources; builds a complete candidate under `.index/generations/<generation>/memory.db`; validates its schema, exact payloads, complete edge inventory, Journal hash provenance, FTS coverage, vector coverage, and model identity; then atomically switches a small manifest. The old active database is retained only through a fresh immutable online-backup generation after tier-exact payload/source parity is proven; repairable lifecycle/source/edge/hash state is normalized on that copy, and Journal may retain its documented recoverable missing-vector backlog. The manifest commits the copy's complete logical state—including WAL-visible rows and vector blobs—so same-count semantic tampering cannot hide behind an unchanged main-file checksum. When source, tier, model, and dimension are unchanged, every retained vector is additionally compared with the newly embedded candidate (missing Journal backlog rows remain repairable). SQLite writer fences hold the source stable during backup and every soon-to-be-active/retained database stable across final validation plus manifest rename; the fsynced temporary manifest's identity and exact bytes are rechecked immediately before that rename, and the renamed file is checked again after every durability callback. If canonical source is ahead of a stale index, rebuild still activates the correct candidate but deliberately omits that unsafe rollback instead of stamping it with a current fingerprint. The previous active index remains usable if any step fails before activation. A divergent legacy `memory.db` remains byte-for-byte in place but is not advertised as rollback; only a parity-compatible legacy database is adopted by online backup.
+`rebuild` reads the configured tier, embeddings model, and dimension; snapshots the canonical markdown/graph sources; builds a complete candidate under `.index/generations/<generation>/memory.db`; validates its schema, exact payloads, complete edge inventory, Journal hash provenance, FTS coverage, vector coverage, and model identity; then atomically switches a small manifest. The old active database is retained only through a fresh immutable online-backup generation after tier-exact payload/source parity is proven; repairable lifecycle/source/edge/hash state is normalized on that copy, and Journal may retain its documented recoverable missing-vector backlog. The manifest commits the copy's complete logical state—including WAL-visible rows and vector blobs—so same-count semantic tampering cannot hide behind an unchanged main-file checksum. When source, tier, model, and dimension are unchanged, every retained vector is additionally compared with the newly embedded candidate (missing Journal backlog rows remain repairable). The first supported daily-source mutation (or BuJo graph mutation) atomically removes the rollback advertisement before changing its source, so normal capture may make `memory rollback` unavailable immediately instead of leaving a stale advertised target; out-of-band source edits still surface as `canonical_mismatch`. SQLite writer fences hold the source stable during backup and every soon-to-be-active/retained database stable across final validation plus manifest rename; the fsynced temporary manifest's identity and exact bytes are rechecked immediately before that rename, and the renamed file is checked again after every durability callback. If canonical source is ahead of a stale index, rebuild still activates the correct candidate but deliberately omits that unsafe rollback instead of stamping it with a current fingerprint. The previous active index remains usable if any step fails before activation. A divergent legacy `memory.db` remains byte-for-byte in place but is not advertised as rollback; only a parity-compatible legacy database is adopted by online backup.
 
 The running agent must be stopped. The command refuses a matching live process, an active writer lease/SQLite transaction, concurrent source changes, symlinked source paths, or a concurrent manifest change. Journal/BuJo rebuilds can call the configured embeddings provider in bounded batches; rebuild never calls the chat LLM. Rollback swaps already-validated generations and makes no embedding or chat-model request.
 
@@ -286,8 +290,9 @@ The running agent must be stopped. The command refuses a matching live process, 
 mono-agent stop
 # restore the prior memory.mode / embeddings model / dimension in mono-agent.config.json
 mono-agent memory rollback --json
-mono-agent memory audit --strict --json
+mono-agent validate
 mono-agent start
+mono-agent memory audit --strict --json
 ```
 
 Before switching, rollback tries to snapshot the outgoing current index under the same rules. If that outgoing index is already semantically divergent or corrupt, recovery to the verified target still succeeds but no reverse rollback is advertised.
@@ -356,8 +361,9 @@ Supermemory owns its remote index, so `mono-agent memory rebuild` and `rollback`
    ```bash
    mono-agent memory rebuild --json
    mono-agent memory audit --json
-   mono-agent memory audit --strict --json
+   mono-agent validate
    mono-agent start
+   mono-agent memory audit --strict --json
    mono-agent status
    ```
 
@@ -365,7 +371,12 @@ Supermemory owns its remote index, so `mono-agent memory rebuild` and `rollback`
 
 7. Verify both kinds of context in the TUI or an enabled conversational channel without restarting between messages. For Telegram, send `Reply exactly with this token: V1-HISTORY-<unique>`, wait for that reply, then ask `What did you send in the last message?` and confirm the token comes back. That second run should use active history and inject no durable memory. Finally ask a qualified durable-memory question such as `What did we decide about releases last month?` to exercise `MemoryRecall`.
 
-If `memory.llm.provider` is `agent-host`, Ollama is needed only for `memory.embeddings.provider: "ollama"`; you do not need an Ollama chat model. If rollback is needed, stop the agent, restore the prior tier/model/dimension if it changed, run `mono-agent memory rollback --json`, then start again.
+The strict audit deliberately includes live runtime telemetry. While the agent is stopped it reports
+`runtime_missing` or `runtime_stale` instead of claiming the whole running system is healthy. Use
+`mono-agent validate` after a stopped rebuild or rollback, then start the agent and run the strict
+audit as the closed live gate.
+
+If `memory.llm.provider` is `agent-host`, Ollama is needed only for `memory.embeddings.provider: "ollama"`; you do not need an Ollama chat model. If rollback is needed, stop the agent, restore the prior tier/model/dimension if it changed, run `mono-agent memory rollback --json`, validate, start again, and run the strict audit.
 
 ## `memory-bujo` CLI — advanced out-of-band maintenance
 

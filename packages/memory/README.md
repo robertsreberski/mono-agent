@@ -81,9 +81,20 @@ Normal index maintenance is config-aware and owned by `@mono-agent/agent-app`:
 ```bash
 mono-agent stop
 mono-agent memory rebuild --json
-mono-agent memory audit --strict --json
+mono-agent validate
 mono-agent start
+mono-agent memory audit --strict --json
 ```
+
+The strict audit includes live runtime telemetry. A deliberately stopped store
+therefore reports `runtime_missing` or `runtime_stale` instead of claiming a
+fully healthy running system; use `validate` for the stopped pre-start gate,
+then run the strict audit after `start`.
+
+Strict health distinguishes fresh/actively retried durable work from abandoned work. A due intake
+item without an active runtime retry, or a published capture intent left unreplayed, becomes the
+closed `work_stalled` degraded condition after 90 seconds. Journal lock ownership and advertised
+rollback-source freshness are checked provider-free; the public report remains aggregate-only.
 
 The app CLI additionally exposes payload-free intake inspection and stopped-store
 recovery: `memory inspect [<id>]`, `memory retry [<id>]`, and
@@ -92,7 +103,7 @@ future store start. Resolve explicitly records operator abandonment without
 claiming capture succeeded, keeps permanent duplicate protection, and refuses
 recoverable retained semantic plans.
 
-This performs the first managed activation and builds and validates a side-by-side generation. A prior index is retained for `mono-agent memory rollback` only as a fresh immutable online-backup generation whose indexed payload exactly matches the current canonical source (Journal may retain its recoverable vector backlog). Its manifest commits the full WAL-visible logical state, including vectors, lifecycle, edges, hashes, graph, FTS, and metadata; same-source/provider rebuilds also compare every retained vector with the newly embedded candidate. SQLite writer fences cover source snapshotting and the final manifest rename; staged and final manifest bytes/identity are checked through durability confirmation. A source-ahead/stale index is never relabeled as safe; a divergent legacy `memory.db` remains byte-for-byte in place but is not advertised as rollback. The lower-level `memory-bujo rebuild|rollback <root> --tier <lite|journal|bujo>` commands are for already-managed roots; they deliberately refuse to infer tier identity or perform the first activation.
+This performs the first managed activation and builds and validates a side-by-side generation. A prior index is retained for `mono-agent memory rollback` only as a fresh immutable online-backup generation whose indexed payload exactly matches the current canonical source (Journal may retain its recoverable vector backlog). Its manifest commits the full WAL-visible logical state, including vectors, lifecycle, edges, hashes, graph, FTS, and metadata; same-source/provider rebuilds also compare every retained vector with the newly embedded candidate. The first supported daily-source mutation (or BuJo graph mutation) atomically retires that rollback advertisement before changing its source, so a rollback can disappear immediately after normal capture instead of becoming stale. SQLite writer fences cover source snapshotting and the final manifest rename; staged and final manifest bytes/identity are checked through durability confirmation. A source-ahead/stale index is never relabeled as safe; a divergent legacy `memory.db` remains byte-for-byte in place but is not advertised as rollback. The lower-level `memory-bujo rebuild|rollback <root> --tier <lite|journal|bujo>` commands are for already-managed roots; they deliberately refuse to infer tier identity or perform the first activation.
 
 ## Public API
 

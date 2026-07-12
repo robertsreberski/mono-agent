@@ -57,6 +57,7 @@ import {
   readManagedIndexManifest,
   type ManagedGeneration,
   type ManagedIndexManifest,
+  type ManagedManifestState,
 } from "./generations.js";
 
 /**
@@ -285,7 +286,6 @@ export function auditCanonicalIndexHealth(
       if (attempt < maxAttempts) continue;
       return { status: "in_progress" };
     }
-    if (parityError !== undefined && attempt < maxAttempts) continue;
     return { status: parityError === undefined ? "match" : "mismatch" };
   }
   return { status: "in_progress" };
@@ -314,7 +314,7 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
     const root = lease.root;
     const rootIdentity = identityOf(root);
     const layoutState = captureManagedLayoutState(root);
-    const manifestState = captureManagedManifestState(root);
+    let manifestState = captureManagedManifestState(root);
     const priorManifest = readManagedIndexManifest(root);
     assertManagedManifestState(root, manifestState);
     const priorActivePath = activeDbPathFromManifest(root, priorManifest);
@@ -363,6 +363,26 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
         // completes and retires the intent before manifest activation.
         replayCaptureOutbox(root, undefined, { retainIntent: true });
         stagedCaptureForCandidate = true;
+      }
+      const postReplayManifestState = captureManagedManifestState(root);
+      if (!sameManagedManifestState(postReplayManifestState, manifestState)) {
+        // Canonical replay is one of the normal source mutation boundaries. If
+        // an advertised rollback existed, replay atomically retired it before
+        // committing the source. Accept only that exact owned manifest change;
+        // every active-descriptor or unexpected rollback change remains a CAS
+        // failure even though this process holds the configured writer lease.
+        const currentManifest = readManagedIndexManifest(root);
+        const expectedRetirement = priorManifest?.rollback === undefined
+          ? undefined
+          : {
+              schemaVersion: MANAGED_INDEX_SCHEMA_VERSION,
+              active: priorManifest.active,
+            } satisfies ManagedIndexManifest;
+        if (expectedRetirement === undefined
+          || JSON.stringify(currentManifest) !== JSON.stringify(expectedRetirement)) {
+          throw new Error("memory-rebuild: managed index manifest changed unexpectedly during capture recovery.");
+        }
+        manifestState = postReplayManifestState;
       }
       assertManagedManifestState(root, manifestState);
     }
@@ -432,8 +452,9 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
     let stagedReplayIntegrity: string | undefined;
     try {
       await db.rebuild(plan.records);
+      const planRecordsById = new Map(plan.records.map((record) => [record.id, record]));
       for (const [contentHash, memoryId] of plan.contentHashes) {
-        const record = db.get(memoryId);
+        const record = planRecordsById.get(memoryId);
         if (record?.source.file === undefined) throw new Error("memory-rebuild: Journal record lost source provenance.");
         db.recordContentHash({
           contentHash,
@@ -588,6 +609,13 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
       lease.release();
     }
   }
+}
+
+function sameManagedManifestState(left: ManagedManifestState, right: ManagedManifestState): boolean {
+  return left.exists === right.exists
+    && left.dev === right.dev
+    && left.ino === right.ino
+    && left.sha256 === right.sha256;
 }
 
 /** Atomically swap active/rollback after validating the retained target. No provider call is made. */
@@ -769,6 +797,11 @@ function snapshotCanonicalSources(root: string, tier: BujoTier): SourceSnapshot 
   return { fingerprint: hash.digest("hex"), daily: files, ...(graph === undefined ? {} : { graph }) };
 }
 
+/** Provider-free fingerprint of the exact canonical source set for one tier. */
+export function readCanonicalSourceFingerprint(root: string, tier: BujoTier): string {
+  return snapshotCanonicalSources(root, tier).fingerprint;
+}
+
 function readStableSourceFile(root: string, relativePath: string): SourceFileSnapshot {
   const snapshot = readCanonicalFileSnapshot(root, relativePath);
   if (snapshot === undefined) throw new Error(`memory-rebuild: canonical source ${relativePath} disappeared.`);
@@ -901,16 +934,22 @@ function buildPlanParityError(
   if (state.memories !== plan.records.length || state.ftsRows !== plan.records.length || state.ftsMismatches !== 0) {
     return "memory-rebuild: candidate memory/FTS coverage validation failed.";
   }
-  const actualMemories = plan.records.map((record) => db.get(record.id));
-  if (stableJson(actualMemories.map((record) => memoryPayload(
-    record,
-    options.allowReplayedLifecycle,
-    options.allowReplaySourceRepair === true,
-  ))) !== stableJson(plan.records.map((record) => memoryPayload(
-    record,
-    options.allowReplayedLifecycle,
-    options.allowReplaySourceRepair === true,
-  )))) {
+  const memoryInventory = db.allMemories();
+  const actualMemoryById = new Map(memoryInventory.map((record) => [record.id, record]));
+  const expectedMemoryById = new Map(plan.records.map((record) => [record.id, record]));
+  const actualMemories = plan.records.map((record) => actualMemoryById.get(record.id));
+  if (actualMemoryById.size !== expectedMemoryById.size || plan.records.some((expected) => !sameCanonicalValue(
+    memoryPayload(
+      actualMemoryById.get(expected.id),
+      options.allowReplayedLifecycle,
+      options.allowReplaySourceRepair === true,
+    ),
+    memoryPayload(
+      expected,
+      options.allowReplayedLifecycle,
+      options.allowReplaySourceRepair === true,
+    ),
+  ))) {
     return "memory-rebuild: candidate memory payload validation failed.";
   }
   if (options.allowReplaySourceRepair === true && actualMemories.some((record, index) => {
@@ -931,14 +970,22 @@ function buildPlanParityError(
     || state.associations !== plan.graph.associations.length || state.relationOrphans !== 0 || state.associationOrphans !== 0) {
     return "memory-rebuild: candidate graph coverage or endpoint validation failed.";
   }
-  const actualEntities = plan.graph.entities.map((entity) => db.getEntity(entity.id));
-  const actualRelations = [...new Set(plan.graph.relations.map((relation) => relation.src))]
-    .flatMap((src) => db.relationsFor(src));
-  const actualAssociations = [...new Set(plan.graph.associations.map((association) => association.memoryId))]
-    .flatMap((memoryId) => db.associationsForMemory(memoryId));
-  if (stableJson(actualEntities) !== stableJson(plan.graph.entities)
-    || stableJson(actualRelations) !== stableJson(plan.graph.relations)
-    || stableJson(actualAssociations) !== stableJson(plan.graph.associations)) {
+  const actualEntities = db.allEntities();
+  const actualRelations = db.allEntityRelations();
+  const actualAssociations = db.allMemoryAssociations();
+  if (!sameKeyedInventory(actualEntities, plan.graph.entities, (entity) => entity.id, (entity) => entity.id)
+    || !sameKeyedInventory(
+      actualRelations,
+      plan.graph.relations,
+      relationKey,
+      relationKey,
+    )
+    || !sameKeyedInventory(
+      actualAssociations,
+      plan.graph.associations,
+      associationKey,
+      associationKey,
+    )) {
     return "memory-rebuild: candidate graph payload validation failed.";
   }
   const expectedEdges = plan.graph.collectionSupports.map((support) => ({
@@ -949,12 +996,11 @@ function buildPlanParityError(
   }));
   const actualEdges = db.allEdges().map(({ createdAt: _createdAt, ...edge }) => edge);
   if (options.allowNoncanonicalEdges === true) {
-    for (const expected of expectedEdges) {
-      if (!actualEdges.some((edge) => stableJson([edge]) === stableJson([expected]))) {
-        return "memory-rebuild: candidate collection support validation failed.";
-      }
+    const actualEdgeInventory = new Map(actualEdges.map((edge) => [edgeKey(edge), canonicalJson(edge)]));
+    if (expectedEdges.some((edge) => actualEdgeInventory.get(edgeKey(edge)) !== canonicalJson(edge))) {
+      return "memory-rebuild: candidate collection support validation failed.";
     }
-  } else if (stableJson(actualEdges) !== stableJson(expectedEdges)) {
+  } else if (!sameKeyedInventory(actualEdges, expectedEdges, edgeKey, edgeKey)) {
     return "memory-rebuild: candidate edge inventory validation failed.";
   }
   if (tier === "journal") {
@@ -963,7 +1009,7 @@ function buildPlanParityError(
     }
     const actual = db.contentHashRecords();
     for (const hash of actual) {
-      const record = db.get(hash.memoryId);
+      const record = actualMemoryById.get(hash.memoryId);
       if (record === undefined || normalizedContentHash(record.text) !== hash.contentHash
         || plan.contentHashes.get(hash.contentHash) !== hash.memoryId) {
         return "memory-rebuild: Journal content-hash correctness validation failed.";
@@ -971,7 +1017,7 @@ function buildPlanParityError(
     }
     if (options.allowJournalHashRepair !== true) {
       const expected = [...plan.contentHashes].map(([contentHash, memoryId]) => {
-        const record = plan.records.find((candidate) => candidate.id === memoryId);
+        const record = expectedMemoryById.get(memoryId);
         return {
           contentHash,
           memoryId,
@@ -979,7 +1025,12 @@ function buildPlanParityError(
           createdAt: record?.createdAt,
         };
       });
-      if (stableJson(actual) !== stableJson(expected)) {
+      if (!sameKeyedInventory(
+        actual,
+        expected,
+        (record) => record.contentHash,
+        (record) => record.contentHash,
+      )) {
         return "memory-rebuild: Journal content-hash provenance validation failed.";
       }
     }
@@ -1482,6 +1533,7 @@ async function snapshotDatabaseForRollback(
 
 function normalizeRollbackToPlan(path: string, plan: BuildPlan): void {
   const raw = new BetterSqlite3(path, { fileMustExist: true });
+  const recordsById = new Map(plan.records.map((record) => [record.id, record]));
   try {
     const update = raw.prepare(
       `UPDATE memories
@@ -1513,12 +1565,12 @@ function normalizeRollbackToPlan(path: string, plan: BuildPlan): void {
       }
       raw.prepare(`DELETE FROM edges`).run();
       for (const support of plan.graph.collectionSupports) {
-        const record = plan.records.find((candidate) => candidate.id === support.memoryId);
+        const record = recordsById.get(support.memoryId);
         insertEdge.run(support.memoryId, support.entityId, record?.createdAt ?? new Date(0).toISOString());
       }
       raw.prepare(`DELETE FROM content_hashes`).run();
       for (const [contentHash, memoryId] of plan.contentHashes) {
-        const record = plan.records.find((candidate) => candidate.id === memoryId);
+        const record = recordsById.get(memoryId);
         if (record?.source.file === undefined) {
           throw new Error("memory-rebuild: rollback Journal normalization lost source provenance.");
         }
@@ -1632,6 +1684,47 @@ function retainedVectorsMatchCandidate(
     retainedDb.close();
     candidateDb.close();
   }
+}
+
+function sameKeyedInventory<Left, Right>(
+  left: readonly Left[],
+  right: readonly Right[],
+  leftKey: (value: Left) => string,
+  rightKey: (value: Right) => string,
+): boolean {
+  if (left.length !== right.length) return false;
+  const inventory = new Map<string, string>();
+  for (const value of left) {
+    const key = leftKey(value);
+    if (inventory.has(key)) return false;
+    inventory.set(key, canonicalJson(value));
+  }
+  for (const value of right) {
+    const key = rightKey(value);
+    if (inventory.get(key) !== canonicalJson(value)) return false;
+    inventory.delete(key);
+  }
+  return inventory.size === 0;
+}
+
+function relationKey(value: { readonly src: string; readonly dst: string; readonly relation: string }): string {
+  return `${value.src}\0${value.dst}\0${value.relation}`;
+}
+
+function associationKey(value: { readonly memoryId: string; readonly entityId: string }): string {
+  return `${value.memoryId}\0${value.entityId}`;
+}
+
+function edgeKey(value: { readonly src: string; readonly dst: string; readonly kind: string }): string {
+  return `${value.src}\0${value.dst}\0${value.kind}`;
+}
+
+function sameCanonicalValue(left: unknown, right: unknown): boolean {
+  return canonicalJson(left) === canonicalJson(right);
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalJsonValue(value));
 }
 
 function stableJson(values: readonly unknown[]): string {
