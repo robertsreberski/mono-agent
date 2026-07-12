@@ -2244,12 +2244,15 @@ function safeRepairableAssociationInventory(
   const actualCapture = actual.filter((association) => association.provenance === "capture");
   const expectedCapture = expected.filter((association) => association.provenance === "capture");
   if (!sameKeyedInventory(actualCapture, expectedCapture, associationKey, associationKey)) return false;
-  return actual.every((association) => (
-    (association.provenance === "capture" || association.provenance === "legacy-name-match")
-    && memories.has(association.memoryId)
-    && entities.has(association.entityId)
-    && isExactIsoTimestamp(association.createdAt)
-  ));
+  return actual.every((association) => {
+    const memory = memories.get(association.memoryId);
+    return (association.provenance === "capture" || association.provenance === "legacy-name-match")
+      && memory !== undefined
+      && entities.has(association.entityId)
+      && (isExactIsoTimestamp(association.createdAt)
+        || (association.provenance === "legacy-name-match"
+          && isCanonicalMemoryTimestamp(association.createdAt, memory)));
+  });
 }
 
 /**
@@ -2287,6 +2290,16 @@ function safeRepairableEdgeInventory(
 function isExactIsoTimestamp(value: string): boolean {
   const millis = Date.parse(value);
   return Number.isFinite(millis) && new Date(millis).toISOString() === value;
+}
+
+/**
+ * Historical canonical bullets may use a valid ISO offset form instead of the
+ * normalized `toISOString()` spelling. A derived legacy cache row is still
+ * safe to replace when it preserves that exact, already parity-checked memory
+ * timestamp; arbitrary or capture-authored timestamp drift remains rejected.
+ */
+function isCanonicalMemoryTimestamp(value: string, memory: MemoryRecord): boolean {
+  return value === memory.createdAt && Number.isFinite(Date.parse(value));
 }
 
 function sameCanonicalValue(left: unknown, right: unknown): boolean {
