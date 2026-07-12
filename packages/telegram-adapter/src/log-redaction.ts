@@ -10,7 +10,7 @@ const SECRET_QUERY_PATTERN = new RegExp(
   "giu",
 );
 const SECRET_HEADER_TEXT_PATTERN = new RegExp(
-  `\\b(([A-Za-z0-9_-]*(?:${SENSITIVE_NAME_FRAGMENT})[A-Za-z0-9_-]*)\\s*[:=]\\s*)[^\\s,;"']+`,
+  `((?:^|[^A-Za-z0-9_-])["']?[A-Za-z0-9_-]*(?:${SENSITIVE_NAME_FRAGMENT})[A-Za-z0-9_-]*["']?\\s*[:=]\\s*)[^\\r\\n]*`,
   "giu",
 );
 const URL_USERINFO_PATTERN = /\b(https?:\/\/)[^/\s:@]+:[^@\s/]+@/giu;

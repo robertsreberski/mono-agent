@@ -23,6 +23,21 @@ describe("Telegram log redaction", () => {
     expect(redacted).not.toContain(`Bearer ${SHORT_BEARER}`);
     expect(redacted).not.toContain(`refresh_token=${SHORT_BEARER}`);
     expect(redacted).toContain("[REDACTED_BEARER_CREDENTIAL]");
+
+    for (const rawHeader of [
+      `Authorization: Basic ${OTHER_BEARER}`,
+      `Authorization: "Basic ${OTHER_BEARER}"`,
+      `Proxy-Authorization: ApiKey ${OTHER_BEARER}`,
+      `Cookie: session=${OTHER_BEARER}; refresh=${SHORT_BEARER}`,
+      `authorization=Basic ${OTHER_BEARER}`,
+      `{"Authorization":"Basic ${OTHER_BEARER}"}`,
+      `{"headers":{"x-api-key":"${OTHER_BEARER}"}}`,
+      `{"query":{"token":"${OTHER_BEARER}"}}`,
+    ]) {
+      const safe = redactTelegramSecretText(rawHeader);
+      expect(safe).not.toContain(OTHER_BEARER);
+      expect(safe).not.toContain(SHORT_BEARER);
+    }
   });
 
   it("sanitizes nested errors, causes, request objects, URLs, and stacks before logging", () => {
