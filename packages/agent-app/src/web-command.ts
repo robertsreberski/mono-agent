@@ -77,7 +77,7 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
   await Promise.all(registryDirs.map((registryDir) => pruneTraceSources({ registryDir })));
   const authRequired = requiresServerAuth(options.host);
   const configuredAuthToken = authRequired
-    ? normalizeOptionalString(options.env[WEB_AUTH_TOKEN_ENV])
+    ? normalizeOptionalString(options.env.MONO_AGENT_WEB_AUTH_TOKEN)
     : undefined;
   const authToken = authRequired ? configuredAuthToken ?? generateBearerToken() : undefined;
   const generatedAuthToken = authToken !== undefined && configuredAuthToken === undefined;

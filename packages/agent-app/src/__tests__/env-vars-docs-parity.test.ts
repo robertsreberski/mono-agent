@@ -32,6 +32,7 @@ function codeEnvKeys(root: string): Set<string> {
     // App-level loaders that read their own MONO_AGENT_* keys outside the core config.
     join(root, "packages/agent-app/src/interaction-bridge.ts"),
     join(root, "packages/agent-app/src/adapter-send-tools.ts"),
+    join(root, "packages/agent-app/src/web-command.ts"),
   ];
   for (const workspaceRoot of ["packages", "extras"]) {
     const workspaceDir = join(root, workspaceRoot);
