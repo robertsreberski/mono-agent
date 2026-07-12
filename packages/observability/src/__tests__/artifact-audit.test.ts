@@ -50,8 +50,34 @@ describe("auditRecordedRuns", () => {
       process_death: 2,
       runtime_error: 1,
       cancelled: 1,
+      cancelled_user: 0,
+      cancelled_stale: 0,
+      cancelled_shutdown: 0,
+      cancelled_signal: 0,
     });
     expect(report.summariesWithFailureKind).toBe(8);
+  });
+
+  it("recognizes user cancellation without degrading artifact health", async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, "cancelled-user.summary.json"), JSON.stringify({
+      runId: "cancelled-user",
+      conversationId: "telegram:42",
+      status: "cancelled",
+      failureKind: "cancelled_user",
+      startedAt: "2026-06-24T11:59:00.000Z",
+      durationMs: 1,
+      eventCount: 0,
+      artifactPaths: [],
+    }), "utf8");
+
+    const report = await auditRecordedRuns(dir, {
+      now: Date.parse("2026-06-24T12:00:00.000Z"),
+      staleAfterMs: 30_000,
+    });
+
+    expect(report.unrecognizedFailureKindCount).toBe(0);
+    expect(report.failureKindHistogram.cancelled_user).toBe(1);
   });
 
   it("reports unrecognized statuses and failure kinds without treating them as parse failures", async () => {

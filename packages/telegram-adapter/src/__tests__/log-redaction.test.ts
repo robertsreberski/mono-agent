@@ -10,15 +10,18 @@ const TOKEN = "123456789:AAExampleSecret_0123456789abcdef";
 const API_URL = `https://api.telegram.org/bot${TOKEN}/getUpdates`;
 const FILE_URL = `https://api.telegram.org/file/bot${TOKEN}/voice/file.ogg`;
 const OTHER_BEARER = "opaque-service-bearer-credential-abcdef";
+const SHORT_BEARER = "abc";
 
 describe("Telegram log redaction", () => {
   it("redacts configured tokens and Bot API URL tokens", () => {
     const redacted = redactTelegramSecretText(
-      `token=${TOKEN} api=${API_URL} file=${FILE_URL} Authorization: Bearer ${OTHER_BEARER} https://host.invalid/?access_token=${OTHER_BEARER}`,
+      `token=${TOKEN} api=${API_URL} file=${FILE_URL} Authorization: Bearer ${SHORT_BEARER} x-client-secret: ${OTHER_BEARER} https://host.invalid/?client_secret=${OTHER_BEARER}&refresh_token=${SHORT_BEARER}`,
       [TOKEN],
     );
     expect(redacted).not.toContain(TOKEN);
     expect(redacted).not.toContain(OTHER_BEARER);
+    expect(redacted).not.toContain(`Bearer ${SHORT_BEARER}`);
+    expect(redacted).not.toContain(`refresh_token=${SHORT_BEARER}`);
     expect(redacted).toContain("[REDACTED_BEARER_CREDENTIAL]");
   });
 
@@ -31,7 +34,12 @@ describe("Telegram log redaction", () => {
       request: {
         url: API_URL,
         token: TOKEN,
-        headers: { Authorization: `Bearer ${OTHER_BEARER}`, "x-api-key": OTHER_BEARER },
+        headers: {
+          Authorization: `Bearer ${SHORT_BEARER}`,
+          "x-api-key": OTHER_BEARER,
+          "x-auth-token": OTHER_BEARER,
+          "x-client-secret": OTHER_BEARER,
+        },
       },
     });
     const sink = vi.fn();

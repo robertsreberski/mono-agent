@@ -2,13 +2,31 @@ const REDACTED_TELEGRAM_TOKEN = "[REDACTED_TELEGRAM_BOT_TOKEN]";
 const REDACTED_BEARER = "[REDACTED_BEARER_CREDENTIAL]";
 const TELEGRAM_URL_TOKEN_PATTERN = /(\/file\/bot|\/bot)([^/?#\s]+)/giu;
 const TELEGRAM_TOKEN_PATTERN = /\b\d{5,}:[A-Za-z0-9_-]{8,}\b/gu;
-const BEARER_CREDENTIAL_PATTERN = /\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/giu;
-const SECRET_QUERY_PATTERN = /([?&](?:access_token|auth_token|api_key|token)=)[^&#\s]+/giu;
+const BEARER_CREDENTIAL_PATTERN = /\b(Bearer\s+)[^\s,;"']+/giu;
+const SECRET_QUERY_PATTERN = /([?&](?:access_token|auth_token|refresh_token|id_token|api_key|client_secret|token|code)=)[^&#\s]+/giu;
+const SECRET_HEADER_TEXT_PATTERN = /\b((?:authorization|proxy-authorization|x-api-key|x-auth-token|x-access-token|x-client-secret|client-secret|api-key)\s*[:=]\s*)[^\s,;"']+/giu;
 const SENSITIVE_LOG_KEYS = new Set([
   "authorization",
   "proxy-authorization",
   "x-api-key",
+  "x-auth-token",
+  "x-access-token",
+  "x-client-secret",
+  "x-amz-security-token",
+  "x-goog-api-key",
   "api-key",
+  "api_key",
+  "apikey",
+  "client-secret",
+  "client_secret",
+  "access-token",
+  "access_token",
+  "auth-token",
+  "auth_token",
+  "refresh-token",
+  "refresh_token",
+  "id-token",
+  "id_token",
   "cookie",
   "set-cookie",
 ]);
@@ -36,7 +54,8 @@ export function redactTelegramSecretText(
     .replace(TELEGRAM_URL_TOKEN_PATTERN, `$1${REDACTED_TELEGRAM_TOKEN}`)
     .replace(TELEGRAM_TOKEN_PATTERN, REDACTED_TELEGRAM_TOKEN)
     .replace(BEARER_CREDENTIAL_PATTERN, `$1${REDACTED_BEARER}`)
-    .replace(SECRET_QUERY_PATTERN, `$1${REDACTED_BEARER}`);
+    .replace(SECRET_QUERY_PATTERN, `$1${REDACTED_BEARER}`)
+    .replace(SECRET_HEADER_TEXT_PATTERN, `$1${REDACTED_BEARER}`);
 }
 
 /** Render one error message without allowing Telegram credentials into logs. */
