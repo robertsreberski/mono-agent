@@ -14,7 +14,7 @@ pnpm run check:secrets
 pnpm run check:oss-hygiene
 pnpm run check:codex-discoverability  # skills/agents Codex parity (wired into CI + verify:all by PR #142)
 pnpm run check:architecture     # catalog + README sections + dependency categories
-pnpm run build                  # pnpm -r --sort run build && build:demo
+pnpm run build                  # packages + demos, then strict deploy-output marker on POSIX/macOS
 pnpm run typecheck
 pnpm test                       # includes release:test + scripts:test + all packages + demos
 pnpm run test:demo
@@ -26,6 +26,15 @@ One-shot equivalent (adds alpha/beta consumer verification):
 ```bash
 pnpm run verify:all
 ```
+
+On supported POSIX/macOS hosts, the root build holds an exclusive ignored build
+lock, clears any prior marker, builds packages and demos, syncs the output tree,
+and atomically publishes an owner-only marker containing the full source SHA,
+source state, Node/ABI, completion time, and deterministic output digest. A
+concurrent build fails closed. Windows and unsupported hosts still run the
+normal build commands but do not publish this deploy proof. If a crash leaves a
+lock, remove it only after confirming no root build is still active, then rerun
+the whole build.
 
 Release-relevant tarball sanity (CI runs both on every push; `<version>` = `packages/agent-app/package.json` version):
 
@@ -66,7 +75,9 @@ repo's dist (see the `worktree-feature` skill).
 ## Gotchas
 
 - The demo gate is chained into `pnpm run build` / `pnpm test` — demos are not optional extras; a demo break is a gate break.
-- A failure may pre-exist on main. Never `git stash` the main working tree (its dist is live-deployed to the fleet); check main via a detached worktree instead:
+- A failure may pre-exist on main. The normal non-bare `main` checkout is frozen
+  for fleet deployment, not development. Never edit or `git stash` it; check
+  main via a detached worktree instead:
 
 ```bash
 git worktree add --detach /tmp/base-check origin/main

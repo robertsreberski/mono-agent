@@ -1,4 +1,7 @@
 .mono-agent/
+.mono-agent-build.json
+.mono-agent-build.json.tmp-*
+.mono-agent-build.lock
 node_modules/
 dist/
 coverage/
