@@ -300,6 +300,7 @@ describe("parseCliArgs", () => {
       "4599",
       "--no-open",
       "--allow-non-loopback",
+      "--show-auth-url",
       "--include-memory",
     ]);
     expect(result.command).toBe("web");
@@ -307,8 +308,10 @@ describe("parseCliArgs", () => {
     expect(result.port).toBe(4599);
     expect(result.open).toBe(false);
     expect(result.allowNonLoopback).toBe(true);
+    expect(result.showAuthUrl).toBe(true);
     expect(result.includeMemory).toBe(true);
     expect(() => parseCliArgs(["web", "--port", "notaport"])).toThrow(/--port/u);
+    expect(() => parseCliArgs(["start", "--show-auth-url"])).toThrow(/only supported for/u);
   });
 
   it("parses the web --max-runs cap and rejects bad or misplaced uses", () => {
@@ -331,6 +334,8 @@ describe("parseCliArgs", () => {
     expect(renderHelp()).toContain("hand-authored runtime backend config");
     expect(renderHelp()).toContain("mono-agent web");
     expect(renderHelp()).toContain("--allow-non-loopback");
+    expect(renderHelp()).toContain("MONO_AGENT_WEB_AUTH_TOKEN");
+    expect(renderHelp()).toContain("--show-auth-url");
     expect(renderHelp()).toContain("--include-memory");
   });
 

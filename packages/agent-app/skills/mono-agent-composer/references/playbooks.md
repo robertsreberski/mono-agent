@@ -71,10 +71,10 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 ```json
 {
   "runtime": { "model": "claude:claude-sonnet-4-6", "session": { "mode": "continuous", "idleTimeoutMs": 1800000 } },
-  "openaiApi": { "enabled": true, "host": "0.0.0.0", "port": 4040, "basePath": "/v1", "allowNonLoopback": true, "modelId": "my-agent", "apiKey": "sk-secret" }
+  "openaiApi": { "enabled": true, "host": "0.0.0.0", "port": 4040, "basePath": "/v1", "allowNonLoopback": true, "modelId": "my-agent" }
 }
 ```
-**Steps:** `mono-agent init` → add `openaiApi` (set `allowNonLoopback`, `apiKey`, `modelId`) + continuous session → `validate` → `start` → in Open WebUI add an OpenAI connection at `http://host:4040/v1` with the bearer.
+**Steps:** `mono-agent init` → add `openaiApi` (set `allowNonLoopback`, `modelId`) + continuous session → put `MONO_AGENT_OPENAI_API_KEY` in an owner-only `.env` → `validate` → `start` → in Open WebUI add an OpenAI connection at `http://host:4040/v1` with the bearer.
 **Smoke:** `curl /v1/models` returns `my-agent`; two calls with the same `X-OpenWebUI-Chat-Id` resume the session and stream via SSE.
 
 ## 5. Webhook automation (sync + async)

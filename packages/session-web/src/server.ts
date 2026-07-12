@@ -15,6 +15,7 @@ import {
   hostForUrl,
   isLoopbackHost,
   listen,
+  normalizeHostForBind,
   normalizeOptionalString,
   readAuthorizationBearer,
 } from "@mono-agent/agent-contracts";
@@ -31,6 +32,7 @@ const DEFAULT_MAX_RUNS_PER_INSTANCE = 200;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const MAX_BROWSER_SSE_QUEUE_FRAMES = 10_000;
 const MAX_BROWSER_SSE_FRAME_BYTES = 1_000_000;
+const FORCE_CLOSE_AFTER_MS = 250;
 const BROWSER_FRAME_ENCODER = new TextEncoder();
 
 export interface StartSessionWebServerOptions {
@@ -60,6 +62,8 @@ export interface StartSessionWebServerOptions {
 
 export interface SessionWebServerHandle {
   readonly url: string;
+  /** Actual address reported by Node after listen; used to verify/advertise wildcard binds safely. */
+  readonly boundAddress?: string;
   stop(): Promise<void>;
 }
 
@@ -76,7 +80,7 @@ class SessionWebServerError extends Error {
 export async function startSessionWebServer(
   options: StartSessionWebServerOptions,
 ): Promise<SessionWebServerHandle> {
-  const host = options.host ?? DEFAULT_HOST;
+  const host = normalizeHostForBind(options.host ?? DEFAULT_HOST);
   const port = options.port ?? DEFAULT_PORT;
   const maxRunsPerInstance = options.maxRunsPerInstance ?? DEFAULT_MAX_RUNS_PER_INSTANCE;
   const staticDir = options.staticDir ?? defaultStaticDir();
@@ -109,6 +113,34 @@ export async function startSessionWebServer(
   const app = express();
   const server = createServer(app);
   const activeStreams = new Set<() => void>();
+  let aggregatorStopPromise: Promise<void> | undefined;
+  let stopPromise: Promise<void> | undefined;
+
+  const stopAggregatorOnce = (): Promise<void> => {
+    aggregatorStopPromise ??= Promise.resolve().then(async () => {
+      await aggregator.stop();
+    });
+    return aggregatorStopPromise;
+  };
+
+  const closeActiveStreams = (): void => {
+    for (const closeStream of [...activeStreams]) {
+      closeStream();
+    }
+    activeStreams.clear();
+  };
+
+  const stopStartedServer = (): Promise<void> => {
+    stopPromise ??= (async () => {
+      closeActiveStreams();
+      try {
+        await closeServerBounded(server);
+      } finally {
+        await stopAggregatorOnce();
+      }
+    })();
+    return stopPromise;
+  };
 
   if (authToken !== undefined) {
     app.use("/api", requireApiAuth(authToken));
@@ -190,22 +222,72 @@ export async function startSessionWebServer(
       listenFailed: (reason) => new SessionWebServerError("start_failed", `Session web server failed to listen: ${reason}`),
       noAddress: () => new SessionWebServerError("start_failed", "Session web server did not receive a TCP address."),
     });
+    const boundNonLoopback = !isLoopbackHost(address.address);
+    if (boundNonLoopback && options.allowNonLoopback !== true) {
+      await stopStartedServer();
+      throw new SessionWebServerError(
+        "unsafe_host",
+        `Session web server resolved a loopback host to a non-loopback bind address (${address.address}).`,
+      );
+    }
+    if (boundNonLoopback && authToken === undefined) {
+      await stopStartedServer();
+      throw new SessionWebServerError(
+        "missing_auth_token",
+        `Session web server requires an auth token when the actual bound address is non-loopback (${address.address}).`,
+      );
+    }
     const url = `http://${hostForUrl(host)}:${address.port}/`;
     return {
       url,
-      async stop() {
-        for (const closeStream of [...activeStreams]) {
-          closeStream();
-        }
-        activeStreams.clear();
-        await close(server);
-        await aggregator.stop();
+      boundAddress: address.address,
+      stop() {
+        return stopStartedServer();
       },
     };
   } catch (error) {
     // Don't leak the aggregator's watchers/live connections if we never bound.
-    await aggregator.stop();
+    await stopAggregatorOnce();
     throw error;
+  }
+}
+
+async function closeServerBounded(server: ReturnType<typeof createServer>): Promise<void> {
+  const closing = close(server);
+  server.closeIdleConnections();
+
+  let forceTimer: ReturnType<typeof setTimeout> | undefined;
+  let outcome: "closed" | "forced";
+  try {
+    outcome = await Promise.race([
+      closing.then(() => "closed" as const),
+      new Promise<"forced">((resolvePromise) => {
+        forceTimer = setTimeout(() => {
+          server.closeAllConnections();
+          resolvePromise("forced");
+        }, FORCE_CLOSE_AFTER_MS);
+      }),
+    ]);
+  } finally {
+    if (forceTimer !== undefined) {
+      clearTimeout(forceTimer);
+    }
+  }
+
+  if (outcome === "forced") {
+    let finalTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        closing,
+        new Promise<void>((resolvePromise) => {
+          finalTimer = setTimeout(resolvePromise, FORCE_CLOSE_AFTER_MS);
+        }),
+      ]);
+    } finally {
+      if (finalTimer !== undefined) {
+        clearTimeout(finalTimer);
+      }
+    }
   }
 }
 
@@ -418,7 +500,7 @@ function parseOffset(value: string | undefined): number {
 
 function requireApiAuth(authToken: string): (req: Request, res: Response, next: NextFunction) => void {
   return (req, res, next) => {
-    const supplied = readAuthorizationBearer(req.headers.authorization) ?? firstString(req.query.token);
+    const supplied = readAuthorizationBearer(req.headers.authorization);
     if (supplied !== undefined && bearerTokensEqual(supplied, authToken)) {
       next();
       return;

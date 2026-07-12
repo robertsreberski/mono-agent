@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { loadOpenAIApiAdapterConfig } from "@mono-agent/openai-api-adapter";
+
 const here = dirname(fileURLToPath(import.meta.url));
 
 /** Walk up from this test until the pnpm workspace root (the dir with pnpm-workspace.yaml). */
@@ -32,6 +34,7 @@ function codeEnvKeys(root: string): Set<string> {
     // App-level loaders that read their own MONO_AGENT_* keys outside the core config.
     join(root, "packages/agent-app/src/interaction-bridge.ts"),
     join(root, "packages/agent-app/src/adapter-send-tools.ts"),
+    join(root, "packages/agent-app/src/web-command.ts"),
   ];
   for (const workspaceRoot of ["packages", "extras"]) {
     const workspaceDir = join(root, workspaceRoot);
@@ -84,6 +87,12 @@ describe("env-vars.md <-> code parity", () => {
     expect(docPaths.length).toBeGreaterThan(0);
   });
 
+  it("keeps the documented OpenAI API port default aligned with runtime", async () => {
+    const channelDoc = readFileSync(join(root, "docs/channels/openai-api.md"), "utf8");
+    const defaults = await loadOpenAIApiAdapterConfig({ env: {} });
+    expect(channelDoc).toContain(`| \`port\` | integer | \`${defaults.port}\` | TCP port`);
+  });
+
   for (const docPath of docPaths) {
     it(`references only real env keys in ${docPath.slice(root.length + 1)}`, () => {
       const docKeys = new Set(envKeysIn(readFileSync(docPath, "utf8")));
@@ -93,6 +102,13 @@ describe("env-vars.md <-> code parity", () => {
         (key) => !key.endsWith("_") && !code.has(key),
       );
       expect(unknown).toEqual([]);
+    });
+
+    it(`documents every OpenAI API env key in ${docPath.slice(root.length + 1)}`, () => {
+      const docKeys = new Set(envKeysIn(readFileSync(docPath, "utf8")));
+      const openAIApiKeys = [...code].filter((key) => key.startsWith("MONO_AGENT_OPENAI_API_"));
+      expect(openAIApiKeys.length).toBeGreaterThan(0);
+      expect(openAIApiKeys.filter((key) => !docKeys.has(key))).toEqual([]);
     });
   }
 });

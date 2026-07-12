@@ -329,7 +329,9 @@ export {
   close,
   hostForUrl,
   isLoopbackHost,
+  isWildcardHost,
   listen,
+  normalizeHostForBind,
 } from "./host-safety.js";
 export type { ListenErrorFactories } from "./host-safety.js";
 export {
