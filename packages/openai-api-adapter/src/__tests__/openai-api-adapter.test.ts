@@ -1,6 +1,10 @@
+import dns from "node:dns";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+
 import { describe, expect, it } from "vitest";
 
-import type { AgentResponder } from "@mono-agent/agent-contracts";
+import { isWildcardHost, type AgentResponder } from "@mono-agent/agent-contracts";
 
 import { startOpenAIApiAdapter, type OpenAIApiChatRequest } from "../index.js";
 
@@ -1003,6 +1007,26 @@ describe("OpenAI API adapter", () => {
     ).rejects.toMatchObject({ code: "missing_required_config" });
   });
 
+  it("requires bearer auth when localhost resolves to a non-loopback address after consent", async () => {
+    const port = await reserveLoopbackPort();
+    const originalLookup = dns.lookup;
+    dns.lookup = wildcardLocalhostLookup as typeof dns.lookup;
+    try {
+      await expect(
+        startOpenAIApiAdapter({
+          host: "localhost",
+          port,
+          allowNonLoopback: true,
+          modelId: "agent",
+          responder: echoResponder(),
+        }),
+      ).rejects.toMatchObject({ code: "missing_required_config" });
+      await expectPortReusable(port);
+    } finally {
+      dns.lookup = originalLookup;
+    }
+  });
+
   it("advertises concrete usable URLs instead of a wildcard bind address", async () => {
     const server = await startOpenAIApiAdapter({
       host: "0.0.0.0",
@@ -1018,6 +1042,30 @@ describe("OpenAI API adapter", () => {
       expect(server.baseUrl).toBe(server.baseUrls[0]);
       expect(server.baseUrls.length).toBeGreaterThan(0);
       expect(server.baseUrls.every((url) => !url.includes("0.0.0.0"))).toBe(true);
+      const models = await fetch(`${server.baseUrl}/models`, {
+        headers: { authorization: "Bearer test-key" },
+      });
+      expect(models.status).toBe(200);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("advertises only concrete URLs for an IPv4-mapped IPv6 wildcard bind", async () => {
+    const server = await startOpenAIApiAdapter({
+      host: "[::ffff:0.0.0.0]",
+      port: 0,
+      allowNonLoopback: true,
+      apiKey: "test-key",
+      modelId: "agent",
+      responder: echoResponder(),
+    });
+
+    try {
+      expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+      expect(server.baseUrl).toBe(server.baseUrls[0]);
+      expect(server.baseUrls.every((url) => !isWildcardHost(new URL(url).hostname))).toBe(true);
+      expect(server.baseUrls.every((url) => !url.includes("::ffff:0"))).toBe(true);
       const models = await fetch(`${server.baseUrl}/models`, {
         headers: { authorization: "Bearer test-key" },
       });
@@ -1268,6 +1316,44 @@ describe("OpenAI API adapter", () => {
     });
   });
 });
+
+async function reserveLoopbackPort(): Promise<number> {
+  const probe = createServer();
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.once("error", rejectPromise);
+    probe.listen(0, "127.0.0.1", () => resolvePromise());
+  });
+  const address = probe.address() as AddressInfo;
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.close((error) => error === undefined ? resolvePromise() : rejectPromise(error));
+  });
+  return address.port;
+}
+
+async function expectPortReusable(port: number): Promise<void> {
+  const probe = createServer();
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.once("error", rejectPromise);
+    probe.listen(port, "127.0.0.1", () => resolvePromise());
+  });
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.close((error) => error === undefined ? resolvePromise() : rejectPromise(error));
+  });
+}
+
+function wildcardLocalhostLookup(
+  _hostname: string,
+  options: unknown,
+  callback?: unknown,
+): void {
+  const done = typeof options === "function" ? options : callback;
+  if (typeof done !== "function") {
+    throw new TypeError("dns.lookup callback is required");
+  }
+  queueMicrotask(() => {
+    (done as (error: null, address: string, family: number) => void)(null, "0.0.0.0", 4);
+  });
+}
 
 function echoResponder(): AgentResponder {
   return {

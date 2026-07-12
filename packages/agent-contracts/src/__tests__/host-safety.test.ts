@@ -63,6 +63,10 @@ describe("bind-host normalization", () => {
     expect(isWildcardHost("::")).toBe(true);
     expect(isWildcardHost("[::]")).toBe(true);
     expect(isWildcardHost("0:0:0:0:0:0:0:0")).toBe(true);
+    expect(isWildcardHost("::ffff:0.0.0.0")).toBe(true);
+    expect(isWildcardHost("[::ffff:0.0.0.0]")).toBe(true);
+    expect(isWildcardHost("0:0:0:0:0:ffff:0:0")).toBe(true);
+    expect(isWildcardHost("::ffff:0.0.0.1")).toBe(false);
     expect(isWildcardHost("0.0.0.0.example")).toBe(false);
   });
 });

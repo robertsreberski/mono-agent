@@ -295,16 +295,34 @@ export async function startOpenAIApiAdapter(
     }
   }
 
-  if (options.allowNonLoopback !== true && !isLoopbackHost(address.address)) {
-    await close(server);
+  async function closeRejectedServer(): Promise<void> {
+    stopping = true;
+    for (const controller of activeRequests) {
+      controller.abort(new Error("OpenAI API adapter rejected its actual bound address."));
+    }
+    await closeServerBounded(server);
+    activeRequests.clear();
+  }
+
+  const boundNonLoopback = !isLoopbackHost(address.address);
+  if (boundNonLoopback && options.allowNonLoopback !== true) {
+    await closeRejectedServer();
     throw new OpenAIApiAdapterError(
       "unsafe_host",
       "OpenAI API adapter resolved a loopback host to a non-loopback bind address.",
       { host, boundAddress: address.address },
     );
   }
+  if (boundNonLoopback && apiKey === undefined) {
+    await closeRejectedServer();
+    throw new OpenAIApiAdapterError(
+      "missing_required_config",
+      "OpenAI API adapter requires an API key when the actual bound address is non-loopback.",
+      { host, boundAddress: address.address },
+    );
+  }
 
-  const origins = advertisedOrigins(host, boundPort);
+  const origins = advertisedOrigins(host, address.address, boundPort);
   const url = origins[0] ?? `http://${hostForUrl(host)}:${boundPort}`;
   const baseUrls = origins.map((origin) => `${origin}${basePath}`);
 
@@ -330,11 +348,32 @@ export async function startOpenAIApiAdapter(
   };
 }
 
-function advertisedOrigins(host: string, port: number): readonly string[] {
-  const hosts = isWildcardHost(host)
-    ? [host.includes(":") ? "::1" : "127.0.0.1", ...discoverPrivateIpv4Addresses()]
+function advertisedOrigins(host: string, boundAddress: string, port: number): readonly string[] {
+  const wildcardHost = isWildcardHost(host)
+    ? host
+    : isWildcardHost(boundAddress)
+      ? boundAddress
+      : undefined;
+  const hosts = wildcardHost !== undefined
+    ? [loopbackForWildcardHost(wildcardHost), ...discoverPrivateIpv4Addresses()]
     : [host];
   return [...new Set(hosts)].map((entry) => `http://${hostForUrl(entry)}:${port}`);
+}
+
+function loopbackForWildcardHost(host: string): "127.0.0.1" | "::1" {
+  const normalized = normalizeHostForBind(host).toLowerCase();
+  if (normalized === "0.0.0.0") {
+    return "127.0.0.1";
+  }
+  try {
+    const canonical = new URL(`http://[${normalized}]/`).hostname.slice(1, -1);
+    if (canonical === "::ffff:0:0") {
+      return "127.0.0.1";
+    }
+  } catch {
+    // isWildcardHost already validated the caller; fall through defensively.
+  }
+  return "::1";
 }
 
 function discoverPrivateIpv4Addresses(): readonly string[] {

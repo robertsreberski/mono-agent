@@ -76,6 +76,7 @@ function headersFrom(call: readonly unknown[]): Record<string, string> {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   clearAuthToken();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -83,7 +84,7 @@ afterEach(() => {
 
 describe("session-web API auth", () => {
   test("bootstraps auth from a URL fragment and keeps bearer tokens out of request URLs", async () => {
-    const replaceState = installWindow("#token=session-secret");
+    const replaceState = installWindow("?keep=query#view=all&token=session-secret");
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ instances: [], sessions: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -94,7 +95,7 @@ describe("session-web API auth", () => {
     expect(headersFrom(fetchMock.mock.calls[0] ?? []).authorization).toBe("Bearer session-secret");
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/sessions?instance=agent+one&limit=10");
     expect(headersFrom(fetchMock.mock.calls[1] ?? []).authorization).toBe("Bearer session-secret");
-    expect(replaceState).toHaveBeenCalledWith(undefined, "", "/");
+    expect(replaceState).toHaveBeenCalledWith(undefined, "", "/?keep=query#view=all");
   });
 
   test("requests paged session history with offset metadata", async () => {
@@ -111,7 +112,7 @@ describe("session-web API auth", () => {
   });
 
   test("keeps a URL token in memory after stripping it when storage is unavailable", async () => {
-    const replaceState = installWindow("?token=url-secret", throwingStorage());
+    const replaceState = installWindow("#token=url-secret", throwingStorage());
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ instances: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -121,6 +122,20 @@ describe("session-web API auth", () => {
     expect(replaceState).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual(["/api/instances", "/api/instances"]);
     expect(fetchMock.mock.calls.map((call) => headersFrom(call).authorization)).toEqual(["Bearer url-secret", "Bearer url-secret"]);
+  });
+
+  test("ignores and removes a query token without disturbing unrelated URL state", async () => {
+    const replaceState = installWindow("?keep=query&token=query-secret#view=all", throwingStorage());
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ instances: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchInstances();
+    await fetchInstances();
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual(["/api/instances", "/api/instances"]);
+    expect(fetchMock.mock.calls.map((call) => headersFrom(call).authorization)).toEqual([undefined, undefined]);
+    expect(replaceState).toHaveBeenCalledOnce();
+    expect(replaceState).toHaveBeenCalledWith(undefined, "", "/?keep=query#view=all");
   });
 
   test("streams with Authorization fetch headers and never puts the token in the URL", async () => {
@@ -151,5 +166,34 @@ describe("session-web API auth", () => {
     expect(headersFrom(fetchMock.mock.calls[0] ?? []).authorization).toBe("Bearer stream-secret");
     expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain("stream-secret");
     close();
+  });
+
+  test("cancels every non-terminating HTTP error body before reconnecting", async () => {
+    vi.useFakeTimers();
+    installWindow();
+    let created = 0;
+    let cancelled = 0;
+    const fetchMock = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start() {
+        created += 1;
+      },
+      cancel() {
+        cancelled += 1;
+      },
+    }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const close = openStream({ onMessage: vi.fn(), onError: vi.fn() });
+    await vi.advanceTimersByTimeAsync(0);
+    expect({ created, cancelled }).toEqual({ created: 1, cancelled: 1 });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect({ created, cancelled }).toEqual({ created: 2, cancelled: 2 });
+
+    close();
+    expect(created - cancelled).toBe(0);
   });
 });

@@ -1,4 +1,7 @@
+import dns from "node:dns";
 import { mkdir, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -440,6 +443,27 @@ describe("startSessionWebServer", () => {
     ).rejects.toThrow(/auth token/u);
   });
 
+  it("requires auth when localhost resolves non-loopback after exposure consent", async () => {
+    const fix = await fixture();
+    const port = await reserveLoopbackPort();
+    const originalLookup = dns.lookup;
+    dns.lookup = wildcardLocalhostLookup as typeof dns.lookup;
+    try {
+      await expect(
+        startSessionWebServer({
+          registryDirs: [fix.registryDir],
+          staticDir: fix.staticDir,
+          host: "localhost",
+          port,
+          allowNonLoopback: true,
+        }),
+      ).rejects.toThrow(/actual bound address is non-loopback/u);
+      await expectPortReusable(port);
+    } finally {
+      dns.lookup = originalLookup;
+    }
+  });
+
   it("requires bearer auth on API and stream routes for non-loopback binds", async () => {
     const fix = await fixture();
     server = await startSessionWebServer({
@@ -497,6 +521,44 @@ describe("startSessionWebServer", () => {
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function reserveLoopbackPort(): Promise<number> {
+  const probe = createServer();
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.once("error", rejectPromise);
+    probe.listen(0, "127.0.0.1", () => resolvePromise());
+  });
+  const address = probe.address() as AddressInfo;
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.close((error) => error === undefined ? resolvePromise() : rejectPromise(error));
+  });
+  return address.port;
+}
+
+async function expectPortReusable(port: number): Promise<void> {
+  const probe = createServer();
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.once("error", rejectPromise);
+    probe.listen(port, "127.0.0.1", () => resolvePromise());
+  });
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.close((error) => error === undefined ? resolvePromise() : rejectPromise(error));
+  });
+}
+
+function wildcardLocalhostLookup(
+  _hostname: string,
+  options: unknown,
+  callback?: unknown,
+): void {
+  const done = typeof options === "function" ? options : callback;
+  if (typeof done !== "function") {
+    throw new TypeError("dns.lookup callback is required");
+  }
+  queueMicrotask(() => {
+    (done as (error: null, address: string, family: number) => void)(null, "0.0.0.0", 4);
+  });
 }
 
 function localLoopbackUrl(serverUrl: string, path: string): string {

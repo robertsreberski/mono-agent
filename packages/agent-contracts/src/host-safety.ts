@@ -50,8 +50,23 @@ export function normalizeHostForBind(host: string): string {
 /** True for the IPv4 and IPv6 unspecified addresses used to bind all interfaces. */
 export function isWildcardHost(host: string): boolean {
   const normalized = normalizeHostForBind(host).toLowerCase();
-  return normalized === "0.0.0.0"
-    || (isIP(normalized) === 6 && canonicalIpv6(normalized) === "::");
+  if (normalized === "0.0.0.0") {
+    return true;
+  }
+  if (isIP(normalized) !== 6) {
+    return false;
+  }
+  const canonical = canonicalIpv6(normalized);
+  if (canonical === "::") {
+    return true;
+  }
+  // Node normalizes the IPv4-mapped unspecified address to an IPv6 wildcard
+  // bind on supported dual-stack hosts. Treat it as wildcard before building
+  // client URLs so an unspecified address is never advertised as a target.
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/u.exec(canonical);
+  return mapped !== null
+    && Number.parseInt(mapped[1] ?? "", 16) === 0
+    && Number.parseInt(mapped[2] ?? "", 16) === 0;
 }
 
 /** Wrap a bare IPv6 host in brackets so it is safe to embed in a URL. */

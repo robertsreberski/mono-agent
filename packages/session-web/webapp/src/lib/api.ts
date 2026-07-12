@@ -125,6 +125,7 @@ export function openStream({ onMessage, onOpen, onError }: StreamHandlers): () =
         cache: "no-store",
       });
       if (!response.ok || response.body === null) {
+        await response.body?.cancel().catch(() => undefined);
         throw new ApiError("/api/stream", String(response.status), {
           status: response.status,
           contentType: response.headers.get("content-type") || undefined,
@@ -211,14 +212,19 @@ function currentAuthToken(): string | undefined {
     return undefined;
   }
   const fragment = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
-  const fromUrl = (
-    new URLSearchParams(fragment).get(AUTH_TOKEN_PARAM)
-    ?? new URLSearchParams(window.location.search).get(AUTH_TOKEN_PARAM)
-  )?.trim();
+  const fragmentParams = new URLSearchParams(fragment);
+  const queryParams = new URLSearchParams(window.location.search);
+  const fromUrl = fragmentParams.get(AUTH_TOKEN_PARAM)?.trim();
   if (fromUrl !== undefined && fromUrl.length > 0) {
     saveAuthToken(fromUrl);
     stripAuthTokenFromUrl();
     return fromUrl;
+  }
+  // Query credentials have already crossed the HTTP request target before the
+  // PWA can inspect them. Never consume them as authentication; remove legacy
+  // or empty token parameters while preserving unrelated query/hash state.
+  if (fragmentParams.has(AUTH_TOKEN_PARAM) || queryParams.has(AUTH_TOKEN_PARAM)) {
+    stripAuthTokenFromUrl();
   }
   if (cachedAuthToken !== undefined) return cachedAuthToken;
   try {

@@ -9,6 +9,7 @@ import {
   hostForUrl,
   isLoopbackHost,
   isWildcardHost,
+  normalizeHostForBind,
   normalizeOptionalString,
 } from "@mono-agent/agent-contracts";
 
@@ -112,10 +113,12 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
     return 1;
   }
 
-  const networkAddresses = isWildcardUrl(handle.url)
+  const wildcardBind = isWildcardUrl(handle.url)
+    || (handle.boundAddress !== undefined && isWildcardHost(handle.boundAddress));
+  const networkAddresses = wildcardBind
     ? bestEffortNetworkAddresses(deps.discoverNetworkAddresses)
     : [];
-  const advertisedUrls = resolveAdvertisedUrls(handle.url, networkAddresses);
+  const advertisedUrls = resolveAdvertisedUrls(handle.url, networkAddresses, handle.boundAddress);
   const primaryUrl = advertisedUrls[0]?.url ?? handle.url;
   const mayPrintConfiguredToken = configuredAuthToken !== undefined
     && options.showAuthUrl === true
@@ -217,12 +220,20 @@ function printAdvertisedUrls(
   }
 }
 
-function resolveAdvertisedUrls(url: string, networkAddresses: readonly WebNetworkAddress[]): AdvertisedUrl[] {
-  if (!isWildcardUrl(url)) {
+function resolveAdvertisedUrls(
+  url: string,
+  networkAddresses: readonly WebNetworkAddress[],
+  boundAddress: string | undefined,
+): AdvertisedUrl[] {
+  const requestedWildcard = isWildcardUrl(url) ? new URL(url).hostname : undefined;
+  const actualWildcard = boundAddress !== undefined && isWildcardHost(boundAddress)
+    ? boundAddress
+    : undefined;
+  if (requestedWildcard === undefined && actualWildcard === undefined) {
     return [{ label: isLoopbackUrl(url) ? "Loopback" : "Web", url }];
   }
-  const wildcardHost = new URL(url).hostname;
-  const loopbackHost = wildcardHost.includes(":") ? "::1" : "127.0.0.1";
+  const wildcardHost = requestedWildcard ?? actualWildcard ?? new URL(url).hostname;
+  const loopbackHost = loopbackForWildcardHost(wildcardHost);
   const urls: AdvertisedUrl[] = [{ label: "Loopback", url: replaceUrlHost(url, loopbackHost) }];
   for (const entry of networkAddresses) {
     urls.push({
@@ -231,6 +242,22 @@ function resolveAdvertisedUrls(url: string, networkAddresses: readonly WebNetwor
     });
   }
   return urls;
+}
+
+function loopbackForWildcardHost(host: string): "127.0.0.1" | "::1" {
+  const normalized = normalizeHostForBind(host).toLowerCase();
+  if (normalized === "0.0.0.0") {
+    return "127.0.0.1";
+  }
+  try {
+    const canonical = new URL(`http://[${normalized}]/`).hostname.slice(1, -1);
+    if (canonical === "::ffff:0:0") {
+      return "127.0.0.1";
+    }
+  } catch {
+    // isWildcardHost already validated the caller; fall through defensively.
+  }
+  return "::1";
 }
 
 function replaceUrlHost(url: string, host: string): string {

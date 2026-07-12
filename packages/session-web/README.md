@@ -67,9 +67,10 @@ updates, API responses, browser SSE frames, and live folds; pass
 
 ## Public API
 
-- `startSessionWebServer(options)` → `{ url, stop() }` (`includeMemory` defaults
-  to `false`; `true` includes memory-maintenance runs in history/API/SSE/live
-  frames).
+- `startSessionWebServer(options)` → `{ url, boundAddress, stop() }`
+  (`boundAddress` is Node's post-listen address for safety checks and wildcard
+  advertisement; `includeMemory` defaults to `false`; `true` includes
+  memory-maintenance runs in history/API/SSE/live frames).
 - `discoverWebInstances(options)` and the `Session`/`SessionStep`/`WebInstance` types.
 
 ## Dependency Boundary

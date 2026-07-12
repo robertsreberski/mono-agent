@@ -61,6 +61,8 @@ export interface StartSessionWebServerOptions {
 
 export interface SessionWebServerHandle {
   readonly url: string;
+  /** Actual address reported by Node after listen; used to verify/advertise wildcard binds safely. */
+  readonly boundAddress?: string;
   stop(): Promise<void>;
 }
 
@@ -191,16 +193,36 @@ export async function startSessionWebServer(
       listenFailed: (reason) => new SessionWebServerError("start_failed", `Session web server failed to listen: ${reason}`),
       noAddress: () => new SessionWebServerError("start_failed", "Session web server did not receive a TCP address."),
     });
-    if (options.allowNonLoopback !== true && !isLoopbackHost(address.address)) {
-      await close(server);
+    async function closeRejectedServer(): Promise<void> {
+      for (const closeStream of [...activeStreams]) {
+        closeStream();
+      }
+      activeStreams.clear();
+      const closing = close(server);
+      void closing.catch(() => undefined);
+      server.closeAllConnections();
+      await closing;
+    }
+
+    const boundNonLoopback = !isLoopbackHost(address.address);
+    if (boundNonLoopback && options.allowNonLoopback !== true) {
+      await closeRejectedServer();
       throw new SessionWebServerError(
         "unsafe_host",
         `Session web server resolved a loopback host to a non-loopback bind address (${address.address}).`,
       );
     }
+    if (boundNonLoopback && authToken === undefined) {
+      await closeRejectedServer();
+      throw new SessionWebServerError(
+        "missing_auth_token",
+        `Session web server requires an auth token when the actual bound address is non-loopback (${address.address}).`,
+      );
+    }
     const url = `http://${hostForUrl(host)}:${address.port}/`;
     return {
       url,
+      boundAddress: address.address,
       async stop() {
         for (const closeStream of [...activeStreams]) {
           closeStream();
