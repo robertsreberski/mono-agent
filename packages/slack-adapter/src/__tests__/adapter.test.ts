@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { AgentResponseCancelledError } from "@mono-agent/agent-contracts";
+import {
+  AgentResponseCancelledError,
+  isChannelUserCancelReason,
+} from "@mono-agent/agent-contracts";
 
 import {
   SerialQueue,
@@ -240,6 +243,7 @@ describe("SlackAdapter", () => {
     expect(capturedSignal?.aborted).toBe(true);
 
     await expect(notifyRun).resolves.toEqual({ delivered: false, reason: "cancelled" });
+    expect(api.postMessageCalls.filter((call) => call.text === "Cancelled.")).toHaveLength(1);
   });
 
   it("notify() without a thread posts top-level and keys on the bare channel", async () => {
@@ -282,6 +286,17 @@ describe("SlackAdapter", () => {
       "Hello! Send me a Slack message and I will pass it to the configured agent.",
       "Send a Slack DM or mention the app in a channel. Use /cancel in a thread to stop the current response.",
     ]);
+    expect(responder.respond).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges /cancel exactly once when no turn is active", async () => {
+    const api = new FakeSlackApi();
+    const responder = { respond: vi.fn() } satisfies AgentResponder;
+    const adapter = new SlackAdapter({ api, responder, allowAllChannels: true });
+
+    await adapter.handleEventCallback(directMessage("/cancel"));
+
+    expect(api.postMessageCalls.filter((call) => call.text === "Cancelled.")).toHaveLength(1);
     expect(responder.respond).not.toHaveBeenCalled();
   });
 
@@ -720,7 +735,7 @@ describe("SlackAdapter", () => {
   it("aborts active runs and clears queued follow-ups on /cancel in the same Slack thread", async () => {
     const api = new FakeSlackApi();
     let capturedSignal: AbortSignal | undefined;
-    const cancelCalls: string[] = [];
+    const cancelCalls: Array<{ conversationId: string; reason: unknown }> = [];
     const responderStarted = createDeferred<void>();
     const adapter = new SlackAdapter({
       api,
@@ -737,8 +752,8 @@ describe("SlackAdapter", () => {
             );
             responderStarted.resolve(undefined);
           }),
-        cancel: (conversationId: string) => {
-          cancelCalls.push(conversationId);
+        cancel: (conversationId: string, reason?: unknown) => {
+          cancelCalls.push({ conversationId, reason });
         },
       },
     });
@@ -750,10 +765,11 @@ describe("SlackAdapter", () => {
       adapter.handleEventCallback(directMessage("/cancel", { eventId: "Ev2", ts: "171.000002", threadTs: "171.000001" })),
     ).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
     expect(capturedSignal?.aborted).toBe(true);
-    expect(cancelCalls).toEqual(["slack:D123:171.000001"]);
+    expect(cancelCalls).toHaveLength(1);
+    expect(cancelCalls[0]?.conversationId).toBe("slack:D123:171.000001");
+    expect(isChannelUserCancelReason(cancelCalls[0]?.reason)).toBe(true);
     await expect(first).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
-    // Final-only delivery: the terminal "Cancelled." copy is the single final post.
-    expect(api.postMessageCalls.at(-1)?.text).toBe("Cancelled.");
+    expect(api.postMessageCalls.filter((call) => call.text === "Cancelled.")).toHaveLength(1);
     expect(api.updateCalls).toEqual([]);
   });
 
@@ -805,8 +821,50 @@ describe("SlackAdapter", () => {
 
     // The responder ran exactly once (A only) — B bailed before responder.respond.
     expect(respondCalls).toBe(1);
-    // No agent answer for B is posted after cancel; the last copy is the terminal.
-    expect(api.postMessageCalls.at(-1)?.text).toBe("Cancelled.");
+    // No agent answer or per-turn cancellation is posted after the command ack.
+    expect(api.postMessageCalls.filter((call) => call.text === "Cancelled.")).toHaveLength(1);
+  });
+
+  it("/cancel aborts another physical thread queued under the same resolved conversation", async () => {
+    const api = new FakeSlackApi();
+    const firstRelease = createDeferred<{ text: string }>();
+    const responderStarted = createDeferred<void>();
+    const requests: string[] = [];
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      resolvePostIndex: async () => "slack:D123",
+      responder: {
+        respond: async (request) => {
+          requests.push(request.text);
+          if (requests.length === 1) {
+            responderStarted.resolve(undefined);
+            return await firstRelease.promise;
+          }
+          return { text: "must not run" };
+        },
+        cancel: () => undefined,
+      },
+    });
+
+    const threadA = adapter.handleEventCallback(
+      directMessage("thread A", { eventId: "EvA", ts: "171.000010", threadTs: "171.000001" }),
+    );
+    await responderStarted.promise;
+    const threadB = adapter.handleEventCallback(
+      directMessage("thread B", { eventId: "EvB", ts: "172.000010", threadTs: "172.000001" }),
+    );
+
+    await expect(adapter.handleEventCallback(
+      directMessage("/cancel", { eventId: "EvCancel", ts: "171.000011", threadTs: "171.000001" }),
+    )).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
+    firstRelease.resolve({ text: "must not deliver" });
+
+    await expect(threadA).resolves.toMatchObject({ kind: "cancelled" });
+    await expect(threadB).resolves.toMatchObject({ kind: "cancelled" });
+    expect(requests).toEqual(["thread A"]);
+    expect(api.postMessageCalls.filter((call) => call.text === "Cancelled.")).toHaveLength(1);
   });
 
   it("does not require a responder.cancel to handle /cancel", async () => {

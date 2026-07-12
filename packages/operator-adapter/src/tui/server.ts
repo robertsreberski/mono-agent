@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 
 import {
+  createChannelUserCancelReason,
   isAgentResponseCancelledError,
   serializeAgentStreamFrame,
   type AgentMessageStream,
@@ -170,7 +171,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       sendJsonError(res, 501, new TuiAdapterError("invalid_request", "This responder does not support cancel."));
       return;
     }
-    options.responder.cancel(conversationId, "tui_cancel");
+    options.responder.cancel(conversationId, createChannelUserCancelReason("TUI"));
     res.status(202).json({ cancelled: conversationId });
   });
 

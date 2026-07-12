@@ -72,22 +72,29 @@ export function buildRunsHealthDisplay(input: BuildRunsHealthDisplayInput): Runs
     details.push(`[WARN] Running summaries while process is gone: ${formatRunExamples(runningWhileOwnerGone, now)}.`);
   }
 
-  const unsuccessful = input.runs.filter((run) => FAILED_LIKE_RUN_STATUSES.has(run.status));
+  const userCancelled = input.runs.filter(isUserCancelledRun);
+  const unsuccessful = input.runs.filter((run) =>
+    FAILED_LIKE_RUN_STATUSES.has(run.status) && !isUserCancelledRun(run)
+  );
   if (unsuccessful.length > 0) {
     hasWarnings = true;
     details.push(`[WARN] Recent non-successful runs: ${formatRunExamples(unsuccessful, now)}.`);
   }
 
-  if (statusCounts.cancelled > 0) {
+  if (userCancelled.length > 0) {
+    details.push(`User-cancelled runs: ${userCancelled.length} (expected lifecycle outcome; health unchanged).`);
+  }
+  const otherCancelled = Math.max(0, statusCounts.cancelled - userCancelled.length);
+  if (otherCancelled > 0) {
     hasWarnings = true;
-    details.push(`[WARN] Cancelled recent runs: ${statusCounts.cancelled}.`);
+    details.push(`[WARN] Cancelled recent runs: ${otherCancelled}.`);
   }
   if (statusCounts.interrupted > 0) {
     hasWarnings = true;
     details.push(`[WARN] Interrupted recent runs: ${statusCounts.interrupted}.`);
   }
 
-  const failureKindCounts = failureKindHistogram(input.runs);
+  const failureKindCounts = failureKindHistogram(input.runs.filter((run) => !isUserCancelledRun(run)));
   if (failureKindCounts.length > 0) {
     hasWarnings = true;
     details.push(`[WARN] Failure kinds: ${failureKindCounts.map(([kind, count]) => `${kind}=${count}`).join(", ")}.`);
@@ -101,6 +108,10 @@ export function buildRunsHealthDisplay(input: BuildRunsHealthDisplayInput): Runs
   }
 
   return { status: hasWarnings ? "waiting" : "ok", details };
+}
+
+function isUserCancelledRun(run: RecordedRunListItem): boolean {
+  return run.status === "cancelled" && run.failureKind?.trim() === "cancelled_user";
 }
 
 export function formatSelectedSkillsLine(selectedSkills: readonly string[] | undefined): string {

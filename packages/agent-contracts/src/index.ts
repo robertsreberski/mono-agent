@@ -162,6 +162,47 @@ export interface AgentResponseCancelledErrorOptions {
   readonly reason?: unknown;
 }
 
+/**
+ * Stable abort reason for an explicit channel-user cancellation such as
+ * `/cancel`. Adapters use this to distinguish a command they already
+ * acknowledged from provider, transport, or shutdown cancellation, whose
+ * existing terminal delivery behavior must remain unchanged.
+ */
+export class ChannelUserCancelReason extends Error {
+  readonly channel: string;
+  /** Cross-package brand; survives duplicate package identities. */
+  readonly channelUserCancel = true as const;
+
+  constructor(channel: string) {
+    const normalizedChannel = channel.trim();
+    if (normalizedChannel.length === 0) {
+      throw new TypeError("Channel user cancel reason requires a channel name.");
+    }
+    super(`Cancelled by ${normalizedChannel} user.`);
+    this.name = "ChannelUserCancelReason";
+    this.channel = normalizedChannel;
+  }
+}
+
+/** Create the branded reason passed to responder and adapter abort controllers. */
+export function createChannelUserCancelReason(channel: string): ChannelUserCancelReason {
+  return new ChannelUserCancelReason(channel);
+}
+
+/** Recognize a channel-user cancellation across duplicate package identities. */
+export function isChannelUserCancelReason(
+  reason: unknown,
+): reason is ChannelUserCancelReason {
+  if (reason instanceof ChannelUserCancelReason) {
+    return true;
+  }
+  return (
+    typeof reason === "object" &&
+    reason !== null &&
+    (reason as { channelUserCancel?: unknown }).channelUserCancel === true
+  );
+}
+
 export class AgentResponseCancelledError extends Error {
   readonly reason?: unknown;
   /**

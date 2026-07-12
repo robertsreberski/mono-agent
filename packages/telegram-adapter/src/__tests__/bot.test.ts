@@ -4,7 +4,10 @@ import { Agent as HttpsAgent } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { AgentResponseCancelledError } from "@mono-agent/agent-contracts";
+import {
+  AgentResponseCancelledError,
+  isChannelUserCancelReason,
+} from "@mono-agent/agent-contracts";
 import { Bot } from "grammy";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -408,6 +411,18 @@ describe("createTelegramBot", () => {
     expect(texts(calls, "sendMessage")).toEqual([
       "Hello! Send text or Telegram media. I pass your caption and download allowed attachments to share with the configured agent.",
       "Send text, documents, photos, audio, video, round videos (video notes), or voice messages. I forward your caption and download supported attachments (within size/type limits) for the agent. Use /cancel to stop the current response.",
+    ]);
+    expect(responder.respond).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges /cancel exactly once when no turn is active", async () => {
+    const responder = { respond: vi.fn() } satisfies AgentResponder;
+    const { bot, calls } = buildTestBot({ responder });
+
+    await bot.handleUpdate(commandUpdate("/cancel"));
+
+    expect(texts(calls, "sendMessage").filter((text) => text === "Cancelled.")).toEqual([
+      "Cancelled.",
     ]);
     expect(responder.respond).not.toHaveBeenCalled();
   });
@@ -1156,7 +1171,7 @@ describe("createTelegramBot", () => {
     const received: string[] = [];
     const cancelCalls: string[] = [];
     const downloadGate = createDeferred<void>();
-    const { bot, downloads } = buildTestBot({
+    const { bot, calls, downloads } = buildTestBot({
       stream: { editDebounceMs: 0 },
       responder: {
         respond: async (request) => {
@@ -1194,6 +1209,9 @@ describe("createTelegramBot", () => {
     // Neither the cancelled active media turn nor the parked text turn reached the
     // responder — the parked message was genuinely cancelled, not run later.
     expect(received).toEqual([]);
+    expect(texts(calls, "sendMessage").filter((text) => text === "Cancelled.")).toEqual([
+      "Cancelled.",
+    ]);
   });
 
   it("replies busyText for an over-cap same-chat flood without invoking the responder or leaking its controller", async () => {
@@ -1389,12 +1407,10 @@ describe("createTelegramBot", () => {
     expect(cancelCalls).toEqual(["telegram:42"]);
     expect(capturedSignal?.aborted).toBe(true);
     await first;
-    expect(texts(calls, "sendMessage")).toContain("Cancelled.");
-    // The in-flight run resolves its placeholder to plain cancelled text via a
-    // final-only sendMessage (no parse_mode).
-    const cancelledSend = calls
-      .filter((call) => call.method === "sendMessage" && call.payload.text === "Cancelled.")
-      .at(-1);
+    const cancelledSends = calls
+      .filter((call) => call.method === "sendMessage" && call.payload.text === "Cancelled.");
+    expect(cancelledSends).toHaveLength(1);
+    const cancelledSend = cancelledSends[0];
     expect(cancelledSend?.payload.parse_mode).toBeUndefined();
   });
 
@@ -1492,7 +1508,7 @@ describe("createTelegramBot", () => {
   it("aborts the active run when /cancel is received and acks it", async () => {
     let capturedSignal: AbortSignal | undefined;
     const started = createDeferred<void>();
-    const cancelCalls: string[] = [];
+    const cancelCalls: Array<{ conversationId: string; reason: unknown }> = [];
     const { bot, calls } = buildTestBot({
       stream: { editDebounceMs: 0 },
       responder: {
@@ -1506,8 +1522,8 @@ describe("createTelegramBot", () => {
             );
             started.resolve();
           }),
-        cancel: (conversationId) => {
-          cancelCalls.push(conversationId);
+        cancel: (conversationId, reason) => {
+          cancelCalls.push({ conversationId, reason });
         },
       },
     });
@@ -1518,19 +1534,46 @@ describe("createTelegramBot", () => {
     await bot.handleUpdate(commandUpdate("/cancel", { updateId: 2 }));
 
     // /cancel clears queued follow-ups via responder.cancel and aborts the live run.
-    expect(cancelCalls).toEqual(["telegram:42"]);
+    expect(cancelCalls).toHaveLength(1);
+    expect(cancelCalls[0]?.conversationId).toBe("telegram:42");
+    expect(isChannelUserCancelReason(cancelCalls[0]?.reason)).toBe(true);
     expect(capturedSignal?.aborted).toBe(true);
     await first;
 
-    // The /cancel command acks with plain cancelled text…
-    expect(texts(calls, "sendMessage")).toContain("Cancelled.");
-    // …and the in-flight run resolves its placeholder to plain cancelled text via
-    // a final-only sendMessage (no parse_mode), with no interim edits.
+    // The command owns the only plain cancellation acknowledgement. The aborted
+    // in-flight turn stays silent.
     expect(texts(calls, "editMessageText")).toEqual([]);
-    const cancelledSend = calls
-      .filter((call) => call.method === "sendMessage" && call.payload.text === "Cancelled.")
-      .at(-1);
+    const cancelledSends = calls
+      .filter((call) => call.method === "sendMessage" && call.payload.text === "Cancelled.");
+    expect(cancelledSends).toHaveLength(1);
+    const cancelledSend = cancelledSends[0];
     expect(cancelledSend?.payload.parse_mode).toBeUndefined();
+  });
+
+  it("acknowledges /cancel exactly once while a proactive turn is active", async () => {
+    const started = createDeferred<void>();
+    const { bot, controller, calls } = buildTestBot({
+      responder: responderFrom(
+        async (request) =>
+          await new Promise<{ text: string }>((resolve) => {
+            request.abortSignal.addEventListener(
+              "abort",
+              () => resolve({ text: "should not be used" }),
+              { once: true },
+            );
+            started.resolve();
+          }),
+      ),
+    });
+
+    const proactive = controller.notify(42, "scheduled nudge");
+    await started.promise;
+    await bot.handleUpdate(commandUpdate("/cancel", { updateId: 2 }));
+
+    await expect(proactive).resolves.toEqual({ delivered: false, reason: "cancelled" });
+    expect(texts(calls, "sendMessage").filter((text) => text === "Cancelled.")).toEqual([
+      "Cancelled.",
+    ]);
   });
 
   it("does not throw when every delivery path fails after a successful run", async () => {
@@ -1556,16 +1599,28 @@ describe("createTelegramBot", () => {
     expect(errors.some((message) => message.includes("final delivery"))).toBe(true);
   });
 
-  it("reports a post-start polling crash via onPollingError", async () => {
+  it("reports a post-start polling crash without leaking nested Bot API tokens", async () => {
     const crashes: unknown[] = [];
-    const failure = new Error("polling crashed");
+    const token = "123456789:AAExampleSecret_0123456789abcdef";
+    const apiUrl = `https://api.telegram.org/bot${token}/getUpdates`;
+    const logs: Array<{ message: string; metadata?: Record<string, unknown> }> = [];
+    const failure = Object.assign(new Error(`polling crashed at ${apiUrl}`, {
+      cause: { request: { url: apiUrl, token } },
+    }), {
+      request: { url: apiUrl },
+    });
     const controller = createTelegramBot({
-      botToken: "test-token",
+      botToken: token,
       allowAllChats: true,
       responder: responderFrom(async () => ({ text: "ok" })),
       onPollingError: (error) => crashes.push(error),
+      logger: {
+        error: (message, metadata) => logs.push(
+          metadata === undefined ? { message } : { message, metadata },
+        ),
+      },
       botFactory: () => {
-        const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
+        const bot = new Bot(token, { botInfo: FAKE_BOT_INFO });
         bot.api.config.use(async () => ok(true));
         return bot;
       },
@@ -1583,8 +1638,60 @@ describe("createTelegramBot", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(crashes).toEqual([failure]);
+    expect(crashes).toHaveLength(1);
+    expect(crashes[0]).toBeInstanceOf(Error);
+    expect((crashes[0] as Error).message).toContain("polling crashed");
+    expect((crashes[0] as Error).message).not.toContain(token);
+    expect(JSON.stringify(crashes)).not.toContain(token);
+    expect(JSON.stringify(logs)).not.toContain(token);
+    expect(JSON.stringify(logs)).toContain("[REDACTED_TELEGRAM_BOT_TOKEN]");
     await controller.stop();
+  });
+
+  it("still schedules polling recovery when redaction inputs and the host callback are hostile", async () => {
+    vi.useFakeTimers();
+    try {
+      let runnerFactories = 0;
+      const failure = new Error("polling crashed");
+      Object.defineProperty(failure, "throwing", {
+        enumerable: true,
+        get: () => { throw new Error("getter failed"); },
+      });
+      const controller = createTelegramBot({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: responderFrom(async () => ({ text: "ok" })),
+        onPollingError: () => { throw new Error("host callback failed"); },
+        logger: { error: () => { throw new Error("logger failed"); } },
+        botFactory: () => {
+          const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
+          bot.api.config.use(async () => ok(true));
+          return bot;
+        },
+        runnerFactory: () => {
+          runnerFactories += 1;
+          const first = runnerFactories === 1;
+          return {
+            start: () => undefined,
+            stop: () => Promise.resolve(),
+            size: () => 0,
+            isRunning: () => true,
+            task: () => first ? Promise.reject(failure) : new Promise<void>(() => {}),
+          };
+        },
+      });
+
+      await controller.start();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(runnerFactories).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(runnerFactories).toBe(2);
+      await controller.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("re-arms message handling after stop() + start() (a message after restart IS handled)", async () => {
@@ -1921,7 +2028,7 @@ describe("createTelegramBot pending asks and status posts", () => {
 
   it("cancels the pending ask on /cancel", async () => {
     const cancel = vi.fn();
-    const { bot } = buildTestBot({
+    const { bot, calls } = buildTestBot({
       responder: responderFrom(async () => ({ text: "turn" })),
       pendingAsks: { tryResolve: vi.fn(async () => false), cancel },
     });
@@ -1929,6 +2036,9 @@ describe("createTelegramBot pending asks and status posts", () => {
     await bot.handleUpdate(commandUpdate("/cancel"));
 
     expect(cancel).toHaveBeenCalledWith("telegram:42");
+    expect(texts(calls, "sendMessage").filter((text) => text === "Cancelled.")).toEqual([
+      "Cancelled.",
+    ]);
   });
 
   it("posts a free-text question via post()", async () => {

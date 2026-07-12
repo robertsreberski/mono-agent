@@ -1,4 +1,7 @@
-import { AgentResponseCancelledError } from "@mono-agent/agent-contracts";
+import {
+  AgentResponseCancelledError,
+  isChannelUserCancelReason,
+} from "@mono-agent/agent-contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
   WhatsAppAdapter,
@@ -319,6 +322,7 @@ describe("WhatsAppAdapter", () => {
   });
 
   it("aborts an active run on /cancel", async () => {
+    const cancelResponder = vi.fn();
     const responder: AgentResponder = {
       respond: vi.fn(
         (request) =>
@@ -330,6 +334,7 @@ describe("WhatsAppAdapter", () => {
             );
           }),
       ),
+      cancel: cancelResponder,
     };
     const { bridge, socket } = createBridge({ responder });
 
@@ -341,7 +346,37 @@ describe("WhatsAppAdapter", () => {
 
     expect(cancel).toMatchObject({ kind: "cancelled", chatJid: "123@s.whatsapp.net" });
     expect(cancelled).toMatchObject({ kind: "cancelled", chatJid: "123@s.whatsapp.net" });
-    expect(socket.sent.map((message) => message.content.text)).toContain("Cancelled.");
+    expect(socket.sent.filter((message) => message.content.text === "Cancelled.")).toHaveLength(1);
+    expect(cancelResponder).toHaveBeenCalledTimes(1);
+    expect(cancelResponder.mock.calls[0]?.[0]).toBe("whatsapp:123@s.whatsapp.net");
+    expect(isChannelUserCancelReason(cancelResponder.mock.calls[0]?.[1])).toBe(true);
+  });
+
+  it("acknowledges /cancel exactly once when no turn is active", async () => {
+    const cancel = vi.fn();
+    const responder: AgentResponder = { respond: vi.fn(), cancel };
+    const { bridge, socket } = createBridge({ responder });
+
+    const result = await bridge.handleMessage(directMessage("/cancel"));
+
+    expect(result).toMatchObject({ kind: "cancelled", chatJid: "123@s.whatsapp.net" });
+    expect(socket.sent.filter((message) => message.content.text === "Cancelled.")).toHaveLength(1);
+    expect(responder.respond).not.toHaveBeenCalled();
+    expect(isChannelUserCancelReason(cancel.mock.calls[0]?.[1])).toBe(true);
+  });
+
+  it("keeps non-command responder cancellation terminal delivery unchanged", async () => {
+    const responder: AgentResponder = {
+      respond: vi.fn(async () => {
+        throw new AgentResponseCancelledError();
+      }),
+    };
+    const { bridge, socket } = createBridge({ responder });
+
+    const result = await bridge.handleMessage(directMessage("please stop"));
+
+    expect(result).toMatchObject({ kind: "cancelled", chatJid: "123@s.whatsapp.net" });
+    expect(socket.sent.filter((message) => message.content.text === "Cancelled.")).toHaveLength(1);
   });
 
   it("surfaces responder failures without fake success", async () => {

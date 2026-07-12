@@ -3,7 +3,11 @@ import { Agent as HttpAgent } from "node:http";
 import { Agent as HttpsAgent } from "node:https";
 import { isAbsolute } from "node:path";
 
-import { isAgentResponseCancelledError } from "@mono-agent/agent-contracts";
+import {
+  createChannelUserCancelReason,
+  isAgentResponseCancelledError,
+  isChannelUserCancelReason,
+} from "@mono-agent/agent-contracts";
 import { run, type RunnerHandle, type RunOptions } from "@grammyjs/runner";
 import { Bot, type Context } from "grammy";
 
@@ -28,6 +32,11 @@ import {
 import { isTelegramAskCallbackData } from "./ask.js";
 import type { TelegramCommandConfig, TelegramReactionsConfig } from "./config.js";
 import { createGrammyTelegramApi } from "./grammy-client.js";
+import {
+  createSecretSafeTelegramLogger,
+  redactTelegramError,
+  redactTelegramErrorMessage,
+} from "./log-redaction.js";
 import {
   TelegramMessageStream,
   type TelegramMessageStreamOptions,
@@ -357,7 +366,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   }
 
   const messages: Required<TelegramAdapterMessages> = { ...DEFAULT_MESSAGES, ...options.messages };
-  const logger = options.logger;
+  const logger = createSecretSafeTelegramLogger(options.logger, [options.botToken]);
   const initialStatusText = options.stream?.initialStatusText ?? DEFAULT_INITIAL_STATUS_TEXT;
   // Per-chat set of AbortControllers for in-flight messages. The runtime harness
   // serializes turns per conversation, so we never reject concurrent messages —
@@ -430,16 +439,17 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
 
   const cancelChat = (chatId: TelegramChatId): void => {
     const conversationId = `telegram:${String(chatId)}`;
+    const reason = createChannelUserCancelReason("Telegram");
     // Fail any pending ask first so a tool blocked on AskUser returns
     // "cancelled by user" instead of waiting out its timeout.
     options.pendingAsks?.cancel(conversationId);
     // Clear queued follow-ups (and signal the harness to abort the in-flight
     // turn) first, then abort every controller we are tracking for this chat.
-    options.responder.cancel?.(conversationId);
+    options.responder.cancel?.(conversationId, reason);
     const controllers = activeControllers.get(String(chatId));
     if (controllers !== undefined) {
       for (const controller of controllers) {
-        controller.abort(new Error("Cancelled by Telegram user."));
+        controller.abort(reason);
       }
     }
     // Drop any album still buffering for this chat so /cancel does not leave it
@@ -455,6 +465,19 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       }
     }
   };
+
+  async function finishCancelledUnlessAcknowledged(
+    stream: TelegramMessageStream,
+    signal: AbortSignal,
+    error?: unknown,
+  ): Promise<void> {
+    const acknowledgedByCommand =
+      isChannelUserCancelReason(signal.reason) ||
+      (isAgentResponseCancelledError(error) && isChannelUserCancelReason(error.reason));
+    if (!acknowledgedByCommand) {
+      await finishSafely(stream, messages.cancelledText, logger);
+    }
+  }
 
   // Cap the Api client's overall HTTP timeout so a half-open getUpdates socket
   // fails in ~50s instead of grammY's 500s default — see DEFAULT_API_TIMEOUT_SECONDS.
@@ -927,7 +950,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       // queued message is genuinely cancelled (not run on the warm session later).
       if (controller.signal.aborted) {
         reactionOutcome = "cancelled";
-        await finishSafely(stream, messages.cancelledText, logger);
+        await finishCancelledUnlessAcknowledged(stream, controller.signal);
         return;
       }
       // Acknowledge receipt with the working reaction before the (slower) status
@@ -945,7 +968,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       }
       if (controller.signal.aborted) {
         reactionOutcome = "cancelled";
-        await finishSafely(stream, messages.cancelledText, logger);
+        await finishCancelledUnlessAcknowledged(stream, controller.signal);
         return;
       }
 
@@ -955,7 +978,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       } catch (error) {
         if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
           reactionOutcome = "cancelled";
-          await finishSafely(stream, messages.cancelledText, logger);
+          await finishCancelledUnlessAcknowledged(stream, controller.signal, error);
           return;
         }
         logger?.error?.("Telegram bot responder failed.", { error: errorMessage(error) });
@@ -971,7 +994,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
 
       if (controller.signal.aborted) {
         reactionOutcome = "cancelled";
-        await finishSafely(stream, messages.cancelledText, logger);
+        await finishCancelledUnlessAcknowledged(stream, controller.signal);
         return;
       }
 
@@ -1388,8 +1411,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       // crash is "degraded, recovering" to the host — never terminal.
       pollingDegraded = true;
     }
-    options.onPollingError?.(error);
     scheduleRestart();
+    try {
+      options.onPollingError?.(redactTelegramError(error, [options.botToken]));
+    } catch {
+      // Host diagnostics are untrusted; polling recovery is already scheduled.
+    }
   }
 
   /** Schedule a single backoff restart, growing the backoff for the next attempt. */
@@ -1588,7 +1615,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return redactTelegramErrorMessage(error);
 }
 
 /** A promise plus its resolver, for an externally-settled deferred value. */
@@ -1725,7 +1752,7 @@ async function readLocalTelegramFile(
   const bytes = await readFile(filePath, signal === undefined ? {} : { signal });
   await unlink(filePath).catch((error: unknown) => {
     logger?.debug?.("Telegram local file cleanup failed (best-effort).", {
-      error: error instanceof Error ? error.message : String(error),
+      error: redactTelegramErrorMessage(error),
     });
   });
   return new Uint8Array(bytes);

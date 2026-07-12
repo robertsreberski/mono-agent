@@ -1,5 +1,7 @@
 import {
+  createChannelUserCancelReason,
   isAgentResponseCancelledError,
+  isChannelUserCancelReason,
   type AgentMessageStream,
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
@@ -284,8 +286,10 @@ export class WhatsAppAdapter {
     const runKey = message.chatJid;
     const activeRun = this.activeRuns.get(runKey);
     if (command?.name === "cancel") {
+      const reason = createChannelUserCancelReason("WhatsApp");
+      this.responder.cancel?.(`whatsapp:${message.chatJid}`, reason);
       if (activeRun !== undefined) {
-        activeRun.controller.abort(new Error("Cancelled by WhatsApp user."));
+        activeRun.controller.abort(reason);
       }
       await this.sendText(message.chatJid, this.messages.cancelledText);
       return withMessageId(
@@ -354,7 +358,7 @@ export class WhatsAppAdapter {
     try {
       await stream.status(this.streamOptions.initialStatusText);
       if (controller.signal.aborted) {
-        await stream.finish(this.messages.cancelledText);
+        await this.finishCancelledUnlessAcknowledged(stream, controller.signal);
         return withMessageId(
           { kind: "cancelled", chatJid: message.chatJid },
           message.messageId,
@@ -365,7 +369,7 @@ export class WhatsAppAdapter {
       const response = await this.responder.respond(request, stream);
 
       if (controller.signal.aborted) {
-        await stream.finish(this.messages.cancelledText);
+        await this.finishCancelledUnlessAcknowledged(stream, controller.signal);
         return withMessageId(
           { kind: "cancelled", chatJid: message.chatJid },
           message.messageId,
@@ -388,7 +392,7 @@ export class WhatsAppAdapter {
       return result;
     } catch (error) {
       if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
-        await finishSafely(stream, this.messages.cancelledText, this.logger);
+        await this.finishCancelledUnlessAcknowledged(stream, controller.signal, error);
         return withMessageId(
           { kind: "cancelled", chatJid: message.chatJid },
           message.messageId,
@@ -412,6 +416,19 @@ export class WhatsAppAdapter {
       if (this.activeRuns.get(runKey) === activeRun) {
         this.activeRuns.delete(runKey);
       }
+    }
+  }
+
+  private async finishCancelledUnlessAcknowledged(
+    stream: WhatsAppMessageStream,
+    signal: AbortSignal,
+    error?: unknown,
+  ): Promise<void> {
+    const acknowledgedByCommand =
+      isChannelUserCancelReason(signal.reason) ||
+      (isAgentResponseCancelledError(error) && isChannelUserCancelReason(error.reason));
+    if (!acknowledgedByCommand) {
+      await finishSafely(stream, this.messages.cancelledText, this.logger);
     }
   }
 

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentMessageStream, AgentStreamEvent } from "@mono-agent/agent-contracts";
+import {
+  createChannelUserCancelReason,
+  isAgentResponseCancelledError,
+  type AgentMessageStream,
+  type AgentStreamEvent,
+} from "@mono-agent/agent-contracts";
 
 import { bucketConversationId, createAgentResponder, streamEventFromRuntimeEvent } from "../responder.js";
 import type { AgentHarness, AgentHarnessRequest, AgentHarnessResponse } from "../types.js";
@@ -127,6 +132,44 @@ describe("createAgentResponder", () => {
     expect(cancelled).toEqual(["conv-7"]);
   });
 
+  it("cancels responder-queued turns before they can reach the harness", async () => {
+    let releaseFirst!: () => void;
+    let firstStarted!: () => void;
+    const firstRelease = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const submitted: string[] = [];
+    const harness: AgentHarness = {
+      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
+      submit: async (request: AgentHarnessRequest) => {
+        submitted.push(request.userMessage);
+        if (submitted.length === 1) {
+          firstStarted();
+          await firstRelease;
+        }
+        return okResponse(request.conversationId);
+      },
+      cancel: () => undefined,
+    };
+    const responder = createAgentResponder({ harness });
+    const first = responder.respond({ ...baseRequest(), text: "first" }, noopStream());
+    await started;
+    const queued = responder.respond({ ...baseRequest(), text: "queued" }, noopStream());
+    const reason = createChannelUserCancelReason("Test");
+
+    responder.cancel("c1", reason);
+    releaseFirst();
+
+    await expect(first).resolves.toMatchObject({ text: "ok" });
+    await expect(queued).rejects.toSatisfy((error: unknown) =>
+      isAgentResponseCancelledError(error) && error.reason === reason,
+    );
+    expect(submitted).toEqual(["first"]);
+
+    await expect(responder.respond({ ...baseRequest(), text: "after" }, noopStream()))
+      .resolves.toMatchObject({ text: "ok" });
+    expect(submitted).toEqual(["first", "after"]);
+  });
+
   it("applies a daily bucket to respond() and cancel() with the same key", async () => {
     const seen: { submitted?: string; cancelled?: string } = {};
     const harness: AgentHarness = {
@@ -152,6 +195,42 @@ describe("createAgentResponder", () => {
     expect(seen.submitted).toBe("telegram:42#2026-06-19");
     // cancel buckets identically, so it targets the same queue/session key.
     expect(seen.cancelled).toBe("telegram:42#2026-06-19");
+  });
+
+  it("cancels the active daily bucket when midnight passes during the turn", async () => {
+    let now = new Date("2026-06-19T23:59:00Z");
+    let release!: () => void;
+    let started!: () => void;
+    const releaseTurn = new Promise<void>((resolve) => { release = resolve; });
+    const turnStarted = new Promise<void>((resolve) => { started = resolve; });
+    const submitted: string[] = [];
+    const cancelled: string[] = [];
+    const harness: AgentHarness = {
+      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
+      submit: async (request: AgentHarnessRequest) => {
+        submitted.push(request.conversationId);
+        started();
+        await releaseTurn;
+        return okResponse(request.conversationId);
+      },
+      cancel: (conversationId) => { cancelled.push(conversationId); },
+    };
+    const responder = createAgentResponder({
+      harness,
+      rollover: "daily",
+      rolloverTimezone: "UTC",
+      now: () => now,
+    });
+
+    const active = responder.respond(baseRequest("telegram:42"), noopStream());
+    await turnStarted;
+    now = new Date("2026-06-20T00:01:00Z");
+    responder.cancel("telegram:42");
+    release();
+    await active;
+
+    expect(submitted).toEqual(["telegram:42#2026-06-19"]);
+    expect(cancelled).toEqual(["telegram:42#2026-06-19"]);
   });
 
   it("replaces an old daily bucket suffix instead of appending another one", async () => {
