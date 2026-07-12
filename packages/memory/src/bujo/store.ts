@@ -758,6 +758,11 @@ export class BujoMemoryStore implements MemoryStore {
   private async performClose(): Promise<void> {
     this.disableRuntimeTimers();
     if (this.journalRetryTimer !== undefined) clearTimeout(this.journalRetryTimer);
+    // Scheduled/direct BuJo curation does not feed completed-turn admission,
+    // so preserve the synchronous close boundary for this queue. Journal's
+    // index queue intentionally remains open until intake has projected every
+    // already-admitted turn.
+    this.captureQueue?.stopAccepting();
     let primary: unknown;
     try {
       const drained = await waitForDrain(
@@ -801,10 +806,13 @@ export class BujoMemoryStore implements MemoryStore {
   /** Drain admitted direct operations before freezing downstream queues. */
   private async drainAcceptedWork(): Promise<void> {
     await Promise.all([...this.admittedOperations].map(async (operation) => await operation.settled));
-    this.indexQueue?.stopAccepting();
-    this.captureQueue?.stopAccepting();
+    // A completed-turn projection may enqueue a Journal vector. Freeze and
+    // drain intake while the downstream queues still accept that work, then
+    // close those queues only after all startup recovery has also enqueued.
     this.completedTurnIntake?.stopAccepting();
     await this.flush();
+    this.indexQueue?.stopAccepting();
+    this.captureQueue?.stopAccepting();
   }
 
   private initializeJournalIndexing(): void {

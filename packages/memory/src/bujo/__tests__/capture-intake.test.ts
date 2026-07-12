@@ -1,11 +1,16 @@
+import { createHash } from "node:crypto";
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   linkSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   renameSync,
+  rmSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -81,7 +86,12 @@ describe("completed-turn durable intake", () => {
       join(memoryRoot, ".capture-intake", "pending"),
       join(memoryRoot, ".capture-intake", "dead"),
       join(memoryRoot, ".capture-intake", "resolved"),
+      join(memoryRoot, ".capture-intake", "ledger"),
     ]) expect(lstatSync(path).mode & 0o777).toBe(0o700);
+    const ledgerPath = join(memoryRoot, ".capture-intake", "ledger", `${admitted.id.slice(0, 2)}.log`);
+    expect(lstatSync(ledgerPath).mode & 0o777).toBe(0o600);
+    expect(lstatSync(join(memoryRoot, ".capture-intake", "ledger-v1.catalog")).mode & 0o777).toBe(0o600);
+    expect(lstatSync(join(memoryRoot, ".capture-intake-v1")).mode & 0o777).toBe(0o600);
     expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({ pending: 1, due: 1 });
     intake.abortForShutdown(false);
   });
@@ -205,10 +215,17 @@ describe("completed-turn durable intake", () => {
     intake.abortForShutdown(false);
   });
 
-  it("bounds resolved receipts while retaining recent idempotency", async () => {
+  it("prunes rich receipts while preserving permanent exact idempotency", async () => {
     const memoryRoot = root();
     let now = FIXED;
-    const intake = manager(memoryRoot, { resolvedRetention: 2, clock: () => now });
+    const summaries = vi.fn(async () => {});
+    const captures = vi.fn(async () => "captured" as const);
+    const intake = manager(memoryRoot, {
+      resolvedRetention: 2,
+      clock: () => now,
+      writeSummary: summaries,
+      capture: captures,
+    });
     const admissions = [];
     for (let index = 0; index < 3; index += 1) {
       admissions.push(intake.admit(turn({ runId: `retained-${index}` })));
@@ -218,7 +235,331 @@ describe("completed-turn durable intake", () => {
     expect(inspectCompletedTurnIntake(memoryRoot, now).snapshot.resolved).toBe(2);
     expect(intake.admit(turn({ runId: "retained-2" }))).toMatchObject({ admissionStatus: "duplicate" });
     expect(existsSync(join(memoryRoot, ".capture-intake", "resolved", `${admissions[0]!.id}.json`))).toBe(false);
+    expect(intake.admit(turn({ runId: "retained-0" }))).toMatchObject({ admissionStatus: "duplicate" });
+    await intake.flush();
+    expect(summaries).toHaveBeenCalledTimes(3);
+    expect(captures).toHaveBeenCalledTimes(3);
     intake.finishShutdown();
+  });
+
+  it("repairs a partial trailing ledger entry and backfills from durable state", async () => {
+    const memoryRoot = root();
+    const first = manager(memoryRoot);
+    const admitted = first.admit(turn({ runId: "partial-ledger" }));
+    await first.flush();
+    first.finishShutdown();
+    const ledgerPath = join(memoryRoot, ".capture-intake", "ledger", `${admitted.id.slice(0, 2)}.log`);
+    appendFileSync(ledgerPath, admitted.id.slice(0, 19));
+
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+    const recovered = manager(memoryRoot);
+    expect(readFileSync(ledgerPath, "utf8").length % 129).toBe(0);
+    expect(recovered.admit(turn({ runId: "partial-ledger" }))).toMatchObject({ admissionStatus: "duplicate" });
+    recovered.finishShutdown();
+  });
+
+  it("fails closed when a deleted shard held an already-pruned commitment", async () => {
+    const memoryRoot = root();
+    const captures = vi.fn(async () => "captured" as const);
+    const intake = manager(memoryRoot, { resolvedRetention: 1, capture: captures });
+    const firstInput = turn({ runId: "ledger-delete-pruned-a" });
+    const first = intake.admit(firstInput);
+    await intake.flush();
+    const firstShard = first.id.slice(0, 2);
+    const secondInput = turn({ runId: runIdInShard(firstShard, "ledger-delete-pruned-b") });
+    const second = intake.admit(secondInput);
+    await intake.flush();
+    expect(existsSync(join(memoryRoot, ".capture-intake", "resolved", `${first.id}.json`))).toBe(false);
+    const firstLedger = join(memoryRoot, ".capture-intake", "ledger", `${firstShard}.log`);
+    unlinkSync(firstLedger);
+    const thirdRunId = runIdOutsideShard(firstShard, "ledger-delete-pruned-c");
+    expect(() => intake.admit(turn({ runId: thirdRunId }))).toThrow(/shard is missing/iu);
+
+    expect(existsSync(firstLedger)).toBe(false);
+    expect(existsSync(join(memoryRoot, ".capture-intake", "resolved", `${second.id}.json`))).toBe(true);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+    expect(() => intake.admit(firstInput)).toThrow(/shard is missing/iu);
+    expect(captures).toHaveBeenCalledTimes(2);
+    intake.finishShutdown();
+  });
+
+  it("retires no rich receipt when a permanent commitment conflicts", async () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot, { resolvedRetention: 1 });
+    const firstInput = turn({ runId: "ledger-conflict-before-prune" });
+    const first = intake.admit(firstInput);
+    await intake.flush();
+    const firstShard = first.id.slice(0, 2);
+    const firstLedger = join(memoryRoot, ".capture-intake", "ledger", `${firstShard}.log`);
+    writeFileSync(firstLedger, `${first.id}${"f".repeat(64)}\n`, { mode: 0o600 });
+    const secondRunId = runIdOutsideShard(firstShard, "ledger-conflict-successor");
+    const second = intake.admit(turn({ runId: secondRunId }));
+
+    await intake.flush();
+
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot.resolved).toBe(2);
+    expect(existsSync(join(memoryRoot, ".capture-intake", "resolved", `${first.id}.json`))).toBe(true);
+    expect(existsSync(join(memoryRoot, ".capture-intake", "resolved", `${second.id}.json`))).toBe(true);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+    expect(() => intake.admit(firstInput)).toThrow(/conflicts|integrity/iu);
+    intake.finishShutdown();
+  });
+
+  it("rejects a valid-looking shard replacement that drops a pruned commitment", async () => {
+    const memoryRoot = root();
+    const captures = vi.fn(async () => "captured" as const);
+    const intake = manager(memoryRoot, { resolvedRetention: 1, capture: captures });
+    const firstInput = turn({ runId: "ledger-replacement-a" });
+    const first = intake.admit(firstInput);
+    await intake.flush();
+    const shardName = first.id.slice(0, 2);
+    const secondInput = turn({ runId: runIdInShard(shardName, "ledger-replacement-b") });
+    const second = intake.admit(secondInput);
+    await intake.flush();
+    expect(existsSync(join(memoryRoot, ".capture-intake", "resolved", `${first.id}.json`))).toBe(false);
+    const secondReceipt = JSON.parse(readFileSync(
+      join(memoryRoot, ".capture-intake", "resolved", `${second.id}.json`),
+      "utf8",
+    )) as { payloadHash: string };
+    const shardPath = join(memoryRoot, ".capture-intake", "ledger", `${shardName}.log`);
+    writeFileSync(shardPath, `${second.id}${secondReceipt.payloadHash}\n`, { mode: 0o600 });
+
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+    expect(() => intake.admit(firstInput)).toThrow(/truncated|integrity.*catalog/iu);
+    expect(captures).toHaveBeenCalledTimes(2);
+    intake.finishShutdown();
+    expect(() => manager(memoryRoot)).toThrow(/truncated|integrity.*catalog/iu);
+  });
+
+  it("advances a lagging catalog only from exact materialized suffix receipts", async () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot);
+    const first = intake.admit(turn({ runId: "catalog-lag-a" }));
+    await intake.flush();
+    const catalogPath = join(memoryRoot, ".capture-intake", "ledger-v1.catalog");
+    const catalogBefore = readFileSync(catalogPath, "utf8");
+    const secondInput = turn({ runId: runIdInShard(first.id.slice(0, 2), "catalog-lag-b") });
+    intake.admit(secondInput);
+    await intake.flush();
+    writeFileSync(catalogPath, catalogBefore, { mode: 0o600 });
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+    intake.finishShutdown();
+
+    const recovered = manager(memoryRoot);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(true);
+    expect(recovered.admit(secondInput)).toMatchObject({ admissionStatus: "duplicate" });
+    recovered.finishShutdown();
+  });
+
+  it("rejects a catalog-ahead recovery entry without a materialized receipt", async () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot);
+    const admitted = intake.admit(turn({ runId: "unowned-suffix-base" }));
+    await intake.flush();
+    intake.finishShutdown();
+    const shardName = admitted.id.slice(0, 2);
+    const injectedRunId = runIdInShard(shardName, "unowned-suffix");
+    const injectedId = createHash("sha256").update(injectedRunId).digest("hex");
+    const injectedPayloadHash = createHash("sha256").update("not-materialized").digest("hex");
+    appendFileSync(
+      join(memoryRoot, ".capture-intake", "ledger", `${shardName}.log`),
+      `${injectedId}${injectedPayloadHash}\n`,
+    );
+
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+    expect(() => manager(memoryRoot)).toThrow(/no exact materialized receipt/iu);
+  });
+
+  it("initializes and backfills a pre-ledger intake tree from a still-materialized record", () => {
+    const memoryRoot = root();
+    const input = turn({ runId: "upgrade-backfill" });
+    const id = writePreLedgerPending(memoryRoot, input);
+    mkdirSync(join(memoryRoot, ".capture-intake", "ledger"), { mode: 0o700 });
+    writeFileSync(join(memoryRoot, ".capture-intake", "ledger", "00.log"), "", { mode: 0o600 });
+    const ledgerPath = join(memoryRoot, ".capture-intake", "ledger", `${id.slice(0, 2)}.log`);
+
+    const upgraded = manager(memoryRoot);
+    expect(upgraded.admit(input)).toMatchObject({ admissionStatus: "duplicate" });
+    expect(existsSync(ledgerPath)).toBe(true);
+    expect(existsSync(join(memoryRoot, ".capture-intake", "ledger-v1.catalog"))).toBe(true);
+    expect(readdirSync(join(memoryRoot, ".capture-intake", "ledger"))).toContain(`${id.slice(0, 2)}.log`);
+    upgraded.abortForShutdown(false);
+  });
+
+  it("rejects a missing external catalog once any historical commitment exists", async () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot);
+    intake.admit(turn({ runId: "missing-external-marker" }));
+    await intake.flush();
+    intake.finishShutdown();
+    unlinkSync(join(memoryRoot, ".capture-intake", "ledger-v1.catalog"));
+
+    expect(() => manager(memoryRoot)).toThrow(/lost.*catalog|missing.*catalog/iu);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+  });
+
+  it("rejects whole-ledger deletion after an older commitment lost its rich receipt", async () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot, { resolvedRetention: 1 });
+    const first = intake.admit(turn({ runId: "whole-ledger-a" }));
+    await intake.flush();
+    const secondRunId = runIdInShard(first.id.slice(0, 2), "whole-ledger-b");
+    intake.admit(turn({ runId: secondRunId }));
+    await intake.flush();
+    expect(existsSync(join(memoryRoot, ".capture-intake", "resolved", `${first.id}.json`))).toBe(false);
+    intake.finishShutdown();
+    rmSync(join(memoryRoot, ".capture-intake", "ledger"), { recursive: true });
+
+    expect(() => manager(memoryRoot)).toThrow(/shard is missing/iu);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+  });
+
+  it("rejects combined ledger and catalog deletion after rich-receipt pruning", async () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot, { resolvedRetention: 1 });
+    const first = intake.admit(turn({ runId: "delete-both-a" }));
+    await intake.flush();
+    intake.admit(turn({ runId: runIdInShard(first.id.slice(0, 2), "delete-both-b") }));
+    await intake.flush();
+    expect(existsSync(join(memoryRoot, ".capture-intake", "resolved", `${first.id}.json`))).toBe(false);
+    intake.finishShutdown();
+    rmSync(join(memoryRoot, ".capture-intake", "ledger"), { recursive: true });
+    unlinkSync(join(memoryRoot, ".capture-intake", "ledger-v1.catalog"));
+
+    expect(existsSync(join(memoryRoot, ".capture-intake-v1"))).toBe(true);
+    expect(() => manager(memoryRoot)).toThrow(/initialized.*lost.*catalog/iu);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+  });
+
+  it("rejects whole-intake deletion when the root schema marker proves prior initialization", async () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot);
+    intake.admit(turn({ runId: "whole-intake-delete" }));
+    await intake.flush();
+    intake.finishShutdown();
+    rmSync(join(memoryRoot, ".capture-intake"), { recursive: true });
+
+    expect(existsSync(join(memoryRoot, ".capture-intake-v1"))).toBe(true);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+    expect(() => manager(memoryRoot)).toThrow(/initialized.*layout is missing/iu);
+  });
+
+  it("rejects deletion of the root-level schema marker after ledger history exists", async () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot);
+    intake.admit(turn({ runId: "missing-schema-marker" }));
+    await intake.flush();
+    intake.finishShutdown();
+    unlinkSync(join(memoryRoot, ".capture-intake-v1"));
+
+    expect(() => manager(memoryRoot)).toThrow(/nonempty.*missing.*schema marker/iu);
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+  });
+
+  it("deduplicates independent manager admissions and rejects their payload conflict", () => {
+    const memoryRoot = root();
+    const blocked = async () => await new Promise<never>(() => {});
+    const first = manager(memoryRoot, { capture: blocked });
+    const second = manager(memoryRoot, { capture: blocked });
+
+    expect(first.admit(turn({ runId: "multi-manager" })).admissionStatus).toBe("admitted");
+    expect(second.admit(turn({ runId: "multi-manager" })).admissionStatus).toBe("duplicate");
+    expect(() => second.admit(turn({ runId: "multi-manager", summary: "conflict" }))).toThrow(/conflicts/iu);
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot.pending).toBe(1);
+    first.abortForShutdown(false);
+    second.abortForShutdown(false);
+  });
+
+  it("keeps normal admission and snapshots off unrelated historical ledger shards", () => {
+    const memoryRoot = root();
+    const blocked = async () => await new Promise<never>(() => {});
+    const intake = manager(memoryRoot, { capture: blocked });
+    const first = intake.admit(turn({ runId: "bounded-normal-path" }));
+    const corruptShard = first.id.startsWith("aa") ? "bb" : "aa";
+    writeFileSync(
+      join(memoryRoot, ".capture-intake", "ledger", `${corruptShard}.log`),
+      `${"f".repeat(128)}\n`,
+      { mode: 0o600 },
+    );
+    let index = 0;
+    let nextRunId: string;
+    do {
+      nextRunId = `bounded-normal-path-${index}`;
+      index += 1;
+    } while (createHash("sha256").update(nextRunId).digest("hex").startsWith(corruptShard));
+
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot.pending).toBe(1);
+    expect(intake.admit(turn({ runId: nextRunId }))).toMatchObject({ admissionStatus: "admitted" });
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+    intake.abortForShutdown(false);
+  });
+
+  it.each(["corrupt", "permissions", "symlink", "hardlink"] as const)(
+    "rejects an unsafe %s permanent ledger shard",
+    (kind) => {
+      const memoryRoot = root();
+      const intake = manager(memoryRoot);
+      const admitted = intake.admit(turn({ runId: `ledger-${kind}` }));
+      intake.finishShutdown();
+      const ledgerPath = join(memoryRoot, ".capture-intake", "ledger", `${admitted.id.slice(0, 2)}.log`);
+      if (kind === "corrupt") writeFileSync(ledgerPath, `${"f".repeat(128)}\n`, { mode: 0o600 });
+      if (kind === "permissions") chmodSync(ledgerPath, 0o644);
+      if (kind === "hardlink") linkSync(ledgerPath, join(memoryRoot, "outside-ledger-hardlink"));
+      if (kind === "symlink") {
+        const target = join(memoryRoot, "outside-ledger");
+        writeFileSync(target, readFileSync(ledgerPath), { mode: 0o600 });
+        unlinkSync(ledgerPath);
+        symlinkSync(target, ledgerPath);
+      }
+
+      expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+      expect(() => manager(memoryRoot)).toThrow(/ledger|canonical file/iu);
+    },
+  );
+
+  it.each(["corrupt", "permissions", "symlink", "hardlink"] as const)(
+    "rejects an unsafe %s permanent ledger catalog",
+    (kind) => {
+      const memoryRoot = root();
+      const intake = manager(memoryRoot);
+      intake.admit(turn({ runId: `catalog-${kind}` }));
+      intake.finishShutdown();
+      const catalogPath = join(memoryRoot, ".capture-intake", "ledger-v1.catalog");
+      if (kind === "corrupt") writeFileSync(catalogPath, "valid-looking but incomplete\n", { mode: 0o600 });
+      if (kind === "permissions") chmodSync(catalogPath, 0o644);
+      if (kind === "hardlink") linkSync(catalogPath, join(memoryRoot, "outside-catalog-hardlink"));
+      if (kind === "symlink") {
+        const target = join(memoryRoot, "outside-catalog");
+        writeFileSync(target, readFileSync(catalogPath), { mode: 0o600 });
+        unlinkSync(catalogPath);
+        symlinkSync(target, catalogPath);
+      }
+
+      expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+      expect(() => manager(memoryRoot)).toThrow(/catalog|canonical file|ledger/iu);
+    },
+  );
+
+  it("retires an exact orphan catalog temp before writable startup", () => {
+    const memoryRoot = root();
+    const intake = manager(memoryRoot);
+    const admitted = intake.admit(turn({ runId: "catalog-temp" }));
+    intake.finishShutdown();
+    const temp = join(
+      memoryRoot,
+      ".capture-intake",
+      ".ledger-v1.catalog-00000000-0000-4000-8000-000000000000.tmp",
+    );
+    writeFileSync(temp, "partial catalog", { mode: 0o600 });
+    expect(auditCompletedTurnIntake(memoryRoot, FIXED).valid).toBe(false);
+
+    const recovered = manager(memoryRoot);
+    expect(existsSync(temp)).toBe(false);
+    expect(recovered.admit(turn({ runId: "catalog-temp" }))).toMatchObject({
+      id: admitted.id,
+      admissionStatus: "duplicate",
+    });
+    recovered.abortForShutdown(false);
   });
 
   it("moves exhausted work to dead, supports stopped-store retry, and resolves successfully", async () => {
@@ -495,6 +836,35 @@ describe("BujoMemoryStore completed-turn integration", () => {
     },
   );
 
+  it("drains an admitted Journal turn into its vector before immediate close", async () => {
+    const memoryRoot = root();
+    const base = fakeEmbeddings(64);
+    let embeddedTexts = 0;
+    const store = createBujoMemoryStore({
+      root: memoryRoot,
+      tier: "journal",
+      dim: 64,
+      embeddings: {
+        ...base,
+        embed: async (texts) => {
+          embeddedTexts += texts.length;
+          return await base.embed(texts);
+        },
+      },
+      clock: () => FIXED,
+    });
+
+    await store.persistCompletedTurn({
+      runId: "journal-immediate-close",
+      conversationId: "conversation-0001",
+      summary: "User prefers durable memory admission.",
+    });
+    await store.close();
+
+    expect(embeddedTexts).toBe(1);
+    expect(inspectCompletedTurnIntake(memoryRoot, FIXED).snapshot).toMatchObject({ pending: 0, resolved: 1 });
+  });
+
   it("bounds hung provider teardown and leaves the admitted turn pending for restart", async () => {
     const memoryRoot = root();
     const warnings: string[] = [];
@@ -700,4 +1070,50 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   throw new Error("condition was not reached");
+}
+
+function runIdOutsideShard(shard: string, prefix: string): string {
+  for (let index = 0; index < 10_000; index += 1) {
+    const runId = `${prefix}-${index}`;
+    if (!createHash("sha256").update(runId).digest("hex").startsWith(shard)) return runId;
+  }
+  throw new Error("could not derive a test run id outside the selected ledger shard");
+}
+
+function runIdInShard(shard: string, prefix: string): string {
+  for (let index = 0; index < 100_000; index += 1) {
+    const runId = `${prefix}-${index}`;
+    if (createHash("sha256").update(runId).digest("hex").startsWith(shard)) return runId;
+  }
+  throw new Error("could not derive a test run id inside the selected ledger shard");
+}
+
+function writePreLedgerPending(memoryRoot: string, input: MemoryCompletedTurn): string {
+  const payload = {
+    runId: input.runId,
+    conversationId: input.conversationId,
+    summary: input.summary,
+    ...(input.captureText === undefined ? {} : { captureText: input.captureText }),
+  };
+  const id = createHash("sha256").update(payload.runId).digest("hex");
+  const payloadHash = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+  for (const path of [
+    join(memoryRoot, ".capture-intake"),
+    join(memoryRoot, ".capture-intake", "pending"),
+    join(memoryRoot, ".capture-intake", "dead"),
+    join(memoryRoot, ".capture-intake", "resolved"),
+  ]) mkdirSync(path, { mode: 0o700 });
+  writeFileSync(join(memoryRoot, ".capture-intake", "pending", `${id}.json`), `${JSON.stringify({
+    schemaVersion: 1,
+    state: "pending",
+    id,
+    payloadHash,
+    ...payload,
+    admittedAt: FIXED.toISOString(),
+    revision: 0,
+    attempt: 0,
+    nextAttemptAt: FIXED.toISOString(),
+    summaryWritten: false,
+  }, null, 2)}\n`, { mode: 0o600 });
+  return id;
 }

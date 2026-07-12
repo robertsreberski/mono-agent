@@ -20,7 +20,9 @@ import type {
 import { acquireMemoryWriterLease } from "./generations.js";
 import { findRetainedCaptureIntent } from "./capture-outbox.js";
 import {
+  appendCanonicalFile,
   canonicalMemoryRootPath,
+  listCanonicalFileNames,
   readCanonicalFileSnapshot,
   removeCanonicalFile,
   writeCanonicalFileAtomic,
@@ -30,9 +32,21 @@ import {
 export const COMPLETED_TURN_INTAKE_SCHEMA_VERSION = 1;
 
 const INTAKE_ROOT = ".capture-intake";
+const INTAKE_SCHEMA_MARKER = ".capture-intake-v1";
 const STATES = ["pending", "dead", "resolved"] as const;
+const LEDGER_ROOT = "ledger";
+const LEDGER_CATALOG_FILE = "ledger-v1.catalog";
+const LEDGER_CATALOG_HEADER = "mono-agent-completed-turn-ledger-v1";
+const LEDGER_CATALOG_TEMP_NAME = /^\.ledger-v1\.catalog-[a-f0-9-]{36}\.tmp$/u;
+const LEDGER_SHARDS = Array.from({ length: 256 }, (_unused, index) => index.toString(16).padStart(2, "0"));
 const FILE_NAME = /^[a-f0-9]{64}\.json$/u;
 const ORPHAN_TEMP_NAME = /^\.[a-f0-9]{64}\.json-[a-f0-9-]{36}\.tmp$/u;
+const LEDGER_FILE_NAME = /^[a-f0-9]{2}\.log$/u;
+const LEDGER_ENTRY = /^([a-f0-9]{64})([a-f0-9]{64})\n$/u;
+const LEDGER_ENTRY_BYTES = 129;
+const LEDGER_CATALOG_LINE = /^([a-f0-9]{2}) ([0-9]{16}) ([a-f0-9]{64})$/u;
+const LEDGER_CATALOG_MAX_BYTES = 32 * 1024;
+const EMPTY_SHA256 = createHash("sha256").update("").digest("hex");
 const ID = /^[a-f0-9]{64}$/u;
 const SAFE_REASON = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 const DIRECTORY_MODE = 0o700;
@@ -228,9 +242,18 @@ export class CompletedTurnIntakeManager {
     );
     this.afterSummaryPersisted = options.afterSummaryPersisted;
     if (intakeLayoutExists(this.root)) {
-      ensureLayout(this.root, false);
+      // Upgrade an older intake tree by adding the compact permanent ledger,
+      // then seed it from every still-materialized record before accepting a
+      // duplicate decision. Pruned pre-ledger receipts cannot be recovered,
+      // but all post-upgrade admissions remain exact for the life of the root.
+      ensureLayout(this.root, true);
       retireOrphanIntakeTemps(this.root);
       recoverStateConflicts(this.root);
+      const materialized = logicalRecords(STATES.flatMap((state) => listRecords(this.root, state))).located;
+      ensureLedgerEntries(this.root, materialized.map(({ record }) => ({
+        id: record.id,
+        payloadHash: record.payloadHash,
+      })));
       const inspection = inspectCompletedTurnIntake(this.root, this.clock());
       if (inspection.snapshot.pending + inspection.snapshot.dead > this.maxActiveRecords) {
         throw new Error("memory-bujo: completed-turn intake active-record capacity is exceeded.");
@@ -239,6 +262,8 @@ export class CompletedTurnIntakeManager {
         inspection.items.filter((item) => item.state === "resolved").map((item) => item.id),
       );
       this.scheduleWorker();
+    } else if (readIntakeSchemaMarker(this.root) !== undefined) {
+      throw new Error("memory-bujo: initialized completed-turn intake layout is missing.");
     }
   }
 
@@ -257,9 +282,24 @@ export class CompletedTurnIntakeManager {
         throw new Error("memory-bujo: completed-turn run id conflicts with an already admitted payload.");
       }
       const preferred = preferredRecord(existing)!;
+      ensureLedgerEntry(this.root, id, payloadHash);
+      if (preferred.record.state === "pending") this.scheduleWorker();
       return {
         id,
         source: join(this.root, preferred.relativePath),
+        bytesWritten: 0,
+        admissionStatus: "duplicate",
+      };
+    }
+
+    const ledger = lookupLedgerEntry(this.root, id);
+    if (ledger !== undefined) {
+      if (ledger.payloadHash !== payloadHash) {
+        throw new Error("memory-bujo: completed-turn run id conflicts with the permanent admission ledger.");
+      }
+      return {
+        id,
+        source: join(this.root, ledger.relativePath),
         bytesWritten: 0,
         admissionStatus: "duplicate",
       };
@@ -285,7 +325,33 @@ export class CompletedTurnIntakeManager {
       nextAttemptAt: admittedAt,
       summaryWritten: false,
     };
-    const written = writeRecord(this.root, "pending", record);
+    let written: LocatedRecord<PendingRecord>;
+    try {
+      written = writeRecord(this.root, "pending", record) as LocatedRecord<PendingRecord>;
+    } catch (error) {
+      // A second process holding the same higher-level writer discipline can
+      // still race at a restart boundary. Converge only when the safely-read
+      // winner is the exact same payload; every other write fault propagates.
+      const raced = locateById(this.root, id);
+      if (raced.length === 0) throw error;
+      if (raced.some(({ record: candidate }) => candidate.payloadHash !== payloadHash)) {
+        throw new Error("memory-bujo: completed-turn run id conflicts with a concurrently admitted payload.");
+      }
+      const preferred = preferredRecord(raced)!;
+      ensureLedgerEntry(this.root, id, payloadHash);
+      if (preferred.record.state === "pending") this.scheduleWorker();
+      return {
+        id,
+        source: join(this.root, preferred.relativePath),
+        bytesWritten: 0,
+        admissionStatus: "duplicate",
+      };
+    }
+    // Publish the content-free permanent admission commitment only after the
+    // recoverable pending payload is durable. A crash between these writes is
+    // repaired from the pending record on startup; a crash after this append
+    // can never make the run id admissible again after rich receipt pruning.
+    ensureLedgerEntry(this.root, id, payloadHash);
     this.scheduleWorker();
     return {
       id,
@@ -455,6 +521,9 @@ export function inspectCompletedTurnIntake(
 ): CompletedTurnIntakeInspection {
   const canonicalRoot = canonicalMemoryRootPath(root, false);
   if (!intakeLayoutExists(canonicalRoot)) {
+    if (readIntakeSchemaMarker(canonicalRoot) !== undefined) {
+      throw new Error("memory-bujo: initialized completed-turn intake layout is missing.");
+    }
     return {
       schemaVersion: COMPLETED_TURN_INTAKE_SCHEMA_VERSION,
       items: [],
@@ -503,6 +572,11 @@ export function auditCompletedTurnIntake(root: string, now = new Date()): Comple
     if (inspection.snapshot.pending + inspection.snapshot.dead > DEFAULT_MAX_ACTIVE_RECORDS) {
       return { valid: false, inspection, issues: ["capacity_exceeded"] };
     }
+    if (intakeLayoutExists(canonicalMemoryRootPath(root, false))) {
+      const canonicalRoot = canonicalMemoryRootPath(root, false);
+      const materialized = logicalRecords(STATES.flatMap((state) => listRecords(canonicalRoot, state))).located;
+      validateAdmissionLedger(canonicalRoot, materialized);
+    }
     return { valid: true, inspection, issues: [] };
   } catch (error) {
     const message = reasonOf(error);
@@ -528,6 +602,8 @@ export function retryCompletedTurnIntake(
     ensureLayout(lease.root, true);
     retireOrphanIntakeTemps(lease.root);
     recoverStateConflicts(lease.root);
+    ensureLedgerEntries(lease.root, logicalRecords(STATES.flatMap((state) => listRecords(lease.root, state))).located
+      .map(({ record }) => ({ id: record.id, payloadHash: record.payloadHash })));
     const now = (options.now ?? new Date()).toISOString();
     let retried = 0;
     for (const located of listRecords(lease.root, "dead")) {
@@ -582,6 +658,7 @@ export function resolveCompletedTurnIntake(
     recoverStateConflicts(lease.root);
     const source = preferredRecord(locateById(lease.root, id));
     if (source === undefined || source.record.state === "resolved") return { resolved: false };
+    ensureLedgerEntry(lease.root, source.record.id, source.record.payloadHash);
     if (findRetainedCaptureIntent(lease.root, id) !== undefined) {
       throw new Error("memory-bujo: intake resolution requires retained semantic-plan recovery first.");
     }
@@ -607,18 +684,17 @@ export function resolveCompletedTurnIntake(
 
 function ensureLayout(root: string, create: boolean): void {
   const canonicalRoot = canonicalMemoryRootPath(root, create);
-  let parent = canonicalRoot;
-  for (const component of [INTAKE_ROOT, ...STATES]) {
-    if (component === INTAKE_ROOT) {
-      parent = ensureDirectory(parent, join(canonicalRoot, component), create, component);
-      continue;
-    }
-    ensureDirectory(parent, join(parent, component), create, `${INTAKE_ROOT}/${component}`);
+  const intakeRoot = ensureDirectory(canonicalRoot, join(canonicalRoot, INTAKE_ROOT), create, INTAKE_ROOT);
+  for (const component of [...STATES, LEDGER_ROOT]) {
+    ensureDirectory(intakeRoot, join(intakeRoot, component), create, `${INTAKE_ROOT}/${component}`);
   }
-  assertIntakeRootEntries(canonicalRoot);
+  if (create) retireOrphanLedgerCatalogTemps(canonicalRoot);
+  assertIntakeRootEntries(canonicalRoot, false);
+  ensureLedgerCatalog(canonicalRoot, create);
+  assertIntakeRootEntries(canonicalRoot, true);
 }
 
-function assertIntakeRootEntries(root: string): void {
+function assertIntakeRootEntries(root: string, requireLedgerCatalog: boolean): void {
   const path = join(root, INTAKE_ROOT);
   const before = lstatSync(path);
   assertSecureDirectory(before, INTAKE_ROOT);
@@ -626,12 +702,451 @@ function assertIntakeRootEntries(root: string): void {
   try {
     assertSameNode(before, fstatSync(fd));
     const names = readdirSync(path, { encoding: "utf8" }).sort();
-    if (names.length !== STATES.length || names.some((name, index) => name !== [...STATES].sort()[index])) {
+    const base = [...STATES, LEDGER_ROOT].sort();
+    const complete = [...base, LEDGER_CATALOG_FILE].sort();
+    const expected = requireLedgerCatalog || names.includes(LEDGER_CATALOG_FILE) ? complete : base;
+    if (names.length !== expected.length || names.some((name, index) => name !== expected[index])) {
       throw new Error("memory-bujo: completed-turn intake root contains an unknown entry.");
     }
     assertSameNode(before, lstatSync(path));
   } finally {
     closeSync(fd);
+  }
+}
+
+interface LedgerShardSnapshot {
+  readonly relativePath: string;
+  readonly content: string;
+  readonly entries: ReadonlyMap<string, string>;
+  readonly identity?: CanonicalFileIdentity;
+}
+
+interface LedgerCatalogEntry {
+  readonly bytes: number;
+  readonly hash: string;
+}
+
+interface LedgerCatalogSnapshot {
+  readonly relativePath: string;
+  readonly entries: ReadonlyMap<string, LedgerCatalogEntry>;
+  readonly identity: CanonicalFileIdentity;
+}
+
+function retireOrphanLedgerCatalogTemps(root: string): void {
+  const path = join(root, INTAKE_ROOT);
+  const before = lstatSync(path);
+  assertSecureDirectory(before, INTAKE_ROOT);
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0));
+  let names: string[];
+  try {
+    assertSameNode(before, fstatSync(fd));
+    names = readdirSync(path, { encoding: "utf8" }).filter((name) => LEDGER_CATALOG_TEMP_NAME.test(name));
+    assertSameNode(before, lstatSync(path));
+  } finally {
+    closeSync(fd);
+  }
+  for (const name of names) {
+    const relativePath = `${INTAKE_ROOT}/${name}`;
+    const snapshot = readCanonicalFileSnapshot(root, relativePath, { maxBytes: LEDGER_CATALOG_MAX_BYTES });
+    if (snapshot === undefined) throw new Error("memory-bujo: completed-turn ledger catalog temp disappeared.");
+    assertSecureLedgerFile(snapshot.identity);
+    removeCanonicalFile(root, relativePath, snapshot.identity);
+  }
+}
+
+function ensureLedgerCatalog(root: string, create: boolean): LedgerCatalogSnapshot {
+  const schemaMarker = readIntakeSchemaMarker(root);
+  if (schemaMarker === undefined && !create) {
+    throw new Error("memory-bujo: completed-turn intake schema marker is missing.");
+  }
+
+  let catalog = readLedgerCatalog(root, true);
+  if (catalog === undefined) {
+    if (!create) throw new Error("memory-bujo: completed-turn admission ledger catalog is missing.");
+    if (schemaMarker !== undefined) {
+      throw new Error("memory-bujo: initialized completed-turn intake lost its integrity catalog.");
+    }
+    const names = listCanonicalFileNames(root, `${INTAKE_ROOT}/${LEDGER_ROOT}`);
+    if (names.some((name) => !LEDGER_FILE_NAME.test(name))) {
+      throw new Error("memory-bujo: markerless completed-turn ledger contains an unknown entry.");
+    }
+    for (const name of names) {
+      const shard = readLedgerShard(root, name.slice(0, 2), false, true);
+      if (shard.content.length !== 0) {
+        throw new Error("memory-bujo: nonempty completed-turn ledger is missing its integrity catalog.");
+      }
+    }
+    const relativePath = `${INTAKE_ROOT}/${LEDGER_CATALOG_FILE}`;
+    try {
+      writeCanonicalFileAtomic(root, relativePath, serializeLedgerCatalog(emptyLedgerCatalog()));
+    } catch (error) {
+      const raced = readLedgerCatalog(root, true);
+      if (raced === undefined) throw error;
+      appendCanonicalFile(root, raced.relativePath, "", {
+        expectedIdentity: raced.identity,
+        syncParent: true,
+      });
+    }
+    catalog = readLedgerCatalog(root, false)!;
+  }
+  if (schemaMarker === undefined) {
+    if ([...catalog.entries.values()].some(({ bytes }) => bytes !== 0)) {
+      throw new Error("memory-bujo: nonempty completed-turn catalog is missing its schema marker.");
+    }
+    for (const name of listCanonicalFileNames(root, `${INTAKE_ROOT}/${LEDGER_ROOT}`)) {
+      if (readLedgerShard(root, name.slice(0, 2), false).content.length !== 0) {
+        throw new Error("memory-bujo: nonempty completed-turn ledger is missing its schema marker.");
+      }
+    }
+    try {
+      appendCanonicalFile(root, INTAKE_SCHEMA_MARKER, "", { requireMissing: true });
+    } catch (error) {
+      const raced = readCanonicalFileSnapshot(root, INTAKE_SCHEMA_MARKER, { allowMissing: true });
+      if (raced === undefined) throw error;
+      assertSecureLedgerFile(raced.identity);
+      if (raced.content.length !== 0) throw error;
+      appendCanonicalFile(root, INTAKE_SCHEMA_MARKER, "", {
+        expectedIdentity: raced.identity,
+        syncParent: true,
+      });
+    }
+  }
+  validateLedgerInventory(root, catalog);
+  return catalog;
+}
+
+function readIntakeSchemaMarker(root: string) {
+  const snapshot = readCanonicalFileSnapshot(root, INTAKE_SCHEMA_MARKER, { allowMissing: true });
+  if (snapshot === undefined) return undefined;
+  assertSecureLedgerFile(snapshot.identity);
+  if (snapshot.content.length !== 0) {
+    throw new Error("memory-bujo: completed-turn intake schema marker is malformed.");
+  }
+  return snapshot;
+}
+
+function validateLedgerInventory(root: string, catalog: LedgerCatalogSnapshot): void {
+  const names = listCanonicalFileNames(root, `${INTAKE_ROOT}/${LEDGER_ROOT}`);
+  if (names.length > LEDGER_SHARDS.length || names.some((name) => !LEDGER_FILE_NAME.test(name))) {
+    throw new Error("memory-bujo: completed-turn admission ledger layout is invalid.");
+  }
+  const present = new Set(names.map((name) => name.slice(0, 2)));
+  for (const [shard, commitment] of catalog.entries) {
+    if (commitment.bytes > 0 && !present.has(shard)) {
+      throw new Error("memory-bujo: completed-turn admission ledger shard is missing.");
+    }
+  }
+}
+
+/** Full explicit audit with memory bounded to one shard plus current receipts. */
+function validateAdmissionLedger(root: string, materialized: readonly LocatedRecord[]): void {
+  const catalog = readLedgerCatalog(root, false)!;
+  validateLedgerInventory(root, catalog);
+  const expected = new Map(materialized.map(({ record }) => [record.id, record.payloadHash] as const));
+  const names = listCanonicalFileNames(root, `${INTAKE_ROOT}/${LEDGER_ROOT}`);
+  for (const name of names) {
+    const shardName = name.slice(0, 2);
+    const shard = reconcileLedgerShard(root, shardName, catalog, new Map(), false, false).shard;
+    for (const [id, payloadHash] of shard.entries) {
+      const commitment = expected.get(id);
+      if (commitment !== undefined) {
+        if (commitment !== payloadHash) {
+          throw new Error("memory-bujo: completed-turn intake record conflicts with its permanent admission commitment.");
+        }
+        expected.delete(id);
+      }
+    }
+  }
+  if (expected.size > 0) {
+    throw new Error("memory-bujo: completed-turn intake record is missing its permanent admission commitment.");
+  }
+}
+
+function lookupLedgerEntry(
+  root: string,
+  id: string,
+): { readonly payloadHash: string; readonly relativePath: string } | undefined {
+  assertId(id);
+  const catalog = readLedgerCatalog(root, false)!;
+  const shard = reconcileLedgerShard(root, id.slice(0, 2), catalog, new Map(), false, false).shard;
+  const payloadHash = shard.entries.get(id);
+  return payloadHash === undefined ? undefined : { payloadHash, relativePath: shard.relativePath };
+}
+
+/**
+ * Ensure one permanent id -> payload commitment. Rich resolved receipts remain
+ * bounded, while this content-free ledger is append-only and exact.
+ */
+function ensureLedgerEntry(root: string, id: string, payloadHash: string): void {
+  ensureLedgerEntries(root, [{ id, payloadHash }]);
+}
+
+function ensureLedgerEntries(
+  root: string,
+  commitments: readonly { readonly id: string; readonly payloadHash: string }[],
+): void {
+  const grouped = new Map<string, Map<string, string>>();
+  for (const { id, payloadHash } of commitments) {
+    assertId(id);
+    assertId(payloadHash);
+    const shard = id.slice(0, 2);
+    const entries = grouped.get(shard) ?? new Map<string, string>();
+    const existing = entries.get(id);
+    if (existing !== undefined && existing !== payloadHash) {
+      throw new Error("memory-bujo: completed-turn materialized records conflict before ledger recovery.");
+    }
+    entries.set(id, payloadHash);
+    grouped.set(shard, entries);
+  }
+
+  for (const [shardName, expected] of grouped) {
+    let published = false;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let catalog = readLedgerCatalog(root, false)!;
+      const reconciled = reconcileLedgerShard(root, shardName, catalog, expected, true, true);
+      catalog = reconciled.catalog;
+      const shard = reconciled.shard;
+      const missing: string[] = [];
+      for (const [id, payloadHash] of expected) {
+        const existing = shard.entries.get(id);
+        if (existing !== undefined && existing !== payloadHash) {
+          throw new Error("memory-bujo: completed-turn run id conflicts with the permanent admission ledger.");
+        }
+        if (existing === undefined) missing.push(`${id}${payloadHash}\n`);
+      }
+      if (missing.length === 0) {
+        published = true;
+        break;
+      }
+      try {
+        appendCanonicalFile(root, shard.relativePath, missing.join(""), shard.identity === undefined
+          ? { requireMissing: true }
+          : { expectedIdentity: shard.identity });
+      } catch (error) {
+        // A concurrent writer may have created or extended this shard after
+        // the safe snapshot. Re-read once; unsafe identities and corruption
+        // are still rejected by the same validation path.
+        if (attempt === 2) throw error;
+        continue;
+      }
+      const verified = readLedgerShard(root, shardName, false);
+      try {
+        catalog = updateLedgerCatalog(root, catalog, shardName, verified.content);
+      } catch (error) {
+        if (attempt === 2) throw error;
+        continue;
+      }
+      const committed = reconcileLedgerShard(root, shardName, catalog, new Map(), false, false).shard;
+      if ([...expected].some(([id, payloadHash]) => committed.entries.get(id) !== payloadHash)) {
+        throw new Error("memory-bujo: completed-turn admission ledger durability verification failed.");
+      }
+      published = true;
+      break;
+    }
+    if (!published) {
+      throw new Error("memory-bujo: completed-turn admission ledger could not publish stable commitments.");
+    }
+  }
+}
+
+function readLedgerShard(
+  root: string,
+  shard: string,
+  repairPartial: boolean,
+  allowMissing = false,
+): LedgerShardSnapshot {
+  if (!/^[a-f0-9]{2}$/u.test(shard)) {
+    throw new Error("memory-bujo: completed-turn admission ledger shard is invalid.");
+  }
+  const relativePath = `${INTAKE_ROOT}/${LEDGER_ROOT}/${shard}.log`;
+  let snapshot = readCanonicalFileSnapshot(root, relativePath, { allowMissing: true });
+  if (snapshot === undefined) {
+    if (allowMissing) return { relativePath, content: "", entries: new Map() };
+    throw new Error("memory-bujo: completed-turn admission ledger shard is missing.");
+  }
+  assertSecureLedgerFile(snapshot.identity);
+
+  const recoverableBytes = snapshot.content.length - (snapshot.content.length % LEDGER_ENTRY_BYTES);
+  const trailing = snapshot.content.slice(recoverableBytes);
+  if (trailing.length > 0) {
+    const isRecoverablePrefix = trailing.length < LEDGER_ENTRY_BYTES
+      && /^[a-f0-9]+$/u.test(trailing)
+      && (trailing.length < 2 || trailing.slice(0, 2) === shard);
+    if (!repairPartial || !isRecoverablePrefix) {
+      throw new Error("memory-bujo: completed-turn admission ledger has a malformed trailing entry.");
+    }
+    writeCanonicalFileAtomic(root, relativePath, snapshot.content.slice(0, recoverableBytes), snapshot.identity);
+    snapshot = readCanonicalFileSnapshot(root, relativePath);
+    if (snapshot === undefined) {
+      throw new Error("memory-bujo: completed-turn admission ledger disappeared during recovery.");
+    }
+    assertSecureLedgerFile(snapshot.identity);
+  }
+
+  const entries = new Map<string, string>();
+  for (let offset = 0; offset < snapshot.content.length; offset += LEDGER_ENTRY_BYTES) {
+    const raw = snapshot.content.slice(offset, offset + LEDGER_ENTRY_BYTES);
+    const match = LEDGER_ENTRY.exec(raw);
+    if (match === null || match[1]!.slice(0, 2) !== shard) {
+      throw new Error("memory-bujo: completed-turn admission ledger contains a malformed entry.");
+    }
+    const existing = entries.get(match[1]!);
+    if (existing !== undefined) {
+      throw new Error("memory-bujo: completed-turn admission ledger contains a duplicate commitment.");
+    }
+    entries.set(match[1]!, match[2]!);
+  }
+  return { relativePath, content: snapshot.content, entries, identity: snapshot.identity };
+}
+
+function reconcileLedgerShard(
+  root: string,
+  shardName: string,
+  catalog: LedgerCatalogSnapshot,
+  recoverable: ReadonlyMap<string, string>,
+  repairPartial: boolean,
+  allowAheadRecovery: boolean,
+): { readonly catalog: LedgerCatalogSnapshot; readonly shard: LedgerShardSnapshot } {
+  const expected = catalog.entries.get(shardName);
+  if (expected === undefined) throw new Error("memory-bujo: completed-turn ledger catalog shard is missing.");
+  const shard = readLedgerShard(root, shardName, repairPartial, expected.bytes === 0);
+  if (shard.content.length < expected.bytes) {
+    throw new Error("memory-bujo: completed-turn admission ledger shard was truncated or replaced.");
+  }
+  const committedPrefix = shard.content.slice(0, expected.bytes);
+  if (hashText(committedPrefix) !== expected.hash) {
+    throw new Error("memory-bujo: completed-turn admission ledger shard integrity does not match its catalog.");
+  }
+  if (shard.content.length === expected.bytes) return { catalog, shard };
+  if (!allowAheadRecovery) {
+    throw new Error("memory-bujo: completed-turn admission ledger is ahead of its integrity catalog.");
+  }
+  const prefixEntries = parseLedgerEntries(committedPrefix, shardName);
+  const suffix = shard.content.slice(expected.bytes);
+  const suffixEntries = parseLedgerEntries(suffix, shardName);
+  for (const [id, payloadHash] of suffixEntries) {
+    if (prefixEntries.has(id) || recoverable.get(id) !== payloadHash) {
+      throw new Error("memory-bujo: uncommitted ledger suffix has no exact materialized receipt.");
+    }
+  }
+  if (shard.identity === undefined) {
+    throw new Error("memory-bujo: uncommitted ledger suffix has no durable shard identity.");
+  }
+  // A prior append may have exposed complete page-cache bytes but failed its
+  // fsync/final identity check. Pin and fsync that exact inode again before the
+  // catalog makes those bytes part of the permanent high-water commitment.
+  appendCanonicalFile(root, shard.relativePath, "", {
+    expectedIdentity: shard.identity,
+    syncParent: true,
+  });
+  const durable = readLedgerShard(root, shardName, false);
+  if (durable.content !== shard.content) {
+    throw new Error("memory-bujo: uncommitted ledger suffix changed before durability recovery.");
+  }
+  const updated = updateLedgerCatalog(root, catalog, shardName, durable.content);
+  const committed = readLedgerShard(root, shardName, false);
+  const updatedEntry = updated.entries.get(shardName)!;
+  if (committed.content.length !== updatedEntry.bytes || hashText(committed.content) !== updatedEntry.hash) {
+    throw new Error("memory-bujo: completed-turn ledger changed while its catalog recovery committed.");
+  }
+  return { catalog: updated, shard: committed };
+}
+
+function readLedgerCatalog(root: string, allowMissing: boolean): LedgerCatalogSnapshot | undefined {
+  const relativePath = `${INTAKE_ROOT}/${LEDGER_CATALOG_FILE}`;
+  const snapshot = readCanonicalFileSnapshot(root, relativePath, {
+    allowMissing,
+    maxBytes: LEDGER_CATALOG_MAX_BYTES,
+  });
+  if (snapshot === undefined) return undefined;
+  assertSecureLedgerFile(snapshot.identity);
+  const lines = snapshot.content.split("\n");
+  if (lines[0] !== LEDGER_CATALOG_HEADER || lines.length !== LEDGER_SHARDS.length + 2 || lines.at(-1) !== "") {
+    throw new Error("memory-bujo: completed-turn admission ledger catalog is malformed.");
+  }
+  const entries = new Map<string, LedgerCatalogEntry>();
+  for (let index = 0; index < LEDGER_SHARDS.length; index += 1) {
+    const match = LEDGER_CATALOG_LINE.exec(lines[index + 1]!);
+    const shard = LEDGER_SHARDS[index]!;
+    if (match === null || match[1] !== shard) {
+      throw new Error("memory-bujo: completed-turn admission ledger catalog entry is malformed.");
+    }
+    const bytes = Number(match[2]);
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes % LEDGER_ENTRY_BYTES !== 0
+      || (bytes === 0 && match[3] !== EMPTY_SHA256)) {
+      throw new Error("memory-bujo: completed-turn admission ledger catalog commitment is invalid.");
+    }
+    entries.set(shard, { bytes, hash: match[3]! });
+  }
+  return { relativePath, entries, identity: snapshot.identity };
+}
+
+function emptyLedgerCatalog(): ReadonlyMap<string, LedgerCatalogEntry> {
+  return new Map(LEDGER_SHARDS.map((shard) => [shard, { bytes: 0, hash: EMPTY_SHA256 }] as const));
+}
+
+function serializeLedgerCatalog(entries: ReadonlyMap<string, LedgerCatalogEntry>): string {
+  const lines = [LEDGER_CATALOG_HEADER];
+  for (const shard of LEDGER_SHARDS) {
+    const entry = entries.get(shard);
+    if (entry === undefined || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0
+      || entry.bytes % LEDGER_ENTRY_BYTES !== 0 || !ID.test(entry.hash)) {
+      throw new Error("memory-bujo: completed-turn admission ledger catalog cannot be serialized.");
+    }
+    lines.push(`${shard} ${String(entry.bytes).padStart(16, "0")} ${entry.hash}`);
+  }
+  const content = `${lines.join("\n")}\n`;
+  if (Buffer.byteLength(content, "utf8") > LEDGER_CATALOG_MAX_BYTES) {
+    throw new Error("memory-bujo: completed-turn admission ledger catalog exceeds its bound.");
+  }
+  return content;
+}
+
+function updateLedgerCatalog(
+  root: string,
+  catalog: LedgerCatalogSnapshot,
+  shardName: string,
+  content: string,
+): LedgerCatalogSnapshot {
+  const current = catalog.entries.get(shardName);
+  if (current === undefined || content.length < current.bytes) {
+    throw new Error("memory-bujo: completed-turn admission ledger catalog update would regress.");
+  }
+  const entries = new Map(catalog.entries);
+  entries.set(shardName, { bytes: content.length, hash: hashText(content) });
+  writeCanonicalFileAtomic(root, catalog.relativePath, serializeLedgerCatalog(entries), catalog.identity);
+  const verified = readLedgerCatalog(root, false)!;
+  const committed = verified.entries.get(shardName);
+  if (committed?.bytes !== content.length || committed.hash !== hashText(content)) {
+    throw new Error("memory-bujo: completed-turn admission ledger catalog durability verification failed.");
+  }
+  return verified;
+}
+
+function parseLedgerEntries(content: string, shard: string): Map<string, string> {
+  if (content.length % LEDGER_ENTRY_BYTES !== 0) {
+    throw new Error("memory-bujo: completed-turn admission ledger entry boundary is invalid.");
+  }
+  const entries = new Map<string, string>();
+  for (let offset = 0; offset < content.length; offset += LEDGER_ENTRY_BYTES) {
+    const match = LEDGER_ENTRY.exec(content.slice(offset, offset + LEDGER_ENTRY_BYTES));
+    if (match === null || match[1]!.slice(0, 2) !== shard || entries.has(match[1]!)) {
+      throw new Error("memory-bujo: completed-turn admission ledger contains a malformed or duplicate entry.");
+    }
+    entries.set(match[1]!, match[2]!);
+  }
+  return entries;
+}
+
+function hashText(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+function assertSecureLedgerFile(identity: CanonicalFileIdentity): void {
+  if ((identity.mode & 0o777) !== FILE_MODE
+    || identity.nlink !== 1
+    || (typeof process.getuid === "function" && identity.uid !== process.getuid())) {
+    throw new Error("memory-bujo: completed-turn admission ledger must be owner-only and single-link.");
   }
 }
 
@@ -817,6 +1332,9 @@ function resolvePending(
   outcome: "captured" | "summary_only",
   resolvedAt: string,
 ): void {
+  // Never discard the payload-bearing state until its exact permanent
+  // commitment is present and conflict-free.
+  ensureLedgerEntry(root, source.record.id, source.record.payloadHash);
   const receipt: ResolvedRecord = {
     schemaVersion: COMPLETED_TURN_INTAKE_SCHEMA_VERSION,
     state: "resolved",
@@ -937,7 +1455,15 @@ function pruneResolved(root: string, retain: number, preserveId?: string): void 
   const removable = preserveId === undefined
     ? resolved
     : resolved.filter(({ record }) => record.id !== preserveId);
-  for (const located of removable.slice(0, removeCount)) {
+  const retiring = removable.slice(0, removeCount);
+  // Preflight every commitment before retiring any rich receipt. This both
+  // restores a missing shard from recoverable metadata and fails closed on a
+  // conflict without partially pruning the batch.
+  ensureLedgerEntries(root, retiring.map(({ record }) => ({
+    id: record.id,
+    payloadHash: record.payloadHash,
+  })));
+  for (const located of retiring) {
     removeCanonicalFile(root, located.relativePath, located.identity);
   }
 }

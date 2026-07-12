@@ -83,7 +83,7 @@ describe("AgentHarness resilience + caching", () => {
     const memory: MemoryStore = {
       load: async () => undefined,
       appendHostSummary: async () => { throw new Error("legacy append must not run"); },
-      persistCompletedTurn: async () => { throw new Error("disk became read-only"); },
+      persistCompletedTurn: async () => { throw new Error("disk became read-only at /private/secret?token=do-not-log"); },
     };
     const recorderFactory = (input: { readonly runId: string; readonly conversationId: string }): RunRecorder => {
       const events: RuntimeEventLike[] = [];
@@ -135,10 +135,46 @@ describe("AgentHarness resilience + caching", () => {
 
     expect(response.text).toBe("provider succeeded");
     expect(response.failure).toBeUndefined();
-    expect(warnings).toEqual([expect.stringContaining("disk became read-only")]);
+    expect(warnings).toEqual([
+      "Memory persistence was not confirmed after the provider answer; the provider response was preserved.",
+    ]);
+    expect(warnings.join(" ")).not.toContain("secret");
     expect(lifecycle).toEqual(["prepare", "warning", "terminal"]);
     expect(terminalCalls).toBe(1);
     expect(response.metadata.summary?.eventCount).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ["hostile toString", { toString: () => { throw new Error("must not stringify"); } }],
+    ["hostile Error.message", (() => {
+      const value = Object.create(Error.prototype) as Error;
+      Object.defineProperty(value, "message", { get: () => { throw new Error("must not read message"); } });
+      return value;
+    })()],
+  ] as const)("preserves a successful provider answer for a %s persistence rejection", async (_label, rejection) => {
+    const identityPath = await identityFixture();
+    const warnings: string[] = [];
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fakeRuntime({ text: "provider succeeded" }),
+      model,
+      executionMode: "sdk",
+      memoryWriteMode: "append-host-summary",
+      memory: {
+        load: async () => undefined,
+        appendHostSummary: async () => { throw new Error("legacy path must not run"); },
+        persistCompletedTurn: async () => { throw rejection; },
+      },
+      onMemoryWarning: (message) => warnings.push(message),
+    });
+
+    const response = await harness.run(request(`conv-${_label}`));
+
+    expect(response.text).toBe("provider succeeded");
+    expect(response.failure).toBeUndefined();
+    expect(warnings).toEqual([
+      "Memory persistence was not confirmed after the provider answer; the provider response was preserved.",
+    ]);
   });
 
   it("loads skills through the injected skills cache on every turn", async () => {

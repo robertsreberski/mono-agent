@@ -15,6 +15,10 @@ import { formatHitsAsBlock, SUPERMEMORY_SOURCE } from "./format.js";
 const DEFAULT_MAX_BYTES = 64_000;
 /** Refuse oversized remote writes instead of silently dropping part of a completed turn. */
 const MAX_COMPLETED_TURN_BYTES = 1_000_000;
+const RECALL_WARNING = "supermemory recall failed; continuing without remote memory.";
+const SUMMARY_WARNING = "supermemory appendHostSummary failed; the turn continues.";
+const COMPLETED_TURN_WARNING = "supermemory persistCompletedTurn failed; the provider response remains valid.";
+const CAPTURE_WARNING = "supermemory capture failed; the queued turn continues.";
 
 export interface SupermemoryStoreOptions {
   /** Hard cap on the bytes a single `load` may return. */
@@ -35,8 +39,9 @@ const NOOP_LOGGER = { warn: (_message: string): void => {} };
 /**
  * MemoryStore backed by an external Supermemory instance (local OSS binary or hosted cloud).
  *
- * The strong `persistCompletedTurn` path awaits one idempotent remote admission and propagates
- * failure so the harness can report degradation without changing the provider answer. Legacy
+ * The strong `persistCompletedTurn` path awaits one run-keyed remote upsert, coalesces exact
+ * same-process retries, rejects same-process payload conflicts, and propagates failure so the
+ * harness can report degradation without changing the provider answer. Legacy
  * writes remain best-effort and NEVER throw: `appendHostSummary` returns `bytesWritten: 0` on
  * failure; `scheduleCapture` is fire-and-forget, serialized through a single chain so captures
  * cannot overlap or reject the chain. Supermemory does extraction/consolidation server-side, so
@@ -47,6 +52,12 @@ const NOOP_LOGGER = { warn: (_message: string): void => {} };
  */
 export class SupermemoryMemoryStore implements MemoryStore {
   private captureChain: Promise<void> = Promise.resolve();
+  /** Exact lifetime idempotency with no retained run/conversation/content. */
+  private readonly completedTurns = new Map<string, string>();
+  private readonly completedTurnInflight = new Map<string, {
+    readonly payloadDigest: string;
+    readonly promise: Promise<MemoryCompletedTurnResult>;
+  }>();
   private readonly maxBytes: number;
   private readonly recallLimit: number | undefined;
   private readonly logger: { warn(message: string): void };
@@ -68,8 +79,8 @@ export class SupermemoryMemoryStore implements MemoryStore {
         return undefined;
       }
       return formatHitsAsBlock(hits, this.maxBytes);
-    } catch (error) {
-      this.logger.warn(`supermemory recall failed: ${message(error)}`);
+    } catch {
+      safeWarn(this.logger, RECALL_WARNING);
       return undefined;
     }
   }
@@ -86,15 +97,16 @@ export class SupermemoryMemoryStore implements MemoryStore {
         metadata: { kind: "host-summary", conversationId },
       });
       return { conversationId, source: SUPERMEMORY_SOURCE, bytesWritten: bytes };
-    } catch (error) {
-      this.logger.warn(`supermemory appendHostSummary failed: ${message(error)}`);
+    } catch {
+      safeWarn(this.logger, SUMMARY_WARNING);
       return { conversationId, source: SUPERMEMORY_SOURCE, bytesWritten: 0 };
     }
   }
 
   /**
    * Strong, awaited completed-turn admission. The remote custom id is derived
-   * only from the stable run id, so a retry upserts the same logical document.
+   * only from the stable run id, so a cross-process retry upserts the same
+   * logical document; local digests distinguish exact retry from conflict.
    * Unlike the legacy write methods, any failure is logged and propagated for
    * the harness to surface as memory degradation.
    */
@@ -107,29 +119,45 @@ export class SupermemoryMemoryStore implements MemoryStore {
         throw new Error(`completed turn exceeds the ${MAX_COMPLETED_TURN_BYTES}-byte Supermemory admission limit`);
       }
       const runIdHash = safeHash(turn.runId);
-      const customId = `completed-turn-${runIdHash}`;
-      await this.client.add({
-        content,
-        customId,
-        // Keep remote indexing metadata flat and free of raw channel/run ids.
-        metadata: {
-          kind: "completed-turn",
-          schemaVersion: 1,
-          hasCapture: turn.captureText !== undefined,
-        },
-      });
-      return {
-        id: customId,
-        runId: turn.runId,
-        conversationId: turn.conversationId,
-        source: SUPERMEMORY_SOURCE,
-        bytesWritten,
-        // The documents endpoint exposes successful upsert admission but does
-        // not distinguish a newly created document from an idempotent retry.
-        admissionStatus: "admitted",
-      };
+      const customId = `completed-turn-${runIdHash.slice(0, 32)}`;
+      const payloadDigest = completedTurnDigest(turn);
+      const completed = this.completedTurns.get(runIdHash);
+      if (completed !== undefined) {
+        assertMatchingCompletedTurn(completed, payloadDigest);
+        return completedTurnResult(turn, customId, 0, "duplicate");
+      }
+      const inflight = this.completedTurnInflight.get(runIdHash);
+      if (inflight !== undefined) {
+        assertMatchingCompletedTurn(inflight.payloadDigest, payloadDigest);
+        await inflight.promise;
+        return completedTurnResult(turn, customId, 0, "duplicate");
+      }
+
+      const result = completedTurnResult(turn, customId, bytesWritten, "admitted");
+      const promise = (async (): Promise<MemoryCompletedTurnResult> => {
+        await this.client.add({
+          content,
+          customId,
+          // Keep remote indexing metadata flat and free of raw channel/run ids.
+          metadata: {
+            kind: "completed-turn",
+            schemaVersion: 1,
+            hasCapture: turn.captureText !== undefined,
+          },
+        });
+        this.completedTurns.set(runIdHash, payloadDigest);
+        return result;
+      })();
+      this.completedTurnInflight.set(runIdHash, { payloadDigest, promise });
+      try {
+        return await promise;
+      } finally {
+        if (this.completedTurnInflight.get(runIdHash)?.promise === promise) {
+          this.completedTurnInflight.delete(runIdHash);
+        }
+      }
     } catch (error) {
-      this.logger.warn(`supermemory persistCompletedTurn failed: ${message(error)}`);
+      safeWarn(this.logger, COMPLETED_TURN_WARNING);
       throw error;
     }
   }
@@ -139,8 +167,8 @@ export class SupermemoryMemoryStore implements MemoryStore {
       .then(async () => {
         try {
           await this.client.add({ content: text, metadata: { kind: "turn-capture", conversationId } });
-        } catch (error) {
-          this.logger.warn(`supermemory capture failed: ${message(error)}`);
+        } catch {
+          safeWarn(this.logger, CAPTURE_WARNING);
         }
       })
       // Terminal guard: the chain must never settle rejected, or every future capture would be skipped.
@@ -176,7 +204,39 @@ function stableId(input: string): string {
 }
 
 function safeHash(input: string): string {
-  return createHash("sha256").update(input).digest("hex").slice(0, 32);
+  return createHash("sha256").update(input).digest("hex");
+}
+
+function completedTurnDigest(turn: MemoryCompletedTurn): string {
+  return createHash("sha256").update(JSON.stringify({
+    conversationId: turn.conversationId,
+    summary: turn.summary,
+    ...(turn.captureText === undefined ? {} : { captureText: turn.captureText }),
+  })).digest("hex");
+}
+
+function assertMatchingCompletedTurn(existing: string, incoming: string): void {
+  if (existing !== incoming) {
+    throw new Error("supermemory: completed-turn run id conflicts with an already admitted payload");
+  }
+}
+
+function completedTurnResult(
+  turn: MemoryCompletedTurn,
+  id: string,
+  bytesWritten: number,
+  admissionStatus: MemoryCompletedTurnResult["admissionStatus"],
+): MemoryCompletedTurnResult {
+  return {
+    id,
+    runId: turn.runId,
+    conversationId: turn.conversationId,
+    source: SUPERMEMORY_SOURCE,
+    bytesWritten,
+    // The documents endpoint exposes a successful upsert but cannot identify
+    // create versus cross-process retry; local exact retries use "duplicate".
+    admissionStatus,
+  };
 }
 
 function completedTurnDocument(turn: MemoryCompletedTurn): string {
@@ -204,6 +264,6 @@ function assertCompletedTurn(turn: MemoryCompletedTurn): void {
   }
 }
 
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function safeWarn(logger: { warn(message: string): void }, message: string): void {
+  try { logger.warn(message); } catch { /* Diagnostics cannot replace the backend result. */ }
 }

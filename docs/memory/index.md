@@ -177,8 +177,9 @@ How the **host** persists each completed turn (independent of the tier's recall)
 - `capture` — **bujo only.** Fsync the summary and full capture text by stable provider run id, then project the raw audit and run serialized curation in the background. One strict extraction call plus at most one strict batch-reconcile call writes canonical facts and precise graph evidence. A normal stop drains for up to 10 seconds; a timed-out active attempt remains pending for restart. Provider/model failures retry with bounded exponential backoff for more than 24 hours, then remain as a durable dead letter rather than claiming success. Because it needs a chat LLM, `writeMode: "capture"` requires `mode: "bujo"` and fails config validation otherwise.
 
 The strong built-in write returns only after the owner-only `.capture-intake/pending` record and
-directory entry are durable. Repeating the same run and payload is idempotent; a conflicting
-payload fails closed. Projection/capture transitions use monotonic receipts and run-derived fact
+directory entry plus its compact content-free admission commitment are durable. Repeating the same
+run and payload remains idempotent after bounded rich-receipt pruning; a conflicting payload fails
+closed. Projection/capture transitions use monotonic receipts and run-derived fact
 ids, so restart after canonical/SQLite commit cannot duplicate the audit or semantic fact. Invalid
 or partial model JSON remains retryable and never counts as a successful empty capture. An intake
 admission failure leaves the provider answer intact but reports explicit memory degradation.

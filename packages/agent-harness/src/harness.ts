@@ -63,6 +63,7 @@ export class AgentHarnessError extends Error {
  * delivered text for a later reply.
  */
 const VERBATIM_DELIVERY_STIMULUS = "[A scheduled or triggered task produced the message below, delivered to you proactively.]";
+const MEMORY_PERSISTENCE_WARNING = "Memory persistence was not confirmed after the provider answer; the provider response was preserved.";
 
 export class MonoAgentHarness implements AgentHarness {
   private readonly options: AgentHarnessOptions;
@@ -1062,10 +1063,12 @@ export class MonoAgentHarness implements AgentHarness {
             memory.scheduleCapture?.(conversationId, captureTurnText(userMessage, assistantText, options));
           }
         }
-      } catch (error) {
+      } catch {
         // The provider answer already succeeded. Memory is additive and must
-        // never retroactively turn that answer into a failed turn.
-        const message = `Memory persistence failed after the provider answer; continuing. ${errorMessageText(error)}`;
+        // never retroactively turn that answer into a failed turn. Keep this
+        // diagnostic constant: backend errors can contain secrets, paths,
+        // model content, hostile accessors, or control characters.
+        const message = MEMORY_PERSISTENCE_WARNING;
         try {
           options.emit?.({
             type: "runtime_warning",

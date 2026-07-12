@@ -52,8 +52,14 @@ const block = await store.load("conv-1", "preferences");
   markdown block capped at `maxBytes`. Degrades to `undefined` on any error.
 - `persistCompletedTurn` → one awaited `POST /v3/documents` containing the deterministic
   summary and optional full capture text. A SHA-256-derived custom id keyed only by `runId`
-  makes retries idempotent; success returns the stable custom id after remote admission,
-  while any failure is logged and thrown so the harness can report degradation. Raw run and
+  keeps remote retries on one logical upsert. During one store lifetime an exact retry returns
+  as a duplicate without another request, while conflicting reuse of a run id fails before a
+  request. That exact lifetime check retains only two SHA-256 digests per distinct run—never raw
+  run ids, conversation ids, or turn content. After a process restart the remote API does not
+  expose enough conditional/read state
+  to distinguish a new document from a retry. Success returns the stable custom id after remote
+  admission, while any failure emits a constant content-free warning and is thrown so the harness
+  can report degradation. Raw run and
   conversation ids are not placed in remote metadata. Documents over 1,000,000 bytes are
   rejected rather than partially captured.
 - Legacy `appendHostSummary` / `scheduleCapture` remain compatible best-effort writes (one-liner /

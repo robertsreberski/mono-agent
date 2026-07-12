@@ -52,14 +52,29 @@ for `writeMode: "capture"`, the bounded host-approved capture text. Projection a
 may run after the reply, but a process restart resumes them from the durable record. Pending work
 uses 16 bounded exponential-backoff attempts (one minute initially, capped at six hours, spanning
 more than 24 hours) before moving to a durable dead letter. Resolved receipts are retained in a
-bounded set so a replay cannot create another raw-audit line or another curated fact for the run.
-The intake directories are `0700` and records are `0600`; symlinks, ownership changes, conflicting
-payloads, malformed records, and unsafe crash transitions are rejected.
+bounded rich set, while an exact content-free `id + payload-hash` commitment remains permanently
+in one of 256 cataloged compact append-only ledger shards. A sibling owner-only integrity catalog
+commits every shard's byte high-water mark and SHA-256 after the shard append is fsynced. Missing,
+truncated, or valid-looking replacement shards therefore fail closed. A crash between shard append
+and catalog commit can advance the catalog only when every suffix entry still has an exact
+materialized intake receipt and after the exact shard inode is fsynced again. A separate
+owner-only schema marker at the memory root proves that the catalog has existed, so deleting both
+the ledger and catalog cannot masquerade as a pre-ledger upgrade. Receipt pruning therefore cannot make an old run
+admissible again or create another raw-audit line/curated fact. The intake directories are `0700`
+and records/ledger shards are `0600`; symlinks, ownership changes, conflicting payloads, malformed
+records, partial ledger writes, and unsafe crash transitions are rejected or deterministically
+recovered before admission.
 
 External `MemoryStore` implementations can opt into the same contract with
 `persistCompletedTurn`. Stores without it retain the legacy `appendHostSummary` plus optional
 `scheduleCapture` behavior. The bundled Supermemory backend implements the strong method as one
 awaited, run-id-keyed remote upsert and propagates admission failure to the harness warning path.
+Within one store lifetime, exact retries are returned as duplicates without a second request and a
+run id reused with different payload bytes fails before any request. The exact check keeps two
+SHA-256 digests per distinct run for that process lifetime, without retaining raw ids or content.
+Across process restarts, the
+remote API's stable custom id preserves one logical upsert, but it does not expose a conditional
+create/read result that lets mono-agent distinguish a new document from a retry.
 
 ### Strict tier write behavior
 
@@ -69,7 +84,9 @@ awaited, run-id-keyed remote upsert and propagates admission failure to the harn
 
 The durable intake and both downstream paths are bounded and observable. Intake admits at most
 4,096 active pending/dead records of at most 640 KiB each and retains at most 4,096 resolved
-receipts. Journal indexing holds at most 256 items / 2 MiB. Each capture-model completion is
+receipts. Its permanent content-free ledger grows by one fixed 129-byte entry per distinct run id
+across up to 256 lazily created shard files plus one fixed-size 256-slot integrity catalog. Journal
+indexing holds at most 256 items / 2 MiB. Each capture-model completion is
 rejected before parsing when it exceeds 262,144 JavaScript characters. Runtime snapshots report
 content-free intake pending/dead/resolved/due/transition counts alongside downstream queue and
 shutdown state. Shutdown gives work up to 10 seconds to drain; after that deadline it aborts the

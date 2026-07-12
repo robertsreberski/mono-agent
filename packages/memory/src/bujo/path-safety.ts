@@ -37,6 +37,15 @@ export interface CanonicalFileSnapshot {
   readonly identity: CanonicalFileIdentity;
 }
 
+export interface CanonicalFileAppendOptions {
+  /** Compare the complete file snapshot observed by an earlier safe read. */
+  readonly expectedIdentity?: CanonicalFileIdentity;
+  /** Create a new file exclusively; fail if the canonical name already exists. */
+  readonly requireMissing?: boolean;
+  /** Also fsync the containing directory, including for an existing file. */
+  readonly syncParent?: boolean;
+}
+
 /**
  * A regular canonical file was unlinked after it became addressable/opened.
  *
@@ -287,14 +296,26 @@ export function appendCanonicalFile(
   root: string,
   relativePath: string,
   content: string | ((existingSize: number) => string),
+  options: CanonicalFileAppendOptions = {},
 ): void {
+  if (options.expectedIdentity !== undefined && options.requireMissing === true) {
+    throw new Error("memory-bujo: canonical append cannot require both an existing and missing file.");
+  }
   const location = canonicalLocation(root, relativePath, true, true);
   const existing = optionalLstat(location.path);
   if (existing !== undefined) assertSafeRegularFile(existing, relativePath);
+  if (options.requireMissing === true && existing !== undefined) {
+    throw new Error(`memory-bujo: canonical file "${relativePath}" already exists before exclusive append.`);
+  }
+  if (options.expectedIdentity !== undefined
+    && (existing === undefined || !sameIdentity(existing, options.expectedIdentity))) {
+    throw new Error(`memory-bujo: canonical file "${relativePath}" changed before append.`);
+  }
   assertStableDirectories(location.directories);
   const fd = openSync(
     location.path,
-    constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | noFollowFlag(),
+    constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT
+      | (options.requireMissing === true ? constants.O_EXCL : 0) | noFollowFlag(),
     DEFAULT_FILE_MODE,
   );
   const created = existing === undefined;
@@ -302,17 +323,23 @@ export function appendCanonicalFile(
     const opened = fstatSync(fd);
     assertSafeRegularFile(opened, relativePath);
     if (existing !== undefined) assertSameNode(existing, opened, relativePath);
+    if (options.expectedIdentity !== undefined && !sameIdentity(opened, options.expectedIdentity)) {
+      throw new Error(`memory-bujo: canonical file "${relativePath}" changed while opening for append.`);
+    }
     assertStableDirectories(location.directories);
     assertPathMatchesFd(location.path, opened, relativePath);
     const data = typeof content === "function" ? content(opened.size) : content;
     if (data.length > 0) writeFileSync(fd, data, "utf8");
     fsyncSync(fd);
+    // Do not report a durable append to an inode that was unlinked/replaced
+    // after the pre-write identity check. Keep the fd pinned through the new
+    // name's directory fsync and perform one final no-follow path comparison.
+    if (created || options.syncParent === true) fsyncDirectory(location.parent);
+    assertStableDirectories(location.directories);
+    assertPathMatchesFd(location.path, fstatSync(fd), relativePath);
   } finally {
     closeSync(fd);
   }
-  // The file fsync makes appended bytes durable; the directory fsync makes a
-  // newly-created canonical name durable before a later intent is completed.
-  if (created) fsyncDirectory(location.parent);
 }
 
 /**
