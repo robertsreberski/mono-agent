@@ -55,8 +55,10 @@ Model output on this path is strict and all-or-nothing: malformed extraction or
 reconciliation JSON remains pending for retry rather than becoming a partial
 capture or a successful empty result. The extraction prompt states the validator's
 exact field, `0..1` salience, identifier, reference, and relation contracts. The
-strict parser remains authoritative and never clamps, rescales, or coerces model
-values.
+reconcile prompt states the exact action-dependent objects: `ADD` has only index/action,
+`NOOP` requires a supplied target id, and `UPDATE`/`SUPERSEDE` require that target plus
+complete replacement text. The strict parser remains authoritative and never clamps,
+rescales, fills missing fields, or coerces model values.
 
 `@mono-agent/memory/bujo` also exposes a synchronous provider-free strict health
 audit. It takes a snapshot-coherent view of managed identity, SQLite and

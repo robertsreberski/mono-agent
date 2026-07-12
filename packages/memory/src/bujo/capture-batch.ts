@@ -30,12 +30,12 @@ Rules:
 - All three root arrays are required, even when empty. Every shown object field is required; emit no other fields.
 - Every memory object has exactly type, text, salience, isInsight, and entityIds. type is task, event, or note; isInsight is a JSON boolean.
 - salience MUST be a finite JSON number from 0 to 1 inclusive, such as 0.8. Never use a 0-10, 0-100, or percentage scale.
-- Every memory is one distinct durable fact, <=160 characters, with no leading or trailing whitespace.
-- Every entity object has exactly id, name, and type. id is lowercase ASCII type:name-kebab including the colon, and the prefix before : exactly matches type.
-- Every relation object has exactly src, dst, and relation. relation is lowercase words separated only by single spaces or hyphens.
-- A memory.entityIds list contains ONLY entities directly stated in that same fact, copied byte-for-byte from entities[].id; otherwise use [].
+- Every memory text is one distinct durable fact: non-empty, at most 160 Unicode code points, no leading/trailing whitespace, no control, formatting, surrogate, line-separator, or paragraph-separator characters, and no reserved <!--mem delimiter.
+- Every entity object has exactly id, name, and type. id is lowercase ASCII type:name-kebab including the colon, at most 96 characters, and its 1-32 character prefix before : exactly matches type. name is non-empty, at most 160 Unicode code points, trimmed, and contains none of the unsafe character classes forbidden for memory text.
+- Every relation object has exactly src, dst, and relation. src and dst are copied entity ids. relation is non-empty, at most 96 characters, and contains lowercase ASCII letters/digits separated only by single spaces or hyphens.
+- A memory.entityIds list contains ONLY entities directly stated in that same fact, copied byte-for-byte from entities[].id with no repeated id; otherwise use [].
 - Relations and entityIds reference exact entity ids in this response. Never associate every memory with every turn entity.
-- Do not emit duplicate entity ids, duplicate relations, duplicate memories, near-duplicate memories, extra keys, comments, or prose.
+- Do not emit duplicate JSON object keys, duplicate entity ids, duplicate relations, duplicate memories, near-duplicate memories, extra keys, comments, or prose.
 - Use empty arrays when there are no durable memories, entities, or relations.
 
 TURN:
