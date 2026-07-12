@@ -141,10 +141,12 @@ describe("session-web API auth", () => {
   test("streams with Authorization fetch headers and never puts the token in the URL", async () => {
     installWindow();
     const frame = { t: "instances", instances: [] };
+    const cancelBody = vi.fn();
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`));
       },
+      cancel: cancelBody,
     });
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(body, {
       status: 200,
@@ -166,6 +168,38 @@ describe("session-web API auth", () => {
     expect(headersFrom(fetchMock.mock.calls[0] ?? []).authorization).toBe("Bearer stream-secret");
     expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain("stream-secret");
     close();
+    await vi.waitFor(() => expect(cancelBody).toHaveBeenCalledOnce());
+  });
+
+  test("parses split CRLF frames, ignores malformed frames, and cancels disposal once", async () => {
+    installWindow();
+    const encoder = new TextEncoder();
+    const cancelBody = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("data: {malformed}\r"));
+        controller.enqueue(encoder.encode("\n\r\n: ping\r\n\r\ndata: {\"t\":\"instances\",\"instances\":[]}\r\n\r"));
+        controller.enqueue(encoder.encode("\n"));
+      },
+      cancel: cancelBody,
+    });
+    const fetchMock = vi.fn(async () => new Response(body, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onMessage = vi.fn();
+
+    const close = openStream({ onMessage });
+    await vi.waitFor(() => {
+      expect(onMessage).toHaveBeenCalledWith({ t: "instances", instances: [] });
+    });
+    expect(onMessage).toHaveBeenCalledTimes(1);
+
+    close();
+    close();
+    await vi.waitFor(() => expect(cancelBody).toHaveBeenCalledOnce());
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   test("cancels every non-terminating HTTP error body before reconnecting", async () => {
@@ -195,5 +229,91 @@ describe("session-web API auth", () => {
 
     close();
     expect(created - cancelled).toBe(0);
+  });
+
+  test("cancels a non-terminating successful body when onOpen throws before reconnecting", async () => {
+    vi.useFakeTimers();
+    installWindow();
+    let created = 0;
+    let cancelled = 0;
+    const events: string[] = [];
+    const fetchMock = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start() {
+        created += 1;
+        events.push(`created:${created}`);
+      },
+      cancel() {
+        cancelled += 1;
+        events.push(`cancelled:${cancelled}`);
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onOpen = vi.fn(() => {
+      throw new Error("onOpen failed");
+    });
+    const onError = vi.fn();
+
+    const close = openStream({ onMessage: vi.fn(), onOpen, onError });
+    await vi.advanceTimersByTimeAsync(0);
+    expect({ created, cancelled, outstanding: created - cancelled }).toEqual({
+      created: 1,
+      cancelled: 1,
+      outstanding: 0,
+    });
+    expect(onOpen).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect({ created, cancelled, outstanding: created - cancelled }).toEqual({
+      created: 2,
+      cancelled: 2,
+      outstanding: 0,
+    });
+    expect(events.indexOf("cancelled:1")).toBeLessThan(events.indexOf("created:2"));
+
+    close();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(created - cancelled).toBe(0);
+  });
+
+  test("cancels an exceptionally failed reader exactly once without cancelling its former body owner", async () => {
+    vi.useFakeTimers();
+    installWindow();
+    const cancelBody = vi.fn(async () => undefined);
+    const cancelReader = vi.fn(async () => undefined);
+    const releaseLock = vi.fn();
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "text/event-stream" }),
+      body: {
+        cancel: cancelBody,
+        getReader: () => ({
+          read: async () => {
+            throw new Error("reader failed");
+          },
+          cancel: cancelReader,
+          releaseLock,
+        }),
+      },
+    }) as unknown as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    const onError = vi.fn();
+
+    const close = openStream({ onMessage: vi.fn(), onError });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(cancelReader).toHaveBeenCalledOnce();
+    expect(cancelBody).not.toHaveBeenCalled();
+    expect(releaseLock).toHaveBeenCalledOnce();
+    close();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(cancelReader).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });

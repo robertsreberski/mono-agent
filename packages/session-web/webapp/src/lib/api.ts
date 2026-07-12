@@ -108,11 +108,14 @@ export interface StreamHandlers {
 export function openStream({ onMessage, onOpen, onError }: StreamHandlers): () => void {
   let disposed = false;
   let controller: AbortController | undefined;
-  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let cancelActiveStream: (() => Promise<void>) | undefined;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
   const connect = async (): Promise<void> => {
     controller = new AbortController();
+    let cancelOwnedStream: (() => Promise<void>) | undefined;
+    let ownedReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let readerCompleted = false;
     try {
       const headers: Record<string, string> = { accept: "text/event-stream" };
       const token = currentAuthToken();
@@ -124,20 +127,44 @@ export function openStream({ onMessage, onOpen, onError }: StreamHandlers): () =
         signal: controller.signal,
         cache: "no-store",
       });
-      if (!response.ok || response.body === null) {
-        await response.body?.cancel().catch(() => undefined);
+      const responseBody = response.body;
+      if (responseBody === null) {
+        throw new ApiError("/api/stream", String(response.status), {
+          status: response.status,
+          contentType: response.headers.get("content-type") || undefined,
+        });
+      }
+      // The successful Response body remains the cancellation owner until
+      // getReader() succeeds. This covers callback/getReader failures without
+      // leaving an unread fetch body alive across the reconnect delay.
+      const cancelBody = cancellationOnce(() => responseBody.cancel());
+      cancelOwnedStream = cancelBody;
+      cancelActiveStream = cancelBody;
+      if (!response.ok) {
+        await cancelBody();
         throw new ApiError("/api/stream", String(response.status), {
           status: response.status,
           contentType: response.headers.get("content-type") || undefined,
         });
       }
       if (disposed) {
-        await response.body.cancel().catch(() => undefined);
+        await cancelBody();
         return;
       }
       onOpen?.();
-      reader = response.body.getReader();
-      await consumeSseStream(reader, onMessage);
+      if (disposed) {
+        await cancelBody();
+        return;
+      }
+      const responseReader = responseBody.getReader();
+      ownedReader = responseReader;
+      // getReader() transfers stream ownership: from here on disposal and
+      // exceptional reads cancel the reader, never its former body owner.
+      const cancelReader = cancellationOnce(() => responseReader.cancel());
+      cancelOwnedStream = cancelReader;
+      cancelActiveStream = cancelReader;
+      await consumeSseStream(responseReader, onMessage);
+      readerCompleted = true;
       if (!disposed) {
         onError?.();
       }
@@ -146,7 +173,17 @@ export function openStream({ onMessage, onOpen, onError }: StreamHandlers): () =
         onError?.();
       }
     } finally {
-      reader = undefined;
+      if (!readerCompleted) {
+        await cancelOwnedStream?.();
+      }
+      try {
+        ownedReader?.releaseLock();
+      } catch {
+        /* cancellation/read completion owns cleanup; lock release is best-effort */
+      }
+      if (cancelActiveStream === cancelOwnedStream) {
+        cancelActiveStream = undefined;
+      }
       controller = undefined;
       if (!disposed) {
         reconnectTimer = setTimeout(() => {
@@ -165,7 +202,20 @@ export function openStream({ onMessage, onOpen, onError }: StreamHandlers): () =
       reconnectTimer = undefined;
     }
     controller?.abort();
-    void reader?.cancel().catch(() => undefined);
+    void cancelActiveStream?.();
+  };
+}
+
+function cancellationOnce(cancel: () => Promise<unknown>): () => Promise<void> {
+  let cancellation: Promise<void> | undefined;
+  return () => {
+    cancellation ??= Promise.resolve()
+      .then(cancel)
+      .then(
+        () => undefined,
+        () => undefined,
+      );
+    return cancellation;
   };
 }
 
