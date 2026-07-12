@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { openMemoryDb } from "../../store/index.js";
-import { appendEntity, appendRelation } from "../graph.js";
+import { appendAssociation, appendEntity, appendRelation } from "../graph.js";
+import { auditCanonicalGraphParity } from "../graph-parity.js";
 import { fakeEmbeddings } from "./helpers.js";
 import { rebuildFromMarkdown } from "../rebuild.js";
 
@@ -39,6 +40,12 @@ describe("rebuildFromMarkdown", () => {
     appendEntity(root, { id: "person:morgan", name: "Morgan", type: "person", createdAt: "2026-06-15T09:00:00.000Z" });
     appendEntity(root, { id: "project:mono-agent", name: "mono-agent", type: "project", createdAt: "2026-06-15T09:00:00.000Z" });
     appendRelation(root, { src: "person:morgan", dst: "project:mono-agent", relation: "maintains", createdAt: "2026-06-15T09:00:00.000Z" });
+    appendAssociation(root, {
+      memoryId: "RB1",
+      entityId: "person:morgan",
+      provenance: "capture",
+      createdAt: "2026-06-15T09:00:00.000Z",
+    });
 
     // Open a fresh db (simulates a delete+rebuild)
     const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
@@ -55,9 +62,19 @@ describe("rebuildFromMarkdown", () => {
     expect(db.getEntity("project:mono-agent")).toMatchObject({ name: "mono-agent", type: "project" });
 
     // Relations were loaded
-    expect(db.relationsFor("person:morgan")).toContainEqual(
-      expect.objectContaining({ dst: "project:mono-agent", relation: "maintains" }),
-    );
+    expect(db.relationsFor("person:morgan")).toEqual([{
+      src: "person:morgan",
+      dst: "project:mono-agent",
+      relation: "maintains",
+      createdAt: "2026-06-15T09:00:00.000Z",
+    }]);
+    expect(db.associationsForMemory("RB1")).toEqual([{
+      memoryId: "RB1",
+      entityId: "person:morgan",
+      provenance: "capture",
+      createdAt: "2026-06-15T09:00:00.000Z",
+    }]);
+    expect(auditCanonicalGraphParity(root, db).matches).toBe(true);
 
     // LLM was never called (rebuildFromMarkdown has no llm parameter)
     expect(llmSpy).not.toHaveBeenCalled();
