@@ -250,6 +250,45 @@ describe("runWeb", () => {
     expect(output).not.toContain("stable-test-token");
   });
 
+  it("reports actual non-loopback reachability when localhost resolves to a wildcard", async () => {
+    const configPath = await testConfig();
+    let output = "";
+    const startServer = vi.fn(async (): Promise<SessionWebServerHandle> => ({
+      url: "http://localhost:4599/",
+      boundAddress: "0.0.0.0",
+      stop: vi.fn(async () => undefined),
+    }));
+
+    await runWeb(
+      {
+        configPath,
+        cwd: dir!,
+        env: {
+          MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: join(dir!, "global-trace-sources"),
+          MONO_AGENT_WEB_AUTH_TOKEN: "stable-test-token",
+        },
+        host: "localhost",
+        allowNonLoopback: true,
+        open: false,
+      },
+      {
+        startServer,
+        waitForShutdown: async () => undefined,
+        stdout: { write: (text) => (output += text) },
+        discoverNetworkAddresses: () => [
+          { address: "192.168.178.103", kind: "lan" },
+          { address: "100.64.103.59", kind: "tailscale" },
+        ],
+      },
+    );
+
+    expect(output).toContain("mono-agent web  →  http://127.0.0.1:4599/");
+    expect(output).toContain("LAN       →  http://192.168.178.103:4599/");
+    expect(output).toContain("Tailscale →  http://100.64.103.59:4599/");
+    expect(output).toContain("Bound non-loopback: direct HTTP is available");
+    expect(output).not.toContain("Loopback only.");
+  });
+
   it("generates auth and prints concrete tokenized loopback, LAN, and Tailscale URLs", async () => {
     const configPath = await testConfig();
     let output = "";

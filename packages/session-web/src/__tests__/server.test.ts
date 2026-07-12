@@ -1,13 +1,14 @@
 import dns from "node:dns";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createConnection, type AddressInfo } from "node:net";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RUNS_HEALTH_STALE_RUNNING_MS } from "@mono-agent/observability";
 
+import { SessionAggregator } from "../aggregator.js";
 import { startSessionWebServer } from "../server.js";
 import type { SessionWebServerHandle } from "../server.js";
 import { makeTmpDir, readSseFrames, registerSource, removeDir, seedRun, seedRunningRun } from "./helpers.js";
@@ -396,6 +397,60 @@ describe("startSessionWebServer", () => {
       await stopPromise.catch(() => undefined);
     }
   });
+
+  it("stops the aggregator exactly once across repeated stop calls", async () => {
+    const stopAggregator = vi.spyOn(SessionAggregator.prototype, "stop");
+    try {
+      const fix = await fixture();
+      server = await startSessionWebServer({ registryDirs: [fix.registryDir], port: 0, staticDir: fix.staticDir });
+
+      const firstStop = server.stop();
+      const repeatedStop = server.stop();
+      expect(repeatedStop).toBe(firstStop);
+      await firstStop;
+      server = undefined;
+
+      expect(stopAggregator).toHaveBeenCalledTimes(1);
+    } finally {
+      stopAggregator.mockRestore();
+    }
+  });
+
+  it.each([undefined, "session-secret"])(
+    "bounds repeated shutdown with a partial HTTP header (auth token: %s)",
+    async (authToken) => {
+      const fix = await fixture();
+      server = await startSessionWebServer({
+        registryDirs: [fix.registryDir],
+        port: 0,
+        staticDir: fix.staticDir,
+        ...(authToken === undefined ? {} : { authToken }),
+      });
+      const url = new URL(server.url);
+      const port = Number.parseInt(url.port, 10);
+      const socket = createConnection({ host: "127.0.0.1", port });
+      await new Promise<void>((resolvePromise, rejectPromise) => {
+        socket.once("connect", resolvePromise);
+        socket.once("error", rejectPromise);
+      });
+      socket.write("GET /api/instances HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer");
+      await sleep(20);
+
+      const firstStop = server.stop();
+      const repeatedStop = server.stop();
+      expect(repeatedStop).toBe(firstStop);
+      server = undefined;
+      try {
+        await expect(
+          Promise.race([firstStop.then(() => "stopped" as const), sleep(1_000).then(() => "timeout" as const)]),
+        ).resolves.toBe("stopped");
+      } finally {
+        socket.destroy();
+        await firstStop.catch(() => undefined);
+      }
+      await expectPortReusable(port);
+    },
+  );
 
   it("serves the SPA index.html for the root and unknown client routes", async () => {
     const fix = await fixture();

@@ -135,7 +135,7 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
     `Watching ${registryDirs.length} registr${registryDirs.length === 1 ? "y" : "ies"} for agents. Press Ctrl-C to stop.\n`,
   );
   stdout.write(`${reverseProxyHint(primaryUrl)}\n`);
-  stdout.write(`${reachabilityHint(handle.url)}\n`);
+  stdout.write(`${reachabilityHint(handle.url, handle.boundAddress)}\n`);
 
   if ((options.open ?? true) && authToken === undefined) {
     try {
@@ -158,7 +158,7 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
  * A one-line hint about who can reach the server. Direct HTTP never depends on
  * Tailscale Serve; Serve is only an optional HTTPS/PWA-installability layer.
  */
-function reachabilityHint(url: string): string {
+function reachabilityHint(url: string, boundAddress: string | undefined): string {
   let port = "";
   let host = "";
   try {
@@ -168,7 +168,8 @@ function reachabilityHint(url: string): string {
   } catch {
     /* leave blank */
   }
-  if (host.length > 0 && !isLoopbackHost(host)) {
+  const effectiveHost = boundAddress ?? host;
+  if (effectiveHost.length > 0 && !isLoopbackHost(effectiveHost)) {
     return "Bound non-loopback: direct HTTP is available over your LAN/Tailnet at the URLs above. Tailscale Serve is optional and only needed for HTTPS + installable/offline PWA behavior.";
   }
   return `Loopback only. Re-run with --host 0.0.0.0 --allow-non-loopback for direct LAN/Tailnet HTTP. Tailscale Serve is optional for HTTPS + installable/offline PWA behavior (port ${port || "<port>"}).`;
