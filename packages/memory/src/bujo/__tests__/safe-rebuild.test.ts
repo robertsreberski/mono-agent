@@ -23,6 +23,7 @@ import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
 import { loadVec } from "../../store/vec.js";
 import {
   createBujoMemoryStore,
+  auditCanonicalGraphParity,
   appendGraphBatch,
   migrate,
   readGraph,
@@ -74,7 +75,16 @@ describe("safe memory index rebuild", () => {
     const live = openMemoryDb({ path: join(root, "memory.db"), embeddings: embeddings("test:graph-parity", 8), dim: 8 });
     await live.upsert({ ...note("M1", "Morgan maintains the memory graph."), source: { file: "daily/2026-07-11.md", line: 3 } });
     const initial = appendGraphBatch(root, {
-      entities: [{ id: "person:morgan", name: "Morgan", type: "person", createdAt: "2026-01-01T00:00:00.000Z" }],
+      entities: [
+        { id: "person:morgan", name: "Morgan", type: "person", createdAt: "2026-01-01T00:00:00.000Z" },
+        { id: "project:mono-agent", name: "mono-agent", type: "project", createdAt: "2026-01-01T00:00:00.000Z" },
+      ],
+      relations: [{
+        src: "person:morgan",
+        dst: "project:mono-agent",
+        relation: "maintains",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }],
       associations: [{
         memoryId: "M1",
         entityId: "person:morgan",
@@ -82,16 +92,19 @@ describe("safe memory index rebuild", () => {
         createdAt: "2026-01-01T00:00:00.000Z",
       }],
     });
-    live.upsertEntity(initial.entities[0]!);
-    live.associateMemory(initial.associations[0]!);
+    for (const entity of initial.entities) live.mirrorCanonicalEntity(entity);
+    for (const relation of initial.relations) live.mirrorCanonicalRelation(relation);
+    for (const association of initial.associations) live.mirrorCanonicalAssociation(association);
     const updated = appendGraphBatch(root, {
       entities: [{ id: "person:morgan", name: "Morgan R.", type: "person", createdAt: NOW }],
       associations: [{ memoryId: "M1", entityId: "person:morgan", provenance: "capture", createdAt: NOW }],
     });
-    live.upsertEntity(updated.entities[0]!);
-    live.associateMemory(updated.associations[0]!);
+    live.mirrorCanonicalEntity(updated.entities[0]!);
+    live.mirrorCanonicalAssociation(updated.associations[0]!);
     const liveEntity = live.getEntity("person:morgan");
+    const liveRelation = live.relationsFor("person:morgan");
     const liveAssociation = live.associationsForMemory("M1");
+    expect(auditCanonicalGraphParity(root, live).matches).toBe(true);
     live.close();
 
     expect(liveEntity).toMatchObject({
@@ -113,9 +126,65 @@ describe("safe memory index rebuild", () => {
     const rebuilt = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
     try {
       expect(rebuilt.getEntity("person:morgan")).toEqual(liveEntity);
+      expect(rebuilt.relationsFor("person:morgan")).toEqual(liveRelation);
       expect(rebuilt.associationsForMemory("M1")).toEqual(liveAssociation);
+      expect(auditCanonicalGraphParity(root, rebuilt).matches).toBe(true);
     } finally {
       rebuilt.close();
+    }
+  });
+
+  it("audits deterministic legacy-name associations as part of the BuJo projection", async () => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("M1", "Morgan owns the project.")]);
+    appendGraphBatch(root, {
+      entities: [{ id: "person:morgan", name: "Morgan", type: "person", createdAt: NOW }],
+    });
+
+    const result = await safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: embeddings("test:derived-graph-parity", 8),
+      dim: 8,
+    });
+    expect(result.derivedLegacyAssociations).toBe(1);
+    const db = openMemoryDb({ path: result.active, readOnly: true, dim: 8 });
+    try {
+      expect(auditCanonicalGraphParity(root, db)).toMatchObject({
+        status: "match",
+        tier: "bujo",
+        matches: true,
+        associations: { canonical: 1, active: 1, matched: 1, extra: 0 },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(["lite", "journal"] as const)("expects an empty graph projection for managed %s", async (tier) => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("M1", "Tier-specific graph projection.")]);
+    appendGraphBatch(root, {
+      entities: [{ id: "person:morgan", name: "Morgan", type: "person", createdAt: NOW }],
+    });
+
+    const result = await safeRebuildMemoryIndex({
+      root,
+      tier,
+      ...(tier === "journal"
+        ? { embeddings: embeddings("test:empty-tier-graph", 8), dim: 8 }
+        : {}),
+    });
+    const db = openMemoryDb({ path: result.active, readOnly: true, ...(tier === "journal" ? { dim: 8 } : {}) });
+    try {
+      expect(auditCanonicalGraphParity(root, db)).toMatchObject({
+        status: "match",
+        tier,
+        matches: true,
+        entities: { canonical: 0, active: 0, matched: 0, missing: 0 },
+      });
+    } finally {
+      db.close();
     }
   });
 
