@@ -7,17 +7,19 @@ import {
   lstatSync,
   openSync,
   readFileSync,
+  readlinkSync,
+  readSync,
   readdirSync,
   renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export const BUILD_MARKER_FILENAME = ".mono-agent-build.json";
 export const BUILD_LOCK_FILENAME = ".mono-agent-build.lock";
-export const BUILD_MARKER_SCHEMA_VERSION = 1;
+export const BUILD_MARKER_SCHEMA_VERSION = 2;
 
 const BUILD_MARKER_KEYS = Object.freeze([
   "schemaVersion",
@@ -27,6 +29,7 @@ const BUILD_MARKER_KEYS = Object.freeze([
   "nodeAbi",
   "sourceState",
   "outputDigest",
+  "dependencyDigest",
 ]);
 const MAX_BUILD_MARKER_BYTES = 4_096;
 const SHA_PATTERN = /^[0-9a-f]{40,64}$/u;
@@ -35,6 +38,8 @@ const NODE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/u;
 const NODE_ABI_PATTERN = /^\d+$/u;
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 const DIRECTORY = constants.O_DIRECTORY ?? 0;
+const MAX_DEPENDENCY_READ_CHUNK_BYTES = 1024 * 1024;
+const MAX_UINT64 = (1n << 64n) - 1n;
 
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -116,7 +121,9 @@ export function parseBuildMarker(value) {
     || !NODE_ABI_PATTERN.test(value.nodeAbi)
     || (value.sourceState !== "clean" && value.sourceState !== "dirty")
     || typeof value.outputDigest !== "string"
-    || !DIGEST_PATTERN.test(value.outputDigest)) {
+    || !DIGEST_PATTERN.test(value.outputDigest)
+    || typeof value.dependencyDigest !== "string"
+    || !DIGEST_PATTERN.test(value.dependencyDigest)) {
     return null;
   }
   return {
@@ -127,6 +134,7 @@ export function parseBuildMarker(value) {
     nodeAbi: value.nodeAbi,
     sourceState: value.sourceState,
     outputDigest: value.outputDigest,
+    dependencyDigest: value.dependencyDigest,
   };
 }
 
@@ -459,10 +467,17 @@ function readStableOutputFile(path, expectedSignature, sync) {
 }
 
 function updateFramed(hash, bytes) {
-  const length = Buffer.allocUnsafe(8);
-  length.writeBigUInt64BE(BigInt(bytes.length));
-  hash.update(length);
+  updateFrameLength(hash, BigInt(bytes.length));
   hash.update(bytes);
+}
+
+function updateFrameLength(hash, byteLength) {
+  if (typeof byteLength !== "bigint" || byteLength < 0n || byteLength > MAX_UINT64) {
+    throw new Error("unsafe framed payload length");
+  }
+  const lengthFrame = Buffer.allocUnsafe(8);
+  lengthFrame.writeBigUInt64BE(byteLength);
+  hash.update(lengthFrame);
 }
 
 export function computeBuildOutputDigest(repo, options = {}) {
@@ -540,4 +555,386 @@ export function computeBuildOutputDigest(repo, options = {}) {
 
 function toRepoPathOrRoot(repo, path) {
   return path === repo ? "" : toRepoPath(repo, path);
+}
+
+function assertDependencyDirectory(path) {
+  const stat = lstatOrNull(path);
+  if (stat === null || !stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error("runtime dependency directory unavailable or unsafe");
+  }
+  return stat;
+}
+
+function runtimeDependencyTopology(repo) {
+  const dependencyRoots = [join(repo, "node_modules")];
+  const workspaceRoots = [];
+  assertDependencyDirectory(dependencyRoots[0]);
+
+  for (const parentName of ["packages", "extras"]) {
+    const parent = join(repo, parentName);
+    const before = assertDependencyDirectory(parent);
+    const names = readdirSync(parent).sort(compareUtf8);
+    for (const name of names) {
+      const packageDirectory = join(parent, name);
+      const packageStat = lstatOrNull(packageDirectory);
+      if (packageStat === null) continue;
+      if (packageStat.isSymbolicLink()) throw new Error("unsafe workspace package directory");
+      if (!packageStat.isDirectory()) continue;
+
+      const manifest = lstatOrNull(join(packageDirectory, "package.json"));
+      if (manifest === null) continue;
+      if (!manifest.isFile() || manifest.isSymbolicLink()) {
+        throw new Error("unsafe workspace package manifest");
+      }
+      workspaceRoots.push(packageDirectory);
+
+      const nodeModules = join(packageDirectory, "node_modules");
+      const dependencyStat = lstatOrNull(nodeModules);
+      if (dependencyStat === null) continue;
+      if (!dependencyStat.isDirectory() || dependencyStat.isSymbolicLink()) {
+        throw new Error("unsafe package dependency root");
+      }
+      dependencyRoots.push(nodeModules);
+    }
+    const after = lstatSync(parent, { bigint: true });
+    if (!after.isDirectory() || !sameFileState(before, after)) {
+      throw new Error("workspace package topology changed during traversal");
+    }
+  }
+
+  const sortRepoPaths = (left, right) => compareUtf8(toRepoPath(repo, left), toRepoPath(repo, right));
+  return {
+    dependencyRoots: dependencyRoots.sort(sortRepoPaths),
+    workspaceRoots: workspaceRoots.sort(sortRepoPaths),
+  };
+}
+
+function pathIsWithin(root, candidate) {
+  const relativePath = relative(root, candidate);
+  return relativePath === ""
+    || (relativePath !== ".."
+      && !relativePath.startsWith(`..${sep}`)
+      && !isAbsolute(relativePath));
+}
+
+function safeDependencySymlinkTarget(repo, topology, path, target) {
+  if (typeof target !== "string" || target.length === 0 || target.includes("\0") || isAbsolute(target)) {
+    throw new Error("unsafe runtime dependency symlink");
+  }
+  const resolvedTarget = resolve(dirname(path), target);
+  const relativeTarget = relative(repo, resolvedTarget);
+  if (relativeTarget === ".."
+    || relativeTarget.startsWith(`..${sep}`)
+    || isAbsolute(relativeTarget)) {
+    throw new Error("runtime dependency symlink escapes repository");
+  }
+  const attestedDependencyTarget = topology.dependencyRoots.some(
+    (root) => pathIsWithin(root, resolvedTarget),
+  );
+  const canonicalWorkspaceTarget = topology.workspaceRoots.includes(resolvedTarget);
+  if (!attestedDependencyTarget && !canonicalWorkspaceTarget) {
+    throw new Error("runtime dependency symlink target is not attested");
+  }
+  return target;
+}
+
+function dependencyMode(stat) {
+  return Number(stat.mode & 0o7777n);
+}
+
+function readStableDependencySymlink(repo, topology, path, expected) {
+  if (!expected.isSymbolicLink()) throw new Error("runtime dependency entry changed");
+  const target = safeDependencySymlinkTarget(repo, topology, path, readlinkSync(path, "utf8"));
+  const current = lstatSync(path, { bigint: true });
+  if (!current.isSymbolicLink()
+    || !sameFileState(expected, current)
+    || dependencyMode(current) !== dependencyMode(expected)) {
+    throw new Error("runtime dependency symlink changed");
+  }
+  return target;
+}
+
+function collectRuntimeDependencyTree(repo, topology) {
+  const entries = new Map();
+
+  function addEntry(path, entry) {
+    const repoPath = toRepoPath(repo, path);
+    if (entries.has(repoPath)) throw new Error("overlapping runtime dependency roots");
+    entries.set(repoPath, entry);
+    return repoPath;
+  }
+
+  function visitDirectory(path, expected, workspaceRoot) {
+    const before = expected ?? assertDependencyDirectory(path);
+    if (!before.isDirectory() || before.isSymbolicLink()) {
+      throw new Error("unsafe runtime dependency directory");
+    }
+    addEntry(path, {
+      type: "directory",
+      path,
+      signature: statSignature(before),
+      mode: dependencyMode(before),
+    });
+    const names = readdirSync(path).sort(compareUtf8);
+    for (const name of names) {
+      // Canonical package-local node_modules directories are separate
+      // attested roots. Other nested application node_modules trees are not
+      // part of the published workspace-package runtime closure.
+      if (workspaceRoot !== undefined && name === "node_modules") continue;
+      const child = join(path, name);
+      const stat = lstatSync(child, { bigint: true });
+      if (stat.isDirectory() && !stat.isSymbolicLink()) {
+        visitDirectory(child, stat, workspaceRoot);
+      } else if (stat.isFile() && !stat.isSymbolicLink()) {
+        addEntry(child, {
+          type: "file",
+          path: child,
+          signature: statSignature(stat),
+          mode: dependencyMode(stat),
+        });
+      } else if (stat.isSymbolicLink()) {
+        addEntry(child, {
+          type: "symlink",
+          path: child,
+          signature: statSignature(stat),
+          mode: dependencyMode(stat),
+          target: readStableDependencySymlink(repo, topology, child, stat),
+        });
+      } else {
+        throw new Error("unsafe runtime dependency entry");
+      }
+    }
+    const after = lstatSync(path, { bigint: true });
+    if (!after.isDirectory()
+      || after.isSymbolicLink()
+      || !sameFileState(before, after)
+      || dependencyMode(after) !== dependencyMode(before)) {
+      throw new Error("runtime dependency directory changed during traversal");
+    }
+  }
+
+  for (const root of topology.dependencyRoots) visitDirectory(root, undefined, undefined);
+  for (const root of topology.workspaceRoots) {
+    visitDirectory(root, undefined, root);
+  }
+  return entries;
+}
+
+function readStableDependencyFile(entry, buffer, framedHash, onReadChunk) {
+  let fd;
+  try {
+    fd = openSync(entry.path, constants.O_RDONLY | NOFOLLOW);
+    const before = fstatSync(fd, { bigint: true });
+    if (!before.isFile()
+      || statSignature(before) !== entry.signature
+      || dependencyMode(before) !== entry.mode
+      || before.size < 0n
+      || before.size > MAX_UINT64) {
+      throw new Error("runtime dependency file changed");
+    }
+    if (framedHash !== undefined) updateFrameLength(framedHash, before.size);
+    const contentHash = createHash("sha256");
+    let bytesReadTotal = 0n;
+    while (true) {
+      const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      bytesReadTotal += BigInt(bytesRead);
+      if (bytesReadTotal > before.size) throw new Error("runtime dependency file changed");
+      const chunk = buffer.subarray(0, bytesRead);
+      contentHash.update(chunk);
+      framedHash?.update(chunk);
+      onReadChunk?.(bytesRead);
+    }
+    if (bytesReadTotal !== before.size) throw new Error("runtime dependency file changed");
+    const after = fstatSync(fd, { bigint: true });
+    const current = lstatSync(entry.path, { bigint: true });
+    if (!after.isFile()
+      || !current.isFile()
+      || current.isSymbolicLink()
+      || !sameFileState(before, after)
+      || !sameFileState(after, current)
+      || dependencyMode(after) !== entry.mode
+      || dependencyMode(current) !== entry.mode) {
+      throw new Error("runtime dependency file changed");
+    }
+    return contentHash.digest("hex");
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function sameRepoPaths(repo, initial, final) {
+  return initial.length === final.length
+    && initial.every((path, index) => toRepoPath(repo, path) === toRepoPath(repo, final[index]));
+}
+
+function sameDependencyTopology(repo, initial, final) {
+  return sameRepoPaths(repo, initial.dependencyRoots, final.dependencyRoots)
+    && sameRepoPaths(repo, initial.workspaceRoots, final.workspaceRoots);
+}
+
+function collectDeploymentState(repo) {
+  const roots = outputRoots(repo);
+  const outputs = collectOutputTree(repo, roots);
+  const dependencyTopology = runtimeDependencyTopology(repo);
+  const dependencies = collectRuntimeDependencyTree(repo, dependencyTopology);
+  return { roots, outputs, dependencyTopology, dependencies };
+}
+
+function sameStringMap(initial, final) {
+  if (initial.size !== final.size) return false;
+  for (const [path, value] of initial) {
+    if (final.get(path) !== value) return false;
+  }
+  return true;
+}
+
+function sameOutputMetadata(repo, initial, final) {
+  if (!sameRepoPaths(repo, initial.roots, final.roots)
+    || initial.outputs.files.size !== final.outputs.files.size
+    || !sameStringMap(initial.outputs.directories, final.outputs.directories)) {
+    return false;
+  }
+  for (const [path, entry] of initial.outputs.files) {
+    if (final.outputs.files.get(path)?.signature !== entry.signature) return false;
+  }
+  return true;
+}
+
+function sameDependencyMetadata(repo, initial, final) {
+  if (!sameDependencyTopology(repo, initial.dependencyTopology, final.dependencyTopology)
+    || initial.dependencies.size !== final.dependencies.size) {
+    return false;
+  }
+  for (const [path, entry] of initial.dependencies) {
+    const current = final.dependencies.get(path);
+    if (current === undefined
+      || current.type !== entry.type
+      || current.signature !== entry.signature
+      || current.mode !== entry.mode
+      || current.target !== entry.target) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function updateFingerprintFields(hash, ...fields) {
+  for (const field of fields) updateFramed(hash, Buffer.from(String(field), "utf8"));
+}
+
+/**
+ * Return one stable metadata fingerprint spanning both deploy outputs and the
+ * complete dependency/workspace closure. The function performs two full
+ * metadata traversals and refuses a fingerprint if roots, paths, identities,
+ * stat signatures, dependency modes, or symlink targets move between them.
+ */
+export function computeDeploymentStateFingerprint(repo, options = {}) {
+  const initial = collectDeploymentState(repo);
+  options.afterFirstPass?.();
+  const final = collectDeploymentState(repo);
+  if (!sameOutputMetadata(repo, initial, final)
+    || !sameDependencyMetadata(repo, initial, final)) {
+    throw new Error("deployment state changed during metadata fingerprint");
+  }
+
+  const hash = createHash("sha256");
+  hash.update("mono-agent-deployment-state-v1\0", "utf8");
+  for (const root of initial.roots) {
+    updateFingerprintFields(hash, "output-root", toRepoPath(repo, root));
+  }
+  for (const path of [...initial.outputs.directories.keys()].sort(compareUtf8)) {
+    updateFingerprintFields(hash, "output-directory", path, initial.outputs.directories.get(path));
+  }
+  for (const path of [...initial.outputs.files.keys()].sort(compareUtf8)) {
+    updateFingerprintFields(hash, "output-file", path, initial.outputs.files.get(path).signature);
+  }
+  for (const root of initial.dependencyTopology.dependencyRoots) {
+    updateFingerprintFields(hash, "dependency-root", toRepoPath(repo, root));
+  }
+  for (const root of initial.dependencyTopology.workspaceRoots) {
+    updateFingerprintFields(hash, "workspace-root", toRepoPath(repo, root));
+  }
+  for (const path of [...initial.dependencies.keys()].sort(compareUtf8)) {
+    const entry = initial.dependencies.get(path);
+    updateFingerprintFields(
+      hash,
+      "dependency-entry",
+      path,
+      entry.type,
+      entry.signature,
+      entry.mode.toString(8).padStart(4, "0"),
+    );
+    if (entry.type === "symlink") updateFingerprintFields(hash, entry.target);
+  }
+  return hash.digest("hex");
+}
+
+/**
+ * Attest the complete installed pnpm dependency topology without following
+ * dependency symlinks. Exact workspace-package link targets are closed by
+ * attesting each canonical package tree once, excluding node_modules
+ * subtrees (the canonical package-local roots are scanned separately).
+ * Every path and entry type is framed into
+ * the digest; regular-file bytes and symlink target strings provide payloads.
+ * A second complete traversal and byte read detects concurrent replacement,
+ * identity, topology, target, or content changes and fails closed.
+ */
+export function computeRuntimeDependencyDigest(repo, options = {}) {
+  const initialTopology = runtimeDependencyTopology(repo);
+  const initial = collectRuntimeDependencyTree(repo, initialTopology);
+  const hash = createHash("sha256");
+  hash.update("mono-agent-runtime-dependency-v1\0", "utf8");
+  const readBuffer = Buffer.allocUnsafe(MAX_DEPENDENCY_READ_CHUNK_BYTES);
+
+  const paths = [...initial.keys()].sort(compareUtf8);
+  for (const repoPath of paths) {
+    const entry = initial.get(repoPath);
+    updateFramed(hash, Buffer.from(repoPath, "utf8"));
+    updateFramed(hash, Buffer.from(entry.type, "utf8"));
+    updateFramed(hash, Buffer.from(entry.mode.toString(8).padStart(4, "0"), "ascii"));
+    if (entry.type === "file") {
+      entry.contentDigest = readStableDependencyFile(
+        entry,
+        readBuffer,
+        hash,
+        options.onFileReadChunk,
+      );
+    } else if (entry.type === "symlink") {
+      updateFramed(hash, Buffer.from(entry.target, "utf8"));
+    }
+  }
+
+  // Test seam for proving mutations between the stable passes fail closed.
+  options.afterFirstPass?.();
+
+  const finalTopology = runtimeDependencyTopology(repo);
+  if (!sameDependencyTopology(repo, initialTopology, finalTopology)) {
+    throw new Error("runtime dependency roots changed during digest");
+  }
+  const final = collectRuntimeDependencyTree(repo, finalTopology);
+  if (initial.size !== final.size) throw new Error("runtime dependency topology changed during digest");
+
+  for (const [repoPath, entry] of initial) {
+    const current = final.get(repoPath);
+    if (current === undefined
+      || current.type !== entry.type
+      || current.signature !== entry.signature
+      || current.mode !== entry.mode
+      || current.target !== entry.target) {
+      throw new Error("runtime dependency entry changed during digest");
+    }
+    if (entry.type === "file") {
+      const contentDigest = readStableDependencyFile(
+        current,
+        readBuffer,
+        undefined,
+        options.onFileReadChunk,
+      );
+      if (contentDigest !== entry.contentDigest) {
+        throw new Error("runtime dependency content changed during digest");
+      }
+    }
+  }
+  return hash.digest("hex");
 }
