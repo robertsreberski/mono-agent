@@ -40,7 +40,11 @@ export type KnownArtifactFailureKind =
   | "usage_limit"
   | "process_death"
   | "runtime_error"
-  | "cancelled";
+  | "cancelled"
+  | "cancelled_user"
+  | "cancelled_stale"
+  | "cancelled_shutdown"
+  | "cancelled_signal";
 
 export interface ArtifactAuditFileIssue {
   readonly fileName: string;

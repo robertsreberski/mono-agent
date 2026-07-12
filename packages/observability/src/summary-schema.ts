@@ -20,6 +20,10 @@ export const KNOWN_ARTIFACT_FAILURE_KINDS = [
   "process_death",
   "runtime_error",
   "cancelled",
+  "cancelled_user",
+  "cancelled_stale",
+  "cancelled_shutdown",
+  "cancelled_signal",
 ] as const satisfies readonly KnownArtifactFailureKind[];
 
 export function isRunSummaryStatus(value: unknown): value is RunSummaryStatus {

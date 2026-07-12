@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   AgentResponseCancelledError,
+  ChannelUserCancelReason,
+  createChannelUserCancelReason,
   isAgentResponseCancelledError,
+  isChannelUserCancelReason,
   type AgentMessageStream,
   type AgentRequestBase,
   type AgentResponder,
@@ -71,6 +74,19 @@ describe("shared agent contracts", () => {
     expect(isAgentResponseCancelledError({ agentResponseCancelled: false })).toBe(false);
     expect(isAgentResponseCancelledError({ agentResponseCancelled: "yes" })).toBe(false);
     expect(isAgentResponseCancelledError({})).toBe(false);
+  });
+
+  it("brands explicit channel-user cancellation reasons across package identities", () => {
+    const reason = createChannelUserCancelReason("chat");
+    expect(reason).toBeInstanceOf(ChannelUserCancelReason);
+    expect(reason.name).toBe("ChannelUserCancelReason");
+    expect(reason.message).toBe("Cancelled by chat user.");
+    expect(reason.channel).toBe("chat");
+    expect(isChannelUserCancelReason(reason)).toBe(true);
+    expect(isChannelUserCancelReason({ channelUserCancel: true, channel: "web" })).toBe(true);
+    expect(isChannelUserCancelReason({ channelUserCancel: false })).toBe(false);
+    expect(isChannelUserCancelReason(new Error("Cancelled by user."))).toBe(false);
+    expect(() => createChannelUserCancelReason("   ")).toThrow(/channel name/);
   });
 
   it("covers every AgentStreamEvent variant (compile-time exhaustiveness)", () => {

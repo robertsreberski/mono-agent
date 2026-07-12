@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { createChannelUserCancelReason } from "@mono-agent/agent-contracts";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
@@ -1476,7 +1477,31 @@ describe("AgentHarness", () => {
 
     expect(fake.calls).toHaveLength(0);
     expect(response.failure).toMatchObject({ kind: "cancelled" });
-    expect(response.metadata.summary).toMatchObject({ status: "cancelled" });
+    expect(response.metadata.summary).toMatchObject({ status: "cancelled", failureKind: "cancelled" });
+  });
+
+  it("records an explicit channel-user cancellation as cancelled_user", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const controller = new AbortController();
+    controller.abort(createChannelUserCancelReason("Telegram"));
+    const fake = createFakeRuntime(async () => {
+      throw new Error("runtime should not run");
+    });
+
+    const response = await createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk" }).run({
+      conversationId: "telegram:42",
+      userMessage: "cancel me",
+      abortSignal: controller.signal,
+    });
+
+    expect(fake.calls).toHaveLength(0);
+    expect(response.failure).toMatchObject({ kind: "cancelled" });
+    expect(response.metadata.summary).toMatchObject({
+      status: "cancelled",
+      failureKind: "cancelled_user",
+    });
   });
 
   it("exposes harness failures through the structural responder and streams runtime deltas", async () => {
