@@ -1,6 +1,7 @@
 import { CombinedAutocompleteProvider, Container, Editor, Loader, Text } from "@earendil-works/pi-tui";
 import type { Component, SlashCommand, TUI } from "@earendil-works/pi-tui";
 import {
+  createChannelUserCancelReason,
   isAgentResponseCancelledError,
   type AgentResponder,
   type AgentResponseMetadata,
@@ -193,12 +194,13 @@ export class ChatView extends Container {
     if (this.activeControllers.size === 0) {
       return false;
     }
+    const reason = createChannelUserCancelReason("TUI");
     for (const controller of this.activeControllers) {
-      controller.abort();
+      controller.abort(reason);
     }
     // Belt and braces for remote responders: socket teardown cancels the turn
     // server-side too, but an explicit cancel also clears queued follow-ups.
-    this.responder?.cancel?.(this.options.conversationId, "tui_cancel");
+    this.responder?.cancel?.(this.options.conversationId, reason);
     return true;
   }
 
