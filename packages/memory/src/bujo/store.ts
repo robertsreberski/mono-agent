@@ -57,7 +57,9 @@ import {
   canonicalMemoryRoot,
   captureSafeSqlitePathState,
   readManagedIndexManifest,
+  registerManagedRollbackRuntime,
   resolveActiveMemoryDbPath,
+  type ManagedRollbackRuntimeLease,
   type MemoryWriterLease,
 } from "./generations.js";
 
@@ -118,6 +120,7 @@ export class BujoMemoryStore implements MemoryStore {
   private readonly root: string;
   private readonly db: MemoryDb;
   private readonly writerLease: MemoryWriterLease | undefined;
+  private rollbackRuntimeLease: ManagedRollbackRuntimeLease | undefined;
   private readonly readOnly: boolean;
   private readonly maxBytes: number;
   private readonly clock: () => Date;
@@ -198,6 +201,9 @@ export class BujoMemoryStore implements MemoryStore {
     let opened: MemoryDb | undefined;
     try {
       const managed = readManagedIndexManifest(this.root);
+      if (!this.readOnly) {
+        this.rollbackRuntimeLease = registerManagedRollbackRuntime(this.root, managed);
+      }
       if (!this.readOnly && managed !== undefined && (
         managed.active.tier !== this._tier
         || managed.active.embeddingModel !== options.embeddings?.id
@@ -258,6 +264,7 @@ export class BujoMemoryStore implements MemoryStore {
       const cleanupErrors: unknown[] = [];
       try { this.completedTurnIntake?.abortForShutdown(false); } catch (closeError) { cleanupErrors.push(closeError); }
       try { opened?.close(); } catch (closeError) { cleanupErrors.push(closeError); }
+      try { this.rollbackRuntimeLease?.release(); } catch (releaseError) { cleanupErrors.push(releaseError); }
       try { writerLease?.release(); } catch (releaseError) { cleanupErrors.push(releaseError); }
       throw withCleanupErrors(error, cleanupErrors, "memory-bujo initialization failed");
     }
@@ -374,6 +381,10 @@ export class BujoMemoryStore implements MemoryStore {
     const intake = this.completedTurnIntake;
     if (intake === undefined) throw new Error("memory-bujo: completed-turn intake is unavailable.");
     const result = intake.admit(turn);
+    // Admission has crossed the fsynced loss boundary. Publish its aggregate
+    // state synchronously before returning; downstream transition chatter uses
+    // the bounded coalescing path below.
+    this.publishRuntimeSnapshotImmediately("running");
     return {
       id: result.id,
       runId: turn.runId,
@@ -650,7 +661,7 @@ export class BujoMemoryStore implements MemoryStore {
     await this.completedTurnIntake?.flush();
     await this.indexQueue?.flush();
     await this.captureQueue?.flush();
-    if (!this.closing) this.publishRuntimeSnapshot("running");
+    if (!this.closing) this.publishRuntimeSnapshotImmediately("running");
   }
 
   queueSnapshot(): BujoQueueSnapshot {
@@ -795,6 +806,7 @@ export class BujoMemoryStore implements MemoryStore {
       this.runtimeSnapshotEnabled = false;
       this.disableRuntimeTimers();
       try { this.db.close(); } catch (closeError) { cleanupErrors.push(closeError); }
+      try { this.rollbackRuntimeLease?.release(); } catch (releaseError) { cleanupErrors.push(releaseError); }
       try { this.writerLease?.release(); } catch (releaseError) { cleanupErrors.push(releaseError); }
       this.closed = true;
       if (primary !== undefined || cleanupErrors.length > 0) {
@@ -898,6 +910,10 @@ export class BujoMemoryStore implements MemoryStore {
           if (resolved.has(key)) removeRetainedCaptureIntent(this.root, key);
         }
       },
+      onChange: (urgency) => {
+        if (urgency === "urgent") this.publishRuntimeSnapshotImmediately("running");
+        else this.scheduleRuntimeSnapshot();
+      },
       warn: (message) => this.safeWarn(message),
     });
   }
@@ -940,6 +956,12 @@ export class BujoMemoryStore implements MemoryStore {
       this.publishRuntimeSnapshot("running");
     }, RUNTIME_SNAPSHOT_COALESCE_MS);
     this.runtimeSnapshotTimer.unref?.();
+  }
+
+  private publishRuntimeSnapshotImmediately(state: "running" | "closed"): void {
+    if (this.runtimeSnapshotTimer !== undefined) clearTimeout(this.runtimeSnapshotTimer);
+    this.runtimeSnapshotTimer = undefined;
+    this.publishRuntimeSnapshot(state);
   }
 
   private publishRuntimeSnapshot(state: "running" | "closed"): void {

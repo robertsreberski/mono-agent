@@ -4,9 +4,10 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { validateMonoAgentFolder, type ValidationReport } from "../doctor.js";
+import { initMonoAgentFolder } from "../init.js";
 import {
   effectiveFirstRunEnvironment,
   evaluateFirstRunConfigurationReadiness,
@@ -23,12 +24,14 @@ import {
   validateWizardPlanInStaging,
   withExactProcessEnvironment,
 } from "../first-run-readiness.js";
-import { composeWizardPlan, defaultAnswers } from "../wizard/answers.js";
+import { composeWizardPlan, defaultAnswers, referencedSetupModelRefs } from "../wizard/answers.js";
+import { findPreset, presetAnswers } from "../wizard/presets.js";
 
 const temporaryDirectories: string[] = [];
 const execFileAsync = promisify(execFile);
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await Promise.all(temporaryDirectories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -44,6 +47,32 @@ function cronPlan(expression = "0 8 * * *") {
     channels: ["channel:cron"],
     moduleInputs: { "channel:cron": { cronExpression: expression } },
   }), { dirBasename: "test-agent", skillsRootExists: false });
+}
+
+function presetPlan(presetId: "local-private" | "telegram-assistant") {
+  return composeWizardPlan(presetAnswers(findPreset(presetId)!), {
+    dirBasename: "test-agent",
+    skillsRootExists: false,
+  });
+}
+
+function stubOllamaModels(): void {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      models: ["nomic-embed-text:v1.5", "llama3.1:8b"].map((name) => ({ name })),
+    }),
+  }));
+}
+
+function presetEnvironment(presetId: "local-private" | "telegram-assistant") {
+  return presetId === "telegram-assistant"
+    ? {
+        MONO_AGENT_TELEGRAM_BOT_TOKEN: "test-telegram-token",
+        MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS: "true",
+      }
+    : {};
 }
 
 function report(
@@ -615,6 +644,83 @@ describe("complete readiness gate", () => {
         "claude:claude-sonnet-5",
         "pi:openai:gpt-5.5",
       ],
+    })).toEqual({ ready: true, reasons: [] });
+  });
+
+  it.each([
+    { presetId: "local-private" as const, tier: "journal" },
+    { presetId: "telegram-assistant" as const, tier: "bujo" },
+  ])("stages a real managed generation for $presetId before real doctor validation", async ({ presetId, tier }) => {
+    stubOllamaModels();
+    const plan = presetPlan(presetId);
+    const verified = referencedSetupModelRefs(plan);
+    let stagedCwd = "";
+    const result = await validateWizardPlanInStaging({
+      plan,
+      env: presetEnvironment(presetId),
+      verifiedCredentialModelRefs: verified,
+      validate: async (options) => {
+        stagedCwd = options.cwd;
+        const { readManagedIndexManifest } = await import("@mono-agent/memory/bujo");
+        const memoryRoot = resolve(options.cwd, plan.configJson.memory!.path!);
+        expect(readManagedIndexManifest(memoryRoot)).toMatchObject({
+          active: {
+            tier,
+            embeddingModel: "ollama:nomic-embed-text:v1.5",
+            dimension: 768,
+          },
+        });
+        expect(readManagedIndexManifest(memoryRoot)?.rollback).toBeUndefined();
+        return await validateMonoAgentFolder(options);
+      },
+    });
+
+    expect(result.sections.find((section) => section.id === "memory")).toMatchObject({ status: "ok" });
+    expect(evaluateFirstRunReadiness({
+      plan,
+      report: result,
+      secretPersistence: presetId === "telegram-assistant"
+        ? { status: "persisted", changed: true }
+        : { status: "not-requested", changed: false },
+      verifiedCredentialModelRefs: verified,
+    })).toEqual({ ready: true, reasons: [] });
+    await expect(access(stagedCwd)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([
+    { presetId: "local-private" as const, tier: "journal" },
+    { presetId: "telegram-assistant" as const, tier: "bujo" },
+  ])("commits $presetId with post-init doctor readiness and no rollback", async ({ presetId, tier }) => {
+    stubOllamaModels();
+    const target = await mkdtemp(join(tmpdir(), `first-run-${presetId}-committed-`));
+    temporaryDirectories.push(target);
+    const init = await initMonoAgentFolder({
+      dir: target,
+      answers: presetAnswers(findPreset(presetId)!),
+      ...(presetId === "telegram-assistant"
+        ? { secretValues: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "test-telegram-token" } }
+        : {}),
+    });
+    const verified = referencedSetupModelRefs(init.plan);
+    const result = await validateMonoAgentFolder({
+      cwd: target,
+      configPath: init.configPath,
+      env: presetEnvironment(presetId),
+      allowFilesystemWrites: true,
+      liveness: true,
+      verifiedCredentialModelRefs: verified,
+    });
+    const memoryRoot = resolve(target, init.plan.configJson.memory!.path!);
+    const { readManagedIndexManifest } = await import("@mono-agent/memory/bujo");
+
+    expect(readManagedIndexManifest(memoryRoot)?.active.tier).toBe(tier);
+    expect(readManagedIndexManifest(memoryRoot)?.rollback).toBeUndefined();
+    expect(result.sections.find((section) => section.id === "memory")).toMatchObject({ status: "ok" });
+    expect(evaluateFirstRunReadiness({
+      plan: init.plan,
+      report: result,
+      secretPersistence: init.secretPersistence,
+      verifiedCredentialModelRefs: verified,
     })).toEqual({ ready: true, reasons: [] });
   });
 

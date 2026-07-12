@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
+
 import { ensureStartable, parseCliArgs } from "../cli.js";
 
 let dir: string;
@@ -22,6 +24,22 @@ afterEach(async () => {
 
 async function writeConfig(json: Record<string, unknown>): Promise<void> {
   await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify(json, null, 2));
+}
+
+async function seedManagedMemory(root: string, tier: "journal" | "bujo", embeddingModel: string): Promise<void> {
+  await safeRebuildMemoryIndex({
+    root,
+    tier,
+    embeddings: {
+      id: embeddingModel,
+      embed: async (texts) => texts.map(() => {
+        const vector = new Array<number>(768).fill(0);
+        vector[0] = 1;
+        return vector;
+      }),
+    },
+    dim: 768,
+  });
 }
 
 describe("ensureStartable (start/restart preflight gate)", () => {
@@ -64,6 +82,7 @@ describe("ensureStartable (start/restart preflight gate)", () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    await seedManagedMemory(join(dir, "mem"), "bujo", "ollama:nomic-embed-text:v1.5");
     await writeConfig({
       runtime: { model: "pi:openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },

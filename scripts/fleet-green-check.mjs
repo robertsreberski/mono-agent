@@ -5,9 +5,13 @@
 // effect is one dated checkpoint comment on issue #119 (skipped with --dry-run).
 // It never restarts an instance, writes a config, or touches an artifact dir.
 //
-// Per instance it checks three things and surfaces a compact markdown table:
+// Per instance it checks five things and surfaces a compact markdown table:
 //   service   — `launchctl list <label>`: a running pid OR last exit 0 = pass.
-//   validate  — deployed `cli.js validate` (cwd = instance dir), exit 0 = pass.
+//   runtime   — the exact plist Node executable reports the expected version + ABI.
+//   validate  — exact plist Node + cli.js `validate --json`, exit 0 = pass.
+//   memory    — exact plist Node + cli.js `memory audit --strict --json`:
+//               healthy passes, in_progress warns, not_configured skips, and
+//               every degraded/unhealthy/unknown/malformed result fails.
 //   runs-24h  — deployed `cli.js metrics --since <24h-ago> --json` (cwd = dir):
 //               surfaces run/failure counts and FAILS on any failure kind other
 //               than a transient provider_unavailable failover (#136's expected
@@ -19,10 +23,12 @@
 //               is a non-RED "idle?" warning. `--strict-runs` fails on ANY
 //               failed run; `--min-runs <n>` fails a too-quiet instance.
 //
-// The deployed sha and the cli.js used for validate/metrics come from the plist
-// ProgramArguments — i.e. the checkout the fleet actually execs — NOT from
-// whatever checkout this script happens to run in. With --expect-sha it fails on
-// a mismatch (window mode); without it the sha is informational only.
+// Each probe retains and uses ProgramArguments[0] (Node), [1] (cli.js), the
+// service's exact absolute --config/--env-file values, and its PATH from that
+// instance's plist. Neither the ambient `node`, a cli.js inferred from this
+// checkout, cwd-default configuration, nor the checker's ambient PATH is proof
+// of the launchd runtime. With --expect-sha it fails on a mismatch (window mode);
+// without it the sha is informational only.
 //
 // Verdict: `VERDICT: GREEN <date> sha <short>` or `VERDICT: RED <date> — <reason>`.
 // Exits non-zero on RED so a wrapper can alert. No comment posted = not a green
@@ -30,7 +36,7 @@
 
 import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -38,6 +44,118 @@ const ISSUE_NUMBER = "119";
 const REPO = "robertsreberski/mono-agent";
 const LABEL_PREFIX = "com.mono-agent.";
 const CLI_MARKER = "/packages/agent-app/";
+const DEFAULT_EXPECT_NODE = "24.15.0";
+const DEFAULT_EXPECT_ABI = "137";
+const COMMAND_TIMEOUT_MS = Object.freeze({
+  plist: 5_000,
+  service: 5_000,
+  runtime: 5_000,
+  validate: 30_000,
+  memory: 60_000,
+  metrics: 30_000,
+  git: 5_000,
+  github: 30_000,
+});
+const LAUNCHD_PROBE_ENV_KEYS = Object.freeze([
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "__CF_USER_TEXT_ENCODING",
+]);
+const MEMORY_PASS_STATUSES = new Set(["healthy"]);
+const MEMORY_WARN_STATUSES = new Set(["in_progress"]);
+const MEMORY_SKIP_STATUSES = new Set(["not_configured"]);
+const MEMORY_FAIL_STATUSES = new Set(["degraded", "unhealthy", "unknown"]);
+const MEMORY_STATUSES = new Set([
+  ...MEMORY_PASS_STATUSES,
+  ...MEMORY_WARN_STATUSES,
+  ...MEMORY_SKIP_STATUSES,
+  ...MEMORY_FAIL_STATUSES,
+]);
+const BUJO_MEMORY_STATUSES = new Set([
+  ...MEMORY_PASS_STATUSES,
+  ...MEMORY_WARN_STATUSES,
+  ...MEMORY_FAIL_STATUSES,
+]);
+const MEMORY_MODES = new Set(["lite", "journal", "bujo"]);
+const MEMORY_REPORT_KEYS = ["schemaVersion", "backend", "mode", "status", "checkedAt", "issues", "counts"];
+const MEMORY_REPORT_KEYS_WITHOUT_MODE = MEMORY_REPORT_KEYS.filter((key) => key !== "mode");
+const MEMORY_COUNT_KEYS = [
+  "pending",
+  "due",
+  "dead",
+  "outbox",
+  "temporary",
+  "memories",
+  "vectors",
+  "missingVectors",
+];
+// Frozen by packages/memory/src/bujo/audit.ts. The producer emits issue codes
+// in this order, so accepting a reordered or duplicated list would widen the
+// supposedly closed fleet boundary beyond the CLI contract.
+const MEMORY_ISSUE_CODES = [
+  "manifest_missing",
+  "manifest_invalid",
+  "configured_identity_mismatch",
+  "database_missing",
+  "database_unavailable",
+  "native_module_unavailable",
+  "health_check_failed",
+  "sqlite_integrity_failed",
+  "metadata_mismatch",
+  "fts_mismatch",
+  "vector_mismatch",
+  "orphaned_rows",
+  "canonical_mismatch",
+  "canonical_invalid",
+  "mutation_in_progress",
+  "intake_invalid",
+  "intake_pending",
+  "dead_letters",
+  "outbox_invalid",
+  "outbox_pending",
+  "work_stalled",
+  "temporary_artifacts",
+  "runtime_missing",
+  "runtime_stale",
+  "runtime_invalid",
+];
+const MEMORY_ISSUE_INDEX = new Map(MEMORY_ISSUE_CODES.map((code, index) => [code, index]));
+const MEMORY_UNKNOWN_ISSUES = new Set([
+  "database_unavailable",
+  "native_module_unavailable",
+  "health_check_failed",
+]);
+const MEMORY_UNHEALTHY_ISSUES = new Set([
+  "manifest_missing",
+  "manifest_invalid",
+  "configured_identity_mismatch",
+  "database_missing",
+  "sqlite_integrity_failed",
+  "metadata_mismatch",
+  "fts_mismatch",
+  "vector_mismatch",
+  "orphaned_rows",
+  "canonical_mismatch",
+  "canonical_invalid",
+  "intake_invalid",
+  "outbox_invalid",
+  "temporary_artifacts",
+]);
+const MEMORY_DEGRADED_ISSUES = new Set([
+  "dead_letters",
+  "work_stalled",
+  "runtime_missing",
+  "runtime_stale",
+  "runtime_invalid",
+]);
+const ISO_INSTANT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:Z|([+-])(\d{2}):(\d{2}))$/u;
 
 // The ONLY failure kind treated as fleet-normal: a transient provider failover
 // (this is #136's "healthy failover" resilience evidence). Every OTHER kind in
@@ -65,7 +183,13 @@ const CANCELLED_KIND_PATTERN = /^cancelled(_|$)/u;
 // ---------------------------------------------------------------------------
 
 export function parseArgs(argv) {
-  const parsed = { dryRun: false, strictRuns: false, help: false };
+  const parsed = {
+    dryRun: false,
+    strictRuns: false,
+    help: false,
+    expectNode: DEFAULT_EXPECT_NODE,
+    expectAbi: DEFAULT_EXPECT_ABI,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") {
@@ -81,6 +205,18 @@ export function parseArgs(argv) {
         .filter((label) => label.length > 0);
     } else if (arg === "--expect-sha") {
       parsed.expectSha = requireValue(argv, (i += 1), arg);
+    } else if (arg === "--expect-node") {
+      const value = requireValue(argv, (i += 1), arg);
+      if (!/^\d+\.\d+\.\d+$/u.test(value)) {
+        throw new Error("--expect-node requires an exact semantic version (for example 24.15.0).");
+      }
+      parsed.expectNode = value;
+    } else if (arg === "--expect-abi") {
+      const value = requireValue(argv, (i += 1), arg);
+      if (!/^\d+$/u.test(value)) {
+        throw new Error("--expect-abi requires a numeric Node modules ABI (for example 137).");
+      }
+      parsed.expectAbi = value;
     } else if (arg === "--min-runs") {
       const value = Number.parseInt(requireValue(argv, (i += 1), arg), 10);
       if (!Number.isInteger(value) || value < 0) {
@@ -132,16 +268,47 @@ export function deriveRepoFromCliPath(cliPath) {
 
 // Reduce a `metrics --json` report's overall bucket to the fields we track.
 export function reduceMetrics(report) {
-  const overall = report?.overall ?? {};
-  const failureKinds = Array.isArray(overall.failureKindRates)
-    ? overall.failureKindRates.map((entry) => ({ kind: String(entry.failureKind), count: Number(entry.count) }))
-    : [];
+  const overall = report?.overall;
+  if (!isRecord(overall)) {
+    throw new Error("invalid metrics report");
+  }
+  const totalRuns = Number(overall.totalRuns);
+  const failedRuns = Number(overall.statusCounts?.failed ?? 0);
+  if (!Number.isInteger(totalRuns) || totalRuns < 0 || !Number.isInteger(failedRuns) || failedRuns < 0 || failedRuns > totalRuns) {
+    throw new Error("invalid metrics counts");
+  }
+  if (!Array.isArray(overall.failureKindRates)) {
+    throw new Error("invalid metrics failure kinds");
+  }
+  const failureKinds = overall.failureKindRates.map((entry) => {
+    const kind = isRecord(entry) && typeof entry.failureKind === "string" && /^[a-z][a-z0-9_]{0,63}$/u.test(entry.failureKind)
+      ? entry.failureKind
+      : "unknown";
+    const count = isRecord(entry) ? Number(entry.count) : Number.NaN;
+    if (!Number.isInteger(count) || count < 0) {
+      throw new Error("invalid metrics failure count");
+    }
+    return { kind, count };
+  });
   return {
     ran: true,
-    totalRuns: Number(overall.totalRuns ?? 0),
-    failedRuns: Number(overall.statusCounts?.failed ?? 0),
+    totalRuns,
+    failedRuns,
     failureKinds,
   };
+}
+
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseJsonObject(text) {
+  try {
+    const value = JSON.parse(text);
+    return isRecord(value) ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 // Classify the runs-24h check. `metrics` is a reduced object, an { error }, or
@@ -219,7 +386,28 @@ export function shortSha(sha) {
   return typeof sha === "string" && sha.length >= 7 ? sha.slice(0, 7) : "unknown";
 }
 
+export function evaluateRuntime(runtime, expected = {}) {
+  if (runtime?.timedOut === true) {
+    return { status: "fail", note: "runtime probe timed out" };
+  }
+  if (!runtime || runtime.ran !== true) {
+    return { status: "fail", note: "runtime probe unavailable" };
+  }
+  const expectNode = expected.expectNode ?? DEFAULT_EXPECT_NODE;
+  const expectAbi = expected.expectAbi ?? DEFAULT_EXPECT_ABI;
+  if (runtime.node !== expectNode || runtime.abi !== expectAbi) {
+    return {
+      status: "fail",
+      note: `runtime ${runtime.node}/abi${runtime.abi} != expected ${expectNode}/abi${expectAbi}`,
+    };
+  }
+  return { status: "pass", note: `${runtime.node}/abi${runtime.abi}` };
+}
+
 function evaluateService(service) {
+  if (service?.timedOut === true) {
+    return { status: "fail", note: "service probe timed out" };
+  }
   if (!service || service.found !== true) {
     return { status: "fail", note: "service not found" };
   }
@@ -233,37 +421,227 @@ function evaluateService(service) {
 }
 
 function evaluateValidate(validate) {
-  if (!validate || validate.ran !== true) {
-    return { status: "skip", note: "not run" };
+  if (validate?.timedOut === true) {
+    return { status: "fail", note: "validate command timed out" };
   }
-  if (validate.exitCode === 0) {
+  if (!validate || validate.ran !== true) {
+    return { status: "fail", note: "validate probe unavailable" };
+  }
+  if (validate.validJson === true && validate.ok === true && validate.exitCode === 0) {
     return { status: "pass", note: "" };
   }
-  const tail = typeof validate.tail === "string" && validate.tail.length > 0 ? validate.tail : "non-zero exit";
-  return { status: "fail", note: `validate failed — ${tail}` };
+  if (validate.validJson !== true) {
+    return { status: "fail", note: "validate returned malformed JSON" };
+  }
+  return { status: "fail", note: "validate reported errors" };
+}
+
+/** Parse the strict memory result even on exit 1, then enforce the full frozen contract. */
+export function parseMemoryAudit(text, exitCode) {
+  const report = parseJsonObject(text);
+  if (report === null || !isStrictMemoryReport(report)) {
+    return { ran: true, malformed: true };
+  }
+  const expectedExit = MEMORY_FAIL_STATUSES.has(report.status) ? 1 : 0;
+  if (exitCode !== expectedExit) {
+    return { ran: true, malformed: true };
+  }
+  return { ran: true, status: report.status };
+}
+
+function isStrictMemoryReport(report) {
+  if (report.schemaVersion !== 1
+    || typeof report.backend !== "string"
+    || typeof report.status !== "string"
+    || !MEMORY_STATUSES.has(report.status)
+    || !isValidIsoInstant(report.checkedAt)
+    || !isClosedIssueList(report.issues)
+    || !isClosedMemoryCounts(report.counts)) {
+    return false;
+  }
+
+  if (report.backend === "bujo") {
+    return hasExactKeys(report, MEMORY_REPORT_KEYS)
+      && typeof report.mode === "string"
+      && MEMORY_MODES.has(report.mode)
+      && BUJO_MEMORY_STATUSES.has(report.status)
+      && report.status === deriveBuiltInMemoryStatus(report.issues)
+      && hasValidBuiltInCountSemantics(report.mode, report.issues, report.counts);
+  }
+  if (report.backend === "none") {
+    return hasExactKeys(report, MEMORY_REPORT_KEYS_WITHOUT_MODE)
+      && report.status === "not_configured"
+      && report.issues.length === 0
+      && hasOnlyZeroMemoryCounts(report.counts);
+  }
+  if (report.backend === "supermemory") {
+    return hasExactKeys(report, MEMORY_REPORT_KEYS_WITHOUT_MODE)
+      && report.status === "unknown"
+      && report.issues.length === 0
+      && hasOnlyZeroMemoryCounts(report.counts);
+  }
+  return false;
+}
+
+function hasExactKeys(record, expectedKeys) {
+  const actualKeys = Object.keys(record);
+  return actualKeys.length === expectedKeys.length
+    && expectedKeys.every((key) => Object.hasOwn(record, key));
+}
+
+function isClosedIssueList(value) {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  let previousIndex = -1;
+  for (const issue of value) {
+    if (typeof issue !== "string") {
+      return false;
+    }
+    const index = MEMORY_ISSUE_INDEX.get(issue);
+    if (index === undefined || index <= previousIndex) {
+      return false;
+    }
+    previousIndex = index;
+  }
+  return true;
+}
+
+function isClosedMemoryCounts(value) {
+  return isRecord(value)
+    && hasExactKeys(value, MEMORY_COUNT_KEYS)
+    && MEMORY_COUNT_KEYS.every((key) => Number.isSafeInteger(value[key]) && value[key] >= 0);
+}
+
+function hasOnlyZeroMemoryCounts(counts) {
+  return MEMORY_COUNT_KEYS.every((key) => counts[key] === 0);
+}
+
+function deriveBuiltInMemoryStatus(issues) {
+  if (issues.some((issue) => MEMORY_UNKNOWN_ISSUES.has(issue))) return "unknown";
+  if (issues.some((issue) => MEMORY_UNHEALTHY_ISSUES.has(issue))) return "unhealthy";
+  if (issues.some((issue) => MEMORY_DEGRADED_ISSUES.has(issue))) return "degraded";
+  return issues.length === 0 ? "healthy" : "in_progress";
+}
+
+function hasValidBuiltInCountSemantics(mode, issues, counts) {
+  const has = (issue) => issues.includes(issue);
+  if (counts.due > counts.pending
+    || has("intake_pending") !== (counts.pending > 0)
+    || has("dead_letters") !== (counts.dead > 0)
+    || has("outbox_pending") !== (counts.outbox > 0)
+    || has("temporary_artifacts") !== (counts.temporary > 0)) {
+    return false;
+  }
+  if (counts.outbox > 0 && !has("mutation_in_progress")) return false;
+
+  const expectedMissingVectors = mode === "lite" ? 0 : Math.max(0, counts.memories - counts.vectors);
+  if (counts.missingVectors !== expectedMissingVectors) return false;
+  if (mode === "journal" && counts.missingVectors > 0 && !has("mutation_in_progress")) return false;
+  if (mode === "bujo" && counts.vectors !== counts.memories && !has("vector_mismatch")) return false;
+  if (mode === "lite" && counts.vectors !== 0 && !has("vector_mismatch")) return false;
+  if (counts.vectors > counts.memories && !has("vector_mismatch")) return false;
+  return true;
+}
+
+function isValidIsoInstant(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const match = ISO_INSTANT_PATTERN.exec(value);
+  if (match === null) {
+    return false;
+  }
+  const year = Number.parseInt(match[1], 10);
+  const month = Number.parseInt(match[2], 10);
+  const day = Number.parseInt(match[3], 10);
+  const hour = Number.parseInt(match[4], 10);
+  const minute = Number.parseInt(match[5], 10);
+  const second = Number.parseInt(match[6], 10);
+  const offsetHour = match[9] === undefined ? 0 : Number.parseInt(match[9], 10);
+  const offsetMinute = match[10] === undefined ? 0 : Number.parseInt(match[10], 10);
+  if (month < 1 || month > 12
+    || day < 1 || day > daysInMonth(year, month)
+    || hour > 23 || minute > 59 || second > 59
+    || offsetHour > 23 || offsetMinute > 59) {
+    return false;
+  }
+  return Number.isFinite(Date.parse(value));
+}
+
+function daysInMonth(year, month) {
+  if (month === 2) {
+    return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28;
+  }
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
+
+export function evaluateMemory(memory) {
+  if (memory?.timedOut === true) {
+    return { status: "fail", memoryStatus: "malformed", note: "memory audit timed out" };
+  }
+  if (!memory || memory.ran !== true) {
+    return { status: "fail", memoryStatus: "malformed", note: "memory audit unavailable" };
+  }
+  if (memory.malformed === true || typeof memory.status !== "string") {
+    return { status: "fail", memoryStatus: "malformed", note: "strict memory audit malformed" };
+  }
+  if (MEMORY_PASS_STATUSES.has(memory.status)) {
+    return { status: "pass", memoryStatus: memory.status, note: "" };
+  }
+  if (MEMORY_WARN_STATUSES.has(memory.status)) {
+    return { status: "warn", memoryStatus: memory.status, note: "memory mutation in progress" };
+  }
+  if (MEMORY_SKIP_STATUSES.has(memory.status)) {
+    return { status: "skip", memoryStatus: memory.status, note: "memory not configured" };
+  }
+  if (MEMORY_FAIL_STATUSES.has(memory.status)) {
+    return { status: "fail", memoryStatus: memory.status, note: `memory ${memory.status}` };
+  }
+  return { status: "fail", memoryStatus: "malformed", note: "strict memory audit malformed" };
 }
 
 const CELL = { pass: "ok", warn: "warn", fail: "FAIL", skip: "—" };
 
 // The verdict + table. Pure: takes already-collected structured data.
 export function buildFleetReport(input) {
-  const { date, deployedSha, expectSha, strictRuns, minRuns } = input;
+  const { date, deployedSha, deployedShaError, expectSha, expectNode, expectAbi, strictRuns, minRuns } = input;
   const rows = input.instances.map((instance) => {
     const name = instanceName(instance.label);
     // A plist that matched the prefix but could not be read is an unknown
     // config the fleet may be running blind — RED, never silently dropped.
     if (typeof instance.discoveryError === "string") {
-      const service = { status: "fail", note: `plist unreadable — ${instance.discoveryError}` };
+      const service = {
+        status: "fail",
+        note: instance.discoveryError === "plist probe timed out" ? "plist probe timed out" : "plist unreadable",
+      };
       const skipped = { status: "skip", note: "" };
-      return { name, label: instance.label, service, validate: skipped, runs: skipped, notes: service.note };
+      return {
+        name,
+        label: instance.label,
+        service,
+        runtime: skipped,
+        validate: skipped,
+        memory: { ...skipped, memoryStatus: "malformed" },
+        runs: skipped,
+        notes: service.note,
+      };
     }
     const service = evaluateService(instance.service);
+    const runtime = evaluateRuntime(instance.runtime, { expectNode, expectAbi });
     const validate = evaluateValidate(instance.validate);
+    const memory = evaluateMemory(instance.memory);
     const runs = evaluateRuns(instance.metrics, { strictRuns, minRuns });
-    const notes = [service.status !== "pass" ? service.note : null, validate.note || null, runs.note || null]
+    const notes = [
+      service.status !== "pass" ? service.note : null,
+      runtime.status !== "pass" ? runtime.note : null,
+      validate.status !== "pass" ? validate.note : null,
+      memory.status !== "pass" ? memory.note : null,
+      runs.note || null,
+    ]
       .filter((note) => note !== null && note !== "")
       .join("; ");
-    return { name, label: instance.label, service, validate, runs, notes };
+    return { name, label: instance.label, service, runtime, validate, memory, runs, notes };
   });
 
   let reason = null;
@@ -272,8 +650,16 @@ export function buildFleetReport(input) {
       reason = `${row.name}: ${row.service.note}`;
       break;
     }
+    if (row.runtime.status === "fail") {
+      reason = `${row.name}: ${row.runtime.note}`;
+      break;
+    }
     if (row.validate.status === "fail") {
       reason = `${row.name}: ${row.validate.note}`;
+      break;
+    }
+    if (row.memory.status === "fail") {
+      reason = `${row.name}: ${row.memory.note}`;
       break;
     }
     if (row.runs.status === "fail") {
@@ -283,6 +669,9 @@ export function buildFleetReport(input) {
   }
 
   const shaKnown = typeof deployedSha === "string" && deployedSha.length >= 7;
+  if (reason === null && typeof deployedShaError === "string") {
+    reason = deployedShaError;
+  }
   if (reason === null && typeof expectSha === "string" && expectSha.length > 0) {
     if (!shaKnown || !deployedSha.startsWith(expectSha)) {
       reason = `deployed sha ${shortSha(deployedSha)} != expected ${shortSha(expectSha)}`;
@@ -315,11 +704,11 @@ export function buildFleetReport(input) {
 }
 
 function renderTable(rows) {
-  const header = "| instance | service | validate | runs-24h | notes |";
-  const divider = "| --- | --- | --- | --- | --- |";
+  const header = "| instance | service | runtime | validate | memory | runs-24h | notes |";
+  const divider = "| --- | --- | --- | --- | --- | --- | --- |";
   const lines = rows.map((row) => {
     const notes = row.notes.length > 0 ? row.notes.replace(/\|/gu, "\\|") : "";
-    return `| ${row.name} | ${CELL[row.service.status]} | ${CELL[row.validate.status]} | ${CELL[row.runs.status]} | ${notes} |`;
+    return `| ${row.name} | ${CELL[row.service.status]} | ${CELL[row.runtime.status]} | ${CELL[row.validate.status]} | ${row.memory.memoryStatus} | ${CELL[row.runs.status]} | ${notes} |`;
   });
   return [header, divider, ...lines].join("\n");
 }
@@ -342,63 +731,214 @@ function discoverInstances(launchAgentsDir, runCommand, readdir) {
     }
     const plistPath = join(launchAgentsDir, entry);
     const filenameLabel = entry.slice(0, -".plist".length);
-    const result = runCommand("plutil", ["-convert", "json", "-o", "-", plistPath]);
+    const result = runCommand("plutil", ["-convert", "json", "-o", "-", plistPath], {
+      timeout: COMMAND_TIMEOUT_MS.plist,
+    });
+    if (result.timedOut === true) {
+      byLabel.set(filenameLabel, { label: filenameLabel, dir: null, nodePath: null, cliPath: null, discoveryError: "plist probe timed out" });
+      continue;
+    }
     if (result.status !== 0) {
-      byLabel.set(filenameLabel, { label: filenameLabel, dir: null, cliPath: null, discoveryError: `plutil failed (${(result.stderr ?? "").trim().split("\n").pop() ?? `exit ${result.status}`})` });
+      byLabel.set(filenameLabel, { label: filenameLabel, dir: null, nodePath: null, cliPath: null, discoveryError: "plist conversion failed" });
       continue;
     }
     let plist;
     try {
       plist = JSON.parse(result.stdout);
-    } catch (error) {
-      byLabel.set(filenameLabel, { label: filenameLabel, dir: null, cliPath: null, discoveryError: `unparseable plist json (${error instanceof Error ? error.message : String(error)})` });
+    } catch {
+      byLabel.set(filenameLabel, { label: filenameLabel, dir: null, nodePath: null, cliPath: null, discoveryError: "plist JSON invalid" });
       continue;
     }
-    const label = typeof plist.Label === "string" ? plist.Label : filenameLabel;
-    const dir = typeof plist.WorkingDirectory === "string" ? plist.WorkingDirectory : null;
-    const args = Array.isArray(plist.ProgramArguments) ? plist.ProgramArguments : [];
-    const cliPath = args.find((arg) => typeof arg === "string" && arg.endsWith("cli.js")) ?? null;
-    byLabel.set(label, { label, dir, cliPath });
+    if (!isRecord(plist)) {
+      byLabel.set(filenameLabel, { label: filenameLabel, dir: null, nodePath: null, cliPath: null, discoveryError: "plist JSON invalid" });
+      continue;
+    }
+    const label = typeof plist.Label === "string" && !plist.Label.includes("\0")
+      ? plist.Label
+      : filenameLabel;
+    const dir = typeof plist.WorkingDirectory === "string"
+      && !plist.WorkingDirectory.includes("\0")
+      && isAbsolute(plist.WorkingDirectory)
+      ? plist.WorkingDirectory
+      : null;
+    const program = parseLaunchdProgramArguments(plist.ProgramArguments);
+    const pathEnv = parseLaunchdPathEnvironment(plist.EnvironmentVariables);
+    if (program === null || pathEnv === null || dir === null) {
+      byLabel.set(filenameLabel, {
+        label: filenameLabel,
+        dir: null,
+        nodePath: null,
+        cliPath: null,
+        probeArgs: [],
+        discoveryError: "plist arguments invalid",
+      });
+      continue;
+    }
+    byLabel.set(label, { label, dir, pathEnv, ...program });
   }
   return byLabel;
 }
 
-function collectInstance(entry, cliPath, since, runCommand) {
+/**
+ * Accept only the launchd shape emitted by buildPlistXml (plus older default-
+ * config plists). Unknown, duplicate, relative, or value-less flags fail the
+ * whole instance closed; none of their values are retained in the report.
+ */
+export function parseLaunchdProgramArguments(value) {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) return null;
+  const [nodePath, cliPath, command, ...tail] = value;
+  if (typeof nodePath !== "string" || nodePath.includes("\0") || !isAbsolute(nodePath)
+    || typeof cliPath !== "string" || cliPath.includes("\0")
+    || !isAbsolute(cliPath) || !cliPath.endsWith("cli.js")
+    || command !== "start") {
+    return null;
+  }
+
+  let foreground = false;
+  let configPath;
+  let envFile;
+  for (let index = 0; index < tail.length; index += 1) {
+    const flag = tail[index];
+    if (flag === "--foreground") {
+      if (foreground) return null;
+      foreground = true;
+      continue;
+    }
+    if (flag !== "--config" && flag !== "--env-file") return null;
+    const path = tail[index + 1];
+    if (typeof path !== "string" || !isAbsolute(path) || path.includes("\0")) return null;
+    index += 1;
+    if (flag === "--config") {
+      if (configPath !== undefined) return null;
+      configPath = path;
+    } else {
+      if (envFile !== undefined) return null;
+      envFile = path;
+    }
+  }
+
+  return {
+    nodePath,
+    cliPath,
+    probeArgs: [
+      ...(configPath === undefined ? [] : ["--config", configPath]),
+      ...(envFile === undefined ? [] : ["--env-file", envFile]),
+    ],
+  };
+}
+
+/**
+ * Managed plists intentionally expose only PATH. Reject any other environment
+ * shape without retaining or rendering its values, then apply the exact PATH
+ * to every runtime/CLI probe.
+ */
+export function parseLaunchdPathEnvironment(value) {
+  if (!isRecord(value) || !hasExactKeys(value, ["PATH"])) return null;
+  return typeof value.PATH === "string" && value.PATH.length > 0 && !value.PATH.includes("\0")
+    ? value.PATH
+    : null;
+}
+
+function collectInstance(entry, since, runCommand) {
   if (typeof entry.discoveryError === "string") {
-    return { label: entry.label, dir: null, discoveryError: entry.discoveryError, service: { found: false, pid: null, lastExitStatus: null }, validate: { ran: false }, metrics: { ran: false } };
+    return {
+      label: entry.label,
+      dir: null,
+      discoveryError: entry.discoveryError,
+      service: { found: false, pid: null, lastExitStatus: null },
+      runtime: { ran: false },
+      validate: { ran: false },
+      memory: { ran: false },
+      metrics: { ran: false },
+    };
   }
-  const service = parseLaunchctlList(...launchctlList(entry.label, runCommand));
+  const service = launchctlList(entry.label, runCommand);
+  const runtime = entry.nodePath === null || typeof entry.pathEnv !== "string"
+    ? { ran: false }
+    : runRuntimeProbe(entry.nodePath, entry.pathEnv, runCommand);
   let validate = { ran: false };
+  let memory = { ran: false };
   let metrics = { ran: false };
-  if (entry.dir !== null && cliPath !== null) {
-    validate = runValidate(cliPath, entry.dir, runCommand);
-    metrics = runMetrics(cliPath, entry.dir, since, runCommand);
+  if (entry.dir !== null && entry.nodePath !== null && entry.cliPath !== null && typeof entry.pathEnv === "string") {
+    const probeArgs = Array.isArray(entry.probeArgs) ? entry.probeArgs : [];
+    validate = runValidate(entry.nodePath, entry.cliPath, entry.dir, entry.pathEnv, probeArgs, runCommand);
+    memory = runMemoryAudit(entry.nodePath, entry.cliPath, entry.dir, entry.pathEnv, probeArgs, runCommand);
+    metrics = runMetrics(entry.nodePath, entry.cliPath, entry.dir, entry.pathEnv, probeArgs, since, runCommand);
   }
-  return { label: entry.label, dir: entry.dir, service, validate, metrics };
+  return { label: entry.label, dir: entry.dir, service, runtime, validate, memory, metrics };
 }
 
 function launchctlList(label, runCommand) {
-  const result = runCommand("launchctl", ["list", label]);
-  return [result.stdout ?? "", result.status];
+  const result = runCommand("launchctl", ["list", label], { timeout: COMMAND_TIMEOUT_MS.service });
+  if (result.timedOut === true) {
+    return { found: false, pid: null, lastExitStatus: null, timedOut: true };
+  }
+  return parseLaunchctlList(result.stdout ?? "", result.status);
 }
 
-function runValidate(cliPath, dir, runCommand) {
-  const result = runCommand("node", [cliPath, "validate"], { cwd: dir });
-  const combined = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  const lines = combined.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
-  return { ran: true, exitCode: result.status, tail: lines.length > 0 ? lines[lines.length - 1] : "" };
-}
-
-function runMetrics(cliPath, dir, since, runCommand) {
-  const result = runCommand("node", [cliPath, "metrics", "--since", since, "--json"], { cwd: dir });
+function runRuntimeProbe(nodePath, pathEnv, runCommand) {
+  const result = runCommand(nodePath, [
+    "-p",
+    "JSON.stringify({node:process.versions.node,abi:process.versions.modules})",
+  ], { timeout: COMMAND_TIMEOUT_MS.runtime, pathEnv });
+  if (result.timedOut === true) {
+    return { ran: false, timedOut: true };
+  }
   if (result.status !== 0) {
-    const err = (result.stderr ?? "").trim().split("\n").pop() ?? "non-zero exit";
-    return { ran: false, error: err.length > 0 ? err : "non-zero exit" };
+    return { ran: false };
+  }
+  const parsed = parseJsonObject(result.stdout ?? "");
+  if (parsed === null || typeof parsed.node !== "string" || !/^\d+\.\d+\.\d+$/u.test(parsed.node)
+    || typeof parsed.abi !== "string" || !/^\d+$/u.test(parsed.abi)) {
+    return { ran: false };
+  }
+  return { ran: true, node: parsed.node, abi: parsed.abi };
+}
+
+function runValidate(nodePath, cliPath, dir, pathEnv, probeArgs, runCommand) {
+  const result = runCommand(nodePath, [cliPath, "validate", "--json", ...probeArgs], {
+    cwd: dir,
+    timeout: COMMAND_TIMEOUT_MS.validate,
+    pathEnv,
+  });
+  if (result.timedOut === true) {
+    return { ran: false, timedOut: true };
+  }
+  const parsed = parseJsonObject(result.stdout ?? "");
+  if (parsed === null || typeof parsed.ok !== "boolean") {
+    return { ran: true, exitCode: result.status, validJson: false };
+  }
+  return { ran: true, exitCode: result.status, validJson: true, ok: parsed.ok };
+}
+
+function runMemoryAudit(nodePath, cliPath, dir, pathEnv, probeArgs, runCommand) {
+  const result = runCommand(nodePath, [cliPath, "memory", "audit", "--strict", "--json", ...probeArgs], {
+    cwd: dir,
+    timeout: COMMAND_TIMEOUT_MS.memory,
+    pathEnv,
+  });
+  if (result.timedOut === true) {
+    return { ran: false, timedOut: true };
+  }
+  return parseMemoryAudit(result.stdout ?? "", result.status);
+}
+
+function runMetrics(nodePath, cliPath, dir, pathEnv, probeArgs, since, runCommand) {
+  const result = runCommand(nodePath, [cliPath, "metrics", "--since", since, "--json", ...probeArgs], {
+    cwd: dir,
+    timeout: COMMAND_TIMEOUT_MS.metrics,
+    pathEnv,
+  });
+  if (result.timedOut === true) {
+    return { ran: false, error: "metrics command timed out" };
+  }
+  if (result.status !== 0) {
+    return { ran: false, error: "metrics command failed" };
   }
   try {
     return reduceMetrics(JSON.parse(result.stdout));
-  } catch (error) {
-    return { ran: false, error: `unparseable metrics json (${error instanceof Error ? error.message : String(error)})` };
+  } catch {
+    return { ran: false, error: "metrics JSON malformed" };
   }
 }
 
@@ -422,24 +962,61 @@ function resolveDeployRepo(discovered, override) {
 
 function readDeployedSha(repo, runCommand) {
   if (repo === null) {
-    return null;
+    return { sha: null, error: null };
   }
-  const result = runCommand("git", ["-C", repo, "rev-parse", "HEAD"]);
-  return result.status === 0 ? (result.stdout ?? "").trim() : null;
+  const result = runCommand("git", ["-C", repo, "rev-parse", "HEAD"], { timeout: COMMAND_TIMEOUT_MS.git });
+  if (result.timedOut === true) {
+    return { sha: null, error: "deployed sha probe timed out" };
+  }
+  const sha = result.status === 0 ? (result.stdout ?? "").trim() : "";
+  return { sha: /^[0-9a-f]{40,64}$/iu.test(sha) ? sha.toLowerCase() : null, error: null };
 }
 
-function runCommandSync(command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    cwd: options.cwd,
-    encoding: "utf8",
-    maxBuffer: 32 * 1024 * 1024,
-    env: process.env,
-  });
+export function runCommandSync(command, args, options = {}) {
+  let result;
+  try {
+    result = spawnSync(command, args, {
+      cwd: options.cwd,
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+      env: typeof options.pathEnv === "string"
+        ? buildLaunchdProbeEnvironment(options.pathEnv)
+        : process.env,
+      timeout: options.timeout,
+      killSignal: "SIGKILL",
+    });
+  } catch {
+    // Invalid/hostile argv or cwd values must become a generic closed probe
+    // failure, never a thrown diagnostic that can echo the input.
+    return { status: 127, stdout: "", stderr: "" };
+  }
+  const timedOut = result.error?.code === "ETIMEDOUT";
+  if (timedOut) {
+    return { status: 124, stdout: "", stderr: "", timedOut: true };
+  }
   return {
     status: result.status ?? (result.error ? 127 : 1),
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? (result.error ? String(result.error) : ""),
   };
+}
+
+/**
+ * Recreate the non-secret user-launchd baseline needed by Node and filesystem
+ * probes. In particular, never inherit shell-only MONO_AGENT_* overrides,
+ * provider credentials, NODE_OPTIONS, proxy variables, or credential-store
+ * selectors that are absent from the managed plist. The CLI loads the exact
+ * plist --env-file itself.
+ */
+export function buildLaunchdProbeEnvironment(pathEnv, ambientEnv = process.env) {
+  const environment = { PATH: pathEnv };
+  for (const key of LAUNCHD_PROBE_ENV_KEYS) {
+    const value = ambientEnv[key];
+    if (typeof value === "string" && value.length > 0 && !value.includes("\0")) {
+      environment[key] = value;
+    }
+  }
+  return environment;
 }
 
 export async function runFleetGreenCheck(options = {}) {
@@ -466,20 +1043,22 @@ export async function runFleetGreenCheck(options = {}) {
   const discovered = discoverInstances(launchAgentsDir, runCommand, readdir);
   const selectedLabels = args.labels ?? [...discovered.keys()];
   const { repo: deployRepo, warning: repoWarning } = resolveDeployRepo(discovered, args.repo);
-  const deployedSha = readDeployedSha(deployRepo, runCommand);
+  const deployed = readDeployedSha(deployRepo, runCommand);
   const since = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
   const date = now.toISOString().slice(0, 10);
 
   const instances = selectedLabels.map((label) => {
-    const entry = discovered.get(label) ?? { label, dir: null, cliPath: null };
-    const cliPath = entry.cliPath ?? (deployRepo !== null ? join(deployRepo, "packages", "agent-app", "dist", "cli.js") : null);
-    return collectInstance(entry, cliPath, since, runCommand);
+    const entry = discovered.get(label) ?? { label, dir: null, nodePath: null, cliPath: null };
+    return collectInstance(entry, since, runCommand);
   });
 
   const report = buildFleetReport({
     date,
-    deployedSha,
+    deployedSha: deployed.sha,
+    ...(deployed.error === null ? {} : { deployedShaError: deployed.error }),
     expectSha: args.expectSha,
+    expectNode: args.expectNode,
+    expectAbi: args.expectAbi,
     strictRuns: args.strictRuns,
     ...(args.minRuns === undefined ? {} : { minRuns: args.minRuns }),
     instances,
@@ -493,12 +1072,14 @@ export async function runFleetGreenCheck(options = {}) {
   stdout.write(`${body}\n`);
 
   if (!args.dryRun) {
-    const result = runCommand("gh", ["issue", "comment", ISSUE_NUMBER, "--repo", REPO, "--body", body]);
+    const result = runCommand("gh", ["issue", "comment", ISSUE_NUMBER, "--repo", REPO, "--body", body], {
+      timeout: COMMAND_TIMEOUT_MS.github,
+    });
     if (result.status !== 0) {
-      stderr.write(`Failed to post comment to #${ISSUE_NUMBER}: ${(result.stderr ?? "").trim()}\n`);
+      stderr.write(`Failed to post comment to #${ISSUE_NUMBER}.\n`);
       return { exitCode: report.exitCode === 0 ? 1 : report.exitCode };
     }
-    stdout.write(`Posted checkpoint to #${ISSUE_NUMBER}: ${(result.stdout ?? "").trim()}\n`);
+    stdout.write(`Posted checkpoint to #${ISSUE_NUMBER}.\n`);
   }
 
   return { exitCode: report.exitCode };
@@ -508,6 +1089,7 @@ function usage() {
   return [
     "Usage:",
     "  node scripts/fleet-green-check.mjs [--dry-run] [--labels <csv>] [--expect-sha <sha>]",
+    "                                     [--expect-node <version>] [--expect-abi <abi>]",
     "                                     [--strict-runs] [--min-runs <n>] [--repo <path>]",
     "",
     "Read-only daily green-check of the launchd mono-agent fleet. Prints a markdown",
@@ -523,9 +1105,11 @@ function usage() {
     "  --labels <csv>  Check these launchd labels instead of auto-discovering plists",
     "                  (a bogus label yields a RED row — used to simulate RED).",
     "  --expect-sha    Fail if the deployed sha does not match (v1 window mode).",
+    `  --expect-node   Require each plist Node to report this version (default ${DEFAULT_EXPECT_NODE}).`,
+    `  --expect-abi    Require each plist Node to report this modules ABI (default ${DEFAULT_EXPECT_ABI}).`,
     "  --strict-runs   Fail runs-24h on ANY failed run, not just untolerated ones.",
     "  --min-runs <n>  Fail an instance with fewer than n runs in the window.",
-    "  --repo <path>   Override the deploy checkout used for sha + validate/metrics.",
+    "  --repo <path>   Override only the deploy checkout used for the sha probe.",
   ].join("\n");
 }
 

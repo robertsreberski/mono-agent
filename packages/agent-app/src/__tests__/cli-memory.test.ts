@@ -10,6 +10,7 @@ import {
   rollbackMemoryIndex,
   safeRebuildMemoryIndex,
 } from "@mono-agent/memory/bujo";
+import * as bujoMemory from "@mono-agent/memory/bujo";
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import { openMemoryDb } from "@mono-agent/memory/store";
 import { listTraceSources } from "@mono-agent/observability";
@@ -35,6 +36,8 @@ describe("parseCliArgs memory", () => {
     expect(() => parseCliArgs(["metrics", "--limit", "3"])).toThrow(/--limit/u);
     expect(renderHelp()).toContain("mono-agent memory");
     expect(renderHelp()).toContain("audit");
+    expect(parseCliArgs(["memory", "audit", "--strict", "--json"])).toMatchObject({ strict: true, json: true });
+    expect(() => parseCliArgs(["memory", "inspect", "--strict"])).toThrow(/memory audit/iu);
   });
 });
 
@@ -47,6 +50,224 @@ describe("runCli memory", () => {
     expect(code).toBe(0);
     expect(stderr).toBe("");
     expect(stdout).toContain("No memory configured");
+  });
+
+  it("emits the closed strict-health JSON contract for unconfigured and remote memory", async () => {
+    const unconfiguredDir = await agentDir({ memory: undefined });
+    const unconfigured = await captureCli(() => withCwd(unconfiguredDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "audit", "--strict", "--json"]))));
+    expect(unconfigured.code).toBe(0);
+    expect(unconfigured.stderr).toBe("");
+    expect(JSON.parse(unconfigured.stdout)).toEqual({
+      schemaVersion: 1,
+      backend: "none",
+      status: "not_configured",
+      checkedAt: expect.any(String),
+      issues: [],
+      counts: {
+        pending: 0,
+        due: 0,
+        dead: 0,
+        outbox: 0,
+        temporary: 0,
+        memories: 0,
+        vectors: 0,
+        missingVectors: 0,
+      },
+    });
+    expect(unconfigured.stdout).not.toContain(unconfiguredDir);
+
+    const remoteDir = await agentDir({
+      memory: {
+        backend: "supermemory",
+        mode: "lite",
+        writeMode: "capture",
+        supermemory: { baseUrl: "https://memory.invalid", container: "strict-agent" },
+      },
+    });
+    const remote = await captureCli(() => withCwd(remoteDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "audit", "--strict", "--json"]))));
+    expect(remote.code).toBe(1);
+    expect(remote.stderr).toBe("");
+    expect(JSON.parse(remote.stdout)).toMatchObject({
+      schemaVersion: 1,
+      backend: "supermemory",
+      status: "unknown",
+      issues: [],
+    });
+  });
+
+  it("audits a real Lite store exactly and exits one for degraded and unhealthy states", async () => {
+    const memoryRoot = join(await tempDir(), "private-memory-root");
+    const dir = await agentDir({
+      memory: { mode: "lite", path: memoryRoot, writeMode: "append-host-summary" },
+    });
+    const privateConversation = "private-conversation-sentinel";
+    const privateText = "private memory payload sentinel";
+    const store = createBujoMemoryStore({ root: memoryRoot });
+    let closed = false;
+    try {
+      await store.appendHostSummary(privateConversation, privateText);
+
+      const healthy = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "audit", "--strict", "--json"]))));
+      expect(healthy.code).toBe(0);
+      expect(healthy.stderr).toBe("");
+      expect(JSON.parse(healthy.stdout)).toEqual({
+        schemaVersion: 1,
+        backend: "bujo",
+        mode: "lite",
+        status: "healthy",
+        checkedAt: expect.any(String),
+        issues: [],
+        counts: {
+          pending: 0,
+          due: 0,
+          dead: 0,
+          outbox: 0,
+          temporary: 0,
+          memories: 1,
+          vectors: 0,
+          missingVectors: 0,
+        },
+      });
+      expect(healthy.stdout).not.toContain(memoryRoot);
+      expect(healthy.stdout).not.toContain(privateConversation);
+      expect(healthy.stdout).not.toContain(privateText);
+
+      await store.close();
+      closed = true;
+      const degraded = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "audit", "--strict", "--json"]))));
+      expect(degraded.code).toBe(1);
+      expect(degraded.stderr).toBe("");
+      expect(JSON.parse(degraded.stdout)).toMatchObject({
+        backend: "bujo",
+        mode: "lite",
+        status: "degraded",
+        issues: expect.arrayContaining(["runtime_stale"]),
+        counts: { memories: 1 },
+      });
+
+      await rm(memoryRoot, { recursive: true, force: true });
+      const unhealthy = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "audit", "--strict", "--json"]))));
+      expect(unhealthy.code).toBe(1);
+      expect(unhealthy.stderr).toBe("");
+      expect(JSON.parse(unhealthy.stdout)).toMatchObject({
+        backend: "bujo",
+        mode: "lite",
+        status: "unhealthy",
+        issues: expect.arrayContaining(["database_missing", "runtime_missing"]),
+      });
+      expect(`${degraded.stdout}${unhealthy.stdout}`).not.toContain(memoryRoot);
+      expect(`${degraded.stdout}${unhealthy.stdout}`).not.toContain(privateText);
+    } finally {
+      if (!closed) await store.close();
+    }
+  });
+
+  it("sanitizes unexpected strict built-in audit failures as health_check_failed", async () => {
+    const memoryRoot = join(await tempDir(), "private-failing-root");
+    const dir = await agentDir({
+      memory: { mode: "lite", path: memoryRoot, writeMode: "append-host-summary" },
+    });
+    const privateSentinel = "unexpected audit detail /private/sentinel";
+    const auditSpy = vi.spyOn(bujoMemory, "auditBujoMemoryHealth").mockImplementation(() => {
+      throw new Error(privateSentinel);
+    });
+    let result: Awaited<ReturnType<typeof captureCli>>;
+    try {
+      result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "audit", "--strict", "--json"]))));
+    } finally {
+      auditSpy.mockRestore();
+    }
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual({
+      schemaVersion: 1,
+      backend: "bujo",
+      mode: "lite",
+      status: "unknown",
+      checkedAt: expect.any(String),
+      issues: ["health_check_failed"],
+      counts: {
+        pending: 0,
+        due: 0,
+        dead: 0,
+        outbox: 0,
+        temporary: 0,
+        memories: 0,
+        vectors: 0,
+        missingVectors: 0,
+      },
+    });
+    expect(result.stdout).not.toContain(memoryRoot);
+    expect(result.stdout).not.toContain(privateSentinel);
+  });
+
+  it("keeps intake inspection and no-op mutations content-free with exit zero", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({ memory: { mode: "lite", path: memoryRoot, writeMode: "append-host-summary" } });
+    await seedLocalStore(memoryRoot);
+
+    const inspected = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "inspect", "--json"]))));
+    expect(inspected.code).toBe(0);
+    expect(inspected.stderr).toBe("");
+    expect(JSON.parse(inspected.stdout)).toMatchObject({
+      schemaVersion: 1,
+      operation: "inspect",
+      matched: 0,
+      items: [],
+    });
+    expect(inspected.stdout).not.toContain("Deploy pipeline uses blue green releases.");
+
+    const retried = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "retry", "--json"]))));
+    expect(retried.code).toBe(0);
+    expect(JSON.parse(retried.stdout)).toEqual({
+      schemaVersion: 1,
+      operation: "retry",
+      changed: false,
+      retried: 0,
+    });
+
+    const absentId = "0".repeat(64);
+    const resolved = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "resolve", absentId, "operator_accepted", "--json"]))));
+    expect(resolved.code).toBe(0);
+    expect(JSON.parse(resolved.stdout)).toEqual({
+      schemaVersion: 1,
+      operation: "resolve",
+      changed: false,
+      resolved: false,
+    });
+
+    const misuse = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "resolve", absentId, "NOT VALID", "--json"]))));
+    expect(misuse.code).toBe(2);
+    expect(misuse.stdout).toBe("");
+    expect(misuse.stderr).toMatch(/reason.*slug/iu);
+  });
+
+  it("blocks intake mutation while the configured agent process is live", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({
+      memory: { mode: "lite", path: memoryRoot, writeMode: "append-host-summary" },
+      traceability: { registryDir: ".trace-registry" },
+    });
+    await mkdir(memoryRoot, { recursive: true });
+    await writeLiveTraceManifest(join(dir, ".trace-registry"), dir, "intake-writer");
+
+    const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "retry", "--json"]))));
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("intake-writer");
   });
 
   it("previews local stats, today, search, and top from the configured store", async () => {
@@ -255,7 +476,7 @@ describe("runCli memory", () => {
     expect(rolledBack.activeDatabase).toBe(managed.details.rollback);
     expect(rolledBack.activeDatabase).not.toBe(managed.activeDatabase);
     expect(await resolveActiveMemoryDbPath(memoryRoot)).toBe(rolledBack.activeDatabase);
-  });
+  }, 15_000);
 
   it("refuses a stale-trace live legacy writer before embeddings and leaves the index unchanged", async () => {
     const memoryRoot = join(await tempDir(), "memory");

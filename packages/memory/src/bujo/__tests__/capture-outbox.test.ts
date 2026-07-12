@@ -1,10 +1,15 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { replayCaptureOutbox, writeCaptureIntent, type CaptureIntentAction } from "../capture-outbox.js";
+import {
+  auditCaptureOutbox,
+  replayCaptureOutbox,
+  writeCaptureIntent,
+  type CaptureIntentAction,
+} from "../capture-outbox.js";
 import { appendBullet, dailyFilePath, rewriteBullet } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
 import { appendEntity, readGraph } from "../graph.js";
@@ -15,6 +20,45 @@ import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
 const NOW = new Date("2026-07-11T09:00:00.000Z");
 
 describe("capture outbox", () => {
+  it("counts malformed intents and abandoned atomic temps while failing closed", () => {
+    const root = tempRoot();
+    const handle = writeCaptureIntent(root, [], {}, NOW.toISOString());
+    writeFileSync(join(root, handle.file), "{not-json\n", { mode: 0o600 });
+    const temp = join(
+      root,
+      ".capture-outbox",
+      ".intent-00000000-0000-4000-8000-000000000000.json-00000000-0000-4000-8000-000000000001.tmp",
+    );
+    writeFileSync(temp, "{partial", { mode: 0o600 });
+
+    expect(auditCaptureOutbox(root)).toEqual({ valid: false, pending: 1, temporary: 1 });
+  });
+
+  it("counts every intent even when the first physical payload is malformed", () => {
+    const root = tempRoot();
+    const handles = [
+      writeCaptureIntent(root, [], {}, NOW.toISOString()),
+      writeCaptureIntent(root, [], {}, NOW.toISOString()),
+    ].sort((left, right) => left.file.localeCompare(right.file));
+    writeFileSync(join(root, handles[0]!.file), "{not-json\n", { mode: 0o600 });
+
+    expect(auditCaptureOutbox(root)).toEqual({ valid: false, pending: 2, temporary: 0 });
+  });
+
+  it("fails an over-capacity physical inventory before parsing intent payloads", () => {
+    const root = tempRoot();
+    mkdirSync(join(root, ".capture-outbox"));
+    for (let index = 0; index < 33; index += 1) {
+      writeFileSync(
+        join(root, ".capture-outbox", `intent-${index.toString(16).padStart(36, "0")}.json`),
+        "{deliberately-not-json\n",
+        { mode: 0o600 },
+      );
+    }
+
+    expect(auditCaptureOutbox(root)).toEqual({ valid: false, pending: 33, temporary: 0 });
+  });
+
   it("completes an ADD from the exact pre-mutation state after an immediate crash", () => {
     const root = tempRoot();
     const item = bullet("ADD", "A prepared capture survives an immediate crash.");

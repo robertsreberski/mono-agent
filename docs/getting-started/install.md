@@ -98,7 +98,7 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 
 | Command | Purpose |
 | --- | --- |
-| `init` | Non-destructive scaffold of a config, `IDENTITY.md`, and `.mono-agent/`. On a TTY with no flags it runs the step-by-step **wizard** (preset or custom; walks you through model, channels, memory, tools, sandbox, observability); any flag or a non-TTY writes the scaffold silently. `setup` is an alias. |
+| `init` | Non-destructive scaffold of a config, `IDENTITY.md`, and `.mono-agent/`. A fresh built-in Journal/BuJo selection also gets one empty provider-free managed generation; pre-existing memory roots are never changed. On a TTY with no flags it runs the step-by-step **wizard** (preset or custom; walks you through model, channels, memory, tools, sandbox, observability); any flag or a non-TTY writes the scaffold silently. `setup` is an alias. |
 | `presets` | List the built-in setup presets (`list`) or show a preset's generated config, `.env.example`, and checklist (`show <id>`). Replaces `recipes` (still an alias). |
 | `validate` | Validate `mono-agent.config.json` and live checks that can be tested safely before starting. |
 | `start` | Start the host for every configured channel (backgrounds on macOS; use `--foreground`/`-f` elsewhere). |

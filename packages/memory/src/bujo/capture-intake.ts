@@ -28,6 +28,7 @@ import {
   writeCanonicalFileAtomic,
   type CanonicalFileIdentity,
 } from "./path-safety.js";
+import { BUJO_RUNTIME_SNAPSHOT_STALE_AFTER_MS } from "./runtime-snapshot.js";
 
 export const COMPLETED_TURN_INTAKE_SCHEMA_VERSION = 1;
 
@@ -115,6 +116,13 @@ interface ResolvedRecord {
 
 type IntakeRecord = PendingRecord | DeadRecord | ResolvedRecord;
 
+interface IntakeRuntimeCacheEntry {
+  readonly state: IntakeState;
+  readonly admittedAt: string;
+  readonly nextAttemptAt?: string;
+  readonly resolvedAt?: string;
+}
+
 interface LocatedRecord<T extends IntakeRecord = IntakeRecord> {
   readonly record: T;
   readonly relativePath: string;
@@ -154,14 +162,35 @@ export interface CompletedTurnIntakeSnapshot {
 export interface CompletedTurnIntakeInspection {
   readonly schemaVersion: typeof COMPLETED_TURN_INTAKE_SCHEMA_VERSION;
   readonly items: readonly CompletedTurnIntakeItem[];
+  /** Valid atomic-write remnants. Their presence still requires recovery. */
+  readonly temporary: number;
   readonly snapshot: Omit<CompletedTurnIntakeSnapshot, "accepting" | "shutdown" | "retrying">;
 }
 
 export interface CompletedTurnIntakeAudit {
   readonly valid: boolean;
   readonly inspection?: CompletedTurnIntakeInspection;
+  /** Physical metadata remains available even when one record is malformed. */
+  readonly counts: {
+    readonly pending: number;
+    readonly due: number;
+    readonly dead: number;
+    readonly temporary: number;
+  };
   /** Metadata-only codes. Paths, payloads, model text, and provider errors are never exposed. */
   readonly issues: readonly ("invalid_layout" | "invalid_record" | "capacity_exceeded" | "state_conflict")[];
+}
+
+/** Internal-only, content-free stability metadata consumed by strict health. */
+export interface CompletedTurnIntakePrivateHealthState {
+  readonly oldestDueAt?: string;
+  readonly digest: string;
+}
+
+/** Internal module contract; intentionally not exported from the package subpath. */
+export interface CompletedTurnIntakeHealthAudit {
+  readonly audit: CompletedTurnIntakeAudit;
+  readonly privateState: CompletedTurnIntakePrivateHealthState;
 }
 
 export interface CompletedTurnIntakeManagerOptions {
@@ -183,6 +212,8 @@ export interface CompletedTurnIntakeManagerOptions {
   readonly afterResolved?: (id: string) => void | Promise<void>;
   /** Startup cleanup for receipts published before a crash interrupted plan retirement. */
   readonly cleanupResolved?: (ids: readonly string[]) => void;
+  /** Content-free notification after intake runtime or durable metadata changes. */
+  readonly onChange?: (urgency?: "urgent") => void;
   readonly warn?: (message: string) => void;
   readonly maxAttempts?: number;
   readonly retryBaseMs?: number;
@@ -191,6 +222,8 @@ export interface CompletedTurnIntakeManagerOptions {
   readonly resolvedRetention?: number;
   /** Test-only crash seam after the run-derived summary is durable but before intake state advances. */
   readonly afterSummaryPersisted?: (id: string) => void;
+  /** Test-only crash seam after a destination is durable but before its lower-revision source retires. */
+  readonly beforeStateSourceRetirement?: (id: string, state: "dead" | "resolved") => void;
 }
 
 /**
@@ -210,18 +243,23 @@ export class CompletedTurnIntakeManager {
   private readonly warn: (message: string) => void;
   private readonly afterResolved: ((id: string) => void | Promise<void>) | undefined;
   private readonly cleanupResolved: ((ids: readonly string[]) => void) | undefined;
+  private readonly onChange: (urgency?: "urgent") => void;
   private readonly maxAttempts: number;
   private readonly retryBaseMs: number;
   private readonly retryMaxMs: number;
   private readonly maxActiveRecords: number;
   private readonly resolvedRetention: number;
   private readonly afterSummaryPersisted: ((id: string) => void) | undefined;
+  private readonly beforeStateSourceRetirement:
+    ((id: string, state: "dead" | "resolved") => void) | undefined;
   private accepting = true;
   private stopped = false;
   private timedOut = false;
   private activeController: AbortController | undefined;
   private worker: Promise<void> | undefined;
   private wakeTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly runtimeRecords = new Map<string, IntakeRuntimeCacheEntry>();
+  private runtimeTransitioning = 0;
 
   constructor(options: CompletedTurnIntakeManagerOptions) {
     this.root = canonicalMemoryRootPath(options.root, true);
@@ -231,6 +269,7 @@ export class CompletedTurnIntakeManager {
     this.warn = options.warn ?? (() => {});
     this.afterResolved = options.afterResolved;
     this.cleanupResolved = options.cleanupResolved;
+    this.onChange = options.onChange ?? (() => {});
     this.maxAttempts = positiveInteger(options.maxAttempts, DEFAULT_MAX_ATTEMPTS, "maxAttempts");
     this.retryBaseMs = positiveInteger(options.retryBaseMs, DEFAULT_RETRY_BASE_MS, "retryBaseMs");
     this.retryMaxMs = positiveInteger(options.retryMaxMs, DEFAULT_RETRY_MAX_MS, "retryMaxMs");
@@ -241,6 +280,7 @@ export class CompletedTurnIntakeManager {
       "resolvedRetention",
     );
     this.afterSummaryPersisted = options.afterSummaryPersisted;
+    this.beforeStateSourceRetirement = options.beforeStateSourceRetirement;
     if (intakeLayoutExists(this.root)) {
       // Upgrade an older intake tree by adding the compact permanent ledger,
       // then seed it from every still-materialized record before accepting a
@@ -249,19 +289,20 @@ export class CompletedTurnIntakeManager {
       ensureLayout(this.root, true);
       retireOrphanIntakeTemps(this.root);
       recoverStateConflicts(this.root);
-      const materialized = logicalRecords(STATES.flatMap((state) => listRecords(this.root, state))).located;
-      ensureLedgerEntries(this.root, materialized.map(({ record }) => ({
+      const materialized = logicalRecords(STATES.flatMap((state) => listRecords(this.root, state)));
+      ensureLedgerEntries(this.root, materialized.located.map(({ record }) => ({
         id: record.id,
         payloadHash: record.payloadHash,
       })));
-      const inspection = inspectCompletedTurnIntake(this.root, this.clock());
-      if (inspection.snapshot.pending + inspection.snapshot.dead > this.maxActiveRecords) {
+      this.seedRuntimeCache(materialized.located, materialized.transitioning);
+      if (this.activeRuntimeRecordCount() > this.maxActiveRecords) {
         throw new Error("memory-bujo: completed-turn intake active-record capacity is exceeded.");
       }
       this.cleanupResolved?.(
-        inspection.items.filter((item) => item.state === "resolved").map((item) => item.id),
+        materialized.located.filter(({ record }) => record.state === "resolved").map(({ record }) => record.id),
       );
       this.scheduleWorker();
+      this.notifyChange();
     } else if (readIntakeSchemaMarker(this.root) !== undefined) {
       throw new Error("memory-bujo: initialized completed-turn intake layout is missing.");
     }
@@ -283,7 +324,10 @@ export class CompletedTurnIntakeManager {
       }
       const preferred = preferredRecord(existing)!;
       ensureLedgerEntry(this.root, id, payloadHash);
+      if (existing.length > 1) this.refreshRuntimeCacheFromDisk();
+      else this.setRuntimeRecord(preferred.record);
       if (preferred.record.state === "pending") this.scheduleWorker();
+      this.notifyChange();
       return {
         id,
         source: join(this.root, preferred.relativePath),
@@ -297,6 +341,7 @@ export class CompletedTurnIntakeManager {
       if (ledger.payloadHash !== payloadHash) {
         throw new Error("memory-bujo: completed-turn run id conflicts with the permanent admission ledger.");
       }
+      this.notifyChange();
       return {
         id,
         source: join(this.root, ledger.relativePath),
@@ -305,8 +350,7 @@ export class CompletedTurnIntakeManager {
       };
     }
 
-    const counts = inspectCompletedTurnIntake(this.root, this.clock()).snapshot;
-    if (counts.pending + counts.dead >= this.maxActiveRecords) {
+    if (this.activeRuntimeRecordCount() >= this.maxActiveRecords) {
       throw new Error("memory-bujo: completed-turn intake is full; admission was not published.");
     }
     const admittedAt = canonicalNow(this.clock);
@@ -328,6 +372,7 @@ export class CompletedTurnIntakeManager {
     let written: LocatedRecord<PendingRecord>;
     try {
       written = writeRecord(this.root, "pending", record) as LocatedRecord<PendingRecord>;
+      this.setRuntimeRecord(written.record);
     } catch (error) {
       // A second process holding the same higher-level writer discipline can
       // still race at a restart boundary. Converge only when the safely-read
@@ -339,7 +384,9 @@ export class CompletedTurnIntakeManager {
       }
       const preferred = preferredRecord(raced)!;
       ensureLedgerEntry(this.root, id, payloadHash);
+      this.refreshRuntimeCacheFromDisk();
       if (preferred.record.state === "pending") this.scheduleWorker();
+      this.notifyChange();
       return {
         id,
         source: join(this.root, preferred.relativePath),
@@ -352,6 +399,7 @@ export class CompletedTurnIntakeManager {
     // repaired from the pending record on startup; a crash after this append
     // can never make the run id admissible again after rich receipt pruning.
     ensureLedgerEntry(this.root, id, payloadHash);
+    this.notifyChange();
     this.scheduleWorker();
     return {
       id,
@@ -372,6 +420,7 @@ export class CompletedTurnIntakeManager {
   stopAccepting(): void {
     this.accepting = false;
     this.clearWakeTimer();
+    this.notifyChange();
   }
 
   abortForShutdown(timedOut: boolean): void {
@@ -380,19 +429,35 @@ export class CompletedTurnIntakeManager {
     this.timedOut = timedOut;
     this.clearWakeTimer();
     this.activeController?.abort(new Error("completed-turn intake shutdown"));
+    this.notifyChange();
   }
 
   finishShutdown(): void {
     this.accepting = false;
     this.stopped = true;
     this.clearWakeTimer();
+    this.notifyChange();
   }
 
   snapshot(): CompletedTurnIntakeSnapshot {
-    const inspection = inspectCompletedTurnIntake(this.root, this.clock());
-    const pending = inspection.snapshot.pending;
+    const nowMs = this.clock().getTime();
+    let pending = 0;
+    let dead = 0;
+    let resolved = 0;
+    let due = 0;
+    for (const record of this.runtimeRecords.values()) {
+      if (record.state === "pending") {
+        pending += 1;
+        if (record.nextAttemptAt !== undefined && Date.parse(record.nextAttemptAt) <= nowMs) due += 1;
+      } else if (record.state === "dead") dead += 1;
+      else resolved += 1;
+    }
     return {
-      ...inspection.snapshot,
+      pending,
+      dead,
+      resolved,
+      due,
+      transitioning: this.runtimeTransitioning,
       retrying: this.activeController === undefined ? 0 : 1,
       accepting: this.accepting && !this.stopped,
       shutdown: this.timedOut
@@ -427,14 +492,21 @@ export class CompletedTurnIntakeManager {
   }
 
   private async runWorker(): Promise<void> {
-    recoverStateConflicts(this.root);
+    this.recoverRuntimeTransitionsIfNeeded();
     for (;;) {
       if (this.stopped) return;
-      const due = listRecords(this.root, "pending")
-        .filter((located): located is LocatedRecord<PendingRecord> => located.record.state === "pending")
-        .filter(({ record }) => Date.parse(record.nextAttemptAt) <= this.clock().getTime())
-        .sort(compareLocated)[0];
-      if (due === undefined) return;
+      const dueId = this.nextPendingRuntimeId(true);
+      if (dueId === undefined) return;
+      let due: LocatedRecord<PendingRecord>;
+      try {
+        const located = readRecord(this.root, "pending", dueId);
+        if (located.record.state !== "pending") throw new Error("memory-bujo: cached intake state is not pending.");
+        due = located as LocatedRecord<PendingRecord>;
+      } catch (error) {
+        this.refreshRuntimeCacheAfterFault();
+        this.notifyChange();
+        throw error;
+      }
       await this.processOne(due);
     }
   }
@@ -442,6 +514,10 @@ export class CompletedTurnIntakeManager {
   private async processOne(initial: LocatedRecord<PendingRecord>): Promise<void> {
     const controller = new AbortController();
     this.activeController = controller;
+    // An aged due record must never look abandoned after processing has
+    // actually begun. Publish retrying=1 without the ordinary coalescing delay.
+    const ageMs = this.clock().getTime() - Date.parse(initial.record.nextAttemptAt);
+    this.notifyChange(ageMs >= BUJO_RUNTIME_SNAPSHOT_STALE_AFTER_MS ? "urgent" : undefined);
     let current = initial;
     try {
       const turn = payloadOf(current.record);
@@ -451,28 +527,71 @@ export class CompletedTurnIntakeManager {
         this.afterSummaryPersisted?.(current.record.id);
         const advanced: PendingRecord = { ...current.record, summaryWritten: true };
         current = replaceRecord(this.root, current, advanced);
+        this.setRuntimeRecord(current.record);
+        this.notifyChange();
       }
       const outcome = await this.capture(turn, current.record.id, current.record.admittedAt, controller.signal);
       controller.signal.throwIfAborted();
-      resolvePending(this.root, current, outcome, canonicalNow(this.clock));
+      const resolved = resolvePending(
+        this.root,
+        current,
+        outcome,
+        canonicalNow(this.clock),
+        this.beforeStateSourceRetirement,
+      );
+      this.setRuntimeRecord(resolved.record);
+      this.notifyChange();
       await this.afterResolved?.(current.record.id);
-      pruneResolved(this.root, this.resolvedRetention, current.record.id);
+      this.recoverRuntimeTransitionsIfNeeded();
+      const retired = pruneResolved(
+        this.root,
+        this.resolvedRetention,
+        current.record.id,
+        this.resolvedRuntimeInventory(),
+      );
+      for (const id of retired) this.runtimeRecords.delete(id);
+      this.notifyChange();
     } catch (error) {
       if (controller.signal.aborted || this.stopped) return;
-      const logical = preferredRecord(locateById(this.root, current.record.id));
+      let logical: LocatedRecord | undefined;
+      try {
+        logical = preferredRecord(locateById(this.root, current.record.id));
+      } catch (refreshError) {
+        this.refreshRuntimeCacheAfterFault();
+        this.notifyChange();
+        throw refreshError;
+      }
       // A state transition publishes its higher revision before retiring the
       // source. If retirement itself failed, the destination already owns the
       // logical turn and the lower pending source must never be rewritten to
       // the same revision.
       if (logical === undefined || logical.record.state !== "pending") {
+        this.refreshRuntimeCacheAfterFault();
+        this.notifyChange();
         safeWarn(this.warn, "completed-turn intake transition published; deferred cleanup remains for startup.");
         throw error;
       }
       const latest = logical as LocatedRecord<PendingRecord>;
+      this.setRuntimeRecord(latest.record);
       const attempt = latest.record.attempt + 1;
       const lastError = failureCode(error);
       if (attempt >= this.maxAttempts) {
-        moveToDead(this.root, latest, attempt, lastError, canonicalNow(this.clock));
+        try {
+          const dead = moveToDead(
+            this.root,
+            latest,
+            attempt,
+            lastError,
+            canonicalNow(this.clock),
+            this.beforeStateSourceRetirement,
+          );
+          this.setRuntimeRecord(dead.record);
+        } catch (transitionError) {
+          this.refreshRuntimeCacheAfterFault();
+          this.notifyChange();
+          throw transitionError;
+        }
+        this.notifyChange();
         safeWarn(this.warn, "completed-turn capture reached its retry limit; a durable dead letter remains.");
       } else {
         const now = this.clock();
@@ -481,26 +600,34 @@ export class CompletedTurnIntakeManager {
           this.retryBaseMs,
           this.retryMaxMs,
         )).toISOString();
-        replaceRecord(this.root, latest, {
-          ...latest.record,
-          attempt,
-          nextAttemptAt,
-          lastError,
-        });
+        try {
+          const pending = replaceRecord(this.root, latest, {
+            ...latest.record,
+            attempt,
+            nextAttemptAt,
+            lastError,
+          });
+          this.setRuntimeRecord(pending.record);
+        } catch (transitionError) {
+          this.refreshRuntimeCacheAfterFault();
+          this.notifyChange();
+          throw transitionError;
+        }
+        this.notifyChange();
         safeWarn(this.warn, "completed-turn capture failed; a durable retry is scheduled.");
       }
     } finally {
       if (this.activeController === controller) this.activeController = undefined;
+      this.notifyChange();
     }
   }
 
   private scheduleNextWake(): void {
     if (this.stopped || this.wakeTimer !== undefined) return;
-    const next = listRecords(this.root, "pending")
-      .filter((located): located is LocatedRecord<PendingRecord> => located.record.state === "pending")
-      .sort((left, right) => left.record.nextAttemptAt.localeCompare(right.record.nextAttemptAt))[0];
-    if (next === undefined) return;
-    const delay = Math.max(0, Date.parse(next.record.nextAttemptAt) - this.clock().getTime());
+    const nextId = this.nextPendingRuntimeId(false);
+    const next = nextId === undefined ? undefined : this.runtimeRecords.get(nextId);
+    if (next?.nextAttemptAt === undefined) return;
+    const delay = Math.max(0, Date.parse(next.nextAttemptAt) - this.clock().getTime());
     this.wakeTimer = setTimeout(() => {
       this.wakeTimer = undefined;
       this.startWorker();
@@ -512,6 +639,85 @@ export class CompletedTurnIntakeManager {
     if (this.wakeTimer !== undefined) clearTimeout(this.wakeTimer);
     this.wakeTimer = undefined;
   }
+
+  private seedRuntimeCache(records: readonly LocatedRecord[], transitioning: number): void {
+    this.runtimeRecords.clear();
+    for (const { record } of records) this.setRuntimeRecord(record);
+    this.runtimeTransitioning = transitioning;
+  }
+
+  private setRuntimeRecord(record: IntakeRecord): void {
+    this.runtimeRecords.set(record.id, {
+      state: record.state,
+      admittedAt: record.admittedAt,
+      ...(record.state === "pending" ? { nextAttemptAt: record.nextAttemptAt } : {}),
+      ...(record.state === "resolved" ? { resolvedAt: record.resolvedAt } : {}),
+    });
+  }
+
+  private activeRuntimeRecordCount(): number {
+    let active = 0;
+    for (const record of this.runtimeRecords.values()) {
+      if (record.state === "pending" || record.state === "dead") active += 1;
+    }
+    return active;
+  }
+
+  private nextPendingRuntimeId(dueOnly: boolean): string | undefined {
+    const nowMs = this.clock().getTime();
+    let selected: { readonly id: string; readonly record: IntakeRuntimeCacheEntry } | undefined;
+    for (const [id, record] of this.runtimeRecords) {
+      if (record.state !== "pending" || record.nextAttemptAt === undefined
+        || (dueOnly && Date.parse(record.nextAttemptAt) > nowMs)) continue;
+      if (selected === undefined
+        || record.nextAttemptAt.localeCompare(selected.record.nextAttemptAt!) < 0
+        || (record.nextAttemptAt === selected.record.nextAttemptAt
+          && (record.admittedAt.localeCompare(selected.record.admittedAt) < 0
+            || (record.admittedAt === selected.record.admittedAt && id.localeCompare(selected.id) < 0)))) {
+        selected = { id, record };
+      }
+    }
+    return selected?.id;
+  }
+
+  private resolvedRuntimeInventory(): readonly { readonly id: string; readonly resolvedAt: string }[] {
+    return [...this.runtimeRecords].flatMap(([id, record]) => record.state === "resolved"
+      && record.resolvedAt !== undefined ? [{ id, resolvedAt: record.resolvedAt }] : []);
+  }
+
+  private refreshRuntimeCacheFromDisk(): void {
+    const internal = inspectCompletedTurnIntakeInternal(this.root, this.clock());
+    this.seedRuntimeCache(internal.located, internal.inspection.snapshot.transitioning);
+  }
+
+  private refreshRuntimeCacheAfterFault(): void {
+    try {
+      this.refreshRuntimeCacheFromDisk();
+    } catch {
+      safeWarn(this.warn, "completed-turn intake runtime metadata refresh failed; durable state remains authoritative.");
+    }
+  }
+
+  private recoverRuntimeTransitionsIfNeeded(): void {
+    if (this.runtimeTransitioning === 0) return;
+    try {
+      recoverStateConflicts(this.root);
+      this.refreshRuntimeCacheFromDisk();
+    } catch (error) {
+      this.refreshRuntimeCacheAfterFault();
+      this.notifyChange();
+      throw error;
+    }
+    this.notifyChange();
+  }
+
+  private notifyChange(urgency?: "urgent"): void {
+    try {
+      this.onChange(urgency);
+    } catch {
+      safeWarn(this.warn, "completed-turn intake state notification failed; durable state remains authoritative.");
+    }
+  }
 }
 
 /** Strict metadata-only inspection. Any unsafe/corrupt entry rejects the whole result. */
@@ -519,19 +725,39 @@ export function inspectCompletedTurnIntake(
   root: string,
   now = new Date(),
 ): CompletedTurnIntakeInspection {
+  return inspectCompletedTurnIntakeInternal(root, now).inspection;
+}
+
+interface CompletedTurnIntakeInternalInspection {
+  readonly inspection: CompletedTurnIntakeInspection;
+  readonly privateState: CompletedTurnIntakePrivateHealthState;
+  readonly located: readonly LocatedRecord[];
+}
+
+function inspectCompletedTurnIntakeInternal(
+  root: string,
+  now: Date,
+): CompletedTurnIntakeInternalInspection {
   const canonicalRoot = canonicalMemoryRootPath(root, false);
   if (!intakeLayoutExists(canonicalRoot)) {
     if (readIntakeSchemaMarker(canonicalRoot) !== undefined) {
       throw new Error("memory-bujo: initialized completed-turn intake layout is missing.");
     }
     return {
-      schemaVersion: COMPLETED_TURN_INTAKE_SCHEMA_VERSION,
-      items: [],
-      snapshot: { pending: 0, dead: 0, resolved: 0, due: 0, transitioning: 0 },
+      inspection: {
+        schemaVersion: COMPLETED_TURN_INTAKE_SCHEMA_VERSION,
+        items: [],
+        temporary: 0,
+        snapshot: { pending: 0, dead: 0, resolved: 0, due: 0, transitioning: 0 },
+      },
+      privateState: { digest: EMPTY_SHA256 },
+      located: [],
     };
   }
   ensureLayout(canonicalRoot, false);
-  const physical = STATES.flatMap((state) => listRecords(canonicalRoot, state));
+  const listed = STATES.map((state) => listRecordsWithTemporary(canonicalRoot, state));
+  const physical = listed.flatMap((entry) => entry.records);
+  const temporary = listed.reduce((sum, entry) => sum + entry.temporary, 0);
   const { located, transitioning } = logicalRecords(physical);
   const items = located.map(({ record }) => ({
     id: record.id,
@@ -542,16 +768,32 @@ export function inspectCompletedTurnIntake(
     due: record.state === "pending" && Date.parse(record.nextAttemptAt) <= now.getTime(),
     ...(record.state === "resolved" ? {} : record.lastError === undefined ? {} : { lastError: record.lastError }),
   })).sort((left, right) => left.id.localeCompare(right.id) || left.state.localeCompare(right.state));
+  const dueTimes = located.flatMap(({ record }) => record.state === "pending"
+    && Date.parse(record.nextAttemptAt) <= now.getTime() ? [record.nextAttemptAt] : []);
+  const digest = createHash("sha256").update(JSON.stringify(located.map(({ record }) => ({
+    id: record.id,
+    state: record.state,
+    revision: record.revision,
+    nextAttemptAt: record.state === "pending" ? record.nextAttemptAt : null,
+  })).sort((left, right) => left.id.localeCompare(right.id)))).digest("hex");
   return {
-    schemaVersion: COMPLETED_TURN_INTAKE_SCHEMA_VERSION,
-    items,
-    snapshot: {
-      pending: items.filter((item) => item.state === "pending").length,
-      dead: items.filter((item) => item.state === "dead").length,
-      resolved: items.filter((item) => item.state === "resolved").length,
-      due: items.filter((item) => item.due).length,
-      transitioning,
+    inspection: {
+      schemaVersion: COMPLETED_TURN_INTAKE_SCHEMA_VERSION,
+      items,
+      temporary,
+      snapshot: {
+        pending: items.filter((item) => item.state === "pending").length,
+        dead: items.filter((item) => item.state === "dead").length,
+        resolved: items.filter((item) => item.state === "resolved").length,
+        due: items.filter((item) => item.due).length,
+        transitioning,
+      },
     },
+    privateState: {
+      ...(dueTimes.length === 0 ? {} : { oldestDueAt: dueTimes.sort()[0]! }),
+      digest,
+    },
+    located,
   };
 }
 
@@ -567,17 +809,38 @@ function intakeLayoutExists(root: string): boolean {
 
 /** Non-throwing audit wrapper for health/CLI consumers. */
 export function auditCompletedTurnIntake(root: string, now = new Date()): CompletedTurnIntakeAudit {
+  return auditCompletedTurnIntakeHealthState(root, now).audit;
+}
+
+/** Strict health audit plus private content-free queue stability metadata. */
+export function auditCompletedTurnIntakeHealthState(
+  root: string,
+  now = new Date(),
+): CompletedTurnIntakeHealthAudit {
   try {
-    const inspection = inspectCompletedTurnIntake(root, now);
+    const internal = inspectCompletedTurnIntakeInternal(root, now);
+    const { inspection } = internal;
+    const counts = countsFromInspection(inspection);
+    if (inspection.temporary > 0) {
+      return {
+        audit: { valid: false, inspection, counts, issues: ["invalid_record"] },
+        privateState: internal.privateState,
+      };
+    }
     if (inspection.snapshot.pending + inspection.snapshot.dead > DEFAULT_MAX_ACTIVE_RECORDS) {
-      return { valid: false, inspection, issues: ["capacity_exceeded"] };
+      return {
+        audit: { valid: false, inspection, counts, issues: ["capacity_exceeded"] },
+        privateState: internal.privateState,
+      };
     }
     if (intakeLayoutExists(canonicalMemoryRootPath(root, false))) {
       const canonicalRoot = canonicalMemoryRootPath(root, false);
-      const materialized = logicalRecords(STATES.flatMap((state) => listRecords(canonicalRoot, state))).located;
-      validateAdmissionLedger(canonicalRoot, materialized);
+      validateAdmissionLedger(canonicalRoot, internal.located);
     }
-    return { valid: true, inspection, issues: [] };
+    return {
+      audit: { valid: true, inspection, counts, issues: [] },
+      privateState: internal.privateState,
+    };
   } catch (error) {
     const message = reasonOf(error);
     const issue = /capacity|bounded file count/iu.test(message)
@@ -587,8 +850,43 @@ export function auditCompletedTurnIntake(root: string, now = new Date()): Comple
       : /directory|layout/iu.test(message)
         ? "invalid_layout"
         : "invalid_record";
-    return { valid: false, issues: [issue] };
+    const counts = physicalIntakeCounts(root);
+    return {
+      audit: { valid: false, counts, issues: [issue] },
+      privateState: {
+        digest: createHash("sha256").update(JSON.stringify({ invalid: issue, counts })).digest("hex"),
+      },
+    };
   }
+}
+
+function countsFromInspection(inspection: CompletedTurnIntakeInspection): CompletedTurnIntakeAudit["counts"] {
+  return {
+    pending: inspection.snapshot.pending,
+    due: inspection.snapshot.due,
+    dead: inspection.snapshot.dead,
+    temporary: inspection.temporary,
+  };
+}
+
+function physicalIntakeCounts(root: string): CompletedTurnIntakeAudit["counts"] {
+  const counts = { pending: 0, due: 0, dead: 0, temporary: 0 };
+  try {
+    const canonicalRoot = canonicalMemoryRootPath(root, false);
+    if (!intakeLayoutExists(canonicalRoot)) return counts;
+    counts.temporary += listLedgerCatalogTempNames(canonicalRoot).length;
+    for (const state of STATES) {
+      for (const name of listStateNames(canonicalRoot, state)) {
+        if (ORPHAN_TEMP_NAME.test(name)) counts.temporary += 1;
+        else if (state === "pending") counts.pending += 1;
+        else if (state === "dead") counts.dead += 1;
+      }
+    }
+  } catch {
+    // Unsafe directory metadata is itself an invalid audit. Keep the bounded
+    // zero/partial inventory without exposing filesystem details.
+  }
+  return counts;
 }
 
 /** Retry selected dead letters (or make selected pending work due) while no store owns the root. */
@@ -733,6 +1031,16 @@ interface LedgerCatalogSnapshot {
 }
 
 function retireOrphanLedgerCatalogTemps(root: string): void {
+  for (const name of listLedgerCatalogTempNames(root)) {
+    const relativePath = `${INTAKE_ROOT}/${name}`;
+    const snapshot = readCanonicalFileSnapshot(root, relativePath, { maxBytes: LEDGER_CATALOG_MAX_BYTES });
+    if (snapshot === undefined) throw new Error("memory-bujo: completed-turn ledger catalog temp disappeared.");
+    assertSecureLedgerFile(snapshot.identity);
+    removeCanonicalFile(root, relativePath, snapshot.identity);
+  }
+}
+
+function listLedgerCatalogTempNames(root: string): string[] {
   const path = join(root, INTAKE_ROOT);
   const before = lstatSync(path);
   assertSecureDirectory(before, INTAKE_ROOT);
@@ -745,13 +1053,7 @@ function retireOrphanLedgerCatalogTemps(root: string): void {
   } finally {
     closeSync(fd);
   }
-  for (const name of names) {
-    const relativePath = `${INTAKE_ROOT}/${name}`;
-    const snapshot = readCanonicalFileSnapshot(root, relativePath, { maxBytes: LEDGER_CATALOG_MAX_BYTES });
-    if (snapshot === undefined) throw new Error("memory-bujo: completed-turn ledger catalog temp disappeared.");
-    assertSecureLedgerFile(snapshot.identity);
-    removeCanonicalFile(root, relativePath, snapshot.identity);
-  }
+  return names;
 }
 
 function ensureLedgerCatalog(root: string, create: boolean): LedgerCatalogSnapshot {
@@ -1191,14 +1493,28 @@ function ensureDirectory(parent: string, path: string, create: boolean, label: s
 }
 
 function listRecords(root: string, state: IntakeState): LocatedRecord[] {
-  return listStateNames(root, state).flatMap((name) => {
-    if (FILE_NAME.test(name)) return [readRecord(root, state, name.slice(0, -5))];
+  return listRecordsWithTemporary(root, state).records;
+}
+
+function listRecordsWithTemporary(
+  root: string,
+  state: IntakeState,
+): { readonly records: LocatedRecord[]; readonly temporary: number } {
+  const records: LocatedRecord[] = [];
+  let temporary = 0;
+  for (const name of listStateNames(root, state)) {
+    if (FILE_NAME.test(name)) {
+      records.push(readRecord(root, state, name.slice(0, -5)));
+      continue;
+    }
     if (ORPHAN_TEMP_NAME.test(name)) {
       validateOrphanTemp(root, state, name);
-      return [];
+      temporary += 1;
+      continue;
     }
     throw new Error("memory-bujo: completed-turn intake has an invalid record name.");
-  });
+  }
+  return { records, temporary };
 }
 
 function listStateNames(root: string, state: IntakeState): string[] {
@@ -1308,6 +1624,7 @@ function moveRecord(
   source: LocatedRecord,
   state: IntakeState,
   target: IntakeRecord,
+  beforeSourceRetirement?: (id: string, state: "dead" | "resolved") => void,
 ): LocatedRecord {
   if (target.revision !== source.record.revision + 1) {
     throw new Error("memory-bujo: completed-turn intake transition revision is not monotonic.");
@@ -1322,6 +1639,7 @@ function moveRecord(
     }
     written = existing;
   }
+  if (state === "dead" || state === "resolved") beforeSourceRetirement?.(target.id, state);
   removeCanonicalFile(root, source.relativePath, source.identity);
   return written;
 }
@@ -1331,7 +1649,8 @@ function resolvePending(
   source: LocatedRecord<PendingRecord>,
   outcome: "captured" | "summary_only",
   resolvedAt: string,
-): void {
+  beforeSourceRetirement?: (id: string, state: "dead" | "resolved") => void,
+): LocatedRecord<ResolvedRecord> {
   // Never discard the payload-bearing state until its exact permanent
   // commitment is present and conflict-free.
   ensureLedgerEntry(root, source.record.id, source.record.payloadHash);
@@ -1346,7 +1665,13 @@ function resolvePending(
     attempt: source.record.attempt,
     outcome,
   };
-  moveRecord(root, source, "resolved", receipt);
+  return moveRecord(
+    root,
+    source,
+    "resolved",
+    receipt,
+    beforeSourceRetirement,
+  ) as LocatedRecord<ResolvedRecord>;
 }
 
 function moveToDead(
@@ -1355,7 +1680,8 @@ function moveToDead(
   attempt: number,
   lastError: FailureCode,
   deadAt: string,
-): void {
+  beforeSourceRetirement?: (id: string, state: "dead" | "resolved") => void,
+): LocatedRecord<DeadRecord> {
   const dead: DeadRecord = {
     schemaVersion: COMPLETED_TURN_INTAKE_SCHEMA_VERSION,
     state: "dead",
@@ -1372,7 +1698,7 @@ function moveToDead(
     summaryWritten: source.record.summaryWritten,
     lastError,
   };
-  moveRecord(root, source, "dead", dead);
+  return moveRecord(root, source, "dead", dead, beforeSourceRetirement) as LocatedRecord<DeadRecord>;
 }
 
 function recoverStateConflicts(root: string): void {
@@ -1446,26 +1772,46 @@ function preferredRecord(records: readonly LocatedRecord[]): LocatedRecord | und
   return ordered[0];
 }
 
-function pruneResolved(root: string, retain: number, preserveId?: string): void {
-  const resolved = listRecords(root, "resolved")
-    .filter((located): located is LocatedRecord<ResolvedRecord> => located.record.state === "resolved")
-    .sort((left, right) => left.record.resolvedAt.localeCompare(right.record.resolvedAt)
-      || left.record.id.localeCompare(right.record.id));
+function pruneResolved(
+  root: string,
+  retain: number,
+  preserveId?: string,
+  runtimeInventory?: readonly { readonly id: string; readonly resolvedAt: string }[],
+): readonly string[] {
+  const resolved: Array<{
+    readonly id: string;
+    readonly resolvedAt: string;
+    readonly located?: LocatedRecord<ResolvedRecord>;
+  }> = runtimeInventory === undefined
+    ? listRecords(root, "resolved")
+      .filter((located): located is LocatedRecord<ResolvedRecord> => located.record.state === "resolved")
+      .map((located) => ({ id: located.record.id, resolvedAt: located.record.resolvedAt, located }))
+    : runtimeInventory.map((record) => ({ ...record }));
+  resolved.sort((left, right) => left.resolvedAt.localeCompare(right.resolvedAt) || left.id.localeCompare(right.id));
   const removeCount = Math.max(0, resolved.length - retain);
   const removable = preserveId === undefined
     ? resolved
-    : resolved.filter(({ record }) => record.id !== preserveId);
+    : resolved.filter(({ id }) => id !== preserveId);
   const retiring = removable.slice(0, removeCount);
+  const located: LocatedRecord<ResolvedRecord>[] = retiring.map((record) => {
+    if (record.located !== undefined) return record.located;
+    const source = readRecord(root, "resolved", record.id);
+    if (source.record.state !== "resolved") {
+      throw new Error("memory-bujo: completed-turn resolved runtime cache diverged from durable state.");
+    }
+    return source as LocatedRecord<ResolvedRecord>;
+  });
   // Preflight every commitment before retiring any rich receipt. This both
   // restores a missing shard from recoverable metadata and fails closed on a
   // conflict without partially pruning the batch.
-  ensureLedgerEntries(root, retiring.map(({ record }) => ({
+  ensureLedgerEntries(root, located.map(({ record }) => ({
     id: record.id,
     payloadHash: record.payloadHash,
   })));
-  for (const located of retiring) {
-    removeCanonicalFile(root, located.relativePath, located.identity);
+  for (const record of located) {
+    removeCanonicalFile(root, record.relativePath, record.identity);
   }
+  return located.map(({ record }) => record.id);
 }
 
 function validateRecord(value: unknown, state: IntakeState, expectedId: string): IntakeRecord {

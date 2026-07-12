@@ -81,6 +81,7 @@ async function toDiscoveredInstance(source: TraceSourceListItem): Promise<Discov
     artifactDir: source.artifactDir,
     health: source.health,
     ...(timeZone === undefined ? {} : { timeZone, timezone: timeZone }),
+    ...(source.memoryHealth === undefined ? {} : { memoryHealth: source.memoryHealth }),
     liveConnected: false,
     counts: { runs: 0 },
   };

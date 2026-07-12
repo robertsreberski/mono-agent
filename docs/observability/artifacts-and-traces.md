@@ -156,6 +156,33 @@ When `registryDir` is a config-local override (as `mono-agent init` scaffolds), 
 | `traceability.staleAfterMs` | `30000` | `MONO_AGENT_TRACE_STALE_AFTER_MS` | Age after which `status` marks a source stale. |
 | `traceability.globalDiscovery` | `true` | `MONO_AGENT_TRACE_GLOBAL_DISCOVERY` | When `registryDir` differs from the global default, also mirror this agent's manifest there. Set `false` to keep registration local-only. |
 
+### Content-free memory health
+
+An `agent-runtime.trace-source.v1` manifest may carry a typed `memoryHealth` snapshot alongside
+process health. The host computes it at trace registration, forces one post-lifecycle refresh after
+the store starts or reloads, then caches ordinary memory-state/trace refreshes and uses a
+completion-based steady-state interval of at least 30 seconds; a fast process-heartbeat setting does
+not turn into a fast full memory audit. It publishes the same value to the primary registry and any
+enabled best-effort global mirror. Memory health is independent of process health: a source can be `running` while its
+memory is `degraded`, or have memory `in_progress` while durable work drains normally.
+
+The nested contract is discriminated by `backend`. Built-in `bujo` requires `mode`
+(`lite`, `journal`, or `bujo`), its core status, canonically ordered closed issues, and optional
+whitelisted counts (`pending`, `due`, `dead`, `outbox`, `temporary`, `memories`, `vectors`, and
+`missingVectors`). `supermemory` carries only `unknown`; `none` carries `not_configured` or
+`unknown`; neither remote/absent variant carries mode, issues, or counts. Registry readers normalize
+this as untrusted input: unknown fields are discarded, while a semantically contradictory newest
+snapshot becomes a timestamp-preserving `unknown` variant rather than disappearing and leaving an
+older green value authoritative. A duplicate local/global source keeps the independently freshest
+`memoryHealth.checkedAt` rather than coupling it to whichever process manifest won the ordinary
+source merge.
+
+The snapshot is safe for discovery surfaces: it contains no paths, filenames, record/run ids,
+memory or model text, payloads, or raw provider/native errors. `none/not_configured`,
+`none/unknown`, and `supermemory/unknown` omit `mode`; the latter is unknown because a local trace registry cannot
+assert health of the remote index. For the exact strict CLI schema and exit contract, see
+[Memory validation & CLI](/memory/validation-and-cli/#strict-provider-free-health-gate).
+
 Keep `staleAfterMs` comfortably larger than `heartbeatMs` (the defaults give a 3× margin) so a single missed write does not flap a healthy agent into the stale state. Registries also self-prune: manifests whose heartbeat is older than 7 days AND whose process is no longer running are deleted automatically the next time an agent starts or `mono-agent tui` runs.
 
 :::note
@@ -165,5 +192,15 @@ Keep `staleAfterMs` comfortably larger than `heartbeatMs` (the defaults give a 3
 ## How `start` and `status` use this
 
 `mono-agent start` prints the active traceability source — Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts — and `mono-agent status` reads the registry to report each known source as live or stale. See the [CLI reference](/observability/cli-reference/) for the full command surface, and [Phoenix export & backfill](/observability/phoenix-and-backfill/) for sending these same events to a trace viewer.
+
+The launchd fleet green check does not trust the interactive shell runtime. For each service it
+reads the plist's exact Node executable, CLI path, absolute `--config`/`--env-file` arguments,
+and managed `PATH`, then uses those values for the Node/ABI probe, `validate --json`,
+`memory audit --strict --json`, and `metrics --json`. Probe children retain only non-secret,
+launchd-safe operational environment values; shell-only `MONO_AGENT_*`, provider credentials,
+`NODE_OPTIONS`, and proxy overrides cannot make the check pass. Probes have hard timeouts and
+their closed memory status/issue/count relationships are validated before a fleet verdict. The
+current fleet contract is Node `24.15.0` and modules ABI `137`; running those probes with ambient
+Node, config, or credentials cannot prove that the deployed service can load its native SQLite modules.
 
 To wire any of this up from code rather than config (custom hosts, embedding the runtime), see [Programmatic usage](/programmatic/).

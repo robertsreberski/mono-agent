@@ -446,6 +446,12 @@ export class MemoryDb {
     return row === undefined ? undefined : this.fromRow(row);
   }
 
+  /** Complete deterministic inventory for rebuild/parity validation. */
+  allMemories(): MemoryRecord[] {
+    const rows = this.db.prepare(`SELECT * FROM memories ORDER BY id`).all() as Record<string, unknown>[];
+    return rows.map((row) => this.fromRow(row));
+  }
+
   count(): number {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM memories`).get() as { n: number }).n;
   }
@@ -975,6 +981,12 @@ export class MemoryDb {
     return rows.map((r) => this.entityFromRow(r));
   }
 
+  /** Complete deterministic entity inventory for rebuild/parity validation. */
+  allEntities(): EntityRecord[] {
+    const rows = this.db.prepare(`SELECT * FROM entities ORDER BY id`).all() as Record<string, unknown>[];
+    return rows.map((row) => this.entityFromRow(row));
+  }
+
   addEntityRelation(src: string, dst: string, relation: string, createdAt = this.clock().toISOString()): void {
     this.db.prepare(
       `INSERT OR IGNORE INTO entity_relations (src, dst, relation, created_at) VALUES (?, ?, ?, ?)`,
@@ -994,6 +1006,19 @@ export class MemoryDb {
       .prepare(`SELECT src, dst, relation, created_at FROM entity_relations WHERE src = ?`)
       .all(src) as { src: string; dst: string; relation: string; created_at: string }[];
     return rows.map((r) => ({ src: r.src, dst: r.dst, relation: r.relation, createdAt: r.created_at }));
+  }
+
+  /** Complete deterministic relation inventory for rebuild/parity validation. */
+  allEntityRelations(): EntityRelationRecord[] {
+    const rows = this.db.prepare(
+      `SELECT src, dst, relation, created_at FROM entity_relations ORDER BY src, dst, relation`,
+    ).all() as Array<{ src: string; dst: string; relation: string; created_at: string }>;
+    return rows.map((row) => ({
+      src: row.src,
+      dst: row.dst,
+      relation: row.relation,
+      createdAt: row.created_at,
+    }));
   }
 
   relationsTouching(entityId: string): EntityRelationRecord[] {
@@ -1046,6 +1071,25 @@ export class MemoryDb {
     const rows = this.db.prepare(
       `SELECT memory_id, entity_id, provenance, created_at FROM memory_entities WHERE memory_id = ? ORDER BY entity_id`,
     ).all(memoryId) as Array<{ memory_id: string; entity_id: string; provenance: MemoryEntityAssociation["provenance"]; created_at: string }>;
+    return rows.map((row) => ({
+      memoryId: row.memory_id,
+      entityId: row.entity_id,
+      provenance: row.provenance,
+      createdAt: row.created_at,
+    }));
+  }
+
+  /** Complete deterministic memory/entity inventory for rebuild/parity validation. */
+  allMemoryAssociations(): MemoryEntityAssociation[] {
+    const rows = this.db.prepare(
+      `SELECT memory_id, entity_id, provenance, created_at
+       FROM memory_entities ORDER BY memory_id, entity_id`,
+    ).all() as Array<{
+      memory_id: string;
+      entity_id: string;
+      provenance: MemoryEntityAssociation["provenance"];
+      created_at: string;
+    }>;
     return rows.map((row) => ({
       memoryId: row.memory_id,
       entityId: row.entity_id,
@@ -1376,6 +1420,24 @@ export class MemoryDb {
 
   integrityCheck(): string {
     return String(this.db.pragma("integrity_check", { simple: true }));
+  }
+
+  /**
+   * Hold one provider-free SQLite read snapshot across the strict health probes.
+   *
+   * The callback can use only MemoryDb's typed read surface; the underlying
+   * better-sqlite3 handle remains private. Nested callers share an existing
+   * transaction so rebuild/parity helpers can compose without changing the
+   * observed database point in time.
+   */
+  withAuditSnapshot<T>(read: () => T): T {
+    const ownsSnapshot = !this.db.inTransaction;
+    if (ownsSnapshot) this.db.exec("BEGIN");
+    try {
+      return read();
+    } finally {
+      if (ownsSnapshot && this.db.inTransaction) this.db.exec("ROLLBACK");
+    }
   }
 
   /**

@@ -13,6 +13,7 @@ import {
 import type { ReflectDeps } from "./reflect.js";
 import { parseDailyFile, serializeDailyFile, type DailyFile } from "./grammar.js";
 import { appendGraphBatch, readGraph } from "./graph.js";
+import { withManagedRollbackRetirement } from "./generations.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
 
@@ -496,12 +497,16 @@ function rewriteCanonicalDecision(
       ? { ...line, bullet: { ...line.bullet, ...patch } }
       : line
   ));
-  writeCanonicalFileAtomic(
-    root,
-    canonical.file,
-    serializeDailyFile({ lines }),
-    canonical.snapshot.identity,
-  );
+  const serialized = serializeDailyFile({ lines });
+  if (serialized === canonical.snapshot.content) return;
+  withManagedRollbackRetirement(root, "daily", () => {
+    writeCanonicalFileAtomic(
+      root,
+      canonical.file,
+      serialized,
+      canonical.snapshot.identity,
+    );
+  });
 }
 
 function bulletMatchesRecord(bullet: Bullet, record: MemoryRecord): boolean {

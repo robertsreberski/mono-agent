@@ -96,8 +96,27 @@ across up to 256 lazily created shard files plus one fixed-size 256-slot integri
 indexing holds at most 256 items / 2 MiB. Each capture-model completion is
 rejected before parsing when it exceeds 262,144 JavaScript characters. Runtime snapshots report
 content-free intake pending/dead/resolved/due/transition counts alongside downstream queue and
-shutdown state. Shutdown gives work up to 10 seconds to drain; after that deadline it aborts the
-cooperative active attempt and returns while the intake record remains pending for restart.
+shutdown state. The store republishes that snapshot immediately after admission and every durable
+intake transition, so a strict health audit sees newly accepted work as `in_progress` without
+waiting for the periodic heartbeat. Notification failures never roll back or misreport the durable
+transition; the on-disk intake remains authoritative. Shutdown gives work up to 10 seconds to
+drain; after that deadline it aborts the cooperative active attempt and returns while the intake
+record remains pending for restart.
+
+Operators can inspect that intake without reading its summaries or capture text:
+
+```bash
+mono-agent memory inspect --json
+mono-agent memory inspect <64-character-id> --json
+```
+
+Inspection returns only ids, states, timestamps, attempts/revisions, due flags, bounded failure
+categories, and aggregate counts. With the matching agent stopped, `memory retry [<id>]` makes
+dead/delayed work due for processing after restart. `memory resolve <id> <reason-slug>` is the
+explicit loss-accepting path: it records `operator_resolved` without claiming capture succeeded,
+preserves permanent duplicate protection, and refuses recoverable retained semantic plans. See
+[Validation & CLI](/memory/validation-and-cli/#completed-turn-intake-inspection-and-recovery) for
+the liveness fence, exact inputs, and no-op semantics.
 
 ### `capture` — per-turn intelligent capture (bujo)
 

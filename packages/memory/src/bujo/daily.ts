@@ -20,7 +20,12 @@ import {
   readCanonicalFileSnapshot,
   writeCanonicalFileAtomic,
 } from "./path-safety.js";
+import { withManagedRollbackRetirement } from "./generations.js";
 import type { Bullet } from "./types.js";
+
+export const JOURNAL_WRITE_LOCK_STALE_AFTER_MS = 30_000;
+
+export type JournalWriteLockStatus = "clear" | "active" | "stale" | "unsafe";
 
 export function dailyFilePath(root: string, when: Date): string {
   const day = when.toISOString().slice(0, 10);
@@ -40,10 +45,12 @@ export function normalizedContentHash(text: string): string {
 /** Append a bullet to today's daily file (creating it with a heading if absent). Returns the bullet. */
 export function appendBullet(root: string, bullet: Bullet, when: Date): Bullet {
   const day = when.toISOString().slice(0, 10);
-  appendCanonicalFile(root, `daily/${day}.md`, (existingSize) => {
+  // Validate the complete payload before retiring a still-valid rollback.
+  const serialized = serializeBullet(bullet);
+  withManagedRollbackRetirement(root, "daily", () => appendCanonicalFile(root, `daily/${day}.md`, (existingSize) => {
     const header = existingSize === 0 ? `# ${day}\n\n` : "";
-    return `${header}${serializeBullet(bullet)}\n`;
-  });
+    return `${header}${serialized}\n`;
+  }));
   return bullet;
 }
 
@@ -94,13 +101,17 @@ export function withJournalWriteLock<T>(root: string, write: () => T): T {
         }
         throw error;
       }
-      const existing = readLockOwner(canonicalRoot);
-      if (existing?.pid !== undefined && processIsAlive(existing.pid)) {
-        throw new Error(`memory-bujo: journal write lock is held by pid ${existing.pid}.`);
+      const existing = classifyJournalWriteLock(canonicalRoot, Date.now());
+      if (existing.status === "active") {
+        if (existing.owner?.pid !== undefined) {
+          throw new Error(`memory-bujo: journal write lock is held by pid ${existing.owner.pid}.`);
+        }
+        throw new Error("memory-bujo: journal write lock is held or has an unverified owner.");
       }
-      // A missing/malformed freshly-published owner is treated as locked. Only
-      // an identity-stable file older than the stale grace can be reclaimed.
-      if (existing === undefined || Date.now() - existing.mtimeMs < 30_000 || !unlinkIfSame(canonicalRoot, existing)) {
+      // The same read-only classifier powers strict health. Mutation remains a
+      // writer-only responsibility and requires the exact pinned identity.
+      if (existing.status !== "stale" || existing.owner === undefined
+        || !unlinkIfSame(canonicalRoot, existing.owner)) {
         throw new Error("memory-bujo: journal write lock is held or has an unverified owner.");
       }
     }
@@ -136,32 +147,67 @@ interface LockOwner {
   readonly mtimeMs: number;
 }
 
-function readLockOwner(root: string): LockOwner | undefined {
+interface JournalWriteLockClassification {
+  readonly status: JournalWriteLockStatus;
+  readonly owner?: LockOwner;
+}
+
+/** Read-only lock classifier shared by the writer and strict health audit. */
+export function inspectJournalWriteLock(root: string, nowMs = Date.now()): JournalWriteLockStatus {
+  return classifyJournalWriteLock(canonicalMemoryRootPath(root, false), nowMs).status;
+}
+
+function classifyJournalWriteLock(root: string, nowMs: number): JournalWriteLockClassification {
   try {
-    const snapshot = readCanonicalFileSnapshot(root, ".journal-write.lock", { maxBytes: 4_096 });
-    if (snapshot === undefined
-      || (snapshot.identity.mode & 0o777) !== 0o600
-      || (typeof process.getuid === "function" && snapshot.identity.uid !== process.getuid())) return undefined;
+    const snapshot = readCanonicalFileSnapshot(root, ".journal-write.lock", {
+      allowMissing: true,
+      maxBytes: 4_096,
+    });
+    if (snapshot === undefined) return { status: "clear" };
+    if ((snapshot.identity.mode & 0o777) !== 0o600
+      || snapshot.identity.nlink !== 1
+      || (typeof process.getuid === "function" && snapshot.identity.uid !== process.getuid())) {
+      return { status: "unsafe" };
+    }
     let pid: number | undefined;
+    let validOwner = false;
     try {
-      const parsed = JSON.parse(snapshot.content) as { pid?: unknown; uid?: unknown };
+      const parsed = JSON.parse(snapshot.content) as {
+        schemaVersion?: unknown;
+        pid?: unknown;
+        uid?: unknown;
+        token?: unknown;
+      };
       if (typeof process.getuid === "function"
         && parsed.uid !== undefined
-        && parsed.uid !== process.getuid()) return undefined;
-      const value = Number(parsed.pid);
-      if (Number.isInteger(value) && value > 0) pid = value;
+        && parsed.uid !== process.getuid()) return { status: "unsafe" };
+      const value = parsed.pid;
+      if (parsed.schemaVersion === 1
+        && typeof value === "number"
+        && Number.isInteger(value)
+        && value > 0
+        && typeof parsed.token === "string"
+        && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(parsed.token)) {
+        pid = value;
+        validOwner = true;
+      }
     } catch {
       // Preserve stable identity/mtime so an abandoned malformed lock can be
       // reclaimed after the grace period without stealing a fresh publish.
     }
-    return {
+    const owner: LockOwner = {
       ...(pid === undefined ? {} : { pid }),
       dev: snapshot.identity.dev,
       ino: snapshot.identity.ino,
       mtimeMs: snapshot.identity.mtimeMs,
     };
+    if (validOwner && pid !== undefined && processIsAlive(pid)) return { status: "active", owner };
+    if (nowMs - snapshot.identity.mtimeMs < JOURNAL_WRITE_LOCK_STALE_AFTER_MS) {
+      return { status: "active", owner };
+    }
+    return { status: "stale", owner };
   } catch {
-    return undefined;
+    return { status: "unsafe" };
   }
 }
 
@@ -228,7 +274,11 @@ export function rewriteBullet(
 
   if (!found) return false;
 
-  writeCanonicalFileAtomic(root, file, serializeDailyFile({ lines: newLines }), snapshot.identity);
+  const serialized = serializeDailyFile({ lines: newLines });
+  if (serialized === snapshot.content) return true;
+  withManagedRollbackRetirement(root, "daily", () => {
+    writeCanonicalFileAtomic(root, file, serialized, snapshot.identity);
+  });
   return true;
 }
 

@@ -2,10 +2,11 @@ import { mkdir, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 
 import { createLiveEventBus, LIVE_EVENT_SCHEMA, type RunEventBus, type RunEventFrame } from "@mono-agent/agent-contracts";
-import { RUNS_HEALTH_STALE_RUNNING_MS } from "@mono-agent/observability";
+import { registerTraceSource, RUNS_HEALTH_STALE_RUNNING_MS } from "@mono-agent/observability";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { SessionAggregator } from "../aggregator.js";
+import type { DiscoveredWebInstance } from "../discovery.js";
 import type { BrowserStreamFrame } from "../session-model.js";
 import { makeTmpDir, registerSource, removeDir, seedRun, seedRunningRun, startTinySseServer, waitFor, type TinySseServer } from "./helpers.js";
 
@@ -986,8 +987,166 @@ describe("SessionAggregator live fold", () => {
     );
     expect(aggregator.getInstances()[0]?.label).toBe("Renamed Agent");
   });
+
+  it("emits a replacement instances frame for a memory-health-only registry update", async () => {
+    const registryDir = await tmp("reg-memory-update");
+    const artifactDir = join(await tmp("agent-memory-update"), "runs");
+    await mkdir(artifactDir, { recursive: true });
+    const source = await registerTraceSource({
+      registryDir,
+      sourceId: SOURCE_ID,
+      label: "Live Agent",
+      artifactDir,
+      memoryHealth: {
+        backend: "bujo",
+        mode: "bujo",
+        status: "healthy",
+        checkedAt: "2026-07-12T08:00:00.000Z",
+        issues: [],
+      },
+    });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 50,
+      reconcileIntervalMs: 60_000,
+      instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
+    });
+    const frames: BrowserStreamFrame[] = [];
+    aggregator.subscribe((frame) => frames.push(frame));
+    await aggregator.start();
+    await sleep(20);
+    frames.length = 0;
+
+    await source.update({
+      memoryHealth: {
+        backend: "bujo",
+        mode: "bujo",
+        status: "degraded",
+        checkedAt: "2026-07-12T08:01:00.000Z",
+        issues: ["intake_pending", "work_stalled"],
+        counts: { pending: 1 },
+      },
+    });
+    await (aggregator as unknown as { reconcile(): Promise<void> }).reconcile();
+
+    const replacement = await waitFor(() =>
+      frames.find(
+        (frame): frame is Extract<BrowserStreamFrame, { t: "instances" }> =>
+          frame.t === "instances" && frame.instances[0]?.memoryHealth?.status === "degraded",
+      ),
+    );
+    expect(replacement.instances).toEqual([
+      expect.objectContaining({
+        sourceId: SOURCE_ID,
+        memoryHealth: {
+          backend: "bujo",
+          mode: "bujo",
+          status: "degraded",
+          checkedAt: "2026-07-12T08:01:00.000Z",
+          issues: ["intake_pending", "work_stalled"],
+          counts: { pending: 1 },
+        },
+      }),
+    ]);
+    expect(frames.some((frame) => frame.t !== "instances")).toBe(false);
+  });
+
+  it("single-flights overlapping reconciles and applies one trailing newest discovery", async () => {
+    const registryDir = await tmp("reg-overlap");
+    const artifactDir = join(await tmp("agent-overlap"), "runs");
+    await mkdir(artifactDir, { recursive: true });
+    const source = await registerTraceSource({
+      registryDir,
+      sourceId: SOURCE_ID,
+      label: "Live Agent",
+      artifactDir,
+      memoryHealth: {
+        backend: "bujo",
+        mode: "bujo",
+        status: "healthy",
+        checkedAt: "2026-07-12T10:00:00.000Z",
+        issues: [],
+      },
+    });
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 50,
+      reconcileIntervalMs: 60_000,
+      registryDebounceMs: 60_000,
+      instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
+    });
+    await aggregator.start();
+    const controller = aggregator as unknown as {
+      discover(): Promise<readonly DiscoveredWebInstance[]>;
+      reconcile(): Promise<void>;
+      reconcileHandoffHook?: () => void;
+    };
+    const originalDiscover = controller.discover.bind(controller);
+    const older = await originalDiscover();
+    await source.update({
+      memoryHealth: {
+        backend: "bujo",
+        mode: "bujo",
+        status: "unhealthy",
+        checkedAt: "2026-07-12T10:01:00.000Z",
+        issues: ["manifest_missing"],
+      },
+    });
+    const newer = await originalDiscover();
+    const entered = deferred();
+    const release = deferred();
+    let discoveries = 0;
+    controller.discover = async () => {
+      discoveries += 1;
+      if (discoveries === 1) {
+        entered.resolve();
+        await release.promise;
+        return older;
+      }
+      return newer;
+    };
+
+    const first = controller.reconcile();
+    await entered.promise;
+    const second = controller.reconcile();
+    expect(second).toBe(first);
+    await Promise.resolve();
+    expect(discoveries).toBe(1);
+
+    release.resolve();
+    await Promise.all([first, second]);
+
+    expect(discoveries).toBe(2);
+    expect(aggregator.getInstances()[0]?.memoryHealth).toMatchObject({
+      status: "unhealthy",
+      checkedAt: "2026-07-12T10:01:00.000Z",
+      issues: ["manifest_missing"],
+    });
+
+    controller.discover = async () => {
+      discoveries += 1;
+      return newer;
+    };
+    let handoffReplay: Promise<void> | undefined;
+    controller.reconcileHandoffHook = () => {
+      handoffReplay = controller.reconcile();
+    };
+    const handoffOwner = controller.reconcile();
+    await handoffOwner;
+    expect(handoffReplay).toBe(handoffOwner);
+    expect(discoveries).toBe(4);
+  });
 });
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function deferred(): { readonly promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
 }

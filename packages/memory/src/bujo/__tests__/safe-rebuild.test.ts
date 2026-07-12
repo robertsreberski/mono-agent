@@ -232,6 +232,39 @@ describe("safe memory index rebuild", () => {
     }
   });
 
+  it("accepts its own rollback retirement when replaying a pending ADD after two Lite rebuilds", async () => {
+    const root = tempRoot();
+    writeDaily(root, [bullet("BASE-ROLLBACK-REPLAY", "The retained Lite base is canonical.")]);
+    await safeRebuildMemoryIndex({ root, tier: "lite" });
+    const retained = await safeRebuildMemoryIndex({ root, tier: "lite" });
+    expect(retained.rollback).toBeDefined();
+    expect(readManagedIndexManifest(root)?.rollback).toBeDefined();
+
+    const item = bullet("PENDING-AFTER-ROLLBACK", "Pending replay advances the retained source safely.");
+    const file = "daily/2026-07-11.md";
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "add",
+      id: item.id,
+      after: { file, bullet: item },
+      record: memoryRecordForBullet(item, file),
+      threads: [],
+    }], {}, NOW);
+
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: "lite" });
+
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+    const active = openMemoryDb({ path: rebuilt.active, readOnly: true });
+    try {
+      expect(active.get(item.id)?.text).toBe(item.text);
+    } finally {
+      active.close();
+    }
+    const manifest = readManagedIndexManifest(root);
+    expect(manifest?.active.sourceFingerprint).toBe(rebuilt.sourceFingerprint);
+    expect(manifest?.rollback?.sourceFingerprint).toBe(rebuilt.sourceFingerprint);
+  });
+
   it("retires current-identity capture recovery before a later snapshot failure", async () => {
     const root = tempRoot();
     const model = embeddings("test:after-snapshot", 8);

@@ -1,6 +1,4 @@
 import dns from "node:dns";
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 
 import { describe, expect, it } from "vitest";
 
@@ -1008,20 +1006,20 @@ describe("OpenAI API adapter", () => {
   });
 
   it("requires bearer auth when localhost resolves to a non-loopback address after consent", async () => {
-    const port = await reserveLoopbackPort();
     const originalLookup = dns.lookup;
     dns.lookup = wildcardLocalhostLookup as typeof dns.lookup;
     try {
       await expect(
         startOpenAIApiAdapter({
           host: "localhost",
-          port,
+          // Let the kernel choose atomically. Reserving and releasing a fixed
+          // port before this bind races every parallel package test/process.
+          port: 0,
           allowNonLoopback: true,
           modelId: "agent",
           responder: echoResponder(),
         }),
       ).rejects.toMatchObject({ code: "missing_required_config" });
-      await expectPortReusable(port);
     } finally {
       dns.lookup = originalLookup;
     }
@@ -1316,30 +1314,6 @@ describe("OpenAI API adapter", () => {
     });
   });
 });
-
-async function reserveLoopbackPort(): Promise<number> {
-  const probe = createServer();
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    probe.once("error", rejectPromise);
-    probe.listen(0, "127.0.0.1", () => resolvePromise());
-  });
-  const address = probe.address() as AddressInfo;
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    probe.close((error) => error === undefined ? resolvePromise() : rejectPromise(error));
-  });
-  return address.port;
-}
-
-async function expectPortReusable(port: number): Promise<void> {
-  const probe = createServer();
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    probe.once("error", rejectPromise);
-    probe.listen(port, "127.0.0.1", () => resolvePromise());
-  });
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    probe.close((error) => error === undefined ? resolvePromise() : rejectPromise(error));
-  });
-}
 
 function wildcardLocalhostLookup(
   _hostname: string,

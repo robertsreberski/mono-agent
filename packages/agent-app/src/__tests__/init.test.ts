@@ -1,6 +1,6 @@
-import { access, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseEnv } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -96,6 +96,127 @@ describe("initMonoAgentFolder", () => {
     const bujoConfig = JSON.parse(await readFile(bujo.configPath, "utf8"));
     expect(bujoConfig.memory).toMatchObject({ mode: "bujo" });
     expect(bujoConfig.memory.path).toContain(".mono-agent/memory");
+  });
+
+  it.each([
+    { presetId: "local-private", tier: "journal" },
+    { presetId: "telegram-assistant", tier: "bujo" },
+  ])("initializes the $presetId preset with one managed $tier generation", async ({ presetId, tier }) => {
+    const result = await initMonoAgentFolder({
+      dir,
+      answers: presetAnswers(findPreset(presetId)!),
+    });
+    const config = JSON.parse(await readFile(result.configPath, "utf8"));
+    const memoryRoot = resolve(dir, config.memory.path);
+    const { readManagedIndexManifest } = await import("@mono-agent/memory/bujo");
+    expect(readManagedIndexManifest(memoryRoot)).toMatchObject({
+      active: {
+        tier,
+        embeddingModel: "ollama:nomic-embed-text:v1.5",
+        dimension: 768,
+      },
+    });
+    expect(readManagedIndexManifest(memoryRoot)?.rollback).toBeUndefined();
+    expect(result.created).toContainEqual(expect.stringMatching(/[\\/]\.mono-agent[\\/]memory$/u));
+  });
+
+  it.each(["local-private", "telegram-assistant"])(
+    "keeps a %s preset dry-run entirely write-free",
+    async (presetId) => {
+      const result = await initMonoAgentFolder({
+        dir,
+        answers: presetAnswers(findPreset(presetId)!),
+        dryRun: true,
+      });
+
+      expect(result.dryRun).toBe(true);
+      await expect(access(join(dir, "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(join(dir, ".mono-agent", "memory"))).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it("never touches a pre-existing managed-memory root", async () => {
+    const memoryRoot = join(dir, ".mono-agent", "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    await writeFile(join(memoryRoot, "sentinel"), "operator-owned\n");
+
+    await expect(initMonoAgentFolder({
+      dir,
+      answers: presetAnswers(findPreset("local-private")!),
+    })).rejects.toThrow(/root already exists/u);
+    expect(await readFile(join(memoryRoot, "sentinel"), "utf8")).toBe("operator-owned\n");
+    await expect(access(join(dir, "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(join(dir, "IDENTITY.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(join(dir, ".mono-agent", "artifacts"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("never follows a pre-existing memory-root symlink", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "agent-app-init-memory-outside-"));
+    try {
+      await mkdir(join(dir, ".mono-agent"));
+      await writeFile(join(outside, "sentinel"), "outside\n");
+      await symlink(outside, join(dir, ".mono-agent", "memory"));
+
+      await expect(initMonoAgentFolder({
+        dir,
+        answers: presetAnswers(findPreset("local-private")!),
+      })).rejects.toThrow(/root already exists/u);
+      expect(await readFile(join(outside, "sentinel"), "utf8")).toBe("outside\n");
+      await expect(access(join(dir, "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(join(dir, "IDENTITY.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a managed-memory identity override before any scaffold write", async () => {
+    await expect(initMonoAgentFolder({
+      dir,
+      answers: presetAnswers(findPreset("local-private")!),
+      env: { MONO_AGENT_MEMORY_PATH: "./external-memory" },
+    })).rejects.toThrow(/refuses MONO_AGENT_MEMORY_PATH/u);
+
+    await expect(access(join(dir, "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(join(dir, "IDENTITY.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(join(dir, ".mono-agent"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects an env tier that would turn a fresh Lite scaffold into managed Journal", async () => {
+    await expect(initMonoAgentFolder({
+      dir,
+      answers: defaultAnswers({ memory: "memory:lite" }),
+      env: { MONO_AGENT_MEMORY_MODE: "journal" },
+    })).rejects.toThrow(/refuses MONO_AGENT_MEMORY_MODE/u);
+    await expect(access(join(dir, "mono-agent.config.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("removes only its unchanged config when first-run memory publication fails", async () => {
+    const configPath = join(dir, "mono-agent.config.json");
+    await expect(initMonoAgentFolder({
+      dir,
+      answers: presetAnswers(findPreset("local-private")!),
+      firstRunManagedMemoryHooks: {
+        beforeRootClaim: async () => { throw new Error("injected first-run failure"); },
+      },
+    })).rejects.toThrow("injected first-run failure");
+
+    await expect(access(configPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("preserves a raced config edit when first-run memory publication fails", async () => {
+    const configPath = join(dir, "mono-agent.config.json");
+    await expect(initMonoAgentFolder({
+      dir,
+      answers: presetAnswers(findPreset("local-private")!),
+      firstRunManagedMemoryHooks: {
+        beforeRootClaim: async () => {
+          await writeFile(configPath, "external raced config\n");
+          throw new Error("injected raced first-run failure");
+        },
+      },
+    })).rejects.toThrow("injected raced first-run failure");
+
+    expect(await readFile(configPath, "utf8")).toBe("external raced config\n");
   });
 
   it("references existing knowledge files in the generated identity", async () => {

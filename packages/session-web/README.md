@@ -16,7 +16,8 @@ discovers everything on the machine via the trace-source registry.
 ## Responsibility
 
 - Discover instances (registry `listTraceSources`/`mergeTraceSources`), exposing
-  name, cwd, `artifactDir`, health, and the optional `live` SSE endpoint.
+  name, cwd, `artifactDir`, process health, independent typed memory health, and
+  the optional `live` SSE endpoint.
 - Read recorded runs per instance and map them to the UI `Session` model
   (`mapRunToSession`, from `@mono-agent/observability`).
 - Watch artifact dirs (run-level) and connect to operator-adapter live SSE (sub-run);
@@ -48,6 +49,20 @@ appears in the stream URL. CLI bootstrap URLs use a fragment that is not sent
 to the server and is removed from browser history after capture. A configured
 token is also enforced when the server binds loopback.
 
+For direct LAN/Tailscale access, the CLI can bind the server itself; Tailscale
+Serve is not a prerequisite:
+
+```bash
+MONO_AGENT_WEB_AUTH_TOKEN='<strong-stable-token>' \
+  mono-agent web --host 0.0.0.0 --allow-non-loopback --no-open
+```
+
+Startup advertises concrete loopback, private-LAN, and Tailscale IPv4 URLs, not
+`0.0.0.0`. Direct Tailscale HTTP is protected by the tailnet transport; plain
+LAN HTTP is not encrypted. Use Tailscale Serve (or another HTTPS proxy) only
+when HTTPS-dependent browser behavior such as installable/offline PWA support
+is required.
+
 Run lists and the initial browser SSE snapshot are summary-only and step-less.
 Full run timelines are read lazily from `/api/sessions/:sourceId/:runId` when a
 detail view opens.
@@ -65,13 +80,27 @@ Memory-maintenance runs are hidden by default across disk history, watched
 updates, API responses, browser SSE frames, and live folds; pass
 `includeMemory: true` to opt them back in.
 
+Instance cards render memory separately from process/live health: healthy is
+green, in-progress teal, degraded amber, unhealthy red, and unknown/off gray.
+Accessible labels/tooltips contain only the status and stable closed issue
+codes. The aggregator compares typed `memoryHealth` values during discovery;
+a memory-only registry change emits an `instances` browser SSE frame, so the
+badge refreshes without a new run or process-health transition.
+Backend-discriminated normalization prevents impossible remote/absent combinations
+from rendering green, and overlapping registry reconciles are single-flight with
+one bounded trailing replay so an older read cannot replace newer health.
+The browser also revalidates the closed, canonical issue list and partial count
+relationships so malformed raw runtime data fails closed to `unknown` without
+surfacing provider text or unknown keys.
+
 ## Public API
 
 - `startSessionWebServer(options)` → `{ url, boundAddress, stop() }`
   (`boundAddress` is Node's post-listen address for safety checks and wildcard
   advertisement; `includeMemory` defaults to `false`; `true` includes
   memory-maintenance runs in history/API/SSE/live frames).
-- `discoverWebInstances(options)` and the `Session`/`SessionStep`/`WebInstance` types.
+- `discoverWebInstances(options)` and the `Session`/`SessionStep`/`WebInstance`
+  types (`WebInstance.memoryHealth` carries the normalized trace-source health).
 
 ## Dependency Boundary
 

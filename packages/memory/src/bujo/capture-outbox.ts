@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { relative } from "node:path";
 
 import type {
@@ -27,6 +27,7 @@ import type { Bullet } from "./types.js";
 
 const OUTBOX_DIR = ".capture-outbox";
 const INTENT_FILE_RE = /^intent-[a-f0-9-]{36}\.json$/u;
+const INTENT_TEMP_RE = /^\.intent-[a-f0-9-]{36}\.json-[a-f0-9-]{36}\.tmp$/u;
 const MAX_INTENTS = 32;
 const MAX_INTENT_BYTES = 2 * 1024 * 1024;
 const MAX_ACTIONS = 8;
@@ -89,6 +90,8 @@ interface CaptureIntent {
   readonly state: "pending" | "complete";
   readonly id: string;
   readonly createdAt: string;
+  /** Actual durable publication time; legacy intents fall back to pinned file mtime. */
+  readonly publishedAt?: string;
   /** Run-keyed owner that keeps this exact plan replayable until intake resolves. */
   readonly retentionKey?: string;
   readonly actions: readonly CaptureIntentAction[];
@@ -114,6 +117,25 @@ export interface CaptureIntentReplayResult extends GraphBatchResult {
 export interface CaptureIntentReplayOptions {
   /** Apply/verify canonical and DB outcomes but leave the durable intent pending. */
   readonly retainIntent?: boolean;
+}
+
+/** Content-free physical inventory for strict health. */
+export interface CaptureOutboxAudit {
+  readonly valid: boolean;
+  readonly pending: number;
+  readonly temporary: number;
+}
+
+/** Internal-only, content-free stability metadata consumed by strict health. */
+export interface CaptureOutboxPrivateHealthState {
+  readonly oldestPublishedAt?: string;
+  readonly digest: string;
+}
+
+/** Internal module contract; intentionally not exported from the package subpath. */
+export interface CaptureOutboxHealthAudit {
+  readonly audit: CaptureOutboxAudit;
+  readonly privateState: CaptureOutboxPrivateHealthState;
 }
 
 /** Atomically publish one bounded, fsynced capture intent before source mutation. */
@@ -142,6 +164,7 @@ export function writeCaptureIntent(
     state: "pending",
     id,
     createdAt,
+    publishedAt: new Date().toISOString(),
     ...(options.retentionKey === undefined ? {} : { retentionKey: options.retentionKey }),
     actions,
     graph: {
@@ -251,6 +274,71 @@ export function hasPendingCaptureIntent(root: string): boolean {
   if (files.length > MAX_INTENTS) throw new Error("memory-capture: capture outbox exceeds its bounded intent count.");
   for (const name of files) loadReplay(root, `${OUTBOX_DIR}/${name}`);
   return files.length > 0;
+}
+
+/**
+ * Validate every physical outbox entry without exposing an intent id or body.
+ * Unknown names, malformed intents, and abandoned atomic-write temps all fail
+ * closed while their aggregate file counts remain visible.
+ */
+export function auditCaptureOutbox(root: string): CaptureOutboxAudit {
+  return auditCaptureOutboxHealthState(root).audit;
+}
+
+/** Strict health audit plus private content-free queue stability metadata. */
+export function auditCaptureOutboxHealthState(root: string): CaptureOutboxHealthAudit {
+  let pending = 0;
+  let temporary = 0;
+  try {
+    const names = listCanonicalFileNames(root, OUTBOX_DIR, { allowMissing: true });
+    let validNames = true;
+    const intentNames: string[] = [];
+    for (const name of names) {
+      if (INTENT_TEMP_RE.test(name)) {
+        temporary += 1;
+        continue;
+      }
+      pending += 1;
+      if (!INTENT_FILE_RE.test(name)) {
+        validNames = false;
+        continue;
+      }
+      intentNames.push(name);
+    }
+    // Count the entire physical inventory before parsing any bounded payload.
+    // Invalid names, temps, and over-capacity queues already fail closed and
+    // must not force up to 2 MiB of JSON allocation per entry.
+    if (!validNames || temporary > 0 || pending > MAX_INTENTS) {
+      return invalidOutboxHealth(pending, temporary);
+    }
+    const replays = intentNames.map((name) => loadReplay(root, `${OUTBOX_DIR}/${name}`));
+    assertDistinctQueuedMemoryIds(replays);
+    const publications = replays.map((replay) => replay.intent.publishedAt
+      ?? new Date(replay.snapshot.identity.mtimeMs).toISOString()).sort();
+    const digest = createHash("sha256").update(JSON.stringify(replays.map((replay) => ({
+      id: replay.intent.id,
+      state: replay.intent.state,
+      publishedAt: replay.intent.publishedAt ?? new Date(replay.snapshot.identity.mtimeMs).toISOString(),
+    })).sort((left, right) => left.id.localeCompare(right.id)))).digest("hex");
+    return {
+      audit: { valid: true, pending, temporary },
+      privateState: {
+        ...(publications.length === 0 ? {} : { oldestPublishedAt: publications[0]! }),
+        digest,
+      },
+    };
+  } catch {
+    return invalidOutboxHealth(pending, temporary);
+  }
+}
+
+function invalidOutboxHealth(pending: number, temporary: number): CaptureOutboxHealthAudit {
+  return {
+    audit: { valid: false, pending, temporary },
+    privateState: {
+      digest: createHash("sha256").update(JSON.stringify({ invalid: true, pending, temporary })).digest("hex"),
+    },
+  };
 }
 
 interface LoadedReplay {
@@ -741,6 +829,8 @@ function parseIntent(raw: string): CaptureIntent {
     || (value.state !== "pending" && value.state !== "complete")
     || typeof value.id !== "string" || !/^[a-f0-9-]{36}$/u.test(value.id)
     || typeof value.createdAt !== "string" || !Number.isFinite(Date.parse(value.createdAt))
+    || (value.publishedAt !== undefined
+      && (typeof value.publishedAt !== "string" || !Number.isFinite(Date.parse(value.publishedAt))))
     || (value.retentionKey !== undefined && (typeof value.retentionKey !== "string"
       || !/^[a-f0-9]{64}$/u.test(value.retentionKey)))
     || !Array.isArray(value.actions) || value.actions.length > MAX_ACTIONS

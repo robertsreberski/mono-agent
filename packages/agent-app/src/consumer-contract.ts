@@ -1,7 +1,7 @@
 import { cp, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { readMonoAgentConfigJson } from "@mono-agent/config";
 import type { MonoAgentConfigJson } from "@mono-agent/config";
@@ -157,6 +157,7 @@ export async function validateConsumerContractFixture(
     const configPath = join(dir, "mono-agent.config.json");
     const sourceJson = (await readMonoAgentConfigJson(configPath)).json as ConsumerSourceJson;
     const config = await loadAppCoreConfig({ env: options.env ?? {}, cwd: dir, configPath });
+    await seedPrivateConsumerMemoryGeneration(dir, config);
     const report = await validateMonoAgentFolder({
       env: options.env ?? {},
       cwd: dir,
@@ -186,6 +187,53 @@ export async function validateConsumerContractFixture(
     sections,
     issues,
   };
+}
+
+/**
+ * Golden fixtures intentionally remain source-only: committing native SQLite
+ * binaries would make them platform-specific and opaque to review. Seed the
+ * copied fixture with a real empty generation so doctor validates the same
+ * managed layout as a rebuilt consumer. Keep the import dynamic: merely
+ * importing agent-app must never load better-sqlite3/sqlite-vec.
+ */
+async function seedPrivateConsumerMemoryGeneration(
+  privateFixtureRoot: string,
+  config: Awaited<ReturnType<typeof loadAppCoreConfig>>,
+): Promise<void> {
+  const memory = config.memory;
+  if (memory === undefined || (memory.backend ?? "bujo") === "supermemory") return;
+
+  const privateRoot = resolve(privateFixtureRoot);
+  const memoryRoot = resolve(memory.path);
+  const relativeMemoryRoot = relative(privateRoot, memoryRoot);
+  if (relativeMemoryRoot.length === 0
+    || relativeMemoryRoot === ".."
+    || relativeMemoryRoot.startsWith(`..${sep}`)
+    || isAbsolute(relativeMemoryRoot)) {
+    throw new Error("Consumer fixture memory.path must be a strict lexical descendant of its private fixture copy.");
+  }
+
+  const { safeRebuildMemoryIndex } = await import("@mono-agent/memory/bujo");
+  const embeddings = memory.embeddings;
+  if (embeddings === undefined) {
+    await safeRebuildMemoryIndex({ root: memoryRoot, tier: memory.mode });
+    return;
+  }
+
+  const dimension = embeddings.dim ?? 768;
+  await safeRebuildMemoryIndex({
+    root: memoryRoot,
+    tier: memory.mode,
+    embeddings: {
+      id: `${embeddings.provider}:${embeddings.model}`,
+      embed: async (texts) => texts.map(() => {
+        const vector = new Array<number>(dimension).fill(0);
+        vector[0] = 1;
+        return vector;
+      }),
+    },
+    dim: dimension,
+  });
 }
 
 function consumerContractIssues(fixture: ConsumerFixture): readonly ConsumerContractIssue[] {

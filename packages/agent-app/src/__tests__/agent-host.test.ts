@@ -447,43 +447,48 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "Logged answer" }));
 
-    const responder = await createConfiguredAgentResponder({
-      config: monoConfig({
-        dir,
-        identityPath,
-        memoryPath: memoryRoot,
-        memoryMode: "journal",
-        memoryWriteMode: "append-host-summary",
-        artifactDir,
-      }),
-      runtime: fake.runtime,
-      // Inject a fake-embeddings journal-tier store so the test is hermetic (no live Ollama in CI).
-      memory: createBujoMemoryStore({ root: memoryRoot, embeddings: fakeEmbeddings, dim: 64 }),
-    });
+    // Inject a fake-embeddings journal-tier store so the test is hermetic (no live Ollama in CI).
+    const memory = createBujoMemoryStore({ root: memoryRoot, embeddings: fakeEmbeddings, dim: 64 });
+    try {
+      const responder = await createConfiguredAgentResponder({
+        config: monoConfig({
+          dir,
+          identityPath,
+          memoryPath: memoryRoot,
+          memoryMode: "journal",
+          memoryWriteMode: "append-host-summary",
+          artifactDir,
+        }),
+        runtime: fake.runtime,
+        memory,
+      });
 
-    await responder.respond(
-      { conversationId: "channel-a", text: "First message", abortSignal: new AbortController().signal },
-      { append: async () => {} },
-    );
+      await responder.respond(
+        { conversationId: "channel-a", text: "First message", abortSignal: new AbortController().signal },
+        { append: async () => {} },
+      );
 
-    // The completed turn is appended as a bullet in today's daily file.
-    const dailyFiles = await readdir(join(memoryRoot, "daily"));
-    expect(dailyFiles.length).toBeGreaterThan(0);
-    const todayFile = dailyFiles.find((f) => /^\d{4}-\d{2}-\d{2}\.md$/u.test(f));
-    expect(todayFile).toBeDefined();
-    const dailyContent = await readFile(join(memoryRoot, "daily", todayFile!), "utf8");
-    expect(dailyContent).toContain("Logged answer");
+      // The completed turn is appended as a bullet in today's daily file.
+      const dailyFiles = await readdir(join(memoryRoot, "daily"));
+      expect(dailyFiles.length).toBeGreaterThan(0);
+      const todayFile = dailyFiles.find((f) => /^\d{4}-\d{2}-\d{2}\.md$/u.test(f));
+      expect(todayFile).toBeDefined();
+      const dailyContent = await readFile(join(memoryRoot, "daily", todayFile!), "utf8");
+      expect(dailyContent).toContain("Logged answer");
 
-    // A compound host summary contains User/Assistant roles and is deliberately
-    // outside the canonical direct-fact contract. It remains available through
-    // the default-on explicit MemoryRecall endpoint instead of being injected.
-    await responder.respond(
-      { conversationId: "channel-b", text: "Logged answer", abortSignal: new AbortController().signal },
-      { append: async () => {} },
-    );
-    const recalledMessage = String(fake.calls[1]?.options.messages?.[0]?.content);
-    expect(recalledMessage).toBe("Logged answer");
-    expect(fake.calls[1]?.prompt).not.toContain("## Memory (recalled)");
+      // A compound host summary contains User/Assistant roles and is deliberately
+      // outside the canonical direct-fact contract. It remains available through
+      // the default-on explicit MemoryRecall endpoint instead of being injected.
+      await responder.respond(
+        { conversationId: "channel-b", text: "Logged answer", abortSignal: new AbortController().signal },
+        { append: async () => {} },
+      );
+      const recalledMessage = String(fake.calls[1]?.options.messages?.[0]?.content);
+      expect(recalledMessage).toBe("Logged answer");
+      expect(fake.calls[1]?.prompt).not.toContain("## Memory (recalled)");
+    } finally {
+      await memory.close();
+    }
   });
 
   it("runs agent-host memory LLM capture on its own runtime, never the channel runtime", async () => {

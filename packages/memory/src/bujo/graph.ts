@@ -6,6 +6,7 @@ import type {
   MemoryEntityAssociation,
   MemoryRecord,
 } from "../store/index.js";
+import { withManagedRollbackRetirement } from "./generations.js";
 import { appendCanonicalFile, readCanonicalFileSnapshot } from "./path-safety.js";
 
 const GRAPH_FILE = "graph.jsonl";
@@ -426,7 +427,10 @@ export function appendGraphBatch(root: string, input: GraphBatchInput): GraphBat
     }
   }
   if (lines.length > 0) {
-    appendCanonicalFile(root, GRAPH_FILE, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+    const serialized = `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`;
+    withManagedRollbackRetirement(root, "graph", () => {
+      appendCanonicalFile(root, GRAPH_FILE, serialized);
+    });
   }
 
   return result;

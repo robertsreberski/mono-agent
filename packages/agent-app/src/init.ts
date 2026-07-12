@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { link, lstat, mkdir, open, realpath, rename, rm, stat, writeFile, type FileHandle } from "node:fs/promises";
+import { link, lstat, mkdir, open, realpath, rename, rm, stat, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { parseEnv } from "node:util";
@@ -10,6 +10,11 @@ import { writeMonoAgentConfigJson } from "@mono-agent/config";
 
 import { composeWizardPlan, defaultAnswers, humanizeAgentName } from "./wizard/answers.js";
 import type { ComposeContext, WizardAnswers, WizardPlan } from "./wizard/answers.js";
+import {
+  initializeFirstRunManagedMemory,
+  preflightFirstRunManagedMemory,
+} from "./first-run-managed-memory.js";
+import type { FirstRunManagedMemoryHooks } from "./first-run-managed-memory.js";
 import { assertManagedProjectSkillInitSafe } from "./project-skills.js";
 
 export interface InitMonoAgentFolderOptions {
@@ -25,6 +30,10 @@ export interface InitMonoAgentFolderOptions {
   readonly secureExistingDotenv?: boolean;
   /** Guided-first-run guard: atomically create config and fail if another writer won the path. */
   readonly requireConfigCreation?: boolean;
+  /** Effective CLI environment used only to reject identity-changing memory overrides. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  /** @internal Test-only fault/race seams for first-run managed-memory publication. */
+  readonly firstRunManagedMemoryHooks?: FirstRunManagedMemoryHooks;
 }
 
 export interface InitMonoAgentFolderResult {
@@ -170,6 +179,27 @@ export async function initMonoAgentFolder(
 
   await assertManagedProjectSkillInitSafe(dir);
 
+  const ctx: ComposeContext = {
+    dirBasename: basename(dir),
+    skillsRootExists: await pathExists(join(dir, "skills")),
+  };
+  const plan = composeWizardPlan(answers, ctx);
+  const configPath = join(dir, "mono-agent.config.json");
+  await assertSafeScaffoldTarget(configPath, "config");
+  const configAlreadyExists = await pathExists(configPath);
+  if (options.requireConfigCreation === true && configAlreadyExists) {
+    const error = new Error(`Refusing guided init because ${configPath} already exists.`) as NodeJS.ErrnoException;
+    error.code = "EEXIST";
+    throw error;
+  }
+  if (!configAlreadyExists) {
+    await preflightFirstRunManagedMemory({
+      agentRoot: dir,
+      plan,
+      ...(options.env === undefined ? {} : { env: options.env }),
+    });
+  }
+
   const knowledgeFiles: string[] = [];
   for (const candidate of KNOWLEDGE_FILE_CANDIDATES) {
     if (await pathExists(join(dir, candidate))) {
@@ -177,17 +207,18 @@ export async function initMonoAgentFolder(
     }
   }
 
-  async function planFile(path: string, write: () => Promise<unknown>): Promise<void> {
+  async function planFile(path: string, write: () => Promise<unknown>): Promise<boolean> {
     if (await pathExists(path)) {
       skipped.push(path);
       changes.push({ path, kind: "unchanged" });
-      return;
+      return false;
     }
     if (!dryRun) {
       await write();
     }
     created.push(path);
     changes.push({ path, kind: dryRun ? "planned-create" : "created" });
+    return true;
   }
 
   const identityPath = join(dir, "IDENTITY.md");
@@ -212,14 +243,8 @@ export async function initMonoAgentFolder(
     });
   }
 
-  const ctx: ComposeContext = {
-    dirBasename: basename(dir),
-    skillsRootExists: await pathExists(join(dir, "skills")),
-  };
-  const plan = composeWizardPlan(answers, ctx);
-
-  const configPath = join(dir, "mono-agent.config.json");
-  await assertSafeScaffoldTarget(configPath, "config");
+  let configCreatedByThisInit = false;
+  let configCreatedIdentity: { readonly dev: number; readonly ino: number } | undefined;
   if (options.requireConfigCreation === true) {
     if (dryRun) {
       if (await pathExists(configPath)) {
@@ -230,8 +255,17 @@ export async function initMonoAgentFolder(
     }
     created.push(configPath);
     changes.push({ path: configPath, kind: dryRun ? "planned-create" : "created" });
+    configCreatedByThisInit = !dryRun;
   } else {
-    await planFile(configPath, () => writeMonoAgentConfigJson({ path: configPath, patch: plan.configJson }));
+    const configPlanned = await planFile(
+      configPath,
+      () => writeMonoAgentConfigJson({ path: configPath, patch: plan.configJson }),
+    );
+    configCreatedByThisInit = !dryRun && configPlanned;
+  }
+  if (configCreatedByThisInit) {
+    const configStat = await lstat(configPath);
+    configCreatedIdentity = { dev: configStat.dev, ino: configStat.ino };
   }
 
   const envExample = plan.envExample;
@@ -281,6 +315,28 @@ export async function initMonoAgentFolder(
       await ensureSafeScaffoldParent(dir, filePath, true);
       await writeFile(filePath, file.contents, { flag: "wx" });
     });
+  }
+
+  if (configCreatedByThisInit) {
+    try {
+      const initializedMemory = await initializeFirstRunManagedMemory({
+        agentRoot: dir,
+        plan,
+        ...(options.env === undefined ? {} : { env: options.env }),
+        ...(options.firstRunManagedMemoryHooks === undefined
+          ? {}
+          : { hooks: options.firstRunManagedMemoryHooks }),
+      });
+      if (initializedMemory.initialized && initializedMemory.root !== undefined) {
+        created.push(initializedMemory.root);
+        changes.push({ path: initializedMemory.root, kind: "created" });
+      }
+    } catch (error) {
+      if (configCreatedIdentity !== undefined) {
+        await removeCreatedConfigIfUnchanged(configPath, configCreatedIdentity, `${JSON.stringify(plan.configJson, null, 2)}\n`);
+      }
+      throw error;
+    }
   }
 
   return {
@@ -1408,6 +1464,38 @@ async function createMonoAgentConfigExclusively(
     await handle?.close();
     await rm(temporaryPath, { force: true });
   }
+}
+
+async function removeCreatedConfigIfUnchanged(
+  path: string,
+  expectedIdentity: { readonly dev: number; readonly ino: number },
+  expectedContents: string,
+): Promise<boolean> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.nlink !== 1 || !sameFileIdentity(opened, expectedIdentity)) return false;
+    if (await handle.readFile({ encoding: "utf8" }) !== expectedContents) return false;
+    const named = await lstat(path);
+    if (!named.isFile() || named.isSymbolicLink() || named.nlink !== 1 || !sameFileIdentity(named, expectedIdentity)) {
+      return false;
+    }
+    await unlink(path);
+    await syncDirectoryBestEffort(dirname(path));
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  } finally {
+    await handle?.close();
+  }
+}
+
+function sameFileIdentity(
+  value: { readonly dev: number; readonly ino: number },
+  expected: { readonly dev: number; readonly ino: number },
+): boolean {
+  return value.dev === expected.dev && value.ino === expected.ino;
 }
 
 async function assertSnapshotUnchanged(
