@@ -316,4 +316,35 @@ describe("session-web API auth", () => {
     expect(cancelReader).toHaveBeenCalledOnce();
     expect(fetchMock).toHaveBeenCalledOnce();
   });
+
+  test("contains throwing error callbacks without duplicate notification or an unhandled connection rejection", async () => {
+    vi.useFakeTimers();
+    installWindow();
+    const onError = vi.fn(() => {
+      throw new Error("consumer error callback failed");
+    });
+    const fetchMock = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.close();
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const close = openStream({ onMessage: vi.fn(), onError });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(onError).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    close();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });

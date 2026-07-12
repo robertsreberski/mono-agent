@@ -111,6 +111,14 @@ export function openStream({ onMessage, onOpen, onError }: StreamHandlers): () =
   let cancelActiveStream: (() => Promise<void>) | undefined;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
+  const notifyError = (): void => {
+    try {
+      onError?.();
+    } catch {
+      /* consumer callbacks must not reject the fire-and-forget connection loop */
+    }
+  };
+
   const connect = async (): Promise<void> => {
     controller = new AbortController();
     let cancelOwnedStream: (() => Promise<void>) | undefined;
@@ -166,11 +174,11 @@ export function openStream({ onMessage, onOpen, onError }: StreamHandlers): () =
       await consumeSseStream(responseReader, onMessage);
       readerCompleted = true;
       if (!disposed) {
-        onError?.();
+        notifyError();
       }
     } catch {
       if (!disposed) {
-        onError?.();
+        notifyError();
       }
     } finally {
       if (!readerCompleted) {
