@@ -1,8 +1,10 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 
 import { ensureStartable, parseCliArgs } from "../cli.js";
 
@@ -25,23 +27,19 @@ async function writeConfig(json: Record<string, unknown>): Promise<void> {
 }
 
 async function seedManagedMemory(root: string, tier: "journal" | "bujo", embeddingModel: string): Promise<void> {
-  const generation = "g-20260712T000000000Z-00000000-0000-4000-8000-000000000000";
-  const generationDir = join(root, ".index", "generations", generation);
-  await mkdir(generationDir, { recursive: true });
-  await writeFile(join(generationDir, "memory.db"), "");
-  await writeFile(join(root, ".index", "manifest.json"), JSON.stringify({
-    schemaVersion: 1,
-    active: {
-      name: generation,
-      tier,
-      sourceFingerprint: "0".repeat(64),
-      policyVersion: "mono-agent-memory-rebuild-v1",
-      createdAt: "2026-07-12T00:00:00.000Z",
-      embeddingModel,
-      dimension: 768,
-      origin: "rebuild",
+  await safeRebuildMemoryIndex({
+    root,
+    tier,
+    embeddings: {
+      id: embeddingModel,
+      embed: async (texts) => texts.map(() => {
+        const vector = new Array<number>(768).fill(0);
+        vector[0] = 1;
+        return vector;
+      }),
     },
-  }));
+    dim: 768,
+  });
 }
 
 describe("ensureStartable (start/restart preflight gate)", () => {

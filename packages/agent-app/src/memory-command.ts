@@ -190,7 +190,7 @@ type StrictMemoryHealthReport =
       readonly mode: NonNullable<MonoAgentConfig["memory"]>["mode"];
       readonly status: "unknown";
       readonly checkedAt: string;
-      readonly issues: readonly ("native_module_unavailable")[];
+      readonly issues: readonly ("native_module_unavailable" | "health_check_failed")[];
       readonly counts: typeof EMPTY_HEALTH_COUNTS;
     }
   | {
@@ -253,7 +253,7 @@ async function runStrictAudit(context: MemoryCommandContext, json: boolean): Pro
       mode: memory.mode,
       status: "unknown",
       checkedAt: new Date().toISOString(),
-      issues: isNativeModuleFailure(error) ? ["native_module_unavailable"] : [],
+      issues: isNativeModuleFailure(error) ? ["native_module_unavailable"] : ["health_check_failed"],
       counts: EMPTY_HEALTH_COUNTS,
     };
   }

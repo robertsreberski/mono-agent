@@ -206,7 +206,7 @@ export async function startMonoAgentApp(options: MonoAgentAppOptions = {}): Prom
   await controller.startExporters("startup");
   await Promise.all(drivers.map((driver) => controller?.startChannelIfConfigured(driver.id, "startup")));
   await controller.startMemoryRitualsIfConfigured("startup");
-  await controller.refreshTraceSource("startup-complete");
+  await controller.refreshMemoryHealthAfterLifecycle("startup-complete");
   return controller;
 }
 
@@ -231,6 +231,9 @@ const DEFAULT_SANDBOX_STATUS: SandboxStatus = sandboxStatusFromState({
   fallbackActive: false,
   unsafeAllowHostProcess: false,
 });
+
+/** Strict memory audits scan durable state; never run them at sub-second trace-heartbeat cadence. */
+const MIN_MEMORY_HEALTH_REFRESH_INTERVAL_MS = 30_000;
 
 class MonoAgentAppController implements MonoAgentApp {
   readonly configPath: string;
@@ -264,7 +267,13 @@ class MonoAgentAppController implements MonoAgentApp {
     checkedAt: new Date().toISOString(),
   };
   private memoryHealthRefreshInFlight: Promise<TraceSourceMemoryHealth> | undefined;
-  private memoryHealthRefreshTimer: ReturnType<typeof setInterval> | undefined;
+  private memoryHealthRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  private memoryHealthRefreshLoopActive = false;
+  private memoryHealthRefreshIntervalMs = MIN_MEMORY_HEALTH_REFRESH_INTERVAL_MS;
+  /** Monotonic completion time for the current generation's cached full audit. */
+  private memoryHealthLastCompletedAtMs: number | undefined;
+  /** One bounded forced refresh reserved by a due timer tick. */
+  private memoryHealthRefreshDue = false;
   private memoryHealthGeneration = 0;
   private selectedSkillsValue: readonly string[] | undefined;
   private sessionMetadataValue: SessionTraceMetadata | undefined;
@@ -364,6 +373,10 @@ class MonoAgentAppController implements MonoAgentApp {
           transports: [],
         };
       }
+      // Freeze periodic memory work before any channel/store teardown. A probe
+      // that already entered is generation-fenced and is deliberately not
+      // awaited, so config reload cannot hang behind native/filesystem work.
+      this.invalidateMemoryHealthRefresh();
       for (const driver of this.drivers) {
         await this.stopChannel(driver.id, `${reason}:reload`);
       }
@@ -380,7 +393,7 @@ class MonoAgentAppController implements MonoAgentApp {
       await this.startExporters(reason);
       await Promise.all(this.drivers.map((driver) => this.startChannelIfConfigured(driver.id, reason)));
       await this.startMemoryRitualsIfConfigured(reason);
-      await this.refreshTraceSource(`${reason}:complete`);
+      await this.refreshMemoryHealthAfterLifecycle(`${reason}:complete`);
       return this.applyResult();
     };
 
@@ -467,7 +480,7 @@ class MonoAgentAppController implements MonoAgentApp {
       } else {
         this.globalTraceSource = undefined;
       }
-      this.startMemoryHealthRefreshLoop(heartbeatMs);
+      this.startMemoryHealthRefreshLoop(MIN_MEMORY_HEALTH_REFRESH_INTERVAL_MS);
 
     } catch (error) {
       this.clearMemoryHealthRefreshTimer();
@@ -659,8 +672,17 @@ class MonoAgentAppController implements MonoAgentApp {
     }).finally(() => {
       if (this.traceRefreshInFlight === pending) {
         this.traceRefreshInFlight = undefined;
+        const replayDue = this.memoryHealthRefreshDue
+          && !this.stopped
+          && generation === this.memoryHealthGeneration
+          && this.traceSource === traceSource;
         this.traceRefreshDirty = false;
         this.traceRefreshLatestReason = undefined;
+        // A timer can fire after the loop's final dirty check but before this
+        // owner settles. Preserve exactly one due replay across that seam.
+        if (replayDue) {
+          void this.refreshTraceSource("memory-health-periodic").catch(() => undefined);
+        }
       }
     });
     this.traceRefreshInFlight = pending;
@@ -673,22 +695,40 @@ class MonoAgentAppController implements MonoAgentApp {
    * manifest composition; provider/native errors collapse to a closed unknown
    * shape and never escape into registry metadata.
    */
-  private refreshMemoryHealthSnapshot(reason: string): Promise<TraceSourceMemoryHealth> {
+  private refreshMemoryHealthSnapshot(reason: string, lifecycleForce = false): Promise<TraceSourceMemoryHealth> {
+    if (this.stopped) {
+      return Promise.resolve(this.memoryHealthValue);
+    }
     if (this.memoryHealthRefreshInFlight !== undefined) {
       return this.memoryHealthRefreshInFlight;
+    }
+    const forced = lifecycleForce || this.memoryHealthRefreshDue;
+    if (!forced && this.memoryHealthLastCompletedAtMs !== undefined
+      && performance.now() - this.memoryHealthLastCompletedAtMs < MIN_MEMORY_HEALTH_REFRESH_INTERVAL_MS) {
+      return Promise.resolve(this.memoryHealthValue);
     }
     const generation = this.memoryHealthGeneration;
     let pending!: Promise<TraceSourceMemoryHealth>;
     pending = this.computeMemoryHealth().then((health) => {
       if (!this.stopped && generation === this.memoryHealthGeneration) {
         this.memoryHealthValue = health;
+        this.recordMemoryHealthCompletion(generation);
         return health;
       }
       return this.memoryHealthValue;
     }).catch(() => {
-      const health = unknownMemoryHealth(this.memoryHealthValue.backend, this.memoryHealthValue.mode);
+      const health = this.memoryHealthValue.backend === "bujo"
+        ? unknownBujoMemoryHealth(this.memoryHealthValue.mode)
+        : this.memoryHealthValue.backend === "supermemory"
+          ? {
+              backend: "supermemory" as const,
+              status: "unknown" as const,
+              checkedAt: new Date().toISOString(),
+            }
+          : unknownNoMemoryHealth();
       if (!this.stopped && generation === this.memoryHealthGeneration) {
         this.memoryHealthValue = health;
+        this.recordMemoryHealthCompletion(generation);
       }
       this.logger?.warn?.("Memory health refresh failed; publishing sanitized unknown health.", { reason });
       return health;
@@ -702,27 +742,28 @@ class MonoAgentAppController implements MonoAgentApp {
   }
 
   private async computeMemoryHealth(): Promise<TraceSourceMemoryHealth> {
-    let backend: TraceSourceMemoryHealth["backend"] = "none";
-    let mode: TraceSourceMemoryHealth["mode"];
+    let config: MonoAgentConfig;
     try {
-      const config = await loadAppCoreConfig({ env: this.env, cwd: this.cwd, configPath: this.configPath });
-      const memory = config.memory;
-      if (memory === undefined) {
-        return {
-          backend: "none",
-          status: "not_configured",
-          checkedAt: new Date().toISOString(),
-        };
-      }
-      mode = memory.mode;
-      if ((memory.backend ?? "bujo") === "supermemory") {
-        return {
-          backend: "supermemory",
-          status: "unknown",
-          checkedAt: new Date().toISOString(),
-        };
-      }
-      backend = "bujo";
+      config = await loadAppCoreConfig({ env: this.env, cwd: this.cwd, configPath: this.configPath });
+    } catch {
+      return unknownNoMemoryHealth();
+    }
+    const memory = config.memory;
+    if (memory === undefined) {
+      return {
+        backend: "none",
+        status: "not_configured",
+        checkedAt: new Date().toISOString(),
+      };
+    }
+    if ((memory.backend ?? "bujo") === "supermemory") {
+      return {
+        backend: "supermemory",
+        status: "unknown",
+        checkedAt: new Date().toISOString(),
+      };
+    }
+    try {
       const { auditBujoMemoryHealth } = await import("@mono-agent/memory/bujo");
       return traceMemoryHealthFromBujo(auditBujoMemoryHealth({
         root: memory.path,
@@ -735,34 +776,88 @@ class MonoAgentAppController implements MonoAgentApp {
             }),
       }));
     } catch {
-      return unknownMemoryHealth(backend, mode);
+      return unknownBujoMemoryHealth(memory.mode);
     }
   }
 
   private startMemoryHealthRefreshLoop(intervalMs: number): void {
+    this.memoryHealthRefreshLoopActive = true;
+    this.memoryHealthRefreshIntervalMs = intervalMs;
+    this.scheduleMemoryHealthRefresh();
+  }
+
+  private scheduleMemoryHealthRefresh(delayOverrideMs?: number): void {
     this.clearMemoryHealthRefreshTimer();
-    this.memoryHealthRefreshTimer = setInterval(() => { this.refreshMemoryHealthOnTimer(); }, intervalMs);
+    if (!this.memoryHealthRefreshLoopActive || this.stopped || this.traceSource === undefined) return;
+    const elapsed = this.memoryHealthLastCompletedAtMs === undefined
+      ? this.memoryHealthRefreshIntervalMs
+      : Math.max(0, performance.now() - this.memoryHealthLastCompletedAtMs);
+    const delay = delayOverrideMs ?? Math.max(0, this.memoryHealthRefreshIntervalMs - elapsed);
+    this.memoryHealthRefreshTimer = setTimeout(() => {
+      this.memoryHealthRefreshTimer = undefined;
+      this.refreshMemoryHealthOnTimer();
+    }, delay);
     this.memoryHealthRefreshTimer.unref?.();
   }
 
+  private recordMemoryHealthCompletion(generation: number): void {
+    if (this.stopped || generation !== this.memoryHealthGeneration) return;
+    this.memoryHealthLastCompletedAtMs = performance.now();
+    // Any full audit that was already running when the timer became due
+    // satisfies that due tick; never queue an immediate second audit.
+    this.memoryHealthRefreshDue = false;
+    this.scheduleMemoryHealthRefresh(this.memoryHealthRefreshIntervalMs);
+  }
+
   private refreshMemoryHealthOnTimer(): void {
-    // Do not even attach another promise reaction while a probe/publication is
-    // active. The next heartbeat observes the latest memory state.
-    if (this.traceRefreshInFlight !== undefined) return;
+    if (this.stopped) return;
+    if (this.memoryHealthLastCompletedAtMs !== undefined) {
+      const elapsed = performance.now() - this.memoryHealthLastCompletedAtMs;
+      if (elapsed < this.memoryHealthRefreshIntervalMs) {
+        this.scheduleMemoryHealthRefresh();
+        return;
+      }
+    }
+    // Set the due bit before joining the trace single-flight. If a publication
+    // is already active it consumes one bounded trailing replay rather than
+    // dropping this tick and waiting another full interval.
+    this.memoryHealthRefreshDue = true;
     void this.refreshTraceSource("memory-health-periodic").catch(() => undefined);
+  }
+
+  /**
+   * Re-audit after channel responders and the shared memory store have started.
+   * The trace source is registered first, so its registration audit can only
+   * observe the previous/stopped runtime snapshot. This one lifecycle force is
+   * generation-fenced and uses the same health/trace single-flights as timer
+   * work; ordinary session and trace events continue to reuse the 30s cache.
+   */
+  async refreshMemoryHealthAfterLifecycle(reason: string): Promise<void> {
+    if (this.stopped) return;
+    const generation = this.memoryHealthGeneration;
+    const joinedExistingAudit = this.memoryHealthRefreshInFlight !== undefined;
+    await this.refreshMemoryHealthSnapshot(reason, true);
+    if (joinedExistingAudit && !this.stopped && generation === this.memoryHealthGeneration) {
+      await this.refreshMemoryHealthSnapshot(reason, true);
+    }
+    if (this.stopped || generation !== this.memoryHealthGeneration) return;
+    await this.refreshTraceSource(reason);
   }
 
   private clearMemoryHealthRefreshTimer(): void {
     if (this.memoryHealthRefreshTimer !== undefined) {
-      clearInterval(this.memoryHealthRefreshTimer);
+      clearTimeout(this.memoryHealthRefreshTimer);
       this.memoryHealthRefreshTimer = undefined;
     }
   }
 
   private invalidateMemoryHealthRefresh(): void {
+    this.memoryHealthRefreshLoopActive = false;
     this.clearMemoryHealthRefreshTimer();
     this.memoryHealthGeneration += 1;
     this.memoryHealthRefreshInFlight = undefined;
+    this.memoryHealthLastCompletedAtMs = undefined;
+    this.memoryHealthRefreshDue = false;
   }
 
   /**
@@ -819,6 +914,9 @@ class MonoAgentAppController implements MonoAgentApp {
       return;
     }
     this.stopped = true;
+    // Stop the periodic audit before the first teardown await. Already-entered
+    // computation is generation-fenced and must never delay shutdown.
+    this.invalidateMemoryHealthRefresh();
     for (const driver of this.drivers) {
       await this.stopChannel(driver.id, "stop");
     }
@@ -1745,7 +1843,9 @@ function traceMemoryHealthFromBujo(report: BujoMemoryHealthReport): TraceSourceM
   };
 }
 
-function traceMemoryStatus(status: MemoryHealthStatus): TraceSourceMemoryStatus {
+function traceMemoryStatus(
+  status: MemoryHealthStatus,
+): Exclude<TraceSourceMemoryStatus, "not_configured"> {
   switch (status) {
     case "healthy":
     case "in_progress":
@@ -1764,6 +1864,7 @@ function traceMemoryIssue(issue: MemoryHealthIssueCode): TraceSourceMemoryIssue 
     case "database_missing":
     case "database_unavailable":
     case "native_module_unavailable":
+    case "health_check_failed":
     case "sqlite_integrity_failed":
     case "metadata_mismatch":
     case "fts_mismatch":
@@ -1777,6 +1878,7 @@ function traceMemoryIssue(issue: MemoryHealthIssueCode): TraceSourceMemoryIssue 
     case "dead_letters":
     case "outbox_invalid":
     case "outbox_pending":
+    case "work_stalled":
     case "temporary_artifacts":
     case "runtime_missing":
     case "runtime_stale":
@@ -1785,15 +1887,23 @@ function traceMemoryIssue(issue: MemoryHealthIssueCode): TraceSourceMemoryIssue 
   }
 }
 
-function unknownMemoryHealth(
-  backend: TraceSourceMemoryHealth["backend"],
-  mode: TraceSourceMemoryHealth["mode"],
-): TraceSourceMemoryHealth {
+function unknownNoMemoryHealth(): TraceSourceMemoryHealth {
   return {
-    backend,
-    ...(backend !== "bujo" || mode === undefined ? {} : { mode }),
+    backend: "none",
     status: "unknown",
     checkedAt: new Date().toISOString(),
+  };
+}
+
+function unknownBujoMemoryHealth(
+  mode: NonNullable<MonoAgentConfig["memory"]>["mode"],
+): TraceSourceMemoryHealth {
+  return {
+    backend: "bujo",
+    mode,
+    status: "unknown",
+    checkedAt: new Date().toISOString(),
+    issues: ["health_check_failed"],
   };
 }
 

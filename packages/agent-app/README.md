@@ -193,11 +193,19 @@ The app publishes a cached, content-free `memoryHealth` snapshot in the primary
 trace-source heartbeat and any enabled best-effort global mirror. Built-in
 health is computed through a dynamic memory import so a native SQLite ABI
 failure becomes sanitized `unknown` health
-instead of crashing unrelated CLI startup. Concurrent refreshes coalesce, the
-periodic timer is unreferenced and cleaned up on stop/reconfigure, and the same
+instead of crashing unrelated CLI startup. Concurrent refreshes coalesce; in
+steady state, ordinary trace events and the completion-based timer never run a
+full audit less than 30 seconds after the prior completion. Startup and reload
+make one explicit post-lifecycle exception so the registered snapshot reflects
+the newly started store. The timer is unreferenced and invalidated at
+stop/reconfigure entry, and the same
 snapshot is used for both registries. The shape is limited to backend/mode,
 closed status and issue vocabularies, ISO check time, and eight whitelisted
 counts—never paths, ids, content, payloads, or raw errors.
+
+Unexpected built-in audit failures use the stable `health_check_failed` issue,
+while durable work that exceeds its ownership grace uses `work_stalled`; both
+are fixed metadata-only classifications.
 
 Operator automation should use:
 
@@ -225,9 +233,12 @@ capture succeeded, keeps permanent duplicate protection, and refuses a retained
 semantic plan.
 
 For launchd fleet verification, invoke the deployed CLI with each plist's exact
-`ProgramArguments[0]` Node and `[1]` CLI paths. The current fleet contract is
-Node `24.15.0`, modules ABI `137`; an ambient shell Node is not evidence that
-the service can load the native memory modules.
+`ProgramArguments[0]` Node, `[1]` CLI, absolute `--config`/`--env-file`, and
+managed `PATH`. Probe children retain only launchd-safe operational environment
+values; shell-only `MONO_AGENT_*`, provider credentials, `NODE_OPTIONS`, and
+proxy overrides are not fleet evidence. The current fleet contract is Node
+`24.15.0`, modules ABI `137`; an ambient shell Node or environment is not
+evidence that the service can load the native memory modules.
 
 Programmatic:
 

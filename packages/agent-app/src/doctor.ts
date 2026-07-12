@@ -55,6 +55,7 @@ import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
 import { findUnknownAppConfigWarnings } from "./config-reference.js";
 import { formatInteractionBridgeUrl, loadInteractionSettings } from "./interaction-bridge.js";
+import { FIRST_RUN_MEMORY_INITIALIZING_MARKER } from "./first-run-managed-memory.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { piAuthRecoveryCommand } from "./provider-setup.js";
 import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "./pi-auth-store-inspection.js";
@@ -1476,6 +1477,15 @@ async function memorySection(
 async function managedMemoryIdentityStatus(
   memory: NonNullable<MonoAgentConfig["memory"]>,
 ): Promise<{ readonly status: "error"; readonly details: readonly string[] } | undefined> {
+  if (await pathExists(join(memory.path, FIRST_RUN_MEMORY_INITIALIZING_MARKER))) {
+    return {
+      status: "error",
+      details: [
+        "[ERROR] First-run managed memory initialization is incomplete.",
+        "Re-run `mono-agent init` in a clean target or remove only the failed first-run root after inspecting it.",
+      ],
+    };
+  }
   const manifestPath = join(memory.path, ".index", "manifest.json");
   if (!(await pathExists(manifestPath))) {
     // Lite has no semantic index authority. Journal/BuJo readiness is strict:
@@ -1532,23 +1542,51 @@ async function managedMemoryIdentityStatus(
 async function builtInMemoryNativeStatus(
   memory: NonNullable<MonoAgentConfig["memory"]>,
 ): Promise<string | undefined> {
+  let database: { close(): void; indexMetadata(): unknown } | undefined;
+  let managedGeneration = false;
   try {
-    const { auditBujoMemoryHealth } = await import("@mono-agent/memory/bujo");
-    const report = auditBujoMemoryHealth({
-      root: memory.path,
-      mode: memory.mode,
-      ...(memory.embeddings === undefined
-        ? {}
-        : {
-            configuredEmbeddingModel: `${memory.embeddings.provider}:${memory.embeddings.model}`,
-            configuredDimension: memory.embeddings.dim ?? 768,
-          }),
-    });
-    return report.issues.includes("native_module_unavailable")
-      ? "[ERROR] Built-in memory native module is unavailable for this Node runtime. Rebuild dependencies with the launch runtime, then re-run `mono-agent validate`."
-      : undefined;
+    const { openMemoryDb } = await import("@mono-agent/memory/store");
+    const manifestPath = join(memory.path, ".index", "manifest.json");
+    if (await pathExists(manifestPath)) {
+      managedGeneration = true;
+      const { resolveActiveMemoryDbPath } = await import("@mono-agent/memory/bujo");
+      database = openMemoryDb({ path: resolveActiveMemoryDbPath(memory.path), readOnly: true });
+    } else {
+      // Lite roots may not exist yet and validation must remain read-only. An
+      // in-memory open exercises the exact native ABI + extension load without
+      // scanning durable memory or creating the configured root.
+      database = openMemoryDb({ path: ":memory:" });
+    }
+    // A single schema-row lookup proves the opened handle can actually read
+    // SQLite state (constructor-only opens can accept a truncated file). This
+    // remains constant-work and avoids the corpus/queue scans of strict audit.
+    database.indexMetadata();
+    database.close();
+    database = undefined;
+    return undefined;
+  } catch (error) {
+    if (isBuiltInMemoryNativeFailure(error)) {
+      return "[ERROR] Built-in memory native module is unavailable for this Node runtime. Rebuild dependencies with the launch runtime, then re-run `mono-agent validate`.";
+    }
+    if (managedGeneration) {
+      return "[ERROR] Built-in memory active generation is unavailable. Stop the agent with `mono-agent stop`, run `mono-agent memory rebuild`, then re-run `mono-agent validate` before restarting.";
+    }
+    return "[ERROR] Built-in memory database smoke check failed. Rebuild dependencies with the launch runtime; if the runtime is compatible, stop the agent and run `mono-agent memory rebuild`, then re-run `mono-agent validate`.";
+  } finally {
+    try { database?.close(); } catch { /* best-effort smoke cleanup */ }
+  }
+}
+
+function isBuiltInMemoryNativeFailure(error: unknown): boolean {
+  try {
+    const message = error instanceof Error ? error.message : "";
+    const code = typeof error === "object" && error !== null && "code" in error
+      ? String((error as { readonly code?: unknown }).code ?? "")
+      : "";
+    return /(?:err_(?:dlopen|module_not_found)|module_not_found|better[-_ ]?sqlite|sqlite[-_ ]?vec|node_module_version|native module|dlopen|\.node\b)/iu
+      .test(`${code} ${message}`);
   } catch {
-    return "[ERROR] Built-in memory health inspection is unavailable for this Node runtime. Rebuild dependencies with the launch runtime, then re-run `mono-agent validate`.";
+    return false;
   }
 }
 

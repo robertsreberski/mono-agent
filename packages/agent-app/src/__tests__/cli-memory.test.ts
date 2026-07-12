@@ -10,6 +10,7 @@ import {
   rollbackMemoryIndex,
   safeRebuildMemoryIndex,
 } from "@mono-agent/memory/bujo";
+import * as bujoMemory from "@mono-agent/memory/bujo";
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import { openMemoryDb } from "@mono-agent/memory/store";
 import { listTraceSources } from "@mono-agent/observability";
@@ -94,6 +95,117 @@ describe("runCli memory", () => {
       status: "unknown",
       issues: [],
     });
+  });
+
+  it("audits a real Lite store exactly and exits one for degraded and unhealthy states", async () => {
+    const memoryRoot = join(await tempDir(), "private-memory-root");
+    const dir = await agentDir({
+      memory: { mode: "lite", path: memoryRoot, writeMode: "append-host-summary" },
+    });
+    const privateConversation = "private-conversation-sentinel";
+    const privateText = "private memory payload sentinel";
+    const store = createBujoMemoryStore({ root: memoryRoot });
+    let closed = false;
+    try {
+      await store.appendHostSummary(privateConversation, privateText);
+
+      const healthy = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "audit", "--strict", "--json"]))));
+      expect(healthy.code).toBe(0);
+      expect(healthy.stderr).toBe("");
+      expect(JSON.parse(healthy.stdout)).toEqual({
+        schemaVersion: 1,
+        backend: "bujo",
+        mode: "lite",
+        status: "healthy",
+        checkedAt: expect.any(String),
+        issues: [],
+        counts: {
+          pending: 0,
+          due: 0,
+          dead: 0,
+          outbox: 0,
+          temporary: 0,
+          memories: 1,
+          vectors: 0,
+          missingVectors: 0,
+        },
+      });
+      expect(healthy.stdout).not.toContain(memoryRoot);
+      expect(healthy.stdout).not.toContain(privateConversation);
+      expect(healthy.stdout).not.toContain(privateText);
+
+      await store.close();
+      closed = true;
+      const degraded = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "audit", "--strict", "--json"]))));
+      expect(degraded.code).toBe(1);
+      expect(degraded.stderr).toBe("");
+      expect(JSON.parse(degraded.stdout)).toMatchObject({
+        backend: "bujo",
+        mode: "lite",
+        status: "degraded",
+        issues: expect.arrayContaining(["runtime_stale"]),
+        counts: { memories: 1 },
+      });
+
+      await rm(memoryRoot, { recursive: true, force: true });
+      const unhealthy = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "audit", "--strict", "--json"]))));
+      expect(unhealthy.code).toBe(1);
+      expect(unhealthy.stderr).toBe("");
+      expect(JSON.parse(unhealthy.stdout)).toMatchObject({
+        backend: "bujo",
+        mode: "lite",
+        status: "unhealthy",
+        issues: expect.arrayContaining(["database_missing", "runtime_missing"]),
+      });
+      expect(`${degraded.stdout}${unhealthy.stdout}`).not.toContain(memoryRoot);
+      expect(`${degraded.stdout}${unhealthy.stdout}`).not.toContain(privateText);
+    } finally {
+      if (!closed) await store.close();
+    }
+  });
+
+  it("sanitizes unexpected strict built-in audit failures as health_check_failed", async () => {
+    const memoryRoot = join(await tempDir(), "private-failing-root");
+    const dir = await agentDir({
+      memory: { mode: "lite", path: memoryRoot, writeMode: "append-host-summary" },
+    });
+    const privateSentinel = "unexpected audit detail /private/sentinel";
+    const auditSpy = vi.spyOn(bujoMemory, "auditBujoMemoryHealth").mockImplementation(() => {
+      throw new Error(privateSentinel);
+    });
+    let result: Awaited<ReturnType<typeof captureCli>>;
+    try {
+      result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "audit", "--strict", "--json"]))));
+    } finally {
+      auditSpy.mockRestore();
+    }
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual({
+      schemaVersion: 1,
+      backend: "bujo",
+      mode: "lite",
+      status: "unknown",
+      checkedAt: expect.any(String),
+      issues: ["health_check_failed"],
+      counts: {
+        pending: 0,
+        due: 0,
+        dead: 0,
+        outbox: 0,
+        temporary: 0,
+        memories: 0,
+        vectors: 0,
+        missingVectors: 0,
+      },
+    });
+    expect(result.stdout).not.toContain(memoryRoot);
+    expect(result.stdout).not.toContain(privateSentinel);
   });
 
   it("keeps intake inspection and no-op mutations content-free with exit zero", async () => {

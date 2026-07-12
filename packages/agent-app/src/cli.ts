@@ -1538,6 +1538,7 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
             result = await initMonoAgentFolder({
               dir: cwd,
               answers,
+              env: effectiveEnv,
               secretValues: selectedSecrets,
               secureExistingDotenv,
               requireConfigCreation: true,
@@ -1798,6 +1799,7 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
             saved = await initMonoAgentFolder({
               dir: cwd,
               answers,
+              env: effectiveEnv,
               secretValues: selectedSecrets,
               secureExistingDotenv,
               requireConfigCreation: true,
@@ -2030,7 +2032,15 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
     return 1;
   }
 
-  const result = await initMonoAgentFolder({ dir: cwd, answers, dryRun: args.dryRun });
+  const result = await initMonoAgentFolder({
+    dir: cwd,
+    answers,
+    dryRun: args.dryRun,
+    // Scaffold-only init has no immediate launchd-minimal worker proof. Reject
+    // both shell and persisted memory-identity overrides instead of creating a
+    // generation at a different path/tier than a follow-up validate would use.
+    env: { ...environment.shellEnv, ...environment.dotenvEnv },
+  });
 
   printInitResult(result);
   printSecretsChecklist(result.plan.secrets, new Set());
@@ -2181,6 +2191,7 @@ async function assessPrewriteFirstRunConfigurationReadiness(options: {
     const preview = await initMonoAgentFolder({
       dir: options.cwd,
       answers: options.answers,
+      env: options.env,
       secretValues: options.secretValues,
       secureExistingDotenv: options.secureExistingDotenv,
       dryRun: true,
@@ -2233,6 +2244,7 @@ async function assessPrewriteFirstRunReadiness(options: {
     const preview = await initMonoAgentFolder({
       dir: options.cwd,
       answers: options.answers,
+      env: options.env,
       secretValues: options.secretValues,
       secureExistingDotenv: options.secureExistingDotenv,
       dryRun: true,

@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
-import * as bujoMemory from "@mono-agent/memory/bujo";
 import { safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
+import * as memoryStore from "@mono-agent/memory/store";
 
 import { validateMonoAgentFolder } from "../doctor.js";
 import type { SdkAuthStatusExecFile } from "../doctor.js";
@@ -1799,9 +1799,11 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("turns native health inspection failure into a structured memory error", async () => {
-    const auditSpy = vi.spyOn(bujoMemory, "auditBujoMemoryHealth").mockImplementation(() => {
-      throw new Error("hostile native loader detail /private/sentinel");
+  it("turns native database smoke failure into a structured memory error", async () => {
+    const openSpy = vi.spyOn(memoryStore, "openMemoryDb").mockImplementation(() => {
+      throw Object.assign(new Error("hostile native loader detail /private/sentinel"), {
+        code: "ERR_DLOPEN_FAILED",
+      });
     });
     const configPath = await writeMinimalConfig({
       memory: {
@@ -1812,11 +1814,12 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     });
 
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-    auditSpy.mockRestore();
+    openSpy.mockRestore();
 
     const memory = sectionById(report, "memory");
     expect(memory.status).toBe("error");
-    expect(memory.details.join("\n")).toContain("health inspection is unavailable");
+    expect(memory.details.join("\n")).toContain("native module is unavailable");
+    expect(memory.details.join("\n")).toContain("Rebuild dependencies with the launch runtime");
     expect(memory.details.join("\n")).not.toContain("/private/sentinel");
   });
 

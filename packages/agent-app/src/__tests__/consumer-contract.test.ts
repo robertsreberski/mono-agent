@@ -6,7 +6,7 @@
  * IDENTITY.md, skills/, mcp.json, and cron files exist, then run this test plus
  * the fixture secret scan.
  */
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -201,7 +201,48 @@ describe("golden consumer config contracts", () => {
       "succeeded",
     ]);
   });
+
+  it("rejects an absolute memory path outside the private copy without creating files", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-app-consumer-escape-"));
+    const fixtureDir = join(root, "fixture");
+    const outsideMemory = join(root, "outside", "memory");
+    try {
+      await cp(join(consumersRoot, "local-agent-alpha"), fixtureDir, { recursive: true });
+      const configPath = join(fixtureDir, "mono-agent.config.json");
+      const config = JSON.parse(await readFile(configPath, "utf8")) as {
+        memory: { path: string };
+      };
+      config.memory.path = outsideMemory;
+      await writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
+
+      const result = await validateConsumerContractFixture({
+        name: "local-agent-alpha",
+        fixtureDir,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.networkCallCount).toBe(0);
+      expect(result.issues).toEqual([
+        expect.objectContaining({
+          check: "consumer-contract",
+          message: expect.stringContaining("strict lexical descendant"),
+        }),
+      ]);
+      expect(await pathExists(outsideMemory)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function validateFixture(name: ConsumerContractName) {
   const sandboxEngine: SandboxEngine = {
@@ -211,47 +252,12 @@ async function validateFixture(name: ConsumerContractName) {
       throw new Error("not used in consumer contract validation");
     }),
   };
-  const fixtureDir = await mkdtemp(join(tmpdir(), `agent-app-consumer-source-${name}-`));
-  try {
-    await cp(join(consumersRoot, name), fixtureDir, { recursive: true });
-    if (name === "local-agent-alpha") {
-      await seedManagedMemory(
-        join(fixtureDir, ".mono-agent", "memory"),
-        "bujo",
-        "ollama:nomic-embed-text:v1.5",
-      );
-    } else {
-      await seedManagedMemory(
-        join(fixtureDir, ".local-agent-beta", "memory"),
-        "journal",
-        "ollama:nomic-embed-text:v1.5",
-      );
-    }
-    const result = await validateConsumerContractFixture({ name, fixtureDir, sandboxEngine });
-    expect(sandboxEngine.isAvailable).toHaveBeenCalledTimes(1);
-    expect(sandboxEngine.prepareCommand).not.toHaveBeenCalled();
-    return result;
-  } finally {
-    await rm(fixtureDir, { recursive: true, force: true });
-  }
-}
-
-async function seedManagedMemory(root: string, tier: "journal" | "bujo", embeddingModel: string): Promise<void> {
-  const generation = "g-20260712T000000000Z-00000000-0000-4000-8000-000000000000";
-  const generationDir = join(root, ".index", "generations", generation);
-  await mkdir(generationDir, { recursive: true });
-  await writeFile(join(generationDir, "memory.db"), "");
-  await writeFile(join(root, ".index", "manifest.json"), JSON.stringify({
-    schemaVersion: 1,
-    active: {
-      name: generation,
-      tier,
-      sourceFingerprint: "0".repeat(64),
-      policyVersion: "mono-agent-memory-rebuild-v1",
-      createdAt: "2026-07-12T00:00:00.000Z",
-      embeddingModel,
-      dimension: 768,
-      origin: "rebuild",
-    },
-  }));
+  const result = await validateConsumerContractFixture({
+    name,
+    fixtureDir: join(consumersRoot, name),
+    sandboxEngine,
+  });
+  expect(sandboxEngine.isAvailable).toHaveBeenCalledTimes(1);
+  expect(sandboxEngine.prepareCommand).not.toHaveBeenCalled();
+  return result;
 }

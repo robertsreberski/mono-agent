@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { listTraceSources } from "@mono-agent/observability";
+import * as bujoMemory from "@mono-agent/memory/bujo";
 import type { AgentResponder, ChannelInteractionHub, ChannelInteractionSink } from "@mono-agent/agent-contracts";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 import type {
@@ -16,6 +17,7 @@ import type { SlackAdapterStartOptions } from "@mono-agent/slack-adapter";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 import { startMonoAgentApp } from "../app.js";
+import { loadAppCoreConfig } from "../app-config.js";
 import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME } from "../adapter-send-tools.js";
 import { RUN_HISTORY_MCP_SERVER_NAME } from "../run-history.js";
 import {
@@ -296,7 +298,7 @@ describe("startMonoAgentApp", () => {
     await app.stop();
   });
 
-  it("periodically publishes memory-only config changes and clears its timer on stop", async () => {
+  it("refreshes memory independently of a fast heartbeat and clears its timer at stop entry", async () => {
     await writeConfig({
       ...baseConfig(),
       traceability: {
@@ -307,6 +309,12 @@ describe("startMonoAgentApp", () => {
       },
     });
     const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
+    const controller = app as unknown as {
+      memoryHealthRefreshTimer?: { readonly _idleTimeout?: number };
+      memoryHealthLastCompletedAtMs: number | undefined;
+      refreshMemoryHealthOnTimer(): void;
+    };
+    expect(controller.memoryHealthRefreshTimer?._idleTimeout).toBe(30_000);
     await writeConfig({
       ...baseConfig(),
       traceability: {
@@ -323,16 +331,195 @@ describe("startMonoAgentApp", () => {
       },
     });
 
+    controller.memoryHealthLastCompletedAtMs = performance.now() - 30_000;
+    controller.refreshMemoryHealthOnTimer();
     await vi.waitFor(async () => {
       const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
       expect(sources[0]?.memoryHealth).toMatchObject({ backend: "supermemory", status: "unknown" });
     }, { timeout: 2_000, interval: 50 });
     expect(app.memoryHealth).toMatchObject({ backend: "supermemory", status: "unknown" });
 
-    const controller = app as unknown as { memoryHealthRefreshTimer?: unknown };
     expect(controller.memoryHealthRefreshTimer).toBeDefined();
-    await app.stop();
+    const stopping = app.stop();
     expect(controller.memoryHealthRefreshTimer).toBeUndefined();
+    await stopping;
+  });
+
+  it("caches sequential explicit audits, refreshes when due, and resets on reload", async () => {
+    await writeConfig(baseConfig());
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
+    const compute = vi.fn(async () => ({
+      backend: "none" as const,
+      status: "not_configured" as const,
+      checkedAt: new Date().toISOString(),
+    }));
+    const controller = app as unknown as {
+      computeMemoryHealth: typeof compute;
+      memoryHealthLastCompletedAtMs: number | undefined;
+      refreshTraceSource(reason: string): Promise<void>;
+      refreshMemoryHealthOnTimer(): void;
+      traceRefreshInFlight?: Promise<void>;
+    };
+    controller.computeMemoryHealth = compute;
+    controller.memoryHealthLastCompletedAtMs = undefined;
+
+    await controller.refreshTraceSource("explicit-one");
+    await controller.refreshTraceSource("explicit-two");
+    expect(compute).toHaveBeenCalledTimes(1);
+
+    controller.memoryHealthLastCompletedAtMs = performance.now() - 30_000;
+    controller.refreshMemoryHealthOnTimer();
+    await vi.waitFor(() => {
+      expect(compute).toHaveBeenCalledTimes(2);
+      expect(controller.traceRefreshInFlight).toBeUndefined();
+    });
+
+    await app.applyConfigChange("cache-reset");
+    // Reload audits once while registering the new trace source, then forces a
+    // post-lifecycle audit after channel/store startup so stopped runtime state
+    // is never retained in the fresh manifest.
+    expect(compute).toHaveBeenCalledTimes(4);
+    await app.stop();
+  });
+
+  it("rebases periodic audits after lifecycle completion and after a slow audit", async () => {
+    await writeConfig(baseConfig());
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    let app: Awaited<ReturnType<typeof startMonoAgentApp>> | undefined;
+    try {
+      app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
+      let releaseSlow!: () => void;
+      const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve; });
+      let call = 0;
+      const compute = vi.fn(async () => {
+        call += 1;
+        if (call === 2) await slowGate;
+        return {
+          backend: "none" as const,
+          status: "not_configured" as const,
+          checkedAt: new Date().toISOString(),
+        };
+      });
+      const controller = app as unknown as {
+        computeMemoryHealth: typeof compute;
+        refreshMemoryHealthAfterLifecycle(reason: string): Promise<void>;
+        memoryHealthRefreshInFlight?: Promise<unknown>;
+        traceRefreshInFlight?: Promise<void>;
+      };
+      controller.computeMemoryHealth = compute;
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      await controller.refreshMemoryHealthAfterLifecycle("test-lifecycle");
+      expect(compute).toHaveBeenCalledTimes(1);
+
+      // The registration timer originally targeted t=30s. Lifecycle completion
+      // at t=20s rebases it, so no non-lifecycle audit runs before t=50s.
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(compute).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(compute).toHaveBeenCalledTimes(2);
+
+      // A one-shot timer cannot queue a second audit while this one takes 60s.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(compute).toHaveBeenCalledTimes(2);
+      const slowAudit = controller.memoryHealthRefreshInFlight;
+      expect(slowAudit).toBeDefined();
+      releaseSlow();
+      await slowAudit;
+      await controller.traceRefreshInFlight;
+
+      // The next due time is 30s after the slow audit's completion, not 30s
+      // after its start and not immediately after its delayed publication.
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(compute).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(compute).toHaveBeenCalledTimes(3);
+      await controller.traceRefreshInFlight;
+    } finally {
+      await app?.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("publishes live managed-memory health immediately after startup", async () => {
+    const memoryRoot = join(dir, ".mono-agent", "memory");
+    await mkdir(memoryRoot, { recursive: true });
+    await bujoMemory.safeRebuildMemoryIndex({
+      root: memoryRoot,
+      tier: "journal",
+      dim: 768,
+      embeddings: {
+        id: "ollama:nomic-embed-text:v1.5",
+        embed: async () => { throw new Error("empty first generation must not embed"); },
+      },
+    });
+    await writeConfig({
+      ...baseConfig(),
+      memory: {
+        mode: "journal",
+        path: "./.mono-agent/memory",
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5", dim: 768 },
+      },
+    });
+    const driver: ChannelDriver = {
+      id: "probe" as never,
+      label: "Probe",
+      loadConfig: async () => ({ enabled: true }),
+      isConfigError: () => false,
+      start: async () => ({ summary: {}, stop: async () => undefined }),
+    };
+    const runtime = { run: async (): Promise<RuntimeResult> => ({ text: "ok" }) };
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver], runtime });
+    try {
+      const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
+      expect(sources[0]?.memoryHealth).toMatchObject({
+        backend: "bujo",
+        mode: "journal",
+        status: "healthy",
+        issues: [],
+      });
+      expect(sources[0]?.memoryHealth).toEqual(app.memoryHealth);
+    } finally {
+      await app.stop();
+    }
+  });
+
+  it("reuses one cached audit across an acquired/saved/released session burst", async () => {
+    await writeConfig(baseConfig());
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
+    const coreConfig = await loadAppCoreConfig({
+      env: {},
+      cwd: dir,
+      configPath: join(dir, "mono-agent.config.json"),
+    });
+    const compute = vi.fn(async () => ({
+      backend: "none" as const,
+      status: "not_configured" as const,
+      checkedAt: new Date().toISOString(),
+    }));
+    const controller = app as unknown as {
+      computeMemoryHealth: typeof compute;
+      memoryHealthLastCompletedAtMs: number | undefined;
+      recordSessionEvent(
+        event: { readonly kind: "acquired" | "saved" | "released"; readonly conversationId: string },
+        config: typeof coreConfig,
+      ): void;
+      traceRefreshInFlight?: Promise<void>;
+    };
+    controller.computeMemoryHealth = compute;
+    controller.memoryHealthLastCompletedAtMs = undefined;
+
+    controller.recordSessionEvent({ kind: "acquired", conversationId: "session-cache" }, coreConfig);
+    controller.recordSessionEvent({ kind: "saved", conversationId: "session-cache" }, coreConfig);
+    controller.recordSessionEvent({ kind: "released", conversationId: "session-cache" }, coreConfig);
+
+    await vi.waitFor(() => {
+      expect(compute).toHaveBeenCalledTimes(1);
+      expect(controller.traceRefreshInFlight).toBeUndefined();
+    });
+    await app.stop();
   });
 
   it("single-flights periodic publication and stops without waiting for a stalled health probe", async () => {
@@ -353,9 +540,14 @@ describe("startMonoAgentApp", () => {
       refreshTraceSource(reason: string): Promise<void>;
       refreshMemoryHealthOnTimer(): void;
       traceRefreshInFlight?: Promise<void>;
+      memoryHealthRefreshInFlight?: Promise<unknown>;
+      memoryHealthRefreshTimer?: unknown;
+      refreshMemoryHealthSnapshot(reason: string): Promise<unknown>;
       traceSource?: unknown;
+      memoryHealthLastCompletedAtMs: number | undefined;
     };
     controller.computeMemoryHealth = compute;
+    controller.memoryHealthLastCompletedAtMs = undefined;
 
     const first = controller.refreshTraceSource("memory-health-periodic");
     const inFlight = controller.traceRefreshInFlight;
@@ -366,14 +558,133 @@ describe("startMonoAgentApp", () => {
 
     expect(controller.traceRefreshInFlight).toBe(inFlight);
     expect(compute).toHaveBeenCalledTimes(1);
-    await app.stop();
+    const stopping = app.stop();
+    expect(controller.memoryHealthRefreshTimer).toBeUndefined();
+    expect(controller.memoryHealthRefreshInFlight).toBeUndefined();
+    await stopping;
     expect(controller.traceRefreshInFlight).toBeUndefined();
+    controller.refreshMemoryHealthOnTimer();
+    await controller.refreshMemoryHealthSnapshot("after-stop");
+    expect(compute).toHaveBeenCalledTimes(1);
 
     // Let the abandoned probe settle and prove its late result is fenced rather
     // than publishing into the stopped source.
     release();
     await first;
     expect(controller.traceSource).toBeUndefined();
+  });
+
+  it("reserves one due audit replay when the timer fires during trace publication", async () => {
+    await writeConfig(baseConfig());
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
+    const compute = vi.fn(async () => ({
+      backend: "none" as const,
+      status: "not_configured" as const,
+      checkedAt: new Date().toISOString(),
+    }));
+    const controller = app as unknown as {
+      computeMemoryHealth: typeof compute;
+      memoryHealthLastCompletedAtMs: number | undefined;
+      refreshTraceSource(reason: string): Promise<void>;
+      refreshMemoryHealthOnTimer(): void;
+      traceSource?: { update(patch: unknown): Promise<unknown> };
+    };
+    controller.computeMemoryHealth = compute;
+    controller.memoryHealthLastCompletedAtMs = undefined;
+    const traceSource = controller.traceSource;
+    expect(traceSource).toBeDefined();
+    if (traceSource === undefined) throw new Error("trace source missing");
+    const originalUpdate = traceSource.update.bind(traceSource);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let updates = 0;
+    traceSource.update = vi.fn(async (patch) => {
+      updates += 1;
+      if (updates === 1) await gate;
+      return await originalUpdate(patch);
+    });
+
+    const publishing = controller.refreshTraceSource("session-acquired");
+    await vi.waitFor(() => { expect(updates).toBe(1); });
+    controller.memoryHealthLastCompletedAtMs = performance.now() - 30_000;
+    controller.refreshMemoryHealthOnTimer();
+    release();
+    await publishing;
+
+    expect(compute).toHaveBeenCalledTimes(2);
+    expect(updates).toBe(2);
+    await app.stop();
+  });
+
+  it("invalidates periodic memory work before a reload waits on channel teardown", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      traceability: {
+        registryDir: "./trace-sources",
+        sourceId: "app-test",
+        sourceLabel: "App Test",
+        heartbeatMs: 250,
+      },
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let stopCalls = 0;
+    const stopEntered = vi.fn();
+    const driver: ChannelDriver = {
+      id: "probe" as never,
+      label: "Probe",
+      loadConfig: async () => ({ enabled: true }),
+      isConfigError: () => false,
+      start: async () => ({
+        summary: {},
+        stop: async () => {
+          stopCalls += 1;
+          stopEntered();
+          if (stopCalls === 1) await gate;
+        },
+      }),
+    };
+    const runtime = { run: async (): Promise<RuntimeResult> => ({ text: "ok" }) };
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver], runtime });
+    const controller = app as unknown as {
+      memoryHealthRefreshTimer?: { readonly _idleTimeout?: number };
+    };
+    expect(controller.memoryHealthRefreshTimer?._idleTimeout).toBe(30_000);
+
+    const applying = app.applyConfigChange("timer-invalidation");
+    await vi.waitFor(() => { expect(stopEntered).toHaveBeenCalledTimes(1); });
+    expect(controller.memoryHealthRefreshTimer).toBeUndefined();
+
+    release();
+    await applying;
+    expect(controller.memoryHealthRefreshTimer?._idleTimeout).toBe(30_000);
+    await app.stop();
+  });
+
+  it("publishes a closed health_check_failed issue when built-in auditing throws", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      memory: { mode: "lite", path: "./memory", writeMode: "append-host-summary" },
+    });
+    const privateSentinel = "private audit failure /private/sentinel";
+    const auditSpy = vi.spyOn(bujoMemory, "auditBujoMemoryHealth").mockImplementation(() => {
+      throw new Error(privateSentinel);
+    });
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
+    try {
+      expect(app.memoryHealth).toMatchObject({
+        backend: "bujo",
+        mode: "lite",
+        status: "unknown",
+        issues: ["health_check_failed"],
+      });
+      const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
+      expect(sources[0]?.memoryHealth).toEqual(app.memoryHealth);
+      expect(JSON.stringify(sources[0])).not.toContain(privateSentinel);
+    } finally {
+      await app.stop();
+      auditSpy.mockRestore();
+    }
   });
 
   it("replays one trailing publication with the latest explicit refresh state", async () => {
@@ -434,10 +745,12 @@ describe("startMonoAgentApp", () => {
     });
     const controller = app as unknown as {
       computeMemoryHealth: typeof compute;
+      memoryHealthLastCompletedAtMs: number | undefined;
       refreshMemoryHealthSnapshot(reason: string): Promise<unknown>;
       refreshTraceSource(reason: string): Promise<void>;
     };
     controller.computeMemoryHealth = compute;
+    controller.memoryHealthLastCompletedAtMs = undefined;
     const first = controller.refreshMemoryHealthSnapshot("one");
     const second = controller.refreshMemoryHealthSnapshot("two");
     expect(first).toBe(second);
@@ -448,7 +761,10 @@ describe("startMonoAgentApp", () => {
     controller.computeMemoryHealth = vi.fn(async () => {
       throw new Error("hostile provider detail /private/memory-sentinel");
     }) as typeof compute;
+    controller.memoryHealthLastCompletedAtMs = undefined;
     await controller.refreshTraceSource("forced-failure");
+    await controller.refreshTraceSource("cached-failure");
+    expect(controller.computeMemoryHealth).toHaveBeenCalledTimes(1);
     const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
     expect(sources[0]?.memoryHealth).toMatchObject({ backend: "none", status: "unknown" });
     expect(JSON.stringify(sources[0])).not.toContain("memory-sentinel");
