@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import {
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  openSync,
+} from "node:fs";
 import { delimiter, dirname, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,6 +19,8 @@ import {
   acquireBuildLock,
   clearBuildMarker,
   computeBuildOutputDigest,
+  computeDeploymentStateFingerprint,
+  computeRuntimeDependencyDigest,
   publishBuildMarker,
   releaseBuildLock,
 } from "./lib/build-provenance.mjs";
@@ -25,6 +36,56 @@ const WINDOWS_PNPM_ARGUMENTS = new Set([
   JSON.stringify(["-r", "--sort", "run", "build"]),
   JSON.stringify(["run", "build:demo"]),
 ]);
+const REQUIRED_EXECUTABLES = Object.freeze([
+  "packages/agent-app/dist/cli.js",
+  "packages/tui/dist/bin/mono-agent-tui.js",
+]);
+const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
+
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function finalizeRequiredExecutables(repo) {
+  const expectedUid = BigInt(process.getuid());
+  const executableBits = (0o111 & ~process.umask()) | 0o100;
+  for (const relativePath of REQUIRED_EXECUTABLES) {
+    const path = resolve(repo, relativePath);
+    let fd;
+    try {
+      fd = openSync(path, constants.O_RDONLY | NOFOLLOW);
+      const before = fstatSync(fd, { bigint: true });
+      const currentBefore = lstatSync(path, { bigint: true });
+      if (!before.isFile()
+        || before.nlink !== 1n
+        || before.uid !== expectedUid
+        || (before.mode & 0o7022n) !== 0n
+        || !currentBefore.isFile()
+        || !sameFileIdentity(before, currentBefore)) {
+        throw new Error("unsafe required executable");
+      }
+      const executableMode = Number(before.mode & 0o666n) | executableBits;
+      fchmodSync(fd, executableMode);
+      fsyncSync(fd);
+      const after = fstatSync(fd, { bigint: true });
+      const currentAfter = lstatSync(path, { bigint: true });
+      if (!after.isFile()
+        || after.nlink !== 1n
+        || after.uid !== expectedUid
+        || (after.mode & 0o7777n) !== BigInt(executableMode)
+        || after.size !== before.size
+        || after.mtimeNs !== before.mtimeNs
+        || !currentAfter.isFile()
+        || !sameFileIdentity(before, after)
+        || !sameFileIdentity(after, currentAfter)
+        || (currentAfter.mode & 0o7777n) !== BigInt(executableMode)) {
+        throw new Error("required executable changed during mode finalization");
+      }
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+    }
+  }
+}
 
 export function prependNodeToPath(nodeBin, currentPath, platform = process.platform) {
   const separator = platform === "win32" ? ";" : delimiter;
@@ -190,38 +251,83 @@ export function runBuildWithProvenance(options = {}) {
       } else {
         result = runBuildCommands(repo, runCommand, commands);
         if (result.exitCode === 0) {
-          const after = readSourceState(repo, runCommand);
-          if (after === null
-            || after.gitSha !== before.gitSha
-            || after.sourceState !== before.sourceState) {
-            result = { exitCode: 1, error: "build source changed during build" };
-          } else {
-            let outputDigest;
-            try {
-              outputDigest = computeBuildOutputDigest(repo, { sync: true });
-            } catch {
-              result = { exitCode: 1, error: "build outputs unavailable or unstable" };
-            }
-            if (outputDigest !== undefined) {
-              const finalSource = readSourceState(repo, runCommand);
-              if (finalSource === null
-                || finalSource.gitSha !== before.gitSha
-                || finalSource.sourceState !== before.sourceState) {
-                result = { exitCode: 1, error: "build source changed during build" };
-              } else {
-                try {
-                  publishBuildMarker(repo, {
-                    schemaVersion: 1,
-                    gitSha: finalSource.gitSha,
-                    completedAt: now().toISOString(),
-                    nodeVersion: process.versions.node,
-                    nodeAbi: process.versions.modules,
-                    sourceState: finalSource.sourceState,
-                    outputDigest,
-                  });
-                  result = { exitCode: 0 };
-                } catch {
-                  result = { exitCode: 1, error: "build marker publication failed" };
+          try {
+            // The executable modes are part of the dependency/workspace
+            // digest. Finalize them while the build lock is held and before
+            // any terminal source or deployment-state attestation.
+            finalizeRequiredExecutables(repo);
+          } catch {
+            result = { exitCode: 1, error: "required build entrypoints unavailable or unsafe" };
+          }
+          if (result.exitCode === 0) {
+            const after = readSourceState(repo, runCommand);
+            if (after === null
+              || after.gitSha !== before.gitSha
+              || after.sourceState !== before.sourceState) {
+              result = { exitCode: 1, error: "build source changed during build" };
+            } else {
+              let outputDigest;
+              let dependencyDigest;
+              let deploymentStateBefore;
+              try {
+                deploymentStateBefore = computeDeploymentStateFingerprint(repo);
+                outputDigest = computeBuildOutputDigest(repo, { sync: true });
+                dependencyDigest = computeRuntimeDependencyDigest(repo);
+                options.afterDeploymentDigests?.();
+              } catch {
+                result = { exitCode: 1, error: "build outputs or runtime dependencies unavailable or unstable" };
+              }
+              if (result.exitCode === 0
+                && deploymentStateBefore !== undefined
+                && outputDigest !== undefined
+                && dependencyDigest !== undefined) {
+                const finalSource = readSourceState(repo, runCommand);
+                if (finalSource === null
+                  || finalSource.gitSha !== before.gitSha
+                  || finalSource.sourceState !== before.sourceState) {
+                  result = { exitCode: 1, error: "build source changed during build" };
+                } else {
+                  let marker;
+                  try {
+                    marker = {
+                      schemaVersion: 2,
+                      gitSha: finalSource.gitSha,
+                      completedAt: now().toISOString(),
+                      nodeVersion: process.versions.node,
+                      nodeAbi: process.versions.modules,
+                      sourceState: finalSource.sourceState,
+                      outputDigest,
+                      dependencyDigest,
+                    };
+                  } catch {
+                    result = { exitCode: 1, error: "build marker publication failed" };
+                  }
+                  if (marker !== undefined) {
+                    let deploymentStateAfter;
+                    try {
+                      deploymentStateAfter = computeDeploymentStateFingerprint(repo);
+                    } catch {
+                      result = {
+                        exitCode: 1,
+                        error: "build outputs or runtime dependencies unavailable or unstable",
+                      };
+                    }
+                    if (deploymentStateAfter !== undefined) {
+                      if (deploymentStateAfter !== deploymentStateBefore) {
+                        result = {
+                          exitCode: 1,
+                          error: "build deployment state changed during attestation",
+                        };
+                      } else {
+                        try {
+                          publishBuildMarker(repo, marker);
+                          result = { exitCode: 0 };
+                        } catch {
+                          result = { exitCode: 1, error: "build marker publication failed" };
+                        }
+                      }
+                    }
+                  }
                 }
               }
             }
