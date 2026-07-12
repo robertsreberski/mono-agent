@@ -1,8 +1,15 @@
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { appendAssociation, appendEntity, appendGraphBatch, appendRelation, readGraph } from "../graph.js";
+import {
+  appendAssociation,
+  appendEntity,
+  appendGraphBatch,
+  appendRelation,
+  readGraph,
+  type GraphBatchInput,
+} from "../graph.js";
 import type { EntityRecord, EntityRelationRecord } from "../../store/index.js";
 
 function entity(id: string, name: string): EntityRecord {
@@ -224,6 +231,55 @@ describe("readGraph", () => {
     const g = readGraph(root);
     expect(g.entities).toHaveLength(2);
     expect(g.entities.map((e) => e.id)).toContain("person:charlie");
+  });
+
+  it.each([
+    ["control identity", { entities: [{ id: "person:bad\0id", name: "Bad", createdAt: "2026-06-15T09:00:00.000Z" }] }],
+    ["invalid optional type", { entities: [{ id: "person:bad", name: "Bad", type: 42, createdAt: "2026-06-15T09:00:00.000Z" }] }],
+    ["format-control summary", { entities: [{ id: "person:bad", name: "Bad", summary: "bad\u202Esummary", createdAt: "2026-06-15T09:00:00.000Z" }] }],
+    ["invalid entity update timestamp", { entities: [{ id: "person:bad", name: "Bad", createdAt: "2026-06-15T09:00:00.000Z", updatedAt: "not-a-date" }] }],
+    ["invalid relation timestamp", { relations: [{ src: "person:a", dst: "person:b", relation: "knows", createdAt: "not-a-date" }] }],
+    ["invalid association provenance", { associations: [{ memoryId: "M1", entityId: "person:a", provenance: "future", createdAt: "2026-06-15T09:00:00.000Z" }] }],
+    ["graph-line discriminator override", { entities: [{ kind: "relation", id: "person:bad", name: "Bad", createdAt: "2026-06-15T09:00:00.000Z" }] }],
+  ])("rejects %s before appending canonical graph state", (_label, input) => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-invalid-write-"));
+
+    expect(() => appendGraphBatch(root, input as unknown as GraphBatchInput)).toThrow(/invalid|missing/iu);
+    expect(existsSync(join(root, "graph.jsonl"))).toBe(false);
+  });
+
+  it("keeps the legacy compatibility reader permissive for strict-invalid records", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-legacy-invalid-"));
+    writeFileSync(join(root, "graph.jsonl"), `${JSON.stringify({
+      kind: "entity",
+      id: "person:legacy\0id",
+      name: "Legacy",
+      createdAt: "2026-06-15T09:00:00.000Z",
+    })}\n`, "utf8");
+
+    expect(readGraph(root).entities).toEqual([
+      expect.objectContaining({ id: "person:legacy\0id", name: "Legacy" }),
+    ]);
+  });
+
+  it("does not republish a strict-invalid legacy field through an otherwise valid merge", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-legacy-merge-"));
+    const graphPath = join(root, "graph.jsonl");
+    writeFileSync(graphPath, `${JSON.stringify({
+      kind: "entity",
+      id: "person:legacy",
+      name: "Legacy",
+      summary: "bad\u202Esummary",
+      createdAt: "2026-06-15T09:00:00.000Z",
+    })}\n`, "utf8");
+    const before = readFileSync(graphPath, "utf8");
+
+    expect(() => appendEntity(root, {
+      id: "person:legacy",
+      name: "Legacy Updated",
+      createdAt: "2026-06-16T09:00:00.000Z",
+    })).toThrow(/invalid/iu);
+    expect(readFileSync(graphPath, "utf8")).toBe(before);
   });
 
   it("rejects a symlinked graph target without reading or appending its referent", () => {

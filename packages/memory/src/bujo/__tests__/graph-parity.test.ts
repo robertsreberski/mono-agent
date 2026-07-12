@@ -1,14 +1,27 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  linkSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
-import { writeCaptureIntent } from "../capture-outbox.js";
+import { replayCaptureOutbox, writeCaptureIntent } from "../capture-outbox.js";
 import { appendBullet } from "../daily.js";
-import { auditCanonicalGraphParity } from "../graph-parity.js";
+import {
+  auditCanonicalGraphParity,
+  inspectCanonicalGraphMutation,
+  type CanonicalGraphMutationProbes,
+} from "../graph-parity.js";
 import { appendEntity, appendGraphBatch, readGraph } from "../graph.js";
+import { CanonicalFileRetiredError } from "../path-safety.js";
 import { readCanonicalGraphAuditSourceSnapshot } from "../rebuild.js";
 
 const CANONICAL_AT = "2026-01-01T00:00:00.000Z";
@@ -203,6 +216,77 @@ describe("canonical graph parity", () => {
     db.close();
   });
 
+  it.each(["capture", "monthly"] as const)(
+    "classifies a typed %s marker retirement as transient source change",
+    (kind) => {
+      const root = mkdtempSync(join(tmpdir(), "bujo-graph-parity-retired-"));
+      const retired = (): boolean => {
+        throw new CanonicalFileRetiredError(kind === "capture" ? ".capture-outbox/intent.json" : "monthly/2026-01.md");
+      };
+      const probes: CanonicalGraphMutationProbes = {
+        capturePending: kind === "capture" ? retired : () => false,
+        migrationPending: kind === "monthly" ? retired : () => false,
+      };
+
+      expect(inspectCanonicalGraphMutation(root, probes)).toEqual({
+        state: {
+          capturePending: false,
+          migrationPending: false,
+          sourceChanged: true,
+        },
+      });
+    },
+  );
+
+  it.each(["symlink", "hardlink"] as const)(
+    "keeps stable %s capture-intent corruption invalid",
+    (kind) => {
+      const root = mkdtempSync(join(tmpdir(), "bujo-graph-parity-unsafe-intent-"));
+      const handle = writeCaptureIntent(root, [], {}, CANONICAL_AT);
+      const target = join(root, handle.file);
+      const outside = join(mkdtempSync(join(tmpdir(), "bujo-graph-parity-unsafe-outside-")), "intent.json");
+      writeFileSync(outside, readFileSync(target));
+      unlinkSync(target);
+      if (kind === "symlink") symlinkSync(outside, target);
+      else linkSync(outside, target);
+      const db = openMemoryDb({ path: ":memory:" });
+
+      expect(auditCanonicalGraphParity(root, db)).toMatchObject({
+        status: "invalid",
+        matches: false,
+        issues: [{ code: "durable-state-invalid" }],
+      });
+      db.close();
+    },
+  );
+
+  it("reports a strict-invalid pending graph as durable corruption without appending it", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-parity-invalid-intent-"));
+    const handle = writeCaptureIntent(root, [], {
+      entities: [{ id: "person:valid", name: "Valid", type: "person", createdAt: CANONICAL_AT }],
+    }, CANONICAL_AT);
+    const intentPath = join(root, handle.file);
+    const intent = JSON.parse(readFileSync(intentPath, "utf8")) as {
+      graph: { entities: Array<Record<string, unknown>> };
+    };
+    intent.graph.entities[0] = {
+      ...intent.graph.entities[0],
+      id: "person:bad\0id",
+      type: 42,
+    };
+    writeFileSync(intentPath, `${JSON.stringify(intent)}\n`, "utf8");
+    const db = openMemoryDb({ path: ":memory:" });
+
+    expect(auditCanonicalGraphParity(root, db)).toMatchObject({
+      status: "invalid",
+      matches: false,
+      issues: [{ code: "durable-state-invalid" }],
+    });
+    expect(() => replayCaptureOutbox(root, db)).toThrow(/invalid|missing/iu);
+    expect(existsSync(join(root, "graph.jsonl"))).toBe(false);
+    db.close();
+  });
+
   it("retries a completed source/index interleaving instead of false-failing", () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-graph-parity-race-"));
     const db = openMemoryDb({ path: ":memory:" });
@@ -290,6 +374,38 @@ describe("canonical graph parity", () => {
       supports: addEdge
         ? { canonical: 1, active: 1, mismatched: 1, payloadMismatches: 1 }
         : { canonical: 1, active: 1, missing: 1, extra: 1 },
+    });
+    db.close();
+  });
+
+  it("fails parity when a collection support edge has noncanonical weight", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-parity-support-weight-"));
+    const canonical = { ...memory("M1"), status: "migrated" as const, text: "Project archive." };
+    appendCanonicalMemory(root, canonical);
+    const graph = appendGraphBatch(root, {
+      entities: [{ id: "collection:projects", name: "Projects", type: "collection", createdAt: CANONICAL_AT }],
+      associations: [{
+        memoryId: "M1",
+        entityId: "collection:projects",
+        provenance: "capture",
+        createdAt: CANONICAL_AT,
+      }],
+    });
+    const db = openMemoryDb({ path: ":memory:" });
+    db.upsertLexical({ ...canonical, collection: "projects" });
+    db.mirrorCanonicalEntity(graph.entities[0]!);
+    db.mirrorCanonicalAssociation(graph.associations[0]!);
+    db.addEdge("M1", "collection:projects", "supports", 0.25);
+
+    expect(auditCanonicalGraphParity(root, db)).toMatchObject({
+      status: "mismatch",
+      matches: false,
+      supports: {
+        canonical: 1,
+        active: 1,
+        mismatched: 1,
+        payloadMismatches: 1,
+      },
     });
     db.close();
   });

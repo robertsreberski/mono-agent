@@ -9,7 +9,7 @@ import type {
 import { appendCanonicalFile, readCanonicalFileSnapshot } from "./path-safety.js";
 
 const GRAPH_FILE = "graph.jsonl";
-const INVALID_GRAPH_STRING = /[\u0000-\u001f\u007f-\u009f\uD800-\uDFFF]/u;
+const INVALID_GRAPH_STRING = /[\p{Cc}\p{Cf}\p{Cs}]/u;
 
 type GraphLine =
   | ({ readonly kind: "entity" } & EntityRecord)
@@ -316,10 +316,56 @@ export function readGraph(root: string): {
 }
 
 /**
+ * Validate graph records with the same strict field rules used by rebuild/audit.
+ *
+ * This is a write-boundary validator only; endpoint validation still happens
+ * against the complete canonical projection after existing records are read.
+ */
+export function assertCanonicalGraphBatch(input: GraphBatchInput): void {
+  if (!isRecord(input)) {
+    throw graphValidationError("invalid-record", "memory-graph: graph batch must be an object.");
+  }
+  const entities = input.entities ?? [];
+  const relations = input.relations ?? [];
+  const associations = input.associations ?? [];
+  if (!Array.isArray(entities) || !Array.isArray(relations) || !Array.isArray(associations)) {
+    throw graphValidationError("invalid-record", "memory-graph: graph batch fields must be arrays.");
+  }
+  entities.forEach((record, index) => {
+    if (!isRecord(record)) {
+      throw graphValidationError("invalid-record", `memory-graph: invalid entity at batch index ${index}.`);
+    }
+    if (Object.prototype.hasOwnProperty.call(record, "kind")) {
+      throw graphValidationError("invalid-record", `memory-graph: invalid entity at batch index ${index}; kind is reserved.`);
+    }
+    strictEntity(record, index + 1);
+  });
+  relations.forEach((record, index) => {
+    if (!isRecord(record)) {
+      throw graphValidationError("invalid-record", `memory-graph: invalid relation at batch index ${index}.`);
+    }
+    if (Object.prototype.hasOwnProperty.call(record, "kind")) {
+      throw graphValidationError("invalid-record", `memory-graph: invalid relation at batch index ${index}; kind is reserved.`);
+    }
+    strictRelation(record, index + 1);
+  });
+  associations.forEach((record, index) => {
+    if (!isRecord(record)) {
+      throw graphValidationError("invalid-record", `memory-graph: invalid association at batch index ${index}.`);
+    }
+    if (Object.prototype.hasOwnProperty.call(record, "kind")) {
+      throw graphValidationError("invalid-record", `memory-graph: invalid association at batch index ${index}; kind is reserved.`);
+    }
+    strictAssociation(record, index + 1);
+  });
+}
+
+/**
  * Merge a capture's graph evidence with one source read and one append.
  * Returned records are the exact canonical forms callers must mirror to DB.
  */
 export function appendGraphBatch(root: string, input: GraphBatchInput): GraphBatchResult {
+  assertCanonicalGraphBatch(input);
   const current = readGraph(root);
   const originalEntities = new Map(current.entities.map((record) => [record.id, record]));
   const originalRelations = new Map(current.relations.map((record) => [relationKey(record), record]));
@@ -352,32 +398,38 @@ export function appendGraphBatch(root: string, input: GraphBatchInput): GraphBat
     touchedAssociations.add(key);
   }
 
+  const result: GraphBatchResult = {
+    entities: [...touchedEntities].map((key) => entities.get(key)!),
+    relations: [...touchedRelations].map((key) => relations.get(key)!),
+    associations: [...touchedAssociations].map((key) => associations.get(key)!),
+  };
+  // A permissively-read legacy record may participate in a merge. Validate the
+  // exact merged records too, so a new append never republishes strict-invalid
+  // state merely because the caller's delta was valid.
+  assertCanonicalGraphBatch(result);
+
   const lines: GraphLine[] = [];
   for (const key of touchedEntities) {
     const record = entities.get(key)!;
     const prior = originalEntities.get(key);
-    if (prior === undefined || !entityRecordsEqual(prior, record)) lines.push({ kind: "entity", ...record });
+    if (prior === undefined || !entityRecordsEqual(prior, record)) lines.push({ ...record, kind: "entity" });
   }
   for (const key of touchedRelations) {
     const record = relations.get(key)!;
-    if (!originalRelations.has(key)) lines.push({ kind: "relation", ...record });
+    if (!originalRelations.has(key)) lines.push({ ...record, kind: "relation" });
   }
   for (const key of touchedAssociations) {
     const record = associations.get(key)!;
     const prior = originalAssociations.get(key);
     if (prior === undefined || prior.provenance !== record.provenance || prior.createdAt !== record.createdAt) {
-      lines.push({ kind: "association", ...record });
+      lines.push({ ...record, kind: "association" });
     }
   }
   if (lines.length > 0) {
     appendCanonicalFile(root, GRAPH_FILE, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
   }
 
-  return {
-    entities: [...touchedEntities].map((key) => entities.get(key)!),
-    relations: [...touchedRelations].map((key) => relations.get(key)!),
-    associations: [...touchedAssociations].map((key) => associations.get(key)!),
-  };
+  return result;
 }
 
 /** Append one precise memory/entity association and return its canonical merged record. */

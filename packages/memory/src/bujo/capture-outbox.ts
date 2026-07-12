@@ -10,7 +10,12 @@ import type {
 } from "../store/index.js";
 import { appendBullet, dailyFilePath, rewriteBullet } from "./daily.js";
 import { parseDailyFile } from "./grammar.js";
-import { appendGraphBatch, type GraphBatchInput, type GraphBatchResult } from "./graph.js";
+import {
+  appendGraphBatch,
+  assertCanonicalGraphBatch,
+  type GraphBatchInput,
+  type GraphBatchResult,
+} from "./graph.js";
 import {
   assertCanonicalDailySourcePath,
   listCanonicalFileNames,
@@ -714,9 +719,10 @@ function parseIntent(raw: string): CaptureIntent {
       touchedMemoryIds.add(id);
     }
   }
-  for (const entity of intent.graph.entities) validateEntity(entity);
-  for (const relation of intent.graph.relations) validateRelation(relation);
-  for (const association of intent.graph.associations) validateAssociation(association);
+  assertCanonicalGraphBatch(intent.graph);
+  if (intent.graph.associations.some((association) => association.provenance !== "capture")) {
+    throw new Error("memory-capture: invalid association in outbox intent.");
+  }
   const memoryIds = new Set(intent.actions.map(memoryIdFor));
   const entityIds = new Set(intent.graph.entities.map((entity) => entity.id));
   if (intent.graph.associations.some((association) => !memoryIds.has(association.memoryId)
@@ -854,30 +860,6 @@ function isBullet(value: unknown): value is Bullet {
     && typeof value.createdAt === "string" && Number.isFinite(Date.parse(value.createdAt))
     && Array.isArray(value.refs) && value.refs.length <= 64 && value.refs.every((ref) => typeof ref === "string")
     && (value.dueAt === undefined || typeof value.dueAt === "string");
-}
-
-function validateEntity(entity: EntityRecord): void {
-  if (!isRecord(entity) || typeof entity.id !== "string" || entity.id.length === 0
-    || typeof entity.name !== "string" || entity.name.length === 0
-    || typeof entity.createdAt !== "string" || !Number.isFinite(Date.parse(entity.createdAt))) {
-    throw new Error("memory-capture: invalid entity in outbox intent.");
-  }
-}
-
-function validateRelation(relation: EntityRelationRecord): void {
-  if (!isRecord(relation) || typeof relation.src !== "string" || typeof relation.dst !== "string"
-    || typeof relation.relation !== "string" || typeof relation.createdAt !== "string"
-    || !Number.isFinite(Date.parse(relation.createdAt))) {
-    throw new Error("memory-capture: invalid relation in outbox intent.");
-  }
-}
-
-function validateAssociation(association: MemoryEntityAssociation): void {
-  if (!isRecord(association) || typeof association.memoryId !== "string" || typeof association.entityId !== "string"
-    || association.provenance !== "capture" || typeof association.createdAt !== "string"
-    || !Number.isFinite(Date.parse(association.createdAt))) {
-    throw new Error("memory-capture: invalid association in outbox intent.");
-  }
 }
 
 function isMemoryStatus(value: unknown): value is Bullet["status"] {

@@ -16,6 +16,7 @@ import {
   readCanonicalGraphAuditSourceSnapshot,
   type CanonicalGraphAuditSourceSnapshot,
 } from "./rebuild.js";
+import { CanonicalFileRetiredError } from "./path-safety.js";
 import type { BujoTier } from "./types.js";
 
 const MAX_AUDIT_ATTEMPTS = 3;
@@ -85,7 +86,7 @@ export function auditCanonicalGraphParity(
   let tier = options.tier ?? "bujo";
 
   for (let attempt = 1; attempt <= MAX_AUDIT_ATTEMPTS; attempt += 1) {
-    const mutationBefore = inspectMutation(root);
+    const mutationBefore = inspectCanonicalGraphMutation(root);
     if (mutationBefore.issue !== undefined) return invalidResult(tier, mutationBefore.issue);
     if (mutationInProgress(mutationBefore.state)) return inProgressResult(tier, mutationBefore.state);
 
@@ -106,7 +107,7 @@ export function auditCanonicalGraphParity(
     try {
       canonicalBefore = readCanonicalGraphAuditSourceSnapshot(root, tier);
     } catch (error) {
-      const transient = inspectMutation(root);
+      const transient = inspectCanonicalGraphMutation(root);
       if (transient.issue !== undefined) return invalidResult(tier, transient.issue);
       if (mutationInProgress(transient.state)) return inProgressResult(tier, transient.state);
       if (attempt < MAX_AUDIT_ATTEMPTS) continue;
@@ -132,14 +133,14 @@ export function auditCanonicalGraphParity(
     try {
       canonicalAfter = readCanonicalGraphAuditSourceSnapshot(root, tier);
     } catch (error) {
-      const transient = inspectMutation(root);
+      const transient = inspectCanonicalGraphMutation(root);
       if (transient.issue !== undefined) return invalidResult(tier, transient.issue);
       if (mutationInProgress(transient.state)) return inProgressResult(tier, transient.state);
       if (attempt < MAX_AUDIT_ATTEMPTS) continue;
       return invalidResult(tier, issueFromCanonicalError(error));
     }
 
-    const mutationAfter = inspectMutation(root);
+    const mutationAfter = inspectCanonicalGraphMutation(root);
     if (mutationAfter.issue !== undefined) return invalidResult(tier, mutationAfter.issue);
     if (mutationInProgress(mutationAfter.state)) return inProgressResult(tier, mutationAfter.state);
     if (canonicalBefore.fingerprint !== canonicalAfter.fingerprint) {
@@ -179,12 +180,26 @@ interface MutationInspection {
   readonly issue?: CanonicalGraphParityIssue;
 }
 
-function inspectMutation(root: string): MutationInspection {
+/** Internal injection seam for deterministic retirement-race verification. */
+export interface CanonicalGraphMutationProbes {
+  readonly capturePending: (root: string) => boolean;
+  readonly migrationPending: (root: string) => boolean;
+}
+
+const DEFAULT_MUTATION_PROBES: CanonicalGraphMutationProbes = {
+  capturePending: hasPendingCaptureIntent,
+  migrationPending: hasPendingMigrateDecision,
+};
+
+export function inspectCanonicalGraphMutation(
+  root: string,
+  probes: CanonicalGraphMutationProbes = DEFAULT_MUTATION_PROBES,
+): MutationInspection {
   try {
     return {
       state: {
-        capturePending: hasPendingCaptureIntent(root),
-        migrationPending: hasPendingMigrateDecision(root),
+        capturePending: probes.capturePending(root),
+        migrationPending: probes.migrationPending(root),
         sourceChanged: false,
       },
     };
@@ -304,6 +319,7 @@ interface CollectionSupportRecord {
   readonly memoryId: string;
   readonly entityId: string;
   readonly collection?: string;
+  readonly weight?: number;
   readonly collectionOnly?: boolean;
 }
 
@@ -312,9 +328,14 @@ function compareSupports(
   active: CanonicalGraphSnapshot,
 ): CanonicalGraphParitySection {
   const memories = new Map(active.memories.map((memory) => [memory.id, memory]));
+  const canonicalRecords: CollectionSupportRecord[] = canonical.map((record) => ({
+    ...record,
+    weight: 1,
+  }));
   const activeRecords: CollectionSupportRecord[] = active.supports.map((edge) => ({
     memoryId: edge.src,
     entityId: edge.dst,
+    weight: edge.weight,
     ...(memories.get(edge.src)?.collection === undefined
       ? {}
       : { collection: memories.get(edge.src)!.collection }),
@@ -331,13 +352,14 @@ function compareSupports(
     }
   }
   return compareByKey<CollectionSupportRecord>(
-    canonical,
+    canonicalRecords,
     activeRecords,
     supportKey,
     (left, right) => ({
       payload: left.memoryId !== right.memoryId
         || left.entityId !== right.entityId
-        || left.collection !== right.collection,
+        || left.collection !== right.collection
+        || left.weight !== right.weight,
       timestamp: false,
       provenance: false,
     }),
@@ -416,6 +438,7 @@ function supportKey(record: CollectionSupportRecord): string {
 }
 
 function isTransientMutationReadError(error: unknown): boolean {
+  if (error instanceof CanonicalFileRetiredError) return true;
   const code = typeof error === "object" && error !== null && "code" in error
     ? String((error as { code?: unknown }).code)
     : "";

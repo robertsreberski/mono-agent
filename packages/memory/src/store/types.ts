@@ -91,6 +91,7 @@ export type CanonicalGraphMemoryRecord = Pick<MemoryRecord, "id" | "status" | "t
 export interface CanonicalGraphSupportEdge {
   readonly src: string;
   readonly dst: string;
+  readonly weight: number;
 }
 
 /** One transactionally consistent graph/parity snapshot from the rebuildable index. */

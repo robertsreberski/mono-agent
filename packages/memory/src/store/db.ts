@@ -1098,8 +1098,8 @@ export class MemoryDb {
         createdAt: row.created_at,
       }));
       const supports = this.db.prepare(
-        `SELECT src, dst FROM edges WHERE kind = 'supports' ORDER BY src, dst`,
-      ).all() as Array<{ src: string; dst: string }>;
+        `SELECT src, dst, weight FROM edges WHERE kind = 'supports' ORDER BY src, dst`,
+      ).all() as Array<{ src: string; dst: string; weight: number }>;
       const metadata = this.indexMetadata();
       return {
         ...(metadata === undefined ? {} : { metadata }),
