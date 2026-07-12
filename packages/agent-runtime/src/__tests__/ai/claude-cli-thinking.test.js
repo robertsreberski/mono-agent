@@ -193,6 +193,46 @@ describe("claude-cli — buildCliCommand flags", () => {
     expect(spec.args).not.toContain("--include-partial-messages");
   });
 
+  it("clamps effort max to xhigh for the codex CLI (codex has no max tier)", () => {
+    const spec = buildCliCommand({
+      sdk: "codex",
+      model: "gpt-5-codex",
+      effort: "max",
+      systemPrompt: "sys",
+      prompt: "hi",
+      cwd: "/tmp",
+    });
+    expect(spec.args).toContain("model_reasoning_effort=xhigh");
+    expect(spec.args).not.toContain("model_reasoning_effort=max");
+    expect(spec.args.join(" ")).toContain("model_reasoning_summary");
+  });
+
+  it("passes effort xhigh through unchanged to the codex CLI", () => {
+    const spec = buildCliCommand({
+      sdk: "codex",
+      model: "gpt-5-codex",
+      effort: "xhigh",
+      systemPrompt: "sys",
+      prompt: "hi",
+      cwd: "/tmp",
+    });
+    expect(spec.args).toContain("model_reasoning_effort=xhigh");
+  });
+
+  it("keeps native --effort max for the claude-code CLI", () => {
+    const spec = buildCliCommand({
+      sdk: "claude-code",
+      model: "claude-opus-4-8",
+      effort: "max",
+      systemPrompt: "sys",
+      prompt: "hi",
+      cwd: "/tmp",
+    });
+    const effortIndex = spec.args.indexOf("--effort");
+    expect(effortIndex).toBeGreaterThanOrEqual(0);
+    expect(spec.args[effortIndex + 1]).toBe("max");
+  });
+
   it("passes the 1M context suffix for Opus 4.8 when contextWindow requests it", () => {
     const spec = buildCliCommand({
       sdk: "claude-code",

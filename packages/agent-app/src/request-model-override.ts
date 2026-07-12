@@ -1,4 +1,4 @@
-import { EFFORT_LEVELS } from "@mono-agent/config";
+import { detectEffortKeyword, EFFORT_LEVELS, effortRank } from "@mono-agent/config";
 import { parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider } from "@mono-agent/runtime-adapter";
 import type {
   LocalProviderDefinition,
@@ -17,6 +17,15 @@ import type {
  * lives here. An invalid value is WARNED and IGNORED (the turn falls back to the
  * harness default) rather than failing — a bad dynamic webhook `model` must not
  * 500 the request.
+ *
+ * The extension ALSO scans every turn's message text for effort trigger
+ * phrases ("think"/"extra think"/"ultra think") and escalates the turn's
+ * effort — see `applyEffortKeywordEscalation`. This lives here rather than in
+ * a sibling extension because siblings compose later-wins in parallel: only
+ * this extension knows the metadata effort the keyword must be compared
+ * against (escalation-only), and it already owns the direct-OpenCode guard.
+ * Effort-only writes keep the shared session (the harness isolates on MODEL
+ * overrides only).
  *
  * Execution mode is NOT set here: the harness derives it from the effective model
  * plus the host's configured executionMode (keeping a compatible host mode, e.g.
@@ -43,6 +52,7 @@ import type {
  */
 export interface RequestModelOverrideLogger {
   warn?(message: string, metadata?: Record<string, unknown>): void;
+  info?(message: string, metadata?: Record<string, unknown>): void;
 }
 
 export interface RequestModelOverrideOptions {
@@ -80,7 +90,10 @@ export interface RequestModelOverrideOptions {
 }
 
 interface RequestModelOverrideInput {
-  readonly request: { readonly metadata?: Record<string, unknown> };
+  readonly request: {
+    readonly metadata?: Record<string, unknown>;
+    readonly userMessage?: string;
+  };
 }
 
 interface RequestModelOverrideResult {
@@ -115,6 +128,10 @@ export function createRequestModelOverrideRuntimeExtension(
     );
     const runtimeOptions: RequestModelOverrideResult["runtimeOptions"] = {};
     const effectiveModelForEffort = model ?? baseModel;
+    // Shared by the metadata effort override AND keyword escalation below: any
+    // direct OpenCode model in the resulting chain means no run-level effort.
+    const directOpenCodeModels = [effectiveModelForEffort, ...fallbackModels]
+      .filter((entry): entry is RuntimeModelReference => entry?.sdk === "opencode");
 
     if (model !== undefined && rawModel !== undefined) {
       runtimeOptions.model = model;
@@ -123,8 +140,6 @@ export function createRequestModelOverrideRuntimeExtension(
 
     if (rawEffort !== undefined) {
       if (EFFORT_SET.has(rawEffort)) {
-        const directOpenCodeModels = [effectiveModelForEffort, ...fallbackModels]
-          .filter((model): model is RuntimeModelReference => model?.sdk === "opencode");
         if (directOpenCodeModels.length > 0) {
           logger?.warn?.("Ignoring per-request effort override for direct OpenCode anywhere in the resulting model chain.", {
             effort: rawEffort,
@@ -142,8 +157,63 @@ export function createRequestModelOverrideRuntimeExtension(
       }
     }
 
+    applyEffortKeywordEscalation(
+      runtimeOptions,
+      input.request.userMessage,
+      options?.baseEffort,
+      directOpenCodeModels,
+      logger,
+    );
+
     return { runtimeOptions, cleanup: async () => {} };
   };
+}
+
+/**
+ * Always-on background escalation: a trigger phrase in the turn's message text
+ * ("think" → high, "extra think" → xhigh, "ultra think" → max) RAISES this
+ * turn's effort, never lowers it. The baseline is the effort the turn would
+ * otherwise run at — an accepted metadata override, else the host default — so
+ * a webhook `effort:"max"` survives a bare "think" and an equal-or-lower
+ * keyword writes nothing (no spurious `run_config.overridden`). Direct
+ * OpenCode anywhere in the effective chain skips escalation (same reason as
+ * the metadata effort guard above: the SDK has no runtime effort control), and
+ * the warn fires only when the keyword would actually have escalated. The
+ * message text itself is never mutated — trigger words reach the model.
+ */
+function applyEffortKeywordEscalation(
+  runtimeOptions: RequestModelOverrideResult["runtimeOptions"],
+  userMessage: string | undefined,
+  baseEffort: string | undefined,
+  directOpenCodeModels: readonly RuntimeModelReference[],
+  logger: RequestModelOverrideLogger | undefined,
+): void {
+  if (typeof userMessage !== "string" || userMessage.length === 0) {
+    return;
+  }
+  const match = detectEffortKeyword(userMessage);
+  if (match === undefined) {
+    return;
+  }
+  const resolvedEffort = runtimeOptions.effort ?? baseEffort;
+  if (effortRank(match.effort) <= effortRank(resolvedEffort)) {
+    return;
+  }
+  if (directOpenCodeModels.length > 0) {
+    logger?.warn?.("Skipping keyword effort escalation for direct OpenCode anywhere in the resulting model chain.", {
+      keyword: match.keyword,
+      effort: match.effort,
+      reason: "The direct OpenCode SDK does not expose runtime effort control.",
+      directOpenCodeModels: directOpenCodeModels.map(runtimeModelReferenceLabel),
+    });
+    return;
+  }
+  runtimeOptions.effort = match.effort;
+  logger?.info?.("Escalating per-turn effort from message keyword.", {
+    keyword: match.keyword,
+    from: resolvedEffort ?? null,
+    to: match.effort,
+  });
 }
 
 /**
@@ -311,7 +381,7 @@ function applyLocalProviderBlock(
  * Read model/effort from webhook, cron, or TUI request metadata. Webhook takes
  * precedence, then cron, then an interactive TUI per-session override — a turn
  * is only ever one of the three. A turn carrying none of these blocks (e.g. an
- * ordinary chat turn) returns `{}` and the extension is a no-op.
+ * ordinary chat turn) returns `{}`, leaving only the keyword escalation scan.
  */
 function readOverride(metadata: Record<string, unknown> | undefined): {
   readonly model?: string;

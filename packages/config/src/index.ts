@@ -68,6 +68,13 @@ export type {
   ReadMonoAgentConfigJsonResult,
 } from "./json-source.js";
 export {
+  detectEffortKeyword,
+  EFFORT_KEYWORD_TRIGGERS,
+  effortRank,
+  maxEffortLevel,
+} from "./effort-keywords.js";
+export type { EffortKeywordMatch, EffortKeywordTrigger } from "./effort-keywords.js";
+export {
   ALLOW_ALL_TOOLS,
   EFFORT_LEVELS,
   MEMORY_BACKENDS,
