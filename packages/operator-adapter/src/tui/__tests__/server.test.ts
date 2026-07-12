@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   AgentResponseCancelledError,
+  isChannelUserCancelReason,
   parseAgentStreamFrame,
   type AgentMessageStream,
   type AgentRequestBase,
@@ -304,7 +305,9 @@ describe("startTuiAdapter", () => {
 
     const accepted = await fetch(`${running.baseUrl}/v1/conversations/tui%3Amain/cancel`, { method: "POST" });
     expect(accepted.status).toBe(202);
-    expect(cancelled).toEqual([["tui:main", "tui_cancel"]]);
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0]?.[0]).toBe("tui:main");
+    expect(isChannelUserCancelReason(cancelled[0]?.[1])).toBe(true);
 
     await running.stop();
     running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })) });

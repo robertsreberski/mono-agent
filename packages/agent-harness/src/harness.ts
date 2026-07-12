@@ -3,7 +3,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { AgentAttachment } from "@mono-agent/agent-contracts";
-import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
+import {
+  isChannelUserCancelReason,
+  NOTHING_TO_REPORT_SENTINEL,
+} from "@mono-agent/agent-contracts";
 import { deriveRunSource } from "@mono-agent/observability";
 import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 import {
@@ -182,7 +185,10 @@ export class MonoAgentHarness implements AgentHarness {
     await recorder.start?.();
 
     if (request.abortSignal.aborted) {
-      const summary = await recorder.finish({ cancelled: true, failureKind: "cancelled" });
+      const summary = await recorder.finish({
+        cancelled: true,
+        failureKind: cancellationFailureKind(request.abortSignal),
+      });
       return failureResponse({ runId, request, summary, kind: "cancelled", message: "Agent request was cancelled before runtime execution." });
     }
 
@@ -335,7 +341,13 @@ export class MonoAgentHarness implements AgentHarness {
       // retirement below), and return a cancelled failure instead.
       if (request.abortSignal.aborted) {
         await this.retireRunResultSession(request.conversationId, sessionRecord, runtimeResult.providerSessionId);
-        const summary = await recorder.finish({ ...runtimeResult, systemPrompt: context.prompt, isolated, cancelled: true, failureKind: "cancelled" });
+        const summary = await recorder.finish({
+          ...runtimeResult,
+          systemPrompt: context.prompt,
+          isolated,
+          cancelled: true,
+          failureKind: cancellationFailureKind(request.abortSignal),
+        });
         return {
           metadata: responseMetadata(runId, request, context, summary, runtimeResult),
           failure: {
@@ -402,7 +414,7 @@ export class MonoAgentHarness implements AgentHarness {
         const summary = await commitRecorderFinish(recorder, {
           ...successResult,
           cancelled: true,
-          failureKind: "cancelled",
+          failureKind: cancellationFailureKind(request.abortSignal),
         });
         return {
           metadata: responseMetadata(runId, request, context, summary, runtimeResult),
@@ -437,8 +449,11 @@ export class MonoAgentHarness implements AgentHarness {
         metadata: responseMetadata(runId, request, context, summary, runtimeResult),
       };
     } catch (error) {
-      const failure = failureFromThrownError(error, request.abortSignal.aborted && !conversationCommitStarted);
-      const summary = await safeRecorderFail(recorder, error);
+      const cancelledBeforeCommit = request.abortSignal.aborted && !conversationCommitStarted;
+      const failure = failureFromThrownError(error, cancelledBeforeCommit);
+      const summary = cancelledBeforeCommit
+        ? await safeRecorderCancel(recorder, cancellationFailureKind(request.abortSignal))
+        : await safeRecorderFail(recorder, error);
       return {
         metadata: responseMetadata(runId, request, context, summary),
         failure,
@@ -1305,6 +1320,21 @@ function failureFromThrownError(error: unknown, wasAborted: boolean): AgentHarne
     return { kind: error.name || "exception", message: error.message, details: errorToDetails(error) };
   }
   return { kind: "exception", message: String(error), details: error };
+}
+
+function cancellationFailureKind(signal: AbortSignal): "cancelled" | "cancelled_user" {
+  return isChannelUserCancelReason(signal.reason) ? "cancelled_user" : "cancelled";
+}
+
+async function safeRecorderCancel(
+  recorder: RunRecorder,
+  failureKind: "cancelled" | "cancelled_user",
+): Promise<RunSummary | undefined> {
+  try {
+    return await recorder.finish({ cancelled: true, failureKind });
+  } catch {
+    return undefined;
+  }
 }
 
 async function safeRecorderFail(recorder: RunRecorder, error: unknown): Promise<RunSummary | undefined> {
