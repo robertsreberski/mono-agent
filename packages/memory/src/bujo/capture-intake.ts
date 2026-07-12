@@ -623,15 +623,23 @@ export class CompletedTurnIntakeManager {
   }
 
   private scheduleNextWake(): void {
-    if (this.stopped || this.wakeTimer !== undefined) return;
+    if (this.stopped) return;
+    // Reconcile the timer from the current durable inventory every time. A new
+    // turn can fail while a later retry already owns the wake, and that earlier
+    // deadline must preempt the stale timer instead of waiting behind it.
+    this.clearWakeTimer();
     const nextId = this.nextPendingRuntimeId(false);
     const next = nextId === undefined ? undefined : this.runtimeRecords.get(nextId);
     if (next?.nextAttemptAt === undefined) return;
     const delay = Math.max(0, Date.parse(next.nextAttemptAt) - this.clock().getTime());
-    this.wakeTimer = setTimeout(() => {
+    const handle = setTimeout(() => {
+      // A cancelled callback that was already queued must never clear a newer
+      // timer installed for an earlier deadline.
+      if (this.wakeTimer !== handle) return;
       this.wakeTimer = undefined;
       this.startWorker();
     }, delay);
+    this.wakeTimer = handle;
     this.wakeTimer.unref?.();
   }
 
