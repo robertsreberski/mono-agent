@@ -305,6 +305,51 @@ describe("completed-turn durable intake", () => {
     restarted.finishShutdown();
   });
 
+  it("preempts a later wake when a new failed turn schedules an earlier retry", async () => {
+    const memoryRoot = root();
+    let now = FIXED;
+    let farAttempts = 0;
+    let earlierAttempts = 0;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const intake = manager(memoryRoot, {
+      clock: () => now,
+      retryBaseMs: 10,
+      retryMaxMs: 1_000,
+      capture: async (input) => {
+        if (input.runId === "far-future-retry") {
+          farAttempts += 1;
+          throw new Error("provider unavailable");
+        }
+        earlierAttempts += 1;
+        if (earlierAttempts === 1) throw new Error("retry once");
+        return "captured";
+      },
+    });
+    try {
+      intake.admit(turn({ runId: "far-future-retry" }));
+      await intake.flush();
+      now = new Date(now.getTime() + 10);
+      await intake.flush();
+      now = new Date(now.getTime() + 20);
+      await intake.flush();
+      expect(farAttempts).toBe(3); // the existing record now owns a +40ms wake
+
+      intake.admit(turn({ runId: "earlier-retry", conversationId: "conversation-0002" }));
+      await waitUntil(() => earlierAttempts === 1 && intake.snapshot().retrying === 0);
+
+      // Do not flush or restart: only the replacement +10ms wake may retry it.
+      now = new Date(now.getTime() + 10);
+      await vi.advanceTimersByTimeAsync(10);
+      await waitUntil(() => earlierAttempts === 2 && intake.snapshot().retrying === 0);
+
+      expect(intake.snapshot()).toMatchObject({ pending: 1, resolved: 1, retrying: 0 });
+      expect(farAttempts).toBe(3);
+    } finally {
+      intake.finishShutdown();
+      vi.useRealTimers();
+    }
+  });
+
   it("retries a crash after summary persistence without duplicating the run-derived audit", async () => {
     const memoryRoot = root();
     const durableIds = new Set<string>();
