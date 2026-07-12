@@ -5,8 +5,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
+import { writeCaptureIntent } from "../capture-outbox.js";
 import { createBujoMemoryStore } from "../store.js";
 import { appendBullet, dailyFilePath, normalizedContentHash } from "../daily.js";
+import { auditCanonicalGraphParity, appendGraphBatch } from "../index.js";
 import { parseDailyFile } from "../grammar.js";
 import { migrate } from "../migrate.js";
 import { readBujoRuntimeSnapshot } from "../runtime-snapshot.js";
@@ -154,6 +156,114 @@ describe("BujoMemoryStore — tier derivation", () => {
     await store.close();
     const inspected = openMemoryDb({ path: join(root, "memory.db"), readOnly: true, dim: 64 });
     expect(inspected.get(bullet.id)?.salience).toBe(0.5);
+    inspected.close();
+  });
+
+  it("repairs canonical relation and association drift during synchronous outbox recovery", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-startup-capture-graph-"));
+    const now = new Date("2026-07-11T09:00:00.000Z");
+    const canonicalAt = "2026-01-01T00:00:00.000Z";
+    const driftedAt = "2026-06-01T00:00:00.000Z";
+    const embeddings = fakeEmbeddings(64);
+    const item: Bullet = {
+      id: "CAPTURE-GRAPH-RECOVERY",
+      type: "note",
+      status: "open",
+      text: "Morgan maintains mono-agent.",
+      salience: 0.7,
+      isInsight: false,
+      createdAt: now.toISOString(),
+      refs: [],
+    };
+    appendBullet(root, item, now);
+    const file = relative(root, dailyFilePath(root, now));
+    const record: MemoryRecord = {
+      ...item,
+      accessCount: 0,
+      tags: [],
+      source: { file },
+    };
+    appendGraphBatch(root, {
+      entities: [
+        { id: "person:morgan", name: "Morgan", type: "person", createdAt: canonicalAt },
+        { id: "project:mono-agent", name: "mono-agent", type: "project", createdAt: canonicalAt },
+      ],
+      relations: [{
+        src: "person:morgan",
+        dst: "project:mono-agent",
+        relation: "maintains",
+        createdAt: canonicalAt,
+      }],
+      associations: [{
+        memoryId: item.id,
+        entityId: "person:morgan",
+        provenance: "capture",
+        createdAt: canonicalAt,
+      }],
+    });
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings, dim: 64 });
+    await db.upsert(record);
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: canonicalAt });
+    db.upsertEntity({ id: "project:mono-agent", name: "mono-agent", type: "project", createdAt: canonicalAt });
+    db.addEntityRelation("person:morgan", "project:mono-agent", "maintains", driftedAt);
+    db.associateMemory({
+      memoryId: item.id,
+      entityId: "person:morgan",
+      provenance: "legacy-name-match",
+      createdAt: driftedAt,
+    });
+    expect(auditCanonicalGraphParity(root, db)).toMatchObject({
+      matches: false,
+      relations: { timestampMismatches: 1 },
+      associations: { timestampMismatches: 1, provenanceMismatches: 1 },
+    });
+    db.close();
+    writeCaptureIntent(root, [{
+      candidateIndex: 0,
+      kind: "noop",
+      id: item.id,
+      expected: { file, bullet: item },
+    }], {
+      entities: [
+        { id: "person:morgan", name: "Morgan", type: "person", createdAt: now.toISOString() },
+        { id: "project:mono-agent", name: "mono-agent", type: "project", createdAt: now.toISOString() },
+      ],
+      relations: [{
+        src: "person:morgan",
+        dst: "project:mono-agent",
+        relation: "maintains",
+        createdAt: now.toISOString(),
+      }],
+      associations: [{
+        memoryId: item.id,
+        entityId: "person:morgan",
+        provenance: "capture",
+        createdAt: now.toISOString(),
+      }],
+    }, now.toISOString());
+
+    const startupLlm = vi.fn(async () => { throw new Error("startup recovery must not call the LLM"); });
+    const store = createBujoMemoryStore({
+      root,
+      tier: "bujo",
+      embeddings,
+      dim: 64,
+      llm: { id: "startup", complete: startupLlm },
+      clock: () => now,
+    });
+    expect(startupLlm).not.toHaveBeenCalled();
+    await store.close();
+
+    const inspected = openMemoryDb({ path: join(root, "memory.db"), readOnly: true, dim: 64 });
+    expect(auditCanonicalGraphParity(root, inspected).matches).toBe(true);
+    expect(inspected.relationsFor("person:morgan")[0]?.createdAt).toBe(canonicalAt);
+    expect(inspected.associationsForMemory(item.id)).toEqual([{
+      memoryId: item.id,
+      entityId: "person:morgan",
+      provenance: "capture",
+      createdAt: canonicalAt,
+    }]);
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
     inspected.close();
   });
 

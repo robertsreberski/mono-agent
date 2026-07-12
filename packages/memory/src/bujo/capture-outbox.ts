@@ -304,11 +304,9 @@ function applyReplay(
   if (db !== undefined) {
     // The DB mirror is part of intent completion. Any failure leaves the
     // pending file in place so restart retries the idempotent canonical graph.
-    for (const entity of canonical.entities) db.upsertEntity(entity);
-    for (const relation of canonical.relations) {
-      db.addEntityRelation(relation.src, relation.dst, relation.relation, relation.createdAt);
-    }
-    for (const association of canonical.associations) db.associateMemory(association);
+    for (const entity of canonical.entities) db.mirrorCanonicalEntity(entity);
+    for (const relation of canonical.relations) db.mirrorCanonicalRelation(relation);
+    for (const association of canonical.associations) db.mirrorCanonicalAssociation(association);
     assertDbReplayOutcome(db, intent.actions, canonical);
   }
 

@@ -340,8 +340,8 @@ function applyClusterOutcome(root: string, db: MemoryDb, decision: DurableMigrat
   if (canonicalEntity === undefined || canonicalAssociation === undefined) {
     throw new Error(`memory-migrate: canonical collection graph outcome for ${decision.id} is incomplete.`);
   }
-  db.upsertEntity(canonicalEntity);
-  db.associateMemory(canonicalAssociation);
+  db.mirrorCanonicalEntity(canonicalEntity);
+  db.mirrorCanonicalAssociation(canonicalAssociation);
   db.addEdge(decision.id, canonicalEntity.id, "supports");
   assertClusterOutcome(root, db, decision.id, canonicalEntity, canonicalAssociation);
 }

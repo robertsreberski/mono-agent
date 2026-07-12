@@ -85,6 +85,13 @@ export interface MemoryEntityAssociation {
   readonly createdAt: string;
 }
 
+/** Complete canonical graph projection stored in the rebuildable index. */
+export interface CanonicalGraphSnapshot {
+  readonly entities: readonly EntityRecord[];
+  readonly relations: readonly EntityRelationRecord[];
+  readonly associations: readonly MemoryEntityAssociation[];
+}
+
 export interface ContentHashRecord {
   readonly contentHash: string;
   readonly memoryId: string;

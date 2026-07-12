@@ -52,6 +52,67 @@ describe("entity repository", () => {
     db.close();
   });
 
+  it("keeps compatibility relation semantics but canonical mirroring overwrites createdAt", () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(8), dim: 8 });
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", createdAt: "2026-01-01T00:00:00.000Z" });
+    db.upsertEntity({ id: "project:mono-agent", name: "mono-agent", createdAt: "2026-01-01T00:00:00.000Z" });
+    db.addEntityRelation("person:morgan", "project:mono-agent", "maintains", "2025-01-01T00:00:00.000Z");
+    db.addEntityRelation("person:morgan", "project:mono-agent", "maintains", "2025-06-01T00:00:00.000Z");
+    expect(db.relationsFor("person:morgan")[0]?.createdAt).toBe("2025-01-01T00:00:00.000Z");
+
+    db.mirrorCanonicalRelation({
+      src: "person:morgan",
+      dst: "project:mono-agent",
+      relation: "maintains",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    expect(db.relationsFor("person:morgan")).toEqual([{
+      src: "person:morgan",
+      dst: "project:mono-agent",
+      relation: "maintains",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }]);
+    db.close();
+  });
+
+  it("keeps compatibility association precedence but canonical mirroring overwrites provenance and createdAt", () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(8), dim: 8 });
+    db.upsertLexical(memory("M1"));
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", createdAt: "2026-01-01T00:00:00.000Z" });
+    db.associateMemory({
+      memoryId: "M1",
+      entityId: "person:morgan",
+      provenance: "capture",
+      createdAt: "2025-01-01T00:00:00.000Z",
+    });
+    db.associateMemory({
+      memoryId: "M1",
+      entityId: "person:morgan",
+      provenance: "legacy-name-match",
+      createdAt: "2025-06-01T00:00:00.000Z",
+    });
+    expect(db.associationsForMemory("M1")).toEqual([{
+      memoryId: "M1",
+      entityId: "person:morgan",
+      provenance: "capture",
+      createdAt: "2025-01-01T00:00:00.000Z",
+    }]);
+
+    db.mirrorCanonicalAssociation({
+      memoryId: "M1",
+      entityId: "person:morgan",
+      provenance: "legacy-name-match",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    expect(db.associationsForMemory("M1")).toEqual([{
+      memoryId: "M1",
+      entityId: "person:morgan",
+      provenance: "legacy-name-match",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }]);
+    db.close();
+  });
+
   it("listEntities returns entities ordered by name up to limit", () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(8), dim: 8 });
     db.upsertEntity({ id: "project:mono-agent", name: "mono-agent", type: "project", createdAt: "2026-06-15T09:00:00.000Z" });
@@ -76,3 +137,18 @@ describe("entity repository", () => {
     db.close();
   });
 });
+
+function memory(id: string) {
+  return {
+    id,
+    type: "note" as const,
+    status: "open" as const,
+    text: "Morgan maintains mono-agent.",
+    salience: 0.7,
+    isInsight: false,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    accessCount: 0,
+    tags: [],
+    source: { file: "daily/2026-01-01.md", line: 3 },
+  };
+}

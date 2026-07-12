@@ -57,6 +57,8 @@ export { extractEntities } from "./entities.js";
 export type { Extraction, ExtractedEntity, ExtractedRelation } from "./entities.js";
 export { appendAssociation, appendGraphBatch, readGraph } from "./graph.js";
 export type { GraphBatchInput, GraphBatchResult } from "./graph.js";
+export { auditCanonicalGraphParity } from "./graph-parity.js";
+export type { CanonicalGraphParityResult, CanonicalGraphParitySection } from "./graph-parity.js";
 
 // Phase 4 built-in LLM adapter
 export { createOllamaLlm } from "./ollama-llm.js";

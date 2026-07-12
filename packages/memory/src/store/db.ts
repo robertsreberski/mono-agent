@@ -18,6 +18,7 @@ import {
   type EntityRecord,
   type EntityRelationRecord,
   type MemoryEntityAssociation,
+  type CanonicalGraphSnapshot,
   type ContentHashRecord,
   type IndexMetadata,
   type MemoryDbOptions,
@@ -918,17 +919,26 @@ export class MemoryDb {
   }
 
   /**
-   * Mirror a canonical entity record into the active index as a total overwrite.
-   * Callers pass the exact merged record produced by `appendGraphBatch` (whose
-   * `mergeEntityRecord` is the single owner of field-preservation), so every
-   * column — including `created_at` and a cleared `summary`/`type`/`updated_at` —
-   * converges to that record. This write preserves nothing on its own: a NULL
-   * incoming value clears the column rather than keeping the prior one. That is
-   * what lets `assertDbReplayOutcome`'s exact-mirror check converge and self-heal
-   * a row that diverged from its `graph.jsonl` canonical line (e.g. one predating a
-   * memory rework), instead of wedging the capture outbox forever.
+   * Compatibility entity upsert. Its established behavior is a total overwrite:
+   * absent optional fields clear existing columns and createdAt is replaced.
+   * Canonical graph callers use the explicitly named mirror method below so
+   * relation/association merge semantics cannot be selected accidentally.
    */
   upsertEntity(entity: EntityRecord): void {
+    this.writeCanonicalEntity(entity);
+  }
+
+  /**
+   * Total-overwrite one entity from canonical graph.jsonl state.
+   *
+   * This deliberately has a distinct name from the compatibility repository
+   * methods below: canonical replay must never inherit merge/ignore semantics.
+   */
+  mirrorCanonicalEntity(entity: EntityRecord): void {
+    this.writeCanonicalEntity(entity);
+  }
+
+  private writeCanonicalEntity(entity: EntityRecord): void {
     this.db.prepare(
       `INSERT INTO entities (id, name, type, summary, created_at, updated_at)
        VALUES (@id, @name, @type, @summary, @created_at, @updated_at)
@@ -971,6 +981,14 @@ export class MemoryDb {
     ).run(src, dst, relation, createdAt);
   }
 
+  /** Total-overwrite one relation from canonical graph.jsonl state. */
+  mirrorCanonicalRelation(record: EntityRelationRecord): void {
+    this.db.prepare(
+      `INSERT INTO entity_relations (src, dst, relation, created_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(src, dst, relation) DO UPDATE SET created_at = excluded.created_at`,
+    ).run(record.src, record.dst, record.relation, record.createdAt);
+  }
+
   relationsFor(src: string): EntityRelationRecord[] {
     const rows = this.db
       .prepare(`SELECT src, dst, relation, created_at FROM entity_relations WHERE src = ?`)
@@ -991,12 +1009,7 @@ export class MemoryDb {
   }
 
   associateMemory(record: MemoryEntityAssociation): void {
-    if (this.get(record.memoryId) === undefined) {
-      throw new Error(`memory-store: cannot associate unknown memory "${record.memoryId}".`);
-    }
-    if (this.getEntity(record.entityId) === undefined) {
-      throw new Error(`memory-store: cannot associate unknown entity "${record.entityId}".`);
-    }
+    this.assertAssociationEndpoints(record);
     this.db.prepare(
       `INSERT INTO memory_entities (memory_id, entity_id, provenance, created_at)
        VALUES (?, ?, ?, ?)
@@ -1006,6 +1019,27 @@ export class MemoryDb {
            ELSE excluded.provenance
          END`,
     ).run(record.memoryId, record.entityId, record.provenance, record.createdAt);
+  }
+
+  /** Total-overwrite one memory/entity association from canonical graph.jsonl state. */
+  mirrorCanonicalAssociation(record: MemoryEntityAssociation): void {
+    this.assertAssociationEndpoints(record);
+    this.db.prepare(
+      `INSERT INTO memory_entities (memory_id, entity_id, provenance, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(memory_id, entity_id) DO UPDATE SET
+         provenance = excluded.provenance,
+         created_at = excluded.created_at`,
+    ).run(record.memoryId, record.entityId, record.provenance, record.createdAt);
+  }
+
+  private assertAssociationEndpoints(record: Pick<MemoryEntityAssociation, "memoryId" | "entityId">): void {
+    if (this.get(record.memoryId) === undefined) {
+      throw new Error(`memory-store: cannot associate unknown memory "${record.memoryId}".`);
+    }
+    if (this.getEntity(record.entityId) === undefined) {
+      throw new Error(`memory-store: cannot associate unknown entity "${record.entityId}".`);
+    }
   }
 
   associationsForMemory(memoryId: string): MemoryEntityAssociation[] {
@@ -1018,6 +1052,36 @@ export class MemoryDb {
       provenance: row.provenance,
       createdAt: row.created_at,
     }));
+  }
+
+  /** Provider-free, complete graph inventory for canonical parity checks. */
+  canonicalGraphSnapshot(): CanonicalGraphSnapshot {
+    const entities = (this.db.prepare(
+      `SELECT id, name, type, summary, created_at, updated_at FROM entities ORDER BY id`,
+    ).all() as Record<string, unknown>[]).map((row) => this.entityFromRow(row));
+    const relations = (this.db.prepare(
+      `SELECT src, dst, relation, created_at FROM entity_relations ORDER BY src, dst, relation`,
+    ).all() as Array<{ src: string; dst: string; relation: string; created_at: string }>).map((row) => ({
+      src: row.src,
+      dst: row.dst,
+      relation: row.relation,
+      createdAt: row.created_at,
+    }));
+    const associations = (this.db.prepare(
+      `SELECT memory_id, entity_id, provenance, created_at
+       FROM memory_entities ORDER BY memory_id, entity_id`,
+    ).all() as Array<{
+      memory_id: string;
+      entity_id: string;
+      provenance: MemoryEntityAssociation["provenance"];
+      created_at: string;
+    }>).map((row) => ({
+      memoryId: row.memory_id,
+      entityId: row.entity_id,
+      provenance: row.provenance,
+      createdAt: row.created_at,
+    }));
+    return { entities, relations, associations };
   }
 
   /**

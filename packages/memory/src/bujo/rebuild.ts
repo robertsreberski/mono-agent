@@ -85,21 +85,21 @@ export async function rebuildFromMarkdown(root: string, db: MemoryDb): Promise<{
   const g = readGraph(root);
   for (const entity of g.entities) {
     try {
-      db.upsertEntity(entity);
+      db.mirrorCanonicalEntity(entity);
     } catch {
       // Per-item isolation: a single corrupt entity must not abort the rebuild
     }
   }
   for (const relation of g.relations) {
     try {
-      db.addEntityRelation(relation.src, relation.dst, relation.relation);
+      db.mirrorCanonicalRelation(relation);
     } catch {
       // Per-item isolation
     }
   }
   for (const association of g.associations) {
     try {
-      db.associateMemory(association);
+      db.mirrorCanonicalAssociation(association);
     } catch {
       // Candidate validation reports orphan endpoints; a malformed canonical
       // association does not prevent preservation of the remaining source.
@@ -327,11 +327,9 @@ export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): P
           createdAt: record.createdAt,
         });
       }
-      for (const entity of plan.graph.entities) db.upsertEntity(entity);
-      for (const relation of plan.graph.relations) {
-        db.addEntityRelation(relation.src, relation.dst, relation.relation, relation.createdAt);
-      }
-      for (const association of plan.graph.associations) db.associateMemory(association);
+      for (const entity of plan.graph.entities) db.mirrorCanonicalEntity(entity);
+      for (const relation of plan.graph.relations) db.mirrorCanonicalRelation(relation);
+      for (const association of plan.graph.associations) db.mirrorCanonicalAssociation(association);
       for (const support of plan.graph.collectionSupports) {
         db.addEdge(support.memoryId, support.entityId, "supports");
       }
