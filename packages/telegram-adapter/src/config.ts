@@ -65,6 +65,12 @@ export interface TelegramAttachmentsConfig {
   readonly maxUploadBytes?: number;
 }
 
+/** Optional request-bound restrictions for app-owned Telegram send tools. */
+export interface TelegramSendToolsConfig {
+  readonly scope?: "producing-conversation";
+  readonly pathScope?: "run-output";
+}
+
 export interface TelegramAdapterConfig {
   readonly enabled: boolean;
   readonly botToken: string;
@@ -94,6 +100,7 @@ export interface TelegramAdapterConfig {
    * required model. Omit to leave audio as an on-disk file only. Not a secret.
    */
   readonly transcription?: TelegramTranscriptionConfig;
+  readonly sendTools?: TelegramSendToolsConfig;
 }
 
 export interface RedactedTelegramAdapterConfig {
@@ -109,6 +116,7 @@ export interface RedactedTelegramAdapterConfig {
   readonly commands?: { readonly count: number };
   readonly reactions?: TelegramReactionsConfig;
   readonly transcription?: TelegramTranscriptionConfig;
+  readonly sendTools?: TelegramSendToolsConfig;
 }
 
 export type TelegramAdapterConfigErrorCode =
@@ -174,12 +182,19 @@ export async function loadTelegramAdapterConfig(
     false,
     invalidConfig,
   );
+  const sendTools = readTelegramSendTools(json);
 
   // A disabled channel never validates its credentials: the status surface reads
   // it as "disabled", not "waiting for config". Only an enabled channel demands
   // its required fields (a missing token then becomes a real "waiting" reason).
   if (!enabled) {
-    return { enabled: false, botToken: "", allowedChatIds, allowAllChats };
+    return {
+      enabled: false,
+      botToken: "",
+      allowedChatIds,
+      allowAllChats,
+      ...(sendTools === undefined ? {} : { sendTools }),
+    };
   }
 
   const botToken = readRequired(
@@ -224,6 +239,31 @@ export async function loadTelegramAdapterConfig(
     ...(commands.length === 0 ? {} : { commands }),
     ...(reactions === undefined ? {} : { reactions }),
     ...(transcription === undefined ? {} : { transcription }),
+    ...(sendTools === undefined ? {} : { sendTools }),
+  };
+}
+
+function readTelegramSendTools(json: SettingsJson): TelegramSendToolsConfig | undefined {
+  const raw = readJsonSection(json, "telegram").sendTools;
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw invalidConfig("telegram.sendTools must be an object with { scope?, pathScope? }.");
+  }
+  const record = raw as Record<string, unknown>;
+  const unknown = Object.keys(record).filter((key) => key !== "scope" && key !== "pathScope");
+  if (unknown.length > 0) {
+    throw invalidConfig("telegram.sendTools contains unknown fields.", { fields: unknown });
+  }
+  if (record.scope !== undefined && record.scope !== "producing-conversation") {
+    throw invalidConfig('telegram.sendTools.scope must be "producing-conversation" when set.');
+  }
+  if (record.pathScope !== undefined && record.pathScope !== "run-output") {
+    throw invalidConfig('telegram.sendTools.pathScope must be "run-output" when set.');
+  }
+  if (record.scope === undefined && record.pathScope === undefined) return undefined;
+  return {
+    ...(record.scope === undefined ? {} : { scope: "producing-conversation" as const }),
+    ...(record.pathScope === undefined ? {} : { pathScope: "run-output" as const }),
   };
 }
 
@@ -579,6 +619,7 @@ export function redactTelegramAdapterConfig(
     ...(config.reactions === undefined ? {} : { reactions: config.reactions }),
     // The endpoint/model are not secrets, so they pass through verbatim.
     ...(config.transcription === undefined ? {} : { transcription: config.transcription }),
+    ...(config.sendTools === undefined ? {} : { sendTools: config.sendTools }),
   };
 }
 

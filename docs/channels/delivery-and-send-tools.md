@@ -73,6 +73,31 @@ Coverage: `config`. Three conditions must hold for a send tool to work:
 
 The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels`, `telegram.allowedChatIds` / `telegram.allowAllChats`) **remains the destination boundary**: allowing the tool does not widen where the agent may send. A send to a destination outside the adapter allowlist is refused.
 
+For an agent shared by multiple Telegram chats, add a stricter per-run boundary:
+
+```json
+{
+  "telegram": {
+    "sendTools": {
+      "scope": "producing-conversation",
+      "pathScope": "run-output"
+    }
+  }
+}
+```
+
+`scope` binds message, button, and file delivery to the Telegram chat that
+produced the current request, even if another chat is globally allowed.
+`pathScope` binds path uploads to the exact app-created
+`artifacts/outbound/<run-id>` directory object, including rejection of root
+replacement and symlink escapes. The child opens the candidate with no-follow,
+verifies the file and directory identities, and uploads bytes read from that
+pinned descriptor; the self-hosted `file://` fast path is disabled in this mode.
+All rejected strict paths return the same generic error, so the tool does not
+become a filesystem-existence oracle. The scratch directory is deleted after the
+run and its tool clients settle. Missing trusted request context fails closed.
+Omitting this block preserves the legacy allowlist-only behavior.
+
 The native sandbox's network allowlist is a separate egress boundary. App-owned send tools run in a sandboxed child and use SRT's authenticated proxy automatically; no `NODE_USE_ENV_PROXY` setting is needed. A `localhost`-only policy cannot reach Slack or Telegram. In `allowlist` mode, include the exact external API hosts plus an explicit loopback host (normally `127.0.0.1`) when a blocking ask tool is enabled. Mono-agent grants SRT's coarse loopback capability only to this trusted app-owned child; it does not let Bash or project MCP servers bind arbitrary loopback ports:
 
 ```json
@@ -97,7 +122,7 @@ The native sandbox's network allowlist is a separate egress boundary. App-owned 
 - One pending ask per conversation: consolidate everything into a single question. A second concurrent ask returns an "already pending" result.
 - On timeout (default 10 min, `interaction.askUser.timeoutMs`) the tool returns without an answer and the user's late reply arrives as a normal next turn. On an app restart pending asks degrade the same way.
 - The wait keeps the MCP call alive via progress notifications (see `tools.mcpCallTimeoutMs` / `tools.mcpCallMaxTotalTimeoutMs`).
-- Tool children can also POST `{conversationId, key, message, state}` to the bridge's `/v1/progress` (URL/token in `MONO_AGENT_INTERACTION_BRIDGE_URL`/`_TOKEN` env) to surface long-tool progress as a channel status message edited in place.
+- Opted project MCP children can POST `{key, message, state}` to `/v1/progress` using `MONO_AGENT_INTERACTION_PROGRESS_URL` / `MONO_AGENT_INTERACTION_PROGRESS_TOKEN`. The run-scoped bearer selects the producing conversation server-side, is revalidated after the body is read, and is revoked at cleanup. The bridge master bearer remains app-owned and is blanked in opted project MCP environments.
 
 When a blocking `AskUser` or `TelegramAskButtons` call completes, mono-agent stores its exact question, options, outcome, and answer/selection when present in the assistant history copy committed for that turn. This makes the interaction available to a later cold/stateless replay even though the transport posted the question out of band. The final outward message and long-term memory capture remain unchanged. Non-blocking `TelegramAskButtons` (`wait: false`) is not folded into that in-turn record; its later callback remains a synthetic next turn.
 

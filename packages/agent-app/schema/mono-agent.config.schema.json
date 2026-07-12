@@ -783,6 +783,21 @@
           ],
           "type": "string"
         },
+        "mcpRequestContextServers": {
+          "description": "Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context.",
+          "examples": [
+            [
+              "transcribe"
+            ]
+          ],
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": [],
+          "uniqueItems": true
+        },
         "mcpCallTimeoutMs": {
           "description": "Configures mcpCallTimeoutMs for the tools section.",
           "examples": [
@@ -1714,6 +1729,32 @@
           ],
           "type": "object",
           "additionalProperties": true
+        },
+        "sendTools": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "scope": {
+              "description": "Bind Telegram send tools to the chat that produced the current run.",
+              "examples": [
+                "producing-conversation"
+              ],
+              "type": "string",
+              "enum": [
+                "producing-conversation"
+              ]
+            },
+            "pathScope": {
+              "description": "Confine Telegram path uploads to the current run output directory.",
+              "examples": [
+                "run-output"
+              ],
+              "type": "string",
+              "enum": [
+                "run-output"
+              ]
+            }
+          }
         },
         "enabled": {
           "description": "Enables the telegram capability.",

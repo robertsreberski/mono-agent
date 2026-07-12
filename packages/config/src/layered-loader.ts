@@ -816,6 +816,9 @@ export function layerJsonOntoEnv(
   if (json.tools?.mcpConfigPath !== undefined) {
     fromJson.MONO_AGENT_MCP_CONFIG_PATH = json.tools.mcpConfigPath;
   }
+  if (json.tools?.mcpRequestContextServers !== undefined) {
+    fromJson.MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS = csv(json.tools.mcpRequestContextServers);
+  }
   if (json.tools?.mcpCallTimeoutMs !== undefined) {
     fromJson.MONO_AGENT_MCP_CALL_TIMEOUT_MS = String(json.tools.mcpCallTimeoutMs);
   }

@@ -44,6 +44,7 @@ describe("layerJsonOntoEnv", () => {
         tools: {
           allowedTools: ["Read"],
           disallowedTools: ["Bash"],
+          mcpRequestContextServers: ["transcribe"],
           mcpCallTimeoutMs: 150000,
           mcpCallMaxTotalTimeoutMs: 2700000,
         },
@@ -81,6 +82,7 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MEMORY_PATH).toBe(".mono-agent/memory");
     expect(layered.MONO_AGENT_ALLOWED_TOOLS).toBe("Read");
     expect(layered.MONO_AGENT_DISALLOWED_TOOLS).toBe("Bash");
+    expect(layered.MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS).toBe("transcribe");
     expect(layered.MONO_AGENT_MCP_CALL_TIMEOUT_MS).toBe("150000");
     expect(layered.MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS).toBe("2700000");
     expect(layered.MONO_AGENT_ARTIFACT_DIR).toBe(".mono-agent/artifacts");

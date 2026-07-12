@@ -120,6 +120,7 @@ export const CONFIG_ENV_KEYS = {
   "tools.allowedTools": "MONO_AGENT_ALLOWED_TOOLS",
   "tools.disallowedTools": "MONO_AGENT_DISALLOWED_TOOLS",
   "tools.mcpConfigPath": "MONO_AGENT_MCP_CONFIG_PATH",
+  "tools.mcpRequestContextServers": "MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS",
   "tools.mcpCallTimeoutMs": "MONO_AGENT_MCP_CALL_TIMEOUT_MS",
   "tools.mcpCallMaxTotalTimeoutMs": "MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS",
   "sandbox.mode": "MONO_AGENT_SANDBOX_MODE",
@@ -725,6 +726,12 @@ function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSect
         label: "MCP config",
         value: tools.mcpConfigPath ?? PLACEHOLDER,
         jsonPresent: json.tools?.mcpConfigPath !== undefined,
+      }),
+      toField(env, {
+        id: "tools.mcpRequestContextServers",
+        label: "Request-context MCP servers",
+        value: tools.mcpRequestContextServers?.join(", ") ?? "none",
+        jsonPresent: json.tools?.mcpRequestContextServers !== undefined,
       }),
       toField(env, {
         id: "tools.mcpCallTimeoutMs",

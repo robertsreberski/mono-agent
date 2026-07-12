@@ -103,6 +103,8 @@ export interface ConfiguredAgentHarnessOptions {
   readonly historyStore?: ConversationHistoryStore;
   /** App-owned run-scoped interaction details to add only to replay history. */
   readonly turnHistoryEnricher?: AgentHarnessOptions["turnHistoryEnricher"];
+  /** App-owned issuer for request-scoped project-MCP progress credentials. */
+  readonly progressCapabilityIssuer?: NonNullable<AgentHarnessOptions["mcpRequestContext"]>["progressCapabilityIssuer"];
   readonly createRunId?: AgentHarnessOptions["createRunId"];
   readonly now?: AgentHarnessOptions["now"];
   readonly runtimeOptions?: AgentHarnessOptions["runtimeOptions"];
@@ -455,6 +457,17 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
     ...(runtimeOptionsForRequest === undefined
       ? {}
       : { runtimeOptionsForRequest }),
+    ...(config.tools.mcpRequestContextServers === undefined
+      ? {}
+      : {
+          mcpRequestContext: {
+            serverNames: config.tools.mcpRequestContextServers,
+            runOutputRoot: resolvePath(config.artifacts.dir, "outbound"),
+            ...(options.progressCapabilityIssuer === undefined
+              ? {}
+              : { progressCapabilityIssuer: options.progressCapabilityIssuer }),
+          },
+        }),
     ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",

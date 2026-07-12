@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -1637,6 +1637,130 @@ describe("AgentHarness", () => {
     });
     expect(fake.calls[0]?.options.mcpConfigPath).toBeUndefined();
   });
+
+  it("injects trusted context into opted-in stdio MCPs after authoritative merging without mutating shared state", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const target = {
+      type: "stdio",
+      command: "transcribe-mcp",
+      env: {
+        KEEP_ME: "yes",
+        MONO_AGENT_MCP_PRODUCING_CONVERSATION_ID: "spoofed",
+        MONO_AGENT_INTERACTION_PROGRESS_TOKEN: "spoofed-token",
+        MONO_AGENT_INTERACTION_BRIDGE_TOKEN: "master-must-not-leak",
+        MONO_AGENT_MCP_ATTACHMENTS_ROOT: "/spoofed/root",
+        MONO_AGENT_MCP_ALLOWED_ATTACHMENT_PATHS: '["/spoofed/file"]',
+        MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES: '[{"path":"/spoofed/file","dev":1,"ino":2}]',
+      },
+    };
+    const untouched = { command: "other-mcp", env: { STATIC: "unchanged" } };
+    const remote = { type: "http", url: "https://mcp.example.test" };
+    const releases: string[] = [];
+    const ambientBefore = process.env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN;
+    process.env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN = "ambient-master";
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    try {
+      await createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        executionMode: "sdk",
+        createRunId: () => "run-trusted-context",
+        runtimeOptionsForRequest: () => ({
+          toolPolicyOverride: {
+            allowedTools: ["*"],
+            disallowedTools: [],
+            mcpServers: { target, untouched, remote },
+          },
+        }),
+        mcpRequestContext: {
+          serverNames: ["target", "remote"],
+          runOutputRoot: join(dir, "outbound"),
+          progressCapabilityIssuer: {
+            issueProgressCapability: ({ conversationId, runId }) => ({
+              url: "http://127.0.0.1:43123",
+              token: `${conversationId}:${runId}:scoped`,
+              release: () => { releases.push(runId); },
+            }),
+          },
+        },
+      }).run({
+        conversationId: "telegram:42#2026-07-12",
+        userMessage: "refine it",
+        abortSignal: new AbortController().signal,
+      });
+
+      const servers = fake.calls[0]?.options.mcpServers as Record<string, Record<string, unknown>>;
+      const injected = servers.target?.env as Record<string, string>;
+      expect(servers.target).not.toBe(target);
+      expect(injected).toMatchObject({
+        KEEP_ME: "yes",
+        MONO_AGENT_MCP_PRODUCING_CONVERSATION_ID: "telegram:42#2026-07-12",
+        MONO_AGENT_MCP_PRODUCING_RUN_ID: "run-trusted-context",
+        MONO_AGENT_MCP_RUN_OUTPUT_DIR: join(dir, "outbound", "run-trusted-context"),
+        MONO_AGENT_INTERACTION_PROGRESS_URL: "http://127.0.0.1:43123",
+        MONO_AGENT_INTERACTION_PROGRESS_TOKEN: "telegram:42#2026-07-12:run-trusted-context:scoped",
+        MONO_AGENT_MCP_ATTACHMENTS_ROOT: "",
+        MONO_AGENT_MCP_ALLOWED_ATTACHMENT_PATHS: "[]",
+        MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES: "[]",
+        MONO_AGENT_INTERACTION_BRIDGE_URL: "",
+        MONO_AGENT_INTERACTION_BRIDGE_TOKEN: "",
+      });
+      expect(servers.untouched).toBe(untouched);
+      expect(servers.remote).toBe(remote);
+      expect(target.env.MONO_AGENT_MCP_PRODUCING_CONVERSATION_ID).toBe("spoofed");
+      expect(target.env.MONO_AGENT_INTERACTION_PROGRESS_TOKEN).toBe("spoofed-token");
+      expect(process.env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN).toBe("ambient-master");
+      expect(releases).toEqual(["run-trusted-context"]);
+      await expect(lstat(join(dir, "outbound", "run-trusted-context"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (ambientBefore === undefined) delete process.env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN;
+      else process.env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN = ambientBefore;
+    }
+  });
+
+  it.each(["success", "failure", "cancel"] as const)(
+    "deletes request MCP output after runtime settlement on %s",
+    async (outcome) => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      const runId = `run-output-${outcome}`;
+      const outputPath = join(dir, "outbound", runId);
+      const controller = new AbortController();
+      const lifecycle: string[] = [];
+      const fake = createFakeRuntime(async () => {
+        expect((await lstat(outputPath)).isDirectory()).toBe(true);
+        lifecycle.push("runtime");
+        if (outcome === "cancel") controller.abort(new Error("cancelled"));
+        if (outcome === "failure") return { text: "", error: "provider failed" };
+        return { text: "ok" };
+      });
+
+      await createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        executionMode: "sdk",
+        createRunId: () => runId,
+        runtimeOptions: { mcpServers: { target: { type: "stdio", command: "target" } } },
+        runtimeOptionsForRequest: () => ({
+          settleCleanup: () => { lifecycle.push("settlement"); },
+        }),
+        mcpRequestContext: { serverNames: ["target"], runOutputRoot: join(dir, "outbound") },
+      }).run({
+        conversationId: "telegram:42",
+        userMessage: "go",
+        abortSignal: controller.signal,
+      });
+
+      expect(lifecycle).toEqual(["runtime", "settlement"]);
+      await expect(lstat(outputPath)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
 
   it("handles cancellation before runtime execution", async () => {
     const dir = await tempDir();

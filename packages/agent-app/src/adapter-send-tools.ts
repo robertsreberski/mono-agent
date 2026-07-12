@@ -1,5 +1,6 @@
-import { readFile, stat } from "node:fs/promises";
-import { basename, resolve as resolvePath } from "node:path";
+import { constants as fsConstants } from "node:fs";
+import { lstat, mkdir, open, readFile, realpath, rm, stat } from "node:fs/promises";
+import { basename, isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -60,7 +61,7 @@ export interface TelegramSendToolSettings {
   readonly botToken: string;
   readonly allowedChatIds: readonly string[];
   readonly allowAllChats: boolean;
-  /** Self-hosted Bot API server base URL (also unlocks file:// path uploads). */
+  /** Self-hosted Bot API base URL (also unlocks file:// for non-strict path uploads). */
   readonly apiRoot?: string;
   /** Upload cap for the TelegramSendFile tool; the resolver fills the 20 MiB default. */
   readonly maxUploadBytes?: number;
@@ -72,6 +73,16 @@ export interface TelegramSendToolSettings {
     readonly file: boolean;
   };
   readonly askBridge?: AskUserToolSettings;
+  readonly sendTools?: {
+    readonly scope?: "producing-conversation";
+    readonly pathScope?: "run-output";
+  };
+  /** Trusted exact request conversation, injected by the app-owned parent. */
+  readonly producingConversationId?: string;
+  /** Trusted current-run output directory, injected by the app-owned parent. */
+  readonly runOutputDir?: string;
+  /** Identity of the app-created directory object; prevents root path swaps. */
+  readonly runOutputIdentity?: FileIdentity;
 }
 
 /**
@@ -109,6 +120,7 @@ export interface AdapterSendToolsRuntimeExtension {
     readonly mcpServers: Record<string, unknown>;
   };
   readonly cleanup: () => Promise<void>;
+  readonly settleCleanup?: () => Promise<void>;
 }
 
 /**
@@ -135,6 +147,8 @@ export interface AdapterSendToolsResolveOptions {
   } | undefined;
   /** Suppress bridge-backed AskUser/TelegramAskButtons for MCP-incompatible routes. */
   readonly suppressInteractionTools?: boolean | undefined;
+  /** App-owned master bridge settings; never sourced from project MCP config. */
+  readonly interaction?: AdapterSendToolsInteractionEnv | undefined;
 }
 
 export async function resolveAdapterSendToolsSettings(
@@ -146,7 +160,9 @@ export async function resolveAdapterSendToolsSettings(
     && isAdapterToolAllowed("TelegramAskButtons", options);
   const telegramFileAllowed = isAdapterToolAllowed("TelegramSendFile", options);
   const telegramAnyAllowed = telegramSendAllowed || telegramAskAllowed || telegramFileAllowed;
-  const telegramAskBridge = telegramAskAllowed ? resolveAskUserToolSettings(input.env) : undefined;
+  const telegramAskBridge = telegramAskAllowed
+    ? resolveAskUserToolSettings(input.env, options.interaction)
+    : undefined;
   const [slack, telegram] = await Promise.all([
     isAdapterToolAllowed("SlackSendMessage", options)
       ? resolveSlackSendToolSettings(input, options)
@@ -160,7 +176,7 @@ export async function resolveAdapterSendToolsSettings(
       : undefined,
   ]);
   const askUser = options.suppressInteractionTools !== true && isAdapterToolAllowed("AskUser", options)
-    ? resolveAskUserToolSettings(input.env)
+    ? resolveAskUserToolSettings(input.env, options.interaction)
     : undefined;
   if (slack === undefined && telegram === undefined && askUser === undefined) {
     return undefined;
@@ -177,14 +193,18 @@ export async function resolveAdapterSendToolsSettings(
  * into the environment (URL + bearer token). The producing conversation id is
  * per-request env, present in the spawned child.
  */
-function resolveAskUserToolSettings(env: Record<string, string | undefined>): AskUserToolSettings | undefined {
-  const bridgeUrl = optionalString(env.MONO_AGENT_INTERACTION_BRIDGE_URL);
-  const bridgeToken = optionalString(env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN);
+function resolveAskUserToolSettings(
+  env: Record<string, string | undefined>,
+  interaction?: AdapterSendToolsInteractionEnv,
+): AskUserToolSettings | undefined {
+  const bridgeUrl = interaction?.bridgeUrl ?? optionalString(env.MONO_AGENT_INTERACTION_BRIDGE_URL);
+  const bridgeToken = interaction?.bridgeToken ?? optionalString(env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN);
   if (bridgeUrl === undefined || bridgeToken === undefined) {
     return undefined;
   }
   const timeoutRaw = Number(optionalString(env.MONO_AGENT_ASK_USER_TIMEOUT_MS));
-  const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw >= 1000 ? timeoutRaw : 600_000;
+  const timeoutMs = interaction?.timeoutMs
+    ?? (Number.isFinite(timeoutRaw) && timeoutRaw >= 1000 ? timeoutRaw : 600_000);
   const conversationId = optionalString(env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID);
   const runId = optionalString(env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_RUN_ID);
   return {
@@ -237,6 +257,8 @@ export interface AdapterSendToolsChildContext {
   readonly conversationId?: string;
   readonly runId?: string;
   readonly indexPath?: string;
+  readonly runOutputDir?: string;
+  readonly runOutputIdentity?: FileIdentity;
 }
 
 export interface AdapterSendToolsInteractionEnv {
@@ -263,6 +285,15 @@ export function adapterSendToolsMcpEnv(
     ...(context?.indexPath === undefined
       ? {}
       : { MONO_AGENT_ADAPTER_TOOLS_POST_INDEX_PATH: context.indexPath }),
+    ...(context?.runOutputDir === undefined
+      ? {}
+      : { MONO_AGENT_ADAPTER_TOOLS_RUN_OUTPUT_DIR: context.runOutputDir }),
+    ...(context?.runOutputIdentity === undefined
+      ? {}
+      : {
+          MONO_AGENT_ADAPTER_TOOLS_RUN_OUTPUT_DEV: String(context.runOutputIdentity.dev),
+          MONO_AGENT_ADAPTER_TOOLS_RUN_OUTPUT_INO: String(context.runOutputIdentity.ino),
+        }),
     ...(interaction === undefined
       ? {}
       : {
@@ -336,12 +367,16 @@ export function createAdapterSendToolsRuntimeExtension(
   allowedTools: readonly string[],
   indexPath?: string,
   interaction?: AdapterSendToolsInteractionEnv,
+  runOutputRoot?: string,
 ): (input: AdapterSendToolsRequestInput) => Promise<AdapterSendToolsRuntimeExtension> {
   return async (input) => {
     const conversationId = input?.request?.conversationId;
     const runId = input?.runId;
     const hasConversation = typeof conversationId === "string" && conversationId.trim().length > 0;
     const hasRunId = typeof runId === "string" && runId.trim().length > 0;
+    const runOutput = runOutputRoot === undefined || !hasRunId
+      ? undefined
+      : await ensureAdapterRunOutputDir(runOutputRoot, runId);
     // The conversation id is forwarded whenever known — AskUser targets it even
     // without indexing; the index path additionally enables posted-message links.
     const context: AdapterSendToolsChildContext | undefined = hasConversation || hasRunId
@@ -349,6 +384,9 @@ export function createAdapterSendToolsRuntimeExtension(
           ...(hasConversation ? { conversationId } : {}),
           ...(hasRunId ? { runId } : {}),
           ...(indexPath === undefined ? {} : { indexPath }),
+          ...(runOutput === undefined
+            ? {}
+            : { runOutputDir: runOutput.path, runOutputIdentity: runOutput.identity }),
         }
       : undefined;
     return {
@@ -364,6 +402,11 @@ export function createAdapterSendToolsRuntimeExtension(
         },
       },
       cleanup: async () => {},
+      settleCleanup: async () => {
+        if (runOutput !== undefined) {
+          await removeOwnedDirectory(runOutput.path, runOutput.identity);
+        }
+      },
     };
   };
 }
@@ -1002,7 +1045,7 @@ function registerTelegramSendFileTool(
     {
       title: "Send Telegram file",
       description:
-        "Upload and send a file to an allowed Telegram chat. Set `kind:\"document\"` to send any file (shown as a downloadable document) or `kind:\"photo\"` to send an image inline. Provide the bytes as base64 `data` (with a `filename` — required for a document), or a workspace `path` (preferred — with a self-hosted Bot API server a `path` upload streams from disk with no size buffering, up to the configured cap).",
+        "Upload and send a file to an allowed Telegram chat. Set `kind:\"document\"` to send any file (shown as a downloadable document) or `kind:\"photo\"` to send an image inline. Provide the bytes as base64 `data` (with a `filename` — required for a document), or a workspace `path`. A self-hosted Bot API can stream legacy path uploads; strict run-output paths are always read through a pinned descriptor.",
       inputSchema: {
         kind: z.enum(["document", "photo"]).describe("`document` for any file (downloadable), `photo` for an image shown inline."),
         chat_id: z.union([z.string().min(1), z.number().int()]).describe("Telegram chat id from the adapter allowlist."),
@@ -1016,14 +1059,23 @@ function registerTelegramSendFileTool(
       extra.signal.throwIfAborted();
       const kind = args.kind;
       assertTelegramChatAllowed(settings, args.chat_id);
+      if ((args.data !== undefined) === (args.path !== undefined)) {
+        throw new Error("provide exactly one of `data` (base64) or `path`.");
+      }
       const maxUploadBytes = settings.maxUploadBytes ?? adapter.DEFAULT_ATTACHMENT_MAX_BYTES;
+      const strictPathUpload = args.path !== undefined && settings.sendTools?.pathScope === "run-output";
+      const strictFile = strictPathUpload
+        ? await readStrictTelegramFile(settings, args.path!, maxUploadBytes, extra.signal, args.filename)
+        : undefined;
+      const uploadPath = args.path === undefined || strictPathUpload
+        ? undefined
+        : await resolveTelegramUploadPath(args.path);
       // file:// fast path: a --local self-hosted server reads the file straight
       // from disk, so a path upload needs no buffering at any size — only a
       // stat-level cap check. Falls back once to the buffered path when the
       // server rejects the URI (e.g. a non---local self-hosted root).
-      if (kind === "document" && settings.apiRoot !== undefined && args.path !== undefined && args.data === undefined) {
-        const resolved = resolvePath(process.cwd(), args.path);
-        const info = await stat(resolved);
+      if (kind === "document" && settings.apiRoot !== undefined && uploadPath !== undefined && args.data === undefined) {
+        const info = await stat(uploadPath);
         if (!info.isFile() || info.size === 0) {
           throw new Error("file is empty or not a regular file.");
         }
@@ -1034,12 +1086,12 @@ function registerTelegramSendFileTool(
           const sent: TelegramSentMessage = await client.sendDocument!(
             {
               chat_id: args.chat_id,
-              document: pathToFileURL(resolved).href,
+              document: pathToFileURL(uploadPath).href,
               ...(args.caption === undefined ? {} : { caption: args.caption }),
             },
             { signal: extra.signal },
           );
-          const name = basename(resolved);
+          const name = basename(uploadPath);
           return {
             content: [{ type: "text", text: `Sent ${kind} ${sent.message_id} (${name}) to ${String(sent.chat.id)}.` }],
             structuredContent: { ok: true, chat_id: sent.chat.id, message_id: sent.message_id, filename: name },
@@ -1051,13 +1103,14 @@ function registerTelegramSendFileTool(
           }
         }
       }
-      const { bytes, filename } = await resolveTelegramFileBytes({
-        data: args.data,
-        path: args.path,
-        filename: args.filename,
-        requireFilename: kind === "document",
-        maxBytes: maxUploadBytes,
-        signal: extra.signal,
+      const { bytes, filename } = strictFile ?? await resolveTelegramFileBytes({
+          data: args.data,
+          path: args.path,
+          ...(uploadPath === undefined ? {} : { resolvedPath: uploadPath }),
+          filename: args.filename,
+          requireFilename: kind === "document",
+          maxBytes: maxUploadBytes,
+          signal: extra.signal,
       });
       const result: TelegramSentMessage =
         kind === "document"
@@ -1091,6 +1144,7 @@ function registerTelegramSendFileTool(
 async function resolveTelegramFileBytes(input: {
   data: string | undefined;
   path: string | undefined;
+  resolvedPath?: string;
   filename: string | undefined;
   requireFilename: boolean;
   maxBytes: number;
@@ -1114,7 +1168,7 @@ async function resolveTelegramFileBytes(input: {
       filename = input.filename;
     }
   } else {
-    const resolved = resolvePath(process.cwd(), input.path!);
+    const resolved = input.resolvedPath ?? resolvePath(process.cwd(), input.path!);
     bytes = new Uint8Array(await readFile(resolved, { signal: input.signal }));
     filename = input.filename ?? basename(resolved);
   }
@@ -1125,6 +1179,129 @@ async function resolveTelegramFileBytes(input: {
     throw new Error(`file exceeds the ${String(input.maxBytes)}-byte upload cap.`);
   }
   return { bytes, filename };
+}
+
+async function resolveTelegramUploadPath(inputPath: string): Promise<string> {
+  return resolvePath(process.cwd(), inputPath);
+}
+
+const STRICT_TELEGRAM_PATH_ERROR =
+  "TelegramSendFile: path must be a regular file inside the current run output directory.";
+
+/**
+ * Read a strict upload through one no-follow file descriptor. Every path check
+ * deliberately collapses to the same error so callers cannot use the tool as
+ * an existence oracle for files outside the run directory.
+ */
+async function readStrictTelegramFile(
+  settings: TelegramSendToolSettings,
+  inputPath: string,
+  maxBytes: number,
+  signal: AbortSignal,
+  requestedFilename: string | undefined,
+): Promise<{ readonly bytes: Uint8Array; readonly filename: string }> {
+  try {
+    signal.throwIfAborted();
+    if (settings.runOutputDir === undefined || settings.runOutputIdentity === undefined) {
+      throw new Error(STRICT_TELEGRAM_PATH_ERROR);
+    }
+    const rootStats = await lstat(settings.runOutputDir);
+    if (!rootStats.isDirectory()
+      || rootStats.isSymbolicLink()
+      || !sameFileIdentity(rootStats, settings.runOutputIdentity)) {
+      throw new Error(STRICT_TELEGRAM_PATH_ERROR);
+    }
+    const rootReal = await realpath(settings.runOutputDir);
+    const candidate = resolvePath(process.cwd(), inputPath);
+    const candidateLinkStats = await lstat(candidate);
+    if (!candidateLinkStats.isFile()
+      || candidateLinkStats.isSymbolicLink()
+      || candidateLinkStats.nlink !== 1) {
+      throw new Error(STRICT_TELEGRAM_PATH_ERROR);
+    }
+    const candidateReal = await realpath(candidate);
+    if (!pathIsInside(rootReal, candidateReal)) throw new Error(STRICT_TELEGRAM_PATH_ERROR);
+
+    const handle = await open(candidateReal, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    try {
+      const openedStats = await handle.stat();
+      if (!openedStats.isFile()
+        || openedStats.nlink !== 1
+        || openedStats.size === 0
+        || openedStats.size > maxBytes) {
+        throw new Error(STRICT_TELEGRAM_PATH_ERROR);
+      }
+      if (!sameFileIdentity(openedStats, fileIdentity(candidateLinkStats))) {
+        throw new Error(STRICT_TELEGRAM_PATH_ERROR);
+      }
+      await assertPinnedCandidate(candidateReal, openedStats);
+      await assertUnchangedRunRoot(settings.runOutputDir, rootReal, settings.runOutputIdentity);
+      const bytes = await readPinnedBytes(handle, openedStats.size, signal);
+      await assertPinnedCandidate(candidateReal, openedStats);
+      await assertUnchangedRunRoot(settings.runOutputDir, rootReal, settings.runOutputIdentity);
+      const finalStats = await handle.stat();
+      if (!sameFileIdentity(finalStats, fileIdentity(openedStats))
+        || finalStats.nlink !== 1
+        || finalStats.size !== openedStats.size
+        || bytes.byteLength === 0
+        || bytes.byteLength > maxBytes) {
+        throw new Error(STRICT_TELEGRAM_PATH_ERROR);
+      }
+      return { bytes, filename: requestedFilename ?? basename(candidateReal) };
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    if (signal.aborted) throw signal.reason ?? error;
+    throw new Error(STRICT_TELEGRAM_PATH_ERROR);
+  }
+}
+
+async function readPinnedBytes(
+  handle: Awaited<ReturnType<typeof open>>,
+  size: number,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
+  const bytes = Buffer.allocUnsafe(size);
+  let offset = 0;
+  while (offset < size) {
+    signal.throwIfAborted();
+    const read = await handle.read(bytes, offset, size - offset, offset);
+    if (read.bytesRead === 0) break;
+    offset += read.bytesRead;
+  }
+  if (offset !== size) throw new Error(STRICT_TELEGRAM_PATH_ERROR);
+  return new Uint8Array(bytes);
+}
+
+function pathIsInside(root: string, candidate: string): boolean {
+  const fromRoot = relative(root, candidate);
+  return fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot);
+}
+
+async function assertPinnedCandidate(
+  path: string,
+  opened: { readonly dev: number; readonly ino: number },
+): Promise<void> {
+  const current = await lstat(path);
+  if (!current.isFile()
+    || current.isSymbolicLink()
+    || current.nlink !== 1
+    || !sameFileIdentity(current, fileIdentity(opened))) {
+    throw new Error(STRICT_TELEGRAM_PATH_ERROR);
+  }
+}
+
+async function assertUnchangedRunRoot(
+  path: string,
+  expectedRealPath: string,
+  expectedIdentity: FileIdentity,
+): Promise<void> {
+  const current = await lstat(path);
+  if (!current.isDirectory() || current.isSymbolicLink() || !sameFileIdentity(current, expectedIdentity)) {
+    throw new Error(STRICT_TELEGRAM_PATH_ERROR);
+  }
+  if (await realpath(path) !== expectedRealPath) throw new Error(STRICT_TELEGRAM_PATH_ERROR);
 }
 
 async function resolveSlackSendToolSettings(
@@ -1162,6 +1339,12 @@ async function resolveTelegramSendToolSettings(
     if (!config.enabled) {
       return undefined;
     }
+    const producingConversationId = optionalString(input.env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID);
+    const runOutputDir = optionalString(input.env.MONO_AGENT_ADAPTER_TOOLS_RUN_OUTPUT_DIR);
+    const runOutputIdentity = parseFileIdentity(
+      input.env.MONO_AGENT_ADAPTER_TOOLS_RUN_OUTPUT_DEV,
+      input.env.MONO_AGENT_ADAPTER_TOOLS_RUN_OUTPUT_INO,
+    );
     return {
       botToken: config.botToken,
       allowedChatIds: config.allowedChatIds,
@@ -1170,6 +1353,10 @@ async function resolveTelegramSendToolSettings(
       maxUploadBytes: config.attachments?.maxUploadBytes ?? adapter.DEFAULT_ATTACHMENT_MAX_BYTES,
       tools,
       ...(askBridge === undefined ? {} : { askBridge }),
+      ...(config.sendTools === undefined ? {} : { sendTools: config.sendTools }),
+      ...(producingConversationId === undefined ? {} : { producingConversationId }),
+      ...(runOutputDir === undefined ? {} : { runOutputDir }),
+      ...(runOutputIdentity === undefined ? {} : { runOutputIdentity }),
     };
   } catch (error) {
     options.logger?.warn?.("Telegram send tool skipped because Telegram adapter config is unavailable.", {
@@ -1188,10 +1375,91 @@ function assertSlackChannelAllowed(settings: SlackSendToolSettings, channel: str
 
 function assertTelegramChatAllowed(settings: TelegramSendToolSettings, chatId: TelegramChatId): void {
   const normalized = String(chatId);
+  if (settings.sendTools?.scope === "producing-conversation") {
+    const producingChatId = telegramChatIdFromConversation(settings.producingConversationId);
+    if (producingChatId === undefined) {
+      throw new Error("TelegramSendMessage: producing Telegram conversation context is unavailable.");
+    }
+    if (normalized !== producingChatId) {
+      throw new Error("TelegramSendMessage: chat_id must match the producing Telegram conversation.");
+    }
+  }
   if (settings.allowAllChats || settings.allowedChatIds.includes(normalized)) {
     return;
   }
   throw new Error("TelegramSendMessage: chat_id is not allowed by Telegram adapter config.");
+}
+
+function telegramChatIdFromConversation(conversationId: string | undefined): string | undefined {
+  if (conversationId === undefined) return undefined;
+  const base = conversationId.split("#", 1)[0] ?? conversationId;
+  if (!base.startsWith("telegram:")) return undefined;
+  const chatId = base.slice("telegram:".length);
+  return chatId.length === 0 ? undefined : chatId;
+}
+
+const SAFE_ADAPTER_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
+
+interface FileIdentity {
+  readonly dev: number;
+  readonly ino: number;
+}
+
+async function ensureAdapterRunOutputDir(
+  root: string,
+  runId: string,
+): Promise<{ readonly path: string; readonly identity: FileIdentity }> {
+  if (!SAFE_ADAPTER_RUN_ID.test(runId)) {
+    throw new Error("adapter-send-tools: run id is unsafe for the run output directory.");
+  }
+  const outputRoot = resolvePath(root);
+  const runOutputDir = join(outputRoot, runId);
+  await mkdir(outputRoot, { recursive: true, mode: 0o700 });
+  try {
+    await mkdir(runOutputDir, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const existing = await lstat(runOutputDir);
+    if (!existing.isDirectory() || existing.isSymbolicLink()) {
+      throw new Error("adapter-send-tools: run output path is not a real directory.");
+    }
+  }
+  const current = await lstat(runOutputDir);
+  if (!current.isDirectory() || current.isSymbolicLink()) {
+    throw new Error("adapter-send-tools: run output path is not a real directory.");
+  }
+  return { path: runOutputDir, identity: fileIdentity(current) };
+}
+
+function fileIdentity(stats: { readonly dev: number; readonly ino: number }): FileIdentity {
+  return { dev: stats.dev, ino: stats.ino };
+}
+
+function sameFileIdentity(
+  stats: { readonly dev: number; readonly ino: number },
+  expected: FileIdentity,
+): boolean {
+  return stats.dev === expected.dev && stats.ino === expected.ino;
+}
+
+function parseFileIdentity(devValue: string | undefined, inoValue: string | undefined): FileIdentity | undefined {
+  const dev = Number(devValue);
+  const ino = Number(inoValue);
+  return Number.isSafeInteger(dev) && dev >= 0 && Number.isSafeInteger(ino) && ino > 0
+    ? { dev, ino }
+    : undefined;
+}
+
+async function removeOwnedDirectory(path: string, expected: FileIdentity): Promise<void> {
+  let current;
+  try {
+    current = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (!current.isDirectory() || current.isSymbolicLink() || !sameFileIdentity(current, expected)) return;
+  await rm(path, { recursive: true, force: true });
 }
 
 function optionalString(value: string | undefined): string | undefined {

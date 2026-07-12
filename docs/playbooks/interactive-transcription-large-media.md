@@ -31,7 +31,7 @@ A Telegram agent that: asks the user for context before it acts (blocking), runs
 - **`AskUser`** — blocking, channel-agnostic "ask a question and wait for the reply" tool; available under the allow-all default, or name it in a specific `tools.allowedTools` (this playbook uses a specific list). One consolidated question per conversation; graceful timeout. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
 - **`interaction`** — the app-owned bridge block (`bridge.port`, `askUser.timeoutMs`, `progress.enabled`); auto-starts when `AskUser` is allowed. See [Env Vars](/config/env-vars/). *(config)*
 - **`tools.mcpCallTimeoutMs` / `tools.mcpCallMaxTotalTimeoutMs`** — inactivity timeout (reset by tool progress) and the hard per-call wall clock; raise the latter for long jobs. See [Env Vars](/config/env-vars/). *(config)*
-- **tool progress → channel status** — a tool `POST`s progress to the bridge (`MONO_AGENT_INTERACTION_BRIDGE_URL`/`_TOKEN`, exported to every tool child) and it appears as a chat status message edited in place. *(code, in your MCP tool)*
+- **tool progress → channel status** — an opted stdio MCP `POST`s with a run-scoped progress capability; the destination comes from trusted request context and the status appears in the producing chat. *(config + code in your MCP tool)*
 - **`telegram.apiRoot` + `telegram.attachments`** — point the adapter at a self-hosted Bot API server and raise the download/upload caps (2 GB ceiling). See [Telegram → Self-hosted Bot API server](/channels/telegram/). *(config)*
 - **`TelegramSendFile`** — deliver a generated file; with `apiRoot` set, a `path` upload streams by `file://` with no buffering. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
 - **`telegram.bot`** — inbound audio/voice is downloaded and handed to the agent as a saved file path; the adapter chat allowlist is the boundary. See [Telegram](/channels/telegram/). *(config)*
@@ -43,8 +43,7 @@ A Telegram agent that: asks the user for context before it acts (blocking), runs
 ```jsonc
 {
   "runtime": {
-    "model": "pi:openai-codex:gpt-5.6-terra",
-    "fallbackModels": ["pi:opencode-go:kimi-k2.6"],
+    "model": "pi:openai-codex:gpt-5.6-sol",
     "executionMode": "sdk",
     "session": { "mode": "continuous", "idleTimeoutMs": 1800000 }
   },
@@ -52,6 +51,7 @@ A Telegram agent that: asks the user for context before it acts (blocking), runs
   "tools": {
     "allowedTools": ["Read", "Bash", "AskUser", "TelegramSendMessage", "TelegramSendFile"],
     "mcpConfigPath": "./.mcp.json",
+    "mcpRequestContextServers": ["transcribe"],
     "mcpCallTimeoutMs": 120000,        // inactivity cap; tool progress resets it
     "mcpCallMaxTotalTimeoutMs": 2700000 // hard per-call wall clock (45 min) for long jobs
   },
@@ -64,7 +64,8 @@ A Telegram agent that: asks the user for context before it acts (blocking), runs
     "enabled": true,
     "allowedChatIds": ["<your-chat-id>"],
     "apiRoot": "http://127.0.0.1:8081",          // self-hosted Bot API server (see below)
-    "attachments": { "maxBytes": 268435456, "maxUploadBytes": 268435456 } // 256 MiB
+    "attachments": { "maxBytes": 268435456, "maxUploadBytes": 268435456 }, // 256 MiB
+    "sendTools": { "scope": "producing-conversation", "pathScope": "run-output" }
   }
 }
 ```
@@ -93,17 +94,18 @@ The self-hosted Bot API server (only needed for attachments over 20 MB) runs loo
 3. The agent calls the long-running `transcribe` tool. That tool `POST`s progress to the bridge ("Transcribing 12:31… 45s elapsed"), which shows as a status message edited in place, and emits MCP progress notifications that keep the call alive well past 120s.
 4. The transcript is written to disk and delivered via **`TelegramSendFile`** — a `path` upload, so with `apiRoot` set the file is sent by `file://` with no buffering.
 
-Writing the progress side of a long tool is a few lines — post to the bridge using the env the app exports to every tool child:
+Writing the progress side of a long tool is a few lines. The host overlays these
+values only for servers named by `tools.mcpRequestContextServers`:
 
 ```ts
 // inside your MCP tool, while the long job runs
-const url = process.env.MONO_AGENT_INTERACTION_BRIDGE_URL;
-const token = process.env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN;
+const url = process.env.MONO_AGENT_INTERACTION_PROGRESS_URL;
+const token = process.env.MONO_AGENT_INTERACTION_PROGRESS_TOKEN;
 if (url && token) {
   await fetch(new URL("/v1/progress", url), {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ conversationId, key: "transcribe", message: "Transcribing… 45s", state: "working" }),
+    body: JSON.stringify({ key: "transcribe", message: "Transcribing… 45s", state: "working" }),
   });
 }
 ```

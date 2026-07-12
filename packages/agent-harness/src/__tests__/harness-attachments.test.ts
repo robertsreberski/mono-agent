@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { link, lstat, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -86,6 +86,156 @@ function createSpyMemoryStore() {
 }
 
 describe("AgentHarness attachments", () => {
+  it("injects only successfully persisted current-request attachment paths into opted stdio MCPs", async () => {
+    const identityPath = await identityFixture();
+    const attachmentsDir = await attachmentsDirFixture();
+    const outputRoot = join(attachmentsDir, "outbound");
+    const fake = createCapturingRuntime();
+    const runIds = ["run-with-attachment", "run-other-chat"];
+    const target = {
+      type: "stdio",
+      command: "transcribe-mcp",
+      env: {
+        MONO_AGENT_MCP_ATTACHMENTS_ROOT: "/spoofed",
+        MONO_AGENT_MCP_ALLOWED_ATTACHMENT_PATHS: '["/spoofed/old"]',
+        MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES: '[{"path":"/spoofed/old","dev":1,"ino":2}]',
+      },
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      attachmentsDir,
+      createRunId: () => runIds.shift() as string,
+      runtimeOptions: {
+        mcpServers: {
+          target,
+          untouched: { type: "stdio", command: "other" },
+          remote: { type: "http", url: "https://mcp.example.test" },
+        },
+      },
+      mcpRequestContext: { serverNames: ["target", "remote"], runOutputRoot: outputRoot },
+    });
+
+    await harness.run({
+      conversationId: "telegram:42#today",
+      userMessage: "clean this",
+      abortSignal: new AbortController().signal,
+      attachments: [{
+        kind: "document",
+        mimeType: "text/plain",
+        data: Buffer.from("current transcript").toString("base64"),
+        name: "current.txt",
+      }],
+    });
+    await harness.run({
+      conversationId: "telegram:99#today",
+      userMessage: "no attachment",
+      abortSignal: new AbortController().signal,
+    });
+
+    const firstServers = fake.calls[0]?.options.mcpServers as Record<string, Record<string, unknown>>;
+    const secondServers = fake.calls[1]?.options.mcpServers as Record<string, Record<string, unknown>>;
+    const firstEnv = firstServers.target?.env as Record<string, string>;
+    const secondEnv = secondServers.target?.env as Record<string, string>;
+    const canonicalRoot = await realpath(attachmentsDir);
+    const firstAllowed = JSON.parse(firstEnv.MONO_AGENT_MCP_ALLOWED_ATTACHMENT_PATHS as string) as string[];
+    const firstIdentities = JSON.parse(firstEnv.MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES as string) as Array<{
+      path: string;
+      dev: number;
+      ino: number;
+    }>;
+    expect(firstEnv.MONO_AGENT_MCP_ATTACHMENTS_ROOT).toBe(canonicalRoot);
+    expect(firstAllowed).toHaveLength(1);
+    expect(firstAllowed[0]).toMatch(/current\.txt$/u);
+    expect(firstAllowed[0]?.startsWith(`${canonicalRoot}/`)).toBe(true);
+    const savedStats = await lstat(firstAllowed[0] as string);
+    expect(firstIdentities).toEqual([{ path: firstAllowed[0], dev: savedStats.dev, ino: savedStats.ino }]);
+    expect(savedStats.mode & 0o777).toBe(0o600);
+    expect(secondEnv.MONO_AGENT_MCP_ATTACHMENTS_ROOT).toBe(canonicalRoot);
+    expect(secondEnv.MONO_AGENT_MCP_ALLOWED_ATTACHMENT_PATHS).toBe("[]");
+    expect(secondEnv.MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES).toBe("[]");
+    expect(firstServers.untouched).toBe(secondServers.untouched);
+    expect(firstServers.remote).toBe(secondServers.remote);
+    expect(target.env.MONO_AGENT_MCP_ATTACHMENTS_ROOT).toBe("/spoofed");
+    expect(target.env.MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES).toContain("/spoofed/old");
+    await expect(lstat(join(outputRoot, "run-with-attachment"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(join(outputRoot, "run-other-chat"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["symlink", "hardlink"] as const)(
+    "pins the writer descriptor identity when the saved attachment path is swapped to a %s",
+    async (replacement) => {
+      const identityPath = await identityFixture();
+      const attachmentsDir = await attachmentsDirFixture();
+      const canonicalRoot = await realpath(attachmentsDir);
+      const runId = `run-${replacement}-swap`;
+      const currentPath = join(canonicalRoot, `${runId}-0-current.m4a`);
+      const preservedOriginal = join(canonicalRoot, `${runId}-original.m4a`);
+      const olderOtherChat = join(canonicalRoot, "run-other-chat-0-private.m4a");
+      await writeFile(olderOtherChat, "other chat private audio", "utf8");
+      const fake = createCapturingRuntime();
+      const harness = createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        executionMode: "sdk",
+        attachmentsDir,
+        createRunId: () => runId,
+        runtimeOptions: {
+          mcpServers: { target: { type: "stdio", command: "target" } },
+        },
+        runtimeOptionsForRequest: async () => {
+          // This hook runs after persistence and before request-context
+          // injection, making both path replacement variants deterministic.
+          await link(currentPath, preservedOriginal);
+          await rm(currentPath);
+          if (replacement === "symlink") {
+            await symlink(olderOtherChat, currentPath);
+          } else {
+            await link(olderOtherChat, currentPath);
+          }
+          return { runtimeOptions: {} };
+        },
+        mcpRequestContext: {
+          serverNames: ["target"],
+          runOutputRoot: join(attachmentsDir, "outbound"),
+        },
+      });
+
+      await harness.run({
+        conversationId: "telegram:current",
+        userMessage: "transcribe",
+        abortSignal: new AbortController().signal,
+        attachments: [{
+          kind: "document",
+          mimeType: "audio/mp4",
+          data: Buffer.from("current request audio").toString("base64"),
+          name: "current.m4a",
+        }],
+      });
+
+      const servers = fake.calls[0]?.options.mcpServers as Record<string, { env?: Record<string, string> }>;
+      const env = servers.target?.env ?? {};
+      const allowedPaths = JSON.parse(env.MONO_AGENT_MCP_ALLOWED_ATTACHMENT_PATHS ?? "[]") as string[];
+      const identities = JSON.parse(env.MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES ?? "[]") as Array<{
+        path: string;
+        dev: number;
+        ino: number;
+      }>;
+      const originalStats = await lstat(preservedOriginal);
+      const replacementStats = await lstat(currentPath);
+
+      expect(allowedPaths).toEqual([currentPath]);
+      expect(identities).toEqual([{ path: currentPath, dev: originalStats.dev, ino: originalStats.ino }]);
+      expect({ dev: replacementStats.dev, ino: replacementStats.ino }).not.toEqual({
+        dev: originalStats.dev,
+        ino: originalStats.ino,
+      });
+    },
+  );
+
   it("persists an image attachment to attachmentsDir and references its saved path in the message", async () => {
     const identityPath = await identityFixture();
     const attachmentsDir = await attachmentsDirFixture();

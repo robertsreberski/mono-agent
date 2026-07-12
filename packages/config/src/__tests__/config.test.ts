@@ -35,6 +35,7 @@ describe("loadMonoAgentConfig", () => {
         MONO_AGENT_ALLOWED_TOOLS: "Read, Grep",
         MONO_AGENT_DISALLOWED_TOOLS: "Bash",
         MONO_AGENT_MCP_CONFIG_PATH: "mcp.json",
+        MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS: "transcribe,documents",
         MONO_AGENT_MCP_CALL_TIMEOUT_MS: "150000",
         MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS: "2700000",
         MONO_AGENT_MEMORY_PATH: "memory.md",
@@ -72,6 +73,7 @@ describe("loadMonoAgentConfig", () => {
       allowedTools: ["Read", "Grep"],
       disallowedTools: ["Bash"],
       mcpConfigPath: "/repo/mcp.json",
+      mcpRequestContextServers: ["transcribe", "documents"],
       mcpCallTimeoutMs: 150000,
       mcpCallMaxTotalTimeoutMs: 2700000,
     });

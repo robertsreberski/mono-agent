@@ -119,6 +119,24 @@ The tool takes a `question` and 2–8 option labels, posts an inline keyboard, a
 
 `TelegramSendFile` lets the agent send a generated file or image back to an allowed chat (available under the allow-all default; name it explicitly under a specific `tools.allowedTools`). A required `kind` selects `"document"` (any file, downloadable) or `"photo"` (an image shown inline). It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path`, plus an optional `caption`; uploads are bounded by the adapter's attachment size cap.
 
+When one bot serves multiple chats, bind all app-owned Telegram tools to the
+request that produced the run and restrict path delivery to its output directory:
+
+```json
+{
+  "telegram": {
+    "sendTools": {
+      "scope": "producing-conversation",
+      "pathScope": "run-output"
+    }
+  }
+}
+```
+
+This is opt-in. In strict mode a guessed second allowed chat is rejected, and a
+file path must realpath beneath the current run output directory; traversal,
+other-run paths, and symlink escapes fail closed.
+
 ```json
 { "tools": { "allowedTools": ["TelegramSendFile"] } }
 ```
