@@ -269,11 +269,11 @@ class MonoAgentAppController implements MonoAgentApp {
   private sharedMemoryBuild: Promise<Awaited<ReturnType<typeof createConfiguredMemory>>> | undefined;
   private configApplyTail: Promise<void> = Promise.resolve();
   private stopped = false;
-  // Interaction bridge (AskUser + tool progress): lazily started once, shared
-  // by every channel; the exported env keys are tracked for cleanup on stop.
+  // Interaction bridge (AskUser + tool progress): lazily started once and shared
+  // by every channel. Its master bearer stays app-owned and is never exported
+  // through the generic host/process environment.
   private interactionBridge: InteractionBridgeHandle | undefined;
   private interactionBridgeStart: Promise<InteractionBridgeHandle | undefined> | undefined;
-  private interactionBridgeEnvKeys: readonly string[] = [];
   // Shared in-process run-event bus: every run's recorder publishes to it (via the
   // broadcast recorder threaded as `runEventSink`), and the `live` channel relays
   // it over SSE. One instance for the app's lifetime — cheap, bounded ring buffer,
@@ -597,9 +597,8 @@ class MonoAgentAppController implements MonoAgentApp {
 
   /**
    * Start the interaction bridge once, when a blocking ask tool is allowed by
-   * the tool policy or the operator configured the `interaction` block. Exports the
-   * bridge env into the app env AND process env so settings resolution and
-   * spawned stdio tool children (which inherit process.env) can reach it.
+   * the tool policy, a request-context MCP needs scoped progress, or the operator
+   * configured the `interaction` block. The master bearer remains app-owned.
    */
   private ensureInteractionBridge(coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined> {
     this.interactionBridgeStart ??= (async () => {
@@ -613,7 +612,9 @@ class MonoAgentAppController implements MonoAgentApp {
         allowedTools: coreConfig.tools.allowedTools,
         disallowedTools: coreConfig.tools.disallowedTools,
       });
-      if (!askUserAllowed && !telegramAskAllowed && !settings.configured) {
+      const scopedProgressNeeded = settings.progressEnabled
+        && (coreConfig.tools.mcpRequestContextServers?.length ?? 0) > 0;
+      if (!askUserAllowed && !telegramAskAllowed && !scopedProgressNeeded && !settings.configured) {
         return undefined;
       }
       try {
@@ -623,12 +624,6 @@ class MonoAgentAppController implements MonoAgentApp {
           askTimeoutMs: settings.askTimeoutMs,
           ...(this.logger === undefined ? {} : { logger: this.logger }),
         });
-        const bridgeEnv = bridge.env();
-        this.interactionBridgeEnvKeys = Object.keys(bridgeEnv);
-        Object.assign(this.env, bridgeEnv);
-        if ((this.env as unknown) !== process.env) {
-          Object.assign(process.env, bridgeEnv);
-        }
         this.interactionBridge = bridge;
         this.logger?.info?.("Interaction bridge started.", { url: bridge.url });
         return bridge;
@@ -646,13 +641,6 @@ class MonoAgentAppController implements MonoAgentApp {
     const bridge = this.interactionBridge;
     this.interactionBridge = undefined;
     this.interactionBridgeStart = undefined;
-    for (const key of this.interactionBridgeEnvKeys) {
-      delete this.env[key];
-      if ((this.env as unknown) !== process.env) {
-        delete process.env[key];
-      }
-    }
-    this.interactionBridgeEnvKeys = [];
     await bridge?.stop().catch(() => undefined);
   }
 
@@ -1076,6 +1064,7 @@ class MonoAgentAppController implements MonoAgentApp {
       ...(this.sandboxEngine === undefined ? {} : { sandboxEngine: this.sandboxEngine }),
       ...(memory !== undefined && { memory }),
       ...(this.interactionBridge === undefined ? {} : { turnHistoryEnricher: this.interactionBridge }),
+      ...(this.interactionBridge === undefined ? {} : { progressCapabilityIssuer: this.interactionBridge }),
       ...(runtimeOptionsForRequest === undefined ? {} : { runtimeOptionsForRequest }),
       onMemoryRecallUnavailable: (error) => {
         this.logger?.warn?.(
@@ -1238,11 +1227,20 @@ class MonoAgentAppController implements MonoAgentApp {
     readonly blockingToolNames: readonly string[];
   }> {
     const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+    const bridgeEnv = this.interactionBridge?.env();
+    const appOwnedInteraction = this.interactionBridge === undefined || bridgeEnv === undefined
+      ? undefined
+      : {
+          bridgeUrl: this.interactionBridge.url,
+          bridgeToken: this.interactionBridge.token,
+          timeoutMs: Number(bridgeEnv.MONO_AGENT_ASK_USER_TIMEOUT_MS),
+        };
     const settings = await resolveAdapterSendToolsSettings(input, {
       allowedTools: coreConfig.tools.allowedTools,
       disallowedTools: coreConfig.tools.disallowedTools,
       logger: this.logger,
       suppressInteractionTools: runtimeRouteContainsDirectOpenCode(coreConfig),
+      ...(appOwnedInteraction === undefined ? {} : { interaction: appOwnedInteraction }),
     });
     if (settings === undefined) {
       return { blockingToolNames: [] };
@@ -1253,7 +1251,10 @@ class MonoAgentAppController implements MonoAgentApp {
     // Forward the posted-message index path so `SlackSendMessage` links each post
     // back to the producing conversation (so a later in-thread reply resumes it).
     const indexPath = resolvePostedMessageIndexPath(await resolveAppArtifactDir(input));
-    const interaction = settings.askUser ?? settings.telegram?.askBridge;
+    const interactionForChild = settings.askUser ?? settings.telegram?.askBridge;
+    const runOutputRoot = settings.telegram?.sendTools?.pathScope === "run-output"
+      ? resolve(coreConfig.artifacts.dir, "outbound")
+      : undefined;
     const createExtension = (
       targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean,
     ): RuntimeOptionsExtension => async (requestInput) => {
@@ -1264,7 +1265,7 @@ class MonoAgentAppController implements MonoAgentApp {
         return { runtimeOptions: {}, cleanup: async () => {} };
       }
       const effectiveInteraction = effectiveToolNames.some(isInteractionToolName)
-        ? interaction
+        ? interactionForChild
         : undefined;
       return await createAdapterSendToolsRuntimeExtension(
         this.configPath,
@@ -1272,6 +1273,7 @@ class MonoAgentAppController implements MonoAgentApp {
         effectiveToolNames,
         indexPath,
         effectiveInteraction,
+        runOutputRoot,
       )(requestInput);
     };
     return { createExtension, blockingToolNames };

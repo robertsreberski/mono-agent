@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -301,6 +301,55 @@ describe("adapter send tools MCP spec/env", () => {
     expect(spec.env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID).toBe("telegram:42#2026-07-02");
     expect(spec.env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_RUN_ID).toBe("run-env-wiring");
     expect(spec.env.MONO_AGENT_ADAPTER_TOOLS_POST_INDEX_PATH).toBeUndefined();
+  });
+
+  it("pins and removes adapter-only run output at settlement, idempotently", async () => {
+    const outputRoot = join(dir, "outbound");
+    const extension = createAdapterSendToolsRuntimeExtension(
+      "/agent/mono-agent.config.json",
+      "/agent",
+      ["TelegramSendFile"],
+      undefined,
+      undefined,
+      outputRoot,
+    );
+    const result = await extension({ runId: "run-output-cleanup", request: { conversationId: "telegram:42" } });
+    const spec = result.runtimeOptions.mcpServers[ADAPTER_SEND_TOOLS_MCP_SERVER_NAME] as {
+      env: Record<string, string | undefined>;
+    };
+    const runOutputDir = spec.env.MONO_AGENT_ADAPTER_TOOLS_RUN_OUTPUT_DIR as string;
+    const before = await lstat(runOutputDir);
+    expect(spec.env.MONO_AGENT_ADAPTER_TOOLS_RUN_OUTPUT_DEV).toBe(String(before.dev));
+    expect(spec.env.MONO_AGENT_ADAPTER_TOOLS_RUN_OUTPUT_INO).toBe(String(before.ino));
+
+    await result.cleanup();
+    expect((await lstat(runOutputDir)).isDirectory()).toBe(true);
+    await result.settleCleanup?.();
+    await expect(lstat(runOutputDir)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(result.settleCleanup?.()).resolves.toBeUndefined();
+  });
+
+  it("never deletes a replacement directory during adapter output cleanup", async () => {
+    const extension = createAdapterSendToolsRuntimeExtension(
+      "/agent/mono-agent.config.json",
+      "/agent",
+      ["TelegramSendFile"],
+      undefined,
+      undefined,
+      join(dir, "outbound"),
+    );
+    const result = await extension({ runId: "run-output-replaced", request: { conversationId: "telegram:42" } });
+    const spec = result.runtimeOptions.mcpServers[ADAPTER_SEND_TOOLS_MCP_SERVER_NAME] as {
+      env: Record<string, string | undefined>;
+    };
+    const runOutputDir = spec.env.MONO_AGENT_ADAPTER_TOOLS_RUN_OUTPUT_DIR as string;
+    await rename(runOutputDir, `${runOutputDir}-original`);
+    await mkdir(runOutputDir);
+    await writeFile(join(runOutputDir, "belongs-to-someone-else"), "keep", "utf8");
+
+    await result.settleCleanup?.();
+
+    expect((await lstat(join(runOutputDir, "belongs-to-someone-else"))).isFile()).toBe(true);
   });
 
   it("forwards interaction bridge env into stdio children for blocking ask tools", async () => {
@@ -2163,6 +2212,121 @@ describe("TelegramSendFile path upload", () => {
     expect(uploaded.filename).toBe("transcript.md");
     expect(uploaded.caption).toBe("your transcript");
     expect(Buffer.from(uploaded.document).toString("utf8")).toBe("# Transcript\n\nhello");
+  });
+
+  it("binds every strict Telegram tool to the producing chat even when another chat is globally allowed", async () => {
+    const telegram = {
+      sendMessage: vi.fn(async (params: TelegramSendMessageParams) => ({ message_id: 1, chat: { id: params.chat_id } })),
+      editMessageText: vi.fn(),
+      sendDocument: vi.fn(async (params: { chat_id: string | number }) => ({ message_id: 2, chat: { id: params.chat_id } })),
+    };
+    const server = await createAdapterSendToolsServer({
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42", "99"],
+        allowAllChats: false,
+        tools: { send: true, ask: true, file: true },
+        sendTools: { scope: "producing-conversation" },
+        producingConversationId: "telegram:42#2026-07-12",
+      },
+    }, { telegram });
+
+    await withMcpClient(server, async (client) => {
+      for (const call of [
+        { name: "TelegramSendMessage", arguments: { chat_id: 99, text: "cross-chat" } },
+        { name: "TelegramAskButtons", arguments: { chat_id: 99, question: "cross-chat?", options: ["Yes", "No"], wait: false } },
+        {
+          name: "TelegramSendFile",
+          arguments: { kind: "document", chat_id: 99, data: Buffer.from("secret").toString("base64"), filename: "secret.txt" },
+        },
+      ]) {
+        const result = await client.callTool(call);
+        expect(result.isError).toBe(true);
+        expect(JSON.stringify(result.content)).toContain("must match the producing Telegram conversation");
+      }
+    });
+
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+    expect(telegram.sendDocument).not.toHaveBeenCalled();
+  });
+
+  it("pins strict path uploads to the current run directory object and returns one generic path error", async () => {
+    const runOutputDir = join(dir, "outbound", "run-1");
+    await mkdir(runOutputDir, { recursive: true });
+    const rootStats = await lstat(runOutputDir);
+    const inside = join(runOutputDir, "transcript.md");
+    const outside = join(dir, "other-chat.md");
+    const missing = join(dir, "missing.md");
+    const escape = join(runOutputDir, "escape.md");
+    const hardlinkEscape = join(runOutputDir, "hardlink.md");
+    await writeFile(inside, "inside", "utf8");
+    await writeFile(outside, "outside", "utf8");
+    await writeFile(escape, "initial candidate", "utf8");
+    await link(outside, hardlinkEscape);
+    const sendDocument = vi.fn(async (params: { chat_id: string | number }) => ({ message_id: 3, chat: { id: params.chat_id } }));
+    const server = await createAdapterSendToolsServer({
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        tools: { send: false, ask: false, file: true },
+        sendTools: { scope: "producing-conversation", pathScope: "run-output" },
+        producingConversationId: "telegram:42#today",
+        runOutputDir,
+        runOutputIdentity: { dev: rootStats.dev, ino: rootStats.ino },
+        apiRoot: "http://127.0.0.1:8081",
+      },
+    }, {
+      telegram: { sendMessage: vi.fn(), editMessageText: vi.fn(), sendDocument },
+    });
+
+    await withMcpClient(server, async (client) => {
+      const allowed = await client.callTool({
+        name: "TelegramSendFile",
+        arguments: { kind: "document", chat_id: 42, path: inside },
+      });
+      expect(allowed.structuredContent).toMatchObject({ ok: true, filename: "transcript.md" });
+      // Replace a previously regular in-scope candidate with a symlink before
+      // upload; strict mode must not follow the replacement.
+      await rm(escape);
+      await symlink(outside, escape);
+      const errors: string[] = [];
+      for (const path of [outside, missing, escape, hardlinkEscape]) {
+        const rejected = await client.callTool({
+          name: "TelegramSendFile",
+          arguments: { kind: "document", chat_id: 42, path },
+        });
+        expect(rejected.isError).toBe(true);
+        errors.push(JSON.stringify(rejected.content));
+      }
+      expect(new Set(errors).size).toBe(1);
+      expect(errors[0]).toContain("path must be a regular file inside the current run output directory");
+
+      const originalRoot = `${runOutputDir}-original`;
+      const attackerRoot = join(dir, "attacker-root");
+      await mkdir(attackerRoot);
+      await writeFile(join(attackerRoot, "stolen.md"), "stolen", "utf8");
+      await rename(runOutputDir, originalRoot);
+      await symlink(attackerRoot, runOutputDir);
+      const swappedSymlink = await client.callTool({
+        name: "TelegramSendFile",
+        arguments: { kind: "document", chat_id: 42, path: join(runOutputDir, "stolen.md") },
+      });
+      expect(JSON.stringify(swappedSymlink.content)).toBe(errors[0]);
+
+      await rm(runOutputDir);
+      await mkdir(runOutputDir);
+      await writeFile(join(runOutputDir, "replacement.md"), "replacement", "utf8");
+      const swappedDirectory = await client.callTool({
+        name: "TelegramSendFile",
+        arguments: { kind: "document", chat_id: 42, path: join(runOutputDir, "replacement.md") },
+      });
+      expect(JSON.stringify(swappedDirectory.content)).toBe(errors[0]);
+    });
+    expect(sendDocument).toHaveBeenCalledTimes(1);
+    const uploaded = (sendDocument as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as { document: unknown };
+    expect(uploaded.document).toBeInstanceOf(Uint8Array);
+    expect(Buffer.from(uploaded.document as Uint8Array).toString("utf8")).toBe("inside");
   });
 });
 

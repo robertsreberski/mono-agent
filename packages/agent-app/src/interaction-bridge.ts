@@ -57,8 +57,13 @@ export interface InteractionBridgeHandle {
   hasPendingAsk(conversationId: string): boolean;
   /** Fail every pending ask on the conversation (user cancelled the run). */
   cancelAsks(conversationId: string): void;
-  /** Environment consumed by tool child processes (AskUser, project MCP servers). */
+  /** Master bridge environment for app-owned ask-tool children only. */
   env(): Record<string, string>;
+  /** Issue a bearer that can only post progress for this exact producing run. */
+  issueProgressCapability(input: {
+    readonly runId: string;
+    readonly conversationId: string;
+  }): { readonly url: string; readonly token: string; release(): void };
   /** Add this run's answered/expired blocking asks to its durable assistant history text. */
   enrichAssistantHistory(input: {
     readonly runId: string;
@@ -202,6 +207,11 @@ interface InteractionJournal {
   omittedEntries: number;
 }
 
+interface ProgressCapabilityBinding {
+  readonly runId: string;
+  readonly conversationId: string;
+}
+
 /** Strip the daily-rollover `#bucket` suffix so registry keys match the channel's base id. */
 function normalizeConversationId(conversationId: string): string {
   return conversationId.split("#", 1)[0] ?? conversationId;
@@ -224,6 +234,7 @@ export async function startInteractionBridge(
   const asksByConversation = new Map<string, PendingAsk>();
   const asksById = new Map<string, PendingAsk>();
   const interactionJournals = new Map<string, InteractionJournal>();
+  const progressCapabilities = new Map<string, ProgressCapabilityBinding>();
   let askCounter = 0;
 
   function appendInteractionJournal(ask: PendingAsk, outcome: "answered" | "expired", answer?: string): void {
@@ -450,17 +461,42 @@ export async function startInteractionBridge(
     });
   }
 
-  async function handleProgress(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  async function handleProgress(
+    request: IncomingMessage,
+    response: ServerResponse,
+    bearer: string | undefined,
+    capability?: ProgressCapabilityBinding,
+  ): Promise<void> {
     const body = await readJsonBody(request);
     const conversationIdRaw = stringField(body, "conversationId");
     const key = stringField(body, "key");
     const message = stringField(body, "message");
-    if (conversationIdRaw === undefined || key === undefined || message === undefined) {
-      sendJson(response, 400, { error: "conversationId, key, and message are required." });
+    if (key === undefined || message === undefined || (capability === undefined && conversationIdRaw === undefined)) {
+      sendJson(response, 400, {
+        error: capability === undefined
+          ? "conversationId, key, and message are required."
+          : "key and message are required.",
+      });
       return;
     }
     const state = stringField(body, "state");
-    const conversationId = normalizeConversationId(conversationIdRaw);
+    const conversationId = capability?.conversationId ?? normalizeConversationId(conversationIdRaw as string);
+    // A scoped caller may retain the legacy conversationId body for compatibility,
+    // but it cannot use that field to redirect its capability to another chat.
+    if (capability !== undefined
+      && conversationIdRaw !== undefined
+      && normalizeConversationId(conversationIdRaw) !== capability.conversationId) {
+      sendJson(response, 403, { error: "progress capability is not valid for that conversation." });
+      return;
+    }
+    // The body may arrive slowly. Revalidate immediately before accepting so a
+    // release/releaseRun/stop that occurs after headers cannot authorize a late
+    // post with a binding captured before revocation.
+    if (capability !== undefined
+      && (bearer === undefined || progressCapabilities.get(bearer) !== capability)) {
+      sendJson(response, 401, { error: "missing, invalid, or revoked progress bearer token." });
+      return;
+    }
     const sink = sinks.get(channelIdOf(conversationId));
     if (sink === undefined) {
       sendJson(response, 501, { error: "no interactive channel is registered for this conversation." });
@@ -496,11 +532,21 @@ export async function startInteractionBridge(
   });
 
   async function routeRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    if (request.headers.authorization !== `Bearer ${token}`) {
+    const url = new URL(request.url ?? "/", "http://bridge.local");
+    const bearer = bearerTokenOf(request.headers.authorization);
+    if (request.method === "POST" && url.pathname === "/v1/progress") {
+      const capability = bearer === undefined ? undefined : progressCapabilities.get(bearer);
+      if (bearer !== token && capability === undefined) {
+        sendJson(response, 401, { error: "missing, invalid, or revoked progress bearer token." });
+        return;
+      }
+      await handleProgress(request, response, bearer, capability);
+      return;
+    }
+    if (bearer !== token) {
       sendJson(response, 401, { error: "missing or invalid bearer token." });
       return;
     }
-    const url = new URL(request.url ?? "/", "http://bridge.local");
     if (request.method === "POST" && url.pathname === "/v1/asks") {
       await handleCreateAsk(request, response);
       return;
@@ -518,10 +564,6 @@ export async function startInteractionBridge(
       }
       response.statusCode = 204;
       response.end();
-      return;
-    }
-    if (request.method === "POST" && url.pathname === "/v1/progress") {
-      await handleProgress(request, response);
       return;
     }
     sendJson(response, 404, { error: "unknown route." });
@@ -565,6 +607,26 @@ export async function startInteractionBridge(
         MONO_AGENT_ASK_USER_TIMEOUT_MS: String(askTimeoutMs),
       };
     },
+    issueProgressCapability(input) {
+      const progressToken = randomBytes(24).toString("base64url");
+      const binding: ProgressCapabilityBinding = {
+        runId: input.runId,
+        conversationId: normalizeConversationId(input.conversationId),
+      };
+      progressCapabilities.set(progressToken, binding);
+      let released = false;
+      return {
+        url,
+        token: progressToken,
+        release() {
+          if (released) return;
+          released = true;
+          if (progressCapabilities.get(progressToken) === binding) {
+            progressCapabilities.delete(progressToken);
+          }
+        },
+      };
+    },
     enrichAssistantHistory(input) {
       const journal = interactionJournals.get(input.runId);
       if (journal === undefined || journal.conversationId !== input.conversationId || journal.entries.length === 0) {
@@ -577,6 +639,11 @@ export async function startInteractionBridge(
       // a journal merely because a malformed producer supplied a mismatched
       // conversation id; enrichment itself still requires the exact bucket.
       interactionJournals.delete(input.runId);
+      for (const [progressToken, binding] of progressCapabilities) {
+        if (binding.runId === input.runId) {
+          progressCapabilities.delete(progressToken);
+        }
+      }
     },
     async stop() {
       for (const ask of asksById.values()) {
@@ -584,11 +651,18 @@ export async function startInteractionBridge(
       }
       asksById.clear();
       interactionJournals.clear();
+      progressCapabilities.clear();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error === undefined || error === null ? resolve() : reject(error)));
       });
     },
   };
+}
+
+function bearerTokenOf(authorization: string | undefined): string | undefined {
+  if (authorization === undefined || !authorization.startsWith("Bearer ")) return undefined;
+  const token = authorization.slice("Bearer ".length).trim();
+  return token.length === 0 ? undefined : token;
 }
 
 async function listenOn(server: Server, host: string, port: number): Promise<void> {

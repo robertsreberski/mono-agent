@@ -25,6 +25,7 @@ Point `tools.mcpConfigPath` at an `mcp.json` file describing one or more MCP ser
 | Key | Type | Notes |
 | --- | --- | --- |
 | `tools.mcpConfigPath` | string | Path to an `mcp.json`. Resolved against the workspace, not the config file. |
+| `tools.mcpRequestContextServers` | string[] | Opt-in stdio server names that receive trusted per-run producing-conversation, run-id, output-directory, current-request attachment, and scoped progress context. HTTP/SSE and unlisted servers are unchanged. |
 | `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `WebFetch`, `WebSearch`) and policy-gated app-owned tools such as `RunHistory` and adapter send tools. Omit (or `["*"]`) for allow-all; a specific list narrows to those names. Does not affect external MCP-server tools. |
 | `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, `RunHistory`, and adapter send tools. On the pi-native runtime it does **not** filter external MCP-server tools (see below). |
 
@@ -64,6 +65,54 @@ SSE and streamable HTTP servers use a `url` instead of `command`/`args`:
 ```
 
 Keep tokens as placeholders in committed files; prefer `env` references or a non-tracked `mcp.json`. Run `mono-agent validate` to confirm the file is found — it reports the resolved `MCP config:` path or a `MCP config file is missing:` warning.
+
+## Trusted request context for a stdio server
+
+An MCP server that owns conversation-scoped data or long-running progress must not
+ask the model to supply a chat or conversation id. Opt it in by configured server
+name instead:
+
+```json
+{
+  "tools": {
+    "mcpConfigPath": "./.mcp.json",
+    "mcpRequestContextServers": ["transcribe"]
+  }
+}
+```
+
+After all static, request, and authoritative tool-policy options are merged,
+mono-agent clones the selected stdio spec for that run and overwrites these env
+keys with host-owned values:
+
+- `MONO_AGENT_MCP_PRODUCING_CONVERSATION_ID`
+- `MONO_AGENT_MCP_PRODUCING_RUN_ID`
+- `MONO_AGENT_MCP_RUN_OUTPUT_DIR`
+- `MONO_AGENT_MCP_ATTACHMENTS_ROOT`
+- `MONO_AGENT_MCP_ALLOWED_ATTACHMENT_PATHS`
+- `MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES`
+- `MONO_AGENT_INTERACTION_PROGRESS_URL`
+- `MONO_AGENT_INTERACTION_PROGRESS_TOKEN`
+
+The output directory is `artifacts/outbound/<run-id>`. It is scratch space for
+the current run, not a durable artifact: mono-agent removes the exact directory
+object it created only after the runtime and tool clients settle. The attachment
+root is canonical. `MONO_AGENT_MCP_ALLOWED_ATTACHMENT_PATHS` is a JSON array of
+the exact lexical paths saved successfully from this request. The accompanying
+`MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES` value is a JSON array of
+`{ "path", "dev", "ino" }` objects captured from each file descriptor after
+write and sync. Consumers must require both an allowed path and its matching
+device/inode identity before reading. A later turn, another conversation, and
+failed saves are never carried over. Authoritative empty arrays are injected
+when there are no allowed files.
+
+The progress bearer is valid only for that run and conversation, cannot call ask
+routes, and is revoked at cleanup. The bridge revalidates it after reading the
+request body, so a post stalled during run cleanup is rejected. `/v1/progress`
+derives its destination from the bearer; a submitted `conversationId` cannot
+redirect it. Configured spoof values lose to the trusted overlay, the shared MCP
+config is not mutated, and the bridge master URL/token are explicitly blanked for
+opted project MCPs.
 
 :::tip
 :::

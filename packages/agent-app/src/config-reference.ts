@@ -169,6 +169,22 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     example: { timezone: "Europe/Amsterdam", start: "22:00", end: "07:00" },
     description: "Quiet-hours rules for Telegram notifications.",
   },
+  {
+    jsonPath: "telegram.sendTools.scope",
+    env: "--",
+    type: "string",
+    defaultLabel: "unset",
+    example: "producing-conversation",
+    description: "Bind Telegram send tools to the chat that produced the current run.",
+  },
+  {
+    jsonPath: "telegram.sendTools.pathScope",
+    env: "--",
+    type: "string",
+    defaultLabel: "unset",
+    example: "run-output",
+    description: "Confine Telegram path uploads to the current run output directory.",
+  },
 ];
 
 export interface ConfigReferenceField {
@@ -542,6 +558,14 @@ function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.enum = SANDBOX_NETWORK_MODES.filter((mode) => mode !== "all");
   } else if (field.jsonPath === "sandbox.fallback") {
     schema.enum = SANDBOX_FALLBACKS;
+  } else if (field.jsonPath === "telegram.sendTools.scope") {
+    schema.enum = ["producing-conversation"];
+  } else if (field.jsonPath === "telegram.sendTools.pathScope") {
+    schema.enum = ["run-output"];
+  }
+  if (field.jsonPath === "tools.mcpRequestContextServers") {
+    schema.uniqueItems = true;
+    schema.items = { type: "string", minLength: 1 };
   }
   return schema;
 }
@@ -617,7 +641,7 @@ function inferType(id: string): ConfigReferenceType {
   if (id === "runtime.fallbacks") {
     return "array";
   }
-  if (id.endsWith("Models") || id.endsWith("Tools") || id.endsWith("Roots") || id.endsWith("allowlist") || id.endsWith("denyWrite") || id.endsWith("selectedSkills") || id.endsWith("Ids") || id.endsWith("Aliases")) {
+  if (id.endsWith("Models") || id.endsWith("Tools") || id.endsWith("Servers") || id.endsWith("Roots") || id.endsWith("allowlist") || id.endsWith("denyWrite") || id.endsWith("selectedSkills") || id.endsWith("Ids") || id.endsWith("Aliases")) {
     return "string[]";
   }
   if (id.endsWith("enabled") || id.endsWith("allowAllChats") || id.endsWith("allowAllChannels") || id.endsWith("allowNonLoopback") || id.endsWith("dryRun") || id.endsWith("globalDiscovery") || id.endsWith("rolloverNotice") || id.endsWith("isolateProactive") || id.endsWith("unsafeAllowHostProcess") || id.endsWith("trace") || id.endsWith("exposeMcpServer")) {
@@ -674,6 +698,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "memory.consolidation.cron": "0 */2 * * *",
     "tools.allowedTools": [ALLOW_ALL_TOOLS],
     "tools.disallowedTools": [],
+    "tools.mcpRequestContextServers": [],
     "tools.mcpCallTimeoutMs": 120_000,
     "tools.mcpCallMaxTotalTimeoutMs": 2_700_000,
     "sandbox.network.mode": "none",
@@ -752,6 +777,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "sandbox.mode": "native",
     "traceability.sourceId": "my-agent",
     "traceability.sourceLabel": "My Agent",
+    "tools.mcpRequestContextServers": ["transcribe"],
     "providers.piAuthPath": "~/.pi/agent/auth.json",
     "telegram.botToken": "env:MONO_AGENT_TELEGRAM_BOT_TOKEN",
     "slack.botToken": "env:MONO_AGENT_SLACK_BOT_TOKEN",
@@ -796,6 +822,9 @@ function descriptionFor(id: string): string {
   }
   if (id === "runtime.routeSafety") {
     return "Uniform preserves one shared safety contract; per-route-native uses and reports each provider's explicit contract.";
+  }
+  if (id === "tools.mcpRequestContextServers") {
+    return "Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context.";
   }
   return `Configures ${name.length > 0 ? name : id} for the ${section} section.`;
 }

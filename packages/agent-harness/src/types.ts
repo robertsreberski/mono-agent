@@ -175,6 +175,32 @@ export interface AgentHarnessTurnHistoryEnricher {
   }): void | Promise<void>;
 }
 
+/** A short-lived bridge credential that can report progress for one run only. */
+export interface AgentHarnessProgressCapability {
+  readonly url: string;
+  readonly token: string;
+  /** Revoke the capability. Safe to call more than once. */
+  release(): void | Promise<void>;
+}
+
+/** App-owned issuer for request-bound progress capabilities. */
+export interface AgentHarnessProgressCapabilityIssuer {
+  issueProgressCapability(input: {
+    readonly runId: string;
+    readonly conversationId: string;
+  }): AgentHarnessProgressCapability | Promise<AgentHarnessProgressCapability>;
+}
+
+/**
+ * Trusted context injected into explicitly opted-in stdio MCP servers after all
+ * runtime/tool-policy option layers have been merged.
+ */
+export interface AgentHarnessMcpRequestContextOptions {
+  readonly serverNames: readonly string[];
+  readonly runOutputRoot: string;
+  readonly progressCapabilityIssuer?: AgentHarnessProgressCapabilityIssuer;
+}
+
 export interface AgentHarnessOptions {
   readonly identityPath: string;
   readonly soulPath?: string;
@@ -216,6 +242,7 @@ export interface AgentHarnessOptions {
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
+  readonly mcpRequestContext?: AgentHarnessMcpRequestContextOptions;
   /**
    * Factory for a runtime bound to a specific model, used when a per-request
    * extension overrides {@link model} (cron job / webhook per-turn model). The
@@ -284,4 +311,11 @@ export interface AgentHarnessRuntimeOptionsExtension {
    */
   readonly toolPolicyOverride?: ToolPolicy;
   readonly cleanup?: () => void | Promise<void>;
+  /**
+   * Cleanup that must wait until the runtime call and all of its tool clients
+   * have settled. Unlike `cleanup`, this is never invoked by the eager abort
+   * release path. Use it for deleting request-owned files that a slow provider
+   * may still have open.
+   */
+  readonly settleCleanup?: () => void | Promise<void>;
 }

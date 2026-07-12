@@ -75,6 +75,32 @@ async function awaitAnswer(
   return (await response.json()) as { status: string; answer?: string };
 }
 
+function startStalledProgressRequest(
+  url: string,
+  token: string,
+): { readonly request: ReturnType<typeof httpRequest>; readonly response: Promise<number> } {
+  let resolveResponse!: (status: number) => void;
+  let rejectResponse!: (error: unknown) => void;
+  const response = new Promise<number>((resolve, reject) => {
+    resolveResponse = resolve;
+    rejectResponse = reject;
+  });
+  const request = httpRequest(new URL("/v1/progress", url), {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      connection: "close",
+    },
+  }, (incoming) => {
+    incoming.resume();
+    incoming.once("end", () => resolveResponse(incoming.statusCode ?? 0));
+  });
+  request.once("error", rejectResponse);
+  request.write('{"key":"transcribe","message":"late"');
+  return { request, response };
+}
+
 describe("interaction bridge", () => {
   it("exports a valid bracketed URL when bound to IPv6 loopback", async () => {
     bridge = await startInteractionBridge({ host: "::1", port: 0 });
@@ -434,6 +460,84 @@ describe("interaction bridge", () => {
       ["telegram:42", "Transcribing… 4:10 / 10:12", { key: "transcribe", state: "working" }],
     ]);
   });
+
+  it("binds scoped progress capabilities to one producing conversation and revokes them", async () => {
+    const handle = await startBridge();
+    const telegram = recordingSink();
+    handle.registerSink("telegram", telegram.sink);
+    const capability = handle.issueProgressCapability({
+      conversationId: "telegram:42#2026-07-12",
+      runId: "run-scoped-progress",
+    });
+    const scopedHeaders = {
+      authorization: `Bearer ${capability.token}`,
+      "content-type": "application/json",
+    };
+
+    const accepted = await fetch(new URL("/v1/progress", capability.url), {
+      method: "POST",
+      headers: scopedHeaders,
+      body: JSON.stringify({ key: "transcribe", message: "Cleaning chunk 2/4", state: "working" }),
+    });
+    expect(accepted.status).toBe(202);
+    expect(telegram.statuses).toEqual([
+      ["telegram:42", "Cleaning chunk 2/4", { key: "transcribe", state: "working" }],
+    ]);
+
+    const redirected = await fetch(new URL("/v1/progress", capability.url), {
+      method: "POST",
+      headers: scopedHeaders,
+      body: JSON.stringify({ conversationId: "telegram:99", key: "transcribe", message: "wrong chat" }),
+    });
+    expect(redirected.status).toBe(403);
+    expect(telegram.statuses).toHaveLength(1);
+
+    const askAttempt = await fetch(new URL("/v1/asks", capability.url), {
+      method: "POST",
+      headers: scopedHeaders,
+      body: JSON.stringify({ conversationId: "telegram:42", question: "escape?" }),
+    });
+    expect(askAttempt.status).toBe(401);
+
+    capability.release();
+    const revoked = await fetch(new URL("/v1/progress", capability.url), {
+      method: "POST",
+      headers: scopedHeaders,
+      body: JSON.stringify({ key: "transcribe", message: "late" }),
+    });
+    expect(revoked.status).toBe(401);
+  });
+
+  it.each(["release", "releaseRun", "stop"] as const)(
+    "revalidates a stalled progress body after %s revokes its scoped token",
+    async (revocation) => {
+      const handle = await startBridge();
+      const telegram = recordingSink();
+      handle.registerSink("telegram", telegram.sink);
+      const capability = handle.issueProgressCapability({
+        conversationId: "telegram:42#stalled",
+        runId: "run-stalled-progress",
+      });
+      const stalled = startStalledProgressRequest(capability.url, capability.token);
+      // Let the bridge capture the headers/capability and block in body reading.
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+      let stopping: Promise<void> | undefined;
+      if (revocation === "release") capability.release();
+      if (revocation === "releaseRun") {
+        handle.releaseRun({ runId: "run-stalled-progress", conversationId: "telegram:42#stalled" });
+      }
+      if (revocation === "stop") {
+        stopping = handle.stop();
+        bridge = undefined;
+      }
+      stalled.request.end("}");
+
+      expect(await stalled.response).toBe(401);
+      await stopping;
+      expect(telegram.statuses).toEqual([]);
+    },
+  );
 
   it("rejects requests without the bearer token", async () => {
     const handle = await startBridge();

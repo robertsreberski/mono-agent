@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdir, open, realpath, rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
 
 import type { AgentAttachment } from "@mono-agent/agent-contracts";
 import {
@@ -40,6 +40,7 @@ import type {
   AgentHarnessSessionEvent,
   ExternalRunSummary,
 } from "./types.js";
+import type { AgentHarnessMcpRequestContextOptions, AgentHarnessProgressCapability } from "./types.js";
 import { createSkillsCache } from "./skills/index.js";
 import type { SkillsCache } from "./skills/index.js";
 import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "./tool-policy/index.js";
@@ -64,6 +65,24 @@ export class AgentHarnessError extends Error {
  */
 const VERBATIM_DELIVERY_STIMULUS = "[A scheduled or triggered task produced the message below, delivered to you proactively.]";
 const MEMORY_PERSISTENCE_WARNING = "Memory persistence was not confirmed after the provider answer; the provider response was preserved.";
+
+interface AttachmentRequestContext {
+  /** Canonical attachment root, or an authoritative empty string when absent. */
+  readonly root: string;
+  /** Exact lexical paths persisted successfully for this request only. */
+  readonly allowedPaths: readonly string[];
+  /** File identities captured from the descriptors that wrote this request's attachments. */
+  readonly allowedIdentities: readonly AttachmentFileIdentity[];
+}
+
+interface FileIdentity {
+  readonly dev: number;
+  readonly ino: number;
+}
+
+interface AttachmentFileIdentity extends FileIdentity {
+  readonly path: string;
+}
 
 export class MonoAgentHarness implements AgentHarness {
   private readonly options: AgentHarnessOptions;
@@ -271,7 +290,11 @@ export class MonoAgentHarness implements AgentHarness {
       // call; `persistText` (original caption + redacted attachment metadata
       // only) is what we write to durable history/memory so the extracted
       // document body never leaks into future prompts or memory recall.
-      const { request: activeRequest, persistUserMessage: persistText } = await this.applyAttachments(request, runId, emit);
+      const {
+        request: activeRequest,
+        persistUserMessage: persistText,
+        attachmentContext,
+      } = await this.applyAttachments(request, runId, emit);
       // Resume id: prefer a live in-memory session record; otherwise, when
       // durable pi sessions are configured, derive a STABLE fs-safe id from the
       // conversationId so a turn resumes the on-disk JSONL transcript across a
@@ -298,7 +321,7 @@ export class MonoAgentHarness implements AgentHarness {
       let runtimeResult: RuntimeResult | undefined;
       let resumeError: unknown;
       try {
-        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, resumeSessionId, prepared.skillDisclosureNames, prepared.history, prepared.historyOmitted, leavePending);
+        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, resumeSessionId, prepared.skillDisclosureNames, prepared.history, prepared.historyOmitted, attachmentContext, leavePending);
       } catch (error) {
         if (resumeSessionId === undefined || request.abortSignal.aborted) {
           throw error;
@@ -326,7 +349,7 @@ export class MonoAgentHarness implements AgentHarness {
         resumeSessionId = undefined;
         prepared = await this.prepareContext(activeRequest, { omitHistory: false, turnId: runId }, emit);
         context = prepared.context;
-        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, undefined, prepared.skillDisclosureNames, prepared.history, prepared.historyOmitted, leavePending);
+        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, undefined, prepared.skillDisclosureNames, prepared.history, prepared.historyOmitted, attachmentContext, leavePending);
       }
       if (runtimeResult === undefined) {
         throw resumeError ?? new Error("Runtime did not produce a result.");
@@ -686,29 +709,63 @@ export class MonoAgentHarness implements AgentHarness {
     request: AgentHarnessRequest,
     runId: string,
     emit: (event: RuntimeEventLike) => void,
-  ): Promise<{ readonly request: AgentHarnessRequest; readonly persistUserMessage: string }> {
+  ): Promise<{
+    readonly request: AgentHarnessRequest;
+    readonly persistUserMessage: string;
+    readonly attachmentContext: AttachmentRequestContext;
+  }> {
     const attachments = request.attachments;
-    if (attachments === undefined || attachments.length === 0) {
-      return { request, persistUserMessage: request.userMessage };
+    const configuredDir = this.options.attachmentsDir;
+    let canonicalDir: string | undefined;
+    if (configuredDir !== undefined
+      && ((attachments !== undefined && attachments.length > 0) || this.options.mcpRequestContext !== undefined)) {
+      try {
+        await mkdir(configuredDir, { recursive: true });
+        canonicalDir = await realpath(configuredDir);
+      } catch (error) {
+        if (attachments !== undefined && attachments.length > 0) {
+          emit({
+            type: "runtime_warning",
+            warning_kind: "attachment_persist_failed",
+            message: `Could not prepare the attachment directory: ${errorMessageText(error)}`,
+          });
+        }
+      }
     }
-    const dir = this.options.attachmentsDir;
+    const allowedPaths: string[] = [];
+    const allowedIdentities: AttachmentFileIdentity[] = [];
+    const attachmentContext = (): AttachmentRequestContext => ({
+      root: canonicalDir ?? "",
+      allowedPaths: [...allowedPaths],
+      allowedIdentities: [...allowedIdentities],
+    });
+    if (attachments === undefined || attachments.length === 0) {
+      return { request, persistUserMessage: request.userMessage, attachmentContext: attachmentContext() };
+    }
     const promptLines: string[] = [];
     const persistLines: string[] = [];
-    let dirEnsured = false;
     for (let index = 0; index < attachments.length; index += 1) {
       const attachment = attachments[index];
       if (attachment === undefined) {
         continue;
       }
       let savedPath: string | undefined;
-      if (dir !== undefined) {
+      if (canonicalDir !== undefined) {
+        let handle: Awaited<ReturnType<typeof open>> | undefined;
         try {
-          if (!dirEnsured) {
-            await mkdir(dir, { recursive: true });
-            dirEnsured = true;
+          savedPath = join(canonicalDir, attachmentFileName(runId, index, attachment));
+          // Capture authority from the descriptor that created and wrote the
+          // file. Never canonicalize the file path itself: realpath would turn
+          // a post-write symlink swap into authority for its target.
+          handle = await open(savedPath, "wx", 0o600);
+          await handle.writeFile(Buffer.from(attachment.data, "base64"));
+          await handle.sync();
+          const persisted = await handle.stat();
+          if (!persisted.isFile() || persisted.nlink !== 1) {
+            throw new Error("persisted attachment is not a uniquely linked regular file");
           }
-          savedPath = join(dir, attachmentFileName(runId, index, attachment));
-          await writeFile(savedPath, Buffer.from(attachment.data, "base64"));
+          allowedPaths.push(savedPath);
+          allowedIdentities.push({ path: savedPath, ...fileIdentity(persisted) });
         } catch (error) {
           emit({
             type: "runtime_warning",
@@ -716,20 +773,25 @@ export class MonoAgentHarness implements AgentHarness {
             message: `Could not save attachment ${attachment.name ?? `#${index}`}: ${errorMessageText(error)}`,
           });
           savedPath = undefined;
+        } finally {
+          if (handle !== undefined) {
+            await handle.close().catch(() => undefined);
+          }
         }
       }
       promptLines.push(describeAttachment(attachment, savedPath, { includeText: true }));
       persistLines.push(describeAttachment(attachment, savedPath, { includeText: false }));
     }
     if (promptLines.length === 0) {
-      return { request, persistUserMessage: request.userMessage };
+      return { request, persistUserMessage: request.userMessage, attachmentContext: attachmentContext() };
     }
-    const header = dir !== undefined
+    const header = configuredDir !== undefined
       ? `[The user attached ${attachments.length} file(s) — saved to disk so you can open them with your tools:]`
       : `[The user attached ${attachments.length} file(s):]`;
     return {
       request: { ...request, userMessage: `${request.userMessage}\n\n${header}\n${promptLines.join("\n")}` },
       persistUserMessage: `${request.userMessage}\n\n${header}\n${persistLines.join("\n")}`,
+      attachmentContext: attachmentContext(),
     };
   }
 
@@ -795,11 +857,15 @@ export class MonoAgentHarness implements AgentHarness {
     skillDisclosureNames: readonly string[],
     history: readonly HistoryMessage[],
     historyOmitted: boolean,
+    attachmentContext: AttachmentRequestContext,
     onProviderStart?: () => void,
   ): Promise<RuntimeResult> {
     const hostOnEvent = request.onEvent;
     let requestExtension: AgentHarnessRuntimeOptionsExtension | undefined;
     let requestExtensionCleanup: Promise<void> | undefined;
+    let mcpProgressCapability: AgentHarnessProgressCapability | undefined;
+    let mcpRunOutputCleanup: (() => Promise<void>) | undefined;
+    let settlementCleanup: Promise<void> | undefined;
     // Admission precedes per-request extension setup. Extensions may allocate
     // loopback MCP listeners or other bounded resources, so queued runs must
     // hold none of them while waiting for a provider slot.
@@ -817,9 +883,41 @@ export class MonoAgentHarness implements AgentHarness {
     };
     const cleanupRequestExtension = (): Promise<void> => {
       requestExtensionCleanup ??= Promise.resolve()
-        .then(async () => requestExtension?.cleanup?.())
+        .then(async () => {
+          const failures: unknown[] = [];
+          try {
+            await requestExtension?.cleanup?.();
+          } catch (error) {
+            failures.push(error);
+          }
+          try {
+            await mcpProgressCapability?.release();
+          } catch (error) {
+            failures.push(error);
+          }
+          if (failures.length > 0) {
+            throw failures[0];
+          }
+        })
         .then(() => undefined);
       return requestExtensionCleanup;
+    };
+    const cleanupAfterSettlement = (): Promise<void> => {
+      settlementCleanup ??= Promise.resolve().then(async () => {
+        const failures: unknown[] = [];
+        try {
+          await requestExtension?.settleCleanup?.();
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await mcpRunOutputCleanup?.();
+        } catch (error) {
+          failures.push(error);
+        }
+        if (failures.length > 0) throw failures[0];
+      });
+      return settlementCleanup;
     };
     const onAbortCleanupAndRelease = (): void => {
       void cleanupRequestExtension().catch(() => undefined).finally(releaseSlot);
@@ -830,12 +928,6 @@ export class MonoAgentHarness implements AgentHarness {
         acquired = true;
       }
       requestExtension = await this.options.runtimeOptionsForRequest?.({ request, runId, context });
-      request.abortSignal.addEventListener("abort", onAbortCleanupAndRelease, { once: true });
-      if (request.abortSignal.aborted) {
-        onAbortCleanupAndRelease();
-        await cleanupRequestExtension();
-        throw request.abortSignal.reason ?? new Error("Agent request was cancelled before provider start.");
-      }
       const policyOptions = toolPolicyToRuntimeOptions(
         requestExtension?.toolPolicyOverride
         ?? this.options.toolPolicy
@@ -856,6 +948,29 @@ export class MonoAgentHarness implements AgentHarness {
         staticRuntimeOptions,
         requestRuntimeOptions,
       );
+      const requestContext = await injectMcpRequestContext({
+        options: this.options.mcpRequestContext,
+        mcpServers: merged.mcpServers,
+        conversationId: request.conversationId,
+        runId,
+        attachmentsRoot: attachmentContext.root,
+        allowedAttachmentPaths: attachmentContext.allowedPaths,
+        allowedAttachmentIdentities: attachmentContext.allowedIdentities,
+      });
+      if (requestContext !== undefined) {
+        merged.mcpServers = requestContext.mcpServers;
+        mcpProgressCapability = requestContext.progressCapability;
+        mcpRunOutputCleanup = requestContext.cleanup;
+      }
+      // Register abort cleanup only after every run-scoped resource is assigned;
+      // otherwise an abort racing capability issuance could memoize cleanup before
+      // the token exists and leave that token live.
+      request.abortSignal.addEventListener("abort", onAbortCleanupAndRelease, { once: true });
+      if (request.abortSignal.aborted) {
+        onAbortCleanupAndRelease();
+        await cleanupRequestExtension();
+        throw request.abortSignal.reason ?? new Error("Agent request was cancelled before provider start.");
+      }
       // Per-request overrides (cron job / webhook per-trigger model + effort) win
       // over the harness defaults. These are applied AFTER the `...merged` spread so
       // the precedence is explicit. Non-override turns are byte-for-byte unchanged.
@@ -994,7 +1109,11 @@ export class MonoAgentHarness implements AgentHarness {
       try {
         await cleanupRequestExtension();
       } finally {
-        releaseSlot();
+        try {
+          await cleanupAfterSettlement();
+        } finally {
+          releaseSlot();
+        }
       }
     }
   }
@@ -1130,6 +1249,165 @@ function validateOptions(options: AgentHarnessOptions): void {
   ) {
     throw new TypeError("executionMode must be an optional non-empty string.");
   }
+  if (options.mcpRequestContext !== undefined) {
+    if (!Array.isArray(options.mcpRequestContext.serverNames)
+      || options.mcpRequestContext.serverNames.some((name) => typeof name !== "string" || name.trim().length === 0)) {
+      throw new TypeError("mcpRequestContext.serverNames must contain non-empty strings.");
+    }
+    if (typeof options.mcpRequestContext.runOutputRoot !== "string"
+      || options.mcpRequestContext.runOutputRoot.trim().length === 0) {
+      throw new TypeError("mcpRequestContext.runOutputRoot must be a non-empty path.");
+    }
+  }
+}
+
+const SAFE_RUN_OUTPUT_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
+const MCP_REQUEST_CONTEXT_RESERVED_ENV = {
+  conversationId: "MONO_AGENT_MCP_PRODUCING_CONVERSATION_ID",
+  runId: "MONO_AGENT_MCP_PRODUCING_RUN_ID",
+  runOutputDir: "MONO_AGENT_MCP_RUN_OUTPUT_DIR",
+  progressUrl: "MONO_AGENT_INTERACTION_PROGRESS_URL",
+  progressToken: "MONO_AGENT_INTERACTION_PROGRESS_TOKEN",
+  attachmentsRoot: "MONO_AGENT_MCP_ATTACHMENTS_ROOT",
+  allowedAttachmentPaths: "MONO_AGENT_MCP_ALLOWED_ATTACHMENT_PATHS",
+  allowedAttachmentIdentities: "MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES",
+} as const;
+
+async function injectMcpRequestContext(input: {
+  readonly options: AgentHarnessMcpRequestContextOptions | undefined;
+  readonly mcpServers: unknown;
+  readonly conversationId: string;
+  readonly runId: string;
+  readonly attachmentsRoot: string;
+  readonly allowedAttachmentPaths: readonly string[];
+  readonly allowedAttachmentIdentities: readonly AttachmentFileIdentity[];
+}): Promise<{
+  readonly mcpServers: Record<string, unknown>;
+  readonly progressCapability?: AgentHarnessProgressCapability;
+  readonly cleanup: () => Promise<void>;
+} | undefined> {
+  if (input.options === undefined || input.options.serverNames.length === 0 || !isRecord(input.mcpServers)) {
+    return undefined;
+  }
+  const selected = new Set(input.options.serverNames);
+  const selectedStdio = Object.entries(input.mcpServers).filter(
+    (entry): entry is [string, Record<string, unknown>] => selected.has(entry[0]) && isStdioMcpServerSpec(entry[1]),
+  );
+  if (selectedStdio.length === 0) {
+    return undefined;
+  }
+  if (!SAFE_RUN_OUTPUT_SEGMENT.test(input.runId)) {
+    throw new AgentHarnessError(
+      "invalid_run_id",
+      "The run id is not safe for request-scoped MCP output isolation.",
+      { runId: input.runId },
+    );
+  }
+  const outputRoot = resolve(input.options.runOutputRoot);
+  const runOutputDir = join(outputRoot, input.runId);
+  await mkdir(outputRoot, { recursive: true, mode: 0o700 });
+  try {
+    await mkdir(runOutputDir, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw error;
+    }
+    const existing = await lstat(runOutputDir);
+    if (!existing.isDirectory() || existing.isSymbolicLink()) {
+      throw new AgentHarnessError(
+        "unsafe_run_output",
+        "The request-scoped MCP output path is not a real directory.",
+        { runOutputDir },
+      );
+    }
+  }
+  const runOutputIdentity = fileIdentity(await lstat(runOutputDir));
+
+  const cleanup = async (): Promise<void> => {
+    await removeOwnedDirectory(runOutputDir, runOutputIdentity);
+  };
+  let progressCapability: AgentHarnessProgressCapability | undefined;
+  try {
+    progressCapability = input.options.progressCapabilityIssuer === undefined
+      ? undefined
+      : await input.options.progressCapabilityIssuer.issueProgressCapability({
+          conversationId: input.conversationId,
+          runId: input.runId,
+        });
+  } catch (error) {
+    await cleanup().catch(() => undefined);
+    throw error;
+  }
+  const trustedEnv: Record<string, string> = {
+    [MCP_REQUEST_CONTEXT_RESERVED_ENV.conversationId]: input.conversationId,
+    [MCP_REQUEST_CONTEXT_RESERVED_ENV.runId]: input.runId,
+    [MCP_REQUEST_CONTEXT_RESERVED_ENV.runOutputDir]: runOutputDir,
+    [MCP_REQUEST_CONTEXT_RESERVED_ENV.progressUrl]: progressCapability?.url ?? "",
+    [MCP_REQUEST_CONTEXT_RESERVED_ENV.progressToken]: progressCapability?.token ?? "",
+    [MCP_REQUEST_CONTEXT_RESERVED_ENV.attachmentsRoot]: input.attachmentsRoot,
+    [MCP_REQUEST_CONTEXT_RESERVED_ENV.allowedAttachmentPaths]: JSON.stringify(input.allowedAttachmentPaths),
+    [MCP_REQUEST_CONTEXT_RESERVED_ENV.allowedAttachmentIdentities]: JSON.stringify(input.allowedAttachmentIdentities),
+    // Opted project MCPs receive a scoped progress capability, never the bridge's
+    // all-routes master bearer even if the host process has stale ambient values.
+    MONO_AGENT_INTERACTION_BRIDGE_URL: "",
+    MONO_AGENT_INTERACTION_BRIDGE_TOKEN: "",
+  };
+  let mcpServers: Record<string, unknown>;
+  try {
+    mcpServers = { ...input.mcpServers };
+    for (const [name, spec] of selectedStdio) {
+      mcpServers[name] = cloneStdioMcpServerWithEnv(spec, trustedEnv);
+    }
+  } catch (error) {
+    await progressCapability?.release();
+    await cleanup().catch(() => undefined);
+    throw error;
+  }
+  return {
+    mcpServers,
+    ...(progressCapability === undefined ? {} : { progressCapability }),
+    cleanup,
+  };
+}
+
+function fileIdentity(stats: { readonly dev: number; readonly ino: number }): FileIdentity {
+  return { dev: stats.dev, ino: stats.ino };
+}
+
+function sameFileIdentity(
+  stats: { readonly dev: number; readonly ino: number },
+  expected: FileIdentity,
+): boolean {
+  return stats.dev === expected.dev && stats.ino === expected.ino;
+}
+
+/** Delete only the directory object this request created; never follow swaps. */
+async function removeOwnedDirectory(path: string, expected: FileIdentity): Promise<void> {
+  let current;
+  try {
+    current = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (!current.isDirectory() || current.isSymbolicLink() || !sameFileIdentity(current, expected)) {
+    return;
+  }
+  await rm(path, { recursive: true, force: true });
+}
+
+function isStdioMcpServerSpec(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  return value.type === "stdio"
+    || (typeof value.command === "string" && value.type !== "http" && value.type !== "sse");
+}
+
+function cloneStdioMcpServerWithEnv(
+  spec: Record<string, unknown>,
+  trustedEnv: Readonly<Record<string, string>>,
+): Record<string | symbol, unknown> {
+  const configuredEnv = isRecord(spec.env) ? spec.env : {};
+  return { ...spec, env: { ...configuredEnv, ...trustedEnv } };
 }
 
 function validateRequest(request: AgentHarnessRequest): void {

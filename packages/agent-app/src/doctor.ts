@@ -1751,12 +1751,14 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     );
   }
   let configuredMcpServerNames: string[] = [];
+  let configuredMcpServers: Record<string, unknown> = {};
   if (config.tools.mcpConfigPath !== undefined) {
     if (await pathExists(config.tools.mcpConfigPath)) {
       details.push(`MCP config: ${config.tools.mcpConfigPath}`);
       try {
         const policy = await loadToolPolicyFromJsonFile(config.tools.mcpConfigPath);
-        configuredMcpServerNames = Object.keys(policy.mcpServers ?? {});
+        configuredMcpServers = policy.mcpServers ?? {};
+        configuredMcpServerNames = Object.keys(configuredMcpServers);
       } catch {
         status = "error";
         details.push(`MCP config is malformed or unreadable: ${config.tools.mcpConfigPath}`);
@@ -1764,6 +1766,22 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     } else {
       status = "error";
       details.push(`MCP config file is missing: ${config.tools.mcpConfigPath}`);
+    }
+  }
+  for (const serverName of config.tools.mcpRequestContextServers ?? []) {
+    const spec = configuredMcpServers[serverName];
+    if (spec === undefined) {
+      status = "error";
+      details.push(
+        `tools.mcpRequestContextServers names unknown MCP server "${serverName}"; declare it in tools.mcpConfigPath.`,
+      );
+      continue;
+    }
+    if (!isStdioMcpSpec(spec)) {
+      status = "error";
+      details.push(
+        `tools.mcpRequestContextServers entry "${serverName}" must reference a stdio MCP server (command/type:stdio), not HTTP/SSE.`,
+      );
     }
   }
   const adapterSendTools = await resolveAdapterSendToolsSettings(input, {
@@ -1802,6 +1820,13 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
   }
 
   return { id: "tools", label: "Tools & MCP", status, details };
+}
+
+function isStdioMcpSpec(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const spec = value as Record<string, unknown>;
+  return spec.type === "stdio"
+    || (typeof spec.command === "string" && spec.type !== "http" && spec.type !== "sse");
 }
 
 interface AdapterEndpointRequirement {

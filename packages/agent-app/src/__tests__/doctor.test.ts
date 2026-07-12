@@ -3517,6 +3517,29 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(tools.details.join("\n")).toContain("cannot safely consume MCP runtime options from tools.mcpConfigPath (filesystem)");
   });
 
+  it("validates request-context MCP names and requires stdio transports", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const mcpConfigPath = join(dir, "mcp.json");
+    await writeFile(mcpConfigPath, JSON.stringify({
+      mcpServers: { remote: { type: "http", url: "https://mcp.example.test" } },
+    }));
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: {
+        allowedTools: ["*"],
+        mcpConfigPath,
+        mcpRequestContextServers: ["missing", "remote"],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("error");
+    expect(tools.details.join("\n")).toContain('names unknown MCP server "missing"');
+    expect(tools.details.join("\n")).toContain('entry "remote" must reference a stdio MCP server');
+  });
+
   it.each([
     ["memory recall", {
       memory: { mode: "lite", path: ".mono-agent/memory", recallTool: { enabled: true } },
