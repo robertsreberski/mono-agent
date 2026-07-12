@@ -1,4 +1,6 @@
 import {
+  chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -28,6 +30,11 @@ import {
   withManagedRollbackRetirement,
 } from "../generations.js";
 import { safeRebuildMemoryIndex } from "../rebuild.js";
+import {
+  legacyReplayProjectionFromDb,
+  prepareReplayProjectionDelta,
+  publishPreparedReplayProjection,
+} from "../replay-projection.js";
 import { createBujoMemoryStore } from "../store.js";
 import {
   BUJO_RUNTIME_SNAPSHOT_SCHEMA_VERSION,
@@ -184,6 +191,23 @@ describe("strict BuJo memory health", () => {
     expect(readManagedIndexManifest(root)?.rollback).toBeDefined();
     expect(readFileSync(join(root, ".index", "manifest.json"), "utf8")).toBe(beforeManifest);
     expect(readdirSync(join(root, ".index")).filter((name) => name.includes("manifest-retire"))).toEqual([]);
+  });
+
+  it("retires only a BuJo rollback for the replay source domain", async () => {
+    const bujoRoot = tempRoot();
+    const provider = fakeEmbeddings(4);
+    await safeRebuildMemoryIndex({ root: bujoRoot, tier: "bujo", embeddings: provider, dim: 4 });
+    await safeRebuildMemoryIndex({ root: bujoRoot, tier: "bujo", embeddings: provider, dim: 4 });
+    expect(readManagedIndexManifest(bujoRoot)?.rollback).toBeDefined();
+    withManagedRollbackRetirement(bujoRoot, "replay", () => undefined);
+    expect(readManagedIndexManifest(bujoRoot)?.rollback).toBeUndefined();
+
+    const liteRoot = tempRoot();
+    await safeRebuildMemoryIndex({ root: liteRoot, tier: "lite" });
+    await safeRebuildMemoryIndex({ root: liteRoot, tier: "lite" });
+    const liteRollback = readManagedIndexManifest(liteRoot)?.rollback?.name;
+    withManagedRollbackRetirement(liteRoot, "replay", () => undefined);
+    expect(readManagedIndexManifest(liteRoot)?.rollback?.name).toBe(liteRollback);
   });
 
   it("preserves a retained rollback across reads, projections, audit-only writes, and exact graph no-ops", async () => {
@@ -347,6 +371,353 @@ describe("strict BuJo memory health", () => {
     expect(result.issues).toEqual([]);
   });
 
+  it("keeps a retired no-active SUPERSEDE lifecycle healthy", async () => {
+    const root = tempRoot();
+    const replay = await rebuildNoActiveSupersede(root);
+    publishRuntime(root, "bujo");
+
+    const result = auditBujoMemoryHealth({
+      root,
+      mode: "bujo",
+      configuredEmbeddingModel: replay.provider.id,
+      configuredDimension: 4,
+      now: NOW,
+    });
+
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+    expect(result.status).toBe("healthy");
+    expect(result.issues).toEqual([]);
+  });
+
+  it("keeps a retired no-active ADD thread edge healthy", async () => {
+    const root = tempRoot();
+    const replay = await rebuildNoActiveThread(root);
+    publishRuntime(root, "bujo");
+
+    const result = auditBujoMemoryHealth({
+      root,
+      mode: "bujo",
+      configuredEmbeddingModel: replay.provider.id,
+      configuredDimension: 4,
+      now: NOW,
+    });
+
+    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
+    expect(result.status).toBe("healthy");
+    expect(result.issues).toEqual([]);
+  });
+
+  it("allows five replayed thread edges for each of multiple sources", async () => {
+    const root = tempRoot();
+    const replay = await rebuildBujoThreadFanout(root, [5, 5]);
+    publishRuntime(root, "bujo");
+
+    const result = auditBujoMemoryHealth({
+      root,
+      mode: "bujo",
+      configuredEmbeddingModel: replay.provider.id,
+      configuredDimension: 4,
+      now: NOW,
+    });
+
+    expect(result.status).toBe("healthy");
+    expect(result.issues).toEqual([]);
+  });
+
+  it("rejects a structurally plausible raw SQLite thread that is absent from the sidecar", async () => {
+    const root = tempRoot();
+    const provider = fakeEmbeddings(4);
+    const source = replayBullet("M-RAW-SOURCE", "Raw replay source.", "open", NOW);
+    const target = replayBullet("M-RAW-TARGET", "Raw replay target.", "open", NOW);
+    appendBullet(root, source, NOW);
+    appendBullet(root, target, NOW);
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+    const raw = new BetterSqlite3(rebuilt.active);
+    try {
+      raw.prepare(
+        "INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, 'thread', 0.8, ?)",
+      ).run(source.id, target.id, NOW.toISOString());
+      raw.pragma("wal_checkpoint(TRUNCATE)");
+    } finally {
+      raw.close();
+    }
+    publishRuntime(root, "bujo");
+
+    const result = auditBujoMemoryHealth({
+      root,
+      mode: "bujo",
+      configuredEmbeddingModel: provider.id,
+      configuredDimension: 4,
+      now: NOW,
+    });
+
+    expect(result.status).toBe("unhealthy");
+    expect(result.issues).toContain("canonical_mismatch");
+  });
+
+  it("reports a malformed replay sidecar as canonical_invalid", async () => {
+    const root = tempRoot();
+    const provider = fakeEmbeddings(4);
+    await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+    writeFileSync(join(root, ".replay-projection-v1.json"), "{not-json\n", { mode: 0o600 });
+    publishRuntime(root, "bujo");
+
+    const result = auditBujoMemoryHealth({
+      root,
+      mode: "bujo",
+      configuredEmbeddingModel: provider.id,
+      configuredDimension: 4,
+      now: NOW,
+    });
+
+    expect(result.status).toBe("unhealthy");
+    expect(result.issues).toContain("canonical_invalid");
+  });
+
+  it("rejects a sixth replayed thread edge from one source", async () => {
+    const root = tempRoot();
+    const replay = await rebuildBujoThreadFanout(root, [6]);
+    publishRuntime(root, "bujo");
+
+    const result = auditBujoMemoryHealth({
+      root,
+      mode: "bujo",
+      configuredEmbeddingModel: replay.provider.id,
+      configuredDimension: 4,
+      now: NOW,
+    });
+
+    expect(result.status).toBe("unhealthy");
+    expect(result.issues).toContain("canonical_mismatch");
+  });
+
+  it.each(["lite", "journal"] as const)(
+    "rejects replay-only lifecycle and thread state from strict %s health",
+    async (tier) => {
+      const root = tempRoot();
+      const replay = await rebuildNonBujoReplayProjection(root, tier);
+      publishRuntime(root, tier);
+
+      const result = auditBujoMemoryHealth({
+        root,
+        mode: tier,
+        ...(tier === "journal" ? {
+          configuredEmbeddingModel: replay.provider.id,
+          configuredDimension: 4,
+        } : {}),
+        now: NOW,
+      });
+
+      expect(result.status).toBe("unhealthy");
+      expect(result.issues).toContain("canonical_mismatch");
+    },
+  );
+
+  it("accepts a temporally ordered replayed SUPERSEDE chain", async () => {
+    const root = tempRoot();
+    const replay = await rebuildBujoLifecycleTopology(root, "chain");
+    publishRuntime(root, "bujo");
+
+    const result = auditBujoMemoryHealth({
+      root,
+      mode: "bujo",
+      configuredEmbeddingModel: replay.provider.id,
+      configuredDimension: 4,
+      now: NOW,
+    });
+
+    expect(result.status).toBe("healthy");
+    expect(result.issues).toEqual([]);
+  });
+
+  it.each(["cycle", "fan-in"] as const)(
+    "rejects a replayed SUPERSEDE %s",
+    async (topology) => {
+      const root = tempRoot();
+      const replay = await rebuildBujoLifecycleTopology(root, topology);
+      publishRuntime(root, "bujo");
+
+      const result = auditBujoMemoryHealth({
+        root,
+        mode: "bujo",
+        configuredEmbeddingModel: replay.provider.id,
+        configuredDimension: 4,
+        now: NOW,
+      });
+
+      expect(result.status).toBe("unhealthy");
+      expect(result.issues).toContain("canonical_mismatch");
+    },
+  );
+
+  it.each([
+    ["a partial lifecycle tuple", (db: BetterSqlite3.Database, oldId: string) => {
+      db.prepare("UPDATE memories SET valid_to = NULL WHERE id = ?").run(oldId);
+    }],
+    ["an unknown replacement target", (db: BetterSqlite3.Database, oldId: string) => {
+      db.prepare("UPDATE memories SET superseded_by = 'MISSING-REPLACEMENT' WHERE id = ?").run(oldId);
+    }],
+    ["a lifecycle timestamp that differs from its replacement", (db: BetterSqlite3.Database, oldId: string) => {
+      db.prepare("UPDATE memories SET valid_to = ?, superseded_at = ? WHERE id = ?")
+        .run("2026-07-12T10:00:01.000Z", "2026-07-12T10:00:01.000Z", oldId);
+    }],
+    ["unequal valid-to and superseded-at timestamps", (db: BetterSqlite3.Database, oldId: string) => {
+      db.prepare("UPDATE memories SET valid_to = ? WHERE id = ?")
+        .run("2026-07-12T10:00:01.000Z", oldId);
+    }],
+    ["a non-invalidated lifecycle row", (db: BetterSqlite3.Database, oldId: string) => {
+      db.prepare("UPDATE memories SET status = 'open' WHERE id = ?").run(oldId);
+    }],
+    ["a missing supersedes edge", (db: BetterSqlite3.Database, oldId: string) => {
+      db.prepare("DELETE FROM edges WHERE src = ? AND kind = 'supersedes'").run(oldId);
+    }],
+    ["a non-unit supersedes edge", (db: BetterSqlite3.Database, oldId: string) => {
+      db.prepare("UPDATE edges SET weight = 0.5 WHERE src = ? AND kind = 'supersedes'").run(oldId);
+    }],
+    ["a supersedes edge timestamp mismatch", (db: BetterSqlite3.Database, oldId: string) => {
+      db.prepare("UPDATE edges SET created_at = ? WHERE src = ? AND kind = 'supersedes'")
+        .run("2026-07-12T10:00:01.000Z", oldId);
+    }],
+  ])("rejects %s after a replayed SUPERSEDE", async (_name, mutate) => {
+    const root = tempRoot();
+    const replay = await rebuildNoActiveSupersede(root);
+    const raw = new BetterSqlite3(replay.active);
+    try {
+      mutate(raw, replay.oldId);
+      raw.pragma("wal_checkpoint(TRUNCATE)");
+    } finally {
+      raw.close();
+    }
+    publishRuntime(root, "bujo");
+
+    const result = auditBujoMemoryHealth({
+      root,
+      mode: "bujo",
+      configuredEmbeddingModel: replay.provider.id,
+      configuredDimension: 4,
+      now: NOW,
+    });
+
+    expect(result.status).toBe("unhealthy");
+    expect(result.issues).toContain("canonical_mismatch");
+  });
+
+  it("keeps an exact dropped validTo-only terminal lifecycle healthy", async () => {
+    const root = tempRoot();
+    const terminal = await rebuildBujoDroppedTerminal(root);
+    publishRuntime(root, "bujo");
+
+    const result = auditBujoMemoryHealth({
+      root,
+      mode: "bujo",
+      configuredEmbeddingModel: terminal.provider.id,
+      configuredDimension: 4,
+      now: NOW,
+    });
+
+    expect(result.status).toBe("healthy");
+    expect(result.issues).toEqual([]);
+  });
+
+  it.each([
+    ["a non-exact terminal timestamp", (db: BetterSqlite3.Database, id: string) => {
+      db.prepare("UPDATE memories SET valid_to = ? WHERE id = ?")
+        .run("2026-07-12T10:00:00Z", id);
+    }],
+    ["a terminal timestamp before creation", (db: BetterSqlite3.Database, id: string) => {
+      db.prepare("UPDATE memories SET valid_to = ? WHERE id = ?")
+        .run("2026-07-12T09:58:00.000Z", id);
+    }],
+    ["a validTo-only lifecycle on a non-dropped row", (db: BetterSqlite3.Database, id: string) => {
+      db.prepare("UPDATE memories SET status = 'invalidated' WHERE id = ?").run(id);
+    }],
+    ["a partial supersededBy field", (db: BetterSqlite3.Database, id: string) => {
+      db.prepare("UPDATE memories SET superseded_by = 'MISSING' WHERE id = ?").run(id);
+    }],
+    ["a partial supersededAt field", (db: BetterSqlite3.Database, id: string) => {
+      db.prepare("UPDATE memories SET superseded_at = ? WHERE id = ?").run(NOW.toISOString(), id);
+    }],
+    ["an outgoing supersedes edge", (db: BetterSqlite3.Database, id: string) => {
+      db.prepare(
+        "INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, 'MISSING', 'supersedes', 1, ?)",
+      ).run(id, NOW.toISOString());
+    }],
+  ])("rejects %s for a dropped terminal lifecycle", async (_name, mutate) => {
+    const root = tempRoot();
+    const terminal = await rebuildBujoDroppedTerminal(root);
+    const raw = new BetterSqlite3(terminal.active);
+    try {
+      mutate(raw, terminal.id);
+      raw.pragma("wal_checkpoint(TRUNCATE)");
+    } finally {
+      raw.close();
+    }
+    publishRuntime(root, "bujo");
+
+    const result = auditBujoMemoryHealth({
+      root,
+      mode: "bujo",
+      configuredEmbeddingModel: terminal.provider.id,
+      configuredDimension: 4,
+      now: NOW,
+    });
+
+    expect(result.status).toBe("unhealthy");
+    expect(result.issues).toContain("canonical_mismatch");
+  });
+
+  it.each([
+    ["an unknown memory endpoint", (db: BetterSqlite3.Database, sourceId: string) => {
+      db.prepare("UPDATE edges SET dst = 'MISSING-THREAD-TARGET' WHERE src = ? AND kind = 'thread'").run(sourceId);
+    }],
+    ["a self endpoint", (db: BetterSqlite3.Database, sourceId: string) => {
+      db.prepare("UPDATE edges SET dst = src WHERE src = ? AND kind = 'thread'").run(sourceId);
+    }],
+    ["an out-of-range weight", (db: BetterSqlite3.Database, sourceId: string) => {
+      db.prepare("UPDATE edges SET weight = 2 WHERE src = ? AND kind = 'thread'").run(sourceId);
+    }],
+    ["a malformed timestamp", (db: BetterSqlite3.Database, sourceId: string) => {
+      db.prepare("UPDATE edges SET created_at = 'not-a-timestamp' WHERE src = ? AND kind = 'thread'").run(sourceId);
+    }],
+    ["a timestamp earlier than a canonical endpoint", (db: BetterSqlite3.Database, sourceId: string) => {
+      db.prepare("UPDATE edges SET created_at = ? WHERE src = ? AND kind = 'thread'")
+        .run(new Date(NOW.getTime() - 120_000).toISOString(), sourceId);
+    }],
+    ["an unsupported about edge", (db: BetterSqlite3.Database, sourceId: string) => {
+      db.prepare("UPDATE edges SET kind = 'about' WHERE src = ? AND kind = 'thread'").run(sourceId);
+    }],
+    ["an extra support edge", (db: BetterSqlite3.Database, sourceId: string, targetId: string) => {
+      db.prepare("INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, 'supports', 1, ?)")
+        .run(sourceId, targetId, NOW.toISOString());
+    }],
+    ["a supersedes edge without lifecycle", (db: BetterSqlite3.Database, sourceId: string, targetId: string) => {
+      db.prepare("INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, 'supersedes', 1, ?)")
+        .run(sourceId, targetId, NOW.toISOString());
+    }],
+  ])("rejects %s after a replayed ADD thread", async (_name, mutate) => {
+    const root = tempRoot();
+    const replay = await rebuildNoActiveThread(root);
+    const raw = new BetterSqlite3(replay.active);
+    try {
+      mutate(raw, replay.sourceId, replay.targetId);
+      raw.pragma("wal_checkpoint(TRUNCATE)");
+    } finally {
+      raw.close();
+    }
+    publishRuntime(root, "bujo");
+
+    const result = auditBujoMemoryHealth({
+      root,
+      mode: "bujo",
+      configuredEmbeddingModel: replay.provider.id,
+      configuredDimension: 4,
+      now: NOW,
+    });
+
+    expect(result.status).toBe("unhealthy");
+    expect(result.issues).toContain("canonical_mismatch");
+  });
+
   it("detects FTS/canonical drift without comparing the mutable DB to the manifest digest", async () => {
     const root = tempRoot();
     const provider = fakeEmbeddings(4);
@@ -369,6 +740,28 @@ describe("strict BuJo memory health", () => {
     expect(result.issues).toContain("fts_mismatch");
     expect(result.issues).toContain("canonical_mismatch");
     expect(result.issues).not.toContain("sqlite_integrity_failed");
+  });
+
+  it("keeps derived collection exact in runtime health even while live telemetry is repair-tolerant", async () => {
+    const root = tempRoot();
+    const provider = fakeEmbeddings(4);
+    appendBullet(root, bullet(), NOW);
+    const rebuilt = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+    const raw = new BetterSqlite3(rebuilt.active);
+    raw.prepare("UPDATE memories SET collection = 'drifted' WHERE id = ?").run(bullet().id);
+    raw.close();
+    publishRuntime(root, "bujo");
+
+    const result = auditBujoMemoryHealth({
+      root,
+      mode: "bujo",
+      configuredEmbeddingModel: provider.id,
+      configuredDimension: 4,
+      now: NOW,
+    });
+
+    expect(result.status).toBe("unhealthy");
+    expect(result.issues).toContain("canonical_mismatch");
   });
 
   it("reports BuJo vector coverage loss from the WAL-visible active state", async () => {
@@ -672,6 +1065,50 @@ describe("strict BuJo memory health", () => {
     expect(JSON.stringify(result)).not.toContain("private");
   });
 
+  it("counts an abandoned replay-sidecar temp, then safely cleans it under a stopped writer lease", async () => {
+    const root = tempRoot();
+    const db = openMemoryDb({ path: join(root, "memory.db") });
+    db.close();
+    publishRuntime(root, "lite");
+    const temporary = join(root, "..replay-projection-v1.json-00000000-0000-4000-8000-000000000001.tmp");
+    writeFileSync(
+      temporary,
+      "{private-partial-sidecar",
+      { mode: 0o600 },
+    );
+
+    const result = auditBujoMemoryHealth({ root, mode: "lite", now: NOW });
+
+    expect(result.status).toBe("unhealthy");
+    expect(result.issues).toContain("temporary_artifacts");
+    expect(result.counts.temporary).toBe(1);
+    expect(JSON.stringify(result)).not.toContain("private-partial-sidecar");
+
+    const store = createBujoMemoryStore({ root, tier: "lite" });
+    await store.close();
+    expect(existsSync(temporary)).toBe(false);
+    publishRuntime(root, "lite");
+    const recovered = auditBujoMemoryHealth({ root, mode: "lite", now: NOW });
+    expect(recovered.issues).not.toContain("temporary_artifacts");
+    expect(recovered.counts.temporary).toBe(0);
+  });
+
+  it("refuses to clean an unsafe replay-sidecar temp and leaves strict health red", () => {
+    const root = tempRoot();
+    const db = openMemoryDb({ path: join(root, "memory.db") });
+    db.close();
+    publishRuntime(root, "lite");
+    const temporary = join(root, "..replay-projection-v1.json-00000000-0000-4000-8000-000000000002.tmp");
+    writeFileSync(temporary, "partial", { mode: 0o644 });
+    chmodSync(temporary, 0o644);
+
+    expect(() => createBujoMemoryStore({ root, tier: "lite" })).toThrow(/temporary.*owner-only/iu);
+    expect(existsSync(temporary)).toBe(true);
+    const result = auditBujoMemoryHealth({ root, mode: "lite", now: NOW });
+    expect(result.status).toBe("unhealthy");
+    expect(result.issues).toContain("temporary_artifacts");
+  });
+
   it("keeps a freshly published outbox intent in progress", () => {
     const root = tempRoot();
     const db = openMemoryDb({ path: join(root, "memory.db") });
@@ -882,6 +1319,267 @@ describe("strict BuJo memory health", () => {
     expect(result.issues).toEqual(["runtime_invalid"]);
   });
 });
+
+async function rebuildNoActiveSupersede(root: string): Promise<{
+  readonly active: string;
+  readonly oldId: string;
+  readonly provider: ReturnType<typeof fakeEmbeddings>;
+}> {
+  const provider = fakeEmbeddings(4);
+  const old = replayBullet("M-REPLAY-OLD", "The earlier canonical claim.", "open", NOW);
+  const replacement = replayBullet("M-REPLAY-NEW", "The replacement canonical claim.", "open", NOW);
+  appendBullet(root, old, NOW);
+  const file = "daily/2026-07-12.md";
+  writeCaptureIntent(root, [{
+    candidateIndex: 0,
+    kind: "supersede",
+    oldId: old.id,
+    newId: replacement.id,
+    beforeOld: { file, bullet: old },
+    afterOld: { file, bullet: { ...old, status: "invalidated" } },
+    afterNew: { file, bullet: replacement },
+    record: replayRecord(replacement, file),
+    vector: deterministicVector(replacement.text, 4),
+    at: NOW.toISOString(),
+  }], {}, NOW.toISOString());
+  const rebuilt = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+  return { active: rebuilt.active, oldId: old.id, provider };
+}
+
+async function rebuildBujoDroppedTerminal(root: string): Promise<{
+  readonly active: string;
+  readonly id: string;
+  readonly provider: ReturnType<typeof fakeEmbeddings>;
+}> {
+  const provider = fakeEmbeddings(4);
+  const createdAt = new Date(NOW.getTime() - 60_000);
+  const item = replayBullet("M-DROPPED-TERMINAL", "The forgotten memory is terminal.", "dropped", createdAt);
+  appendBullet(root, item, createdAt);
+  const rebuilt = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+  const raw = new BetterSqlite3(rebuilt.active);
+  try {
+    raw.prepare("UPDATE memories SET valid_to = ? WHERE id = ?").run(NOW.toISOString(), item.id);
+    raw.pragma("wal_checkpoint(TRUNCATE)");
+  } finally {
+    raw.close();
+  }
+  attestLegacyReplay(root, rebuilt.active);
+  return { active: rebuilt.active, id: item.id, provider };
+}
+
+async function rebuildNoActiveThread(root: string): Promise<{
+  readonly active: string;
+  readonly sourceId: string;
+  readonly targetId: string;
+  readonly provider: ReturnType<typeof fakeEmbeddings>;
+}> {
+  const provider = fakeEmbeddings(4);
+  const targetAt = new Date(NOW.getTime() - 60_000);
+  const target = replayBullet("M-THREAD-TARGET", "The established thread target.", "open", targetAt);
+  const source = replayBullet("M-THREAD-SOURCE", "The new memory threads to its neighbour.", "open", NOW);
+  appendBullet(root, target, targetAt);
+  const file = "daily/2026-07-12.md";
+  writeCaptureIntent(root, [{
+    candidateIndex: 0,
+    kind: "add",
+    id: source.id,
+    after: { file, bullet: source },
+    record: replayRecord(source, file),
+    vector: deterministicVector(source.text, 4),
+    threads: [{ src: source.id, dst: target.id, weight: 0.8 }],
+  }], {}, NOW.toISOString());
+  const rebuilt = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+  return { active: rebuilt.active, sourceId: source.id, targetId: target.id, provider };
+}
+
+async function rebuildBujoThreadFanout(
+  root: string,
+  perSourceCounts: readonly number[],
+): Promise<{
+  readonly active: string;
+  readonly provider: ReturnType<typeof fakeEmbeddings>;
+}> {
+  const provider = fakeEmbeddings(4);
+  const maxTargets = Math.max(0, ...perSourceCounts);
+  const sources = perSourceCounts.map((_, index) => replayBullet(
+    `M-FANOUT-SOURCE-${index}`,
+    `Thread fanout source ${index}.`,
+    "open",
+    NOW,
+  ));
+  const targets = Array.from({ length: maxTargets }, (_, index) => replayBullet(
+    `M-FANOUT-TARGET-${index}`,
+    `Thread fanout target ${index}.`,
+    "open",
+    NOW,
+  ));
+  for (const item of [...sources, ...targets]) appendBullet(root, item, NOW);
+  const rebuilt = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+  const raw = new BetterSqlite3(rebuilt.active);
+  try {
+    const insert = raw.prepare(
+      "INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, 'thread', 0.8, ?)",
+    );
+    perSourceCounts.forEach((count, sourceIndex) => {
+      for (let targetIndex = 0; targetIndex < count; targetIndex += 1) {
+        insert.run(sources[sourceIndex]!.id, targets[targetIndex]!.id, NOW.toISOString());
+      }
+    });
+    raw.pragma("wal_checkpoint(TRUNCATE)");
+  } finally {
+    raw.close();
+  }
+  if (perSourceCounts.every((count) => count <= 5)) attestLegacyReplay(root, rebuilt.active);
+  return { active: rebuilt.active, provider };
+}
+
+async function rebuildNonBujoReplayProjection(
+  root: string,
+  tier: "lite" | "journal",
+): Promise<{
+  readonly active: string;
+  readonly provider: ReturnType<typeof fakeEmbeddings>;
+}> {
+  const provider = fakeEmbeddings(4);
+  const old = replayBullet(
+    `M-${tier.toUpperCase()}-OLD`,
+    `The ${tier} prior claim.`,
+    "invalidated",
+    new Date(NOW.getTime() - 60_000),
+  );
+  const replacement = replayBullet(
+    `M-${tier.toUpperCase()}-NEW`,
+    `The ${tier} replacement claim.`,
+    "open",
+    NOW,
+  );
+  appendBullet(root, old, NOW);
+  appendBullet(root, replacement, NOW);
+  const rebuilt = tier === "journal"
+    ? await safeRebuildMemoryIndex({ root, tier, embeddings: provider, dim: 4 })
+    : await safeRebuildMemoryIndex({ root, tier });
+  const db = openMemoryDb({ path: rebuilt.active, ...(tier === "journal" ? { dim: 4 } : {}) });
+  try {
+    const records = db.allMemories();
+    const oldId = records.find((record) => record.text === old.text)?.id;
+    const replacementId = records.find((record) => record.text === replacement.text)?.id;
+    if (oldId === undefined || replacementId === undefined) throw new Error("test replay record missing");
+    db.markSuperseded(oldId, replacementId, replacement.createdAt);
+    db.addEdge(replacementId, oldId, "thread", 0.8);
+    db.checkpoint();
+  } finally {
+    db.close();
+  }
+  return { active: rebuilt.active, provider };
+}
+
+async function rebuildBujoLifecycleTopology(
+  root: string,
+  topology: "chain" | "cycle" | "fan-in",
+): Promise<{
+  readonly active: string;
+  readonly provider: ReturnType<typeof fakeEmbeddings>;
+}> {
+  const provider = fakeEmbeddings(4);
+  const firstAt = topology === "cycle" ? NOW : new Date(NOW.getTime() - 120_000);
+  const secondAt = topology === "cycle" ? NOW : new Date(NOW.getTime() - 60_000);
+  const first = replayBullet("M-TOPOLOGY-A", "Topology claim A.", "invalidated", firstAt);
+  const second = replayBullet("M-TOPOLOGY-B", "Topology claim B.", "invalidated", secondAt);
+  const terminal = replayBullet("M-TOPOLOGY-C", "Topology claim C.", "open", NOW);
+  appendBullet(root, first, NOW);
+  appendBullet(root, second, NOW);
+  if (topology !== "cycle") appendBullet(root, terminal, NOW);
+  const rebuilt = await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+  const raw = new BetterSqlite3(rebuilt.active);
+  try {
+    if (topology === "chain") {
+      installLifecycle(raw, first.id, second.id, second.createdAt);
+      installLifecycle(raw, second.id, terminal.id, terminal.createdAt);
+    } else if (topology === "cycle") {
+      installLifecycle(raw, first.id, second.id, NOW.toISOString());
+      installLifecycle(raw, second.id, first.id, NOW.toISOString());
+    } else {
+      installLifecycle(raw, first.id, terminal.id, terminal.createdAt);
+      installLifecycle(raw, second.id, terminal.id, terminal.createdAt);
+    }
+    raw.pragma("wal_checkpoint(TRUNCATE)");
+  } finally {
+    raw.close();
+  }
+  if (topology === "chain") attestLegacyReplay(root, rebuilt.active);
+  return { active: rebuilt.active, provider };
+}
+
+function attestLegacyReplay(root: string, dbPath: string): void {
+  const db = openMemoryDb({ path: dbPath, readOnly: true, dim: 4 });
+  try {
+    const projection = legacyReplayProjectionFromDb(db, "a".repeat(64));
+    publishPreparedReplayProjection(root, prepareReplayProjectionDelta(root, {
+      terminals: projection.terminals,
+      supersedes: projection.supersedes,
+      threads: projection.threads,
+    }));
+  } finally {
+    db.close();
+  }
+}
+
+function installLifecycle(
+  db: BetterSqlite3.Database,
+  sourceId: string,
+  replacementId: string,
+  at: string,
+): void {
+  db.prepare(
+    "UPDATE memories SET valid_to = ?, superseded_by = ?, superseded_at = ? WHERE id = ?",
+  ).run(at, replacementId, at, sourceId);
+  db.prepare(
+    "INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, 'supersedes', 1, ?)",
+  ).run(sourceId, replacementId, at);
+}
+
+function replayBullet(
+  id: string,
+  text: string,
+  status: Bullet["status"],
+  createdAt: Date,
+): Bullet {
+  return {
+    id,
+    type: "note",
+    status,
+    text,
+    salience: 0.7,
+    isInsight: false,
+    createdAt: createdAt.toISOString(),
+    refs: [],
+  };
+}
+
+function replayRecord(item: Bullet, file: string): MemoryRecord {
+  return {
+    id: item.id,
+    type: item.type,
+    status: item.status,
+    text: item.text,
+    salience: item.salience,
+    isInsight: item.isInsight,
+    createdAt: item.createdAt,
+    accessCount: 0,
+    tags: [],
+    source: { file },
+  };
+}
+
+function deterministicVector(text: string, dim: number): number[] {
+  const vector = new Array<number>(dim).fill(0);
+  for (const [index, byte] of Buffer.from(text).entries()) {
+    const slot = index % dim;
+    vector[slot] = (vector[slot] ?? 0) + byte / 255;
+  }
+  const norm = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0)) || 1;
+  return vector.map((value) => value / norm);
+}
 
 function tempRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "memory-health-audit-"));

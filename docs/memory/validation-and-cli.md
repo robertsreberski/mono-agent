@@ -50,6 +50,10 @@ mono-agent memory rebuild --json
 # Swap back to the retained prior generation
 mono-agent memory rollback --json
 
+# One-time explicit TOFU for a stopped legacy managed or unmanaged BuJo
+# index whose replay-owned SQLite state predates the canonical sidecar
+mono-agent memory adopt-replay --json
+
 # Machine-readable output for scripts
 mono-agent memory stats --json
 ```
@@ -64,7 +68,7 @@ While the configured store runs, it atomically publishes a coalesced metadata-on
 
 ### Strict provider-free health gate
 
-`mono-agent memory audit --strict --json` is the closed, provider-free health contract. It makes no embedding, chat-model, Ollama, OpenAI, or Supermemory request. For the built-in backend it takes a bounded, snapshot-coherent view of managed identity, SQLite integrity and metadata, FTS/vector coverage, canonical source parity, rollback-source freshness, durable completed-turn intake, capture outbox, temporary artifacts, and the runtime snapshot. SQLite still requires the native modules built for the Node runtime that invokes the command; an unavailable native module reports `unknown` rather than leaking the loader error.
+`mono-agent memory audit --strict --json` is the closed, provider-free health contract. It makes no embedding, chat-model, Ollama, OpenAI, or Supermemory request. For the built-in backend it takes a bounded, snapshot-coherent view of managed identity, SQLite integrity and metadata, FTS/vector coverage, canonical source parity (including BuJo's exact replay projection), rollback-source freshness, durable completed-turn intake, capture outbox, temporary artifacts, and the runtime snapshot. SQLite still requires the native modules built for the Node runtime that invokes the command; an unavailable native module reports `unknown` rather than leaking the loader error.
 
 Fresh durable work is `in_progress`, but it cannot remain successful forever after its owner disappears. A due intake item with no active retry, or a published capture intent awaiting replay, becomes `work_stalled` after the same 90-second grace used for runtime staleness. The timestamps and stability digests used for that decision remain private; the public report carries only the stable issue and aggregate counts. A live/fresh Journal write lock is similarly distinguished from a stale or malformed owner without mutating the lock during audit.
 
@@ -114,6 +118,96 @@ work_stalled temporary_artifacts runtime_missing runtime_stale runtime_invalid
 ```
 
 The strict report is metadata-only by construction. It never publishes paths, filenames, record or run ids, model text, payloads, raw provider/native errors, or arbitrary extra fields. `backend: "supermemory"` therefore reports `unknown` with empty issues and zeroed counts instead of pretending to know remote health; an absent backend reports `not_configured` with the same closed empty shape.
+
+### BuJo replay projection and explicit legacy adoption
+
+The BuJo tier keeps one owner-only canonical replay authority at
+`memory.path/.replay-projection-v1.json`. It exactly describes the replay-owned
+thread edges, supersession lifecycle/edges, and migration-forget terminal
+timestamps that cannot be reconstructed from daily markdown and `graph.jsonl`
+alone. The file is metadata-only: ids, timestamps, thread weights, authority
+kinds, and content-free authority digests, never memory text or model output.
+It must be an owner-owned, single-link regular file with mode `0600` and exact
+canonical JSON.
+
+Strict audit compares this entire projection with SQLite. A plausible raw
+SQLite edge or lifecycle update that has no exact sidecar authority is still
+RED as `canonical_mismatch`; malformed/unsafe canonical bytes are
+`canonical_invalid`. Missing plus nonempty legacy replay state is never
+auto-blessed by startup, audit, or rebuild. Lite and Journal do not consume the
+BuJo sidecar and reject replay-owned lifecycle/edges in their databases.
+Interrupted atomic replay-sidecar publication files are also strict temporary
+artifacts: they increase `counts.temporary` and report `temporary_artifacts`
+instead of being ignored, adopted, or interpreted as canonical authority.
+
+For the one legacy case where a managed generation or legacy unmanaged
+`memory.db` legitimately predates the sidecar, make the trust decision
+explicitly over SSH. Use this flow only after strict audit or a refused rebuild
+identifies a missing projection beside nonempty replay state:
+
+```bash
+cd /path/to/agent
+mono-agent stop
+mono-agent memory adopt-replay --json
+mono-agent memory rebuild --json
+mono-agent start
+mono-agent memory audit --strict --json
+```
+
+`adopt-replay` is an explicit trust-on-first-use operation. It requires the
+configured built-in `mode: "bujo"`, a stopped store, a missing sidecar, an
+exact canonical non-replay base, and a SQLite `BEGIN IMMEDIATE` fence plus
+logical digest under the memory-root writer lease. It supports either a managed
+active BuJo generation whose semantic identity matches config or a legacy
+unmanaged BuJo `memory.db` whose identity can be pinned safely. The database
+and every present SQLite sidecar (`-wal`, `-shm`, or `-journal`) must be
+current-user-owned, single-link regular files with mode `0600`; adoption rejects
+unsafe family members instead of chmodding or following them.
+
+The durable state may contain a bounded set of disjoint capture intents and
+completed receipts plus at most one migration marker. Adoption proves that any
+already-applied SQLite replay rows are an exact subset of that durable authority
+before it binds the full projection. An unexplained row, overlapping mutable
+capture plans, or a mutable pending capture beside a pending migration fails
+closed. Immutable completed capture receipts may coexist with a later pending
+migration. The mandatory immediate `memory rebuild` completes mutable attested
+work without another chat-model or embeddings call and removes retireable
+markers; a retained completed receipt remains until its intake item resolves.
+The subsequent candidate build still uses the configured embeddings provider,
+in bounded batches, before it activates the managed generation. Do not run
+`start`, capture, migration, or any other writer between adoption and rebuild.
+
+Adoption publishes the sidecar without overwriting existing authority and
+retires an advertised BuJo rollback before the canonical change. A Lite or
+Journal rollback is outside the replay source domain and remains advertised.
+Its success JSON
+contains only `backend`, `mode`, `status`, counts for terminals/supersedes/
+threads, `authorityDigest`, and `rebuildRequired: true`; it does not reveal
+memory text or paths. All failures use stable closed codes/messages. JSON mode
+emits one parseable metadata-only failure object on stdout; human mode emits the
+same fixed code/message on stderr. Neither includes memory/model text, ids,
+paths, marker/database details, or arbitrary underlying errors.
+
+| Adoption failure code | Fixed meaning |
+| --- | --- |
+| `replay_adoption_usage` | The command/flags do not match the documented adoption invocation. |
+| `replay_adoption_config_invalid` | The mono-agent configuration could not be validated. |
+| `replay_adoption_requires_bujo` | Configured memory is not built-in BuJo with embeddings. |
+| `replay_adoption_agent_running` | The configured agent is still running. |
+| `replay_adoption_failed` | A closed operational precondition or integrity check failed; keep the agent stopped and inspect strict health. |
+
+Adoption does not repair, reinterpret, or prove the historical meaning of raw
+SQLite state—the operator is accepting that meaning. The required follow-up
+rebuild fingerprints the sidecar with the other BuJo canonical sources,
+finishes any attested pending protocol without repeating paid provider work,
+then uses the configured embeddings provider for the normal semantic candidate
+build, reprojects the authority into a fully validated generation, and preserves
+it exactly.
+Future capture/migration projection changes retire an affected BuJo rollback
+before publication; daily-source changes still retire a rollback from any tier.
+Thus `rollback` is never advertised against stale replay authority. For an empty
+or new root, do not adopt: ordinary rebuild initializes the exact empty
+projection safely.
 
 ### Completed-turn intake inspection and recovery
 
@@ -280,7 +374,7 @@ mono-agent start
 mono-agent memory audit --strict --json
 ```
 
-`rebuild` reads the configured tier, embeddings model, and dimension; snapshots the canonical markdown/graph sources; builds a complete candidate under `.index/generations/<generation>/memory.db`; validates its schema, exact payloads, complete edge inventory, Journal hash provenance, FTS coverage, vector coverage, and model identity; then atomically switches a small manifest. The old active database is retained only through a fresh immutable online-backup generation after tier-exact payload/source parity is proven; repairable lifecycle/source/edge/hash state is normalized on that copy, and Journal may retain its documented recoverable missing-vector backlog. The manifest commits the copy's complete logical state—including WAL-visible rows and vector blobs—so same-count semantic tampering cannot hide behind an unchanged main-file checksum. When source, tier, model, and dimension are unchanged, every retained vector is additionally compared with the newly embedded candidate (missing Journal backlog rows remain repairable). The first supported daily-source mutation (or BuJo graph mutation) atomically removes the rollback advertisement before changing its source, so normal capture may make `memory rollback` unavailable immediately instead of leaving a stale advertised target; out-of-band source edits still surface as `canonical_mismatch`. SQLite writer fences hold the source stable during backup and every soon-to-be-active/retained database stable across final validation plus manifest rename; the fsynced temporary manifest's identity and exact bytes are rechecked immediately before that rename, and the renamed file is checked again after every durability callback. If canonical source is ahead of a stale index, rebuild still activates the correct candidate but deliberately omits that unsafe rollback instead of stamping it with a current fingerprint. The previous active index remains usable if any step fails before activation. A divergent legacy `memory.db` remains byte-for-byte in place but is not advertised as rollback; only a parity-compatible legacy database is adopted by online backup.
+`rebuild` reads the configured tier, embeddings model, and dimension; snapshots the canonical markdown/graph sources plus BuJo's exact replay sidecar; builds a complete candidate under `.index/generations/<generation>/memory.db`; validates its schema, exact payloads, complete edge/lifecycle/replay inventory, Journal hash provenance, FTS coverage, vector coverage, and model identity; then atomically switches a small manifest. The replay sidecar participates in the BuJo source fingerprint and is preserved exactly rather than inferred from SQLite. The old active database is retained only through a fresh immutable online-backup generation after tier-exact payload/source parity is proven; repairable lifecycle/source/edge/hash state is normalized on that copy, and Journal may retain its documented recoverable missing-vector backlog. The manifest commits the copy's complete logical state—including WAL-visible rows and vector blobs—so same-count semantic tampering cannot hide behind an unchanged main-file checksum. When source, tier, model, and dimension are unchanged, every retained vector is additionally compared with the newly embedded candidate (missing Journal backlog rows remain repairable). The first supported daily-source mutation atomically removes any rollback advertisement before changing its source; a BuJo graph/replay-only mutation removes only an advertised BuJo rollback. Normal capture may therefore make `memory rollback` unavailable immediately instead of leaving a stale advertised target, while a Lite/Journal rollback remains valid across a graph/replay-only change; out-of-band source edits still surface as `canonical_mismatch`. SQLite writer fences hold the source stable during backup and every soon-to-be-active/retained database stable across final validation plus manifest rename; the fsynced temporary manifest's identity and exact bytes are rechecked immediately before that rename, and the renamed file is checked again after every durability callback. If canonical source is ahead of a stale index, rebuild still activates the correct candidate but deliberately omits that unsafe rollback instead of stamping it with a current fingerprint. The previous active index remains usable if any step fails before activation. A divergent legacy `memory.db` remains byte-for-byte in place but is not advertised as rollback; only a parity-compatible legacy database is adopted by online backup.
 
 The running agent must be stopped. The command refuses a matching live process, an active writer lease/SQLite transaction, concurrent source changes, symlinked source paths, or a concurrent manifest change. Journal/BuJo rebuilds can call the configured embeddings provider in bounded batches; rebuild never calls the chat LLM. Rollback swaps already-validated generations and makes no embedding or chat-model request.
 
@@ -301,7 +395,7 @@ The logical digest is an integrity/CAS commitment under mono-agent's owner-only 
 
 Rebuild output and `audit --json` report the generation name, indexed count, raw/unstructured/missing-identity/legacy-source/Journal-duplicate skips, source locations that require review, and legacy associations derived by exact unique whole-name matching. BuJo raw audit files are never promoted automatically into the curated index, and no command replays history through a paid chat model.
 
-Supermemory owns its remote index, so `mono-agent memory rebuild` and `rollback` reject that backend explicitly.
+Supermemory owns its remote index, so `mono-agent memory rebuild`, `rollback`, and `adopt-replay` reject that backend explicitly.
 
 ## Enable v1 on an existing agent
 

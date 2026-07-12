@@ -7,10 +7,12 @@ import type { EmbeddingProvider } from "../../search/index.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { appendBullet, dailyFilePath } from "../daily.js";
+import { auditBujoMemoryHealth } from "../audit.js";
 import { writeCaptureIntent } from "../capture-outbox.js";
 import { parseDailyFile } from "../grammar.js";
 import { createIdFactory } from "../ids.js";
 import { migrate } from "../migrate.js";
+import { assertCanonicalGraphRepairBaseParity, safeRebuildMemoryIndex } from "../rebuild.js";
 import { reconcile, reconcileBatch, type ReconcileDeps } from "../reconcile.js";
 import { createBujoMemoryStore } from "../store.js";
 import type { Bullet, CandidateMemory } from "../types.js";
@@ -114,6 +116,7 @@ function makeDeps(
     llm,
     nextId: createIdFactory({ clock: () => FIXED, random: () => 0 }),
     now: () => FIXED,
+    canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
     ...overrides,
   };
 }
@@ -159,6 +162,52 @@ describe("reconcile", () => {
     // Daily file contains the new bullet line.
     const parsed = parseDailyFile(dailyContent(root));
     expect(parsed.bullets.some((b) => b.id === newId && b.text === candidate.text)).toBe(true);
+  });
+
+  it("omits a zero-weight thread at the public threshold boundary", async () => {
+    const root = newRoot();
+    const provider = fakeEmbeddings(DIM);
+    appendBullet(root, {
+      id: "ORTHOGONAL",
+      type: "note",
+      status: "open",
+      text: "An orthogonal indexed memory",
+      salience: 0.5,
+      isInsight: false,
+      createdAt: FIXED.toISOString(),
+      refs: [],
+    }, FIXED);
+    const rebuilt = await safeRebuildMemoryIndex({
+      root,
+      tier: "bujo",
+      embeddings: provider,
+      dim: DIM,
+    });
+    const db = openMemoryDb({ path: rebuilt.active, embeddings: provider, dim: DIM });
+    openDbs.push(db);
+    db.findSimilar = async () => [{ record: db.get("ORTHOGONAL")!, distance: 1 }];
+    const candidate: CandidateMemory = {
+      type: "note",
+      text: "A novel boundary memory",
+      salience: 0.7,
+      isInsight: false,
+    };
+
+    const actions = await reconcile(
+      [candidate],
+      makeDeps(db, root, fakeLlm([]), { threadThreshold: 1 }),
+    );
+
+    expect(actions).toEqual([{ kind: "add", id: expect.any(String) }]);
+    const id = actions[0]?.kind === "add" ? actions[0].id : "";
+    expect(db.edges(id).filter((edge) => edge.kind === "thread")).toEqual([]);
+    expect(auditBujoMemoryHealth({
+      root,
+      mode: "bujo",
+      configuredEmbeddingModel: provider.id,
+      configuredDimension: DIM,
+      now: FIXED,
+    }).issues).not.toContain("canonical_mismatch");
   });
 
   it("case 2 — duplicate candidate + LLM says noop → no write", async () => {
@@ -260,7 +309,7 @@ describe("reconcile", () => {
     expect(parsed.bullets.find((b) => b.id === "UPD1")?.text).toBe(merged);
   });
 
-  it("case 5 — per-candidate isolation: a candidate whose write throws is skipped, others proceed", async () => {
+  it("case 5 — durable replay stops on pre-existing canonical/index divergence", async () => {
     const root = newRoot();
     const db = openDb(root);
     // Index record whose canonical daily file is MISSING (simulated index/markdown divergence).
@@ -275,13 +324,13 @@ describe("reconcile", () => {
     const failing: CandidateMemory = { type: "note", text: "morgan prefers opt in memory capture and review", salience: 0.6, isInsight: false };
     const novel: CandidateMemory = { type: "task", text: "schedule the offsite logistics budget", salience: 0.7, isInsight: false };
 
-    const actions = await reconcile([failing, novel], makeDeps(db, root, llm));
+    await expect(reconcile([failing, novel], makeDeps(db, root, llm)))
+      .rejects.toThrow(/candidate memory payload validation failed/iu);
 
-    // The failing candidate produced no action; the novel one was added — and reconcile did not throw.
-    expect(actions).toHaveLength(1);
-    expect(actions[0]?.kind).toBe("add");
-    const newId = actions[0]?.kind === "add" ? actions[0].id : "";
-    expect(db.get(newId)?.text).toBe(novel.text);
+    // The source/index divergence is not silently blessed merely because the
+    // other candidate was individually valid. Its durable intent remains for
+    // recovery after the operator repairs the pre-existing GHOST row.
+    expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
     // GHOST was not partially mutated by the failed update (rewriteBullet threw before the index write).
     expect(db.get("GHOST")?.status).toBe("open");
   });
@@ -585,7 +634,7 @@ describe("reconcileBatch", () => {
     let startupEmbeddingCalls = 0;
     const store = createBujoMemoryStore({
       root,
-      tier: "journal",
+      tier: "bujo",
       embeddings: {
         id: base.id,
         embed: async (texts) => {
@@ -594,6 +643,7 @@ describe("reconcileBatch", () => {
         },
       },
       dim: DIM,
+      llm: { id: "no-call-recovery", complete: async () => { throw new Error("recovery must not call the LLM"); } },
       clock: () => FIXED,
     });
     expect(startupEmbeddingCalls).toBe(0);

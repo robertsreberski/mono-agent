@@ -25,7 +25,11 @@ my-agent/
   .mono-agent/
     artifacts/             # JSONL run summaries + events
     workspace/             # runtime working directory (if not ".")
-    memory/                # journal memory root (daily notes, graph.jsonl, index/)
+    memory/                # built-in memory root (framework-managed)
+      daily/               # canonical dated memory notes
+      graph.jsonl          # BuJo canonical entity graph
+      .replay-projection-v1.json # BuJo exact metadata-only replay authority (0600)
+      .index/              # managed generations + manifest/runtime metadata
     whatsapp-auth/         # Baileys auth state (WhatsApp channel only)
     trace-sources/         # traceability registry (if kept folder-local)
 ```
