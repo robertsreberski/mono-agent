@@ -32,7 +32,6 @@ import {
   resolveSupermemoryContainer,
 } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { readManagedIndexManifest } from "@mono-agent/memory/bujo";
 import {
   describeSandboxEffectiveState,
   resolveSandboxEffectiveState,
@@ -1437,6 +1436,16 @@ async function memorySection(
     };
   }
 
+  const nativeAvailability = await builtInMemoryNativeStatus(config.memory);
+  if (nativeAvailability !== undefined) {
+    return {
+      id: "memory",
+      label: "Memory",
+      status: "error",
+      details: [...details, nativeAvailability],
+    };
+  }
+
   if (config.memory.mode === "journal" || config.memory.mode === "bujo") {
     const warns = await memoryLivenessWarnings(config.memory, liveness, allowFilesystemWrites);
     if (warns.length > 0) {
@@ -1466,19 +1475,37 @@ async function memorySection(
 
 async function managedMemoryIdentityStatus(
   memory: NonNullable<MonoAgentConfig["memory"]>,
-): Promise<{ readonly status: "waiting" | "error"; readonly details: readonly string[] } | undefined> {
+): Promise<{ readonly status: "error"; readonly details: readonly string[] } | undefined> {
   const manifestPath = join(memory.path, ".index", "manifest.json");
-  if (!(await pathExists(manifestPath))) return undefined;
-  let manifest;
-  try {
-    manifest = readManagedIndexManifest(memory.path);
-  } catch (error) {
+  if (!(await pathExists(manifestPath))) {
+    // Lite has no semantic index authority. Journal/BuJo readiness is strict:
+    // a missing manifest is fatal even for a wholly new/unmanaged root, and the
+    // provider must not be probed until rebuild establishes that authority.
+    if (memory.mode === "lite") return undefined;
     return {
       status: "error",
-      details: [`[ERROR] Managed memory generation metadata is invalid: ${error instanceof Error ? error.message : String(error)}`],
+      details: [
+        "[ERROR] Managed memory generation metadata is missing for Journal/BuJo memory.",
+        "Stop the agent with `mono-agent stop`, run `mono-agent memory rebuild`, then re-run `mono-agent validate` before restarting.",
+      ],
     };
   }
-  if (manifest === undefined) return undefined;
+  let manifest;
+  try {
+    const { readManagedIndexManifest } = await import("@mono-agent/memory/bujo");
+    manifest = readManagedIndexManifest(memory.path);
+  } catch {
+    return {
+      status: "error",
+      details: ["[ERROR] Managed memory generation metadata is invalid or unavailable."],
+    };
+  }
+  if (manifest === undefined) {
+    return {
+      status: "error",
+      details: ["[ERROR] Managed memory generation metadata disappeared during validation."],
+    };
+  }
 
   const configuredModel = memory.embeddings === undefined
     ? undefined
@@ -1494,12 +1521,35 @@ async function managedMemoryIdentityStatus(
   const identity = (tier: string, model: string | undefined, dimension: number | undefined): string =>
     `tier=${tier}, model=${model ?? "none"}, dim=${dimension ?? "none"}`;
   return {
-    status: "waiting",
+    status: "error",
     details: [
-      `[WARN] Active managed generation does not match the configured memory identity: active ${identity(active.tier, active.embeddingModel, active.dimension)}; configured ${identity(memory.mode, configuredModel, configuredDimension)}.`,
+      `[ERROR] Active managed generation does not match the configured memory identity: active ${identity(active.tier, active.embeddingModel, active.dimension)}; configured ${identity(memory.mode, configuredModel, configuredDimension)}.`,
       "Stop the agent with `mono-agent stop`, run `mono-agent memory rebuild`, then re-run `mono-agent validate` before restarting.",
     ],
   };
+}
+
+async function builtInMemoryNativeStatus(
+  memory: NonNullable<MonoAgentConfig["memory"]>,
+): Promise<string | undefined> {
+  try {
+    const { auditBujoMemoryHealth } = await import("@mono-agent/memory/bujo");
+    const report = auditBujoMemoryHealth({
+      root: memory.path,
+      mode: memory.mode,
+      ...(memory.embeddings === undefined
+        ? {}
+        : {
+            configuredEmbeddingModel: `${memory.embeddings.provider}:${memory.embeddings.model}`,
+            configuredDimension: memory.embeddings.dim ?? 768,
+          }),
+    });
+    return report.issues.includes("native_module_unavailable")
+      ? "[ERROR] Built-in memory native module is unavailable for this Node runtime. Rebuild dependencies with the launch runtime, then re-run `mono-agent validate`."
+      : undefined;
+  } catch {
+    return "[ERROR] Built-in memory health inspection is unavailable for this Node runtime. Rebuild dependencies with the launch runtime, then re-run `mono-agent validate`.";
+  }
 }
 
 async function liteRootWritableWarning(memoryPath: string, allowFilesystemWrites: boolean): Promise<string[]> {

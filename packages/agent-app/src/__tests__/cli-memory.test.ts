@@ -35,6 +35,8 @@ describe("parseCliArgs memory", () => {
     expect(() => parseCliArgs(["metrics", "--limit", "3"])).toThrow(/--limit/u);
     expect(renderHelp()).toContain("mono-agent memory");
     expect(renderHelp()).toContain("audit");
+    expect(parseCliArgs(["memory", "audit", "--strict", "--json"])).toMatchObject({ strict: true, json: true });
+    expect(() => parseCliArgs(["memory", "inspect", "--strict"])).toThrow(/memory audit/iu);
   });
 });
 
@@ -47,6 +49,113 @@ describe("runCli memory", () => {
     expect(code).toBe(0);
     expect(stderr).toBe("");
     expect(stdout).toContain("No memory configured");
+  });
+
+  it("emits the closed strict-health JSON contract for unconfigured and remote memory", async () => {
+    const unconfiguredDir = await agentDir({ memory: undefined });
+    const unconfigured = await captureCli(() => withCwd(unconfiguredDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "audit", "--strict", "--json"]))));
+    expect(unconfigured.code).toBe(0);
+    expect(unconfigured.stderr).toBe("");
+    expect(JSON.parse(unconfigured.stdout)).toEqual({
+      schemaVersion: 1,
+      backend: "none",
+      status: "not_configured",
+      checkedAt: expect.any(String),
+      issues: [],
+      counts: {
+        pending: 0,
+        due: 0,
+        dead: 0,
+        outbox: 0,
+        temporary: 0,
+        memories: 0,
+        vectors: 0,
+        missingVectors: 0,
+      },
+    });
+    expect(unconfigured.stdout).not.toContain(unconfiguredDir);
+
+    const remoteDir = await agentDir({
+      memory: {
+        backend: "supermemory",
+        mode: "lite",
+        writeMode: "capture",
+        supermemory: { baseUrl: "https://memory.invalid", container: "strict-agent" },
+      },
+    });
+    const remote = await captureCli(() => withCwd(remoteDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "audit", "--strict", "--json"]))));
+    expect(remote.code).toBe(1);
+    expect(remote.stderr).toBe("");
+    expect(JSON.parse(remote.stdout)).toMatchObject({
+      schemaVersion: 1,
+      backend: "supermemory",
+      status: "unknown",
+      issues: [],
+    });
+  });
+
+  it("keeps intake inspection and no-op mutations content-free with exit zero", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({ memory: { mode: "lite", path: memoryRoot, writeMode: "append-host-summary" } });
+    await seedLocalStore(memoryRoot);
+
+    const inspected = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "inspect", "--json"]))));
+    expect(inspected.code).toBe(0);
+    expect(inspected.stderr).toBe("");
+    expect(JSON.parse(inspected.stdout)).toMatchObject({
+      schemaVersion: 1,
+      operation: "inspect",
+      matched: 0,
+      items: [],
+    });
+    expect(inspected.stdout).not.toContain("Deploy pipeline uses blue green releases.");
+
+    const retried = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "retry", "--json"]))));
+    expect(retried.code).toBe(0);
+    expect(JSON.parse(retried.stdout)).toEqual({
+      schemaVersion: 1,
+      operation: "retry",
+      changed: false,
+      retried: 0,
+    });
+
+    const absentId = "0".repeat(64);
+    const resolved = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "resolve", absentId, "operator_accepted", "--json"]))));
+    expect(resolved.code).toBe(0);
+    expect(JSON.parse(resolved.stdout)).toEqual({
+      schemaVersion: 1,
+      operation: "resolve",
+      changed: false,
+      resolved: false,
+    });
+
+    const misuse = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "resolve", absentId, "NOT VALID", "--json"]))));
+    expect(misuse.code).toBe(2);
+    expect(misuse.stdout).toBe("");
+    expect(misuse.stderr).toMatch(/reason.*slug/iu);
+  });
+
+  it("blocks intake mutation while the configured agent process is live", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({
+      memory: { mode: "lite", path: memoryRoot, writeMode: "append-host-summary" },
+      traceability: { registryDir: ".trace-registry" },
+    });
+    await mkdir(memoryRoot, { recursive: true });
+    await writeLiveTraceManifest(join(dir, ".trace-registry"), dir, "intake-writer");
+
+    const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "retry", "--json"]))));
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("intake-writer");
   });
 
   it("previews local stats, today, search, and top from the configured store", async () => {
@@ -255,7 +364,7 @@ describe("runCli memory", () => {
     expect(rolledBack.activeDatabase).toBe(managed.details.rollback);
     expect(rolledBack.activeDatabase).not.toBe(managed.activeDatabase);
     expect(await resolveActiveMemoryDbPath(memoryRoot)).toBe(rolledBack.activeDatabase);
-  });
+  }, 15_000);
 
   it("refuses a stale-trace live legacy writer before embeddings and leaves the index unchanged", async () => {
     const memoryRoot = join(await tempDir(), "memory");

@@ -206,6 +206,8 @@ interface ParsedCliArgs {
   readonly staleAfterMs?: number;
   /** audit-runs: print the full machine-readable report. */
   readonly json?: boolean;
+  /** memory audit: fail closed on degraded or unknown health. */
+  readonly strict?: boolean;
   /** memory: max rows for search/top/entity preview. */
   readonly limit?: number;
   /** web: bind host (default 127.0.0.1). */
@@ -294,6 +296,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let update = false;
   let staleAfterMs: number | undefined;
   let json = false;
+  let strict = false;
   let limit: number | undefined;
   let host: string | undefined;
   let port: number | undefined;
@@ -376,6 +379,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       }
       case "--json":
         json = true;
+        break;
+      case "--strict":
+        strict = true;
         break;
       case "--limit": {
         const raw = requireValue(rest, ++i, flag);
@@ -606,6 +612,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (limit !== undefined && cmd !== "memory") {
     throw new Error("--limit is only supported for `mono-agent memory`.");
   }
+  if (strict && (cmd !== "memory" || (positionals[0] ?? "stats") !== "audit")) {
+    throw new Error("--strict is only supported for `mono-agent memory audit`.");
+  }
   if (auth && cmd !== "init") {
     throw new Error("--auth is only supported for `mono-agent init`.");
   }
@@ -665,6 +674,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(consumerPath === undefined ? {} : { consumerPath }),
     ...(staleAfterMs === undefined ? {} : { staleAfterMs }),
     ...(json ? { json } : {}),
+    ...(strict ? { strict } : {}),
     ...(limit === undefined ? {} : { limit }),
     ...(agent === undefined ? {} : { agent }),
     ...(conversation === undefined ? {} : { conversation }),
@@ -755,7 +765,7 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    signature: "mono-agent validate [--preset <id>] [--consumer <path>] [--config <path>] [--env-file <path>]",
+    signature: "mono-agent validate [--preset <id>] [--consumer <path>] [--config <path>] [--env-file <path>] [--json]",
     lines: [
       "Load every config section and report what would run, wait, or fail.",
       "--consumer validates another agent folder read-only, including its .env.",
@@ -890,12 +900,13 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
   },
   {
     signature:
-      "mono-agent memory [stats|today|show <date>|search <query>|top|audit|rebuild|rollback]\n" +
-      "                  [--limit <n>] [--json] [--config <path>] [--env-file <path>]",
+      "mono-agent memory [stats|today|show <date>|search <query>|top|audit|inspect [id]|retry [id]|resolve <id> <reason>|rebuild|rollback]\n" +
+      "                  [--limit <n>] [--strict] [--json] [--config <path>] [--env-file <path>]",
     lines: [
       "Preview the configured memory store from an agent folder. Reads the",
       "memory block from mono-agent.config.json, not the standalone memory-bujo",
-      "env workflow. Human-first output by default; audit --json is metadata-only.",
+      "env workflow. Human-first output by default; audit --strict --json is a",
+      "metadata-only health gate. Intake inspect/retry/resolve never print payload content.",
     ],
   },
 ];
@@ -1094,6 +1105,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
         positionals: args.positionals,
         json: args.json === true,
+        strict: args.strict === true,
         ...(args.limit === undefined ? {} : { limit: args.limit }),
       });
     }
@@ -3323,20 +3335,60 @@ async function runValidate(args: ParsedCliArgs): Promise<number> {
     allowFilesystemWrites: context.allowFilesystemWrites,
   });
 
-  for (const section of report.sections) {
-    process.stdout.write(formatSection(section));
-  }
-
   const preset = resolveValidatePreset(args);
   if (preset === "unknown") {
+    if (args.json === true) {
+      process.stdout.write(`${JSON.stringify({ ok: false, sections: report.sections })}\n`);
+    }
     return 1;
   }
+  let presetResult:
+    | {
+        readonly id: string;
+        readonly expectations: readonly {
+          readonly sectionId: string;
+          readonly expected: ValidationStatus;
+          readonly actual: ValidationStatus | "missing";
+          readonly met: boolean;
+        }[];
+      }
+    | undefined;
   if (preset !== undefined) {
     const plan = composeWizardPlan(presetAnswers(preset), {
       dirBasename: basename(context.cwd),
       skillsRootExists: false,
     });
+    presetResult = {
+      id: preset.id,
+      expectations: plan.validateExpectations.map((expectation) => {
+        const actual = report.sections.find((entry) => entry.id === expectation.sectionId)?.status ?? "missing";
+        return {
+          sectionId: expectation.sectionId,
+          expected: expectation.mustBe,
+          actual,
+          met: actual === expectation.mustBe,
+        };
+      }),
+    };
+    if (args.json === true) {
+      process.stdout.write(`${JSON.stringify({
+        ok: report.ok,
+        sections: report.sections,
+        preset: presetResult,
+      })}\n`);
+      return report.ok ? 0 : 1;
+    }
+    for (const section of report.sections) {
+      process.stdout.write(formatSection(section));
+    }
     process.stdout.write(renderPlanCompleteness(plan.validateExpectations, `Preset: ${preset.id}`, report));
+  } else if (args.json === true) {
+    process.stdout.write(`${JSON.stringify({ ok: report.ok, sections: report.sections })}\n`);
+    return report.ok ? 0 : 1;
+  } else {
+    for (const section of report.sections) {
+      process.stdout.write(formatSection(section));
+    }
   }
 
   const hasWaitingSections = report.sections.some((section) => section.status === "waiting");

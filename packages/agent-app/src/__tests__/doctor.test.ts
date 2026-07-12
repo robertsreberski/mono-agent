@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
+import * as bujoMemory from "@mono-agent/memory/bujo";
 import { safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 
 import { validateMonoAgentFolder } from "../doctor.js";
@@ -40,6 +41,29 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function seedManagedMemoryFixture(input: {
+  readonly root: string;
+  readonly tier: "journal" | "bujo";
+  readonly embeddingModel?: string;
+  readonly dimension?: number;
+}): Promise<void> {
+  const dimension = input.dimension ?? 768;
+  await safeRebuildMemoryIndex({
+    root: input.root,
+    tier: input.tier,
+    ...(input.embeddingModel === undefined
+      ? {}
+      : {
+          embeddings: {
+            id: input.embeddingModel,
+            embed: async (texts) => texts.map(() =>
+              Array.from({ length: dimension }, (_value, index) => index === 0 ? 1 : 0)),
+          },
+          dim: dimension,
+        }),
+  });
 }
 
 async function writeRunSummary(artifactDir: string, name: string, summary: Record<string, unknown>): Promise<void> {
@@ -163,6 +187,11 @@ describe("validateMonoAgentFolder", () => {
 
   it("warns non-fatally when a secret is sourced from JSON", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    await seedManagedMemoryFixture({
+      root: dir,
+      tier: "journal",
+      embeddingModel: "openai:text-embedding-3-small",
+    });
     const configPath = await writeConfig({
       runtime: { model: "pi:openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },
@@ -189,6 +218,11 @@ describe("validateMonoAgentFolder", () => {
 
   it("does not add a secret-placement warning when the same secret is env-sourced", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    await seedManagedMemoryFixture({
+      root: dir,
+      tier: "journal",
+      embeddingModel: "openai:text-embedding-3-small",
+    });
     const configPath = await writeConfig({
       runtime: { model: "pi:openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },
@@ -215,6 +249,11 @@ describe("validateMonoAgentFolder", () => {
 
   it("warns non-fatally for removed JSON memory ritual keys", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    await seedManagedMemoryFixture({
+      root: dir,
+      tier: "bujo",
+      embeddingModel: "ollama:nomic-embed-text:v1.5",
+    });
     const configPath = await writeConfig({
       runtime: { model: "pi:openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },
@@ -438,6 +477,11 @@ describe("validateMonoAgentFolder", () => {
 
   it("accepts inferred and aliased models from providers.local on every Pi validation surface", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    await seedManagedMemoryFixture({
+      root: dir,
+      tier: "bujo",
+      embeddingModel: "openai:text-embedding-3-small",
+    });
     const configPath = await writeConfig({
       runtime: {
         model: "pi:local-compat:inferred-primary",
@@ -1617,8 +1661,39 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     vi.unstubAllGlobals();
   });
 
-  async function writeMinimalConfig(extra: Record<string, unknown> = {}): Promise<string> {
+  async function writeMinimalConfig(
+    extra: Record<string, unknown> = {},
+    options: { readonly seedManagedMemory?: boolean } = {},
+  ): Promise<string> {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const memoryValue = extra["memory"];
+    const memory = typeof memoryValue === "object" && memoryValue !== null
+      ? memoryValue as Record<string, unknown>
+      : undefined;
+    if (options.seedManagedMemory !== false
+      && memory !== undefined && (memory["mode"] === "journal" || memory["mode"] === "bujo")
+      && typeof memory["path"] === "string"
+      && !(await pathExists(join(memory["path"], ".index")))) {
+      const embeddingsValue = memory["embeddings"];
+      const embeddings = typeof embeddingsValue === "object" && embeddingsValue !== null
+        ? embeddingsValue as Record<string, unknown>
+        : undefined;
+      const embedding = embeddings !== undefined
+        && typeof embeddings["provider"] === "string" && typeof embeddings["model"] === "string"
+        ? {
+            id: `${embeddings["provider"]}:${embeddings["model"]}`,
+            dim: typeof embeddings["dim"] === "number" ? embeddings["dim"] : 768,
+          }
+        : undefined;
+      await seedManagedMemoryFixture({
+        root: memory["path"],
+        tier: memory["mode"],
+        ...(embedding === undefined ? {} : {
+          embeddingModel: embedding.id,
+          dimension: embedding.dim,
+        }),
+      });
+    }
     const configPath = join(dir, "mono-agent.config.json");
     await writeFile(
       configPath,
@@ -1669,7 +1744,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
 
     const memory = sectionById(report, "memory");
-    expect(memory.status).toBe("waiting");
+    expect(memory.status).toBe("error");
     const text = memory.details.join("\n");
     expect(text).toContain("active tier=journal, model=ollama:old-embed, dim=8");
     expect(text).toContain("configured tier=bujo, model=ollama:new-embed, dim=16");
@@ -1677,6 +1752,72 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(text).toContain("mono-agent memory rebuild");
     expect(text).toContain("mono-agent validate");
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("fails an unmanaged Journal root with a missing manifest before provider probes", async () => {
+    const memoryPath = join(dir, "missing-managed-manifest");
+    const fetchSpy = vi.fn().mockRejectedValue(new Error("provider probe must not run"));
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "journal",
+        path: memoryPath,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      },
+    }, { seedManagedMemory: false });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("error");
+    expect(memory.details.join("\n")).toMatch(/managed.*metadata.*missing/iu);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("fails malformed managed metadata before provider probes", async () => {
+    const memoryPath = join(dir, "malformed-managed-manifest");
+    await mkdir(join(memoryPath, ".index"), { recursive: true });
+    await writeFile(join(memoryPath, ".index", "manifest.json"), "{not-json", "utf8");
+    const fetchSpy = vi.fn().mockRejectedValue(new Error("provider probe must not run"));
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: memoryPath,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: strictBujoLlm,
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("error");
+    expect(memory.details.join("\n")).toMatch(/metadata.*invalid|unavailable/iu);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("turns native health inspection failure into a structured memory error", async () => {
+    const auditSpy = vi.spyOn(bujoMemory, "auditBujoMemoryHealth").mockImplementation(() => {
+      throw new Error("hostile native loader detail /private/sentinel");
+    });
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "lite",
+        path: dir,
+        writeMode: "append-host-summary",
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+    auditSpy.mockRestore();
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("error");
+    expect(memory.details.join("\n")).toContain("health inspection is unavailable");
+    expect(memory.details.join("\n")).not.toContain("/private/sentinel");
   });
 
   it("accepts a managed generation whose configured identity matches before normal liveness checks", async () => {
@@ -1869,7 +2010,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(report.ok).toBe(true);
   });
 
-  it("warns when the memory root is not writable", async () => {
+  it("fails an unmanaged BuJo root before provider or writability probes", async () => {
     stubFetch(["nomic-embed-text:v1.5"]);
     // A path *under an existing file* makes mkdir fail with ENOTDIR deterministically on every
     // platform and regardless of privileges. A hardcoded /proc path hangs on Linux CI runners.
@@ -1885,14 +2026,15 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
         embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
         llm: strictBujoLlm,
       },
-    });
+    }, { seedManagedMemory: false });
 
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
 
     const memory = sectionById(report, "memory");
-    expect(memory.status).toBe("waiting");
-    expect(memory.details.join("\n")).toMatch(/writable|mkdir/iu);
-    expect(report.ok).toBe(true);
+    expect(memory.status).toBe("error");
+    expect(memory.details.join("\n")).toMatch(/managed.*metadata.*missing/iu);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(report.ok).toBe(false);
   });
 
   it("warns on journal mode when Ollama is unreachable (journal also needs embeddings)", async () => {
@@ -2105,7 +2247,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(report.ok).toBe(true);
   });
 
-  it("does not create a missing journal memory root when filesystem writes are disabled", async () => {
+  it("fails without creating an unmanaged Journal root when filesystem writes are disabled", async () => {
     const memoryPath = join(dir, "missing-journal-memory");
     const configPath = await writeMinimalConfig({
       memory: {
@@ -2114,7 +2256,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
         writeMode: "append-host-summary",
         embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
       },
-    });
+    }, { seedManagedMemory: false });
 
     const report = await validateMonoAgentFolder({
       env: {},
@@ -2125,10 +2267,10 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     });
 
     const memory = sectionById(report, "memory");
-    expect(memory.status).toBe("waiting");
-    expect(memory.details.join("\n")).toContain("Consumer validation is read-only and did not create it");
+    expect(memory.status).toBe("error");
+    expect(memory.details.join("\n")).toMatch(/managed.*metadata.*missing/iu);
     expect(await pathExists(memoryPath)).toBe(false);
-    expect(report.ok).toBe(true);
+    expect(report.ok).toBe(false);
   });
 
   it("reports consolidation cadence for bujo with a chat LLM (auto-scheduled)", async () => {
@@ -2223,6 +2365,11 @@ describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    await seedManagedMemoryFixture({
+      root: dir,
+      tier: "bujo",
+      embeddingModel: "ollama:nomic-embed-text:v1.5",
+    });
     const configPath = await writeConfig({
       runtime: { model: "pi:openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },
@@ -2245,7 +2392,7 @@ describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("still flags the memory root as not writable (a local, non-network check)", async () => {
+  it("fails an unmanaged memory root before local or network probes", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
@@ -2266,8 +2413,8 @@ describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
 
     const memory = sectionById(report, "memory");
-    expect(memory.status).toBe("waiting");
-    expect(memory.details.join("\n")).toMatch(/writable|mkdir/iu);
+    expect(memory.status).toBe("error");
+    expect(memory.details.join("\n")).toMatch(/managed.*metadata.*missing/iu);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

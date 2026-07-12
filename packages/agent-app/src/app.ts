@@ -5,7 +5,17 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import { createLiveEventBus } from "@mono-agent/agent-contracts";
 import type { AgentResponder, RunEventBus } from "@mono-agent/agent-contracts";
 import { pruneTraceSources, reconcileStaleRunArtifacts, registerTraceSource } from "@mono-agent/observability";
-import type { TraceSourceHandle } from "@mono-agent/observability";
+import type {
+  TraceSourceHandle,
+  TraceSourceMemoryHealth,
+  TraceSourceMemoryIssue,
+  TraceSourceMemoryStatus,
+} from "@mono-agent/observability";
+import type {
+  BujoMemoryHealthReport,
+  MemoryHealthIssueCode,
+  MemoryHealthStatus,
+} from "@mono-agent/memory/bujo";
 import { modelReferenceKey } from "@mono-agent/runtime-adapter";
 import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import {
@@ -159,6 +169,7 @@ export interface MonoAgentApp {
   readonly traceabilityStatus: TraceabilityStatus;
   readonly exporterStatus: ExporterStatus;
   readonly sandboxStatus: SandboxStatus;
+  readonly memoryHealth?: TraceSourceMemoryHealth;
   readonly selectedSkills: readonly string[] | undefined;
   channelStatus(id: ChannelId): ChannelStatus;
   channelStatuses(): ReadonlyMap<ChannelId, ChannelStatus>;
@@ -247,12 +258,26 @@ class MonoAgentAppController implements MonoAgentApp {
     reason: "No observability exporter configured.",
   };
   private sandboxStatusValue: SandboxStatus = DEFAULT_SANDBOX_STATUS;
+  private memoryHealthValue: TraceSourceMemoryHealth = {
+    backend: "none",
+    status: "unknown",
+    checkedAt: new Date().toISOString(),
+  };
+  private memoryHealthRefreshInFlight: Promise<TraceSourceMemoryHealth> | undefined;
+  private memoryHealthRefreshTimer: ReturnType<typeof setInterval> | undefined;
+  private memoryHealthGeneration = 0;
   private selectedSkillsValue: readonly string[] | undefined;
   private sessionMetadataValue: SessionTraceMetadata | undefined;
   /** The exporter the responder threads into agent-host (first configured exporter). */
   private resolvedExporter: ResolvedExporter | undefined;
   private traceSource: TraceSourceHandle | undefined;
-  private traceRefreshTail: Promise<void> = Promise.resolve();
+  /**
+   * Whole-publication single flight. A slow health probe must not let periodic
+   * heartbeat ticks build an unbounded promise tail behind it.
+   */
+  private traceRefreshInFlight: Promise<void> | undefined;
+  private traceRefreshDirty = false;
+  private traceRefreshLatestReason: string | undefined;
   // Best-effort mirror of `traceSource` into the machine-wide global registry,
   // present only when `shouldMirrorTraceSourceGlobally` gates it on (see
   // `startTraceability`). Kept in lockstep with `traceSource` on every
@@ -308,6 +333,10 @@ class MonoAgentAppController implements MonoAgentApp {
 
   get sandboxStatus(): SandboxStatus {
     return this.sandboxStatusValue;
+  }
+
+  get memoryHealth(): TraceSourceMemoryHealth {
+    return this.memoryHealthValue;
   }
 
   get selectedSkills(): readonly string[] | undefined {
@@ -394,6 +423,7 @@ class MonoAgentAppController implements MonoAgentApp {
     try {
       const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
       await this.refreshSelectedSkillsSnapshot(reason);
+      await this.refreshMemoryHealthSnapshot(reason);
       const [registryDir, artifactDir, sourceId, label, heartbeatMs, globalDiscovery] = await Promise.all([
         resolveAppTraceRegistryDir(input),
         resolveAppArtifactDir(input),
@@ -412,6 +442,7 @@ class MonoAgentAppController implements MonoAgentApp {
         transports: this.activeTransports(),
         configPath: this.configPath,
         metadata: this.traceMetadata(reason),
+        memoryHealth: this.memoryHealthValue,
         heartbeatMs,
       };
       this.traceSource = await registerTraceSource(registerOptions);
@@ -436,8 +467,10 @@ class MonoAgentAppController implements MonoAgentApp {
       } else {
         this.globalTraceSource = undefined;
       }
+      this.startMemoryHealthRefreshLoop(heartbeatMs);
 
     } catch (error) {
+      this.clearMemoryHealthRefreshTimer();
       const failure = reasonOf(error);
       this.traceabilityStatusValue = { kind: "failed", reason: failure };
       this.logger?.error?.("Traceability source registration failed.", { reason: failure });
@@ -568,31 +601,168 @@ class MonoAgentAppController implements MonoAgentApp {
     void this.refreshTraceSource("exporter-warning").catch(() => undefined);
   }
 
-  async refreshTraceSource(reason: string): Promise<void> {
-    const run = async (): Promise<void> => {
-      if (this.traceSource === undefined) {
-        return;
-      }
-      const patch = { transports: this.activeTransports(), metadata: this.traceMetadata(reason) };
-      try {
-        await this.traceSource.update(patch);
-      } catch (error) {
-        this.logger?.warn?.("Traceability source update failed.", { reason: reasonOf(error) });
-      }
-      if (this.globalTraceSource !== undefined) {
-        try {
-          await this.globalTraceSource.update(patch);
-        } catch (error) {
-          this.logger?.warn?.("Global trace-source mirror update failed.", { reason: reasonOf(error) });
+  refreshTraceSource(reason: string): Promise<void> {
+    const existing = this.traceRefreshInFlight;
+    if (existing !== undefined) {
+      // Keep one bounded replay slot. Concurrent explicit callers share the
+      // exact owner promise; the owner publishes the latest state/reason once
+      // more after its current write. Requests arriving during that replay set
+      // the same bit again, without growing a callback queue.
+      this.traceRefreshDirty = true;
+      this.traceRefreshLatestReason = reason;
+      return existing;
+    }
+    const traceSource = this.traceSource;
+    const globalTraceSource = this.globalTraceSource;
+    if (traceSource === undefined) {
+      return Promise.resolve();
+    }
+    const generation = this.memoryHealthGeneration;
+    let pending!: Promise<void>;
+    pending = (async (): Promise<void> => {
+      let publishReason = reason;
+      for (;;) {
+        this.traceRefreshDirty = false;
+        this.traceRefreshLatestReason = undefined;
+        const health = await this.refreshMemoryHealthSnapshot(publishReason);
+        if (generation !== this.memoryHealthGeneration || this.traceSource !== traceSource) {
+          return;
         }
+        const patch = {
+          transports: this.activeTransports(),
+          metadata: this.traceMetadata(publishReason),
+          memoryHealth: health,
+        };
+        try {
+          await traceSource.update(patch);
+        } catch (error) {
+          this.logger?.warn?.("Traceability source update failed.", { reason: reasonOf(error) });
+        }
+        if (globalTraceSource !== undefined && generation === this.memoryHealthGeneration
+          && this.globalTraceSource === globalTraceSource) {
+          try {
+            await globalTraceSource.update(patch);
+          } catch (error) {
+            this.logger?.warn?.("Global trace-source mirror update failed.", { reason: reasonOf(error) });
+          }
+        }
+        if (!this.traceRefreshDirty || generation !== this.memoryHealthGeneration
+          || this.traceSource !== traceSource) {
+          return;
+        }
+        publishReason = this.traceRefreshLatestReason ?? publishReason;
       }
-    };
-    const next = this.traceRefreshTail.then(run, run);
-    this.traceRefreshTail = next.then(
-      () => undefined,
-      () => undefined,
-    );
-    await next;
+    })().catch(() => {
+      // Health computation and trace handles already sanitize/log their own
+      // failures. Keep this final boundary closed so background refreshes never
+      // become unhandled rejections or leak raw provider/native errors.
+    }).finally(() => {
+      if (this.traceRefreshInFlight === pending) {
+        this.traceRefreshInFlight = undefined;
+        this.traceRefreshDirty = false;
+        this.traceRefreshLatestReason = undefined;
+      }
+    });
+    this.traceRefreshInFlight = pending;
+    return pending;
+  }
+
+  /**
+   * Refresh the content-free memory snapshot once for all concurrent trace
+   * publishers. The cached value is the only memory state read by synchronous
+   * manifest composition; provider/native errors collapse to a closed unknown
+   * shape and never escape into registry metadata.
+   */
+  private refreshMemoryHealthSnapshot(reason: string): Promise<TraceSourceMemoryHealth> {
+    if (this.memoryHealthRefreshInFlight !== undefined) {
+      return this.memoryHealthRefreshInFlight;
+    }
+    const generation = this.memoryHealthGeneration;
+    let pending!: Promise<TraceSourceMemoryHealth>;
+    pending = this.computeMemoryHealth().then((health) => {
+      if (!this.stopped && generation === this.memoryHealthGeneration) {
+        this.memoryHealthValue = health;
+        return health;
+      }
+      return this.memoryHealthValue;
+    }).catch(() => {
+      const health = unknownMemoryHealth(this.memoryHealthValue.backend, this.memoryHealthValue.mode);
+      if (!this.stopped && generation === this.memoryHealthGeneration) {
+        this.memoryHealthValue = health;
+      }
+      this.logger?.warn?.("Memory health refresh failed; publishing sanitized unknown health.", { reason });
+      return health;
+    }).finally(() => {
+      if (this.memoryHealthRefreshInFlight === pending) {
+        this.memoryHealthRefreshInFlight = undefined;
+      }
+    });
+    this.memoryHealthRefreshInFlight = pending;
+    return pending;
+  }
+
+  private async computeMemoryHealth(): Promise<TraceSourceMemoryHealth> {
+    let backend: TraceSourceMemoryHealth["backend"] = "none";
+    let mode: TraceSourceMemoryHealth["mode"];
+    try {
+      const config = await loadAppCoreConfig({ env: this.env, cwd: this.cwd, configPath: this.configPath });
+      const memory = config.memory;
+      if (memory === undefined) {
+        return {
+          backend: "none",
+          status: "not_configured",
+          checkedAt: new Date().toISOString(),
+        };
+      }
+      mode = memory.mode;
+      if ((memory.backend ?? "bujo") === "supermemory") {
+        return {
+          backend: "supermemory",
+          status: "unknown",
+          checkedAt: new Date().toISOString(),
+        };
+      }
+      backend = "bujo";
+      const { auditBujoMemoryHealth } = await import("@mono-agent/memory/bujo");
+      return traceMemoryHealthFromBujo(auditBujoMemoryHealth({
+        root: memory.path,
+        mode: memory.mode,
+        ...(memory.embeddings === undefined
+          ? {}
+          : {
+              configuredEmbeddingModel: `${memory.embeddings.provider}:${memory.embeddings.model}`,
+              configuredDimension: memory.embeddings.dim ?? 768,
+            }),
+      }));
+    } catch {
+      return unknownMemoryHealth(backend, mode);
+    }
+  }
+
+  private startMemoryHealthRefreshLoop(intervalMs: number): void {
+    this.clearMemoryHealthRefreshTimer();
+    this.memoryHealthRefreshTimer = setInterval(() => { this.refreshMemoryHealthOnTimer(); }, intervalMs);
+    this.memoryHealthRefreshTimer.unref?.();
+  }
+
+  private refreshMemoryHealthOnTimer(): void {
+    // Do not even attach another promise reaction while a probe/publication is
+    // active. The next heartbeat observes the latest memory state.
+    if (this.traceRefreshInFlight !== undefined) return;
+    void this.refreshTraceSource("memory-health-periodic").catch(() => undefined);
+  }
+
+  private clearMemoryHealthRefreshTimer(): void {
+    if (this.memoryHealthRefreshTimer !== undefined) {
+      clearInterval(this.memoryHealthRefreshTimer);
+      this.memoryHealthRefreshTimer = undefined;
+    }
+  }
+
+  private invalidateMemoryHealthRefresh(): void {
+    this.clearMemoryHealthRefreshTimer();
+    this.memoryHealthGeneration += 1;
+    this.memoryHealthRefreshInFlight = undefined;
   }
 
   /**
@@ -1409,14 +1579,25 @@ class MonoAgentAppController implements MonoAgentApp {
   }
 
   private async stopTraceSource(reason: string): Promise<void> {
+    this.invalidateMemoryHealthRefresh();
     const traceSource = this.traceSource;
     const globalTraceSource = this.globalTraceSource;
+    // Detach before stopping. A health probe may be stalled indefinitely; its
+    // generation/handle checks fence any late result, while a reload is free to
+    // register and refresh a new source without waiting for the old probe.
+    this.traceSource = undefined;
+    this.globalTraceSource = undefined;
+    this.traceRefreshInFlight = undefined;
+    this.traceRefreshDirty = false;
+    this.traceRefreshLatestReason = undefined;
     if (traceSource === undefined && globalTraceSource === undefined) {
       return;
     }
-    this.traceSource = undefined;
-    this.globalTraceSource = undefined;
-    const patch = { metadata: this.traceMetadata(reason), transports: this.activeTransports() };
+    const patch = {
+      metadata: this.traceMetadata(reason),
+      transports: this.activeTransports(),
+      memoryHealth: this.memoryHealthValue,
+    };
     await traceSource?.stop(patch).catch((error: unknown) => {
       this.logger?.warn?.("Traceability source stop update failed.", { reason: reasonOf(error) });
     });
@@ -1542,6 +1723,78 @@ class MonoAgentAppController implements MonoAgentApp {
       channels,
     };
   }
+}
+
+function traceMemoryHealthFromBujo(report: BujoMemoryHealthReport): TraceSourceMemoryHealth {
+  return {
+    backend: "bujo",
+    mode: report.mode,
+    status: traceMemoryStatus(report.status),
+    checkedAt: report.checkedAt,
+    issues: report.issues.map(traceMemoryIssue),
+    counts: {
+      pending: report.counts.pending,
+      due: report.counts.due,
+      dead: report.counts.dead,
+      outbox: report.counts.outbox,
+      temporary: report.counts.temporary,
+      memories: report.counts.memories,
+      vectors: report.counts.vectors,
+      missingVectors: report.counts.missingVectors,
+    },
+  };
+}
+
+function traceMemoryStatus(status: MemoryHealthStatus): TraceSourceMemoryStatus {
+  switch (status) {
+    case "healthy":
+    case "in_progress":
+    case "degraded":
+    case "unhealthy":
+    case "unknown":
+      return status;
+  }
+}
+
+function traceMemoryIssue(issue: MemoryHealthIssueCode): TraceSourceMemoryIssue {
+  switch (issue) {
+    case "manifest_missing":
+    case "manifest_invalid":
+    case "configured_identity_mismatch":
+    case "database_missing":
+    case "database_unavailable":
+    case "native_module_unavailable":
+    case "sqlite_integrity_failed":
+    case "metadata_mismatch":
+    case "fts_mismatch":
+    case "vector_mismatch":
+    case "orphaned_rows":
+    case "canonical_mismatch":
+    case "canonical_invalid":
+    case "mutation_in_progress":
+    case "intake_invalid":
+    case "intake_pending":
+    case "dead_letters":
+    case "outbox_invalid":
+    case "outbox_pending":
+    case "temporary_artifacts":
+    case "runtime_missing":
+    case "runtime_stale":
+    case "runtime_invalid":
+      return issue;
+  }
+}
+
+function unknownMemoryHealth(
+  backend: TraceSourceMemoryHealth["backend"],
+  mode: TraceSourceMemoryHealth["mode"],
+): TraceSourceMemoryHealth {
+  return {
+    backend,
+    ...(backend !== "bujo" || mode === undefined ? {} : { mode }),
+    status: "unknown",
+    checkedAt: new Date().toISOString(),
+  };
 }
 
 function nextDailyRolloverAt(now: Date, timezone: string | undefined): string | undefined {

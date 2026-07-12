@@ -2,9 +2,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { describeChannelStatus, loadCliEnvFile, monoAgentVersion, parseCliArgs, renderHelp } from "../cli.js";
+import { describeChannelStatus, loadCliEnvFile, monoAgentVersion, parseCliArgs, renderHelp, runCli } from "../cli.js";
 
 const tempDirs: string[] = [];
 
@@ -272,6 +272,17 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["start", "--consumer", "../local-agent-alpha"])).toThrow(/--consumer/u);
   });
 
+  it("accepts --strict only for memory audit", () => {
+    expect(parseCliArgs(["memory", "audit", "--strict", "--json"])).toMatchObject({
+      command: "memory",
+      positionals: ["audit"],
+      strict: true,
+      json: true,
+    });
+    expect(() => parseCliArgs(["memory", "stats", "--strict"])).toThrow(/only supported.*memory audit/iu);
+    expect(() => parseCliArgs(["validate", "--strict"])).toThrow(/only supported.*memory audit/iu);
+  });
+
   it("defaults to help and rejects unknown commands and flags", () => {
     expect(parseCliArgs([]).command).toBe("help");
     expect(parseCliArgs(["--help"]).command).toBe("help");
@@ -352,6 +363,27 @@ describe("parseCliArgs", () => {
   });
 });
 
+describe("runCli validate --json", () => {
+  it("emits exactly one plain JSON object and exits according to its ok field", async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
+    await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+    }), "utf8");
+
+    const result = await captureCli(() => withCwd(dir, () => runCli(["validate", "--json"])));
+
+    expect(result.stderr).toBe("");
+    expect(result.stdout).not.toMatch(/\u001b\[/u);
+    const parsed = JSON.parse(result.stdout) as { readonly ok: boolean; readonly sections: readonly unknown[] };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.sections.length).toBeGreaterThan(0);
+    expect(result.code).toBe(parsed.ok ? 0 : 1);
+    expect(result.stdout.trim().split("\n")).toHaveLength(1);
+  });
+});
+
 describe("loadCliEnvFile", () => {
   it("loads vars from the file without overwriting exported ones, and ignores missing files", async () => {
     const dir = await tempDir();
@@ -400,3 +432,36 @@ describe("describeChannelStatus", () => {
     expect(describeChannelStatus({ kind: "disabled", reason: "not enabled" })).toBe("disabled: not enabled");
   });
 });
+
+async function captureCli(run: () => Promise<number>): Promise<{
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}> {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+    stdout.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+    return true;
+  }) as typeof process.stdout.write);
+  const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+    stderr.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+    return true;
+  }) as typeof process.stderr.write);
+  try {
+    return { code: await run(), stdout: stdout.join(""), stderr: stderr.join("") };
+  } finally {
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
+  }
+}
+
+async function withCwd<T>(cwd: string, run: () => Promise<T>): Promise<T> {
+  const previous = process.cwd();
+  try {
+    process.chdir(cwd);
+    return await run();
+  } finally {
+    process.chdir(previous);
+  }
+}

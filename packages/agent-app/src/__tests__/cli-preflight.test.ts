@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,6 +22,26 @@ afterEach(async () => {
 
 async function writeConfig(json: Record<string, unknown>): Promise<void> {
   await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify(json, null, 2));
+}
+
+async function seedManagedMemory(root: string, tier: "journal" | "bujo", embeddingModel: string): Promise<void> {
+  const generation = "g-20260712T000000000Z-00000000-0000-4000-8000-000000000000";
+  const generationDir = join(root, ".index", "generations", generation);
+  await mkdir(generationDir, { recursive: true });
+  await writeFile(join(generationDir, "memory.db"), "");
+  await writeFile(join(root, ".index", "manifest.json"), JSON.stringify({
+    schemaVersion: 1,
+    active: {
+      name: generation,
+      tier,
+      sourceFingerprint: "0".repeat(64),
+      policyVersion: "mono-agent-memory-rebuild-v1",
+      createdAt: "2026-07-12T00:00:00.000Z",
+      embeddingModel,
+      dimension: 768,
+      origin: "rebuild",
+    },
+  }));
 }
 
 describe("ensureStartable (start/restart preflight gate)", () => {
@@ -64,6 +84,7 @@ describe("ensureStartable (start/restart preflight gate)", () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    await seedManagedMemory(join(dir, "mem"), "bujo", "ollama:nomic-embed-text:v1.5");
     await writeConfig({
       runtime: { model: "pi:openai-codex:gpt-5.5" },
       context: { identityPath: "./IDENTITY.md" },

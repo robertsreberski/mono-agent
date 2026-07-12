@@ -3,16 +3,12 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { openMemoryDb } from "@mono-agent/memory/store";
 import type { EntityRecord, IndexMetadata, MemoryDb, MemoryRecord, MemoryStoreAudit, MemoryStoreStats } from "@mono-agent/memory/store";
 import { listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
-import {
-  parseDailyFile,
-  readBujoRuntimeSnapshot,
-  resolveActiveMemoryDbPath,
-  rollbackMemoryIndex,
-  safeRebuildMemoryIndex,
+import type {
+  BujoMemoryHealthReport,
+  CompletedTurnIntakeInspection,
 } from "@mono-agent/memory/bujo";
 
 import {
@@ -21,11 +17,6 @@ import {
   resolveAppTraceRegistryDir,
   resolveGlobalTraceRegistryDir,
 } from "./app-config.js";
-import {
-  createMemoryEmbeddingProvider,
-  createRecallStore,
-  resolveMemoryRecallSettings,
-} from "./memory-recall.js";
 import type {
   MemoryRecallBujoSettings,
   MemoryRecallSettings,
@@ -36,6 +27,19 @@ const DEFAULT_SEARCH_LIMIT = 8;
 const DEFAULT_TOP_LIMIT = 10;
 const DEFAULT_ENTITY_LIMIT = 8;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
+const INTAKE_ID_RE = /^[a-f0-9]{64}$/u;
+const INTAKE_REASON_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
+const MEMORY_HEALTH_SCHEMA_VERSION = 1;
+const EMPTY_HEALTH_COUNTS = Object.freeze({
+  pending: 0,
+  due: 0,
+  dead: 0,
+  outbox: 0,
+  temporary: 0,
+  memories: 0,
+  vectors: 0,
+  missingVectors: 0,
+});
 
 export interface RunMemoryCommandInput {
   readonly cwd: string;
@@ -43,6 +47,7 @@ export interface RunMemoryCommandInput {
   readonly configPath?: string;
   readonly positionals: readonly string[];
   readonly json: boolean;
+  readonly strict: boolean;
   readonly limit?: number;
 }
 
@@ -65,6 +70,11 @@ interface PreviewRecallHit {
 }
 
 export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<number> {
+  const usageError = memoryCommandUsageError(input);
+  if (usageError !== undefined) {
+    process.stderr.write(ui.errorLine(usageError));
+    return 2;
+  }
   const context = await loadMemoryCommandContext(input);
   if ("code" in context) {
     return context.code;
@@ -73,6 +83,11 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
   const [rawSubcommand, ...rest] = input.positionals;
   const subcommand = rawSubcommand ?? "stats";
   if (context.config.memory === undefined) {
+    if (subcommand === "audit" && input.strict) {
+      const result = notConfiguredHealthReport();
+      write(input.json, result, () => renderStrictAudit(result));
+      return strictHealthExitCode(result.status);
+    }
     writeNoMemory(context.configPath, input.json);
     return 0;
   }
@@ -101,16 +116,259 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
     case "top":
       return await runTop(context, input);
     case "audit":
-      return await runAudit(context, input.json);
+      return input.strict
+        ? await runStrictAudit(context, input.json)
+        : await runAudit(context, input.json);
+    case "inspect":
+      return await runIntakeInspect(context, rest[0], input.json);
+    case "retry":
+      return await runIntakeMutation(context, "retry", rest[0], undefined, input.json);
+    case "resolve":
+      return await runIntakeMutation(context, "resolve", rest[0], rest[1], input.json);
     case "rebuild":
       return await runIndexTransition(context, "rebuild", input.json);
     case "rollback":
       return await runIndexTransition(context, "rollback", input.json);
     default:
       process.stderr.write(ui.errorLine(`Unknown memory subcommand \`${subcommand}\`.`));
-      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, audit, rebuild, or rollback."));
+      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, audit, inspect [id], retry [id], resolve <id> <reason>, rebuild, or rollback."));
       return 2;
   }
+}
+
+function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefined {
+  const [rawSubcommand, ...rest] = input.positionals;
+  const subcommand = rawSubcommand ?? "stats";
+  if (input.strict && subcommand !== "audit") {
+    return "--strict is only supported for `mono-agent memory audit`.";
+  }
+  if (input.limit !== undefined && subcommand !== "stats" && subcommand !== "search" && subcommand !== "top") {
+    return "--limit is only supported for memory stats, search, and top.";
+  }
+  switch (subcommand) {
+    case "stats":
+    case "today":
+    case "top":
+    case "audit":
+    case "rebuild":
+    case "rollback":
+      return rest.length === 0 ? undefined : `Usage: mono-agent memory ${subcommand}.`;
+    case "show":
+      return rest.length === 1 && DATE_RE.test(rest[0] ?? "")
+        ? undefined
+        : "Usage: mono-agent memory show <YYYY-MM-DD>.";
+    case "search":
+      return rest.join(" ").trim().length > 0
+        ? undefined
+        : "Usage: mono-agent memory search <query>.";
+    case "inspect":
+      return rest.length <= 1 && (rest[0] === undefined || INTAKE_ID_RE.test(rest[0]))
+        ? undefined
+        : "Usage: mono-agent memory inspect [<64-character-id>].";
+    case "retry":
+      return rest.length <= 1 && (rest[0] === undefined || INTAKE_ID_RE.test(rest[0]))
+        ? undefined
+        : "Usage: mono-agent memory retry [<64-character-id>].";
+    case "resolve":
+      if (rest.length !== 2 || !INTAKE_ID_RE.test(rest[0] ?? "")) {
+        return "Usage: mono-agent memory resolve <64-character-id> <reason-slug>.";
+      }
+      return INTAKE_REASON_RE.test(rest[1] ?? "")
+        ? undefined
+        : "memory resolve reason must be a 1-64 character lowercase slug.";
+    default:
+      return undefined;
+  }
+}
+
+type PublishedMemoryHealthStatus = BujoMemoryHealthReport["status"] | "not_configured";
+type StrictMemoryHealthReport =
+  | BujoMemoryHealthReport
+  | {
+      readonly schemaVersion: typeof MEMORY_HEALTH_SCHEMA_VERSION;
+      readonly backend: "bujo";
+      readonly mode: NonNullable<MonoAgentConfig["memory"]>["mode"];
+      readonly status: "unknown";
+      readonly checkedAt: string;
+      readonly issues: readonly ("native_module_unavailable")[];
+      readonly counts: typeof EMPTY_HEALTH_COUNTS;
+    }
+  | {
+      readonly schemaVersion: typeof MEMORY_HEALTH_SCHEMA_VERSION;
+      readonly backend: "none" | "supermemory";
+      readonly status: "not_configured" | "unknown";
+      readonly checkedAt: string;
+      readonly issues: readonly [];
+      readonly counts: typeof EMPTY_HEALTH_COUNTS;
+    };
+
+function notConfiguredHealthReport(now = new Date()): StrictMemoryHealthReport {
+  return {
+    schemaVersion: MEMORY_HEALTH_SCHEMA_VERSION,
+    backend: "none",
+    status: "not_configured",
+    checkedAt: now.toISOString(),
+    issues: [],
+    counts: EMPTY_HEALTH_COUNTS,
+  };
+}
+
+async function runStrictAudit(context: MemoryCommandContext, json: boolean): Promise<number> {
+  const memory = context.config.memory;
+  if (memory === undefined) {
+    const result = notConfiguredHealthReport();
+    write(json, result, () => renderStrictAudit(result));
+    return 0;
+  }
+  if ((memory.backend ?? "bujo") === "supermemory") {
+    const result: StrictMemoryHealthReport = {
+      schemaVersion: MEMORY_HEALTH_SCHEMA_VERSION,
+      backend: "supermemory",
+      status: "unknown",
+      checkedAt: new Date().toISOString(),
+      issues: [],
+      counts: EMPTY_HEALTH_COUNTS,
+    };
+    write(json, result, () => renderStrictAudit(result));
+    return 1;
+  }
+
+  let result: StrictMemoryHealthReport;
+  try {
+    const { auditBujoMemoryHealth } = await loadBujoModule();
+    result = auditBujoMemoryHealth({
+      root: memory.path,
+      mode: memory.mode,
+      ...(memory.embeddings === undefined
+        ? {}
+        : {
+            configuredEmbeddingModel: `${memory.embeddings.provider}:${memory.embeddings.model}`,
+            configuredDimension: memory.embeddings.dim ?? 768,
+          }),
+    });
+  } catch (error) {
+    result = {
+      schemaVersion: MEMORY_HEALTH_SCHEMA_VERSION,
+      backend: "bujo",
+      mode: memory.mode,
+      status: "unknown",
+      checkedAt: new Date().toISOString(),
+      issues: isNativeModuleFailure(error) ? ["native_module_unavailable"] : [],
+      counts: EMPTY_HEALTH_COUNTS,
+    };
+  }
+  write(json, result, () => renderStrictAudit(result));
+  return strictHealthExitCode(result.status);
+}
+
+function strictHealthExitCode(status: PublishedMemoryHealthStatus): 0 | 1 {
+  switch (status) {
+    case "healthy":
+    case "in_progress":
+    case "not_configured":
+      return 0;
+    case "degraded":
+    case "unhealthy":
+    case "unknown":
+      return 1;
+  }
+}
+
+async function runIntakeInspect(
+  context: MemoryCommandContext,
+  id: string | undefined,
+  json: boolean,
+): Promise<number> {
+  const memory = context.config.memory;
+  if (memory === undefined) {
+    writeNoMemory(context.configPath, json);
+    return 0;
+  }
+  if ((memory.backend ?? "bujo") === "supermemory") {
+    process.stderr.write(ui.errorLine("memory inspect is available only for the built-in memory intake."));
+    return 1;
+  }
+  try {
+    const { inspectCompletedTurnIntake } = await loadBujoModule();
+    const inspection = inspectCompletedTurnIntake(memory.path);
+    const result = intakeInspectionResult(inspection, id);
+    write(json, result, () => renderIntakeInspection(result));
+    return 0;
+  } catch {
+    process.stderr.write(ui.errorLine("memory inspect failed; the intake metadata is unavailable or invalid."));
+    return 1;
+  }
+}
+
+async function runIntakeMutation(
+  context: MemoryCommandContext,
+  operation: "retry" | "resolve",
+  id: string | undefined,
+  reason: string | undefined,
+  json: boolean,
+): Promise<number> {
+  const memory = context.config.memory;
+  if (memory === undefined) {
+    writeNoMemory(context.configPath, json);
+    return 0;
+  }
+  if ((memory.backend ?? "bujo") === "supermemory") {
+    process.stderr.write(ui.errorLine(`memory ${operation} is available only for the built-in memory intake.`));
+    return 1;
+  }
+  try {
+    await assertNoLiveConfiguredAgent(context.configPath, await memoryRegistryDirs(context));
+    const bujo = await loadBujoModule();
+    if (operation === "retry") {
+      const mutation = bujo.retryCompletedTurnIntake(memory.path, id === undefined ? {} : { id });
+      const result = {
+        schemaVersion: MEMORY_HEALTH_SCHEMA_VERSION,
+        operation,
+        changed: mutation.retried > 0,
+        retried: mutation.retried,
+      };
+      write(json, result, () => renderIntakeMutation(result));
+      return 0;
+    }
+    const mutation = bujo.resolveCompletedTurnIntake(memory.path, id!, reason!);
+    const result = {
+      schemaVersion: MEMORY_HEALTH_SCHEMA_VERSION,
+      operation,
+      changed: mutation.resolved,
+      resolved: mutation.resolved,
+    };
+    write(json, result, () => renderIntakeMutation(result));
+    return 0;
+  } catch (error) {
+    const retainedPlan = /retained semantic-plan recovery/iu.test(reasonOf(error));
+    process.stderr.write(ui.errorLine(retainedPlan
+      ? "memory resolve refused: retained semantic-plan recovery must complete first."
+      : `memory ${operation} failed: ${reasonOf(error)}`));
+    return 1;
+  }
+}
+
+function intakeInspectionResult(inspection: CompletedTurnIntakeInspection, id: string | undefined) {
+  const items = id === undefined ? inspection.items : inspection.items.filter((item) => item.id === id);
+  return {
+    schemaVersion: inspection.schemaVersion,
+    operation: "inspect" as const,
+    matched: items.length,
+    temporary: inspection.temporary,
+    snapshot: inspection.snapshot,
+    items,
+  };
+}
+
+async function memoryRegistryDirs(context: MemoryCommandContext): Promise<readonly string[]> {
+  return await dedupeRegistryDirs([
+    await resolveAppTraceRegistryDir({
+      env: context.env,
+      cwd: context.cwd,
+      configPath: context.configPath,
+    }),
+    resolveGlobalTraceRegistryDir(context.env),
+  ]);
 }
 
 async function runIndexTransition(
@@ -137,16 +395,14 @@ async function runIndexTransition(
   }
 
   try {
-    const configuredRegistryDir = await resolveAppTraceRegistryDir({
-      env: context.env,
-      cwd: context.cwd,
-      configPath: context.configPath,
-    });
-    const registryDirs = await dedupeRegistryDirs([
-      configuredRegistryDir,
-      resolveGlobalTraceRegistryDir(context.env),
-    ]);
+    const registryDirs = await memoryRegistryDirs(context);
     await assertNoLiveConfiguredAgent(context.configPath, registryDirs);
+    const {
+      resolveActiveMemoryDbPath,
+      rollbackMemoryIndex,
+      safeRebuildMemoryIndex,
+    } = await loadBujoModule();
+    const { createMemoryEmbeddingProvider } = await loadMemoryRecallModule();
     const embeddings = settings.embeddings === undefined
       ? undefined
       : await createMemoryEmbeddingProvider(settings.embeddings);
@@ -203,6 +459,8 @@ async function runAudit(context: MemoryCommandContext, json: boolean): Promise<n
   }
 
   const root = memory.path;
+  const { readBujoRuntimeSnapshot, resolveActiveMemoryDbPath } = await loadBujoModule();
+  const { openMemoryDb } = await loadMemoryStoreModule();
   const runtime = readBujoRuntimeSnapshot(root);
   const dbPath = await resolveActiveMemoryDbPath(root);
   const rootExists = await exists(root);
@@ -398,6 +656,8 @@ async function runStats(context: MemoryCommandContext, input: RunMemoryCommandIn
   }
 
   const root = memory.path;
+  const { resolveActiveMemoryDbPath } = await loadBujoModule();
+  const { openMemoryDb } = await loadMemoryStoreModule();
   const dbPath = await resolveActiveMemoryDbPath(root);
   const rootExists = await exists(root);
   const dbExists = await exists(dbPath);
@@ -484,6 +744,7 @@ async function runShow(context: MemoryCommandContext, date: string, json: boolea
     return 0;
   }
   const content = await readFile(found, "utf8");
+  const { parseDailyFile } = await loadBujoModule();
   const parsed = parseDailyFile(content);
   const result = {
     configured: true,
@@ -516,6 +777,7 @@ async function runSearch(
     return 0;
   }
   if (!("supermemory" in settings)) {
+    const { resolveActiveMemoryDbPath } = await loadBujoModule();
     const dbPath = await resolveActiveMemoryDbPath(settings.root);
     settings = { ...settings, dbPath };
   }
@@ -580,6 +842,8 @@ async function runTop(context: MemoryCommandContext, input: RunMemoryCommandInpu
     write(input.json, result, () => `${ui.banner("mono-agent memory", "top")}\n${result.message}\n`);
     return 0;
   }
+  const { resolveActiveMemoryDbPath } = await loadBujoModule();
+  const { openMemoryDb } = await loadMemoryStoreModule();
   const dbPath = await resolveActiveMemoryDbPath(memory.path);
   if (!(await exists(dbPath))) {
     const result = {
@@ -611,10 +875,6 @@ async function runTop(context: MemoryCommandContext, input: RunMemoryCommandInpu
 }
 
 function previewRecallSettings(config: MonoAgentConfig): MemoryRecallSettings | undefined {
-  const fromTool = resolveMemoryRecallSettings(config);
-  if (fromTool !== undefined) {
-    return fromTool;
-  }
   const memory = config.memory;
   if (memory === undefined) {
     return undefined;
@@ -658,6 +918,7 @@ async function recallWithFtsFallback(
   query: string,
   limit: number,
 ): Promise<{ readonly hits: readonly PreviewRecallHit[]; readonly degraded?: string }> {
+  const { createRecallStore } = await loadMemoryRecallModule();
   const store = await createRecallStore(settings);
   try {
     return { hits: await store.recall(query, { topK: limit, trackAccess: false }) as readonly PreviewRecallHit[] };
@@ -938,6 +1199,65 @@ function renderAudit(result: {
   return out;
 }
 
+function renderStrictAudit(result: StrictMemoryHealthReport): string {
+  return [
+    ui.banner("mono-agent memory", "strict health"),
+    "\n",
+    ui.keyValue([
+      ["schema", String(result.schemaVersion)],
+      ["backend", result.backend],
+      ["mode", "mode" in result ? result.mode : "none"],
+      ["status", result.status],
+      ["checked", result.checkedAt],
+      ["issues", result.issues.length === 0 ? "none" : result.issues.join(", ")],
+      ["pending", String(result.counts.pending)],
+      ["due", String(result.counts.due)],
+      ["dead", String(result.counts.dead)],
+      ["outbox", String(result.counts.outbox)],
+      ["temporary", String(result.counts.temporary)],
+      ["memories", String(result.counts.memories)],
+      ["vectors", String(result.counts.vectors)],
+      ["missing vectors", String(result.counts.missingVectors)],
+    ], 2),
+  ].join("");
+}
+
+function renderIntakeInspection(result: ReturnType<typeof intakeInspectionResult>): string {
+  let out = ui.banner("mono-agent memory", "intake inspection") + "\n";
+  out += ui.keyValue([
+    ["matched", String(result.matched)],
+    ["pending", String(result.snapshot.pending)],
+    ["due", String(result.snapshot.due)],
+    ["dead", String(result.snapshot.dead)],
+    ["resolved", String(result.snapshot.resolved)],
+    ["transitioning", String(result.snapshot.transitioning)],
+    ["temporary", String(result.temporary)],
+  ], 2);
+  for (const item of result.items) {
+    out += `  ${item.id}  state=${item.state} attempt=${item.attempt} revision=${item.revision} due=${item.due ? "yes" : "no"}`;
+    if (item.lastError !== undefined) out += ` lastError=${item.lastError}`;
+    out += "\n";
+  }
+  return out;
+}
+
+function renderIntakeMutation(result: {
+  readonly operation: "retry" | "resolve";
+  readonly changed: boolean;
+  readonly retried?: number;
+  readonly resolved?: boolean;
+}): string {
+  return [
+    ui.banner("mono-agent memory", `intake ${result.operation}`),
+    "\n",
+    ui.keyValue([
+      ["changed", result.changed ? "yes" : "no"],
+      ...(result.retried === undefined ? [] : [["retried", String(result.retried)] as const]),
+      ...(result.resolved === undefined ? [] : [["resolved", result.resolved ? "yes" : "no"] as const]),
+    ], 2),
+  ].join("");
+}
+
 function renderLocalStats(stats: {
   readonly mode: string;
   readonly effectiveTier: string;
@@ -1125,4 +1445,28 @@ function formatRatio(value: number): string {
 
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function loadBujoModule(): Promise<typeof import("@mono-agent/memory/bujo")> {
+  return await import("@mono-agent/memory/bujo");
+}
+
+async function loadMemoryStoreModule(): Promise<typeof import("@mono-agent/memory/store")> {
+  return await import("@mono-agent/memory/store");
+}
+
+async function loadMemoryRecallModule(): Promise<typeof import("./memory-recall.js")> {
+  return await import("./memory-recall.js");
+}
+
+function isNativeModuleFailure(error: unknown): boolean {
+  try {
+    const message = error instanceof Error ? error.message : "";
+    const code = typeof error === "object" && error !== null && "code" in error
+      ? String((error as { readonly code?: unknown }).code ?? "")
+      : "";
+    return /better[-_ ]?sqlite|sqlite[-_ ]?vec|node_module_version|native module|dlopen|\.node\b/iu.test(`${code} ${message}`);
+  } catch {
+    return false;
+  }
 }

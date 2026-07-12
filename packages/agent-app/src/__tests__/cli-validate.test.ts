@@ -54,6 +54,26 @@ async function writeConsumerConfig(
   return configPath;
 }
 
+async function seedManagedMemory(root: string, tier: "journal" | "bujo", embeddingModel: string): Promise<void> {
+  const generation = "g-20260712T000000000Z-00000000-0000-4000-8000-000000000000";
+  const generationDir = join(root, ".index", "generations", generation);
+  await mkdir(generationDir, { recursive: true });
+  await writeFile(join(generationDir, "memory.db"), "");
+  await writeFile(join(root, ".index", "manifest.json"), JSON.stringify({
+    schemaVersion: 1,
+    active: {
+      name: generation,
+      tier,
+      sourceFingerprint: "0".repeat(64),
+      policyVersion: "mono-agent-memory-rebuild-v1",
+      createdAt: "2026-07-12T00:00:00.000Z",
+      embeddingModel,
+      dimension: 768,
+      origin: "rebuild",
+    },
+  }));
+}
+
 async function captureRunCli(argv: readonly string[]): Promise<{ readonly code: number; readonly stdout: string; readonly stderr: string }> {
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -103,7 +123,7 @@ describe("runCli validate --consumer", () => {
 
   it("does not describe a generic waiting section as ready", async () => {
     const memoryDir = join(dir, ".mono-agent", "memory");
-    await mkdir(memoryDir, { recursive: true });
+    await seedManagedMemory(memoryDir, "journal", "openai:text-embedding-3-small");
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
     await writeConsumerConfig(dir, "mono-agent.config.json", {
       runtime: { model: "codex:gpt-5.6-terra" },
