@@ -23,7 +23,12 @@ my-agent/
   .mono-agent/             # framework-managed runtime state (gitignore this)
     artifacts/             # JSONL run summaries + events (local traceability fallback)
     workspace/             # runtime working directory (when not ".")
-    memory/                # journal/bujo memory root (daily notes, graph.jsonl, index/)
+    memory/                # built-in memory root (framework-managed)
+      daily/               # canonical dated memory notes
+      graph.jsonl          # BuJo canonical entity graph
+      .replay-projection-v1.json # BuJo exact metadata-only replay authority (0600)
+      .index/              # managed generations, manifest, runtime snapshot
+      .capture-intake/     # owner-only durable completed-turn intake
     whatsapp-auth/         # Baileys auth state (WhatsApp channel only)
     sessions/              # durable pi sessions → resume across restarts
     trace-sources/         # traceability registry (when kept folder-local)
@@ -73,7 +78,7 @@ The framework creates and writes everything under `.mono-agent/`. You generally 
 |------|-------|------------|
 | `.mono-agent/artifacts/` | JSONL run summaries and events — the always-on local traceability fallback. | `artifacts.dir` |
 | `.mono-agent/workspace/` | The runtime working directory, when `runtime.workspace` is not `"."`. | `runtime.workspace` |
-| `.mono-agent/memory/` | Memory substrate root: daily notes, `graph.jsonl`, and the search index. | `memory.path` |
+| `.mono-agent/memory/` | Built-in memory root: canonical daily notes, BuJo `graph.jsonl` and owner-only `.replay-projection-v1.json`, durable intake, and the managed `.index/`. The replay sidecar is exact metadata-only authority for BuJo lifecycle/thread replay; do not edit it or SQLite directly. | `memory.path` |
 | `.mono-agent/whatsapp-auth/` | Baileys auth state, written only when the WhatsApp channel is enabled. | (WhatsApp channel) |
 | `.mono-agent/sessions/` | Durable pi sessions (JSONL) so conversations resume across restarts; unset = in-memory only. | `providers.piNative.piSessionsRoot` |
 | `.mono-agent/trace-sources/` | The traceability registry, when kept folder-local. | `traceability.registryDir` |

@@ -5,11 +5,12 @@ import { join, relative } from "node:path";
 import { openMemoryDb, type MemoryDb } from "../../store/index.js";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { captureTurn } from "../capture.js";
+import { captureTurn as captureTurnImpl } from "../capture.js";
 import { replayCaptureOutbox } from "../capture-outbox.js";
 import { appendBullet, dailyFilePath } from "../daily.js";
 import { readGraph } from "../graph.js";
 import { migrate } from "../migrate.js";
+import { assertCanonicalGraphRepairBaseParity } from "../rebuild.js";
 import type { ReconcileDeps } from "../reconcile.js";
 import { createBujoMemoryStore } from "../store.js";
 import type { Bullet } from "../types.js";
@@ -47,6 +48,11 @@ function makeSeqNextId(): () => string {
   let seq = 0;
   return () => `CAP${String(++seq).padStart(4, "0")}`;
 }
+
+const captureTurn: typeof captureTurnImpl = async (text, deps) => await captureTurnImpl(text, {
+  ...deps,
+  canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+});
 
 async function seed(db: MemoryDb, root: string, id: string, text: string): Promise<void> {
   const bullet: Bullet = {
@@ -448,11 +454,11 @@ describe("captureTurn", () => {
     const root = newRoot();
     const db = openDb(root);
 
-    // Wrap the db so the *index mirror* (upsertEntity/addEntityRelation) throws. Canonical-first ordering
+    // Wrap the db so the exact index projection replacement throws. Canonical-first ordering
     // means graph.jsonl is written before the mirror, so the data survives a mirror failure.
     const failingDb = new Proxy(db, {
       get(target, prop, receiver) {
-        if (prop === "mirrorCanonicalEntity" || prop === "mirrorCanonicalRelation") {
+        if (prop === "replaceCanonicalGraphProjection") {
           return () => { throw new Error("index mirror down"); };
         }
         const value = Reflect.get(target, prop, receiver) as unknown;
@@ -482,7 +488,9 @@ describe("captureTurn", () => {
     expect(graph.relations.some((r) => r.src === "person:morgan" && r.relation === "maintains")).toBe(true);
     expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
 
-    const replayed = replayCaptureOutbox(root, db);
+    const replayed = replayCaptureOutbox(root, db, {
+      canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+    });
     expect(replayed).toHaveLength(1);
     expect(db.associationsForMemory("CAP0001")).toEqual([
       expect.objectContaining({ entityId: "person:morgan", provenance: "capture" }),
@@ -544,17 +552,25 @@ describe("captureTurn", () => {
     })).rejects.toThrow(/graph|symlink|regular/iu);
 
     expect(labels).toEqual(["capture:extract", "capture:reconcile-batch"]);
-    expect(db.get("CAP0001")?.text).toBe("Aster uses quarterly red-team reviews.");
-    expect(db.get("UPDATE")?.text).toBe("Morgan prefers reviewed blue deployment releases.");
-    expect(db.get("OLD")?.status).toBe("invalidated");
-    expect(db.get("CAP0002")?.text).toBe("Atlas launches in August.");
+    // Daily/graph/sidecar are the source transaction. A graph publication
+    // fault must leave SQLite wholly before the prepared batch.
+    expect(db.get("CAP0001")).toBeUndefined();
+    expect(db.get("UPDATE")?.text).toBe("Morgan prefers blue deployment releases.");
+    expect(db.get("OLD")?.status).toBe("open");
+    expect(db.get("CAP0002")).toBeUndefined();
     expect(db.get("NOOP")?.text).toBe("Paola prefers quiet mornings.");
     expect(readdirSync(join(root, ".capture-outbox"))).toHaveLength(1);
 
     unlinkSync(join(root, "graph.jsonl"));
-    replayCaptureOutbox(root, db);
+    replayCaptureOutbox(root, db, {
+      canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+    });
 
     expect(labels).toEqual(["capture:extract", "capture:reconcile-batch"]);
+    expect(db.get("CAP0001")?.text).toBe("Aster uses quarterly red-team reviews.");
+    expect(db.get("UPDATE")?.text).toBe("Morgan prefers reviewed blue deployment releases.");
+    expect(db.get("OLD")?.status).toBe("invalidated");
+    expect(db.get("CAP0002")?.text).toBe("Atlas launches in August.");
     expect(readGraph(root).associations.map((association) => association.memoryId).sort()).toEqual([
       "CAP0001",
       "CAP0002",
@@ -569,7 +585,9 @@ describe("captureTurn", () => {
     const db = openDb(root);
     const failingDb = new Proxy(db, {
       get(target, prop, receiver) {
-        if (prop === "mirrorCanonicalAssociation") return () => { throw new Error("association mirror fault"); };
+        if (prop === "replaceCanonicalGraphProjection") {
+          return () => { throw new Error("association mirror fault"); };
+        }
         const value = Reflect.get(target, prop, receiver) as unknown;
         return typeof value === "function" ? value.bind(target) : value;
       },

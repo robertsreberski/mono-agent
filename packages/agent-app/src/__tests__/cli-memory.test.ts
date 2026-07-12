@@ -36,6 +36,7 @@ describe("parseCliArgs memory", () => {
     expect(() => parseCliArgs(["metrics", "--limit", "3"])).toThrow(/--limit/u);
     expect(renderHelp()).toContain("mono-agent memory");
     expect(renderHelp()).toContain("audit");
+    expect(renderHelp()).toContain("adopt-replay");
     expect(parseCliArgs(["memory", "audit", "--strict", "--json"])).toMatchObject({ strict: true, json: true });
     expect(() => parseCliArgs(["memory", "inspect", "--strict"])).toThrow(/memory audit/iu);
   });
@@ -671,6 +672,297 @@ describe("runCli memory", () => {
     }
   });
 
+  it("runs explicit BuJo replay adoption with an aggregate-only JSON contract", async () => {
+    const privateRoot = join(await tempDir(), "private-memory-root");
+    const dir = await agentDir({
+      memory: {
+        mode: "bujo",
+        path: privateRoot,
+        writeMode: "capture",
+        embeddings: { provider: "ollama", model: "private-embed", dim: 8 },
+        llm: { provider: "ollama", model: "private-capture" },
+      },
+    });
+    const authorityDigest = "a".repeat(64);
+    const privatePayload = "private-memory-payload-sentinel";
+    const privateIntentId = "private-intent-id-sentinel";
+    const adoptionResult = {
+      backend: "bujo",
+      mode: "bujo",
+      status: "adopted",
+      counts: { terminals: 2, supersedes: 3, threads: 4 },
+      authorityDigest,
+      rebuildRequired: true,
+      privatePayload,
+      privateIntentId,
+      privatePath: privateRoot,
+    } as ReturnType<typeof bujoMemory.adoptLegacyReplayProjection> & {
+      readonly privatePayload: string;
+      readonly privateIntentId: string;
+      readonly privatePath: string;
+    };
+    const adoption = vi.spyOn(bujoMemory, "adoptLegacyReplayProjection").mockReturnValue(adoptionResult);
+    let result: Awaited<ReturnType<typeof captureCli>>;
+    let adoptionCalls: unknown[][] = [];
+    try {
+      result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "adopt-replay", "--json"]))));
+      adoptionCalls = adoption.mock.calls.map((call) => [...call]);
+    } finally {
+      adoption.mockRestore();
+    }
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual({
+      backend: "bujo",
+      mode: "bujo",
+      status: "adopted",
+      counts: { terminals: 2, supersedes: 3, threads: 4 },
+      authorityDigest,
+      rebuildRequired: true,
+    });
+    expect(result.stdout).not.toContain(privateRoot);
+    expect(result.stdout).not.toContain("private-embed");
+    expect(result.stdout).not.toContain("private-capture");
+    expect(result.stdout).not.toContain(privatePayload);
+    expect(result.stdout).not.toContain(privateIntentId);
+    expect(adoptionCalls).toEqual([[{
+      root: privateRoot,
+      mode: "bujo",
+      embeddingModel: "ollama:private-embed",
+      dimension: 8,
+    }]]);
+  });
+
+  it("returns closed parseable errors for replay-adoption usage and invalid/private configs", async () => {
+    const usageDir = await agentDir({
+      memory: {
+        mode: "bujo",
+        path: join(await tempDir(), "usage-private-root"),
+        writeMode: "capture",
+        embeddings: { provider: "ollama", model: "private-embed", dim: 8 },
+        llm: { provider: "ollama", model: "private-capture" },
+      },
+    });
+    const privateArgument = "private-intent-id-sentinel";
+    const usage = await captureCli(() => withCwd(usageDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "adopt-replay", privateArgument, "--json"]))));
+    expectClosedReplayAdoptionFailure(usage, "replay_adoption_usage", [
+      usageDir,
+      privateArgument,
+      "private-embed",
+      "private-capture",
+    ]);
+    expect(usage.code).toBe(2);
+
+    const privateFlag = "--private-payload-flag-sentinel";
+    const parseFailure = await captureCli(() => withCwd(usageDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "adopt-replay", privateFlag, "--json"]))));
+    expectClosedReplayAdoptionFailure(parseFailure, "replay_adoption_usage", [
+      usageDir,
+      privateFlag,
+      "private-embed",
+      "private-capture",
+    ]);
+    expect(parseFailure.code).toBe(2);
+
+    const adoption = vi.spyOn(bujoMemory, "adoptLegacyReplayProjection");
+    try {
+      for (const foreignFlags of [
+        ["--dry-run"],
+        ["--force"],
+        ["--foreground"],
+        ["--include-memory"],
+        ["--all"],
+        ["--model", "private-model-flag-value"],
+        ["--host", "0.0.0.0"],
+        ["--port", "4599"],
+        ["--strict"],
+        ["--limit", "1"],
+      ]) {
+        const rejected = await captureCli(() => withCwd(usageDir, () => withCleanMonoAgentEnv(() =>
+          runCli(["memory", "adopt-replay", ...foreignFlags, "--json"]))));
+        expectClosedReplayAdoptionFailure(rejected, "replay_adoption_usage", [
+          usageDir,
+          "private-model-flag-value",
+          "private-embed",
+          "private-capture",
+        ]);
+        expect(rejected.code).toBe(2);
+      }
+      expect(adoption).not.toHaveBeenCalled();
+    } finally {
+      adoption.mockRestore();
+    }
+
+    const humanUsage = await captureCli(() => withCwd(usageDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "adopt-replay", privateArgument]))));
+    expectClosedReplayAdoptionHumanFailure(humanUsage, "replay_adoption_usage", [
+      usageDir,
+      privateArgument,
+      "private-embed",
+      "private-capture",
+    ]);
+    expect(humanUsage.code).toBe(2);
+
+    const privateConfigRoot = join(await tempDir(), "private-config-path-sentinel");
+    await mkdir(privateConfigRoot, { recursive: true });
+    await writeFile(join(privateConfigRoot, "mono-agent.config.json"), "{ private-memory-payload-sentinel", "utf8");
+    const invalid = await captureCli(() => withCwd(privateConfigRoot, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "adopt-replay", "--json"]))));
+    expectClosedReplayAdoptionFailure(invalid, "replay_adoption_config_invalid", [
+      privateConfigRoot,
+      "private-memory-payload-sentinel",
+    ]);
+    const invalidHuman = await captureCli(() => withCwd(privateConfigRoot, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "adopt-replay"]))));
+    expectClosedReplayAdoptionHumanFailure(invalidHuman, "replay_adoption_config_invalid", [
+      privateConfigRoot,
+      "private-memory-payload-sentinel",
+    ]);
+  });
+
+  it("rejects non-BuJo replay adoption with a closed metadata-only contract", async () => {
+    for (const memory of [
+      undefined,
+      { mode: "lite", path: join(await tempDir(), "private-lite-memory"), writeMode: "append-host-summary" },
+      {
+        mode: "journal",
+        path: join(await tempDir(), "private-journal-memory"),
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "private-test-embed", dim: 8 },
+      },
+      {
+        backend: "supermemory",
+        mode: "bujo",
+        writeMode: "capture",
+        supermemory: { baseUrl: "https://memory.invalid", container: "private-container" },
+      },
+    ]) {
+      const dir = await agentDir({ memory });
+      const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "adopt-replay", "--json"]))));
+      expectClosedReplayAdoptionFailure(result, "replay_adoption_requires_bujo", [
+        dir,
+        "private-lite-memory",
+        "private-journal-memory",
+        "private-test-embed",
+        "private-container",
+      ]);
+
+      const human = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "adopt-replay"]))));
+      expectClosedReplayAdoptionHumanFailure(human, "replay_adoption_requires_bujo", [
+        dir,
+        "private-lite-memory",
+        "private-journal-memory",
+        "private-test-embed",
+        "private-container",
+      ]);
+    }
+  });
+
+  it("redacts live-agent metadata from replay-adoption errors", async () => {
+    const privateRoot = join(await tempDir(), "live-private-memory");
+    const dir = await agentDir({
+      memory: {
+        mode: "bujo",
+        path: privateRoot,
+        writeMode: "capture",
+        embeddings: { provider: "ollama", model: "test-embed", dim: 8 },
+        llm: { provider: "ollama", model: "test-capture" },
+      },
+      traceability: { registryDir: ".trace-registry" },
+    });
+    const privateSourceId = "private-adoption-writer-id";
+    await writeLiveTraceManifest(join(dir, ".trace-registry"), dir, privateSourceId);
+    const adoption = vi.spyOn(bujoMemory, "adoptLegacyReplayProjection");
+    let result: Awaited<ReturnType<typeof captureCli>>;
+    try {
+      result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "adopt-replay", "--json"]))));
+    } finally {
+      adoption.mockRestore();
+    }
+    expectClosedReplayAdoptionFailure(result, "replay_adoption_agent_running", [
+      dir,
+      privateRoot,
+      privateSourceId,
+      String(process.pid),
+      "test-embed",
+      "test-capture",
+    ]);
+    const humanResult = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "adopt-replay"]))));
+    expectClosedReplayAdoptionHumanFailure(humanResult, "replay_adoption_agent_running", [
+      dir,
+      privateRoot,
+      privateSourceId,
+      String(process.pid),
+      "test-embed",
+      "test-capture",
+    ]);
+    expect(adoption).not.toHaveBeenCalled();
+  });
+
+  it("never exposes replay-adoption package failures or malformed private results", async () => {
+    const privateRoot = join(await tempDir(), "private-adoption-root");
+    const dir = await agentDir({
+      memory: {
+        mode: "bujo",
+        path: privateRoot,
+        writeMode: "capture",
+        embeddings: { provider: "ollama", model: "private-embed", dim: 8 },
+        llm: { provider: "ollama", model: "private-capture" },
+      },
+    });
+    const sentinels = [
+      privateRoot,
+      "private-memory-payload-sentinel",
+      "private-memory-id-sentinel",
+      "private-intent-id-sentinel",
+      "private-decision-id-sentinel",
+      "private-db-marker-detail-sentinel",
+      "private-embed",
+      "private-capture",
+    ];
+    const privateFailure = sentinels.join(" | ");
+    const adoption = vi.spyOn(bujoMemory, "adoptLegacyReplayProjection");
+    try {
+      adoption.mockImplementationOnce(() => {
+        throw new Error(privateFailure);
+      });
+      const jsonFailure = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "adopt-replay", "--json"]))));
+      expectClosedReplayAdoptionFailure(jsonFailure, "replay_adoption_failed", sentinels);
+
+      adoption.mockImplementationOnce(() => {
+        throw new Error(privateFailure);
+      });
+      const humanFailure = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "adopt-replay"]))));
+      expect(humanFailure.code).toBe(1);
+      expect(humanFailure.stdout).toBe("");
+      expect(humanFailure.stderr).toContain("[replay_adoption_failed]");
+      for (const sentinel of sentinels) expect(humanFailure.stderr).not.toContain(sentinel);
+
+      adoption.mockReturnValueOnce({
+        backend: "bujo",
+        mode: "bujo",
+        status: "adopted",
+        counts: { terminals: 1, supersedes: 1, threads: 1 },
+        authorityDigest: privateFailure,
+        rebuildRequired: true,
+      } as ReturnType<typeof bujoMemory.adoptLegacyReplayProjection>);
+      const malformed = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "adopt-replay", "--json"]))));
+      expectClosedReplayAdoptionFailure(malformed, "replay_adoption_failed", sentinels);
+    } finally {
+      adoption.mockRestore();
+    }
+  });
+
   it("proxies Supermemory search and marks local stats unavailable", async () => {
     const server = await supermemoryServer();
     try {
@@ -837,6 +1129,39 @@ async function captureCli(run: () => Promise<number>): Promise<{ readonly code: 
   } finally {
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
+  }
+}
+
+function expectClosedReplayAdoptionFailure(
+  result: { readonly code: number; readonly stdout: string; readonly stderr: string },
+  code: string,
+  sentinels: readonly string[],
+): void {
+  expect(result.code).toBeGreaterThan(0);
+  expect(result.stderr).toBe("");
+  expect(JSON.parse(result.stdout)).toEqual({
+    schemaVersion: 1,
+    operation: "adopt-replay",
+    status: "failed",
+    code,
+    message: expect.any(String),
+  });
+  expect(JSON.parse(result.stdout).message).not.toBe("");
+  for (const sentinel of sentinels) {
+    expect(result.stdout).not.toContain(sentinel);
+  }
+}
+
+function expectClosedReplayAdoptionHumanFailure(
+  result: { readonly code: number; readonly stdout: string; readonly stderr: string },
+  code: string,
+  sentinels: readonly string[],
+): void {
+  expect(result.code).toBeGreaterThan(0);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toContain(`[${code}]`);
+  for (const sentinel of sentinels) {
+    expect(result.stderr).not.toContain(sentinel);
   }
 }
 

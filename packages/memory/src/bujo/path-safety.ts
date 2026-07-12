@@ -37,6 +37,11 @@ export interface CanonicalFileSnapshot {
   readonly identity: CanonicalFileIdentity;
 }
 
+/** Exact compare-and-swap expectation for a canonical name that did not exist. */
+export const CANONICAL_FILE_MISSING: unique symbol = Symbol("canonical-file-missing");
+
+export type CanonicalFileExpectedState = CanonicalFileIdentity | typeof CANONICAL_FILE_MISSING;
+
 export interface CanonicalFileAppendOptions {
   /** Compare the complete file snapshot observed by an earlier safe read. */
   readonly expectedIdentity?: CanonicalFileIdentity;
@@ -350,12 +355,16 @@ export function writeCanonicalFileAtomic(
   root: string,
   relativePath: string,
   content: string,
-  expectedIdentity?: CanonicalFileIdentity,
+  expectedIdentity?: CanonicalFileExpectedState,
 ): void {
   const location = canonicalLocation(root, relativePath, true, true);
   const existing = optionalLstat(location.path);
   if (existing !== undefined) assertSafeRegularFile(existing, relativePath);
-  if (expectedIdentity !== undefined) {
+  if (expectedIdentity === CANONICAL_FILE_MISSING) {
+    if (existing !== undefined) {
+      throw new Error(`memory-bujo: canonical file "${relativePath}" appeared before rewrite.`);
+    }
+  } else if (expectedIdentity !== undefined) {
     if (existing === undefined || !sameIdentity(existing, expectedIdentity)) {
       throw new Error(`memory-bujo: canonical file "${relativePath}" was replaced before rewrite.`);
     }

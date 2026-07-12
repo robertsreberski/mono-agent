@@ -72,7 +72,11 @@ async function captureTurnUnlocked(
   });
   deps.abortSignal?.throwIfAborted();
   if (intentHandle === undefined) throw new Error("memory-capture: reconcile completed without a durable intent.");
-  const canonical = replayCaptureIntent(deps.root, intentHandle, deps.db);
+  const canonical = replayCaptureIntent(deps.root, intentHandle, deps.db, {
+    ...(deps.canonicalGraphRepairGuard === undefined
+      ? {}
+      : { canonicalGraphRepairGuard: deps.canonicalGraphRepairGuard }),
+  });
   const actions = preparedActions.map(reconcileActionForIntent);
 
   return {

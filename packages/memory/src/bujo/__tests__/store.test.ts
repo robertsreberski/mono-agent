@@ -859,6 +859,17 @@ describe("BujoMemoryStore async capture queue", () => {
   it("keeps raw host audit and recall off the blocked curated-capture path", async () => {
     const root = tmpRoot();
     const embeddings = fakeEmbeddings(64);
+    const seedAt = new Date("2026-06-15T12:00:00.000Z");
+    appendBullet(root, {
+      id: "FAST-RECALL",
+      type: "note",
+      status: "open",
+      text: "The stable recall sentinel remains available",
+      salience: 0.8,
+      isInsight: false,
+      createdAt: seedAt.toISOString(),
+      refs: [],
+    }, seedAt);
     const seedDb = openMemoryDb({ path: join(root, "memory.db"), embeddings, dim: 64 });
     await seedDb.upsert({
       id: "FAST-RECALL",
@@ -867,10 +878,10 @@ describe("BujoMemoryStore async capture queue", () => {
       text: "The stable recall sentinel remains available",
       salience: 0.8,
       isInsight: false,
-      createdAt: new Date("2026-06-15T12:00:00.000Z").toISOString(),
+      createdAt: seedAt.toISOString(),
       accessCount: 0,
       tags: [],
-      source: {},
+      source: { file: relative(root, dailyFilePath(root, seedAt)) },
     });
     seedDb.close();
     let enterCapture!: () => void;

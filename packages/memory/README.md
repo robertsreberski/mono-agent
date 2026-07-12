@@ -6,7 +6,7 @@ Category: `context`
 
 ## Responsibility
 
-Local memory building blocks published as one package with explicit subpaths. `@mono-agent/memory/store` owns the SQLite substrate, schema, FTS5/sqlite-vec hybrid recall, and rebuildable record database. `@mono-agent/memory/search` owns embedding providers, circuit-breaking, chunk gathering, and the in-memory cosine vector index. `@mono-agent/memory/bujo` owns the Bullet-Journal memory engine: markdown grammar, canonical daily files, tier-aware capture/recall, entity graph projection, reflection, migration, and the `memory-bujo` maintenance CLI.
+Local memory building blocks published as one package with explicit subpaths. `@mono-agent/memory/store` owns the SQLite substrate, schema, FTS5/sqlite-vec hybrid recall, and rebuildable record database. `@mono-agent/memory/search` owns embedding providers, circuit-breaking, chunk gathering, and the in-memory cosine vector index. `@mono-agent/memory/bujo` owns the Bullet-Journal memory engine: markdown grammar, canonical daily files, tier-aware capture/recall, entity graph and replay projections, reflection, migration, and the `memory-bujo` maintenance CLI.
 
 The shared `MemoryBlock`, `MemoryStore`, and `MemoryWriteResult` contracts live in `@mono-agent/agent-contracts`. The store subpath re-exports them for local-store consumers, but `@mono-agent/agent-contracts` is the source of truth.
 
@@ -86,6 +86,16 @@ mono-agent start
 mono-agent memory audit --strict --json
 ```
 
+For BuJo, the owner-only `memory.path/.replay-projection-v1.json` is the exact
+canonical authority for replay-owned thread edges, supersession lifecycle and
+edges, and migration-forget terminal timestamps. It contains ids, timestamps,
+weights, and content-free authority digests—not memory text. Strict health
+compares that projection exactly with SQLite, so plausible replay rows added
+directly to SQLite are still `canonical_mismatch`; a missing sidecar beside
+nonempty replay state is never adopted automatically. Lite and Journal do not
+consume this BuJo sidecar and reject replay-owned lifecycle or edges in their
+SQLite index.
+
 The strict audit includes live runtime telemetry. A deliberately stopped store
 therefore reports `runtime_missing` or `runtime_stale` instead of claiming a
 fully healthy running system; use `validate` for the stopped pre-start gate,
@@ -103,13 +113,51 @@ future store start. Resolve explicitly records operator abandonment without
 claiming capture succeeded, keeps permanent duplicate protection, and refuses
 recoverable retained semantic plans.
 
-This performs the first managed activation and builds and validates a side-by-side generation. A prior index is retained for `mono-agent memory rollback` only as a fresh immutable online-backup generation whose indexed payload exactly matches the current canonical source (Journal may retain its recoverable vector backlog). Its manifest commits the full WAL-visible logical state, including vectors, lifecycle, edges, hashes, graph, FTS, and metadata; same-source/provider rebuilds also compare every retained vector with the newly embedded candidate. The first supported daily-source mutation (or BuJo graph mutation) atomically retires that rollback advertisement before changing its source, so a rollback can disappear immediately after normal capture instead of becoming stale. SQLite writer fences cover source snapshotting and the final manifest rename; staged and final manifest bytes/identity are checked through durability confirmation. A source-ahead/stale index is never relabeled as safe; a divergent legacy `memory.db` remains byte-for-byte in place but is not advertised as rollback. The lower-level `memory-bujo rebuild|rollback <root> --tier <lite|journal|bujo>` commands are for already-managed roots; they deliberately refuse to infer tier identity or perform the first activation.
+This performs the first managed activation and builds and validates a side-by-side generation. BuJo rebuild fingerprints and preserves the exact replay sidecar as canonical source. A prior index is retained for `mono-agent memory rollback` only as a fresh immutable online-backup generation whose indexed payload exactly matches the current canonical source (Journal may retain its recoverable vector backlog). Its manifest commits the full WAL-visible logical state, including vectors, lifecycle, edges, hashes, graph, FTS, and metadata; same-source/provider rebuilds also compare every retained vector with the newly embedded candidate. The first supported daily-source mutation atomically retires any advertised rollback before changing its source; a BuJo graph/replay-only mutation retires only an advertised BuJo rollback because Lite and Journal do not fingerprint that source domain. A rollback can therefore disappear immediately after normal capture instead of becoming stale. SQLite writer fences cover source snapshotting and the final manifest rename; staged and final manifest bytes/identity are checked through durability confirmation. A source-ahead/stale index is never relabeled as safe; a divergent legacy `memory.db` remains byte-for-byte in place but is not advertised as rollback. The lower-level `memory-bujo rebuild|rollback <root> --tier <lite|journal|bujo>` commands are for already-managed roots; they deliberately refuse to infer tier identity or perform the first activation.
+
+One legacy case needs an explicit trust decision: a stopped built-in BuJo root,
+managed or still using the legacy unmanaged `memory.db`, may contain
+structurally valid replay state from before the sidecar existed. After reviewing
+the target root, an SSH-only operator can bind that exact metadata once, rebuild
+from the now-complete canonical source, and restart:
+
+```bash
+mono-agent stop
+mono-agent memory adopt-replay --json
+mono-agent memory rebuild --json
+mono-agent start
+mono-agent memory audit --strict --json
+```
+
+`adopt-replay` is a deliberate trust-on-first-use operation, not a repair or an
+automatic migration. It requires a stopped configured built-in BuJo store,
+an owner-only (`0600`) SQLite database/WAL family, and returns only closed
+aggregate metadata. Replay publication retires an advertised BuJo rollback;
+rollback generations from another tier are outside that source domain and are
+preserved.
+It may attest a bounded set of disjoint capture intents/receipts and at most one
+migration marker. Mutable pending capture work and a pending migration are
+mutually exclusive, but immutable completed capture receipts may coexist with a
+later pending migration. Existing replay rows must be an exact subset of that
+durable authority. Adoption may leave durable evidence in place for crash
+safety, so run the required `memory rebuild` immediately. Rebuild completes
+mutable attested work without another chat-model or embeddings call and removes
+retireable markers; a retained completed receipt remains until its intake item
+resolves. Building the new semantic generation then uses the configured
+embeddings provider in the normal bounded rebuild path.
+Do not start the service between adoption and rebuild. Do not adopt a fresh or
+empty root; ordinary rebuild initializes an empty projection safely.
+
+All adoption failures use stable codes and fixed remediation text. `--json`
+prints one parseable metadata-only failure object on stdout; human mode prints
+the same code/message on stderr. Neither form includes paths, memory or model
+text, record/intent/decision ids, database details, or underlying error text.
 
 ## Public API
 
 - `@mono-agent/memory/store`: `openMemoryDb`, `MemoryDb`, `DEFAULT_VEC_DIM`, `MEMORY_TYPES`, `MEMORY_STATUSES`, local record/entity/recall/stats/audit types, and re-exported `MemoryBlock`, `MemoryLoadOptions`, `MemoryStore`, `MemoryWriteResult`
 - `@mono-agent/memory/search`: `createEmbeddingProvider`, `createCircuitBreakerEmbeddingProvider`, `createVectorMemoryIndex`, `gatherMemoryChunks`, embedding/search provider classes and types
-- `@mono-agent/memory/bujo`: `createBujoMemoryStore`, `BujoMemoryStore`, `composeRecallBlock`, `auditBujoMemoryHealth` and its closed schema/status/issue/count types, `safeRebuildMemoryIndex`, `rollbackMemoryIndex`, `resolveActiveMemoryDbPath`, managed-generation helpers, privacy-safe runtime-snapshot reader/types, strict completed-turn capture, content-free intake `inspect`/`audit` helpers, stopped-store `retry`/explicit `resolve` helpers, markdown grammar helpers, batched capture/reconcile/reflection/migration helpers, `createOllamaLlm`, and related BuJo/LLM types
+- `@mono-agent/memory/bujo`: `createBujoMemoryStore`, `BujoMemoryStore`, `composeRecallBlock`, `auditBujoMemoryHealth` and its closed schema/status/issue/count types, `safeRebuildMemoryIndex`, `rollbackMemoryIndex`, `adoptLegacyReplayProjection`, `resolveActiveMemoryDbPath`, managed-generation helpers, privacy-safe runtime-snapshot reader/types, strict completed-turn capture, content-free intake `inspect`/`audit` helpers, stopped-store `retry`/explicit `resolve` helpers, markdown grammar helpers, batched capture/reconcile/reflection/migration helpers, `createOllamaLlm`, and related BuJo/LLM types
 - CLI: `memory-bujo`
 
 ## Dependency Boundary

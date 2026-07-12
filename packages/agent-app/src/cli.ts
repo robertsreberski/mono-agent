@@ -900,13 +900,15 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
   },
   {
     signature:
-      "mono-agent memory [stats|today|show <date>|search <query>|top|audit|inspect [id]|retry [id]|resolve <id> <reason>|rebuild|rollback]\n" +
+      "mono-agent memory [stats|today|show <date>|search <query>|top|audit|inspect [id]|retry [id]|resolve <id> <reason>|rebuild|rollback|adopt-replay]\n" +
       "                  [--limit <n>] [--strict] [--json] [--config <path>] [--env-file <path>]",
     lines: [
       "Preview the configured memory store from an agent folder. Reads the",
       "memory block from mono-agent.config.json, not the standalone memory-bujo",
       "env workflow. Human-first output by default; audit --strict --json is a",
       "metadata-only health gate. Intake inspect/retry/resolve never print payload content.",
+      "adopt-replay is an explicit stopped-agent, SSH-safe BuJo trust-on-first-use",
+      "operation. It returns metadata only and requires rebuild before restart.",
     ],
   },
 ];
@@ -984,8 +986,21 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   try {
     args = parseCliArgs(argv);
   } catch (error) {
+    if (argv[0] === "memory" && argv.includes("adopt-replay")) {
+      const { writeReplayAdoptionCliFailure } = await import("./memory-command.js");
+      writeReplayAdoptionCliFailure(argv.includes("--json"), "replay_adoption_usage");
+      return 2;
+    }
     process.stderr.write(ui.errorLine(error instanceof Error ? error.message : String(error)));
     process.stdout.write(`\n${renderHelp()}`);
+    return 2;
+  }
+
+  if (args.command === "memory"
+    && args.positionals[0] === "adopt-replay"
+    && hasUnsupportedReplayAdoptionFlag(argv)) {
+    const { writeReplayAdoptionCliFailure } = await import("./memory-command.js");
+    writeReplayAdoptionCliFailure(args.json === true, "replay_adoption_usage");
     return 2;
   }
 
@@ -1110,6 +1125,25 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       });
     }
   }
+}
+
+/**
+ * `adopt-replay` is a stopped-store trust boundary, so command-global flags
+ * must never be silently ignored. In particular, `--dry-run` cannot be parsed
+ * successfully and then execute the mutation. Validate the raw invocation so
+ * future parser flags also fail closed unless they are explicitly admitted.
+ */
+function hasUnsupportedReplayAdoptionFlag(argv: readonly string[]): boolean {
+  for (let index = 1; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (token === "--config" || token === "--env-file") {
+      index += 1;
+      continue;
+    }
+    if (token === "--json") continue;
+    if (token?.startsWith("-") === true) return true;
+  }
+  return false;
 }
 
 export interface SandboxCommandDependencies {

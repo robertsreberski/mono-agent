@@ -13,16 +13,36 @@ import { parseDailyFile } from "./grammar.js";
 import {
   appendGraphBatch,
   assertCanonicalGraphBatch,
+  replaceDbCanonicalGraphProjectionWithParity,
+  type CanonicalGraphRepairGuard,
   type GraphBatchInput,
   type GraphBatchResult,
 } from "./graph.js";
 import {
   assertCanonicalDailySourcePath,
   listCanonicalFileNames,
+  listCanonicalRootFileNames,
   readCanonicalFileSnapshot,
   removeCanonicalFile,
   writeCanonicalFileAtomic,
 } from "./path-safety.js";
+import { withManagedRollbackRetirement } from "./generations.js";
+import {
+  assertReplayDbStateSubsetOfProjection,
+  assertProjectionContainsDelta,
+  assertReplayProjectionMatchesDb,
+  emptyReplayProjection,
+  mergeReplayProjectionDelta,
+  prepareReplayProjectionDelta,
+  publishPreparedReplayProjection,
+  readBujoCanonicalSourceFingerprint,
+  readReplayProjectionStrict,
+  replayProjectionAuthorityId,
+  replayProjectionDbSnapshot,
+  replayProjectionDbReplacement,
+  type ReplayProjectionDelta,
+  type ReplayProjectionV1,
+} from "./replay-projection.js";
 import type { Bullet } from "./types.js";
 
 const OUTBOX_DIR = ".capture-outbox";
@@ -45,6 +65,8 @@ export interface CaptureThreadEdge {
   readonly src: string;
   readonly dst: string;
   readonly weight: number;
+  /** Exact replay timestamp. New intents persist it; legacy intents may omit it. */
+  readonly createdAt?: string;
 }
 
 interface CaptureActionBase {
@@ -117,6 +139,22 @@ export interface CaptureIntentReplayResult extends GraphBatchResult {
 export interface CaptureIntentReplayOptions {
   /** Apply/verify canonical and DB outcomes but leave the durable intent pending. */
   readonly retainIntent?: boolean;
+  readonly canonicalGraphRepairGuard?: CanonicalGraphRepairGuard;
+}
+
+/** Provider-free, content-hidden authority preview for explicit stopped-store adoption. */
+export interface PendingCaptureReplayAdoptionPreview {
+  readonly projection: ReplayProjectionV1;
+  /** Replay receipt deltas already committed before `state: complete`. */
+  readonly mustPresentProjection: ReplayProjectionV1;
+  readonly ownedThreadSources: readonly string[];
+  readonly ownedLifecycleSources: readonly string[];
+  readonly legacyThreadTimestampKeys: readonly string[];
+  readonly pendingMemoryIds: readonly string[];
+  readonly graphEntityIds: readonly string[];
+  readonly graphRelationKeys: readonly string[];
+  readonly graphAssociationKeys: readonly string[];
+  readonly commitment: string;
 }
 
 /** Content-free physical inventory for strict health. */
@@ -147,6 +185,8 @@ export function writeCaptureIntent(
   options: CaptureIntentWriteOptions = {},
 ): CaptureIntentHandle {
   if (actions.length > MAX_ACTIONS) throw new Error("memory-capture: prepared action batch exceeds the outbox bound.");
+  for (const action of actions) validateAction(action);
+  assertCanonicalGraphBatch(graph);
   const files = listCanonicalFileNames(root, OUTBOX_DIR, {
     allowMissing: true,
     include: (name) => INTENT_FILE_RE.test(name),
@@ -166,7 +206,7 @@ export function writeCaptureIntent(
     createdAt,
     publishedAt: new Date().toISOString(),
     ...(options.retentionKey === undefined ? {} : { retentionKey: options.retentionKey }),
-    actions,
+    actions: materializeNewIntentThreads(root, actions),
     graph: {
       entities: [...(graph.entities ?? [])],
       relations: [...(graph.relations ?? [])],
@@ -211,6 +251,10 @@ export function removeRetainedCaptureIntent(root: string, retentionKey: string):
   if (intent.retentionKey !== retentionKey) {
     throw new Error("memory-capture: retained intent ownership changed before cleanup.");
   }
+  assertProjectionContainsDelta(
+    readReplayProjectionStrict(root).projection,
+    captureReplayDelta(root, intent),
+  );
   removeCanonicalFile(root, handle.file, snapshot.identity);
   return true;
 }
@@ -226,11 +270,15 @@ export function replayCaptureIntent(
   const files = captureIntentFiles(root);
   if (files.length > MAX_INTENTS) throw new Error("memory-capture: capture outbox exceeds its bounded intent count.");
   const replays = files.map((name) => loadReplay(root, `${OUTBOX_DIR}/${name}`));
+  assertGraphRepairGuardForReplay(db, replays, options);
   assertDistinctQueuedMemoryIds(replays);
-  const replay = replays.find((candidate) => candidate.file === handle.file);
-  if (replay === undefined) throw new Error(`memory-capture: pending intent "${handle.file}" disappeared.`);
-  const plan = preflightReplay(root, replay, db);
-  return applyReplay(root, plan, db, options);
+  const plans = replays.map((replay) => preflightReplay(root, replay, db));
+  const selectedIndex = plans.findIndex((candidate) => candidate.file === handle.file);
+  if (selectedIndex < 0) throw new Error(`memory-capture: pending intent "${handle.file}" disappeared.`);
+  const expectedReplay = preflightReplayDeltas(root, plans);
+  assertCompleteReplayReceipts(root, plans);
+  assertMissingProjectionReplayIsAuthorized(root, db, expectedReplay, legacyThreadTimestampKeys(plans), plans);
+  return applyReplayPlans(root, plans, db, options)[selectedIndex]!;
 }
 
 /** Replay every pending capture before accepting new writes or taking a rebuild snapshot. */
@@ -243,12 +291,16 @@ export function replayCaptureOutbox(
   const files = captureIntentFiles(root);
   if (files.length > MAX_INTENTS) throw new Error("memory-capture: capture outbox exceeds its bounded intent count.");
   const replays = files.map((name) => loadReplay(root, `${OUTBOX_DIR}/${name}`));
+  assertGraphRepairGuardForReplay(db, replays, options);
   assertDistinctQueuedMemoryIds(replays);
   // Validate every queued action and every vector against the current DB before
   // the first Markdown or graph append. A bad later intent cannot leave an
   // earlier intent half-applied merely because filenames sort first.
   const plans = replays.map((replay) => preflightReplay(root, replay, db));
-  return plans.map((plan) => applyReplay(root, plan, db, options));
+  const expectedReplay = preflightReplayDeltas(root, plans);
+  assertCompleteReplayReceipts(root, plans);
+  assertMissingProjectionReplayIsAuthorized(root, db, expectedReplay, legacyThreadTimestampKeys(plans), plans);
+  return applyReplayPlans(root, plans, db, options);
 }
 
 function assertReplayMode(db: MemoryDb | undefined, options: CaptureIntentReplayOptions): void {
@@ -257,6 +309,35 @@ function assertReplayMode(db: MemoryDb | undefined, options: CaptureIntentReplay
       "memory-capture: replay without an active index may only stage canonical source while retaining the intent.",
     );
   }
+}
+
+function assertGraphRepairGuardForReplay(
+  db: MemoryDb | undefined,
+  replays: readonly LoadedReplay[],
+  options: CaptureIntentReplayOptions,
+): void {
+  if (db !== undefined && replays.some((replay) => replay.intent.state === "pending")
+    && options.canonicalGraphRepairGuard === undefined) {
+    throw new Error("memory-capture: DB replay requires a canonical graph repair parity guard.");
+  }
+}
+
+function assertMissingProjectionReplayIsAuthorized(
+  root: string,
+  db: MemoryDb | undefined,
+  expectedReplay: ReplayProjectionV1,
+  legacyThreadKeys: ReadonlySet<string>,
+  plans: readonly ReplayPlan[],
+): void {
+  if (db === undefined || readReplayProjectionStrict(root).state.kind === "present") return;
+  if (plans.some((plan) => plan.intent.state === "complete")) {
+    throw new Error(
+      "memory-capture: completed intent replay authority is missing; explicitly adopt replay before recovery.",
+    );
+  }
+  assertReplayDbStateSubsetOfProjection(db, expectedReplay, {
+    legacyThreadTimestampKeys: legacyThreadKeys,
+  });
 }
 
 /** Explicit rollback cannot carry provider-bound pending vectors across identities. */
@@ -274,6 +355,96 @@ export function hasPendingCaptureIntent(root: string): boolean {
   if (files.length > MAX_INTENTS) throw new Error("memory-capture: capture outbox exceeds its bounded intent count.");
   for (const name of files) loadReplay(root, `${OUTBOX_DIR}/${name}`);
   return files.length > 0;
+}
+
+/** Bounded probe for the capture protocol's still-mutable action phase. */
+export function hasMutablePendingCaptureIntent(root: string): boolean {
+  const files = captureIntentFiles(root);
+  if (files.length > MAX_INTENTS) throw new Error("memory-capture: capture outbox exceeds its bounded intent count.");
+  return files.some((name) => loadReplay(root, `${OUTBOX_DIR}/${name}`).intent.state === "pending");
+}
+
+/**
+ * Validate every durable capture intent against its exact canonical/SQLite
+ * before-or-after phase without writing source, sidecar, graph, or DB state.
+ */
+export function previewPendingCaptureReplayAdoption(
+  root: string,
+  db: MemoryDb,
+): PendingCaptureReplayAdoptionPreview | undefined {
+  const files = captureIntentFiles(root);
+  if (files.length === 0) return undefined;
+  if (files.length > MAX_INTENTS) throw new Error("memory-capture: capture outbox exceeds its bounded intent count.");
+  const replays = files.map((name) => loadReplay(root, `${OUTBOX_DIR}/${name}`));
+  assertDistinctQueuedMemoryIds(replays);
+  const plans = replays.map((replay) => preflightReplay(root, replay, db));
+  let projection = emptyReplayProjection();
+  for (const plan of plans) projection = mergeReplayProjectionDelta(projection, plan.replayDelta);
+  let mustPresentProjection = emptyReplayProjection();
+  for (const plan of plans) {
+    if (plan.intent.state === "complete") {
+      mustPresentProjection = mergeReplayProjectionDelta(mustPresentProjection, plan.replayDelta);
+    }
+  }
+  const ownedThreadSources = uniqueSorted(plans.flatMap((plan) => plan.intent.actions.flatMap((action) => (
+    action.kind === "add" ? [action.id] : []
+  ))));
+  const ownedLifecycleSources = uniqueSorted(plans.flatMap((plan) => plan.intent.actions.flatMap((action) => (
+    action.kind === "supersede" ? [action.oldId] : []
+  ))));
+  const legacyThreadKeys = uniqueSorted([...legacyThreadTimestampKeys(plans)]);
+  const pendingPlans = plans.filter((plan) => plan.intent.state === "pending");
+  const pendingMemoryIds = uniqueSorted(pendingPlans.flatMap((plan) => (
+    plan.intent.actions.flatMap((action) => touchedMemoryIds(action))
+  )));
+  const graphEntityIds = uniqueSorted(pendingPlans.flatMap((plan) => plan.intent.graph.entities.map((entity) => entity.id)));
+  const graphRelationKeys = uniqueSorted(pendingPlans.flatMap((plan) => plan.intent.graph.relations.map((relation) => (
+    `${relation.src}\0${relation.dst}\0${relation.relation}`
+  ))));
+  const graphAssociationKeys = uniqueSorted(pendingPlans.flatMap((plan) => plan.intent.graph.associations.map((association) => (
+    `${association.memoryId}\0${association.entityId}`
+  ))));
+  const commitment = replayProjectionAuthorityId({
+    schemaVersion: 1,
+    kind: "pending-capture-adoption-preview",
+    files: replays.map((replay) => ({
+      file: replay.file,
+      sha256: createHash("sha256").update(replay.snapshot.content).digest("hex"),
+      identity: replay.snapshot.identity,
+    })),
+    projection,
+    mustPresentProjection,
+    ownedThreadSources,
+    ownedLifecycleSources,
+    legacyThreadTimestampKeys: legacyThreadKeys,
+    pendingMemoryIds,
+    graphEntityIds,
+    graphRelationKeys,
+    graphAssociationKeys,
+  });
+  return {
+    projection,
+    mustPresentProjection,
+    ownedThreadSources,
+    ownedLifecycleSources,
+    legacyThreadTimestampKeys: legacyThreadKeys,
+    pendingMemoryIds,
+    graphEntityIds,
+    graphRelationKeys,
+    graphAssociationKeys,
+    commitment,
+  };
+}
+
+export function assertPendingCaptureReplayAdoptionPreview(
+  root: string,
+  db: MemoryDb,
+  expectedCommitment: string,
+): void {
+  const current = previewPendingCaptureReplayAdoption(root, db);
+  if (current === undefined || current.commitment !== expectedCommitment) {
+    throw new Error("memory-capture: durable adoption preview changed before replay authority publication.");
+  }
 }
 
 /**
@@ -350,11 +521,19 @@ interface LoadedReplay {
 interface ReplayPlan extends LoadedReplay {
   readonly writes: readonly ReplayWrite[];
   readonly appliedMemoryIds: ReadonlySet<string>;
+  readonly legacySalienceRepairs: readonly LegacySalienceRepair[];
+  readonly replayDelta: ReplayProjectionDelta;
 }
 
 interface ReplayWrite {
   readonly action: Exclude<CaptureIntentAction, { readonly kind: "noop" }>;
   readonly record: MemoryRecord;
+}
+
+interface LegacySalienceRepair {
+  readonly id: string;
+  readonly expectedCurrent: number;
+  readonly canonical: number;
 }
 
 function captureIntentFiles(root: string): string[] {
@@ -373,8 +552,20 @@ function loadReplay(root: string, file: string): LoadedReplay {
 
 function preflightReplay(root: string, replay: LoadedReplay, db: MemoryDb | undefined): ReplayPlan {
   const { intent } = replay;
+  const replayDelta = captureReplayDelta(root, intent, db);
+
+  // `complete` is a durable receipt written only after canonical, replay, DB,
+  // and the exact graph repair all committed. It must never replay its stale
+  // mutable action/graph payload: later captures are allowed to evolve the
+  // same memory or entity while the retained receipt remains on disk.
   if (intent.state === "complete") {
-    return { ...replay, writes: [], appliedMemoryIds: new Set<string>() };
+    return {
+      ...replay,
+      writes: [],
+      appliedMemoryIds: new Set(),
+      legacySalienceRepairs: [],
+      replayDelta,
+    };
   }
 
   const appliedMemoryIds = new Set<string>();
@@ -385,9 +576,10 @@ function preflightReplay(root: string, replay: LoadedReplay, db: MemoryDb | unde
     appliedMemoryIds.add(memoryIdFor(action));
   }
 
+  const legacySalienceRepairs = new Map<string, LegacySalienceRepair>();
   const writes = db === undefined
     ? intent.actions.flatMap((action) => action.kind === "noop" ? [] : [{ action, record: action.record }])
-    : intent.actions.flatMap((action) => preflightDbAction(db, action));
+    : intent.actions.flatMap((action) => preflightDbAction(root, db, action, legacySalienceRepairs));
   if (db !== undefined) {
     db.assertPreparedUpserts(
       writes.map((write) => write.record),
@@ -395,7 +587,47 @@ function preflightReplay(root: string, replay: LoadedReplay, db: MemoryDb | unde
     );
   }
 
-  return { ...replay, writes, appliedMemoryIds };
+  return {
+    ...replay,
+    writes,
+    appliedMemoryIds,
+    legacySalienceRepairs: [...legacySalienceRepairs.values()],
+    replayDelta,
+  };
+}
+
+/** Validate the whole queue's replay authority before the first source write. */
+function preflightReplayDeltas(root: string, plans: readonly ReplayPlan[]): ReplayProjectionV1 {
+  let projection = readReplayProjectionStrict(root).projection;
+  for (const plan of plans) {
+    projection = mergeReplayProjectionDelta(projection, plan.replayDelta);
+  }
+  return projection;
+}
+
+function assertCompleteReplayReceipts(root: string, plans: readonly ReplayPlan[]): void {
+  const complete = plans.filter((plan) => plan.intent.state === "complete");
+  if (complete.length === 0) return;
+  const replay = readReplayProjectionStrict(root);
+  if (replay.state.kind !== "present") {
+    throw new Error(
+      "memory-capture: completed intent replay authority is missing; explicitly adopt replay before recovery.",
+    );
+  }
+  for (const plan of complete) assertProjectionContainsDelta(replay.projection, plan.replayDelta);
+}
+
+function legacyThreadTimestampKeys(plans: readonly ReplayPlan[]): ReadonlySet<string> {
+  return new Set(plans.flatMap((plan) => plan.intent.actions.flatMap((action) => (
+    action.kind === "add"
+      ? action.threads.filter((edge) => edge.createdAt === undefined)
+        .map((edge) => `${edge.src}\0${edge.dst}`)
+      : []
+  ))));
+}
+
+function uniqueSorted(values: readonly string[]): string[] {
+  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
 
 function applyReplay(
@@ -403,21 +635,56 @@ function applyReplay(
   plan: ReplayPlan,
   db: MemoryDb | undefined,
   options: CaptureIntentReplayOptions,
+  deferGraphAndRetirement = false,
 ): CaptureIntentReplayResult {
-  const { file, snapshot, intent, writes, appliedMemoryIds } = plan;
+  const { intent, writes, appliedMemoryIds, legacySalienceRepairs, replayDelta } = plan;
   if (intent.state === "complete") {
-    if (intent.retentionKey !== undefined) return emptyReplay();
-    removeCanonicalFile(root, file, snapshot.identity);
+    const replay = readReplayProjectionStrict(root);
+    if (replay.state.kind !== "present") {
+      throw new Error("memory-capture: completed intent replay authority disappeared during receipt verification.");
+    }
+    assertProjectionContainsDelta(replay.projection, replayDelta);
+    if (db !== undefined && !deferGraphAndRetirement) {
+      assertOrNormalizeCompleteReceiptReplay(db, replay.projection, [plan]);
+    }
+    if (deferGraphAndRetirement || options.retainIntent === true || intent.retentionKey !== undefined) {
+      return emptyReplay();
+    }
+    removeReplayIntent(root, plan);
     return emptyReplay();
   }
-
+  // This fresh publication CAS is intentionally prepared at apply time. Batch
+  // preflight folded every delta purely, but intent N must observe the sidecar
+  // identity written by intent N-1 rather than retaining a shared stale CAS.
+  const preparedReplay = prepareReplayProjectionDelta(root, replayDelta);
   for (const action of intent.actions) {
     if (applyCanonicalAction(root, action) === "conflict") {
       throw new Error(`memory-capture: pending intent ${intent.id} conflicts with canonical action ${action.kind}.`);
     }
   }
 
+  // Canonical graph evidence is part of the same source transaction and must
+  // be durable before the sidecar advertises replay state that may reference
+  // these new memories.
+  const canonical = appendGraphBatch(root, {
+    entities: intent.graph.entities,
+    relations: intent.graph.relations,
+    associations: intent.graph.associations.filter((association) => appliedMemoryIds.has(association.memoryId)),
+  });
+  const publishedReplay = preparedReplay.changed
+    ? withManagedRollbackRetirement(
+        root,
+        "replay",
+        () => publishPreparedReplayProjection(root, preparedReplay),
+      )
+    : publishPreparedReplayProjection(root, preparedReplay);
+  assertProjectionContainsDelta(publishedReplay.projection, replayDelta);
+  const committedSourceFingerprint = readBujoCanonicalSourceFingerprint(root);
+
   if (db !== undefined) {
+    for (const repair of legacySalienceRepairs) {
+      db.repairLegacySalience(repair.id, repair.expectedCurrent, repair.canonical);
+    }
     if (writes.length > 0) {
       db.commitPreparedUpserts(
         writes.map((write) => write.record),
@@ -426,57 +693,179 @@ function applyReplay(
     }
     for (const action of intent.actions) {
       if (action.kind === "supersede") db.markSuperseded(action.oldId, action.newId, action.at);
-      if (action.kind === "add") {
-        for (const edge of action.threads) db.addEdge(edge.src, edge.dst, "thread", edge.weight);
-      }
+    }
+    db.replaceReplayProjection(replayProjectionDbReplacement(publishedReplay.projection));
+    assertReplayProjectionMatchesDb(db, publishedReplay.projection);
+    // The exact DB projection is part of intent completion. Recomputing the
+    // whole deterministic projection also adds/removes legacy-name matches
+    // affected by this memory or entity change. Any failure leaves the intent
+    // pending so restart retries the idempotent canonical graph.
+    if (!deferGraphAndRetirement) {
+      replaceDbCanonicalGraphProjectionWithParity(root, db, options.canonicalGraphRepairGuard!);
+      assertDbReplayOutcome(db, intent.actions, canonical);
     }
   }
 
-  // Canonical memory and its rebuildable SQLite row now exist. Only then may
-  // graph evidence become canonical; a graph failure leaves this intent
-  // pending and replayable without an orphan association.
-  const canonical = appendGraphBatch(root, {
-    entities: intent.graph.entities,
-    relations: intent.graph.relations,
-    associations: intent.graph.associations.filter((association) => appliedMemoryIds.has(association.memoryId)),
-  });
-
-  if (db !== undefined) {
-    // The DB mirror is part of intent completion. Any failure leaves the
-    // pending file in place so restart retries the idempotent canonical graph.
-    for (const entity of canonical.entities) db.mirrorCanonicalEntity(entity);
-    for (const relation of canonical.relations) db.mirrorCanonicalRelation(relation);
-    for (const association of canonical.associations) db.mirrorCanonicalAssociation(association);
-    assertDbReplayOutcome(db, intent.actions, canonical);
+  if (readBujoCanonicalSourceFingerprint(root) !== committedSourceFingerprint) {
+    throw new Error("memory-capture: canonical source changed during replay projection commit.");
   }
 
-  if (options.retainIntent === true || intent.retentionKey !== undefined) {
+  if (deferGraphAndRetirement || db === undefined) {
     return { ...canonical, appliedMemoryIds: [...appliedMemoryIds] };
   }
+
+  const completed = markReplayIntentComplete(root, plan);
+  if (options.retainIntent !== true && intent.retentionKey === undefined) {
+    removeReplayIntent(root, completed);
+  }
+  return { ...canonical, appliedMemoryIds: [...appliedMemoryIds] };
+}
+
+function applyReplayPlans(
+  root: string,
+  plans: readonly ReplayPlan[],
+  db: MemoryDb | undefined,
+  options: CaptureIntentReplayOptions,
+): CaptureIntentReplayResult[] {
+  if (db === undefined || plans.length <= 1) {
+    return plans.map((plan) => applyReplay(root, plan, db, options));
+  }
+  // All plans were preflighted before the first mutation. Defer total graph
+  // repair and receipt retirement until every disjoint canonical/DB endpoint
+  // exists; an adopted later DB-after intent can otherwise make the first
+  // plan's exact base guard fail even though the batch is fully recoverable.
+  const results = plans.map((plan) => applyReplay(root, plan, db, options, true));
+  const sourceFingerprint = readBujoCanonicalSourceFingerprint(root);
+  const replay = readReplayProjectionStrict(root);
+  if (replay.state.kind !== "present") {
+    throw new Error("memory-capture: replay authority disappeared before batch finalization.");
+  }
+  assertOrNormalizeCompleteReceiptReplay(db, replay.projection, plans);
+  const pendingPlans = plans.filter((plan) => plan.intent.state === "pending");
+  if (pendingPlans.length > 0) {
+    replaceDbCanonicalGraphProjectionWithParity(root, db, options.canonicalGraphRepairGuard!);
+  }
+  for (const [index, plan] of plans.entries()) {
+    if (plan.intent.state === "complete") continue;
+    assertDbReplayOutcome(db, plan.intent.actions, results[index]!, false);
+  }
+  if (readBujoCanonicalSourceFingerprint(root) !== sourceFingerprint) {
+    throw new Error("memory-capture: canonical source changed during replay batch finalization.");
+  }
+  const completedPlans = plans.map((plan) => (
+    plan.intent.state === "complete" ? plan : markReplayIntentComplete(root, plan)
+  ));
+  if (options.retainIntent !== true) {
+    for (const plan of completedPlans) {
+      if (plan.intent.retentionKey === undefined) removeReplayIntent(root, plan);
+    }
+  }
+  return results;
+}
+
+function markReplayIntentComplete(root: string, plan: ReplayPlan): ReplayPlan {
+  const { file, snapshot, intent } = plan;
+  if (intent.state === "complete") return plan;
 
   const completed: CaptureIntent = { ...intent, state: "complete" };
   writeCanonicalFileAtomic(root, file, serializeIntent(completed), snapshot.identity);
   const completeSnapshot = readCanonicalFileSnapshot(root, file, { maxBytes: MAX_INTENT_BYTES });
   if (completeSnapshot === undefined) throw new Error(`memory-capture: completed intent "${file}" disappeared.`);
-  removeCanonicalFile(root, file, completeSnapshot.identity);
-  return { ...canonical, appliedMemoryIds: [...appliedMemoryIds] };
+  return { ...plan, intent: completed, snapshot: completeSnapshot };
+}
+
+function removeReplayIntent(root: string, plan: ReplayPlan): void {
+  removeCanonicalFile(root, plan.file, plan.snapshot.identity);
+}
+
+function assertOrNormalizeCompleteReceiptReplay(
+  db: MemoryDb,
+  projection: ReplayProjectionV1,
+  plans: readonly ReplayPlan[],
+): void {
+  try {
+    assertReplayProjectionMatchesDb(db, projection);
+    return;
+  } catch (exactError) {
+    const legacyKeys = new Set(plans.flatMap((plan) => (
+      plan.intent.state !== "complete"
+        ? []
+        : plan.intent.actions.flatMap((action) => action.kind === "add"
+          ? action.threads.filter((edge) => edge.createdAt === undefined)
+            .map((edge) => `${edge.src}\0${edge.dst}`)
+          : [])
+    )));
+    if (legacyKeys.size === 0) throw exactError;
+    const actual = replayProjectionDbSnapshot(db);
+    const expected = replayProjectionDbReplacement(projection);
+    if (actual.terminals.length !== expected.terminals.length
+      || actual.supersedes.length !== expected.supersedes.length
+      || actual.threads.length !== expected.threads.length) {
+      throw exactError;
+    }
+    // This is the one legacy receipt exception: old ADD intents omitted their
+    // edge timestamp. Equal key counts plus subset equality prove the DB differs
+    // only at a receipt-declared thread timestamp before one replay-only total
+    // replacement. Mutable memory/graph action payloads are never consulted.
+    assertReplayDbStateSubsetOfProjection(db, projection, {
+      legacyThreadTimestampKeys: legacyKeys,
+    });
+    db.replaceReplayProjection(expected);
+    assertReplayProjectionMatchesDb(db, projection);
+  }
 }
 
 function assertDistinctQueuedMemoryIds(replays: readonly LoadedReplay[]): void {
-  const owners = new Map<string, string>();
+  const memoryOwners = new Map<string, string>();
+  const entityOwners = new Map<string, string>();
+  const relationOwners = new Map<string, string>();
+  const associationOwners = new Map<string, string>();
   for (const replay of replays) {
     if (replay.intent.state === "complete") continue;
     for (const action of replay.intent.actions) {
       for (const id of touchedMemoryIds(action)) {
-        const owner = owners.get(id);
+        const owner = memoryOwners.get(id);
         if (owner !== undefined) {
           throw new Error(
             `memory-capture: queued intents ${owner} and ${replay.intent.id} overlap on memory ${id}.`,
           );
         }
-        owners.set(id, replay.intent.id);
+        memoryOwners.set(id, replay.intent.id);
       }
     }
+    assertDistinctQueuedKeys(
+      replay.intent.id,
+      replay.intent.graph.entities.map((entity) => entity.id),
+      entityOwners,
+      "graph entity",
+    );
+    assertDistinctQueuedKeys(
+      replay.intent.id,
+      replay.intent.graph.relations.map((relation) => `${relation.src}\0${relation.dst}\0${relation.relation}`),
+      relationOwners,
+      "graph relation",
+    );
+    assertDistinctQueuedKeys(
+      replay.intent.id,
+      replay.intent.graph.associations.map((association) => `${association.memoryId}\0${association.entityId}`),
+      associationOwners,
+      "graph association",
+    );
+  }
+}
+
+function assertDistinctQueuedKeys(
+  intentId: string,
+  keys: readonly string[],
+  owners: Map<string, string>,
+  label: string,
+): void {
+  for (const key of new Set(keys)) {
+    const owner = owners.get(key);
+    if (owner !== undefined) {
+      throw new Error(`memory-capture: queued intents ${owner} and ${intentId} overlap on ${label}.`);
+    }
+    owners.set(key, intentId);
   }
 }
 
@@ -484,21 +873,39 @@ function touchedMemoryIds(action: CaptureIntentAction): readonly string[] {
   return action.kind === "supersede" ? [action.oldId, action.newId] : [action.id];
 }
 
-function preflightDbAction(db: MemoryDb, action: CaptureIntentAction): ReplayWrite[] {
+function preflightDbAction(
+  root: string,
+  db: MemoryDb,
+  action: CaptureIntentAction,
+  legacySalienceRepairs: Map<string, LegacySalienceRepair>,
+): ReplayWrite[] {
   if (action.kind === "noop") {
     const current = db.get(action.id);
-    if (current === undefined || !recordMatchesCanonicalState(current, action.expected)
+    const match = current === undefined ? "different" : replayRecordMatch(root, current, action.expected);
+    if (current === undefined || match === "different"
       || !hasUnsupersededLifecycle(db, current)) {
       throw new Error(`memory-capture: pending NOOP target ${action.id} does not match the active index.`);
     }
+    if (match === "legacy-salience") queueLegacySalienceRepair(legacySalienceRepairs, current, action.expected);
     return [];
   }
 
   if (action.kind === "add") {
+    for (const edge of action.threads) {
+      const target = db.get(edge.dst);
+      if (target === undefined) {
+        throw new Error(`memory-capture: pending ADD thread target ${edge.dst} is missing from the active index.`);
+      }
+      resolveThreadCreatedAt(root, db, action, edge);
+    }
     const current = db.get(action.id);
-    if (current !== undefined && (!recordMatchesCanonicalState(current, action.after)
+    const match = current === undefined ? "exact" : replayRecordMatch(root, current, action.after);
+    if (current !== undefined && (match === "different"
       || !hasUnsupersededLifecycle(db, current))) {
       throw new Error(`memory-capture: pending ADD target ${action.id} conflicts with the active index.`);
+    }
+    if (current !== undefined && match === "legacy-salience") {
+      queueLegacySalienceRepair(legacySalienceRepairs, current, action.after);
     }
     if (current !== undefined && dbHasCanonicalOutcome(db, action)) return [];
     return [{ action, record: mergeLiveRecordState(action.record, current) }];
@@ -506,11 +913,21 @@ function preflightDbAction(db: MemoryDb, action: CaptureIntentAction): ReplayWri
 
   if (action.kind === "update") {
     const current = db.get(action.id);
+    const beforeMatch = current === undefined
+      ? "different"
+      : replayRecordMatch(root, current, action.before, action.after);
+    const afterMatch = current === undefined ? "different" : replayRecordMatch(root, current, action.after);
     if (current === undefined
-      || (!recordMatchesCanonicalState(current, action.before)
-        && !recordMatchesCanonicalState(current, action.after))
+      || (beforeMatch === "different" && afterMatch === "different")
       || !hasUnsupersededLifecycle(db, current)) {
       throw new Error(`memory-capture: pending UPDATE target ${action.id} matches neither allowed active-index state.`);
+    }
+    if (beforeMatch === "legacy-salience" || afterMatch === "legacy-salience") {
+      queueLegacySalienceRepair(
+        legacySalienceRepairs,
+        current,
+        beforeMatch === "legacy-salience" ? action.before : action.after,
+      );
     }
     if (recordMatchesCanonicalState(current, action.after) && dbHasCanonicalOutcome(db, action)) return [];
     return [{ action, record: mergeLiveRecordState(action.record, current) }];
@@ -520,16 +937,18 @@ function preflightDbAction(db: MemoryDb, action: CaptureIntentAction): ReplayWri
   if (old === undefined) {
     throw new Error(`memory-capture: pending supersede target ${action.oldId} is missing from the active index.`);
   }
-  const oldBefore = recordMatchesCanonicalState(old, action.beforeOld)
+  const oldBeforeMatch = replayRecordMatch(root, old, action.beforeOld, action.afterOld);
+  const oldAfterMatch = replayRecordMatch(root, old, action.afterOld);
+  const oldBefore = oldBeforeMatch !== "different"
     && old.supersededBy === undefined
     && old.supersededAt === undefined
     && old.validTo === undefined;
-  const oldAfter = recordMatchesCanonicalState(old, action.afterOld)
+  const oldAfter = oldAfterMatch !== "different"
     && old.supersededBy === action.newId
     && old.supersededAt === action.at
     && old.validTo === action.at
     && db.edges(action.oldId).some((edge) => edge.kind === "supersedes" && edge.dst === action.newId);
-  const oldAwaitingFinalize = recordMatchesCanonicalState(old, action.afterOld)
+  const oldAwaitingFinalize = oldAfterMatch !== "different"
     && old.supersededBy === undefined
     && old.supersededAt === undefined
     && old.validTo === undefined
@@ -537,12 +956,133 @@ function preflightDbAction(db: MemoryDb, action: CaptureIntentAction): ReplayWri
   if (!oldBefore && !oldAfter && !oldAwaitingFinalize) {
     throw new Error(`memory-capture: pending supersede target ${action.oldId} conflicts with the active index.`);
   }
+  if ((oldBefore && oldBeforeMatch === "legacy-salience")
+    || ((oldAfter || oldAwaitingFinalize) && oldAfterMatch === "legacy-salience")) {
+    queueLegacySalienceRepair(
+      legacySalienceRepairs,
+      old,
+      oldBefore && oldBeforeMatch === "legacy-salience" ? action.beforeOld : action.afterOld,
+    );
+  }
   const replacement = db.get(action.newId);
-  if (replacement !== undefined && !recordMatchesCanonicalState(replacement, action.afterNew)) {
+  const replacementMatch = replacement === undefined
+    ? "exact"
+    : replayRecordMatch(root, replacement, action.afterNew);
+  if (replacement !== undefined && replacementMatch === "different") {
     throw new Error(`memory-capture: pending supersede replacement ${action.newId} conflicts with the active index.`);
+  }
+  if (replacement !== undefined && replacementMatch === "legacy-salience") {
+    queueLegacySalienceRepair(legacySalienceRepairs, replacement, action.afterNew);
   }
   if (replacement !== undefined && dbHasCanonicalOutcome(db, action)) return [];
   return [{ action, record: mergeLiveRecordState(action.record, replacement) }];
+}
+
+/** Provider- and wall-clock-free timestamp for replay-owned thread evidence. */
+function deterministicThreadCreatedAt(sourceCreatedAt: string, targetCreatedAt: string): string {
+  const sourceMillis = Date.parse(sourceCreatedAt);
+  const targetMillis = Date.parse(targetCreatedAt);
+  if (!Number.isFinite(sourceMillis) || !Number.isFinite(targetMillis)) {
+    throw new Error("memory-capture: pending ADD thread endpoint has an invalid creation timestamp.");
+  }
+  return new Date(Math.max(sourceMillis, targetMillis)).toISOString();
+}
+
+function resolveThreadCreatedAt(
+  root: string,
+  db: MemoryDb | undefined,
+  action: Extract<CaptureIntentAction, { readonly kind: "add" }>,
+  edge: CaptureThreadEdge,
+): string {
+  const targetCreatedAt = findCanonicalMemoryCreatedAt(root, edge.dst);
+  if (targetCreatedAt === undefined) {
+    throw new Error(`memory-capture: legacy pending ADD thread target ${edge.dst} has no canonical timestamp.`);
+  }
+  const dbTarget = db?.get(edge.dst);
+  if (dbTarget !== undefined && dbTarget.createdAt !== targetCreatedAt) {
+    throw new Error("memory-capture: pending ADD thread target timestamp differs between canonical source and SQLite.");
+  }
+  const expected = deterministicThreadCreatedAt(action.after.bullet.createdAt, targetCreatedAt);
+  if (edge.createdAt !== undefined && edge.createdAt !== expected) {
+    throw new Error("memory-capture: pending ADD thread timestamp does not match its canonical endpoints.");
+  }
+  return expected;
+}
+
+function materializeNewIntentThreads(
+  root: string,
+  actions: readonly CaptureIntentAction[],
+): CaptureIntentAction[] {
+  return actions.map((action) => {
+    if (action.kind !== "add") return action;
+    const threads = action.threads.map((edge) => {
+      const targetCreatedAt = findCanonicalMemoryCreatedAt(root, edge.dst);
+      if (targetCreatedAt === undefined) {
+        throw new Error(`memory-capture: new ADD thread target ${edge.dst} has no canonical timestamp.`);
+      }
+      const createdAt = deterministicThreadCreatedAt(action.after.bullet.createdAt, targetCreatedAt);
+      if (edge.createdAt !== undefined && edge.createdAt !== createdAt) {
+        throw new Error(`memory-capture: new ADD thread target ${edge.dst} has a conflicting timestamp.`);
+      }
+      return { ...edge, createdAt };
+    });
+    return { ...action, threads };
+  });
+}
+
+function findCanonicalMemoryCreatedAt(root: string, id: string): string | undefined {
+  const dailyNames = listCanonicalFileNames(root, "daily", {
+    allowMissing: true,
+    include: (name) => name.endsWith(".md"),
+  });
+  const dailyNameSet = new Set(dailyNames);
+  const files = [
+    ...dailyNames.map((name) => `daily/${name}`),
+    ...listCanonicalRootFileNames(root, {
+      include: (name) => /^\d{4}-\d{2}-\d{2}\.md$/u.test(name) && !dailyNameSet.has(name),
+    }),
+  ];
+  const matches: string[] = [];
+  for (const file of files) {
+    const snapshot = readCanonicalFileSnapshot(root, file);
+    if (snapshot === undefined) throw new Error(`memory-capture: canonical source "${file}" disappeared.`);
+    for (const bullet of parseDailyFile(snapshot.content).bullets) {
+      if (bullet.id === id) matches.push(bullet.createdAt);
+    }
+  }
+  if (matches.length > 1) {
+    throw new Error(`memory-capture: thread target ${id} is duplicated in canonical source.`);
+  }
+  return matches[0];
+}
+
+function captureReplayDelta(
+  root: string,
+  intent: CaptureIntent,
+  db?: MemoryDb,
+): ReplayProjectionDelta {
+  const { state: _state, ...immutableAuthority } = intent;
+  const authorityId = replayProjectionAuthorityId(immutableAuthority);
+  return {
+    terminals: [],
+    supersedes: intent.actions.flatMap((action) => action.kind === "supersede" ? [{
+      src: action.oldId,
+      dst: action.newId,
+      at: action.at,
+      authorityKind: "capture" as const,
+      authorityId,
+    }] : []),
+    threads: intent.actions.flatMap((action) => action.kind === "add"
+      ? action.threads.map((edge) => ({
+          src: edge.src,
+          dst: edge.dst,
+          weight: edge.weight,
+          at: resolveThreadCreatedAt(root, db, action, edge),
+          authorityKind: "capture" as const,
+          authorityId,
+        }))
+      : []),
+  };
 }
 
 function hasUnsupersededLifecycle(db: MemoryDb, record: MemoryRecord): boolean {
@@ -613,22 +1153,73 @@ function dbHasCanonicalOutcome(db: MemoryDb, action: CaptureIntentAction): boole
 }
 
 function recordMatchesCanonicalState(record: MemoryRecord, state: CanonicalBulletState): boolean {
+  return record.salience === state.bullet.salience
+    && recordMatchesCanonicalStateExceptSalience(record, state);
+}
+
+/**
+ * Historical `applyDecay` releases could mutate only the SQLite salience mirror.
+ * An upgrade may trust that one-field drift only when either this exact bullet
+ * or the action's validated completed bullet is independently present in
+ * canonical source. The completed-state proof is supplied only for a DB-before
+ * row after canonical mutation. Replay records a compare-and-swap repair and
+ * requires canonical salience again before retiring the durable intent.
+ */
+function replayRecordMatch(
+  root: string,
+  record: MemoryRecord,
+  state: CanonicalBulletState,
+  completedState?: CanonicalBulletState,
+): "exact" | "legacy-salience" | "different" {
+  if (recordMatchesCanonicalState(record, state)) return "exact";
+  if (Number.isFinite(record.salience)
+    && record.salience !== state.bullet.salience
+    && recordMatchesCanonicalStateExceptSalience(record, state)
+    && (bulletState(root, state) === "exact"
+      || (completedState !== undefined && bulletState(root, completedState) === "exact"))) {
+    return "legacy-salience";
+  }
+  return "different";
+}
+
+function recordMatchesCanonicalStateExceptSalience(
+  record: MemoryRecord,
+  state: CanonicalBulletState,
+): boolean {
   const bullet = state.bullet;
   return record.id === bullet.id
     && record.type === bullet.type
     && record.status === bullet.status
     && record.text === bullet.text
-    && record.salience === bullet.salience
     && record.isInsight === bullet.isInsight
     && record.createdAt === bullet.createdAt
     && record.dueAt === bullet.dueAt
     && record.source.file === state.file;
 }
 
+function queueLegacySalienceRepair(
+  repairs: Map<string, LegacySalienceRepair>,
+  record: MemoryRecord,
+  state: CanonicalBulletState,
+): void {
+  const repair: LegacySalienceRepair = {
+    id: record.id,
+    expectedCurrent: record.salience,
+    canonical: state.bullet.salience,
+  };
+  const existing = repairs.get(record.id);
+  if (existing !== undefined
+    && (existing.expectedCurrent !== repair.expectedCurrent || existing.canonical !== repair.canonical)) {
+    throw new Error(`memory-capture: conflicting legacy salience repair for ${record.id}.`);
+  }
+  repairs.set(record.id, repair);
+}
+
 function assertDbReplayOutcome(
   db: MemoryDb,
   actions: readonly CaptureIntentAction[],
   graph: GraphBatchResult,
+  assertGraph = true,
 ): void {
   for (const action of actions) {
     if (!dbHasCanonicalOutcome(db, action)) {
@@ -650,6 +1241,7 @@ function assertDbReplayOutcome(
       }
     }
   }
+  if (!assertGraph) return;
   for (const entity of graph.entities) {
     if (!entityRecordsEqual(db.getEntity(entity.id), entity)) {
       throw new Error(`memory-capture: active index did not mirror entity ${entity.id}.`);
@@ -891,8 +1483,12 @@ function validateAction(action: CaptureIntentAction): void {
     if (action.id !== action.after.bullet.id || action.record.source.file !== action.after.file
       || !Array.isArray(action.threads) || action.threads.length > 5
       || action.threads.some((edge) => !isRecord(edge) || edge.src !== action.id
-        || typeof edge.dst !== "string" || edge.dst.length === 0
-        || typeof edge.weight !== "number" || !Number.isFinite(edge.weight))) {
+        || typeof edge.dst !== "string" || edge.dst.length === 0 || edge.dst === action.id
+        || typeof edge.weight !== "number" || !Number.isFinite(edge.weight)
+        || edge.weight <= 0 || edge.weight > 1
+        || (edge.createdAt !== undefined && (typeof edge.createdAt !== "string"
+          || !Number.isFinite(Date.parse(edge.createdAt))
+          || new Date(Date.parse(edge.createdAt)).toISOString() !== edge.createdAt)))) {
       throw new Error("memory-capture: invalid add action in outbox intent.");
     }
     return;

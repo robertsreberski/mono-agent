@@ -20,6 +20,18 @@ import {
 } from "./daily.js";
 import { parseDailyFile } from "./grammar.js";
 import { serializeBullet } from "./grammar.js";
+import { replaceDbCanonicalGraphProjectionWithParity } from "./graph.js";
+import {
+  assertCanonicalGraphRepairBaseParity,
+  auditCanonicalIndexHealth,
+} from "./rebuild.js";
+import {
+  REPLAY_PROJECTION_FILE,
+  assertReplayProjectionMatchesDb,
+  cleanupReplayProjectionTemporaryArtifacts,
+  readReplayProjectionStrict,
+  replayProjectionDbSnapshot,
+} from "./replay-projection.js";
 import { createIdFactory } from "./ids.js";
 import type { LlmComplete } from "./llm.js";
 import type { EmbeddingProvider } from "../search/index.js";
@@ -126,7 +138,7 @@ export class BujoMemoryStore implements MemoryStore {
   private readonly clock: () => Date;
   private readonly nextId: () => string;
   private readonly llm?: LlmComplete;
-  private readonly _tier: BujoTier;
+  private readonly _tier!: BujoTier;
   private readonly logger: BujoLogger;
   private readonly backgroundDrainTimeoutMs: number;
   private indexQueue?: BoundedBatchQueue<IndexJob>;
@@ -169,7 +181,7 @@ export class BujoMemoryStore implements MemoryStore {
       : options.llm === undefined
         ? "journal"
         : "bujo";
-    const tier = options.tier ?? derivedTier;
+    let tier = options.tier ?? derivedTier;
     // Pure validation precedes every filesystem/lease side effect.
     assertTierPrerequisites(tier, options);
     if (options.allowFtsFallback === true && (
@@ -195,12 +207,17 @@ export class BujoMemoryStore implements MemoryStore {
     this.maxBytes = options.maxBytes ?? 8_000;
     this.clock = options.clock ?? (() => new Date());
     this.nextId = createIdFactory({ clock: this.clock });
-    this._tier = tier;
     this.logger = options.logger ?? { warn: () => {} };
     if (options.llm !== undefined) this.llm = this.instrumentLlm(options.llm);
     let opened: MemoryDb | undefined;
     try {
+      if (!this.readOnly) cleanupReplayProjectionTemporaryArtifacts(this.root);
       const managed = readManagedIndexManifest(this.root);
+      if (this.readOnly && options.tier === undefined && managed !== undefined) {
+        tier = managed.active.tier;
+        assertTierPrerequisites(tier, options);
+      }
+      this._tier = tier;
       if (!this.readOnly) {
         this.rollbackRuntimeLease = registerManagedRollbackRuntime(this.root, managed);
       }
@@ -250,11 +267,64 @@ export class BujoMemoryStore implements MemoryStore {
           );
         }
       }
+      if (this.readOnly) {
+        if (this._tier === "bujo") {
+          const replay = readReplayProjectionStrict(this.root);
+          if (replay.state.kind === "missing") {
+            throw new Error(
+              `memory-bujo: read-only BuJo requires ${REPLAY_PROJECTION_FILE}; `
+              + "unattested replay state is not exposed.",
+            );
+          }
+          assertReplayProjectionMatchesDb(opened, replay.projection);
+          if (auditCanonicalIndexHealth(this.root, "bujo", opened).status !== "match") {
+            throw new Error(
+              "memory-bujo: read-only BuJo requires exact canonical memory, graph, and replay parity; "
+              + "run stopped-store rebuild before recall.",
+            );
+          }
+        } else {
+          const replay = replayProjectionDbSnapshot(opened);
+          if (replay.terminals.length > 0 || replay.supersedes.length > 0 || replay.threads.length > 0) {
+            throw new Error(`memory-bujo: read-only ${this._tier} rejects BuJo replay-owned lifecycle and edges.`);
+          }
+        }
+      }
       if (!this.readOnly) {
         // Already-paid durable state predates any work this process could
         // accept. Recover it synchronously in protocol order, or fence a
         // mismatched/ambiguous state before queues and runtime writes exist.
-        recoverDurableMutationState(this.root, opened, this._tier);
+        recoverDurableMutationState(
+          this.root,
+          opened,
+          this._tier,
+          assertCanonicalGraphRepairBaseParity,
+        );
+        if (this._tier === "bujo") {
+          const replay = readReplayProjectionStrict(this.root);
+          if (replay.state.kind === "missing") {
+            throw new Error(
+              `memory-bujo: ${REPLAY_PROJECTION_FILE} is missing; refusing to bless replay-owned SQLite state. `
+              + "Stop the store and run safe rebuild for an empty legacy projection or explicit replay projection adoption.",
+            );
+          }
+          assertReplayProjectionMatchesDb(opened, replay.projection);
+          // Older runtimes could retire an intent after mirroring only its
+          // touched graph rows. Heal that complete provider-free projection
+          // before queues or runtime health become visible. This does not
+          // establish Markdown/SQLite memory parity; strict canonical-index
+          // health continues to audit that independent invariant.
+          replaceDbCanonicalGraphProjectionWithParity(
+            this.root,
+            opened,
+            assertCanonicalGraphRepairBaseParity,
+          );
+        } else {
+          const replay = replayProjectionDbSnapshot(opened);
+          if (replay.terminals.length > 0 || replay.supersedes.length > 0 || replay.threads.length > 0) {
+            throw new Error(`memory-bujo: ${this._tier} rejects BuJo replay-owned lifecycle and edges.`);
+          }
+        }
       }
       if (!this.readOnly) this.initializeCompletedTurnIntake();
       if (!this.readOnly && this._tier === "journal") this.initializeJournalIndexing();
@@ -484,10 +554,14 @@ export class BujoMemoryStore implements MemoryStore {
       db: this.db,
       tier: this._tier,
       abortSignal,
+      canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
     }, async () => {
       const retained = findRetainedCaptureIntent(this.root, intakeId);
       if (retained !== undefined) {
-        replayCaptureIntent(this.root, retained, this.db, { retainIntent: true });
+        replayCaptureIntent(this.root, retained, this.db, {
+          retainIntent: true,
+          canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+        });
         return "captured";
       }
       const text = turn.captureText;
@@ -502,6 +576,7 @@ export class BujoMemoryStore implements MemoryStore {
         now: () => new Date(admittedAt),
         abortSignal,
         captureRetentionKey: intakeId,
+        canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
       });
       return "captured";
     });
@@ -723,6 +798,7 @@ export class BujoMemoryStore implements MemoryStore {
       db: this.db,
       tier: this._tier,
       ...(abortSignal === undefined ? {} : { abortSignal }),
+      canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
     }, async () => {
       const res = await captureTurn(text, {
         db: this.db,
@@ -731,6 +807,7 @@ export class BujoMemoryStore implements MemoryStore {
         nextId: this.nextId,
         now: this.clock,
         ...(abortSignal === undefined ? {} : { abortSignal }),
+        canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
       });
       return { actions: res.actions.length, entities: res.entities };
     });
@@ -903,6 +980,7 @@ export class BujoMemoryStore implements MemoryStore {
         root: this.root,
         db: this.db,
         tier: this._tier,
+        canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
       }, async () => { removeRetainedCaptureIntent(this.root, id); }),
       cleanupResolved: (ids) => {
         const resolved = new Set(ids);
@@ -1126,6 +1204,7 @@ export class BujoMemoryStore implements MemoryStore {
       db: this.db,
       tier: this._tier,
       abortSignal,
+      canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
     }, async () => await run(abortSignal)), callerSignal);
   }
 

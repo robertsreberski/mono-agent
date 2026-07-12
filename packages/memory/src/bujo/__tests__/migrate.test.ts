@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
@@ -10,7 +10,7 @@ import { appendBullet, dailyFilePath, rewriteBullet } from "../daily.js";
 import { writeCaptureIntent } from "../capture-outbox.js";
 import { auditCanonicalGraphParity, type CanonicalGraphParityResult } from "../graph-parity.js";
 import { parseDailyFile } from "../grammar.js";
-import { readGraph } from "../graph.js";
+import { appendGraphBatch, readGraph } from "../graph.js";
 import { createIdFactory } from "../ids.js";
 import {
   assertNoPendingMigrateDecision,
@@ -20,6 +20,11 @@ import {
   type MigrateDeps,
 } from "../migrate.js";
 import { MemoryModelError } from "../model-error.js";
+import {
+  assertCanonicalGraphRepairBaseParity,
+  auditCanonicalIndexHealth,
+} from "../rebuild.js";
+import { initializeReplayProjection, readReplayProjectionStrict } from "../replay-projection.js";
 import type { Bullet } from "../types.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 
@@ -38,6 +43,7 @@ function newRoot(): string {
 }
 
 function openDb(root: string): MemoryDb {
+  initializeReplayProjection(root);
   const db = openMemoryDb({
     path: join(root, "memory.db"),
     embeddings: fakeEmbeddings(DIM),
@@ -99,6 +105,7 @@ function makeDeps(
     llm: fakeLlm([]),
     nextId: createIdFactory({ clock: () => NOW, random: () => 0 }),
     now: () => NOW,
+    canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
     ...overrides,
   };
 }
@@ -117,6 +124,20 @@ describe("migrate", () => {
     await seedAging(db, root, "MIG-RESCHEDULE", "review quarterly goals and OKRs");
     await seedAging(db, root, "MIG-CLUSTER", "read book on stoicism and resilience");
     await seedAging(db, root, "MIG-FORGET", "buy milk from the corner store");
+    const legacyEntity = {
+      id: "concept:stoicism",
+      name: "stoicism",
+      type: "concept",
+      createdAt: SIXTY_DAYS_AGO.toISOString(),
+    } as const;
+    appendGraphBatch(root, { entities: [legacyEntity] });
+    db.mirrorCanonicalEntity(legacyEntity);
+    db.mirrorCanonicalAssociation({
+      memoryId: "MIG-CLUSTER",
+      entityId: legacyEntity.id,
+      provenance: "legacy-name-match",
+      createdAt: SIXTY_DAYS_AGO.toISOString(),
+    });
 
     // Script the fake LLM: key on each item's unique text fragment
     const dueAt = "2026-07-01T00:00:00.000Z";
@@ -175,26 +196,41 @@ describe("migrate", () => {
 
     const clusterEdges = db.edges("MIG-CLUSTER");
     expect(clusterEdges.some((e) => e.kind === "supports" && e.dst === "collection:books")).toBe(true);
-    expect(readGraph(root)).toMatchObject({
-      entities: [expect.objectContaining({ id: "collection:books", name: "books", type: "collection" })],
-      associations: [expect.objectContaining({
+    expect(db.associationsForMemory("MIG-CLUSTER")).toEqual([
+      expect.objectContaining({
         memoryId: "MIG-CLUSTER",
         entityId: "collection:books",
         provenance: "capture",
-      })],
-    });
+      }),
+    ]);
+    const canonicalGraph = readGraph(root);
+    expect(canonicalGraph.entities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "collection:books", name: "books", type: "collection" }),
+    ]));
+    expect(canonicalGraph.associations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        memoryId: "MIG-CLUSTER",
+        entityId: "collection:books",
+        provenance: "capture",
+      }),
+    ]));
 
     // --- forget: status dropped + validTo in db + daily line struck ---
     const forgotten = db.get("MIG-FORGET");
     expect(forgotten).toBeDefined();
     expect(forgotten!.status).toBe("dropped");
     expect(forgotten!.validTo).toBe(NOW.toISOString());
+    expect(readReplayProjectionStrict(root).projection.terminals).toEqual([
+      expect.objectContaining({ id: "MIG-FORGET", at: NOW.toISOString(), authorityKind: "migration" }),
+    ]);
 
     const forgottenBullet = parseDailyFile(dailyContent(root, SIXTY_DAYS_AGO)).bullets.find(
       (b) => b.id === "MIG-FORGET",
     );
     expect(forgottenBullet).toBeDefined();
     expect(forgottenBullet!.status).toBe("dropped");
+    expect(auditCanonicalGraphParity(root, db).matches).toBe(true);
+    expect(auditCanonicalIndexHealth(root, "bujo", db)).toEqual({ status: "match" });
 
     // --- monthly/<YYYY-MM>.md exists and lists the actions ---
     const monthlyPath = join(root, "monthly", "2026-06.md");
@@ -333,6 +369,40 @@ describe("migrate", () => {
     },
   );
 
+  it("converges a crashed forget after sidecar and SQLite commit without another provider call", async () => {
+    const root = newRoot();
+    let db = openDb(root);
+    await seedAging(db, root, "MIG-FORGET-RETRY", "forget crash convergence sentinel");
+    const firstLlm = vi.fn(async () => JSON.stringify({ action: "forget" }));
+
+    await expect(migrate(makeDeps(db, root, {
+      llm: { id: "first-forget", complete: firstLlm },
+      hooks: { afterActionCommitted: () => { throw new Error("fault-after-forget-commit"); } },
+    }))).rejects.toThrow("fault-after-forget-commit");
+
+    expect(db.get("MIG-FORGET-RETRY")).toMatchObject({ status: "dropped", validTo: NOW.toISOString() });
+    expect(readReplayProjectionStrict(root).projection.terminals).toEqual([
+      expect.objectContaining({ id: "MIG-FORGET-RETRY", at: NOW.toISOString() }),
+    ]);
+    expect(hasPendingMigrateDecision(root)).toBe(true);
+    rmSync(join(root, ".replay-projection-v1.json"));
+
+    closeDb(db);
+    db = openMemoryDb({
+      path: join(root, "memory.db"),
+      embeddings: fakeEmbeddings(DIM),
+      dim: DIM,
+    });
+    openDbs.push(db);
+    const retryLlm = vi.fn(async () => { throw new Error("retry must not call the LLM"); });
+    const result = await migrate(makeDeps(db, root, { llm: { id: "retry-forget", complete: retryLlm } }));
+
+    expect(retryLlm).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ forgotten: 1, reviewed: 1 });
+    expect(hasPendingMigrateDecision(root)).toBe(false);
+    expect(auditCanonicalIndexHealth(root, "bujo", db)).toEqual({ status: "match" });
+  });
+
   it("reports an admitted durable migration as in_progress instead of graph divergence", async () => {
     const root = newRoot();
     const db = openDb(root);
@@ -374,7 +444,7 @@ describe("migrate", () => {
     db.recordAccess(["MIG-TELEMETRY"], accessedAt);
     const provider = vi.spyOn(db, "prepareUpsertVectors");
 
-    expect(recoverPendingMigrateDecision(root, db)).toBe(true);
+    expect(recoverPendingMigrateDecision(root, db, assertCanonicalGraphRepairBaseParity)).toBe(true);
 
     expect(firstLlm).toHaveBeenCalledTimes(1);
     expect(provider).not.toHaveBeenCalled();
@@ -384,7 +454,7 @@ describe("migrate", () => {
       lastAccessedAt: accessedAt.toISOString(),
     });
     expect(readFileSync(join(root, "monthly", "2026-06.md"), "utf8")).not.toContain("mono-agent-migrate:");
-    expect(recoverPendingMigrateDecision(root, db)).toBe(false);
+    expect(recoverPendingMigrateDecision(root, db, assertCanonicalGraphRepairBaseParity)).toBe(false);
   });
 
   it("rejects duplicate canonical ids before paying providers or publishing a decision", async () => {
@@ -419,7 +489,7 @@ describe("migrate", () => {
     appendBullet(root, canonical, SIXTY_DAYS_AGO);
     const before = dailyContent(root, SIXTY_DAYS_AGO);
 
-    expect(() => recoverPendingMigrateDecision(root, db))
+    expect(() => recoverPendingMigrateDecision(root, db, assertCanonicalGraphRepairBaseParity))
       .toThrow(/contains 2 bullets.*exactly one/iu);
 
     expect(db.get("MIG-DUPLICATE-RETRY")?.salience).toBe(0.2);

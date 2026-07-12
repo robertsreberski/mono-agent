@@ -22,7 +22,7 @@ import {
 } from "../graph-parity.js";
 import { appendEntity, appendGraphBatch, readGraph } from "../graph.js";
 import { CanonicalFileRetiredError } from "../path-safety.js";
-import { readCanonicalGraphAuditSourceSnapshot } from "../rebuild.js";
+import { assertCanonicalGraphRepairBaseParity, readCanonicalGraphAuditSourceSnapshot } from "../rebuild.js";
 
 const CANONICAL_AT = "2026-01-01T00:00:00.000Z";
 const DRIFTED_AT = "2026-06-01T00:00:00.000Z";
@@ -282,7 +282,9 @@ describe("canonical graph parity", () => {
       matches: false,
       issues: [{ code: "durable-state-invalid" }],
     });
-    expect(() => replayCaptureOutbox(root, db)).toThrow(/invalid|missing/iu);
+    expect(() => replayCaptureOutbox(root, db, {
+      canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
+    })).toThrow(/invalid|missing/iu);
     expect(existsSync(join(root, "graph.jsonl"))).toBe(false);
     db.close();
   });
