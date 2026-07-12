@@ -3,37 +3,17 @@ const REDACTED_BEARER = "[REDACTED_BEARER_CREDENTIAL]";
 const TELEGRAM_URL_TOKEN_PATTERN = /(\/file\/bot|\/bot)([^/?#\s]+)/giu;
 const TELEGRAM_TOKEN_PATTERN = /\b\d{5,}:[A-Za-z0-9_-]{8,}\b/gu;
 const BEARER_CREDENTIAL_PATTERN = /\b(Bearer\s+)[^\s,;"']+/giu;
-const SECRET_QUERY_PATTERN = /([?&](?:access_token|auth_token|refresh_token|id_token|api_key|client_secret|token|code)=)[^&#\s]+/giu;
-const SECRET_HEADER_TEXT_PATTERN = /\b((?:authorization|proxy-authorization|x-api-key|x-auth-token|x-access-token|x-client-secret|client-secret|api-key)\s*[:=]\s*)[^\s,;"']+/giu;
-const SENSITIVE_LOG_KEYS = new Set([
-  "authorization",
-  "proxy-authorization",
-  "x-api-key",
-  "x-auth-token",
-  "x-access-token",
-  "x-client-secret",
-  "x-amz-security-token",
-  "x-goog-api-key",
-  "api-key",
-  "api_key",
-  "apikey",
-  "client-secret",
-  "client_secret",
-  "access-token",
-  "access_token",
-  "auth-token",
-  "auth_token",
-  "refresh-token",
-  "refresh_token",
-  "id-token",
-  "id_token",
-  "token",
-  "code",
-  "secret",
-  "password",
-  "cookie",
-  "set-cookie",
-]);
+const SENSITIVE_NAME_FRAGMENT = "authorization|auth|cookie|token|secret|password|signature|sig|credential|key|code";
+const SENSITIVE_LOG_KEY_PATTERN = new RegExp(`(?:^|[-_])(?:${SENSITIVE_NAME_FRAGMENT})(?:$|[-_])`, "iu");
+const SECRET_QUERY_PATTERN = new RegExp(
+  `([?&][^=&#\\s]*(?:${SENSITIVE_NAME_FRAGMENT})[^=&#\\s]*=)[^&#\\s]+`,
+  "giu",
+);
+const SECRET_HEADER_TEXT_PATTERN = new RegExp(
+  `\\b(([A-Za-z0-9_-]*(?:${SENSITIVE_NAME_FRAGMENT})[A-Za-z0-9_-]*)\\s*[:=]\\s*)[^\\s,;"']+`,
+  "giu",
+);
+const URL_USERINFO_PATTERN = /\b(https?:\/\/)[^/\s:@]+:[^@\s/]+@/giu;
 
 export interface TelegramLogSink {
   debug?(message: string, metadata?: Record<string, unknown>): void;
@@ -59,7 +39,8 @@ export function redactTelegramSecretText(
     .replace(TELEGRAM_TOKEN_PATTERN, REDACTED_TELEGRAM_TOKEN)
     .replace(BEARER_CREDENTIAL_PATTERN, `$1${REDACTED_BEARER}`)
     .replace(SECRET_QUERY_PATTERN, `$1${REDACTED_BEARER}`)
-    .replace(SECRET_HEADER_TEXT_PATTERN, `$1${REDACTED_BEARER}`);
+    .replace(SECRET_HEADER_TEXT_PATTERN, `$1${REDACTED_BEARER}`)
+    .replace(URL_USERINFO_PATTERN, `$1${REDACTED_BEARER}@`);
 }
 
 /** Render one error message without allowing Telegram credentials into logs. */
@@ -147,6 +128,7 @@ function sanitizeTelegramLogValue(
   value: unknown,
   knownSecrets: readonly string[],
   seen: WeakSet<object>,
+  container?: "headers" | "query",
 ): unknown {
   if (typeof value === "string") {
     return redactTelegramSecretText(value, knownSecrets);
@@ -176,14 +158,31 @@ function sanitizeTelegramLogValue(
     }
     for (const [key, nested] of Object.entries(value)) {
       if (!(key in safe)) {
+        const childContainer = logContainer(key);
         safe[key] = sensitiveLogKey(key)
           ? REDACTED_BEARER
-          : sanitizeTelegramLogValue(nested, knownSecrets, seen);
+          : sanitizeTelegramLogValue(nested, knownSecrets, seen, childContainer);
       }
     }
     return safe;
   }
   if (Array.isArray(value)) {
+    if (container === "headers") {
+      if (typeof value[0] === "string" && value.length === 2) {
+        return [redactTelegramSecretText(value[0], knownSecrets), REDACTED_BEARER];
+      }
+      return value.map((entry, index) => {
+        if (Array.isArray(entry) && typeof entry[0] === "string") {
+          return [redactTelegramSecretText(entry[0], knownSecrets), REDACTED_BEARER];
+        }
+        if (typeof entry === "string") {
+          return index % 2 === 0
+            ? redactTelegramSecretText(entry, knownSecrets)
+            : REDACTED_BEARER;
+        }
+        return sanitizeTelegramLogValue(entry, knownSecrets, seen, "headers");
+      });
+    }
     if (typeof value[0] === "string" && sensitiveLogKey(value[0])) {
       return [redactTelegramSecretText(value[0], knownSecrets), REDACTED_BEARER];
     }
@@ -201,15 +200,34 @@ function sanitizeTelegramLogValue(
 
   const safe: Record<string, unknown> = {};
   for (const [key, nested] of Object.entries(value)) {
-    safe[key] = sensitiveLogKey(key)
+    const childContainer = logContainer(key);
+    safe[key] = container === "headers" || sensitiveLogKey(key)
       ? REDACTED_BEARER
-      : sanitizeTelegramLogValue(nested, knownSecrets, seen);
+      : sanitizeTelegramLogValue(nested, knownSecrets, seen, childContainer ?? container);
   }
   return safe;
 }
 
 function sensitiveLogKey(key: string): boolean {
-  return SENSITIVE_LOG_KEYS.has(key.toLocaleLowerCase("en-US"));
+  const normalized = normalizeLogKey(key);
+  return SENSITIVE_LOG_KEY_PATTERN.test(normalized);
+}
+
+function logContainer(key: string): "headers" | "query" | undefined {
+  const normalized = normalizeLogKey(key).replace(/[-_]/gu, "");
+  if (normalized === "headers" || normalized === "header" || normalized === "rawheaders" || normalized === "headerpairs") {
+    return "headers";
+  }
+  if (normalized === "query" || normalized === "params" || normalized === "searchparams") {
+    return "query";
+  }
+  return undefined;
+}
+
+function normalizeLogKey(key: string): string {
+  return key
+    .replace(/([a-z0-9])([A-Z])/gu, "$1-$2")
+    .toLocaleLowerCase("en-US");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -15,7 +15,7 @@ const SHORT_BEARER = "abc";
 describe("Telegram log redaction", () => {
   it("redacts configured tokens and Bot API URL tokens", () => {
     const redacted = redactTelegramSecretText(
-      `token=${TOKEN} api=${API_URL} file=${FILE_URL} Authorization: Bearer ${SHORT_BEARER} x-client-secret: ${OTHER_BEARER} https://host.invalid/?client_secret=${OTHER_BEARER}&refresh_token=${SHORT_BEARER}`,
+      `token=${TOKEN} api=${API_URL} file=${FILE_URL} Authorization: Bearer ${SHORT_BEARER} X-Amz-Security-Token: ${OTHER_BEARER} Cookie: session=${OTHER_BEARER} https://host.invalid/?X-Amz-Signature=${OTHER_BEARER}&refresh_token=${SHORT_BEARER} https://user:${OTHER_BEARER}@host.invalid/`,
       [TOKEN],
     );
     expect(redacted).not.toContain(TOKEN);
@@ -39,9 +39,12 @@ describe("Telegram log redaction", () => {
           "x-api-key": OTHER_BEARER,
           "x-auth-token": OTHER_BEARER,
           "x-client-secret": OTHER_BEARER,
+          "x-session-token": OTHER_BEARER,
+          "x-future-auth-material": OTHER_BEARER,
         },
         headerPairs: [["x-auth-token", OTHER_BEARER]],
-        query: { token: OTHER_BEARER, code: SHORT_BEARER },
+        rawHeaders: ["X-Future-Header", OTHER_BEARER],
+        query: { token: OTHER_BEARER, code: SHORT_BEARER, signature: OTHER_BEARER, key: OTHER_BEARER },
       },
     });
     const sink = vi.fn();
