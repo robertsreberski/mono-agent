@@ -700,7 +700,7 @@ async function collectInteractiveFromSeed(
             validate: validateWizardAgentName,
           })).trim();
           draft.purpose = (await textPrompt({
-            message: "What should this agent help with?",
+            message: "What Role should be saved to IDENTITY.md → ## Role?",
             initialValue: draft.purpose,
             placeholder: "Help with work in this folder",
             validate: validateWizardAgentPurpose,
@@ -1472,6 +1472,7 @@ async function confirmSummary(
   const capabilities = plan.selectedModules
     .filter((module) => module.kind !== "provider")
     .map((module) => module.title);
+  const identityAlreadyExists = await pathExists(join(ctx.cwd, "IDENTITY.md"));
 
   const creates = ["mono-agent.config.json", "IDENTITY.md", ".mono-agent/artifacts/", ".mono-agent/workspace/"];
   if (plan.envExample !== undefined) {
@@ -1529,7 +1530,11 @@ async function confirmSummary(
   ];
   const lines = [
     `Agent:        ${draft.name}`,
-    `Purpose:      ${draft.purpose}`,
+    "Role target:  IDENTITY.md → ## Role",
+    `Role text:    ${draft.purpose}`,
+    `Role write:   ${identityAlreadyExists
+      ? "Preserve the existing IDENTITY.md unchanged; the entered Role text will not be written."
+      : "Create IDENTITY.md with the entered text as its ## Role body."}`,
     "Routes:",
     ...runtimeRoutes.map((route, index) =>
       `  ${index === 0 ? "Primary" : `Fallback ${index}`}: ${route.model} [${route.effort ?? "provider default"}]`,
@@ -1586,7 +1591,7 @@ async function confirmSummary(
       const step = await select({
         message: "What would you like to edit?",
         options: [
-          { value: "0", label: "Agent name and purpose" },
+          { value: "0", label: "Agent name and Role" },
           { value: "1", label: "Models and efforts" },
           { value: "2", label: "Channels" },
           { value: "3", label: "Memory" },

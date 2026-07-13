@@ -33,7 +33,7 @@ describe("optional Supermemory plugin loading", () => {
     })).resolves.toEqual({ createSupermemoryStore, validateSupermemoryConfig });
   });
 
-  it("prefers a plugin installed in the explicit agent folder", async () => {
+  it("resolves an explicitly installed agent-folder plugin by default", async () => {
     const agentRoot = mkdtempSync(join(tmpdir(), "mono-agent-root-"));
     temporaryDirectories.push(agentRoot);
     const packageRoot = join(
@@ -66,9 +66,35 @@ describe("optional Supermemory plugin loading", () => {
       "utf8",
     );
 
-    await expect(loadSupermemoryPlugin({ cwd: agentRoot })).resolves.toMatchObject({
-      marker: "agent-local",
-    });
+    const loaded = await loadSupermemoryPlugin({ cwd: agentRoot }) as unknown as { marker?: string };
+    expect(loaded.marker).toBe("agent-local");
+  });
+
+  it("prefers the app-side plugin for a managed runtime closure", async () => {
+    const agentRoot = mkdtempSync(join(tmpdir(), "mono-agent-root-"));
+    temporaryDirectories.push(agentRoot);
+    const packageRoot = join(agentRoot, "node_modules", "@mono-agent", "memory-supermemory");
+    mkdirSync(join(packageRoot, "dist"), { recursive: true });
+    writeFileSync(join(packageRoot, "package.json"), JSON.stringify({
+      name: SUPERMEMORY_PLUGIN_PACKAGE,
+      version: agentAppPackageVersion(),
+      type: "module",
+      exports: {
+        ".": { import: "./dist/index.js" },
+        "./package.json": "./package.json",
+      },
+    }), "utf8");
+    writeFileSync(join(packageRoot, "dist", "index.js"), [
+      "export const marker = 'agent-local';",
+      "export const createSupermemoryStore = () => ({});",
+      "export const validateSupermemoryConfig = () => ({ valid: true, errors: [] });",
+    ].join("\n"), "utf8");
+
+    const loaded = await loadSupermemoryPlugin({
+      cwd: agentRoot,
+      preferAppInstall: true,
+    }) as unknown as { marker?: string };
+    expect(loaded.marker).not.toBe("agent-local");
   });
 
   it("turns only a missing plugin into an exact matching-version install action", async () => {

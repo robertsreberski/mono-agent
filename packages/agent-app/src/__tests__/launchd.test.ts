@@ -1,3 +1,6 @@
+import { userInfo } from "node:os";
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -7,6 +10,7 @@ import {
   domainTarget,
   escapeXml,
   launchdPathsFor,
+  parseLaunchdServicePid,
   serviceTarget,
 } from "../launchd.js";
 import type { PlistInput } from "../launchd.js";
@@ -18,9 +22,10 @@ function plistInput(overrides: Partial<PlistInput> = {}): PlistInput {
     cliPath: "/opt/app/dist/cli.js",
     configPath: "/work/demo/mono-agent.config.json",
     cwd: "/work/demo",
+    expectedBackgroundSnapshot: "approved-background-snapshot",
     stdoutPath: "/home/u/.mono-agent/logs/com.mono-agent.demo-0a1b2c3d.out.log",
     stderrPath: "/home/u/.mono-agent/logs/com.mono-agent.demo-0a1b2c3d.err.log",
-    pathEnv: "/usr/bin:/bin",
+    environment: { PATH: "/usr/bin:/bin" },
     ...overrides,
   };
 }
@@ -60,6 +65,21 @@ describe("launchdPathsFor", () => {
     expect(paths.launchAgentsDir).toBe("/home/u/Library/LaunchAgents");
     expect(paths.logDir).toBe("/home/u/.mono-agent/logs");
   });
+
+  it("uses the OS account home instead of an ambient HOME override", () => {
+    const originalHome = process.env.HOME;
+    process.env.HOME = "/tmp/untrusted-mono-agent-home";
+    try {
+      const paths = launchdPathsFor("com.mono-agent.demo-0a1b2c3d");
+      const accountHome = userInfo().homedir;
+      expect(paths.launchAgentsDir).toBe(resolve(accountHome, "Library", "LaunchAgents"));
+      expect(paths.logDir).toBe(resolve(accountHome, ".mono-agent", "logs"));
+      expect(paths.launchAgentsDir).not.toContain(process.env.HOME);
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+    }
+  });
 });
 
 describe("escapeXml", () => {
@@ -69,17 +89,24 @@ describe("escapeXml", () => {
 });
 
 describe("buildPlistXml", () => {
-  it("runs the foreground worker with the absolute node, cli, and config paths", () => {
+  it("clears launchd's inherited environment before running the foreground worker", () => {
     const xml = buildPlistXml(plistInput());
+    expect(xml).toContain("<string>/usr/bin/env</string>");
+    expect(xml).toContain("<string>-i</string>");
     expect(xml).toContain("<string>/usr/local/bin/node</string>");
     expect(xml).toContain("<string>/opt/app/dist/cli.js</string>");
     expect(xml).toContain("<string>start</string>");
     expect(xml).toContain("<string>--foreground</string>");
     expect(xml).toContain("<string>--config</string>");
     expect(xml).toContain("<string>/work/demo/mono-agent.config.json</string>");
-    // Argument order: node, cli, start, --foreground, --config, <config>.
+    // Argument order: env, -i, explicit values, node, cli, start, flags.
+    expect(xml.indexOf("/usr/bin/env")).toBeLessThan(xml.indexOf("-i"));
+    expect(xml.indexOf("-i")).toBeLessThan(xml.indexOf("PATH=/usr/bin:/bin"));
+    expect(xml.indexOf("PATH=/usr/bin:/bin")).toBeLessThan(xml.indexOf("/usr/local/bin/node"));
     expect(xml.indexOf("start")).toBeLessThan(xml.indexOf("--foreground"));
     expect(xml.indexOf("--foreground")).toBeLessThan(xml.indexOf("--config"));
+    expect(xml).toContain("<string>--expected-background-snapshot</string>");
+    expect(xml).toContain("<string>approved-background-snapshot</string>");
   });
 
   it("passes --env-file to the worker when set", () => {
@@ -97,19 +124,32 @@ describe("buildPlistXml", () => {
     expect(xml).toContain("<key>ThrottleInterval</key>\n  <integer>10</integer>");
   });
 
-  it("only sets PATH in EnvironmentVariables — never secrets", () => {
-    const xml = buildPlistXml(plistInput({ pathEnv: "/usr/bin:/bin:/opt/homebrew/bin" }));
-    const envBlock = xml.slice(xml.indexOf("<key>EnvironmentVariables</key>"), xml.indexOf("<key>RunAtLoad</key>"));
-    const keys = (envBlock.match(/<key>([^<]+)<\/key>/gu) ?? []).map((key) => key.replace(/<\/?key>/gu, ""));
-    // The wrapper key plus exactly one inner key (PATH); nothing secret leaks in.
-    expect(keys).toEqual(["EnvironmentVariables", "PATH"]);
-    expect(envBlock).toContain("/opt/homebrew/bin");
+  it("restores only explicit operational values as env -i arguments", () => {
+    const xml = buildPlistXml(plistInput({
+      environment: { HOME: "/home/u", PATH: "/usr/bin:/bin:/opt/homebrew/bin" },
+    }));
+    expect(xml).not.toContain("<key>EnvironmentVariables</key>");
+    expect(xml).toContain("<string>HOME=/home/u</string>");
+    expect(xml).toContain("<string>PATH=/usr/bin:/bin:/opt/homebrew/bin</string>");
+    expect(xml.indexOf("HOME=/home/u")).toBeLessThan(xml.indexOf("PATH=/usr/bin"));
   });
 
   it("XML-escapes paths that contain ampersands", () => {
     const xml = buildPlistXml(plistInput({ cwd: "/work/A & B", configPath: "/work/A & B/mono-agent.config.json" }));
     expect(xml).toContain("<string>/work/A &amp; B</string>");
     expect(xml).not.toMatch(/<string>[^<]*\s&\s[^<]*<\/string>/u);
+  });
+});
+
+describe("parseLaunchdServicePid", () => {
+  it("extracts a positive top-level pid from launchctl print output", () => {
+    expect(parseLaunchdServicePid("service = {\n\tpid = 4321\n\tlast exit code = 0\n}\n")).toBe(4321);
+  });
+
+  it("rejects absent, zero, and inline pid-like noise", () => {
+    expect(parseLaunchdServicePid("state = waiting\n")).toBeUndefined();
+    expect(parseLaunchdServicePid("pid = 0\n")).toBeUndefined();
+    expect(parseLaunchdServicePid("note = pid = 999\n")).toBeUndefined();
   });
 });
 

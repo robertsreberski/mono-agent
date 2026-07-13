@@ -40,6 +40,13 @@ export interface InitMonoAgentFolderResult {
   readonly dir: string;
   readonly configPath: string;
   readonly identityPath: string;
+  /** Exact outcome for the wizard Role's one canonical destination. */
+  readonly identityRole: {
+    readonly path: string;
+    readonly section: "## Role";
+    /** `preserved` means the entered Role was not written anywhere. */
+    readonly status: "created" | "preserved" | "planned-create";
+  };
   /** Files and directories created (or, with dryRun, that would be created). */
   readonly created: readonly string[];
   /** Files that already existed and were left untouched (absolute paths). */
@@ -223,7 +230,7 @@ export async function initMonoAgentFolder(
 
   const identityPath = join(dir, "IDENTITY.md");
   await assertSafeScaffoldTarget(identityPath, "identity");
-  await planFile(identityPath, () => writeFile(
+  const identityCreated = await planFile(identityPath, () => writeFile(
     identityPath,
     identityTemplate(
       dir,
@@ -343,6 +350,11 @@ export async function initMonoAgentFolder(
     dir,
     configPath,
     identityPath,
+    identityRole: {
+      path: identityPath,
+      section: "## Role",
+      status: identityCreated ? (dryRun ? "planned-create" : "created") : "preserved",
+    },
     created,
     skipped,
     knowledgeFiles,
@@ -1640,7 +1652,7 @@ function identityTemplate(
   knowledgeFiles: readonly string[],
 ): string {
   const knowledgeSection = knowledgeFiles.length === 0
-    ? "This folder starts empty; describe the agent's purpose and boundaries here."
+    ? "No existing project knowledge files were detected. Add references to authoritative knowledge here when available."
     : [
         "This folder already carries knowledge the agent must read and respect:",
         "",

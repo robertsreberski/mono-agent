@@ -17,7 +17,8 @@ import type { SlackAdapterStartOptions } from "@mono-agent/slack-adapter";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 import { startMonoAgentApp } from "../app.js";
-import { loadAppCoreConfig } from "../app-config.js";
+import type { BackgroundSnapshot } from "../background-snapshot.js";
+import { loadAppCoreConfig, resolveAppTraceSourceId } from "../app-config.js";
 import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME } from "../adapter-send-tools.js";
 import { RUN_HISTORY_MCP_SERVER_NAME } from "../run-history.js";
 import {
@@ -65,6 +66,76 @@ const unavailableSandboxEngine: SandboxEngine = {
 };
 
 describe("startMonoAgentApp", () => {
+  it("reads an immutable config source while advertising the canonical config path", async () => {
+    const canonicalConfigPath = await writeConfig({
+      ...baseConfig(),
+      traceability: {
+        registryDir: "./trace-sources",
+        sourceLabel: "Canonical config must not be loaded",
+      },
+    });
+    const configReadPath = join(dir, "frozen-mono-agent.config.json");
+    await writeFile(configReadPath, JSON.stringify({
+      ...baseConfig(),
+      traceability: {
+        registryDir: "./trace-sources",
+        sourceLabel: "Frozen startup config",
+      },
+    }, null, 2));
+    const loadedPaths: string[] = [];
+    const driver: ChannelDriver = {
+      id: "probe" as never,
+      label: "Probe",
+      async loadConfig(input) {
+        loadedPaths.push(input.configPath);
+        return {};
+      },
+      isConfigError: () => false,
+      disabledReason: () => "test-only probe",
+      start: async () => { throw new Error("disabled probe must not start"); },
+    };
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      configPath: canonicalConfigPath,
+      configReadPath,
+      drivers: [driver],
+    });
+    try {
+      expect(app.configPath).toBe(canonicalConfigPath);
+      expect(loadedPaths).toEqual([configReadPath]);
+      const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
+      expect(sources[0]?.label).toBe("Frozen startup config");
+      expect(sources[0]?.configPath).toBe(canonicalConfigPath);
+      expect(sources[0]?.sourceId).toBe(await resolveAppTraceSourceId(
+        { cwd: dir, env: {}, configPath: canonicalConfigPath },
+      ));
+    } finally {
+      await app.stop();
+    }
+  });
+
+  it("publishes only the supplied secret-free background snapshot in trace metadata", async () => {
+    await writeConfig(baseConfig());
+    const backgroundSnapshot: BackgroundSnapshot = {
+      schema: "mono-agent.background-snapshot.v1",
+      configPath: join(dir, "mono-agent.config.json"),
+      configFingerprint: "config-fingerprint",
+      dotenvPath: join(dir, ".env"),
+      dotenvFingerprint: "dotenv-fingerprint",
+      identityPath: join(dir, "IDENTITY.md"),
+      identityFingerprint: "identity-fingerprint",
+      operationalEnvironmentFingerprint: "environment-fingerprint",
+    };
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [], backgroundSnapshot });
+    const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
+    expect(sources).toHaveLength(1);
+    expect(sources[0]?.metadata?.backgroundSnapshot).toEqual(backgroundSnapshot);
+    await app.stop();
+  });
+
   it("starts configured channels, reports waiting/disabled for the rest, and stops cleanly", async () => {
     await writeConfig({
       ...baseConfig(),

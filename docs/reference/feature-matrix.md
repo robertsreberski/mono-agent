@@ -148,8 +148,8 @@ Built-in channels are independent JSON sections: `telegram`, `slack`, `webhook`,
 
 | Feature id | Coverage | Config key(s) | Env var(s) | Prose page | Playbook(s) |
 | --- | --- | --- | --- | --- | --- |
-| `app.cli-init` | cli | `--name`, concise purpose prompt, managed project skills, canonical repeated `--fallback`/`--fallback-effort`, `--route-safety`, `--codex-auth`; any flag/non-TTY remains scaffold-only | — | [Quickstart](/getting-started/quickstart/) | — |
-| `app.cli-setup` | cli | bare TTY `mono-agent init`: searchable catalogs, Escape-back, concrete review, all-route proof, interrupt resume/restart, then local configuration TUI | — | [CLI reference](/observability/cli-reference/#init) | — |
+| `app.cli-init` | cli | `--name`, exact `IDENTITY.md` → `## Role` prompt/outcome, managed project skills, canonical repeated `--fallback`/`--fallback-effort`, `--route-safety`, `--codex-auth`; any flag/non-TTY remains scaffold-only | — | [Quickstart](/getting-started/quickstart/) | — |
+| `app.cli-setup` | cli | bare TTY `mono-agent init`: searchable catalogs, Escape-back, concrete review, all-route proof, interrupt resume/restart; macOS starts the background agent before remote temporary configuration, unsupported platforms stay manual | — | [CLI reference](/observability/cli-reference/#init) | — |
 | `app.secure-secret-persistence` | cli | fail-closed owner-only `.env` merge + external lock + pathname no-clobber/recovery checks; Windows manual only | channel/provider-native secret vars | [Env vars](/config/env-vars/) | — |
 | `app.provider-auth` | cli | `mono-agent auth login <provider\|codex> [--pi-auth-path] [--api-key-stdin] [--codex-auth browser\|device]` | `MONO_AGENT_PI_AUTH_PATH` | [CLI reference](/observability/cli-reference/#auth-login) | — |
 | `app.cli-presets` | cli | `mono-agent presets list \| show <id>` (`recipes` alias) | — | [Presets & modules](/reference/recipes/) | — |
@@ -160,7 +160,7 @@ Built-in channels are independent JSON sections: `telegram`, `slack`, `webhook`,
 | `app.cli-stop` | cli | `mono-agent stop [--config]` | — | [Install](/getting-started/install/) | — |
 | `app.cli-logs` | cli | `mono-agent logs [--config] [--follow\|-f] [--lines <n>]` | — | [CLI reference](/observability/cli-reference/) | — |
 | `app.cli-restart-clean` | cli | `mono-agent restart [--config] [--force]` | — | [CLI reference](/observability/cli-reference/) | — |
-| `app.local-conversational-config` | cli + tool | `mono-agent tui --local [--configure]`; request-scoped `ProposeAgentConfiguration`; host approval/reload | — | [CLI reference](/observability/cli-reference/#tui) | — |
+| `app.local-conversational-config` | cli + tool | macOS `mono-agent tui --configure` against the managed background agent; separate configuration/ordinary conversations; request-scoped `ProposeAgentConfiguration`; host approval/restart/ready-source swap or rollback/recovery; `--local` is ordinary chat only | — | [CLI reference](/observability/cli-reference/#tui) | — |
 | `app.managed-project-skills` | cli + config | generated selected skills; `mono-agent install-skill --project --check\|--update` | `MONO_AGENT_SKILLS_ROOT`, `MONO_AGENT_SELECTED_SKILLS`, `MONO_AGENT_SKILL_DISCLOSURE` | [Skills](/context/skills/) | — |
 | `app.cli-install-skill` | cli | `mono-agent install-skill [--target claude\|codex\|both] [--force]`; `--project (--check\|--update)` | — | [CLI reference](/observability/cli-reference/) | — |
 | `app.env-file` | cli | automatic; `--env-file <path>` to override | — | [Env vars](/config/env-vars/) | — |

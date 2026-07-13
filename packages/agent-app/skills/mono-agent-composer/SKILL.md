@@ -33,7 +33,7 @@ Do **not** read or grep the `@mono-agent` TypeScript/package source — `package
 - The deliverable is a folder that works: `mono-agent.config.json` + `IDENTITY.md` (+ optional `skills/`, `mcp.json`), validated and started — not a tutorial.
 - Start by discovering the intended agent product, not by naming packages.
 - Ask one question at a time; skip anything the user already answered.
-- Respect existing knowledge: if the folder has `AGENTS.md`, `CLAUDE.md`, `README.md`, or an existing `IDENTITY.md`, reference it from the identity instead of replacing it. Never overwrite existing files.
+- Respect existing knowledge: if the folder has `AGENTS.md`, `CLAUDE.md`, `README.md`, or `SOUL.md`, reference it from the identity instead of copying it. `IDENTITY.md` → `## Role` is the single canonical guided-init Role location. Never overwrite an existing identity; say explicitly that a newly entered Role was not written and tell the user to add or edit that heading manually.
 - Fail closed: no allowed tools, no memory writes, loopback-only network until the user opts in.
 - Do not fake runtime success, silently broaden tool access, or hide provider/MCP failures. Backup models are configured failover (`runtime.fallbackModels`), never silent substitution.
 - Secrets stay in env vars or the untracked config file; never commit tokens or `.env*` files.
@@ -67,8 +67,8 @@ Everything below runs in the user's agent folder, not the workspace.
    mono-agent init --model <ref> [--fallback-models <csv>] [--effort <level>] [--auth] [--memory lite|journal|bujo]   # bare scaffold
    ```
 
-   Either writes a `mono-agent.config.json` (with `tools.allowedTools` pre-filled from the selected capabilities' recommended tools), an `IDENTITY.md` that references any knowledge files already present, the managed project-local `mono-agent-configure` and `mono-agent-memory` skills, and `.mono-agent/` working directories (presets also emit a `.env.example` and any extra files). `--effort` writes `runtime.effort` on supporting providers (do not use it with direct `opencode:*` SDK 1.x); `--auth` opts in to provider setup before writing files; `--dry-run` previews without writing or launching auth/preflight commands. Existing scaffold/config files are never overwritten; reviewed secret setup is the deliberate exception that can transactionally replace `.env` and update `.gitignore`.
-3. **Configure.** Edit `mono-agent.config.json` to match the discovery answers. Preserve the generated `mono-agent-configure` and `mono-agent-memory` selections when appending other skills, and do not auto-select this full authoring-oriented composer inside the generated agent. Read `references/config-blueprint.md` for the full annotated config shape: every channel section, skills, MCP, memory, sandbox, and fallback models. Run `mono-agent config` to see the resolved configuration field-by-field with each value tagged `env` / `json` / `default` — the fastest way to confirm a value came from where you intended.
+   Either writes a `mono-agent.config.json` (with `tools.allowedTools` pre-filled from the selected capabilities' recommended tools), an `IDENTITY.md` whose `## Role` body is the one Role destination and which references any knowledge files already present, the managed project-local `mono-agent-configure` and `mono-agent-memory` skills, and `.mono-agent/` working directories (presets also emit a `.env.example` and any extra files). `--effort` writes `runtime.effort` on supporting providers (do not use it with direct `opencode:*` SDK 1.x); `--auth` opts in to provider setup before writing files; `--dry-run` previews without writing or launching auth/preflight commands. Existing scaffold/config files are never overwritten; reviewed secret setup is the deliberate exception that can transactionally replace `.env` and update `.gitignore`.
+3. **Configure.** Edit `mono-agent.config.json` to match the discovery answers. For a newly created identity, put the agreed text under `IDENTITY.md` → `## Role`; if it existed before init, preserve it and report that the new answer was not stored. Preserve the generated `mono-agent-configure` and `mono-agent-memory` selections when appending other skills, and do not auto-select this full authoring-oriented composer inside the generated agent. Read `references/config-blueprint.md` for the full annotated config shape: every channel section, skills, MCP, memory, sandbox, and fallback models. Run `mono-agent config` to see the resolved configuration field-by-field with each value tagged `env` / `json` / `default` — the fastest way to confirm a value came from where you intended.
 4. **Validate.**
 
    ```bash
@@ -82,7 +82,7 @@ Everything below runs in the user's agent folder, not the workspace.
    mono-agent start
    ```
 
-   Then run the acceptance smoke test matching the chosen channel (see `references/validation.md`). To change anything, edit `mono-agent.config.json` directly and run `mono-agent restart`; there is no live browser re-apply.
+   Then run the acceptance smoke test matching the chosen channel (see `references/validation.md`). To change anything, edit `mono-agent.config.json` or `IDENTITY.md` directly and run `mono-agent restart`; there is no live browser re-apply. On macOS, `mono-agent tui --configure` can open a temporary proposal-only configuration conversation against the already-running background agent. It is separate from ordinary chat, never accepts secrets, requires an out-of-band approval, and restarts or rolls back through the managed lifecycle. Off macOS, use manual edits plus `validate`, foreground `start`, and ordinary `tui`; conversational configuration is unavailable.
 
 ## When Config Is Not Enough
 

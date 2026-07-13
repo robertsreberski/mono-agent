@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   beforeCommit: undefined as (() => Promise<void>) | undefined,
+  defaultBackgroundDeps: vi.fn(),
+  ensureBackgroundReady: vi.fn(),
   confirmAnswers: [] as unknown[],
   detectProviderCredentialStatesOverride: undefined as undefined | ((...args: unknown[]) => unknown),
   executeProviderSetupPlan: vi.fn(),
@@ -16,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   runModelRepairWizard: vi.fn(),
   runSetupRepairWizard: vi.fn(),
   runTui: vi.fn(),
+  resolveInstanceTarget: vi.fn(),
   runAllRouteReadinessProbe: vi.fn(),
   sandboxRuntimeStatus: vi.fn(),
   setupManagedSrt: vi.fn(),
@@ -73,6 +76,26 @@ vi.mock("../readiness-probe.js", async (importOriginal) => {
   return { ...actual, runAllRouteReadinessProbe: mocks.runAllRouteReadinessProbe };
 });
 
+vi.mock("../background-snapshot-key.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../background-snapshot-key.js")>();
+  const key = Buffer.alloc(32, 0x44);
+  return {
+    ...actual,
+    loadBackgroundSnapshotKey: async () => Buffer.from(key),
+    loadOrCreateBackgroundSnapshotKey: async () => Buffer.from(key),
+  };
+});
+
+vi.mock("../background.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../background.js")>();
+  return {
+    ...actual,
+    defaultBackgroundDeps: mocks.defaultBackgroundDeps,
+    ensureBackgroundReady: mocks.ensureBackgroundReady,
+    resolveInstanceTarget: mocks.resolveInstanceTarget,
+  };
+});
+
 vi.mock("../tui-command.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../tui-command.js")>();
   return { ...actual, runTui: mocks.runTui };
@@ -125,6 +148,7 @@ const originalPiAuthPath = process.env.MONO_AGENT_PI_AUTH_PATH;
 const originalTelegramToken = process.env.MONO_AGENT_TELEGRAM_BOT_TOKEN;
 const stdinTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 const temporaryDirectories: string[] = [];
 
 function readyReport() {
@@ -152,6 +176,14 @@ beforeEach(async () => {
   mocks.selectAnswers.length = 0;
   mocks.selectCalls.length = 0;
   mocks.beforeCommit = undefined;
+  mocks.defaultBackgroundDeps.mockReset();
+  mocks.defaultBackgroundDeps.mockReturnValue({});
+  mocks.ensureBackgroundReady.mockReset();
+  mocks.ensureBackgroundReady.mockResolvedValue({
+    ok: true,
+    action: "started",
+    source: { sourceId: "mono-agent-ready-source" },
+  });
   mocks.executeProviderSetupPlan.mockReset();
   mocks.logError.mockReset();
   mocks.runInitWizard.mockReset();
@@ -165,6 +197,8 @@ beforeEach(async () => {
   mocks.checkSandboxRuntime.mockReset();
   mocks.validateMonoAgentFolder.mockReset();
   mocks.runAllRouteReadinessProbe.mockResolvedValue({ ok: true });
+  mocks.resolveInstanceTarget.mockReset();
+  mocks.resolveInstanceTarget.mockResolvedValue({ target: "guided-init-background" });
   const managedStatus = {
     state: "ready" as const,
     source: "managed" as const,
@@ -186,6 +220,7 @@ beforeEach(async () => {
   mocks.validateMonoAgentFolder.mockResolvedValue(readyReport());
   Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
   Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+  Object.defineProperty(process, "platform", { configurable: true, value: "darwin" });
   vi.spyOn(process.stdout, "write").mockImplementation((() => true) as typeof process.stdout.write);
   vi.spyOn(process.stderr, "write").mockImplementation((() => true) as typeof process.stderr.write);
   const dir = await mkdtemp(join(tmpdir(), "mono-agent-cli-first-run-"));
@@ -200,6 +235,7 @@ afterEach(async () => {
   else Object.defineProperty(process.stdin, "isTTY", stdinTtyDescriptor);
   if (stdoutTtyDescriptor === undefined) delete (process.stdout as { isTTY?: boolean }).isTTY;
   else Object.defineProperty(process.stdout, "isTTY", stdoutTtyDescriptor);
+  if (platformDescriptor !== undefined) Object.defineProperty(process, "platform", platformDescriptor);
   if (originalTelegramToken === undefined) delete process.env.MONO_AGENT_TELEGRAM_BOT_TOKEN;
   else process.env.MONO_AGENT_TELEGRAM_BOT_TOKEN = originalTelegramToken;
   if (originalOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
@@ -210,6 +246,31 @@ afterEach(async () => {
 });
 
 describe("guided init state transitions", () => {
+  it("keeps an absent default dotenv implicit for the launchd worker and configuration TUI", async () => {
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers(),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      runProviderSetup: false,
+    });
+    mocks.confirmAnswers.push(false);
+
+    await expect(runCli(["init"])).resolves.toBe(0);
+
+    expect(mocks.resolveInstanceTarget).toHaveBeenCalledWith(expect.objectContaining({
+      args: { configPath: join(process.cwd(), "mono-agent.config.json") },
+    }));
+    expect(mocks.resolveInstanceTarget.mock.calls[0]?.[0]?.args).not.toHaveProperty("envFile");
+    expect(mocks.runTui).toHaveBeenCalledWith(expect.objectContaining({
+      configPath: join(process.cwd(), "mono-agent.config.json"),
+      agent: "mono-agent-ready-source",
+      configure: true,
+    }));
+    expect(mocks.runTui.mock.calls[0]?.[0]).not.toHaveProperty("envFile");
+    await expect(access(join(process.cwd(), ".env"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("securely re-processes an existing selected dotenv secret without replacing its value", async () => {
     const envPath = join(process.cwd(), ".env");
     await writeFile(envPath, "MONO_AGENT_TELEGRAM_BOT_TOKEN=operator-value\n", { mode: 0o644 });
@@ -235,9 +296,106 @@ describe("guided init state transitions", () => {
     expect(mocks.runTui).toHaveBeenCalledWith(expect.objectContaining({
       configPath: join(process.cwd(), "mono-agent.config.json"),
       cwd: process.cwd(),
-      local: true,
+      envFile: join(process.cwd(), ".env"),
+      agent: "mono-agent-ready-source",
       configure: true,
     }));
+    expect(mocks.runTui.mock.calls[0]?.[0]).not.toHaveProperty("local");
+    expect(mocks.ensureBackgroundReady).toHaveBeenCalledOnce();
+    const backgroundResolution = mocks.resolveInstanceTarget.mock.calls[0]?.[0] as {
+      readonly env: Readonly<Record<string, string | undefined>>;
+    };
+    expect(backgroundResolution.env.MONO_AGENT_TELEGRAM_BOT_TOKEN).toBe("operator-value");
+    expect(backgroundResolution.env).not.toHaveProperty("MONO_AGENT_PI_AUTH_PATH");
+    const configurationEnvironment = mocks.runTui.mock.calls[0]?.[0]?.env as
+      | Readonly<Record<string, string | undefined>>
+      | undefined;
+    expect(configurationEnvironment?.MONO_AGENT_TELEGRAM_BOT_TOKEN).toBe("operator-value");
+    expect(configurationEnvironment).not.toHaveProperty("MONO_AGENT_PI_AUTH_PATH");
+  });
+
+  it("passes an explicit env file through ordinary TUI dispatch for later managed restarts", async () => {
+    await expect(runCli(["tui", "--env-file", ".env.operator"])).resolves.toBe(0);
+
+    expect(mocks.runTui).toHaveBeenCalledWith(expect.objectContaining({
+      configPath: join(process.cwd(), "mono-agent.config.json"),
+      cwd: process.cwd(),
+      envFile: ".env.operator",
+    }));
+  });
+
+  it("preserves committed files and skips configuration chat when background readiness fails", async () => {
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers(),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      runProviderSetup: false,
+    });
+    mocks.confirmAnswers.push(false);
+    mocks.ensureBackgroundReady.mockResolvedValue({ ok: false, action: "start", reason: "timeout" });
+
+    await expect(runCli(["init"])).resolves.toBe(1);
+
+    await expect(access(join(process.cwd(), "mono-agent.config.json"))).resolves.toBeUndefined();
+    expect(mocks.runTui).not.toHaveBeenCalled();
+    const diagnostic = vi.mocked(process.stderr.write).mock.calls.map(([chunk]) => String(chunk)).join("");
+    expect(diagnostic).toContain("files were preserved");
+    expect(diagnostic).toContain("configuration chat was not opened");
+  });
+
+  it("prints exact recovery commands when background target resolution throws unexpectedly", async () => {
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers(),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      runProviderSetup: false,
+    });
+    mocks.confirmAnswers.push(false);
+    mocks.resolveInstanceTarget.mockRejectedValue(new Error("trace registry resolution failed"));
+
+    await expect(runCli(["init"])).resolves.toBe(1);
+
+    await expect(access(join(process.cwd(), "mono-agent.config.json"))).resolves.toBeUndefined();
+    expect(mocks.ensureBackgroundReady).not.toHaveBeenCalled();
+    expect(mocks.runTui).not.toHaveBeenCalled();
+    const diagnostic = vi.mocked(process.stderr.write).mock.calls.map(([chunk]) => String(chunk)).join("");
+    expect(diagnostic).toContain("trace registry resolution failed");
+    expect(diagnostic).toContain("validated agent files were preserved");
+    expect(diagnostic).toContain("mono-agent start --config");
+    expect(diagnostic).toContain("mono-agent status --config");
+    expect(diagnostic).toContain("mono-agent logs --config");
+    expect(diagnostic).toContain("--follow");
+    expect(diagnostic).toContain(".mono-agent/logs/");
+    expect(diagnostic).not.toContain("--env-file");
+  });
+
+  it("gives explicit two-terminal guidance without claiming readiness on unsupported platforms", async () => {
+    Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+    mocks.runInitWizard.mockResolvedValue({
+      status: "answers",
+      answers: defaultAnswers(),
+      moduleSecrets: {},
+      providerSetupSecrets: {},
+      runProviderSetup: false,
+    });
+    mocks.confirmAnswers.push(false);
+
+    await expect(runCli(["init"])).resolves.toBe(0);
+
+    expect(mocks.ensureBackgroundReady).not.toHaveBeenCalled();
+    expect(mocks.runTui).not.toHaveBeenCalled();
+    const output = vi.mocked(process.stdout.write).mock.calls.map(([chunk]) => String(chunk)).join("");
+    expect(output).toContain("Automatic background start and configuration chat require macOS launchd");
+    expect(output).toContain("mono-agent start --foreground --config");
+    expect(output).toContain("Configure manually:");
+    expect(output).toContain("mono-agent tui --config");
+    expect(output).toContain("Conversational configuration requires the managed macOS background lifecycle");
+    expect(output).not.toContain("mono-agent tui --configure");
+    expect(output).not.toContain("--env-file");
+    expect(output).toContain("readiness is not claimed");
+    expect(output).not.toContain("Agent ready");
   });
 
   it("hardens an existing provider key even when the selected plan has no module secrets", async () => {

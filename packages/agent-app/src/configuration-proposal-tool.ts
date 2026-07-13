@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { rename, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -11,6 +10,7 @@ export const CONFIGURATION_PROPOSAL_TOOL_NAME = "ProposeAgentConfiguration";
 
 const SINK_ENV = "MONO_AGENT_CONFIGURATION_PROPOSAL_SINK";
 const BASE_VERSION_ENV = "MONO_AGENT_CONFIGURATION_BASE_VERSION";
+const BIDI_CONTROL = /\p{Bidi_Control}/u;
 
 export interface JsonPatchOperation {
   readonly op: "add" | "remove" | "replace" | "move" | "copy" | "test";
@@ -34,6 +34,26 @@ export interface ConfigurationProposalChildSettings {
   readonly baseVersion: string;
 }
 
+/**
+ * Proposal copy is rendered in an out-of-band terminal approval card. Keep
+ * ordinary Unicode text and LF newlines intact, but reject terminal controls
+ * and bidi controls that could clear, overwrite, or visually reorder the
+ * operator's review.
+ */
+export function containsUnsafeConfigurationReviewControl(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    if (
+      (codePoint <= 0x1f && codePoint !== 0x0a)
+      || (codePoint >= 0x7f && codePoint <= 0x9f)
+      || BIDI_CONTROL.test(character)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const patchOperationSchema = z.object({
   op: z.enum(["add", "remove", "replace", "move", "copy", "test"]),
   path: z.string().min(1).max(500).startsWith("/"),
@@ -49,10 +69,28 @@ const patchOperationSchema = z.object({
 });
 
 const proposalInputSchema = {
-  rationale: z.string().trim().min(1).max(2_000).describe("Short operator-facing reason for this change."),
-  patch: z.array(patchOperationSchema).min(1).max(50).describe("RFC 6902 patch against mono-agent.config.json."),
-  role: z.string().trim().min(1).max(8_000).optional().describe("Optional replacement body for the existing ## Role section in IDENTITY.md."),
+  rationale: configurationReviewTextSchema(2_000, "Short operator-facing reason for this change."),
+  patch: z.array(patchOperationSchema).max(50).describe("RFC 6902 patch against mono-agent.config.json. May be empty only for a Role-only proposal."),
+  role: configurationReviewTextSchema(
+    8_000,
+    "Optional replacement body for the existing ## Role section in the configured identity document (normally IDENTITY.md).",
+  ).optional(),
 };
+
+function configurationReviewTextSchema(maxLength: number, description: string) {
+  return z.string()
+    .superRefine((value, context) => {
+      if (containsUnsafeConfigurationReviewControl(value)) {
+        context.addIssue({
+          code: "custom",
+          message: "Configuration proposal review text contains unsafe terminal or bidi controls.",
+        });
+      }
+    })
+    .transform((value) => value.trim())
+    .pipe(z.string().min(1).max(maxLength))
+    .describe(description);
+}
 
 export function configurationProposalChildSettingsFromEnv(
   env: Record<string, string | undefined>,
@@ -106,10 +144,28 @@ export function createConfigurationProposalServer(settings: ConfigurationProposa
       inputSchema: proposalInputSchema,
     },
     async (args) => {
+      if (args.patch.length === 0 && args.role === undefined) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "A configuration proposal must change config, the configured identity document's ## Role, or both." }],
+        };
+      }
       if (proposed) {
         return {
           isError: true,
           content: [{ type: "text", text: "Only one configuration proposal is accepted per turn." }],
+        };
+      }
+      if (
+        containsUnsafeConfigurationReviewControl(args.rationale)
+        || (args.role !== undefined && containsUnsafeConfigurationReviewControl(args.role))
+      ) {
+        return {
+          isError: true,
+          content: [{
+            type: "text",
+            text: "Configuration proposal review text may contain printable characters and LF newlines only; unsafe terminal or bidi controls were rejected.",
+          }],
         };
       }
       if (
@@ -174,7 +230,9 @@ function containsSecretLike(value: unknown): boolean {
 }
 
 async function writeProposal(path: string, proposal: AgentConfigurationProposal): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  // The owner-local TUI pre-creates the capability directory. Never recreate
+  // it here: removing that directory on console exit must revoke late tool
+  // calls from an abort-ignoring provider rather than resurrect the session.
   const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
   try {
     await writeFile(temporary, `${JSON.stringify(proposal)}\n`, { flag: "wx", mode: 0o600 });

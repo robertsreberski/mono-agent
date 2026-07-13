@@ -101,6 +101,7 @@ How the endpoint is discovered: the running channel's summary (`baseUrl`) is fol
 ## Concurrency & security
 
 - A console conversation uses its own `conversationId`, so it runs concurrently with every other channel; reusing an existing id (e.g. a Telegram conversation's) is possible and queues behind that conversation's in-flight turn.
+- Managed macOS configuration uses a separate opaque configuration conversation id and never reuses the ordinary chat id. The proposal-only extension is scoped to that request; after the proposal/review outcome, the console moves to a fresh ordinary conversation while the background endpoint stays authoritative.
 - Loopback-only by default; binding further requires `allowNonLoopback` **and** should always pair with `apiKey`. Remember this endpoint streams tool arguments and results verbatim — it is an operator surface by design.
 
 ## Related

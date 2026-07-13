@@ -131,6 +131,8 @@ export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput 
   readonly verifiedCredentialModelRefs?: readonly string[];
   /** Injectable subprocess seam for deterministic provider credential/login-status tests. */
   readonly sdkAuthStatusExecFile?: SdkAuthStatusExecFile;
+  /** Managed workers resolve optional plugins only from their attested app closure. */
+  readonly preferAppPluginInstall?: boolean;
 }
 
 /**
@@ -188,7 +190,14 @@ export async function validateMonoAgentFolder(
       staticTriggerCredentialRefs,
     ));
     sections.push(await contextSection(coreConfig, options.cwd));
-    sections.push(await memorySection(coreConfig, options.cwd, options.env, liveness, allowFilesystemWrites));
+    sections.push(await memorySection(
+      coreConfig,
+      options.cwd,
+      options.env,
+      liveness,
+      allowFilesystemWrites,
+      options.preferAppPluginInstall === true,
+    ));
     sections.push(await toolsSection(coreConfig, options));
     sections.push(await sandboxSection(coreConfig, options.sandboxEngine));
   }
@@ -1342,6 +1351,7 @@ async function memorySection(
   env: Readonly<Record<string, string | undefined>>,
   liveness: boolean,
   allowFilesystemWrites: boolean,
+  preferAppPluginInstall: boolean,
 ): Promise<ValidationSection> {
   if (config.memory === undefined) {
     return { id: "memory", label: "Memory", status: "disabled", details: ["No memory configured."] };
@@ -1360,7 +1370,7 @@ async function memorySection(
       };
     }
     try {
-      const plugin = await loadSupermemoryPlugin({ cwd });
+      const plugin = await loadSupermemoryPlugin({ cwd, preferAppInstall: preferAppPluginInstall });
       const validation = plugin.validateSupermemoryConfig({
         baseUrl: sm.baseUrl,
         container: resolveSupermemoryContainer(config),

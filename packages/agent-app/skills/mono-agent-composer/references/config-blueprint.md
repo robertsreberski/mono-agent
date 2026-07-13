@@ -12,7 +12,7 @@ One `mono-agent.config.json` declares the whole agent. Paths are relative to the
 ```text
 my-agent/
   mono-agent.config.json   # the single declaration below
-  IDENTITY.md              # role, boundaries, references to existing knowledge
+  IDENTITY.md              # canonical ## Role body, boundaries, references to existing knowledge
   skills/                  # optional: <skill-name>/SKILL.md per selected skill
   cron/                    # optional: <job-id>.md scheduled prompts
   mcp.json                 # optional: MCP server definitions
@@ -294,7 +294,7 @@ A `.env` file in the folder is loaded automatically (exported shell variables wi
 
 For BuJo capture and the effective `bujo` tier that runs scheduled consolidation, configure `memory.llm`. Use `provider: "ollama"` with a local Ollama chat model string and optional `endpoint`, or `provider: "agent-host"` with `model` as a normal SDK runtime model reference such as `pi:openai-codex:gpt-5.5` and `executionMode: "sdk"`. `endpoint` is Ollama-only, and CLI-backed refs such as `codex:gpt-5.5` are rejected for memory LLMs until runtimes can enforce no external actions. The same values can be supplied via `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`, and `MONO_AGENT_MEMORY_LLM_ENDPOINT`. The standalone `memory-bujo migrate` command remains Ollama-only; other maintenance commands use the configured embeddings provider. `agent-host` LLM capture is an in-app composition path that injects the `LlmComplete` implementation into the BuJo store.
 
-For operator views, run `mono-agent tui` or `mono-agent web` from any directory once the agent is started. Both discover running agents via the trace-source registry. The TUI chats over the default-on `tui` stream endpoint (`"tui": {"enabled": false}` opts out); the web PWA reads artifacts and live updates from the default-on `live` relay (`"live": {"enabled": false}` opts out). Web history/live views show agent runs by default; add `mono-agent web --include-memory` to inspect memory-maintenance runs. Both bind loopback by default. The low-level `mono-agent-tui` bin also supports `--responder <file>` (embedded, an ESM module default-exporting an `AgentResponderLike` or exporting `createResponder(env, cwd, configJson)`) and `--url <baseUrl>` (direct connect).
+For operator views, run `mono-agent tui` or `mono-agent web` from any directory once the agent is started. Both discover running agents via the trace-source registry. The TUI chats over the default-on `tui` stream endpoint (`"tui": {"enabled": false}` opts out); on macOS, `mono-agent tui --configure` opens a separate temporary proposal-only conversation against the managed background agent and must not be combined with `--local`. The web PWA reads artifacts and live updates from the default-on `live` relay (`"live": {"enabled": false}` opts out). Web history/live views show agent runs by default; add `mono-agent web --include-memory` to inspect memory-maintenance runs. Both bind loopback by default. The low-level `mono-agent-tui` bin also supports `--responder <file>` (embedded, an ESM module default-exporting an `AgentResponderLike` or exporting `createResponder(env, cwd, configJson)`) and `--url <baseUrl>` (direct connect).
 
 ## Programmatic Escape Hatch
 

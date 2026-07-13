@@ -1,17 +1,20 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import {
   isPathUnderTmpdir,
+  resolveAppTraceRegistryDir,
   resolveAppTraceGlobalDiscovery,
   resolveAppTraceSourceLabel,
   resolveGlobalTraceRegistryDir,
   resolveTraceTmpdirRoot,
   shouldMirrorTraceSourceGlobally,
 } from "../app-config.js";
+
+const ACCOUNT_TRACE_REGISTRY = join(userInfo().homedir, ".mono-agent", "trace-sources");
 
 describe("resolveAppTraceSourceLabel", () => {
   it("uses agent.name as the display default while preserving an explicit trace label", async () => {
@@ -51,14 +54,59 @@ describe("resolveAppTraceSourceLabel", () => {
 });
 
 describe("resolveGlobalTraceRegistryDir", () => {
-  it("defaults to the host-shared registry under the home directory", () => {
-    expect(resolveGlobalTraceRegistryDir({})).toBe(join(homedir(), ".mono-agent", "trace-sources"));
+  it("defaults to the OS account home independently of ambient HOME", () => {
+    const previousHome = process.env.HOME;
+    const ambientHome = join(tmpdir(), "mono-agent-ambient-home-do-not-use");
+    process.env.HOME = ambientHome;
+    try {
+      expect(resolveGlobalTraceRegistryDir({ HOME: ambientHome })).toBe(ACCOUNT_TRACE_REGISTRY);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
   });
 
   it("honors MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR (test/ops injection seam)", () => {
     expect(resolveGlobalTraceRegistryDir({ MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: "/fake/global-registry" })).toBe(
       "/fake/global-registry",
     );
+  });
+});
+
+describe("resolveAppTraceRegistryDir", () => {
+  it("defaults to the OS account home independently of ambient HOME", async () => {
+    const previousHome = process.env.HOME;
+    const ambientHome = join(tmpdir(), "mono-agent-ambient-home-do-not-use");
+    process.env.HOME = ambientHome;
+    try {
+      await expect(resolveAppTraceRegistryDir({
+        env: { HOME: ambientHome },
+        cwd: "/nowhere",
+        configPath: "/nowhere/mono-agent.config.json",
+      })).resolves.toBe(ACCOUNT_TRACE_REGISTRY);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+  it("preserves explicit config and environment overrides", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-trace-registry-"));
+    const configPath = join(dir, "mono-agent.config.json");
+    try {
+      await writeFile(configPath, JSON.stringify({
+        traceability: { registryDir: "./config-registry" },
+      }));
+      await expect(resolveAppTraceRegistryDir({ env: {}, cwd: dir, configPath }))
+        .resolves.toBe(join(dir, "config-registry"));
+      await expect(resolveAppTraceRegistryDir({
+        env: { MONO_AGENT_TRACE_REGISTRY_DIR: "./environment-registry" },
+        cwd: dir,
+        configPath,
+      })).resolves.toBe(join(dir, "environment-registry"));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

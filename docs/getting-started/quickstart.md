@@ -6,7 +6,7 @@ sidebar:
 
 # Your First Agent
 
-This page walks the happy path: complete the single guided `mono-agent init` wizard, then continue directly in the current folder's local TUI. A background service and webhook smoke remain available later, but neither is required for the first conversation. A real model reply still requires provider credentials or a configured local provider.
+This page walks the macOS happy path: complete the guided `mono-agent init` wizard, let it start the durable background agent, use the short temporary configuration mode, then continue in ordinary remote chat. A real model reply still requires provider credentials or a configured local provider.
 
 ## Prerequisites
 
@@ -30,7 +30,7 @@ cd my-agent
 mono-agent init
 ```
 
-The wizard starts from a [preset](/reference/recipes/) or custom answers, asks what the agent should be called and one concise sentence describing its purpose, then walks through the same model, channel, memory, runtime-appropriate tool/safety, and observability decisions either way. Type to search the primary and fallback catalogs; add as many fallbacks as you need and choose each route's supported effort or **Provider default**. Escape moves back one logical step. Ctrl-C asks before exiting.
+The wizard starts from a [preset](/reference/recipes/) or custom answers, asks what the agent should be called, and labels the next answer as the exact Role text for `IDENTITY.md` → `## Role`. Creation review repeats both the destination and the exact text. If `IDENTITY.md` already exists, the wizard says it will remain unchanged and that the entered Role will not be written. It then walks through the same model, channel, memory, runtime-appropriate tool/safety, and observability decisions either way. Type to search the primary and fallback catalogs; add as many fallbacks as you need and choose each route's supported effort or **Provider default**. Escape moves back one logical step. Ctrl-C asks before exiting.
 
 Journal and BuJo add a dedicated local-embeddings step. Choose Ollama or LM Studio,
 confirm its service root, select a model from provider-native typed discovery, and let the
@@ -44,9 +44,11 @@ when its server uses authentication, name the populated owner-only `.env` variab
 
 **Allow all tools** is the default and includes shell, file, web, and enabled channel-send tools. `runtime.routeSafety: "uniform"` keeps one common fail-closed contract. A mixed Pi/Claude/Codex/OpenCode chain requires explicit `per-route-native` acceptance after the wizard displays the concrete route matrix. Pi keeps mono-agent tools and optional managed SRT; provider-owned routes use their documented native contract. Unsupported capabilities are never silently dropped.
 
-After the explicit **Creation review**, the wizard makes one disposable no-tool call for every selected route, sequentially, with a 90-second cloud or 240-second local deadline per route. A detected Codex/Claude sign-in or Pi auth-store entry skips redundant authentication, but it is not called verified until the exact route succeeds. Escape or Ctrl-C interrupts safely. Recovery can resume routes already verified under the same non-secret plan fingerprint, restart all checks, edit choices, or cancel without writing. Choosing authentication repair clears all prior route proofs before the checks rerun. Provider failure, timeout, empty output, or any tool action fails that route. **Agent ready** additionally requires the committed config and every selected credential, channel, sandbox, memory, and observability expectation to be ready.
+After the explicit **Creation review**, the wizard makes one disposable no-tool call for every selected route, sequentially, with a 90-second cloud or 240-second local deadline per route. A detected Codex/Claude sign-in or Pi auth-store entry skips redundant authentication, but it is not called verified until the exact route succeeds. Escape or Ctrl-C interrupts safely. Recovery can resume routes already verified under the same non-secret plan fingerprint, restart all checks, edit choices, or cancel without writing. Choosing authentication repair clears all prior route proofs before the checks rerun. Provider failure, timeout, empty output, or any tool action fails that route. On macOS, **Agent ready** additionally requires the committed config and every selected credential, channel, sandbox, memory, and observability expectation to be ready. The exact already-resolved package closure—including selected plugin-tier channel and Supermemory packages—is copied and integrity-manifested outside any disposable npm cache without running npm or lifecycle scripts; its source digest prevents reuse after dependency drift. Launchd is then loaded or fully reloaded through a clean allowlisted environment. The worker must acquire the one canonical per-config lifetime lease, distinguish its owner across PID reuse, and freeze the attested config, Identity, optional Soul, and external MCP authority file into private read-only inputs. Its live PID, fresh trace, committed snapshot fingerprints, durable environment, and reachable TUI endpoint must agree. Only then does the wizard open the TUI against that background process.
 
-Passing any flag or running without a TTY skips the wizard and writes a scaffold only. It never runs the readiness proof or labels the result ready, and it prints the exact continuation command: `mono-agent tui --local --configure`. These flags remain useful for automation:
+Passing any flag or running without a TTY skips the wizard and writes a scaffold only. It never runs the readiness proof, starts a process, or labels the result ready. These flags remain useful for automation:
+
+Exact background file bytes are committed with a per-config 256-bit HMAC key stored under owner-only `~/.mono-agent/background-snapshot-keys/`; argv and trace metadata expose neither plaintext nor an offline-testable content digest.
 
 Optional flags:
 
@@ -77,7 +79,7 @@ mono-agent init \
 `init` is non-destructive for scaffold/config files (`app.cli-init`): existing config, identity, and capability files are reported as unchanged. Guided secret setup is the explicit exception and may securely harden/update `.env` plus `.gitignore`. In a clean folder it creates:
 
 - **`mono-agent.config.json`** — the single config file that declares the whole agent. It enables the **webhook channel** (`webhook.enabled: true`) as the zero-credential smoke channel so you can get a response immediately, and wires `artifacts`, `traceability`, and `context.identityPath` to the scaffolded paths.
-- **`IDENTITY.md`** — the purpose-derived Role, boundaries, and a Knowledge section that references any `AGENTS.md`, `CLAUDE.md`, `README.md`, or `SOUL.md` already present in the folder. See [Identity and Soul](/context/identity-and-soul/).
+- **`IDENTITY.md`** — the reviewed Role is stored only as the body of `## Role`, alongside boundaries and a Knowledge section that references any `AGENTS.md`, `CLAUDE.md`, `README.md`, or `SOUL.md` already present in the folder. An existing file is preserved byte-for-byte; in that case the entered Role is not written, and you add or edit its `## Role` section later. See [Identity and Soul](/context/identity-and-soul/).
 - **`skills/mono-agent-configure` and `skills/mono-agent-memory`** — versioned project-local skills selected with index disclosure. `ReadSkill` loads their bodies only when needed. `skills/.mono-agent-managed.json` records their hashes for safe drift checks and updates.
 - **`.mono-agent/`** — working directories: `.mono-agent/artifacts` (run output) and `.mono-agent/workspace`.
 
@@ -137,17 +139,21 @@ Every field has a `MONO_AGENT_*` env override (env > JSON > defaults) — for ex
 
 For selected channel secrets, the guided wizard never shows values in config, examples, review output, or logs. Existing non-empty dotenv assignments/comments are preserved. A shell-only selected secret does not skip the masked prompt because a later background start cannot inherit that shell; the entered value must match any exported or persisted copy before the wizard writes a missing value. Durable provider keys already present in `.env` go through the same secure preflight even when the plan has no channel secret. On POSIX the canonical agent directory must be current-user-owned and not group/world-writable, while existing `.env` and `.gitignore` files must be current-user-owned single-link regular files. The env is written or tightened to owner-only (`0600`) under an external lock, the ignore guard loses group/world write access, and promotion is pathname no-clobber with exact rules for `.env` plus transaction artifacts. Pathname competitors stay at the target. The claimed inode is rechecked; detected writes through an already-open descriptor are retained at a printed owner-only recovery path, while a non-cooperative write after the final check remains outside the POSIX guarantee. Automatic persistence refuses tracked, symlinked, hard-linked, or foreign-owned files, malformed/conflicting dotenv, unrepresentable values, stale locks, concurrent changes, and platforms such as Windows where owner-only protection cannot be verified. Follow the printed manual instructions; never copy `.env.example` over an already populated `.env`.
 
-## 2. Continue in the local TUI (`cli`)
+## 2. Finish temporary configuration, then chat (`cli`)
 
-After a successful guided readiness proof, init opens this mode automatically:
+After a successful guided readiness proof on macOS, init starts the background agent, waits for its ready trace source, and opens this remote mode automatically:
 
 ```bash
-mono-agent tui --local --configure
+mono-agent tui --configure
 ```
 
-`--local` builds the current folder's responder in-process; it does not discover a daemon or create launchd state. The first recorded agent turn asks how you would like to configure it further. The bundled skills can prepare one minimal RFC 6902 proposal, but the model cannot apply it: the host validates the candidate against the effective environment, shows a separate approval card, and writes only after your TUI confirmation. `/configure` re-enters this mode later. Giving an ordinary task consumes and exits the pending configuration invitation.
+The opening exchange is visibly labeled **Temporary post-wizard configuration mode** and uses a separate configuration conversation id. It is not ordinary chat. The host says: “Discuss the agent's Role, behavior, memory, skills, tools, or channels. Do not enter secrets. Nothing changes until the host shows a separate approval. Reply `done` or `no changes` to finish without edits. After your reply and any approval or rejection, ordinary chat starts; `/quit` closes only this console and the background agent keeps running.” The agent may prepare one minimal RFC 6902 proposal, but it cannot apply anything. The local host validates the candidate, shows a separate approve/reject review, and writes only after your confirmation. No proposal or rejection moves the same console to a fresh ordinary conversation; `/configure` can re-enter later.
 
-The conversational patch surface is intentionally small: public name; effort, turn/session UX; selected project skills and disclosure; memory size or MemoryRecall enablement; semantic tool-policy tightening; and the separately validated Role body. Paths, memory tier/capture behavior, secrets, model/provider or runtime-permission changes, external MCP servers/plugins, channels and cron/proactive jobs, exporters or embeddings/LLM endpoints, sandbox/network policy, and unknown future fields are refused here and handed to the existing explicit setup flow. During that turn, ordinary action tools and configured MCP servers are replaced by `ReadSkill`, `MemoryRecall`, and the inert proposal server; direct providers that cannot project a finite tool list are forced into native read-only plan mode. Approved changes run under an owner-only transaction lock, stage and fsync replacements before a final non-yielding source comparison plus rename, reject symlink-parent escapes, compensate Role if config rollback races, retain a local rollback change id, wait before dispatching fast follow-ups, reload after the response settles, and start a fresh provider conversation.
+The conversational patch surface is intentionally small: public name; effort, turn/session UX; selected project skills and disclosure; memory size or MemoryRecall enablement; semantic tool-policy tightening; and the separately validated `## Role` body in the identity file resolved from `context.identityPath`. Paths, memory tier/capture behavior, secrets, model/provider or runtime-permission changes, external MCP servers/plugins, channels and cron/proactive jobs, exporters or embeddings/LLM endpoints, sandbox/network policy, and unknown future fields are refused for direct application and handed to an explicit guided flow. During the configuration conversation, ordinary action tools and configured MCP servers are replaced by `ReadSkill`, `MemoryRecall`, and the inert proposal server. Pure direct-Codex chains use native read-only plan mode; mixed chains retain the finite proposal surface. Because direct OpenCode cannot receive the proposal MCP capability, a direct-OpenCode primary uses a configured capable fallback and a direct-OpenCode fallback makes temporary configuration refuse explicitly.
+
+After approval, the host commits the files, restarts the launchd agent, waits for its new ready trace source, swaps the TUI endpoint, and activates ordinary chat. If the new configuration cannot start, it restores the prior files, restarts the previous agent, reports the recovery, and still moves to ordinary chat. If rollback or recovery restart fails, the console reports manual recovery instead of claiming success. Use `mono-agent status`, `mono-agent logs --follow`, `mono-agent restart`, and `mono-agent stop` to inspect or recover the managed instance.
+
+Conversational configuration is unavailable off macOS because it depends on managed restart, readiness, and rollback. The wizard preserves the files without a readiness claim. Edit `mono-agent.config.json` and `IDENTITY.md` manually, run `mono-agent validate`, then run `mono-agent start --foreground` in Terminal 1 and ordinary `mono-agent tui` in Terminal 2.
 
 ## 3. Validate (`cli`)
 
@@ -181,13 +187,13 @@ node "$repo/packages/agent-app/dist/cli.js" validate
 :::
 Point validate at a non-default config or env file with `mono-agent validate --config ./other.config.json --env-file ./.env`. To check a downstream agent folder from elsewhere, use `mono-agent validate --consumer ../local-agent-alpha`; the consumer `.env` loads by default and relative `--config` / `--env-file` paths resolve inside that folder.
 
-## 4. Start (`cli`, optional)
+## 4. Start or inspect the service (`cli`)
 
 ```bash
 mono-agent start
 ```
 
-This boots the runtime and every enabled channel. The webhook channel listens on loopback (`127.0.0.1`) and, because the default `port` is `0`, picks a free port. `start` prints the resolved webhook **invoke URL** — copy it for the smoke test below.
+Guided macOS init has already started this service before configuration mode. Run `mono-agent status` to inspect it; use `mono-agent start` when continuing from a scaffold or manually recovered setup. This boots the runtime and every enabled channel. The webhook channel listens on loopback (`127.0.0.1`) and, because the default `port` is `0`, picks a free port. `start` prints the resolved webhook **invoke URL** — copy it for the smoke test below.
 
 On macOS, `mono-agent start` backgrounds the agent with launchd and returns. On other platforms, use `mono-agent start --foreground`.
 

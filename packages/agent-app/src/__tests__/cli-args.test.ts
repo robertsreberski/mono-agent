@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { describeChannelStatus, loadCliEnvFile, monoAgentVersion, parseCliArgs, renderHelp, runCli } from "../cli.js";
+import { MANAGED_BACKGROUND_WORKER_ENV } from "../background-runtime.js";
 
 const tempDirs: string[] = [];
 
@@ -146,6 +147,42 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["start", "--foreground"])).toMatchObject({ command: "start", foreground: true });
     expect(parseCliArgs(["start", "-f"])).toMatchObject({ command: "start", foreground: true });
     expect(parseCliArgs(["start"])).toMatchObject({ command: "start", foreground: false });
+  });
+
+  it("parses the internal managed-worker snapshot transport without advertising it as public help", () => {
+    expect(parseCliArgs([
+      "start",
+      "--foreground",
+      "--expected-background-snapshot",
+      "encoded-snapshot",
+    ])).toMatchObject({
+      command: "start",
+      foreground: true,
+      expectedBackgroundSnapshot: "encoded-snapshot",
+    });
+    expect(renderHelp()).not.toContain("--expected-background-snapshot");
+  });
+
+  it("rejects the internal snapshot outside launchd and makes a missing managed snapshot non-restarting", async () => {
+    const ordinary = await captureCli(() => runCli([
+      "start",
+      "--foreground",
+      "--expected-background-snapshot",
+      "encoded-snapshot",
+    ]));
+    expect(ordinary.code).toBe(2);
+    expect(ordinary.stderr).toContain("reserved for the managed LaunchAgent worker");
+
+    const previous = process.env[MANAGED_BACKGROUND_WORKER_ENV];
+    process.env[MANAGED_BACKGROUND_WORKER_ENV] = "1";
+    try {
+      const managed = await captureCli(() => runCli(["start", "--foreground"]));
+      expect(managed.code).toBe(0);
+      expect(managed.stderr).toContain("missing its approved background snapshot");
+    } finally {
+      if (previous === undefined) delete process.env[MANAGED_BACKGROUND_WORKER_ENV];
+      else process.env[MANAGED_BACKGROUND_WORKER_ENV] = previous;
+    }
   });
 
   it("parses the background control commands with --config", () => {

@@ -74,6 +74,7 @@ import {
   composeRuntimeOptionExtensions,
   type RuntimeOptionsExtension,
 } from "./runtime-option-extensions.js";
+import { createLocalConfigurationRuntimeExtension } from "./local-configuration.js";
 import {
   createRunHistoryRuntimeExtension,
   isRunHistoryToolAllowed,
@@ -90,6 +91,7 @@ import {
   configuredRuntimeModels,
   hasConfiguredRuntimeFallbacks,
 } from "./runtime-routes.js";
+import type { BackgroundSnapshot } from "./background-snapshot.js";
 
 /**
  * Outcome of a live config re-apply (`applyConfigChange`). Consumed by callers
@@ -105,6 +107,12 @@ export interface MonoAgentAppOptions {
   readonly cwd?: string;
   /** Path to mono-agent.config.json; defaults to <cwd>/mono-agent.config.json. */
   readonly configPath?: string;
+  /**
+   * Optional immutable read source for managed workers. The public app and
+   * trace metadata continue to identify `configPath`; every runtime/channel
+   * config loader reads this path instead.
+   */
+  readonly configReadPath?: string;
   readonly logger?: MonoAgentAppLogger;
   /** Channel drivers to run. Defaults to every built-in channel. */
   readonly drivers?: readonly ChannelDriver[];
@@ -113,6 +121,8 @@ export interface MonoAgentAppOptions {
   /** Sandbox engine override (testing / advanced composition). */
   readonly sandboxEngine?: SandboxEngine;
   readonly traceDefaults?: AppTraceDefaults;
+  /** Secret-free proof of the durable files/environment observed by this worker. */
+  readonly backgroundSnapshot?: BackgroundSnapshot;
 }
 
 export type TraceabilityStatus =
@@ -187,18 +197,21 @@ export interface MonoAgentApp {
 export async function startMonoAgentApp(options: MonoAgentAppOptions = {}): Promise<MonoAgentApp> {
   const cwd = resolve(options.cwd ?? process.cwd());
   const configPath = resolve(cwd, options.configPath ?? "mono-agent.config.json");
+  const configReadPath = resolve(cwd, options.configReadPath ?? configPath);
   const env = options.env ?? process.env;
-  const drivers = options.drivers ?? await resolveChannelDrivers({ env, cwd, configPath });
+  const drivers = options.drivers ?? await resolveChannelDrivers({ env, cwd, configPath: configReadPath });
 
   const controller = new MonoAgentAppController({
     cwd,
     configPath,
+    configReadPath,
     env,
     drivers,
     ...(options.logger === undefined ? {} : { logger: options.logger }),
     ...(options.runtime === undefined ? {} : { runtime: options.runtime }),
     ...(options.sandboxEngine === undefined ? {} : { sandboxEngine: options.sandboxEngine }),
     ...(options.traceDefaults === undefined ? {} : { traceDefaults: options.traceDefaults }),
+    ...(options.backgroundSnapshot === undefined ? {} : { backgroundSnapshot: options.backgroundSnapshot }),
   });
 
   await controller.refreshSandboxStatus("startup");
@@ -213,12 +226,14 @@ export async function startMonoAgentApp(options: MonoAgentAppOptions = {}): Prom
 interface MonoAgentAppControllerInput {
   readonly cwd: string;
   readonly configPath: string;
+  readonly configReadPath: string;
   readonly env: Record<string, string | undefined>;
   readonly drivers: readonly ChannelDriver[];
   readonly logger?: MonoAgentAppLogger;
   readonly runtime?: MonoRuntimeLike;
   readonly sandboxEngine?: SandboxEngine;
   readonly traceDefaults?: AppTraceDefaults;
+  readonly backgroundSnapshot?: BackgroundSnapshot;
 }
 
 const DEFAULT_SANDBOX_STATUS: SandboxStatus = sandboxStatusFromState({
@@ -238,6 +253,7 @@ const MIN_MEMORY_HEALTH_REFRESH_INTERVAL_MS = 30_000;
 class MonoAgentAppController implements MonoAgentApp {
   readonly configPath: string;
   private readonly cwd: string;
+  private readonly configReadPath: string;
   private readonly env: Record<string, string | undefined>;
   private readonly drivers: readonly ChannelDriver[];
   private readonly driversById: ReadonlyMap<ChannelId, ChannelDriver>;
@@ -245,6 +261,7 @@ class MonoAgentAppController implements MonoAgentApp {
   private readonly runtime: MonoRuntimeLike | undefined;
   private readonly sandboxEngine: SandboxEngine | undefined;
   private readonly traceDefaults: AppTraceDefaults | undefined;
+  private readonly backgroundSnapshot: BackgroundSnapshot | undefined;
   private readonly activeRuntimes: MonoRuntimeLike[] = [];
   private readonly statuses = new Map<ChannelId, ChannelStatus>();
   private readonly running = new Map<ChannelId, RunningChannel>();
@@ -317,6 +334,7 @@ class MonoAgentAppController implements MonoAgentApp {
   constructor(input: MonoAgentAppControllerInput) {
     this.cwd = input.cwd;
     this.configPath = input.configPath;
+    this.configReadPath = input.configReadPath;
     this.env = input.env;
     this.drivers = input.drivers;
     this.driversById = new Map(input.drivers.map((driver) => [driver.id, driver]));
@@ -324,6 +342,7 @@ class MonoAgentAppController implements MonoAgentApp {
     this.runtime = input.runtime;
     this.sandboxEngine = input.sandboxEngine;
     this.traceDefaults = input.traceDefaults;
+    this.backgroundSnapshot = input.backgroundSnapshot;
     for (const driver of input.drivers) {
       this.statuses.set(driver.id, {
         kind: "waiting_for_config",
@@ -434,13 +453,13 @@ class MonoAgentAppController implements MonoAgentApp {
     }
     let artifactDirForRetention: string | undefined;
     try {
-      const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+      const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configReadPath };
       await this.refreshSelectedSkillsSnapshot(reason);
       await this.refreshMemoryHealthSnapshot(reason);
       const [registryDir, artifactDir, sourceId, label, heartbeatMs, globalDiscovery] = await Promise.all([
         resolveAppTraceRegistryDir(input),
         resolveAppArtifactDir(input),
-        resolveAppTraceSourceId(input, this.traceDefaults),
+        resolveAppTraceSourceId(input, this.traceDefaults, this.configPath),
         resolveAppTraceSourceLabel(input, this.traceDefaults),
         resolveAppTraceHeartbeatMs(input),
         resolveAppTraceGlobalDiscovery(input),
@@ -500,7 +519,7 @@ class MonoAgentAppController implements MonoAgentApp {
 
   async refreshSandboxStatus(reason: string): Promise<SandboxStatus> {
     try {
-      const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+      const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configReadPath };
       const coreConfig = await loadAppCoreConfig(input);
       const state = await resolveSandboxEffectiveState({
         ...(coreConfig.sandbox === undefined ? {} : { policy: coreConfig.sandbox }),
@@ -564,7 +583,7 @@ class MonoAgentAppController implements MonoAgentApp {
     if (this.stopped) {
       return this.exporterStatusValue;
     }
-    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configReadPath };
     let exporters: readonly ResolvedExporter[];
     try {
       exporters = await resolveAppObservabilityExporters(input);
@@ -744,7 +763,7 @@ class MonoAgentAppController implements MonoAgentApp {
   private async computeMemoryHealth(): Promise<TraceSourceMemoryHealth> {
     let config: MonoAgentConfig;
     try {
-      config = await loadAppCoreConfig({ env: this.env, cwd: this.cwd, configPath: this.configPath });
+      config = await loadAppCoreConfig({ env: this.env, cwd: this.cwd, configPath: this.configReadPath });
     } catch {
       return unknownNoMemoryHealth();
     }
@@ -868,7 +887,7 @@ class MonoAgentAppController implements MonoAgentApp {
   private ensureInteractionBridge(coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined> {
     this.interactionBridgeStart ??= (async () => {
       const directOpenCodeRoute = runtimeRouteContainsDirectOpenCode(coreConfig);
-      const settings = await loadInteractionSettings({ env: this.env, configPath: this.configPath });
+      const settings = await loadInteractionSettings({ env: this.env, configPath: this.configReadPath });
       const askUserAllowed = !directOpenCodeRoute && isAdapterSendToolAllowed("AskUser", {
         allowedTools: coreConfig.tools.allowedTools,
         disallowedTools: coreConfig.tools.disallowedTools,
@@ -936,7 +955,7 @@ class MonoAgentAppController implements MonoAgentApp {
     }
     let coreConfig: MonoAgentConfig;
     try {
-      const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+      const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configReadPath };
       coreConfig = await loadAppCoreConfig(input);
       this.rememberSelectedSkills(coreConfig);
     } catch {
@@ -1015,7 +1034,7 @@ class MonoAgentAppController implements MonoAgentApp {
     void (async () => {
       let coreConfig: MonoAgentConfig;
       try {
-        const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+        const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configReadPath };
         coreConfig = await loadAppCoreConfig(input);
         this.rememberSelectedSkills(coreConfig);
       } catch (error) {
@@ -1093,7 +1112,7 @@ class MonoAgentAppController implements MonoAgentApp {
    * infer a target when a job/endpoint sets no explicit `notifyConversationId`.
    */
   private async listNotifyDestinations(): Promise<readonly NotifyDestination[]> {
-    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configReadPath };
     const artifactDir = await resolveAppArtifactDir(input);
     return await resolveNotifyDestinations({
       input,
@@ -1104,7 +1123,7 @@ class MonoAgentAppController implements MonoAgentApp {
   }
 
   private async startChannel(driver: ChannelDriver, reason: string): Promise<ChannelStatus> {
-    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configReadPath };
 
     let config: unknown;
     try {
@@ -1309,11 +1328,20 @@ class MonoAgentAppController implements MonoAgentApp {
       : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
         ? { runtimeOptions: {}, cleanup: async () => {} }
         : await runHistoryBase(requestInput);
+    const localConfigurationExtension = createLocalConfigurationRuntimeExtension({
+      cwd: this.cwd,
+      configPath: this.configPath,
+      configReadPath: this.configReadPath,
+      env: this.env,
+    });
     const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
       supermemoryMcp,
       runHistoryExtension,
       adapterSendToolsExtension,
       requestModelOverride.extension,
+      // Last and authoritative: only an opaque owner-created configuration
+      // session can replace the daemon's ordinary action/MCP surface.
+      localConfigurationExtension,
     ]);
     // The override factory is only needed when fallbacks are configured: the
     // fallback router freezes the model chain, so an override must run on a runtime
@@ -1432,9 +1460,9 @@ class MonoAgentAppController implements MonoAgentApp {
     readonly sourceLabel?: string;
     readonly configPath?: string;
   }> {
-    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configReadPath };
     const [sourceId, sourceLabel] = await Promise.all([
-      resolveAppTraceSourceId(input, this.traceDefaults),
+      resolveAppTraceSourceId(input, this.traceDefaults, this.configPath),
       resolveAppTraceSourceLabel(input, this.traceDefaults),
     ]);
     return { sourceId, sourceLabel, configPath: this.configPath };
@@ -1494,7 +1522,7 @@ class MonoAgentAppController implements MonoAgentApp {
     ) => RuntimeOptionsExtension;
     readonly blockingToolNames: readonly string[];
   }> {
-    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configReadPath };
     const bridgeEnv = this.interactionBridge?.env();
     const appOwnedInteraction = this.interactionBridge === undefined || bridgeEnv === undefined
       ? undefined
@@ -1536,7 +1564,7 @@ class MonoAgentAppController implements MonoAgentApp {
         ? interactionForChild
         : undefined;
       return await createAdapterSendToolsRuntimeExtension(
-        this.configPath,
+        this.configReadPath,
         this.cwd,
         effectiveToolNames,
         indexPath,
@@ -1580,6 +1608,10 @@ class MonoAgentAppController implements MonoAgentApp {
       };
       this.sharedMemory = await createConfiguredMemory(coreConfig, {
         cwd: this.cwd,
+        // A managed worker receives a launch-attested snapshot and an exact
+        // plugin closure beside agent-app. Never let mutable agent-local
+        // node_modules replace that copied closure after launch.
+        preferAppPluginInstall: this.backgroundSnapshot !== undefined,
         ...(logger === undefined ? {} : { logger }),
         observability,
       });
@@ -1721,7 +1753,7 @@ class MonoAgentAppController implements MonoAgentApp {
 
   private async refreshSelectedSkillsSnapshot(reason: string): Promise<void> {
     try {
-      const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+      const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configReadPath };
       this.rememberSelectedSkills(await loadAppCoreConfig(input));
     } catch (error) {
       this.selectedSkillsValue = undefined;
@@ -1777,6 +1809,7 @@ class MonoAgentAppController implements MonoAgentApp {
     }
     return {
       reason,
+      ...(this.backgroundSnapshot === undefined ? {} : { backgroundSnapshot: this.backgroundSnapshot }),
       ...(this.exporterStatusValue.kind === "configured"
         ? {
             observability: {

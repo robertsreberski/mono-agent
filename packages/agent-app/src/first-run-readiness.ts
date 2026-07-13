@@ -7,6 +7,7 @@ import { parseEnv } from "node:util";
 
 import type { ValidationReport } from "./doctor.js";
 import { validateMonoAgentFolder } from "./doctor.js";
+import { selectBackgroundOperationalEnvironment } from "./background-environment.js";
 import { initializeFirstRunManagedMemory } from "./first-run-managed-memory.js";
 import type { SecretPersistenceOutcome } from "./init.js";
 import { piAuthPathForSetup } from "./provider-setup.js";
@@ -342,37 +343,6 @@ export async function withExactProcessEnvironment<T>(
  * guided path deliberately does not inherit provider credentials or mono-agent
  * config from the invoking shell: a launchd worker cannot reproduce either.
  */
-const FIRST_RUN_OPERATIONAL_ENV_NAMES = new Set([
-  "APPDATA",
-  "COLORTERM",
-  "COMSPEC",
-  "ComSpec",
-  "FORCE_COLOR",
-  "HOME",
-  "HOMEDRIVE",
-  "HOMEPATH",
-  "LANG",
-  "LANGUAGE",
-  "LC_ALL",
-  "LC_CTYPE",
-  "LOCALAPPDATA",
-  "LOGNAME",
-  "NO_COLOR",
-  "PATH",
-  "PATHEXT",
-  "PROGRAMDATA",
-  "SHELL",
-  "SYSTEMROOT",
-  "SystemRoot",
-  "TEMP",
-  "TERM",
-  "TMP",
-  "TMPDIR",
-  "USER",
-  "USERNAME",
-  "USERPROFILE",
-]);
-
 const MONO_AGENT_SECRET_ENV_NAME = /(?:^|_)(?:API_KEY|CREDENTIAL|CREDENTIALS|PASSWORD|SECRET|TOKEN)$/u;
 const SENSITIVE_DOTENV_NAME = /(api.?key|credential|password|secret|token)/iu;
 
@@ -494,9 +464,7 @@ export function effectiveFirstRunEnvironment(options: {
   readonly enteredSecrets?: CliEnvironment;
   readonly resolvedPiAuthPath?: string;
 }): Record<string, string | undefined> {
-  const operationalEnv = Object.fromEntries(
-    Object.entries(options.shellEnv).filter(([name]) => FIRST_RUN_OPERATIONAL_ENV_NAMES.has(name)),
-  );
+  const operationalEnv = selectBackgroundOperationalEnvironment(options.shellEnv);
   return {
     ...options.dotenvEnv,
     ...operationalEnv,
