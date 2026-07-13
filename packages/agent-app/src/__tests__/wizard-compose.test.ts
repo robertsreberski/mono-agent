@@ -139,7 +139,7 @@ describe("wizard composer — env-example + secret checklist coverage", () => {
 });
 
 describe("wizard composer — complete setup dependencies", () => {
-  it("includes runtime, fallback, hidden agent-host memory, and local memory services in stable order", () => {
+  it("includes runtime, fallback, and hidden agent-host memory refs in stable order", () => {
     const plan = composeWizardPlan(defaultAnswers({
       fallbackModels: ["claude:claude-sonnet-4-6"],
       memory: "memory:bujo",
@@ -149,13 +149,12 @@ describe("wizard composer — complete setup dependencies", () => {
       "codex:gpt-5.6-terra",
       "claude:claude-sonnet-4-6",
       "pi:openai-codex:gpt-5.6-terra",
-      "pi:ollama:nomic-embed-text:v1.5",
     ]);
     expect(plan.configJson.memory?.embeddings?.model).toBe("nomic-embed-text:v1.5");
     expect(plan.validateExpectations).toContainEqual(expect.objectContaining({ sectionId: "credentials", mustBe: "ok" }));
   });
 
-  it("dedupes local-only runtime and memory refs without requiring credentials", () => {
+  it("keeps embedding-native setup out of generic local runtime refs", () => {
     const plan = composeWizardPlan(defaultAnswers({
       model: "pi:ollama:qwen3:8b",
       memory: "memory:bujo",
@@ -163,7 +162,6 @@ describe("wizard composer — complete setup dependencies", () => {
 
     expect(referencedSetupModelRefs(plan)).toEqual([
       "pi:ollama:qwen3:8b",
-      "pi:ollama:nomic-embed-text:v1.5",
     ]);
     expect(plan.validateExpectations.map((expectation) => expectation.sectionId)).not.toContain("credentials");
   });
@@ -178,7 +176,6 @@ describe("wizard composer — complete setup dependencies", () => {
     expect(referencedSetupModelRefs(plan)).toEqual([
       "codex:gpt-5.5",
       "pi:openai-codex:gpt-5.6-terra",
-      "pi:ollama:nomic-embed-text:v1.5",
     ]);
   });
 });

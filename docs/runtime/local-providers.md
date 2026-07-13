@@ -83,7 +83,7 @@ ollama pull gemma4:31b
 
 The model `name` must match the exact tag you pulled (including any `:tag` suffix). If a ref resolves to a model Ollama has not pulled, the call fails — run `mono-agent validate` to surface reachability and model checks before starting. See [Validation & CLI](/memory/validation-and-cli/).
 
-Ollama also powers memory embeddings and BuJo capture independently of the chat runtime — those live under `memory.embeddings` / `memory.llm`, not `providers.local`. See [Embeddings](/memory/embeddings/).
+Ollama and LM Studio can power memory embeddings independently of the chat runtime; BuJo capture has its own explicit LLM configuration. Those settings live under `memory.embeddings` / `memory.llm`, not `providers.local`. See [Embeddings](/memory/embeddings/).
 
 ## LM Studio and OpenAI-compatible gateways
 
@@ -185,5 +185,5 @@ Failover is reported in run results, never silent. See [Fallback chains](/runtim
 
 - [Backends & model refs](/runtime/backends/) — the `pi:<provider>:<model>` ref taxonomy.
 - [Fallback chains](/runtime/fallback/) — composing local models into canonical `fallbacks`.
-- [Embeddings](/memory/embeddings/) — Ollama for memory recall.
+- [Embeddings](/memory/embeddings/) — Ollama, LM Studio, or OpenAI for semantic memory recall.
 - [Local-only Ollama agent](/playbooks/local-only-ollama-agent/) — full walkthrough.

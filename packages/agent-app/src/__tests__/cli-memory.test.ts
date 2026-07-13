@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import {
   createBujoMemoryStore,
+  readManagedIndexManifest,
   resolveActiveMemoryDbPath,
   rollbackMemoryIndex,
   safeRebuildMemoryIndex,
@@ -22,6 +23,7 @@ import { parseCliArgs, renderHelp, runCli } from "../cli.js";
 const tempDirs: string[] = [];
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -478,6 +480,79 @@ describe("runCli memory", () => {
     expect(rolledBack.activeDatabase).not.toBe(managed.activeDatabase);
     expect(await resolveActiveMemoryDbPath(memoryRoot)).toBe(rolledBack.activeDatabase);
   }, 15_000);
+
+  it("rebuilds managed memory with the exact LM Studio provider identity and no Ollama request", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({
+      memory: {
+        mode: "journal",
+        path: memoryRoot,
+        writeMode: "append-host-summary",
+        embeddings: {
+          provider: "lmstudio",
+          model: "text-embedding-test",
+          endpoint: "http://localhost:1234",
+          dim: 4,
+        },
+      },
+    });
+    await seedLocalStore(memoryRoot);
+    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { input: readonly string[] };
+      return new Response(JSON.stringify({
+        data: body.input.map((text, index) => ({
+          index,
+          embedding: [text.length || 1, 0, 0, 0],
+        })),
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const rebuild = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "rebuild", "--json"]))));
+
+    expect(rebuild.code, rebuild.stderr).toBe(0);
+    expect(rebuild.stderr).toBe("");
+    expect(readManagedIndexManifest(memoryRoot)?.active).toMatchObject({
+      tier: "journal",
+      embeddingModel: "lmstudio:text-embedding-test",
+      dimension: 4,
+    });
+    expect(fetchSpy).toHaveBeenCalled();
+    expect(fetchSpy.mock.calls.every((call) => String(call[0]) === "http://localhost:1234/v1/embeddings")).toBe(true);
+    expect(JSON.stringify(fetchSpy.mock.calls)).not.toMatch(/Authorization|11434|ollama/iu);
+  });
+
+  it("fails rebuild before any request when LM Studio apiKeyEnv is declared but unresolved", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({
+      memory: {
+        mode: "journal",
+        path: memoryRoot,
+        writeMode: "append-host-summary",
+        embeddings: {
+          provider: "lmstudio",
+          model: "text-embedding-test",
+          endpoint: "http://localhost:1234",
+          apiKeyEnv: "LM_STUDIO_API_KEY",
+          dim: 4,
+        },
+      },
+    });
+    await seedLocalStore(memoryRoot);
+    const before = await resolveActiveMemoryDbPath(memoryRoot);
+    const fetchSpy = vi.fn().mockRejectedValue(new Error("must not make a keyless request"));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const rebuild = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "rebuild"]))));
+
+    expect(rebuild.code).toBe(1);
+    expect(rebuild.stdout).toBe("");
+    expect(rebuild.stderr).toMatch(/LM_STUDIO_API_KEY.*no resolved value/iu);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(await resolveActiveMemoryDbPath(memoryRoot)).toBe(before);
+  });
 
   it("refuses a stale-trace live legacy writer before embeddings and leaves the index unchanged", async () => {
     const memoryRoot = join(await tempDir(), "memory");

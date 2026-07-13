@@ -32,6 +32,23 @@ const store: MemoryStore = createBujoMemoryStore({
 await store.appendHostSummary("conv-1", "User prefers concise answers.");
 ```
 
+`@mono-agent/memory/search` supports `ollama`, `lmstudio`, and `openai` embedding
+providers. LM Studio uses a service-root endpoint and appends `/v1/embeddings`:
+
+```ts
+const lmStudioEmbeddings = createEmbeddingProvider({
+  provider: "lmstudio",
+  model: "text-embedding-nomic-embed-text-v1.5",
+  endpoint: "http://localhost:1234",
+});
+```
+
+LM Studio authentication is optional. Hosts may resolve a key from `apiKeyEnv`
+and pass it as `apiKey`; do not invent a dummy key for a keyless server. Provider
+selection is exclusive—an LM Studio failure never falls back to Ollama or OpenAI.
+The config-first guided wizard and provider-native model discovery/probe live in
+`@mono-agent/agent-app`, not this package.
+
 Hosts that have a stable provider-run id should use the strong completed-turn
 boundary. It resolves only after an owner-only, fsynced intake record exists;
 summary projection and optional model curation resume from that record after a
@@ -90,6 +107,13 @@ mono-agent validate
 mono-agent start
 mono-agent memory audit --strict --json
 ```
+
+The managed generation identity includes tier, embedding provider/model, and
+dimension. Stop and rebuild after changing any of those values; do not reuse or
+relabel vectors from the prior identity. The standalone `memory-bujo migrate`
+command is a separate advanced Ollama-chat-LLM maintenance path outside guided
+init. Other standalone semantic commands can use the configured Ollama,
+LM Studio, or OpenAI embeddings provider.
 
 For BuJo, the owner-only `memory.path/.replay-projection-v1.json` is the exact
 canonical authority for replay-owned thread edges, supersession lifecycle and
@@ -161,7 +185,7 @@ text, record/intent/decision ids, database details, or underlying error text.
 ## Public API
 
 - `@mono-agent/memory/store`: `openMemoryDb`, `MemoryDb`, `DEFAULT_VEC_DIM`, `MEMORY_TYPES`, `MEMORY_STATUSES`, local record/entity/recall/stats/audit types, and re-exported `MemoryBlock`, `MemoryLoadOptions`, `MemoryStore`, `MemoryWriteResult`
-- `@mono-agent/memory/search`: `createEmbeddingProvider`, `createCircuitBreakerEmbeddingProvider`, `createVectorMemoryIndex`, `gatherMemoryChunks`, embedding/search provider classes and types
+- `@mono-agent/memory/search`: `createEmbeddingProvider`, `OllamaEmbeddingProvider`, `LmStudioEmbeddingProvider`, `OpenAIEmbeddingProvider`, `createCircuitBreakerEmbeddingProvider`, `createVectorMemoryIndex`, `gatherMemoryChunks`, and embedding/search types
 - `@mono-agent/memory/bujo`: `createBujoMemoryStore`, `BujoMemoryStore`, `composeRecallBlock`, `auditBujoMemoryHealth` and its closed schema/status/issue/count types, `safeRebuildMemoryIndex`, `rollbackMemoryIndex`, `adoptLegacyReplayProjection`, `resolveActiveMemoryDbPath`, managed-generation helpers, privacy-safe runtime-snapshot reader/types, strict completed-turn capture, content-free intake `inspect`/`audit` helpers, stopped-store `retry`/explicit `resolve` helpers, markdown grammar helpers, batched capture/reconcile/reflection/migration helpers, `createOllamaLlm`, and related BuJo/LLM types
 - CLI: `memory-bujo`
 

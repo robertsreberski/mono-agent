@@ -86,7 +86,7 @@ create/read result that lets mono-agent distinguish a new document from a retry.
 ### Strict tier write behavior
 
 - **Lite:** projects the admitted normalized host observation to `daily/YYYY-MM-DD.md` and indexes it for FTS. It never embeds and never calls a chat model.
-- **Journal:** projects the admitted observation with a case-preserving, NFKC/whitespace-normalized SHA-256 identity, then makes it available to FTS. Semantic indexing is queued in batches of up to 32, so Ollama/OpenAI embedding latency is not on the provider-success critical path. Repeated content converges on one markdown/index identity.
+- **Journal:** projects the admitted observation with a case-preserving, NFKC/whitespace-normalized SHA-256 identity, then makes it available to FTS. Semantic indexing is queued in batches of up to 32, so Ollama/LM Studio/OpenAI embedding latency is not on the provider-success critical path. Repeated content converges on one markdown/index identity.
 - **BuJo:** projects each admitted compact host observation to `audit/YYYY-MM-DD.md`, outside curated recall. Only `writeMode: "capture"` asks the memory model to promote durable facts into canonical `daily/` notes and the graph. A model outage therefore cannot turn an uncurated raw transcript into recalled fact.
 
 ### Exact BuJo replay projection
@@ -281,8 +281,8 @@ See [Tool policy](/tools/policy/) and [MCP tools](/tools/mcp/) for how MCP-provi
 | `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline (and standalone advanced `migrate`; legacy `reflect` needs no model) |
 | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama chat endpoint (default `http://localhost:11434`) |
 | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | `memory.llm.timeoutMs` | Per-call chat-LLM timeout. **In-app (agent-app) default `60000`**; standalone `memory-bujo migrate` reads the same var but defaults to `120000`. See [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts). |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama` / `openai`; defaults to `ollama` once the required Journal/BuJo embeddings block is present |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Defaults by provider (`nomic-embed-text:v1.5` for Ollama) |
+| `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama` / `lmstudio` / `openai`; defaults to `ollama` once the required Journal/BuJo embeddings block is present; no cross-provider fallback |
+| `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Defaults by provider (`nomic-embed-text:v1.5` for Ollama; `text-embedding-nomic-embed-text-v1.5` for LM Studio) |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` | Defaults to `768`; set it when the model output dimension differs |
 
 See [Environment variables](/config/env-vars/) for the full table and precedence rules.

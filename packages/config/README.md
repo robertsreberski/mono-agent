@@ -122,6 +122,36 @@ MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL=false
 
 `MONO_AGENT_LOCAL_PROVIDERS_JSON` can hold the full local-provider array. Env values win over JSON; empty env values are ignored. `MONO_AGENT_LOCAL_PROVIDER_API_KEY` and provider `apiKeyEnv` are passed only to the runtime path and are redacted from `redactMonoAgentConfig()`.
 
+## Managed Memory Embeddings
+
+Journal and BuJo accept `ollama`, `lmstudio`, or `openai` in
+`memory.embeddings.provider`. Keep the provider, service root, exact model, and
+actual dimension explicit because they form the managed index identity:
+
+```json
+{
+  "memory": {
+    "mode": "journal",
+    "path": "./.mono-agent/memory",
+    "embeddings": {
+      "provider": "lmstudio",
+      "endpoint": "http://localhost:1234",
+      "model": "text-embedding-nomic-embed-text-v1.5",
+      "dim": 768,
+      "apiKeyEnv": "LM_STUDIO_API_KEY"
+    }
+  }
+}
+```
+
+Omit `apiKeyEnv` for keyless LM Studio. When the field is present, the loader
+preserves the variable name and resolves its value only from the environment;
+the app reports a missing/empty declared variable as `waiting` and never silently
+retries keyless. OpenAI still requires a resolved key. Provider selection is
+exclusive and does not define fallback behavior. Changing provider, model, or
+dimension on an existing Journal/BuJo root requires the config-aware stopped
+`mono-agent memory rebuild` workflow.
+
 ### Provider sessions
 
 Continuous provider sessions are configured under `runtime.session` (JSON: `{ "runtime": { "session": { "mode": "continuous", "idleTimeoutMs": 1800000 } } }`):

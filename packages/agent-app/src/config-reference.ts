@@ -805,6 +805,15 @@ function exampleFor(id: string): SettingsJsonValue {
 function descriptionFor(id: string): string {
   const section = id.split(".")[0] ?? "config";
   const name = id.split(".").slice(1).join(".");
+  if (id === "memory.embeddings.provider") {
+    return "Embedding service used by Journal/BuJo memory: ollama, lmstudio, or openai.";
+  }
+  if (id === "memory.embeddings.endpoint") {
+    return "Provider service root. LM Studio uses <root>/v1/embeddings and defaults to http://localhost:1234.";
+  }
+  if (id === "memory.embeddings.apiKeyEnv") {
+    return "Environment-variable name containing an optional provider bearer token; an explicitly declared name must resolve before memory starts.";
+  }
   if (id.includes("apiKey") || id.includes("Token")) {
     return `Secret value for ${id}; prefer the env override.`;
   }

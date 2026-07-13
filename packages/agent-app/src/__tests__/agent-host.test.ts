@@ -1489,7 +1489,7 @@ function monoConfig(input: {
   readonly memoryMode?: "lite" | "journal" | "bujo";
   readonly memoryWriteMode?: "disabled" | "append-host-summary" | "capture";
   readonly memoryEmbeddings?: {
-    readonly provider: "ollama" | "openai";
+    readonly provider: "ollama" | "lmstudio" | "openai";
     readonly model: string;
     readonly endpoint?: string;
     readonly apiKey?: string;

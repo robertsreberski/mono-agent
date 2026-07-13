@@ -19,6 +19,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -1706,14 +1707,83 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     return configPath;
   }
 
-  function stubFetch(models: string[]): void {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ models: models.map((name) => ({ name })) }),
-      }),
-    );
+  function stubFetch(models: string[], dimension = 768): void {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/api/tags")) {
+        return new Response(JSON.stringify({ models: models.map((name) => ({ name })) }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/show")) {
+        return new Response(JSON.stringify({ capabilities: ["embedding"] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/embed")) {
+        return new Response(JSON.stringify({ embeddings: [new Array<number>(dimension).fill(0.01)] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected Ollama test request: ${url}`);
+    }));
+  }
+
+  function stubLmStudioFetch(options: {
+    readonly models?: readonly Readonly<Record<string, unknown>>[];
+    readonly vector?: readonly number[];
+    readonly status?: number;
+    readonly error?: Error;
+  } = {}) {
+    const fetchSpy = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+      if (options.error !== undefined) throw options.error;
+      const url = String(input);
+      const status = options.status ?? 200;
+      if (url === "http://localhost:1234/api/v1/models") {
+        return new Response(JSON.stringify({
+          models: options.models ?? [
+            { key: "text-embedding-test", type: "embedding" },
+            { key: "chat-test", type: "llm" },
+          ],
+        }), {
+          status,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "http://localhost:1234/v1/embeddings") {
+        return new Response(JSON.stringify({
+          data: [{ embedding: options.vector ?? [1, 0, 0, 0] }],
+        }), {
+          status,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected LM Studio test request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    return fetchSpy;
+  }
+
+  async function writeLmStudioMemoryConfig(options: {
+    readonly apiKeyEnv?: string;
+    readonly dim?: number;
+  } = {}): Promise<string> {
+    return await writeMinimalConfig({
+      memory: {
+        mode: "journal",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: {
+          provider: "lmstudio",
+          model: "text-embedding-test",
+          dim: options.dim ?? 4,
+          ...(options.apiKeyEnv === undefined ? {} : { apiKeyEnv: options.apiKeyEnv }),
+        },
+      },
+    });
   }
 
   const strictBujoLlm = { provider: "ollama", model: "nomic-embed-text:v1.5" } as const;
@@ -1834,7 +1904,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
       },
       dim: 8,
     });
-    stubFetch(["nomic-embed-text:v1.5"]);
+    stubFetch(["nomic-embed-text:v1.5"], 8);
     const configPath = await writeMinimalConfig({
       memory: {
         mode: "journal",
@@ -1967,15 +2037,23 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
   });
 
   it("warns when the embeddings model is not yet pulled", async () => {
-    stubFetch(["llama3:latest"]); // model present but NOT the embeddings model
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/api/embed")) {
+        return new Response(JSON.stringify({ error: "model not found" }), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected missing-model request: ${url}`);
+    }));
 
     const configPath = await writeMinimalConfig({
       memory: {
-        mode: "bujo",
+        mode: "journal",
         path: dir,
         writeMode: "append-host-summary",
         embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
-        llm: strictBujoLlm,
       },
     });
 
@@ -2125,11 +2203,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
   });
 
   it("does NOT check an agent-host chat LLM against Ollama when embeddings provider is ollama", async () => {
-    const fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ models: [{ name: "nomic-embed-text:v1.5" }] }),
-    });
-    vi.stubGlobal("fetch", fetch);
+    stubFetch(["nomic-embed-text:v1.5"]);
     const configPath = await writeMinimalConfig({
       memory: {
         mode: "bujo",
@@ -2151,14 +2225,33 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
   });
 
   it("checks Ollama embeddings and chat models against their own endpoints", async () => {
-    const fetch = vi.fn(async (url: string) => {
-      const models = url.startsWith("http://localhost:11435/")
-        ? [{ name: "qwen3.6:latest" }]
-        : [{ name: "nomic-embed-text:v1.5" }];
-      return {
-        ok: true,
-        json: async () => ({ models }),
-      };
+    const fetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "http://localhost:11435/api/tags") {
+        return new Response(JSON.stringify({ models: [{ name: "qwen3.6:latest" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "http://localhost:11434/api/tags") {
+        return new Response(JSON.stringify({ models: [{ name: "nomic-embed-text:v1.5" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "http://localhost:11434/api/show") {
+        return new Response(JSON.stringify({ capabilities: ["embedding"] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "http://localhost:11434/api/embed") {
+        return new Response(JSON.stringify({ embeddings: [new Array<number>(768).fill(0.01)] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected endpoint-specific Ollama request: ${url}`);
     });
     vi.stubGlobal("fetch", fetch);
     const configPath = await writeMinimalConfig({
@@ -2181,8 +2274,136 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(memory.status).toBe("ok");
     const text = memory.details.join("\n");
     expect(text).not.toMatch(/not pulled|WARN/iu);
-    expect(fetch).toHaveBeenCalledWith("http://localhost:11434/api/tags", expect.anything());
+    expect(fetch).toHaveBeenCalledWith("http://localhost:11434/api/embed", expect.anything());
     expect(fetch).toHaveBeenCalledWith("http://localhost:11435/api/tags", expect.anything());
+  });
+
+  it("probes only the exact keyless LM Studio model with the configured dimension", async () => {
+    const fetchSpy = stubLmStudioFetch();
+    const configPath = await writeLmStudioMemoryConfig();
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    expect(memory.details.join("\n")).not.toMatch(/WARN/iu);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost:1234/v1/embeddings",
+      expect.objectContaining({ headers: { "Content-Type": "application/json" } }),
+    );
+    expect(JSON.stringify(fetchSpy.mock.calls)).not.toMatch(/Authorization|11434|ollama/iu);
+  });
+
+  it("uses the resolved LM Studio apiKeyEnv bearer token for exact-model proof", async () => {
+    const fetchSpy = stubLmStudioFetch();
+    const configPath = await writeLmStudioMemoryConfig({ apiKeyEnv: "LM_STUDIO_API_KEY" });
+
+    const report = await validateMonoAgentFolder({
+      env: { LM_STUDIO_API_KEY: "effective-token" },
+      cwd: dir,
+      configPath,
+    });
+
+    expect(sectionById(report, "memory").status).toBe("ok");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    for (const call of fetchSpy.mock.calls) {
+      expect(call[1]).toEqual(expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer effective-token" }),
+      }));
+    }
+  });
+
+  it("waits without a keyless probe when the declared LM Studio apiKeyEnv is missing", async () => {
+    const fetchSpy = stubLmStudioFetch();
+    const configPath = await writeLmStudioMemoryConfig({ apiKeyEnv: "LM_STUDIO_API_KEY" });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("waiting");
+    expect(memory.details.join("\n")).toMatch(/LM_STUDIO_API_KEY.*no non-empty value.*no keyless probe/isu);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("reports LM Studio HTTP 401 as an actionable authentication wait", async () => {
+    stubLmStudioFetch({ status: 401 });
+    const configPath = await writeLmStudioMemoryConfig();
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("waiting");
+    expect(memory.details.join("\n")).toMatch(/LM Studio authentication failed.*HTTP 401.*apiKeyEnv/isu);
+  });
+
+  it("reports an unavailable LM Studio service without probing Ollama", async () => {
+    const fetchSpy = stubLmStudioFetch({ error: new Error("ECONNREFUSED") });
+    const configPath = await writeLmStudioMemoryConfig();
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("waiting");
+    expect(memory.details.join("\n")).toMatch(/LM Studio not reachable.*Start LM Studio/isu);
+    expect(JSON.stringify(fetchSpy.mock.calls)).not.toMatch(/11434|ollama/iu);
+  });
+
+  it("accepts a manual LM Studio model when its exact embedding probe succeeds despite catalog metadata", async () => {
+    const fetchSpy = stubLmStudioFetch({ models: [{ key: "text-embedding-test", type: "llm" }] });
+    const configPath = await writeLmStudioMemoryConfig();
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    expect(memory.details.join("\n")).not.toMatch(/WARN/iu);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledWith("http://localhost:1234/v1/embeddings", expect.anything());
+    expect(fetchSpy).not.toHaveBeenCalledWith("http://localhost:1234/api/v1/models", expect.anything());
+  });
+
+  it("accepts a manual Ollama model without scanning unrelated catalog entries", async () => {
+    const fetchSpy = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "http://localhost:11434/api/embed") {
+        return new Response(JSON.stringify({ embeddings: [new Array<number>(768).fill(0.01)] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`Doctor must not scan Ollama catalog for exact-model readiness: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "journal",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "manual-embedding-model", dim: 768 },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    expect(sectionById(report, "memory").status).toBe("ok");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledWith("http://localhost:11434/api/embed", expect.anything());
+  });
+
+  it.each([
+    { label: "malformed", vector: [] as number[], detail: /invalid embedding vector/iu },
+    { label: "wrong-dimension", vector: [1, 0], detail: /returned dimension 2.*configured dimension is 4/iu },
+  ])("reports a $label LM Studio embedding result as waiting", async ({ vector, detail }) => {
+    stubLmStudioFetch({ vector });
+    const configPath = await writeLmStudioMemoryConfig();
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("waiting");
+    expect(memory.details.join("\n")).toMatch(detail);
   });
 
   it("passes lite mode without any Ollama probe (lite needs no embeddings)", async () => {

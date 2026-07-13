@@ -28,6 +28,17 @@ npm i -g @mono-agent/agent-app      # the scoped host that owns the CLI
 
 The production first-run path is the interactive wizard: bare `mono-agent init` on a TTY asks for the agent's public display name, then walks through a preset (or custom) build using the same model, reasoning effort, channel, memory, tool, and sandbox decisions either way. The primary and fallback pickers are searchable and combine every model for the guided Pi providers (Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go), Codex's live account catalog when available, the Claude SDK catalog, and discovered OpenCode-Go/Ollama/LM Studio models. Other hand-authored Pi refs and `providers.local[]` remain runtime-compatible but are not advertised as guided cloud-provider integrations. A live Codex provider default leads the list; the offline curated fallback is `codex:gpt-5.6-terra`. Offline metadata never guesses supported effort levels, so that entry offers **Provider default** until live `model/list` data is available. GPT-5.6 Sol remains explicitly selectable as `codex:gpt-5.6-sol` or `pi:openai-codex:gpt-5.6-sol`. If Codex is missing, install it only from the [official Codex CLI instructions](https://developers.openai.com/codex/cli/); mono-agent never auto-installs Codex.
 
+Selecting Journal or BuJo starts a separate embeddings chooser: Ollama or LM Studio,
+service root, exact embedding model, actual vector dimension, and optional `apiKeyEnv`.
+Ollama models must advertise the `embedding` capability through `/api/show`; LM Studio
+models must have exact type `embedding` in `/api/v1/models`. Guided setup proves the
+selection with one fixed non-user embedding request before readiness. Manual model/dimension
+entry is available when discovery is inconclusive, but it cannot bypass that live gate, and
+failure never falls through to the other provider. LM Studio defaults to keyless
+`http://localhost:1234`; a declared auth environment variable must be populated in the
+owner-only agent environment. BuJo's capture LLM remains separately explicit (`agent-host`
+in generated configs, or an authored Ollama `memory.llm`).
+
 The wizard distinguishes credential detection from verified readiness. It makes one disposable no-tool call for **every selected runtime route**, in order, using a 90-second cloud or 240-second local deadline per route. A detected Codex/Claude login or Pi auth-store entry skips redundant authentication, but only that exact successful model call becomes verified. Escape or Ctrl-C interrupts the current preflight safely; the recovery menu can resume the still-matching plan, restart every route check, edit choices, or cancel without writing. Authentication repair invalidates every prior route proof because credential bytes may have changed. Provider failure, timeout, empty output, or any tool action fails that route. The wizard atomically creates the config only after the explicit `Create “<name>”?` review, validates that exact snapshot, and rechecks it before the **Agent ready** label and local-TUI handoff. Any flag or non-TTY invocation is intentionally scaffold-only and makes no readiness claim.
 
 That proof uses the environment a later worker can reproduce: `.env` values, securely entered selected secrets, the resolved Pi store, and only operational host values such as `PATH` and `HOME`. Shell-only provider credentials and `MONO_AGENT_*` config overrides cannot make setup pass and then disappear under launchd; persisted non-secret config overrides are named and rejected so the generated JSON is the configuration that is actually validated and started.
@@ -80,6 +91,12 @@ curl -s http://127.0.0.1:<PORT>/webhook/invoke \
 `<PORT>` comes from the `start` output. A reply means runtime, model, identity, and channel wiring all work. On a local build with packages already installed and built, `init` plus `validate` should take well under a minute; first reply time depends on provider authentication, network latency, and model availability.
 
 `init` scaffolds `mono-agent.config.json` (webhook enabled as the credential-free smoke channel), a purpose-derived `IDENTITY.md` that references the folder's existing knowledge, two versioned project-local configuration skills, and `.mono-agent/` working dirs without overwriting existing scaffold/config files. Guided secret setup is the explicit exception: after review it may securely update `.env` and `.gitignore`. A successful interactive readiness run continues directly into `mono-agent tui --local --configure`; it does not create background service state. The config declares the public `agent.name`, primary model, canonical ordered `runtime.fallbacks`, per-route effort and safety mode, channels, skills, MCP servers, memory, sandbox, and observability. `agent.name` is display metadata (including default trace/A2A labels), never an input to filesystem paths, service ids, sessions, or provider identity. Legacy `runtime.fallbackModels` configs continue to load and retain their historical global-effort inheritance.
+
+The managed Journal/BuJo index identity includes the embeddings provider, model, and
+dimension. After changing any of them on an existing store, stop the agent and run
+`mono-agent memory rebuild --json` before validating and restarting; never reuse old vectors
+under a new identity. The advanced standalone `memory-bujo migrate` command remains an
+Ollama-only maintenance surface outside guided init.
 
 ### Presets & the setup wizard
 

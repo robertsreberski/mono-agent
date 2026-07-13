@@ -110,7 +110,7 @@ describe("config reference", () => {
     expect(schemaNode(schema, "memory", "backend").enum).toEqual(["bujo", "supermemory"]);
     expect(schemaNode(schema, "memory", "mode").enum).toEqual(["lite", "journal", "bujo"]);
     expect(schemaNode(schema, "memory", "writeMode").enum).toEqual(["disabled", "append-host-summary", "capture"]);
-    expect(schemaNode(schema, "memory", "embeddings", "provider").enum).toEqual(["ollama", "openai"]);
+    expect(schemaNode(schema, "memory", "embeddings", "provider").enum).toEqual(["ollama", "lmstudio", "openai"]);
     expect(schemaNode(schema, "memory", "llm", "provider").enum).toEqual(["ollama", "agent-host"]);
     expect(schemaNode(schema, "sandbox", "mode").enum).toEqual(["native", "off"]);
     expect(schemaNode(schema, "sandbox", "network", "mode").enum).toEqual(["none", "localhost", "allowlist"]);
