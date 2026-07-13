@@ -546,6 +546,8 @@ export async function createConfiguredMemory(
   deps: {
     /** Agent config folder used to resolve explicitly installed optional plugins. */
     cwd?: string;
+    /** Managed workers must use the plugin frozen into their app-side runtime closure. */
+    preferAppPluginInstall?: boolean;
     logger?: { warn(message: string): void };
     /**
      * Injection seam for the bujo memory LLM's runtime (tests). This runtime MUST
@@ -581,6 +583,9 @@ export async function createConfiguredMemory(
     }
     const { createSupermemoryStore } = await loadSupermemoryPlugin({
       ...(deps.cwd === undefined ? {} : { cwd: deps.cwd }),
+      ...(deps.preferAppPluginInstall === undefined
+        ? {}
+        : { preferAppInstall: deps.preferAppPluginInstall }),
     });
     // External backend: `mode`/`embeddings`/`llm` are bujo-only and intentionally ignored. Recall +
     // capture both go over the REST client; Supermemory extracts/consolidates server-side.

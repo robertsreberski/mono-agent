@@ -23,15 +23,37 @@ It connects to agents two ways:
   `startMonoAgentTui({ responder, … })`, or
   run the `mono-agent-tui` bin with `--responder <module>`.
 
-An embedded host may also pass a local configuration controller. It starts a
-hidden-host-prompt/real-agent-response invitation, adds `/configure`, and shows
-an out-of-band approve/reject card after the response settles. The TUI never
-validates or writes the proposal; those authority decisions stay with the host.
+Temporary post-wizard configuration is deliberately attached to the managed
+remote agent, not an embedded responder. From the agent project, `mono-agent
+tui --configure` connects to the ready background process that owns the
+current config. The first agent message explains that this is a short
+configuration exchange, identifies the Role destination (the configured
+identity document's `## Role`, normally `IDENTITY.md → ## Role`), warns against
+entering secrets, says `done` or `no changes` finishes without edits, and asks
+for one configuration reply.
+
+If the agent proposes a change, the host shows a separate approve/reject card,
+validates any config or Role edit, and writes only after approval. It then
+restarts the managed background agent, proves the fresh endpoint ready, and
+switches the console to it; a failed restart restores the previous files and
+attempts to recover the prior agent. After approval, rejection, or a no-change
+reply, the console hands off to ordinary chat. `/quit` closes only this console
+while the background agent keeps running; if an approval/restart transaction is
+already active, closing waits until that transaction settles. Long Role bodies
+are paged with the decision controls still visible; unsafe terminal or bidi
+control characters are rejected before review text is rendered.
 
 ## Install / Usage
 
 ```bash
 pnpm --filter @mono-agent/tui run build
+```
+
+Open the managed agent's temporary post-wizard configuration exchange from its
+project directory:
+
+```bash
+mono-agent tui --configure
 ```
 
 ```ts
@@ -69,7 +91,7 @@ commands: `/help /agents /replay /config /configure /cancel /thinking /quit`.
 ## Public API
 
 - `startMonoAgentTui`, `MonoAgentTuiApp`
-- `TuiConfigurationController`, `ConfigurationProposalCard` (host-owned local approval lifecycle)
+- `TuiConfigurationController`, `ConfigurationProposalCard` (UI contract for an authoritative host-owned remote configuration lifecycle)
 - `RemoteAgentResponder` (AgentResponder over the operator-adapter TUI NDJSON wire)
 - `discoverInstances` / `resolveInstanceApiKey` / `defaultTraceRegistryDir`
 - `listReplayRuns` / `readReplayRun`
@@ -91,7 +113,12 @@ It does not boot a harness, run models, persist conversations (its history
 store is display-only), serve the stream endpoint (that is
 `@mono-agent/operator-adapter`), write run artifacts/config, validate proposals,
 or register agents in the trace-source registry. The config view remains
-read-only; a supplied controller owns any separate approval action.
+read-only. `@mono-agent/agent-app` owns the managed configuration capability,
+proposal validation, atomic writes, approval consequences, background restart,
+readiness check, and rollback; the supplied controller only lets this package
+render and sequence that host-owned lifecycle. Ordinary turns submitted during
+that boundary remain gated until a fresh or recovered endpoint is proven; an
+unrecovered error cancels them and disconnects the unverified endpoint.
 
 ## Verification
 

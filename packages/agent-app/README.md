@@ -29,8 +29,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Drive each channel through a uniform driver contract with per-channel
   `disabled` / `waiting_for_config` / `running` / `failed` status.
 - Register the host as a traceability source. Config edits are made directly in
-  `mono-agent.config.json`, or proposed through the OS-owner-local configuration
-  TUI; direct edits take effect on the next `mono-agent restart`.
+  `mono-agent.config.json`, or proposed through the OS-owner-managed macOS
+  configuration TUI; direct edits take effect on the next `mono-agent restart`.
 - Resolve and surface any configured `observability.exporters` (the Phoenix
   preset): `start`/`status` report the configured endpoint and a note that JSONL
   artifacts remain local; `validate` performs the live reachability probe. Export
@@ -54,7 +54,7 @@ node <workspace>/packages/agent-app/dist/cli.js init
 
 On an interactive terminal, bare `mono-agent init` (no flags) runs a colourful,
 step-by-step wizard — powered by `@clack/prompts` — that asks for the public
-agent name plus a concise purpose and composes the capability selection before writing anything. Escape
+agent name plus exact Role text for `IDENTITY.md` → `## Role` and composes the capability selection before writing anything. An existing `IDENTITY.md` is preserved and the review says the entered Role will not be written. Escape
 moves back one logical step; Ctrl-C asks for exit confirmation. The final
 **Creation review** names the agent, routes/efforts, route safety, provider/SRT
 actions, exact files, secret destinations, and number of real model calls before
@@ -106,18 +106,14 @@ protected; the claimed inode is rechecked and detected open-descriptor writes ar
 retained in a reported recovery copy (writes after the final POSIX check remain
 non-cooperative); unsafe/tracked/foreign-owned/multiply-linked
 paths, stale locks, invalid dotenv, conflicts, and Windows fail closed to manual setup. Before the
-interactive wizard opens the local TUI it requires one disposable no-tool
+interactive wizard can start the background agent it requires one disposable no-tool
 response from every selected runtime route and a complete validation report with
 every selected expectation ready. Cancellation, provider failure, timeout (90s
 cloud / 240s local per route), empty output, or any tool action fails the check.
 Escape or Ctrl-C interrupts preflight; recovery can resume verified routes when
 the non-secret plan fingerprint still matches, restart all checks, edit choices,
 or cancel. Authentication repair clears every prior route proof because it can
-replace credential bytes. Guided commit atomically
-creates the config and rechecks its exact snapshot after validation and before
-opening `mono-agent tui --local --configure`. This builds the current-folder
-responder in-process and never creates launchd state. Saving after failure is
-explicitly incomplete and never auto-starts.
+replace credential bytes. Guided commit atomically creates the config and rechecks its exact snapshot after validation. On macOS it then creates or refreshes the canonical per-config launchd service, waits for a fresh `startup-complete` trace source, and opens `mono-agent tui --configure` remotely against that same background responder. A background-start failure preserves the committed files, skips the chat, and prints exact `start`, `status`, and `logs --follow` recovery commands plus log paths. Off macOS, conversational configuration is unavailable: the wizard preserves the files and gives manual edit/validate, foreground-start, and ordinary-TUI guidance without claiming readiness. Any flag or non-TTY invocation remains scaffold-only and never starts a process.
 
 Every scaffold selects versioned `mono-agent-configure` and `mono-agent-memory`
 skills from `./skills` with index disclosure. `ReadSkill` remains separate from
@@ -128,8 +124,13 @@ compare-and-swap activation prevent outside or concurrent
 operator edits from being overwritten, and a partial activation restores only
 files that still equal the managed bytes it wrote.
 
-In a marked local configuration turn only, the app injects proposal-only
-`ProposeAgentConfiguration`. The host accepts only a fail-closed low-risk
+In the separate **Temporary post-wizard configuration mode** only, the background app injects proposal-only
+`ProposeAgentConfiguration`. The opening message says to discuss the agent's Role,
+behavior, memory, skills, tools, or channels; never enter secrets; and expect a
+separate host approval before anything changes. Reply `done` or `no changes` to
+finish without edits. It also says ordinary chat starts
+after the reply and any approval or rejection, while `/quit` closes only the console
+and leaves the background agent running. The host accepts only a fail-closed low-risk
 allowlist: public name; effort, turn/session UX; selected project skills and
 disclosure; memory size or MemoryRecall enablement; semantic tool-policy
 tightening; and the separately validated Role body. Every path, memory-tier or
@@ -140,11 +141,41 @@ config/Identity/state paths without following symlink parents, stages and
 fsyncs replacements, then performs the final source comparison and rename as
 one non-yielding commit step under an owner-only transaction lock. Separate TUI
 confirmation, failure-atomic config/Role rollback compensation, rollback
-evidence, and a fresh responder remain mandatory. Configuration turns replace
+evidence, a successful managed restart, and a fresh ready trace source remain mandatory. Configuration turns replace
 the ordinary tool/MCP policy with `ReadSkill`, `MemoryRecall`, and the proposal
-tool only; direct providers that cannot project a finite list run in their
-native read-only plan posture. Fast follow-ups wait through responder rotation.
-Remote/proactive channels never receive this tool.
+tool only. Pure direct-Codex chains use its native read-only plan posture;
+mixed chains keep the finite proposal surface so a route that cannot represent
+it cannot widen authority. Direct OpenCode cannot receive the host-owned MCP
+proposal capability: a direct-OpenCode primary is routed through a configured
+proposal-capable fallback, while a direct-OpenCode fallback makes temporary
+configuration unavailable with explicit remediation. The approval card shows
+every full, untruncated JSON patch value and pages through the exact Role body
+while keeping Reject/Approve reachable, and rejects
+terminal-control or bidi-control review text before displaying it. Fast follow-ups wait through responder rotation.
+Ordinary chat uses a different conversation id. A proposal-free finish, rejection, successful approval, or recovered rollback ends the temporary mode and activates ordinary chat; `/quit` closes only the console while the daemon keeps running. Remote/proactive channels never receive this tool.
+
+Before the first macOS background launch, the CLI copies the exact package and
+already-resolved dependency closure it is currently executing—including configured
+channel plugins and the optional Supermemory backend—into an owner-only,
+version/Node-ABI/CLI/closure-digest runtime under `~/.mono-agent/runtimes/agent-app/`.
+It does not invoke npm or lifecycle scripts, so provider secrets never reach an
+installer and pnpm `workspace:` links do not require registry resolution. A
+relative-path/type/mode/content-hash manifest and the complete source-closure
+digest are bound into the runtime marker and verified on every reuse. The LaunchAgent always points there, never at an
+`npm create`/npx cache. Existing verified runtime snapshots are reused and
+retained because another agent may still reference them. A loaded job is fully
+booted out and bootstrapped again so rewritten arguments and environment are
+adopted. Launchd enters Node through `/usr/bin/env -i`, so inherited variables
+such as `NODE_OPTIONS` cannot execute before the worker's allowlisted environment
+is established. Every foreground worker holds one owner-only lifetime lease for its
+canonical config, so a managed and manual host cannot run together. A per-config
+256-bit key in owner-only `~/.mono-agent/background-snapshot-keys/` commits exact
+file bytes without exposing plaintext or offline-testable hashes in argv/traces.
+A managed worker freezes the proven config, Identity, optional Soul, and MCP authority
+file into private read-only copies before app/channel loading, while trace metadata continues to
+name the canonical config. Readiness requires one live launchd-owned trace PID,
+the exact durable snapshot, and, for configuration, a reachable TUI endpoint.
+Stop succeeds only after both launchd unload and worker death are proven.
 
 Guided readiness uses a worker-reproducible environment rather than the launching
 shell: durable `.env` values, entered selected secrets, the resolved Pi auth path,
@@ -278,13 +309,15 @@ await app.stop();
 - `createBroadcastRunRecorder` for publishing recorder lifecycle events to a
   live run-event sink.
 - `initMonoAgentFolder(options)` / `validateMonoAgentFolder(options)`. Init results
-  expose precise `changes` and `secretPersistence` outcomes; the compatibility
-  `secretsPersisted` flag is true only after a committed secret write.
+  expose precise `changes`, `secretPersistence`, and canonical `identityRole`
+  created/preserved/planned outcomes; the compatibility `secretsPersisted` flag
+  is true only after a committed secret write.
 - `MONO_AGENT_APP_FIELD_GROUPS` and the `resolveApp*` traceability/artifact
   resolvers.
 - `runCli(argv)` / `parseCliArgs(argv)` backing the `mono-agent` bin.
-- Local configuration CLI lifecycle: `mono-agent tui --local [--configure]` and
-  managed project-skill drift/update through `install-skill --project`.
+- Managed configuration CLI lifecycle: macOS `mono-agent tui --configure`
+  against the background agent (`--local` is ordinary chat only), plus managed
+  project-skill drift/update through `install-skill --project`.
 - Managed SRT lifecycle: `sandboxRuntimeStatus`, `setupManagedSrt`, and
   `checkSandboxRuntime` (also exposed as `mono-agent sandbox status|setup|check`).
 

@@ -13,6 +13,7 @@ describe("waitForShutdownSignal", () => {
     // Defensive: ensure no stray listeners leak between tests.
     process.removeAllListeners("SIGINT");
     process.removeAllListeners("SIGTERM");
+    vi.restoreAllMocks();
   });
 
   it("stays pending until a signal arrives (foreground does not exit immediately)", async () => {
@@ -68,5 +69,16 @@ describe("waitForShutdownSignal", () => {
     await pending;
 
     expect(app.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves a failed shutdown so outer cleanup can release the worker lease", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const app = { stop: vi.fn(async () => { throw new Error("stop failed"); }) };
+    const pending = waitForShutdownSignal(app);
+
+    process.emit("SIGTERM");
+
+    await expect(pending).resolves.toBe(1);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("Foreground shutdown failed: stop failed"));
   });
 });

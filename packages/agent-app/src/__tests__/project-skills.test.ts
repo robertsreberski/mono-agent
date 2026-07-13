@@ -9,6 +9,7 @@ import { initMonoAgentFolder } from "../init.js";
 import {
   checkManagedProjectSkills,
   PROJECT_SKILL_MANIFEST_PATH,
+  PROJECT_SKILL_VERSION,
   updateManagedProjectSkills,
 } from "../project-skills.js";
 import { defaultAnswers } from "../wizard/answers.js";
@@ -42,8 +43,12 @@ describe("managed project skills", () => {
       skillDisclosure: "index",
     });
     expect((await checkManagedProjectSkills(dir)).ok).toBe(true);
-    expect(await readFile(join(dir, "skills", "mono-agent-configure", "SKILL.md"), "utf8"))
-      .toContain("ProposeAgentConfiguration");
+    expect(PROJECT_SKILL_VERSION).toBe("1.1.0");
+    const configureSkill = await readFile(join(dir, "skills", "mono-agent-configure", "SKILL.md"), "utf8");
+    expect(configureSkill).toContain("ProposeAgentConfiguration once");
+    expect(configureSkill).toContain("IDENTITY.md → ## Role");
+    expect(configureSkill).toContain("authoritative background agent");
+    expect(configureSkill).toContain("ordinary chat uses a separate conversation");
   });
 
   it("detects an operator edit and refuses to overwrite it", async () => {

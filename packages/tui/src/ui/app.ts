@@ -1,4 +1,4 @@
-import { Container, matchesKey, SelectList, Text, TUI } from "@earendil-works/pi-tui";
+import { Container, matchesKey, SelectList, Text, TruncatedText, TUI, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component, OverlayHandle, SelectItem, SlashCommand, Terminal } from "@earendil-works/pi-tui";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import { EFFORT_LEVELS } from "@mono-agent/config";
@@ -9,7 +9,7 @@ import type { DiscoveredInstance } from "../data/instances.js";
 import { RemoteAgentResponder } from "../remote/client.js";
 import { selectListTheme, styles } from "./theme.js";
 import { StatusBar } from "./components/status-bar.js";
-import { ChatView } from "./views/chat.js";
+import { ChatView, type ChatTurnSettledEvent } from "./views/chat.js";
 import { ConfigView } from "./views/config.js";
 import { PickerView } from "./views/picker.js";
 import { ReplayView } from "./views/replay.js";
@@ -28,20 +28,35 @@ export interface ConfigurationProposalCard {
   readonly title: string;
   readonly rationale: string;
   readonly details: readonly string[];
+  /** Exact, host-bounded Role body that will replace the named canonical section. */
+  readonly role?: { readonly location: string; readonly proposedBody: string };
 }
 
 export interface ConfigurationProposalResult {
   readonly message: string;
+  readonly kind?: "applied" | "rejected" | "rolled_back" | "error";
+  /** Fresh endpoint proven ready after apply, or after restoring the old config. */
+  readonly connection?: { readonly baseUrl: string; readonly apiKey?: string };
 }
 
 export interface TuiConfigurationController {
+  /** Opaque capability id; the daemon derives an owner-only proposal sink from it. */
+  readonly sessionId: string;
+  /** Unique base for configuration-only conversations; ordinary chat never uses it. */
+  readonly conversationId: string;
+  /** Effective configured identity destination shown honestly to the operator. */
+  readonly roleLocation: string;
   /** When present, boot immediately starts the recorded configuration invitation turn. */
   readonly initialPrompt?: string;
   /** Prompt used when the operator invokes /configure later. */
   readonly prompt: string;
+  /** Fresh operator-phase instruction; must not repeat the opening invitation. */
+  readonly operatorPrompt: string;
   takeProposal(): Promise<ConfigurationProposalCard | undefined>;
   approve(id: string): Promise<ConfigurationProposalResult>;
   reject(id: string): Promise<ConfigurationProposalResult>;
+  /** Revoke an attempt that cannot reach its operator/proposal phase. */
+  abandon(): Promise<void>;
 }
 
 export interface MonoAgentTuiAppOptions {
@@ -72,7 +87,7 @@ export interface MonoAgentTuiAppOptions {
   readonly env?: Record<string, string | undefined>;
   /** Test seam: coalescing window for streamed markdown; 0 = synchronous. */
   readonly flushIntervalMs?: number;
-  /** Local-only configuration lifecycle; absent for remote/discovery TUI sessions. */
+  /** Host-owned configuration lifecycle; normally paired with a remote background connection. */
   readonly configuration?: TuiConfigurationController;
 }
 
@@ -90,6 +105,98 @@ const EFFORT_PICKER_DEFAULT_VALUE = "tui-effort-picker:__default__";
  */
 const TOGGLE_THINKING_ON_EFFORT = "high";
 const TOGGLE_THINKING_OFF_EFFORT = "none";
+
+class ConfigurationReviewPager implements Component {
+  private offset = 0;
+  private renderedLines: readonly string[] = [];
+
+  constructor(
+    private readonly text: string,
+    private readonly pageRows: number,
+  ) {}
+
+  scrollPage(direction: -1 | 1): void {
+    const maxOffset = Math.max(0, this.renderedLines.length - this.pageRows);
+    const step = Math.max(1, this.pageRows - 1);
+    this.offset = Math.max(0, Math.min(maxOffset, this.offset + direction * step));
+  }
+
+  invalidate(): void {
+    this.renderedLines = [];
+  }
+
+  render(width: number): string[] {
+    this.renderedLines = wrapConfigurationReviewText(this.text, width);
+    const maxOffset = Math.max(0, this.renderedLines.length - this.pageRows);
+    this.offset = Math.min(this.offset, maxOffset);
+
+    const visible = this.renderedLines.slice(this.offset, this.offset + this.pageRows);
+    while (visible.length < this.pageRows) visible.push(" ".repeat(width));
+
+    const total = this.renderedLines.length;
+    const start = total === 0 ? 0 : this.offset + 1;
+    const end = Math.min(total, this.offset + this.pageRows);
+    const indicator = new TruncatedText(
+      styles.dim(`review lines ${start}-${end}/${total} · pgup/pgdn scroll`),
+      1,
+      0,
+    ).render(width)[0] ?? " ".repeat(width);
+    return [...visible, indicator];
+  }
+}
+
+const CONFIGURATION_REVIEW_GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** Wrap without Text's whitespace trimming so every approved printable grapheme remains visible. */
+function wrapConfigurationReviewText(text: string, width: number): string[] {
+  const contentWidth = Math.max(1, width - 2);
+  const wrapped: string[] = [];
+  for (const logicalLine of text.split("\n")) {
+    if (logicalLine.length === 0) {
+      wrapped.push("");
+      continue;
+    }
+    let current = "";
+    let currentWidth = 0;
+    for (const { segment } of CONFIGURATION_REVIEW_GRAPHEMES.segment(logicalLine)) {
+      const segmentWidth = visibleWidth(segment);
+      if (current.length > 0 && currentWidth + segmentWidth > contentWidth) {
+        wrapped.push(current);
+        current = "";
+        currentWidth = 0;
+      }
+      current += segment;
+      currentWidth += segmentWidth;
+    }
+    wrapped.push(current);
+  }
+  return wrapped.map((line) => {
+    const withMargins = ` ${line} `;
+    return withMargins + " ".repeat(Math.max(0, width - visibleWidth(withMargins)));
+  });
+}
+
+function configurationProposalHasUnsafeReviewControls(proposal: ConfigurationProposalCard): boolean {
+  const displayedText = [
+    proposal.title,
+    proposal.rationale,
+    ...proposal.details,
+    ...(proposal.role === undefined ? [] : [proposal.role.location, proposal.role.proposedBody]),
+  ];
+  return displayedText.some((value) => {
+    for (const character of value) {
+      const codePoint = character.codePointAt(0)!;
+      if (
+        (codePoint <= 0x1f && codePoint !== 0x0a)
+        || (codePoint >= 0x7f && codePoint <= 0x9f)
+        || /\p{Bidi_Control}/u.test(character)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  });
+}
 
 /**
  * Root controller: owns the pi-tui instance, the view stack, connection state,
@@ -114,12 +221,20 @@ export class MonoAgentTuiApp {
   private modelOptions: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; reasoningMode?: string; label?: string }> = {};
   /** The connected agent's own default model ref (from `/v1/info`) — the effort picker's effective model when no `/model` override is active. */
   private agentModel: string | undefined;
-  /** The single open picker overlay (model or effort); only one at a time. */
-  private activePicker: { readonly handle: OverlayHandle; readonly list: SelectList } | undefined;
+  /** The single open picker/review overlay; only one at a time. */
+  private activePicker: {
+    readonly handle: OverlayHandle;
+    readonly list: SelectList;
+    readonly review?: ConfigurationReviewPager;
+  } | undefined;
   private ctrlCArmedAt = 0;
   private exitResolve: (() => void) | undefined;
   private readonly exitPromise: Promise<void>;
   private stopped = false;
+  private configurationAttempt = 0;
+  private configurationAttemptActive = false;
+  private configurationResolutionActive = false;
+  private stopAfterConfigurationResolution = false;
 
   constructor(options: MonoAgentTuiAppOptions) {
     this.options = options;
@@ -138,8 +253,7 @@ export class MonoAgentTuiApp {
       ...(options.logger === undefined ? {} : { logger: options.logger }),
       ...(options.flushIntervalMs === undefined ? {} : { flushIntervalMs: options.flushIntervalMs }),
       ...(options.configuration === undefined ? {} : {
-        localMode: true,
-        onTurnSettled: (event) => this.handleConfigurationTurnSettled(event.configuration),
+        onTurnSettled: (event) => this.handleConfigurationTurnSettled(event),
       }),
     });
     this.picker = new PickerView({
@@ -174,13 +288,32 @@ export class MonoAgentTuiApp {
     if (this.stopped) {
       return;
     }
+    if (this.configurationResolutionActive) {
+      this.stopAfterConfigurationResolution = true;
+      this.chat.addNotice(
+        "Configuration approval is still applying/restarting. This console will close after the host transaction settles; closing it does not send a background stop request.",
+        "warning",
+      );
+      return;
+    }
+    this.finishStop();
+  }
+
+  private finishStop(): void {
+    if (this.stopped) return;
     this.stopped = true;
     this.chat.cancelActiveTurn();
+    this.chat.finishConfigurationAttempt();
     this.tui.stop();
     this.exitResolve?.();
   }
 
   showView(view: TuiViewId): void {
+    if (view === "picker" && this.options.configuration !== undefined) {
+      this.statusBar.setEphemeral("this configuration console is pinned to its background agent");
+      this.tui.requestRender();
+      return;
+    }
     this.view = view;
     this.viewHost.clear();
     const component: Component =
@@ -196,23 +329,7 @@ export class MonoAgentTuiApp {
     if (responder !== undefined) {
       this.chat.setResponder(responder);
     } else if (connection !== undefined) {
-      const remote = new RemoteAgentResponder({
-        baseUrl: connection.baseUrl,
-        ...(connection.apiKey === undefined ? {} : { apiKey: connection.apiKey }),
-      });
-      this.chat.setResponder(remote);
-      void remote
-        .info()
-        .then((info) => {
-          this.applyAgentInfo(info);
-          this.tui.requestRender();
-        })
-        .catch((error: unknown) => {
-          this.chat.addNotice(
-            `Could not reach the agent: ${error instanceof Error ? error.message : String(error)}`,
-            "error",
-          );
-        });
+      this.setRemoteConnection(connection);
     }
     if (instance?.artifactDir !== undefined) {
       this.replay.setArtifactDir(instance.artifactDir);
@@ -228,6 +345,26 @@ export class MonoAgentTuiApp {
     if (this.options.initialStatusText !== undefined) {
       this.statusBar.setEphemeral(this.options.initialStatusText);
     }
+  }
+
+  private setRemoteConnection(connection: { readonly baseUrl: string; readonly apiKey?: string }): void {
+    const remote = new RemoteAgentResponder({
+      baseUrl: connection.baseUrl,
+      ...(connection.apiKey === undefined ? {} : { apiKey: connection.apiKey }),
+    });
+    this.chat.setResponder(remote);
+    void remote
+      .info()
+      .then((info) => {
+        this.applyAgentInfo(info);
+        this.tui.requestRender();
+      })
+      .catch((error: unknown) => {
+        this.chat.addNotice(
+          `Could not reach the agent: ${error instanceof Error ? error.message : String(error)}`,
+          "error",
+        );
+      });
   }
 
   private async refreshInstances(): Promise<void> {
@@ -351,7 +488,18 @@ export class MonoAgentTuiApp {
     // "any key closes" behaviour, which would dismiss the picker on arrows.
     if (this.activePicker !== undefined) {
       if (matchesKey(data, "escape")) {
-        this.closePicker();
+        // Picker cancellation can carry meaning: on a configuration review it
+        // is an explicit host-side rejection, not merely a cosmetic close.
+        this.activePicker.list.handleInput(data);
+        this.tui.requestRender();
+        return { consume: true };
+      }
+      if (
+        this.activePicker.review !== undefined
+        && (matchesKey(data, "pageUp") || matchesKey(data, "pageDown"))
+      ) {
+        this.activePicker.review.scrollPage(matchesKey(data, "pageDown") ? 1 : -1);
+        this.tui.requestRender();
         return { consume: true };
       }
       if (
@@ -452,9 +600,20 @@ export class MonoAgentTuiApp {
         return true;
       case "quit":
       case "exit":
+        if (this.options.configuration !== undefined) {
+          this.statusBar.setEphemeral("closing console; no background stop requested");
+          this.tui.requestRender();
+        }
         this.stop();
         return true;
       case "agents":
+        if (this.options.configuration !== undefined) {
+          this.chat.addNotice(
+            "This temporary configuration console is pinned to the background agent it can safely restart. Close it before choosing another agent.",
+            "warning",
+          );
+          return true;
+        }
         this.showView("picker");
         void this.refreshInstances();
         return true;
@@ -500,7 +659,7 @@ export class MonoAgentTuiApp {
         `${styles.accent("tab")}         next view (chat: only when the editor is empty) · ${styles.accent("shift+tab")} previous`,
         `${styles.accent("esc")}         cancel in-flight turn · back`,
         `${styles.accent("ctrl+t")}      expand/collapse thinking`,
-        `${styles.accent("ctrl+c ×2")}   quit`,
+        `${styles.accent("ctrl+c ×2")}   quit console only (does not stop agent)`,
         "",
         `${styles.accent("replay list")}    s source filter · x status filter · r refresh`,
         `${styles.accent("replay detail")}  ↑↓/pgup/pgdn/g/G step · [ ] turn · t/o/m/y/e/a filter · / search · n/N match · enter raw json · esc layers back`,
@@ -515,6 +674,7 @@ export class MonoAgentTuiApp {
         styles.dim("effort options are model-specific"),
         "",
         `${styles.accent("/help /agents /replay /config /configure /cancel /thinking /model /effort /quit")}`,
+        styles.dim("/configure opens one temporary proposal-only conversation; /quit closes only this console"),
         "",
         styles.dim("any key closes this help"),
       ].join("\n"),
@@ -594,32 +754,101 @@ export class MonoAgentTuiApp {
   private enterConfiguration(): void {
     const configuration = this.options.configuration;
     if (configuration === undefined) {
-      this.chat.addNotice("Conversational configuration is available only in `mono-agent tui --local`.", "warning");
+      this.chat.addNotice(
+        "Temporary configuration mode is unavailable in this console. On macOS, open the managed agent with `mono-agent tui --configure`.",
+        "warning",
+      );
+      return;
+    }
+    if (this.chat.hasActiveTurn()) {
+      this.chat.addNotice("Wait for the active turn to settle, then run /configure again.", "warning");
+      return;
+    }
+    if (this.configurationAttemptActive) {
+      this.chat.addNotice(
+        "Finish the current configuration reply and its host approval or rejection before running /configure again.",
+        "warning",
+      );
       return;
     }
     this.showView("chat");
-    this.chat.beginConfiguration(configuration.prompt);
+    this.configurationAttemptActive = true;
+    this.configurationAttempt += 1;
+    this.chat.addInfo(
+      `Temporary post-wizard configuration mode: discuss the agent's Role (${configuration.roleLocation}), behavior, memory, skills, tools, or channels. Do not enter secrets. Nothing changes until the host shows a separate approval. Reply done or no changes to finish without edits. After your reply and any approval or rejection, ordinary chat starts. /quit closes only this console and sends no background stop; the agent remains running unless restart/recovery reports failure.`,
+    );
+    this.chat.beginConfiguration(configuration.prompt, {
+      sessionId: configuration.sessionId,
+      conversationId: `${configuration.conversationId}-${this.configurationAttempt}`,
+      operatorPrompt: configuration.operatorPrompt,
+    });
   }
 
-  private async handleConfigurationTurnSettled(configurationTurn: boolean): Promise<void> {
-    if (!configurationTurn) return;
+  private async handleConfigurationTurnSettled(event: ChatTurnSettledEvent): Promise<void> {
+    if (!event.configuration) return;
     const configuration = this.options.configuration;
     if (configuration === undefined) return;
+    if (event.configurationPhase === "invitation") {
+      if (event.status !== "ok") {
+        try {
+          await configuration.abandon();
+        } catch (error) {
+          this.chat.addNotice(
+            `The failed configuration attempt could not revoke its proposal capability: ${error instanceof Error ? error.message : String(error)}`,
+            "error",
+          );
+        } finally {
+          this.finishConfigurationAttempt();
+        }
+      }
+      return;
+    }
+    if (event.configurationCompletion === "no-changes") {
+      try {
+        await configuration.abandon();
+        this.chat.addInfo("Configuration mode finished; no changes were requested. Ordinary chat is now active.");
+      } catch (error) {
+        this.chat.addNotice(
+          `Configuration ended without changes, but its proposal capability could not be revoked cleanly: ${error instanceof Error ? error.message : String(error)}`,
+          "error",
+        );
+        this.chat.addInfo("Configuration mode finished; no files changed. Ordinary chat is now active.");
+      } finally {
+        this.finishConfigurationAttempt();
+      }
+      return;
+    }
+    let proposalShown = false;
     try {
       const proposal = await configuration.takeProposal();
-      if (proposal !== undefined) this.showConfigurationProposal(proposal);
+      if (proposal !== undefined) {
+        this.showConfigurationProposal(proposal);
+        proposalShown = true;
+        return;
+      }
+      this.chat.addInfo("Configuration mode finished; no changes were proposed. Ordinary chat is now active.");
     } catch (error) {
       this.chat.addNotice(error instanceof Error ? error.message : String(error), "error");
+      this.chat.addInfo("Configuration mode finished; no files changed. Ordinary chat is now active.");
+    } finally {
+      if (!proposalShown) this.finishConfigurationAttempt();
     }
   }
 
   private showConfigurationProposal(proposal: ConfigurationProposalCard): void {
     if (this.activePicker !== undefined) {
-      this.chat.addNotice("A configuration proposal is ready, but another picker is open. Close it and run /configure again.", "warning");
+      this.closePicker();
+    }
+    if (configurationProposalHasUnsafeReviewControls(proposal)) {
+      this.chat.addNotice(
+        "Configuration proposal review text contained unsafe terminal or bidi controls and was not displayed. The proposal is being rejected without approval.",
+        "error",
+      );
+      void this.resolveConfigurationProposal(proposal, false);
       return;
     }
     const list = new SelectList([
-      { value: "approve", label: "Approve and reload" },
+      { value: "approve", label: "Approve, restart, and verify" },
       { value: "reject", label: "Reject; change nothing" },
     ], 2, selectListTheme);
     list.onSelect = (item: SelectItem) => {
@@ -632,15 +861,34 @@ export class MonoAgentTuiApp {
     };
     list.setSelectedIndex(1);
 
+    const roleReview = proposal.role === undefined
+      ? ""
+      : [
+          "",
+          `Exact proposed Role body (${proposal.role.location})`,
+          "--- begin exact Role body ---",
+          proposal.role.proposedBody,
+          "--- end exact Role body ---",
+        ].join("\n");
+    const review = new ConfigurationReviewPager([
+      "Reason",
+      proposal.rationale,
+      "",
+      "Changes",
+      proposal.details.length === 0
+        ? "• no mono-agent.config.json changes"
+        : proposal.details.map((detail) => `• ${detail}`).join("\n"),
+      roleReview,
+    ].join("\n"), Math.max(1, Math.min(14, this.options.terminal.rows - 5)));
     const overlay = new Container();
-    overlay.addChild(new Text(styles.bold(proposal.title), 1, 0));
-    overlay.addChild(new Text(proposal.rationale, 1, 0));
-    overlay.addChild(new Text(proposal.details.map((detail) => `• ${detail}`).join("\n"), 1, 0));
+    overlay.addChild(new TruncatedText(styles.bold(proposal.title), 1, 0));
+    overlay.addChild(review);
     overlay.addChild(list);
-    overlay.addChild(new Text(styles.dim("host-validated · enter select · esc rejects"), 1, 0));
+    overlay.addChild(new TruncatedText(styles.dim("pgup/pgdn review · ↑↓ decision · enter select · esc rejects"), 1, 0));
     this.activePicker = {
       handle: this.tui.showOverlay(overlay, { anchor: "center", width: 76, nonCapturing: true }),
       list,
+      review,
     };
     this.tui.requestRender();
   }
@@ -651,19 +899,65 @@ export class MonoAgentTuiApp {
   ): Promise<void> {
     const configuration = this.options.configuration;
     if (configuration === undefined) return;
+    if (this.configurationResolutionActive) return;
+    this.configurationResolutionActive = true;
+    let releaseSubmissions: (() => void) | undefined;
+    const submissionsReleased = new Promise<void>((resolve) => {
+      releaseSubmissions = resolve;
+    });
+    this.chat.gateSubmissions(submissionsReleased);
     this.statusBar.setEphemeral(approve ? "validating and applying approved configuration…" : "rejecting proposal…");
     this.tui.requestRender();
     try {
       const result = approve
         ? await configuration.approve(proposal.id)
         : await configuration.reject(proposal.id);
-      this.chat.addInfo(result.message);
+      if (result.connection !== undefined) {
+        this.setRemoteConnection(result.connection);
+      }
+      if (approve && result.connection === undefined && result.kind === "error") {
+        this.chat.setResponder(undefined);
+        const cancelled = this.chat.cancelConfigurationBlockedTurns();
+        if (cancelled > 0) {
+          this.chat.addNotice(
+            `${cancelled} ordinary message${cancelled === 1 ? " was" : "s were"} cancelled because restart and recovery did not produce a verified agent endpoint. Submit it again only after manual recovery succeeds.`,
+            "error",
+          );
+        }
+      }
+      if (result.kind === "error" || result.kind === "rolled_back") {
+        this.chat.addNotice(result.message, "error");
+      } else {
+        this.chat.addInfo(result.message);
+      }
     } catch (error) {
+      if (approve) {
+        this.chat.setResponder(undefined);
+        const cancelled = this.chat.cancelConfigurationBlockedTurns();
+        if (cancelled > 0) {
+          this.chat.addNotice(
+            `${cancelled} ordinary message${cancelled === 1 ? " was" : "s were"} cancelled because the configuration transaction did not return a verified agent endpoint. Recover the background agent before resubmitting it.`,
+            "error",
+          );
+        }
+      }
       this.chat.addNotice(error instanceof Error ? error.message : String(error), "error");
     } finally {
+      releaseSubmissions?.();
+      this.configurationResolutionActive = false;
+      this.finishConfigurationAttempt();
       this.statusBar.setEphemeral("");
       this.tui.requestRender();
+      if (this.stopAfterConfigurationResolution) {
+        this.finishStop();
+      }
     }
+  }
+
+  private finishConfigurationAttempt(): void {
+    if (!this.configurationAttemptActive) return;
+    this.configurationAttemptActive = false;
+    this.chat.finishConfigurationAttempt();
   }
 
   /**
@@ -797,11 +1091,11 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "agents", description: "Pick another running agent" },
   { name: "replay", description: "Browse recorded runs (full event timeline)" },
   { name: "config", description: "Read-only resolved config" },
-  { name: "configure", description: "Re-enter local conversational configuration" },
+  { name: "configure", description: "Open one temporary host-approved configuration conversation" },
   { name: "cancel", description: "Cancel the in-flight turn" },
   { name: "thinking", description: "Expand/collapse thinking blocks" },
   { name: "model", description: "Override this session's model (no arg opens a picker)" },
   { name: "effort", description: "Override this session's effort (no arg opens a model-aware picker)" },
   { name: "new", description: "Visual break in the transcript" },
-  { name: "quit", description: "Exit the TUI" },
+  { name: "quit", description: "Close this console; keep the background agent running" },
 ];

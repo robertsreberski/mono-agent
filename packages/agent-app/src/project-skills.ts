@@ -20,7 +20,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import type { GeneratedFile } from "./modules/types.js";
 
-export const PROJECT_SKILL_VERSION = "1.0.0";
+export const PROJECT_SKILL_VERSION = "1.1.0";
 export const PROJECT_SKILL_MANIFEST_PATH = "skills/.mono-agent-managed.json";
 
 export const PROJECT_SKILL_NAMES = [
@@ -45,14 +45,14 @@ version: ${PROJECT_SKILL_VERSION}
 
 Use this skill when the operator asks to configure, tune, or change this agent.
 
-1. Treat the current resolved config, IDENTITY.md, and validation output as operational truth. Memory may recall preferences, but never use memory as proof that a change is active.
-2. Ask at most one focused question at a time. If the operator gives an ordinary task instead of configuration intent, perform that task and stop the configuration flow.
+1. Treat the current resolved config, the configured identity document's \`## Role\` (normally \`IDENTITY.md → ## Role\`), and validation output as operational truth. Memory may recall preferences, but never use memory as proof that a change is active.
+2. This is one temporary configuration exchange, separate from ordinary chat. Ask one focused question. After the operator's reply, either make exactly one proposal or clearly say that no changes are proposed. If the reply is an ordinary task, do not execute it with configuration authority; hand it off to the ordinary conversation.
 3. Never ask for API keys, OAuth tokens, passwords, bot tokens, or other secrets in chat. Explain the exact masked mono-agent auth or owner-only .env flow instead.
-4. For a safe local change, call ProposeAgentConfiguration with a short rationale, an RFC 6902 JSON Patch against mono-agent.config.json, and optionally a replacement body for the existing ## Role section in IDENTITY.md.
-5. Do not claim the proposal was applied. The host validates it, shows an out-of-band diff, and requires the operator to approve it.
+4. For a safe local change, call ProposeAgentConfiguration once with a short rationale, an RFC 6902 JSON Patch against mono-agent.config.json, and optionally a replacement body for the configured identity document's \`## Role\` (normally \`IDENTITY.md → ## Role\`). A Role-only proposal uses an empty patch.
+5. Do not claim the proposal was applied. The local host validates it, shows an out-of-band review, requires the operator to approve it, commits files atomically, restarts the authoritative background agent, and proves readiness. A failed restart restores the approved files and attempts to restore the previous daemon before reporting recovery instructions.
 6. Keep config proposals to the host's documented low-risk allowlist: public name; effort, turn/session UX; selected project skills and disclosure; memory size or MemoryRecall enablement; and tool-policy tightening. Paths, memory tier/capture behavior, external MCP servers, plugins, channels or cron/proactive jobs, tool/runtime permissions, model-route or provider posture, embeddings/LLM endpoints, exporters, sandboxing, and network exposure require the explicit guided flow named by the host.
 
-Keep proposals minimal. Preserve unrelated config, existing knowledge references, and every identity section except the optional Role body.
+Keep proposals minimal. Preserve unrelated config, existing knowledge references, and every identity section except the optional Role body. Configuration mode ends after a no-change reply or after approval/rejection; ordinary chat uses a separate conversation.
 `;
 
 const MEMORY_SKILL = `---

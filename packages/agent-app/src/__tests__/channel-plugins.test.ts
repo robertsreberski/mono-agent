@@ -6,7 +6,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { startMonoAgentApp } from "../app.js";
 import { collectChannelConfigViews } from "../channel-config-view.js";
-import { ChannelPluginConfigError } from "../channel-plugins.js";
+import {
+  ChannelPluginConfigError,
+  configuredChannelPluginPackageNames,
+} from "../channel-plugins.js";
 import { resolveChannelDrivers } from "../channels.js";
 import type { ChannelDriver } from "../channels.js";
 import { validateMonoAgentFolder } from "../doctor.js";
@@ -46,6 +49,25 @@ function sectionById(report: Awaited<ReturnType<typeof validateMonoAgentFolder>>
 }
 
 describe("channel plugins", () => {
+  it("enumerates unique configured package names for managed-runtime capture", async () => {
+    const configPath = await writeConfig({
+      ...baseConfig(),
+      channels: {
+        plugins: [
+          { package: "@mono-agent/whatsapp-adapter" },
+          { package: "@mono-agent/a2a-adapter", id: "a2a-one" },
+          { package: "@mono-agent/a2a-adapter", id: "a2a-two" },
+          { id: "invalid-without-package" },
+        ],
+      },
+    });
+
+    await expect(configuredChannelPluginPackageNames(configPath)).resolves.toEqual([
+      "@mono-agent/a2a-adapter",
+      "@mono-agent/whatsapp-adapter",
+    ]);
+  });
+
   it("loads an explicit workspace plugin for validate, config view, and start status", async () => {
     const configPath = await writeConfig({
       ...baseConfig(),

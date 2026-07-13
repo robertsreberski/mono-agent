@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import process from "node:process";
+
+import { accountHomeDirectory } from "./account-home.js";
 
 /**
  * Thin, side-effect-light helpers around macOS launchd. The `launchctl` runner
@@ -33,9 +34,17 @@ export interface PlistInput {
   readonly configPath: string;
   readonly cwd: string;
   readonly envFile?: string;
+  /** Secret-free approved input identity, encoded for the internal worker. */
+  readonly expectedBackgroundSnapshot: string;
   readonly stdoutPath: string;
   readonly stderrPath: string;
-  readonly pathEnv: string;
+  /** Deliberately allowlisted, non-secret worker environment. */
+  readonly environment: Readonly<Record<string, string>>;
+}
+
+export interface LaunchdServiceInfo {
+  readonly loaded: boolean;
+  readonly pid?: number;
 }
 
 const LABEL_PREFIX = "com.mono-agent";
@@ -62,7 +71,7 @@ export function deriveLaunchdLabel(configPath: string): string {
   return `${LABEL_PREFIX}.${folder.length === 0 ? "agent" : folder}-${hash}`;
 }
 
-export function launchdPathsFor(label: string, home: string = homedir()): LaunchdPaths {
+export function launchdPathsFor(label: string, home: string = accountHomeDirectory()): LaunchdPaths {
   const launchAgentsDir = resolve(home, "Library", "LaunchAgents");
   const logDir = resolve(home, ".mono-agent", "logs");
   return {
@@ -84,12 +93,19 @@ export function escapeXml(value: string): string {
 }
 
 /**
- * The plist runs `node <cli.js> start --foreground …` (the existing blocking
- * worker) in the config's directory. No secrets are written here — the worker
- * loads `.env` from its working directory exactly like the foreground CLI.
+ * The plist runs the blocking worker through `/usr/bin/env -i`. Clearing the
+ * launchd job's inherited environment before Node starts is important: Node
+ * startup variables such as NODE_OPTIONS execute before cli.ts can sanitise
+ * process.env. Only the explicit, non-secret operational allowlist is restored.
  */
 export function buildPlistXml(input: PlistInput): string {
+  const environmentArguments = Object.entries(input.environment)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${value}`);
   const programArguments = [
+    "/usr/bin/env",
+    "-i",
+    ...environmentArguments,
     input.nodePath,
     input.cliPath,
     "start",
@@ -97,6 +113,8 @@ export function buildPlistXml(input: PlistInput): string {
     "--config",
     input.configPath,
     ...(input.envFile === undefined ? [] : ["--env-file", input.envFile]),
+    "--expected-background-snapshot",
+    input.expectedBackgroundSnapshot,
   ];
   const argsXml = programArguments.map((arg) => `    <string>${escapeXml(arg)}</string>`).join("\n");
 
@@ -112,11 +130,6 @@ ${argsXml}
   </array>
   <key>WorkingDirectory</key>
   <string>${escapeXml(input.cwd)}</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key>
-    <string>${escapeXml(input.pathEnv)}</string>
-  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -187,18 +200,32 @@ export function makeLaunchctlRunner(): LaunchctlRunner {
 
 /** True when the service is bootstrapped in the user's gui domain. */
 export async function isLoaded(runner: LaunchctlRunner, label: string, uid: number): Promise<boolean> {
+  return (await launchdServiceInfo(runner, label, uid)).loaded;
+}
+
+/** Read the launchd-owned process identity from `launchctl print`. */
+export async function launchdServiceInfo(
+  runner: LaunchctlRunner,
+  label: string,
+  uid: number,
+): Promise<LaunchdServiceInfo> {
   const result = await runner(["print", serviceTarget(label, uid)]);
-  return result.code === 0;
+  if (result.code !== 0) return { loaded: false };
+  const pid = parseLaunchdServicePid(result.stdout);
+  return pid === undefined ? { loaded: true } : { loaded: true, pid };
+}
+
+/** Parse only launchd's top-level `pid = N` field; never infer a pid from noise. */
+export function parseLaunchdServicePid(output: string): number | undefined {
+  const match = /^\s*pid\s*=\s*(\d+)\s*$/mu.exec(output);
+  if (match?.[1] === undefined) return undefined;
+  const pid = Number(match[1]);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
 }
 
 /** Bootstrap (load + RunAtLoad-launch) the plist. Caller tolerates "already bootstrapped". */
 export async function bootstrap(runner: LaunchctlRunner, plistPath: string, uid: number): Promise<LaunchctlResult> {
   return await runner(["bootstrap", domainTarget(uid), plistPath]);
-}
-
-/** Kill and restart an already-loaded service, picking up a rewritten plist. */
-export async function kickstartRestart(runner: LaunchctlRunner, label: string, uid: number): Promise<LaunchctlResult> {
-  return await runner(["kickstart", "-k", serviceTarget(label, uid)]);
 }
 
 /**

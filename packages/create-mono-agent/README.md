@@ -10,6 +10,12 @@ Three equivalent entry points, one behaviour:
 - `npx create-mono-agent` — the same, spelled explicitly.
 - `npm i -g create-mono-agent` — a global install that puts the natural `mono-agent` command on your `PATH`.
 
+On macOS, a one-off `npm create`/npx wizard may start the finished agent in the
+background. Before it does, `@mono-agent/agent-app` copies the exact executing
+package through npm into a private, verified runtime under
+`~/.mono-agent/runtimes/agent-app/`; launchd never keeps a disposable npm-cache
+path. This does not install a global command or mutate `PATH`.
+
 The bare `mono-agent` npm name is unavailable — npm rejects it as too similar to
 an unrelated `monoagent` package — so this installer follows the `create-*`
 convention while still exposing the ergonomic `mono-agent` bin.
