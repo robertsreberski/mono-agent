@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/agent-runtime",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Agent runtime supporting Claude SDK/CLI, Codex, OpenCode, and Pi SDK bridges out of the box",
   "type": "module",
   "license": "GPL-3.0-only",

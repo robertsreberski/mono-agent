@@ -399,7 +399,10 @@ Supermemory owns its remote index, so `mono-agent memory rebuild`, `rollback`, a
 
 ## Enable v1 on an existing agent
 
-`0.7.0` is the product-v1 lockstep release. Product v1 is a product milestone, not an npm major-`1` claim. This is the complete cutover for an existing local agent, with one backend-specific branch in step 6.
+`0.8.0` is the first product-v1 lockstep release published to npm. The immutable
+`0.7.0` source tag introduced the milestone but was not published. Product v1 is
+a product milestone, not an npm major-`1` claim. This is the complete cutover
+for an existing local agent, with one backend-specific branch in step 6.
 
 1. Confirm Node.js meets the supported floor. The repository `.nvmrc` pins the exact minimum; an existing agent directory may not contain that file, so select the version explicitly there:
 
@@ -409,26 +412,51 @@ Supermemory owns its remote index, so `mono-agent memory rebuild`, `rollback`, a
    nvm use 22.19.0
    ```
 
-2. Upgrade the package that already owns the global `mono-agent` command, then confirm the exact published version. `create-mono-agent` and `@mono-agent/agent-app` both provide that command, so do not install both globally:
-
-   ```bash
-   VERSION="0.7.0"
-   npm ls -g --depth=0 create-mono-agent @mono-agent/agent-app || true
-
-   npm i -g "create-mono-agent@$VERSION"          # if create-mono-agent is listed
-   # OR
-   npm i -g "@mono-agent/agent-app@$VERSION"      # if @mono-agent/agent-app is listed
-
-   mono-agent --version
-   ```
-
-   For a new global install, prefer `create-mono-agent`. To switch package owners, uninstall the currently listed package before installing the other one.
-
-3. In the agent directory, stop the old process, check/refresh the two managed configuration skills, and open the post-wizard configuration conversation. Reconcile any operator-modified skill before using `--update`:
+2. Stop the old agent before changing its installed packages. Then upgrade the
+   package that already owns the global `mono-agent` command and confirm the
+   exact published version. `create-mono-agent` and `@mono-agent/agent-app` both
+   provide that command, so do not install both globally:
 
    ```bash
    cd /path/to/agent
    mono-agent stop
+   npm ls -g --depth=0 create-mono-agent @mono-agent/agent-app || true
+   ```
+
+   If `create-mono-agent` is listed, upgrade that owner:
+
+   ```bash
+   npm i -g "create-mono-agent@0.8.0"
+   ```
+
+   Otherwise, if `@mono-agent/agent-app` is listed, upgrade that owner instead:
+
+   ```bash
+   npm i -g "@mono-agent/agent-app@0.8.0"
+   ```
+
+   Then confirm the command resolves to the new version:
+
+   ```bash
+   mono-agent --version
+   ```
+
+   For a new global install, prefer `create-mono-agent`. To switch package
+   owners, uninstall the currently listed package before installing the other
+   one. If this agent's existing configuration selects Supermemory as
+   `memory.backend`, install the matching plugin in the agent folder now,
+   before any new CLI command loads the configured responder:
+
+   ```bash
+   VERSION="0.8.0"
+   npm install --save-exact "@mono-agent/memory-supermemory@$VERSION"
+   ```
+
+3. Check/refresh the two managed configuration skills and open the post-wizard
+   configuration conversation. Reconcile any operator-modified skill before
+   using `--update`:
+
+   ```bash
    mono-agent install-skill --project --check
    mono-agent install-skill --project --update
    mono-agent tui --local --configure
@@ -450,7 +478,22 @@ Supermemory owns its remote index, so `mono-agent memory rebuild`, `rollback`, a
    mono-agent validate
    ```
 
-6. For the built-in Lite, Journal, or BuJo backend, build the first managed index and inspect its local accounting. Then start the agent:
+6. For the built-in Lite, Journal, or BuJo backend, inspect the stopped store:
+
+   ```bash
+   mono-agent memory audit --json
+   ```
+
+   Only for a legacy BuJo store, and only when the audit or first rebuild
+   explicitly identifies nonempty replay-owned SQLite state without its
+   canonical projection, adopt that replay state while every writer remains
+   stopped:
+
+   ```bash
+   mono-agent memory adopt-replay --json
+   ```
+
+   Then build the managed index, verify it, and start the agent:
 
    ```bash
    mono-agent memory rebuild --json
@@ -461,7 +504,25 @@ Supermemory owns its remote index, so `mono-agent memory rebuild`, `rollback`, a
    mono-agent status
    ```
 
-   If `memory.backend` is `supermemory`, skip `memory rebuild` and `rollback`: Supermemory owns its remote index and those index-transition commands intentionally reject it. `memory audit --json` is safe but reports local integration metadata only; it cannot inspect the remote index. Start/status the agent after validation.
+   Do not run `adopt-replay` merely because an audit is unhealthy: it is a
+   trust-on-first-use command for the exact missing-projection legacy case and
+   rejects unrelated drift. If the first rebuild gives that explicit adoption
+   instruction, run `adopt-replay` and then rerun the rebuild without starting
+   another writer between them.
+
+   If `memory.backend` is `supermemory`, the matching plugin was installed in
+   step 2. Skip `adopt-replay`, `memory rebuild`, and `rollback`: Supermemory
+   owns its remote index and those built-in index-transition commands
+   intentionally reject it.
+
+   ```bash
+   mono-agent validate
+   mono-agent start
+   mono-agent status
+   ```
+
+   `memory audit --json` is safe for Supermemory but reports local integration
+   metadata only; it cannot inspect the remote index.
 
 7. Verify both kinds of context in the TUI or an enabled conversational channel without restarting between messages. For Telegram, send `Reply exactly with this token: V1-HISTORY-<unique>`, wait for that reply, then ask `What did you send in the last message?` and confirm the token comes back. That second run should use active history and inject no durable memory. Finally ask a qualified durable-memory question such as `What did we decide about releases last month?` to exercise `MemoryRecall`.
 
