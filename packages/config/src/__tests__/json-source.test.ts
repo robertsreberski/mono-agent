@@ -107,6 +107,35 @@ describe("writeMonoAgentConfigJson", () => {
     expect(json.telegram).toEqual({ botToken: "abc", allowedChatIds: ["222"] });
   });
 
+  it("round-trips LM Studio embeddings including an optional credential reference", async () => {
+    const path = join(dir, "config.json");
+    await writeMonoAgentConfigJson({
+      path,
+      patch: {
+        memory: {
+          mode: "journal",
+          path: ".mono-agent/memory",
+          embeddings: {
+            provider: "lmstudio",
+            model: "embed-model",
+            endpoint: "http://localhost:1234",
+            apiKeyEnv: "LM_STUDIO_API_KEY",
+            dim: 768,
+          },
+        },
+      },
+    });
+
+    const { json } = await readMonoAgentConfigJson(path);
+    expect(json.memory?.embeddings).toEqual({
+      provider: "lmstudio",
+      model: "embed-model",
+      endpoint: "http://localhost:1234",
+      apiKeyEnv: "LM_STUDIO_API_KEY",
+      dim: 768,
+    });
+  });
+
   it("does not leave a .tmp file behind on success", async () => {
     const path = join(dir, "config.json");
     await writeMonoAgentConfigJson({ path, patch: { runtime: { maxTurns: 4 } } });

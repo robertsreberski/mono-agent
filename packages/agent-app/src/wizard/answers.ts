@@ -95,10 +95,10 @@ export interface WizardPlan {
 }
 
 /**
- * Every model/service reference that provider setup must account for. Runtime
- * refs come first, followed by memory-owned refs in execution order. Local
- * memory services use synthetic Pi refs so the existing setup planner can run
- * the matching Ollama/LM Studio preflight without learning a second shape.
+ * Every runtime/LLM reference that generic provider setup must account for.
+ * Managed-memory embeddings deliberately stay out of this Pi-model-shaped
+ * list: the guided wizard and readiness gate use the configured service root
+ * and embedding-native discovery/probe contract instead.
  */
 export function referencedSetupModelRefs(plan: WizardPlan): readonly string[] {
   const refs: string[] = [];
@@ -126,11 +126,6 @@ export function referencedSetupModelRefs(plan: WizardPlan): readonly string[] {
   } else if (memory?.llm?.provider === "ollama" || memory?.llm?.provider === "lmstudio") {
     add(localServiceModelRef(memory.llm.provider, memory.llm.model));
   }
-  const embeddings = memory?.embeddings as { readonly provider?: unknown; readonly model?: unknown } | undefined;
-  if (embeddings?.provider === "ollama" || embeddings?.provider === "lmstudio") {
-    add(localServiceModelRef(embeddings.provider, embeddings.model));
-  }
-
   return refs;
 }
 
@@ -393,12 +388,8 @@ export function composeWizardPlan(answers: WizardAnswers, ctx: ComposeContext): 
   const secrets: SecretChecklistItem[] = [];
   const envLines: string[] = [];
   const validateExpectations: ModuleValidateExpectation[] = [{ sectionId: "runtime", mustBe: "ok" }];
-  let providerOllamaSelected = false;
 
   for (const module of modules) {
-    if (module.id === "provider:ollama") {
-      providerOllamaSelected = true;
-    }
     const values = resolveModuleInputs(module, moduleOverrides(module, answers));
     applyFragment(config, module.configFragment(values));
 
@@ -431,16 +422,6 @@ export function composeWizardPlan(answers: WizardAnswers, ctx: ComposeContext): 
   };
 
   applyDefaultA2AAgentName(config, agentName);
-
-  // The local-ollama endpoint mirrors the old recipe: only when the ollama
-  // provider is present AND memory embeddings actually target ollama.
-  const memory = config.memory as (Record<string, unknown> & { embeddings?: Record<string, unknown> }) | undefined;
-  if (providerOllamaSelected && memory?.embeddings !== undefined && memory.embeddings.provider === "ollama") {
-    config.memory = {
-      ...memory,
-      embeddings: { ...memory.embeddings, endpoint: "http://localhost:11434" },
-    };
-  }
 
   const configJson = monoAgentConfigWithSchema(config as unknown as MonoAgentConfigJson);
   const envExample = envLines.length > 0 ? `${envLines.join("\n")}\n` : undefined;

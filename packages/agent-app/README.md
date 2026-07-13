@@ -68,7 +68,16 @@ child for terminal input. This is the readiness-proven path;
 any flag or non-TTY invocation is scaffold-only and never claims the agent is
 ready. Presets seed the same model, channel,
 tool, and sandbox decisions as the custom path; they do not silently bypass
-safety choices. Searchable primary/fallback pickers combine every bundled model
+safety choices. Journal and BuJo open a dedicated local embeddings step: choose
+Ollama or LM Studio, service root, exact model, actual dimension, and optional
+`apiKeyEnv`. Ollama discovery filters `/api/tags` models through `/api/show`
+`embedding` capabilities; LM Studio filters exact `type: "embedding"` entries
+from `/api/v1/models` and uses their `key`. One fixed non-user request to
+`/api/embed` or `/v1/embeddings` must return a non-empty finite vector of the
+configured dimension before readiness. Manual model/dimension entry can author
+the plan when discovery is inconclusive, but cannot fake readiness. Provider
+failures never fall through to the other local service. Searchable
+primary/fallback pickers combine every bundled model
 for the guided Pi providers (Anthropic, GitHub Copilot, OpenAI Codex, and
 OpenCode-Go), Codex's live account catalog, the Claude SDK catalog, and local
 discovery. The live Codex provider default leads when available; offline setup
@@ -225,9 +234,16 @@ mono-agent memory resolve <64-character-id> <reason-slug> --json
 
 Journal and BuJo always require a valid managed `.index/manifest.json`; only
 Lite may remain unmanaged. Missing/corrupt authority, active/configured
-tier-model-dimension mismatch, and native-module/ABI failure are validation
+tier-provider-model-dimension mismatch, and native-module/ABI failure are validation
 errors with stop/rebuild/revalidate remediation. Provider reachability remains
-an operational `waiting` state. `retry` makes dead/delayed intake due for the
+an operational `waiting` state. LM Studio is keyless when `apiKeyEnv` is omitted;
+a declared but missing variable stays `waiting` and never retries keyless.
+Changing provider, model, or dimension on an existing root requires a stopped,
+config-aware `mono-agent memory rebuild --json`. BuJo uses the selected
+embeddings service independently from its explicit capture LLM (`agent-host` in
+generated configs, or an authored Ollama block). The advanced standalone
+`memory-bujo migrate` command remains Ollama-only and outside guided init.
+`retry` makes dead/delayed intake due for the
 next store start; `resolve` explicitly abandons one item without claiming
 capture succeeded, keeps permanent duplicate protection, and refuses a retained
 semantic plan.

@@ -15,6 +15,7 @@ export class MemorySearchError extends Error {
 type FetchLike = typeof fetch;
 
 const DEFAULT_OLLAMA_ENDPOINT = "http://localhost:11434";
+const DEFAULT_LMSTUDIO_ENDPOINT = "http://localhost:1234";
 const DEFAULT_OPENAI_ENDPOINT = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -76,6 +77,64 @@ export interface OpenAIEmbeddingOptions {
   readonly fetchImpl?: FetchLike;
 }
 
+export interface LmStudioEmbeddingOptions {
+  readonly model: string;
+  readonly endpoint?: string;
+  readonly apiKey?: string;
+  readonly timeoutMs?: number;
+  readonly fetchImpl?: FetchLike;
+}
+
+/** Local embeddings via LM Studio's OpenAI-compatible `/v1/embeddings` endpoint. */
+export class LmStudioEmbeddingProvider implements EmbeddingProvider {
+  readonly id: string;
+  private readonly model: string;
+  private readonly apiKey: string | undefined;
+  private readonly endpoint: string;
+  private readonly timeoutMs: number;
+  private readonly fetchImpl: FetchLike;
+
+  constructor(options: LmStudioEmbeddingOptions) {
+    if (typeof options.model !== "string" || options.model.trim().length === 0) {
+      throw new MemorySearchError("invalid_embedding_options", "LM Studio embedding model is required.");
+    }
+    this.model = options.model;
+    this.apiKey = typeof options.apiKey === "string" && options.apiKey.trim().length > 0
+      ? options.apiKey
+      : undefined;
+    this.endpoint = normalizeServiceRoot(options.endpoint ?? DEFAULT_LMSTUDIO_ENDPOINT, "LM Studio");
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.id = `lmstudio:${this.model}`;
+  }
+
+  async embed(texts: readonly string[]): Promise<number[][]> {
+    if (texts.length === 0) {
+      return [];
+    }
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (this.apiKey !== undefined) {
+      headers.authorization = `Bearer ${this.apiKey}`;
+    }
+    const response = await withTimeout(this.timeoutMs, (signal) =>
+      this.fetchImpl(`${this.endpoint}/v1/embeddings`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model: this.model, input: [...texts] }),
+        redirect: "error",
+        signal,
+      }),
+    );
+    if (!response.ok) {
+      throw new MemorySearchError("embedding_request_failed", `LM Studio embeddings request failed (${response.status}).`, {
+        status: response.status,
+        endpoint: this.endpoint,
+      });
+    }
+    return readOpenAICompatibleEmbeddings(response, texts.length);
+  }
+}
+
 /** Remote embeddings via the OpenAI-compatible `/embeddings` endpoint. */
 export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   readonly id: string;
@@ -117,9 +176,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
         status: response.status,
       });
     }
-    const json = (await response.json()) as { data?: Array<{ embedding?: unknown }> };
-    const embeddings = Array.isArray(json.data) ? json.data.map((entry) => entry.embedding) : undefined;
-    return validateEmbeddings(embeddings, texts.length);
+    return readOpenAICompatibleEmbeddings(response, texts.length);
   }
 }
 
@@ -147,7 +204,31 @@ export function createEmbeddingProvider(
       ...(fetchImpl === undefined ? {} : { fetchImpl }),
     });
   }
+  if (config.provider === "lmstudio") {
+    return new LmStudioEmbeddingProvider({
+      model: config.model,
+      ...(config.endpoint === undefined ? {} : { endpoint: config.endpoint }),
+      ...(config.apiKey === undefined ? {} : { apiKey: config.apiKey }),
+      ...(config.timeoutMs === undefined ? {} : { timeoutMs: config.timeoutMs }),
+      ...(fetchImpl === undefined ? {} : { fetchImpl }),
+    });
+  }
   throw new MemorySearchError("invalid_embedding_options", `Unknown embedding provider "${String(config.provider)}".`);
+}
+
+async function readOpenAICompatibleEmbeddings(response: Response, expected: number): Promise<number[][]> {
+  const json: unknown = await response.json();
+  const data = typeof json === "object" && json !== null
+    ? (json as Record<string, unknown>).data
+    : undefined;
+  const embeddings = Array.isArray(data)
+    ? data.map((entry) => (
+        typeof entry === "object" && entry !== null
+          ? (entry as Record<string, unknown>).embedding
+          : undefined
+      ))
+    : undefined;
+  return validateEmbeddings(embeddings, expected);
 }
 
 function validateEmbeddings(value: unknown, expected: number): number[][] {
@@ -158,11 +239,38 @@ function validateEmbeddings(value: unknown, expected: number): number[][] {
     });
   }
   return value.map((vector) => {
-    if (!Array.isArray(vector) || vector.some((component) => typeof component !== "number")) {
-      throw new MemorySearchError("embedding_response_invalid", "Embedding vector was not an array of numbers.");
+    if (
+      !Array.isArray(vector)
+      || vector.length === 0
+      || vector.some((component) => typeof component !== "number" || !Number.isFinite(component))
+    ) {
+      throw new MemorySearchError(
+        "embedding_response_invalid",
+        "Embedding vector was not a non-empty array of finite numbers.",
+      );
     }
     return vector as number[];
   });
+}
+
+function normalizeServiceRoot(value: string, label: string): string {
+  const normalized = value.trim().replace(/\/+$/u, "");
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new MemorySearchError("invalid_embedding_options", `${label} endpoint must be an absolute HTTP(S) service root.`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new MemorySearchError("invalid_embedding_options", `${label} endpoint must be an absolute HTTP(S) service root.`);
+  }
+  if (parsed.username.length > 0 || parsed.password.length > 0 || parsed.search.length > 0 || parsed.hash.length > 0) {
+    throw new MemorySearchError(
+      "invalid_embedding_options",
+      `${label} endpoint service root must not include credentials, a query, or a fragment.`,
+    );
+  }
+  return normalized;
 }
 
 async function withTimeout(timeoutMs: number, run: (signal: AbortSignal) => Promise<Response>): Promise<Response> {

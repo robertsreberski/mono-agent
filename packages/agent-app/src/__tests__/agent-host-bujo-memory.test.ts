@@ -37,6 +37,7 @@ async function tempDir(): Promise<string> {
   return dir;
 }
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -163,6 +164,72 @@ describe("createConfiguredMemory — bujo mode", () => {
         { memoryRuntime: createRecordingRuntime() },
       ),
     ).rejects.toThrow(/SDK execution mode only/u);
+  });
+
+  it("uses LM Studio embeddings at runtime without involving the BuJo chat LLM provider", async () => {
+    const dir = await tempDir();
+    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { input: readonly string[] };
+      return new Response(JSON.stringify({
+        data: body.input.map(() => ({ embedding: [1, 0, 0, 0] })),
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const runtime = createRecordingRuntime();
+    const store = await createConfiguredMemory(
+      bujoConfig({
+        dir,
+        identityPath: join(dir, "IDENTITY.md"),
+        memoryRoot: join(dir, "lm-studio-memory"),
+        embeddings: {
+          provider: "lmstudio",
+          model: "text-embedding-test",
+          endpoint: "http://localhost:1234",
+          dim: 4,
+        },
+        llm: {
+          provider: "agent-host",
+          model: "pi:openai-codex:gpt-5.5",
+          executionMode: "sdk",
+        },
+      }),
+      { memoryRuntime: runtime },
+    );
+
+    await (store as unknown as { load(conversationId: string, query: string): Promise<unknown> })
+      .load("conv-1", "remember the provider");
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost:1234/v1/embeddings",
+      expect.objectContaining({ headers: { "content-type": "application/json" } }),
+    );
+    expect(JSON.stringify(fetchSpy.mock.calls)).not.toMatch(/Authorization|11434|ollama/iu);
+    expect(runtime.calls).toHaveLength(0);
+    await (store as unknown as { close(): Promise<void> }).close();
+  });
+
+  it("fails managed memory when its declared embedding credential is unresolved", async () => {
+    const dir = await tempDir();
+
+    await expect(createConfiguredMemory(
+      bujoConfig({
+        dir,
+        identityPath: join(dir, "IDENTITY.md"),
+        memoryRoot: join(dir, "lm-studio-memory"),
+        embeddings: {
+          provider: "lmstudio",
+          model: "text-embedding-test",
+          apiKeyEnv: "LM_STUDIO_API_KEY",
+          dim: 4,
+        },
+        llm: {
+          provider: "agent-host",
+          model: "pi:openai-codex:gpt-5.5",
+          executionMode: "sdk",
+        },
+      }),
+      { memoryRuntime: createRecordingRuntime() },
+    )).rejects.toThrow(/LM_STUDIO_API_KEY.*no resolved value/iu);
   });
 });
 
@@ -395,6 +462,7 @@ function bujoConfig(input: {
   readonly dir: string;
   readonly identityPath: string;
   readonly memoryRoot: string;
+  readonly embeddings?: NonNullable<MonoAgentConfig["memory"]>["embeddings"];
   readonly llm?: NonNullable<MonoAgentConfig["memory"]>["llm"];
   readonly observabilityExporters?: readonly PhoenixExporterConfig[];
 }): MonoAgentConfig {
@@ -412,7 +480,7 @@ function bujoConfig(input: {
       path: input.memoryRoot,
       writeMode: "disabled",
       maxBytes: 8_000,
-      embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      embeddings: input.embeddings ?? { provider: "ollama", model: "nomic-embed-text:v1.5" },
       ...(input.llm === undefined ? {} : { llm: input.llm }),
     },
     tools: { allowedTools: [], disallowedTools: [] },

@@ -227,6 +227,36 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS).toBe("20000");
   });
 
+  it("loads keyless LM Studio embeddings and preserves an unresolved JSON credential reference", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "IDENTITY.md" },
+      memory: {
+        mode: "journal",
+        path: ".mono-agent/memory",
+        embeddings: {
+          provider: "lmstudio",
+          model: "embed-model",
+          endpoint: "http://localhost:1234",
+          apiKeyEnv: "LM_STUDIO_API_KEY",
+          dim: 768,
+        },
+      },
+    }), "utf8");
+
+    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+
+    expect(config.memory?.embeddings).toEqual({
+      provider: "lmstudio",
+      model: "embed-model",
+      endpoint: "http://localhost:1234",
+      apiKeyEnv: "LM_STUDIO_API_KEY",
+      dim: 768,
+    });
+    expect(config.memory?.embeddings?.apiKey).toBeUndefined();
+  });
+
   it("translates JSON memory.recallTool.enabled to an env key", () => {
     const layered = layerJsonOntoEnv(
       { memory: { mode: "journal", path: ".mono-agent/memory", recallTool: { enabled: false } } },

@@ -194,6 +194,32 @@ describe("buildMonoAgentConfigView", () => {
     expect(JSON.stringify(sections)).not.toContain("sk-super-secret");
   });
 
+  it("surfaces a keyless LM Studio service root and unresolved credential reference", () => {
+    const sections = buildView(baseEnv, {
+      memory: {
+        mode: "journal",
+        path: "/repo/memory",
+        embeddings: {
+          provider: "lmstudio",
+          model: "embed-model",
+          endpoint: "http://localhost:1234",
+          apiKeyEnv: "LM_STUDIO_API_KEY",
+        },
+      },
+    });
+
+    expect(field(sections, "memory.embeddings.provider")).toMatchObject({ value: "lmstudio", source: "json" });
+    expect(field(sections, "memory.embeddings.endpoint")).toMatchObject({
+      value: "http://localhost:1234",
+      source: "json",
+    });
+    expect(field(sections, "memory.embeddings.apiKey")).toMatchObject({ value: "unset", redacted: true });
+    expect(field(sections, "memory.embeddings.apiKeyEnv")).toMatchObject({
+      value: "LM_STUDIO_API_KEY",
+      source: "json",
+    });
+  });
+
   it("activates the memory section and shows the resolved mode", () => {
     const sections = buildView({
       ...baseEnv,

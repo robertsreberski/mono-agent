@@ -1,5 +1,6 @@
 export {
   createEmbeddingProvider,
+  LmStudioEmbeddingProvider,
   MemorySearchError,
   OllamaEmbeddingProvider,
   OpenAIEmbeddingProvider,

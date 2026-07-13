@@ -32,6 +32,16 @@ mono-agent init
 
 The wizard starts from a [preset](/reference/recipes/) or custom answers, asks what the agent should be called and one concise sentence describing its purpose, then walks through the same model, channel, memory, runtime-appropriate tool/safety, and observability decisions either way. Type to search the primary and fallback catalogs; add as many fallbacks as you need and choose each route's supported effort or **Provider default**. Escape moves back one logical step. Ctrl-C asks before exiting.
 
+Journal and BuJo add a dedicated local-embeddings step. Choose Ollama or LM Studio,
+confirm its service root, select a model from provider-native typed discovery, and let the
+wizard prove and record the actual vector dimension. Ollama discovery checks `/api/show`
+for the `embedding` capability; LM Studio accepts only `/api/v1/models` entries whose type
+is `embedding`. If discovery is unavailable you may enter the model and a positive dimension
+manually, but guided readiness still requires a real `/api/embed` or `/v1/embeddings` probe.
+The selected provider never falls back to the other one. LM Studio is keyless by default;
+when its server uses authentication, name the populated owner-only `.env` variable through
+`apiKeyEnv` rather than putting a token in config.
+
 **Allow all tools** is the default and includes shell, file, web, and enabled channel-send tools. `runtime.routeSafety: "uniform"` keeps one common fail-closed contract. A mixed Pi/Claude/Codex/OpenCode chain requires explicit `per-route-native` acceptance after the wizard displays the concrete route matrix. Pi keeps mono-agent tools and optional managed SRT; provider-owned routes use their documented native contract. Unsupported capabilities are never silently dropped.
 
 After the explicit **Creation review**, the wizard makes one disposable no-tool call for every selected route, sequentially, with a 90-second cloud or 240-second local deadline per route. A detected Codex/Claude sign-in or Pi auth-store entry skips redundant authentication, but it is not called verified until the exact route succeeds. Escape or Ctrl-C interrupts safely. Recovery can resume routes already verified under the same non-secret plan fingerprint, restart all checks, edit choices, or cancel without writing. Choosing authentication repair clears all prior route proofs before the checks rerun. Provider failure, timeout, empty output, or any tool action fails that route. **Agent ready** additionally requires the committed config and every selected credential, channel, sandbox, memory, and observability expectation to be ready.
@@ -71,7 +81,7 @@ mono-agent init \
 - **`skills/mono-agent-configure` and `skills/mono-agent-memory`** — versioned project-local skills selected with index disclosure. `ReadSkill` loads their bodies only when needed. `skills/.mono-agent-managed.json` records their hashes for safe drift checks and updates.
 - **`.mono-agent/`** — working directories: `.mono-agent/artifacts` (run output) and `.mono-agent/workspace`.
 
-When a fresh guided, preset, or flag-based init selects built-in Journal or BuJo memory, init also creates one empty managed generation without calling the embeddings provider. It never adopts or changes a pre-existing memory root; stop the agent and use the explicit `mono-agent memory rebuild` path for an existing root. Fresh managed init rejects environment overrides for memory backend, mode, path, and embedding provider/model/dimension; put that identity in the generated config. Credential and endpoint environment values remain valid inputs.
+When a fresh init selects built-in Journal or BuJo memory, init also creates one empty managed generation without indexing content. Guided setup has already made its separate fixed, non-user readiness probe; flag/non-TTY scaffolding makes no provider call and no readiness claim. Init never adopts or changes a pre-existing memory root; stop the agent and use the explicit `mono-agent memory rebuild` path for an existing root. Fresh managed init rejects environment overrides for memory backend, mode, path, and embedding provider/model/dimension; put that identity in the generated config. Credential and endpoint environment values remain valid inputs.
 
 The generated config (with canonical `--fallback` routes and `--memory bujo`) looks like this — note that `tools.allowedTools` defaults to allow-all (`["*"]`), and the `bujo` tier scaffolds its embeddings, capture LLM, and recall tool:
 
@@ -111,7 +121,12 @@ The generated config (with canonical `--fallback` routes and `--memory bujo`) lo
     "mode": "bujo",
     "path": "./.mono-agent/memory",
     "writeMode": "capture",
-    "embeddings": { "provider": "ollama", "model": "nomic-embed-text:v1.5" },
+    "embeddings": {
+      "provider": "ollama",
+      "model": "nomic-embed-text:v1.5",
+      "endpoint": "http://localhost:11434",
+      "dim": 768
+    },
     "llm": { "provider": "agent-host", "model": "pi:openai-codex:gpt-5.6-terra" },
     "recallTool": { "enabled": true }
   }

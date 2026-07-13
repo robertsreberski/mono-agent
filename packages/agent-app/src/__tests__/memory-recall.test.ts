@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   MEMORY_RECALL_MCP_SERVER_NAME,
+  createMemoryEmbeddingProvider,
   createMemoryRecallServer,
   createRecallStore,
   memoryRecallMcpEnv,
@@ -169,6 +170,34 @@ describe("resolveMemoryRecallSettings", () => {
       },
     });
   });
+
+  it("preserves the exact LM Studio embedding identity and service root", () => {
+    const settings = resolveMemoryRecallSettings(
+      configWithMemory({
+        mode: "journal",
+        path: "/memory",
+        maxBytes: 64_000,
+        writeMode: "append-host-summary",
+        embeddings: {
+          provider: "lmstudio",
+          model: "text-embedding-test",
+          endpoint: "http://localhost:1234",
+          dim: 4,
+        },
+      }),
+    );
+
+    expect(settings).toEqual({
+      root: "/memory",
+      tier: "journal",
+      embeddings: {
+        provider: "lmstudio",
+        model: "text-embedding-test",
+        endpoint: "http://localhost:1234",
+        dim: 4,
+      },
+    });
+  });
 });
 
 describe("memoryRecallMcpServerSpec / env", () => {
@@ -247,6 +276,53 @@ describe("memoryRecallMcpServerSpec / env", () => {
     const resolved = bujo(memoryRecallSettingsFromEnv({ ...env, MY_OPENAI_KEY: "resolved-secret" }));
     expect(resolved.embeddings?.apiKey).toBe("resolved-secret");
     expect(resolved.embeddings?.apiKeyEnv).toBe("MY_OPENAI_KEY");
+  });
+
+  it("round-trips LM Studio through the recall child env without putting its named secret in the spec", () => {
+    const lmStudio: MemoryRecallSettings = {
+      root: "/memory",
+      tier: "journal",
+      embeddings: {
+        provider: "lmstudio",
+        model: "text-embedding-test",
+        endpoint: "http://localhost:1234",
+        apiKey: "resolved-secret",
+        apiKeyEnv: "LM_STUDIO_API_KEY",
+        dim: 4,
+      },
+    };
+
+    const env = memoryRecallMcpEnv(lmStudio);
+    expect(env).toMatchObject({
+      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "lmstudio",
+      MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: "http://localhost:1234",
+      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "LM_STUDIO_API_KEY",
+    });
+    expect(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY).toBeUndefined();
+    expect(Object.values(env)).not.toContain("resolved-secret");
+
+    expect(memoryRecallSettingsFromEnv({ ...env, LM_STUDIO_API_KEY: "child-secret" })).toEqual({
+      root: "/memory",
+      tier: "journal",
+      embeddings: {
+        provider: "lmstudio",
+        model: "text-embedding-test",
+        endpoint: "http://localhost:1234",
+        apiKey: "child-secret",
+        apiKeyEnv: "LM_STUDIO_API_KEY",
+        dim: 4,
+      },
+    });
+  });
+
+  it("rejects a missing declared recall credential instead of falling back to a literal or keyless request", () => {
+    expect(() => memoryRecallSettingsFromEnv({
+      MONO_AGENT_MEMORY_PATH: "/memory",
+      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "lmstudio",
+      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "text-embedding-test",
+      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "LM_STUDIO_API_KEY",
+      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "must-not-fallback",
+    })).toThrow(/LM_STUDIO_API_KEY.*no non-empty value/iu);
   });
 
   it("falls back to forwarding a literal inline apiKey when no apiKeyEnv is present (F13 residual)", () => {
@@ -409,6 +485,38 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
 });
 
 describe("createRecallStore", () => {
+  it("builds a keyless LM Studio provider with the exact root and identity", async () => {
+    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { input: readonly string[] };
+      return new Response(JSON.stringify({
+        data: body.input.map(() => ({ embedding: [1, 0, 0, 0] })),
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const provider = await createMemoryEmbeddingProvider({
+      provider: "lmstudio",
+      model: "text-embedding-test",
+      endpoint: "http://localhost:1234",
+    });
+    await expect(provider.embed(["remember this"])).resolves.toEqual([[1, 0, 0, 0]]);
+
+    expect(provider.id).toBe("lmstudio:text-embedding-test");
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost:1234/v1/embeddings",
+      expect.objectContaining({ headers: { "content-type": "application/json" } }),
+    );
+    expect(JSON.stringify(fetchSpy.mock.calls)).not.toMatch(/Authorization|11434|ollama/iu);
+  });
+
+  it("fails before provider construction when a declared credential has no resolved value", async () => {
+    await expect(createMemoryEmbeddingProvider({
+      provider: "lmstudio",
+      model: "text-embedding-test",
+      apiKeyEnv: "LM_STUDIO_API_KEY",
+    })).rejects.toThrow(/LM_STUDIO_API_KEY.*no resolved value/iu);
+  });
+
   it("builds an FTS-only store when settings carry no embeddings (F12)", async () => {
     // No embeddings → lite tier → FTS recall answers without any Ollama/OpenAI backend.
     await seedRecallMemory(dir, "The deploy pipeline uses blue-green releases on Fridays.");

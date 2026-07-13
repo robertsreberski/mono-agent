@@ -85,6 +85,7 @@ const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MEMORY_MAX_BYTES = 64_000;
 const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
   ollama: "nomic-embed-text:v1.5",
+  lmstudio: "text-embedding-nomic-embed-text-v1.5",
   openai: "text-embedding-3-small",
 };
 const MEMORY_LLM_ENV_KEYS = [
@@ -897,8 +898,13 @@ function readMemoryEmbeddingsConfig(env: Record<string, string | undefined>): Me
   const model = normalizeOptionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL) ?? DEFAULT_EMBEDDINGS_MODELS[provider];
   const endpoint = normalizeOptionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT);
   const apiKeyEnv = normalizeOptionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV);
-  const apiKey = (apiKeyEnv === undefined ? undefined : normalizeOptionalString(env[apiKeyEnv]))
-    ?? normalizeOptionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY);
+  // A declared name is authoritative. Ignoring an unresolved name in favor of
+  // the generic literal could send a stale credential to a newly selected
+  // provider; local providers preserve the unresolved reference so readiness
+  // can explain it, while OpenAI still fails its mandatory-key validation.
+  const apiKey = apiKeyEnv === undefined
+    ? normalizeOptionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY)
+    : normalizeOptionalString(env[apiKeyEnv]);
   if (provider === "openai" && apiKey === undefined) {
     throw new MonoAgentConfigError(
       "invalid_env",

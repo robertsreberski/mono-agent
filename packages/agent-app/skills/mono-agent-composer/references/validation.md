@@ -91,7 +91,7 @@ pnpm run test:demo
 | Cron | Run a one-off scheduled invocation or wait for one tick. |
 | Observability | Confirm a run writes a redacted JSONL artifact; if an `observability.exporters` Phoenix entry is set, confirm the trace appears in Phoenix. |
 | Memory recall tool | With any memory tier configured (`memory.recallTool.enabled` defaults on), ask the agent to recall an old note and confirm `MemoryRecall` appears separately from action-tool allowlists and returns it. |
-| Semantic memory search | With `memory.embeddings` set (Ollama: `ollama pull nomic-embed-text:v1.5` first), ask a paraphrased question about an old note and confirm `MemoryRecall` (hybrid keyword + semantic) returns it. |
+| Semantic memory search | With `memory.embeddings` set, first prove the configured provider only: Ollama model advertises `embedding` through `/api/show` and answers `/api/embed`, or LM Studio model has exact `type: "embedding"` in `/api/v1/models` and answers `/v1/embeddings`. Verify the finite vector dimension matches config, then ask a paraphrased question about an old note and confirm `MemoryRecall` returns it. Never accept a cross-provider fallback as proof. |
 
 ## Failure Handling
 

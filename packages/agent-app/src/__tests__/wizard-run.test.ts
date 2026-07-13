@@ -84,6 +84,15 @@ const discoveryMock = vi.hoisted(() => ({
   }),
 }));
 
+const memoryEmbeddingMock = vi.hoisted(() => ({
+  discover: vi.fn(async (options: { provider: "ollama" | "lmstudio" }) =>
+    options.provider === "ollama"
+      ? ["nomic-embed-text:v1.5"]
+      : ["text-embedding-nomic-embed-text-v1.5"]
+  ),
+  probe: vi.fn(async () => ({ dimension: 768 })),
+}));
+
 function nextAnswer(queue: unknown[], name: string): unknown {
   if (queue.length === 0) throw new Error(`No queued ${name} answer.`);
   return queue.shift();
@@ -139,6 +148,15 @@ vi.mock("../wizard/model-discovery.js", async (importOriginal) => {
   return { ...actual, discoverWizardModelCandidates: discoveryMock.discover };
 });
 
+vi.mock("../memory-embedding-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../memory-embedding-service.js")>();
+  return {
+    ...actual,
+    discoverMemoryEmbeddingModels: memoryEmbeddingMock.discover,
+    probeMemoryEmbeddingSelection: memoryEmbeddingMock.probe,
+  };
+});
+
 import { defaultAnswers } from "../wizard/answers.js";
 import {
   guidedModelRefProblem,
@@ -164,6 +182,8 @@ beforeEach(() => {
   ]) queue.length = 0;
   discoveryMock.calls.length = 0;
   discoveryMock.discover.mockClear();
+  memoryEmbeddingMock.discover.mockClear();
+  memoryEmbeddingMock.probe.mockClear();
 });
 
 async function withTtyStdin<T>(run: () => Promise<T>): Promise<T> {
@@ -878,10 +898,19 @@ describe("wizard production flow", () => {
   });
 
   it("recomputes provider setup when a memory edit changes hidden setup model refs", async () => {
-    promptMock.selectAnswers.push("edit", "3", "memory:bujo", "create");
+    promptMock.selectAnswers.push(
+      "edit",
+      "3",
+      "memory:bujo",
+      "lmstudio",
+      "create",
+    );
+    promptMock.autocompleteAnswers.push("text-embedding-nomic-embed-text-v1.5");
+    promptMock.textAnswers.push("http://localhost:1234", "LM_STUDIO_API_KEY");
     promptMock.confirmAnswers.push(false); // observability while the existing review flow advances
     const result = await runSetupRepairWizard({
       cwd: "/tmp/agent",
+      persistedEnv: { LM_STUDIO_API_KEY: "local-test-secret" },
       answers: defaultAnswers({ model: "codex:gpt-5.6-terra" }),
       runProviderSetup: false,
       providerSetupSecrets: {},
@@ -894,7 +923,104 @@ describe("wizard production flow", () => {
     expect(result.status).toBe("answers");
     if (result.status !== "answers") return;
     expect(result.answers.memory).toBe("memory:bujo");
+    expect(result.answers.moduleInputs["memory:bujo"]).toEqual({
+      embeddingProvider: "lmstudio",
+      embeddingEndpoint: "http://localhost:1234",
+      embeddingModel: "text-embedding-nomic-embed-text-v1.5",
+      embeddingDimension: "768",
+      embeddingApiKeyEnv: "LM_STUDIO_API_KEY",
+    });
+    expect(memoryEmbeddingMock.discover).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "lmstudio",
+      endpoint: "http://localhost:1234",
+      apiKey: "local-test-secret",
+    }));
+    expect(memoryEmbeddingMock.probe).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "lmstudio",
+      model: "text-embedding-nomic-embed-text-v1.5",
+      apiKey: "local-test-secret",
+    }));
+    expect(JSON.stringify(result.answers)).not.toContain("local-test-secret");
     expect(result.runProviderSetup).toBe(true);
+  });
+
+  it("replaces the complete managed-memory provider bag when an edit switches services", async () => {
+    promptMock.selectAnswers.push("edit", "4", "ollama", "create");
+    promptMock.autocompleteAnswers.push("nomic-embed-text:v1.5");
+    promptMock.textAnswers.push("http://localhost:11434", "");
+
+    const result = await runSetupRepairWizard({
+      cwd: "/tmp/agent",
+      answers: defaultAnswers({
+        memory: "memory:bujo",
+        moduleInputs: {
+          "memory:bujo": {
+            embeddingProvider: "lmstudio",
+            embeddingEndpoint: "http://localhost:1234",
+            embeddingModel: "old-lmstudio-model",
+            embeddingDimension: "1024",
+            embeddingApiKeyEnv: "STALE_LM_STUDIO_KEY",
+          },
+        },
+      }),
+      runProviderSetup: false,
+      providerSetupSecrets: {},
+      providerEnvironmentSecrets: {},
+      piApiKeyPersistenceByProvider: {},
+      credentialStates: { codex: "credential_detected" },
+      moduleSecrets: {},
+    });
+
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    expect(result.answers.moduleInputs["memory:bujo"]).toEqual({
+      embeddingProvider: "ollama",
+      embeddingEndpoint: "http://localhost:11434",
+      embeddingModel: "nomic-embed-text:v1.5",
+      embeddingDimension: "768",
+    });
+  });
+
+  it("keeps manual model and positive dimension explicit when typed discovery and probing are unavailable", async () => {
+    memoryEmbeddingMock.discover.mockResolvedValueOnce([]);
+    memoryEmbeddingMock.probe.mockRejectedValueOnce(new Error("service unavailable"));
+    promptMock.selectAnswers.push("edit", "4", "lmstudio", "create");
+    promptMock.textAnswers.push(
+      "http://localhost:1234",
+      "",
+      "manually-loaded-embedding-model",
+      "512",
+    );
+
+    const result = await runSetupRepairWizard({
+      cwd: "/tmp/agent",
+      answers: defaultAnswers({
+        memory: "memory:journal",
+        moduleInputs: {
+          "memory:journal": {
+            embeddingProvider: "lmstudio",
+            embeddingEndpoint: "http://localhost:1234",
+            embeddingModel: "previous-model",
+            embeddingDimension: "768",
+          },
+        },
+      }),
+      runProviderSetup: false,
+      providerSetupSecrets: {},
+      providerEnvironmentSecrets: {},
+      piApiKeyPersistenceByProvider: {},
+      credentialStates: { codex: "credential_detected" },
+      moduleSecrets: {},
+    });
+
+    expect(result.status).toBe("answers");
+    if (result.status !== "answers") return;
+    expect(result.answers.moduleInputs["memory:journal"]).toEqual({
+      embeddingProvider: "lmstudio",
+      embeddingEndpoint: "http://localhost:1234",
+      embeddingModel: "manually-loaded-embedding-model",
+      embeddingDimension: "512",
+    });
   });
 
   it("repairs only model settings and preserves unrelated answers", async () => {

@@ -7,7 +7,7 @@ export type MemorySearchErrorCode =
   | "index_read_failed"
   | "index_write_failed";
 
-/** Turns text into dense vectors. Implementations: Ollama (default), OpenAI. */
+/** Turns text into dense vectors. Implementations: Ollama (default), LM Studio, OpenAI. */
 export interface EmbeddingProvider {
   /** Stable identifier for diagnostics (e.g. "ollama:nomic-embed-text"). */
   readonly id: string;
@@ -30,7 +30,7 @@ export interface SearchHit {
   readonly day?: string;
 }
 
-export type EmbeddingProviderKind = "ollama" | "openai";
+export type EmbeddingProviderKind = "ollama" | "lmstudio" | "openai";
 
 export interface EmbeddingProviderConfig {
   readonly provider: EmbeddingProviderKind;

@@ -28,7 +28,12 @@ A Telegram bot that answers via long-polling, captures every turn into BuJo memo
 
 ## Configuration
 
-The bujo tier requires both an embeddings provider (for semantic recall) and an app-level `memory.llm` (for capture and effective tier selection for scheduled consolidation). This recipe uses local Ollama for both, so no extra API keys are needed.
+The bujo tier requires both an embeddings provider (for semantic recall) and an app-level
+`memory.llm` (for capture and effective tier selection for scheduled consolidation). Guided
+init lets you choose Ollama or LM Studio for embeddings and keeps the capture LLM explicit:
+generated configs use `agent-host`, while this older fully-local recipe deliberately keeps an
+explicit Ollama `memory.llm`. Selecting LM Studio embeddings would not move capture to LM
+Studio or create a cross-provider fallback.
 
 ```json
 {
@@ -74,7 +79,11 @@ Use the exact `nomic-embed-text:v1.5` tag; the bare `nomic-embed-text` tag resol
 
 1. Pull the local models the memory tier needs: `ollama pull nomic-embed-text:v1.5 && ollama pull qwen3.6:latest`.
 2. Scaffold the agent: `mono-agent init --model claude:claude-sonnet-4-6 --memory bujo`.
-3. Edit `mono-agent.config.json`: add the `telegram` section with `botToken` and `allowedChatIds`, set `memory.writeMode` to `capture`, and fill in the `embeddings` and `llm` blocks.
+3. In guided init choose Ollama for this recipe's embeddings, then edit
+   `mono-agent.config.json`: add the `telegram` section with `botToken` and
+   `allowedChatIds`, set `memory.writeMode` to `capture`, and keep the explicit Ollama
+   `memory.llm` block shown above. To use LM Studio embeddings instead, choose it in the
+   wizard and leave the capture LLM independently explicit.
 4. Run `mono-agent validate` and confirm memory liveness — embeddings and chat model pulled, and the consolidation cadence shown.
 5. Run `mono-agent start` and confirm telegram reports running.
 6. Send a fact from an allowed chat (e.g. "My dog is named Pixel"), then in a later turn ask a paraphrased question and confirm recall.

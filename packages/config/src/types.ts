@@ -58,10 +58,17 @@ export interface MemoryEmbeddingsCircuitBreakerConfig {
 export interface MemoryEmbeddingsConfig {
   readonly provider: MemoryEmbeddingsProvider;
   readonly model: string;
+  /**
+   * Provider service root. LM Studio defaults to `http://localhost:1234` and
+   * resolves embeddings below this root at `/v1/embeddings`.
+   */
   readonly endpoint?: string;
   /** Resolved key value (inline or read from `apiKeyEnv` at load time). */
   readonly apiKey?: string;
-  /** Name of the env var the key was read from, kept for redacted display. */
+  /**
+   * Name of the env var configured for the key. Optional-auth local providers
+   * keep it even while unset so readiness can report a waiting credential.
+   */
   readonly apiKeyEnv?: string;
   /** Embedding vector dimension (bujo mode default: 768 for nomic-embed-text). */
   readonly dim?: number;

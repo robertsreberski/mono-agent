@@ -109,9 +109,12 @@ See [../runtime/local-providers.md](/runtime/local-providers/) for the local pro
 | `MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER` | `memory.supermemory.container` | Container/namespace tag scoping this agent's memories. Defaults to the trace `sourceId`. |
 | `MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS` | `memory.supermemory.timeoutMs` | Per-call HTTP timeout (`1`–`600000`, default `10000`). |
 | `MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER` | `memory.supermemory.exposeMcpServer` | Also inject Supermemory's official MCP server alongside the in-app `MemoryRecall` tool. Default `false`. |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama` or `openai`. See [../memory/embeddings.md](/memory/embeddings/). |
+| `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama`, `lmstudio`, or `openai`. The configured provider is exclusive; there is no cross-provider fallback. See [../memory/embeddings.md](/memory/embeddings/). |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Embedding model string. |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` | Embedding dimension. |
+| `MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT` | `memory.embeddings.endpoint` | Service root: defaults to `http://localhost:11434` for Ollama, `http://localhost:1234` for LM Studio, or `https://api.openai.com/v1` for OpenAI. |
+| `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV` | `memory.embeddings.apiKeyEnv` | Name of the variable holding the key. LM Studio is keyless when omitted; when declared, a missing/empty named variable reports `waiting` rather than silently retrying keyless. |
+| `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY` | `memory.embeddings.apiKey` | Direct key override. Prefer `_API_KEY_ENV` so config stores only a variable name. |
 | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned read-only `MemoryRecall`; default on for every configured tier, explicit false opts out. |
 | `MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED` | `memory.consolidation.enabled` | Scheduled BuJo consolidation; default on. |
 | `MONO_AGENT_MEMORY_CONSOLIDATION_CRON` | `memory.consolidation.cron` | Default `0 */2 * * *`. See [../memory/rituals.md](/memory/rituals/). |

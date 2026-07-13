@@ -57,12 +57,26 @@ function presetPlan(presetId: "local-private" | "telegram-assistant") {
 }
 
 function stubOllamaModels(): void {
-  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: async () => ({
-      models: ["nomic-embed-text:v1.5", "llama3.1:8b"].map((name) => ({ name })),
-    }),
+  vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith("/api/tags")) {
+      return new Response(JSON.stringify({
+        models: ["nomic-embed-text:v1.5", "llama3.1:8b"].map((name) => ({ name })),
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.endsWith("/api/show")) {
+      return new Response(JSON.stringify({ capabilities: ["embedding"] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.endsWith("/api/embed")) {
+      return new Response(JSON.stringify({ embeddings: [new Array<number>(768).fill(0.01)] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error(`Unexpected first-run readiness Ollama request: ${url}`);
   }));
 }
 

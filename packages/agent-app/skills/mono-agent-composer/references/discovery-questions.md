@@ -113,11 +113,17 @@ No prerequisites. No Ollama. SQLite is bundled.
 
 **Tier 3 — journal (embeddings required):**
 
-- Ask: which embeddings provider/model?
-  - Ollama default: `provider: "ollama"`, model `nomic-embed-text:v1.5`, dim `768`
-    (use the exact `:v1.5` tag; pull first with `ollama pull nomic-embed-text:v1.5`).
-  - OpenAI option: `provider: "openai"`, model `text-embedding-3-small`, API key via
-    `apiKeyEnv`, dim matching the model.
+- Guided init asks for Ollama or LM Studio, service root, exact model, actual dimension,
+  and optional auth-env name. Treat this as separate from runtime chat-model discovery.
+  - Ollama default root `http://localhost:11434`: enumerate `/api/tags`, retain only
+    `/api/show` capabilities containing `embedding`, then prove `/api/embed`.
+  - LM Studio default root `http://localhost:1234`: retain exact `type: "embedding"`
+    entries from `/api/v1/models`, use their `key`, then prove `/v1/embeddings`.
+  - Hand-authored OpenAI remains supported but is not a guided local-memory choice.
+- If typed discovery is inconclusive, ask for exact model + positive dimension, while
+  explaining that real readiness still must pass. Never substitute another provider.
+- LM Studio is keyless when `apiKeyEnv` is omitted. If named, the variable must already
+  contain the token in the owner-only agent environment; missing declared auth is `waiting`.
 
 Write:
 
@@ -129,13 +135,16 @@ Write:
   "embeddings": {
     "provider": "ollama",
     "model": "nomic-embed-text:v1.5",
+    "endpoint": "http://localhost:11434",
     "dim": 768
   }
 }
 ```
 
-After writing, remind the user to run `mono-agent validate` (checks root writability and
-provider-specific liveness; Ollama model pulls are checked only when using Ollama).
+After writing, remind the user to run `mono-agent validate` (checks root writability,
+managed provider/model/dimension identity, provider-native model typing, real finite-vector
+response, and dimension). Changing any semantic identity field on an existing root requires
+stopping the agent and running config-aware `mono-agent memory rebuild --json`.
 
 **Tier 4 — bujo (embeddings + chat model + consolidation):**
 
@@ -144,7 +153,8 @@ hybrid BM25+vector recall, entity graph, scheduled consolidation (decay + duplic
 superseding), living `index.md`, and an empty retired `future-log.md` stub. Consolidation
 is **auto-scheduled in-app** — no external cron or launchd setup needed.
 
-- Ask: which embeddings provider/model? Use the same choices as journal.
+- Ask: which embeddings provider/service-root/model/dimension/auth-env? Use the same
+  exclusive choices and real-probe contract as journal.
 - Ask: which chat LLM provider/model for LLM pipelines?
   - Ollama: local model string such as `qwen3.6:latest`; pull it first with
     `ollama pull qwen3.6:latest`.
@@ -155,6 +165,11 @@ is **auto-scheduled in-app** — no external cron or launchd setup needed.
   deterministic rapid-log summaries (`append-host-summary`) plus scheduled consolidation?
 - Ask: should we keep the default consolidation schedule (`0 */2 * * *`), customise the
   cron expression, or disable scheduled consolidation?
+
+The embeddings service and capture LLM are independent. Choosing LM Studio embeddings does
+not move capture there; guided config keeps an explicit `agent-host` LLM, while an authored
+Ollama `memory.llm` remains valid. Standalone advanced `memory-bujo migrate` is still
+Ollama-only and outside guided init.
 
 Write (embeddings + chat model):
 

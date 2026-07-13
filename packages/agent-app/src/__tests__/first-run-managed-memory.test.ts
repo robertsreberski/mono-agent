@@ -2,7 +2,7 @@ import { access, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { validateMonoAgentFolder } from "../doctor.js";
 import {
@@ -17,9 +17,20 @@ let dir: string;
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "agent-app-first-memory-"));
   await mkdir(join(dir, ".mono-agent"));
+  vi.stubGlobal("fetch", vi.fn(async (url: string | URL) => {
+    const value = String(url);
+    if (value.endsWith("/api/embed")) {
+      return new Response(JSON.stringify({ embeddings: [new Array<number>(768).fill(0.01)] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error(`Unexpected first-run embeddings request: ${value}`);
+  }));
 });
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -30,7 +41,109 @@ function localPrivatePlan() {
   });
 }
 
+function lmStudioPlan(options: { readonly apiKeyEnv?: string; readonly dimension?: number } = {}) {
+  const base = localPrivatePlan();
+  return {
+    ...base,
+    configJson: {
+      ...base.configJson,
+      memory: {
+        ...base.configJson.memory!,
+        embeddings: {
+          provider: "lmstudio" as const,
+          model: "text-embedding-test",
+          endpoint: "http://localhost:1234",
+          dim: options.dimension ?? 4,
+          ...(options.apiKeyEnv === undefined ? {} : { apiKeyEnv: options.apiKeyEnv }),
+        },
+      },
+    },
+  };
+}
+
 describe("initializeFirstRunManagedMemory", () => {
+  it("proves keyless LM Studio embeddings before publishing their exact managed identity", async () => {
+    const calls: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), ...(init === undefined ? {} : { init }) });
+      return new Response(JSON.stringify({ data: [{ embedding: [1, 0, 0, 0] }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }));
+
+    const result = await initializeFirstRunManagedMemory({ agentRoot: dir, plan: lmStudioPlan() });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("http://localhost:1234/v1/embeddings");
+    expect(calls[0]?.init?.headers).toEqual({ "Content-Type": "application/json" });
+    const { readManagedIndexManifest } = await import("@mono-agent/memory/bujo");
+    expect(readManagedIndexManifest(result.root!)?.active).toMatchObject({
+      tier: "journal",
+      embeddingModel: "lmstudio:text-embedding-test",
+      dimension: 4,
+    });
+  });
+
+  it("resolves a declared LM Studio credential only from the supplied effective environment", async () => {
+    const calls: RequestInit[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      calls.push(init ?? {});
+      return new Response(JSON.stringify({ data: [{ embedding: [1, 0, 0, 0] }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }));
+
+    await initializeFirstRunManagedMemory({
+      agentRoot: dir,
+      plan: lmStudioPlan({ apiKeyEnv: "LM_STUDIO_API_KEY" }),
+      env: { LM_STUDIO_API_KEY: "effective-token" },
+    });
+
+    expect(calls[0]?.headers).toEqual({
+      "Content-Type": "application/json",
+      Authorization: "Bearer effective-token",
+    });
+  });
+
+  it("rejects a declared missing LM Studio credential without probing or claiming the root", async () => {
+    const fetchSpy = vi.fn().mockRejectedValue(new Error("must not probe keyless"));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await expect(initializeFirstRunManagedMemory({
+      agentRoot: dir,
+      plan: lmStudioPlan({ apiKeyEnv: "LM_STUDIO_API_KEY" }),
+      env: {},
+    })).rejects.toThrow(/LM_STUDIO_API_KEY.*no non-empty value/iu);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await expect(access(join(dir, ".mono-agent", "memory"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not claim the managed root when LM Studio is unavailable", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
+
+    await expect(initializeFirstRunManagedMemory({ agentRoot: dir, plan: lmStudioPlan() }))
+      .rejects.toThrow(/LM Studio embedding probe.*could not connect/iu);
+
+    await expect(access(join(dir, ".mono-agent", "memory"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([
+    { label: "malformed", payload: { data: [{ embedding: [] }] }, error: /invalid embedding vector/iu },
+    { label: "wrong-dimension", payload: { data: [{ embedding: [1, 0] }] }, error: /dimension 2.*configured dimension is 4/iu },
+  ])("does not publish a root when the LM Studio proof is $label", async ({ payload, error }) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })));
+
+    await expect(initializeFirstRunManagedMemory({ agentRoot: dir, plan: lmStudioPlan() })).rejects.toThrow(error);
+
+    await expect(access(join(dir, ".mono-agent", "memory"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it.each([
     { label: "escaping", path: "../outside-memory" },
     { label: "absolute", path: "/tmp/outside-memory" },

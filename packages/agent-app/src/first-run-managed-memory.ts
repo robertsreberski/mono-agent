@@ -2,9 +2,12 @@ import type { Stats } from "node:fs";
 import { link, lstat, mkdir, mkdtemp, open, readdir, realpath, rmdir, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import { probeMemoryEmbeddingSelection } from "./memory-embedding-service.js";
 import type { WizardPlan } from "./wizard/answers.js";
 
 const DEFAULT_MANAGED_MEMORY_DIMENSION = 768;
+const FIRST_RUN_EMBEDDING_PROBE_TIMEOUT_MS = 5_000;
+const FIRST_RUN_OPENAI_PROBE_TEXT = "mono-agent managed-memory first-run embedding readiness probe";
 export const FIRST_RUN_MEMORY_INITIALIZING_MARKER = ".first-run-memory-initializing";
 const FIRST_RUN_MANAGED_MEMORY_OVERRIDE_KEYS = [
   "MONO_AGENT_MEMORY_BACKEND",
@@ -411,6 +414,10 @@ async function promoteManagedIndex(options: {
 function managedMemoryConfiguration(plan: WizardPlan): {
   readonly mode: "journal" | "bujo";
   readonly path: string;
+  readonly provider: "ollama" | "lmstudio" | "openai";
+  readonly model: string;
+  readonly endpoint?: string;
+  readonly apiKeyEnv?: string;
   readonly embeddingId: string;
   readonly dimension: number;
 } | undefined {
@@ -425,14 +432,87 @@ function managedMemoryConfiguration(plan: WizardPlan): {
   }
   const provider = memory.embeddings?.provider;
   const model = memory.embeddings?.model;
-  if (typeof provider !== "string" || provider.length === 0 || typeof model !== "string" || model.length === 0) {
+  if (
+    (provider !== "ollama" && provider !== "lmstudio" && provider !== "openai")
+    || typeof model !== "string" || model.length === 0
+  ) {
     throw new Error(`First-run ${memory.mode} memory requires a configured embedding provider and model.`);
   }
   const dimension = memory.embeddings?.dim ?? DEFAULT_MANAGED_MEMORY_DIMENSION;
   if (!Number.isInteger(dimension) || dimension <= 0) {
     throw new Error(`First-run ${memory.mode} memory requires a positive integer embedding dimension.`);
   }
-  return { mode: memory.mode, path: memory.path, embeddingId: `${provider}:${model}`, dimension };
+  const endpoint = memory.embeddings?.endpoint?.trim();
+  const apiKeyEnv = memory.embeddings?.apiKeyEnv?.trim();
+  return {
+    mode: memory.mode,
+    path: memory.path,
+    provider,
+    model,
+    ...(endpoint === undefined || endpoint.length === 0 ? {} : { endpoint }),
+    ...(apiKeyEnv === undefined || apiKeyEnv.length === 0 ? {} : { apiKeyEnv }),
+    embeddingId: `${provider}:${model}`,
+    dimension,
+  };
+}
+
+function firstRunEmbeddingApiKey(
+  configured: NonNullable<ReturnType<typeof managedMemoryConfiguration>>,
+  env: Readonly<Record<string, string | undefined>> | undefined,
+): string | undefined {
+  if (configured.apiKeyEnv === undefined) return undefined;
+  const apiKey = env?.[configured.apiKeyEnv]?.trim();
+  if (apiKey === undefined || apiKey.length === 0) {
+    throw new Error(
+      `First-run ${configured.mode} memory declares apiKeyEnv ${configured.apiKeyEnv}, but the supplied effective ` +
+      `environment has no non-empty value. Set ${configured.apiKeyEnv} and retry.`,
+    );
+  }
+  return apiKey;
+}
+
+async function proveFirstRunEmbeddingSelection(
+  configured: NonNullable<ReturnType<typeof managedMemoryConfiguration>>,
+  env: Readonly<Record<string, string | undefined>> | undefined,
+): Promise<void> {
+  const apiKey = firstRunEmbeddingApiKey(configured, env);
+  try {
+    if (configured.provider === "ollama" || configured.provider === "lmstudio") {
+      await probeMemoryEmbeddingSelection({
+        provider: configured.provider,
+        model: configured.model,
+        expectedDimension: configured.dimension,
+        timeoutMs: FIRST_RUN_EMBEDDING_PROBE_TIMEOUT_MS,
+        ...(configured.endpoint === undefined ? {} : { endpoint: configured.endpoint }),
+        ...(apiKey === undefined ? {} : { apiKey }),
+      });
+      return;
+    }
+
+    if (apiKey === undefined) {
+      throw new Error("OpenAI embeddings require apiKeyEnv pointing at a value in the supplied effective environment.");
+    }
+    const { createEmbeddingProvider } = await import("@mono-agent/memory/search");
+    const provider = createEmbeddingProvider({
+      provider: "openai",
+      model: configured.model,
+      apiKey,
+      timeoutMs: FIRST_RUN_EMBEDDING_PROBE_TIMEOUT_MS,
+      ...(configured.endpoint === undefined ? {} : { endpoint: configured.endpoint }),
+    });
+    const vectors = await provider.embed([FIRST_RUN_OPENAI_PROBE_TEXT]);
+    if (vectors.length !== 1 || vectors[0]?.length !== configured.dimension) {
+      throw new Error(
+        `OpenAI returned dimension ${vectors[0]?.length ?? "unknown"} for ${configured.model}; ` +
+        `configured dimension is ${configured.dimension}.`,
+      );
+    }
+  } catch (error) {
+    throw new Error(
+      `First-run ${configured.mode} memory embedding readiness failed for ${configured.embeddingId}: ` +
+      `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 function assertNoManagedMemoryIdentityOverrides(
@@ -500,10 +580,12 @@ export async function initializeFirstRunManagedMemory(
   if (target === undefined) return { initialized: false };
   const { configured, agentRoot, root } = target;
   throwIfAborted(options.abortSignal);
-  const pinnedParents = await pinRealDirectoryChain(agentRoot, dirname(root));
   if (await optionalLstat(root) !== undefined) {
     throw new Error(`Refusing to initialize managed memory because its root already exists: ${root}`);
   }
+  await proveFirstRunEmbeddingSelection(configured, options.env);
+  throwIfAborted(options.abortSignal);
+  const pinnedParents = await pinRealDirectoryChain(agentRoot, dirname(root));
 
   throwIfAborted(options.abortSignal);
   await options.hooks?.beforeRootClaim?.(root);

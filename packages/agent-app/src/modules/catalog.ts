@@ -1,6 +1,10 @@
-import type { MonoAgentConfigJson } from "@mono-agent/config";
+import type { MonoAgentConfigJson, MonoAgentMemoryEmbeddingsJson } from "@mono-agent/config";
 import { validateCronExpression } from "@mono-agent/cron-adapter";
 
+import {
+  DEFAULT_MEMORY_EMBEDDING_ENDPOINTS,
+  memoryEmbeddingEndpointProblem,
+} from "../memory-embedding-service.js";
 import { DEFAULT_PI_MEMORY_MODEL, memoryBlock } from "./base.js";
 import type { CapabilityModule, ModuleKind } from "./types.js";
 
@@ -247,6 +251,92 @@ const channelA2a: CapabilityModule = {
 // Memory
 // ---------------------------------------------------------------------------
 
+const DEFAULT_MEMORY_EMBEDDING_MODEL = "nomic-embed-text:v1.5";
+const DEFAULT_LMSTUDIO_EMBEDDING_MODEL = "text-embedding-nomic-embed-text-v1.5";
+const DEFAULT_MEMORY_EMBEDDING_DIMENSION = "768";
+
+const managedMemoryEmbeddingInputs: CapabilityModule["inputs"] = [
+  {
+    id: "embeddingProvider",
+    label: "Embedding service",
+    description: "Local embedding service: ollama or lmstudio.",
+    default: "ollama",
+    validate: (value) => value === "ollama" || value === "lmstudio"
+      ? undefined
+      : "Choose ollama or lmstudio.",
+  },
+  {
+    id: "embeddingEndpoint",
+    label: "Embedding service endpoint",
+    description: "Absolute HTTP(S) service root; the wizard discovers the provider-specific API paths.",
+    validate: memoryEmbeddingEndpointProblem,
+  },
+  {
+    id: "embeddingModel",
+    label: "Embedding model",
+    description: "Exact service-native model id selected from typed embedding discovery.",
+    validate: validateRequiredSingleLine,
+  },
+  {
+    id: "embeddingDimension",
+    label: "Embedding dimension",
+    description: "Positive vector dimension returned by the selected embedding model.",
+    validate: validatePositiveInteger,
+  },
+  {
+    id: "embeddingApiKeyEnv",
+    label: "Optional embedding API-key environment variable",
+    description: "Environment-variable name containing a bearer token; leave blank for keyless local service.",
+    validate: validateOptionalEnvironmentName,
+  },
+];
+
+function managedMemoryEmbeddings(values: Readonly<Record<string, string | undefined>>): MonoAgentMemoryEmbeddingsJson {
+  const provider = values.embeddingProvider === "lmstudio" ? "lmstudio" : "ollama";
+  const endpoint = values.embeddingEndpoint?.trim()
+    || DEFAULT_MEMORY_EMBEDDING_ENDPOINTS[provider];
+  const model = values.embeddingModel?.trim()
+    || (provider === "lmstudio" ? DEFAULT_LMSTUDIO_EMBEDDING_MODEL : DEFAULT_MEMORY_EMBEDDING_MODEL);
+  const parsedDimension = Number(values.embeddingDimension ?? DEFAULT_MEMORY_EMBEDDING_DIMENSION);
+  const dim = Number.isSafeInteger(parsedDimension) && parsedDimension > 0
+    ? parsedDimension
+    : Number(DEFAULT_MEMORY_EMBEDDING_DIMENSION);
+  const apiKeyEnv = values.embeddingApiKeyEnv?.trim();
+  return {
+    provider,
+    endpoint,
+    model,
+    dim,
+    ...(apiKeyEnv === undefined || apiKeyEnv.length === 0 ? {} : { apiKeyEnv }),
+  };
+}
+
+function managedMemoryEnvExampleLines(values: Readonly<Record<string, string | undefined>>): readonly string[] {
+  const apiKeyEnv = values.embeddingApiKeyEnv?.trim();
+  return apiKeyEnv === undefined || apiKeyEnv.length === 0
+    ? []
+    : ["# Optional local embedding service bearer token", `${apiKeyEnv}=`];
+}
+
+function validateRequiredSingleLine(value: string | undefined): string | undefined {
+  const trimmed = value?.trim() ?? "";
+  return trimmed.length > 0 && !/[\u0000-\u001f\u007f]/u.test(trimmed)
+    ? undefined
+    : "Enter a non-empty single-line model id.";
+}
+
+function validatePositiveInteger(value: string | undefined): string | undefined {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? undefined : "Enter a positive integer dimension.";
+}
+
+function validateOptionalEnvironmentName(value: string | undefined): string | undefined {
+  const trimmed = value?.trim() ?? "";
+  return trimmed.length === 0 || /^[A-Za-z_][A-Za-z0-9_]*$/u.test(trimmed)
+    ? undefined
+    : "Use an environment-variable name such as LM_STUDIO_API_KEY.";
+}
+
 const memoryLite: CapabilityModule = {
   id: "memory:lite",
   kind: "memory",
@@ -262,22 +352,23 @@ const memoryJournal: CapabilityModule = {
   id: "memory:journal",
   kind: "memory",
   title: "Journal (semantic recall)",
-  summary: "Semantic recall via local ollama embeddings.",
+  summary: "Semantic recall via local Ollama or LM Studio embeddings.",
   riskLevel: "low",
-  inputs: [],
-  configFragment: () => ({
+  inputs: managedMemoryEmbeddingInputs,
+  configFragment: (values) => ({
     memory: {
       ...memoryBlock("journal"),
-      embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      embeddings: managedMemoryEmbeddings(values),
       recallTool: { enabled: true },
     },
   }),
+  envExampleLines: managedMemoryEnvExampleLines,
   validateExpectations: [
     {
       sectionId: "memory",
       mustBe: "ok",
       note:
-        "Ollama must be reachable and contain nomic-embed-text:v1.5; if the model is missing, run `ollama pull nomic-embed-text:v1.5`.",
+        "The selected Ollama or LM Studio service must be reachable and return the configured embedding dimension.",
     },
   ],
 };
@@ -286,13 +377,13 @@ const memoryBujo: CapabilityModule = {
   id: "memory:bujo",
   kind: "memory",
   title: "BuJo (capture + recall)",
-  summary: "Daily-log capture plus semantic recall (needs ollama).",
+  summary: "Daily-log capture plus semantic recall via Ollama or LM Studio.",
   riskLevel: "medium",
-  inputs: [],
+  inputs: managedMemoryEmbeddingInputs,
   configFragment: (values) => ({
     memory: {
       ...memoryBlock("bujo"),
-      embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      embeddings: managedMemoryEmbeddings(values),
       // Direct Codex is CLI-only, while the memory LLM has an SDK-only safety
       // contract. Route every direct Codex primary through the equivalent Pi
       // Terra model for this internal call, not only the default candidate.
@@ -303,12 +394,13 @@ const memoryBujo: CapabilityModule = {
       recallTool: { enabled: true },
     },
   }),
+  envExampleLines: managedMemoryEnvExampleLines,
   validateExpectations: [
     {
       sectionId: "memory",
       mustBe: "ok",
       note:
-        "Ollama must be reachable and contain nomic-embed-text:v1.5; if the model is missing, run `ollama pull nomic-embed-text:v1.5`.",
+        "The selected Ollama or LM Studio service must be reachable and return the configured embedding dimension.",
     },
   ],
 };

@@ -28,7 +28,7 @@ export const MEMORY_MODES = ["lite", "journal", "bujo"] as const;
 export const MEMORY_WRITE_MODES = ["disabled", "append-host-summary", "capture"] as const;
 
 /** Embedding providers supported by the built-in memory backend. */
-export const MEMORY_EMBEDDINGS_PROVIDERS = ["ollama", "openai"] as const;
+export const MEMORY_EMBEDDINGS_PROVIDERS = ["ollama", "lmstudio", "openai"] as const;
 
 /** Chat-LLM providers supported by BuJo capture. */
 export const MEMORY_LLM_PROVIDERS = ["ollama", "agent-host"] as const;

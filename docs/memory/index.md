@@ -42,7 +42,7 @@ running Ollama. Host summaries can be appended after each run
 
 Adds hybrid recall (BM25 + vector RRF) on top of the lite tier. Salience remains
 static canonical Markdown metadata; the scheduler does not decay it over time.
-Requires a configured embeddings provider, either Ollama or OpenAI. No chat model needed.
+Requires a configured Ollama, LM Studio, or OpenAI embeddings provider. No chat model needed.
 The host first fsyncs the completed turn into run-id-keyed durable intake, then projects a lexical
 observation using a stable content-hash identity and queues vector indexing in bounded batches. A
 slow or temporarily unavailable embedding provider therefore does not delay terminal reporting;
@@ -198,7 +198,8 @@ No external prerequisites. SQLite is bundled.
 
 ### Journal tier
 
-**Embeddings model (required when using the Ollama embeddings provider):**
+**Embeddings service:** guided init chooses Ollama or LM Studio and proves the exact
+model/dimension. For Ollama, pull the default model first:
 
 ```bash
 ollama pull nomic-embed-text:v1.5
@@ -210,7 +211,8 @@ at startup. `mono-agent validate` checks for this exact tag.
 
 ### Bujo tier
 
-**Embeddings model (required when using the Ollama embeddings provider):**
+**Embeddings service:** guided init chooses Ollama or LM Studio independently from the
+capture LLM. For Ollama embeddings, pull the default model first:
 
 ```bash
 ollama pull nomic-embed-text:v1.5
@@ -257,7 +259,7 @@ but ignored; `mono-agent validate` reports a warning when it sees them.
 ## CLI maintenance
 
 Use the config-aware CLI from the agent folder for index transitions. It reads the exact
-tier/model/dimension from `mono-agent.config.json`, refuses a running configured agent,
+tier/provider/model/dimension from `mono-agent.config.json`, refuses a running configured agent,
 builds a validated generation beside the active database, and switches it atomically.
 
 ```bash
@@ -341,19 +343,19 @@ lost. Raise the timeout for slow models. See
 `mono-agent validate` (the agent-app doctor) first dynamically loads the built-in memory
 implementation and validates managed identity. Journal and BuJo require a valid managed
 `.index/manifest.json`; only Lite may remain unmanaged. Missing/corrupt managed metadata,
-a tier/model/dimension mismatch, or native-module/ABI failure is an `error` with stop,
+a tier/provider/model/dimension mismatch, or native-module/ABI failure is an `error` with stop,
 rebuild, and revalidate remediation. It then runs liveness checks that scale with the tier:
 
 **lite:** confirms the memory root is creatable and writable.
 
 **journal / bujo:**
 1. **Memory root writable** — confirms `memory.path` is creatable and writable.
-2. **Ollama embeddings reachable** — only when `memory.embeddings.provider` is `ollama`;
-   probes that embedding endpoint's `GET /api/tags` with a short timeout.
-3. **Embeddings model pulled** — for Ollama embeddings only, confirms
-   `nomic-embed-text:v1.5` (or whichever `memory.embeddings.model` you set) appears in
-   that endpoint's `/api/tags`. If absent it emits:
-   `⚠  memory embeddings model "nomic-embed-text:v1.5" not found — run: ollama pull nomic-embed-text:v1.5`
+2. **Typed embedding model** — Ollama requires `/api/show` capability `embedding`; LM
+   Studio requires exact type `embedding` in `/api/v1/models`. OpenAI keeps its
+   credential/config checks.
+3. **Real provider probe** — the configured backend must return one non-empty finite vector
+   from `/api/embed` or `/v1/embeddings` with the configured dimension. Missing declared LM
+   Studio auth reports `waiting`; failure never crosses providers.
 
 **bujo (additional):**
 4. **Chat model pulled** — only when `memory.llm.provider` is `ollama`; probes the chat
