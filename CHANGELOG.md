@@ -1,9 +1,61 @@
 # Release notes
 
+## 0.8.0 — Durable operations and direct access (2026-07-13)
+
+This is the first public npm release containing the Product v1 source line. The
+0.7.0 source tag remains an immutable milestone but was not published to npm.
+
+### Highlights
+
+- Completed turns are durably admitted before success is reported. BuJo capture
+  now has fsynced intake, restart-safe retries and dead letters, strict output
+  contracts, exact replay adoption, and health-visible reconciliation.
+- Strict memory audit now verifies managed generations, canonical graph and
+  SQLite parity, vector coverage, intake/outbox state, stale runtime artifacts,
+  and legacy timestamp adoption without silently accepting partial state.
+- `/cancel` emits one terminal acknowledgement across Telegram, Slack, and
+  WhatsApp, stays out of model/history/memory processing, and records user
+  cancellation without degrading fleet health.
+- Session Web and the OpenAI-compatible API support authenticated direct LAN and
+  Tailscale access. Tailscale Serve remains optional for HTTPS and full PWA
+  installation behavior.
+- Blocking asks retain their history; completed prior runs can be inspected
+  through a conversation-scoped, read-only tool; request-scoped MCP delivery no
+  longer leaks tools between concurrent turns.
+- Per-turn effort keywords, native voice transcription, safer Telegram logging,
+  cron de-duplication, and loaded-build provenance improve day-to-day operation.
+- Lockstep publication now binds immutable tarballs to a clean exact tag and
+  verified build provenance, stages and integrity-checks the complete package
+  set before promotion, and smoke-tests all three public CLI entry paths.
+
+### Compatibility
+
+- Node.js **22.19.0 or newer** is required. This is a new requirement for public
+  npm users upgrading from 0.6.2; it was already the floor for the unpublished
+  0.7.0 source milestone.
+- All 21 catalog-publishable packages move together to 0.8.0. Do not mix
+  `@mono-agent/*` or `create-mono-agent` versions.
+- BuJo entity writes now replace the complete canonical record. Integrations
+  that call the low-level `upsertEntity` API must provide every field they want
+  retained instead of relying on omitted fields from an older record.
+- `AgentHarnessResponse.metadata.summary` no longer exposes `systemPrompt` and
+  is typed as `ExternalRunSummary`. Private recorder artifacts still retain the
+  prompt for local inspection, but channel/programmatic callers must not depend
+  on receiving it from the harness response.
+
+### Upgrade
+
+Users on 0.6.2 can upgrade directly to 0.8.0; no public 0.7.0 package is
+required. Follow the
+[product-v1 cutover checklist](./docs/memory/validation-and-cli.md#enable-v1-on-an-existing-agent)
+and run `mono-agent memory audit --strict --json` after upgrading a built-in
+memory agent.
+
 ## 0.7.0 — Product v1 (2026-07-11)
 
-Product v1 is the 0.7.0 lockstep release; it is a product milestone, not an npm
-major-version claim.
+Product v1 is the 0.7.0 source/tag milestone; it is a product milestone, not an
+npm major-version claim. This exact version was not published to npm; its
+content is included in the 0.8.0 public release.
 
 ### Highlights
 

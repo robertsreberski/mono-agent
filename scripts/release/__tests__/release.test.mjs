@@ -17,7 +17,19 @@ import {
   releaseVersionFromTag,
   validateRelease,
 } from "../validate-release.mjs";
-import { describePublishedExportsDrift } from "../publish-release.mjs";
+import {
+  PUBLIC_NPM_REGISTRY,
+  assertBuildMarkerForHead,
+  assertCurrentBuildProvenance,
+  assertReleaseGitState,
+  computeTarballIntegrity,
+  describePublishedExportsDrift,
+  executeFrozenPublish,
+  freezeReleaseTarballs,
+  publicNpmEnvironment,
+  runWorkspaceBuild,
+  stagingDistTagForRelease,
+} from "../publish-release.mjs";
 import { SUPPORTED_NODE_ENGINE } from "../../node-version.mjs";
 
 const expectedPublishablePackages = packageCatalog.filter((entry) => entry.publishable === true);
@@ -377,5 +389,287 @@ describe("published exports drift guard", () => {
     expect(describePublishedExportsDrift(mainOnly, undefined)).toBeUndefined();
     // Local exposes only ".", published has more -> still fine.
     expect(describePublishedExportsDrift(mainOnly, { ".": {}, "./sub": {} })).toBeUndefined();
+  });
+});
+
+describe("hardened local release publish", () => {
+  const head = "a".repeat(40);
+  const other = "b".repeat(40);
+
+  function fakeGit(responses, calls = []) {
+    return (_command, args, options) => {
+      const key = args.join(" ");
+      calls.push({ key, options });
+      const response = responses[key];
+      if (response === undefined) {
+        return { status: 1, stdout: "", stderr: `unexpected git call: ${key}` };
+      }
+      return typeof response === "string"
+        ? { status: 0, stdout: response, stderr: "" }
+        : response;
+    };
+  }
+
+  test("requires a clean HEAD at the exact requested release tag", () => {
+    const cleanTagged = fakeGit({
+      "status --porcelain=v1 --untracked-files=all": "",
+      "rev-parse HEAD": `${head}\n`,
+      "rev-parse --verify refs/tags/v1.2.3^{commit}": `${head}\n`,
+    });
+    expect(assertReleaseGitState("v1.2.3", { spawn: cleanTagged, repo: "/repo" })).toBe(head);
+
+    const dirty = fakeGit({
+      "status --porcelain=v1 --untracked-files=all": " M package.json\n",
+    });
+    expect(() => assertReleaseGitState("v1.2.3", { spawn: dirty, repo: "/repo" }))
+      .toThrow(/HEAD is not clean/u);
+
+    const wrongTag = fakeGit({
+      "status --porcelain=v1 --untracked-files=all": "",
+      "rev-parse HEAD": `${head}\n`,
+      "rev-parse --verify refs/tags/v1.2.3^{commit}": `${other}\n`,
+    });
+    expect(() => assertReleaseGitState("v1.2.3", { spawn: wrongTag, repo: "/repo" }))
+      .toThrow(/does not point at HEAD/u);
+  });
+
+  test("requires build provenance for the exact clean HEAD", () => {
+    expect(() => assertBuildMarkerForHead({ gitSha: other, sourceState: "clean" }, head))
+      .toThrow(/build provenance is for/u);
+    expect(() => assertBuildMarkerForHead({ gitSha: head, sourceState: "dirty" }, head))
+      .toThrow(/sourceState must be clean/u);
+    expect(() => assertBuildMarkerForHead({ gitSha: head, sourceState: "clean" }, head))
+      .not.toThrow();
+  });
+
+  test("safely verifies current build output and dependency digests", () => {
+    const marker = {
+      gitSha: head,
+      sourceState: "clean",
+      outputDigest: "output-digest",
+      dependencyDigest: "dependency-digest",
+    };
+    const report = { status: "ok", marker, fingerprint: "marker-fingerprint" };
+    const valid = {
+      repo: "/repo",
+      readMarker: () => report,
+      computeOutputDigest: () => "output-digest",
+      computeDependencyDigest: () => "dependency-digest",
+    };
+    expect(() => assertCurrentBuildProvenance(head, valid)).not.toThrow();
+    expect(() => assertCurrentBuildProvenance(head, {
+      ...valid,
+      readMarker: () => ({ status: "unsafe" }),
+    })).toThrow(/marker is unsafe/u);
+    expect(() => assertCurrentBuildProvenance(head, {
+      ...valid,
+      computeOutputDigest: () => "changed-after-pack",
+    })).toThrow(/output digest does not match/u);
+    expect(() => assertCurrentBuildProvenance(head, {
+      ...valid,
+      computeDependencyDigest: () => "changed-dependencies",
+    })).toThrow(/dependency digest does not match/u);
+
+    let reads = 0;
+    expect(() => assertCurrentBuildProvenance(head, {
+      ...valid,
+      readMarker: () => ({
+        ...report,
+        fingerprint: reads++ === 0 ? "marker-fingerprint" : "replacement-fingerprint",
+      }),
+    })).toThrow(/marker changed during verification/u);
+  });
+
+  test("computes npm-compatible SHA-512 tarball integrity", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-integrity-test-"));
+    try {
+      const tarball = path.join(directory, "package.tgz");
+      fs.writeFileSync(tarball, "frozen release bytes");
+      expect(computeTarballIntegrity(tarball)).toBe(
+        "sha512-Rm9vf6vSGsnWmxOMBDQxmAB/WyIo6WnAERp7+O/ixVBit2plzZWpw2uzuFy6ZWhJGRdyfGe/c2prtLyvCT8hKw==",
+      );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("pins npm to the public registry and removes ambient proxy registry config", () => {
+    const env = publicNpmEnvironment({
+      PATH: "/bin",
+      NPM_CONFIG_REGISTRY: "http://127.0.0.1:9999/",
+      npm_config_userconfig: "/home/user/.npmrc",
+      "npm_config_@mono-agent:registry": "http://127.0.0.1:9999/",
+      NODE_AUTH_TOKEN: "not-a-real-token",
+    });
+
+    expect(env).toMatchObject({
+      PATH: "/bin",
+      NPM_CONFIG_REGISTRY: PUBLIC_NPM_REGISTRY,
+      NPM_CONFIG_USERCONFIG: "/dev/null",
+      "npm_config_@mono-agent:registry": PUBLIC_NPM_REGISTRY,
+      "npm_config_//registry.npmjs.org/:_authToken": "not-a-real-token",
+    });
+    expect(env.npm_config_userconfig).toBeUndefined();
+    expect(env.NODE_AUTH_TOKEN).toBeUndefined();
+  });
+
+  test("scrubs npm credentials from git, build, and pack subprocesses", () => {
+    const authKey = "npm_config_//registry.npmjs.org/:_authToken";
+    const envSource = {
+      PATH: "/bin",
+      NODE_AUTH_TOKEN: "not-a-real-token",
+      NPM_TOKEN: "not-a-real-token",
+      NPM_DEV_TOKEN: "not-a-real-token",
+      [authKey]: "not-a-real-token",
+    };
+    const childEnvironments = [];
+    const gitCalls = [];
+    const cleanTagged = fakeGit({
+      "status --porcelain=v1 --untracked-files=all": "",
+      "rev-parse HEAD": `${head}\n`,
+      "rev-parse --verify refs/tags/v1.2.3^{commit}": `${head}\n`,
+    }, gitCalls);
+    assertReleaseGitState("v1.2.3", {
+      spawn: cleanTagged,
+      repo: "/repo",
+      envSource,
+    });
+    childEnvironments.push(...gitCalls.map((call) => call.options.env));
+
+    runWorkspaceBuild({
+      repo: "/repo",
+      envSource,
+      log: () => {},
+      spawn: (_command, _args, options) => {
+        childEnvironments.push(options.env);
+        return { status: 0 };
+      },
+    });
+
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-pack-env-test-"));
+    try {
+      freezeReleaseTarballs(
+        [{ name: "@mono-agent/example", version: "1.2.3" }],
+        directory,
+        {
+          envSource,
+          log: () => {},
+          spawn: (_command, _args, options) => {
+            childEnvironments.push(options.env);
+            return { status: 0, stdout: "", stderr: "" };
+          },
+          pack: (pkg, destination, packOptions) => {
+            packOptions.spawn("pnpm", ["pack"], { encoding: "utf8" });
+            const tarballPath = path.join(destination, "example.tgz");
+            fs.writeFileSync(tarballPath, "tarball");
+            return { name: pkg.name, version: pkg.version, tarballPath };
+          },
+        },
+      );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+
+    expect(childEnvironments.length).toBeGreaterThan(0);
+    for (const env of childEnvironments) {
+      expect(env.NODE_AUTH_TOKEN).toBeUndefined();
+      expect(env.NPM_TOKEN).toBeUndefined();
+      expect(env.NPM_DEV_TOKEN).toBeUndefined();
+      expect(env[authKey]).toBeUndefined();
+      expect(env.PATH).toBe("/bin");
+    }
+  });
+
+  test("fails a partial retry on integrity mismatch before any registry mutation", async () => {
+    const frozenPackages = [
+      { name: "@mono-agent/a", version: "1.2.3", integrity: "sha512-a" },
+      { name: "@mono-agent/b", version: "1.2.3", integrity: "sha512-b" },
+    ];
+    const mutations = [];
+
+    await expect(executeFrozenPublish({
+      frozenPackages,
+      dryRun: false,
+      stagingTag: "mono-agent-stage-1-2-3",
+      finalDistTag: "latest",
+      readIntegrity: (pkg) => (pkg.name.endsWith("/a") ? "sha512-wrong" : null),
+      publishTarball: (pkg) => mutations.push(`publish:${pkg.name}`),
+      waitForIntegrity: (pkg) => pkg.integrity,
+      promote: (pkg) => mutations.push(`promote:${pkg.name}`),
+      log: () => {},
+    })).rejects.toThrow(/exists with integrity sha512-wrong/u);
+    expect(mutations).toEqual([]);
+  });
+
+  test("stages missing packages, verifies the complete set, then promotes", async () => {
+    const frozenPackages = [
+      { name: "@mono-agent/a", version: "1.2.3", integrity: "sha512-a" },
+      { name: "@mono-agent/b", version: "1.2.3", integrity: "sha512-b" },
+    ];
+    const operations = [];
+
+    await executeFrozenPublish({
+      frozenPackages,
+      dryRun: false,
+      stagingTag: "mono-agent-stage-1-2-3",
+      finalDistTag: "latest",
+      readIntegrity: (pkg) => {
+        operations.push(`inspect:${pkg.name}`);
+        return pkg.name.endsWith("/a") ? pkg.integrity : null;
+      },
+      publishTarball: (pkg, options) => {
+        operations.push(`publish:${pkg.name}:${options.distTag}`);
+      },
+      waitForIntegrity: (pkg) => {
+        operations.push(`verify:${pkg.name}`);
+        return pkg.integrity;
+      },
+      promote: (pkg, distTag) => {
+        operations.push(`promote:${pkg.name}:${distTag}`);
+      },
+      log: () => {},
+    });
+
+    expect(operations).toEqual([
+      "inspect:@mono-agent/a",
+      "inspect:@mono-agent/b",
+      "publish:@mono-agent/b:mono-agent-stage-1-2-3",
+      "verify:@mono-agent/a",
+      "verify:@mono-agent/b",
+      "promote:@mono-agent/a:latest",
+      "promote:@mono-agent/b:latest",
+    ]);
+    expect(stagingDistTagForRelease("v1.2.3-beta.1")).toBe("mono-agent-stage-1-2-3-beta-1");
+  });
+
+  test("keeps dry-run publication non-mutating and skips registry inspection", async () => {
+    const frozenPackages = [
+      { name: "@mono-agent/a", version: "1.2.3", integrity: "sha512-a" },
+    ];
+    const operations = [];
+
+    await executeFrozenPublish({
+      frozenPackages,
+      dryRun: true,
+      stagingTag: "mono-agent-stage-1-2-3",
+      finalDistTag: "latest",
+      readIntegrity: () => {
+        throw new Error("dry run must not inspect npm");
+      },
+      publishTarball: (pkg, options) => operations.push({ name: pkg.name, ...options }),
+      waitForIntegrity: () => {
+        throw new Error("dry run must not wait for npm");
+      },
+      promote: () => {
+        throw new Error("dry run must not promote");
+      },
+      log: () => {},
+    });
+
+    expect(operations).toEqual([{
+      name: "@mono-agent/a",
+      distTag: "mono-agent-stage-1-2-3",
+      dryRun: true,
+    }]);
   });
 });

@@ -1468,6 +1468,9 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
     });
   });
 
+  // This is a durability/queue-correctness stress case, not a latency SLA:
+  // 300 serialized appends intentionally fsync canonical and lock state while
+  // the package suite runs in parallel with other workspaces.
   it("pages overflow recovery without rescanning active queue rows", async () => {
     const root = tmpRoot();
     const calls: number[] = [];
@@ -1493,7 +1496,7 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
       highWaterItems: 256,
     });
     await store.close();
-  }, 10_000);
+  }, 30_000);
 
   it("canonicalizes whitespace-equivalent legacy bullets to one recallable Journal row", async () => {
     const root = tmpRoot();
