@@ -56,8 +56,8 @@ The wizard composes an agent from these modules. Selecting one auto-checks its r
 | `channel:cron` | Run on a five-field schedule (`minute hour day-of-month month day-of-week`, UTC by default). Guided init validates it inline, then scaffolds `cron/digest.md`; seconds and macros such as `@daily` are unsupported. | — |
 | `channel:a2a` | Expose the agent over A2A (Agent Card + provider endpoint). | — |
 | `memory:lite` | SQLite full-text recall, zero external dependencies. | — |
-| `memory:journal` | Semantic recall via local Ollama embeddings. | — |
-| `memory:bujo` | Daily-log capture plus semantic recall (needs Ollama). | — |
+| `memory:journal` | Semantic recall via a guided Ollama or LM Studio embeddings service. | — |
+| `memory:bujo` | Daily-log capture plus semantic recall via guided Ollama or LM Studio embeddings; capture LLM remains explicit. | — |
 | `memory:supermemory` | External Supermemory instance for server-side extraction + recall. | — |
 | `sandbox` | Native `srt` sandbox: workspace-only FS, localhost network, fails closed. | `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash` |
 | `observability:phoenix` | Best-effort Phoenix OTLP export, sensitive data excluded. | — |
@@ -117,6 +117,6 @@ The old recipe surface still works, mapped forward:
 
 - `mono-agent recipes list | show <id>` → alias of `mono-agent presets list | show <id>`.
 - `mono-agent setup` → alias of `mono-agent init`.
-- `mono-agent init --recipe <id>` and `mono-agent validate --recipe <id>` → the deprecated `--recipe` flag maps to the preset that replaced the recipe (with a deprecation notice), so `minimal-webhook` → `starter`, `personal-telegram-bujo` → `telegram-assistant`, `slack-team-bot` → `slack-bot`, `local-ollama-private` → `local-private`, and `sandboxed-code-agent` → `code-sandbox`. `personal-telegram-supermemory` is retired from core because its backend is now an explicitly installed plugin; use the plugin skill/playbook. The `local-lmstudio-private` recipe is also retired (mapping it onto the Ollama-based `local-private` preset would silently swap the engine and memory tier); reach LM Studio via `mono-agent init --model pi:lmstudio:<id>`, which auto-adds the `provider:lmstudio` module, or the wizard's "Other…" model choice.
+- `mono-agent init --recipe <id>` and `mono-agent validate --recipe <id>` → the deprecated `--recipe` flag maps to the preset that replaced the recipe (with a deprecation notice), so `minimal-webhook` → `starter`, `personal-telegram-bujo` → `telegram-assistant`, `slack-team-bot` → `slack-bot`, `local-ollama-private` → `local-private`, and `sandboxed-code-agent` → `code-sandbox`. `personal-telegram-supermemory` is retired from core because its backend is now an explicitly installed plugin; use the plugin skill/playbook. The `local-lmstudio-private` recipe is also retired (mapping it onto the Ollama-based `local-private` preset would silently swap the runtime engine); reach LM Studio via `mono-agent init --model pi:lmstudio:<id>` or the wizard's "Other…" model choice, then choose LM Studio explicitly when Journal/BuJo asks for its embeddings service.
 
 The fully-retired blueprints — `full-safe`, `full-local-power`, `openai-api-gateway`, `cron-digest`, `a2a-provider`, and `phoenix-observed` — have no replacement preset. `--recipe` errors with a pointer to the wizard, because each is now either a single wizard choice (enable the `channel:openai-api`, `channel:cron`, `channel:a2a`, or `observability:phoenix` module) or a hand-assembled config the [composer skill](/context/skills/) builds from the capability modules and [playbooks](/playbooks/).

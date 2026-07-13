@@ -73,31 +73,41 @@ Every key below is verified against [the config blueprint](/config/blueprint/). 
 
 ## Upgrade to semantic recall (journal tier)
 
-LM Studio's local server is fully OpenAI-compatible, including a real `/v1/embeddings` endpoint — the same client the config already speaks for `provider: "openai"` embeddings works against it directly, so `journal`-tier hybrid (BM25 + vector) recall doesn't require Ollama or a cloud key. This isn't the recipe's shipped default because `memory.embeddings` with `provider: "openai"` requires its API key to already be resolvable when the config loads — a hard failure if `.env` isn't populated yet, unlike a channel credential (which only affects that one channel and reports `waiting`). Add it deliberately, after the base agent above is already working:
+LM Studio is a first-class embeddings provider. Journal-tier hybrid (BM25 + vector) recall
+uses the same local server's `/v1/embeddings` endpoint and never sends an Ollama request or
+requires an OpenAI/dummy key. Add it deliberately after the base agent is working:
 
 1. In LM Studio, load an embedding model too (e.g. a Nomic Embed Text v1.5 GGUF) alongside your chat model — LM Studio serves both from the same local server concurrently.
-2. Add an `embeddings` block and switch `mode` to `journal`:
+2. Rerun guided `mono-agent init` in a fresh folder and choose Journal → LM Studio, or add
+   the equivalent explicit block and switch `mode` to `journal`:
    ```json
    {
      "memory": {
        "mode": "journal",
        "path": "./.mono-agent/memory",
        "embeddings": {
-         "provider": "openai",
-         "model": "nomic-embed-text-v1.5",
-         "endpoint": "http://localhost:1234/v1"
+         "provider": "lmstudio",
+         "model": "text-embedding-nomic-embed-text-v1.5",
+         "endpoint": "http://localhost:1234",
+         "dim": 768
        }
      }
    }
    ```
-3. Set the (non-secret) placeholder key in `.env` — LM Studio requires the bearer header on every OpenAI-compatible request but never validates its value; this is [LM Studio's own documented placeholder](https://lmstudio.ai/docs/developer/openai-compat/embeddings):
-   ```bash
-   echo 'MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY=lm-studio' >> .env
-   ```
-4. Run `mono-agent validate` — memory should report `ok`.
+3. Keep `apiKeyEnv` absent for LM Studio's default keyless server. If you enabled LM Studio
+   authentication, add `"apiKeyEnv": "LM_STUDIO_API_KEY"` and populate that variable in
+   the agent's owner-only `.env`; a declared but missing value reports `waiting` and does
+   not retry keyless.
+4. Run `mono-agent memory rebuild --json` for an existing Journal/BuJo root, then
+   `mono-agent validate`. A provider/model/dimension change is a new managed index identity;
+   never reuse or relabel old vectors.
 
 :::caution
-LM Studio identifies models by whatever name it displays for what you've loaded — there's no fixed registry tag like Ollama's `nomic-embed-text:v1.5`. Set `memory.embeddings.model` to match **exactly** what LM Studio reports (check its model list or `GET /v1/models`). A mismatch fails embedding calls at request time, not startup — recall degrades to empty with a `memory_degraded` warning rather than crashing the turn.
+LM Studio identifies models by service-native keys. Set `memory.embeddings.model` to the
+exact `key` whose `/api/v1/models` entry has `type: "embedding"`; do not infer it from the
+runtime chat catalog. Guided setup filters that typed list and proves one real finite vector
+through `/v1/embeddings`. If discovery is unavailable, manual model/dimension entry remains
+available, but the real readiness probe must still pass before setup reports ready.
 :::
 
 ## Related

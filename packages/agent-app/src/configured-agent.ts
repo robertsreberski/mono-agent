@@ -615,6 +615,12 @@ export async function createConfiguredMemory(
   // a sustained outage stops blocking recall entirely. The harness degrades
   // recall to empty (with a memory_degraded warning) when this errors.
   const search = await loadMemorySearchModule();
+  if (embeddingsConfig?.apiKeyEnv !== undefined && embeddingsConfig.apiKey === undefined) {
+    throw new Error(
+      `memory.embeddings.apiKeyEnv ${embeddingsConfig.apiKeyEnv} is declared but has no resolved value; ` +
+      `set ${embeddingsConfig.apiKeyEnv} before starting managed memory.`,
+    );
+  }
   const embeddings = search.createCircuitBreakerEmbeddingProvider(
     search.createEmbeddingProvider({
       provider: embeddingsConfig?.provider ?? "ollama",

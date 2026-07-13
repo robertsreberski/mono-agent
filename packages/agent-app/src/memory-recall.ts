@@ -49,7 +49,7 @@ export interface MemoryRecallEmbeddingsCircuitBreaker {
 
 /** Embeddings the recall server needs. Mirrors the resolved `config.memory.embeddings` slice. */
 export interface MemoryRecallEmbeddings {
-  readonly provider: "ollama" | "openai";
+  readonly provider: "ollama" | "lmstudio" | "openai";
   readonly model: string;
   readonly endpoint?: string;
   /** Resolved key value. Only used as a last resort (inline apiKey, no apiKeyEnv). */
@@ -212,9 +212,10 @@ export function resolveMemoryRecallSettings(config: MonoAgentConfig): MemoryReca
  *
  * Only `MONO_AGENT_MEMORY_PATH` is required. When the embeddings provider/model are both absent the
  * child runs FTS-only (no embedding provider). When present, the embeddings slice — including the
- * resilience knobs (timeout + circuit breaker) — is rehydrated. The api key is resolved from the
- * inherited env var named by `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV` when set, falling back to a
- * literal `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY` (the inline-key case).
+ * resilience knobs (timeout + circuit breaker) — is rehydrated. When
+ * `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV` is set, that named inherited value is authoritative and
+ * must resolve; a literal `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY` is accepted only for the inline-key
+ * case where no env-var name was declared.
  */
 export function memoryRecallSettingsFromEnv(env: Record<string, string | undefined>): MemoryRecallSettings {
   if (optionalString(env.MONO_AGENT_MEMORY_BACKEND) === "supermemory") {
@@ -263,15 +264,26 @@ export function memoryRecallSettingsFromEnv(env: Record<string, string | undefin
       "memory-recall: incomplete embeddings environment (MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER and MONO_AGENT_MEMORY_EMBEDDINGS_MODEL must be set together).",
     );
   }
-  if (provider !== "ollama" && provider !== "openai") {
-    throw new Error(`memory-recall: unsupported MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER "${provider}" (expected "ollama" or "openai").`);
+  if (provider !== "ollama" && provider !== "lmstudio" && provider !== "openai") {
+    throw new Error(
+      `memory-recall: unsupported MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER "${provider}" ` +
+      `(expected "ollama", "lmstudio", or "openai").`,
+    );
   }
   const endpoint = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT);
   const apiKeyEnv = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV);
-  // Resolve the key from the named inherited var first (F13); fall back to a literal value.
-  const apiKey =
-    (apiKeyEnv === undefined ? undefined : optionalString(env[apiKeyEnv])) ??
-    optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY);
+  const namedApiKey = apiKeyEnv === undefined ? undefined : optionalString(env[apiKeyEnv]);
+  if (apiKeyEnv !== undefined && namedApiKey === undefined) {
+    throw new Error(
+      `memory-recall: memory.embeddings.apiKeyEnv ${apiKeyEnv} is declared but the inherited environment ` +
+      `has no non-empty value; set ${apiKeyEnv} before starting recall.`,
+    );
+  }
+  // A declared name is authoritative: never turn a missing named credential
+  // into an accidental keyless request or silently substitute another value.
+  const apiKey = apiKeyEnv === undefined
+    ? optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY)
+    : namedApiKey;
   const dim = parseDim(optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM));
   const timeoutMs = parsePositiveInt(optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS), "MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS");
   const failureThreshold = parsePositiveInt(
@@ -438,6 +450,12 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
 export async function createMemoryEmbeddingProvider(
   embeddings: MemoryRecallEmbeddings,
 ): Promise<EmbeddingProvider> {
+  if (embeddings.apiKeyEnv !== undefined && embeddings.apiKey === undefined) {
+    throw new Error(
+      `memory.embeddings.apiKeyEnv ${embeddings.apiKeyEnv} is declared but has no resolved value; ` +
+      `set ${embeddings.apiKeyEnv} before using semantic memory.`,
+    );
+  }
   const providerConfig: EmbeddingProviderConfig = {
     provider: embeddings.provider,
     model: embeddings.model,

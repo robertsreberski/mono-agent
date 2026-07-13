@@ -55,13 +55,13 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `memory.consolidation.cron` | `string` | `MONO_AGENT_MEMORY_CONSOLIDATION_CRON` | 0 */2 * * * | `0 */2 * * *` | Configures consolidation.cron for the memory section. |
 | `memory.consolidation.enabled` | `boolean` | `MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED` | true | `true` | Enables the memory capability. |
 | `memory.embeddings.apiKey` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY` | unset | `example` | Secret value for memory.embeddings.apiKey; prefer the env override. |
-| `memory.embeddings.apiKeyEnv` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV` | unset | `example` | Secret value for memory.embeddings.apiKeyEnv; prefer the env override. |
+| `memory.embeddings.apiKeyEnv` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV` | unset | `example` | Environment-variable name containing an optional provider bearer token; an explicitly declared name must resolve before memory starts. |
 | `memory.embeddings.circuitBreaker.cooldownMs` | `integer` | `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS` | 30000 | `30000` | Configures embeddings.circuitBreaker.cooldownMs for the memory section. |
 | `memory.embeddings.circuitBreaker.failureThreshold` | `integer` | `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | 3 | `3` | Configures embeddings.circuitBreaker.failureThreshold for the memory section. |
 | `memory.embeddings.dim` | `integer` | `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | unset | `1` | Configures embeddings.dim for the memory section. |
-| `memory.embeddings.endpoint` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT` | unset | `example` | Configures embeddings.endpoint for the memory section. |
+| `memory.embeddings.endpoint` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT` | unset | `example` | Provider service root. LM Studio uses <root>/v1/embeddings and defaults to http://localhost:1234. |
 | `memory.embeddings.model` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | unset | `nomic-embed-text:v1.5` | Configures embeddings.model for the memory section. |
-| `memory.embeddings.provider` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | unset | `ollama` | Configures embeddings.provider for the memory section. |
+| `memory.embeddings.provider` | `string` | `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | unset | `ollama` | Embedding service used by Journal/BuJo memory: ollama, lmstudio, or openai. |
 | `memory.embeddings.timeoutMs` | `integer` | `MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS` | 10000 | `10000` | Configures embeddings.timeoutMs for the memory section. |
 | `memory.llm.endpoint` | `string` | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | unset | `example` | Configures llm.endpoint for the memory section. |
 | `memory.llm.executionMode` | `string` | `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` | unset | `example` | Configures llm.executionMode for the memory section. |

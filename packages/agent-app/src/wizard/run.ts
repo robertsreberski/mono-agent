@@ -8,6 +8,13 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 import { findModule } from "../modules/catalog.js";
 import { hasSensitivePersistedEnvironmentValue } from "../first-run-readiness.js";
+import {
+  DEFAULT_MEMORY_EMBEDDING_ENDPOINTS,
+  discoverMemoryEmbeddingModels,
+  memoryEmbeddingEndpointProblem,
+  type ManagedMemoryEmbeddingProvider,
+  probeMemoryEmbeddingSelection,
+} from "../memory-embedding-service.js";
 import { DEFAULT_MODEL } from "../modules/base.js";
 import { ALLOW_ALL_TOOLS, APP_TOOL_NAMES, BUILTIN_TOOL_NAMES, isAllowAllTools } from "../modules/known-tools.js";
 import {
@@ -132,6 +139,8 @@ interface DraftAnswers {
 }
 
 const SANDBOXABLE_TOOLS = new Set(["Bash", "Write", "Edit"]);
+const MANAGED_MEMORY_MODULE_IDS = new Set(["memory:journal", "memory:bujo"]);
+const MANUAL_EMBEDDING_MODEL = "__manual_embedding_model__";
 
 type PromptResult<T> = Promise<T | symbol>;
 
@@ -617,7 +626,8 @@ function wizardStepHasInteractivePrompt(step: number, draft: DraftAnswers): bool
       return true;
     case 4:
       return [...draft.channels, ...(draft.memory === undefined ? [] : [draft.memory])]
-        .some((id) => findModule(id)?.inputs.some((input) => input.secret !== true) === true);
+        .some((id) => !MANAGED_MEMORY_MODULE_IDS.has(id)
+          && findModule(id)?.inputs.some((input) => input.secret !== true) === true);
     case 5:
       return !selectedRuntimeModels(draft).every(hasFixedAllowAllToolPolicyRef);
     case 6:
@@ -747,7 +757,12 @@ async function collectInteractiveFromSeed(
             initialValue: draft.memory ?? "",
           });
           draft.memory = memory === "" ? undefined : memory;
-          if (
+          if (previousMemory !== draft.memory && previousMemory !== undefined) {
+            delete draft.moduleInputs[previousMemory];
+          }
+          if (draft.memory !== undefined && MANAGED_MEMORY_MODULE_IDS.has(draft.memory)) {
+            await promptManagedMemoryEmbeddingInputs(draft, ctx);
+          } else if (
             returnToReviewAfterStep === 3
             && draft.memory !== undefined
             && draft.memory !== previousMemory
@@ -758,6 +773,13 @@ async function collectInteractiveFromSeed(
           break;
         }
         case 4:
+          if (
+            returnToReviewAfterStep === 4
+            && draft.memory !== undefined
+            && MANAGED_MEMORY_MODULE_IDS.has(draft.memory)
+          ) {
+            await promptManagedMemoryEmbeddingInputs(draft, ctx);
+          }
           await promptModuleInputs(draft);
           advanceAfter(4);
           break;
@@ -1072,6 +1094,9 @@ async function promptModuleInputs(
   const moduleIds = requestedModuleIds
     ?? [...draft.channels, ...(draft.memory === undefined ? [] : [draft.memory])];
   for (const id of moduleIds) {
+    if (MANAGED_MEMORY_MODULE_IDS.has(id)) {
+      continue;
+    }
     const module = findModule(id);
     if (module === undefined) {
       continue;
@@ -1096,6 +1121,150 @@ async function promptModuleInputs(
       }
     }
   }
+}
+
+/**
+ * Collect one complete, provider-specific embedding selection for Journal or
+ * BuJo. The finished bag replaces the prior provider bag as a unit so switching
+ * providers cannot retain a stale endpoint, model, dimension, or auth-env name.
+ */
+async function promptManagedMemoryEmbeddingInputs(
+  draft: DraftAnswers,
+  ctx: WizardRunContext,
+): Promise<void> {
+  const moduleId = draft.memory;
+  if (moduleId === undefined || !MANAGED_MEMORY_MODULE_IDS.has(moduleId)) return;
+  const previous = draft.moduleInputs[moduleId] ?? {};
+  const previousProvider = isManagedMemoryEmbeddingProvider(previous.embeddingProvider)
+    ? previous.embeddingProvider
+    : "ollama";
+  const provider = await select<ManagedMemoryEmbeddingProvider>({
+    message: `${findModule(moduleId)?.title ?? "Managed memory"}: embedding service`,
+    options: [
+      { value: "ollama", label: "Ollama", hint: "local /api embedding service" },
+      { value: "lmstudio", label: "LM Studio", hint: "local typed model catalog + /v1/embeddings" },
+    ],
+    initialValue: previousProvider,
+  });
+  const sameProvider = provider === previousProvider;
+  const endpoint = (await textPrompt({
+    message: `${providerLabel(provider)} service root`,
+    initialValue: sameProvider
+      ? previous.embeddingEndpoint ?? DEFAULT_MEMORY_EMBEDDING_ENDPOINTS[provider]
+      : DEFAULT_MEMORY_EMBEDDING_ENDPOINTS[provider],
+    placeholder: DEFAULT_MEMORY_EMBEDDING_ENDPOINTS[provider],
+    validate: memoryEmbeddingEndpointProblem,
+  })).trim().replace(/\/+$/u, "");
+  const apiKeyEnv = (await textPrompt({
+    message: `${providerLabel(provider)} API-key environment variable (optional)`,
+    ...(sameProvider && previous.embeddingApiKeyEnv !== undefined
+      ? { initialValue: previous.embeddingApiKeyEnv }
+      : {}),
+    placeholder: "Leave blank for a keyless local service",
+    validate: validateOptionalEmbeddingApiKeyEnv,
+  })).trim();
+  const apiKey = apiKeyEnv.length === 0 ? undefined : ctx.persistedEnv?.[apiKeyEnv];
+
+  let discoveredModels: readonly string[] = [];
+  try {
+    discoveredModels = await discoverMemoryEmbeddingModels({
+      provider,
+      endpoint,
+      ...(apiKey === undefined ? {} : { apiKey }),
+    });
+    if (discoveredModels.length === 0) {
+      p.log.warn(`${providerLabel(provider)} did not report any models explicitly typed as embedding-capable.`);
+    }
+  } catch (error) {
+    p.log.warn(`${providerLabel(provider)} embedding discovery was unavailable: ${safeErrorMessage(error)}`);
+  }
+
+  let model: string;
+  if (discoveredModels.length > 0) {
+    const initialModel = sameProvider && previous.embeddingModel !== undefined
+      && discoveredModels.includes(previous.embeddingModel)
+      ? previous.embeddingModel
+      : discoveredModels[0]!;
+    const selectedModel = await autocomplete<string>({
+      message: `${providerLabel(provider)} embedding model`,
+      options: [
+        ...discoveredModels.map((value) => ({ value, label: value, hint: "typed embedding model" })),
+        { value: MANUAL_EMBEDDING_MODEL, label: "Enter another model id…", hint: "manual readiness fallback" },
+      ],
+      initialValue: initialModel,
+      placeholder: "Type to search embedding models…",
+      maxItems: MODEL_AUTOCOMPLETE_MAX_ITEMS,
+    });
+    model = selectedModel === MANUAL_EMBEDDING_MODEL
+      ? await promptManualEmbeddingModel(sameProvider ? previous.embeddingModel : undefined)
+      : selectedModel;
+  } else {
+    model = await promptManualEmbeddingModel(sameProvider ? previous.embeddingModel : undefined);
+  }
+
+  let dimension: number | undefined;
+  try {
+    const result = await probeMemoryEmbeddingSelection({
+      provider,
+      endpoint,
+      model,
+      ...(apiKey === undefined ? {} : { apiKey }),
+    });
+    dimension = result.dimension;
+    p.log.info(`${providerLabel(provider)} proved ${model} with embedding dimension ${dimension}.`);
+  } catch (error) {
+    p.log.warn(`${providerLabel(provider)} could not prove ${model} yet: ${safeErrorMessage(error)}`);
+  }
+  if (dimension === undefined) {
+    const enteredDimension = await textPrompt({
+      message: `${providerLabel(provider)} embedding dimension`,
+      initialValue: sameProvider ? previous.embeddingDimension ?? "768" : "768",
+      placeholder: "Positive integer; live readiness will verify it",
+      validate: validateEmbeddingDimension,
+    });
+    dimension = Number(enteredDimension.trim());
+  }
+
+  draft.moduleInputs[moduleId] = {
+    embeddingProvider: provider,
+    embeddingEndpoint: endpoint,
+    embeddingModel: model,
+    embeddingDimension: String(dimension),
+    ...(apiKeyEnv.length === 0 ? {} : { embeddingApiKeyEnv: apiKeyEnv }),
+  };
+}
+
+async function promptManualEmbeddingModel(initialValue?: string): Promise<string> {
+  return (await textPrompt({
+    message: "Embedding model id",
+    ...(initialValue === undefined ? {} : { initialValue }),
+    placeholder: "Exact model id from the local service",
+    validate: (value) => (value ?? "").trim().length > 0 ? undefined : "Enter an embedding model id.",
+  })).trim();
+}
+
+function isManagedMemoryEmbeddingProvider(value: string | undefined): value is ManagedMemoryEmbeddingProvider {
+  return value === "ollama" || value === "lmstudio";
+}
+
+function providerLabel(provider: ManagedMemoryEmbeddingProvider): string {
+  return provider === "ollama" ? "Ollama" : "LM Studio";
+}
+
+function validateOptionalEmbeddingApiKeyEnv(value: string | undefined): string | undefined {
+  const trimmed = (value ?? "").trim();
+  return trimmed.length === 0 || /^[A-Za-z_][A-Za-z0-9_]*$/u.test(trimmed)
+    ? undefined
+    : "Use an environment-variable name such as LM_STUDIO_API_KEY.";
+}
+
+function validateEmbeddingDimension(value: string | undefined): string | undefined {
+  const parsed = Number((value ?? "").trim());
+  return Number.isSafeInteger(parsed) && parsed > 0 ? undefined : "Enter a positive integer dimension.";
+}
+
+function safeErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "unknown service error";
 }
 
 /** Collect only typed required secrets, masked and retained solely for this run. */

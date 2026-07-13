@@ -56,6 +56,10 @@ import type { ChannelDriver } from "./channels.js";
 import { findUnknownAppConfigWarnings } from "./config-reference.js";
 import { formatInteractionBridgeUrl, loadInteractionSettings } from "./interaction-bridge.js";
 import { FIRST_RUN_MEMORY_INITIALIZING_MARKER } from "./first-run-managed-memory.js";
+import {
+  DEFAULT_MEMORY_EMBEDDING_ENDPOINTS,
+  probeMemoryEmbeddingSelection,
+} from "./memory-embedding-service.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { piAuthRecoveryCommand } from "./provider-setup.js";
 import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "./pi-auth-store-inspection.js";
@@ -184,7 +188,7 @@ export async function validateMonoAgentFolder(
       staticTriggerCredentialRefs,
     ));
     sections.push(await contextSection(coreConfig, options.cwd));
-    sections.push(await memorySection(coreConfig, options.cwd, liveness, allowFilesystemWrites));
+    sections.push(await memorySection(coreConfig, options.cwd, options.env, liveness, allowFilesystemWrites));
     sections.push(await toolsSection(coreConfig, options));
     sections.push(await sandboxSection(coreConfig, options.sandboxEngine));
   }
@@ -1335,6 +1339,7 @@ const DEFAULT_CONSOLIDATION_CRON = "0 */2 * * *";
 async function memorySection(
   config: MonoAgentConfig,
   cwd: string,
+  env: Readonly<Record<string, string | undefined>>,
   liveness: boolean,
   allowFilesystemWrites: boolean,
 ): Promise<ValidationSection> {
@@ -1448,7 +1453,7 @@ async function memorySection(
   }
 
   if (config.memory.mode === "journal" || config.memory.mode === "bujo") {
-    const warns = await memoryLivenessWarnings(config.memory, liveness, allowFilesystemWrites);
+    const warns = await memoryLivenessWarnings(config.memory, env, liveness, allowFilesystemWrites);
     if (warns.length > 0) {
       return {
         id: "memory",
@@ -1614,12 +1619,12 @@ async function fetchOllamaModels(endpoint: string): Promise<string[]> {
 
 async function memoryLivenessWarnings(
   memory: NonNullable<MonoAgentConfig["memory"]>,
+  env: Readonly<Record<string, string | undefined>>,
   liveness: boolean,
   allowFilesystemWrites: boolean,
 ): Promise<string[]> {
   const warns: string[] = [];
   const mode = memory.mode;
-  const embeddingsUsesOllama = (memory.embeddings?.provider ?? "ollama") === "ollama";
   const llmUsesOllama = memory.llm?.provider === "ollama";
   const ollamaModelsByEndpoint = new Map<string, string[] | undefined>();
 
@@ -1627,10 +1632,31 @@ async function memoryLivenessWarnings(
   const rootWarns = await memoryRootWritableWarnings(mode, memory.path, allowFilesystemWrites);
   warns.push(...rootWarns);
 
+  const embeddings = memory.embeddings;
+  let embeddingApiKey = embeddings?.apiKey;
+  if (embeddings?.apiKeyEnv !== undefined) {
+    embeddingApiKey = env[embeddings.apiKeyEnv]?.trim();
+    if (embeddingApiKey === undefined || embeddingApiKey.length === 0) {
+      warns.push(
+        `[WARN] Embeddings apiKeyEnv ${embeddings.apiKeyEnv} is declared, but the resolved environment has no ` +
+        `non-empty value. Set ${embeddings.apiKeyEnv} before starting managed memory; no keyless probe was attempted.`,
+      );
+      embeddingApiKey = undefined;
+    }
+  }
+
   // Network-dependent probes below only ever produce `waiting`, so the start
   // preflight skips them (liveness=false) without changing the pass/fail verdict.
   if (!liveness) {
     return warns;
+  }
+
+  if (
+    embeddings !== undefined
+    && (embeddings.provider === "ollama" || embeddings.provider === "lmstudio")
+    && (embeddings.apiKeyEnv === undefined || embeddingApiKey !== undefined)
+  ) {
+    warns.push(...await localEmbeddingLivenessWarnings(embeddings, embeddingApiKey));
   }
 
   async function modelsForOllamaEndpoint(endpoint: string): Promise<string[] | undefined> {
@@ -1651,18 +1677,9 @@ async function memoryLivenessWarnings(
     }
   }
 
-  // 2. Ollama liveness — only probe components that actually use Ollama. OpenAI embeddings and
-  // agent-host chat LLMs have no local model list to validate here.
-  if (embeddingsUsesOllama) {
-    const endpoint = memory.embeddings?.endpoint ?? "http://localhost:11434";
-    const ollamaModels = await modelsForOllamaEndpoint(endpoint);
-    if (ollamaModels !== undefined) {
-      const embeddingsModel = memory.embeddings?.model ?? "nomic-embed-text:v1.5";
-      if (!ollamaModels.includes(embeddingsModel)) {
-        warns.push(`[WARN] Embeddings model ${embeddingsModel} not pulled — run \`ollama pull ${embeddingsModel}\`.`);
-      }
-    }
-  }
+  // 2. Chat-LLM Ollama liveness remains independent from the selected
+  // embeddings service. OpenAI embeddings and agent-host chat LLMs have no
+  // local typed model catalog to validate here.
   if (llmUsesOllama && memory.llm !== undefined) {
     const endpoint = memory.llm.endpoint ?? "http://localhost:11434";
     const ollamaModels = await modelsForOllamaEndpoint(endpoint);
@@ -1675,6 +1692,54 @@ async function memoryLivenessWarnings(
   }
 
   return warns;
+}
+
+async function localEmbeddingLivenessWarnings(
+  embeddings: NonNullable<NonNullable<MonoAgentConfig["memory"]>["embeddings"]>,
+  apiKey: string | undefined,
+): Promise<string[]> {
+  if (embeddings.provider !== "ollama" && embeddings.provider !== "lmstudio") return [];
+  const provider = embeddings.provider;
+  const label = provider === "ollama" ? "Ollama" : "LM Studio";
+  const endpoint = (embeddings.endpoint ?? DEFAULT_MEMORY_EMBEDDING_ENDPOINTS[provider]).replace(/\/+$/u, "");
+  // Runtime readiness is authoritative on the exact configured model. Typed
+  // catalogs help the wizard offer choices, but an unavailable/incomplete
+  // catalog must not make its explicit manual fallback permanently unready.
+  try {
+    await probeMemoryEmbeddingSelection({
+      provider,
+      endpoint,
+      model: embeddings.model,
+      expectedDimension: embeddings.dim ?? 768,
+      timeoutMs: BUJO_PROBE_TIMEOUT_MS,
+      ...(apiKey === undefined ? {} : { apiKey }),
+    });
+    return [];
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (/HTTP 401/u.test(reason)) {
+      return [
+        `[WARN] ${label} authentication failed at ${endpoint} (HTTP 401). ` +
+        "Set the configured embeddings apiKeyEnv to a valid bearer token and retry.",
+      ];
+    }
+    if (/could not connect|timed out/iu.test(reason)) {
+      return [
+        `[WARN] ${label} not reachable at ${endpoint}; embeddings will fail at runtime (${reason}). ` +
+        `Start ${label} or fix the endpoint.`,
+      ];
+    }
+    if (provider === "ollama" && /HTTP 404/u.test(reason)) {
+      return [
+        `[WARN] Ollama embedding model ${embeddings.model} could not be proved at ${endpoint} (${reason}); ` +
+        `run \`ollama pull ${embeddings.model}\` and verify its embedding capability.`,
+      ];
+    }
+    return [
+      `[WARN] ${label} embedding readiness failed for ${embeddings.model} at ${endpoint} (${reason}). ` +
+      "Verify the selected model, authentication, and configured dimension.",
+    ];
+  }
 }
 
 async function memoryRootWritableWarnings(

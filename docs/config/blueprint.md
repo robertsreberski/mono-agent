@@ -110,10 +110,10 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "writeMode": "capture",                // disabled | append-host-summary | capture (bujo only)
     "maxBytes": 64000,
     "embeddings": {                        // block required for journal/bujo; fields below have defaults
-      "provider": "ollama",                // ollama | openai; default ollama
+      "provider": "ollama",                // ollama | lmstudio | openai; default ollama
       "model": "nomic-embed-text:v1.5",   // provider default; use exact :v1.5 tag (pull first with ollama pull)
-      "endpoint": "http://localhost:11434",
-      "apiKeyEnv": "OPENAI_API_KEY",       // or inline "apiKey"; required for openai
+      "endpoint": "http://localhost:11434", // service root; LM Studio default is http://localhost:1234
+      // "apiKeyEnv": "LM_STUDIO_API_KEY", // optional for authenticated LM Studio; required for openai
       "dim": 768                           // default 768; must match the model output dimension
     },
     "llm": {                               // required for strict bujo; rejected for lite/journal

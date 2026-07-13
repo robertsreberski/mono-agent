@@ -1390,6 +1390,22 @@ describe("loadMonoAgentConfig", () => {
     ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
   });
 
+  it("does not treat LM Studio as a memory LLM provider", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          ...journalMemoryPrerequisite,
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_MODE: "bujo",
+          MONO_AGENT_MEMORY_LLM_PROVIDER: "lmstudio",
+          MONO_AGENT_MEMORY_LLM_MODEL: "chat-model",
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+  });
+
   it("loads memory.embeddings.dim from env", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
@@ -1404,6 +1420,99 @@ describe("loadMonoAgentConfig", () => {
     });
 
     expect(config.memory?.embeddings?.dim).toBe(768);
+  });
+
+  it("loads LM Studio embeddings without requiring an API key", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "lmstudio",
+        MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: "http://localhost:1234",
+      },
+    });
+
+    expect(config.memory?.embeddings).toEqual({
+      provider: "lmstudio",
+      model: "text-embedding-nomic-embed-text-v1.5",
+      endpoint: "http://localhost:1234",
+    });
+  });
+
+  it("preserves an unresolved LM Studio apiKeyEnv without treating its name as a key", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "lmstudio",
+        MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "embed-model",
+        MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "LM_STUDIO_API_KEY",
+      },
+    });
+
+    expect(config.memory?.embeddings).toMatchObject({
+      provider: "lmstudio",
+      model: "embed-model",
+      apiKeyEnv: "LM_STUDIO_API_KEY",
+    });
+    expect(config.memory?.embeddings?.apiKey).toBeUndefined();
+  });
+
+  it("does not substitute a generic literal when a declared LM Studio apiKeyEnv is unresolved", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "lmstudio",
+        MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "LM_STUDIO_API_KEY",
+        MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "stale-provider-secret",
+      },
+    });
+
+    expect(config.memory?.embeddings?.apiKeyEnv).toBe("LM_STUDIO_API_KEY");
+    expect(config.memory?.embeddings?.apiKey).toBeUndefined();
+  });
+
+  it("does not let a generic literal satisfy an unresolved OpenAI apiKeyEnv", () => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
+        MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "OPENAI_EMBEDDINGS_KEY",
+        MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "stale-provider-secret",
+      },
+    })).toThrow(/openai memory embeddings require/u);
+  });
+
+  it("resolves an optional LM Studio apiKeyEnv when the named variable is set", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "lmstudio",
+        MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "embed-model",
+        MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "LM_STUDIO_API_KEY",
+        LM_STUDIO_API_KEY: "resolved-token",
+        MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "stale-provider-secret",
+      },
+    });
+
+    expect(config.memory?.embeddings).toMatchObject({
+      provider: "lmstudio",
+      apiKey: "resolved-token",
+      apiKeyEnv: "LM_STUDIO_API_KEY",
+    });
   });
 
   it("omits embeddings.dim when the env is unset", () => {
