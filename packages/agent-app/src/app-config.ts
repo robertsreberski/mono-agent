@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
 
 import type { ChannelConfigInput } from "@mono-agent/agent-contracts";
@@ -9,6 +9,8 @@ import {
   readMonoAgentConfigJson,
 } from "@mono-agent/config";
 import type { MonoAgentConfig, ObservabilityExporterConfig } from "@mono-agent/config";
+
+import { accountHomeDirectory } from "./account-home.js";
 
 // The structural shape moved to @mono-agent/agent-contracts (ChannelConfigInput)
 // so channel drivers can be authored against the neutral contract; this alias
@@ -331,12 +333,14 @@ export async function resolveAppTraceRegistryDir(input: MonoAgentAppConfigInput)
     // Fall through to the default below.
   }
 
-  return resolve(homedir(), ".mono-agent", "trace-sources");
+  return resolve(accountHomeDirectory(), ".mono-agent", "trace-sources");
 }
 
 export async function resolveAppTraceSourceId(
   input: MonoAgentAppConfigInput,
   defaults?: AppTraceDefaults,
+  /** Canonical public identity path when `input.configPath` is an immutable private read copy. */
+  fallbackConfigPath: string = input.configPath,
 ): Promise<string> {
   const envSourceId = input.env.MONO_AGENT_TRACE_SOURCE_ID?.trim();
   if (envSourceId !== undefined && envSourceId.length > 0) {
@@ -356,7 +360,7 @@ export async function resolveAppTraceSourceId(
   const hash = createHash("sha256")
     .update(resolve(input.cwd))
     .update("\0")
-    .update(resolve(input.configPath))
+    .update(resolve(fallbackConfigPath))
     .digest("hex")
     .slice(0, 12);
   return `${defaults?.sourceIdPrefix ?? DEFAULT_TRACE_SOURCE_ID_PREFIX}-${hash}`;
@@ -429,7 +433,7 @@ export function resolveGlobalTraceRegistryDir(env: Record<string, string | undef
   if (override !== undefined && override.length > 0) {
     return resolve(override);
   }
-  return resolve(homedir(), ".mono-agent", "trace-sources");
+  return resolve(accountHomeDirectory(), ".mono-agent", "trace-sources");
 }
 
 export async function resolveAppTraceGlobalDiscovery(input: MonoAgentAppConfigInput): Promise<boolean> {

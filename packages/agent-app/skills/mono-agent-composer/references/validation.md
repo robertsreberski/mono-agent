@@ -80,7 +80,7 @@ pnpm run test:demo
 
 | Surface | Smoke |
 | --- | --- |
-| TUI | Start the host and complete one local prompt. |
+| TUI | Start the host, connect with ordinary `mono-agent tui`, and complete one real prompt against the running responder. |
 | Telegram | Send one allowed chat message and verify the reply. |
 | Slack | Send one allowed DM or channel message and verify formatting. |
 | Adapter send tools | When `SlackSendMessage` / `TelegramSendMessage` are available (allow-all, or an explicit `tools.allowedTools` entry) with the channel enabled, call them from a non-Slack/Telegram surface such as TUI, cron, or OpenAI API to an allowed destination and verify delivery. |

@@ -6,7 +6,7 @@ sidebar:
 
 # Terminal UI (mono-agent tui)
 
-`mono-agent tui` is the operator console: a live chat with **full insight into the agent's thinking process** — streamed reasoning, tool calls with arguments/progress/results/timing, token usage, cost, provider lifecycle and failover — plus a recorded-run replay browser and a read-only, source-annotated view of the resolved config. It can connect to a running agent or build the current folder's responder in-process. It ships in `@mono-agent/tui`, built on pi-tui differential rendering. Coverage: `cli` (+ the `tui` config section for remote endpoints).
+`mono-agent tui` is the operator console: a live chat with **full insight into the agent's thinking process** — streamed reasoning, tool calls with arguments/progress/results/timing, token usage, cost, provider lifecycle and failover — plus a recorded-run replay browser and a read-only, source-annotated view of the resolved config. It normally connects to the authoritative running agent; `--local` remains an ordinary in-process chat escape hatch, never a configuration host. It ships in `@mono-agent/tui`, built on pi-tui differential rendering. Coverage: `cli` (+ the `tui` config section for remote endpoints).
 
 ## How it connects
 
@@ -21,8 +21,8 @@ Remote mode is a **separate process** from the agent. `mono-agent start` runs th
 mono-agent tui                        # discover + connect from anywhere
 mono-agent tui --agent personal-agent # pick a specific instance
 mono-agent tui --conversation ops     # chat under a stable conversation id
-mono-agent tui --local                # current folder, no daemon
-mono-agent tui --local --configure    # open with the configuration invitation
+mono-agent tui --configure            # managed macOS configuration conversation
+mono-agent tui --local                # ordinary current-folder chat, no daemon
 ```
 
 :::note
@@ -65,17 +65,25 @@ Oversized tool payloads are truncated on the wire (marked in the panel); the ful
 | `enter` | Submit message · open selection. |
 | `ctrl+c` twice | Quit. |
 
-The input editor autocompletes slash commands: `/help`, `/agents`, `/replay`, `/config`, `/configure`, `/cancel`, `/thinking`, `/quit`. `/configure` applies only to the OS-owner-local mode; remote sessions can explain configuration but cannot apply it.
+The input editor autocompletes slash commands: `/help`, `/agents`, `/replay`, `/config`, `/configure`, `/cancel`, `/thinking`, `/quit`. `/configure` re-enters the managed configuration conversation on a supported macOS background instance. `/quit` closes the console; it does not stop the background agent.
 
-## Local conversational configuration
+## Managed conversational configuration
 
-`mono-agent tui --local` loads the current `mono-agent.config.json` and builds its responder in-process without starting channels or creating launchd state. Add `--configure` to begin with a real recorded agent turn asking how it should be configured; `/configure` re-enters later. The next operator response is the one configuration turn. If it is an ordinary task, the mode ends and the task proceeds normally.
+`mono-agent tui --configure` attaches to the authoritative macOS background instance and opens **Temporary post-wizard configuration mode**. Do not combine it with `--local`. `/configure` re-enters later. The host makes the purpose and stop condition explicit:
 
-The request-scoped `ProposeAgentConfiguration` tool exists only in that marked local turn. The host replaces ordinary action tools and configured MCP servers with `ReadSkill`, `MemoryRecall`, and the inert proposal server; direct providers that cannot project that finite list run in native read-only plan mode. The proposal records one RFC 6902 config patch and optional replacement for the existing `## Role` body; the model cannot write files. After the response settles, the host accepts only public name, effort/turn/session UX, selected project skills/disclosure, memory size/MemoryRecall enablement, and semantic tool-policy tightening. It rejects stale, secret-bearing, environment-shadowed (including JSON Patch source paths), path-bearing, authority/network/provider, and unknown-field candidates before validation and a separate approve/reject card. Approval uses canonical owner-local paths and an owner-only transaction lock; it stages and fsyncs each replacement before a final exact source comparison plus rename with no JavaScript yield, compensates a restored Role if config rollback races, retains local rollback evidence, then replaces the responder and begins a fresh provider conversation. The TUI holds fast follow-up submissions until this settled hook and rotation finish. Memory tiers/capture, secrets, runtime/model/provider posture, external MCP/plugins, channels or proactive jobs, exporters/endpoints, and sandbox/network policy are handed to explicit guided flows.
+> Temporary post-wizard configuration mode: discuss the agent's Role, behavior, memory, skills, tools, or channels. Do not enter secrets. Nothing changes until the host shows a separate approval. Reply done or no changes to finish without edits. After your reply and any approval or rejection, ordinary chat starts; /quit closes only this console and the background agent keeps running.
+
+Configuration and ordinary chat use different conversation ids. A proposal-free finish reports **Configuration mode finished; no changes were proposed. Ordinary chat is now active.** Rejection reports **Proposal rejected; no files changed. Ordinary chat is now active.** `/quit` closes only the console, while the background process and its channels continue running.
+
+Before granting configuration authority, the host matches the registry record to one live launchd PID, the exact config/dotenv/Identity/Soul/MCP-authority/operational-environment snapshot, and a reachable TUI endpoint. The request-scoped `ProposeAgentConfiguration` tool exists only in that marked conversation. The background responder replaces ordinary action tools and configured MCP servers with `ReadSkill`, `MemoryRecall`, and the inert proposal server. Pure direct-Codex chains use native read-only plan mode; mixed chains retain the finite proposal surface so an incompatible route cannot widen it. Direct OpenCode cannot receive this MCP capability: a direct-OpenCode primary uses a configured proposal-capable fallback, while a direct-OpenCode fallback makes the mode refuse with remediation. The proposal records one RFC 6902 config patch and optional replacement for the `## Role` body in the identity file resolved from `context.identityPath`; the model cannot write files. The host accepts only public name, effort/turn/session UX, selected project skills/disclosure, memory size/MemoryRecall enablement, and semantic tool-policy tightening. It rejects stale, secret-bearing, environment-shadowed (including JSON Patch source paths), path-bearing, authority/network/provider, unknown-field, terminal-control, and bidi-control candidates before validation and a separate approve/reject card. Long Role bodies are paged while the decision controls remain visible. Memory tiers/capture, secrets, runtime/model/provider posture, external MCP/plugins, channels or proactive jobs, exporters/endpoints, and sandbox/network policy are handed to explicit guided flows.
+
+Approval commits the candidate under an owner-only transaction, restarts the managed background agent, waits for a fresh ready trace source, swaps the console endpoint, and reports **Configuration applied and the background agent restarted successfully. Ordinary chat is now active.** If the candidate cannot start, the host restores the approved files, restarts the previous background agent, swaps to the recovered endpoint, and reports **The new configuration could not start, so the approved files were restored and the previous background agent was restarted. Ordinary chat is now active.** A failed rollback or recovery restart is never hidden: the console remains open with manual recovery guidance, disconnects the unverified endpoint, and cancels ordinary messages queued behind the failed transaction. If the fresh endpoint is already proven but proposal-capability rotation fails afterward, the endpoint swap and applied result are preserved while configuration re-entry is disabled for that console. Inspect or recover with `mono-agent status`, `mono-agent logs --follow`, `mono-agent restart`, and `mono-agent stop` (add the same `--config` when using a non-default config).
+
+Conversational configuration is unavailable off macOS because safe apply depends on managed restart, readiness, and rollback. Edit `mono-agent.config.json` and `IDENTITY.md` manually, run `mono-agent validate`, start `mono-agent start --foreground` in one terminal, and open ordinary `mono-agent tui` in another.
 
 ## Embedded mode (custom hosts)
 
-The remote and app-owned local modes use the same TUI, which also runs **in-process** against any `AgentResponder` — the same rendering drives both, because the wire protocol replays the exact stream callbacks. Custom hosts can embed it programmatically:
+The remote and ordinary local modes use the same TUI, which also runs **in-process** against any `AgentResponder` — the same rendering drives both, because the wire protocol replays the exact stream callbacks. Custom hosts can embed it programmatically:
 
 ```ts
 import { startMonoAgentTui } from "@mono-agent/tui";

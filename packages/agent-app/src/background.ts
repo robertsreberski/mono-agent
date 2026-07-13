@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
-import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { constants as fsConstants, type Stats } from "node:fs";
+import { type FileHandle, lstat, mkdir, open, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import process from "node:process";
 
 import { listRecordedRuns, listTraceSources } from "@mono-agent/observability";
@@ -20,13 +22,46 @@ import {
   defaultPathEnv,
   deriveLaunchdLabel,
   isLoaded,
-  kickstartRestart,
+  launchdServiceInfo,
   launchdPathsFor,
   makeLaunchctlRunner,
 } from "./launchd.js";
 import type { LaunchctlResult, LaunchctlRunner, LaunchdPaths } from "./launchd.js";
+import { selectBackgroundOperationalEnvironment } from "./background-environment.js";
+import {
+  ensureManagedBackgroundRuntime,
+  MANAGED_BACKGROUND_WORKER_ENV,
+} from "./background-runtime.js";
+import type {
+  ManagedBackgroundRuntime,
+  ManagedBackgroundRuntimeInput,
+  ManagedRuntimeAdditionalPackage,
+} from "./background-runtime.js";
+import {
+  backgroundSnapshotFromMetadata,
+  captureBackgroundSnapshot,
+  encodeBackgroundSnapshot,
+  sameBackgroundSnapshot,
+} from "./background-snapshot.js";
+import type { BackgroundSnapshot } from "./background-snapshot.js";
+import { resolveConfiguredManagedRuntimePackages } from "./managed-runtime-packages.js";
+import {
+  currentProcessIncarnation,
+  isSameProcessIncarnation as matchesProcessIncarnation,
+  processIncarnationFromJson,
+} from "./process-incarnation.js";
+import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incarnation.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import * as ui from "./ui.js";
+
+export {
+  acquireBackgroundWorkerLease,
+  backgroundWorkerLeasePath,
+} from "./background-worker-lease.js";
+export type {
+  BackgroundWorkerLease,
+  BackgroundWorkerLeaseOptions,
+} from "./background-worker-lease.js";
 
 /**
  * Background-service orchestration for the mono-agent CLI. The interactive
@@ -51,7 +86,16 @@ export interface InstanceTarget {
   readonly nodePath: string;
   readonly cliPath: string;
   readonly envFile?: string;
-  readonly pathEnv: string;
+  /**
+   * Transient effective config environment reconstructed by the controller.
+   * It may contain secrets: never serialize, log, or materialize it in launchd.
+   */
+  readonly configurationEnvironment: Readonly<Record<string, string | undefined>>;
+  readonly environment: Readonly<Record<string, string>>;
+  /** Exact wizard/approval snapshot this launch is allowed to claim ready. */
+  readonly expectedSnapshot?: BackgroundSnapshot;
+  /** Guided/configuration handoffs additionally require a usable TUI endpoint. */
+  readonly requireTui?: boolean;
 }
 
 export interface ResolveInstanceTargetInput {
@@ -60,6 +104,20 @@ export interface ResolveInstanceTargetInput {
   readonly cwd: string;
   /** Absolute path to the running cli.js, baked into the plist. */
   readonly cliPath: string;
+  readonly requireTui?: boolean;
+}
+
+/** Exact non-secret environment materialised into a managed LaunchAgent. */
+export function managedBackgroundEnvironment(
+  env: Readonly<Record<string, string | undefined>>,
+): Readonly<Record<string, string>> {
+  return {
+    ...selectBackgroundOperationalEnvironment(env),
+    PATH: defaultPathEnv({ ...env }),
+    // This is a lifecycle marker, not a config override. It tells cli.ts to
+    // discard launchd's ambient environment before loading the chosen dotenv.
+    [MANAGED_BACKGROUND_WORKER_ENV]: "1",
+  };
 }
 
 /**
@@ -68,8 +126,11 @@ export interface ResolveInstanceTargetInput {
  * detached launcher can find the worker's manifest without any IPC.
  */
 export async function resolveInstanceTarget(input: ResolveInstanceTargetInput): Promise<InstanceTarget> {
-  const cwd = resolve(input.cwd);
-  const configPath = resolve(cwd, input.args.configPath ?? "mono-agent.config.json");
+  const lexicalCwd = resolve(input.cwd);
+  const [cwd, configPath] = await Promise.all([
+    realpath(lexicalCwd),
+    canonicalBackgroundConfigPath(lexicalCwd, input.args.configPath),
+  ]);
   const configInput = { env: input.env, cwd, configPath };
   const [registryDir, staleAfterMs] = await Promise.all([
     resolveAppTraceRegistryDir(configInput),
@@ -88,8 +149,40 @@ export async function resolveInstanceTarget(input: ResolveInstanceTargetInput): 
     // Bake an explicit --env-file (resolved absolute) into the plist so the
     // launchd worker loads the same env file the launcher did.
     ...(input.args.envFile === undefined ? {} : { envFile: resolve(cwd, input.args.envFile) }),
-    pathEnv: defaultPathEnv(input.env),
+    configurationEnvironment: { ...input.env },
+    environment: managedBackgroundEnvironment(input.env),
+    ...(input.requireTui === true ? { requireTui: true } : {}),
   };
+}
+
+/**
+ * Collapse symlinked parent aliases without following the config's final path
+ * component. The final component is separately required to be a regular,
+ * non-symlink file before start; keeping it unresolved preserves that check.
+ * Missing parents remain addressable so stop/status/logs can still operate on
+ * a previously installed label after an agent folder is damaged or removed.
+ */
+export async function canonicalBackgroundConfigPath(
+  cwd: string,
+  configuredPath?: string,
+): Promise<string> {
+  const lexical = resolve(cwd, configuredPath ?? "mono-agent.config.json");
+  try {
+    const candidate = join(await realpath(dirname(lexical)), basename(lexical));
+    try {
+      const details = await lstat(candidate);
+      // Preserve the final-component symlink so the start-time regular-file
+      // check can reject it. For a real file, realpath also canonicalises the
+      // stored filename casing on the default case-insensitive macOS volume.
+      return details.isSymbolicLink() ? candidate : await realpath(candidate);
+    } catch (error) {
+      if (isErrno(error, "ENOENT") || isErrno(error, "ENOTDIR")) return candidate;
+      throw error;
+    }
+  } catch (error) {
+    if (isErrno(error, "ENOENT") || isErrno(error, "ENOTDIR")) return lexical;
+    throw error;
+  }
 }
 
 export interface BackgroundDeps {
@@ -106,6 +199,17 @@ export interface BackgroundDeps {
   readonly rename: (oldPath: string, newPath: string) => Promise<void>;
   /** True when a pid is still alive (or alive but owned by another user). */
   readonly isAlive: (pid: number) => boolean;
+  /** Install/verify an immutable CLI outside npm/npx's disposable cache. */
+  readonly ensureManagedRuntime: (input: ManagedBackgroundRuntimeInput) => Promise<ManagedBackgroundRuntime>;
+  /** Resolve config-selected plugin-tier packages before the disposable source can disappear. */
+  readonly resolveManagedRuntimePackages?: (
+    target: InstanceTarget,
+  ) => Promise<readonly ManagedRuntimeAdditionalPackage[]>;
+  /** Fail closed when another lifecycle command owns this config label. */
+  readonly acquireLifecycleLock: (target: InstanceTarget) => Promise<(() => Promise<void>) | undefined>;
+  /** Prove a metadata-advertised TUI endpoint is actually reachable. */
+  readonly probeTui: (source: TraceSourceListItem) => Promise<boolean>;
+  readonly captureSnapshot?: (target: InstanceTarget) => Promise<BackgroundSnapshot>;
   readonly stdout: (text: string) => void;
   readonly stderr: (text: string) => void;
   /** Run `tail` with inherited stdio; resolves with its exit code. */
@@ -120,10 +224,10 @@ export function defaultBackgroundDeps(): BackgroundDeps {
     sleep: (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
     listRecordedRuns,
     listTraceSources,
-    writeFile: (path, data) => writeFile(path, data, "utf8"),
-    mkdir: (path) => mkdir(path, { recursive: true }).then(() => undefined),
+    writeFile: writeOwnerPrivateLaunchdFile,
+    mkdir: ensureOwnerPrivateLaunchdDirectory,
     rm: (path) => rm(path, { force: true }),
-    stat,
+    stat: inspectOwnerPrivateLaunchdLog,
     rename,
     isAlive: (pid) => {
       try {
@@ -134,6 +238,14 @@ export function defaultBackgroundDeps(): BackgroundDeps {
         return isErrno(error, "EPERM");
       }
     },
+    ensureManagedRuntime: (input) => ensureManagedBackgroundRuntime(input),
+    resolveManagedRuntimePackages: (target) => resolveConfiguredManagedRuntimePackages({
+      cwd: target.cwd,
+      configPath: target.configPath,
+      env: target.configurationEnvironment,
+    }),
+    acquireLifecycleLock: acquireFilesystemLifecycleLock,
+    probeTui: probeTuiEndpoint,
     stdout: (text) => void process.stdout.write(text),
     stderr: (text) => void process.stderr.write(text),
     spawnTail: (args) =>
@@ -153,19 +265,34 @@ export interface PollOptions {
 export interface ReadyPollOptions extends PollOptions {
   /** Only accept a worker that started at or after this time (restart safety). */
   readonly sinceMs: number;
+  readonly requireTui?: boolean;
 }
 
 const DEFAULT_POLL: PollOptions = { timeoutMs: 18_000, intervalMs: 400 };
-const SINCE_SKEW_MS = 2_000;
 export const LAUNCHD_LOG_MAX_BYTES = 5 * 1024 * 1024;
 export const LAUNCHD_LOG_ROTATION_COUNT = 3;
+
+export type BackgroundLaunchAction = "started" | "restarted";
+
+export type BackgroundLaunchResult =
+  | {
+      readonly ok: true;
+      readonly action: BackgroundLaunchAction;
+      /** The fresh, authoritative worker trace that proved startup complete. */
+      readonly source: TraceSourceListItem;
+    }
+  | {
+      readonly ok: false;
+      readonly action: "start" | "restart";
+      readonly reason: "runtime" | "snapshot" | "preparation" | "ownership" | "launchctl" | "readiness" | "timeout";
+    };
 
 export async function startBackground(
   target: InstanceTarget,
   deps: BackgroundDeps,
   poll: PollOptions = DEFAULT_POLL,
 ): Promise<number> {
-  return await launchBackground(target, deps, poll);
+  return (await ensureBackgroundReady(target, deps, poll)).ok ? 0 : 1;
 }
 
 /** Restart is behaviourally identical: ensure a single fresh running instance. */
@@ -174,32 +301,185 @@ export async function restartBackground(
   deps: BackgroundDeps,
   poll: PollOptions = DEFAULT_POLL,
 ): Promise<number> {
-  return await launchBackground(target, deps, poll);
+  return (await ensureBackgroundReady(target, deps, poll)).ok ? 0 : 1;
 }
 
-async function launchBackground(target: InstanceTarget, deps: BackgroundDeps, poll: PollOptions): Promise<number> {
+/**
+ * Stop, perform the caller's stopped-worker mutation, and start again while
+ * retaining one lifecycle lock. This closes the force-restart gap in which a
+ * concurrent start could previously enter while the session store was purged.
+ */
+export async function forceRestartBackground(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  whileStopped: () => Promise<void>,
+  poll: PollOptions = DEFAULT_POLL,
+): Promise<number> {
+  const release = await deps.acquireLifecycleLock(target);
+  if (release === undefined) {
+    deps.stderr(ui.errorLine(`Another lifecycle command is already active for ${target.label}.`));
+    deps.stderr(ui.hint("No LaunchAgent or session changes were made. Wait for that command to finish, then retry."));
+    return 1;
+  }
+  try {
+    const stopCode = await stopBackgroundUnlocked(target, deps, poll);
+    if (stopCode !== 0) return stopCode;
+    await whileStopped();
+    return (await ensureBackgroundReadyUnlocked(target, deps, poll)).ok ? 0 : 1;
+  } finally {
+    await release().catch((error: unknown) => {
+      deps.stderr(ui.errorLine(
+        `Could not release lifecycle lock for ${target.label}: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+    });
+  }
+}
+
+/**
+ * Ensure the canonical per-config LaunchAgent is running and return the fresh
+ * trace source that proved it reached `startup-complete`. This is the shared
+ * lifecycle boundary for CLI start/restart and remote configuration handoffs;
+ * callers must not open a console when the result is not ok.
+ */
+export async function ensureBackgroundReady(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  poll: PollOptions = DEFAULT_POLL,
+): Promise<BackgroundLaunchResult> {
+  const release = await deps.acquireLifecycleLock(target);
+  if (release === undefined) {
+    deps.stderr(ui.errorLine(`Another lifecycle command is already active for ${target.label}.`));
+    deps.stderr(ui.hint("No LaunchAgent changes were made. Wait for that command to finish, then retry."));
+    return { ok: false, action: "start", reason: "ownership" };
+  }
+  try {
+    return await ensureBackgroundReadyUnlocked(target, deps, poll);
+  } finally {
+    await release().catch((error: unknown) => {
+      deps.stderr(ui.errorLine(
+        `Could not release lifecycle lock for ${target.label}: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+    });
+  }
+}
+
+async function ensureBackgroundReadyUnlocked(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  poll: PollOptions,
+): Promise<BackgroundLaunchResult> {
+  if (target.expectedSnapshot === undefined) {
+    deps.stderr(ui.errorLine("Refusing to launch a managed worker without an approved background snapshot."));
+    deps.stderr(ui.hint("No LaunchAgent changes were made. Retry from the wizard or `mono-agent start`."));
+    return { ok: false, action: "start", reason: "snapshot" };
+  }
   const uid = deps.getuid();
-  await writePlist(target, deps);
-  await rotateLaunchdLogs(target.paths, deps);
-  const sinceMs = deps.now();
-  const outcome = await bootstrapOrRestart(target, deps, uid);
+  if (!(await snapshotStillMatches(target, deps))) {
+    reportSnapshotDrift(target, deps);
+    return { ok: false, action: "start", reason: "snapshot" };
+  }
+  let launchTarget: InstanceTarget;
+  try {
+    const additionalPackages = await deps.resolveManagedRuntimePackages?.(target) ?? [];
+    const runtime = await deps.ensureManagedRuntime({
+      currentCliPath: target.cliPath,
+      nodePath: target.nodePath,
+      additionalPackages,
+    });
+    launchTarget = {
+      ...target,
+      cliPath: runtime.cliPath,
+      nodePath: runtime.nodePath,
+    };
+  } catch (error) {
+    reportLifecycleException(target, deps, "install and verify the durable managed runtime", error);
+    return { ok: false, action: "start", reason: "runtime" };
+  }
+
+  // Runtime materialisation can involve npm/native installation. Recheck the
+  // approved files after that unbounded external work and before writing any
+  // LaunchAgent state.
+  if (!(await snapshotStillMatches(launchTarget, deps))) {
+    reportSnapshotDrift(launchTarget, deps);
+    return { ok: false, action: "start", reason: "snapshot" };
+  }
+
+  try {
+    const conflict = await findOwnershipConflict(launchTarget, deps, uid);
+    if (conflict !== undefined) {
+      reportOwnershipConflict(launchTarget, deps, conflict);
+      return { ok: false, action: "start", reason: "ownership" };
+    }
+  } catch (error) {
+    reportLifecycleException(launchTarget, deps, "verify the existing background worker ownership", error);
+    return { ok: false, action: "start", reason: "ownership" };
+  }
+
+  let sinceMs: number;
+  try {
+    await prepareLaunchdDirectories(launchTarget, deps);
+    await rotateLaunchdLogs(launchTarget.paths, deps);
+    await writePlist(launchTarget, deps);
+    sinceMs = deps.now();
+  } catch (error) {
+    reportLifecycleException(launchTarget, deps, "prepare the LaunchAgent", error);
+    return { ok: false, action: "start", reason: "preparation" };
+  }
+  let outcome: LaunchOutcome;
+  try {
+    outcome = await bootstrapOrRestart(launchTarget, deps, uid, poll);
+  } catch (error) {
+    reportLifecycleException(launchTarget, deps, "start the LaunchAgent", error);
+    return { ok: false, action: "start", reason: "launchctl" };
+  }
+  const action = outcome.restarted ? "restart" as const : "start" as const;
   if (!outcome.ok) {
-    return failLaunch(target, deps, outcome.restarted ? "restart" : "start", outcome.failure);
+    reportLaunchFailure(launchTarget, deps, action, outcome.failure);
+    return { ok: false, action, reason: "launchctl" };
   }
   deps.stdout(ui.hint("Waiting for the worker to report ready…"));
-  const ready = await pollInstanceReady(target, deps, { ...poll, sinceMs });
-  if (ready === undefined) {
-    return reportTimeout(target, deps);
+  let ready: TraceSourceListItem | undefined;
+  try {
+    ready = await pollInstanceReady(launchTarget, deps, {
+      ...poll,
+      sinceMs,
+      ...(launchTarget.requireTui === true ? { requireTui: true } : {}),
+    });
+  } catch (error) {
+    reportLifecycleException(launchTarget, deps, "read the worker readiness trace", error);
+    return { ok: false, action, reason: "readiness" };
   }
-  printInstanceInfo(ready, target, deps, outcome.restarted ? "restarted" : "started");
-  return 0;
+  if (ready === undefined) {
+    if (!(await snapshotStillMatches(launchTarget, deps))) {
+      const stopped = await stopBackgroundUnlocked(launchTarget, deps, poll);
+      reportSnapshotDrift(launchTarget, deps);
+      if (stopped === 0) {
+        deps.stderr(ui.style.dim("The drifted LaunchAgent was stopped before returning control.") + "\n");
+      } else {
+        deps.stderr(ui.style.yellow("The drifted LaunchAgent could not be proven stopped; follow the recovery commands above.") + "\n");
+      }
+      return { ok: false, action, reason: "snapshot" };
+    }
+    reportTimeout(launchTarget, deps);
+    return { ok: false, action, reason: "timeout" };
+  }
+  const completedAction = outcome.restarted ? "restarted" as const : "started" as const;
+  printInstanceInfo(ready, launchTarget, deps, completedAction);
+  return { ok: true, action: completedAction, source: ready };
+}
+
+async function prepareLaunchdDirectories(target: InstanceTarget, deps: BackgroundDeps): Promise<void> {
+  // launchd will not create the log file's parent directory, so make both dirs
+  // before writing the plist that references them.
+  await deps.mkdir(dirname(target.paths.logDir));
+  await deps.mkdir(target.paths.logDir);
+  await deps.mkdir(target.paths.launchAgentsDir);
 }
 
 async function writePlist(target: InstanceTarget, deps: BackgroundDeps): Promise<void> {
-  // launchd will not create the log file's parent directory, so make both dirs
-  // before writing the plist that references them.
-  await deps.mkdir(target.paths.logDir);
-  await deps.mkdir(target.paths.launchAgentsDir);
+  if (target.expectedSnapshot === undefined) {
+    throw new Error("A managed LaunchAgent requires an approved background snapshot.");
+  }
   const xml = buildPlistXml({
     label: target.label,
     nodePath: target.nodePath,
@@ -207,9 +487,10 @@ async function writePlist(target: InstanceTarget, deps: BackgroundDeps): Promise
     configPath: target.configPath,
     cwd: target.cwd,
     ...(target.envFile === undefined ? {} : { envFile: target.envFile }),
+    expectedBackgroundSnapshot: encodeBackgroundSnapshot(target.expectedSnapshot),
     stdoutPath: target.paths.stdoutPath,
     stderrPath: target.paths.stderrPath,
-    pathEnv: target.pathEnv,
+    environment: target.environment,
   });
   await deps.writeFile(target.paths.plistPath, xml);
 }
@@ -225,8 +506,9 @@ async function rotateLaunchdLog(path: string, deps: BackgroundDeps): Promise<voi
   let size: number;
   try {
     size = (await deps.stat(path)).size;
-  } catch {
-    return;
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return;
+    throw error;
   }
   if (size <= LAUNCHD_LOG_MAX_BYTES) {
     return;
@@ -244,6 +526,152 @@ async function rotateLaunchdLog(path: string, deps: BackgroundDeps): Promise<voi
   }
 }
 
+async function ensureOwnerPrivateLaunchdDirectory(path: string): Promise<void> {
+  const parent = dirname(path);
+  const parentDetails = await lstat(parent);
+  assertOwnerDirectory(parentDetails, parent, "LaunchAgent parent");
+  try {
+    await mkdir(path, { mode: 0o700 });
+  } catch (error) {
+    if (!isErrno(error, "EEXIST")) throw error;
+  }
+  const parentAfter = await lstat(parent);
+  assertOwnerDirectory(parentAfter, parent, "LaunchAgent parent");
+  if (!sameFilesystemIdentity(parentDetails, parentAfter)) {
+    throw new Error(`LaunchAgent parent ${parent} changed while ${path} was created.`);
+  }
+  const handle = await open(
+    path,
+    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+  );
+  try {
+    const before = await handle.stat();
+    assertOwnerDirectory(before, path, "LaunchAgent directory");
+    await handle.chmod(0o700);
+    const secured = await handle.stat();
+    if (!sameFilesystemIdentity(before, secured)) {
+      throw new Error(`LaunchAgent directory ${path} changed while it was secured.`);
+    }
+    assertOwnerDirectory(secured, path, "LaunchAgent directory");
+    if ((secured.mode & 0o077) !== 0) {
+      throw new Error(`LaunchAgent directory ${path} must be owner-only.`);
+    }
+    const current = await lstat(path);
+    if (!sameFilesystemIdentity(secured, current)) {
+      throw new Error(`LaunchAgent directory ${path} changed while it was secured.`);
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+async function writeOwnerPrivateLaunchdFile(path: string, data: string): Promise<void> {
+  let existing: Stats | undefined;
+  try {
+    existing = await lstat(path);
+    assertOwnerRegularFile(existing, path, "LaunchAgent plist");
+  } catch (error) {
+    if (!isErrno(error, "ENOENT")) throw error;
+  }
+
+  const temporaryPath = join(
+    dirname(path),
+    `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  let handle: FileHandle | undefined = await open(
+    temporaryPath,
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    await handle.writeFile(data, "utf8");
+    await handle.chmod(0o600);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+
+    const temporary = await lstat(temporaryPath);
+    assertOwnerRegularFile(temporary, temporaryPath, "temporary LaunchAgent plist");
+    if ((temporary.mode & 0o777) !== 0o600) {
+      throw new Error(`Temporary LaunchAgent plist ${temporaryPath} must be owner-readable and owner-writable only.`);
+    }
+
+    let current: Stats | undefined;
+    try {
+      current = await lstat(path);
+    } catch (error) {
+      if (!isErrno(error, "ENOENT")) throw error;
+    }
+    if (
+      (existing === undefined) !== (current === undefined)
+      || (existing !== undefined && current !== undefined && !sameFilesystemIdentity(existing, current))
+    ) {
+      throw new Error(`LaunchAgent plist ${path} changed before the new definition was committed.`);
+    }
+
+    await rename(temporaryPath, path);
+    const committed = await lstat(path);
+    assertOwnerRegularFile(committed, path, "LaunchAgent plist");
+    if (!sameFilesystemIdentity(temporary, committed)) {
+      throw new Error(`LaunchAgent plist ${path} changed while the new definition was committed.`);
+    }
+  } finally {
+    await handle?.close().catch(() => undefined);
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
+
+async function inspectOwnerPrivateLaunchdLog(path: string): Promise<Stats> {
+  const handle = await open(
+    path,
+    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+  );
+  try {
+    const before = await handle.stat();
+    assertOwnerRegularFile(before, path, "LaunchAgent log");
+    await handle.chmod(0o600);
+    const secured = await handle.stat();
+    if (!sameFilesystemIdentity(before, secured)) {
+      throw new Error(`LaunchAgent log ${path} changed while it was secured.`);
+    }
+    assertOwnerRegularFile(secured, path, "LaunchAgent log");
+    const current = await lstat(path);
+    if (!sameFilesystemIdentity(secured, current)) {
+      throw new Error(`LaunchAgent log ${path} changed while it was secured.`);
+    }
+    return secured;
+  } finally {
+    await handle.close();
+  }
+}
+
+function assertOwnerDirectory(details: Stats, path: string, description: string): void {
+  if (!details.isDirectory() || details.isSymbolicLink()) {
+    throw new Error(`${description} ${path} must be a real directory.`);
+  }
+  assertCurrentUserOwns(details, path, description);
+}
+
+function assertOwnerRegularFile(details: Stats, path: string, description: string): void {
+  if (!details.isFile() || details.isSymbolicLink()) {
+    throw new Error(`${description} ${path} must be a regular non-symbolic-link file.`);
+  }
+  if (details.nlink !== 1) {
+    throw new Error(`${description} ${path} must have exactly one filesystem link.`);
+  }
+  assertCurrentUserOwns(details, path, description);
+}
+
+function assertCurrentUserOwns(details: Stats, path: string, description: string): void {
+  if (typeof process.getuid === "function" && details.uid !== process.getuid()) {
+    throw new Error(`${description} ${path} is not owned by the current user.`);
+  }
+}
+
+function sameFilesystemIdentity(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
 interface LaunchOutcome {
   readonly ok: boolean;
   readonly restarted: boolean;
@@ -251,12 +679,18 @@ interface LaunchOutcome {
 }
 
 /**
- * Idempotent: bootstrap when not loaded, otherwise `kickstart -k` to restart.
- * `bootstrap` reporting "already bootstrapped" (or any non-zero) is tolerated as
- * long as a follow-up `print` confirms the service is loaded.
+ * Idempotent: bootstrap when not loaded. A loaded job is always fully removed
+ * before bootstrap so launchd cannot retain stale ProgramArguments or env from
+ * the previous plist.
  */
-async function bootstrapOrRestart(target: InstanceTarget, deps: BackgroundDeps, uid: number): Promise<LaunchOutcome> {
-  if (!(await isLoaded(deps.runner, target.label, uid))) {
+async function bootstrapOrRestart(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  uid: number,
+  poll: PollOptions,
+): Promise<LaunchOutcome> {
+  const service = await launchdServiceInfo(deps.runner, target.label, uid);
+  if (!service.loaded) {
     const booted = await bootstrap(deps.runner, target.paths.plistPath, uid);
     if (booted.code === 0 || (await isLoaded(deps.runner, target.label, uid))) {
       return { ok: true, restarted: false };
@@ -264,12 +698,38 @@ async function bootstrapOrRestart(target: InstanceTarget, deps: BackgroundDeps, 
     return { ok: false, restarted: false, failure: booted };
   }
 
-  const restart = await kickstartRestart(deps.runner, target.label, uid);
-  if (restart.code === 0) {
-    return { ok: true, restarted: true };
+  const oldSources = await findInstances(target, deps);
+  const oldPids = uniquePids([
+    service.pid,
+    // A cleanly stopped manifest can outlive its process long enough for the OS
+    // to reuse that pid for unrelated work. It is historical evidence, not an
+    // ownership claim, so never wait for its recycled pid during restart.
+    ...oldSources
+      .filter((source) => source.health !== "stopped")
+      .map((source) => source.pid),
+  ]);
+  const removed = await bootout(deps.runner, target.label, uid);
+  const unloaded = await pollUntil(
+    deps,
+    poll,
+    async () => !(await launchdServiceInfo(deps.runner, target.label, uid)).loaded,
+  );
+  if (!unloaded) {
+    return {
+      ok: false,
+      restarted: true,
+      failure: lifecycleFailure(removed, "launchd still reports the previous service as loaded after bootout"),
+    };
   }
-  // Fallback: a full unload + reload cycle.
-  await bootout(deps.runner, target.label, uid);
+  const stopped = await pollUntil(deps, poll, async () => oldPids.every((pid) => !deps.isAlive(pid)));
+  if (!stopped) {
+    return {
+      ok: false,
+      restarted: true,
+      failure: lifecycleFailure(removed, `previous worker pid(s) ${oldPids.join(", ")} remained alive after bootout`),
+    };
+  }
+
   const booted = await bootstrap(deps.runner, target.paths.plistPath, uid);
   if (booted.code === 0 || (await isLoaded(deps.runner, target.label, uid))) {
     return { ok: true, restarted: true };
@@ -277,30 +737,124 @@ async function bootstrapOrRestart(target: InstanceTarget, deps: BackgroundDeps, 
   return { ok: false, restarted: true, failure: booted };
 }
 
-export async function stopBackground(target: InstanceTarget, deps: BackgroundDeps): Promise<number> {
-  const uid = deps.getuid();
-  const existing = await findInstance(target, deps);
-  const wasLoaded = await isLoaded(deps.runner, target.label, uid);
-  const result = await bootout(deps.runner, target.label, uid);
-  // Removing the plist stops it from relaunching at the next login.
-  await deps.rm(target.paths.plistPath);
-  await maybeUnlinkDeadManifest(target, deps, existing);
+async function findOwnershipConflict(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  uid: number,
+): Promise<string | undefined> {
+  const [service, sources] = await Promise.all([
+    launchdServiceInfo(deps.runner, target.label, uid),
+    findInstances(target, deps),
+  ]);
+  const live = sources.filter(
+    (source) => source.health !== "stopped" && source.pid !== undefined && deps.isAlive(source.pid),
+  );
+  if (live.length === 0) return undefined;
+  if (!service.loaded || service.pid === undefined || !deps.isAlive(service.pid)) {
+    return `live matching trace pid(s) ${live.map((source) => source.pid).join(", ")} are not owned by a live ${target.label} launchd job`;
+  }
+  const foreign = live.filter((source) => source.pid !== service.pid);
+  if (foreign.length > 0) {
+    return `live matching trace pid(s) ${foreign.map((source) => source.pid).join(", ")} differ from launchd pid ${service.pid}`;
+  }
+  return undefined;
+}
 
-  // `bootout` also exits non-zero when the service was never loaded, which is
-  // fine. A non-zero exit is only a real failure if the service is still loaded
-  // afterwards — otherwise we'd silently swallow genuine stop failures.
-  if (result.code !== 0 && (await isLoaded(deps.runner, target.label, uid))) {
-    deps.stderr(ui.errorLine(`Failed to stop ${target.label}: launchctl bootout exited ${result.code}.`));
+async function pollUntil(
+  deps: BackgroundDeps,
+  options: PollOptions,
+  condition: () => Promise<boolean>,
+): Promise<boolean> {
+  const deadline = deps.now() + options.timeoutMs;
+  for (;;) {
+    if (await condition()) return true;
+    if (deps.now() >= deadline) return false;
+    await deps.sleep(options.intervalMs);
+  }
+}
+
+function lifecycleFailure(result: LaunchctlResult, detail: string): LaunchctlResult {
+  return {
+    code: result.code === 0 ? 1 : result.code,
+    stdout: result.stdout,
+    stderr: [result.stderr.trim(), detail].filter((value) => value.length > 0).join("\n"),
+  };
+}
+
+function uniquePids(values: readonly (number | undefined)[]): number[] {
+  return [...new Set(values.filter((value): value is number => value !== undefined && value > 0))];
+}
+
+export async function stopBackground(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  poll: PollOptions = DEFAULT_POLL,
+): Promise<number> {
+  const release = await deps.acquireLifecycleLock(target);
+  if (release === undefined) {
+    deps.stderr(ui.errorLine(`Another lifecycle command is already active for ${target.label}.`));
+    deps.stderr(ui.hint("The LaunchAgent plist was preserved. Wait for that command to finish, then retry."));
+    return 1;
+  }
+  try {
+    return await stopBackgroundUnlocked(target, deps, poll);
+  } finally {
+    await release().catch((error: unknown) => {
+      deps.stderr(ui.errorLine(
+        `Could not release lifecycle lock for ${target.label}: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+    });
+  }
+}
+
+async function stopBackgroundUnlocked(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  poll: PollOptions,
+): Promise<number> {
+  const uid = deps.getuid();
+  const existing = await findInstances(target, deps);
+  const service = await launchdServiceInfo(deps.runner, target.label, uid);
+  const liveTracePids = uniquePids(existing
+    .filter((source) => source.health !== "stopped" && source.pid !== undefined && deps.isAlive(source.pid))
+    .map((source) => source.pid));
+  if (liveTracePids.some((pid) => pid !== service.pid)) {
+    deps.stderr(ui.errorLine(
+      `Refusing to stop ${target.label}: matching live trace pid(s) ${liveTracePids.join(", ")} are not owned by that launchd job.`,
+    ));
+    deps.stderr(ui.hint("The LaunchAgent plist was preserved. Stop the unmanaged process explicitly, then retry."));
+    return 1;
+  }
+
+  const result = await bootout(deps.runner, target.label, uid);
+  const unloaded = await pollUntil(
+    deps,
+    poll,
+    async () => !(await launchdServiceInfo(deps.runner, target.label, uid)).loaded,
+  );
+  const ownedPids = uniquePids([service.pid, ...liveTracePids]);
+  const stopped = await pollUntil(deps, poll, async () => ownedPids.every((pid) => !deps.isAlive(pid)));
+  if (!unloaded || !stopped) {
+    deps.stderr(ui.errorLine(
+      `Failed to prove ${target.label} stopped${result.code === 0 ? "" : ` (launchctl bootout exited ${result.code})`}.`,
+    ));
     const detail = (result.stderr || result.stdout).trim();
     if (detail.length > 0) {
       deps.stderr(ui.style.dim(detail) + "\n");
     }
-    deps.stderr(ui.hint("The plist was removed, but the service is still running."));
+    if (!unloaded) deps.stderr(ui.style.dim("launchd still reports the service as loaded.\n"));
+    if (!stopped) deps.stderr(ui.style.dim(`Worker pid(s) ${ownedPids.join(", ")} are still alive.\n`));
+    deps.stderr(ui.hint("The LaunchAgent plist was preserved so the service remains recoverable. Inspect status/logs and retry."));
     return 1;
   }
 
+  // Remove the plist only after both launchd ownership and process death are
+  // proven. This prevents a failed stop from destroying its recovery handle.
+  await deps.rm(target.paths.plistPath);
+  for (const source of existing) await maybeUnlinkDeadManifest(target, deps, source);
+
   deps.stdout(
-    wasLoaded
+    service.loaded
       ? `${ui.badge("ok")}${ui.style.bold(`Stopped ${target.label}`)} and removed its LaunchAgent.\n`
       : `${ui.style.dim(`${target.label} was not running; removed its LaunchAgent if present.`)}\n`,
   );
@@ -310,11 +864,15 @@ export async function stopBackground(target: InstanceTarget, deps: BackgroundDep
 
 export async function statusBackground(target: InstanceTarget, deps: BackgroundDeps): Promise<number> {
   const result = await deps.listTraceSources({ registryDir: target.registryDir, staleAfterMs: target.staleAfterMs });
-  const current = result.sources.find((source) => matchesConfig(source, target.configPath));
+  const classified = await Promise.all(result.sources.map(async (source) => ({
+    source,
+    matches: await matchesConfig(source, target.configPath),
+  })));
+  const current = classified.find((entry) => entry.matches)?.source;
 
   if (current === undefined) {
     deps.stdout(ui.style.dim(`No running mono-agent instance for ${target.configPath}.`) + "\n");
-    deps.stdout(ui.hint(`Start it with: mono-agent start${configFlag(target)}`));
+    deps.stdout(ui.hint(`Start it with: mono-agent start${commandFlags(target)}`));
   } else {
     writeInstanceDetail(current, target, deps);
     await writeRunsHealthDetail(current, deps);
@@ -322,9 +880,9 @@ export async function statusBackground(target: InstanceTarget, deps: BackgroundD
 
   // Only surface other instances that are live or crashed — cleanly stopped
   // manifests linger in the registry and would just be noise.
-  const others = result.sources.filter(
-    (source) => !matchesConfig(source, target.configPath) && source.health !== "stopped",
-  );
+  const others = classified
+    .filter((entry) => !entry.matches && entry.source.health !== "stopped")
+    .map((entry) => entry.source);
   if (others.length > 0) {
     deps.stdout("\n" + ui.rule("Other mono-agent instances"));
     for (const source of others) {
@@ -357,11 +915,19 @@ export async function pollInstanceReady(
   options: ReadyPollOptions,
 ): Promise<TraceSourceListItem | undefined> {
   const deadline = deps.now() + options.timeoutMs;
-  const sinceFloor = options.sinceMs - SINCE_SKEW_MS;
   for (;;) {
-    const match = await findInstance(target, deps);
-    if (match !== undefined && isReady(match) && startedAtMs(match) >= sinceFloor) {
-      return match;
+    const service = await launchdServiceInfo(deps.runner, target.label, deps.getuid());
+    if (service.loaded && service.pid !== undefined && deps.isAlive(service.pid)) {
+      const matches = await findInstances(target, deps);
+      const match = matches.find((source) => source.pid === service.pid);
+      if (match !== undefined
+        && isReady(match, options.requireTui === true)
+        && startedAtMs(match) >= options.sinceMs
+        && snapshotMetadataMatches(match, target.expectedSnapshot)
+        && await snapshotStillMatches(target, deps)
+        && (options.requireTui !== true || await deps.probeTui(match))) {
+        return match;
+      }
     }
     if (deps.now() >= deadline) {
       return undefined;
@@ -370,21 +936,63 @@ export async function pollInstanceReady(
   }
 }
 
+async function snapshotStillMatches(target: InstanceTarget, deps: BackgroundDeps): Promise<boolean> {
+  if (target.expectedSnapshot === undefined) return true;
+  const capture = deps.captureSnapshot ?? captureTargetSnapshot;
+  try {
+    return sameBackgroundSnapshot(await capture(target), target.expectedSnapshot);
+  } catch {
+    return false;
+  }
+}
+
+async function captureTargetSnapshot(target: InstanceTarget): Promise<BackgroundSnapshot> {
+  return await captureBackgroundSnapshot({
+    cwd: target.cwd,
+    configPath: target.configPath,
+    ...(target.envFile === undefined ? {} : { envFile: target.envFile }),
+    env: target.configurationEnvironment,
+  });
+}
+
+function snapshotMetadataMatches(
+  source: TraceSourceListItem,
+  expected: BackgroundSnapshot | undefined,
+): boolean {
+  if (expected === undefined) return true;
+  const actual = backgroundSnapshotFromMetadata(source.metadata);
+  return actual !== undefined && sameBackgroundSnapshot(actual, expected);
+}
+
+function reportSnapshotDrift(target: InstanceTarget, deps: BackgroundDeps): void {
+  deps.stderr(ui.errorLine("The committed config, dotenv, Identity, Soul, MCP config, or durable environment changed before background readiness."));
+  deps.stderr(ui.style.dim("No readiness claim was made for a different snapshot.") + "\n");
+  reportLaunchRecovery(target, deps);
+}
+
 export function printInstanceInfo(
   source: TraceSourceListItem,
   target: InstanceTarget,
   deps: BackgroundDeps,
   verb: string,
 ): void {
-  const flag = configFlag(target);
+  const flag = commandFlags(target);
   deps.stdout(`${ui.badge("ok")}${ui.style.bold(`mono-agent ${verb} in the background.`)}\n\n`);
   writeInstanceDetail(source, target, deps);
   deps.stdout("\n" + ui.hint(`Stop with: mono-agent stop${flag}   ·   Logs: mono-agent logs${flag} --follow`));
 }
 
-async function findInstance(target: InstanceTarget, deps: BackgroundDeps): Promise<TraceSourceListItem | undefined> {
+async function findInstances(target: InstanceTarget, deps: BackgroundDeps): Promise<readonly TraceSourceListItem[]> {
   const result = await deps.listTraceSources({ registryDir: target.registryDir, staleAfterMs: target.staleAfterMs });
-  return result.sources.find((source) => matchesConfig(source, target.configPath));
+  const matches = await Promise.all(result.sources.map(async (source) => ({
+    source,
+    matches: await matchesConfig(source, target.configPath),
+  })));
+  return matches.filter((entry) => entry.matches).map((entry) => entry.source);
+}
+
+async function findInstance(target: InstanceTarget, deps: BackgroundDeps): Promise<TraceSourceListItem | undefined> {
+  return (await findInstances(target, deps))[0];
 }
 
 async function maybeUnlinkDeadManifest(
@@ -400,33 +1008,54 @@ async function maybeUnlinkDeadManifest(
   await deps.rm(resolve(target.registryDir, `${existing.sourceId}.json`));
 }
 
-function failLaunch(
+function reportLaunchFailure(
   target: InstanceTarget,
   deps: BackgroundDeps,
   verb: string,
   result: LaunchctlResult | undefined,
-): number {
+): void {
   deps.stderr(ui.errorLine(`Failed to ${verb} ${target.label} via launchctl${result === undefined ? "" : ` (exit ${result.code})`}.`));
   const detail = (result?.stderr || result?.stdout || "").trim();
   if (detail.length > 0) {
     deps.stderr(ui.style.dim(detail) + "\n");
   }
-  deps.stderr(ui.hint(`Logs: ${target.paths.stderrPath}`));
-  return 1;
+  reportLaunchRecovery(target, deps);
 }
 
-function reportTimeout(target: InstanceTarget, deps: BackgroundDeps): number {
-  const flag = configFlag(target);
+function reportOwnershipConflict(target: InstanceTarget, deps: BackgroundDeps, detail: string): void {
+  deps.stderr(ui.errorLine(`Refusing to launch a second worker for ${target.configPath}.`));
+  deps.stderr(ui.style.dim(`${detail}.\n`));
+  deps.stderr(ui.hint("No LaunchAgent changes were made. Stop the unmanaged process or reconcile launchd ownership, then retry."));
+  reportLaunchRecovery(target, deps);
+}
+
+function reportLifecycleException(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  operation: string,
+  error: unknown,
+): void {
+  deps.stderr(ui.errorLine(`Failed to ${operation}: ${error instanceof Error ? error.message : String(error)}`));
+  deps.stderr(ui.style.dim("The committed agent files were preserved.") + "\n");
+  reportLaunchRecovery(target, deps);
+}
+
+function reportTimeout(target: InstanceTarget, deps: BackgroundDeps): void {
   deps.stderr(ui.errorLine("mono-agent did not report ready within the timeout."));
-  deps.stderr(ui.style.dim("It may still be starting, or it may have failed. Inspect:") + "\n");
+  deps.stderr(ui.style.dim("The committed agent files were preserved. It may still be starting, or it may have failed.") + "\n");
+  reportLaunchRecovery(target, deps);
+}
+
+function reportLaunchRecovery(target: InstanceTarget, deps: BackgroundDeps): void {
+  const flags = commandFlags(target);
+  deps.stderr(ui.style.dim("Retry or inspect with:") + "\n");
   deps.stderr(
     `  ${ui.style.gray("logs:  ")} ${target.paths.stderrPath}\n` +
       `          ${target.paths.stdoutPath}\n` +
-      `  ${ui.style.gray("follow:")} mono-agent logs${flag} --follow\n` +
-      `  ${ui.style.gray("status:")} mono-agent status${flag}\n` +
-      `  ${ui.style.gray("stop:  ")} mono-agent stop${flag}\n`,
+      `  ${ui.style.gray("retry: ")} mono-agent start${flags}\n` +
+      `  ${ui.style.gray("status:")} mono-agent status${flags}\n` +
+      `  ${ui.style.gray("follow:")} mono-agent logs${flags} --follow\n`,
   );
-  return 1;
 }
 
 function writeInstanceDetail(source: TraceSourceListItem, target: InstanceTarget, deps: BackgroundDeps): void {
@@ -519,12 +1148,27 @@ function formatOtherInstance(source: TraceSourceListItem): string {
   return `  ${ui.healthBadge(source.health)}${source.health.padEnd(8)} pid ${pid.padEnd(7)} ${source.sourceId}  ${config}`;
 }
 
-function matchesConfig(source: TraceSourceListItem, configPath: string): boolean {
-  return source.configPath !== undefined && resolve(source.configPath) === configPath;
+async function matchesConfig(source: TraceSourceListItem, configPath: string): Promise<boolean> {
+  if (source.configPath === undefined) return false;
+  return await canonicalBackgroundConfigPath(process.cwd(), source.configPath) === configPath;
 }
 
-function isReady(source: TraceSourceListItem): boolean {
-  return source.health === "running" && metadataReason(source) === "startup-complete";
+function isReady(source: TraceSourceListItem, requireTui: boolean): boolean {
+  if (source.health !== "running" || metadataReason(source) !== "startup-complete") return false;
+  if (source.memoryHealth?.status === "unhealthy") return false;
+  const channels = channelRecords(source);
+  if (channels.some((channel) => channel.kind === "failed")) return false;
+  if (!requireTui) return true;
+  if (channels.some((channel) => typeof channel.kind === "string"
+    && ["failed", "degraded", "waiting_for_config"].includes(channel.kind))) return false;
+  return tuiEndpoint(source) !== undefined;
+}
+
+function channelRecords(source: TraceSourceListItem): readonly Record<string, unknown>[] {
+  const channels = source.metadata?.channels;
+  if (channels === null || typeof channels !== "object") return [];
+  return Object.values(channels as Record<string, unknown>)
+    .filter((value): value is Record<string, unknown> => value !== null && typeof value === "object");
 }
 
 function metadataReason(source: TraceSourceListItem): string | undefined {
@@ -693,7 +1337,268 @@ function stringFieldAsList(record: Record<string, unknown>, key: string): string
 /** ` --config <path>` when a non-default config is in play, else empty. */
 function configFlag(target: InstanceTarget): string {
   const defaultPath = resolve(target.cwd, "mono-agent.config.json");
-  return target.configPath === defaultPath ? "" : ` --config ${target.configPath}`;
+  return target.configPath === defaultPath ? "" : ` --config ${shellCommandArgument(target.configPath)}`;
+}
+
+function commandFlags(target: InstanceTarget): string {
+  return `${configFlag(target)}${target.envFile === undefined ? "" : ` --env-file ${shellCommandArgument(target.envFile)}`}`;
+}
+
+function shellCommandArgument(value: string): string {
+  return /^[a-zA-Z0-9_./:@%+=,-]+$/u.test(value) ? value : `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+interface LifecycleLockIdentity {
+  readonly dev: number | bigint;
+  readonly ino: number | bigint;
+}
+
+export interface FilesystemLifecycleLockOptions {
+  readonly pid?: number;
+  readonly now?: () => number;
+  /** Legacy owner-record compatibility only; new records use incarnation identity. */
+  readonly isProcessAlive?: (pid: number) => boolean;
+  readonly processIncarnation?: ProcessIncarnation;
+  readonly isSameProcessIncarnation?: SameProcessIncarnation;
+  readonly ownerlessGraceMs?: number;
+  readonly randomToken?: () => string;
+  /** Deterministic seam immediately after the final identity check. */
+  readonly beforeStaleLockRename?: () => Promise<void>;
+}
+
+export async function acquireFilesystemLifecycleLock(
+  target: InstanceTarget,
+  options: FilesystemLifecycleLockOptions = {},
+): Promise<(() => Promise<void>) | undefined> {
+  const pid = options.pid ?? process.pid;
+  const now = options.now ?? (() => Date.now());
+  const isProcessAlive = options.isProcessAlive ?? processIsAlive;
+  const incarnation = options.processIncarnation ?? await currentProcessIncarnation();
+  const isSameProcess = options.isSameProcessIncarnation ?? matchesProcessIncarnation;
+  const ownerlessGraceMs = options.ownerlessGraceMs ?? 5 * 60_000;
+  const randomToken = options.randomToken ?? randomUUID;
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    throw new Error(`Lifecycle lock pid must be a positive safe integer; received ${String(pid)}.`);
+  }
+  if (!Number.isFinite(ownerlessGraceMs) || ownerlessGraceMs < 0) {
+    throw new Error("Lifecycle lock ownerless grace must be a non-negative finite duration.");
+  }
+  const managedRoot = dirname(target.paths.logDir);
+  const locksDir = resolve(managedRoot, "locks");
+  for (const path of [managedRoot, locksDir]) {
+    await ensureOwnerPrivateLaunchdDirectory(path);
+  }
+
+  const lockDir = resolve(locksDir, `${target.label}.lock`);
+  const ownerPath = resolve(lockDir, "owner.json");
+  const token = `${pid}-${now()}-${randomToken()}`;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    let createdIdentity: LifecycleLockIdentity | undefined;
+    try {
+      await mkdir(lockDir, { mode: 0o700 });
+      const created = await assertLifecycleLockDirectory(lockDir);
+      createdIdentity = lifecycleLockIdentity(created);
+      await writeFile(ownerPath, `${JSON.stringify({
+        pid,
+        token,
+        createdAt: new Date(now()).toISOString(),
+        incarnation,
+      })}\n`, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+      if (!(await sameLifecycleLockDirectory(lockDir, createdIdentity))) {
+        throw new Error(`Lifecycle lock ${lockDir} changed while its owner record was written.`);
+      }
+      const ownedIdentity = createdIdentity;
+      return async () => {
+        try {
+          if (!(await sameLifecycleLockDirectory(lockDir, ownedIdentity))) {
+            throw new Error(`Lifecycle lock ${lockDir} is no longer owned by this command.`);
+          }
+          const current = JSON.parse(await readFile(ownerPath, "utf8")) as { token?: unknown };
+          if (current.token !== token) {
+            throw new Error(`Lifecycle lock ${lockDir} is no longer owned by this command.`);
+          }
+          const releasedPath = resolve(
+            locksDir,
+            `${target.label}.released-${now()}-${pid}-${randomToken()}`,
+          );
+          if (!(await sameLifecycleLockDirectory(lockDir, ownedIdentity))) {
+            throw new Error(`Lifecycle lock ${lockDir} changed during release.`);
+          }
+          await rename(lockDir, releasedPath);
+          const moved = await lstat(releasedPath);
+          if (!sameLifecycleLockIdentity(moved, ownedIdentity)) {
+            await rename(releasedPath, lockDir).catch(() => undefined);
+            throw new Error(`Lifecycle lock ${lockDir} changed during release.`);
+          }
+          await rm(releasedPath, { recursive: true, force: true });
+        } catch (error) {
+          if (!isErrno(error, "ENOENT")) throw error;
+        }
+      };
+    } catch (error) {
+      if (createdIdentity !== undefined) {
+        await removeSameLifecycleLockDirectory(lockDir, createdIdentity).catch(() => undefined);
+      }
+      if (!isErrno(error, "EEXIST")) throw error;
+    }
+
+    let observed: Stats;
+    try {
+      observed = await assertLifecycleLockDirectory(lockDir);
+    } catch (error) {
+      if (isErrno(error, "ENOENT")) continue;
+      return undefined;
+    }
+    const observedIdentity = lifecycleLockIdentity(observed);
+    const owner = await readLifecycleLockOwner(ownerPath);
+    if (!(await sameLifecycleLockDirectory(lockDir, observedIdentity))) continue;
+    if (owner !== undefined) {
+      let sameOwner = true;
+      try {
+        sameOwner = owner.incarnation === undefined
+          ? isProcessAlive(owner.pid)
+          : await isSameProcess(owner.pid, owner.incarnation);
+      } catch {
+        // A failed identity probe cannot authorize stealing another command's lock.
+        sameOwner = true;
+      }
+      if (sameOwner) return undefined;
+    }
+    if (owner === undefined) {
+      const lockAgeMs = now() - observed.mtimeMs;
+      // Another process may be between its atomic mkdir and owner.json write.
+      // Never steal that fresh ownerless lock; only recover abandoned debris.
+      if (lockAgeMs < ownerlessGraceMs) return undefined;
+    }
+    if (!(await sameLifecycleLockDirectory(lockDir, observedIdentity))) continue;
+    await options.beforeStaleLockRename?.();
+    const stalePath = resolve(locksDir, `${target.label}.stale-${now()}-${pid}-${randomToken()}`);
+    try {
+      await rename(lockDir, stalePath);
+    } catch (error) {
+      if (isErrno(error, "ENOENT") || isErrno(error, "EEXIST")) continue;
+      return undefined;
+    }
+    const moved = await lstat(stalePath);
+    if (!sameLifecycleLockIdentity(moved, observedIdentity)) {
+      // A contender replaced the path after our final identity check. Restore
+      // the directory we moved and fail closed; never delete its live lock.
+      await rename(stalePath, lockDir).catch(() => undefined);
+      return undefined;
+    }
+    await rm(stalePath, { recursive: true, force: true });
+  }
+  return undefined;
+}
+
+async function assertLifecycleLockDirectory(path: string): Promise<Stats> {
+  const details = await lstat(path);
+  if (!details.isDirectory() || details.isSymbolicLink()) {
+    throw new Error(`Lifecycle lock ${path} must be a real directory.`);
+  }
+  if (typeof process.getuid === "function" && details.uid !== process.getuid()) {
+    throw new Error(`Lifecycle lock ${path} is not owned by the current user.`);
+  }
+  return details;
+}
+
+function lifecycleLockIdentity(details: Stats): LifecycleLockIdentity {
+  return { dev: details.dev, ino: details.ino };
+}
+
+function sameLifecycleLockIdentity(details: Stats, identity: LifecycleLockIdentity): boolean {
+  return details.dev === identity.dev && details.ino === identity.ino;
+}
+
+async function sameLifecycleLockDirectory(
+  path: string,
+  identity: LifecycleLockIdentity,
+): Promise<boolean> {
+  try {
+    const details = await assertLifecycleLockDirectory(path);
+    return sameLifecycleLockIdentity(details, identity);
+  } catch {
+    return false;
+  }
+}
+
+async function removeSameLifecycleLockDirectory(
+  path: string,
+  identity: LifecycleLockIdentity,
+): Promise<void> {
+  if (await sameLifecycleLockDirectory(path, identity)) {
+    await rm(path, { recursive: true, force: true });
+  }
+}
+
+async function readLifecycleLockOwner(path: string): Promise<{
+  readonly pid: number;
+  readonly incarnation?: ProcessIncarnation;
+} | undefined> {
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf8")) as { pid?: unknown; incarnation?: unknown };
+    const incarnation = processIncarnationFromJson(parsed.incarnation);
+    return typeof parsed.pid === "number" && Number.isSafeInteger(parsed.pid) && parsed.pid > 0
+      ? {
+          pid: parsed.pid,
+          ...(incarnation === undefined ? {} : { incarnation }),
+        }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return isErrno(error, "EPERM");
+  }
+}
+
+async function probeTuiEndpoint(source: TraceSourceListItem): Promise<boolean> {
+  const baseUrl = tuiEndpoint(source);
+  if (baseUrl === undefined) return false;
+  let url: URL;
+  try {
+    url = new URL(`${baseUrl.replace(/\/+$/u, "")}/v1/info`);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:" || !isLoopbackHostname(url.hostname)) return false;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
+    // Authenticated adapters return 401/403 without the secret. That still
+    // proves the advertised loopback listener is reachable; an open endpoint
+    // additionally proves it belongs to the expected worker pid.
+    if (response.status === 401 || response.status === 403) return true;
+    if (!response.ok) return false;
+    const body = await response.json() as { pid?: unknown };
+    return typeof source.pid === "number" && body.pid === source.pid;
+  } catch {
+    return false;
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "::1" || hostname === "localhost";
+}
+
+function tuiEndpoint(source: TraceSourceListItem): string | undefined {
+  const channels = source.metadata?.channels;
+  if (channels === null || typeof channels !== "object") return undefined;
+  const tui = (channels as Record<string, unknown>).tui;
+  if (tui === null || typeof tui !== "object") return undefined;
+  const record = tui as Record<string, unknown>;
+  return record.kind === "running" && typeof record.baseUrl === "string" && record.baseUrl.trim().length > 0
+    ? record.baseUrl
+    : undefined;
 }
 
 function formatChannels(source: TraceSourceListItem): string[] {

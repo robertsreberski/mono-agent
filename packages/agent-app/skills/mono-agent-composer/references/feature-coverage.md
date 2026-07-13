@@ -23,7 +23,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 
 | Capability | Coverage | Where |
 | --- | --- | --- |
-| Identity + optional soul documents | config | `context.identityPath`, `context.soulPath` |
+| Identity + optional soul documents; wizard Role has one explicit destination and created/preserved outcome | config + cli | `context.identityPath`, `context.soulPath`; guided Role is `IDENTITY.md` → `## Role`, and an existing identity is never overwritten |
 | Selected skills from a skills root | config | `context.skillsRoot`, `context.selectedSkills` |
 | Generated project configuration skills with progressive disclosure | config + cli | init selects `mono-agent-configure` + `mono-agent-memory` under `./skills` with `context.skillDisclosure: "index"`; drift: `mono-agent install-skill --project --check\|--update` |
 | Per-skill byte cap | config | `context.skillMaxBytes` |
@@ -78,10 +78,10 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Trace-source registry (heartbeat manifests `mono-agent status` reads) | config | `traceability.{registryDir,sourceId,sourceLabel,heartbeatMs,staleAfterMs,globalDiscovery}` |
 | Phoenix trace viewer (OTLP exporter; local JSONL artifacts are the fallback) | config | `observability.exporters` (phoenix entry) |
 | Operator console (live chat with thinking/tool/telemetry insight, run replay, config view) | cli | `mono-agent tui [--agent <label>]`; agents serve the `tui` stream endpoint by default (`tui.enabled`, loopback) |
-| Current-folder local conversation and proposal-only configuration | cli + tool | `mono-agent tui --local [--configure]`; `/configure`; host-gated `ProposeAgentConfiguration` exists only for one marked local configuration turn |
+| Managed proposal-only configuration conversation | cli + tool | macOS `mono-agent tui --configure` attaches to the authoritative background agent; `/configure`; separate configuration/ordinary conversation ids; host-gated `ProposeAgentConfiguration`; approval restarts and waits for readiness, failed start rolls files/agent back. `--local` is ordinary chat only; off macOS configuration is manual |
 | Session Recorder web PWA (read-only run browser) | cli | `mono-agent web [--host] [--port] [--no-open] [--allow-non-loopback] [--include-memory]`; consumes the default-on `live` relay and local artifacts; memory runs are opt-in |
 | Setup presets (saved answer-sets: generate config + `.env.example` + checklist) | cli | `mono-agent presets list\|show <id>`, `mono-agent init --preset <id> --yes` (`recipes`/`--recipe` deprecated aliases) |
-| Interactive setup wizard (preset/custom; walks model→channels→memory→tools→sandbox→observability; Journal/BuJo explicitly choose Ollama or LM Studio service root/model/dimension/optional auth env using typed discovery and a real probe) | cli | `mono-agent init` (no flags, on a TTY; `setup` alias); manual embedding entry still requires readiness probe |
+| Interactive setup wizard (preset/custom; exact `IDENTITY.md` → `## Role` prompt/outcome; walks model→channels→memory→tools→sandbox→observability; Journal/BuJo explicitly choose Ollama or LM Studio service root/model/dimension/optional auth env using typed discovery and a real probe; macOS starts the background agent before temporary configuration) | cli | `mono-agent init` (no flags, on a TTY; `setup` alias); manual embedding entry still requires readiness probe; flags/non-TTY stay scaffold-only; unsupported platforms use manual configuration/foreground start/ordinary TUI |
 | Tools reporting + no-tools guardrail (allow-all → `All tools allowed`; explicit empty `allowedTools: []` → `waiting`; unknown-tool "did you mean"; send-tool/channel cross-checks) | cli | part of `mono-agent validate`/`doctor`; the wizard's tools step |
 | Resolved config view (every field tagged env/json/default) | cli | `mono-agent config` |
 | Scaffold / validate / start / install-skill | cli | `mono-agent init [--model <ref>] [--fallback-models <csv>] [--effort <level>] [--auth]\|validate [--consumer <path>]\|config\|presets\|start\|install-skill` |

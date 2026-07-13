@@ -1,0 +1,599 @@
+import { lstat, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile, mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, relative } from "node:path";
+import process from "node:process";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  ensureManagedBackgroundRuntime,
+  MANAGED_BACKGROUND_WORKER_ENV,
+  sanitizeManagedBackgroundWorkerEnvironment,
+} from "../background-runtime.js";
+import type { ManagedBackgroundRuntimeDeps, ManagedRuntimeInstallInput } from "../background-runtime.js";
+import type { ProcessIncarnation } from "../process-incarnation.js";
+
+const roots: string[] = [];
+const TEST_PROCESS_INCARNATION: ProcessIncarnation = {
+  schema: "mono-agent.process-incarnation.v1",
+  bootSessionId: "boot-current",
+  processStartId: "start-current",
+};
+
+function incarnation(bootSessionId: string, processStartId: string): ProcessIncarnation {
+  return { schema: "mono-agent.process-incarnation.v1", bootSessionId, processStartId };
+}
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
+
+async function fixturePackage(version = "9.8.7"): Promise<{ root: string; cliPath: string; bytes: string }> {
+  const root = await mkdtemp(join(tmpdir(), "mono-agent-runtime-source-"));
+  roots.push(root);
+  const cliPath = join(root, "dist", "cli.js");
+  const bytes = "#!/usr/bin/env node\nconsole.log('managed fixture');\n";
+  await mkdir(dirname(cliPath), { recursive: true });
+  await writeFile(cliPath, bytes, "utf8");
+  await writeFile(join(root, "package.json"), `${JSON.stringify({
+    name: "@mono-agent/agent-app",
+    version,
+    type: "module",
+    bin: { "mono-agent": "./dist/cli.js" },
+    files: ["dist"],
+  })}\n`, "utf8");
+  return { root, cliPath, bytes };
+}
+
+async function workspaceFixture(): Promise<{
+  root: string;
+  cliPath: string;
+  dependencyPath: string;
+  dependencyContents: string;
+}> {
+  const root = await mkdtemp(join(tmpdir(), "mono-agent-runtime-workspace-"));
+  roots.push(root);
+  const appRoot = join(root, "packages", "agent-app");
+  const dependencyRoot = join(root, "packages", "workspace-dependency");
+  const cliPath = join(appRoot, "dist", "cli.js");
+  const dependencyContents = "export const preserved = 'workspace-closure-preserved';\n";
+  await mkdir(dirname(cliPath), { recursive: true });
+  await mkdir(dependencyRoot, { recursive: true });
+  await writeFile(cliPath, "import { preserved } from '@fixture/workspace-dependency';\nconsole.log(preserved);\n", "utf8");
+  await writeFile(join(appRoot, "package.json"), `${JSON.stringify({
+    name: "@mono-agent/agent-app",
+    version: "9.8.7",
+    type: "module",
+    dependencies: { "@fixture/workspace-dependency": "workspace:1.0.0" },
+  })}\n`, "utf8");
+  await writeFile(join(dependencyRoot, "package.json"), `${JSON.stringify({
+    name: "@fixture/workspace-dependency",
+    version: "1.0.0",
+    type: "module",
+    exports: "./index.js",
+  })}\n`, "utf8");
+  const dependencyPath = join(dependencyRoot, "index.js");
+  await writeFile(dependencyPath, dependencyContents, "utf8");
+  const dependencyLink = join(appRoot, "node_modules", "@fixture", "workspace-dependency");
+  await mkdir(dirname(dependencyLink), { recursive: true });
+  await symlink(dependencyRoot, dependencyLink, "dir");
+  return { root, cliPath, dependencyPath, dependencyContents };
+}
+
+async function additionalPackageFixture(packageName = "@fixture/configured-plugin"): Promise<{
+  root: string;
+  entryPath: string;
+  contents: string;
+}> {
+  const root = await mkdtemp(join(tmpdir(), "mono-agent-runtime-plugin-"));
+  roots.push(root);
+  const entryPath = join(root, "dist", "index.js");
+  const contents = "export const configuredPlugin = 'durable-plugin';\n";
+  await mkdir(dirname(entryPath), { recursive: true });
+  await writeFile(entryPath, contents, "utf8");
+  await writeFile(join(root, "package.json"), `${JSON.stringify({
+    name: packageName,
+    version: "9.8.7",
+    type: "module",
+    exports: "./dist/index.js",
+  })}\n`, "utf8");
+  return { root, entryPath, contents };
+}
+
+async function homeFixture(): Promise<string> {
+  const home = await mkdtemp(join(tmpdir(), "mono-agent-runtime-home-"));
+  roots.push(home);
+  return home;
+}
+
+describe("ensureManagedBackgroundRuntime", () => {
+  it("copies an exact local package into a private immutable runtime that survives source deletion", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+
+    expect(runtime.installRoot).toContain(join(homeDir, ".mono-agent", "runtimes", "agent-app", "9.8.7"));
+    expect(runtime.cliPath).not.toContain(source.root);
+    const packageRoot = dirname(dirname(runtime.cliPath));
+    expect((await lstat(packageRoot)).isSymbolicLink()).toBe(false);
+    expect((await lstat(runtime.installRoot)).mode & 0o077).toBe(0);
+    const lock = JSON.parse(await readFile(join(runtime.installRoot, "package-lock.json"), "utf8")) as {
+      packages: Record<string, { version?: string }>;
+    };
+    expect(Object.entries(lock.packages).some(([path, value]) =>
+      path.endsWith("node_modules/@mono-agent/agent-app") && value.version === "9.8.7")).toBe(true);
+
+    await rm(source.root, { recursive: true, force: true });
+    expect(await readFile(runtime.cliPath, "utf8")).toBe(source.bytes);
+  }, 30_000);
+
+  it("materializes a real workspace-linked dependency closure without asking npm to parse workspace ranges", async () => {
+    const source = await workspaceFixture();
+    const homeDir = await homeFixture();
+
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    await rm(source.root, { recursive: true, force: true });
+
+    const managedPackageRoot = dirname(dirname(runtime.cliPath));
+    const dependencyRoot = await realpath(join(
+      managedPackageRoot,
+      "node_modules",
+      "@fixture",
+      "workspace-dependency",
+    ));
+    expect(dependencyRoot.startsWith(await realpath(runtime.installRoot))).toBe(true);
+    expect(await readFile(join(dependencyRoot, "index.js"), "utf8")).toBe(source.dependencyContents);
+    const lock = JSON.parse(await readFile(join(runtime.installRoot, "package-lock.json"), "utf8")) as {
+      packages: Record<string, { name?: string; version?: string }>;
+    };
+    expect(Object.values(lock.packages)).toContainEqual(expect.objectContaining({
+      name: "@fixture/workspace-dependency",
+      version: "1.0.0",
+    }));
+  });
+
+  it("binds reuse to the current dependency bytes even when CLI bytes and package version are unchanged", async () => {
+    const source = await workspaceFixture();
+    const homeDir = await homeFixture();
+    const first = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+
+    const updated = "export const preserved = 'updated-with-same-cli';\n";
+    await writeFile(source.dependencyPath, updated, "utf8");
+    const second = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+
+    expect(second.installRoot).not.toBe(first.installRoot);
+    const dependencyRoot = await realpath(join(
+      dirname(dirname(second.cliPath)),
+      "node_modules",
+      "@fixture",
+      "workspace-dependency",
+    ));
+    expect(await readFile(join(dependencyRoot, "index.js"), "utf8")).toBe(updated);
+    expect(await readFile(join(
+      await realpath(join(dirname(dirname(first.cliPath)), "node_modules", "@fixture", "workspace-dependency")),
+      "index.js",
+    ), "utf8")).toBe(source.dependencyContents);
+  });
+
+  it("materializes and top-level-links config-selected additional packages", async () => {
+    const source = await fixturePackage();
+    const plugin = await additionalPackageFixture("@mono-agent/a2a-adapter");
+    const supermemory = await additionalPackageFixture("@mono-agent/memory-supermemory");
+    const homeDir = await homeFixture();
+
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+      additionalPackages: [
+        { packageName: "@mono-agent/a2a-adapter", packageSource: plugin.root },
+        { packageName: "@mono-agent/memory-supermemory", packageSource: supermemory.root },
+      ],
+    });
+    await rm(source.root, { recursive: true, force: true });
+    await rm(plugin.root, { recursive: true, force: true });
+    await rm(supermemory.root, { recursive: true, force: true });
+
+    const linkedPlugin = join(runtime.installRoot, "node_modules", "@mono-agent", "a2a-adapter");
+    const pluginRoot = await realpath(linkedPlugin);
+    expect(pluginRoot.startsWith(await realpath(runtime.installRoot))).toBe(true);
+    expect(await readFile(join(pluginRoot, "dist", "index.js"), "utf8")).toBe(plugin.contents);
+    const supermemoryRoot = await realpath(join(
+      runtime.installRoot,
+      "node_modules",
+      "@mono-agent",
+      "memory-supermemory",
+    ));
+    expect(supermemoryRoot.startsWith(await realpath(runtime.installRoot))).toBe(true);
+    expect(await readFile(join(supermemoryRoot, "dist", "index.js"), "utf8")).toBe(supermemory.contents);
+    const lock = JSON.parse(await readFile(join(runtime.installRoot, "package-lock.json"), "utf8")) as {
+      packages: Record<string, { link?: boolean }>;
+    };
+    expect(lock.packages["node_modules/@mono-agent/a2a-adapter"]?.link).toBe(true);
+    expect(lock.packages["node_modules/@mono-agent/memory-supermemory"]?.link).toBe(true);
+  });
+
+  it("binds config-selected additional package bytes into runtime reuse identity", async () => {
+    const source = await fixturePackage();
+    const plugin = await additionalPackageFixture();
+    const homeDir = await homeFixture();
+    const input = {
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+      additionalPackages: [{ packageName: "@fixture/configured-plugin", packageSource: plugin.root }],
+    } as const;
+
+    const first = await ensureManagedBackgroundRuntime(input);
+    const updated = "export const configuredPlugin = 'updated-plugin';\n";
+    await writeFile(plugin.entryPath, updated, "utf8");
+    const second = await ensureManagedBackgroundRuntime(input);
+
+    expect(second.installRoot).not.toBe(first.installRoot);
+    const secondPlugin = await realpath(join(
+      second.installRoot,
+      "node_modules",
+      "@fixture",
+      "configured-plugin",
+    ));
+    expect(await readFile(join(secondPlugin, "dist", "index.js"), "utf8")).toBe(updated);
+  });
+
+  it("rejects source-package symlinks that escape the copied package root", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const outside = await mkdtemp(join(tmpdir(), "mono-agent-runtime-outside-"));
+    roots.push(outside);
+    const outsideFile = join(outside, "secret.txt");
+    await writeFile(outsideFile, "must not be copied\n", "utf8");
+    const linkPath = join(source.root, "dist", "escape.txt");
+    await symlink(relative(dirname(linkPath), outsideFile), linkPath);
+
+    await expect(ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    })).rejects.toThrow(/source symlink .* escapes its package root/u);
+  });
+
+  it("preserves a relative symlink whose target stays inside the source package", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    await symlink("cli.js", join(source.root, "dist", "cli-alias.js"));
+
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    await rm(source.root, { recursive: true, force: true });
+
+    expect(await readFile(join(dirname(runtime.cliPath), "cli-alias.js"), "utf8")).toBe(source.bytes);
+  });
+
+  it("rejects edit-and-restore source drift while an injected installer is staging", async () => {
+    const source = await workspaceFixture();
+    const homeDir = await homeFixture();
+    const deps = fakeInstallerDeps(async (input) => {
+      await materializeInstalledPackage(input, await readFile(source.cliPath));
+      await writeFile(source.dependencyPath, "export const preserved = 'transient';\n", "utf8");
+      await writeFile(source.dependencyPath, source.dependencyContents, "utf8");
+    });
+
+    await expect(ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    }, deps)).rejects.toThrow(/package closure changed while staging/u);
+  });
+
+  it("repairs a corrupted managed runtime from itself after the disposable source has gone", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const first = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    await rm(source.root, { recursive: true, force: true });
+    await writeFile(join(first.installRoot, ".mono-agent-runtime.json"), "{}\n", "utf8");
+
+    const repaired = await ensureManagedBackgroundRuntime({
+      currentCliPath: first.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+
+    expect(await readFile(repaired.cliPath, "utf8")).toBe(source.bytes);
+    const quarantineRoot = join(dirname(first.installRoot), "quarantine");
+    const quarantined = await readdir(quarantineRoot);
+    expect(quarantined).toHaveLength(1);
+    expect(await readFile(join(quarantineRoot, quarantined[0]!, ".mono-agent-runtime.json"), "utf8")).toBe("{}\n");
+  });
+
+  it("rejects and repairs a managed runtime whose copied dependency was tampered", async () => {
+    const source = await workspaceFixture();
+    const homeDir = await homeFixture();
+    const first = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    const firstPackageRoot = dirname(dirname(first.cliPath));
+    const firstDependencyRoot = await realpath(join(
+      firstPackageRoot,
+      "node_modules",
+      "@fixture",
+      "workspace-dependency",
+    ));
+    await writeFile(join(firstDependencyRoot, "index.js"), "export const preserved = 'tampered';\n", "utf8");
+
+    const repaired = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+
+    const repairedPackageRoot = dirname(dirname(repaired.cliPath));
+    const repairedDependencyRoot = await realpath(join(
+      repairedPackageRoot,
+      "node_modules",
+      "@fixture",
+      "workspace-dependency",
+    ));
+    expect(await readFile(join(repairedDependencyRoot, "index.js"), "utf8")).toBe(source.dependencyContents);
+    const quarantineRoot = join(dirname(first.installRoot), "quarantine");
+    const quarantined = await readdir(quarantineRoot);
+    expect(quarantined).toHaveLength(1);
+    const quarantinedDependency = await realpath(join(
+      quarantineRoot,
+      quarantined[0]!,
+      "node_modules",
+      "@mono-agent",
+      "agent-app",
+      "node_modules",
+      "@fixture",
+      "workspace-dependency",
+    ));
+    expect(await readFile(join(quarantinedDependency, "index.js"), "utf8")).toContain("tampered");
+  });
+
+  it("reuses a verified runtime without running the installer again", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    let installs = 0;
+    const deps = fakeInstallerDeps(async (input) => {
+      installs += 1;
+      await materializeInstalledPackage(input, await readFile(source.cliPath));
+    });
+
+    const first = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    }, deps);
+    const second = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    }, deps);
+
+    expect(second).toEqual(first);
+    expect(installs).toBe(1);
+  });
+
+  it("fails closed and removes staging when installed CLI bytes do not match", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const deps = fakeInstallerDeps(async (input) => {
+      await materializeInstalledPackage(input, Buffer.from("different CLI"));
+    });
+
+    await expect(ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    }, deps)).rejects.toThrow("does not match the executing CLI SHA-256");
+
+    const abiRoot = join(homeDir, ".mono-agent", "runtimes", "agent-app", "9.8.7");
+    const descendants = await recursiveNames(abiRoot);
+    expect(descendants.some((name) => name.includes(".staging-"))).toBe(false);
+    expect(descendants.some((name) => name === ".mono-agent-runtime.json")).toBe(false);
+  });
+
+  it("quarantines an invalid prior root and atomically replaces it without deleting old evidence", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    let installs = 0;
+    const deps = fakeInstallerDeps(async (input) => {
+      installs += 1;
+      await materializeInstalledPackage(input, await readFile(source.cliPath));
+    });
+    const first = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    }, deps);
+    await writeFile(first.cliPath, "tampered", "utf8");
+
+    const repaired = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    }, deps);
+
+    expect(installs).toBe(2);
+    expect(await readFile(repaired.cliPath, "utf8")).toBe(source.bytes);
+    const quarantineRoot = join(dirname(first.installRoot), "quarantine");
+    const quarantined = await readdir(quarantineRoot);
+    expect(quarantined).toHaveLength(1);
+    expect(await readFile(join(
+      quarantineRoot,
+      quarantined[0]!,
+      "node_modules",
+      "@mono-agent",
+      "agent-app",
+      "dist",
+      "cli.js",
+    ), "utf8")).toBe("tampered");
+  });
+
+  it("does not steal an active install lock even after the stale-age threshold", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    let unblock!: () => void;
+    let started!: () => void;
+    const installStarted = new Promise<void>((resolvePromise) => { started = resolvePromise; });
+    const holdInstall = new Promise<void>((resolvePromise) => { unblock = resolvePromise; });
+    const firstDeps = fakeInstallerDeps(async (input) => {
+      started();
+      await holdInstall;
+      await materializeInstalledPackage(input, await readFile(source.cliPath));
+    });
+    const first = ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    }, firstDeps);
+    await installStarted;
+    let secondInstalls = 0;
+    const secondDeps = fakeInstallerDeps(async () => { secondInstalls += 1; });
+
+    await expect(ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    }, secondDeps)).rejects.toThrow("Timed out waiting for the managed runtime installation lock");
+    expect(secondInstalls).toBe(0);
+
+    unblock();
+    await expect(first).resolves.toMatchObject({ packageVersion: "9.8.7" });
+  });
+
+  it("repairs an install lock whose PID was reused by a different process incarnation", async () => {
+    await expectRepairFromStaleRuntimeLock(incarnation("boot-current", "start-old"));
+  });
+
+  it("repairs an install lock left by a prior boot even when its PID is live again", async () => {
+    await expectRepairFromStaleRuntimeLock(incarnation("boot-prior", "start-current"));
+  });
+});
+
+describe("sanitizeManagedBackgroundWorkerEnvironment", () => {
+  it("keeps only operational values and consumes the internal marker", () => {
+    const env: Record<string, string | undefined> = {
+      [MANAGED_BACKGROUND_WORKER_ENV]: "1",
+      PATH: "/usr/bin",
+      HOME: "/home/u",
+      OPENAI_API_KEY: "secret",
+      MONO_AGENT_MODEL: "hostile-override",
+    };
+    sanitizeManagedBackgroundWorkerEnvironment(env);
+    expect(env).toEqual({ PATH: "/usr/bin", HOME: "/home/u" });
+  });
+
+  it("does nothing without the internal marker", () => {
+    const env = { PATH: "/usr/bin", OPENAI_API_KEY: "shell-value" };
+    sanitizeManagedBackgroundWorkerEnvironment(env);
+    expect(env.OPENAI_API_KEY).toBe("shell-value");
+  });
+});
+
+function fakeInstallerDeps(
+  installPackage: ManagedBackgroundRuntimeDeps["installPackage"],
+): ManagedBackgroundRuntimeDeps {
+  let now = 1_000_000;
+  let id = 0;
+  return {
+    now: () => now,
+    sleep: async (ms) => { now += ms; },
+    randomId: () => `test-${id += 1}`,
+    installPackage,
+    currentProcessIncarnation: async () => TEST_PROCESS_INCARNATION,
+    isSameProcessIncarnation: (_pid, expected) =>
+      expected.bootSessionId === TEST_PROCESS_INCARNATION.bootSessionId
+      && expected.processStartId === TEST_PROCESS_INCARNATION.processStartId,
+  };
+}
+
+async function expectRepairFromStaleRuntimeLock(staleIncarnation: ProcessIncarnation): Promise<void> {
+  const source = await fixturePackage();
+  const homeDir = await homeFixture();
+  const firstDeps = fakeInstallerDeps(async (input) => {
+    await materializeInstalledPackage(input, await readFile(source.cliPath));
+  });
+  const first = await ensureManagedBackgroundRuntime({
+    currentCliPath: source.cliPath,
+    nodePath: process.execPath,
+    homeDir,
+  }, firstDeps);
+  await writeFile(join(first.installRoot, ".mono-agent-runtime.json"), "{}\n", "utf8");
+
+  const lockDir = join(dirname(first.installRoot), `.${basename(first.installRoot)}.lock`);
+  await mkdir(lockDir, { mode: 0o700 });
+  await writeFile(join(lockDir, "owner.json"), `${JSON.stringify({
+    pid: process.pid,
+    createdAt: new Date(0).toISOString(),
+    incarnation: staleIncarnation,
+  })}\n`, { encoding: "utf8", mode: 0o600 });
+
+  const repaired = await ensureManagedBackgroundRuntime({
+    currentCliPath: source.cliPath,
+    nodePath: process.execPath,
+    homeDir,
+  }, fakeInstallerDeps(async (input) => {
+    await materializeInstalledPackage(input, await readFile(source.cliPath));
+  }));
+
+  expect(await readFile(repaired.cliPath, "utf8")).toBe(source.bytes);
+  await expect(lstat(lockDir)).rejects.toMatchObject({ code: "ENOENT" });
+}
+
+async function materializeInstalledPackage(input: ManagedRuntimeInstallInput, cli: Buffer): Promise<void> {
+  const packageRoot = join(input.stagingDir, "node_modules", "@mono-agent", "agent-app");
+  await mkdir(join(packageRoot, "dist"), { recursive: true });
+  await writeFile(join(packageRoot, "dist", "cli.js"), cli);
+  await writeFile(join(packageRoot, "package.json"), `${JSON.stringify({
+    name: "@mono-agent/agent-app",
+    version: input.packageVersion,
+  })}\n`, "utf8");
+  await writeFile(join(input.stagingDir, "package-lock.json"), `${JSON.stringify({
+    lockfileVersion: 3,
+    packages: {
+      "node_modules/@mono-agent/agent-app": {
+        name: "@mono-agent/agent-app",
+        version: input.packageVersion,
+      },
+    },
+  })}\n`, "utf8");
+}
+
+async function recursiveNames(path: string): Promise<string[]> {
+  try {
+    const entries = await readdir(path, { withFileTypes: true });
+    const nested = await Promise.all(entries.map(async (entry) => [
+      entry.name,
+      ...(entry.isDirectory() ? await recursiveNames(join(path, entry.name)) : []),
+    ]));
+    return nested.flat();
+  } catch {
+    return [];
+  }
+}

@@ -100,6 +100,17 @@ export async function resolveConfiguredChannelPlugins(
   return drivers;
 }
 
+/** Bare package names whose configured drivers must be copied into a managed runtime. */
+export async function configuredChannelPluginPackageNames(
+  configPath: string,
+): Promise<readonly string[]> {
+  const entries = await readConfiguredChannelPluginEntries(configPath);
+  return [...new Set(entries.flatMap((entry) => {
+    const packageName = pluginEntryPackageName(entry);
+    return packageName === undefined ? [] : [packageName];
+  }))].sort((left, right) => left.localeCompare(right));
+}
+
 export function createExternalPackageChannelDriver(
   options: ExternalPackageChannelDriverOptions,
 ): ChannelDriver {

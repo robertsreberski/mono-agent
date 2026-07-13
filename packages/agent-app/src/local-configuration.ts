@@ -14,10 +14,11 @@ import {
   chmod,
   lstat,
   mkdir,
-  mkdtemp,
   open,
+  readdir,
   readFile,
   realpath,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -36,21 +37,37 @@ import type {
   AgentHarnessRuntimeOptionsInput,
 } from "@mono-agent/agent-harness";
 import { createToolPolicy } from "@mono-agent/agent-harness";
-import type { ConfigurationProposalCard, ConfigurationProposalResult } from "@mono-agent/tui";
+import type {
+  ConfigurationProposalCard,
+  ConfigurationProposalResult,
+  TuiConfigurationController,
+} from "@mono-agent/tui";
 
 import { loadAppCoreConfig } from "./app-config.js";
+import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME } from "./adapter-send-tools.js";
+import {
+  captureBackgroundSnapshot,
+} from "./background-snapshot.js";
+import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { createConfiguredAgentResponder } from "./configured-agent.js";
 import {
   CONFIGURATION_PROPOSAL_MCP_SERVER_NAME,
   CONFIGURATION_PROPOSAL_TOOL_NAME,
   configurationProposalMcpServerSpec,
+  containsUnsafeConfigurationReviewControl,
   type AgentConfigurationProposal,
   type JsonPatchOperation,
 } from "./configuration-proposal-tool.js";
 import { validateMonoAgentFolder } from "./doctor.js";
+import { ADAPTER_SEND_TOOL_NAMES, canonicalToolName } from "./modules/known-tools.js";
+import { RUN_HISTORY_MCP_SERVER_NAME, RUN_HISTORY_TOOL_NAME } from "./run-history.js";
+import { configuredRuntimeFallbackModels } from "./runtime-routes.js";
 
 export const LOCAL_CONFIGURATION_PROMPT =
-  "Begin local configuration mode. Read the mono-agent-configure skill, then ask the operator one concise question: how would they like to configure you further? Mention that behavior, memory, skills, tools, or channels can be discussed, but do not repeat the setup wizard and do not ask for secrets.";
+  "Begin temporary post-wizard configuration mode. This is not an ordinary chat. Read the mono-agent-configure skill. Your first assistant message must explain that this short conversation is for discussing the agent's Role (the configured identity document → ## Role; normally IDENTITY.md → ## Role), behavior, memory, skills, tools, or channels; secrets must never be entered; nothing changes without a separate host-owned approval; the operator can reply done or no changes to finish without edits; and ordinary chat starts after the operator's reply and any approval or rejection. Mention that /quit closes only the console and never sends a background stop request; the agent remains running unless a later restart or recovery explicitly reports failure. Then ask one concise question: how would the operator like to configure you further? Do not repeat the setup wizard. After the operator's single reply, either record one constrained proposal with ProposeAgentConfiguration or explain that no changes are needed. Never claim a proposal was applied: the local host validates it and asks for separate approval.";
+
+export const LOCAL_CONFIGURATION_OPERATOR_PROMPT =
+  "Continue the temporary post-wizard configuration exchange after the opening invitation. The invitation was already shown in a separate provider conversation: do not repeat it and do not ask the opening question again. Read the mono-agent-configure skill, act on the operator's one reply, and either record one constrained proposal with ProposeAgentConfiguration or clearly state that no changes are proposed so the host can hand off to ordinary chat. Never ask for secrets or claim a proposal was applied.";
 
 const CONFIGURATION_READ_ONLY_TOOLS = [
   "ReadSkill",
@@ -60,6 +77,19 @@ const CONFIGURATION_READ_ONLY_TOOLS = [
 ] as const;
 
 type DisposableResponder = AgentResponder & { dispose?(): Promise<void> };
+
+export interface ConfigurationBackgroundConnection {
+  readonly baseUrl: string;
+  readonly apiKey?: string;
+}
+
+export type ConfigurationBackgroundRestartResult =
+  | { readonly ok: true; readonly connection: ConfigurationBackgroundConnection }
+  | { readonly ok: false; readonly message: string };
+
+export type RestartConfigurationBackground = (
+  expectedSnapshot: BackgroundSnapshot,
+) => Promise<ConfigurationBackgroundRestartResult>;
 
 interface PreparedProposal {
   readonly proposal: AgentConfigurationProposal;
@@ -76,19 +106,13 @@ interface PreparedProposal {
 interface AppliedConfigurationChange {
   readonly changeId: string;
   readonly rollbackDir: string;
-  rollback(): Promise<void>;
+  readonly snapshot: BackgroundSnapshot;
+  rollback(): Promise<BackgroundSnapshot>;
 }
 
 export interface LocalConfigurationSession {
   readonly responder: AgentResponder;
   readonly title: string;
-  readonly configuration: {
-    readonly initialPrompt?: string;
-    readonly prompt: string;
-    takeProposal(): Promise<ConfigurationProposalCard | undefined>;
-    approve(id: string): Promise<ConfigurationProposalResult>;
-    reject(id: string): Promise<ConfigurationProposalResult>;
-  };
   dispose(): Promise<void>;
 }
 
@@ -96,97 +120,341 @@ export interface CreateLocalConfigurationSessionOptions {
   readonly cwd: string;
   readonly configPath: string;
   readonly env: Record<string, string | undefined>;
-  readonly configure: boolean;
+  readonly configure?: boolean;
+  readonly envFile?: string;
+  /** Deterministic transaction-race seam for regression tests. */
+  readonly beforeSnapshotCapture?: (phase: "apply" | "rollback") => void | Promise<void>;
 }
 
-/** Build a current-folder responder without starting channels or creating service state. */
+export interface CreateRemoteConfigurationSessionOptions extends CreateLocalConfigurationSessionOptions {
+  readonly restartBackground: RestartConfigurationBackground;
+  /** Deterministic failure seam for capability-rotation regression tests. */
+  readonly beforeRotateAttempt?: () => void | Promise<void>;
+}
+
+export interface RemoteConfigurationSession {
+  readonly configuration: TuiConfigurationController;
+  dispose(): Promise<void>;
+}
+
+/** Build a current-folder responder for ordinary embedded chat only. */
 export async function createLocalConfigurationSession(
   options: CreateLocalConfigurationSessionOptions,
 ): Promise<LocalConfigurationSession> {
-  const manager = await LocalConfigurationManager.create(options);
-  let active = await manager.buildResponder();
-  const activateResponder = async (replacement: DisposableResponder): Promise<void> => {
-    const previous = active;
-    active = replacement;
-    await previous.dispose?.();
-  };
-  const replaceActiveResponder = async (): Promise<void> => {
-    const replacement = await manager.buildResponder();
-    await activateResponder(replacement);
-  };
-  const proxy: AgentResponder = {
-    respond: async (request, stream) => await active.respond(request, stream),
-    cancel: (conversationId, reason) => active.cancel?.(conversationId, reason),
-    deliverVerbatim: async (conversationId, text) => await active.deliverVerbatim?.(conversationId, text),
-  };
-
+  if (options.configure === true) {
+    throw new Error("Temporary configuration must attach to the authoritative background agent; use `mono-agent tui --configure` without `--local`.");
+  }
+  const authenticated = await authenticatedLocalConfig(options.cwd, options.configPath);
+  const secureOptions = { ...options, ...authenticated };
+  const config = await loadAppCoreConfig(secureOptions);
+  const responder = await createConfiguredAgentResponder({ config }) as DisposableResponder;
   return {
-    responder: proxy,
-    title: manager.currentConfig.agent?.name ?? "Mono Agent",
+    responder,
+    title: config.agent?.name ?? "Mono Agent",
+    async dispose(): Promise<void> {
+      await responder.dispose?.();
+    },
+  };
+}
+
+/**
+ * Create the local host controller for a remote configuration conversation.
+ * The daemon only proposes; this process validates, confirms, writes, restarts,
+ * proves readiness, and rolls back on failure.
+ */
+export async function createRemoteConfigurationSession(
+  options: CreateRemoteConfigurationSessionOptions,
+): Promise<RemoteConfigurationSession> {
+  // `runTui` reconstructs the managed worker's dotenv-plus-operational
+  // environment once, before discovery and launchd/source verification. Reuse
+  // that exact snapshot here: a second dotenv read would open a TOCTOU window
+  // and could make proposal validation/restart authority disagree with the
+  // already-proven background worker.
+  const manager = await LocalConfigurationManager.create(options);
+  return {
     configuration: {
-      ...(options.configure ? { initialPrompt: LOCAL_CONFIGURATION_PROMPT } : {}),
+      get sessionId() {
+        return manager.sessionId;
+      },
+      conversationId: `tui-configuration-${randomUUID()}`,
+      roleLocation: manager.roleLocation,
+      initialPrompt: LOCAL_CONFIGURATION_PROMPT,
       prompt: LOCAL_CONFIGURATION_PROMPT,
+      operatorPrompt: LOCAL_CONFIGURATION_OPERATOR_PROMPT,
       takeProposal: async () => {
         let proposal: ConfigurationProposalCard | undefined;
         try {
           proposal = await manager.takeProposal();
         } catch (error) {
-          // A failed proposal must not leave its request-scoped MCP server in a
-          // retained provider session. Rotate first, then report the validation
-          // failure to the TUI.
-          await replaceActiveResponder();
+          const rotationWarning = await rotateAttemptSafely(manager, options.beforeRotateAttempt);
+          if (rotationWarning !== undefined) {
+            throw new Error(`${reasonOf(error)} ${rotationWarning}`);
+          }
           throw error;
         }
         if (proposal === undefined) {
-          // Codex and other resumable providers retain the MCP configuration
-          // from the turn that opened their provider session. Rotating after a
-          // proposal-free configuration turn makes the next reply start with a
-          // fresh request-scoped server and removes the tool before ordinary
-          // turns. The stable proxy keeps the TUI connection unchanged.
-          await replaceActiveResponder();
+          const rotationWarning = await rotateAttemptSafely(manager, options.beforeRotateAttempt);
+          if (rotationWarning !== undefined) throw new Error(rotationWarning);
         }
         return proposal;
       },
       approve: async (id) => {
-        const applied = await manager.apply(id);
-        let replacement: DisposableResponder;
-        try {
-          replacement = await manager.buildResponder();
-        } catch (error) {
-          await applied.rollback();
-          throw new Error(
-            `The approved files were restored because the replacement responder could not start: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
-        await activateResponder(replacement);
-        return {
-          message: `Applied configuration change ${applied.changeId}. A fresh provider conversation is now active. Rollback evidence: ${applied.rollbackDir}`,
-        };
+        return await settleConfigurationAttempt(
+          manager,
+          () => approveAndRestart(manager, id, options.restartBackground),
+          options.beforeRotateAttempt,
+        );
       },
       reject: async (id) => {
-        const result = await manager.reject(id);
-        await replaceActiveResponder();
-        return result;
+        return await settleConfigurationAttempt(
+          manager,
+          () => manager.reject(id),
+          options.beforeRotateAttempt,
+        );
+      },
+      abandon: async () => {
+        const rotationWarning = await rotateAttemptSafely(manager, options.beforeRotateAttempt);
+        if (rotationWarning !== undefined) throw new Error(rotationWarning);
       },
     },
     async dispose(): Promise<void> {
-      await active.dispose?.();
       await manager.dispose();
     },
   };
 }
 
+async function settleConfigurationAttempt(
+  manager: LocalConfigurationManager,
+  task: () => Promise<ConfigurationProposalResult>,
+  beforeRotateAttempt?: () => void | Promise<void>,
+): Promise<ConfigurationProposalResult> {
+  let result: ConfigurationProposalResult | undefined;
+  let taskError: unknown;
+  try {
+    result = await task();
+  } catch (error) {
+    taskError = error;
+  }
+
+  const rotationWarning = await rotateAttemptSafely(manager, beforeRotateAttempt);
+  if (taskError !== undefined) {
+    if (rotationWarning !== undefined) {
+      throw new Error(`${reasonOf(taskError)} ${rotationWarning}`);
+    }
+    throw taskError;
+  }
+  if (result === undefined) {
+    throw new Error("Configuration attempt finished without a host result.");
+  }
+  return rotationWarning === undefined
+    ? result
+    : { ...result, message: `${result.message} ${rotationWarning}` };
+}
+
+async function rotateAttemptSafely(
+  manager: LocalConfigurationManager,
+  beforeRotateAttempt?: () => void | Promise<void>,
+): Promise<string | undefined> {
+  try {
+    await beforeRotateAttempt?.();
+    await manager.rotateAttempt();
+    return undefined;
+  } catch (error) {
+    await manager.disableConfigurationAttempts(error);
+    return (
+      `Warning: the completed configuration capability could not be rotated (${reasonOf(error)}). ` +
+      "Configuration re-entry is disabled in this console; close it and run `mono-agent tui --configure` again."
+    );
+  }
+}
+
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function approveAndRestart(
+  manager: LocalConfigurationManager,
+  id: string,
+  restartBackground: RestartConfigurationBackground,
+): Promise<ConfigurationProposalResult> {
+  const applied = await manager.apply(id);
+  const attempted = await safeRestart(restartBackground, applied.snapshot);
+  if (attempted.ok) {
+    return {
+      kind: "applied",
+      connection: attempted.connection,
+      message:
+        `Configuration applied and the background agent restarted successfully. Ordinary chat is now active. ` +
+        `Rollback evidence: ${applied.rollbackDir}`,
+    };
+  }
+
+  try {
+    const restoredSnapshot = await applied.rollback();
+    const recovered = await safeRestart(restartBackground, restoredSnapshot);
+    if (recovered.ok) {
+      return {
+        kind: "rolled_back",
+        connection: recovered.connection,
+        message:
+          `The new configuration could not start, so the approved files were restored and the previous background agent was restarted. ` +
+          `Ordinary chat is now active. ${attempted.message} Rollback evidence: ${applied.rollbackDir}`,
+      };
+    }
+    return {
+      kind: "error",
+      message:
+        `The new configuration could not start. The approved files were restored, but the previous background agent also failed to restart. ` +
+        `${attempted.message} Recovery attempt: ${recovered.message} Manual recovery is required. ` +
+        `Rollback evidence: ${applied.rollbackDir}`,
+    };
+  } catch (error) {
+    return {
+      kind: "error",
+      message:
+        `The new configuration could not start, and automatic file rollback also failed: ` +
+        `${error instanceof Error ? error.message : String(error)} ${attempted.message} ` +
+        `Manual recovery is required. Rollback evidence: ${applied.rollbackDir}`,
+    };
+  }
+
+}
+
+async function safeRestart(
+  restart: RestartConfigurationBackground,
+  expectedSnapshot: BackgroundSnapshot,
+): Promise<ConfigurationBackgroundRestartResult> {
+  try {
+    return await restart(expectedSnapshot);
+  } catch (error) {
+    return {
+      ok: false,
+      message: `Background restart failed unexpectedly: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+export interface ConfigurationRuntimeExtensionOptions {
+  readonly cwd: string;
+  /** Canonical mutable path used only to authenticate this agent folder/capability root. */
+  readonly configPath: string;
+  /** Immutable worker copy used for route classification and proposal base version. */
+  readonly configReadPath?: string;
+  readonly env: Record<string, string | undefined>;
+}
+
+/** Install proposal-only authority on explicitly capability-marked TUI requests. */
+export function createLocalConfigurationRuntimeExtension(
+  options: ConfigurationRuntimeExtensionOptions,
+): (input: AgentHarnessRuntimeOptionsInput) => Promise<AgentHarnessRuntimeOptionsExtension> {
+  return async (input) => {
+    const request = configurationRequestFromMetadata(input.request.metadata);
+    if (request === undefined) return { runtimeOptions: {} };
+
+    const authenticated = await authenticatedLocalConfig(options.cwd, options.configPath);
+    const sessionDir = await resolveOwnedDirectoryInside(
+      authenticated.cwd,
+      join(authenticated.cwd, ".mono-agent", "configuration-proposals", `session-${request.sessionId}`),
+      "Configuration proposal session",
+    );
+    const configReadPath = options.configReadPath ?? authenticated.configPath;
+    const config = await loadAppCoreConfig({
+      cwd: authenticated.cwd,
+      configPath: configReadPath,
+      env: options.env,
+    });
+    const route = configurationRuntimeRoute(config);
+    const allRoutesUseDirectCodex = route.models.every((model) => model.sdk === "codex");
+    const runtimeOptions = {
+      permissionMode: "plan" as const,
+      ...(route.modelOverride === undefined ? {} : { model: route.modelOverride }),
+    };
+    if (request.phase === "invitation") {
+      return {
+        toolPolicyOverride: createToolPolicy({
+          allowedTools: allRoutesUseDirectCodex ? ["*"] : ["ReadSkill", "MemoryRecall"],
+          disallowedTools: [],
+          mcpServers: {},
+        }),
+        runtimeOptions,
+      };
+    }
+
+    const snapshot = await readMonoAgentConfigJson(configReadPath);
+    const sinkPath = join(sessionDir, `proposal-${safeFilePart(input.runId)}.json`);
+    const proposalServer = configurationProposalMcpServerSpec({
+      sinkPath,
+      baseVersion: snapshot.version,
+    }, authenticated.cwd);
+    return {
+      toolPolicyOverride: createToolPolicy({
+        allowedTools: allRoutesUseDirectCodex ? ["*"] : CONFIGURATION_READ_ONLY_TOOLS,
+        disallowedTools: [],
+        mcpServers: {
+          [CONFIGURATION_PROPOSAL_MCP_SERVER_NAME]: proposalServer,
+        },
+      }),
+      runtimeOptions,
+    };
+  };
+}
+
+function configurationRuntimeRoute(config: MonoAgentConfig): {
+  readonly models: readonly MonoAgentConfig["runtime"]["model"][];
+  readonly modelOverride?: MonoAgentConfig["runtime"]["model"];
+} {
+  const fallbacks = configuredRuntimeFallbackModels(config.runtime);
+  const directOpenCodeFallbacks = fallbacks.filter((model) => model.sdk === "opencode");
+  if (config.runtime.model.sdk !== "opencode") {
+    if (directOpenCodeFallbacks.length > 0) {
+      throw new Error(
+        "Temporary configuration is unavailable while the fallback chain contains direct OpenCode. " +
+        "Its provider-owned tool loop cannot receive the host-owned proposal MCP capability, so a failover could silently lose the proposal. " +
+        "Use a Pi route such as pi:opencode-go:<model>, or remove the direct opencode:* fallback before running /configure.",
+      );
+    }
+    return { models: [config.runtime.model, ...fallbacks] };
+  }
+
+  const supported = fallbacks.find((model) => model.sdk !== "opencode");
+  if (supported === undefined || directOpenCodeFallbacks.length > 0) {
+    throw new Error(
+      "Temporary configuration cannot use direct OpenCode's provider-owned tool loop because it cannot receive the host-owned proposal MCP capability. " +
+      "Add a proposal-capable fallback such as pi:opencode-go:<model>, or switch the primary runtime before running /configure.",
+    );
+  }
+  const remaining = fallbacks.filter((model) => model !== supported);
+  return {
+    modelOverride: supported,
+    models: [supported, ...remaining],
+  };
+}
+
 export class LocalConfigurationManager {
   readonly currentConfig: MonoAgentConfig;
-  private readonly pendingSinks = new Set<string>();
+  readonly roleLocation: string;
   private readonly prepared = new Map<string, PreparedProposal>();
+  private readonly cleanupPaths = new Set<string>();
+  private currentSessionId: string;
+  private currentSessionDir: string;
+  private disabledReason: string | undefined;
 
   private constructor(
     private readonly options: CreateLocalConfigurationSessionOptions,
-    private readonly sessionDir: string,
+    private readonly proposalRoot: string,
+    sessionDir: string,
+    sessionId: string,
     currentConfig: MonoAgentConfig,
   ) {
+    this.currentSessionId = sessionId;
+    this.currentSessionDir = sessionDir;
+    this.cleanupPaths.add(sessionDir);
     this.currentConfig = currentConfig;
+    this.roleLocation = formatRoleLocation(this.options.cwd, currentConfig.context.identityPath);
+  }
+
+  get sessionId(): string {
+    return this.currentSessionId;
   }
 
   static async create(options: CreateLocalConfigurationSessionOptions): Promise<LocalConfigurationManager> {
@@ -201,82 +469,137 @@ export class LocalConfigurationManager {
       join(secureOptions.cwd, ".mono-agent", "configuration-proposals"),
       "Configuration proposal directory",
     );
-    const sessionDir = await mkdtemp(join(parent, "session-"));
+    const sessionId = randomUUID();
+    const sessionDir = join(parent, `session-${sessionId}`);
+    await mkdir(sessionDir, { mode: 0o700 });
     await chmod(sessionDir, 0o700);
     const currentConfig = await loadAppCoreConfig(secureOptions);
-    return new LocalConfigurationManager(secureOptions, sessionDir, currentConfig);
+    return new LocalConfigurationManager(secureOptions, parent, sessionDir, sessionId, currentConfig);
   }
 
-  async buildResponder(): Promise<DisposableResponder> {
-    await resolveOwnedRegularFileInside(this.options.cwd, this.options.configPath, "Config file");
-    const config = await loadAppCoreConfig(this.options);
-    return await createConfiguredAgentResponder({
-      config,
-      runtimeOptionsForRequest: async (input) => await this.runtimeExtension(input),
-    }) as DisposableResponder;
-  }
+  /** Revoke the completed attempt's opaque filesystem capability before issuing the next one. */
+  async rotateAttempt(): Promise<void> {
+    this.assertAttemptsEnabled();
+    const previousDir = this.currentSessionDir;
+    const revokedPath = join(this.proposalRoot, `.revoked-${randomUUID()}`);
+    const sessionId = randomUUID();
+    const sessionDir = join(this.proposalRoot, `session-${sessionId}`);
+    try {
+      const revoked = await resolveOwnedDirectoryInside(
+        this.options.cwd,
+        previousDir,
+        "Configuration proposal session",
+      );
+      // Rename first: removing the exact `session-<capability>` path revokes
+      // late model calls atomically even if recursive cleanup is interrupted.
+      await rename(revoked, revokedPath);
+      this.cleanupPaths.delete(previousDir);
+      this.cleanupPaths.add(revokedPath);
+      this.prepared.clear();
 
-  private async runtimeExtension(
-    input: AgentHarnessRuntimeOptionsInput,
-  ): Promise<AgentHarnessRuntimeOptionsExtension> {
-    if (!isLocalConfigurationRequest(input.request.metadata)) {
-      return { runtimeOptions: {} };
+      await mkdir(sessionDir, { mode: 0o700 });
+      this.cleanupPaths.add(sessionDir);
+      await chmod(sessionDir, 0o700);
+      this.currentSessionId = sessionId;
+      this.currentSessionDir = sessionDir;
+      // Proposal payloads are secret-rejected and owner-only; a cleanup failure
+      // cannot restore the old capability path, so do not invalidate the newly
+      // issued attempt if best-effort deletion loses a race with process exit.
+      try {
+        await rm(revokedPath, { recursive: true, force: true });
+        this.cleanupPaths.delete(revokedPath);
+      } catch {
+        // The capability path is already atomically revoked. Keep the renamed
+        // artifact registered so dispose() can retry best-effort cleanup.
+      }
+    } catch (error) {
+      this.cleanupPaths.add(previousDir);
+      this.cleanupPaths.add(revokedPath);
+      this.cleanupPaths.add(sessionDir);
+      await this.disableConfigurationAttempts(error);
+      throw error;
     }
-    const secureConfig = await resolveOwnedRegularFileInside(this.options.cwd, this.options.configPath, "Config file");
-    const snapshot = await readMonoAgentConfigJson(secureConfig);
-    const sessionDir = await ensureOwnedDirectoryInside(
-      this.options.cwd,
-      this.sessionDir,
-      "Configuration proposal session",
-    );
-    const sinkPath = join(sessionDir, `${safeFilePart(input.runId)}.json`);
-    this.pendingSinks.add(sinkPath);
-    const proposalServer = configurationProposalMcpServerSpec({
-      sinkPath,
-      baseVersion: snapshot.version,
-    }, this.options.cwd);
-    const directProviderNeedsNativeReadOnly = this.currentConfig.runtime.model.sdk === "codex"
-      || this.currentConfig.runtime.model.sdk === "opencode";
-    return {
-      toolPolicyOverride: createToolPolicy({
-        // Direct Codex/OpenCode cannot project a finite tool list. Their native
-        // plan posture below denies mutating built-ins; replacing MCP policy
-        // still removes every configured external/action server.
-        allowedTools: directProviderNeedsNativeReadOnly ? ["*"] : CONFIGURATION_READ_ONLY_TOOLS,
-        disallowedTools: [],
-        mcpServers: {
-          [CONFIGURATION_PROPOSAL_MCP_SERVER_NAME]: proposalServer,
-        },
+  }
+
+  /** Poison the public capability id and best-effort remove every owned attempt path. */
+  async disableConfigurationAttempts(error: unknown): Promise<void> {
+    if (this.disabledReason === undefined) {
+      this.disabledReason = reasonOf(error);
+    }
+    this.prepared.clear();
+    const disabledId = randomUUID();
+    this.currentSessionId = disabledId;
+    // Deliberately do not create this path: future `/configure` metadata can no
+    // longer name any existing proposal capability even when old cleanup fails.
+    this.currentSessionDir = join(this.proposalRoot, `session-${disabledId}`);
+    await Promise.all(
+      [...this.cleanupPaths].map(async (path) => {
+        try {
+          await rm(path, { recursive: true, force: true });
+          this.cleanupPaths.delete(path);
+        } catch {
+          // Keep failed paths registered so dispose() gets one final retry.
+        }
       }),
-      runtimeOptions: {
-        // Native direct-provider bridges enforce read-only/deny-all action
-        // posture with this field; finite-list runtimes get both defenses.
-        permissionMode: "plan",
-      },
-    };
+    );
+  }
+
+  private assertAttemptsEnabled(): void {
+    if (this.disabledReason !== undefined) {
+      throw new Error(
+        `Temporary configuration re-entry is disabled because the prior capability could not be rotated: ${this.disabledReason}`,
+      );
+    }
   }
 
   async takeProposal(): Promise<ConfigurationProposalCard | undefined> {
-    await ensureOwnedDirectoryInside(this.options.cwd, this.sessionDir, "Configuration proposal session");
-    for (const sink of [...this.pendingSinks]) {
-      this.pendingSinks.delete(sink);
-      const contents = await readOptional(sink);
-      await rm(sink, { force: true });
-      if (contents === undefined) continue;
-      const proposal = parseProposal(contents);
-      return await this.prepareProposal(proposal);
+    this.assertAttemptsEnabled();
+    const sessionDir = await resolveOwnedDirectoryInside(
+      this.options.cwd,
+      this.currentSessionDir,
+      "Configuration proposal session",
+    );
+    const sinks = (await readdir(sessionDir))
+      .filter((name) => /^proposal-[A-Za-z0-9._-]+\.json$/u.test(name))
+      .sort();
+    if (sinks.length === 0) return undefined;
+    if (sinks.length > 1) {
+      // Consume every well-formed sink name before failing closed. Otherwise a
+      // single malformed/duplicate turn would permanently poison later
+      // /configure attempts that reuse this owner-created capability session.
+      for (const name of sinks) {
+        const stale = await resolveOwnedRegularFileInside(
+          this.options.cwd,
+          join(sessionDir, name),
+          "Configuration proposal payload",
+        );
+        await rm(stale);
+      }
+      throw new Error("The configuration conversation produced more than one proposal payload; nothing was applied.");
     }
-    return undefined;
+    const sink = await resolveOwnedRegularFileInside(
+      this.options.cwd,
+      join(sessionDir, sinks[0]!),
+      "Configuration proposal payload",
+    );
+    const contents = await readFile(sink, "utf8");
+    await rm(sink);
+    return await this.prepareProposal(parseProposal(contents));
   }
 
   async reject(id: string): Promise<ConfigurationProposalResult> {
+    this.assertAttemptsEnabled();
     if (!this.prepared.delete(id)) {
       throw new Error(`Configuration proposal ${id} is no longer pending.`);
     }
-    return { message: `Rejected configuration proposal ${id}; no files changed.` };
+    return {
+      kind: "rejected",
+      message: `Proposal rejected; no files changed. Ordinary chat is now active.`,
+    };
   }
 
   async prepareProposal(proposal: AgentConfigurationProposal): Promise<ConfigurationProposalCard> {
+    this.assertAttemptsEnabled();
     const prepared = await this.prepare(proposal);
     this.prepared.set(proposal.id, prepared);
     return prepared.card;
@@ -316,12 +639,22 @@ export class LocalConfigurationManager {
     }
 
     const details = proposal.patch.map(formatPatchOperation);
-    if (proposal.role !== undefined) details.push("replace IDENTITY.md ## Role body");
+    if (proposal.role !== undefined && rolePath !== undefined) {
+      details.push(`replace ${formatRoleLocation(this.options.cwd, rolePath)}`);
+    }
     const card: ConfigurationProposalCard = {
       id: proposal.id,
       title: "Agent configuration proposal",
       rationale: proposal.rationale,
       details,
+      ...(proposal.role === undefined || rolePath === undefined
+        ? {}
+        : {
+            role: {
+              location: formatRoleLocation(this.options.cwd, rolePath),
+              proposedBody: normalizedRoleBody(proposal.role),
+            },
+          }),
     };
     return {
       proposal,
@@ -337,6 +670,7 @@ export class LocalConfigurationManager {
   }
 
   async apply(id: string): Promise<AppliedConfigurationChange> {
+    this.assertAttemptsEnabled();
     const prepared = this.prepared.get(id);
     if (prepared === undefined) throw new Error(`Configuration proposal ${id} is no longer pending.`);
 
@@ -361,12 +695,13 @@ export class LocalConfigurationManager {
     );
     await writeFile(join(rollbackDir, "mono-agent.config.json.before"), prepared.configBefore, { flag: "wx", mode: 0o600 });
     if (prepared.roleBefore !== undefined) {
-      await writeFile(join(rollbackDir, "IDENTITY.md.before"), prepared.roleBefore, { flag: "wx", mode: 0o600 });
+      await writeFile(join(rollbackDir, "identity-document.before"), prepared.roleBefore, { flag: "wx", mode: 0o600 });
     }
 
     const configAfter = `${JSON.stringify(prepared.candidate, null, 2)}\n`;
     let configWritten = false;
     let roleWritten = false;
+    let appliedSnapshot: BackgroundSnapshot | undefined;
     try {
       // Candidate validation and rollback-evidence staging both await I/O. A
       // second comparison at the actual commit boundary prevents either step
@@ -381,7 +716,7 @@ export class LocalConfigurationManager {
         // rename and before the second. If either changed, the guarded catch
         // restores only files that still equal our exact committed bytes.
         await assertExactOwnedContents(this.options.cwd, this.options.configPath, configAfter, "Committed config changed before the Role update");
-        await assertExactOwnedContents(this.options.cwd, prepared.rolePath, prepared.roleBefore!, "IDENTITY.md changed at the Role commit boundary");
+        await assertExactOwnedContents(this.options.cwd, prepared.rolePath, prepared.roleBefore!, "Configured identity document changed at the Role commit boundary");
         await atomicReplaceExact(this.options.cwd, prepared.rolePath, prepared.roleBefore!, prepared.roleAfter);
         roleWritten = true;
       }
@@ -403,6 +738,22 @@ export class LocalConfigurationManager {
         changedPaths: prepared.proposal.patch.map((operation) => operation.path),
         roleChanged: prepared.roleAfter !== undefined,
       }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+      await this.options.beforeSnapshotCapture?.("apply");
+      appliedSnapshot = await this.captureCommittedSnapshot();
+      await assertExactOwnedContents(
+        this.options.cwd,
+        this.options.configPath,
+        configAfter,
+        "Committed config changed while its approved background snapshot was captured",
+      );
+      if (prepared.rolePath !== undefined && prepared.roleAfter !== undefined) {
+        await assertExactOwnedContents(
+          this.options.cwd,
+          prepared.rolePath,
+          prepared.roleAfter,
+          "Committed Role changed while its approved background snapshot was captured",
+        );
+      }
     } catch (error) {
       const recoveryErrors: string[] = [];
       if (roleWritten && prepared.rolePath !== undefined && prepared.roleAfter !== undefined && prepared.roleBefore !== undefined) {
@@ -430,16 +781,21 @@ export class LocalConfigurationManager {
       throw error;
     }
 
+    if (appliedSnapshot === undefined) {
+      throw new Error("The approved configuration was not accompanied by an exact background snapshot.");
+    }
+
     this.prepared.delete(id);
     return {
       changeId,
       rollbackDir,
+      snapshot: appliedSnapshot,
       rollback: async () => {
-        await withConfigurationTransactionLock(this.options.cwd, `${id}-rollback`, async () => {
+        return await withConfigurationTransactionLock(this.options.cwd, `${id}-rollback`, async () => {
           await assertExactOwnedContents(this.options.cwd, this.options.configPath, configAfter, "Configuration changed before rollback");
           let roleRestored = false;
           if (prepared.rolePath !== undefined && prepared.roleAfter !== undefined) {
-            await assertExactOwnedContents(this.options.cwd, prepared.rolePath, prepared.roleAfter, "IDENTITY.md changed before rollback");
+            await assertExactOwnedContents(this.options.cwd, prepared.rolePath, prepared.roleAfter, "Configured identity document changed before rollback");
             await atomicReplaceExact(this.options.cwd, prepared.rolePath, prepared.roleAfter, prepared.roleBefore!);
             roleRestored = true;
           }
@@ -465,15 +821,41 @@ export class LocalConfigurationManager {
             changeId,
             rolledBackAt: new Date().toISOString(),
           }, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+          await this.options.beforeSnapshotCapture?.("rollback");
+          const restoredSnapshot = await this.captureCommittedSnapshot();
+          await assertExactOwnedContents(
+            this.options.cwd,
+            this.options.configPath,
+            prepared.configBefore,
+            "Restored config changed while its rollback background snapshot was captured",
+          );
+          if (prepared.rolePath !== undefined && prepared.roleBefore !== undefined) {
+            await assertExactOwnedContents(
+              this.options.cwd,
+              prepared.rolePath,
+              prepared.roleBefore,
+              "Restored Role changed while its rollback background snapshot was captured",
+            );
+          }
+          return restoredSnapshot;
         });
       },
     };
   }
 
+  private async captureCommittedSnapshot(): Promise<BackgroundSnapshot> {
+    return await captureBackgroundSnapshot({
+      cwd: this.options.cwd,
+      configPath: this.options.configPath,
+      ...(this.options.envFile === undefined ? {} : { envFile: this.options.envFile }),
+      env: this.options.env,
+    });
+  }
+
   private async validateCandidate(candidate: MonoAgentConfigJson, label: string): Promise<void> {
     const sessionDir = await ensureOwnedDirectoryInside(
       this.options.cwd,
-      this.sessionDir,
+      this.currentSessionDir,
       "Configuration proposal session",
     );
     const path = join(sessionDir, `${safeFilePart(label)}.candidate.json`);
@@ -499,15 +881,32 @@ export class LocalConfigurationManager {
   }
 
   async dispose(): Promise<void> {
-    await rm(this.sessionDir, { recursive: true, force: true });
+    await Promise.all(
+      [...new Set([...this.cleanupPaths, this.currentSessionDir])]
+        .map((path) => rm(path, { recursive: true, force: true })),
+    );
+    this.cleanupPaths.clear();
   }
 }
 
 export function isLocalConfigurationRequest(metadata: Record<string, unknown> | undefined): boolean {
+  return configurationRequestFromMetadata(metadata) !== undefined;
+}
+
+function configurationRequestFromMetadata(
+  metadata: Record<string, unknown> | undefined,
+): { readonly sessionId: string; readonly phase: "invitation" | "operator" } | undefined {
   const tui = metadata?.tui;
-  return typeof tui === "object" && tui !== null
-    && (tui as Record<string, unknown>).local === true
-    && (tui as Record<string, unknown>).configuration === true;
+  if (metadata?.source !== "tui" || typeof tui !== "object" || tui === null) return undefined;
+  const record = tui as Record<string, unknown>;
+  const sessionId = record.configurationSessionId;
+  const phase = record.configurationPhase;
+  return record.configuration === true
+      && (phase === "invitation" || phase === "operator")
+      && typeof sessionId === "string"
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(sessionId)
+    ? { sessionId, phase }
+    : undefined;
 }
 
 function parseProposal(contents: string): AgentConfigurationProposal {
@@ -519,6 +918,7 @@ function parseProposal(contents: string): AgentConfigurationProposal {
     || typeof parsed.rationale !== "string"
     || !Array.isArray(parsed.patch)
     || typeof parsed.createdAt !== "string"
+    || (parsed.role !== undefined && typeof parsed.role !== "string")
   ) {
     throw new Error("The configuration proposal payload was malformed.");
   }
@@ -636,6 +1036,12 @@ function assertProposalContainsNoSecrets(
   proposal: AgentConfigurationProposal,
   env: Record<string, string | undefined>,
 ): void {
+  if (containsUnsafeConfigurationReviewControl(proposal.rationale)) {
+    throw new Error("The proposal rationale contains unsafe terminal or bidi control characters. It was rejected.");
+  }
+  if (proposal.role !== undefined && containsUnsafeConfigurationReviewControl(proposal.role)) {
+    throw new Error("The proposed Role contains unsafe terminal or bidi control characters. It was rejected.");
+  }
   const secretValues = Object.entries(env)
     .filter(([name, value]) => /(?:api.?key|credential|password|secret|token)/iu.test(name) && (value?.length ?? 0) >= 4)
     .map(([, value]) => value!);
@@ -772,35 +1178,132 @@ function toolAuthorityBroadened(
   before: MonoAgentConfigJson["tools"],
   after: MonoAgentConfigJson["tools"],
 ): boolean {
-  const beforeAllowed = new Set(before?.allowedTools ?? []);
-  const afterAllowed = new Set(after?.allowedTools ?? []);
-  const beforeDenied = new Set(before?.disallowedTools ?? []);
-  const afterDenied = new Set(after?.disallowedTools ?? []);
-  const beforeAllowsAll = before?.allowedTools === undefined || beforeAllowed.has("*");
-  const afterAllowsAll = after?.allowedTools === undefined || afterAllowed.has("*");
+  const beforeAllowed = (before?.allowedTools ?? ["*"]).map(normalizeToolPattern);
+  const afterAllowed = (after?.allowedTools ?? ["*"]).map(normalizeToolPattern);
+  const beforeDenied = (before?.disallowedTools ?? []).map(normalizeToolPattern);
+  const afterDenied = (after?.disallowedTools ?? []).map(normalizeToolPattern);
 
-  if (afterAllowsAll) {
-    return !beforeAllowsAll || [...beforeDenied].some((tool) => !afterDenied.has(tool));
+  return afterAllowed.some((allowed) => {
+    // A deny that covers the whole allow pattern leaves no effective authority.
+    if (afterDenied.some((denied) => toolPatternCovers(denied, allowed))) return false;
+
+    // Conservatively require one prior allow pattern to cover the whole new
+    // pattern. Finite exact patterns cannot collectively cover a wildcard.
+    if (!beforeAllowed.some((priorAllowed) => toolPatternCovers(priorAllowed, allowed))) return true;
+
+    // Deny-wins means every part of this allow pattern that was denied before
+    // must remain denied. This catches exact denies hidden by a new MCP server
+    // wildcard, as well as wildcard denies narrowed to exact names.
+    return beforeDenied.some((priorDenied) => {
+      if (afterDenied.some((denied) => toolPatternCovers(denied, priorDenied))) return false;
+      const overlap = toolPatternIntersection(allowed, priorDenied);
+      return overlap !== undefined
+        && !afterDenied.some((denied) => toolPatternCovers(denied, overlap));
+    });
+  });
+}
+
+/**
+ * Tool policy values are exact names except for global `*` and the canonical
+ * MCP server wildcard `mcp__<server>__*`. Return whether every tool matched by
+ * `candidate` is also matched by `covering`.
+ */
+function toolPatternCovers(covering: string, candidate: string): boolean {
+  if (covering === candidate || covering === "*") return true;
+  const prefix = mcpServerWildcardPrefix(covering);
+  if (prefix === undefined) return false;
+  const candidatePrefix = mcpServerWildcardPrefix(candidate);
+  return (candidatePrefix ?? candidate).startsWith(prefix)
+    || appOwnedMcpWildcardCovers(prefix, candidate);
+}
+
+/** Return the narrower pattern when two supported tool patterns overlap. */
+function toolPatternIntersection(left: string, right: string): string | undefined {
+  if (toolPatternCovers(left, right)) return right;
+  if (toolPatternCovers(right, left)) return left;
+  if (left === "mcp__*" && isMcpAuthorityTool(right)) return right;
+  if (right === "mcp__*" && isMcpAuthorityTool(left)) return left;
+  return undefined;
+}
+
+function mcpServerWildcardPrefix(pattern: string): string | undefined {
+  if (!pattern.startsWith("mcp__") || pattern === "mcp__*") return undefined;
+  if (pattern.endsWith("__*")) return pattern.slice(0, -1);
+  const serverName = pattern.slice("mcp__".length);
+  return serverName.length > 0 && !serverName.includes("__")
+    ? `${pattern}__`
+    : undefined;
+}
+
+function normalizeToolPattern(pattern: string): string {
+  const bare = canonicalToolName(pattern);
+  if (bare !== pattern) return bare;
+
+  const qualified = mcpQualifiedTool(pattern);
+  if (qualified === undefined) return pattern;
+  const canonical = canonicalToolName(qualified.tool);
+  return isAppOwnedMcpTool(qualified.server, canonical)
+    ? canonical
+    : pattern;
+}
+
+function mcpQualifiedTool(pattern: string): { readonly server: string; readonly tool: string } | undefined {
+  if (!pattern.startsWith("mcp__") || mcpServerWildcardPrefix(pattern) !== undefined) return undefined;
+  const body = pattern.slice("mcp__".length);
+  const separator = body.lastIndexOf("__");
+  if (separator <= 0 || separator >= body.length - 2) return undefined;
+  return {
+    server: body.slice(0, separator),
+    tool: body.slice(separator + 2),
+  };
+}
+
+function isAppOwnedMcpTool(server: string, tool: string): boolean {
+  return server === ADAPTER_SEND_TOOLS_MCP_SERVER_NAME
+    ? ADAPTER_SEND_TOOL_NAMES.some((name) => name === tool)
+    : server === RUN_HISTORY_MCP_SERVER_NAME && tool === RUN_HISTORY_TOOL_NAME;
+}
+
+function appOwnedMcpWildcardCovers(prefix: string, candidate: string): boolean {
+  if (prefix === `mcp__${ADAPTER_SEND_TOOLS_MCP_SERVER_NAME}__`) {
+    return ADAPTER_SEND_TOOL_NAMES.some((name) => name === candidate);
   }
-  return [...afterAllowed].some((tool) =>
-    tool !== "*"
-    && !afterDenied.has(tool)
-    && ((!beforeAllowsAll && !beforeAllowed.has(tool)) || beforeDenied.has(tool))
-  );
+  return prefix === `mcp__${RUN_HISTORY_MCP_SERVER_NAME}__`
+    && candidate === RUN_HISTORY_TOOL_NAME;
+}
+
+function isAppOwnedTool(candidate: string): boolean {
+  return ADAPTER_SEND_TOOL_NAMES.some((name) => name === candidate)
+    || candidate === RUN_HISTORY_TOOL_NAME;
+}
+
+function isMcpAuthorityTool(candidate: string): boolean {
+  return (candidate.startsWith("mcp__") && candidate !== "mcp__*") || isAppOwnedTool(candidate);
 }
 
 function replaceRoleSection(identity: string, role: string): string {
-  const body = role.trim();
-  if (body.length === 0 || /^##\s/mu.test(body)) {
+  const body = normalizedRoleBody(role);
+  if (/^##\s/mu.test(body)) {
     throw new Error("The generated Role must be non-empty and cannot introduce another level-two Identity section.");
   }
   const match = /^## Role\s*\n([\s\S]*?)(?=\n##\s|$)/mu.exec(identity);
   if (match === null || match.index === undefined) {
-    throw new Error("IDENTITY.md has no canonical ## Role section to replace safely.");
+    throw new Error("The configured identity document has no canonical ## Role section to replace safely.");
   }
   const start = match.index;
   const end = start + match[0].length;
   return `${identity.slice(0, start)}## Role\n\n${body}\n${identity.slice(end).replace(/^\n*/u, "\n")}`;
+}
+
+function normalizedRoleBody(role: string): string {
+  const body = role.trim();
+  if (body.length === 0) {
+    throw new Error("The generated Role must be non-empty.");
+  }
+  if (body.length > 8_000) {
+    throw new Error("The generated Role exceeds the 8,000-character review limit.");
+  }
+  return body;
 }
 
 function formatPatchOperation(operation: JsonPatchOperation): string {
@@ -808,8 +1311,15 @@ function formatPatchOperation(operation: JsonPatchOperation): string {
   if (operation.op === "move" || operation.op === "copy") return `${operation.op} ${operation.from} -> ${operation.path}`;
   if (operation.op === "test") return `verify current value at ${operation.path}`;
   const rendered = JSON.stringify(operation.value);
-  const compact = rendered === undefined ? "" : rendered.length <= 180 ? rendered : `${rendered.slice(0, 179)}…`;
-  return `${operation.op} ${operation.path} = ${compact}`;
+  return `${operation.op} ${operation.path} = ${rendered ?? ""}`;
+}
+
+function formatRoleLocation(cwd: string, identityPath: string): string {
+  const relativePath = relative(resolve(cwd), resolve(identityPath));
+  const display = relativePath.length > 0 && relativePath !== ".." && !relativePath.startsWith(`..${sep}`)
+    ? relativePath
+    : resolve(identityPath);
+  return `${display} → ## Role`;
 }
 
 function pathsOverlap(left: string, right: string): boolean {
@@ -877,6 +1387,21 @@ async function ensureOwnedDirectoryInside(root: string, path: string, label: str
   return current;
 }
 
+/** Resolve an already-created owner-only directory without creating capability ids supplied by a client. */
+async function resolveOwnedDirectoryInside(root: string, path: string, label: string): Promise<string> {
+  const canonicalRoot = await realpath(resolve(root));
+  const absolute = resolve(path);
+  assertLexicalPathInside(canonicalRoot, absolute, label);
+  const segments = relative(canonicalRoot, absolute).split(sep).filter((segment) => segment.length > 0);
+  let current = canonicalRoot;
+  await assertOwnedDirectory(current, "Current agent folder");
+  for (const segment of segments) {
+    current = join(current, segment);
+    await assertOwnedDirectory(current, label);
+  }
+  return current;
+}
+
 async function assertOwnedDirectory(path: string, label: string): Promise<void> {
   assertOwnedDirectoryInfo(await lstat(path), path, label);
 }
@@ -925,7 +1450,7 @@ async function assertPreparedSourcesCurrent(
     const secureRole = await resolveOwnedRegularFileInside(cwd, prepared.rolePath, "Identity file");
     const currentRole = await readFile(secureRole, "utf8");
     if (sha256(currentRole) !== prepared.expectedRoleHash) {
-      throw new Error(`IDENTITY.md changed ${phase}. Nothing was written; run /configure again.`);
+      throw new Error(`Configured identity document changed ${phase}. Nothing was written; run /configure again.`);
     }
   }
 }
@@ -1108,15 +1633,6 @@ function sha256(value: string): string {
 
 function safeFilePart(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/gu, "_").slice(0, 120);
-}
-
-async function readOptional(path: string): Promise<string | undefined> {
-  try {
-    return await readFile(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

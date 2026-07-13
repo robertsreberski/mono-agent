@@ -4,11 +4,26 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { initChangeDisplayRows, secretChecklistDisplayRows } from "../cli.js";
+import { identityRoleDisplayLine, initChangeDisplayRows, secretChecklistDisplayRows } from "../cli.js";
 import { initMonoAgentFolder } from "../init.js";
 import { defaultAnswers } from "../wizard/answers.js";
 
 describe("init result reporting", () => {
+  it("reports the exact Role destination for created, preserved, and dry-run identities", () => {
+    const path = "/agents/demo/IDENTITY.md";
+
+    expect(identityRoleDisplayLine({ path, section: "## Role", status: "created" })).toBe(
+      `Role saved to ${path} → ## Role. Edit ${path} → ## Role later to change it.`,
+    );
+    expect(identityRoleDisplayLine({ path, section: "## Role", status: "preserved" })).toBe(
+      `${path} already existed and was preserved; the entered Role was not written. ` +
+      `Add or edit ${path} → ## Role to set it.`,
+    );
+    expect(identityRoleDisplayLine({ path, section: "## Role", status: "planned-create" })).toBe(
+      `Dry run: Role would be saved to ${path} → ## Role.`,
+    );
+  });
+
   it("reports dry-run creates/updates and configured names without exposing values", async () => {
     const dir = await mkdtemp(join(tmpdir(), "cli-init-output-"));
     const token = "top-secret-value";

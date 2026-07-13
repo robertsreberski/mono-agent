@@ -43,10 +43,10 @@ Fills one config section per choice: built-in channels use `webhook`, `openaiApi
 Question:
 
 ```text
-What is this agent's role, and does this folder already contain knowledge it must respect?
+What exact text belongs in IDENTITY.md → ## Role, and does this folder already contain knowledge it must respect?
 ```
 
-Fills: `context.identityPath` (default `./IDENTITY.md`), optional `context.soulPath`, `runtime.workspace`. `mono-agent init` detects `AGENTS.md`, `CLAUDE.md`, `README.md`, and `SOUL.md` and references them from the generated identity — keep those references rather than copying content.
+Fills: the `## Role` body in the one canonical identity file, `context.identityPath` (default `./IDENTITY.md`), optional `context.soulPath`, and `runtime.workspace`. `mono-agent init` detects `AGENTS.md`, `CLAUDE.md`, `README.md`, and `SOUL.md` and references them from a generated identity — keep those references rather than copying content. If `IDENTITY.md` already exists, preserve it unchanged, say the newly entered Role was not written, and tell the user to add or edit its `## Role` heading manually. Do not assume the heading already exists or store the unused answer elsewhere.
 
 ## 4. Skills
 

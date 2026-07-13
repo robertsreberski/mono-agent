@@ -39,22 +39,34 @@ export interface SupermemoryPluginModule {
 }
 
 export type ImportOptionalPlugin = (specifier: string) => Promise<unknown>;
-export type ResolveOptionalPlugin = (specifier: string, cwd: string) => string;
+export type ResolveOptionalPlugin = (
+  specifier: string,
+  cwd: string,
+  preferAppInstall?: boolean,
+) => string;
 
 export interface SupermemoryPluginResolutionOptions {
-  /** Agent folder whose local node_modules should take precedence. */
+  /** Agent folder that normally owns an explicitly installed optional plugin. */
   readonly cwd?: string;
+  /** Managed workers load only the closure copied beside agent-app. */
+  readonly preferAppInstall?: boolean;
   /** Test seam; production uses dynamic import of the resolved entry point. */
   readonly importModule?: ImportOptionalPlugin;
-  /** Test seam; production resolves the package manifest from cwd, then the app install. */
+  /** Test seam; production resolves the package manifest using the requested precedence. */
   readonly resolveModule?: ResolveOptionalPlugin;
 }
 
 const importOptionalPlugin: ImportOptionalPlugin = async (specifier) =>
   await import(/* @vite-ignore */ specifier);
-const resolveOptionalPlugin: ResolveOptionalPlugin = (specifier, cwd) => {
+const resolveOptionalPlugin: ResolveOptionalPlugin = (specifier, cwd, preferAppInstall = false) => {
   const request = `${specifier}/package.json`;
-  const searchRoots = [join(cwd, "package.json"), import.meta.url];
+  const appRoot = import.meta.url;
+  const agentRoot = join(cwd, "package.json");
+  // Ordinary installs preserve the established explicit agent-folder
+  // override. Managed workers use only the app-side package copied into their
+  // attested closure; a missing copy must fail closed, never fall back to
+  // mutable agent-local code.
+  const searchRoots = preferAppInstall ? [appRoot] : [agentRoot, appRoot];
   let lastError: unknown;
   for (const root of searchRoots) {
     try {
@@ -80,7 +92,7 @@ export async function loadSupermemoryPlugin(
   const resolveModule = options.resolveModule ?? resolveOptionalPlugin;
   let manifestPath: string;
   try {
-    manifestPath = resolveModule(SUPERMEMORY_PLUGIN_PACKAGE, cwd);
+    manifestPath = resolveModule(SUPERMEMORY_PLUGIN_PACKAGE, cwd, options.preferAppInstall === true);
   } catch (error) {
     throw new Error(missingSupermemoryPluginMessage(), { cause: error });
   }
@@ -123,7 +135,7 @@ export function isSupermemoryPluginInstalled(
   const resolveModule = options.resolveModule ?? resolveOptionalPlugin;
   let manifestPath: string;
   try {
-    manifestPath = resolveModule(SUPERMEMORY_PLUGIN_PACKAGE, cwd);
+    manifestPath = resolveModule(SUPERMEMORY_PLUGIN_PACKAGE, cwd, options.preferAppInstall === true);
   } catch {
     return false;
   }
@@ -138,7 +150,11 @@ export function installedSupermemoryPluginVersion(
   const cwd = options.cwd ?? process.cwd();
   const resolveModule = options.resolveModule ?? resolveOptionalPlugin;
   try {
-    return pluginVersionFromManifest(resolveModule(SUPERMEMORY_PLUGIN_PACKAGE, cwd));
+    return pluginVersionFromManifest(resolveModule(
+      SUPERMEMORY_PLUGIN_PACKAGE,
+      cwd,
+      options.preferAppInstall === true,
+    ));
   } catch {
     return undefined;
   }

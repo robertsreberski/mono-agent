@@ -1,3 +1,7 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { CANCEL, ESCAPE, promptMock } = vi.hoisted(() => ({
@@ -129,9 +133,9 @@ vi.mock("@clack/prompts", () => ({
   multiselect: vi.fn(async () => nextPromptAnswer(promptMock.multiselectAnswers, "multiselect")),
   text: vi.fn(async (options: Record<string, unknown>) => {
     promptMock.textCalls.push(options);
-    // New identity-purpose prompt: existing flow tests press Enter on the
+    // Role prompt: existing flow tests press Enter on the
     // supplied default so their unrelated module-input queues stay stable.
-    if (options.message === "What should this agent help with?") {
+    if (options.message === "What Role should be saved to IDENTITY.md → ## Role?") {
       return options.initialValue;
     }
     return nextPromptAnswer(promptMock.textAnswers, "text");
@@ -263,6 +267,9 @@ describe("wizard production flow", () => {
     expect(matrix).toContain("Claude: provider-native sandbox");
     const review = promptMock.notes.find((note) => note.title === "Creation review")?.message ?? "";
     expect(review).toContain("Agent:        Research Companion");
+    expect(review).toContain("Role target:  IDENTITY.md → ## Role");
+    expect(review).toContain("Role text:    Help the operator work effectively in this folder.");
+    expect(review).toContain("Create IDENTITY.md with the entered text as its ## Role body.");
     expect(review).toContain("minimal");
     expect(review).toContain("high");
     expect(review).toContain("2 real model call(s)");
@@ -275,6 +282,30 @@ describe("wizard production flow", () => {
       "Edit choices",
       "Cancel without writing",
     ]);
+  });
+
+  it("warns in Creation review that an existing IDENTITY.md keeps its current Role", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "wizard-existing-identity-"));
+    try {
+      await writeFile(join(cwd, "IDENTITY.md"), "# Operator identity\n\n## Role\n\nKeep me.\n");
+      promptMock.selectAnswers.push("__custom__", "", "", "create");
+      promptMock.autocompleteAnswers.push("codex:gpt-5.6-terra");
+      promptMock.textAnswers.push("Preserved Identity Agent");
+      promptMock.multiselectAnswers.push(["channel:webhook"]);
+      promptMock.confirmAnswers.push(false, false);
+
+      const result = await runInitWizard({ cwd });
+
+      expect(result.status).toBe("answers");
+      const review = promptMock.notes.find((note) => note.title === "Creation review")?.message ?? "";
+      expect(review).toContain("Role target:  IDENTITY.md → ## Role");
+      expect(review).toContain("Role text:    Help the operator work effectively in this folder.");
+      expect(review).toContain(
+        "Preserve the existing IDENTITY.md unchanged; the entered Role text will not be written.",
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it("resolves a uniform managed-SRT mismatch before provider setup can begin", async () => {
@@ -864,7 +895,7 @@ describe("wizard production flow", () => {
     expect(result.answers.name).toBe("Renamed Partner");
     expect(promptMock.textCalls.map((call) => call.message)).toEqual([
       "What should this agent be called?",
-      "What should this agent help with?",
+      "What Role should be saved to IDENTITY.md → ## Role?",
     ]);
     expect(promptMock.autocompleteCalls).toHaveLength(0);
     expect(promptMock.multiselectAnswers).toHaveLength(0);

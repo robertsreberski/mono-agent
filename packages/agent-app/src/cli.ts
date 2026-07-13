@@ -36,7 +36,12 @@ import {
 import { runAuditRuns } from "./audit-runs.js";
 import { runBackfill } from "./backfill.js";
 import {
+  acquireBackgroundWorkerLease,
+  canonicalBackgroundConfigPath,
   defaultBackgroundDeps,
+  ensureBackgroundReady,
+  forceRestartBackground,
+  managedBackgroundEnvironment,
   resolveInstanceTarget,
   restartBackground,
   startBackground,
@@ -44,7 +49,19 @@ import {
   stopBackground,
   tailLogs,
 } from "./background.js";
-import type { BackgroundDeps, InstanceTarget } from "./background.js";
+import type { BackgroundDeps, BackgroundLaunchResult, InstanceTarget } from "./background.js";
+import {
+  MANAGED_BACKGROUND_WORKER_ENV,
+  sanitizeManagedBackgroundWorkerEnvironment,
+} from "./background-runtime.js";
+import {
+  captureBackgroundSnapshot,
+  decodeBackgroundSnapshot,
+  captureDurableBackgroundInputs,
+  loadDurableBackgroundEnvironment,
+  materializeBackgroundRuntimeInputs,
+} from "./background-snapshot.js";
+import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { formatChannelFactValue } from "./channel-fact-format.js";
 import { resolveChannelDrivers } from "./channels.js";
@@ -77,6 +94,7 @@ import {
 import type { InitMonoAgentFolderResult } from "./init.js";
 import { installComposerSkill } from "./install-skill.js";
 import type { InstallSkillTarget } from "./install-skill.js";
+import { deriveLaunchdLabel, launchdPathsFor } from "./launchd.js";
 import { checkManagedProjectSkills, updateManagedProjectSkills } from "./project-skills.js";
 import { runMetrics } from "./metrics.js";
 import type { ModuleValidateExpectation } from "./modules/index.js";
@@ -162,6 +180,8 @@ interface ParsedCliArgs {
   /** Non-flag arguments (e.g. `presets show <id>`). */
   readonly positionals: readonly string[];
   readonly envFile?: string;
+  /** Internal owner-private launchd transport; never a public start option. */
+  readonly expectedBackgroundSnapshot?: string;
   readonly target?: InstallSkillTarget;
   readonly force: boolean;
   /** start: run the blocking foreground worker instead of backgrounding. */
@@ -273,6 +293,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let codexAuthMode: CodexLoginMode | undefined;
   const positionals: string[] = [];
   let envFile: string | undefined;
+  let expectedBackgroundSnapshot: string | undefined;
   let target: InstallSkillTarget | undefined;
   let force = false;
   let foreground = false;
@@ -527,6 +548,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--env-file":
         envFile = requireValue(rest, ++i, flag);
         break;
+      case "--expected-background-snapshot":
+        expectedBackgroundSnapshot = requireValue(rest, ++i, flag);
+        break;
       case "--target": {
         const raw = requireValue(rest, ++i, flag);
         if (raw !== "claude" && raw !== "codex" && raw !== "both") {
@@ -580,8 +604,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if ((local || configure) && cmd !== "tui") {
     throw new Error("--local and --configure are only supported for `mono-agent tui`.");
   }
-  if (configure && !local) {
-    throw new Error("--configure requires `mono-agent tui --local`.");
+  if (configure && local) {
+    throw new Error("--configure attaches to the authoritative background agent; omit --local.");
   }
   if ((project || check || update) && cmd !== "install-skill") {
     throw new Error("--project, --check, and --update are only supported for `mono-agent install-skill`.");
@@ -658,6 +682,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(codexAuthMode === undefined ? {} : { codexAuthMode }),
     positionals,
     ...(envFile === undefined ? {} : { envFile }),
+    ...(expectedBackgroundSnapshot === undefined ? {} : { expectedBackgroundSnapshot }),
     ...(target === undefined ? {} : { target }),
     force,
     foreground,
@@ -830,14 +855,14 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
   },
   {
     signature: "mono-agent tui [--agent <label|sourceId>] [--conversation <id>]\n" +
-      "               [--local [--configure]]",
+      "               [--configure | --local]",
     lines: [
       "Open the operator console from any directory: live chat with full",
       "thinking/tool/telemetry insight, recorded-run replay, and config view.",
       "Discovers running agents via the trace-source registry; one running",
       "agent connects directly, several open a picker.",
-      "--local builds the current folder's responder in-process without a",
-      "daemon; --configure starts the recorded local configuration invitation.",
+      "--configure opens the guided configuration chat on the authoritative",
+      "background agent; --local is an ordinary in-process chat only.",
     ],
   },
   {
@@ -996,6 +1021,23 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     return 2;
   }
 
+  // Only the internal launchd foreground shape may honor the managed-worker
+  // marker. A hostile/global launchctl environment must not sanitize unrelated
+  // commands such as `mono-agent validate` or `mono-agent status`.
+  const managedBackgroundWorker =
+    args.command === "start" && args.foreground && process.env[MANAGED_BACKGROUND_WORKER_ENV] === "1";
+  if (args.expectedBackgroundSnapshot !== undefined && !managedBackgroundWorker) {
+    process.stderr.write(ui.errorLine("--expected-background-snapshot is reserved for the managed LaunchAgent worker."));
+    return 2;
+  }
+  if (managedBackgroundWorker && args.expectedBackgroundSnapshot === undefined) {
+    process.stderr.write(ui.errorLine("Managed LaunchAgent worker is missing its approved background snapshot."));
+    return 0;
+  }
+  if (managedBackgroundWorker) {
+    sanitizeManagedBackgroundWorkerEnvironment(process.env);
+  }
+
   if (args.command === "memory"
     && args.positionals[0] === "adopt-replay"
     && hasUnsupportedReplayAdoptionFlag(argv)) {
@@ -1045,7 +1087,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     case "presets":
       return runPresets(args);
     case "start":
-      return await runStart(args);
+      return await runStart(args, undefined, managedBackgroundWorker);
     case "restart":
     case "stop":
     case "status":
@@ -1058,6 +1100,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         configPath: resolve(process.cwd(), args.configPath ?? "mono-agent.config.json"),
         cwd: process.cwd(),
         env: process.env,
+        ...(args.envFile === undefined ? {} : { envFile: args.envFile }),
         ...(args.agent === undefined ? {} : { agent: args.agent }),
         ...(args.conversation === undefined ? {} : { conversationId: args.conversation }),
         ...(args.local === true ? { local: true } : {}),
@@ -1611,6 +1654,14 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
             );
             return 1;
           }
+          // A missing default .env is a valid, durable empty environment. Keep
+          // proving its absence in the approved snapshot, but do not turn that
+          // default into an explicit --env-file argument: the managed worker
+          // treats an explicitly named missing file as an operator error.
+          const backgroundEnvFile = args.envFile === undefined
+            && committedDotenvSnapshot.fingerprint === "missing"
+            ? undefined
+            : environment.dotenvPath;
           const postWriteConflicts = selectedSecretEnvironmentConflicts(
             result.plan,
             environment.shellEnv,
@@ -1644,6 +1695,33 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
           if (!sameConcreteEnvironment(effectiveEnv, postWriteEnv)) {
             printIncompleteSetup(
               ["The durable environment changed after the primary-model check. Retry setup before claiming readiness."],
+              result.configPath,
+            );
+            return 1;
+          }
+          let committedBackgroundSnapshot: BackgroundSnapshot;
+          let committedBackgroundEnvironment: Readonly<Record<string, string>>;
+          let committedBackgroundConfigSourceFingerprint: string;
+          try {
+            const durableInputs = await captureDurableBackgroundInputs({
+              cwd,
+              configPath: result.configPath,
+              envFile: environment.dotenvPath,
+              operationalEnvironment: managedBackgroundEnvironment(postWriteEnv),
+            });
+            committedBackgroundSnapshot = durableInputs.snapshot;
+            committedBackgroundEnvironment = durableInputs.environment;
+            committedBackgroundConfigSourceFingerprint = durableInputs.configSourceFingerprint;
+          } catch {
+            printIncompleteSetup(
+              ["The complete committed config, dotenv, Identity, Soul, and MCP snapshot could not be proven safely."],
+              result.configPath,
+            );
+            return 1;
+          }
+          if (committedBackgroundConfigSourceFingerprint !== committedConfigSnapshot.fingerprint) {
+            printIncompleteSetup(
+              ["The committed config or durable environment changed before the background snapshot was captured."],
               result.configPath,
             );
             return 1;
@@ -1706,7 +1784,7 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
           }
           process.stdout.write(
             ui.badge("ok") + ui.style.green("All runtime route checks passed — every selected model produced a real no-tool response.\n") +
-            ui.badge("ok") + ui.style.green("Agent ready — every selected capability passed full validation.\n"),
+            ui.badge("ok") + ui.style.green("Agent configuration validated — every selected capability passed full validation.\n"),
           );
           const preTuiConfigDrift = await firstRunConfigDrift(
             result.configPath,
@@ -1732,13 +1810,52 @@ async function runInit(args: ParsedCliArgs, environment: RunInitEnvironmentConte
             printIncompleteSetup([preTuiSecretGuard.message], result.configPath);
             return 1;
           }
-          process.stdout.write(ui.badge("ok") + ui.style.green("Opening the ready agent in the local configuration TUI.\n"));
+          if (process.platform !== "darwin") {
+            printUnsupportedGuidedInitHandoff(result.configPath, backgroundEnvFile);
+            return 0;
+          }
+          process.stdout.write(ui.hint("Starting the authoritative background agent before configuration chat…"));
+          let background: BackgroundLaunchResult;
+          try {
+            const resolvedBackgroundTarget = await resolveInstanceTarget({
+              args: {
+                configPath: result.configPath,
+                ...(backgroundEnvFile === undefined ? {} : { envFile: backgroundEnvFile }),
+              },
+              env: { ...committedBackgroundEnvironment },
+              cwd,
+              cliPath: fileURLToPath(import.meta.url),
+              requireTui: true,
+            });
+            const backgroundTarget = {
+              ...resolvedBackgroundTarget,
+              expectedSnapshot: committedBackgroundSnapshot,
+            };
+            background = await ensureBackgroundReady(
+              backgroundTarget,
+              defaultBackgroundDeps(),
+            );
+          } catch (error) {
+            printUnexpectedGuidedBackgroundFailure(result.configPath, backgroundEnvFile, error);
+            return 1;
+          }
+          if (!background.ok) {
+            process.stderr.write(ui.hint(
+              "The validated agent files were preserved, but configuration chat was not opened because the background agent is not ready.",
+            ));
+            return 1;
+          }
+          process.stdout.write(
+            ui.badge("ok") + ui.style.green("Agent ready — the background process reported startup complete.\n") +
+            ui.badge("ok") + ui.style.green("Opening configuration chat on the authoritative background agent.\n"),
+          );
           const { runTui } = await import("./tui-command.js");
-          return await withExactProcessEnvironment(postWriteEnv, () => runTui({
+          return await withExactProcessEnvironment(committedBackgroundEnvironment, () => runTui({
             configPath: result.configPath,
             cwd,
-            env: postWriteEnv,
-            local: true,
+            env: committedBackgroundEnvironment,
+            ...(backgroundEnvFile === undefined ? {} : { envFile: backgroundEnvFile }),
+            agent: background.source.sourceId,
             configure: true,
           }));
         }
@@ -2996,7 +3113,7 @@ async function runAuth(args: ParsedCliArgs): Promise<number> {
   }
 
   const cwd = process.cwd();
-  const configPath = resolve(cwd, args.configPath ?? "mono-agent.config.json");
+  const configPath = await canonicalBackgroundConfigPath(cwd, args.configPath);
   const directCodex = provider === "codex";
   if (directCodex && args.piAuthPath !== undefined) {
     process.stderr.write(ui.errorLine("--pi-auth-path does not apply to direct Codex login."));
@@ -3235,6 +3352,20 @@ export function initChangeDisplayRows(result: InitMonoAgentFolderResult): readon
   }));
 }
 
+/** Human-readable, value-free proof of where the wizard Role did (or did not) land. */
+export function identityRoleDisplayLine(identityRole: InitMonoAgentFolderResult["identityRole"]): string {
+  switch (identityRole.status) {
+    case "created":
+      return `Role saved to ${identityRole.path} → ${identityRole.section}. ` +
+        `Edit ${identityRole.path} → ${identityRole.section} later to change it.`;
+    case "preserved":
+      return `${identityRole.path} already existed and was preserved; the entered Role was not written. ` +
+        `Add or edit ${identityRole.path} → ${identityRole.section} to set it.`;
+    case "planned-create":
+      return `Dry run: Role would be saved to ${identityRole.path} → ${identityRole.section}.`;
+  }
+}
+
 export interface SecretChecklistDisplayRow {
   readonly envVar: string;
   readonly label: string;
@@ -3267,6 +3398,7 @@ function printInitResult(result: InitMonoAgentFolderResult): void {
     // included in this result or printed here.
     process.stdout.write(`${prefix}${rendered}  ${row.path}\n`);
   }
+  process.stdout.write(`\n${identityRoleDisplayLine(result.identityRole)}\n`);
   if (result.knowledgeFiles.length > 0) {
     process.stdout.write(`\nIdentity references existing knowledge: ${ui.style.cyan(result.knowledgeFiles.join(", "))}\n`);
   }
@@ -3318,14 +3450,59 @@ function printSecretsChecklist(
 }
 
 function printNextSteps(configPath: string): void {
+  const startCommand = process.platform === "darwin" ? "mono-agent start" : "mono-agent start --foreground";
+  const tuiCommand = process.platform === "darwin"
+    ? `mono-agent tui --configure ${ui.style.dim("(after the agent reports ready)")}`
+    : `mono-agent tui ${ui.style.dim("(ordinary chat after foreground startup; edit config files manually)")}`;
   process.stdout.write(
     "\n" +
       ui.heading("Next steps") +
       `  ${ui.style.bold("1.")} Edit ${configPath} ${ui.style.dim("(model, channels, skills, memory, sandbox)")}\n` +
       `  ${ui.style.bold("2.")} mono-agent validate\n` +
-      `  ${ui.style.bold("3.")} mono-agent tui --local --configure\n` +
-      `  ${ui.style.bold("4.")} ${process.platform === "darwin" ? "mono-agent start" : "mono-agent start --foreground"} ${ui.style.dim("(optional background/long-running service)")}\n`,
+      `  ${ui.style.bold("3.")} ${startCommand}\n` +
+      `  ${ui.style.bold("4.")} ${tuiCommand}\n`,
   );
+}
+
+function printUnsupportedGuidedInitHandoff(configPath: string, envFile?: string): void {
+  const flags = guidedHandoffFlags(configPath, envFile);
+  process.stdout.write(
+    "\n" +
+      ui.heading("Manual start required") +
+      ui.style.yellow("Automatic background start and configuration chat require macOS launchd.\n") +
+      ui.style.dim("The validated agent files were preserved, but no agent process was started and readiness is not claimed.\n") +
+      `  ${ui.style.bold("Configure manually:")} edit ${configPath} and IDENTITY.md, then run mono-agent validate${flags}\n` +
+      `  ${ui.style.bold("Terminal 1:")} mono-agent start --foreground${flags}\n` +
+      `  ${ui.style.bold("Terminal 2:")} mono-agent tui${flags} ${ui.style.dim("(ordinary chat after startup completes)")}\n` +
+      ui.style.dim("Conversational configuration requires the managed macOS background lifecycle.\n"),
+  );
+}
+
+function printUnexpectedGuidedBackgroundFailure(configPath: string, envFile: string | undefined, error: unknown): void {
+  const flags = guidedHandoffFlags(configPath, envFile);
+  const paths = launchdPathsFor(deriveLaunchdLabel(configPath));
+  process.stderr.write(ui.errorLine(
+    `The background lifecycle failed unexpectedly: ${error instanceof Error ? error.message : String(error)}`,
+  ));
+  process.stderr.write(ui.style.dim(
+    "The validated agent files were preserved, but configuration chat was not opened. Retry or inspect with:\n",
+  ));
+  process.stderr.write(
+    `  ${ui.style.gray("logs:  ")} ${paths.stderrPath}\n` +
+      `          ${paths.stdoutPath}\n` +
+      `  ${ui.style.gray("retry: ")} mono-agent start${flags}\n` +
+      `  ${ui.style.gray("status:")} mono-agent status${flags}\n` +
+      `  ${ui.style.gray("follow:")} mono-agent logs${flags} --follow\n`,
+  );
+}
+
+function guidedHandoffFlags(configPath: string, envFile?: string): string {
+  return ` --config ${shellCommandArgument(configPath)}`
+    + (envFile === undefined ? "" : ` --env-file ${shellCommandArgument(envFile)}`);
+}
+
+function shellCommandArgument(value: string): string {
+  return /^[a-zA-Z0-9_./:@%+=,-]+$/u.test(value) ? value : `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 async function runInstallSkill(args: ParsedCliArgs): Promise<number> {
@@ -3730,13 +3907,24 @@ type PreflightFailure = Extract<PreflightResult, { ok: false }>;
 export async function ensureStartable(
   args: ParsedCliArgs,
   env: Record<string, string | undefined> = process.env,
+  options: {
+    readonly cwd?: string;
+    readonly configPath?: string;
+    readonly preferAppPluginInstall?: boolean;
+  } = {},
 ): Promise<PreflightResult> {
-  const cwd = process.cwd();
-  const configPath = resolve(cwd, args.configPath ?? "mono-agent.config.json");
+  const cwd = options.cwd ?? process.cwd();
+  const configPath = options.configPath ?? resolve(cwd, args.configPath ?? "mono-agent.config.json");
   if (!(await pathExists(configPath))) {
     return { ok: false, code: 2, kind: "missing-config", configPath };
   }
-  const report = await validateMonoAgentFolder({ env, cwd, configPath, liveness: false });
+  const report = await validateMonoAgentFolder({
+    env,
+    cwd,
+    configPath,
+    liveness: false,
+    ...(options.preferAppPluginInstall === true ? { preferAppPluginInstall: true } : {}),
+  });
   if (!report.ok) {
     return { ok: false, code: 1, kind: "validation", report };
   }
@@ -3770,9 +3958,10 @@ async function pathExists(path: string): Promise<boolean> {
 async function runStart(
   args: ParsedCliArgs,
   env?: Record<string, string | undefined>,
+  managedBackgroundWorker = false,
 ): Promise<number> {
   if (args.foreground) {
-    return await runForeground(args, env);
+    return await runForeground(args, env, managedBackgroundWorker);
   }
   return await runBackgroundCommand(args, "start", env);
 }
@@ -3785,26 +3974,100 @@ async function runStart(
 async function runForeground(
   args: ParsedCliArgs,
   env: Record<string, string | undefined> = process.env,
+  managedBackgroundWorker = false,
 ): Promise<number> {
-  const pre = await ensureStartable(args, env);
-  if (!pre.ok) {
-    printPreflightFailure(pre);
-    return pre.code;
+  const cwd = process.cwd();
+  const configPath = await canonicalBackgroundConfigPath(cwd, args.configPath);
+  const startupEnvironment = { ...env };
+
+  let lease;
+  try {
+    lease = await acquireBackgroundWorkerLease(configPath);
+  } catch (error) {
+    process.stderr.write(ui.errorLine(
+      `Could not acquire the worker singleton lease: ${error instanceof Error ? error.message : String(error)}`,
+    ));
+    return 1;
+  }
+  if (lease === undefined) {
+    process.stderr.write(ui.errorLine(
+      `Another foreground or managed background worker already owns ${configPath}; refusing to start a duplicate.`,
+    ));
+    return 1;
   }
 
-  const app = await startMonoAgentApp({
-    cwd: process.cwd(),
-    env,
-    ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
-    logger: consoleLogger(),
-  });
+  let runtimeInputs: Awaited<ReturnType<typeof materializeBackgroundRuntimeInputs>> | undefined;
+  let app: MonoAgentApp | undefined;
+  try {
+    let backgroundSnapshot: BackgroundSnapshot | undefined;
+    if (managedBackgroundWorker) {
+      try {
+        backgroundSnapshot = decodeBackgroundSnapshot(args.expectedBackgroundSnapshot ?? "");
+        const dotenvPath = resolve(cwd, args.envFile ?? ".env");
+        if (backgroundSnapshot.configPath !== configPath || backgroundSnapshot.dotenvPath !== dotenvPath) {
+          throw new Error("The approved snapshot paths do not match the managed worker arguments.");
+        }
+        runtimeInputs = await materializeBackgroundRuntimeInputs({
+          snapshot: backgroundSnapshot,
+          cwd,
+          env: startupEnvironment,
+        });
+      } catch (error) {
+        process.stderr.write(ui.errorLine(
+          `Managed worker could not freeze its startup snapshot: ${error instanceof Error ? error.message : String(error)}`,
+        ));
+        // KeepAlive restarts only unsuccessful exits. This refusal cannot heal
+        // without a new approved snapshot, so exit successfully and let the
+        // controller unload/recreate the job instead of retrying forever.
+        return 0;
+      }
+    }
 
-  await printAppStatus(app);
-  // Block until a shutdown signal. Returning here (the old behavior) let the
-  // process exit immediately whenever no channel owned a live handle — e.g. a
-  // traceability-only config, now that the operator console is retired and the
-  // trace heartbeat timer is unref'd.
-  return await waitForShutdownSignal(app);
+    const preflightEnvironment = runtimeInputs?.environment ?? startupEnvironment;
+    const pre = await ensureStartable(args, preflightEnvironment, runtimeInputs === undefined
+      ? {}
+      : {
+          cwd,
+          configPath: runtimeInputs.configPath,
+          preferAppPluginInstall: true,
+        });
+    if (!pre.ok) {
+      printPreflightFailure(pre);
+      return managedBackgroundWorker ? 0 : pre.code;
+    }
+    try {
+      await readCliConfigSnapshot(runtimeInputs?.configPath ?? configPath);
+    } catch (error) {
+      process.stderr.write(ui.errorLine(
+        `Cannot establish the foreground config identity: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+      return managedBackgroundWorker ? 0 : 1;
+    }
+
+    app = await startMonoAgentApp({
+      cwd,
+      configPath,
+      ...(runtimeInputs === undefined ? {} : { configReadPath: runtimeInputs.configPath }),
+      env: runtimeInputs?.environment ?? startupEnvironment,
+      logger: consoleLogger(),
+      ...(backgroundSnapshot === undefined ? {} : { backgroundSnapshot }),
+    });
+
+    await printAppStatus(app);
+    // Block until a shutdown signal. Returning here (the old behavior) let the
+    // process exit immediately whenever no channel owned a live handle — e.g. a
+    // traceability-only config, now that the operator console is retired and the
+    // trace heartbeat timer is unref'd.
+    return await waitForShutdownSignal(app);
+  } finally {
+    await app?.stop().catch(() => undefined);
+    await runtimeInputs?.dispose().catch(() => undefined);
+    await lease.release().catch((error) => {
+      process.stderr.write(ui.style.yellow(
+        `⚠ Could not cleanly release worker singleton lease ${lease.path}: ${error instanceof Error ? error.message : String(error)}`,
+      ) + "\n");
+    });
+  }
 }
 
 async function runBackgroundCommand(
@@ -3817,34 +4080,74 @@ async function runBackgroundCommand(
     return guard;
   }
 
+  let controllerEnvironment: Record<string, string | undefined>;
+  try {
+    controllerEnvironment = await loadDurableBackgroundEnvironment({
+      cwd: process.cwd(),
+      ...(args.envFile === undefined ? {} : { envFile: args.envFile }),
+      operationalEnvironment: managedBackgroundEnvironment(env),
+    });
+  } catch (error) {
+    if (command === "start" || command === "restart") {
+      process.stderr.write(ui.errorLine(
+        `Cannot reconstruct the managed worker environment: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+      process.stderr.write(ui.hint("No LaunchAgent changes were made. Fix the dotenv path and retry."));
+      return 1;
+    }
+    controllerEnvironment = { ...env };
+    process.stderr.write(ui.style.yellow(
+      `⚠ Could not reconstruct the managed worker environment; ${command} will use the current shell only: ${error instanceof Error ? error.message : String(error)}`,
+    ) + "\n");
+  }
+
   // Refuse to launch (or relaunch) an unconfigured/broken folder BEFORE writing
   // the plist and bootstrapping launchctl — otherwise the worker would crash and
   // launchd's KeepAlive would retry it forever. stop/status/logs stay ungated so
   // a broken instance can still be inspected and torn down.
   if (command === "start" || command === "restart") {
-    const pre = await ensureStartable(args, env);
+    const pre = await ensureStartable(args, controllerEnvironment);
     if (!pre.ok) {
       printPreflightFailure(pre);
       return pre.code;
     }
   }
 
-  const target = await resolveInstanceTarget({
+  let target = await resolveInstanceTarget({
     args: {
       ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
       ...(args.envFile === undefined ? {} : { envFile: args.envFile }),
     },
-    env,
+    env: controllerEnvironment,
     cwd: process.cwd(),
     cliPath: fileURLToPath(import.meta.url),
   });
+  if (command === "start" || command === "restart") {
+    try {
+      const expectedSnapshot = await captureBackgroundSnapshot({
+        cwd: target.cwd,
+        configPath: target.configPath,
+        ...(target.envFile === undefined ? {} : { envFile: target.envFile }),
+        env: controllerEnvironment,
+      });
+      target = { ...target, expectedSnapshot };
+    } catch (error) {
+      process.stderr.write(ui.errorLine(
+        `Cannot prove the durable background snapshot: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+      process.stderr.write(ui.hint("No LaunchAgent changes were made. Fix the config/dotenv/Identity/Soul/MCP mismatch and retry."));
+      return 1;
+    }
+  }
   const deps = defaultBackgroundDeps();
 
   switch (command) {
     case "start":
       return await startBackground(target, deps);
     case "restart":
-      return args.force ? await runForceRestart(target, deps) : await restartBackground(target, deps);
+      return args.force
+        ? await runForceRestart(target, deps, controllerEnvironment)
+        : await restartBackground(target, deps);
     case "stop":
       return await stopBackground(target, deps);
     case "status":
@@ -3860,19 +4163,20 @@ async function runBackgroundCommand(
  * they are deleted; the runtime recreates the store on the next session, and the
  * agent's durable memory lives elsewhere, so only resumable transcripts are dropped.
  */
-async function runForceRestart(target: InstanceTarget, deps: BackgroundDeps): Promise<number> {
-  const stopCode = await stopBackground(target, deps);
-  if (stopCode !== 0) {
-    return stopCode;
-  }
-  const result = await purgeSessions({ env: process.env, cwd: target.cwd, configPath: target.configPath });
-  if (result.removed) {
-    const count = result.files === 0 ? "" : ` (${result.files} session file${result.files === 1 ? "" : "s"})`;
-    process.stdout.write(`${ui.badge("ok")}${ui.style.bold("Cleared persisted sessions")}${count}.\n`);
-  } else {
-    process.stdout.write(ui.style.dim("No persisted sessions to clear (in-memory or none on disk).") + "\n");
-  }
-  return await startBackground(target, deps);
+async function runForceRestart(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  environment: Record<string, string | undefined>,
+): Promise<number> {
+  return await forceRestartBackground(target, deps, async () => {
+    const result = await purgeSessions({ env: environment, cwd: target.cwd, configPath: target.configPath });
+    if (result.removed) {
+      const count = result.files === 0 ? "" : ` (${result.files} session file${result.files === 1 ? "" : "s"})`;
+      process.stdout.write(`${ui.badge("ok")}${ui.style.bold("Cleared persisted sessions")}${count}.\n`);
+    } else {
+      process.stdout.write(ui.style.dim("No persisted sessions to clear (in-memory or none on disk).") + "\n");
+    }
+  });
 }
 
 /**
@@ -4035,8 +4339,17 @@ export function waitForShutdownSignal(app: Pick<MonoAgentApp, "stop">): Promise<
       clearInterval(keepAlive);
       void (async () => {
         process.stdout.write("\n" + ui.hint(`Received ${signal}; stopping mono agent app…`));
-        await app.stop();
-        resolve(0);
+        try {
+          await app.stop();
+          resolve(0);
+        } catch (error) {
+          process.stderr.write(ui.errorLine(
+            `Foreground shutdown failed: ${error instanceof Error ? error.message : String(error)}`,
+          ));
+          // Resolve so runForeground's finally block can retry idempotent app
+          // cleanup and release the process-lifetime singleton lease.
+          resolve(1);
+        }
       })();
     };
     process.on("SIGINT", onSignal);

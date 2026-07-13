@@ -26,6 +26,11 @@ describe("initMonoAgentFolder", () => {
 
     expect(result.created).toContain(result.configPath);
     expect(result.created).toContain(result.identityPath);
+    expect(result.identityRole).toEqual({
+      path: result.identityPath,
+      section: "## Role",
+      status: "created",
+    });
     expect(result.knowledgeFiles).toEqual([]);
     expect(result.plan.configJson).toBeDefined();
 
@@ -47,7 +52,12 @@ describe("initMonoAgentFolder", () => {
     const identity = await readFile(result.identityPath, "utf8");
     expect(identity).toContain("# Identity");
     expect(identity).toContain("You are Agent App Init");
-    expect(identity).toContain("Help the operator work effectively in this folder.");
+    expect(identity).toContain("## Role\n\nHelp the operator work effectively in this folder.\n\n## Knowledge");
+    expect(identity).toContain(
+      "## Knowledge\n\nNo existing project knowledge files were detected. " +
+      "Add references to authoritative knowledge here when available.\n\n## Boundaries",
+    );
+    expect(identity).not.toContain("describe the agent's purpose and boundaries here");
   });
 
   it("composes the supplied answers (model + extra channels)", async () => {
@@ -67,7 +77,9 @@ describe("initMonoAgentFolder", () => {
     expect(config.slack).toEqual({ enabled: true });
     expect(config.cron).toEqual({ dir: "cron" });
     expect(await readFile(result.identityPath, "utf8")).toContain("You are Atlas, a mono agent");
-    expect(await readFile(result.identityPath, "utf8")).toContain("Coordinate research for this project.");
+    expect(await readFile(result.identityPath, "utf8")).toContain(
+      "## Role\n\nCoordinate research for this project.\n\n## Knowledge",
+    );
   });
 
   it("writes fallback models, effort, and memory when the answers request them", async () => {
@@ -253,9 +265,29 @@ describe("initMonoAgentFolder", () => {
 
     expect(result.skipped).toContain(configPath);
     expect(result.skipped).toContain(result.identityPath);
+    expect(result.identityRole).toEqual({
+      path: result.identityPath,
+      section: "## Role",
+      status: "preserved",
+    });
     const config = JSON.parse(await readFile(configPath, "utf8"));
     expect(config.runtime.model).toBe("codex:gpt-5.6-terra");
     expect(await readFile(result.identityPath, "utf8")).toBe("# Mine\n");
+  });
+
+  it("reports a planned Role write without touching the identity during dry-run", async () => {
+    const result = await initMonoAgentFolder({
+      dir,
+      dryRun: true,
+      answers: defaultAnswers({ purpose: "Preserve this exact Role text." }),
+    });
+
+    expect(result.identityRole).toEqual({
+      path: result.identityPath,
+      section: "## Role",
+      status: "planned-create",
+    });
+    await expect(access(result.identityPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("refuses to write generated capability files through a symlinked parent", async () => {

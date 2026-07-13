@@ -86,6 +86,42 @@ describe("ChatView model override (Layer 3)", () => {
     expect(metadata[1]).toEqual({ source: "tui" });
   });
 
+  it("does not carry ordinary model or effort overrides into configuration turns", async () => {
+    const { responder, metadata } = capturingResponder();
+    const { chat } = setup(responder);
+    chat.setModelOverride("opencode:test/model");
+    chat.setEffortOverride("high");
+
+    chat.beginConfiguration("open configuration", {
+      conversationId: "configuration",
+      sessionId: "11111111-2222-4333-8444-555555555555",
+      operatorPrompt: "handle one configuration response",
+    });
+    await waitForSettle(chat);
+    chat.editor.onSubmit?.("make a safe change");
+    await waitForSettle(chat);
+
+    expect(metadata).toHaveLength(2);
+    expect(metadata[0]).toEqual({
+      source: "tui",
+      tui: {
+        configuration: true,
+        configurationSessionId: "11111111-2222-4333-8444-555555555555",
+        configurationPhase: "invitation",
+      },
+    });
+    expect(metadata[1]).toEqual({
+      source: "tui",
+      tui: {
+        configuration: true,
+        configurationSessionId: "11111111-2222-4333-8444-555555555555",
+        configurationPhase: "operator",
+      },
+    });
+    expect(chat.getModelOverride()).toBe("opencode:test/model");
+    expect(chat.getEffortOverride()).toBe("high");
+  });
+
   it("exposes the current override for the picker's (current) marker", () => {
     const { chat } = setup();
     expect(chat.getModelOverride()).toBeUndefined();

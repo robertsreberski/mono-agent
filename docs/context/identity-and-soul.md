@@ -26,9 +26,9 @@ Both are part of the assembled context block. For how they sit alongside memory 
 and other human-facing labels. The A2A adapter also uses it as the default Agent
 Card name when its plugin-specific name is omitted. It never alters filesystem
 paths, service/source ids, provider identity, or session keys. The config field is
-not injected into prompts at runtime. Guided init does copy the chosen name into
-the newly scaffolded, editable `IDENTITY.md`; later `agent.name` changes do not
-rewrite that file.
+not injected into prompts at runtime. Guided init copies the chosen name only into
+a newly scaffolded, editable `IDENTITY.md`; later `agent.name` changes do not
+rewrite that file, and an existing identity is never overwritten.
 
 ```json
 {
@@ -40,6 +40,8 @@ rewrite that file.
 ## Identity (required)
 
 `context.identityPath` points at the markdown loaded into **every** prompt. It defines the agent's role, scope, and hard boundaries. `mono-agent init` scaffolds an `IDENTITY.md` for you.
+
+During guided init, the Role prompt and Creation review both name the single canonical destination: `IDENTITY.md` → `## Role`. In a new file, the accepted Role text becomes that section's body without paraphrasing. The post-create summary repeats where to edit it later. If `IDENTITY.md` already exists, init preserves it byte-for-byte, reports that the entered Role was not written, and tells you to add or edit its `## Role` section. It never assumes a pre-existing identity already has that heading, and it never stores the unused answer in config or a second identity location.
 
 ```json
 {
@@ -64,9 +66,12 @@ The identity document should be short and stable. Rather than copy-pasting proje
 
 You are the build-and-release agent for the `acme-web` repo.
 
-Your role:
+## Role
+
 - Triage failing CI, propose fixes, and open PRs against `main`.
 - Stay inside the repo working tree; never touch infra or secrets.
+
+## Knowledge
 
 Authoritative project guidance (read before acting):
 - ./AGENTS.md — contribution rules and review gates
