@@ -137,7 +137,7 @@ npm update -g @mono-agent/tui
 
 The `create-mono-agent` installer, `@mono-agent/agent-app`, `@mono-agent/tui`, and every other `@mono-agent/*` package release in lockstep at one version — keep any pinned references (scoped or the `create-mono-agent` installer) on the same version.
 
-For reproducible installs or one-shot scaffolds, pin the version explicitly to a published release — use the same version across every `@mono-agent/*` package (pick one from [GitHub Releases](https://github.com/robertsreberski/mono-agent/releases)):
+For reproducible installs or one-shot scaffolds, pin the version explicitly to a published release — use the same version across every `@mono-agent/*` package (pick one from the [published npm versions](https://www.npmjs.com/package/@mono-agent/agent-app?activeTab=versions)):
 
 ```bash
 version=<published-version>
@@ -145,8 +145,10 @@ npm i -g "@mono-agent/agent-app@$version" "@mono-agent/tui@$version"
 npm exec --package "@mono-agent/agent-app@$version" -- mono-agent init
 ```
 
-Review published version notes in [GitHub Releases](https://github.com/robertsreberski/mono-agent/releases).
-For the 0.7.0 product-v1 milestone, follow the complete [existing-agent cutover checklist](/memory/validation-and-cli/#enable-v1-on-an-existing-agent) after updating the binaries.
+Source collaborators can review each version's notes in the repository
+`CHANGELOG.md` and match them to its immutable source tag. Public installers can
+confirm every published package version through npm metadata.
+For the Product v1 line, first published to npm as 0.8.0, follow the complete [existing-agent cutover checklist](/memory/validation-and-cli/#enable-v1-on-an-existing-agent) after updating the binaries.
 
 ## Run an unreleased build
 

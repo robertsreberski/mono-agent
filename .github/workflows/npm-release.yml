@@ -21,6 +21,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag points at current main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          test "$(git rev-parse "${GITHUB_REF_NAME}^{commit}")" = "$(git rev-parse HEAD)"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -84,8 +93,15 @@ jobs:
             "$@"
           }
           VERSION="${GITHUB_REF_NAME#v}"
-          TMP_PREFIX="$(mktemp -d)"
-          retry npm install -g --prefix "$TMP_PREFIX" --prefer-online "@mono-agent/tui@${VERSION}"
-          "$TMP_PREFIX/bin/mono-agent-tui" --help
-          retry npm install -g --prefix "$TMP_PREFIX" --prefer-online "@mono-agent/agent-app@${VERSION}"
-          "$TMP_PREFIX/bin/mono-agent" --help
+          TMP_ROOT="$(mktemp -d)"
+          trap 'rm -rf -- "$TMP_ROOT"' EXIT
+
+          retry npm install -g --prefix "$TMP_ROOT/tui" --prefer-online "@mono-agent/tui@${VERSION}"
+          "$TMP_ROOT/tui/bin/mono-agent-tui" --help
+
+          retry npm install -g --prefix "$TMP_ROOT/app" --prefer-online "@mono-agent/agent-app@${VERSION}"
+          "$TMP_ROOT/app/bin/mono-agent" --help
+
+          retry npm install -g --prefix "$TMP_ROOT/create" --prefer-online "create-mono-agent@${VERSION}"
+          "$TMP_ROOT/create/bin/create-mono-agent" --help
+          "$TMP_ROOT/create/bin/mono-agent" --help
