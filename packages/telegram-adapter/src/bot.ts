@@ -1653,6 +1653,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       runner: {
         // Self-retry transient getUpdates errors (network blips) with exponential
         // backoff before the task rejects and the monitor restarts the runner.
+        // grammY otherwise prints the full nested transport error via
+        // console.error, which can include the credential-bearing Bot API URL.
+        // Terminal failures still flow through the adapter's redacted logger.
+        silent: true,
         retryInterval: "exponential",
         maxRetryTime: DEFAULT_RUNNER_MAX_RETRY_TIME_MS,
         fetch: {

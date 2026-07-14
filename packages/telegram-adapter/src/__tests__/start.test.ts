@@ -229,6 +229,7 @@ describe("startTelegramAdapter", () => {
       const runOptions = runnerModuleMocks.run.mock.calls[0]?.[1];
       expect(runOptions).toMatchObject({
         runner: {
+          silent: true,
           retryInterval: "exponential",
           maxRetryTime: 90_000,
           fetch: { timeout: 30, allowed_updates: ["message"] },
@@ -242,6 +243,7 @@ describe("startTelegramAdapter", () => {
       expect(runnerModuleMocks.run).toHaveBeenCalledTimes(1);
       expect(onPollingError).not.toHaveBeenCalled();
       expect(onPollingRecovered).not.toHaveBeenCalled();
+      expect(consoleError).not.toHaveBeenCalled();
     } finally {
       await result?.stop();
       consoleError.mockRestore();
