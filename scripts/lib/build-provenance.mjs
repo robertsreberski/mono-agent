@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export const BUILD_MARKER_FILENAME = ".mono-agent-build.json";
 export const BUILD_LOCK_FILENAME = ".mono-agent-build.lock";
@@ -642,6 +642,17 @@ function dependencyMode(stat) {
   return Number(stat.mode & 0o7777n);
 }
 
+function isVitestCacheContainer(path) {
+  return basename(path) === ".vite" && basename(dirname(path)) === "node_modules";
+}
+
+function isIgnoredVitestCacheDirectory(path, stat) {
+  return basename(path) === "vitest"
+    && isVitestCacheContainer(dirname(path))
+    && stat.isDirectory()
+    && !stat.isSymbolicLink();
+}
+
 function readStableDependencySymlink(repo, topology, path, expected) {
   if (!expected.isSymbolicLink()) throw new Error("runtime dependency entry changed");
   const target = safeDependencySymlinkTarget(repo, topology, path, readlinkSync(path, "utf8"));
@@ -669,20 +680,34 @@ function collectRuntimeDependencyTree(repo, topology) {
     if (!before.isDirectory() || before.isSymbolicLink()) {
       throw new Error("unsafe runtime dependency directory");
     }
-    addEntry(path, {
-      type: "directory",
-      path,
-      signature: statSignature(before),
-      mode: dependencyMode(before),
-    });
-    const names = readdirSync(path).sort(compareUtf8);
-    for (const name of names) {
+    const children = readdirSync(path)
+      .sort(compareUtf8)
+      .map((name) => {
+        const child = join(path, name);
+        return { name, child, stat: lstatSync(child, { bigint: true }) };
+      });
+    const attestedChildren = children.filter(
+      ({ child, stat }) => !isIgnoredVitestCacheDirectory(child, stat),
+    );
+
+    // Vitest owns node_modules/.vite/vitest as mutable test state. Treat an
+    // otherwise-empty .vite container as part of that excluded subtree so
+    // creating the cache after a build does not alter the runtime digest.
+    // Any sibling entry keeps .vite and that sibling inside the attestation.
+    const omitDirectory = isVitestCacheContainer(path) && attestedChildren.length === 0;
+    if (!omitDirectory) {
+      addEntry(path, {
+        type: "directory",
+        path,
+        signature: statSignature(before),
+        mode: dependencyMode(before),
+      });
+    }
+    for (const { name, child, stat } of attestedChildren) {
       // Canonical package-local node_modules directories are separate
       // attested roots. Other nested application node_modules trees are not
       // part of the published workspace-package runtime closure.
       if (workspaceRoot !== undefined && name === "node_modules") continue;
-      const child = join(path, name);
-      const stat = lstatSync(child, { bigint: true });
       if (stat.isDirectory() && !stat.isSymbolicLink()) {
         visitDirectory(child, stat, workspaceRoot);
       } else if (stat.isFile() && !stat.isSymbolicLink()) {
