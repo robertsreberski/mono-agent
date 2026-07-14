@@ -116,6 +116,70 @@ payload returns `idempotency_conflict`.
 returns one authoritative task/message rather than transient deltas, because
 those deltas cannot be reconstructed from the durable terminal receipt.
 
+## Durable dispatch lifecycle
+
+Use `dispatchMessage` when the caller must admit long-running work now and
+reconcile its terminal state later. It requires an `idempotencyKey` and owns the
+response projection: callers cannot set `returnImmediately` or `stream`.
+
+```ts
+import { createA2AConsumer } from "@mono-agent/a2a-adapter";
+
+const consumer = await createA2AConsumer({ agentUrl });
+const dispatch = await consumer.dispatchMessage({
+  text: canonicalPayload,
+  contextId,
+  idempotencyKey: delegationId,
+  timeoutMs: 10_000, // admission only
+});
+
+console.log(dispatch.current.metadata.a2a.taskId);
+
+const outcome = await dispatch.observeTerminal({
+  timeoutMs: 120_000, // this observation only
+  signal: observerSignal,
+});
+
+if (outcome.status === "completed") {
+  console.log(outcome.response.text);
+} else {
+  console.warn(outcome.status, outcome.error.code);
+}
+```
+
+`dispatch.current` is the latest authoritative snapshot seen through that
+handle. `observeTerminal()` sends the identical canonical payload and key with
+the blocking projection, so a durable mono-agent provider joins the admitted
+task rather than invoking the responder again. Concurrent observers and later
+observers are safe for the same reason.
+
+Observation has its own signal and timeout. Aborting or timing out an observer
+does not cancel or bound remote work, and another observer can rejoin later.
+Only `dispatch.cancel({ signal })` requests remote cancellation.
+
+Terminal protocol states resolve as a discriminated
+`A2AConsumerTerminalOutcome`:
+
+| `status` | Additional value |
+| --- | --- |
+| `completed` | `response` |
+| `failed` | `response` and `A2AConsumerError` with `remote_failed` |
+| `canceled` | `response` and `A2AConsumerError` with `remote_canceled` |
+| `rejected` | `response` and `A2AConsumerError` with `remote_rejected` |
+| `auth_required` | `response` and `A2AConsumerError` with `remote_auth_required` |
+| `input_required` | `response` and `A2AConsumerError` with `remote_input_required` |
+
+Transport, discovery, observer-timeout, and idempotency-integrity failures still
+reject. In particular, `idempotency_conflict`, `idempotency_in_doubt`, and
+`idempotency_result_expired` are not terminal business outcomes and must be
+handled by the supervising caller.
+
+For a one-shot admission, `dispatchA2AMessage({ agentUrl, ... })` creates the
+consumer and returns the same dispatch handle. After a caller process restart,
+repeat the same function with the original canonical payload and key; a
+retained terminal result is replayed, while an active admission whose outcome
+cannot be proven fails closed with `idempotency_in_doubt`.
+
 `createA2AConsumerResponder` never invents a key. Supply a resolver when the
 local request already carries a stable identity:
 
