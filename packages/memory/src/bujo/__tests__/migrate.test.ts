@@ -14,8 +14,10 @@ import { appendGraphBatch, readGraph } from "../graph.js";
 import { createIdFactory } from "../ids.js";
 import {
   assertNoPendingMigrateDecision,
+  forgetExplicitMemories,
   hasPendingMigrateDecision,
   migrate,
+  previewExplicitForgetMemories,
   recoverPendingMigrateDecision,
   type MigrateDeps,
 } from "../migrate.js";
@@ -24,7 +26,11 @@ import {
   assertCanonicalGraphRepairBaseParity,
   auditCanonicalIndexHealth,
 } from "../rebuild.js";
-import { initializeReplayProjection, readReplayProjectionStrict } from "../replay-projection.js";
+import {
+  initializeReplayProjection,
+  readBujoCanonicalSourceFingerprint,
+  readReplayProjectionStrict,
+} from "../replay-projection.js";
 import type { Bullet } from "../types.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 
@@ -115,6 +121,64 @@ function dailyContent(root: string, when: Date): string {
 }
 
 describe("migrate", () => {
+  it("forgets an explicit validated id set through the durable migration boundary", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "EXPLICIT-A", "first explicit forget sentinel");
+    await seedAging(db, root, "EXPLICIT-B", "second explicit forget sentinel");
+    const prepareVectors = vi.spyOn(db, "prepareUpsertVectors");
+    const expectedSourceFingerprint = readBujoCanonicalSourceFingerprint(root);
+
+    expect(previewExplicitForgetMemories(root, db, ["EXPLICIT-A", "EXPLICIT-B"])).toEqual({ eligible: 2 });
+    const result = await forgetExplicitMemories({
+      root,
+      db,
+      ids: ["EXPLICIT-A", "EXPLICIT-B"],
+      now: () => NOW,
+      expectedSourceFingerprint,
+    });
+
+    expect(result).toMatchObject({ forgotten: 2, recoveredPendingDecision: false });
+    expect(result.sourceFingerprint).not.toBe(expectedSourceFingerprint);
+    expect(prepareVectors).toHaveBeenCalledTimes(1);
+    expect(prepareVectors.mock.calls[0]?.[0]).toHaveLength(2);
+    expect(db.get("EXPLICIT-A")).toMatchObject({ status: "dropped", validTo: NOW.toISOString() });
+    expect(db.get("EXPLICIT-B")).toMatchObject({ status: "dropped", validTo: NOW.toISOString() });
+    expect(readReplayProjectionStrict(root).projection.terminals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "EXPLICIT-A", at: NOW.toISOString(), authorityKind: "migration" }),
+      expect.objectContaining({ id: "EXPLICIT-B", at: NOW.toISOString(), authorityKind: "migration" }),
+    ]));
+    expect(auditCanonicalIndexHealth(root, "bujo", db)).toEqual({ status: "match" });
+  });
+
+  it("rejects unknown, terminal, duplicate, and stale explicit forget plans before provider work", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seedAging(db, root, "EXPLICIT-LIVE", "explicit rejection sentinel");
+    const sourceFingerprint = readBujoCanonicalSourceFingerprint(root);
+    const prepareVectors = vi.spyOn(db, "prepareUpsertVectors");
+
+    expect(() => previewExplicitForgetMemories(root, db, ["UNKNOWN"])).toThrow(/unknown memory id/iu);
+    expect(() => previewExplicitForgetMemories(root, db, ["EXPLICIT-LIVE", "EXPLICIT-LIVE"])).toThrow(/duplicates/iu);
+    await expect(forgetExplicitMemories({
+      root,
+      db,
+      ids: ["EXPLICIT-LIVE"],
+      now: () => NOW,
+      expectedSourceFingerprint: "0".repeat(64),
+    })).rejects.toThrow(/source changed/iu);
+    expect(prepareVectors).not.toHaveBeenCalled();
+
+    await forgetExplicitMemories({
+      root,
+      db,
+      ids: ["EXPLICIT-LIVE"],
+      now: () => NOW,
+      expectedSourceFingerprint: sourceFingerprint,
+    });
+    expect(() => previewExplicitForgetMemories(root, db, ["EXPLICIT-LIVE"])).toThrow(/already terminal/iu);
+  });
+
   it("applies all four actions (promote / reschedule / cluster / forget) and writes monthly record", async () => {
     const root = newRoot();
     const db = openDb(root);

@@ -144,6 +144,16 @@ recoverable retained semantic plans.
 
 This performs the first managed activation and builds and validates a side-by-side generation. BuJo rebuild fingerprints and preserves the exact replay sidecar as canonical source. A prior index is retained for `mono-agent memory rollback` only as a fresh immutable online-backup generation whose indexed payload exactly matches the current canonical source (Journal may retain its recoverable vector backlog). Its manifest commits the full WAL-visible logical state, including vectors, lifecycle, edges, hashes, graph, FTS, and metadata; same-source/provider rebuilds also compare every retained vector with the newly embedded candidate. The first supported daily-source mutation atomically retires any advertised rollback before changing its source; a BuJo graph/replay-only mutation retires only an advertised BuJo rollback because Lite and Journal do not fingerprint that source domain. A rollback can therefore disappear immediately after normal capture instead of becoming stale. SQLite writer fences cover source snapshotting and the final manifest rename; staged and final manifest bytes/identity are checked through durability confirmation. A source-ahead/stale index is never relabeled as safe; a divergent legacy `memory.db` remains byte-for-byte in place but is not advertised as rollback. The lower-level `memory-bujo rebuild|rollback <root> --tier <lite|journal|bujo>` commands are for already-managed roots; they deliberately refuse to infer tier identity or perform the first activation.
 
+Explicit operator-selected BuJo cleanup is exposed through the high-level
+`applyExplicitMemoryForget` / `restoreExplicitMemoryForget` coordinator. It is
+bounded to 32 ids, owns the authoritative writer lease, completes pending
+durable recovery before taking a backup, publishes an fsynced sibling recovery
+record before mutation, and rebuilds the managed generation. Normal writers
+refuse an unresolved recovery record. Restore prevalidates the snapshot and
+atomically renames it into place while retaining the current root as quarantine
+until validation and durable manifest publication succeed. The low-level
+per-decision mutator is intentionally not exported from `@mono-agent/memory/bujo`.
+
 One legacy case needs an explicit trust decision: a stopped built-in BuJo root,
 managed or still using the legacy unmanaged `memory.db`, may contain
 structurally valid replay state from before the sidecar existed. After reviewing
@@ -186,7 +196,7 @@ text, record/intent/decision ids, database details, or underlying error text.
 
 - `@mono-agent/memory/store`: `openMemoryDb`, `MemoryDb`, `DEFAULT_VEC_DIM`, `MEMORY_TYPES`, `MEMORY_STATUSES`, local record/entity/recall/stats/audit types, and re-exported `MemoryBlock`, `MemoryLoadOptions`, `MemoryStore`, `MemoryWriteResult`
 - `@mono-agent/memory/search`: `createEmbeddingProvider`, `OllamaEmbeddingProvider`, `LmStudioEmbeddingProvider`, `OpenAIEmbeddingProvider`, `createCircuitBreakerEmbeddingProvider`, `createVectorMemoryIndex`, `gatherMemoryChunks`, and embedding/search types
-- `@mono-agent/memory/bujo`: `createBujoMemoryStore`, `BujoMemoryStore`, `composeRecallBlock`, `auditBujoMemoryHealth` and its closed schema/status/issue/count types, `safeRebuildMemoryIndex`, `rollbackMemoryIndex`, `adoptLegacyReplayProjection`, `resolveActiveMemoryDbPath`, managed-generation helpers, privacy-safe runtime-snapshot reader/types, strict completed-turn capture, content-free intake `inspect`/`audit` helpers, stopped-store `retry`/explicit `resolve` helpers, markdown grammar helpers, batched capture/reconcile/reflection/migration helpers, `createOllamaLlm`, and related BuJo/LLM types
+- `@mono-agent/memory/bujo`: `createBujoMemoryStore`, `BujoMemoryStore`, `composeRecallBlock`, `auditBujoMemoryHealth` and its closed schema/status/issue/count types, `safeRebuildMemoryIndex`, `rollbackMemoryIndex`, `adoptLegacyReplayProjection`, `resolveActiveMemoryDbPath`, `applyExplicitMemoryForget`, `restoreExplicitMemoryForget`, `resolveExplicitMemoryForgetRoot`, their closed error/result/options types, managed-generation helpers, privacy-safe runtime-snapshot reader/types, strict completed-turn capture, content-free intake `inspect`/`audit` helpers, stopped-store `retry`/explicit `resolve` helpers, markdown grammar helpers, batched capture/reconcile/reflection/migration helpers, `createOllamaLlm`, and related BuJo/LLM types
 - CLI: `memory-bujo`
 
 ## Dependency Boundary

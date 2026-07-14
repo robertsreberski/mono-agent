@@ -16,6 +16,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
 import { canonicalMemoryRootPath } from "./path-safety.js";
+import { assertNoMemoryMaintenanceTransaction } from "./maintenance.js";
 import type { BujoTier } from "./types.js";
 
 export const MANAGED_INDEX_SCHEMA_VERSION = 1;
@@ -223,6 +224,26 @@ export function createManagedGeneration(root: string, now = new Date()): { reado
  * Safe rebuild and rollback use the same lease, so they fail before constructing providers.
  */
 export function acquireMemoryWriterLease(root: string, hooks: MemoryWriterLeaseHooks = {}): MemoryWriterLease {
+  assertNoMemoryMaintenanceTransaction(root);
+  const lease = acquireMemoryWriterLeaseForMaintenance(root, hooks);
+  try {
+    // Maintenance publishes its durable marker while holding this same root
+    // lease. Rechecking after acquisition closes the window where a normal
+    // writer passed the first check, waited for maintenance, then acquired the
+    // root immediately after maintenance released it.
+    assertNoMemoryMaintenanceTransaction(lease.root);
+    return lease;
+  } catch (error) {
+    lease.release();
+    throw error;
+  }
+}
+
+/** Internal stopped-store path; callers must already own the sibling maintenance lease. */
+export function acquireMemoryWriterLeaseForMaintenance(
+  root: string,
+  hooks: MemoryWriterLeaseHooks = {},
+): MemoryWriterLease {
   const canonicalRoot = canonicalMemoryRoot(root, true);
   ensureManagedLayout(canonicalRoot);
   const layoutState = captureManagedLayoutState(canonicalRoot);

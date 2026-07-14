@@ -261,6 +261,11 @@ mono-agent memory inspect --json
 mono-agent memory retry --json
 mono-agent memory retry <64-character-id> --json
 mono-agent memory resolve <64-character-id> <reason-slug> --json
+
+# Explicit BuJo cleanup: prepare is read-only; apply/restore require stop.
+mono-agent memory forget prepare --ids-file ./forget-ids.txt --reason noise_cleanup --plan ./forget-plan.json --json
+mono-agent memory forget apply --plan ./forget-plan.json --json
+mono-agent memory forget restore --backup /path/returned/by/apply --json
 ```
 
 Journal and BuJo always require a valid managed `.index/manifest.json`; only
@@ -277,7 +282,14 @@ generated configs, or an authored Ollama block). The advanced standalone
 `retry` makes dead/delayed intake due for the
 next store start; `resolve` explicitly abandons one item without claiming
 capture succeeded, keeps permanent duplicate protection, and refuses a retained
-semantic plan.
+semantic plan. `forget prepare` accepts at most 32 ids and writes an owner-only,
+single-link, content-free explicit-id plan. Stopped-store `forget apply` owns the
+authoritative writer lease plus a durable sibling recovery fence, creates a
+fsync-verified full backup, commits each id through durable migration-forget,
+and rebuilds the managed generation. Failure restores automatically; process
+death blocks normal writers until recovery resumes. Explicit restore refuses to
+overwrite any durable change made after cleanup and atomically consumes the
+verified sibling snapshot without constructing a third full copy.
 
 For launchd fleet verification, invoke the deployed CLI with each plist's exact
 `ProgramArguments[0]` Node, `[1]` CLI, absolute `--config`/`--env-file`, and
