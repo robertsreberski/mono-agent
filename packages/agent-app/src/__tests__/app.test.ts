@@ -1884,7 +1884,7 @@ describe("startMonoAgentApp", () => {
     await running.stop();
   });
 
-  it("routes a Telegram poll crash to onDegraded (not the fatal onFailure) and recovery to onRecovered", async () => {
+  it("routes each Telegram polling outage through one degraded/recovered edge", async () => {
     const onFailure = vi.fn();
     const onDegraded = vi.fn();
     const onRecovered = vi.fn();
@@ -1907,14 +1907,26 @@ describe("startMonoAgentApp", () => {
     });
 
     // A polling crash is recoverable (the adapter self-restarts) → degraded, NOT the
-    // fatal onFailure path that would dispose the harness.
+    // fatal onFailure path that would dispose the harness. Repeated callbacks for
+    // the same outage remain one host state edge.
+    captured?.onPollingRecovered?.();
+    expect(onRecovered).not.toHaveBeenCalled();
     captured?.onPollingError?.(new Error("getUpdates died"));
+    captured?.onPollingError?.(new Error("getUpdates still down"));
     expect(onDegraded).toHaveBeenCalledWith("getUpdates died");
+    expect(onDegraded).toHaveBeenCalledTimes(1);
     expect(onFailure).not.toHaveBeenCalled();
 
     // The adapter's later recovery flips the channel back to running.
     captured?.onPollingRecovered?.();
+    captured?.onPollingRecovered?.();
     expect(onRecovered).toHaveBeenCalledTimes(1);
+
+    // A later independent outage has its own pair of state edges.
+    captured?.onPollingError?.(new Error("getUpdates died later"));
+    captured?.onPollingRecovered?.();
+    expect(onDegraded).toHaveBeenCalledTimes(2);
+    expect(onRecovered).toHaveBeenCalledTimes(2);
 
     await running.stop();
   });

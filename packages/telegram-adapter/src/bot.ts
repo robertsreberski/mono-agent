@@ -74,8 +74,10 @@ const DEFAULT_API_TIMEOUT_SECONDS = 50;
 // timeout; a stalled socket then fails fast instead of hanging.
 const DEFAULT_LONG_POLL_TIMEOUT_SECONDS = 30;
 // The runner self-retries transient getUpdates errors with exponential backoff
-// for up to this window before its task rejects and the monitor takes over.
-const DEFAULT_RUNNER_MAX_RETRY_TIME_MS = 15_000;
+// for up to this window before its task rejects and the monitor takes over. Keep
+// this below the 120s poll watchdog so an isolated transport timeout is absorbed
+// in-place while a sustained outage still has a hard liveness bound.
+const DEFAULT_RUNNER_MAX_RETRY_TIME_MS = 90_000;
 
 // Auto-restart backoff bounds for the polling monitor (mirrors slack-adapter's
 // socket-mode reconnect loop): start at 500ms, double on each consecutive
@@ -263,16 +265,17 @@ export interface CreateTelegramBotOptions {
    */
   readonly pollWatchdogMs?: number;
   /**
-   * Called when polling crashes after a successful start (the runner's task
-   * rejects). The adapter ALWAYS schedules a backoff restart afterwards, so a host
-   * should treat this as "degraded, recovering" — not terminal — and pair it with
-   * {@link onPollingRecovered}.
+   * Called once when polling becomes degraded after a successful start (the
+   * runner's task rejects or the poll-liveness watchdog expires). The adapter
+   * ALWAYS restarts afterwards, so a host should treat this as "degraded,
+   * recovering" — not terminal — and pair it with {@link onPollingRecovered}.
    */
   readonly onPollingError?: (error: unknown) => void;
   /**
-   * Called when a (re)started runner stays up past the stability window AFTER a
-   * prior crash — i.e. the poller has recovered. Lets a host flip a "degraded"
-   * channel back to "running". Not fired for the initial healthy start.
+   * Called once when a (re)started runner stays up past the stability window and
+   * completes a successful poll AFTER a prior failure — i.e. the poller has
+   * recovered. Lets a host flip a "degraded" channel back to "running". Not
+   * fired for the initial healthy start.
    */
   readonly onPollingRecovered?: () => void;
   /**
@@ -496,10 +499,16 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // OUTERMOST transformer (grammY runs the most-recently-installed first), so it
   // observes every getUpdates resolution even beneath a test-injected transformer.
   let lastPollMs = Date.now();
+  let activePollGeneration = 0;
+  let successfulPollGeneration = 0;
+  let handleSuccessfulPoll = (): void => undefined;
   bot.api.config.use(async (prev, method, payload, signal) => {
+    const requestGeneration = activePollGeneration;
     const result = await prev(method, payload, signal);
     if (method === "getUpdates") {
       lastPollMs = Date.now();
+      successfulPollGeneration = requestGeneration;
+      handleSuccessfulPoll();
     }
     return result;
   });
@@ -1269,6 +1278,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // Current restart backoff (ms). Doubles on each consecutive crash that recurs
   // before the stability window; resets to the initial delay on a clean restart.
   let restartBackoffMs = DEFAULT_RESTART_INITIAL_BACKOFF_MS;
+  // Recovery requires both a runner that crossed the stability window and a
+  // successful poll completed by that same runner.
+  let stableRunner: RunnerHandle | undefined;
+  let runnerPollGeneration = 0;
   // Poll-liveness watchdog. Lifetime-scoped (armed at first spawn, cleared on
   // stop()) so it spans crash/backoff/restart cycles. `pollWatchdogMs <= 0`
   // disables it. `watchdogRestarting` prevents a second tick from stacking
@@ -1279,6 +1292,11 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // True once polling has crashed and not yet recovered. Gates onPollingRecovered
   // so it fires only after a real crash→recovery cycle, never on the initial start.
   let pollingDegraded = false;
+  handleSuccessfulPoll = () => {
+    if (runnerHandle !== undefined) {
+      maybeCompletePollingRecovery(runnerHandle);
+    }
+  };
 
   /** Arm the lifetime-scoped poll-liveness watchdog (idempotent, no-op if disabled). */
   function startPollWatchdog(): void {
@@ -1317,7 +1335,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       return;
     }
     const stalledMs = Date.now() - lastPollMs;
-    if (stalledMs <= pollWatchdogMs) {
+    if (stalledMs < pollWatchdogMs) {
       return;
     }
     watchdogRestarting = true;
@@ -1328,6 +1346,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       stalledMs,
       thresholdMs: pollWatchdogMs,
     });
+    markPollingDegraded(new Error(
+      `Telegram poll liveness stalled for ${stalledMs}ms (threshold ${pollWatchdogMs}ms).`,
+    ));
     void Promise.resolve(current.stop())
       .catch(() => undefined)
       .finally(() => {
@@ -1359,22 +1380,20 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     // stalled, and ensure the lifetime-scoped watchdog is armed.
     lastPollMs = Date.now();
     startPollWatchdog();
+    stableRunner = undefined;
+    activePollGeneration += 1;
+    runnerPollGeneration = activePollGeneration;
     runnerHandle = (options.runnerFactory ?? defaultRunnerFactory)(bot);
     const spawned = runnerHandle;
     // A runner that stays up for the stability window counts as a clean restart:
     // reset the backoff so a LATER, unrelated crash starts from the initial delay
-    // again. A runner that crashes before this window keeps the grown backoff so
-    // a flapping connection is not hammered.
+    // again. Recovery also requires a successful getUpdates resolution from THIS
+    // runner; merely remaining inside grammY's retry loop is not healthy polling.
     stabilityTimer = setTimeout(() => {
       stabilityTimer = undefined;
       if (!stopped && runnerHandle === spawned) {
-        restartBackoffMs = DEFAULT_RESTART_INITIAL_BACKOFF_MS;
-        // This runner stayed up past the stability window. If it followed a crash,
-        // polling has recovered — tell the host so it can clear a "degraded" state.
-        if (pollingDegraded) {
-          pollingDegraded = false;
-          options.onPollingRecovered?.();
-        }
+        stableRunner = spawned;
+        maybeCompletePollingRecovery(spawned);
       }
     }, DEFAULT_RESTART_STABILITY_MS);
     stabilityTimer.unref?.();
@@ -1398,6 +1417,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       clearTimeout(stabilityTimer);
       stabilityTimer = undefined;
     }
+    stableRunner = undefined;
     if (stopped) {
       return;
     }
@@ -1406,16 +1426,47 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         error: errorMessage(error),
         restartInMs: restartBackoffMs,
       });
-      // Mark degraded so the stability-window callback fires onPollingRecovered once a
-      // restarted runner stays up. The adapter always restarts (capped backoff), so a
-      // crash is "degraded, recovering" to the host — never terminal.
-      pollingDegraded = true;
+      // Mark degraded so the stability-window callback fires onPollingRecovered
+      // once a restarted runner proves a healthy poll. The adapter always restarts
+      // (capped backoff), so a crash is "degraded, recovering" to the host — never
+      // terminal.
+      markPollingDegraded(error);
     }
     scheduleRestart();
+  }
+
+  /** Emit one degraded edge for the current outage, even across runner churn. */
+  function markPollingDegraded(error: unknown): void {
+    if (pollingDegraded) {
+      return;
+    }
+    pollingDegraded = true;
     try {
       options.onPollingError?.(redactTelegramError(error, [options.botToken]));
     } catch {
       // Host diagnostics are untrusted; polling recovery is already scheduled.
+    }
+  }
+
+  /** Reset backoff and emit recovery once stability and a real poll are proven. */
+  function maybeCompletePollingRecovery(spawned: RunnerHandle): void {
+    if (
+      stopped ||
+      runnerHandle !== spawned ||
+      stableRunner !== spawned ||
+      successfulPollGeneration !== runnerPollGeneration
+    ) {
+      return;
+    }
+    restartBackoffMs = DEFAULT_RESTART_INITIAL_BACKOFF_MS;
+    if (!pollingDegraded) {
+      return;
+    }
+    pollingDegraded = false;
+    try {
+      options.onPollingRecovered?.();
+    } catch {
+      // Host diagnostics must not destabilize a healthy polling runner.
     }
   }
 
@@ -1575,6 +1626,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         clearTimeout(stabilityTimer);
         stabilityTimer = undefined;
       }
+      stableRunner = undefined;
       clearPollWatchdog();
       for (const buffer of albumBuffers.values()) {
         clearTimeout(buffer.timer);
@@ -1601,6 +1653,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       runner: {
         // Self-retry transient getUpdates errors (network blips) with exponential
         // backoff before the task rejects and the monitor restarts the runner.
+        // grammY otherwise prints the full nested transport error via
+        // console.error, which can include the credential-bearing Bot API URL.
+        // Terminal failures still flow through the adapter's redacted logger.
+        silent: true,
         retryInterval: "exponential",
         maxRetryTime: DEFAULT_RUNNER_MAX_RETRY_TIME_MS,
         fetch: {

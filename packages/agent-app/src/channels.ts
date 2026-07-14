@@ -1374,6 +1374,9 @@ function telegramStartOptions(
     allowedTools: input.coreConfig.tools.allowedTools,
     disallowedTools: input.coreConfig.tools.disallowedTools,
   });
+  // Keep host status transitions edge-triggered even if an adapter regression or
+  // a stop/restart race repeats a lifecycle callback for the same outage.
+  let pollingDegraded = false;
   return {
     botToken: input.config.botToken,
     allowedChatIds: [...input.config.allowedChatIds],
@@ -1399,10 +1402,21 @@ function telegramStartOptions(
     // A polling crash is recoverable by construction: the adapter always schedules
     // a backoff restart (it never gives up on its own), so report it as DEGRADED
     // (keep the responder/harness alive) rather than fatal. onPollingRecovered flips
-    // the channel back to running once a restarted runner stays up.
-    onPollingError: (error) =>
-      input.onDegraded?.(error instanceof Error ? error.message : String(error)),
-    onPollingRecovered: () => input.onRecovered?.(),
+    // the channel back to running once a restarted runner proves a healthy poll.
+    onPollingError: (error) => {
+      if (pollingDegraded) {
+        return;
+      }
+      pollingDegraded = true;
+      input.onDegraded?.(error instanceof Error ? error.message : String(error));
+    },
+    onPollingRecovered: () => {
+      if (!pollingDegraded) {
+        return;
+      }
+      pollingDegraded = false;
+      input.onRecovered?.();
+    },
     ...(input.config.apiRoot === undefined ? {} : { apiRoot: input.config.apiRoot }),
     ...(telegramAttachmentOptions(input.config) === undefined
       ? {}
