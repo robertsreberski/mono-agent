@@ -240,6 +240,38 @@ describe("deterministic output digest", () => {
 });
 
 describe("deterministic runtime dependency digest", () => {
+  it("ignores only node_modules Vitest result-cache creation and mutation", () => {
+    const root = tempRoot();
+    createOutputs(root);
+    const digest = computeRuntimeDependencyDigest(root);
+    const cacheDirectories = [
+      join(root, "node_modules/.vite/vitest"),
+      join(root, "packages/example/node_modules/.vite/vitest"),
+      join(root, "extras/example/node_modules/.vite/vitest"),
+    ];
+
+    for (const cacheDirectory of cacheDirectories) {
+      mkdirSync(cacheDirectory, { recursive: true });
+      writeFileSync(join(cacheDirectory, "results.json"), '{"version":1}\n');
+    }
+    expect(computeRuntimeDependencyDigest(root)).toBe(digest);
+
+    for (const cacheDirectory of cacheDirectories) {
+      writeFileSync(join(cacheDirectory, "results.json"), '{"version":2}\n');
+      mkdirSync(join(cacheDirectory, "nested"));
+      writeFileSync(join(cacheDirectory, "nested/state.bin"), Buffer.from([0x01, 0x02]));
+    }
+    expect(computeRuntimeDependencyDigest(root)).toBe(digest);
+
+    const attestedViteEntry = join(root, "packages/example/node_modules/.vite/runtime.js");
+    writeFileSync(attestedViteEntry, "export const runtime = 1;\n");
+    const digestWithViteEntry = computeRuntimeDependencyDigest(root);
+    expect(digestWithViteEntry).not.toBe(digest);
+
+    writeFileSync(attestedViteEntry, "export const runtime = 2;\n");
+    expect(computeRuntimeDependencyDigest(root)).not.toBe(digestWithViteEntry);
+  });
+
   it("is creation-order independent and changes on arbitrary JavaScript mutation", () => {
     const first = tempRoot();
     const second = tempRoot();
