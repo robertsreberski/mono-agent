@@ -232,6 +232,14 @@ interface ParsedCliArgs {
   readonly limit?: number;
   /** continuations list: opaque keyset cursor from the previous page. */
   readonly cursor?: string;
+  /** memory forget prepare: newline-delimited explicit memory ids. */
+  readonly idsFile?: string;
+  /** memory forget prepare: lowercase operator reason slug. */
+  readonly reason?: string;
+  /** memory forget prepare/apply: owner-private plan artifact. */
+  readonly planPath?: string;
+  /** memory forget restore: owner-private backup directory. */
+  readonly backupPath?: string;
   /** web: bind host (default 127.0.0.1). */
   readonly host?: string;
   /** web: bind port (default 4599). */
@@ -322,6 +330,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let strict = false;
   let limit: number | undefined;
   let cursor: string | undefined;
+  let idsFile: string | undefined;
+  let reason: string | undefined;
+  let planPath: string | undefined;
+  let backupPath: string | undefined;
   let host: string | undefined;
   let port: number | undefined;
   let open: boolean | undefined;
@@ -420,6 +432,18 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--cursor":
         cursor = requireValue(rest, ++i, flag).trim();
         if (cursor.length === 0 || cursor.length > 512) throw new Error("--cursor must be 1-512 characters.");
+        break;
+      case "--ids-file":
+        idsFile = requireValue(rest, ++i, flag);
+        break;
+      case "--reason":
+        reason = requireValue(rest, ++i, flag);
+        break;
+      case "--plan":
+        planPath = requireValue(rest, ++i, flag);
+        break;
+      case "--backup":
+        backupPath = requireValue(rest, ++i, flag);
         break;
       case "--host":
         host = requireValue(rest, ++i, flag);
@@ -653,6 +677,12 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (strict && (cmd !== "memory" || (positionals[0] ?? "stats") !== "audit")) {
     throw new Error("--strict is only supported for `mono-agent memory audit`.");
   }
+  if (
+    (idsFile !== undefined || reason !== undefined || planPath !== undefined || backupPath !== undefined)
+    && (cmd !== "memory" || positionals[0] !== "forget")
+  ) {
+    throw new Error("--ids-file, --reason, --plan, and --backup are only supported for `mono-agent memory forget`.");
+  }
   if (auth && cmd !== "init") {
     throw new Error("--auth is only supported for `mono-agent init`.");
   }
@@ -716,6 +746,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(strict ? { strict } : {}),
     ...(limit === undefined ? {} : { limit }),
     ...(cursor === undefined ? {} : { cursor }),
+    ...(idsFile === undefined ? {} : { idsFile }),
+    ...(reason === undefined ? {} : { reason }),
+    ...(planPath === undefined ? {} : { planPath }),
+    ...(backupPath === undefined ? {} : { backupPath }),
     ...(agent === undefined ? {} : { agent }),
     ...(conversation === undefined ? {} : { conversation }),
     ...(local ? { local } : {}),
@@ -941,6 +975,8 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
   {
     signature:
       "mono-agent memory [stats|today|show <date>|search <query>|top|audit|inspect [id]|retry [id]|resolve <id> <reason>|rebuild|rollback|adopt-replay]\n" +
+      "mono-agent memory forget prepare --ids-file <file> --reason <slug> --plan <file>\n" +
+      "mono-agent memory forget apply --plan <file> | forget restore --backup <dir>\n" +
       "                  [--limit <n>] [--strict] [--json] [--config <path>] [--env-file <path>]",
     lines: [
       "Preview the configured memory store from an agent folder. Reads the",
@@ -949,6 +985,8 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "metadata-only health gate. Intake inspect/retry/resolve never print payload content.",
       "adopt-replay is an explicit stopped-agent, SSH-safe BuJo trust-on-first-use",
       "operation. It returns metadata only and requires rebuild before restart.",
+      "forget uses an explicit, content-free plan plus a full owner-private backup;",
+      "apply and restore require the configured agent to be stopped.",
     ],
   },
   {
@@ -1040,6 +1078,12 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       writeReplayAdoptionCliFailure(argv.includes("--json"), "replay_adoption_usage");
       return 2;
     }
+    if (argv[0] === "memory" && argv.includes("forget")) {
+      const { writeMemoryForgetFailure } = await import("./memory-command.js");
+      const operationIndex = argv.indexOf("forget") + 1;
+      writeMemoryForgetFailure(argv.includes("--json"), argv[operationIndex] ?? "unknown", "forget_usage");
+      return 2;
+    }
     process.stderr.write(ui.errorLine(error instanceof Error ? error.message : String(error)));
     process.stdout.write(`\n${renderHelp()}`);
     return 2;
@@ -1067,6 +1111,13 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     && hasUnsupportedReplayAdoptionFlag(argv)) {
     const { writeReplayAdoptionCliFailure } = await import("./memory-command.js");
     writeReplayAdoptionCliFailure(args.json === true, "replay_adoption_usage");
+    return 2;
+  }
+  if (args.command === "memory"
+    && args.positionals[0] === "forget"
+    && hasUnsupportedMemoryForgetFlag(argv)) {
+    const { writeMemoryForgetFailure } = await import("./memory-command.js");
+    writeMemoryForgetFailure(args.json === true, args.positionals[1] ?? "unknown", "forget_usage");
     return 2;
   }
 
@@ -1201,6 +1252,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         json: args.json === true,
         strict: args.strict === true,
         ...(args.limit === undefined ? {} : { limit: args.limit }),
+        ...(args.idsFile === undefined ? {} : { idsFile: args.idsFile }),
+        ...(args.reason === undefined ? {} : { reason: args.reason }),
+        ...(args.planPath === undefined ? {} : { planPath: args.planPath }),
+        ...(args.backupPath === undefined ? {} : { backupPath: args.backupPath }),
       });
     }
   }
@@ -1216,6 +1271,21 @@ function hasUnsupportedReplayAdoptionFlag(argv: readonly string[]): boolean {
   for (let index = 1; index < argv.length; index += 1) {
     const token = argv[index];
     if (token === "--config" || token === "--env-file") {
+      index += 1;
+      continue;
+    }
+    if (token === "--json") continue;
+    if (token?.startsWith("-") === true) return true;
+  }
+  return false;
+}
+
+/** Forget is mutating, so every accepted command-global flag is explicit. */
+function hasUnsupportedMemoryForgetFlag(argv: readonly string[]): boolean {
+  const valueFlags = new Set(["--config", "--env-file", "--ids-file", "--reason", "--plan", "--backup"]);
+  for (let index = 1; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (token !== undefined && valueFlags.has(token)) {
       index += 1;
       continue;
     }
