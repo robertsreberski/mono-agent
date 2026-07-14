@@ -1,5 +1,37 @@
 # Release notes
 
+## 0.9.0 — Durable origin-bound continuations (2026-07-14)
+
+### Highlights
+
+- Long-running tool work can claim a host-owned continuation before dispatch,
+  return the interactive turn promptly, and later bind the durable result to the
+  exact originating conversation without exposing channel routes or credentials
+  to the model, A2A payloads, or result contracts.
+- Continuation synthesis is isolated, tool-disabled, and at most once. Its
+  output is persisted before delivery, so restart-safe native-channel retries
+  reuse the same synthesis instead of running the model again.
+- Reply, actionable-notification, silent, and capture modes support interactive
+  and detached work. Status, retry, cancel, and delivery-unknown resolution give
+  operators a durable control surface for recovery and auditing.
+- Configured loopback MCP servers receive short-lived opaque claim capabilities;
+  spoofed or remote claim transports are rejected. Pi tool failures now retain
+  their error status through runtime bridging and telemetry.
+- Bounded concurrent workers, active-record admission limits, operation
+  timeouts, and keyset-paginated operator reads prevent one hung provider or
+  abusive claim origin from stalling or exhausting the continuation service.
+- Multi-message native delivery requires every chunk to succeed. Partial sends
+  become delivery-unknown, and operator-confirmed sends use a history-only
+  commit so reconciliation can never repost the answer.
+
+### Compatibility
+
+- All 21 catalog-publishable packages move together to 0.9.0. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+- Durable continuations are opt-in. Existing agents keep their current turn and
+  delivery behavior until a continuation service and eligible MCP servers or
+  detached routes are explicitly configured.
+
 ## 0.8.0 — Durable operations and direct access (2026-07-13)
 
 This is the first public npm release containing the Product v1 source line. The

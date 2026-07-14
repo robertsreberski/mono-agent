@@ -133,6 +133,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const memory = readMemoryConfig(input.env, cwd);
   const mcpConfigPath = readOptionalPath(input.env.MONO_AGENT_MCP_CONFIG_PATH, cwd);
   const mcpRequestContextServers = readCsv(input.env.MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS);
+  const continuationServers = readCsv(input.env.MONO_AGENT_CONTINUATION_SERVERS);
   const sandbox = readSandboxConfig(input.env, workspace);
   const artifactDir = readPath(input.env.MONO_AGENT_ARTIFACT_DIR, cwd, resolve(cwd, ".mono-agent", "artifacts"));
   const artifactRetention = readArtifactRetentionConfig(input.env);
@@ -195,6 +196,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     disallowedTools: readCsv(input.env.MONO_AGENT_DISALLOWED_TOOLS),
     ...(mcpConfigPath === undefined ? {} : { mcpConfigPath }),
     ...(mcpRequestContextServers.length === 0 ? {} : { mcpRequestContextServers }),
+    ...(continuationServers.length === 0 ? {} : { continuationServers }),
     ...(mcpCallTimeoutMs === undefined ? {} : { mcpCallTimeoutMs }),
     ...(mcpCallMaxTotalTimeoutMs === undefined ? {} : { mcpCallMaxTotalTimeoutMs }),
   };

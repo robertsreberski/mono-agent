@@ -3,17 +3,22 @@ import {
   isAgentResponseCancelledError,
   isChannelUserCancelReason,
   type AgentAttachment,
+  type AgentContinuationTurn,
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
   type AgentResponse,
 } from "@mono-agent/agent-contracts";
+import { createHash } from "node:crypto";
 
 import {
+  SlackDeliveryError,
   SlackMessageStream,
   type AgentMessageStream,
+  type SlackDeliveryReceipt,
   type SlackMessageStreamLogger,
   type SlackMessageStreamOptions,
 } from "./message-stream.js";
+import { SlackApiError } from "./slack-client.js";
 import { normalizeSlackMarkdownToMarkdown } from "./slack-markdown.js";
 import type {
   SlackBlockActionsPayload,
@@ -94,6 +99,17 @@ export type AgentResponder = SharedAgentResponder<AgentRequest, AgentMessageStre
 export interface SlackNotifyResult {
   readonly delivered: boolean;
   readonly reason?: string;
+  /** Stable machine-readable outcome for durable continuation routing. */
+  readonly code?: string;
+  readonly retryable?: boolean;
+  /** True when Slack may have accepted the post but no receipt was observed. */
+  readonly ambiguous?: boolean;
+  readonly deliveryId?: string;
+  readonly channelId?: "slack";
+  /** Whether the confirmed Slack post was also appended to durable conversation history. */
+  readonly historyRecorded?: boolean;
+  /** Bounded machine code when a confirmed post could not be recorded to history. */
+  readonly historyErrorCode?: string;
 }
 
 /**
@@ -104,6 +120,18 @@ export interface SlackNotifyResult {
  */
 export interface SlackNotifyOptions {
   readonly verbatim?: boolean;
+  /** Stable host delivery identity. Converted to Slack's UUID client_msg_id. */
+  readonly deliveryKey?: string;
+}
+
+export interface SlackContinuationSynthesisInput {
+  /** Exact history identity, including a rollover bucket when present. */
+  readonly conversationId: string;
+  readonly replyToConversationId: string;
+  readonly channelId: SlackChannelId;
+  readonly threadTs?: SlackMessageTs;
+  readonly prompt: string;
+  readonly continuation: AgentContinuationTurn;
 }
 
 export interface SlackAdapterMessages {
@@ -417,6 +445,40 @@ function isSerialQueueFullError(error: unknown): error is SerialQueueFullError {
   return error instanceof SerialQueueFullError;
 }
 
+function slackNotifyFailure(error: SlackDeliveryError, confirmedAnswer: boolean): SlackNotifyResult {
+  if (confirmedAnswer || error.disposition === "unknown") {
+    return {
+      delivered: false,
+      reason: "delivery outcome is unknown",
+      code: "delivery_unknown",
+      retryable: false,
+      ambiguous: true,
+    };
+  }
+  if (error.disposition === "retryable") {
+    return {
+      delivered: false,
+      reason: "Slack temporarily refused delivery",
+      code: slackDeliveryErrorCode(error, "delivery_retry_exhausted"),
+      retryable: true,
+    };
+  }
+  return {
+    delivered: false,
+    reason: "Slack refused delivery",
+    code: slackDeliveryErrorCode(error, "delivery_refused"),
+    retryable: false,
+  };
+}
+
+function slackDeliveryErrorCode(error: SlackDeliveryError, fallback: string): string {
+  if (error.cause instanceof SlackApiError) {
+    const code = error.cause.slackError?.trim();
+    if (code !== undefined && code.length > 0 && code.length <= 128) return code;
+  }
+  return fallback;
+}
+
 export class SlackAdapter {
   private readonly api: SlackWebApi;
   private readonly responder: AgentResponder;
@@ -688,8 +750,8 @@ export class SlackAdapter {
     try {
       return await queue.run(() =>
         options?.verbatim === true
-          ? this.runVerbatimDelivery(conversationId, channelId, threadTs, text, runKey, controller)
-          : this.runProactiveTurn(conversationId, channelId, threadTs, text, runKey, controller),
+          ? this.runVerbatimDelivery(conversationId, channelId, threadTs, text, runKey, controller, options.deliveryKey)
+          : this.runProactiveTurn(conversationId, channelId, threadTs, text, runKey, controller, options?.deliveryKey),
       );
     } catch (error) {
       if (isSerialQueueFullError(error)) {
@@ -697,13 +759,102 @@ export class SlackAdapter {
         this.logger?.warn?.("Slack proactive notify dropped: conversation is at its concurrency cap.", {
           conversationId,
         });
-        return { delivered: false, reason: "conversation at concurrency cap" };
+        return {
+          delivered: false,
+          reason: "conversation at concurrency cap",
+          code: "conversation_busy",
+          retryable: true,
+        };
       }
       throw error;
     } finally {
       if (queue.idle && this.admissionQueues.get(conversationId) === queue) {
         this.admissionQueues.delete(conversationId);
       }
+    }
+  }
+
+  /**
+   * Run a framework-owned continuation synthesis in the original conversation
+   * without posting or committing history. The harness enforces the immutable
+   * history boundary and zero-tool policy carried by `continuation`; native
+   * delivery happens only after the caller durably persists the returned text.
+   */
+  async synthesizeContinuation(input: SlackContinuationSynthesisInput): Promise<string> {
+    if (!this.isAuthorized(input.channelId)) {
+      throw new Error("Slack continuation destination is not in the adapter allowlist.");
+    }
+    const controller = new AbortController();
+    const runKey = `continuation:${input.continuation.continuationId}`;
+    this.registerController(runKey, input.conversationId, controller);
+    let queue = this.admissionQueues.get(input.conversationId);
+    if (queue === undefined) {
+      queue = new SerialQueue();
+      this.admissionQueues.set(input.conversationId, queue);
+    }
+    try {
+      return await queue.run(async () => {
+        const stream = new SilentAgentMessageStream();
+        const response = await this.responder.respond({
+          conversationId: input.conversationId,
+          replyTo: { conversationId: input.replyToConversationId },
+          continuation: input.continuation,
+          channelId: input.channelId,
+          messageTs: input.threadTs ?? "",
+          threadTs: input.threadTs ?? "",
+          eventId: `continuation:${input.continuation.continuationId}`,
+          text: input.prompt,
+          trigger: "direct",
+          abortSignal: controller.signal,
+          metadata: {
+            slack: {
+              eventId: `continuation:${input.continuation.continuationId}`,
+              channel: { id: input.channelId },
+              message: {
+                ts: input.threadTs ?? "",
+                ...(input.threadTs === undefined ? {} : { threadTs: input.threadTs }),
+              },
+              trigger: "direct",
+            },
+          },
+        }, stream);
+        const text = response.text?.trim();
+        if (text === undefined || text.length === 0) throw new Error("Continuation synthesis produced no answer.");
+        return text;
+      });
+    } finally {
+      this.unregisterController(runKey, input.conversationId, controller);
+      if (queue.idle && this.admissionQueues.get(input.conversationId) === queue) {
+        this.admissionQueues.delete(input.conversationId);
+      }
+    }
+  }
+
+  /**
+   * Append an operator-confirmed continuation to durable history without
+   * touching Slack. This is deliberately separate from notify(verbatim) so an
+   * ambiguous native send can be reconciled without any chance of reposting.
+   */
+  async recordContinuationHistory(
+    conversationId: string,
+    text: string,
+    deliveryKey?: string,
+  ): Promise<{ readonly recorded: true } | { readonly recorded: false; readonly code: string }> {
+    if (this.responder.deliverVerbatim === undefined) {
+      return { recorded: false, code: "history_record_unavailable" };
+    }
+    try {
+      await this.responder.deliverVerbatim(
+        conversationId,
+        text,
+        deliveryKey === undefined ? undefined : { idempotencyKey: deliveryKey },
+      );
+      return { recorded: true };
+    } catch (error) {
+      this.logger?.warn?.("Slack continuation history-only commit failed.", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { recorded: false, code: "history_record_failed" };
     }
   }
 
@@ -893,6 +1044,8 @@ export class SlackAdapter {
     channelId: SlackChannelId,
     threadTs: SlackMessageTs | undefined,
     controller: AbortController,
+    deliveryKey?: string,
+    onAnswerReceipt?: (ref: { readonly ts: SlackMessageTs; readonly channel: SlackChannelId }) => void,
   ): SlackMessageStreamOptions {
     const streamOptions: SlackMessageStreamOptions = {
       api: this.api,
@@ -900,21 +1053,29 @@ export class SlackAdapter {
       // No reactToTs: a proactive turn has no inbound message to react to.
       finalOnly: this.streamOptions.finalOnly ?? true,
       abortSignal: controller.signal,
+      ...(deliveryKey === undefined ? {} : { clientMsgId: slackClientMessageId(deliveryKey) }),
     };
     if (threadTs !== undefined) {
       streamOptions.threadTs = threadTs;
-    } else if (this.recordPostedMessage !== undefined) {
+    }
+    if (this.recordPostedMessage !== undefined) {
       // A top-level proactive post is a fresh thread root with no prior history.
       // Record its ts → this conversation so a user's in-thread reply resolves
       // back here (the threaded case already shares the thread's conversationId).
       const record = this.recordPostedMessage;
       let recorded = false;
       streamOptions.onPosted = ({ ts, channel }) => {
-        if (recorded || ts.length === 0) {
-          return;
+        if (threadTs === undefined && record !== undefined && !recorded && ts.length > 0) {
+          recorded = true;
+          record(channel, ts, conversationId);
         }
-        recorded = true;
-        record(channel, ts, conversationId);
+      };
+    }
+    if (onAnswerReceipt !== undefined) {
+      streamOptions.onDeliveryReceipt = (receipt: SlackDeliveryReceipt) => {
+        if (receipt.contentKind === "answer") {
+          onAnswerReceipt({ ts: receipt.ts, channel: receipt.channel });
+        }
       };
     }
     if (this.streamOptions.maxMessageChars !== undefined) {
@@ -949,36 +1110,71 @@ export class SlackAdapter {
     text: string,
     runKey: string,
     controller: AbortController,
+    deliveryKey?: string,
   ): Promise<SlackNotifyResult> {
+    let answerReceipt: { readonly ts: SlackMessageTs; readonly channel: SlackChannelId } | undefined;
     const stream = new SlackMessageStream(
-      this.buildProactiveStreamOptions(conversationId, channelId, threadTs, controller),
+      this.buildProactiveStreamOptions(conversationId, channelId, threadTs, controller, deliveryKey, (ref) => {
+        answerReceipt = ref;
+      }),
     );
     try {
       if (controller.signal.aborted) {
-        return { delivered: false, reason: "cancelled" };
+        return { delivered: false, reason: "cancelled", code: "cancelled", retryable: false };
       }
       if (text.trim().length === 0) {
-        return { delivered: false, reason: "empty notification" };
+        return { delivered: false, reason: "empty notification", code: "empty_notification", retryable: false };
       }
       try {
         await stream.finish(text);
       } catch (error) {
+        if (error instanceof SlackDeliveryError) {
+          const failure = slackNotifyFailure(error, answerReceipt !== undefined);
+          this.logger?.error?.("Slack verbatim notify delivery failed.", {
+            error: error.message,
+            disposition: failure.ambiguous === true
+              ? "unknown"
+              : failure.retryable === true ? "retryable" : "permanent",
+          });
+          return failure;
+        }
         if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
-          return { delivered: false, reason: "cancelled" };
+          return { delivered: false, reason: "cancelled", code: "cancelled", retryable: false };
         }
         this.logger?.error?.("Slack verbatim notify delivery failed.", {
           error: error instanceof Error ? error.message : String(error),
         });
-        return { delivered: false, reason: "delivery failed" };
+        return { delivered: false, reason: "delivery failed", code: "delivery_failed", retryable: true };
       }
+      let historyRecorded = false;
+      let historyErrorCode: string | undefined;
       try {
-        await this.responder.deliverVerbatim?.(conversationId, text);
+        if (this.responder.deliverVerbatim === undefined) {
+          historyErrorCode = "history_record_unavailable";
+        } else {
+          await this.responder.deliverVerbatim(
+            conversationId,
+            text,
+            deliveryKey === undefined ? undefined : { idempotencyKey: deliveryKey },
+          );
+          historyRecorded = true;
+        }
       } catch (error) {
+        historyErrorCode = "history_record_failed";
         this.logger?.warn?.("Slack verbatim notify history record failed.", {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-      return { delivered: true };
+      return {
+        delivered: true,
+        code: "delivered",
+        channelId: "slack",
+        historyRecorded,
+        ...(historyErrorCode === undefined ? {} : { historyErrorCode }),
+        ...(answerReceipt === undefined
+          ? {}
+          : { deliveryId: `slack:${answerReceipt.channel}:${answerReceipt.ts}` }),
+      };
     } finally {
       this.unregisterController(runKey, conversationId, controller);
     }
@@ -991,16 +1187,21 @@ export class SlackAdapter {
     text: string,
     runKey: string,
     controller: AbortController,
+    deliveryKey?: string,
   ): Promise<SlackNotifyResult> {
+    let answerReceipt: { readonly ts: SlackMessageTs; readonly channel: SlackChannelId } | undefined;
     const stream = new SlackMessageStream(
-      this.buildProactiveStreamOptions(conversationId, channelId, threadTs, controller),
+      this.buildProactiveStreamOptions(conversationId, channelId, threadTs, controller, deliveryKey, (ref) => {
+        answerReceipt = ref;
+      }),
     );
     try {
       if (controller.signal.aborted) {
-        return { delivered: false, reason: "cancelled" };
+        return { delivered: false, reason: "cancelled", code: "cancelled", retryable: false };
       }
       const request: AgentRequest = {
         conversationId,
+        replyTo: { conversationId },
         channelId,
         messageTs: threadTs ?? "",
         threadTs: threadTs ?? "",
@@ -1022,32 +1223,49 @@ export class SlackAdapter {
         response = await this.responder.respond(request, stream);
       } catch (error) {
         if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
-          return { delivered: false, reason: "cancelled" };
+          return { delivered: false, reason: "cancelled", code: "cancelled", retryable: false };
         }
         this.logger?.error?.("Slack proactive notify failed.", {
           error: error instanceof Error ? error.message : String(error),
         });
-        return { delivered: false, reason: "responder failed" };
+        return { delivered: false, reason: "responder failed", code: "responder_failed", retryable: true };
       }
       const answer = response.text;
       if (controller.signal.aborted) {
-        return { delivered: false, reason: "cancelled" };
+        return { delivered: false, reason: "cancelled", code: "cancelled", retryable: false };
       }
       if (answer === undefined || answer.trim().length === 0) {
-        return { delivered: false, reason: "agent produced no answer" };
+        return { delivered: false, reason: "agent produced no answer", code: "empty_response", retryable: false };
       }
       try {
         await stream.finish(answer);
       } catch (error) {
+        if (error instanceof SlackDeliveryError) {
+          const failure = slackNotifyFailure(error, answerReceipt !== undefined);
+          this.logger?.error?.("Slack proactive delivery failed after a successful AI run.", {
+            error: error.message,
+            disposition: failure.ambiguous === true
+              ? "unknown"
+              : failure.retryable === true ? "retryable" : "permanent",
+          });
+          return failure;
+        }
         if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
-          return { delivered: false, reason: "cancelled" };
+          return { delivered: false, reason: "cancelled", code: "cancelled", retryable: false };
         }
         this.logger?.error?.("Slack proactive delivery failed after a successful AI run.", {
           error: error instanceof Error ? error.message : String(error),
         });
-        return { delivered: false, reason: "delivery failed" };
+        return { delivered: false, reason: "delivery failed", code: "delivery_failed", retryable: true };
       }
-      return { delivered: true };
+      return {
+        delivered: true,
+        code: "delivered",
+        channelId: "slack",
+        ...(answerReceipt === undefined
+          ? {}
+          : { deliveryId: `slack:${answerReceipt.channel}:${answerReceipt.ts}` }),
+      };
     } finally {
       this.unregisterController(runKey, conversationId, controller);
     }
@@ -1428,6 +1646,7 @@ function buildAgentRequest(
 
   const request: AgentRequest = {
     conversationId,
+    replyTo: { conversationId: `slack:${event.channelId}:${event.threadTs}` },
     channelId: event.channelId,
     messageTs: event.messageTs,
     threadTs: event.threadTs,
@@ -1551,6 +1770,24 @@ function conversationIdFor(event: SlackTextEvent): string {
 
 function normalizeIdForMatch(value: string): string {
   return value.trim().toLowerCase();
+}
+
+/** Provider event sink for a continuation turn whose output is persisted before delivery. */
+class SilentAgentMessageStream implements AgentMessageStream {
+  async status(): Promise<void> {}
+  async append(): Promise<void> {}
+  async replace(): Promise<void> {}
+  async event(): Promise<void> {}
+  async finish(): Promise<void> {}
+}
+
+/** Derive a stable RFC 4122-shaped UUID for Slack's client_msg_id field. */
+function slackClientMessageId(deliveryKey: string): string {
+  const bytes = createHash("sha256").update(`mono-agent-slack-delivery\0${deliveryKey}`).digest().subarray(0, 16);
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /** First argument that is a non-blank string, else undefined. */

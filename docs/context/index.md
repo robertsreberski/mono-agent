@@ -16,7 +16,7 @@ Each turn the agent builds a prompt from these layers:
 |-------|--------|----------|-----|
 | Identity | `IDENTITY.md` (or path) | config | `context.identityPath` |
 | Soul (optional) | `SOUL.md` (or path) | config | `context.soulPath` |
-| Session | the turn's `conversationId` + callback guidance | auto | none (auto-generated) |
+| Session | host-owned delivery and callback-safety guidance; physical route withheld | auto | none (auto-generated) |
 | Conversation history | bounded in-memory store | auto / code | 12 messages by default; twice a positive `runtime.maxTurns` |
 | Selected skills | `<skillsRoot>/<name>/SKILL.md` | config | `context.skillsRoot`, `context.selectedSkills` |
 

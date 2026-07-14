@@ -187,7 +187,9 @@ To send nothing for a tick or request, the agent either produces an **empty fina
 
 ### Fan-out and multi-destination
 
-Notifying **multiple** or **other** conversations from one trigger is not a built-in. Compose it from several cron jobs (each with its own `notifyConversationId`) or from a skill that calls the send tools explicitly. The async-callback pattern — a live chat kicks off a long-running operation and a later webhook delivers the result back into the original conversation — is built by setting that endpoint's `notifyConversationId` (or passing it through to a single-candidate inference) so the final answer lands in the right place.
+Notifying **multiple** or **other** conversations from one trigger is not a built-in. Compose it from several cron jobs (each with its own `notifyConversationId`) or from a skill that calls the send tools explicitly.
+
+For a live chat that delegates work and needs one later reply in the same channel/thread, use a [durable continuation](/tools/durable-continuations/). The host binds the physical reply target and gives only a selected trusted MCP server a claim capability. Do not ask the model to copy a `conversationId` into a webhook payload: model-supplied routing is neither an authorization boundary nor a reliable thread binding.
 
 ## Related pages
 
@@ -196,4 +198,5 @@ Notifying **multiple** or **other** conversations from one trigger is not a buil
 - [Cron](/channels/cron/) and [Webhook](/channels/webhook/) — the proactive turns that support native `notify: true` delivery.
 - [Tool policy](/tools/policy/) — `allowedTools` / `disallowedTools` precedence.
 - [MCP tools](/tools/mcp/) — external MCP policy and the app-owned tool exceptions.
+- [Durable continuations](/tools/durable-continuations/) — origin-bound asynchronous results and native delivery receipts.
 - [Write your own channel adapter](/programmatic/custom-channels/) — building a driver to override `stream.finalOnly`, debounce, and message texts.

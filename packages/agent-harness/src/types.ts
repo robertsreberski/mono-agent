@@ -1,4 +1,9 @@
-import type { AgentAttachment, MemoryStore } from "@mono-agent/agent-contracts";
+import type {
+  AgentAttachment,
+  AgentContinuationTurn,
+  AgentReplyTarget,
+  MemoryStore,
+} from "@mono-agent/agent-contracts";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import type { MonoRuntimeLike, RuntimeModelReference, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
@@ -32,6 +37,10 @@ export interface AgentHarnessRequest {
    * contract required.
    */
   readonly attachments?: readonly AgentAttachment[];
+  /** Host-owned physical delivery target. Never included in prompts or traces. */
+  readonly replyTo?: AgentReplyTarget;
+  /** Host-owned continuation synthesis controls. Never included in prompts. */
+  readonly continuation?: AgentContinuationTurn;
 }
 
 export interface AgentHarnessFailure {
@@ -79,7 +88,11 @@ export interface AgentHarness {
    * history and retire any warm provider session so a later reply cold-loads the
    * delivered message into context. No model call.
    */
-  appendVerbatimTurn?(conversationId: string, text: string): Promise<void>;
+  appendVerbatimTurn?(
+    conversationId: string,
+    text: string,
+    options?: { readonly idempotencyKey?: string },
+  ): Promise<void>;
   /** Retire all live provider sessions (graceful shutdown). */
   dispose?(): Promise<void>;
 }
@@ -191,6 +204,46 @@ export interface AgentHarnessProgressCapabilityIssuer {
   }): AgentHarnessProgressCapability | Promise<AgentHarnessProgressCapability>;
 }
 
+export type AgentHarnessContinuationMode =
+  | "reply"
+  | "notify_if_actionable"
+  | "silent"
+  | "capture";
+
+/** A short-lived claim credential bound to one run, server, and host route. */
+export interface AgentHarnessContinuationClaimCapability {
+  readonly url: string;
+  readonly token: string;
+  readonly fingerprint: string;
+  readonly mode: AgentHarnessContinuationMode;
+  /** Revoke the capability. Safe to call more than once. */
+  release(): void | Promise<void>;
+}
+
+/** App-owned issuer for destination-bound continuation claim capabilities. */
+export interface AgentHarnessContinuationClaimCapabilityIssuer {
+  issueContinuationClaimCapability(input: {
+    readonly runId: string;
+    readonly serverName: string;
+    readonly conversationId: string;
+    readonly replyTo?: AgentReplyTarget;
+    /** Interactive origin snapshot; absent for detached named-route claims. */
+    readonly historyBoundary?: string;
+  }):
+    | AgentHarnessContinuationClaimCapability
+    | undefined
+    | Promise<AgentHarnessContinuationClaimCapability | undefined>;
+}
+
+/**
+ * Trusted continuation context injected only into explicitly selected stdio or
+ * loopback-HTTP MCP servers. It is independent of raw MCP request context.
+ */
+export interface AgentHarnessContinuationContextOptions {
+  readonly serverNames: readonly string[];
+  readonly capabilityIssuer: AgentHarnessContinuationClaimCapabilityIssuer;
+}
+
 /**
  * Trusted context injected into explicitly opted-in stdio MCP servers after all
  * runtime/tool-policy option layers have been merged.
@@ -243,6 +296,7 @@ export interface AgentHarnessOptions {
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
   readonly mcpRequestContext?: AgentHarnessMcpRequestContextOptions;
+  readonly continuationContext?: AgentHarnessContinuationContextOptions;
   /**
    * Factory for a runtime bound to a specific model, used when a per-request
    * extension overrides {@link model} (cron job / webhook per-turn model). The

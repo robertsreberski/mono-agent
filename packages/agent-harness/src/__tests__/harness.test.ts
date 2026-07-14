@@ -520,9 +520,11 @@ describe("AgentHarness", () => {
     expect(String(fake.calls[0]?.options.messages?.[0]?.content)).toContain("Remember: terse.");
     expect(fake.calls[0]?.prompt).not.toContain("Remember: terse.");
     expect(fake.calls[0]?.prompt).toContain("Earlier answer");
-    // The deliverable (telegram:) conversation gets the webhook-callback routing guidance.
-    expect(fake.calls[0]?.prompt).toContain("You are currently handling the conversation `telegram:1`.");
-    expect(fake.calls[0]?.prompt).toContain(`include \`"conversationId": "telegram:1"\` in the JSON body of its callback`);
+    // The deliverable conversation gets host-owned continuation guidance without
+    // exposing its physical route to the model.
+    expect(fake.calls[0]?.prompt).toContain("The host owns its exact channel and thread destination");
+    expect(fake.calls[0]?.prompt).toContain("continuation-capable tool explicitly confirms");
+    expect(fake.calls[0]?.prompt).not.toContain("telegram:1");
     expect(fake.calls[0]?.prompt).toContain("# Skill: research");
     expect(fake.calls[0]?.options).toMatchObject({ allowedTools: ["Read"], disallowedTools: ["Bash"], maxTurns: 3 });
     await expect(historyStore.load("telegram:1")).resolves.toHaveLength(3);
@@ -726,6 +728,32 @@ describe("AgentHarness", () => {
     expect(history.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(history.at(-1)?.content).toBe("Your morning brief.");
     // No model turn ran — delivery happened in the channel, this only records it.
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it("appendVerbatimTurn is idempotent by host delivery key and rejects conflicting content", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const fake = createFakeRuntime(async () => ({ text: "unused" }));
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore });
+
+    await harness.appendVerbatimTurn?.("slack:D1:1.1", "Confirmed answer", { idempotencyKey: "continuation:one" });
+    await harness.appendVerbatimTurn?.("slack:D1:1.1", "Confirmed answer", { idempotencyKey: "continuation:one" });
+    await expect(harness.appendVerbatimTurn?.(
+      "slack:D1:1.1",
+      "Conflicting answer",
+      { idempotencyKey: "continuation:one" },
+    )).rejects.toThrow(/idempotency key conflicts/u);
+
+    const history = await historyStore.load("slack:D1:1.1");
+    expect(history).toHaveLength(2);
+    expect(history.at(-1)).toMatchObject({
+      role: "assistant",
+      content: "Confirmed answer",
+      idempotencyKey: "continuation:one",
+    });
     expect(fake.calls).toHaveLength(0);
   });
 
@@ -937,9 +965,11 @@ describe("AgentHarness", () => {
 
     expect(response.text).toBe("Final answer");
     expect(fake.calls).toHaveLength(1);
-    // A non-push conversation id is told it is a request-driven run with no interactive user.
-    expect(fake.calls[0]?.prompt).toContain("You are currently handling the conversation `conversation-extension`.");
+    // A non-push turn is described without exposing its internal conversation id
+    // or suggesting that the model invent a callback route.
     expect(fake.calls[0]?.prompt).toContain("request-driven run (scheduled, webhook, or API) with no interactive user");
+    expect(fake.calls[0]?.prompt).toContain("Do not invent or infer a callback destination");
+    expect(fake.calls[0]?.prompt).not.toContain("conversation-extension");
     expect(fake.calls[0]?.options.allowedTools).toEqual(["Grep", "Read", "AskCollaborator"]);
     expect(fake.calls[0]?.options.disallowedTools).toEqual(["Write"]);
     expect(fake.calls[0]?.options.mcpServers).toEqual({
@@ -1720,6 +1750,278 @@ describe("AgentHarness", () => {
       if (ambientBefore === undefined) delete process.env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN;
       else process.env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN = ambientBefore;
     }
+  });
+
+  it("injects destination-bound continuation claims into selected stdio and loopback HTTP servers", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const stdio = {
+      type: "stdio",
+      command: "a8c-control-stdio",
+      env: {
+        KEEP_ME: "yes",
+        MONO_AGENT_CONTINUATION_CLAIM_TOKEN: "spoofed",
+      },
+    };
+    const loopback = {
+      type: "http",
+      url: "http://127.0.0.1:43124/mcp",
+      headers: {
+        Authorization: "Bearer configured",
+        "X-Mono-Agent-Continuation-Claim-Token": "spoofed-case-insensitive",
+      },
+    };
+    const remote = { type: "http", url: "https://mcp.example.test", headers: { STATIC: "untouched" } };
+    const issued: Array<Record<string, unknown>> = [];
+    const released: string[] = [];
+    const fake = createFakeRuntime(async () => ({ text: "accepted" }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      createRunId: () => "run-continuation-claim",
+      runtimeOptions: { mcpServers: { stdio, loopback, remote } },
+      continuationContext: {
+        serverNames: ["stdio", "loopback"],
+        capabilityIssuer: {
+          issueContinuationClaimCapability(input) {
+            issued.push(input);
+            return {
+              url: "http://127.0.0.1:43125/continuations/claim",
+              token: `token-${input.serverName}`,
+              fingerprint: `fingerprint-${input.serverName}`,
+              mode: "reply",
+              release: () => { released.push(input.serverName); },
+            };
+          },
+        },
+      },
+    }).run({
+      conversationId: "slack:C1:thread#2026-07-14",
+      replyTo: { conversationId: "slack:C1:thread" },
+      userMessage: "delegate this",
+      abortSignal: new AbortController().signal,
+    });
+
+    const servers = fake.calls[0]?.options.mcpServers as Record<string, Record<string, unknown>>;
+    expect(servers.stdio?.env).toMatchObject({
+      KEEP_ME: "yes",
+      MONO_AGENT_CONTINUATION_CLAIM_URL: "http://127.0.0.1:43125/continuations/claim",
+      MONO_AGENT_CONTINUATION_CLAIM_TOKEN: "token-stdio",
+      MONO_AGENT_CONTINUATION_CLAIM_FINGERPRINT: "fingerprint-stdio",
+      MONO_AGENT_CONTINUATION_CLAIM_MODE: "reply",
+    });
+    expect(servers.loopback?.headers).toEqual({
+      Authorization: "Bearer configured",
+      "x-mono-agent-continuation-claim-url": "http://127.0.0.1:43125/continuations/claim",
+      "x-mono-agent-continuation-claim-token": "token-loopback",
+      "x-mono-agent-continuation-claim-fingerprint": "fingerprint-loopback",
+      "x-mono-agent-continuation-claim-mode": "reply",
+    });
+    expect(servers.remote).toBe(remote);
+    expect(JSON.stringify(servers)).not.toContain("slack:C1:thread");
+    expect(issued).toEqual([
+      {
+        runId: "run-continuation-claim",
+        serverName: "stdio",
+        conversationId: "slack:C1:thread#2026-07-14",
+        replyTo: { conversationId: "slack:C1:thread" },
+        historyBoundary: "run-continuation-claim",
+      },
+      {
+        runId: "run-continuation-claim",
+        serverName: "loopback",
+        conversationId: "slack:C1:thread#2026-07-14",
+        replyTo: { conversationId: "slack:C1:thread" },
+        historyBoundary: "run-continuation-claim",
+      },
+    ]);
+    expect(released).toEqual(["stdio", "loopback"]);
+    expect(stdio.env.MONO_AGENT_CONTINUATION_CLAIM_TOKEN).toBe("spoofed");
+    expect(loopback.headers["X-Mono-Agent-Continuation-Claim-Token"]).toBe("spoofed-case-insensitive");
+  });
+
+  it("rejects a selected non-loopback HTTP continuation server before provider execution", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "must not run" }));
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      runtimeOptions: { mcpServers: { remote: { type: "http", url: "https://mcp.example.test" } } },
+      continuationContext: {
+        serverNames: ["remote"],
+        capabilityIssuer: { issueContinuationClaimCapability: () => undefined },
+      },
+    }).run({ conversationId: "c", userMessage: "delegate", abortSignal: new AbortController().signal });
+
+    expect(fake.calls).toHaveLength(0);
+    expect(response.failure).toMatchObject({ kind: "unsupported_continuation_server" });
+  });
+
+  it.each([
+    ["stdio without a command", "worker", { worker: { type: "stdio" } }],
+    ["stdio with a blank command", "worker", { worker: { type: "stdio", command: "   " } }],
+    ["conflicting stdio URL", "worker", {
+      worker: { type: "stdio", command: "local-worker", url: "https://mcp.example.test" },
+    }],
+    ["conflicting HTTP command", "worker", {
+      worker: { type: "http", command: "local-worker", url: "http://127.0.0.1:43124/mcp" },
+    }],
+    ["runtime-invalid server name", "bad name", { "bad name": { command: "local-worker" } }],
+  ])("rejects a selected %s before provider execution", async (_label, serverName, mcpServers) => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "must not run" }));
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      runtimeOptions: { mcpServers },
+      continuationContext: {
+        serverNames: [serverName],
+        capabilityIssuer: { issueContinuationClaimCapability: () => undefined },
+      },
+    }).run({ conversationId: "c", userMessage: "delegate", abortSignal: new AbortController().signal });
+
+    expect(fake.calls).toHaveLength(0);
+    expect(response.failure).toMatchObject({ kind: "unsupported_continuation_server" });
+  });
+
+  it("issues detached named-route claims without an interactive history boundary", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let issued: Record<string, unknown> | undefined;
+    const fake = createFakeRuntime(async () => ({ text: "scheduled" }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      createRunId: () => "run-proactive",
+      runtimeOptions: { mcpServers: { control: { command: "a8c-control" } } },
+      continuationContext: {
+        serverNames: ["control"],
+        capabilityIssuer: {
+          issueContinuationClaimCapability(input) {
+            issued = input;
+            return {
+              url: "http://127.0.0.1:43125/continuations/claim",
+              token: "detached-token",
+              fingerprint: "detached-fingerprint",
+              mode: "notify_if_actionable",
+              release: () => {},
+            };
+          },
+        },
+      },
+    }).run({
+      conversationId: "cron:attention",
+      userMessage: "collect attention",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(issued).toEqual({
+      runId: "run-proactive",
+      serverName: "control",
+      conversationId: "cron:attention",
+    });
+  });
+
+  it("runs continuation synthesis through the origin boundary with no tools and no history commit", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const history = createInMemoryHistoryStore({ maxMessages: 20 });
+    const runIds = ["run-origin", "run-later", "run-continuation"];
+    const answers = ["origin answer", "later answer", "synthesized final"];
+    const fake = createFakeRuntime(async () => ({ text: answers.shift() ?? null }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: history,
+      createRunId: () => runIds.shift() ?? "run-extra",
+      runtimeOptions: {
+        allowedTools: ["Bash"],
+        disallowedTools: [],
+        mcpConfigPath: join(dir, "mcp.json"),
+        mcpServers: { dangerous: { command: "dangerous" } },
+      },
+    });
+
+    await harness.run({ conversationId: "slack:C1", userMessage: "origin question", abortSignal: new AbortController().signal });
+    await harness.run({ conversationId: "slack:C1", userMessage: "later question", abortSignal: new AbortController().signal });
+    const before = await history.load("slack:C1");
+    const response = await harness.run({
+      conversationId: "slack:C1",
+      userMessage: "untrusted specialist result",
+      abortSignal: new AbortController().signal,
+      continuation: {
+        continuationId: "continuation-1",
+        originRunId: "run-origin",
+        historyBoundary: "run-origin",
+        toolsDisabled: true,
+        deferHistoryCommit: true,
+      },
+    });
+
+    expect(response.text).toBe("synthesized final");
+    expect(fake.calls[2]?.prompt).toContain("origin question");
+    expect(fake.calls[2]?.prompt).toContain("origin answer");
+    expect(fake.calls[2]?.prompt).not.toContain("later question");
+    expect(fake.calls[2]?.prompt).not.toContain("later answer");
+    expect(fake.calls[2]?.options.allowedTools).toEqual([]);
+    expect(fake.calls[2]?.options.disallowedTools).toEqual(["*"]);
+    expect(fake.calls[2]?.options.mcpServers).toEqual({});
+    expect(fake.calls[2]?.options.mcpConfigPath).toBeUndefined();
+    expect(await history.load("slack:C1")).toEqual(before);
+  });
+
+  it("uses latest conversation history when a detached continuation has no explicit boundary", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const history = createInMemoryHistoryStore({ maxMessages: 20 });
+    const runIds = ["run-first", "run-latest", "run-detached"];
+    const answers = ["first answer", "latest answer", "detached final"];
+    const fake = createFakeRuntime(async () => ({ text: answers.shift() ?? null }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: history,
+      createRunId: () => runIds.shift() ?? "run-extra",
+    });
+
+    await harness.run({ conversationId: "slack:C2", userMessage: "first question", abortSignal: new AbortController().signal });
+    await harness.run({ conversationId: "slack:C2", userMessage: "latest question", abortSignal: new AbortController().signal });
+    const before = await history.load("slack:C2");
+    const response = await harness.run({
+      conversationId: "slack:C2",
+      userMessage: "detached proactive payload",
+      abortSignal: new AbortController().signal,
+      continuation: {
+        continuationId: "continuation-detached",
+        originRunId: "proactive-origin-for-trace-only",
+        toolsDisabled: true,
+        deferHistoryCommit: true,
+      },
+    });
+
+    expect(response.text).toBe("detached final");
+    expect(fake.calls[2]?.prompt).toContain("first answer");
+    expect(fake.calls[2]?.prompt).toContain("latest question");
+    expect(fake.calls[2]?.prompt).toContain("latest answer");
+    expect(fake.calls[2]?.options.allowedTools).toEqual([]);
+    expect(fake.calls[2]?.options.mcpServers).toEqual({});
+    expect(await history.load("slack:C2")).toEqual(before);
   });
 
   it.each(["success", "failure", "cancel"] as const)(

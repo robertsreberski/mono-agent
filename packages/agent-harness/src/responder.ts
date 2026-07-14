@@ -76,10 +76,17 @@ export function createAgentResponder(options: {
         cancellationReasonByBaseConversation.set(serializationKey, { generation, reason });
       }
     },
-    async deliverVerbatim(conversationId: string, text: string): Promise<void> {
-      // Bucket identically to respond() so the verbatim post lands under the same
-      // history/session key a later reply on this conversation will resume.
-      await options.harness.appendVerbatimTurn?.(bucket(conversationId), text);
+    async deliverVerbatim(
+      conversationId: string,
+      text: string,
+      deliveryOptions?: { readonly idempotencyKey?: string },
+    ): Promise<void> {
+      const serializationKey = responseSerializationKey(conversationId, options.rollover);
+      await serializeByKey(responseTailsByBaseConversation, serializationKey, async () => {
+        // Bucket identically to respond() so the verbatim post lands under the same
+        // history/session key a later reply on this conversation will resume.
+        await options.harness.appendVerbatimTurn?.(bucket(conversationId), text, deliveryOptions);
+      });
     },
     async respond(request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> {
       const serializationKey = responseSerializationKey(request.conversationId, options.rollover);
@@ -146,6 +153,8 @@ export function createAgentResponder(options: {
       abortSignal: request.abortSignal,
       ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
       ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
+      ...(request.replyTo === undefined ? {} : { replyTo: request.replyTo }),
+      ...(request.continuation === undefined ? {} : { continuation: request.continuation }),
       ...(boundary === undefined ? {} : { sessionBoundary: boundary }),
       onEvent: (event) => {
         const streamEvent = streamEventFromRuntimeEvent(event, eventContext);

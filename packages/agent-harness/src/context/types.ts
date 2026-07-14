@@ -21,6 +21,10 @@ export interface HistoryMessage {
   readonly content: string;
   readonly name?: string;
   readonly timestamp?: string;
+  /** Host run that committed this message, used for continuation snapshots. */
+  readonly runId?: string;
+  /** Host-only identity for idempotent history-only delivery commits. */
+  readonly idempotencyKey?: string;
 }
 
 export interface SkillIndexEntry {

@@ -1,6 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
-import { access, lstat, mkdir, readFile, stat } from "node:fs/promises";
+import { access, lstat, mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
 import { join } from "node:path";
@@ -13,10 +13,15 @@ import {
 } from "@earendil-works/pi-ai/providers/all";
 import { listRecordedRuns } from "@mono-agent/observability";
 import { serializeTraceSpans } from "@mono-agent/observability/otel";
-import { loadToolPolicyFromJsonFile } from "@mono-agent/agent-harness";
+import {
+  classifyContinuationMcpServerTransport,
+  isStdioMcpServerSpec,
+  loadToolPolicyFromJsonFile,
+} from "@mono-agent/agent-harness";
 import {
   defaultExecutionModeForModel,
   describeMonoRuntimeSupport,
+  isValidMcpServerName,
   modelReferenceKey,
   networkPolicyAllowsUrl,
   parseMonoRuntimeModelReference,
@@ -54,6 +59,12 @@ import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
 import { findUnknownAppConfigWarnings } from "./config-reference.js";
+import { loadContinuationSettings } from "./continuation-config.js";
+import {
+  CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
+  CONTINUATION_STORE_SCHEMA_VERSION,
+} from "./continuation-store.js";
+import { CONTINUATION_STATES, type ContinuationState } from "./continuations.js";
 import { formatInteractionBridgeUrl, loadInteractionSettings } from "./interaction-bridge.js";
 import { FIRST_RUN_MEMORY_INITIALIZING_MARKER } from "./first-run-managed-memory.js";
 import {
@@ -199,6 +210,7 @@ export async function validateMonoAgentFolder(
       options.preferAppPluginInstall === true,
     ));
     sections.push(await toolsSection(coreConfig, options));
+    sections.push(await continuationSection(coreConfig, options));
     sections.push(await sandboxSection(coreConfig, options.sandboxEngine));
   }
 
@@ -1932,6 +1944,13 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     }
   }
   for (const serverName of config.tools.mcpRequestContextServers ?? []) {
+    if (!isValidMcpServerName(serverName)) {
+      status = "error";
+      details.push(
+        `tools.mcpRequestContextServers entry "${serverName}" is not a runtime-valid MCP server name (letters, digits, underscores, and hyphens only).`,
+      );
+      continue;
+    }
     const spec = configuredMcpServers[serverName];
     if (spec === undefined) {
       status = "error";
@@ -1940,10 +1959,33 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
       );
       continue;
     }
-    if (!isStdioMcpSpec(spec)) {
+    if (!isStdioMcpServerSpec(spec)) {
       status = "error";
       details.push(
         `tools.mcpRequestContextServers entry "${serverName}" must reference a stdio MCP server (command/type:stdio), not HTTP/SSE.`,
+      );
+    }
+  }
+  for (const serverName of config.tools.continuationServers ?? []) {
+    if (!isValidMcpServerName(serverName)) {
+      status = "error";
+      details.push(
+        `tools.continuationServers entry "${serverName}" is not a runtime-valid MCP server name (letters, digits, underscores, and hyphens only).`,
+      );
+      continue;
+    }
+    const spec = configuredMcpServers[serverName];
+    if (spec === undefined) {
+      status = "error";
+      details.push(
+        `tools.continuationServers names unknown MCP server "${serverName}"; declare it in tools.mcpConfigPath.`,
+      );
+      continue;
+    }
+    if (classifyContinuationMcpServerTransport(spec) === "unsupported") {
+      status = "error";
+      details.push(
+        `tools.continuationServers entry "${serverName}" must reference a stdio or loopback HTTP MCP server; remote HTTP and SSE are not supported.`,
       );
     }
   }
@@ -1985,11 +2027,371 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
   return { id: "tools", label: "Tools & MCP", status, details };
 }
 
-function isStdioMcpSpec(value: unknown): boolean {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const spec = value as Record<string, unknown>;
-  return spec.type === "stdio"
-    || (typeof spec.command === "string" && spec.type !== "http" && spec.type !== "sse");
+async function continuationSection(
+  config: MonoAgentConfig,
+  input: ValidateMonoAgentFolderOptions,
+): Promise<ValidationSection> {
+  let settings;
+  try {
+    settings = await loadContinuationSettings({
+      cwd: input.cwd,
+      configPath: input.configPath,
+      env: input.env,
+    });
+  } catch (error) {
+    return {
+      id: "continuations",
+      label: "Durable continuations",
+      status: "error",
+      details: [`Continuation configuration is invalid: ${continuationReason(error)}`],
+    };
+  }
+
+  const continuationServers = config.tools.continuationServers ?? [];
+  if (!settings.configured && continuationServers.length === 0) {
+    return {
+      id: "continuations",
+      label: "Durable continuations",
+      status: "disabled",
+      details: ["No continuation-capable MCP servers or detached continuation routes are configured."],
+    };
+  }
+  if (!settings.enabled) {
+    return {
+      id: "continuations",
+      label: "Durable continuations",
+      status: "error",
+      details: ["Continuation service is disabled while continuation functionality is configured."],
+    };
+  }
+
+  const details = [
+    `Loopback service: http://${formatContinuationHost(settings.host)}:${String(settings.port)}.`,
+    `Owner-only state: ${settings.stateDir}.`,
+    continuationServers.length === 0
+      ? "Run-scoped continuation MCP servers: none."
+      : `Run-scoped continuation MCP servers: ${continuationServers.join(", ")}.`,
+  ];
+  const routeNames = Object.entries(settings.namedRoutes).map(([name, route]) => `${name} (${route.mode})`);
+  details.push(routeNames.length === 0 ? "Named detached routes: none." : `Named detached routes: ${routeNames.join(", ")}.`);
+  const detachedNames = Object.keys(settings.detachedServices);
+  details.push(detachedNames.length === 0 ? "Detached services: none." : `Detached services: ${detachedNames.join(", ")}.`);
+
+  const state = await inspectContinuationState(settings.stateDir);
+  details.push(...state.details);
+  return {
+    id: "continuations",
+    label: "Durable continuations",
+    status: state.status,
+    details,
+  };
+}
+
+async function inspectContinuationState(stateDir: string): Promise<{
+  readonly status: "ok" | "waiting" | "error";
+  readonly details: readonly string[];
+}> {
+  const details: string[] = [];
+  let directory;
+  try {
+    directory = await lstat(stateDir);
+  } catch (error) {
+    if (continuationFsCode(error) === "ENOENT") {
+      return {
+        status: "ok",
+        details: ["State has not been initialized; the app will create it with owner-only permissions on first start."],
+      };
+    }
+    return { status: "error", details: [`Continuation state cannot be inspected: ${continuationReason(error)}`] };
+  }
+  if (!directory.isDirectory() || directory.isSymbolicLink()) {
+    return { status: "error", details: ["Continuation state path must be a real directory, not a file or symlink."] };
+  }
+  const directorySecurityError = continuationOwnershipError(directory, "state directory", 0o700);
+  if (directorySecurityError !== undefined) {
+    return { status: "error", details: [directorySecurityError] };
+  }
+
+  const secretError = await inspectContinuationSecret(join(stateDir, "continuation-secret"));
+  if (secretError !== undefined) {
+    return { status: "error", details: [secretError] };
+  }
+
+  const manifestPath = join(stateDir, "continuation-store-v2.json");
+  let manifestInfo;
+  try {
+    manifestInfo = await lstat(manifestPath);
+  } catch (error) {
+    if (continuationFsCode(error) !== "ENOENT") {
+      return { status: "error", details: [`Continuation store manifest cannot be inspected: ${continuationReason(error)}`] };
+    }
+  }
+  if (manifestInfo !== undefined) {
+    if (!manifestInfo.isFile() || manifestInfo.isSymbolicLink()) {
+      return { status: "error", details: ["Continuation store manifest must be a regular file, not a symlink."] };
+    }
+    const manifestSecurityError = continuationOwnershipError(manifestInfo, "store manifest", 0o600);
+    if (manifestSecurityError !== undefined) return { status: "error", details: [manifestSecurityError] };
+    let manifest: unknown;
+    try {
+      manifest = JSON.parse(await readFile(manifestPath, "utf8")) as unknown;
+    } catch (error) {
+      return { status: "error", details: [`Continuation store manifest contains invalid JSON: ${continuationReason(error)}`] };
+    }
+    if (!isContinuationStoreManifest(manifest)) {
+      return { status: "error", details: ["Continuation store manifest has an unsupported or malformed schema."] };
+    }
+    const recordsDirectoryError = await inspectContinuationRecordsDirectory(join(stateDir, "records-v2"));
+    if (recordsDirectoryError !== undefined) return { status: "error", details: [recordsDirectoryError] };
+    const transaction = await inspectContinuationTransaction(join(stateDir, "continuation-transaction-v2.json"));
+    if (!transaction.valid) return { status: "error", details: [transaction.detail] };
+    const owner = await inspectContinuationOwnerDatabase(join(stateDir, "continuations-owner.sqlite"));
+    if (!owner.valid) return { status: "error", details: [owner.detail] };
+    details.push(
+      `Store v2: ${String(manifest.stats.records)} retained; ${String(manifest.stats.active)} active; ${String(manifest.stats.unresolvedDelivery)} delivery unknown; ${String(manifest.stats.deadLettered)} dead-lettered; ${String(manifest.stats.historyDegraded)} history-degraded deliveries; ${String(manifest.stats.terminalTombstones)} terminal tombstones; ${String(manifest.stats.capturedText)} captured answers.`,
+      `Retention: at most ${String(manifest.stats.limits.terminalMaxRecords)} terminal tombstones and ${String(manifest.stats.limits.capturedTextMaxRecords)} captured answers.`,
+      transaction.detail,
+      owner.detail,
+    );
+    return {
+      status: transaction.pending
+        || manifest.stats.unresolvedDelivery > 0
+        || manifest.stats.deadLettered > 0
+        || manifest.stats.historyDegraded > 0
+        ? "waiting"
+        : "ok",
+      details,
+    };
+  }
+
+  const storePath = join(stateDir, "continuations-v1.json");
+  let storeInfo;
+  try {
+    storeInfo = await lstat(storePath);
+  } catch (error) {
+    if (continuationFsCode(error) === "ENOENT") {
+      details.push("No continuation ledger has been written yet.");
+      const owner = await inspectContinuationOwnerDatabase(join(stateDir, "continuations-owner.sqlite"));
+      details.push(owner.detail);
+      return { status: owner.valid ? "ok" : "error", details };
+    }
+    return { status: "error", details: [`Continuation ledger cannot be inspected: ${continuationReason(error)}`] };
+  }
+  if (!storeInfo.isFile() || storeInfo.isSymbolicLink()) {
+    return { status: "error", details: ["Continuation ledger must be a regular file, not a symlink."] };
+  }
+  const storeSecurityError = continuationOwnershipError(storeInfo, "ledger", 0o600);
+  if (storeSecurityError !== undefined) {
+    return { status: "error", details: [storeSecurityError] };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(storePath, "utf8")) as unknown;
+  } catch (error) {
+    return { status: "error", details: [`Continuation ledger contains invalid JSON: ${continuationReason(error)}`] };
+  }
+  if (!isContinuationLedger(parsed)) {
+    return { status: "error", details: ["Continuation ledger has an unsupported or malformed schema."] };
+  }
+
+  const counts = Object.fromEntries(CONTINUATION_STATES.map((state) => [state, 0])) as Record<ContinuationState, number>;
+  for (const record of Object.values(parsed.records)) {
+    if (!isDoctorObject(record) || typeof record.state !== "string" || !CONTINUATION_STATES.includes(record.state as ContinuationState)) {
+      return { status: "error", details: ["Continuation ledger contains a record with an invalid lifecycle state."] };
+    }
+    counts[record.state as ContinuationState] += 1;
+  }
+  const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+  const pending = counts.claimed + counts.result_received + counts.synthesizing + counts.ready_to_deliver + counts.delivery_retry;
+  details.push(
+    `Legacy ledger awaiting v2 migration: ${String(total)} total; ${String(pending)} pending; ${String(counts.delivery_unknown)} delivery unknown; ${String(counts.dead_lettered)} dead-lettered.`,
+  );
+  const owner = await inspectContinuationOwnerDatabase(join(stateDir, "continuations-owner.sqlite"));
+  details.push(owner.detail);
+  return {
+    status: !owner.valid
+      ? "error"
+      : counts.delivery_unknown > 0 || counts.dead_lettered > 0
+        ? "waiting"
+        : "ok",
+    details,
+  };
+}
+
+async function inspectContinuationSecret(path: string): Promise<string | undefined> {
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    return continuationFsCode(error) === "ENOENT"
+      ? undefined
+      : `Continuation secret cannot be inspected: ${continuationReason(error)}`;
+  }
+  if (!info.isFile() || info.isSymbolicLink()) return "Continuation secret must be a regular file, not a symlink.";
+  const securityError = continuationOwnershipError(info, "secret", 0o600);
+  if (securityError !== undefined) return securityError;
+  try {
+    const secret = Buffer.from((await readFile(path, "utf8")).trim(), "base64url");
+    if (secret.length !== 32) return "Continuation secret contents are invalid.";
+  } catch (error) {
+    return `Continuation secret cannot be read: ${continuationReason(error)}`;
+  }
+  return undefined;
+}
+
+async function inspectContinuationOwnerDatabase(path: string): Promise<{
+  readonly valid: boolean;
+  readonly detail: string;
+}> {
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    return continuationFsCode(error) === "ENOENT"
+      ? { valid: true, detail: "The OS-backed continuation ownership database has not been initialized yet." }
+      : { valid: false, detail: `Continuation ownership database cannot be inspected: ${continuationReason(error)}` };
+  }
+  if (!info.isFile() || info.isSymbolicLink()) {
+    return { valid: false, detail: "Continuation ownership database is not a regular file." };
+  }
+  const securityError = continuationOwnershipError(info, "ownership database", 0o600);
+  if (securityError !== undefined) return { valid: false, detail: securityError };
+  return { valid: true, detail: "OS-backed exclusive ownership is released automatically on clean stop or process death." };
+}
+
+async function inspectContinuationRecordsDirectory(path: string): Promise<string | undefined> {
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    return continuationFsCode(error) === "ENOENT"
+      ? "Continuation record directory is missing."
+      : `Continuation record directory cannot be inspected: ${continuationReason(error)}`;
+  }
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    return "Continuation record directory must be a real directory, not a file or symlink.";
+  }
+  const directorySecurityError = continuationOwnershipError(info, "record directory", 0o700);
+  if (directorySecurityError !== undefined) return directorySecurityError;
+  try {
+    for (const entry of await readdir(path, { withFileTypes: true })) {
+      if (!entry.name.endsWith(".json") && !(entry.name.startsWith(".") && entry.name.endsWith(".tmp"))) {
+        return `Continuation record directory contains an unexpected entry: ${entry.name}.`;
+      }
+      const recordInfo = await lstat(join(path, entry.name));
+      if (!recordInfo.isFile() || recordInfo.isSymbolicLink()) {
+        return `Continuation record entry is not a regular file: ${entry.name}.`;
+      }
+      const securityError = continuationOwnershipError(recordInfo, "record", 0o600);
+      if (securityError !== undefined) return securityError;
+    }
+  } catch (error) {
+    return `Continuation record directory cannot be inspected: ${continuationReason(error)}`;
+  }
+  return undefined;
+}
+
+async function inspectContinuationTransaction(path: string): Promise<{
+  readonly valid: boolean;
+  readonly pending: boolean;
+  readonly detail: string;
+}> {
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    return continuationFsCode(error) === "ENOENT"
+      ? { valid: true, pending: false, detail: "No interrupted durable transaction is awaiting recovery." }
+      : { valid: false, pending: false, detail: `Continuation transaction cannot be inspected: ${continuationReason(error)}` };
+  }
+  if (!info.isFile() || info.isSymbolicLink()) {
+    return { valid: false, pending: true, detail: "Continuation transaction must be a regular file, not a symlink." };
+  }
+  const securityError = continuationOwnershipError(info, "transaction", 0o600);
+  if (securityError !== undefined) return { valid: false, pending: true, detail: securityError };
+  return {
+    valid: true,
+    pending: true,
+    detail: "An interrupted durable transaction is present and will be completed idempotently by the state owner.",
+  };
+}
+
+function continuationOwnershipError(
+  info: Awaited<ReturnType<typeof lstat>>,
+  label: string,
+  expectedMode: number,
+): string | undefined {
+  if (typeof process.getuid === "function" && Number(info.uid) !== process.getuid()) {
+    return `Continuation ${label} is not owned by the current user.`;
+  }
+  if (process.platform !== "win32" && (Number(info.mode) & 0o777) !== expectedMode) {
+    return `Continuation ${label} permissions must be ${expectedMode.toString(8)}.`;
+  }
+  return undefined;
+}
+
+function isContinuationLedger(value: unknown): value is {
+  readonly schemaVersion: number;
+  readonly records: Record<string, unknown>;
+} {
+  return isDoctorObject(value)
+    && value.schemaVersion === CONTINUATION_STORE_SCHEMA_VERSION
+    && isDoctorObject(value.records);
+}
+
+function isContinuationStoreManifest(value: unknown): value is {
+  readonly schemaVersion: number;
+  readonly generation: string;
+  readonly stats: {
+    readonly records: number;
+    readonly active: number;
+    readonly unresolvedDelivery: number;
+    readonly deadLettered: number;
+    readonly historyDegraded: number;
+    readonly terminalTombstones: number;
+    readonly capturedText: number;
+    readonly limits: {
+      readonly terminalMaxRecords: number;
+      readonly capturedTextMaxRecords: number;
+    };
+  };
+} {
+  if (!isDoctorObject(value)
+    || value.schemaVersion !== CONTINUATION_RECORD_STORE_SCHEMA_VERSION
+    || typeof value.generation !== "string"
+    || !isDoctorObject(value.stats)
+    || value.stats.format !== "per-record-v2"
+    || !isDoctorObject(value.stats.limits)) return false;
+  return [
+    value.stats.records,
+    value.stats.active,
+    value.stats.unresolvedDelivery,
+    value.stats.deadLettered,
+    value.stats.historyDegraded,
+    value.stats.terminalTombstones,
+    value.stats.compacted,
+    value.stats.capturedText,
+    value.stats.limits.terminalMaxRecords,
+    value.stats.limits.terminalMaxAgeMs,
+    value.stats.limits.capturedTextMaxRecords,
+    value.stats.limits.capturedTextMaxAgeMs,
+  ].every((entry) => Number.isSafeInteger(entry) && Number(entry) >= 0);
+}
+
+function isDoctorObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function continuationFsCode(error: unknown): string | undefined {
+  return isDoctorObject(error) && typeof error.code === "string" ? error.code : undefined;
+}
+
+function continuationReason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function formatContinuationHost(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }
 
 interface AdapterEndpointRequirement {

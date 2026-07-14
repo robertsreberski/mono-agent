@@ -121,6 +121,130 @@ describe("validateMonoAgentFolder", () => {
     expect(sectionById(report, "channel:telegram").status).toBe("disabled");
   });
 
+  it("reports fixed-port continuation configuration without creating state during read-only validation", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    const mcpConfigPath = join(dir, "mcp.json");
+    await writeFile(mcpConfigPath, JSON.stringify({
+      mcpServers: { "a8c-control": { command: "a8c-control" } },
+    }));
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { mcpConfigPath, continuationServers: ["a8c-control"] },
+      continuations: { port: 4381 },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      allowFilesystemWrites: false,
+    });
+
+    const section = sectionById(report, "continuations");
+    expect(section.status).toBe("ok");
+    expect(section.details.join("\n")).toContain("http://127.0.0.1:4381");
+    expect(section.details.join("\n")).toContain("a8c-control");
+    expect(await pathExists(stateDir)).toBe(false);
+  });
+
+  it("fails continuation doctor validation for ephemeral configured ports", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      continuations: { port: 0 },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(report, "continuations")).toMatchObject({ status: "error" });
+    expect(sectionById(report, "continuations").details.join("\n")).toContain("between 1 and 65535");
+  });
+
+  it("surfaces continuation lifecycle counts without exposing stored result payloads", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    const ledgerPath = join(stateDir, "continuations-v1.json");
+    await writeFile(ledgerPath, JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: new Date().toISOString(),
+      records: {
+        unknown: { state: "delivery_unknown", resultPayload: "TOP SECRET" },
+        dead: { state: "dead_lettered", resultPayload: "MORE SECRET" },
+        pending: { state: "delivery_retry", synthesizedText: "PRIVATE ANSWER" },
+      },
+    }), { mode: 0o600 });
+    await chmod(ledgerPath, 0o600);
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      continuations: {},
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const section = sectionById(report, "continuations");
+    expect(section.status).toBe("waiting");
+    expect(section.details.join("\n")).toContain("3 total; 1 pending; 1 delivery unknown; 1 dead-lettered");
+    expect(section.details.join("\n")).not.toContain("TOP SECRET");
+    expect(section.details.join("\n")).not.toContain("PRIVATE ANSWER");
+  });
+
+  it("reports bounded v2 storage and history degradation without reading record payloads", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    const recordsDir = join(stateDir, "records-v2");
+    await mkdir(recordsDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    await chmod(recordsDir, 0o700);
+    const recordPath = join(recordsDir, "opaque.json");
+    await writeFile(recordPath, JSON.stringify({ resultPayload: "TOP SECRET V2" }), { mode: 0o600 });
+    await chmod(recordPath, 0o600);
+    const manifestPath = join(stateDir, "continuation-store-v2.json");
+    await writeFile(manifestPath, JSON.stringify({
+      schemaVersion: 2,
+      generation: "generation-v2",
+      updatedAt: new Date().toISOString(),
+      stats: {
+        format: "per-record-v2",
+        records: 4,
+        active: 1,
+        unresolvedDelivery: 0,
+        deadLettered: 0,
+        terminalTombstones: 3,
+        compacted: 3,
+        capturedText: 1,
+        historyDegraded: 1,
+        limits: {
+          terminalMaxRecords: 50_000,
+          terminalMaxAgeMs: 31_536_000_000,
+          capturedTextMaxRecords: 1_000,
+          capturedTextMaxAgeMs: 2_592_000_000,
+        },
+      },
+    }), { mode: 0o600 });
+    await chmod(manifestPath, 0o600);
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      continuations: {},
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const section = sectionById(report, "continuations");
+    expect(section.status).toBe("waiting");
+    expect(section.details.join("\n")).toContain("4 retained; 1 active");
+    expect(section.details.join("\n")).toContain("1 history-degraded deliveries");
+    expect(section.details.join("\n")).toContain("at most 50000 terminal tombstones");
+    expect(section.details.join("\n")).not.toContain("TOP SECRET V2");
+  });
+
   it("reports adapter-derived send tools when enabled adapter configs are valid", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
@@ -3909,6 +4033,101 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(tools.status).toBe("error");
     expect(tools.details.join("\n")).toContain('names unknown MCP server "missing"');
     expect(tools.details.join("\n")).toContain('entry "remote" must reference a stdio MCP server');
+  });
+
+  it("rejects unknown and unsupported continuation MCP servers", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const mcpConfigPath = join(dir, "mcp.json");
+    await writeFile(mcpConfigPath, JSON.stringify({
+      mcpServers: {
+        remote: { type: "http", url: "https://mcp.example.test" },
+        events: { type: "sse", url: "http://127.0.0.1:8123/events" },
+      },
+    }));
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: {
+        allowedTools: ["*"],
+        mcpConfigPath,
+        continuationServers: ["missing", "remote", "events"],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const tools = sectionById(report, "tools");
+    expect(report.ok).toBe(false);
+    expect(tools.status).toBe("error");
+    expect(tools.details.join("\n")).toContain('names unknown MCP server "missing"');
+    expect(tools.details.join("\n")).toContain('entry "remote" must reference a stdio or loopback HTTP MCP server');
+    expect(tools.details.join("\n")).toContain('entry "events" must reference a stdio or loopback HTTP MCP server');
+  });
+
+  it("accepts stdio and loopback HTTP continuation MCP servers", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const mcpConfigPath = join(dir, "mcp.json");
+    await writeFile(mcpConfigPath, JSON.stringify({
+      mcpServers: {
+        worker: { command: "local-worker" },
+        control: { type: "http", url: "http://[::1]:8123/mcp" },
+      },
+    }));
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: {
+        allowedTools: ["*"],
+        mcpConfigPath,
+        continuationServers: ["worker", "control"],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(report.ok).toBe(true);
+    expect(sectionById(report, "tools").status).toBe("ok");
+  });
+
+  it("rejects continuation MCP declarations the canonical runtime drops or reinterprets", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const mcpConfigPath = join(dir, "mcp.json");
+    await writeFile(mcpConfigPath, JSON.stringify({
+      mcpServers: {
+        missingCommand: { type: "stdio" },
+        blankCommand: { type: "stdio", command: "   " },
+        conflictingStdio: {
+          type: "stdio",
+          command: "local-worker",
+          url: "https://mcp.example.test",
+        },
+        conflictingHttp: {
+          type: "http",
+          command: "local-worker",
+          url: "http://127.0.0.1:8123/mcp",
+        },
+        "bad name": { command: "local-worker" },
+      },
+    }));
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: {
+        allowedTools: ["*"],
+        mcpConfigPath,
+        continuationServers: [
+          "missingCommand",
+          "blankCommand",
+          "conflictingStdio",
+          "conflictingHttp",
+          "bad name",
+        ],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const details = sectionById(report, "tools").details.join("\n");
+    expect(report.ok).toBe(false);
+    expect(details.match(/must reference a stdio or loopback HTTP MCP server/gu)).toHaveLength(4);
+    expect(details).toContain('entry "bad name" is not a runtime-valid MCP server name');
   });
 
   it.each([

@@ -39,6 +39,8 @@ export interface ProactiveNotifyInput {
    * destination's harness (e.g. a Slack interactive trigger).
    */
   readonly verbatim?: boolean;
+  /** Stable host delivery identity for adapters with duplicate suppression. */
+  readonly deliveryKey?: string;
   /** Currently running channels, keyed by id (the app's live registry). */
   readonly running: ReadonlyMap<ChannelId, Pick<RunningChannel, "notify">>;
   readonly logger?: MonoAgentAppLogger;
@@ -74,6 +76,7 @@ export async function routeProactiveNotification(input: ProactiveNotifyInput): P
       conversationId: input.conversationId,
       text: input.text,
       ...(input.verbatim === undefined ? {} : { verbatim: input.verbatim }),
+      ...(input.deliveryKey === undefined ? {} : { deliveryKey: input.deliveryKey }),
     });
   } catch (error) {
     const reason = reasonOf(error);

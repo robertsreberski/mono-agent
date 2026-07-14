@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -27,6 +28,8 @@ import {
   defaultChannelDrivers,
 } from "../channels.js";
 import type { ChannelDriver } from "../channels.js";
+import { startContinuationService } from "../continuation-service.js";
+import { canonicalContinuationJson, continuationDigest, type ContinuationStatusSnapshot } from "../continuations.js";
 
 let dir: string;
 
@@ -53,6 +56,31 @@ function baseConfig(): Record<string, unknown> {
     artifacts: { dir: "./artifacts" },
     traceability: { registryDir: "./trace-sources", sourceId: "app-test", sourceLabel: "App Test" },
   };
+}
+
+async function availableLoopbackPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("test server has no TCP port");
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return address.port;
+}
+
+async function waitForContinuationState(
+  app: Awaited<ReturnType<typeof startMonoAgentApp>>,
+  continuationId: string,
+  state: string,
+): Promise<ContinuationStatusSnapshot> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const current = (await app.listContinuations?.() ?? []).find((item) => item.continuationId === continuationId);
+    if (current?.state === state) return current;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Continuation ${continuationId} did not reach ${state}.`);
 }
 
 const unavailableSandboxEngine: SandboxEngine = {
@@ -135,6 +163,133 @@ describe("startMonoAgentApp", () => {
     expect(sources[0]?.metadata?.backgroundSnapshot).toEqual(backgroundSnapshot);
     await app.stop();
   });
+
+  it("keeps a restarted continuation queued until its destination responder is ready", async () => {
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    const port = await availableLoopbackPort();
+    await writeConfig({
+      ...baseConfig(),
+      tools: { allowedTools: [], disallowedTools: [], continuationServers: ["a8c-control"] },
+      continuations: { port, stateDir: ".mono-agent/continuations" },
+    });
+
+    // Seed a durable result with a prior service instance, then stop it. The app
+    // restart must recover this record before its channel driver has finished.
+    const seed = await startContinuationService({
+      stateDir,
+      port: 0,
+      autoProcess: false,
+      synthesize: async () => ({ text: "seed should never synthesize" }),
+      deliver: async () => ({ kind: "delivered", code: "delivered" }),
+    });
+    const capability = seed.issueContinuationClaimCapability({
+      runId: "run-restart-queued",
+      serverName: "a8c-control",
+      conversationId: "slack:D1:171.5",
+      replyTo: { conversationId: "slack:D1:171.5" },
+    });
+    const claimResponse = await fetch(capability.url, {
+      method: "POST",
+      headers: { authorization: `Bearer ${capability.token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        taskKey: "restart-queued",
+        taskHash: continuationDigest("restart-queued"),
+        deadline: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    });
+    expect(claimResponse.status).toBe(200);
+    const claim = await claimResponse.json() as {
+      readonly continuationId: string;
+      readonly resultUrl: string;
+      readonly token: string;
+    };
+    const payload = { status: "complete", finding: "fresh evidence" };
+    const resultResponse = await fetch(claim.resultUrl, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${claim.token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        idempotencyKey: "restart-result",
+        payload,
+        payloadHash: continuationDigest(canonicalContinuationJson(payload)),
+      }),
+    });
+    expect(resultResponse.status).toBe(202);
+    await seed.stop();
+
+    let releaseStart: (() => void) | undefined;
+    const channelGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+    let markStartEntered: (() => void) | undefined;
+    const startEntered = new Promise<void>((resolve) => { markStartEntered = resolve; });
+    const synthesize = vi.fn(async () => "Synthesized once after restart");
+    const deliver = vi.fn(async () => ({
+      delivered: true,
+      deliveryId: "slack:D1:200.1",
+      channelId: "slack",
+      historyRecorded: false,
+      historyErrorCode: "history_record_failed",
+    }));
+    const driver: ChannelDriver = {
+      id: "slack",
+      label: "Slack",
+      loadConfig: async () => ({ enabled: true }),
+      isConfigError: () => false,
+      start: async () => {
+        markStartEntered?.();
+        await channelGate;
+        return {
+          summary: {},
+          stop: async () => undefined,
+          synthesizeContinuation: async () => ({
+            kind: "synthesized",
+            text: await synthesize(),
+          }),
+          notify: deliver,
+        } as never;
+      },
+    };
+
+    let app: Awaited<ReturnType<typeof startMonoAgentApp>> | undefined;
+    const appPromise = startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver] });
+    try {
+      await startEntered;
+      // Let the continuation worker observe the still-gated channel. Poll the
+      // durable state rather than assuming an exact worker-timer phase under a
+      // loaded package-wide test run.
+      const statusUrl = `http://127.0.0.1:${String(port)}/v1/continuations/${encodeURIComponent(claim.continuationId)}/status`;
+      let waitingStatus: Record<string, unknown> | undefined;
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const waitingResponse = await fetch(statusUrl, { headers: { authorization: `Bearer ${claim.token}` } });
+        expect(waitingResponse.status).toBe(200);
+        waitingStatus = await waitingResponse.json() as Record<string, unknown>;
+        if ((waitingStatus.lastError as { code?: string } | undefined)?.code === "destination_channel_unavailable") break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(waitingStatus).toMatchObject({
+        state: "result_received",
+        attempts: { synthesis: 0, delivery: 0 },
+        lastError: { code: "destination_channel_unavailable" },
+      });
+      expect(synthesize).not.toHaveBeenCalled();
+
+      releaseStart?.();
+      app = await appPromise;
+      const delivered = await waitForContinuationState(app, claim.continuationId, "delivered");
+      expect(delivered).toMatchObject({
+        attempts: { synthesis: 1, delivery: 1 },
+        receipt: { historyRecorded: false, historyErrorCode: "history_record_failed" },
+      });
+      await expect(app.continuationHealth?.()).resolves.toMatchObject({
+        status: "degraded",
+        storage: { historyDegraded: 1 },
+      });
+      expect(synthesize).toHaveBeenCalledOnce();
+      expect(deliver).toHaveBeenCalledOnce();
+    } finally {
+      releaseStart?.();
+      app ??= await appPromise.catch(() => undefined);
+      await app?.stop();
+    }
+  }, 10_000);
 
   it("starts configured channels, reports waiting/disabled for the rest, and stops cleanly", async () => {
     await writeConfig({

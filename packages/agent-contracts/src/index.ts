@@ -39,12 +39,47 @@ export interface AgentAttachment {
   readonly durationSeconds?: number;
 }
 
+/**
+ * Host-owned destination for a later reply.  This is deliberately separate
+ * from {@link AgentRequestBase.conversationId}: the latter may be rewritten for
+ * session rollover, while this value identifies the channel conversation that
+ * can actually receive a reply.  Hosts must not copy it into model prompts,
+ * tool arguments, or run artifacts.
+ */
+export interface AgentReplyTarget {
+  readonly conversationId: string;
+}
+
+/**
+ * Host-only controls for a framework-owned continuation synthesis turn.
+ *
+ * A continuation turn is an isolated, tool-free reconstruction of the
+ * conversation as it stood at an explicit `historyBoundary`. When no boundary
+ * is present (for example, a detached named-route continuation), the latest
+ * available conversation history is used. `originRunId` is trace correlation,
+ * not an implicit history boundary. Its synthetic prompt and generated answer
+ * are not committed to conversation history; the continuation service commits
+ * the answer only after native channel delivery succeeds.
+ */
+export interface AgentContinuationTurn {
+  readonly continuationId: string;
+  readonly originRunId: string;
+  /** Origin run to slice through; omitted means use current/latest history. */
+  readonly historyBoundary?: string;
+  readonly toolsDisabled: true;
+  readonly deferHistoryCommit: true;
+}
+
 export interface AgentRequestBase {
   readonly conversationId: string;
   readonly text: string;
   readonly abortSignal: AbortSignal;
   readonly metadata?: AgentRequestMetadata;
   readonly attachments?: readonly AgentAttachment[];
+  /** Host-only physical reply destination; never model-visible. */
+  readonly replyTo?: AgentReplyTarget;
+  /** Host-only continuation synthesis controls; never model-visible. */
+  readonly continuation?: AgentContinuationTurn;
 }
 
 export interface AgentResponse {
@@ -163,7 +198,11 @@ export interface AgentResponder<
    * session for it is retired — so a later user reply resumes with the delivered
    * message in context. No model call happens here; the text was already posted.
    */
-  deliverVerbatim?(conversationId: string, text: string): Promise<void>;
+  deliverVerbatim?(
+    conversationId: string,
+    text: string,
+    options?: { readonly idempotencyKey?: string },
+  ): Promise<void>;
 }
 
 export interface AgentResponseCancelledErrorOptions {
@@ -272,6 +311,9 @@ export {
 } from "./resilient-message-stream.js";
 export type {
   ChannelTransport,
+  ChannelDeliveryDisposition,
+  ChannelFailureCertainty,
+  ChannelMessageContentKind,
   ChannelSendOutcome,
   MessageRef,
   ResilientMessageStreamOptions,

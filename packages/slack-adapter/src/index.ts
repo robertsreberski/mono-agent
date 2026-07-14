@@ -39,11 +39,14 @@ export {
 } from "./message-stream.js";
 export type {
   AgentMessageStream,
+  SlackDeliveryReceipt,
+  SlackDeliveryReceiptListener,
   SlackMessageStreamLogger,
   SlackMessageStreamOptions,
   SlackSendOutcome,
 } from "./message-stream.js";
 export {
+  SerialQueueFullError,
   SlackAdapter,
 } from "./adapter.js";
 export type {
@@ -55,6 +58,7 @@ export type {
   SlackAdapterOptions,
   SlackAdapterStreamOptions,
   SlackAttachmentOptions,
+  SlackContinuationSynthesisInput,
   SlackEventHandlingResult,
   SlackEventIgnoredReason,
   SlackHomeButton,

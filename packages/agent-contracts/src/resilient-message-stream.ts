@@ -33,13 +33,22 @@ export interface MessageRef {
   readonly [key: string]: unknown;
 }
 
+/** Semantic content carried by a confirmed channel write. */
+export type ChannelMessageContentKind = "status" | "answer";
+
+/** Whether a failed native call is known not to have landed or may have landed. */
+export type ChannelFailureCertainty = "not_delivered" | "unknown";
+
+/** Durable routing decision after the stream has exhausted its own recovery. */
+export type ChannelDeliveryDisposition = "retryable" | "permanent" | "unknown";
+
 /** How a failed post/edit should be handled by {@link ResilientMessageStream}. */
 export type ChannelSendOutcome =
-  | { kind: "not_modified" }
-  | { kind: "recreate" }
-  | { kind: "reformat_plain" }
-  | { kind: "retry"; retryAfterMs?: number }
-  | { kind: "fatal" };
+  | { kind: "not_modified"; failureCertainty?: ChannelFailureCertainty }
+  | { kind: "recreate"; failureCertainty?: ChannelFailureCertainty }
+  | { kind: "reformat_plain"; failureCertainty?: ChannelFailureCertainty }
+  | { kind: "retry"; retryAfterMs?: number; failureCertainty?: ChannelFailureCertainty }
+  | { kind: "fatal"; failureCertainty?: ChannelFailureCertainty };
 
 /**
  * Abstracts a chat channel's API so the resilience FSM is transport-agnostic.
@@ -49,9 +58,13 @@ export interface ChannelTransport {
   /** Per-message character budget for this channel. */
   readonly maxMessageChars: number;
   /** Post a new message and return a ref usable by {@link edit}. */
-  post(text: string, options: { markdown: boolean }): Promise<MessageRef>;
+  post(text: string, options: { markdown: boolean; contentKind?: ChannelMessageContentKind }): Promise<MessageRef>;
   /** Edit a previously posted message in place. */
-  edit(ref: MessageRef, text: string, options: { markdown: boolean }): Promise<void>;
+  edit(
+    ref: MessageRef,
+    text: string,
+    options: { markdown: boolean; contentKind?: ChannelMessageContentKind },
+  ): Promise<void>;
   /** Classify a post/edit failure into a recovery strategy. */
   classifyError(error: unknown): ChannelSendOutcome;
   /** Render markdown to the channel's wire format. Defaults to identity. */
@@ -111,12 +124,17 @@ export interface ResilientMessageStreamOptions {
 export class ChannelDeliveryError extends Error {
   override readonly cause: unknown;
   readonly attempts: number;
+  readonly disposition: ChannelDeliveryDisposition;
 
-  constructor(message: string, details: { cause: unknown; attempts: number }) {
+  constructor(
+    message: string,
+    details: { cause: unknown; attempts: number; disposition?: ChannelDeliveryDisposition },
+  ) {
     super(message);
     this.name = "ChannelDeliveryError";
     this.cause = details.cause;
     this.attempts = details.attempts;
+    this.disposition = details.disposition ?? "unknown";
   }
 }
 
@@ -213,7 +231,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     const hadMessage = this.sentMessage !== undefined;
     await this.ensureMessage();
     if (hadMessage && !this.hasAnswerText) {
-      await this.deliverText(this.statusText, { final: false });
+      await this.deliverText(this.statusText, { final: false, contentKind: "status" });
     }
   }
 
@@ -300,7 +318,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
       const hadMessage = this.sentMessage !== undefined;
       await this.ensureMessage();
       if (hadMessage) {
-        await this.deliverText(this.statusText, { final: false });
+        await this.deliverText(this.statusText, { final: false, contentKind: "status" });
       } else {
         this.scheduleEdit();
       }
@@ -343,7 +361,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     // sequence: ensureMessage runs inside deliverText's retry loop.)
     const post = this.finalOnly && this.sentMessage === undefined;
     try {
-      await this.deliverText(firstChunk ?? EMPTY_FINAL_TEXT, { final: true, post });
+      await this.deliverText(firstChunk ?? EMPTY_FINAL_TEXT, { final: true, post, contentKind: "answer" });
     } catch (error) {
       if (this.abortSignal?.aborted === true) {
         // Cancelled: deliver in place if we can, but never post a brand-new
@@ -419,7 +437,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     if (this.sendMessagePromise === undefined) {
       const initialText = this.statusText;
       this.sendMessagePromise = this.transport
-        .post(initialText, { markdown: false })
+        .post(initialText, { markdown: false, contentKind: "status" })
         .then((message) => {
           this.lastFlushedText = initialText;
           this.lastFlushedMarkdown = false;
@@ -453,7 +471,10 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
 
   private startInFlightEdit(): void {
     const text = this.interimDisplayText();
-    this.inFlightEdit = this.deliverText(text, { final: false }).catch((error: unknown) => {
+    this.inFlightEdit = this.deliverText(text, {
+      final: false,
+      contentKind: this.hasAnswerText || this.currentText.length > 0 ? "answer" : "status",
+    }).catch((error: unknown) => {
       // Interim edits are best-effort; deliverText already swallows, but guard
       // against an abort rejection so a streaming hiccup never aborts the run.
       this.logger?.warn?.("Resilient stream interim edit failed (ignored).", {
@@ -471,7 +492,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
    */
   private async deliverText(
     sourceText: string,
-    options: { final: boolean; post?: boolean },
+    options: { final: boolean; post?: boolean; contentKind: ChannelMessageContentKind },
   ): Promise<void> {
     const normalizedSource = normalizeTrailing(sourceText, EMPTY_FINAL_TEXT);
     let useMarkdown = options.final && this.formatMarkdown;
@@ -486,15 +507,23 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     // retry loop (used for the final-only first send) instead of edit-in-place.
     let recreate = options.post === true;
     let lastError: unknown;
+    let sawUnknownFailure = false;
+    let lastOutcome: ChannelSendOutcome | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         if (recreate) {
-          const sent = await this.transport.post(renderedText, { markdown: useMarkdown });
+          const sent = await this.transport.post(renderedText, {
+            markdown: useMarkdown,
+            contentKind: options.contentKind,
+          });
           this.sentMessage = sent;
         } else {
           const message = await this.ensureMessage();
-          await this.transport.edit(message, renderedText, { markdown: useMarkdown });
+          await this.transport.edit(message, renderedText, {
+            markdown: useMarkdown,
+            contentKind: options.contentKind,
+          });
         }
         this.lastFlushedText = renderedText;
         this.lastFlushedMarkdown = useMarkdown;
@@ -502,6 +531,8 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
       } catch (error) {
         lastError = error;
         const outcome = this.transport.classifyError(error);
+        lastOutcome = outcome;
+        sawUnknownFailure ||= outcome.failureCertainty !== "not_delivered";
         if (outcome.kind === "not_modified") {
           this.lastFlushedText = renderedText;
           this.lastFlushedMarkdown = useMarkdown;
@@ -537,6 +568,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
       throw new ChannelDeliveryError("Channel final delivery failed.", {
         cause: lastError,
         attempts: maxAttempts,
+        disposition: deliveryDisposition(lastOutcome, sawUnknownFailure),
       });
     }
     this.logger?.warn?.("Resilient stream interim edit failed (ignored).", {
@@ -552,13 +584,52 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     const normalized = normalizeTrailing(text, EMPTY_FINAL_TEXT);
     const maxAttempts = this.maxSendRetries + 1;
     let lastError: unknown = cause;
+    let sawUnknownFailure = cause instanceof ChannelDeliveryError && cause.disposition === "unknown";
+    let lastOutcome: ChannelSendOutcome | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        const sent = await this.transport.post(normalized, { markdown: false });
+        const sent = await this.transport.post(normalized, { markdown: false, contentKind: "answer" });
         this.sentMessage = sent;
         this.lastFlushedText = normalized;
         this.lastFlushedMarkdown = false;
+        return;
+      } catch (error) {
+        lastError = error;
+        const outcome = this.transport.classifyError(error);
+        lastOutcome = outcome;
+        sawUnknownFailure ||= outcome.failureCertainty !== "not_delivered";
+        if (outcome.kind === "retry" && attempt < maxAttempts) {
+          await this.sleep(this.retryDelayMs(outcome.retryAfterMs, attempt));
+          if (this.abortSignal?.aborted === true) {
+            break;
+          }
+          continue;
+        }
+        break;
+      }
+    }
+
+    throw new ChannelDeliveryError("Channel delivery failed after fallback send.", {
+      cause: lastError,
+      attempts: maxAttempts,
+      disposition: deliveryDisposition(lastOutcome, sawUnknownFailure),
+    });
+  }
+
+  /**
+   * Deliver every overflow chunk or fail the final delivery. Once the primary
+   * chunk has landed a later failure is necessarily ambiguous to the caller;
+   * silently accepting it would falsely acknowledge a truncated answer.
+   */
+  private async sendOverflowChunk(chunk: string): Promise<void> {
+    const normalized = normalizeTrailing(chunk, EMPTY_FINAL_TEXT);
+    const maxAttempts = this.maxSendRetries + 1;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        await this.transport.post(normalized, { markdown: false, contentKind: "answer" });
         return;
       } catch (error) {
         lastError = error;
@@ -574,36 +645,11 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
       }
     }
 
-    throw new ChannelDeliveryError("Channel delivery failed after fallback send.", {
+    throw new ChannelDeliveryError("Channel overflow delivery failed after the primary chunk was posted.", {
       cause: lastError,
       attempts: maxAttempts,
+      disposition: "unknown",
     });
-  }
-
-  /** Overflow continuation chunks are best-effort: the primary answer already landed. */
-  private async sendOverflowChunk(chunk: string): Promise<void> {
-    const normalized = normalizeTrailing(chunk, EMPTY_FINAL_TEXT);
-    const maxAttempts = this.maxSendRetries + 1;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      try {
-        await this.transport.post(normalized, { markdown: false });
-        return;
-      } catch (error) {
-        const outcome = this.transport.classifyError(error);
-        if (outcome.kind === "retry" && attempt < maxAttempts) {
-          await this.sleep(this.retryDelayMs(outcome.retryAfterMs, attempt));
-          if (this.abortSignal?.aborted === true) {
-            return;
-          }
-          continue;
-        }
-        this.logger?.warn?.("Resilient overflow chunk failed (ignored).", {
-          error: errorMessage(error),
-        });
-        return;
-      }
-    }
   }
 
   private retryDelayMs(retryAfterMs: number | undefined, attempt: number): number {
@@ -664,4 +710,12 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function deliveryDisposition(
+  outcome: ChannelSendOutcome | undefined,
+  sawUnknownFailure: boolean,
+): ChannelDeliveryDisposition {
+  if (sawUnknownFailure || outcome === undefined) return "unknown";
+  return outcome.kind === "retry" ? "retryable" : "permanent";
 }

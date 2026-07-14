@@ -135,8 +135,26 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "allowedTools": ["*"],                 // omit or ["*"] = all tools; ["Read","Bash"] = just those; [] = none (chat-only)
     "disallowedTools": [],                 // deny wins where supported; overlap is rejected
     "mcpConfigPath": "./mcp.json",         // stdio/sse/http servers; inlined for SDK runtimes
+    "continuationServers": ["work-control"], // trusted stdio or loopback-HTTP async result owners
     "mcpCallTimeoutMs": 120000,            // inactivity cap per MCP call; tool progress resets it
     "mcpCallMaxTotalTimeoutMs": 2700000    // hard per-call wall clock (45 min); progress cannot extend it
+  },
+
+  // Host-owned durable async delivery. A model never receives the route or
+  // capabilities. Detached bearers are read from the named environment vars.
+  "continuations": {
+    "enabled": true,
+    "host": "127.0.0.1",                  // loopback only
+    "port": 4319,                          // fixed loopback port; persisted callback/status URLs survive restarts
+    "stateDir": ".mono-agent/continuations",
+    "namedRoutes": {
+      "daily-attention": { "mode": "notify_if_actionable", "conversationId": "slack:C_EXAMPLE:T_EXAMPLE" },
+      "verification": { "mode": "capture" },
+      "background-index": { "mode": "silent" }
+    },
+    "detachedServices": [
+      { "name": "work-control", "tokenEnv": "WORK_CONTROL_CONTINUATION_TOKEN" }
+    ]
   },
 
   // Human-in-the-loop bridge: blocking AskUser + tool progress → channel status
