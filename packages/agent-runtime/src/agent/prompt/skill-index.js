@@ -37,7 +37,7 @@ export function buildSkillPathNote({ assetsPath, skillsRoot } = {}) {
 /**
  * @param {{body?: string, assetsPath?: string, skillsRoot?: any, maxChars?: number}} [options]
  */
-export function formatSkillBodyWithPathNote({ body, assetsPath, skillsRoot, maxChars = 12000 } = {}) {
+export function formatSkillBodyWithPathNote({ body, assetsPath, skillsRoot, maxChars } = {}) {
   const text = [
     buildSkillPathNote({ assetsPath, skillsRoot }),
     String(body || "").trim(),

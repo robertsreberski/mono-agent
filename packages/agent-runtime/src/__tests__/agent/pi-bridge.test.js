@@ -612,6 +612,24 @@ describe("pi MCP tool helpers", () => {
     expect(result.content[0].text).not.toContain("name: research");
   });
 
+  it("ReadSkill returns instructions beyond the legacy 12,000-character boundary", async () => {
+    const root = tempWorkspace();
+    const skillsRoot = join(root, "skills");
+    const sentinel = "full-body-sentinel-beyond-legacy-limit";
+    mkdirSync(join(skillsRoot, "research"), { recursive: true });
+    writeFileSync(
+      join(skillsRoot, "research", "SKILL.md"),
+      `# Research\n\n${"x".repeat(12_500)}\n\n${sentinel}\n`,
+    );
+
+    const tools = getPiBuiltinTools([], { skillsRoot, skillNames: ["research"] });
+    const readSkill = tools.find((tool) => tool.name === "ReadSkill");
+    const result = await readSkill.execute("ReadSkill:full", { name: "research" });
+
+    expect(result.content[0].text).toContain(sentinel);
+    expect(result.content[0].text.length).toBeGreaterThan(12_000);
+  });
+
   it("ReadSkill rejects path traversal and unknown skills", async () => {
     const root = tempWorkspace();
     const skillsRoot = join(root, "skills");
@@ -651,8 +669,9 @@ describe("pi MCP tool helpers", () => {
   it("ReadSkill accepts pi's Skill shape and derives root from a nested filePath", async () => {
     const root = tempWorkspace();
     const filePath = join(root, "skills", "research", "SKILL.md");
+    const sentinel = "pi-file-path-sentinel-beyond-legacy-limit";
     mkdirSync(join(root, "skills", "research"), { recursive: true });
-    writeFileSync(filePath, "---\nname: research\n---\n# Research\n\npi-shape body.\n");
+    writeFileSync(filePath, `---\nname: research\n---\n# Research\n\npi-shape body.\n${"x".repeat(12_500)}\n${sentinel}\n`);
 
     const tools = getPiBuiltinTools([], {
       skills: [{ name: "research", description: "when researching", content: "ignored — read lazily", filePath }],
@@ -663,6 +682,7 @@ describe("pi MCP tool helpers", () => {
 
     const result = await readSkill.execute("ReadSkill:pi", { name: "research" });
     expect(result.content[0].text).toContain("pi-shape body.");
+    expect(result.content[0].text).toContain(sentinel);
     expect(result.content[0].text).not.toContain("name: research");
     // The note points at the skill's own directory (the derived one-up root is
     // a prefix of this path, so asserting on it separately would be a weaker
