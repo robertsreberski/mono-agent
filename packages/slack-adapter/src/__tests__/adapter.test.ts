@@ -1599,6 +1599,116 @@ describe("SlackAdapter.handleShortcut", () => {
     expect(ack?.text).toBe("🔄 Syncing…");
     expect(ack?.thread_ts).toBeUndefined();
     expect(summary?.text).toContain("No changes");
+    // Default (no threadReply): the result is its own top-level message.
+    expect(summary?.thread_ts).toBeUndefined();
+  });
+
+  it("threads the interaction result under the ack when threadReply is set (one thread, not two top-level posts)", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      shortcuts: [
+        { callbackId: "sync_now", prompt: "Run the sync.", channelId: "D1", ackText: "🔄 Syncing…", threadReply: true },
+      ],
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "No changes" };
+      }),
+    });
+
+    const result = await adapter.handleShortcut({ type: "shortcut", callback_id: "sync_now" });
+
+    expect(result).toMatchObject({ kind: "triggered", delivered: true });
+    const ack = api.postMessageCalls[0];
+    const summary = api.postMessageCalls[1];
+    // Ack is the thread root (posted top-level); the result replies under it. The
+    // fake api hands the first post ts "200.000001".
+    expect(ack?.thread_ts).toBeUndefined();
+    expect(summary?.thread_ts).toBe("200.000001");
+    // The run's conversation is keyed on that ack thread, so a later in-thread
+    // reply resolves back to it rather than to the bare-DM chat.
+    expect(captured?.conversationId).toBe("slack:D1:200.000001");
+  });
+
+  it("keeps threadReply best-effort: the result still posts top-level when the ack throws", async () => {
+    const api = new FakeSlackApi();
+    api.failPostMessageWhenTextIncludes = "Syncing";
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      shortcuts: [
+        { callbackId: "sync_now", prompt: "Run the sync.", channelId: "D1", ackText: "🔄 Syncing…", threadReply: true },
+      ],
+      responder: responderFrom(async () => ({ text: "No changes" })),
+    });
+
+    const result = await adapter.handleShortcut({ type: "shortcut", callback_id: "sync_now" });
+
+    expect(result).toMatchObject({ kind: "triggered", delivered: true });
+    // Ack throw was swallowed; with no ack ts to thread under, the result posts top-level.
+    expect(api.postMessageCalls.at(-1)?.text).toContain("No changes");
+    expect(api.postMessageCalls.at(-1)?.thread_ts).toBeUndefined();
+  });
+
+  it("with threadReply set, a message shortcut in a source thread keeps that thread (does not re-parent under the ack)", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      shortcuts: [{ callbackId: "sync_now", prompt: "Run the sync.", ackText: "🔄 Syncing…", threadReply: true }],
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "done" };
+      }),
+    });
+
+    const result = await adapter.handleShortcut({
+      type: "message_action",
+      callback_id: "sync_now",
+      channel: { id: "C1" },
+      message: { ts: "171.5" },
+    });
+
+    expect(result).toMatchObject({ kind: "triggered", channelId: "C1", delivered: true });
+    // threadReply only fills a MISSING thread; a real source thread wins, so both the
+    // ack and the result stay under the source message — not re-parented to the ack ts.
+    expect(api.postMessageCalls[0]?.thread_ts).toBe("171.5");
+    expect(api.postMessageCalls.at(-1)?.thread_ts).toBe("171.5");
+    expect(captured?.conversationId).toBe("slack:C1:171.5");
+  });
+
+  it("threads a Home button's result under its ack when threadReply is set (block_actions path)", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      homeTab: {
+        enabled: true,
+        buttons: [
+          { actionId: "draft", label: "📝 Draft", prompt: "Draft it.", channelId: "D1", ackText: "📝 Drafting…", threadReply: true },
+        ],
+      },
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "the draft" };
+      }),
+    });
+
+    const result = await adapter.handleBlockActions({
+      type: "block_actions",
+      actions: [{ action_id: "draft", value: "draft" }],
+    });
+
+    expect(result).toMatchObject({ kind: "triggered", id: "draft", delivered: true });
+    // Home tab carries no source channel → the ack posts top-level and the draft
+    // threads under it (fake api hands the first post ts "200.000001").
+    expect(api.postMessageCalls[0]?.thread_ts).toBeUndefined();
+    expect(api.postMessageCalls[1]?.thread_ts).toBe("200.000001");
+    expect(captured?.conversationId).toBe("slack:D1:200.000001");
   });
 
   it("falls back to the first allowlisted channel when the binding omits channelId", async () => {
