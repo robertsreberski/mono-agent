@@ -6,6 +6,19 @@ import type { AgentResponder } from "../adapter.js";
 import { createTelegramBot } from "../bot.js";
 import { startTelegramAdapter } from "../start.js";
 
+const runnerModuleMocks = vi.hoisted(() => ({ run: vi.fn() }));
+
+vi.mock("@grammyjs/runner", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@grammyjs/runner")>();
+  return {
+    ...actual,
+    run: ((...args: Parameters<typeof actual.run>) => {
+      runnerModuleMocks.run(...args);
+      return actual.run(...args);
+    }) as typeof actual.run,
+  };
+});
+
 const FAKE_BOT_INFO = {
   id: 1,
   is_bot: true as const,
@@ -155,6 +168,85 @@ describe("startTelegramAdapter", () => {
     await result.stop();
     expect(runner?.stopCalls).toBe(1);
     expect(runner?.isRunning()).toBe(false);
+  });
+
+  it("uses the exact 90s retry budget and absorbs an isolated timeout inside one runner", async () => {
+    vi.useFakeTimers();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let result: Awaited<ReturnType<typeof startTelegramAdapter>> | undefined;
+    try {
+      runnerModuleMocks.run.mockClear();
+      let pollAttempts = 0;
+      let successfulPolls = 0;
+      const onPollingError = vi.fn();
+      const onPollingRecovered = vi.fn();
+      const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
+      bot.api.config.use(async (_prev, method, _payload, signal) => {
+        if (method !== "getUpdates") {
+          return { ok: true, result: true } as never;
+        }
+        pollAttempts += 1;
+        if (pollAttempts === 1) {
+          // Model one real HTTP-client timeout: the failed request itself takes
+          // 50s. The old 15s budget was already exhausted when it threw; the new
+          // 90s budget can wait 100ms and retry inside this same runner.
+          await new Promise((_resolve, reject) => {
+            const timeout = setTimeout(
+              () => reject(new Error("getUpdates ETIMEDOUT")),
+              50_000,
+            );
+            const abortSignal = signal as AbortSignal | undefined;
+            abortSignal?.addEventListener("abort", () => {
+              clearTimeout(timeout);
+              reject(new Error("poll stopped"));
+            }, { once: true });
+          });
+        }
+        if (successfulPolls === 0) {
+          successfulPolls += 1;
+          return { ok: true, result: [] } as never;
+        }
+        return await new Promise((_resolve, reject) => {
+          const abortSignal = signal as AbortSignal | undefined;
+          abortSignal?.addEventListener(
+            "abort",
+            () => reject(new Error("poll stopped")),
+            { once: true },
+          );
+        });
+      });
+
+      result = await startTelegramAdapter({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: { respond: vi.fn() } satisfies AgentResponder,
+        deleteWebhookOnStart: false,
+        onPollingError,
+        onPollingRecovered,
+        botFactory: () => bot,
+      });
+
+      const runOptions = runnerModuleMocks.run.mock.calls[0]?.[1];
+      expect(runOptions).toMatchObject({
+        runner: {
+          retryInterval: "exponential",
+          maxRetryTime: 90_000,
+          fetch: { timeout: 30, allowed_updates: ["message"] },
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(50_100);
+      // Failure, successful retry, then the runner's next active long-poll.
+      expect(pollAttempts).toBe(3);
+      expect(successfulPolls).toBe(1);
+      expect(runnerModuleMocks.run).toHaveBeenCalledTimes(1);
+      expect(onPollingError).not.toHaveBeenCalled();
+      expect(onPollingRecovered).not.toHaveBeenCalled();
+    } finally {
+      await result?.stop();
+      consoleError.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("registers configured commands via setMyCommands at startup", async () => {
@@ -363,9 +455,9 @@ describe("startTelegramAdapter polling auto-restart", () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(runnerFactory).toHaveBeenCalledTimes(4);
 
-      // The restart loop kept running and still surfaced each crash to the host,
-      // while the degraded log line was emitted only once for the whole degraded period.
-      expect(errors).toHaveLength(4);
+      // The restart loop kept running, but the whole outage is one state edge:
+      // repeated runner crashes neither re-log nor re-notify the host.
+      expect(errors).toHaveLength(1);
       expect(errorLogs).toHaveLength(1);
 
       await result.stop();
@@ -457,9 +549,11 @@ describe("startTelegramAdapter polling auto-restart", () => {
       await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS); // +500ms = 1000ms total
       expect(runnerFactory).toHaveBeenCalledTimes(3);
 
-      // Runner #3 STAYS UP past the 30s stability window → the backoff resets to
-      // the initial delay. Then crash it: the next restart fires at INITIAL again
-      // (500ms), proving the reset (a non-reset path would wait 2000ms).
+      // Runner #3 completes a real poll and STAYS UP past the 30s stability
+      // window → the backoff resets to the initial delay. Then crash it: the
+      // next restart fires at INITIAL again (500ms), proving the reset (a
+      // non-reset path would wait 2000ms).
+      await bot.api.getUpdates({});
       await vi.advanceTimersByTimeAsync(30_000);
       runners[2]?.crash();
       await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS);
@@ -473,11 +567,13 @@ describe("startTelegramAdapter polling auto-restart", () => {
 });
 
 describe("startTelegramAdapter poll-liveness watchdog", () => {
-  it("force-restarts a runner that is connected but no longer polling", async () => {
+  it("bounds sustained loss, then emits one degraded and one proven recovery edge", async () => {
     vi.useFakeTimers();
     try {
       const { bot } = recordingBot();
       const warnings: string[] = [];
+      const onPollingError = vi.fn();
+      const onPollingRecovered = vi.fn();
       const runnerFactory = vi.fn(() => new FakeRunner());
 
       const result = await startTelegramAdapter({
@@ -485,9 +581,9 @@ describe("startTelegramAdapter poll-liveness watchdog", () => {
         allowAllChats: true,
         responder: { respond: vi.fn() } satisfies AgentResponder,
         deleteWebhookOnStart: false,
-        // Small window so the test does not advance fake time by minutes.
-        pollWatchdogMs: 3000,
         logger: { warn: (message) => { warnings.push(message); } },
+        onPollingError,
+        onPollingRecovered,
         botFactory: () => bot,
         runnerFactory,
       });
@@ -495,12 +591,30 @@ describe("startTelegramAdapter poll-liveness watchdog", () => {
       expect(runnerFactory).toHaveBeenCalledTimes(1);
 
       // No getUpdates ever resolves (the FakeRunner never calls it), so the
-      // heartbeat stays stale. The watchdog ticks (every ~1000ms) and at >3000ms
-      // staleness force-restarts the runner — even though it reports running and
+      // heartbeat stays stale. The default watchdog remains exactly 120s and
+      // force-restarts at that bound even though the runner reports running and
       // its task never rejected.
-      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(119_999);
+      expect(runnerFactory).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
       expect(runnerFactory).toHaveBeenCalledTimes(2);
       expect(warnings.some((w) => /poll liveness stalled/i.test(w))).toBe(true);
+      expect(onPollingError).toHaveBeenCalledTimes(1);
+      expect(onPollingRecovered).not.toHaveBeenCalled();
+
+      // A runner merely surviving 30s is not enough: keep its real poll heartbeat
+      // fresh throughout the stability window, then recovery fires exactly once.
+      for (let elapsed = 0; elapsed < 30_000; elapsed += 10_000) {
+        await vi.advanceTimersByTimeAsync(10_000);
+        await bot.api.getUpdates({});
+      }
+      expect(runnerFactory).toHaveBeenCalledTimes(2);
+      expect(onPollingError).toHaveBeenCalledTimes(1);
+      expect(onPollingRecovered).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await bot.api.getUpdates({});
+      expect(onPollingRecovered).toHaveBeenCalledTimes(1);
 
       await result.stop();
     } finally {
@@ -672,7 +786,7 @@ describe("startTelegramAdapter onPollingRecovered", () => {
 
   const STABILITY_MS = 30_000;
 
-  it("fires after a crash once a restarted runner stays up past the stability window", async () => {
+  it("fires only after a restarted runner is stable and completes a successful poll", async () => {
     vi.useFakeTimers();
     try {
       const { bot } = recordingBot();
@@ -697,11 +811,63 @@ describe("startTelegramAdapter onPollingRecovered", () => {
       await vi.advanceTimersByTimeAsync(500);
       expect(runnerFactory).toHaveBeenCalledTimes(2);
 
-      // Recovery only fires once the restarted runner survives the stability window.
+      // Merely surviving the stability window while still retrying is not proof
+      // of recovery, so the callback remains silent without a successful poll.
       expect(onPollingRecovered).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(STABILITY_MS);
+      expect(onPollingRecovered).not.toHaveBeenCalled();
+
+      // A real poll resolution from runner #2 proves connectivity and emits the
+      // recovery edge immediately because stability is already established.
+      await bot.api.getUpdates({});
+      expect(onPollingRecovered).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(STABILITY_MS);
       expect(onPollingRecovered).toHaveBeenCalledTimes(1);
 
+      await result.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not credit a late poll completion from the stopped runner to its replacement", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseOldPoll!: () => void;
+      let pollCalls = 0;
+      const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
+      bot.api.config.use(async (_prev, method) => {
+        if (method === "getUpdates" && pollCalls++ === 0) {
+          await new Promise<void>((resolve) => { releaseOldPoll = resolve; });
+        }
+        return { ok: true, result: [] } as never;
+      });
+      const onPollingRecovered = vi.fn();
+      const runners: RecoverableRunner[] = [];
+      const result = await startTelegramAdapter({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: { respond: vi.fn() } satisfies AgentResponder,
+        deleteWebhookOnStart: false,
+        pollWatchdogMs: 0,
+        onPollingRecovered,
+        botFactory: () => bot,
+        runnerFactory: () => {
+          const runner = new RecoverableRunner();
+          runners.push(runner);
+          return runner;
+        },
+      });
+
+      const oldPoll = bot.api.getUpdates({});
+      runners[0]?.crash();
+      await vi.advanceTimersByTimeAsync(500 + STABILITY_MS);
+      releaseOldPoll();
+      await oldPoll;
+      expect(onPollingRecovered).not.toHaveBeenCalled();
+
+      await bot.api.getUpdates({});
+      expect(onPollingRecovered).toHaveBeenCalledTimes(1);
       await result.stop();
     } finally {
       vi.useRealTimers();
