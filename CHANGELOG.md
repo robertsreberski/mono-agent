@@ -32,6 +32,15 @@
   delivery behavior until a continuation service and eligible MCP servers or
   detached routes are explicitly configured.
 
+### Upgrade
+
+- Upgrading managed SRT from 0.8 or earlier is an offline transition. Stop
+  every old background and foreground mono-agent process for the OS user, and
+  wait for old `mono-agent init` and `mono-agent sandbox setup` commands to
+  exit, before installing 0.9. Keep them stopped through the first 0.9 sandbox
+  setup. Older versions do not honor 0.9's permanent OS-level install guard,
+  so mixed-version setup or repair is unsafe.
+
 ## 0.8.0 — Durable operations and direct access (2026-07-13)
 
 This is the first public npm release containing the Product v1 source line. The
