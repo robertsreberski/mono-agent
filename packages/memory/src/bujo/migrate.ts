@@ -7,6 +7,7 @@ import {
   appendCanonicalFile,
   assertCanonicalDailySourcePath,
   listCanonicalFileNames,
+  listCanonicalRootFileNames,
   readCanonicalFileSnapshot,
   writeCanonicalFileAtomic,
 } from "./path-safety.js";
@@ -51,6 +52,25 @@ export interface MigrateResult {
   readonly clustered: number;
   readonly forgotten: number;
   readonly reviewed: number;
+}
+
+export interface ExplicitForgetDeps {
+  readonly root: string;
+  readonly db: MemoryDb;
+  readonly ids: readonly string[];
+  readonly now: () => Date;
+  readonly expectedSourceFingerprint: string;
+  readonly abortSignal?: AbortSignal;
+}
+
+export interface ExplicitForgetResult {
+  readonly forgotten: number;
+  readonly recoveredPendingDecision: boolean;
+  readonly sourceFingerprint: string;
+}
+
+export interface ExplicitForgetPreview {
+  readonly eligible: number;
 }
 
 export type MigrateAction = "promote" | "reschedule" | "cluster" | "forget";
@@ -132,6 +152,129 @@ export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
     deps,
     async (recovery) => await migrateUnlocked(deps, recovery.migrationAction),
   );
+}
+
+/**
+ * Forget an operator-selected set of BuJo memories without asking an LLM to
+ * choose them. The ordinary durable migration transaction remains the sole
+ * mutation path, so canonical source, replay authority, and SQLite cannot
+ * silently diverge.
+ */
+export async function forgetExplicitMemories(
+  deps: ExplicitForgetDeps,
+): Promise<ExplicitForgetResult> {
+  return await withSerializedBujoMutation(
+    { root: deps.root, db: deps.db, tier: "bujo", ...(deps.abortSignal === undefined ? {} : { abortSignal: deps.abortSignal }) },
+    async (recovery) => {
+      deps.abortSignal?.throwIfAborted();
+      if (readBujoCanonicalSourceFingerprint(deps.root) !== deps.expectedSourceFingerprint) {
+        throw new Error("memory-forget: canonical source changed after the plan was prepared.");
+      }
+      if (deps.ids.length === 0 || new Set(deps.ids).size !== deps.ids.length) {
+        throw new Error("memory-forget: ids must be a non-empty set without duplicates.");
+      }
+
+      const before = previewExplicitForgetRecords(deps.root, deps.db, deps.ids);
+      const now = deps.now();
+      const updated = before.map((record) => updatedRecord(record, "forget", now, undefined, undefined));
+      const vectors = await deps.db.prepareUpsertVectors(updated);
+      deps.abortSignal?.throwIfAborted();
+
+      // Provider work happens before the first durable marker. Recheck every
+      // source afterwards so a paid vector cannot bind to stale source bytes.
+      before.forEach((record) => assertCanonicalDecisionState(deps.root, record));
+      const decisions = before.map((record, index) => durableDecision(
+        record,
+        updated[index]!,
+        "forget",
+        now,
+        vectors[index],
+        undefined,
+      ));
+      for (const decision of decisions) {
+        const monthlyFile = monthlyFileFor(now);
+        appendPendingDecision(deps.root, monthlyFile, decision);
+        applyDurableDecision(deps, monthlyFile, decision);
+      }
+      return {
+        forgotten: decisions.length,
+        recoveredPendingDecision: recovery.migrationAction !== undefined,
+        sourceFingerprint: readBujoCanonicalSourceFingerprint(deps.root),
+      };
+    },
+  );
+}
+
+/** Content-free read-only validation for an explicit forget plan. */
+export function previewExplicitForgetMemories(
+  root: string,
+  db: MemoryDb,
+  ids: readonly string[],
+): ExplicitForgetPreview {
+  return { eligible: previewExplicitForgetRecords(root, db, ids).length };
+}
+
+/** Read-only canonical-source validation used while preparing an operator plan. */
+export function previewCanonicalExplicitForgetMemories(
+  root: string,
+  ids: readonly string[],
+): ExplicitForgetPreview {
+  if (ids.length === 0 || new Set(ids).size !== ids.length) {
+    throw new Error("memory-forget: ids must be a non-empty set without duplicates.");
+  }
+  const wanted = new Set(ids);
+  const matches = new Map<string, Bullet[]>();
+  const dailyNames = new Set(listCanonicalFileNames(root, "daily", {
+    allowMissing: true,
+    include: (name) => name.endsWith(".md"),
+  }));
+  const paths = [
+    ...listCanonicalRootFileNames(root, {
+      include: (name) => /^\d{4}-\d{2}-\d{2}\.md$/u.test(name) && !dailyNames.has(name),
+    }),
+    ...[...dailyNames].sort().map((name) => `daily/${name}`),
+  ];
+  for (const path of paths) {
+    const snapshot = readCanonicalFileSnapshot(root, path);
+    if (snapshot === undefined) continue;
+    for (const bullet of parseDailyFile(snapshot.content).bullets) {
+      if (!wanted.has(bullet.id)) continue;
+      const found = matches.get(bullet.id) ?? [];
+      found.push(bullet);
+      matches.set(bullet.id, found);
+    }
+  }
+  for (const id of ids) {
+    const found = matches.get(id) ?? [];
+    if (found.length !== 1) {
+      throw new Error(`memory-forget: memory ${id} requires exactly one canonical source bullet.`);
+    }
+    if (found[0]!.status === "dropped" || found[0]!.status === "invalidated") {
+      throw new Error(`memory-forget: memory ${id} is already terminal.`);
+    }
+  }
+  return { eligible: ids.length };
+}
+
+function previewExplicitForgetRecords(
+  root: string,
+  db: MemoryDb,
+  ids: readonly string[],
+): readonly MemoryRecord[] {
+  if (ids.length === 0 || new Set(ids).size !== ids.length) {
+    throw new Error("memory-forget: ids must be a non-empty set without duplicates.");
+  }
+  return ids.map((id) => {
+    const record = db.get(id);
+    if (record === undefined) {
+      throw new Error(`memory-forget: unknown memory id ${id}.`);
+    }
+    if (record.status === "dropped" || record.status === "invalidated") {
+      throw new Error(`memory-forget: memory ${id} is already terminal.`);
+    }
+    assertCanonicalDecisionState(root, record);
+    return record;
+  });
 }
 
 /** The caller holds the per-root mutation lease for planning through durable application. */

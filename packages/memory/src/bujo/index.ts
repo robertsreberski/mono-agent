@@ -31,6 +31,20 @@ export {
 } from "./generations.js";
 export type { ManagedGeneration, ManagedIndexManifest } from "./generations.js";
 export {
+  applyExplicitMemoryForget,
+  ExplicitMemoryForgetError,
+  resolveExplicitMemoryForgetRoot,
+  restoreExplicitMemoryForget,
+} from "./explicit-forget.js";
+export type {
+  ApplyExplicitMemoryForgetOptions,
+  ExplicitMemoryForgetApplyResult,
+  ExplicitMemoryForgetErrorCode,
+  ExplicitMemoryForgetHooks,
+  ExplicitMemoryForgetRestoreResult,
+  RestoreExplicitMemoryForgetOptions,
+} from "./explicit-forget.js";
+export {
   BUJO_RUNTIME_SNAPSHOT_SCHEMA_VERSION,
   BUJO_RUNTIME_SNAPSHOT_STALE_AFTER_MS,
   readBujoRuntimeSnapshot,
@@ -110,6 +124,11 @@ export { createOllamaLlm } from "./ollama-llm.js";
 // Phase 3 rituals
 export { reflect } from "./reflect.js";
 export type { ReflectDeps, ReflectResult } from "./reflect.js";
-export { migrate } from "./migrate.js";
-export type { MigrateDeps, MigrateResult } from "./migrate.js";
+export { migrate, previewCanonicalExplicitForgetMemories } from "./migrate.js";
+export type {
+  ExplicitForgetPreview,
+  MigrateDeps,
+  MigrateResult,
+} from "./migrate.js";
+export { readBujoCanonicalSourceFingerprint } from "./replay-projection.js";
 export { writeFutureLog, writeIndex } from "./projections.js";

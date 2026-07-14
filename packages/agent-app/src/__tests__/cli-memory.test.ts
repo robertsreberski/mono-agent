@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -41,6 +42,19 @@ describe("parseCliArgs memory", () => {
     expect(renderHelp()).toContain("adopt-replay");
     expect(parseCliArgs(["memory", "audit", "--strict", "--json"])).toMatchObject({ strict: true, json: true });
     expect(() => parseCliArgs(["memory", "inspect", "--strict"])).toThrow(/memory audit/iu);
+    expect(parseCliArgs([
+      "memory", "forget", "prepare", "--ids-file", "ids.txt", "--reason", "noise_cleanup", "--plan", "forget.json",
+    ])).toMatchObject({
+      command: "memory",
+      positionals: ["forget", "prepare"],
+      idsFile: "ids.txt",
+      reason: "noise_cleanup",
+      planPath: "forget.json",
+    });
+    expect(parseCliArgs(["memory", "forget", "restore", "--backup", "backup"])).toMatchObject({
+      backupPath: "backup",
+    });
+    expect(() => parseCliArgs(["status", "--plan", "private.json"])).toThrow(/memory forget/iu);
   });
 });
 
@@ -328,6 +342,7 @@ describe("runCli memory", () => {
         embeddings: { provider: "ollama", model: "test-embed", dim: 8 },
         llm: { provider: "ollama", model: "test-capture" },
       },
+      traceability: { registryDir: ".trace-registry" },
     });
     const embeddings: EmbeddingProvider = {
       id: "ollama:test-embed",
@@ -729,6 +744,218 @@ describe("runCli memory", () => {
     }
   });
 
+  it("prepares, applies, and restores a content-free explicit BuJo forget plan", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({
+      memory: {
+        mode: "bujo",
+        path: memoryRoot,
+        writeMode: "capture",
+        embeddings: { provider: "ollama", model: "test-embed", dim: 8 },
+        llm: { provider: "ollama", model: "test-capture" },
+      },
+      traceability: { registryDir: ".trace-registry" },
+    });
+    await seedLocalStore(memoryRoot);
+    await safeRebuildMemoryIndex({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: deterministicEmbeddings("ollama:test-embed", 8),
+      dim: 8,
+    });
+    const dailyName = (await readdir(join(memoryRoot, "daily"))).sort()[0]!;
+    const dailyRelative = join("daily", dailyName);
+    const originalRecords = bujoMemory.parseDailyFile(await readFile(join(memoryRoot, dailyRelative), "utf8")).bullets;
+    const target = originalRecords[0]!;
+    const untouched = originalRecords[1]!;
+    const idsFile = join(dir, "forget-ids.txt");
+    const planPath = join(dir, "forget-plan.json");
+    await writeFile(idsFile, `${target.id}\n`, "utf8");
+    expect(bujoMemory.previewCanonicalExplicitForgetMemories(memoryRoot, [target.id])).toEqual({ eligible: 1 });
+    const beforePrepare = await testTreeFingerprint(memoryRoot);
+
+    const prepared = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "forget", "prepare",
+      "--ids-file", idsFile,
+      "--reason", "noise_cleanup",
+      "--plan", planPath,
+      "--json",
+    ]))));
+    expect(prepared.code, `${prepared.stdout}${prepared.stderr}`).toBe(0);
+    expect(prepared.stderr).toBe("");
+    expect(JSON.parse(prepared.stdout)).toMatchObject({
+      schemaVersion: 1,
+      operation: "forget-prepare",
+      status: "prepared",
+      count: 1,
+      planPath: await realpath(planPath),
+      planDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
+    const planBytes = await readFile(planPath, "utf8");
+    expect(planBytes).toContain(target.id);
+    expect(planBytes).not.toContain(target.text);
+    expect(planBytes).not.toContain(untouched.text);
+    expect((await stat(planPath)).mode & 0o077).toBe(0);
+    expect(await testTreeFingerprint(memoryRoot)).toBe(beforePrepare);
+
+    const ignoredDryRun = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "forget", "apply", "--plan", planPath, "--dry-run", "--json",
+    ]))));
+    expect(ignoredDryRun.code).toBe(2);
+    expect(JSON.parse(ignoredDryRun.stdout)).toMatchObject({ code: "forget_usage", status: "failed" });
+    expect(await testTreeFingerprint(memoryRoot)).toBe(beforePrepare);
+
+    const unsafePlanPath = join(memoryRoot, "unsafe-plan.json");
+    const unsafe = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "forget", "prepare", "--ids-file", idsFile, "--reason", "unsafe_test", "--plan", unsafePlanPath, "--json",
+    ]))));
+    expect(unsafe.code).toBe(1);
+    expect(JSON.parse(unsafe.stdout)).toMatchObject({ code: "forget_prepare_failed" });
+    await expect(stat(unsafePlanPath)).rejects.toThrow();
+
+    const copiedPlanPath = join(memoryRoot, "copied-plan.json");
+    await writeFile(copiedPlanPath, planBytes, { encoding: "utf8", mode: 0o600 });
+    const copiedPlan = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "forget", "apply", "--plan", copiedPlanPath, "--json"]))));
+    expect(copiedPlan.code).toBe(1);
+    expect(JSON.parse(copiedPlan.stdout)).toMatchObject({ code: "forget_apply_failed" });
+    await rm(copiedPlanPath);
+
+    const hardLinkedPlanPath = join(dir, "hard-linked-plan.json");
+    await link(planPath, hardLinkedPlanPath);
+    const hardLinkedPlan = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "forget", "apply", "--plan", hardLinkedPlanPath, "--json"]))));
+    expect(hardLinkedPlan.code).toBe(1);
+    expect(JSON.parse(hardLinkedPlan.stdout)).toMatchObject({ code: "forget_apply_failed" });
+    await rm(hardLinkedPlanPath);
+
+    const registryDir = join(dir, ".trace-registry");
+    await writeLiveTraceManifest(registryDir, dir, "forget-live-writer");
+    const liveRefusal = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "forget", "apply", "--plan", planPath, "--json"]))));
+    expect(liveRefusal.code).toBe(1);
+    expect(JSON.parse(liveRefusal.stdout)).toMatchObject({ code: "forget_apply_failed" });
+    expect(liveRefusal.stdout).not.toContain(target.text);
+    await rm(registryDir, { recursive: true, force: true });
+
+    const originalDaily = await readFile(join(memoryRoot, dailyRelative), "utf8");
+    await writeFile(join(memoryRoot, dailyRelative), `${originalDaily}\n`, "utf8");
+    const staleRefusal = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "forget", "apply", "--plan", planPath, "--json"]))));
+    expect(staleRefusal.code).toBe(1);
+    expect(JSON.parse(staleRefusal.stdout)).toMatchObject({ code: "forget_apply_failed" });
+    expect(staleRefusal.stdout).not.toContain(target.text);
+    await writeFile(join(memoryRoot, dailyRelative), originalDaily, "utf8");
+
+    stubOllamaEmbeddings(8);
+    const applied = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "forget", "apply", "--plan", planPath, "--json"]))));
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(applied.stderr).toBe("");
+    const appliedResult = JSON.parse(applied.stdout) as {
+      readonly status: string;
+      readonly count: number;
+      readonly backupPath: string;
+    };
+    expect(appliedResult).toMatchObject({ status: "applied", count: 1 });
+    expect(appliedResult.backupPath.startsWith(`${memoryRoot}-`)).toBe(false);
+    expect(appliedResult.backupPath.startsWith(memoryRoot)).toBe(false);
+    expect(applied.stdout).not.toContain(target.text);
+    expect((await stat(appliedResult.backupPath)).mode & 0o077).toBe(0);
+
+    const canonical = bujoMemory.parseDailyFile(await readFile(join(memoryRoot, dailyRelative), "utf8"));
+    expect(canonical.bullets.find((bullet) => bullet.id === target.id)?.status).toBe("dropped");
+    expect(canonical.bullets.find((bullet) => bullet.id === untouched.id)?.status).not.toBe("dropped");
+    const appliedDb = openMemoryDb({ path: await resolveActiveMemoryDbPath(memoryRoot), readOnly: true });
+    expect(appliedDb.get(target.id)).toMatchObject({ status: "dropped", validTo: expect.any(String) });
+    appliedDb.close();
+    expect(readManagedIndexManifest(memoryRoot)?.active.sourceFingerprint).toEqual(
+      bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot),
+    );
+    const strict = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "audit", "--strict", "--json"]))));
+    const strictResult = JSON.parse(strict.stdout) as { readonly status: string; readonly issues: readonly string[] };
+    // The fixture intentionally has no live runtime heartbeat; the stopped
+    // store may be runtime_stale, but every durable authority surface is clean.
+    expect(strictResult, strict.stdout).toMatchObject({ status: "degraded", issues: ["runtime_stale"] });
+    expect(strict.code).toBe(1);
+
+    await writeFile(join(memoryRoot, "operator-notes-shm"), "must block restore\n", "utf8");
+    const refused = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "forget", "restore", "--backup", appliedResult.backupPath, "--json"]))));
+    expect(refused.code).toBe(1);
+    expect(JSON.parse(refused.stdout)).toMatchObject({ code: "forget_restore_failed" });
+    expect(await readFile(join(memoryRoot, "operator-notes-shm"), "utf8")).toBe("must block restore\n");
+    await rm(join(memoryRoot, "operator-notes-shm"));
+
+    const restored = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "forget", "restore", "--backup", appliedResult.backupPath, "--json"]))));
+    expect(restored.code, `${restored.stdout}${restored.stderr}`).toBe(0);
+    expect(JSON.parse(restored.stdout)).toMatchObject({ status: "restored" });
+    const restoredDb = openMemoryDb({ path: await resolveActiveMemoryDbPath(memoryRoot), readOnly: true });
+    expect(restoredDb.get(target.id)?.status).not.toBe("dropped");
+    expect(restoredDb.get(untouched.id)?.status).not.toBe("dropped");
+    restoredDb.close();
+  }, 30_000);
+
+  it("refuses an authoritative shared-root writer lease without changing memory", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({
+      memory: {
+        mode: "bujo",
+        path: memoryRoot,
+        writeMode: "capture",
+        embeddings: { provider: "ollama", model: "test-embed", dim: 8 },
+        llm: { provider: "ollama", model: "test-capture" },
+      },
+    });
+    await seedLocalStore(memoryRoot);
+    await safeRebuildMemoryIndex({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: deterministicEmbeddings("ollama:test-embed", 8),
+      dim: 8,
+    });
+    const active = openMemoryDb({ path: await resolveActiveMemoryDbPath(memoryRoot), readOnly: true });
+    const target = active.topSalient(1)[0]!;
+    active.close();
+    const idsFile = join(dir, "recover-ids.txt");
+    const planPath = join(dir, "recover-plan.json");
+    await writeFile(idsFile, `${target.id}\n`, "utf8");
+    const prepared = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "forget", "prepare", "--ids-file", idsFile, "--reason", "failure_test", "--plan", planPath, "--json",
+    ]))));
+    expect(prepared.code, prepared.stderr).toBe(0);
+    const beforeSource = bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot);
+    const beforeDb = openMemoryDb({ path: await resolveActiveMemoryDbPath(memoryRoot), readOnly: true });
+    const beforeIntegrity = beforeDb.logicalIntegrityDigest();
+    beforeDb.close();
+    const competing = createBujoMemoryStore({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: deterministicEmbeddings("ollama:test-embed", 8),
+      dim: 8,
+      llm: { id: "test", complete: async () => "[]" },
+    });
+    stubOllamaEmbeddings(8);
+    let refused: Awaited<ReturnType<typeof captureCli>>;
+    try {
+      refused = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+        runCli(["memory", "forget", "apply", "--plan", planPath, "--json"]))));
+    } finally {
+      await competing.close();
+    }
+    expect(refused.code).toBe(1);
+    expect(JSON.parse(refused.stdout)).toMatchObject({ code: "forget_apply_failed" });
+    expect(refused.stdout).not.toContain(target.text);
+    expect(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot)).toBe(beforeSource);
+    const unchanged = openMemoryDb({ path: await resolveActiveMemoryDbPath(memoryRoot), readOnly: true });
+    expect(unchanged.get(target.id)?.status).not.toBe("dropped");
+    expect(unchanged.logicalIntegrityDigest()).toBe(beforeIntegrity);
+    unchanged.close();
+    expect((await readdir(join(memoryRoot, ".."))).some((name) => name.includes("forget-backup"))).toBe(false);
+  }, 30_000);
+
   it("rejects rebuild and rollback for Supermemory", async () => {
     const dir = await agentDir({
       memory: {
@@ -896,6 +1123,43 @@ describe("runCli memory", () => {
       privateConfigRoot,
       "private-memory-payload-sentinel",
     ]);
+
+    const forgetUsage = await captureCli(() => withCwd(usageDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "forget", "prepare", "--ids-file", privateArgument, "--plan", "private-plan", "--json"]))));
+    expect(forgetUsage.code).toBe(2);
+    expect(forgetUsage.stderr).toBe("");
+    expect(JSON.parse(forgetUsage.stdout)).toMatchObject({ code: "forget_usage", status: "failed" });
+    expect(forgetUsage.stdout).not.toContain(privateArgument);
+
+    const forgetParse = await captureCli(() => withCwd(usageDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "forget", "apply", "--plan", "private-plan", privateFlag, "--json"]))));
+    expect(forgetParse.code).toBe(2);
+    expect(forgetParse.stderr).toBe("");
+    expect(JSON.parse(forgetParse.stdout)).toMatchObject({ code: "forget_usage", status: "failed" });
+    expect(forgetParse.stdout).not.toContain(privateFlag);
+
+    const privateOperation = "private-operation-payload-sentinel";
+    const unknownForget = await captureCli(() => withCwd(usageDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "forget", privateOperation, "--json"]))));
+    expect(unknownForget.code).toBe(2);
+    expect(JSON.parse(unknownForget.stdout)).toMatchObject({
+      operation: "forget-unknown",
+      code: "forget_usage",
+      status: "failed",
+    });
+    expect(`${unknownForget.stdout}${unknownForget.stderr}`).not.toContain(privateOperation);
+
+    const unknownForgetHuman = await captureCli(() => withCwd(usageDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "forget", privateOperation]))));
+    expect(unknownForgetHuman.code).toBe(2);
+    expect(`${unknownForgetHuman.stdout}${unknownForgetHuman.stderr}`).not.toContain(privateOperation);
+
+    const forgetConfig = await captureCli(() => withCwd(privateConfigRoot, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "forget", "apply", "--plan", "private-plan", "--json"]))));
+    expect(forgetConfig.code).toBe(1);
+    expect(forgetConfig.stderr).toBe("");
+    expect(JSON.parse(forgetConfig.stdout)).toMatchObject({ code: "forget_config_invalid", status: "failed" });
+    expect(forgetConfig.stdout).not.toContain("private-memory-payload-sentinel");
   });
 
   it("rejects non-BuJo replay adoption with a closed metadata-only contract", async () => {
@@ -1132,6 +1396,33 @@ function deterministicEmbeddings(id: string, dim: number): EmbeddingProvider {
       return vector;
     }),
   };
+}
+
+function stubOllamaEmbeddings(dim: number): void {
+  vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    expect(String(input)).toBe("http://localhost:11434/api/embed");
+    const body = JSON.parse(String(init?.body)) as { readonly input: readonly string[] };
+    return new Response(JSON.stringify({
+      embeddings: body.input.map((_text, index) => {
+        const vector = new Array<number>(dim).fill(0.01);
+        vector[index % dim] = 1;
+        return vector;
+      }),
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  }));
+}
+
+async function testTreeFingerprint(root: string): Promise<string> {
+  const hash = createHash("sha256");
+  for (const path of (await readdir(root, { recursive: true })).sort()) {
+    const absolute = join(root, path);
+    const info = await lstat(absolute);
+    hash.update(`${path}\0${info.mode & 0o777}\0`);
+    if (info.isFile()) hash.update(await readFile(absolute));
+    else if (info.isSymbolicLink()) hash.update(await readlink(absolute));
+    hash.update("\0");
+  }
+  return hash.digest("hex");
 }
 
 async function upsertIndexed(

@@ -1,5 +1,17 @@
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { constants, type Stats } from "node:fs";
+import {
+  lstat,
+  mkdir,
+  open as openFile,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -32,6 +44,10 @@ const INTAKE_ID_RE = /^[a-f0-9]{64}$/u;
 const INTAKE_REASON_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 const MEMORY_HEALTH_SCHEMA_VERSION = 1;
 const REPLAY_ADOPTION_SCHEMA_VERSION = 1;
+const MEMORY_FORGET_SCHEMA_VERSION = 1;
+const MAX_FORGET_IDS = 32;
+const MAX_FORGET_PLAN_BYTES = 1024 * 1024;
+const MEMORY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u;
 const EMPTY_HEALTH_COUNTS = Object.freeze({
   pending: 0,
   due: 0,
@@ -51,6 +67,24 @@ export interface RunMemoryCommandInput {
   readonly json: boolean;
   readonly strict: boolean;
   readonly limit?: number;
+  readonly idsFile?: string;
+  readonly reason?: string;
+  readonly planPath?: string;
+  readonly backupPath?: string;
+}
+
+interface MemoryForgetPlanPayload {
+  readonly schemaVersion: typeof MEMORY_FORGET_SCHEMA_VERSION;
+  readonly operation: "forget";
+  readonly rootFingerprint: string;
+  readonly sourceFingerprint: string;
+  readonly reason: string;
+  readonly createdAt: string;
+  readonly memoryIds: readonly string[];
+}
+
+interface MemoryForgetPlan extends MemoryForgetPlanPayload {
+  readonly planDigest: string;
 }
 
 interface MemoryCommandContext {
@@ -78,6 +112,10 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       writeReplayAdoptionCliFailure(input.json, "replay_adoption_usage");
       return 2;
     }
+    if (input.positionals[0] === "forget") {
+      writeMemoryForgetFailure(input.json, input.positionals[1] ?? "unknown", "forget_usage");
+      return 2;
+    }
     process.stderr.write(ui.errorLine(usageError));
     return 2;
   }
@@ -96,6 +134,10 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
     }
     if (subcommand === "adopt-replay") {
       writeReplayAdoptionCliFailure(input.json, "replay_adoption_requires_bujo");
+      return 1;
+    }
+    if (subcommand === "forget") {
+      writeMemoryForgetFailure(input.json, rest[0] ?? "unknown", "forget_requires_bujo");
       return 1;
     }
     writeNoMemory(context.configPath, input.json);
@@ -141,9 +183,11 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       return await runIndexTransition(context, "rollback", input.json);
     case "adopt-replay":
       return await runReplayAdoption(context, input.json);
+    case "forget":
+      return await runMemoryForget(context, rest, input);
     default:
       process.stderr.write(ui.errorLine(`Unknown memory subcommand \`${subcommand}\`.`));
-      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, audit, inspect [id], retry [id], resolve <id> <reason>, rebuild, rollback, or adopt-replay."));
+      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, audit, inspect [id], retry [id], resolve <id> <reason>, rebuild, rollback, adopt-replay, or forget prepare|apply|restore."));
       return 2;
   }
 }
@@ -189,6 +233,28 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
       return INTAKE_REASON_RE.test(rest[1] ?? "")
         ? undefined
         : "memory resolve reason must be a 1-64 character lowercase slug.";
+    case "forget": {
+      const operation = rest[0];
+      if (rest.length !== 1 || (operation !== "prepare" && operation !== "apply" && operation !== "restore")) {
+        return "Usage: mono-agent memory forget prepare|apply|restore with the required operation flags.";
+      }
+      if (operation === "prepare") {
+        return input.idsFile !== undefined && input.reason !== undefined && input.planPath !== undefined
+          && input.backupPath === undefined && INTAKE_REASON_RE.test(input.reason)
+          ? undefined
+          : "Usage: mono-agent memory forget prepare --ids-file <file> --reason <lowercase-slug> --plan <file>.";
+      }
+      if (operation === "apply") {
+        return input.planPath !== undefined && input.idsFile === undefined && input.reason === undefined
+          && input.backupPath === undefined
+          ? undefined
+          : "Usage: mono-agent memory forget apply --plan <file>.";
+      }
+      return input.backupPath !== undefined && input.idsFile === undefined && input.reason === undefined
+        && input.planPath === undefined
+        ? undefined
+        : "Usage: mono-agent memory forget restore --backup <dir>.";
+    }
     default:
       return undefined;
   }
@@ -292,6 +358,388 @@ function publicReplayAdoptionResult(result: LegacyReplayAdoptionResult): LegacyR
 
 function isSafeAggregateCount(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0;
+}
+
+class MemoryForgetOperationError extends Error {
+  constructor(
+    readonly code: MemoryForgetFailureCode,
+    readonly recovered = false,
+    readonly backupPath?: string,
+  ) {
+    super(code);
+  }
+}
+
+export type MemoryForgetFailureCode =
+  | "forget_requires_bujo"
+  | "forget_usage"
+  | "forget_config_invalid"
+  | "forget_prepare_failed"
+  | "forget_apply_failed"
+  | "forget_apply_failed_recovered"
+  | "forget_apply_recovery_failed"
+  | "forget_restore_failed";
+
+const MEMORY_FORGET_FAILURE_MESSAGES: Readonly<Record<MemoryForgetFailureCode, string>> = Object.freeze({
+  forget_requires_bujo: "Memory forget requires a configured built-in BuJo store with embeddings.",
+  forget_usage: "Memory forget arguments are invalid.",
+  forget_config_invalid: "Memory forget requires a valid private configuration.",
+  forget_prepare_failed: "Forget-plan preparation failed without changing the memory store.",
+  forget_apply_failed: "Forget-plan application failed before a recoverable backup was available.",
+  forget_apply_failed_recovered: "Forget-plan application failed and the complete pre-apply backup was restored.",
+  forget_apply_recovery_failed: "Forget-plan application failed and automatic recovery could not be verified; keep the agent stopped and restore the reported backup manually.",
+  forget_restore_failed: "Backup restore was refused or failed; the current memory store was not intentionally overwritten.",
+});
+
+async function runMemoryForget(
+  context: MemoryCommandContext,
+  rest: readonly string[],
+  input: RunMemoryCommandInput,
+): Promise<number> {
+  const operation = rest[0] as "prepare" | "apply" | "restore";
+  const memory = context.config.memory;
+  if (memory === undefined || (memory.backend ?? "bujo") === "supermemory"
+    || memory.mode !== "bujo" || memory.embeddings === undefined) {
+    writeMemoryForgetFailure(input.json, operation, "forget_requires_bujo");
+    return 1;
+  }
+
+  try {
+    const bujo = await loadBujoModule();
+    const root = bujo.resolveExplicitMemoryForgetRoot(resolve(context.cwd, memory.path));
+    if (operation === "prepare") {
+      const result = await prepareMemoryForgetPlan(context, root, input);
+      write(input.json, result, () => renderMemoryForgetResult(result));
+      return 0;
+    }
+    if (operation === "apply") {
+      const result = await applyMemoryForgetPlan(context, root, input.planPath!);
+      write(input.json, result, () => renderMemoryForgetResult(result));
+      return 0;
+    }
+    const result = await restoreMemoryForgetBackup(context, root, input.backupPath!);
+    write(input.json, result, () => renderMemoryForgetResult(result));
+    return 0;
+  } catch (error) {
+    const failure = error instanceof MemoryForgetOperationError
+      ? error
+      : new MemoryForgetOperationError(
+          operation === "prepare"
+            ? "forget_prepare_failed"
+            : operation === "restore"
+              ? "forget_restore_failed"
+              : "forget_apply_failed",
+        );
+    writeMemoryForgetFailure(input.json, operation, failure.code, failure.recovered, failure.backupPath);
+    return 1;
+  }
+}
+
+async function prepareMemoryForgetPlan(
+  context: MemoryCommandContext,
+  root: string,
+  input: RunMemoryCommandInput,
+) {
+  const idsFile = resolve(context.cwd, input.idsFile!);
+  const planPath = await canonicalProspectivePath(resolve(context.cwd, input.planPath!));
+  if (isSameOrUnderDirectory(root, planPath)) {
+    throw new MemoryForgetOperationError("forget_prepare_failed");
+  }
+  const memoryIds = await readMemoryIds(idsFile);
+  const bujo = await loadBujoModule();
+  bujo.previewCanonicalExplicitForgetMemories(root, memoryIds);
+
+  const payload: MemoryForgetPlanPayload = {
+    schemaVersion: MEMORY_FORGET_SCHEMA_VERSION,
+    operation: "forget",
+    rootFingerprint: memoryRootFingerprint(root),
+    sourceFingerprint: bujo.readBujoCanonicalSourceFingerprint(root),
+    reason: input.reason!,
+    createdAt: new Date().toISOString(),
+    memoryIds,
+  };
+  const plan: MemoryForgetPlan = { ...payload, planDigest: memoryForgetPlanDigest(payload) };
+  await writePrivateJsonExclusive(planPath, plan);
+  return {
+    schemaVersion: MEMORY_FORGET_SCHEMA_VERSION,
+    operation: "forget-prepare" as const,
+    status: "prepared" as const,
+    count: memoryIds.length,
+    planPath,
+    planDigest: plan.planDigest,
+  };
+}
+
+async function applyMemoryForgetPlan(
+  context: MemoryCommandContext,
+  root: string,
+  rawPlanPath: string,
+) {
+  const planPath = resolve(context.cwd, rawPlanPath);
+  const canonicalPlanPath = await canonicalProspectivePath(planPath);
+  if (isSameOrUnderDirectory(root, canonicalPlanPath)) {
+    throw new MemoryForgetOperationError("forget_apply_failed");
+  }
+  const plan = await readMemoryForgetPlan(planPath);
+  const bujo = await loadBujoModule();
+  if (plan.rootFingerprint !== memoryRootFingerprint(root)) {
+    throw new MemoryForgetOperationError("forget_apply_failed");
+  }
+  // Preserve the user-facing same-config diagnostic; the package transaction
+  // independently enforces the authoritative shared-root writer lease.
+  await assertNoLiveConfiguredAgent(context.configPath, await memoryRegistryDirs(context));
+  const settings = previewRecallSettings(context.config);
+  if (settings === undefined || "supermemory" in settings || settings.embeddings === undefined) {
+    throw new MemoryForgetOperationError("forget_apply_failed");
+  }
+  const { createMemoryEmbeddingProvider } = await loadMemoryRecallModule();
+  const embeddings = await createMemoryEmbeddingProvider(settings.embeddings);
+  try {
+    const result = await bujo.applyExplicitMemoryForget({
+      root,
+      ids: plan.memoryIds,
+      expectedRootFingerprint: plan.rootFingerprint,
+      expectedSourceFingerprint: plan.sourceFingerprint,
+      planDigest: plan.planDigest,
+      embeddings,
+      dimension: settings.embeddings.dim ?? 768,
+    });
+    return {
+      schemaVersion: MEMORY_FORGET_SCHEMA_VERSION,
+      operation: "forget-apply" as const,
+      status: "applied" as const,
+      count: result.forgotten,
+      sourceFingerprint: result.sourceFingerprint,
+      backupPath: result.backupPath,
+      planDigest: plan.planDigest,
+    };
+  } catch (error) {
+    if (error instanceof bujo.ExplicitMemoryForgetError) {
+      if (error.code === "apply_failed_recovered") {
+        throw new MemoryForgetOperationError("forget_apply_failed_recovered", true, error.backupPath);
+      }
+      if (error.code === "apply_recovery_failed") {
+        throw new MemoryForgetOperationError("forget_apply_recovery_failed", false, error.backupPath);
+      }
+    }
+    throw new MemoryForgetOperationError("forget_apply_failed");
+  }
+}
+
+async function restoreMemoryForgetBackup(
+  context: MemoryCommandContext,
+  root: string,
+  rawBackupPath: string,
+) {
+  const bujo = await loadBujoModule();
+  try {
+    const result = await bujo.restoreExplicitMemoryForget({
+      root,
+      backupPath: resolve(context.cwd, rawBackupPath),
+      expectedRootFingerprint: memoryRootFingerprint(root),
+    });
+    return {
+      schemaVersion: MEMORY_FORGET_SCHEMA_VERSION,
+      operation: "forget-restore" as const,
+      status: "restored" as const,
+      backupPath: result.backupPath,
+      sourceFingerprint: result.sourceFingerprint,
+      planDigest: result.planDigest,
+    };
+  } catch {
+    throw new MemoryForgetOperationError("forget_restore_failed");
+  }
+}
+
+async function readMemoryIds(path: string): Promise<readonly string[]> {
+  const raw = await readPinnedFile(path, MAX_FORGET_PLAN_BYTES, false);
+  const ids = raw.split(/\r?\n/gu).map((id) => id.trim()).filter((id) => id.length > 0).sort();
+  if (ids.length === 0 || ids.length > MAX_FORGET_IDS || new Set(ids).size !== ids.length
+    || ids.some((id) => !MEMORY_ID_RE.test(id))) {
+    throw new MemoryForgetOperationError("forget_prepare_failed");
+  }
+  return ids;
+}
+
+function memoryForgetPlanDigest(payload: MemoryForgetPlanPayload): string {
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
+function memoryRootFingerprint(root: string): string {
+  return createHash("sha256").update(root).digest("hex");
+}
+
+async function readMemoryForgetPlan(path: string): Promise<MemoryForgetPlan> {
+  const value = await readPrivateJson(path, MAX_FORGET_PLAN_BYTES);
+  if (!isObject(value)
+    || !hasExactKeys(value, [
+      "createdAt",
+      "memoryIds",
+      "operation",
+      "planDigest",
+      "reason",
+      "rootFingerprint",
+      "schemaVersion",
+      "sourceFingerprint",
+    ])
+    || value.schemaVersion !== MEMORY_FORGET_SCHEMA_VERSION
+    || value.operation !== "forget"
+    || !isSha256(value.rootFingerprint)
+    || !isSha256(value.sourceFingerprint)
+    || typeof value.reason !== "string" || !INTAKE_REASON_RE.test(value.reason)
+    || typeof value.createdAt !== "string" || !isCanonicalIso(value.createdAt)
+    || !Array.isArray(value.memoryIds) || value.memoryIds.length === 0
+    || value.memoryIds.length > MAX_FORGET_IDS
+    || value.memoryIds.some((id) => typeof id !== "string" || !MEMORY_ID_RE.test(id))
+    || new Set(value.memoryIds).size !== value.memoryIds.length
+    || typeof value.planDigest !== "string" || !isSha256(value.planDigest)) {
+    throw new MemoryForgetOperationError("forget_apply_failed");
+  }
+  const payload: MemoryForgetPlanPayload = {
+    schemaVersion: MEMORY_FORGET_SCHEMA_VERSION,
+    operation: "forget",
+    rootFingerprint: value.rootFingerprint,
+    sourceFingerprint: value.sourceFingerprint,
+    reason: value.reason,
+    createdAt: value.createdAt,
+    memoryIds: value.memoryIds as string[],
+  };
+  if (value.planDigest !== memoryForgetPlanDigest(payload)) {
+    throw new MemoryForgetOperationError("forget_apply_failed");
+  }
+  return { ...payload, planDigest: value.planDigest };
+}
+
+async function writePrivateJsonExclusive(path: string, value: unknown): Promise<void> {
+  const handle = await openFile(
+    path,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+    0o600,
+  );
+  try {
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await handle.sync();
+    const opened = await handle.stat();
+    const current = await lstat(path);
+    assertPinnedFile(opened, current, path, true, MAX_FORGET_PLAN_BYTES);
+  } finally {
+    await handle.close();
+  }
+  await fsyncParentDirectory(path);
+}
+
+async function readPrivateJson(path: string, maxBytes: number): Promise<unknown> {
+  return JSON.parse(await readPinnedFile(path, maxBytes, true)) as unknown;
+}
+
+async function readPinnedFile(path: string, maxBytes: number, ownerPrivate: boolean): Promise<string> {
+  const before = await lstat(path);
+  const handle = await openFile(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = await handle.stat();
+    assertPinnedFile(before, opened, path, ownerPrivate, maxBytes);
+    const content = await handle.readFile("utf8");
+    const after = await handle.stat();
+    const current = await lstat(path);
+    assertPinnedFile(opened, after, path, ownerPrivate, maxBytes);
+    assertPinnedFile(opened, current, path, ownerPrivate, maxBytes);
+    if (opened.size !== after.size || opened.mtimeMs !== after.mtimeMs || opened.ctimeMs !== after.ctimeMs) {
+      throw new Error("private artifact changed while it was read");
+    }
+    return content;
+  } finally {
+    await handle.close();
+  }
+}
+
+function assertPinnedFile(
+  expected: Stats,
+  actual: Stats,
+  path: string,
+  ownerPrivate: boolean,
+  maxBytes: number,
+): void {
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  if (!actual.isFile() || actual.isSymbolicLink() || actual.nlink !== 1 || actual.size > maxBytes
+    || expected.dev !== actual.dev || expected.ino !== actual.ino
+    || (ownerPrivate && (actual.mode & 0o077) !== 0)
+    || (uid !== undefined && actual.uid !== uid)) {
+    throw new Error(`private artifact is unsafe: ${path}`);
+  }
+}
+
+async function fsyncParentDirectory(path: string): Promise<void> {
+  const handle = await openFile(dirname(path), constants.O_RDONLY);
+  try { await handle.sync(); } finally { await handle.close(); }
+}
+
+async function canonicalProspectivePath(path: string): Promise<string> {
+  const parent = await realpath(dirname(path));
+  return join(parent, basename(path));
+}
+
+function isSameOrUnderDirectory(parent: string, child: string): boolean {
+  return parent === child || isUnderDirectory(parent, child);
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
+}
+
+function isCanonicalIso(value: string): boolean {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+}
+
+export function writeMemoryForgetFailure(
+  json: boolean,
+  operation: string,
+  code: MemoryForgetFailureCode,
+  recovered = false,
+  backupPath?: string,
+): void {
+  const safeOperation = operation === "prepare" || operation === "apply" || operation === "restore"
+    ? operation
+    : "unknown";
+  const result = {
+    schemaVersion: MEMORY_FORGET_SCHEMA_VERSION,
+    operation: `forget-${safeOperation}`,
+    status: "failed" as const,
+    code,
+    message: MEMORY_FORGET_FAILURE_MESSAGES[code],
+    ...(recovered ? { recovered: true } : {}),
+    ...(backupPath === undefined ? {} : { backupPath }),
+  };
+  if (json) {
+    write(true, result, () => "");
+    return;
+  }
+  process.stderr.write(ui.errorLine(`[${code}] ${result.message}`));
+}
+
+function renderMemoryForgetResult(result: {
+  readonly operation: string;
+  readonly status: string;
+  readonly count?: number;
+  readonly planPath?: string;
+  readonly backupPath?: string;
+  readonly sourceFingerprint?: string;
+}): string {
+  return `${ui.banner("mono-agent memory", result.operation)}\n${ui.keyValue([
+    ["status", result.status],
+    ...(result.count === undefined ? [] : [["count", String(result.count)] as const]),
+    ...(result.planPath === undefined ? [] : [["plan", result.planPath] as const]),
+    ...(result.backupPath === undefined ? [] : [["backup", result.backupPath] as const]),
+    ...(result.sourceFingerprint === undefined ? [] : [["source fingerprint", result.sourceFingerprint] as const]),
+  ])}\n`;
 }
 
 type PublishedMemoryHealthStatus = BujoMemoryHealthReport["status"] | "not_configured";
@@ -687,6 +1135,10 @@ async function loadMemoryCommandContext(
       // Config/native failures can contain the config path or invalid private
       // values. Adoption always exposes the same closed error contract.
       writeReplayAdoptionCliFailure(input.json, "replay_adoption_config_invalid");
+      return { code: 1 };
+    }
+    if (input.positionals[0] === "forget") {
+      writeMemoryForgetFailure(input.json, input.positionals[1] ?? "unknown", "forget_config_invalid");
       return { code: 1 };
     }
     if (isAppCoreConfigError(error)) {

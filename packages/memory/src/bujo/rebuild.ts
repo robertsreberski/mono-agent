@@ -66,6 +66,7 @@ import {
   MANAGED_INDEX_SCHEMA_VERSION,
   MEMORY_REBUILD_POLICY_VERSION,
   acquireMemoryWriterLease,
+  acquireMemoryWriterLeaseForMaintenance,
   activateManagedIndex,
   assertManagedLayoutState,
   assertManagedManifestState,
@@ -414,7 +415,21 @@ function inspectCanonicalIndexMutation(root: string): "clear" | "pending" | "cha
  */
 export async function safeRebuildMemoryIndex(options: SafeMemoryIndexOptions): Promise<SafeMemoryIndexResult> {
   assertSafeRebuildOptions(options);
-  const lease = acquireMemoryWriterLease(options.root);
+  return await safeRebuildMemoryIndexWithLease(options, acquireMemoryWriterLease(options.root));
+}
+
+/** Internal stopped-store path; the caller owns the durable sibling transaction marker. */
+export async function safeRebuildMemoryIndexForMaintenance(
+  options: SafeMemoryIndexOptions,
+): Promise<SafeMemoryIndexResult> {
+  assertSafeRebuildOptions(options);
+  return await safeRebuildMemoryIndexWithLease(options, acquireMemoryWriterLeaseForMaintenance(options.root));
+}
+
+async function safeRebuildMemoryIndexWithLease(
+  options: SafeMemoryIndexOptions,
+  lease: ReturnType<typeof acquireMemoryWriterLease>,
+): Promise<SafeMemoryIndexResult> {
   let sourceFence: SqliteWriterFence | undefined;
   let candidateName: string | undefined;
   let activated = false;

@@ -54,6 +54,13 @@ mono-agent memory rollback --json
 # index whose replay-owned SQLite state predates the canonical sidecar
 mono-agent memory adopt-replay --json
 
+# Explicit, reversible removal of selected BuJo memories
+mono-agent memory forget prepare --ids-file ./forget-ids.txt --reason noise_cleanup --plan ./forget-plan.json --json
+mono-agent stop
+mono-agent memory forget apply --plan ./forget-plan.json --json
+# Optional only while no durable post-cleanup change has occurred
+mono-agent memory forget restore --backup /path/returned/by/apply --json
+
 # Machine-readable output for scripts
 mono-agent memory stats --json
 ```
@@ -65,6 +72,14 @@ Plain `audit` is the detailed local operator report: its JSON contains counts, s
 While the configured store runs, it atomically publishes a coalesced metadata-only snapshot at `.index/runtime.json` (plus a 30-second heartbeat). `audit` uses that snapshot for queue capacity/backlog/high-water/drain/failure/discard counts and embedding/LLM call counts since that store start. It marks a closed, dead-process, invalid, or older-than-90-seconds snapshot as stale. Monetary cost, tokens, and search percentiles remain `null` unless another telemetry surface records them; audit does not guess them from memory content.
 
 `search` uses the same recall path as the `MemoryRecall` tool. When local semantic embeddings are configured but unavailable, it prints a warning and falls back to FTS-only recall instead of pretending semantic search succeeded. For Supermemory-backed agents, `search` queries Supermemory and `stats` reports the known configured container/base URL while marking local SQLite-only counts as unknown.
+
+### Reversible explicit BuJo forget plans
+
+`memory forget` is an operator-selected cleanup path, not an LLM classification pass. Put at most 32 existing memory ids, one per line, in the ids file. `prepare` reads only canonical BuJo sources, rejects missing, duplicate, or already-terminal ids, and creates a new `0600`, single-link JSON plan outside the memory root. The plan contains ids and binding metadata but no memory text. Its root fingerprint, canonical source fingerprint, reason slug, timestamp, and checksum make stale or accidentally edited plans fail closed. The checksum is edit detection inside the trusted same-user operator boundary; it is not authentication against another process running as that same OS user.
+
+Run `apply` only after stopping the configured agent. A package-owned stopped-store coordinator acquires the authoritative memory-writer lease, finishes any prior durable recovery, rechecks the plan and active managed index, and then makes a fully fsynced, verified sibling backup before the first semantic change. A stable sibling transaction record blocks every normal writer until apply or recovery commits. Each selected item uses the ordinary durable migration-forget transaction: its canonical bullet becomes `dropped`, the exact terminal timestamp enters replay authority and SQLite, and a safe managed rebuild refreshes index and graph projections. No chat LLM is called; the configured embeddings provider is used by the bounded durable update and rebuild. JSON and human output contain only metadata, counts, fingerprints, plan/backup paths, and fixed failure codes—never memory text or raw package errors.
+
+If apply fails after the transaction record exists, the coordinator closes the index, restores the complete snapshot, verifies canonical/index parity and its tree fingerprint, and reports whether recovery succeeded. A process death leaves the fsynced transaction and deterministic backup discoverable; normal store startup refuses until a later apply/restore invocation completes recovery. An explicit `restore` prevalidates the snapshot, rechecks the exact post-apply tree at the commit boundary, then atomically renames the current root into retained quarantine and consumes the sibling snapshot as the restored root. It never makes a third full copy. A failed activation rolls the quarantine back; an unverified quarantine is never deleted. Only the exact active SQLite coordination files are checkpointed and removed while the writer lease is held. Every unrelated file—including arbitrary names ending in `-shm` or `-wal`—participates in freshness and blocks overwrite.
 
 ### Strict provider-free health gate
 

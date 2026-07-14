@@ -52,6 +52,14 @@ afterEach(() => {
 });
 
 describe("safe memory index rebuild", () => {
+  it("creates a new nested memory root before any maintenance marker can exist", async () => {
+    const parent = tempRoot();
+    const root = join(parent, "consumer", ".mono-agent", "memory");
+    const result = await safeRebuildMemoryIndex({ root, tier: "lite" });
+    expect(result.indexed).toBe(0);
+    expect(existsSync(result.active)).toBe(true);
+  });
+
   it("indexes root-level legacy dates while daily/<date> takes deterministic precedence", async () => {
     const root = tempRoot();
     writeFileSync(
