@@ -62,8 +62,8 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Slack (Socket Mode, channel allowlist, mention handling) | config | `slack` section |
 | External channel plugins | config | `channels.plugins[]: { package, id?, label?, config? }`; package must export `createChannelDriver(options)` or a default driver factory |
 | WhatsApp (Baileys, QR login, group mention/any triggers) | config | `channels.plugins[].package: "@mono-agent/whatsapp-adapter"` plus plugin `config.{enabled,allowedChatJids,allowAllChats,groupMode,botJids,mentionTextAliases,stripMentionText}` |
-| A2A provider (Agent Card, JSON-RPC + REST, streaming, bearer) | config | `channels.plugins[].package: "@mono-agent/a2a-adapter"` plus plugin `config.provider`, `config.agent`, `config.skill`; `config.enabled` is canonical |
-| A2A consumer settings (remote agent URLs, timeouts) | config + code | same A2A plugin entry's `config.consumer`; calls via `createA2AConsumerResponder` |
+| A2A provider (Agent Card, JSON-RPC + REST, streaming, bearer, opt-in durable dispatch identity) | config | `channels.plugins[].package: "@mono-agent/a2a-adapter"` plus plugin `config.provider` (including `idempotency.{namespace,stateDir,retentionMs,maxRecords}`), `config.agent`, `config.skill`; `config.enabled` is canonical |
+| A2A consumer settings (remote agent URLs, timeouts) and calls | config + code | same A2A plugin entry's `config.consumer`; calls via `sendA2AMessage({ idempotencyKey })` or `createA2AConsumerResponder({ idempotencyKeyForRequest })` |
 | TUI stream endpoint (operator console transport) | config | `tui.{enabled,host,port,basePath,allowNonLoopback,apiKey}`; default on, loopback |
 | Live event relay (read-only run-event SSE for web) | config | `live.{enabled,host,port,basePath,allowNonLoopback,apiKey}`; default on, loopback |
 | Cron jobs (five-field expressions, timezones, overlap skip) | config | `cron.jobs[]`, single-job `MONO_AGENT_CRON_*`, or one markdown file per job in `cron.dir` / `MONO_AGENT_CRON_DIR` (default `cron/`) |

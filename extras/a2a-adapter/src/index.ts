@@ -36,6 +36,7 @@ export {
 } from "./consumer.js";
 export type {
   A2AConsumerOptions,
+  A2AConsumerResponderOptions,
   A2AConsumerResponse,
   A2AConsumerResponseMetadata,
   A2AConsumerSendMessageInput,
@@ -57,6 +58,17 @@ export {
   loadA2AAdapterConfig,
   redactA2AAdapterConfig,
 } from "./config.js";
+
+export {
+  A2A_IDEMPOTENCY_EXTENSION_URI,
+  A2A_IDEMPOTENCY_METADATA_KEY,
+  A2A_IDEMPOTENCY_SCHEMA_VERSION,
+  defaultA2AIdempotencyStateDir,
+  normalizeA2AIdempotencyKey,
+} from "./idempotency.js";
+export type {
+  A2AProviderIdempotencyOptions,
+} from "./idempotency.js";
 export type {
   A2AAdapterAgentConfig,
   A2AAdapterConfig,

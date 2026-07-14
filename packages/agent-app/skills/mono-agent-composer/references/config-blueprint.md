@@ -243,7 +243,13 @@ my-agent/
             "publicBaseUrl": "https://agent.example.com",
             "allowNonLoopback": false,
             "requireBearer": false,
-            "bearerToken": "..."
+            "bearerToken": "...",
+            "idempotency": {              // optional; namespace explicitly enables the v1 extension
+              "namespace": "my-agent-production", // stable authenticated-principal boundary
+              "stateDir": ".mono-agent/a2a-my-agent", // optional derived owner-only path when omitted
+              "retentionMs": 2592000000,  // full result replay horizon
+              "maxRecords": 10000         // permanent unique-key capacity
+            }
           },
           "agent": { "name": "My Agent", "description": "What it does.", "version": "0.1.0" },
           "skill": { "id": "main", "name": "Main", "description": "Primary skill.", "tags": ["agent"] },

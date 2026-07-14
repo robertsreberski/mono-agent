@@ -6,6 +6,7 @@ import {
   DefaultExecutionEventBusManager,
   DefaultRequestHandler,
   InMemoryTaskStore,
+  type A2ARequestHandler,
   type AgentExecutor,
   type ExecutionEventBus,
   type RequestContext,
@@ -50,6 +51,12 @@ import {
   createA2AAgentCard,
 } from "./card.js";
 import { A2AProviderError } from "./errors.js";
+import {
+  createIdempotentA2ARequestHandler,
+  guardUnsupportedA2AIdempotency,
+  type A2AProviderIdempotencyOptions,
+  validateA2AProviderIdempotencyOptions,
+} from "./idempotency.js";
 
 export interface A2ARequestMetadata {
   readonly tenant?: string;
@@ -84,6 +91,8 @@ export interface A2AProviderOptions {
   readonly allowNonLoopback?: boolean;
   readonly requireBearer?: boolean;
   readonly bearerToken?: string;
+  /** Enables the advertised mono-agent extension only with durable state. */
+  readonly idempotency?: A2AProviderIdempotencyOptions;
   readonly responder: AgentResponder<A2AAgentRequest, AgentMessageStream, AgentResponse>;
   readonly agent: Omit<A2AAgentCardOptions, "publicBaseUrl" | "skill" | "requireBearer">;
   readonly skill: A2AAgentSkillOptions;
@@ -149,18 +158,34 @@ export async function startA2AProvider(
     ...options.agent,
     publicBaseUrl,
     requireBearer,
+    durableIdempotency: options.idempotency !== undefined,
     skill: options.skill,
   });
   const executor = new MonoA2AExecutor(options.responder, {
     sourceUrl: publicBaseUrl,
     ...(options.logger === undefined ? {} : { logger: options.logger }),
   });
-  const requestHandler = new DefaultRequestHandler(
+  const taskStore = new InMemoryTaskStore();
+  const baseRequestHandler = new DefaultRequestHandler(
     agentCard,
-    new InMemoryTaskStore(),
+    taskStore,
     executor,
     new DefaultExecutionEventBusManager(),
   );
+  let requestHandler: A2ARequestHandler = guardUnsupportedA2AIdempotency(baseRequestHandler);
+  if (options.idempotency !== undefined) {
+    try {
+      requestHandler = await createIdempotentA2ARequestHandler({
+        delegate: baseRequestHandler,
+        taskStore,
+        options: options.idempotency,
+        ...(options.logger === undefined ? {} : { logger: options.logger }),
+      });
+    } catch (error) {
+      await close(server).catch(() => undefined);
+      throw error;
+    }
+  }
   const auth = requireBearer
     ? bearerAuthMiddleware(options.bearerToken as string)
     : (_req: Request, _res: Response, next: NextFunction) => next();
@@ -391,6 +416,9 @@ function validateProviderOptions(options: A2AProviderOptions): void {
   }
   if (!Number.isInteger(options.port ?? 0) || (options.port ?? 0) < 0 || (options.port ?? 0) > 65535) {
     throw new A2AProviderError("invalid_config", "A2A provider port must be an integer from 0 to 65535.");
+  }
+  if (options.idempotency !== undefined) {
+    validateA2AProviderIdempotencyOptions(options.idempotency);
   }
 }
 

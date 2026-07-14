@@ -1,5 +1,7 @@
 export type A2AProviderErrorCode =
+  | "idempotency_store_error"
   | "invalid_config"
+  | "invalid_idempotency_key"
   | "missing_required_config"
   | "start_failed"
   | "unsupported_input"
@@ -30,7 +32,13 @@ export class A2AProviderError extends Error {
 export type A2AConsumerErrorCode =
   | "discovery_failed"
   | "empty_a2a_response"
+  | "idempotency_conflict"
+  | "idempotency_capacity_exhausted"
+  | "idempotency_in_doubt"
+  | "idempotency_result_expired"
+  | "idempotency_unsupported"
   | "invalid_agent_card"
+  | "invalid_idempotency_key"
   | "remote_auth_required"
   | "remote_canceled"
   | "remote_failed"

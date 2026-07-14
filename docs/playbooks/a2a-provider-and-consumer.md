@@ -39,7 +39,12 @@ The block below is a single `mono-agent.config.json` carrying **both** sides for
             "host": "127.0.0.1",
             "port": 4201,
             "requireBearer": true,
-            "bearerToken": "..."
+            "bearerToken": "...",
+            "idempotency": {
+              "namespace": "research-production",
+              "retentionMs": 2592000000,
+              "maxRecords": 10000
+            }
           },
           "agent": {
             "name": "Research Agent",
@@ -65,7 +70,7 @@ The block below is a single `mono-agent.config.json` carrying **both** sides for
 }
 ```
 
-Keep the bearer token out of the file in production by supplying it via env var: `MONO_AGENT_A2A_BEARER_TOKEN=...` maps to plugin `config.provider.bearerToken`, and `MONO_AGENT_A2A_ENABLED=true` maps to plugin `config.enabled` (the legacy `MONO_AGENT_A2A_PROVIDER_ENABLED` / `config.provider.enabled` form is still honored; the root flag wins when both are set). See [../config/env-vars.md](/config/env-vars/).
+Keep the bearer token out of the file in production by supplying it via env var: `MONO_AGENT_A2A_BEARER_TOKEN=...` maps to plugin `config.provider.bearerToken`, and `MONO_AGENT_A2A_ENABLED=true` maps to plugin `config.enabled` (the legacy `MONO_AGENT_A2A_PROVIDER_ENABLED` / `config.provider.enabled` form is still honored; the root flag wins when both are set). The idempotency namespace is a reviewed stable authenticated-principal boundary, not a URL, version, or secret. See [../config/env-vars.md](/config/env-vars/).
 
 :::caution
 When the provider sits behind a proxy or is reached from another host, set plugin `config.provider.publicBaseUrl` so the Agent Card advertises the right URL, and `config.provider.allowNonLoopback: true` to bind beyond `127.0.0.1`. Always pair non-loopback exposure with `requireBearer: true`.
@@ -73,16 +78,16 @@ When the provider sits behind a proxy or is reached from another host, set plugi
 
 ## Steps
 
-1. Provider: run `mono-agent init`, add an `@mono-agent/a2a-adapter` entry under `channels.plugins[]` with `config.provider`, `config.agent`, and `config.skill`, set `requireBearer: true` and a `bearerToken`, then `mono-agent validate` and `mono-agent start`.
+1. Provider: run `mono-agent init`, add an `@mono-agent/a2a-adapter` entry under `channels.plugins[]` with `config.provider`, `config.agent`, and `config.skill`, set `requireBearer: true` and a `bearerToken`, and choose a stable `provider.idempotency.namespace` for paid/non-repeatable work; then `mono-agent validate` and `mono-agent start`.
 2. Confirm the Agent Card is reachable at the provider port (e.g. `http://127.0.0.1:4201`).
 3. Consumer: configure plugin `config.consumer.remoteAgentUrls` (and `defaultRemoteAgentUrl`/`bearerToken`/`timeoutMs`), or compose `createA2AConsumerResponder` programmatically — invoking remote agents is code-only, see [../programmatic/a2a-consumer.md](/programmatic/a2a-consumer/).
-4. From the consumer, send text to the provider's Agent Card URL with the bearer token.
-5. Confirm the provider responds and the consumer surfaces the result.
+4. From the consumer, send text to the provider's Agent Card URL with the bearer token and the existing logical dispatch id as `idempotencyKey` (or resolve it with `idempotencyKeyForRequest`).
+5. Repeat the same keyed call and confirm the provider returns the same task/result without a second responder invocation.
 
 ## Smoke test
 
 :::tip
-Send a message to the provider's Agent Card URL (with bearer) using `sendA2AMessage()` / the consumer responder; confirm a real response from the provider agent.
+Send the same keyed message twice to the provider's Agent Card URL (with bearer) using `sendA2AMessage()` / the consumer responder; confirm a real response and one responder invocation.
 :::
 
 ## Related

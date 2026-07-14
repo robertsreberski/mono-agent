@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import type {
   ChannelConfigInput,
   ChannelConfigViewField,
@@ -28,6 +30,7 @@ import {
   type A2AProviderStartResult,
   startA2AProvider,
 } from "./provider.js";
+import { defaultA2AIdempotencyStateDir } from "./idempotency.js";
 
 export type A2AAdapterRawConfig = Readonly<Record<string, SettingsJsonValue>>;
 
@@ -43,6 +46,10 @@ const DEFAULT_CHANNEL_LABEL = "A2A";
 const DISABLED_REASON = "A2A provider is disabled.";
 const MISSING_AGENT_SKILL_REASON = "A2A provider requires agent and skill configuration.";
 const CONFIG_VIEW_PLACEHOLDER = "—";
+
+function resolveA2AStateDir(cwd: string, configured: string): string {
+  return resolve(cwd, configured);
+}
 
 export function createA2AChannelDriver(
   options: A2AChannelDriverOptions = {},
@@ -101,6 +108,7 @@ export function createA2AChannelDriver(
         throw new A2AProviderError("missing_required_config", MISSING_AGENT_SKILL_REASON);
       }
       const providerFactory = options.providerFactory ?? startA2AProvider;
+      const idempotency = config.provider.idempotency;
       const provider = await providerFactory({
         host: config.provider.host,
         port: config.provider.port,
@@ -108,6 +116,18 @@ export function createA2AChannelDriver(
         allowNonLoopback: config.provider.allowNonLoopback,
         requireBearer: config.provider.requireBearer,
         ...(config.provider.bearerToken === undefined ? {} : { bearerToken: config.provider.bearerToken }),
+        ...(idempotency === undefined
+          ? {}
+          : {
+              idempotency: {
+                stateDir: idempotency.stateDir === undefined
+                  ? defaultA2AIdempotencyStateDir(input.cwd, idempotency.namespace)
+                  : resolveA2AStateDir(input.cwd, idempotency.stateDir),
+                namespace: idempotency.namespace,
+                retentionMs: idempotency.retentionMs,
+                maxRecords: idempotency.maxRecords,
+              },
+            }),
         responder: input.responder,
         agent: {
           name: config.agent.name,
@@ -271,6 +291,13 @@ function validateA2AAdapterRawConfig(config: A2AAdapterRawConfig): void {
     validateRawBoolean(provider, "allowNonLoopback", "a2a.provider.allowNonLoopback");
     validateRawBoolean(provider, "requireBearer", "a2a.provider.requireBearer");
     validateRawString(provider, "bearerToken", "a2a.provider.bearerToken");
+    const idempotency = readOptionalRawSection(provider, "idempotency", "a2a.provider.idempotency");
+    if (idempotency !== undefined) {
+      validateRawString(idempotency, "stateDir", "a2a.provider.idempotency.stateDir");
+      validateRawString(idempotency, "namespace", "a2a.provider.idempotency.namespace");
+      validateRawInteger(idempotency, "retentionMs", "a2a.provider.idempotency.retentionMs");
+      validateRawInteger(idempotency, "maxRecords", "a2a.provider.idempotency.maxRecords");
+    }
   }
 
   const agent = readOptionalRawSection(config, "agent", "a2a.agent");

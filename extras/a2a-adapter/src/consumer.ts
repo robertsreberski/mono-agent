@@ -16,6 +16,8 @@ import {
   ClientFactory,
   JsonRpcTransportFactory,
   RestTransportFactory,
+  ServiceParameters,
+  withA2AExtensions,
   type RequestOptions,
 } from "@a2a-js/sdk/client";
 import type {
@@ -26,6 +28,14 @@ import type {
 } from "@mono-agent/agent-contracts";
 
 import { A2AConsumerError } from "./errors.js";
+import {
+  A2A_IDEMPOTENCY_EXTENSION_URI,
+  A2A_IDEMPOTENCY_METADATA_KEY,
+  A2A_IDEMPOTENCY_SCHEMA_VERSION,
+  a2aIdempotencyEnvelope,
+  classifyA2AIdempotencyTransportError,
+  stableA2AMessageId,
+} from "./idempotency.js";
 
 export interface A2AConsumerOptions {
   readonly agentUrl: string;
@@ -40,7 +50,15 @@ export interface A2AConsumerSendMessageInput {
   readonly message?: Message;
   readonly contextId?: string;
   readonly taskId?: string;
+  /**
+   * Stable identity for one logical dispatch. The remote Agent Card must
+   * advertise the mono-agent idempotency extension or the consumer fails
+   * before sending.
+   */
+  readonly idempotencyKey?: string;
   readonly returnImmediately?: boolean;
+  /** Per-caller history projection; it is not part of logical workload identity. */
+  readonly historyLength?: number;
   readonly stream?: boolean;
   readonly metadata?: Record<string, unknown>;
   readonly signal?: AbortSignal;
@@ -64,39 +82,64 @@ export interface A2AConsumerResponse extends AgentResponse {
   readonly metadata: A2AConsumerResponseMetadata;
 }
 
+export interface A2AConsumerResponderOptions extends A2AConsumerOptions {
+  readonly streamRemote?: boolean;
+  /** Resolve a stable logical key from the local request; undefined disables it. */
+  readonly idempotencyKeyForRequest?: (request: AgentRequestBase) => string | undefined;
+}
+
 export class A2AConsumer {
   readonly agentCard: AgentCard;
   private readonly client: Client;
   private readonly agentUrl: string;
   private readonly timeoutMs: number | undefined;
+  private readonly refreshConnection: ((signal?: AbortSignal) => Promise<{
+    readonly agentCard: AgentCard;
+    readonly client: Client;
+  }>) | undefined;
 
   constructor(input: {
     readonly client: Client;
     readonly agentCard: AgentCard;
     readonly agentUrl: string;
     readonly timeoutMs?: number;
+    readonly refreshConnection?: (signal?: AbortSignal) => Promise<{
+      readonly agentCard: AgentCard;
+      readonly client: Client;
+    }>;
   }) {
     this.client = input.client;
     this.agentCard = input.agentCard;
     this.agentUrl = input.agentUrl;
     this.timeoutMs = input.timeoutMs;
+    this.refreshConnection = input.refreshConnection;
   }
 
   async sendMessage(input: A2AConsumerSendMessageInput): Promise<A2AConsumerResponse> {
     const request = buildSendMessageRequest(input);
     const timeoutContext = signalWithTimeout(input.signal, input.timeoutMs ?? this.timeoutMs);
-    const options = timeoutContext.signal === undefined
-      ? undefined
-      : { signal: timeoutContext.signal } satisfies RequestOptions;
+    const options = requestOptionsFor(input, timeoutContext.signal);
 
     try {
-      if (input.stream === true && this.agentCard.capabilities?.streaming === true) {
-        return await this.sendStreaming(request, options);
+      let agentCard = this.agentCard;
+      let client = this.client;
+      if (input.idempotencyKey !== undefined) {
+        if (this.refreshConnection !== undefined) {
+          const refreshed = await this.refreshConnection(timeoutContext.signal);
+          assertIdempotencySupported(refreshed.agentCard);
+          agentCard = refreshed.agentCard;
+          client = refreshed.client;
+        } else {
+          assertIdempotencySupported(agentCard);
+        }
       }
-      const result = await this.client.sendMessage(request, options);
+      if (input.stream === true && agentCard.capabilities?.streaming === true) {
+        return await this.sendStreaming(client, request, options);
+      }
+      const result = await client.sendMessage(request, options);
       return responseFromResult(result, {
         agentUrl: this.agentUrl,
-        protocolVersion: this.client.protocolVersion,
+        protocolVersion: client.protocolVersion,
         allowPending: input.returnImmediately === true,
       });
     } catch (error) {
@@ -125,11 +168,12 @@ export class A2AConsumer {
   }
 
   private async sendStreaming(
+    client: Client,
     request: SendMessageRequest,
     options: RequestOptions | undefined,
   ): Promise<A2AConsumerResponse> {
     let latest: SendMessageResult | undefined;
-    for await (const event of this.client.sendMessageStream(request, options)) {
+    for await (const event of client.sendMessageStream(request, options)) {
       latest = resultFromStreamEvent(event) ?? latest;
     }
     if (latest === undefined) {
@@ -140,7 +184,7 @@ export class A2AConsumer {
     }
     return responseFromResult(latest, {
       agentUrl: this.agentUrl,
-      protocolVersion: this.client.protocolVersion,
+      protocolVersion: client.protocolVersion,
       allowPending: false,
     });
   }
@@ -169,6 +213,17 @@ export async function createA2AConsumer(
     client,
     agentCard,
     agentUrl: options.agentUrl,
+    refreshConnection: async (signal) => {
+      const refreshedCard = await discoverA2AAgent({
+        agentUrl: options.agentUrl,
+        fetchImpl,
+        ...(signal === undefined ? {} : { signal }),
+      });
+      return {
+        agentCard: refreshedCard,
+        client: await factory.createFromAgentCard(refreshedCard),
+      };
+    },
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
   });
 }
@@ -176,12 +231,13 @@ export async function createA2AConsumer(
 export async function discoverA2AAgent(input: {
   readonly agentUrl: string;
   readonly fetchImpl?: typeof fetch;
+  readonly signal?: AbortSignal;
 }): Promise<AgentCard> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const cardUrl = agentCardUrlFor(input.agentUrl);
   let response: Response;
   try {
-    response = await fetchImpl(cardUrl);
+    response = await fetchImpl(cardUrl, input.signal === undefined ? undefined : { signal: input.signal });
   } catch (error) {
     throw new A2AConsumerError("discovery_failed", "Failed to fetch A2A Agent Card.", {
       reason: error instanceof Error ? error.message : String(error),
@@ -207,9 +263,7 @@ export async function sendA2AMessage(
 }
 
 export function createA2AConsumerResponder(
-  options: A2AConsumerOptions & {
-    readonly streamRemote?: boolean;
-  },
+  options: A2AConsumerResponderOptions,
 ): AgentResponder<AgentRequestBase, AgentMessageStream, AgentResponse> {
   let consumerPromise: Promise<A2AConsumer> | undefined;
   const getConsumer = (): Promise<A2AConsumer> => {
@@ -219,9 +273,11 @@ export function createA2AConsumerResponder(
   return {
     async respond(request, stream): Promise<AgentResponse> {
       const consumer = await getConsumer();
+      const idempotencyKey = options.idempotencyKeyForRequest?.(request);
       const response = await consumer.sendMessage({
         text: request.text,
         contextId: request.conversationId,
+        ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
         signal: request.abortSignal,
         stream: options.streamRemote === true,
       });
@@ -234,21 +290,33 @@ export function createA2AConsumerResponder(
 }
 
 function buildSendMessageRequest(input: A2AConsumerSendMessageInput): SendMessageRequest {
+  const idempotencyKey = normalizeConsumerIdempotencyKey(input.idempotencyKey);
   const message = input.message ?? textMessage({
     text: requireText(input.text),
     contextId: input.contextId ?? "",
     taskId: input.taskId ?? "",
+    ...(idempotencyKey === undefined ? {} : { messageId: stableA2AMessageId(idempotencyKey) }),
   });
+  const metadata = { ...(input.metadata ?? {}) };
+  if (idempotencyKey !== undefined) {
+    if (Object.prototype.hasOwnProperty.call(metadata, A2A_IDEMPOTENCY_METADATA_KEY)) {
+      throw new A2AConsumerError(
+        "invalid_idempotency_key",
+        `A2A request metadata key ${A2A_IDEMPOTENCY_METADATA_KEY} is reserved; pass idempotencyKey instead.`,
+      );
+    }
+    metadata[A2A_IDEMPOTENCY_METADATA_KEY] = a2aIdempotencyEnvelope(idempotencyKey);
+  }
   return {
     tenant: "",
     message,
     configuration: {
       acceptedOutputModes: ["text/plain"],
       taskPushNotificationConfig: undefined,
-      historyLength: 10,
+      historyLength: normalizeHistoryLength(input.historyLength),
       returnImmediately: input.returnImmediately === true,
     },
-    metadata: input.metadata ?? {},
+    metadata,
   };
 }
 
@@ -256,9 +324,10 @@ function textMessage(input: {
   readonly text: string;
   readonly contextId: string;
   readonly taskId: string;
+  readonly messageId?: string;
 }): Message {
   return {
-    messageId: randomUUID(),
+    messageId: input.messageId ?? randomUUID(),
     contextId: input.contextId,
     taskId: input.taskId,
     role: Role.ROLE_USER,
@@ -449,10 +518,110 @@ function normalizeConsumerError(
     return error;
   }
   const reason = error instanceof Error ? error.message : String(error);
+  const idempotencyFailure = classifyA2AIdempotencyTransportError(reason);
+  if (idempotencyFailure === "capacity_exhausted") {
+    return new A2AConsumerError(
+      "idempotency_capacity_exhausted",
+      "The A2A provider's durable idempotency admission capacity is exhausted; automatic execution was refused.",
+      { reason },
+    );
+  }
+  if (idempotencyFailure === "conflict") {
+    return new A2AConsumerError(
+      "idempotency_conflict",
+      "The A2A idempotency key is already bound to a different canonical request.",
+      { reason },
+    );
+  }
+  if (idempotencyFailure === "in_doubt") {
+    return new A2AConsumerError(
+      "idempotency_in_doubt",
+      "The A2A provider has a non-terminal durable admission from a prior process and refuses automatic re-execution.",
+      { reason },
+    );
+  }
+  if (idempotencyFailure === "result_expired") {
+    return new A2AConsumerError(
+      "idempotency_result_expired",
+      "The A2A provider compacted the terminal result after retention; the logical key remains bound and was not re-executed.",
+      { reason },
+    );
+  }
+  if (idempotencyFailure === "unsupported") {
+    return new A2AConsumerError(
+      "idempotency_unsupported",
+      "The A2A provider refused the reserved key envelope because durable idempotency is not configured.",
+      { reason },
+    );
+  }
+  if (idempotencyFailure === "invalid_key") {
+    return new A2AConsumerError("invalid_idempotency_key", "The A2A idempotency key was rejected by the provider.", { reason });
+  }
   if (/\b(401|403|UNAUTHENTICATED|Unauthorized|auth)/iu.test(reason)) {
     return new A2AConsumerError("remote_auth_required", "Remote A2A agent requires authentication.", { reason });
   }
   return new A2AConsumerError("send_failed", "A2A message send failed.", { reason });
+}
+
+function normalizeConsumerIdempotencyKey(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  try {
+    return a2aIdempotencyEnvelope(value).key;
+  } catch {
+    throw new A2AConsumerError(
+      "invalid_idempotency_key",
+      "A2A idempotencyKey must be 1-200 ASCII letters, digits, or . _ : @ - and start with a letter or digit.",
+      { field: "idempotencyKey" },
+    );
+  }
+}
+
+function normalizeHistoryLength(value: number | undefined): number {
+  const historyLength = value ?? 10;
+  if (!Number.isSafeInteger(historyLength) || historyLength < 0) {
+    throw new A2AConsumerError(
+      "send_failed",
+      "A2A historyLength must be a non-negative safe integer.",
+      { field: "historyLength" },
+    );
+  }
+  return historyLength;
+}
+
+function requestOptionsFor(
+  input: A2AConsumerSendMessageInput,
+  signal: AbortSignal | undefined,
+): RequestOptions | undefined {
+  const serviceParameters = input.idempotencyKey === undefined
+    ? undefined
+    : ServiceParameters.create(withA2AExtensions(A2A_IDEMPOTENCY_EXTENSION_URI));
+  if (signal === undefined && serviceParameters === undefined) {
+    return undefined;
+  }
+  return {
+    ...(signal === undefined ? {} : { signal }),
+    ...(serviceParameters === undefined ? {} : { serviceParameters }),
+  };
+}
+
+function assertIdempotencySupported(card: AgentCard): void {
+  const extensions = card.capabilities?.extensions;
+  const extension = Array.isArray(extensions)
+    ? extensions.find((candidate) =>
+        isRecord(candidate) && candidate.uri === A2A_IDEMPOTENCY_EXTENSION_URI)
+    : undefined;
+  if (
+    extension?.params?.schemaVersion !== A2A_IDEMPOTENCY_SCHEMA_VERSION
+    || extension.params.metadataKey !== A2A_IDEMPOTENCY_METADATA_KEY
+  ) {
+    throw new A2AConsumerError(
+      "idempotency_unsupported",
+      "Remote A2A Agent Card does not advertise the mono-agent logical dispatch idempotency extension; refusing a keyed send.",
+      { extensionUri: A2A_IDEMPOTENCY_EXTENSION_URI },
+    );
+  }
 }
 
 function assertAgentCard(card: unknown, agentUrl: string): asserts card is AgentCard {

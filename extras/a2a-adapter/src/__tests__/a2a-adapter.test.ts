@@ -112,6 +112,72 @@ describe("A2A adapter contract", () => {
     }
   });
 
+  it.each([
+    ["no capabilities", (card: Record<string, unknown>) => {
+      delete card.capabilities;
+    }],
+    ["capabilities without extensions", (card: Record<string, unknown>) => {
+      card.capabilities = { streaming: false };
+    }],
+    ["non-array extensions", (card: Record<string, unknown>) => {
+      card.capabilities = { streaming: false, extensions: "malformed" };
+    }],
+    ["a malformed extension entry", (card: Record<string, unknown>) => {
+      card.capabilities = { streaming: false, extensions: [null] };
+    }],
+  ] as const)(
+    "keeps unkeyed compatibility but refuses keyed sends for a card with %s",
+    async (label, mutateCard) => {
+      const provider = await startA2AProvider({
+        host: "127.0.0.1",
+        port: 0,
+        responder: echoResponder(),
+        agent: {
+          name: "Legacy Mono",
+          description: "Omits modern extension capability fields",
+          version: "0.1.0",
+        },
+        skill: {
+          id: "legacy",
+          name: "Legacy",
+          description: "Legacy compatibility",
+          tags: ["legacy"],
+        },
+      });
+      let posts = 0;
+      try {
+        const consumer = await createA2AConsumer({
+          agentUrl: provider.agentCardUrl,
+          fetchImpl: async (input, init) => {
+            const request = input instanceof Request ? input : new Request(input, init);
+            const response = await fetch(request);
+            if (request.method !== "GET") {
+              posts += 1;
+              return response;
+            }
+            const card = await response.json() as Record<string, unknown>;
+            mutateCard(card);
+            return new Response(JSON.stringify(card), {
+              status: response.status,
+              headers: { "Content-Type": "application/json" },
+            });
+          },
+        });
+
+        await expect(consumer.sendMessage({ text: "unkeyed remains compatible" }))
+          .resolves.toMatchObject({ text: "echo: unkeyed remains compatible" });
+        expect(posts).toBe(1);
+        await expect(consumer.sendMessage({
+          text: "keyed must fail before dispatch",
+          idempotencyKey: `legacy-${label.replace(/[^A-Za-z0-9]/gu, "-")}`,
+        })).rejects.toMatchObject({ code: "idempotency_unsupported" });
+        expect(posts).toBe(1);
+      } finally {
+        await provider.stop();
+      }
+    },
+  );
+
   it("enforces bearer auth on message endpoints while keeping the card discoverable", async () => {
     const provider = await startA2AProvider({
       host: "127.0.0.1",
@@ -368,6 +434,8 @@ describe("A2A adapter contract", () => {
       env: {
         MONO_AGENT_A2A_PROVIDER_ENABLED: "true",
         MONO_AGENT_A2A_BEARER_TOKEN: "env-token",
+        MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE: "env-principal",
+        MONO_AGENT_A2A_IDEMPOTENCY_MAX_RECORDS: "321",
         MONO_AGENT_A2A_REMOTE_AGENT_URLS: "http://127.0.0.1:4300, http://127.0.0.1:4301",
       },
       json: {
@@ -376,6 +444,12 @@ describe("A2A adapter contract", () => {
             host: "127.0.0.1",
             port: 4300,
             requireBearer: true,
+            idempotency: {
+              stateDir: ".mono-agent/a2a-state",
+              namespace: "json-principal",
+              retentionMs: 120000,
+              maxRecords: 123,
+            },
           },
           agent: {
             name: "Configured Mono",
@@ -402,6 +476,12 @@ describe("A2A adapter contract", () => {
       port: 4300,
       requireBearer: true,
       bearerToken: "env-token",
+      idempotency: {
+        stateDir: ".mono-agent/a2a-state",
+        namespace: "env-principal",
+        retentionMs: 120000,
+        maxRecords: 321,
+      },
     });
     expect(config.consumer.remoteAgentUrls).toEqual([
       "http://127.0.0.1:4300",
@@ -793,6 +873,12 @@ describe("A2A adapter contract", () => {
       allowNonLoopback: false,
       requireBearer: true,
       bearerToken: "provider-token",
+      idempotency: {
+        stateDir: expect.stringMatching(/^\/repo\/\.mono-agent\/a2a-idempotency\/driver-production-/u),
+        namespace: "driver-production",
+        retentionMs: 120_000,
+        maxRecords: 123,
+      },
       agent: {
         name: "Driver Mono",
         description: "Driver provider",
@@ -814,6 +900,82 @@ describe("A2A adapter contract", () => {
 
     await running.stop();
     expect(stopped).toBe(true);
+  });
+
+  it("does not enable durable idempotency from config without an explicit namespace", async () => {
+    let captured: A2AProviderOptions | undefined;
+    const driver = createA2AChannelDriver({
+      providerFactory: async (options) => {
+        captured = options;
+        return fakeProviderResult();
+      },
+    });
+    const complete = completeChannelConfig();
+    const { idempotency: _idempotency, ...providerWithoutIdempotency } = complete.provider;
+    await driver.start({
+      config: {
+        ...complete,
+        provider: providerWithoutIdempotency,
+      },
+      coreConfig: {},
+      responder: echoResponder(),
+      cwd: "/repo",
+      onFailure() {},
+    });
+
+    expect(captured).not.toHaveProperty("idempotency");
+  });
+
+  it("rejects partial idempotency config that omits its stable namespace", async () => {
+    await expect(loadA2AAdapterConfig({
+      env: {},
+      json: {
+        a2a: {
+          provider: {
+            idempotency: {
+              stateDir: ".mono-agent/ambiguous-a2a-state",
+            },
+          },
+        },
+      },
+    })).rejects.toMatchObject({
+      code: "missing_required_config",
+      details: { env: "MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE" },
+    });
+  });
+
+  it.each([
+    [
+      "empty",
+      {},
+      {
+        code: "missing_required_config",
+        details: { path: "a2a.provider.idempotency.namespace" },
+      },
+    ],
+    [
+      "unknown",
+      { namespce: "production" },
+      {
+        code: "invalid_config",
+        details: {
+          path: "a2a.provider.idempotency",
+          unknownFields: ["namespce"],
+        },
+      },
+    ],
+  ] as const)("rejects an explicitly present %s idempotency block", async (_label, idempotency, expected) => {
+    const driver = createA2AChannelDriver({
+      config: {
+        provider: { idempotency },
+      },
+    });
+
+    await expect(driver.loadConfig({
+      env: {},
+      cwd: "/repo",
+      configPath: "/repo/missing-mono-agent.config.json",
+    })).rejects.toMatchObject(expected);
   });
 
   it("honors plugin-style raw config while letting env overrides win", async () => {
@@ -952,6 +1114,11 @@ function completeChannelConfig(): A2AAdapterConfig {
       allowNonLoopback: false,
       requireBearer: true,
       bearerToken: "provider-token",
+      idempotency: {
+        namespace: "driver-production",
+        retentionMs: 120_000,
+        maxRecords: 123,
+      },
     },
     agent: {
       name: "Driver Mono",

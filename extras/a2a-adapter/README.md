@@ -53,8 +53,50 @@ import { sendA2AMessage } from "@mono-agent/a2a-adapter";
 const response = await sendA2AMessage({
   agentUrl: "http://127.0.0.1:4300/.well-known/agent-card.json",
   text: "Hello from Agent B.",
+  idempotencyKey: "stable-logical-dispatch-42",
 });
 ```
+
+`idempotencyKey` is an opt-in mono-agent A2A extension. Before sending, the
+consumer requires the named/versioned capability in the remote Agent Card, so a
+generic peer cannot silently ignore the key. Long-lived consumers re-check the
+live card before every keyed POST, and unconfigured mono-agent providers reject
+a stale reserved envelope. Keyed requests also declare and
+activate that capability through the standard A2A extension service parameter.
+A durable provider binds the key
+to a canonical execution fingerprint, invokes its responder at most once
+automatically, and replays the same task. A changed payload conflicts. This is
+not a claim of exactly-once external effects.
+
+Programmatic providers opt in with a stable reviewed namespace and owner-only
+state directory:
+
+```ts
+await startA2AProvider({
+  // ...responder, agent, skill...
+  idempotency: {
+    stateDir: "/absolute/private/path/a2a-idempotency",
+    namespace: "inventory-worker-production",
+    retentionMs: 30 * 24 * 60 * 60 * 1_000,
+    maxRecords: 10_000,
+  },
+});
+```
+
+The namespace is the authenticated logical-principal boundary. Never derive it
+from an endpoint, version, or bearer secret: it must survive rebinds, upgrades,
+and credential rotation. A namespace/token shared by mutually untrusted callers
+does not provide caller isolation.
+
+Active admissions found after restart return `idempotency_in_doubt` and remain
+fail-closed. Terminal tasks replay for `retentionMs`, then compact to a permanent
+fingerprint tombstone and return `idempotency_result_expired`; keys are never
+reused. `maxRecords` is a hard unique-key capacity and exhaustion returns
+`idempotency_capacity_exhausted` without evicting existing bindings.
+Changing a store's `maxRecords` or namespace requires an explicit store
+migration; startup refuses to reinterpret an existing manifest.
+Config-loaded providers reject any partial `provider.idempotency` block that
+omits the namespace; they never silently start without the advertised guard.
 
 ## Public API
 
@@ -88,7 +130,13 @@ Config can be loaded from a `channels.plugins[]` entry or explicit environment v
             "host": "127.0.0.1",
             "port": 4300,
             "requireBearer": true,
-            "bearerToken": "redacted-value"
+            "bearerToken": "redacted-value",
+            "idempotency": {
+              "namespace": "agent-a-production",
+              "stateDir": ".mono-agent/a2a-agent-a",
+              "retentionMs": 2592000000,
+              "maxRecords": 10000
+            }
           },
           "agent": {
             "description": "Local A2A provider.",
@@ -127,6 +175,10 @@ Important env names:
 - `MONO_AGENT_A2A_ALLOW_NON_LOOPBACK`
 - `MONO_AGENT_A2A_REQUIRE_BEARER`
 - `MONO_AGENT_A2A_BEARER_TOKEN`
+- `MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE`
+- `MONO_AGENT_A2A_IDEMPOTENCY_STATE_DIR`
+- `MONO_AGENT_A2A_IDEMPOTENCY_RETENTION_MS`
+- `MONO_AGENT_A2A_IDEMPOTENCY_MAX_RECORDS`
 - `MONO_AGENT_NAME`
 - `MONO_AGENT_A2A_AGENT_NAME`
 - `MONO_AGENT_A2A_AGENT_DESCRIPTION`
