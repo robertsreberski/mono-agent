@@ -188,6 +188,11 @@ export interface SlackShortcutBinding {
    * (e.g. "🔄 Syncing…"). Best-effort: a failed ack post does not block the run.
    */
   readonly ackText?: string;
+  /**
+   * When true (and `ackText` is set), the run's result posts as a threaded reply
+   * under the instant ack instead of as a separate top-level message. Default off.
+   */
+  readonly threadReply?: boolean;
 }
 
 /**
@@ -227,6 +232,12 @@ export interface SlackHomeButton {
   readonly prompt: string;
   readonly channelId?: SlackChannelId;
   readonly ackText?: string;
+  /**
+   * When true (and `ackText` is set), the run's result posts as a threaded reply
+   * under the instant ack — one ack+result thread instead of two top-level
+   * messages. Default: top-level. See {@link SlackHomeButton.ackText}.
+   */
+  readonly threadReply?: boolean;
 }
 
 /** App Home tab options: whether to publish it, an optional header, and its buttons. */
@@ -929,7 +940,12 @@ export class SlackAdapter {
    */
   private async runBoundInteraction(
     id: string,
-    binding: { readonly prompt: string; readonly channelId?: SlackChannelId; readonly ackText?: string },
+    binding: {
+      readonly prompt: string;
+      readonly channelId?: SlackChannelId;
+      readonly ackText?: string;
+      readonly threadReply?: boolean;
+    },
     payloadChannelId: SlackChannelId | undefined,
     payloadThreadTs: SlackMessageTs | undefined,
   ): Promise<SlackInteractionHandlingResult> {
@@ -943,22 +959,30 @@ export class SlackAdapter {
       return { kind: "unauthorized", id, channelId };
     }
 
-    // A Slack `thread_ts` is channel-scoped, so only thread the reply when the
-    // destination IS the channel the interaction came from. A binding that pins a
-    // different channelId (or a global shortcut / Home-tab click with no source
-    // channel) posts top-level — otherwise a foreign thread_ts 404s the post.
-    const threadTs = channelId === payloadChannelId ? payloadThreadTs : undefined;
+    // A Slack `thread_ts` is channel-scoped, so only thread off a SOURCE message
+    // when the destination IS the channel the interaction came from. A binding that
+    // pins a different channelId (or a global shortcut / Home-tab click with no
+    // source channel) has no such thread — a foreign thread_ts would 404.
+    let threadTs = channelId === payloadChannelId ? payloadThreadTs : undefined;
 
     // Instant feedback: the result lands seconds later (and a global shortcut or a
     // Home-tab click shows no on-click UI), so post the ack now (best-effort)
-    // before the run. The result follows as its own message in the same channel.
+    // before the run.
     if (binding.ackText !== undefined) {
       try {
-        await this.api.chatPostMessage({
+        const ack = await this.api.chatPostMessage({
           channel: channelId,
           text: binding.ackText,
           ...(threadTs === undefined ? {} : { thread_ts: threadTs }),
         });
+        // Opt-in (`threadReply`): thread the run's result under the ack so a click
+        // with no source thread (Home-tab button / global shortcut) yields ONE
+        // thread — ack + result — instead of two separate top-level messages. Left
+        // off, the result posts top-level as before. When the interaction already
+        // threads off a source message, that thread is kept either way.
+        if (binding.threadReply === true && threadTs === undefined) {
+          threadTs = ack.ts;
+        }
       } catch (error) {
         this.logger?.warn?.("Slack interaction ack message failed (continuing with the run).", {
           id,
