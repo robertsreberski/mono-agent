@@ -27,6 +27,12 @@ export interface A2AAdapterProviderConfig {
   readonly allowNonLoopback: boolean;
   readonly requireBearer: boolean;
   readonly bearerToken?: string;
+  readonly idempotency?: {
+    readonly stateDir?: string;
+    readonly namespace: string;
+    readonly retentionMs: number;
+    readonly maxRecords: number;
+  };
 }
 
 export interface A2AAdapterAgentConfig {
@@ -72,6 +78,14 @@ export interface LoadA2AAdapterConfigInput {
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 0;
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_IDEMPOTENCY_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+const DEFAULT_IDEMPOTENCY_MAX_RECORDS = 10_000;
+const A2A_IDEMPOTENCY_JSON_FIELDS = new Set([
+  "stateDir",
+  "namespace",
+  "retentionMs",
+  "maxRecords",
+]);
 
 const invalidConfig = (message: string, details?: Record<string, unknown>): A2AProviderError =>
   new A2AProviderError("invalid_config", message, details);
@@ -80,6 +94,7 @@ export async function loadA2AAdapterConfig(
   input: LoadA2AAdapterConfigInput,
 ): Promise<A2AAdapterConfig> {
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
+  const jsonIdempotencyWasConfigured = validateJsonIdempotencySection(json);
   const env = layerA2AJsonOntoEnv(json, input.env);
   // Canonical root flag first (`a2a.enabled` / MONO_AGENT_A2A_ENABLED), matching
   // every other channel; the legacy `a2a.provider.enabled` form keeps working.
@@ -87,6 +102,21 @@ export async function loadA2AAdapterConfig(
   const enabled = readBoolean(env.MONO_AGENT_A2A_ENABLED ?? env.MONO_AGENT_A2A_PROVIDER_ENABLED, enabledVar, false, invalidConfig);
   const publicBaseUrl = normalizeOptionalString(env.MONO_AGENT_A2A_PUBLIC_BASE_URL);
   const providerBearerToken = normalizeOptionalString(env.MONO_AGENT_A2A_BEARER_TOKEN);
+  const idempotencyStateDir = normalizeOptionalString(env.MONO_AGENT_A2A_IDEMPOTENCY_STATE_DIR);
+  const idempotencyNamespace = normalizeOptionalString(env.MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE);
+  const idempotencyWasConfigured = jsonIdempotencyWasConfigured || [
+    env.MONO_AGENT_A2A_IDEMPOTENCY_STATE_DIR,
+    env.MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE,
+    env.MONO_AGENT_A2A_IDEMPOTENCY_RETENTION_MS,
+    env.MONO_AGENT_A2A_IDEMPOTENCY_MAX_RECORDS,
+  ].some((value) => value !== undefined);
+  if (idempotencyWasConfigured && idempotencyNamespace === undefined) {
+    throw new A2AProviderError(
+      "missing_required_config",
+      "MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE is required when any A2A idempotency setting is configured.",
+      { env: "MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE" },
+    );
+  }
   const provider: A2AAdapterProviderConfig = {
     enabled,
     host: readString(env.MONO_AGENT_A2A_HOST, DEFAULT_HOST),
@@ -95,6 +125,28 @@ export async function loadA2AAdapterConfig(
     allowNonLoopback: readBoolean(env.MONO_AGENT_A2A_ALLOW_NON_LOOPBACK, "MONO_AGENT_A2A_ALLOW_NON_LOOPBACK", false, invalidConfig),
     requireBearer: readBoolean(env.MONO_AGENT_A2A_REQUIRE_BEARER, "MONO_AGENT_A2A_REQUIRE_BEARER", false, invalidConfig),
     ...(providerBearerToken === undefined ? {} : { bearerToken: providerBearerToken }),
+    ...(idempotencyNamespace === undefined
+      ? {}
+      : {
+          idempotency: {
+            ...(idempotencyStateDir === undefined ? {} : { stateDir: idempotencyStateDir }),
+            namespace: idempotencyNamespace,
+            retentionMs: readInteger(
+              env.MONO_AGENT_A2A_IDEMPOTENCY_RETENTION_MS,
+              "MONO_AGENT_A2A_IDEMPOTENCY_RETENTION_MS",
+              DEFAULT_IDEMPOTENCY_RETENTION_MS,
+              invalidConfig,
+              { min: 60_000, max: 365 * 24 * 60 * 60 * 1_000 },
+            ),
+            maxRecords: readInteger(
+              env.MONO_AGENT_A2A_IDEMPOTENCY_MAX_RECORDS,
+              "MONO_AGENT_A2A_IDEMPOTENCY_MAX_RECORDS",
+              DEFAULT_IDEMPOTENCY_MAX_RECORDS,
+              invalidConfig,
+              { min: 1, max: 1_000_000 },
+            ),
+          },
+        }),
   };
 
   const consumerBearerToken = normalizeOptionalString(env.MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN);
@@ -123,6 +175,49 @@ export async function loadA2AAdapterConfig(
     skill,
     consumer,
   };
+}
+
+function validateJsonIdempotencySection(json: SettingsJson): boolean {
+  const a2a = readJsonSection(json, "a2a");
+  const providerValue = a2a.provider;
+  if (!isRecordValue(providerValue)
+    || !Object.prototype.hasOwnProperty.call(providerValue, "idempotency")) {
+    return false;
+  }
+
+  const idempotency = providerValue.idempotency;
+  if (!isRecordValue(idempotency)) {
+    throw invalidConfig(
+      "a2a.provider.idempotency must be an object.",
+      { path: "a2a.provider.idempotency" },
+    );
+  }
+  const fields = Object.keys(idempotency);
+  if (fields.length === 0) {
+    throw new A2AProviderError(
+      "missing_required_config",
+      "a2a.provider.idempotency.namespace is required when the idempotency block is present.",
+      {
+        path: "a2a.provider.idempotency.namespace",
+        env: "MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE",
+      },
+    );
+  }
+  const unknownFields = fields.filter((field) => !A2A_IDEMPOTENCY_JSON_FIELDS.has(field));
+  if (unknownFields.length > 0) {
+    throw invalidConfig(
+      `a2a.provider.idempotency contains unknown field${unknownFields.length === 1 ? "" : "s"}: ${unknownFields.join(", ")}.`,
+      {
+        path: "a2a.provider.idempotency",
+        unknownFields,
+      },
+    );
+  }
+  return true;
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 export function redactA2AAdapterConfig(
@@ -247,6 +342,10 @@ export const A2A_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "a2a.provider.allowNonLoopback", env: "MONO_AGENT_A2A_ALLOW_NON_LOOPBACK", kind: "boolean", fromJson: (s) => readRecord(s.provider).allowNonLoopback },
   { id: "a2a.provider.requireBearer", env: "MONO_AGENT_A2A_REQUIRE_BEARER", kind: "boolean", fromJson: (s) => readRecord(s.provider).requireBearer },
   { id: "a2a.provider.bearerToken", env: "MONO_AGENT_A2A_BEARER_TOKEN", secret: true, fromJson: (s) => readRecord(s.provider).bearerToken },
+  { id: "a2a.provider.idempotency.stateDir", env: "MONO_AGENT_A2A_IDEMPOTENCY_STATE_DIR", fromJson: (s) => readRecord(readRecord(s.provider).idempotency).stateDir },
+  { id: "a2a.provider.idempotency.namespace", env: "MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE", fromJson: (s) => readRecord(readRecord(s.provider).idempotency).namespace },
+  { id: "a2a.provider.idempotency.retentionMs", env: "MONO_AGENT_A2A_IDEMPOTENCY_RETENTION_MS", kind: "integer", fromJson: (s) => readRecord(readRecord(s.provider).idempotency).retentionMs },
+  { id: "a2a.provider.idempotency.maxRecords", env: "MONO_AGENT_A2A_IDEMPOTENCY_MAX_RECORDS", kind: "integer", fromJson: (s) => readRecord(readRecord(s.provider).idempotency).maxRecords },
 
   { id: "a2a.agent.name", env: "MONO_AGENT_A2A_AGENT_NAME", fromJson: (s) => readRecord(s.agent).name },
   { id: "a2a.agent.description", env: "MONO_AGENT_A2A_AGENT_DESCRIPTION", fromJson: (s) => readRecord(s.agent).description },
