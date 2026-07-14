@@ -52,8 +52,13 @@ If you need richer transport semantics, treat the provider as a stable text gate
             "port": 4201,
             "publicBaseUrl": "https://agent.example.com",
             "allowNonLoopback": false,
-            "requireBearer": false,
-            "bearerToken": "..."
+            "requireBearer": true,
+            "bearerToken": "...",
+            "idempotency": {
+              "namespace": "my-agent-production",
+              "retentionMs": 2592000000,
+              "maxRecords": 10000
+            }
           },
           "agent": {
             "name": "My Agent",
@@ -87,6 +92,14 @@ If you need richer transport semantics, treat the provider as a stable text gate
 | `allowNonLoopback` | boolean | `false` | Must be `true` to bind a non-loopback `host` or advertise a non-loopback `publicBaseUrl`. |
 | `requireBearer` | boolean | `false` | Require `Authorization: Bearer <token>` on `/a2a/json-rpc` and `/a2a/rest`. |
 | `bearerToken` | string | — | The expected token. Required when `requireBearer` is `true`. |
+| `idempotency.namespace` | string | — | Explicitly enables durable logical-dispatch idempotency and defines the stable authenticated principal boundary. Never derive it from URL/version/token. |
+| `idempotency.stateDir` | string | derived owner-only path | Durable receipt/tombstone directory. Relative paths resolve from the agent cwd. |
+| `idempotency.retentionMs` | integer | `2592000000` | Full terminal-result replay horizon; compact tombstones remain permanent. |
+| `idempotency.maxRecords` | integer | `10000` | Hard unique-key admission capacity; exhaustion fails closed. |
+
+The block is all-or-nothing: configuring any `idempotency.*` field requires a
+non-empty `idempotency.namespace`. Partial configuration fails validation rather
+than starting without protection.
 
 ### `config.agent`
 
@@ -126,6 +139,10 @@ Every key has a `MONO_AGENT_*` override. Strings split on commas where the value
 | `MONO_AGENT_A2A_ALLOW_NON_LOOPBACK` | plugin `config.provider.allowNonLoopback` |
 | `MONO_AGENT_A2A_REQUIRE_BEARER` | plugin `config.provider.requireBearer` |
 | `MONO_AGENT_A2A_BEARER_TOKEN` | plugin `config.provider.bearerToken` |
+| `MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE` | plugin `config.provider.idempotency.namespace` |
+| `MONO_AGENT_A2A_IDEMPOTENCY_STATE_DIR` | plugin `config.provider.idempotency.stateDir` |
+| `MONO_AGENT_A2A_IDEMPOTENCY_RETENTION_MS` | plugin `config.provider.idempotency.retentionMs` |
+| `MONO_AGENT_A2A_IDEMPOTENCY_MAX_RECORDS` | plugin `config.provider.idempotency.maxRecords` |
 | `MONO_AGENT_A2A_AGENT_NAME` | plugin `config.agent.name` (wins over root `agent.name` / `MONO_AGENT_NAME`) |
 | `MONO_AGENT_A2A_AGENT_DESCRIPTION` | plugin `config.agent.description` |
 | `MONO_AGENT_A2A_AGENT_VERSION` | plugin `config.agent.version` |

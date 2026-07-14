@@ -77,8 +77,66 @@ Options:
 | `bearerToken` | `string?` | Optional bearer token attached to all outbound requests. |
 | `timeoutMs` | `number?` | Optional per-request timeout. |
 | `streamRemote` | `boolean?` | When `true` *and* the remote Agent Card advertises streaming, the response is streamed; otherwise a single message is sent and the text appended once. |
+| `idempotencyKeyForRequest` | `(request) => string \| undefined` | Optional resolver for an existing stable logical-dispatch key. No key is invented when it returns `undefined`. |
 
 On each `respond()`, the responder maps the incoming request onto the remote `sendMessage` call: `request.text` becomes the message text, `request.conversationId` becomes the remote `contextId`, and `request.abortSignal` is forwarded so cancellation propagates to the remote agent.
+
+## Stable logical dispatch identity
+
+For paid or otherwise non-repeatable work, pass one stable key for the logical
+dispatch, not a newly generated key for each HTTP attempt:
+
+```ts
+const response = await sendA2AMessage({
+  agentUrl,
+  text: canonicalPayload,
+  contextId,
+  returnImmediately: true,
+  idempotencyKey: delegationId,
+});
+```
+
+Do not use `taskId` as an initial identity. A2A task ids are provider-created,
+and the pinned SDK rejects unknown initial task ids. The consumer discovers the
+Agent Card first and refuses a keyed call with `idempotency_unsupported` unless
+the provider advertises the mono-agent v1 extension. Long-lived consumers
+re-check the live card before every keyed POST; mono-agent providers without
+durable state reject a stale reserved envelope instead of ignoring it. The
+reserved wire envelope is paired with the standard `A2A-Extensions` request
+parameter, activated by the provider, and stripped before the responder/model.
+
+The same namespace/key and execution payload rejoin one task. Each caller still
+chooses its own response projection: `returnImmediately: true` gets the accepted
+or current task, while `false` waits for that same task's terminal result;
+`historyLength` applies only to that caller's returned clone. A changed execution
+payload returns `idempotency_conflict`.
+
+`sendA2AMessage` / `A2AConsumer.sendMessage` expose `returnImmediately`,
+`historyLength`, and `stream` as caller-specific projections. Keyed streaming
+returns one authoritative task/message rather than transient deltas, because
+those deltas cannot be reconstructed from the durable terminal receipt.
+
+`createA2AConsumerResponder` never invents a key. Supply a resolver when the
+local request already carries a stable identity:
+
+```ts
+const responder = createA2AConsumerResponder({
+  agentUrl,
+  idempotencyKeyForRequest(request) {
+    return typeof request.metadata?.delegationId === "string"
+      ? request.metadata.delegationId
+      : undefined;
+  },
+});
+```
+
+Permanent/operator-visible failures are `idempotency_conflict`,
+`idempotency_in_doubt`, `idempotency_result_expired`,
+`idempotency_capacity_exhausted`, `idempotency_unsupported`, and
+`invalid_idempotency_key`. They must not enter an automatic retry loop. The
+extension guarantees at-most-one automatic responder invocation for a durable
+admission; it does not assert exactly-once external effects or an unambiguous
+business outcome.
 
 ## Dynamic remote-agent selection
 

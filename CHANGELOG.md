@@ -1,5 +1,42 @@
 # Release notes
 
+## 0.9.1 — Durable A2A dispatch admission (2026-07-14)
+
+### Highlights
+
+- A2A callers can attach a versioned `idempotencyKey` metadata extension after
+  verifying that the remote Agent Card advertises durable support. Unsupported
+  peers fail before a task is submitted.
+- Providers fsync a payload-bound admission before invoking the responder.
+  Same-process concurrent duplicates share one execution; a concurrent provider
+  process loses the exclusive admission and fails closed as
+  `idempotency_in_doubt`. Retained terminal tasks replay, and a changed request
+  under the same key fails with a typed conflict.
+- Immediate and blocking callers share the same admitted task while retaining
+  their own response projection and history length. The provider persists an
+  immediate acceptance and monitors it to a terminal task without treating
+  response preferences as different work.
+- A provider restart with an active receipt fails closed as
+  `idempotency_in_doubt`; it never guesses that model work is safe to repeat.
+  Expired results compact to permanent conflict tombstones, and bounded store
+  capacity fails closed instead of evicting a live or previously bound key.
+- Owner-only state, strict persisted-result validation, file and directory
+  fsync, cross-process exclusive admission, and permanent key ownership close
+  crash, expiry, and concurrent-provider replay races.
+
+### Compatibility
+
+- Durable A2A idempotency is opt-in. A config-loaded provider advertises it only
+  when plugin `config.provider.idempotency.namespace` (or the equivalent
+  full-root/env setting) is an explicit stable logical principal; `stateDir`,
+  retention, and maximum records remain configurable.
+- Direct consumers may pass `idempotencyKey`. Programmatic responder bridges
+  may supply `idempotencyKeyForRequest`; neither path invents a random identity.
+- The contract is at-most-once and fail-closed across ambiguous failure, not a
+  claim of exactly-once execution across an unknowable process/network crash.
+- All 21 catalog-publishable packages move together to 0.9.1. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.9.0 — Durable origin-bound continuations (2026-07-14)
 
 ### Highlights

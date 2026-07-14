@@ -1,6 +1,11 @@
 import type { AgentCard, AgentProvider, AgentSkill } from "@a2a-js/sdk";
 
 import { A2AProviderError } from "./errors.js";
+import {
+  A2A_IDEMPOTENCY_EXTENSION_URI,
+  A2A_IDEMPOTENCY_METADATA_KEY,
+  A2A_IDEMPOTENCY_SCHEMA_VERSION,
+} from "./idempotency.js";
 
 export interface A2AAgentSkillOptions {
   readonly id: string;
@@ -23,6 +28,8 @@ export interface A2AAgentCardOptions {
   readonly skill: A2AAgentSkillOptions;
   readonly documentationUrl?: string;
   readonly iconUrl?: string;
+  /** Advertise only when this provider has a durable idempotency stateDir. */
+  readonly durableIdempotency?: boolean;
 }
 
 export function createA2AAgentCard(options: A2AAgentCardOptions): AgentCard {
@@ -69,7 +76,20 @@ export function createA2AAgentCard(options: A2AAgentCardOptions): AgentCard {
     capabilities: {
       streaming: true,
       pushNotifications: false,
-      extensions: [],
+      extensions: options.durableIdempotency === true
+        ? [
+            {
+              uri: A2A_IDEMPOTENCY_EXTENSION_URI,
+              description: "Mono-agent stable logical dispatch idempotency with conflict detection and fail-closed restart recovery.",
+              required: false,
+              params: {
+                schemaVersion: A2A_IDEMPOTENCY_SCHEMA_VERSION,
+                metadataKey: A2A_IDEMPOTENCY_METADATA_KEY,
+                activeAfterRestart: "idempotency_in_doubt",
+              },
+            },
+          ]
+        : [],
       extendedAgentCard: false,
     },
     securitySchemes,

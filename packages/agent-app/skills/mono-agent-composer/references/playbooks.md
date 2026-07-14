@@ -127,7 +127,7 @@ Flow, check whether one of these fits and adapt it. Verify every key against
       "id": "a2a",
       "config": {
         "enabled": true,
-        "provider": { "host": "127.0.0.1", "port": 4201, "requireBearer": true, "bearerToken": "..." },
+        "provider": { "host": "127.0.0.1", "port": 4201, "requireBearer": true, "bearerToken": "...", "idempotency": { "namespace": "research-production", "retentionMs": 2592000000, "maxRecords": 10000 } },
         "agent": { "name": "Research Agent", "description": "Does research.", "version": "0.1.0" },
         "skill": { "id": "research", "name": "Research", "description": "Web research", "tags": ["research"] },
         "consumer": { "remoteAgentUrls": ["http://127.0.0.1:4201"], "defaultRemoteAgentUrl": "http://127.0.0.1:4201", "bearerToken": "...", "timeoutMs": 30000 }
@@ -136,8 +136,8 @@ Flow, check whether one of these fits and adapt it. Verify every key against
   }
 }
 ```
-**Steps:** provider — `init`, add the `@mono-agent/a2a-adapter` plugin entry with `provider`/`agent`/`skill` + bearer, `validate`, `start`, confirm the Agent Card is reachable. Consumer — set plugin `config.consumer` (or compose `createA2AConsumerResponder`), send text to the provider's Agent Card URL with the bearer.
-**Smoke:** send a message to the provider's Agent Card URL with the bearer; confirm a real response.
+**Steps:** provider — `init`, add the `@mono-agent/a2a-adapter` plugin entry with `provider`/`agent`/`skill` + bearer; for paid/non-repeatable calls choose a reviewed stable `provider.idempotency.namespace`; `validate`, `start`, confirm the Agent Card is reachable. Consumer — set plugin `config.consumer` (or compose `createA2AConsumerResponder`), then pass the existing logical dispatch id through `idempotencyKey` / `idempotencyKeyForRequest` rather than generating one per attempt.
+**Smoke:** repeat one keyed message to the provider's Agent Card URL with the bearer; confirm the same task/result is returned and the responder runs once.
 
 ## 8. Multi-agent orchestration (`AskCollaborator`) — code
 **For:** a workflow designer composing specialist agents.
