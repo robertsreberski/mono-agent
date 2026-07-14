@@ -1,5 +1,37 @@
 # Release notes
 
+## 0.10.0 — Durable A2A lifecycle joins (2026-07-14)
+
+### Highlights
+
+- A2A consumers can now admit a logical dispatch with a mandatory stable
+  `idempotencyKey` and receive a lifecycle handle containing the current
+  authoritative projection, an independently abortable terminal observer, and
+  an explicit cancellation operation.
+- Terminal observation rejoins the original provider admission with the same
+  canonical request. Stopping or timing out an observer does not cancel remote
+  work, while explicit cancellation remains a separate, auditable authority.
+- Terminal outcomes are discriminated as completed, failed, canceled,
+  rejected, authentication-required, or input-required and retain the final
+  response for bounded orchestration decisions.
+- The top-level `dispatchA2AMessage` helper and exported lifecycle types make
+  restart-safe broker reconciliation available without exposing provider
+  internals.
+
+### Compatibility
+
+- Existing `sendA2AMessage`, streaming, and responder APIs are unchanged.
+  Durable lifecycle callers should use `dispatchA2AMessage`; its
+  `idempotencyKey` is required and is never generated implicitly.
+- Observation `signal` and `timeoutMs` values govern only the local join. They
+  never imply remote cancellation; call `cancel()` explicitly when cancellation
+  is intended.
+- All 21 catalog-publishable packages move together to 0.10.0. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+- The 0.9.2 source preparation was not published to npm. Its reliability and
+  maintenance changes, documented in the next section, ship publicly as part
+  of 0.10.0.
+
 ## 0.9.2 — Reliable context, polling, provenance, and memory maintenance (2026-07-14)
 
 ### Highlights

@@ -31,15 +31,21 @@ export {
   A2AConsumer,
   createA2AConsumer,
   createA2AConsumerResponder,
+  dispatchA2AMessage,
   discoverA2AAgent,
   sendA2AMessage,
 } from "./consumer.js";
 export type {
+  A2AConsumerDispatch,
+  A2AConsumerDispatchCancelOptions,
+  A2AConsumerDispatchMessageInput,
+  A2AConsumerDispatchObservationOptions,
   A2AConsumerOptions,
   A2AConsumerResponderOptions,
   A2AConsumerResponse,
   A2AConsumerResponseMetadata,
   A2AConsumerSendMessageInput,
+  A2AConsumerTerminalOutcome,
 } from "./consumer.js";
 
 export {
