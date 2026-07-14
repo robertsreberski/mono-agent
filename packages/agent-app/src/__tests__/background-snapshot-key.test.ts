@@ -45,6 +45,7 @@ describe("background snapshot proof key", () => {
     const home = await temporaryHome();
     await expect(loadBackgroundSnapshotKey("/agents/missing/mono-agent.config.json", { homeDir: home }))
       .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(home, ".mono-agent"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rejects symlinked and malformed key files", async () => {
@@ -63,7 +64,7 @@ describe("background snapshot proof key", () => {
       .rejects.toThrow("is invalid");
   });
 
-  it.skipIf(process.platform !== "darwin")("strips a macOS ACL from the dedicated key root before loading a still-private key", async () => {
+  it.skipIf(process.platform !== "darwin")("rejects a macOS ACL on the dedicated key root without modifying it", async () => {
     const home = await temporaryHome();
     const configPath = "/agents/acl/mono-agent.config.json";
     await loadOrCreateBackgroundSnapshotKey(configPath, { homeDir: home });
@@ -73,9 +74,23 @@ describe("background snapshot proof key", () => {
     expect(await hasMacAcl(root)).toBe(true);
     expect(await hasMacAcl(path)).toBe(false);
 
-    await expect(loadBackgroundSnapshotKey(configPath, { homeDir: home })).resolves.toHaveLength(32);
-    expect(await hasMacAcl(root)).toBe(false);
+    await expect(loadBackgroundSnapshotKey(configPath, { homeDir: home }))
+      .rejects.toThrow(/must not have an access-control list/iu);
+    expect(await hasMacAcl(root)).toBe(true);
     expect(await hasMacAcl(path)).toBe(false);
+  });
+
+  it("rejects a permissive key ancestor without repairing it", async () => {
+    const home = await temporaryHome();
+    const configPath = "/agents/exposed-root/mono-agent.config.json";
+    await loadOrCreateBackgroundSnapshotKey(configPath, { homeDir: home });
+    const path = await backgroundSnapshotKeyPath(configPath, { homeDir: home });
+    const root = dirname(path);
+    await chmod(root, 0o755);
+
+    await expect(loadBackgroundSnapshotKey(configPath, { homeDir: home }))
+      .rejects.toThrow(/must be owner-private/iu);
+    expect((await stat(root)).mode & 0o777).toBe(0o755);
   });
 
   it.skipIf(process.platform !== "darwin")("rejects rather than reusing an existing key that may have leaked through an ACL", async () => {

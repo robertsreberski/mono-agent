@@ -1,4 +1,5 @@
-import { lstat, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile, mkdir } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile, mkdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import process from "node:process";
@@ -6,7 +7,9 @@ import process from "node:process";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  ensureManagedBackgroundRuntime,
+  attestManagedBackgroundRuntime,
+  defaultManagedBackgroundRuntimeDeps,
+  ensureManagedBackgroundRuntime as ensureManagedBackgroundRuntimeImpl,
   MANAGED_BACKGROUND_WORKER_ENV,
   sanitizeManagedBackgroundWorkerEnvironment,
 } from "../background-runtime.js";
@@ -19,6 +22,20 @@ const TEST_PROCESS_INCARNATION: ProcessIncarnation = {
   bootSessionId: "boot-current",
   processStartId: "start-current",
 };
+
+async function ensureManagedBackgroundRuntime(
+  input: Parameters<typeof ensureManagedBackgroundRuntimeImpl>[0],
+  deps?: Parameters<typeof ensureManagedBackgroundRuntimeImpl>[1],
+) {
+  if (deps !== undefined) return ensureManagedBackgroundRuntimeImpl(input, deps);
+  let now = Date.now();
+  const defaults = defaultManagedBackgroundRuntimeDeps();
+  return ensureManagedBackgroundRuntimeImpl(input, {
+    ...defaults,
+    now: () => now,
+    sleep: async (ms) => { now += ms; },
+  });
+}
 
 function incarnation(bootSessionId: string, processStartId: string): ProcessIncarnation {
   return { schema: "mono-agent.process-incarnation.v1", bootSessionId, processStartId };
@@ -132,6 +149,34 @@ describe("ensureManagedBackgroundRuntime", () => {
     expect(await readFile(runtime.cliPath, "utf8")).toBe(source.bytes);
   }, 30_000);
 
+  it("publishes a post-promotion launch boundary and waits past its whole-second precision", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    let now = 10_000;
+    const deps: ManagedBackgroundRuntimeDeps = {
+      now: () => now,
+      sleep: async (ms) => { now += ms; },
+      randomId: () => "launch-boundary",
+      installPackage: async (input) => {
+        await materializeInstalledPackage(input, await readFile(source.cliPath));
+      },
+      currentProcessIncarnation: async () => TEST_PROCESS_INCARNATION,
+      isSameProcessIncarnation: () => true,
+    };
+
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    }, deps);
+    const marker = JSON.parse(await readFile(join(runtime.installRoot, ".mono-agent-runtime.json"), "utf8")) as {
+      installedAt: string;
+    };
+
+    expect(marker.installedAt).toBe("1970-01-01T00:00:10.000Z");
+    expect(now).toBe(11_000);
+  });
+
   it("materializes a real workspace-linked dependency closure without asking npm to parse workspace ranges", async () => {
     const source = await workspaceFixture();
     const homeDir = await homeFixture();
@@ -190,6 +235,258 @@ describe("ensureManagedBackgroundRuntime", () => {
       await realpath(join(dirname(dirname(first.cliPath)), "node_modules", "@fixture", "workspace-dependency")),
       "index.js",
     ), "utf8")).toBe(source.dependencyContents);
+  });
+
+  it("read-only attestation binds the canonical cached closure to the exact deploy source", async () => {
+    const source = await workspaceFixture();
+    const plugin = await additionalPackageFixture();
+    const homeDir = await homeFixture();
+    const additionalPackages = [{ packageName: "@fixture/configured-plugin", packageSource: plugin.root }];
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+      additionalPackages,
+    });
+
+    const first = await attestManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      runtimeCliPath: runtime.cliPath,
+      homeDir,
+      additionalPackages,
+    });
+    const second = await attestManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      runtimeCliPath: runtime.cliPath,
+      homeDir,
+      additionalPackages,
+    });
+
+    expect(first).toEqual(second);
+    expect(first).toEqual({
+      schema: "mono-agent.managed-runtime-attestation.v1",
+      fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      installedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/u),
+    });
+  });
+
+  it("rejects a promoted cache whose provisional marker was never finalized", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    const markerPath = join(runtime.installRoot, ".mono-agent-runtime.json");
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as { installedAt: string };
+    marker.installedAt = "1970-01-01T00:00:00.000Z";
+    await writeFile(markerPath, `${JSON.stringify(marker, undefined, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+
+    await expect(attestManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      runtimeCliPath: runtime.cliPath,
+      homeDir,
+    })).rejects.toThrow(/marker or closure manifest is invalid/u);
+  });
+
+  it("rejects a forged cache marker and manifest when cached dependency bytes differ from source", async () => {
+    const source = await workspaceFixture();
+    const homeDir = await homeFixture();
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    const runtimeDependencyRoot = await realpath(join(
+      dirname(dirname(runtime.cliPath)),
+      "node_modules",
+      "@fixture",
+      "workspace-dependency",
+    ));
+    const runtimeDependencyPath = join(runtimeDependencyRoot, "index.js");
+    const tampered = "export const preserved = 'forged-cache';\n";
+    await writeFile(runtimeDependencyPath, tampered, "utf8");
+
+    const manifestPath = join(runtime.installRoot, ".mono-agent-closure.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      entries: Array<{ path: string; type: string; sha256?: string }>;
+    };
+    const dependencyEntry = manifest.entries.find((entry) =>
+      entry.type === "file" && entry.path.endsWith("workspace-dependency-1.0.0/package/index.js"));
+    expect(dependencyEntry).toBeDefined();
+    dependencyEntry!.sha256 = createHash("sha256").update(tampered).digest("hex");
+    const manifestContents = `${JSON.stringify(manifest, undefined, 2)}\n`;
+    await writeFile(manifestPath, manifestContents, { encoding: "utf8", mode: 0o600 });
+    const markerPath = join(runtime.installRoot, ".mono-agent-runtime.json");
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as { closureManifestSha256: string };
+    marker.closureManifestSha256 = createHash("sha256").update(manifestContents).digest("hex");
+    await writeFile(markerPath, `${JSON.stringify(marker, undefined, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+
+    await expect(attestManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      runtimeCliPath: runtime.cliPath,
+      homeDir,
+    })).rejects.toThrow(/does not match the deploy source closure/u);
+  });
+
+  it("rejects an arbitrary cache path even when it ends in the managed CLI suffix", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    await expect(attestManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      runtimeCliPath: join(homeDir, ".mono-agent", "runtimes", "attacker", "node_modules", "@mono-agent", "agent-app", "dist", "cli.js"),
+      homeDir,
+    })).rejects.toThrow(/canonical execution-closure path/u);
+  });
+
+  it("rejects edit-and-restore source drift during attestation", async () => {
+    const source = await workspaceFixture();
+    const homeDir = await homeFixture();
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    await expect(attestManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      runtimeCliPath: runtime.cliPath,
+      homeDir,
+    }, {
+      afterInitialCaptures: async () => {
+        await writeFile(source.dependencyPath, "export const preserved = 'transient-source';\n", "utf8");
+        await writeFile(source.dependencyPath, source.dependencyContents, "utf8");
+      },
+    })).rejects.toThrow(/deploy source execution closure changed while it was attested/u);
+  });
+
+  it("rejects edit-and-restore cached-runtime drift during attestation", async () => {
+    const source = await workspaceFixture();
+    const homeDir = await homeFixture();
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    const runtimeDependencyRoot = await realpath(join(
+      dirname(dirname(runtime.cliPath)),
+      "node_modules",
+      "@fixture",
+      "workspace-dependency",
+    ));
+    const runtimeDependencyPath = join(runtimeDependencyRoot, "index.js");
+
+    await expect(attestManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      runtimeCliPath: runtime.cliPath,
+      homeDir,
+    }, {
+      afterInitialCaptures: async () => {
+        await writeFile(runtimeDependencyPath, "export const preserved = 'transient-cache';\n", "utf8");
+        await writeFile(runtimeDependencyPath, source.dependencyContents, "utf8");
+      },
+    })).rejects.toThrow(/managed runtime execution closure changed while it was attested/u);
+  });
+
+  it("rejects a cached file changed and restored before the worker is inspected", async () => {
+    const source = await workspaceFixture();
+    const homeDir = await homeFixture();
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    const runtimeDependencyRoot = await realpath(join(
+      dirname(dirname(runtime.cliPath)),
+      "node_modules",
+      "@fixture",
+      "workspace-dependency",
+    ));
+    const runtimeDependencyPath = join(runtimeDependencyRoot, "index.js");
+    await writeFile(runtimeDependencyPath, "export const preserved = 'loaded-tamper';\n", "utf8");
+    await writeFile(runtimeDependencyPath, source.dependencyContents, "utf8");
+
+    await expect(attestManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      runtimeCliPath: runtime.cliPath,
+      homeDir,
+    })).rejects.toThrow(/install-time proof/u);
+  });
+
+  it("rejects a cached dependency link replaced and restored before the worker is inspected", async () => {
+    const source = await workspaceFixture();
+    const homeDir = await homeFixture();
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    const dependencyLink = join(
+      dirname(dirname(runtime.cliPath)),
+      "node_modules",
+      "@fixture",
+      "workspace-dependency",
+    );
+    const originalTarget = await readlink(dependencyLink);
+    await rm(dependencyLink);
+    await symlink(originalTarget, dependencyLink, "dir");
+
+    await expect(attestManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      runtimeCliPath: runtime.cliPath,
+      homeDir,
+    })).rejects.toThrow(/install-time proof/u);
+  });
+
+  it("rejects a runtime resolution directory swapped and restored before the worker is inspected", async () => {
+    const source = await workspaceFixture();
+    const homeDir = await homeFixture();
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    const nodeModules = join(runtime.installRoot, "node_modules");
+    const displaced = join(runtime.installRoot, ".node_modules-displaced");
+    await rename(nodeModules, displaced);
+    await mkdir(nodeModules);
+    await rm(nodeModules, { recursive: true });
+    await rename(displaced, nodeModules);
+
+    await expect(attestManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      runtimeCliPath: runtime.cliPath,
+      homeDir,
+    })).rejects.toThrow(/install-time proof/u);
+  });
+
+  it("does not reuse a cached closure changed and restored after installation", async () => {
+    const source = await workspaceFixture();
+    const homeDir = await homeFixture();
+    const first = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    const runtimeDependencyRoot = await realpath(join(
+      dirname(dirname(first.cliPath)),
+      "node_modules",
+      "@fixture",
+      "workspace-dependency",
+    ));
+    const runtimeDependencyPath = join(runtimeDependencyRoot, "index.js");
+    const before = await lstat(first.cliPath);
+    await writeFile(runtimeDependencyPath, "export const preserved = 'transient-reuse';\n", "utf8");
+    await writeFile(runtimeDependencyPath, source.dependencyContents, "utf8");
+
+    const second = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    const after = await lstat(second.cliPath);
+    expect(second.installRoot).toBe(first.installRoot);
+    expect(after.ino).not.toBe(before.ino);
   });
 
   it("materializes and top-level-links config-selected additional packages", async () => {
@@ -570,10 +867,10 @@ async function materializeInstalledPackage(input: ManagedRuntimeInstallInput, cl
   const packageRoot = join(input.stagingDir, "node_modules", "@mono-agent", "agent-app");
   await mkdir(join(packageRoot, "dist"), { recursive: true });
   await writeFile(join(packageRoot, "dist", "cli.js"), cli);
-  await writeFile(join(packageRoot, "package.json"), `${JSON.stringify({
-    name: "@mono-agent/agent-app",
-    version: input.packageVersion,
-  })}\n`, "utf8");
+  await writeFile(
+    join(packageRoot, "package.json"),
+    await readFile(join(input.packageSource, "package.json")),
+  );
   await writeFile(join(input.stagingDir, "package-lock.json"), `${JSON.stringify({
     lockfileVersion: 3,
     packages: {

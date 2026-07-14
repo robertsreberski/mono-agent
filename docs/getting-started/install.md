@@ -186,7 +186,14 @@ root build is still active, then rerun the complete build. Windows and unsupport
 normal build commands but do not publish this POSIX/macOS deploy proof. On a managed launchd fleet,
 `--expect-labels <csv>` additionally pins the exact host topology; the checker revalidates each selected
 canonical plist after its expensive probes, while auto-discovery alone cannot detect a plist that was
-removed before the run began. After the build, the CLI entry point is
+removed before the run began. Current managed plists execute an owner-private copied runtime under
+`~/.mono-agent/runtimes`, so pass `--repo <deploy-checkout>` to select the source checkout whose build
+marker and SHA are being proved. The checker also requires the copied CLI to occupy the canonical
+content-addressed path and verifies its v4 marker, complete closure manifest, package bytes,
+configured-plugin closure, and install-time execution-filesystem proof (including every resolution-path
+directory inside the private install root) against that source checkout at both ends of the probe;
+canonical ancestors above that root are separately required to remain owner-private. The running
+process must start after the conservative finalized-runtime boundary. After the build, the source CLI entry point is
 `packages/agent-app/dist/cli.js`. For a literal source-build smoke test from a clean folder, call that
 entry directly:
 

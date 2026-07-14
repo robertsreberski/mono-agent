@@ -35,7 +35,7 @@ export async function resolveConfiguredManagedRuntimePackages(
   const appBase = import.meta.url;
   const cwdBase = pathToFileURL(join(cwd, "package.json")).href;
   const resolved = await Promise.all([...requirements]
-    .sort(([left], [right]) => left.localeCompare(right))
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
     .map(async ([packageName, allowCwdFallback]) => ({
       packageName,
       packageSource: await resolveInstalledPackageRoot(

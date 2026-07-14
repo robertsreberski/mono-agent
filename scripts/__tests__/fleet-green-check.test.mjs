@@ -1,8 +1,21 @@
+import {
+  chmodSync,
+  linkSync,
+  lstatSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
   buildLaunchdProbeEnvironment,
   buildFleetReport,
+  deriveLaunchdLabel,
   deriveRepoFromCliPath,
   evaluateLoaded,
   evaluateExpectedLabels,
@@ -10,25 +23,33 @@ import {
   evaluateRuntime,
   evaluateRuns,
   instanceName,
+  inspectCanonicalLaunchdPath,
   parseArgs,
   parseBuildProvenanceProbe,
+  parseManagedRuntimeAttestationProbe,
   parseLaunchdProgramArguments,
   parseLaunchdPathEnvironment,
   parseLaunchctlList,
+  parseLaunchctlPrint,
   parseMemoryAudit,
   parseProcessStart,
   reduceMetrics,
   runCommandSync,
   runFleetGreenCheck,
   shortSha,
+  MANAGED_BACKGROUND_ENV_NAMES,
 } from "../fleet-green-check.mjs";
+import { BACKGROUND_OPERATIONAL_ENV_NAMES } from "../../packages/agent-app/src/background-environment.ts";
 
 const DATE = "2026-07-07";
 const SHA = "0e35c86d1122334455667788990011223344abcd";
 const NODE = "/opt/node-24.15.0/bin/node";
+const NODE_DEVICE = "16777234";
+const NODE_INODE = "424242";
 const CLI = "/Users/example/mono-agent/packages/agent-app/dist/cli.js";
 const MEMORY_CHECKED_AT = "2026-07-12T08:00:00.000Z";
 const BUILD_COMPLETED_AT = "2026-07-12T10:00:00.000Z";
+const RUNTIME_INSTALLED_AT = "2026-07-12T09:00:00.000Z";
 const BUILD_FINGERPRINT = "a".repeat(64);
 const OUTPUT_DIGEST = "b".repeat(64);
 const DEPENDENCY_DIGEST = "c".repeat(64);
@@ -82,6 +103,95 @@ function service({ found = true, pid = 4242, lastExitStatus = 0 } = {}) {
   return { found, pid, lastExitStatus };
 }
 
+function launchctlPrintOutput({
+  label = "com.mono-agent.orchestrator-b6ef5dde",
+  pid = 100,
+  programArguments = [NODE, CLI, "start", "--foreground", "--config", "/Users/example/agents/orchestrator/custom.config.json", "--env-file", "/Users/example/agents/orchestrator/.env.production"],
+  cwd = "/Users/example/agents/orchestrator",
+  plistPath = `/Users/example/Library/LaunchAgents/${label}.plist`,
+  stdoutPath = `/Users/example/.mono-agent/logs/${label}.out.log`,
+  stderrPath = `/Users/example/.mono-agent/logs/${label}.err.log`,
+} = {}) {
+  return [
+    `gui/501/${label} = {`,
+    `\tpath = ${plistPath}`,
+    `\tprogram = ${programArguments[0]}`,
+    "\targuments = {",
+    ...programArguments.map((argument) => `\t\t${argument}`),
+    "\t}",
+    `\tworking directory = ${cwd}`,
+    `\tstdout path = ${stdoutPath}`,
+    `\tstderr path = ${stderrPath}`,
+    `\tpid = ${pid}`,
+    "}",
+    "",
+  ].join("\n");
+}
+
+function fakeLaunchdPathInspector(path, kind) {
+  return `${kind}:${path}`;
+}
+
+function fakeExecutablePathInspector(path) {
+  return {
+    device: NODE_DEVICE,
+    inode: NODE_INODE,
+    fingerprint: `executable:${path}:${NODE_DEVICE}:${NODE_INODE}`,
+  };
+}
+
+function fakeExecutableLsof(pid, path = NODE) {
+  return {
+    status: 0,
+    stdout: `p${pid}\nftxt\nD0x1000012\ni${NODE_INODE}\nn${path}\n`,
+    stderr: "",
+  };
+}
+
+describe("inspectCanonicalLaunchdPath", () => {
+  it("accepts only current-user private real directories and single-link 0600 plist files", () => {
+    const root = mkdtempSync(join(tmpdir(), "mono-agent-launchd-metadata-"));
+    try {
+      chmodSync(root, 0o700);
+      const plistPath = join(root, "agent.plist");
+      writeFileSync(plistPath, "plist", { mode: 0o600 });
+      expect(inspectCanonicalLaunchdPath(root, "directory")).toMatch(/^[0-9a-f]{64}$/u);
+      expect(inspectCanonicalLaunchdPath(plistPath, "plist")).toMatch(/^[0-9a-f]{64}$/u);
+
+      chmodSync(root, 0o755);
+      expect(inspectCanonicalLaunchdPath(root, "directory")).toBeNull();
+      chmodSync(root, 0o700);
+      chmodSync(plistPath, 0o644);
+      expect(inspectCanonicalLaunchdPath(plistPath, "plist")).toBeNull();
+      chmodSync(plistPath, 0o600);
+
+      const hardLink = join(root, "agent-hardlink.plist");
+      linkSync(plistPath, hardLink);
+      expect(lstatSync(plistPath).nlink).toBe(2);
+      expect(inspectCanonicalLaunchdPath(plistPath, "plist")).toBeNull();
+      rmSync(hardLink);
+      const symbolicLink = join(root, "agent-symlink.plist");
+      symlinkSync(plistPath, symbolicLink);
+      expect(inspectCanonicalLaunchdPath(symbolicLink, "plist")).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("changes the identity proof when a validated plist changes", () => {
+    const root = mkdtempSync(join(tmpdir(), "mono-agent-launchd-identity-"));
+    try {
+      const plistPath = join(root, "agent.plist");
+      writeFileSync(plistPath, "first", { mode: 0o600 });
+      const initial = inspectCanonicalLaunchdPath(plistPath, "plist");
+      writeFileSync(plistPath, "second-and-longer", { mode: 0o600 });
+      expect(inspectCanonicalLaunchdPath(plistPath, "plist")).not.toBe(initial);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 function buildMarker(overrides = {}) {
   return {
     schemaVersion: 2,
@@ -117,12 +227,15 @@ function loaded() {
       fingerprint: PLIST_FINGERPRINT,
       shapeFingerprint: PLIST_SHAPE_FINGERPRINT,
     },
+    launchDefinitionInitial: { status: "ok", fingerprint: "f".repeat(64) },
+    launchDefinitionFinal: { status: "ok", fingerprint: "f".repeat(64) },
+    launchDefinitionTerminal: { status: "ok", fingerprint: "f".repeat(64) },
     markerInitial: buildMarkerProbe(),
     markerFinal: buildMarkerProbe(),
     checkoutInitial: { sha: SHA, clean: true, error: null },
     checkoutFinal: { sha: SHA, clean: true, error: null },
     processStart: { ran: true, startedAtMs: Date.parse("2026-07-12T10:01:00.000Z") },
-    processIdentity: { ran: true, argvMatches: true, cwdMatches: true },
+    processIdentity: { ran: true, argvMatches: true, executableMatches: true, cwdMatches: true },
     serviceRecheck: service(),
   };
 }
@@ -131,7 +244,7 @@ function metrics({ totalRuns = 40, failedRuns = 0, failureKinds = [] } = {}) {
   return { ran: true, totalRuns, failedRuns, failureKinds };
 }
 
-function greenInstance(label = "com.mono-agent.orchestrator-2146e3d3") {
+function greenInstance(label = "com.mono-agent.orchestrator-b6ef5dde") {
   return {
     label,
     dir: "/Users/example/agents/orchestrator",
@@ -196,6 +309,34 @@ describe("parseLaunchctlList", () => {
   });
 });
 
+describe("parseLaunchctlPrint", () => {
+  it("accepts only the exact loaded plist path, structured argv, cwd, and pid", () => {
+    const label = "com.mono-agent.orchestrator-b6ef5dde";
+    const programArguments = [NODE, CLI, "start", "--config", "/Users/example/Agent Folder/config.json"];
+    const expected = {
+      plistPath: `/Users/example/Library/LaunchAgents/${label}.plist`,
+      launchdProgramArguments: programArguments,
+      dir: "/Users/example/Agent Folder",
+      stdoutPath: `/Users/example/.mono-agent/logs/${label}.out.log`,
+      stderrPath: `/Users/example/.mono-agent/logs/${label}.err.log`,
+      pid: 100,
+    };
+    expect(parseLaunchctlPrint(launchctlPrintOutput({
+      label,
+      programArguments,
+      cwd: expected.dir,
+    }), 0, expected)).toEqual({
+      status: "ok",
+      fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    });
+    expect(parseLaunchctlPrint(launchctlPrintOutput({
+      label,
+      programArguments: [...programArguments, "--unexpected"],
+      cwd: expected.dir,
+    }), 0, expected)).toEqual({ status: "unavailable" });
+  });
+});
+
 describe("deriveRepoFromCliPath", () => {
   it("strips the packages/agent-app suffix", () => {
     expect(deriveRepoFromCliPath("/Users/example/mono-agent/packages/agent-app/dist/cli.js")).toBe("/Users/example/mono-agent");
@@ -221,6 +362,65 @@ describe("loaded build provenance", () => {
     expect(parseBuildProvenanceProbe('{"schemaVersion":2,"status":"missing"}', 1)).toEqual({ status: "missing" });
     expect(parseBuildProvenanceProbe('{"schemaVersion":2,"status":"unsafe"}', 1)).toEqual({ status: "unsafe" });
     expect(parseBuildProvenanceProbe('{"schemaVersion":2,"status":"malformed"}', 1)).toEqual({ status: "malformed" });
+  });
+
+  it("parses only the closed managed-runtime attestation contract", () => {
+    const fingerprint = "9".repeat(64);
+    expect(parseManagedRuntimeAttestationProbe(JSON.stringify({
+      schemaVersion: 1,
+      status: "ok",
+      fingerprint,
+      installedAt: RUNTIME_INSTALLED_AT,
+    }), 0)).toEqual({ status: "ok", fingerprint, installedAt: RUNTIME_INSTALLED_AT });
+    expect(parseManagedRuntimeAttestationProbe('{"schemaVersion":1,"status":"unsafe"}', 1))
+      .toEqual({ status: "unsafe" });
+    expect(parseManagedRuntimeAttestationProbe(JSON.stringify({
+      schemaVersion: 1,
+      status: "ok",
+      fingerprint,
+      installedAt: RUNTIME_INSTALLED_AT,
+      private: "must-not-survive",
+    }), 0)).toEqual({ status: "malformed" });
+  });
+
+  it("requires stable managed-runtime attestation on managed rows", () => {
+    const value = loaded();
+    value.managed = true;
+    value.processIdentity = { ran: true, executableMatches: true, cwdMatches: true };
+    value.runtimeAttestationInitial = { status: "ok", fingerprint: "9".repeat(64), installedAt: RUNTIME_INSTALLED_AT };
+    value.runtimeAttestationFinal = { status: "ok", fingerprint: "8".repeat(64), installedAt: RUNTIME_INSTALLED_AT };
+    expect(evaluateLoaded(value, service(), { ran: true, node: "24.15.0", abi: "137" }))
+      .toEqual({ status: "fail", note: "managed runtime changed during probe" });
+  });
+
+  it("requires the running executable inode to match the plist Node for every accepted shape", () => {
+    const value = loaded();
+    value.processIdentity.executableMatches = false;
+    expect(evaluateLoaded(value, service(), { ran: true, node: "24.15.0", abi: "137" }))
+      .toEqual({ status: "fail", note: "process executable does not match plist" });
+  });
+
+  it("rejects a process from the install second and accepts only a later-second start", () => {
+    const value = loaded();
+    value.managed = true;
+    value.processIdentity = { ran: true, executableMatches: true, cwdMatches: true };
+    value.runtimeAttestationInitial = {
+      status: "ok",
+      fingerprint: "9".repeat(64),
+      installedAt: "2026-07-12T10:01:00.500Z",
+    };
+    value.runtimeAttestationFinal = { ...value.runtimeAttestationInitial };
+    expect(evaluateLoaded(value, service(), { ran: true, node: "24.15.0", abi: "137" }))
+      .toEqual({ status: "fail", note: "process predates managed runtime" });
+
+    value.processStart.startedAtMs = Date.parse("2026-07-12T10:01:01.000Z");
+    expect(evaluateLoaded(value, service(), { ran: true, node: "24.15.0", abi: "137" }))
+      .toEqual({ status: "pass", note: "" });
+
+    value.runtimeAttestationInitial.installedAt = "2026-07-12T10:02:00.000Z";
+    value.runtimeAttestationFinal.installedAt = "2026-07-12T10:02:00.000Z";
+    expect(evaluateLoaded(value, service(), { ran: true, node: "24.15.0", abi: "137" }))
+      .toEqual({ status: "fail", note: "process predates managed runtime" });
   });
 
   it.each([
@@ -296,6 +496,21 @@ describe("loaded build provenance", () => {
 describe("parseLaunchdProgramArguments", () => {
   const config = "/Users/example/agents/orchestrator/custom.config.json";
   const envFile = "/Users/example/agents/orchestrator/.env.production";
+  const managedArguments = (...environment) => [
+    "/usr/bin/env",
+    "-i",
+    ...environment,
+    NODE,
+    CLI,
+    "start",
+    "--foreground",
+    "--config",
+    config,
+    "--env-file",
+    envFile,
+    "--expected-background-snapshot",
+    "approved_snapshot",
+  ];
 
   it("retains only the exact absolute config and env-file used by the service", () => {
     const programArguments = [
@@ -304,19 +519,90 @@ describe("parseLaunchdProgramArguments", () => {
     expect(parseLaunchdProgramArguments(programArguments)).toEqual({
       nodePath: NODE,
       cliPath: CLI,
+      configPath: config,
+      envFile,
+      expectedBackgroundSnapshot: undefined,
+      managed: false,
+      launchdProgramArguments: programArguments,
       programArguments,
       probeArgs: ["--config", config, "--env-file", envFile],
     });
   });
 
-  it("accepts an older cwd-default service without fabricating config flags", () => {
+  it("rejects an unversioned cwd-default legacy shape no producer emitted", () => {
     const programArguments = [NODE, CLI, "start", "--foreground"];
+    expect(parseLaunchdProgramArguments(programArguments)).toBeNull();
+  });
+
+  it("accepts the hardened managed-worker wrapper and retains its exact non-secret environment", () => {
+    const programArguments = managedArguments(
+      "HOME=/Users/example",
+      "MONO_AGENT_MANAGED_WORKER=1",
+      "PATH=/managed/bin:/usr/bin:/bin",
+    );
     expect(parseLaunchdProgramArguments(programArguments)).toEqual({
       nodePath: NODE,
       cliPath: CLI,
-      programArguments,
-      probeArgs: [],
+      configPath: config,
+      envFile,
+      expectedBackgroundSnapshot: "approved_snapshot",
+      managed: true,
+      managedEnvironment: {
+        HOME: "/Users/example",
+        PATH: "/managed/bin:/usr/bin:/bin",
+      },
+      launchdProgramArguments: programArguments,
+      programArguments: programArguments.slice(5),
+      probeArgs: ["--config", config, "--env-file", envFile],
+      pathEnv: "/managed/bin:/usr/bin:/bin",
     });
+  });
+
+  it.each([
+    ["unknown environment", managedArguments("AWS_ACCESS_KEY_ID=private", "MONO_AGENT_MANAGED_WORKER=1", "PATH=/usr/bin:/bin")],
+    ["missing lifecycle marker", managedArguments("HOME=/Users/example", "PATH=/usr/bin:/bin")],
+    ["wrong lifecycle marker", managedArguments("MONO_AGENT_MANAGED_WORKER=0", "PATH=/usr/bin:/bin")],
+    ["missing PATH", managedArguments("MONO_AGENT_MANAGED_WORKER=1")],
+    ["duplicate PATH", managedArguments("MONO_AGENT_MANAGED_WORKER=1", "PATH=/usr/bin:/bin", "PATH=/bin")],
+    ["unsorted environment", managedArguments("PATH=/usr/bin:/bin", "MONO_AGENT_MANAGED_WORKER=1")],
+    ["missing approved snapshot", managedArguments("MONO_AGENT_MANAGED_WORKER=1", "PATH=/usr/bin:/bin").slice(0, -2)],
+    ["reordered lifecycle flags", (() => {
+      const args = managedArguments("MONO_AGENT_MANAGED_WORKER=1", "PATH=/usr/bin:/bin");
+      const worker = args.slice(4);
+      return [...args.slice(0, 4), worker[0], worker[1], "start", "--config", config, "--foreground", "--env-file", envFile, "--expected-background-snapshot", "approved_snapshot"];
+    })()],
+  ])("rejects a managed wrapper with %s", (_label, args) => {
+    expect(parseLaunchdProgramArguments(args)).toBeNull();
+  });
+
+  it("accepts producer-valid spaces in managed paths and values without ambiguous ps argv proof", () => {
+    const spacedConfig = "/Users/example/Agent Folder/config file.json";
+    const spaced = managedArguments(
+      "HOME=/Users/example/Agent Home",
+      "MONO_AGENT_MANAGED_WORKER=1",
+      "PATH=/Users/example/Agent Home/bin:/usr/bin:/bin",
+    );
+    spaced[spaced.indexOf(config)] = spacedConfig;
+    expect(parseLaunchdProgramArguments(spaced)).toMatchObject({
+      managed: true,
+      configPath: spacedConfig,
+      managedEnvironment: {
+        HOME: "/Users/example/Agent Home",
+        PATH: "/Users/example/Agent Home/bin:/usr/bin:/bin",
+      },
+    });
+  });
+
+  it("uses locale-independent code-unit ordering and stays in exact producer allowlist parity", () => {
+    const argumentsWithMixedCase = managedArguments(
+      "COMSPEC=/first",
+      "ComSpec=/second",
+      "MONO_AGENT_MANAGED_WORKER=1",
+      "PATH=/usr/bin:/bin",
+    );
+    expect(parseLaunchdProgramArguments(argumentsWithMixedCase)?.managed).toBe(true);
+    expect(new Set([...MANAGED_BACKGROUND_ENV_NAMES].filter((name) => name !== "MONO_AGENT_MANAGED_WORKER")))
+      .toEqual(new Set(BACKGROUND_OPERATIONAL_ENV_NAMES));
   });
 
   it.each([
@@ -708,7 +994,7 @@ describe("buildFleetReport", () => {
     expect(report.exitCode).toBe(0);
     expect(report.verdictLine).toBe(`VERDICT: GREEN ${DATE} sha 0e35c86`);
     expect(report.table).toContain("| instance | service | loaded | runtime | validate | memory | runs-24h | notes |");
-    expect(report.table).toContain("| orchestrator-2146e3d3 | ok | ok | ok | ok | healthy | ok |");
+    expect(report.table).toContain("| orchestrator-b6ef5dde | ok | ok | ok | ok | healthy | ok |");
     expect(report.body).toContain(`### Fleet green-check ${DATE}`);
   });
 
@@ -727,8 +1013,8 @@ describe("buildFleetReport", () => {
     stale.loaded.processStart.startedAtMs = Date.parse(BUILD_COMPLETED_AT);
     const report = buildFleetReport({ date: DATE, deployedSha: SHA, instances: [stale] });
     expect(report.verdict).toBe("RED");
-    expect(report.reason).toBe("orchestrator-2146e3d3: process predates build");
-    expect(report.table).toContain("| orchestrator-2146e3d3 | ok | FAIL | ok |");
+    expect(report.reason).toBe("orchestrator-b6ef5dde: process predates build");
+    expect(report.table).toContain("| orchestrator-b6ef5dde | ok | FAIL | ok |");
   });
 
   it("marks a stopped clean service RED because every selected agent must run", () => {
@@ -754,7 +1040,7 @@ describe("buildFleetReport", () => {
     broken.runtime = { ran: true, node: "22.19.0", abi: "127" };
     const report = buildFleetReport({ date: DATE, deployedSha: SHA, instances: [broken] });
     expect(report.verdict).toBe("RED");
-    expect(report.reason).toBe("orchestrator-2146e3d3: runtime 22.19.0/abi127 != expected 24.15.0/abi137");
+    expect(report.reason).toBe("orchestrator-b6ef5dde: runtime 22.19.0/abi127 != expected 24.15.0/abi137");
   });
 
   it.each([
@@ -833,7 +1119,7 @@ describe("buildFleetReport", () => {
     const expected = "d".repeat(40);
     const report = buildFleetReport({ date: DATE, deployedSha: SHA, expectSha: expected, instances: [greenInstance()] });
     expect(report.verdict).toBe("RED");
-    expect(report.reason).toBe("orchestrator-2146e3d3: loaded sha 0e35c86 != expected ddddddd");
+    expect(report.reason).toBe("orchestrator-b6ef5dde: loaded sha 0e35c86 != expected ddddddd");
     expect(report.body).toContain("Deployed sha: 0e35c86 (expected ddddddd)");
   });
 
@@ -851,6 +1137,16 @@ describe("buildFleetReport", () => {
     const report = buildFleetReport({ date: DATE, deployedSha: SHA, instances: [greenInstance(), other] });
     expect(report.verdict).toBe("RED");
     expect(report.reason).toBe("instances span 2 deploy revisions");
+  });
+
+  it("RED when the reported deploy sha differs from the single row-proven checkout", () => {
+    const report = buildFleetReport({
+      date: DATE,
+      deployedSha: "f".repeat(40),
+      instances: [greenInstance()],
+    });
+    expect(report.verdict).toBe("RED");
+    expect(report.reason).toBe("deployed sha fffffff differs from loaded checkout");
   });
 
   it("bogus-label: a label with no plist/dir yields a RED row, not a crash", () => {
@@ -882,7 +1178,7 @@ describe("buildFleetReport", () => {
 
 describe("helpers", () => {
   it("instanceName strips the com.mono-agent. prefix", () => {
-    expect(instanceName("com.mono-agent.orchestrator-2146e3d3")).toBe("orchestrator-2146e3d3");
+    expect(instanceName("com.mono-agent.orchestrator-b6ef5dde")).toBe("orchestrator-b6ef5dde");
     expect(instanceName("custom-label")).toBe("invalid-label");
     expect(instanceName("com.mono-agent.ok\nprivate-value")).toBe("invalid-label");
   });
@@ -923,12 +1219,23 @@ describe("runFleetGreenCheck (orchestration)", () => {
   const configPath = "/Users/example/agents/orchestrator/custom.config.json";
   const envFile = "/Users/example/agents/orchestrator/.env.production";
   const launchdPath = "/managed/node/bin:/usr/bin:/bin";
-  const plistJson = JSON.stringify({
-    Label: "com.mono-agent.orchestrator-2146e3d3",
-    WorkingDirectory: "/Users/example/agents/orchestrator",
-    ProgramArguments: [NODE, CLI, "start", "--foreground", "--config", configPath, "--env-file", envFile],
+  const exactLegacyPlist = ({
+    label = "com.mono-agent.orchestrator-b6ef5dde",
+    dir = "/Users/example/agents/orchestrator",
+    programArguments = [NODE, CLI, "start", "--foreground", "--config", configPath, "--env-file", envFile],
+  } = {}) => JSON.stringify({
+    Label: label,
+    WorkingDirectory: dir,
+    ProgramArguments: programArguments,
     EnvironmentVariables: { PATH: launchdPath },
+    RunAtLoad: true,
+    KeepAlive: { SuccessfulExit: false },
+    StandardOutPath: `/Users/example/.mono-agent/logs/${label}.out.log`,
+    StandardErrorPath: `/Users/example/.mono-agent/logs/${label}.err.log`,
+    ThrottleInterval: 10,
+    ProcessType: "Interactive",
   });
+  const plistJson = exactLegacyPlist();
   const metricsJson = JSON.stringify({ overall: { totalRuns: 10, statusCounts: { succeeded: 10, failed: 0 }, failureKindRates: [] } });
 
   function fakeRunner(overrides = {}) {
@@ -936,7 +1243,16 @@ describe("runFleetGreenCheck (orchestration)", () => {
     const runCommand = (command, args, options) => {
       calls.push({ command, args, options });
       if (command === "/usr/bin/plutil") return overrides.plist ?? { status: 0, stdout: plistJson, stderr: "" };
-      if (command === "/bin/launchctl") return overrides.service ?? { status: 0, stdout: '{\n\t"PID" = 100;\n\t"LastExitStatus" = 0;\n};', stderr: "" };
+      if (command === "/bin/launchctl") {
+        if (args[0] === "print") {
+          return overrides.launchDefinition ?? {
+            status: 0,
+            stdout: launchctlPrintOutput(),
+            stderr: "",
+          };
+        }
+        return overrides.service ?? { status: 0, stdout: '{\n\t"PID" = 100;\n\t"LastExitStatus" = 0;\n};', stderr: "" };
+      }
       if (command === "/usr/bin/git") {
         if (overrides.git !== undefined) return overrides.git;
         return args.includes("status")
@@ -949,12 +1265,26 @@ describe("runFleetGreenCheck (orchestration)", () => {
           : overrides.process ?? { status: 0, stdout: "Sun Jul 12 12:01:00 2026\n", stderr: "" };
       }
       if (command === "/usr/sbin/lsof") {
+        if (args.includes("txt")) {
+          return overrides.identityExecutable ?? {
+            status: 0,
+            stdout: `p100\nftxt\nD0x1000012\ni${NODE_INODE}\nn${NODE}\n`,
+            stderr: "",
+          };
+        }
         return overrides.identityCwd ?? { status: 0, stdout: "p100\nfcwd\nn/Users/example/agents/orchestrator\n", stderr: "" };
       }
       if (command === NODE && args[0]?.endsWith("build-provenance-probe.mjs")) {
         return overrides.marker ?? {
           status: 0,
           stdout: `${JSON.stringify({ schemaVersion: 2, status: "ok", marker: buildMarker(), fingerprint: BUILD_FINGERPRINT, outputDigest: OUTPUT_DIGEST, dependencyDigest: DEPENDENCY_DIGEST })}\n`,
+          stderr: "",
+        };
+      }
+      if (command === NODE && args[0]?.endsWith("managed-runtime-attestation-probe.mjs")) {
+        return overrides.runtimeAttestation ?? {
+          status: 0,
+          stdout: `${JSON.stringify({ schemaVersion: 1, status: "ok", fingerprint: "9".repeat(64), installedAt: RUNTIME_INSTALLED_AT })}\n`,
           stderr: "",
         };
       }
@@ -978,8 +1308,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: err,
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
@@ -987,6 +1320,184 @@ describe("runFleetGreenCheck (orchestration)", () => {
     expect(`${out.text}${err.text}`).not.toContain(secret);
     expect(`${out.text}${err.text}`).not.toContain("--bad");
     expect(calls).toEqual([]);
+  });
+
+  it("binds a hardened cached runtime to the explicit deploy checkout", async () => {
+    const runtimeCli = "/Users/example/.mono-agent/runtimes/agent-app/0.9.2/runtime/node_modules/@mono-agent/agent-app/dist/cli.js";
+    const workerArguments = [
+      NODE,
+      runtimeCli,
+      "start",
+      "--foreground",
+      "--config",
+      configPath,
+      "--env-file",
+      envFile,
+      "--expected-background-snapshot",
+      "approved_snapshot",
+    ];
+    const managedPlist = JSON.stringify({
+      Label: "com.mono-agent.orchestrator-b6ef5dde",
+      WorkingDirectory: "/Users/example/agents/orchestrator",
+      ProgramArguments: [
+        "/usr/bin/env",
+        "-i",
+        "HOME=/Users/example",
+        "MONO_AGENT_MANAGED_WORKER=1",
+        `PATH=${launchdPath}`,
+        ...workerArguments,
+      ],
+      RunAtLoad: true,
+      KeepAlive: { SuccessfulExit: false },
+      StandardOutPath: "/Users/example/.mono-agent/logs/com.mono-agent.orchestrator-b6ef5dde.out.log",
+      StandardErrorPath: "/Users/example/.mono-agent/logs/com.mono-agent.orchestrator-b6ef5dde.err.log",
+      ThrottleInterval: 10,
+      ProcessType: "Interactive",
+    });
+    const launchdProgramArguments = JSON.parse(managedPlist).ProgramArguments;
+    const { calls, runCommand } = fakeRunner({
+      plist: { status: 0, stdout: managedPlist, stderr: "" },
+      identityCommand: { status: 0, stdout: `${workerArguments.join(" ")}\n`, stderr: "" },
+      launchDefinition: {
+        status: 0,
+        stdout: launchctlPrintOutput({ programArguments: launchdProgramArguments }),
+        stderr: "",
+      },
+    });
+    const out = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run", "--repo", "/deploy/mono-agent"],
+      stdout: out,
+      stderr: sink(),
+      runCommand,
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(out.text).toContain("VERDICT: GREEN 2026-07-07 sha 0e35c86");
+    expect(calls.filter((call) => call.command === "/usr/bin/git")
+      .every((call) => call.args[1] === "/deploy/mono-agent")).toBe(true);
+    expect(calls.find((call) => call.command === NODE && call.args.includes("validate"))?.args[0])
+      .toBe(runtimeCli);
+    const managedProbeEnvironment = { HOME: "/Users/example", PATH: launchdPath };
+    expect(calls
+      .filter((call) => call.command === NODE)
+      .every((call) => JSON.stringify(call.options.environment) === JSON.stringify(managedProbeEnvironment)))
+      .toBe(true);
+    expect(calls.filter((call) => call.command === NODE
+      && call.args[0]?.endsWith("managed-runtime-attestation-probe.mjs"))).toHaveLength(2);
+
+    const mismatched = fakeRunner({
+      plist: { status: 0, stdout: managedPlist, stderr: "" },
+      launchDefinition: {
+        status: 0,
+        stdout: launchctlPrintOutput({ programArguments: launchdProgramArguments }),
+        stderr: "",
+      },
+      identityExecutable: {
+        status: 0,
+        stdout: `p100\nftxt\nD0x1000012\ni999999\nn${NODE}\n`,
+        stderr: "",
+      },
+    });
+    const mismatchedOut = sink();
+    const mismatchedResult = await runFleetGreenCheck({
+      argv: ["--dry-run", "--repo", "/deploy/mono-agent"],
+      stdout: mismatchedOut,
+      stderr: sink(),
+      runCommand: mismatched.runCommand,
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(mismatchedResult.exitCode).toBe(1);
+    expect(mismatchedOut.text).toContain("process executable does not match plist");
+  });
+
+  it("fails an arbitrary managed cache path when read-only runtime attestation rejects it", async () => {
+    const runtimeCli = "/attacker/stale-cache/node_modules/@mono-agent/agent-app/dist/cli.js";
+    const launchdProgramArguments = [
+      "/usr/bin/env",
+      "-i",
+      "HOME=/Users/example",
+      "MONO_AGENT_MANAGED_WORKER=1",
+      `PATH=${launchdPath}`,
+      NODE,
+      runtimeCli,
+      "start",
+      "--foreground",
+      "--config",
+      configPath,
+      "--expected-background-snapshot",
+      "approved_snapshot",
+    ];
+    const managedPlist = JSON.stringify({
+      Label: "com.mono-agent.orchestrator-b6ef5dde",
+      ProgramArguments: launchdProgramArguments,
+      WorkingDirectory: "/Users/example/agents/orchestrator",
+      RunAtLoad: true,
+      KeepAlive: { SuccessfulExit: false },
+      StandardOutPath: "/Users/example/.mono-agent/logs/com.mono-agent.orchestrator-b6ef5dde.out.log",
+      StandardErrorPath: "/Users/example/.mono-agent/logs/com.mono-agent.orchestrator-b6ef5dde.err.log",
+      ThrottleInterval: 10,
+      ProcessType: "Interactive",
+    });
+    const { calls, runCommand } = fakeRunner({
+      plist: { status: 0, stdout: managedPlist, stderr: "" },
+      runtimeAttestation: { status: 1, stdout: '{"schemaVersion":1,"status":"unsafe"}\n', stderr: "private cache details" },
+      launchDefinition: { status: 0, stdout: launchctlPrintOutput({ programArguments: launchdProgramArguments }), stderr: "" },
+    });
+    const out = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run", "--repo", "/deploy/mono-agent"],
+      stdout: out,
+      stderr: sink(),
+      runCommand,
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain("managed runtime attestation failed");
+    expect(out.text).not.toContain("attacker");
+    expect(calls.some((call) => call.command === NODE && call.args[0] === runtimeCli)).toBe(false);
+  });
+
+  it("fails when launchd's loaded definition differs from the persisted accepted plist", async () => {
+    const { runCommand } = fakeRunner({
+      launchDefinition: {
+        status: 0,
+        stdout: launchctlPrintOutput({ programArguments: [NODE, CLI, "start", "--foreground", "--config", "/private/stale.json"] }),
+        stderr: "",
+      },
+    });
+    const out = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: out,
+      stderr: sink(),
+      runCommand,
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain("loaded launch definition unavailable");
+    expect(out.text).not.toContain("stale.json");
   });
 
   it("--dry-run prints the verdict and never invokes gh (read-only)", async () => {
@@ -997,8 +1508,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(0);
@@ -1007,7 +1521,7 @@ describe("runFleetGreenCheck (orchestration)", () => {
     expect(calls.every((call) => Number.isInteger(call.options?.timeout) && call.options.timeout > 0)).toBe(true);
     const systemEnvironment = { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" };
     expect(calls.filter((call) => call.command === "/usr/bin/plutil")).toHaveLength(2);
-    expect(calls.filter((call) => call.command === "/bin/launchctl")).toHaveLength(2);
+    expect(calls.filter((call) => call.command === "/bin/launchctl")).toHaveLength(5);
     expect(calls
       .filter((call) => call.command === "/usr/bin/plutil" || call.command === "/bin/launchctl")
       .every((call) => JSON.stringify(call.options.environment) === JSON.stringify(systemEnvironment)))
@@ -1017,7 +1531,7 @@ describe("runFleetGreenCheck (orchestration)", () => {
     expect(calls.some((c) => c.command === "node")).toBe(false);
     const runtimeAndCliCalls = calls.filter((call) => call.command === NODE);
     expect(runtimeAndCliCalls).toHaveLength(6);
-    expect(runtimeAndCliCalls.every((call) => call.options.pathEnv === launchdPath)).toBe(true);
+    expect(runtimeAndCliCalls.every((call) => call.options.environment?.PATH === launchdPath)).toBe(true);
     expect(calls.find((c) => c.command === NODE && c.args[0] === "-p")?.args).toEqual([
       "-p",
       "JSON.stringify({node:process.versions.node,abi:process.versions.modules})",
@@ -1060,16 +1574,12 @@ describe("runFleetGreenCheck (orchestration)", () => {
   });
 
   it("reports multiple deploy checkouts without leaking either absolute path", async () => {
-    const secondLabel = "com.mono-agent.personal-agent-059657c8";
     const secondDir = "/Users/example/private-second-agent";
+    const secondConfigPath = `${secondDir}/custom.config.json`;
+    const secondLabel = deriveLaunchdLabel(secondConfigPath);
     const secondCli = "/Users/example/private-second-checkout/packages/agent-app/dist/cli.js";
-    const secondArguments = [NODE, secondCli, "start", "--foreground", "--config", configPath, "--env-file", envFile];
-    const secondPlist = JSON.stringify({
-      Label: secondLabel,
-      WorkingDirectory: secondDir,
-      ProgramArguments: secondArguments,
-      EnvironmentVariables: { PATH: launchdPath },
-    });
+    const secondArguments = [NODE, secondCli, "start", "--foreground", "--config", secondConfigPath, "--env-file", envFile];
+    const secondPlist = exactLegacyPlist({ label: secondLabel, dir: secondDir, programArguments: secondArguments });
     const base = fakeRunner();
     const runCommand = (command, args, options) => {
       if (command === "/usr/bin/plutil" && args.at(-1).includes(secondLabel)) {
@@ -1078,12 +1588,16 @@ describe("runFleetGreenCheck (orchestration)", () => {
       if (command === "/bin/launchctl" && args[1] === secondLabel) {
         return { status: 0, stdout: '{\n\t"PID" = 200;\n\t"LastExitStatus" = 0;\n};', stderr: "" };
       }
+      if (command === "/bin/launchctl" && args[0] === "print" && args[1].endsWith(secondLabel)) {
+        return { status: 0, stdout: launchctlPrintOutput({ label: secondLabel, pid: 200, programArguments: secondArguments, cwd: secondDir }), stderr: "" };
+      }
       if (command === "/bin/ps" && args.includes("200")) {
         return args.includes("command=")
           ? { status: 0, stdout: `${secondArguments.join(" ")}\n`, stderr: "" }
           : { status: 0, stdout: "Sun Jul 12 12:01:00 2026\n", stderr: "" };
       }
       if (command === "/usr/sbin/lsof" && args.includes("200")) {
+        if (args.includes("txt")) return fakeExecutableLsof(200);
         return { status: 0, stdout: `p200\nfcwd\nn${secondDir}\n`, stderr: "" };
       }
       return base.runCommand(command, args, options);
@@ -1094,9 +1608,12 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
       readdir: () => [
-        "com.mono-agent.orchestrator-2146e3d3.plist",
+        "com.mono-agent.orchestrator-b6ef5dde.plist",
         `${secondLabel}.plist`,
       ],
       now: new Date("2026-07-07T12:00:00Z"),
@@ -1104,7 +1621,7 @@ describe("runFleetGreenCheck (orchestration)", () => {
     expect(result.exitCode).toBe(0);
     expect(out.text).toContain("instances span 2 deploy checkouts");
     expect(out.text).not.toContain("private-second-checkout");
-    expect(out.text).not.toContain("private-second-agent");
+    expect(out.text).not.toContain(secondDir);
     const markerCalls = base.calls.filter((call) => call.command === NODE && call.args[0]?.endsWith("build-provenance-probe.mjs"));
     expect(markerCalls).toHaveLength(4);
     expect(markerCalls.filter((call) => call.args[1] === "/Users/example/mono-agent")).toHaveLength(2);
@@ -1112,15 +1629,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
   });
 
   it("runs one initial and one final marker probe for instances sharing an exact deploy identity", async () => {
-    const secondLabel = "com.mono-agent.personal-agent-059657c8";
     const secondDir = "/Users/example/agents/personal-agent";
-    const sharedArguments = [NODE, CLI, "start", "--foreground", "--config", configPath, "--env-file", envFile];
-    const secondPlist = JSON.stringify({
-      Label: secondLabel,
-      WorkingDirectory: secondDir,
-      ProgramArguments: sharedArguments,
-      EnvironmentVariables: { PATH: launchdPath },
-    });
+    const secondConfigPath = `${secondDir}/custom.config.json`;
+    const secondLabel = deriveLaunchdLabel(secondConfigPath);
+    const secondArguments = [NODE, CLI, "start", "--foreground", "--config", secondConfigPath, "--env-file", envFile];
+    const secondPlist = exactLegacyPlist({ label: secondLabel, dir: secondDir, programArguments: secondArguments });
     const base = fakeRunner();
     const runCommand = (command, args, options) => {
       if (command === "/usr/bin/plutil" && args.at(-1).includes(secondLabel)) {
@@ -1129,12 +1642,16 @@ describe("runFleetGreenCheck (orchestration)", () => {
       if (command === "/bin/launchctl" && args[1] === secondLabel) {
         return { status: 0, stdout: '{\n\t"PID" = 200;\n\t"LastExitStatus" = 0;\n};', stderr: "" };
       }
+      if (command === "/bin/launchctl" && args[0] === "print" && args[1].endsWith(secondLabel)) {
+        return { status: 0, stdout: launchctlPrintOutput({ label: secondLabel, pid: 200, programArguments: secondArguments, cwd: secondDir }), stderr: "" };
+      }
       if (command === "/bin/ps" && args.includes("200")) {
         return args.includes("command=")
-          ? { status: 0, stdout: `${sharedArguments.join(" ")}\n`, stderr: "" }
+          ? { status: 0, stdout: `${secondArguments.join(" ")}\n`, stderr: "" }
           : { status: 0, stdout: "Sun Jul 12 12:01:00 2026\n", stderr: "" };
       }
       if (command === "/usr/sbin/lsof" && args.includes("200")) {
+        if (args.includes("txt")) return fakeExecutableLsof(200);
         return { status: 0, stdout: `p200\nfcwd\nn${secondDir}\n`, stderr: "" };
       }
       return base.runCommand(command, args, options);
@@ -1144,9 +1661,12 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: sink(),
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
       readdir: () => [
-        "com.mono-agent.orchestrator-2146e3d3.plist",
+        "com.mono-agent.orchestrator-b6ef5dde.plist",
         `${secondLabel}.plist`,
       ],
       now: new Date("2026-07-07T12:00:00Z"),
@@ -1154,19 +1674,15 @@ describe("runFleetGreenCheck (orchestration)", () => {
     expect(result.exitCode).toBe(0);
     const markerCalls = base.calls.filter((call) => call.command === NODE && call.args[0]?.endsWith("build-provenance-probe.mjs"));
     expect(markerCalls).toHaveLength(2);
-    expect(markerCalls.every((call) => call.args[1] === "/Users/example/mono-agent" && call.options.pathEnv === launchdPath)).toBe(true);
+    expect(markerCalls.every((call) => call.args[1] === "/Users/example/mono-agent" && call.options.environment?.PATH === launchdPath)).toBe(true);
   });
 
   it("catches a shared deployment mutation after row work with one terminal marker probe", async () => {
-    const secondLabel = "com.mono-agent.personal-agent-059657c8";
     const secondDir = "/Users/example/agents/personal-agent";
-    const sharedArguments = [NODE, CLI, "start", "--foreground", "--config", configPath, "--env-file", envFile];
-    const secondPlist = JSON.stringify({
-      Label: secondLabel,
-      WorkingDirectory: secondDir,
-      ProgramArguments: sharedArguments,
-      EnvironmentVariables: { PATH: launchdPath },
-    });
+    const secondConfigPath = `${secondDir}/custom.config.json`;
+    const secondLabel = deriveLaunchdLabel(secondConfigPath);
+    const secondArguments = [NODE, CLI, "start", "--foreground", "--config", secondConfigPath, "--env-file", envFile];
+    const secondPlist = exactLegacyPlist({ label: secondLabel, dir: secondDir, programArguments: secondArguments });
     const base = fakeRunner();
     let firstRowWorkComplete = false;
     let markerCalls = 0;
@@ -1174,15 +1690,19 @@ describe("runFleetGreenCheck (orchestration)", () => {
       if (command === "/usr/bin/plutil" && args.at(-1).includes(secondLabel)) {
         return { status: 0, stdout: secondPlist, stderr: "" };
       }
+      if (command === "/bin/launchctl" && args[0] === "print" && args[1].endsWith(secondLabel)) {
+        return { status: 0, stdout: launchctlPrintOutput({ label: secondLabel, pid: 200, programArguments: secondArguments, cwd: secondDir }), stderr: "" };
+      }
       if (command === "/bin/launchctl" && args[1] === secondLabel) {
         return { status: 0, stdout: '{\n\t"PID" = 200;\n\t"LastExitStatus" = 0;\n};', stderr: "" };
       }
       if (command === "/bin/ps" && args.includes("200")) {
         return args.includes("command=")
-          ? { status: 0, stdout: `${sharedArguments.join(" ")}\n`, stderr: "" }
+          ? { status: 0, stdout: `${secondArguments.join(" ")}\n`, stderr: "" }
           : { status: 0, stdout: "Sun Jul 12 12:01:00 2026\n", stderr: "" };
       }
       if (command === "/usr/sbin/lsof" && args.includes("200")) {
+        if (args.includes("txt")) return fakeExecutableLsof(200);
         return { status: 0, stdout: `p200\nfcwd\nn${secondDir}\n`, stderr: "" };
       }
       if (command === NODE && args.includes("metrics") && options?.cwd === "/Users/example/agents/orchestrator") {
@@ -1214,9 +1734,12 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
       readdir: () => [
-        "com.mono-agent.orchestrator-2146e3d3.plist",
+        "com.mono-agent.orchestrator-b6ef5dde.plist",
         `${secondLabel}.plist`,
       ],
       now: new Date("2026-07-07T12:00:00Z"),
@@ -1253,8 +1776,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(markerCalls).toBe(2);
@@ -1266,21 +1792,21 @@ describe("runFleetGreenCheck (orchestration)", () => {
   it.each([
     [
       "missing",
-      "com.mono-agent.orchestrator-2146e3d3,com.mono-agent.personal-agent-059657c8",
-      ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      "com.mono-agent.orchestrator-b6ef5dde,com.mono-agent.personal-agent-059657c8",
+      ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       "fleet labels mismatch (missing 1, extra 0)",
     ],
     [
       "extra hostile filename",
-      "com.mono-agent.orchestrator-2146e3d3",
-      ["com.mono-agent.orchestrator-2146e3d3.plist", "com.mono-agent.bad\nSYNTHETIC_PRIVATE_LABEL.plist"],
+      "com.mono-agent.orchestrator-b6ef5dde",
+      ["com.mono-agent.orchestrator-b6ef5dde.plist", "com.mono-agent.bad\nSYNTHETIC_PRIVATE_LABEL.plist"],
       "fleet labels mismatch (missing 0, extra 1)",
     ],
     [
       "non-colliding invalid placeholder",
-      "com.mono-agent.orchestrator-2146e3d3",
+      "com.mono-agent.orchestrator-b6ef5dde",
       [
-        "com.mono-agent.orchestrator-2146e3d3.plist",
+        "com.mono-agent.orchestrator-b6ef5dde.plist",
         "com.mono-agent.invalid-plist-1.plist",
         "com.mono-agent.bad\nSYNTHETIC_PRIVATE_LABEL.plist",
       ],
@@ -1294,7 +1820,10 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
       readdir: () => entries,
       now: new Date("2026-07-07T12:00:00Z"),
     });
@@ -1318,13 +1847,85 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
     expect(out.text).toContain("plist unreadable");
     expect(out.text).not.toContain(secret);
+    expect(calls.some((call) => call.command === NODE)).toBe(false);
+  });
+
+  it("rejects a filename Label that is not derived from the persisted config path", async () => {
+    const mismatchedConfigPath = "/Users/example/agents/other/custom.config.json";
+    const hostile = exactLegacyPlist({
+      programArguments: [NODE, CLI, "start", "--foreground", "--config", mismatchedConfigPath],
+    });
+    const { calls, runCommand } = fakeRunner({
+      plist: { status: 0, stdout: hostile, stderr: "" },
+    });
+    const out = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run"],
+      stdout: out,
+      stderr: sink(),
+      runCommand,
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain("plist unreadable");
+    expect(calls.some((call) => call.command === NODE)).toBe(false);
+  });
+
+  it("rejects unsafe launchd path metadata before converting or executing the plist", async () => {
+    const { calls, runCommand } = fakeRunner();
+    const out = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run", "--repo", "/deploy/mono-agent"],
+      stdout: out,
+      stderr: sink(),
+      runCommand,
+      trustedNodePath: NODE,
+      inspectLaunchdPath: () => null,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain("plist unreadable");
+    expect(calls.some((call) => call.command === "/usr/bin/plutil")).toBe(false);
+    expect(calls.some((call) => call.command === NODE)).toBe(false);
+  });
+
+  it("rejects launchd plist identity replacement across one conversion", async () => {
+    const { calls, runCommand } = fakeRunner();
+    let plistInspections = 0;
+    const out = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run", "--repo", "/deploy/mono-agent"],
+      stdout: out,
+      stderr: sink(),
+      runCommand,
+      trustedNodePath: NODE,
+      inspectLaunchdPath: (path, kind) => kind === "directory"
+        ? `directory:${path}`
+        : `plist:${path}:${plistInspections += 1}`,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain("plist unreadable");
+    expect(calls.filter((call) => call.command === "/usr/bin/plutil")).toHaveLength(1);
     expect(calls.some((call) => call.command === NODE)).toBe(false);
   });
 
@@ -1338,12 +1939,15 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
-    expect(out.text).toContain("orchestrator-2146e3d3: build marker missing");
+    expect(out.text).toContain("orchestrator-b6ef5dde: build marker missing");
     expect(out.text).not.toContain("private marker path");
   });
 
@@ -1383,8 +1987,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: err,
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(plistCalls).toBe(2);
@@ -1403,12 +2010,15 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
       readdir: () => {
         reads += 1;
         return reads === 1
-          ? ["com.mono-agent.orchestrator-2146e3d3.plist"]
-          : ["com.mono-agent.orchestrator-2146e3d3.plist", "com.mono-agent.private-added.plist"];
+          ? ["com.mono-agent.orchestrator-b6ef5dde.plist"]
+          : ["com.mono-agent.orchestrator-b6ef5dde.plist", "com.mono-agent.private-added.plist"];
       },
       now: new Date("2026-07-07T12:00:00Z"),
     });
@@ -1420,18 +2030,19 @@ describe("runFleetGreenCheck (orchestration)", () => {
   it("catches a pid restart during persisted-plist proof and leaves launchctl as the final external probe", async () => {
     const base = fakeRunner();
     const operations = [];
-    let plistCalls = 0;
-    let restarted = false;
+    let listCalls = 0;
     const runCommand = (command, args, options) => {
       if (command === "/usr/bin/plutil") {
         operations.push("plist");
-        plistCalls += 1;
-        if (plistCalls === 2) restarted = true;
       }
       if (command === "/bin/launchctl") {
         operations.push("launchctl");
-        const pid = restarted ? 101 : 100;
-        return { status: 0, stdout: `{\n\t"PID" = ${pid};\n\t"LastExitStatus" = 0;\n};`, stderr: "" };
+        if (args[0] === "list") {
+          listCalls += 1;
+          const pid = listCalls === 1 ? 100 : 101;
+          return { status: 0, stdout: `{\n\t"PID" = ${pid};\n\t"LastExitStatus" = 0;\n};`, stderr: "" };
+        }
+        return { status: 0, stdout: launchctlPrintOutput(), stderr: "" };
       }
       if ((command === "/bin/ps" && args.includes("command=")) || command === "/usr/sbin/lsof") {
         operations.push("identity");
@@ -1450,33 +2061,40 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
       readdir: () => {
         operations.push("topology");
-        return ["com.mono-agent.orchestrator-2146e3d3.plist"];
+        return ["com.mono-agent.orchestrator-b6ef5dde.plist"];
       },
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
-    expect(out.text).toContain("orchestrator-2146e3d3: service changed during probe");
+    expect(out.text).toContain("orchestrator-b6ef5dde: service changed during probe");
     const finalLaunchctl = operations.lastIndexOf("launchctl");
     expect(operations.at(-1)).toBe("launchctl");
     expect(operations.slice(finalLaunchctl + 1).filter((operation) => ["plist", "topology", "identity", "marker", "checkout"].includes(operation))).toEqual([]);
-    expect(operations.lastIndexOf("identity")).toBeLessThan(operations.lastIndexOf("plist"));
+    expect(operations.lastIndexOf("plist")).toBeLessThan(operations.lastIndexOf("identity"));
     expect(operations.lastIndexOf("plist")).toBeLessThan(operations.lastIndexOf("topology"));
-    expect(operations.lastIndexOf("topology")).toBeLessThan(operations.lastIndexOf("marker"));
     expect(operations.lastIndexOf("marker")).toBeLessThan(operations.lastIndexOf("checkout"));
-    expect(operations.lastIndexOf("checkout")).toBeLessThan(finalLaunchctl);
+    expect(operations.lastIndexOf("checkout")).toBeLessThan(operations.lastIndexOf("plist"));
+    expect(operations.lastIndexOf("topology")).toBeLessThan(operations.lastIndexOf("identity"));
+    expect(operations.lastIndexOf("identity")).toBeLessThan(finalLaunchctl);
   });
 
   it("fails a launchd state race even when the pid is unchanged", async () => {
     const base = fakeRunner();
-    let launchctlCalls = 0;
+    let listCalls = 0;
     const runCommand = (command, args, options) => {
       if (command === "/bin/launchctl") {
-        launchctlCalls += 1;
-        const exit = launchctlCalls === 1 ? 0 : 1;
-        return { status: 0, stdout: `{\n\t"PID" = 100;\n\t"LastExitStatus" = ${exit};\n};`, stderr: "" };
+        if (args[0] === "list") {
+          listCalls += 1;
+          const exit = listCalls === 1 ? 0 : 1;
+          return { status: 0, stdout: `{\n\t"PID" = 100;\n\t"LastExitStatus" = ${exit};\n};`, stderr: "" };
+        }
+        return { status: 0, stdout: launchctlPrintOutput(), stderr: "" };
       }
       return base.runCommand(command, args, options);
     };
@@ -1486,24 +2104,24 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
-    expect(out.text).toContain("orchestrator-2146e3d3: service changed during probe");
+    expect(out.text).toContain("orchestrator-b6ef5dde: service changed during probe");
   });
 
   it("rechecks every service only after all fleet rows have been collected", async () => {
-    const firstLabel = "com.mono-agent.orchestrator-2146e3d3";
-    const secondLabel = "com.mono-agent.personal-agent-059657c8";
+    const firstLabel = "com.mono-agent.orchestrator-b6ef5dde";
     const secondDir = "/Users/example/agents/personal-agent";
-    const secondPlist = JSON.stringify({
-      Label: secondLabel,
-      WorkingDirectory: secondDir,
-      ProgramArguments: [NODE, CLI, "start", "--foreground", "--config", configPath, "--env-file", envFile],
-      EnvironmentVariables: { PATH: launchdPath },
-    });
+    const secondConfigPath = `${secondDir}/custom.config.json`;
+    const secondLabel = deriveLaunchdLabel(secondConfigPath);
+    const secondArguments = [NODE, CLI, "start", "--foreground", "--config", secondConfigPath, "--env-file", envFile];
+    const secondPlist = exactLegacyPlist({ label: secondLabel, dir: secondDir, programArguments: secondArguments });
     const base = fakeRunner();
     let secondCollectionStarted = false;
     let firstLaunchCalls = 0;
@@ -1513,6 +2131,13 @@ describe("runFleetGreenCheck (orchestration)", () => {
         return { status: 0, stdout: secondPlist, stderr: "" };
       }
       if (command === "/bin/launchctl") {
+        if (args[0] === "print") {
+          const label = args[1].split("/").at(-1);
+          const pid = label === secondLabel ? 200 : 100;
+          const cwd = label === secondLabel ? secondDir : "/Users/example/agents/orchestrator";
+          const programArguments = label === secondLabel ? secondArguments : undefined;
+          return { status: 0, stdout: launchctlPrintOutput({ label, pid, cwd, programArguments }), stderr: "" };
+        }
         const label = args[1];
         launchOrder.push(label);
         if (label === secondLabel) secondCollectionStarted = true;
@@ -1522,10 +2147,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       }
       if (command === "/bin/ps" && args.includes("200")) {
         return args.includes("command=")
-          ? { status: 0, stdout: `${[NODE, CLI, "start", "--foreground", "--config", configPath, "--env-file", envFile].join(" ")}\n`, stderr: "" }
+          ? { status: 0, stdout: `${secondArguments.join(" ")}\n`, stderr: "" }
           : { status: 0, stdout: "Sun Jul 12 12:01:00 2026\n", stderr: "" };
       }
       if (command === "/usr/sbin/lsof" && args.includes("200")) {
+        if (args.includes("txt")) return fakeExecutableLsof(200);
         return { status: 0, stdout: `p200\nfcwd\nn${secondDir}\n`, stderr: "" };
       }
       return base.runCommand(command, args, options);
@@ -1536,32 +2162,31 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
       readdir: () => [`${firstLabel}.plist`, `${secondLabel}.plist`],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(launchOrder).toEqual([firstLabel, secondLabel, firstLabel, secondLabel]);
     expect(result.exitCode).toBe(1);
-    expect(out.text).toContain("orchestrator-2146e3d3: service changed during probe");
+    expect(out.text).toContain("orchestrator-b6ef5dde: service changed during probe");
   });
 
   it.each([
     ["marker", "build changed during probe"],
     ["checkout", "checkout changed during probe"],
   ])("captures an early row's final %s only after the later row's expensive probes", async (mutation, expected) => {
-    const firstLabel = "com.mono-agent.orchestrator-2146e3d3";
+    const firstLabel = "com.mono-agent.orchestrator-b6ef5dde";
     const firstRepo = "/Users/example/mono-agent";
-    const secondLabel = "com.mono-agent.personal-agent-059657c8";
     const secondRepo = "/Users/example/private-second-checkout";
     const secondDir = "/Users/example/agents/personal-agent";
+    const secondConfigPath = `${secondDir}/custom.config.json`;
+    const secondLabel = deriveLaunchdLabel(secondConfigPath);
     const secondCli = `${secondRepo}/packages/agent-app/dist/cli.js`;
-    const secondArguments = [NODE, secondCli, "start", "--foreground", "--config", configPath, "--env-file", envFile];
-    const secondPlist = JSON.stringify({
-      Label: secondLabel,
-      WorkingDirectory: secondDir,
-      ProgramArguments: secondArguments,
-      EnvironmentVariables: { PATH: launchdPath },
-    });
+    const secondArguments = [NODE, secondCli, "start", "--foreground", "--config", secondConfigPath, "--env-file", envFile];
+    const secondPlist = exactLegacyPlist({ label: secondLabel, dir: secondDir, programArguments: secondArguments });
     const base = fakeRunner();
     const events = [];
     let secondExpensiveComplete = false;
@@ -1572,7 +2197,13 @@ describe("runFleetGreenCheck (orchestration)", () => {
         return { status: 0, stdout: secondPlist, stderr: "" };
       }
       if (command === "/bin/launchctl") {
-        const label = args[1];
+        const label = args[0] === "print" ? args[1].split("/").at(-1) : args[1];
+        if (args[0] === "print") {
+          const pid = label === secondLabel ? 200 : 100;
+          const programArguments = label === secondLabel ? secondArguments : undefined;
+          const cwd = label === secondLabel ? secondDir : "/Users/example/agents/orchestrator";
+          return { status: 0, stdout: launchctlPrintOutput({ label, pid, programArguments, cwd }), stderr: "" };
+        }
         events.push(`launch:${label}`);
         const pid = label === secondLabel ? 200 : 100;
         return { status: 0, stdout: `{\n\t"PID" = ${pid};\n\t"LastExitStatus" = 0;\n};`, stderr: "" };
@@ -1637,6 +2268,7 @@ describe("runFleetGreenCheck (orchestration)", () => {
         events.push("identity:first");
       }
       if (command === "/usr/sbin/lsof" && args.includes("200")) {
+        if (args.includes("txt")) return fakeExecutableLsof(200);
         return { status: 0, stdout: `p200\nfcwd\nn${secondDir}\n`, stderr: "" };
       }
       return base.runCommand(command, args, options);
@@ -1647,7 +2279,10 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
       readdir: () => [`${firstLabel}.plist`, `${secondLabel}.plist`],
       now: new Date("2026-07-07T12:00:00Z"),
     });
@@ -1681,8 +2316,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
@@ -1701,8 +2339,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
@@ -1719,15 +2360,56 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
-    expect(out.text).toContain("orchestrator-2146e3d3: not running (last exit 0)");
-    expect(out.text).toContain("| orchestrator-2146e3d3 | FAIL | FAIL | ok |");
+    expect(out.text).toContain("orchestrator-b6ef5dde: not running (last exit 0)");
+    expect(out.text).toContain("| orchestrator-b6ef5dde | FAIL | FAIL | FAIL |");
     expect(calls.some((call) => call.command === "/bin/ps")).toBe(false);
     expect(calls.some((call) => call.command === NODE && call.args[0]?.endsWith("build-provenance-probe.mjs"))).toBe(false);
+  });
+
+  it("rejects execution-affecting keys outside the exact managed plist producer schema", async () => {
+    const managedArguments = [
+      "/usr/bin/env", "-i", "HOME=/Users/example", "MONO_AGENT_MANAGED_WORKER=1", `PATH=${launchdPath}`,
+      NODE, CLI, "start", "--foreground", "--config", configPath,
+      "--expected-background-snapshot", "approved_snapshot",
+    ];
+    const hostilePlist = JSON.stringify({
+      Label: "com.mono-agent.orchestrator-b6ef5dde",
+      Program: "/private/hostile-prelude",
+      ProgramArguments: managedArguments,
+      WorkingDirectory: "/Users/example/agents/orchestrator",
+      RunAtLoad: true,
+      KeepAlive: { SuccessfulExit: false },
+      StandardOutPath: "/Users/example/.mono-agent/logs/com.mono-agent.orchestrator-b6ef5dde.out.log",
+      StandardErrorPath: "/Users/example/.mono-agent/logs/com.mono-agent.orchestrator-b6ef5dde.err.log",
+      ThrottleInterval: 10,
+      ProcessType: "Interactive",
+    });
+    const { calls, runCommand } = fakeRunner({ plist: { status: 0, stdout: hostilePlist, stderr: "" } });
+    const out = sink();
+    const result = await runFleetGreenCheck({
+      argv: ["--dry-run", "--repo", "/deploy/mono-agent"],
+      stdout: out,
+      stderr: sink(),
+      runCommand,
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
+      now: new Date("2026-07-07T12:00:00Z"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(out.text).toContain("plist unreadable");
+    expect(out.text).not.toContain("hostile-prelude");
+    expect(calls.some((call) => call.command === NODE)).toBe(false);
   });
 
   it.each([
@@ -1736,7 +2418,7 @@ describe("runFleetGreenCheck (orchestration)", () => {
     ["hostile unknown flag", [NODE, CLI, "start", "--config", configPath, "--token", "private-plist-token"]],
   ])("fails a %s plist closed without running any CLI probe or leaking values", async (_label, programArguments) => {
     const hostilePlist = JSON.stringify({
-      Label: "com.mono-agent.orchestrator-2146e3d3",
+      Label: "com.mono-agent.orchestrator-b6ef5dde",
       WorkingDirectory: "/Users/example/agents/orchestrator",
       ProgramArguments: programArguments,
       EnvironmentVariables: { PATH: launchdPath },
@@ -1750,8 +2432,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
@@ -1763,7 +2448,7 @@ describe("runFleetGreenCheck (orchestration)", () => {
   it("fails a hostile plist environment closed without running probes or leaking values", async () => {
     const secret = "private-plist-environment-value";
     const hostilePlist = JSON.stringify({
-      Label: "com.mono-agent.orchestrator-2146e3d3",
+      Label: "com.mono-agent.orchestrator-b6ef5dde",
       WorkingDirectory: "/Users/example/agents/orchestrator",
       ProgramArguments: [NODE, CLI, "start", "--config", configPath],
       EnvironmentVariables: { PATH: launchdPath, PRIVATE_TOKEN: secret },
@@ -1777,8 +2462,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
@@ -1787,11 +2475,16 @@ describe("runFleetGreenCheck (orchestration)", () => {
     expect(calls.some((call) => call.command === NODE)).toBe(false);
   });
 
-  it("fails a NUL working directory closed without throwing or leaking its value", async () => {
-    const secret = "private-nul-working-directory";
+  it.each([
+    ["NUL", "\0"],
+    ["tab", "\t"],
+    ["newline", "\n"],
+    ["DEL", "\u007f"],
+  ])("fails a %s working directory closed without throwing or leaking its value", async (_label, control) => {
+    const secret = "private-control-working-directory";
     const hostilePlist = JSON.stringify({
-      Label: "com.mono-agent.orchestrator-2146e3d3",
-      WorkingDirectory: `/Users/example/agents/orchestrator\0${secret}`,
+      Label: "com.mono-agent.orchestrator-b6ef5dde",
+      WorkingDirectory: `/Users/example/agents/orchestrator${control}${secret}`,
       ProgramArguments: [NODE, CLI, "start", "--config", configPath],
       EnvironmentVariables: { PATH: launchdPath },
     });
@@ -1804,8 +2497,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
@@ -1821,8 +2517,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: sink(),
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(0);
@@ -1854,8 +2553,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: err,
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
@@ -1877,8 +2579,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
@@ -1901,8 +2606,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: err,
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
@@ -1918,8 +2626,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: sink(),
       stderr: sink(),
       runCommand: mismatch.runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(red.exitCode).toBe(1);
@@ -1944,8 +2655,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: sink(),
       stderr: sink(),
       runCommand: matching.runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(green.exitCode).toBe(0);
@@ -1965,8 +2679,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: err,
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
@@ -1985,8 +2702,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
         if (command === "/bin/launchctl") return { status: 113, stdout: "Could not find service.\n", stderr: "" };
         return runCommand(command, args);
       },
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
@@ -2004,8 +2724,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
         if (command === "/usr/bin/plutil") return { status: 1, stdout: "", stderr: "corrupt.plist: JSON error\n" };
         return runCommand(command, args);
       },
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
@@ -2021,8 +2744,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: out,
       stderr: sink(),
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);
@@ -2037,8 +2763,11 @@ describe("runFleetGreenCheck (orchestration)", () => {
       stdout: sink(),
       stderr: err,
       runCommand,
-      launchAgentsDir: "/fake/LaunchAgents",
-      readdir: () => ["com.mono-agent.orchestrator-2146e3d3.plist"],
+      trustedNodePath: NODE,
+      inspectLaunchdPath: fakeLaunchdPathInspector,
+      inspectExecutablePath: fakeExecutablePathInspector,
+      launchAgentsDir: "/Users/example/Library/LaunchAgents",
+      readdir: () => ["com.mono-agent.orchestrator-b6ef5dde.plist"],
       now: new Date("2026-07-07T12:00:00Z"),
     });
     expect(result.exitCode).toBe(1);

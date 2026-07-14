@@ -1,6 +1,6 @@
 ---
 name: fleet-deploy
-description: Deploy repo changes to the live launchd mono-agent fleet (~/personal-agent, ~/a8c-agents/orchestrator) and restart/verify them. Use when asked to "deploy", "restart the agents", "get this live", or after merging changes the fleet should run.
+description: Deploy repo changes to the live launchd mono-agent fleet and restart/verify every current instance. Use when asked to "deploy", "restart the agents", "get this live", or after merging changes the fleet should run.
 ---
 
 # Fleet deploy
@@ -15,9 +15,10 @@ the deploy checkout.
 
 The daily tracker and the installed `com.mono-agent.*` launchd plists are the
 authoritative fleet map; do not restrict a deploy to the two historically
-documented instances. The current fleet is exactly nine active, running agents:
-`activity-digest`, `deep-research`, `finances`, `inner-child`, `orchestrator`,
-`p2-watcher`, `personal-agent`, `slack-sweep`, and `transcription`. A missing PID,
+documented instances. The current mono-agent fleet is exactly four active,
+running agents: `finances`, `inner-child`, `personal-agent`, and `transcription`.
+The separately managed `~/a8c-agents` services use their own launchd namespace
+and status command; do not silently mix stopped A8C services into this gate. A missing PID,
 an extra matching plist, or any row that cannot be reconciled is a fleet blocker.
 
 Run the exact host gate under "Daily green check" before changing anything and
@@ -26,12 +27,15 @@ or invalid plist is a fleet blocker, not an instance to omit from the report.
 
 | Instance | Config / label | Notes |
 |---|---|---|
-| `~/personal-agent` | `mono-agent.config.json` / `com.mono-agent.personal-agent-059657c8` | Telegram (allowlist 183676192), webhook, OpenAI API :4312/v1, 4 cron jobs, bujo memory, piAuthPath `~/.pi/personal-agent/auth.json` |
-| `~/a8c-agents/orchestrator` | `mono-agent.config.json` / `com.mono-agent.orchestrator-2146e3d3` | Slack Socket Mode, OpenAI API :4311/v1, journal memory, piAuthPath `~/.pi/a8c-agent/auth.json`, working dir `.a8c-agent/` (NOT `.mono-agent/`) |
+| `~/personal/finances` | `mono-agent.config.json` / `com.mono-agent.finances-e9c073d7` | Telegram, webhook, bujo memory |
+| `~/agents/inner-child` | `mono-agent.config.json` / `com.mono-agent.inner-child-fdfc3392` | Telegram, webhook, cron, native sandbox, bujo memory |
+| `~/agents/transcription` | `mono-agent.config.json` / `com.mono-agent.transcription-f4a742c8` | Telegram, no configured memory |
+| `~/personal-agent` | `mono-agent.config.json` / `com.mono-agent.personal-agent-059657c8` | Telegram, webhook, OpenAI API :4312/v1, cron, bujo memory, restart last |
 
-**Deploy mechanism:** the canonical plists hardcode `node <this repo>/packages/agent-app/dist/cli.js …`,
-and the global `mono-agent` CLI is an npm-global symlink to the same package.
-**Building this repo's dist IS deploying.** A successful root `pnpm run build`
+**Deploy mechanism:** the source CLI verifies and copies its exact package closure
+into an owner-private managed runtime under `~/.mono-agent/runtimes`, and the
+canonical hardened plists execute that copied CLI through `/usr/bin/env -i`.
+**Building this repo and restarting every instance IS deploying.** A successful root `pnpm run build`
 also atomically publishes the ignored, owner-only `.mono-agent-build.json`
 completion marker on supported POSIX/macOS deploy hosts. The marker binds that
 build to the full checkout SHA, source state, Node version, modules ABI,
@@ -52,7 +56,7 @@ tree clean. Do steps 1–4 in one uninterrupted pass:
 git fetch origin main && git reset --hard <sha>   # 1. or: git pull --ff-only; tree MUST be clean first
 pnpm install --frozen-lockfile                     # 2.
 pnpm run build                                     # 3. builds dist, finalizes executable modes, then publishes the marker
-# 4. rolling restart, orchestrator FIRST, personal-agent LAST (see "Restart + verify")
+# 4. rolling restart: finances, inner-child, transcription, personal-agent LAST
 ```
 
 **Never leave the tree between install and restart.** `pnpm install` rewrites
@@ -76,14 +80,15 @@ stash, copy a marker, fabricate its timestamp, or bypass the `loaded` failure.
 
 ## Restart + verify
 
-Roll all nine instances one at a time, **orchestrator first, personal-agent
-last**. Every instance must be running at the end. Discover each working
+Roll all four instances one at a time, **personal-agent last**. Every instance
+must be running at the end. Discover each working
 directory and label from its plist/tracker row instead of guessing; after the
-intermediate instances, finish with:
+first three instances, finish with:
 
 ```bash
-cd ~/a8c-agents/orchestrator && mono-agent restart   # or: npm run restart
-cd ~/a8c-agents/orchestrator && mono-agent validate 2>&1 | tail -45
+cd ~/personal/finances && mono-agent restart
+cd ~/agents/inner-child && mono-agent restart
+cd ~/agents/transcription && mono-agent restart
 cd ~/personal-agent && mono-agent restart 2>&1 | tail -25
 cd ~/personal-agent && mono-agent validate 2>&1 | tail -45
 mono-agent status
@@ -108,22 +113,30 @@ last-24h run health, then prints
 `instance | service | loaded | runtime | validate | memory | runs-24h | notes`
 plus `VERDICT: GREEN|RED`. Run the authoritative gate from the deployed checkout
 (or an exact checkout that implements the same build-marker schema). Runtime
-and CLI probes use each instance plist's exact `ProgramArguments[0]` Node and
-`ProgramArguments[1]` cli.js, never the ambient shell's `node` or the checker's
-CLI. The build-provenance probe belongs to the checker checkout, so a newer
+and CLI probes use each hardened plist's exact worker Node and copied cli.js,
+never the ambient shell's `node` or the checker's CLI. Pin the deploy source
+tree with `--repo`; the checker then proves the canonical private runtime path,
+v4 marker/manifest, complete cached execution closure, and unchanged install-time
+filesystem proof for package entries, links, and resolution-path directories inside the private install
+root against that exact checkout, including config-selected plugins; canonical ancestors above it must
+remain owner-private. The running process must start after the conservative finalized-runtime boundary.
+The build-provenance probe belongs to the checker checkout, so a newer
 checker intentionally fails closed on an older marker schema instead of
 claiming cross-version proof:
 
 ```bash
-FLEET_LABELS='com.mono-agent.activity-digest-0680cd0b,com.mono-agent.deep-research-cd0b9a0d,com.mono-agent.finances-e9c073d7,com.mono-agent.inner-child-fdfc3392,com.mono-agent.orchestrator-2146e3d3,com.mono-agent.p2-watcher-e537b146,com.mono-agent.personal-agent-059657c8,com.mono-agent.slack-sweep-aa87c1b8,com.mono-agent.transcription-f4a742c8'
+DEPLOY_REPO=/Users/example/Personal_Repositories/mono-agent
+FLEET_LABELS='com.mono-agent.finances-e9c073d7,com.mono-agent.inner-child-fdfc3392,com.mono-agent.personal-agent-059657c8,com.mono-agent.transcription-f4a742c8'
 
 # Exact host gate: print only.
 node scripts/fleet-green-check.mjs --dry-run \
+  --repo "$DEPLOY_REPO" \
   --expect-labels "$FLEET_LABELS" \
   --expect-sha <full-sha> --expect-node 24.15.0 --expect-abi 137
 
 # Exact host gate: also post to #119.
 node scripts/fleet-green-check.mjs \
+  --repo "$DEPLOY_REPO" \
   --expect-labels "$FLEET_LABELS" \
   --expect-sha <full-sha> --expect-node 24.15.0 --expect-abi 137
 
@@ -139,17 +152,20 @@ them explicit in deploy evidence and update them deliberately during a fleet
 runtime migration. Generic auto-discovery checks every matching plist it finds;
 it cannot prove that a removed plist still belongs to the fleet. The installed
 nightly job and all deployment evidence therefore use `--expect-labels` with the
-exact nine-label set above. Missing or extra labels drive RED before any row can
+exact four-label set above. Missing or extra labels drive RED before any row can
 be treated as healthy. `--expect-sha` accepts a full SHA and applies it
 independently to every instance; multiple deploy checkouts do not weaken that
 requirement.
 
-Canonical managed plists use whitespace-free `ProgramArguments`, absolute
-executable/config paths, and an exact filename/`Label` match. Discovery converts
+Canonical managed plists use control-free, structurally compared
+`ProgramArguments`, an allowlisted `/usr/bin/env -i` wrapper, absolute
+executable/config paths, and a label derived from that exact config path.
+Discovery converts
 them with `/usr/bin/plutil` and checks service state with `/bin/launchctl`, both
 under a closed system environment instead of the interactive `PATH`. For every
-PID, `loaded` requires its actual argv and cwd to match that canonical plist
-contract exactly, an absent build lock, and an exact owner-only build marker.
+PID, `loaded` requires launchd's loaded structured arguments and log paths plus
+the running Node executable and cwd to match that canonical plist contract
+exactly, an absent build lock, and an exact owner-only build marker.
 The checkout must be clean and remain on the same full SHA across both reads;
 the marker SHA must equal that SHA and the expected SHA, its Node/ABI must equal
 the running runtime, and its recorded output and dependency digests must equal

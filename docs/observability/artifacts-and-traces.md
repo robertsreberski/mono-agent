@@ -196,11 +196,23 @@ Keep `staleAfterMs` comfortably larger than `heartbeatMs` (the defaults give a 3
 The launchd fleet green check does not trust the interactive shell runtime. Generic mode discovers
 every matching plist present; a host gate can pass `--expect-labels <csv>` to require an exact
 duplicate-free set, so a removed or added fleet plist drives RED. Discovery requires a canonical
-filename/`Label` match, whitespace-free `ProgramArguments`, and absolute executable/config paths. It
+filename/`Label` match, control-free `ProgramArguments`, and absolute executable/config paths. Managed
+paths and operational values may contain spaces because loaded arguments are compared structurally. It
+accepts both a closed legacy direct-Node shape and the exact current hardened `/usr/bin/env -i` producer
+shape; the latter may contain only the operational environment allowlist plus its managed-worker marker.
+Because the copied CLI lives outside Git, current managed-runtime checks also pass
+`--repo <deploy-checkout>` to pin build/SHA provenance to the source tree. A read-only attestation requires
+the canonical content-addressed cache path, a valid v4 marker and complete byte-level closure manifest,
+semantic equality between source and cached execution closures (including configured plugins), and the
+install-time filesystem identities of package entries, links, and every resolution-path directory inside
+the private install root; canonical ancestors above it must remain owner-private. The loaded process must
+start after the conservative finalized-runtime boundary. It
 invokes `/usr/bin/plutil` and `/bin/launchctl` with a closed system environment, then reads each
-service's exact Node executable, CLI path, absolute `--config`/`--env-file` arguments, and managed `PATH` for
-the Node/ABI, build-marker, `validate --json`, `memory audit --strict --json`, and `metrics --json`
-probes. It also requires a running PID whose actual argv and cwd exactly match the plist contract.
+service's exact Node executable, CLI path, absolute `--config`/`--env-file` arguments, and complete managed
+environment for the Node/ABI, build-marker, `validate --json`, `memory audit --strict --json`, and
+`metrics --json` probes. Initial and final `launchctl print` reads must match the persisted program,
+structured arguments, working directory, origin plist, and PID. The running PID's actual Node executable
+device/inode and cwd must also match.
 On supported POSIX/macOS hosts, the root build holds an exclusive lock from before clearing the old
 marker through package/demo build, required CLI/TUI executable-mode finalization, output sync,
 deterministic output-digest calculation, installed
@@ -215,9 +227,10 @@ stable across both reads, and the marker's full SHA to match both that checkout 
 per-instance expected SHA. Marker Node/ABI must match the runtime, its output and dependency digests
 must match fresh digests of the current deploy outputs and installed dependency tree, and the process
 must have started after build completion. It repeats the marker, digests, and checkout-state probes,
-reconverts each selected canonical plist and requires its fingerprint to remain unchanged, then
-performs a global final launchd PID/state pass after every expensive row completes. This closes build,
-dependency mutation, persisted-launch-contract replacement, checkout, and early-row restart races.
+reconverts each selected canonical plist and requires its fingerprint to remain unchanged, repeats the
+managed-runtime and loaded-launch-definition attestations, then performs a global final launchd PID/state
+pass after every expensive row completes. This closes build, dependency/cache mutation,
+persisted-versus-loaded launch-contract replacement, checkout, and early-row restart races.
 Every expected fleet service must be running; a clean prior exit is not green.
 
 Probe children retain only non-secret, launchd-safe operational environment values; shell-only

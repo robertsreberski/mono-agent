@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildPlistXml,
+  buildLaunchdProgramArguments,
   defaultPathEnv,
   deriveLaunchdLabel,
   domainTarget,
@@ -134,10 +135,40 @@ describe("buildPlistXml", () => {
     expect(xml.indexOf("HOME=/home/u")).toBeLessThan(xml.indexOf("PATH=/usr/bin"));
   });
 
+  it("sorts mixed-case environment names by code unit independent of host locale", () => {
+    const args = buildLaunchdProgramArguments(plistInput({
+      environment: {
+        ComSpec: "/second",
+        COMSPEC: "/first",
+        PATH: "/usr/bin:/bin",
+      },
+    }));
+    expect(args.slice(2, 5)).toEqual([
+      "COMSPEC=/first",
+      "ComSpec=/second",
+      "PATH=/usr/bin:/bin",
+    ]);
+  });
+
   it("XML-escapes paths that contain ampersands", () => {
     const xml = buildPlistXml(plistInput({ cwd: "/work/A & B", configPath: "/work/A & B/mono-agent.config.json" }));
     expect(xml).toContain("<string>/work/A &amp; B</string>");
     expect(xml).not.toMatch(/<string>[^<]*\s&\s[^<]*<\/string>/u);
+  });
+
+  it.each([
+    ["config path", { configPath: "/work/agent\nprivate/config.json" }],
+    ["working directory", { cwd: "/work/agent\tprivate" }],
+    ["environment value", { environment: { PATH: "/usr/bin\n/private" } }],
+    ["log path", { stdoutPath: "/tmp/agent\rprivate.log" }],
+  ])("rejects controls in %s before writing a managed plist", (_label, overrides) => {
+    expect(() => buildPlistXml(plistInput(overrides))).toThrow(/must not contain control characters/u);
+  });
+
+  it("rejects environment names outside the producer/checker grammar", () => {
+    expect(() => buildLaunchdProgramArguments(plistInput({
+      environment: { "PATH=shadow": "/private", PATH: "/usr/bin:/bin" },
+    }))).toThrow(/portable identifier grammar/u);
   });
 });
 

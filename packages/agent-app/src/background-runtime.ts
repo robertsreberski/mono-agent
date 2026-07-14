@@ -33,6 +33,7 @@ export const MANAGED_BACKGROUND_WORKER_ENV = "MONO_AGENT_MANAGED_WORKER";
 const LOCK_WAIT_TIMEOUT_MS = 30_000;
 const LOCK_STALE_AFTER_MS = 5 * 60_000;
 const LOCK_POLL_INTERVAL_MS = 200;
+const PROVISIONAL_RUNTIME_INSTALLED_AT = "1970-01-01T00:00:00.000Z";
 
 export interface ManagedBackgroundRuntime {
   readonly cliPath: string;
@@ -63,6 +64,34 @@ export interface ManagedBackgroundRuntimeInput {
   readonly packageSource?: string;
   /** Config-selected channel/memory plugin packages that must survive outside the caller's install tree. */
   readonly additionalPackages?: readonly ManagedRuntimeAdditionalPackage[];
+}
+
+/** Inputs for the read-only fleet attestation of an already materialized runtime. */
+export interface ManagedBackgroundRuntimeAttestationInput {
+  /** CLI from the trusted deploy checkout whose execution closure is expected. */
+  readonly currentCliPath: string;
+  /** CLI path persisted in the managed LaunchAgent. */
+  readonly runtimeCliPath: string;
+  readonly homeDir?: string;
+  readonly packageVersion?: string;
+  readonly nodeAbi?: string;
+  readonly platform?: NodeJS.Platform;
+  readonly arch?: string;
+  readonly packageSource?: string;
+  readonly additionalPackages?: readonly ManagedRuntimeAdditionalPackage[];
+}
+
+export interface ManagedBackgroundRuntimeAttestation {
+  readonly schema: "mono-agent.managed-runtime-attestation.v1";
+  /** Opaque, path-free identity used only to compare an initial and final probe. */
+  readonly fingerprint: string;
+  /** Safe lifecycle boundary: a managed worker must start after this install. */
+  readonly installedAt: string;
+}
+
+interface ManagedBackgroundRuntimeAttestationDeps {
+  /** Deterministic race-test seam; production never supplies this hook. */
+  readonly afterInitialCaptures?: () => Promise<void>;
 }
 
 export interface ManagedRuntimeInstallInput {
@@ -112,9 +141,10 @@ interface RuntimeLockIdentity {
 }
 
 interface RuntimeMarker extends RuntimeIdentity {
-  readonly schema: "mono-agent.managed-runtime.v3";
+  readonly schema: "mono-agent.managed-runtime.v4";
   readonly packageName: typeof PACKAGE_NAME;
   readonly closureManifestSha256: string;
+  readonly executionProofSha256: string;
   readonly installedAt: string;
 }
 
@@ -158,6 +188,8 @@ interface ExecutionClosureCapture {
   readonly additionalRoots: readonly { readonly packageName: string; readonly nodeId: number }[];
   readonly sourceClosureSha256: string;
   readonly sourceProofSha256: string;
+  /** Path-independent post-promotion inode/time proof for the private install root. */
+  readonly filesystemProofSha256: string;
 }
 
 interface SourcePackageManifest {
@@ -186,6 +218,12 @@ interface SourcePackageProofEntry {
   readonly mtimeNs: string;
   readonly ctimeNs: string;
   readonly target?: string;
+}
+
+interface ResolvedInstalledDependency {
+  readonly candidatePath: string;
+  readonly packageRoot: string;
+  readonly proof: SourcePackageProofEntry;
 }
 
 export function defaultManagedBackgroundRuntimeDeps(): ManagedBackgroundRuntimeDeps {
@@ -256,22 +294,25 @@ export async function ensureManagedBackgroundRuntime(
   const layout = runtimeLayout(home, identity, id, deps.now());
   await ensurePrivateRuntimeAncestors(home, layout.versionAbiDir);
 
-  if (await verifyRuntime(layout, identity)) {
+  if (await verifyRuntime(layout, identity, additionalPackages)) {
+    await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
     return runtimeResult(layout, identity, input.nodePath);
   }
 
-  const acquired = await acquireRuntimeLock(layout, identity, deps);
+  const acquired = await acquireRuntimeLock(layout, identity, additionalPackages, deps);
   if (!acquired) {
     // Another installer may have completed between the final lock poll and the
     // timeout boundary. Verify one last time before reporting the contention.
-    if (await verifyRuntime(layout, identity)) {
+    if (await verifyRuntime(layout, identity, additionalPackages)) {
+      await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
       return runtimeResult(layout, identity, input.nodePath);
     }
     throw new Error(`Timed out waiting for the managed runtime installation lock at ${layout.lockDir}.`);
   }
 
   try {
-    if (await verifyRuntime(layout, identity)) {
+    if (await verifyRuntime(layout, identity, additionalPackages)) {
+      await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
       return runtimeResult(layout, identity, input.nodePath);
     }
     await assertSourceClosureUnchanged(packageSource, additionalPackages, sourceClosure, "before staging");
@@ -301,12 +342,28 @@ export async function ensureManagedBackgroundRuntime(
         );
       }
       const closureManifestSha256 = await writeClosureManifest(staged);
+      const stagedPackageSource = dirname(dirname(staged.cliPath));
+      const stagedAdditionalPackages = additionalPackages.map(({ packageName }) => ({
+        packageName,
+        packageSource: join(staged.installRoot, "node_modules", ...packageNameSegments(packageName)),
+      }));
+      const stagedExecutionClosure = await captureExecutionClosure(
+        stagedPackageSource,
+        stagedAdditionalPackages,
+        staged.installRoot,
+      );
+      if (stagedExecutionClosure.sourceClosureSha256 !== identity.sourceClosureSha256) {
+        throw new Error("The staged managed runtime execution closure does not match its source identity.");
+      }
       const marker: RuntimeMarker = {
-        schema: "mono-agent.managed-runtime.v3",
+        schema: "mono-agent.managed-runtime.v4",
         packageName: PACKAGE_NAME,
         closureManifestSha256,
+        executionProofSha256: stagedExecutionClosure.filesystemProofSha256,
         ...identity,
-        installedAt: new Date(deps.now()).toISOString(),
+        // Provisional only. Promotion rewrites this with the post-proof launch
+        // boundary; a crash before that rewrite must never look finalized.
+        installedAt: PROVISIONAL_RUNTIME_INSTALLED_AT,
       };
       await writePrivateJson(staged.markerPath, marker);
       await chmod(layout.stagingDir, 0o700);
@@ -314,20 +371,142 @@ export async function ensureManagedBackgroundRuntime(
       // runtime aside. This is essential when the executing CLI (and therefore
       // packageSource) lives inside that invalid runtime: quarantine must never
       // make the only repair source disappear halfway through installation.
-      await quarantineInvalidRuntime(layout, identity, deps);
-      await promoteStaging(layout, staged, identity);
+      await quarantineInvalidRuntime(layout, identity, additionalPackages, deps);
+      const promoted = await promoteStaging(layout, staged, identity, additionalPackages);
+      if (promoted) {
+        // Renaming the staging root changes that directory's ctime. Rebind the
+        // marker to the post-promotion resolution-path identities before any
+        // caller can persist or launch this runtime.
+        const promotedPackageSource = dirname(dirname(layout.cliPath));
+        const promotedAdditionalPackages = additionalPackages.map(({ packageName }) => ({
+          packageName,
+          packageSource: join(layout.installRoot, "node_modules", ...packageNameSegments(packageName)),
+        }));
+        const promotedClosure = await captureExecutionClosure(
+          promotedPackageSource,
+          promotedAdditionalPackages,
+          layout.installRoot,
+        );
+        if (promotedClosure.sourceClosureSha256 !== identity.sourceClosureSha256) {
+          throw new Error("The promoted managed runtime execution closure does not match its source identity.");
+        }
+        await writeFinalizedRuntimeMarker(layout.markerPath, {
+          ...marker,
+          executionProofSha256: promotedClosure.filesystemProofSha256,
+        }, deps);
+      }
     } catch (error) {
       await rm(layout.stagingDir, { recursive: true, force: true }).catch(() => undefined);
       throw error;
     }
 
-    if (!(await verifyRuntime(layout, identity))) {
+    if (!(await verifyRuntime(layout, identity, additionalPackages))) {
       throw new Error("The managed runtime failed verification after atomic promotion.");
     }
+    await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
     return runtimeResult(layout, identity, input.nodePath);
   } finally {
     await removeSameRuntimeLockDirectory(layout.lockDir, acquired).catch(() => undefined);
   }
+}
+
+/**
+ * Prove, without installing or repairing anything, that a persisted managed
+ * runtime is the canonical private copy of the exact deploy-source execution
+ * closure (including config-selected plugin roots).
+ */
+export async function attestManagedBackgroundRuntime(
+  input: ManagedBackgroundRuntimeAttestationInput,
+  deps: ManagedBackgroundRuntimeAttestationDeps = {},
+): Promise<ManagedBackgroundRuntimeAttestation> {
+  const currentCliPath = resolve(input.currentCliPath);
+  await assertRegularFile(currentCliPath, "current mono-agent CLI");
+  const packageSource = resolve(input.packageSource ?? packageRootForCli(currentCliPath));
+  const sourceDetails = await lstat(packageSource);
+  if (!sourceDetails.isDirectory() || sourceDetails.isSymbolicLink()) {
+    throw new Error(`Managed runtime package source ${packageSource} must be a real directory.`);
+  }
+  const additionalPackages = await canonicalAdditionalPackages(input.additionalPackages ?? []);
+  const sourceClosureInitial = await captureExecutionClosure(packageSource, additionalPackages);
+  const packageVersion = input.packageVersion ?? await packageVersionAt(packageSource);
+  if (!isExactVersion(packageVersion)) {
+    throw new Error(`Cannot attest a durable managed runtime for invalid package version ${JSON.stringify(packageVersion)}.`);
+  }
+  const identity: RuntimeIdentity = {
+    packageVersion,
+    cliSha256: sha256(await readFile(currentCliPath)),
+    sourceClosureSha256: sourceClosureInitial.sourceClosureSha256,
+    nodeAbi: input.nodeAbi ?? requiredNodeAbi(),
+    platform: input.platform ?? process.platform,
+    arch: input.arch ?? process.arch,
+  };
+  const home = resolve(input.homeDir ?? accountHomeDirectory());
+  const layout = runtimeLayout(home, identity, "attestation", 0);
+  if (resolve(input.runtimeCliPath) !== layout.cliPath) {
+    throw new Error("The managed runtime CLI is not at the canonical execution-closure path.");
+  }
+  if (!(await verifyPrivateRuntimeAncestors(home, layout.versionAbiDir))) {
+    throw new Error("The managed runtime has an unsafe ancestor directory.");
+  }
+  const markerInitial = await verifiedRuntimeMarker(layout, identity);
+  if (markerInitial === undefined) {
+    throw new Error("The managed runtime marker or closure manifest is invalid.");
+  }
+
+  const runtimePackageSource = dirname(dirname(layout.cliPath));
+  const runtimeAdditionalPackages = additionalPackages.map(({ packageName }) => ({
+    packageName,
+    packageSource: join(layout.installRoot, "node_modules", ...packageNameSegments(packageName)),
+  }));
+  const runtimeClosureInitial = await captureExecutionClosure(
+    runtimePackageSource,
+    runtimeAdditionalPackages,
+    layout.installRoot,
+  );
+  if (runtimeClosureInitial.sourceClosureSha256 !== sourceClosureInitial.sourceClosureSha256) {
+    throw new Error("The managed runtime execution closure does not match the deploy source closure.");
+  }
+  if (runtimeClosureInitial.filesystemProofSha256 !== markerInitial.executionProofSha256) {
+    throw new Error("The managed runtime filesystem proof does not match its install-time proof.");
+  }
+
+  await deps.afterInitialCaptures?.();
+
+  const sourceClosureFinal = await captureExecutionClosure(packageSource, additionalPackages);
+  if (sourceClosureFinal.sourceClosureSha256 !== sourceClosureInitial.sourceClosureSha256
+    || sourceClosureFinal.sourceProofSha256 !== sourceClosureInitial.sourceProofSha256) {
+    throw new Error("The deploy source execution closure changed while it was attested.");
+  }
+  const runtimeClosureFinal = await captureExecutionClosure(
+    runtimePackageSource,
+    runtimeAdditionalPackages,
+    layout.installRoot,
+  );
+  if (runtimeClosureFinal.sourceClosureSha256 !== runtimeClosureInitial.sourceClosureSha256
+    || runtimeClosureFinal.sourceProofSha256 !== runtimeClosureInitial.sourceProofSha256) {
+    throw new Error("The managed runtime execution closure changed while it was attested.");
+  }
+  if (runtimeClosureFinal.filesystemProofSha256 !== markerInitial.executionProofSha256) {
+    throw new Error("The managed runtime filesystem proof changed after installation.");
+  }
+
+  const markerFinal = await verifiedRuntimeMarker(layout, identity);
+  if (markerFinal === undefined || JSON.stringify(markerFinal) !== JSON.stringify(markerInitial)) {
+    throw new Error("The managed runtime changed while it was attested.");
+  }
+  const fingerprint = sha256(Buffer.from(JSON.stringify({
+    schema: "mono-agent.managed-runtime-attestation.v1",
+    identity,
+    sourceProofSha256: sourceClosureFinal.sourceProofSha256,
+    runtimeProofSha256: runtimeClosureFinal.sourceProofSha256,
+    closureManifestSha256: markerInitial.closureManifestSha256,
+    installedAt: markerInitial.installedAt,
+  }), "utf8"));
+  return {
+    schema: "mono-agent.managed-runtime-attestation.v1",
+    fingerprint,
+    installedAt: markerInitial.installedAt,
+  };
 }
 
 /**
@@ -381,7 +560,7 @@ async function materializeExactExecutionClosure(input: ManagedRuntimeInstallInpu
   for (const node of closure) {
     const destination = requiredMapValue(destinations, node.id, "package destination");
     for (const [dependencyName, dependencyId] of [...node.dependencies].sort(([left], [right]) =>
-      left.localeCompare(right))) {
+      compareCodeUnits(left, right))) {
       const dependencyDestination = requiredMapValue(destinations, dependencyId, "dependency destination");
       const linkPath = join(destination, "node_modules", ...packageNameSegments(dependencyName));
       await mkdir(dirname(linkPath), { recursive: true, mode: 0o700 });
@@ -401,7 +580,7 @@ async function materializeExactExecutionClosure(input: ManagedRuntimeInstallInpu
     return [portableRelativePath(input.stagingDir, destination), {
       name: node.metadata.name,
       version: node.metadata.version,
-      dependencies: Object.fromEntries([...node.dependencies].sort(([left], [right]) => left.localeCompare(right)).map(
+      dependencies: Object.fromEntries([...node.dependencies].sort(([left], [right]) => compareCodeUnits(left, right)).map(
         ([dependencyName, dependencyId]) => [
           dependencyName,
           requiredClosureNode(closure, dependencyId).metadata.version,
@@ -441,13 +620,24 @@ async function materializeExactExecutionClosure(input: ManagedRuntimeInstallInpu
 async function captureExecutionClosure(
   packageSource: string,
   additionalPackages: readonly ManagedRuntimeAdditionalPackage[],
+  filesystemProofRoot?: string,
 ): Promise<ExecutionClosureCapture> {
   const nodes: MutableExecutionClosureNode[] = [];
   const bySourceRoot = new Map<string, number>();
   const proofs = new Map<number, readonly SourcePackageProofEntry[]>();
+  const dependencyProofs: Array<{
+    readonly ownerId: number;
+    readonly dependencyName: string;
+    readonly proof: SourcePackageProofEntry;
+  }> = [];
+  const resolutionPathProof = filesystemProofRoot === undefined
+    ? undefined
+    : await createResolutionPathProof(filesystemProofRoot);
 
   const visit = async (source: string): Promise<number> => {
+    await resolutionPathProof?.captureAncestors(source);
     const sourceRoot = await realpath(source);
+    await resolutionPathProof?.captureAncestors(sourceRoot);
     const existing = bySourceRoot.get(sourceRoot);
     if (existing !== undefined) return existing;
 
@@ -466,22 +656,37 @@ async function captureExecutionClosure(
     bySourceRoot.set(sourceRoot, id);
 
     for (const [dependencyName, optional] of dependencyRequirements(metadata)) {
-      const dependencyRoot = await resolveInstalledDependencyPackageRoot(sourceRoot, dependencyName);
-      if (dependencyRoot === undefined) {
+      const dependency = await resolveInstalledDependencyPackageRoot(sourceRoot, dependencyName);
+      if (dependency === undefined) {
         if (optional) continue;
         throw new Error(
           `Cannot preserve the executing dependency closure: ${metadata.name}@${metadata.version} ` +
           `cannot resolve required dependency ${dependencyName}. Build or install the package completely before starting it.`,
         );
       }
-      node.dependencies.set(dependencyName, await visit(dependencyRoot));
+      await resolutionPathProof?.captureAncestors(dependency.candidatePath);
+      const dependencyNodeId = await visit(dependency.packageRoot);
+      const [dependencyProofAfter, dependencyRootAfter] = await Promise.all([
+        captureFilesystemPathProof(dependency.candidatePath, dependencyName),
+        realpath(dependency.candidatePath),
+      ]);
+      if (
+        dependencyRootAfter !== dependency.packageRoot
+        || !sameSourceProofEntry(dependency.proof, dependencyProofAfter)
+      ) {
+        throw new Error(`Installed dependency ${dependencyName} changed while its execution closure was inspected.`);
+      }
+      dependencyProofs.push({ ownerId: id, dependencyName, proof: dependencyProofAfter });
+      node.dependencies.set(dependencyName, dependencyNodeId);
     }
     return id;
   };
 
   await visit(packageSource);
   const additionalRoots: { packageName: string; nodeId: number }[] = [];
+  const additionalProofs: Array<{ readonly packageName: string; readonly proof: SourcePackageProofEntry }> = [];
   for (const additional of additionalPackages) {
+    const additionalProof = await captureFilesystemPathProof(additional.packageSource, additional.packageName);
     const nodeId = await visit(additional.packageSource);
     const node = requiredClosureNode(nodes, nodeId);
     if (node.metadata.name !== additional.packageName) {
@@ -490,10 +695,21 @@ async function captureExecutionClosure(
         `expected ${additional.packageName}.`,
       );
     }
+    const [additionalProofAfter, additionalRootAfter] = await Promise.all([
+      captureFilesystemPathProof(additional.packageSource, additional.packageName),
+      realpath(additional.packageSource),
+    ]);
+    if (additionalRootAfter !== node.sourceRoot || !sameSourceProofEntry(additionalProof, additionalProofAfter)) {
+      throw new Error(
+        `Additional managed runtime package ${additional.packageName} changed while its execution closure was inspected.`,
+      );
+    }
+    additionalProofs.push({ packageName: additional.packageName, proof: additionalProofAfter });
     additionalRoots.push({ packageName: additional.packageName, nodeId });
   }
 
   const closure = nodes as readonly ExecutionClosureNode[];
+  const resolutionPaths = await resolutionPathProof?.finalize() ?? [];
   const stable = {
     schema: "mono-agent.source-execution-closure.v1",
     roots: {
@@ -505,7 +721,7 @@ async function captureExecutionClosure(
       name: node.metadata.name,
       version: node.metadata.version,
       dependencies: [...node.dependencies]
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareCodeUnits(left, right))
         .map(([name, nodeId]) => ({ name, nodeId })),
       sourcePackage: node.sourcePackage,
     })),
@@ -518,12 +734,26 @@ async function captureExecutionClosure(
       sourceRoot: node.sourceRoot,
       entries: requiredMapValue(proofs, node.id, "source package proof"),
     })),
+    dependencyLinks: dependencyProofs,
+    additionalLinks: additionalProofs,
+    resolutionPaths,
+  };
+  const filesystemProof = {
+    schema: "mono-agent.source-filesystem-proof.v1",
+    packages: closure.map((node) => ({
+      id: node.id,
+      entries: requiredMapValue(proofs, node.id, "source package proof"),
+    })),
+    dependencyLinks: dependencyProofs,
+    additionalLinks: additionalProofs,
+    resolutionPaths,
   };
   return {
     nodes: closure,
     additionalRoots,
     sourceClosureSha256: sha256(Buffer.from(JSON.stringify(stable), "utf8")),
     sourceProofSha256: sha256(Buffer.from(JSON.stringify(proof), "utf8")),
+    filesystemProofSha256: sha256(Buffer.from(JSON.stringify(filesystemProof), "utf8")),
   };
 }
 
@@ -552,7 +782,7 @@ async function canonicalAdditionalPackages(
     byName.set(entry.packageName, canonical);
   }
   return [...byName]
-    .sort(([left], [right]) => left.localeCompare(right))
+    .sort(([left], [right]) => compareCodeUnits(left, right))
     .map(([packageName, packageSource]) => ({ packageName, packageSource }));
 }
 
@@ -596,7 +826,7 @@ async function captureSourcePackage(packageRoot: string): Promise<SourcePackageC
     entries.push({ path: pathRelative, type: "directory", mode: fileMode(before.mode) });
     proof.push(sourceProofEntry(pathRelative, "directory", before));
 
-    const childNames = (await readdir(directory)).sort((left, right) => left.localeCompare(right));
+    const childNames = (await readdir(directory)).sort(compareCodeUnits);
     for (const name of childNames) {
       const path = join(directory, name);
       const childRelative = sourcePackageRelativePath(root, path);
@@ -624,7 +854,7 @@ async function captureSourcePackage(packageRoot: string): Promise<SourcePackageC
 
     const [after, childNamesAfter] = await Promise.all([
       lstat(directory, { bigint: true }),
-      readdir(directory).then((names) => names.sort((left, right) => left.localeCompare(right))),
+      readdir(directory).then((names) => names.sort(compareCodeUnits)),
     ]);
     if (!sameSourceStats(before, after) || JSON.stringify(childNames) !== JSON.stringify(childNamesAfter)) {
       throw new Error(`Managed runtime source package directory ${pathRelative} changed while it was inspected.`);
@@ -635,8 +865,8 @@ async function captureSourcePackage(packageRoot: string): Promise<SourcePackageC
   if (packageJson === undefined) {
     throw new Error(`Managed runtime source package ${root} has no regular package.json.`);
   }
-  entries.sort((left, right) => left.path.localeCompare(right.path));
-  proof.sort((left, right) => left.path.localeCompare(right.path));
+  entries.sort((left, right) => compareCodeUnits(left.path, right.path));
+  proof.sort((left, right) => compareCodeUnits(left.path, right.path));
   return {
     manifest: { schema: "mono-agent.source-package.v1", entries },
     proof,
@@ -771,6 +1001,111 @@ function sameSourceStats(left: BigIntStats, right: BigIntStats): boolean {
     && left.ctimeNs === right.ctimeNs;
 }
 
+function sameSourceProofEntry(left: SourcePackageProofEntry, right: SourcePackageProofEntry): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+async function captureFilesystemPathProof(
+  path: string,
+  logicalPath: string,
+): Promise<SourcePackageProofEntry> {
+  const before = await lstat(path, { bigint: true });
+  const type = before.isSymbolicLink()
+    ? "symlink"
+    : before.isDirectory()
+      ? "directory"
+      : before.isFile()
+        ? "file"
+        : undefined;
+  if (type === undefined) {
+    throw new Error(`Managed runtime package path ${logicalPath} has an unsupported filesystem type.`);
+  }
+  const target = type === "symlink" ? await readlink(path) : undefined;
+  const [after, targetAfter] = await Promise.all([
+    lstat(path, { bigint: true }),
+    type === "symlink" ? readlink(path) : Promise.resolve(undefined),
+  ]);
+  if (
+    !sameSourceStats(before, after)
+    || (type === "symlink" && (!after.isSymbolicLink() || targetAfter !== target))
+    || (type === "directory" && (!after.isDirectory() || after.isSymbolicLink()))
+    || (type === "file" && (!after.isFile() || after.isSymbolicLink()))
+  ) {
+    throw new Error(`Managed runtime package path ${logicalPath} changed while it was inspected.`);
+  }
+  const portableTarget = target?.split(sep).join("/");
+  return sourceProofEntry(logicalPath, type, after, portableTarget);
+}
+
+async function createResolutionPathProof(filesystemRoot: string): Promise<{
+  readonly captureAncestors: (path: string) => Promise<void>;
+  readonly finalize: () => Promise<readonly SourcePackageProofEntry[]>;
+}> {
+  const lexicalRoot = resolve(filesystemRoot);
+  const canonicalRoot = await realpath(lexicalRoot);
+  const captured = new Map<string, { readonly path: string; readonly proof: SourcePackageProofEntry }>();
+
+  const captureDirectory = async (path: string, logicalPath: string): Promise<void> => {
+    const current = await captureFilesystemPathProof(path, logicalPath);
+    if (current.type !== "directory") {
+      throw new Error(`Managed runtime resolution path ${logicalPath} must be a real directory.`);
+    }
+    const existing = captured.get(logicalPath);
+    if (existing !== undefined && !sameSourceProofEntry(existing.proof, current)) {
+      throw new Error(`Managed runtime resolution path ${logicalPath} changed while it was inspected.`);
+    }
+    if (existing === undefined) captured.set(logicalPath, { path, proof: current });
+  };
+
+  const captureAncestors = async (path: string): Promise<void> => {
+    const target = resolve(path);
+    const root = pathInsideRoot(lexicalRoot, target)
+      ? lexicalRoot
+      : pathInsideRoot(canonicalRoot, target)
+        ? canonicalRoot
+        : undefined;
+    if (root === undefined) {
+      throw new Error("Managed runtime execution closure resolves outside its private install root.");
+    }
+    await captureDirectory(root, ".");
+    const parent = dirname(target);
+    const parentRelative = relative(root, parent);
+    if (parentRelative === "" || parentRelative === ".") return;
+    let cursor = root;
+    for (const segment of parentRelative.split(sep).filter(Boolean)) {
+      cursor = join(cursor, segment);
+      await captureDirectory(cursor, portableResolutionPath(root, cursor));
+    }
+  };
+
+  await captureDirectory(lexicalRoot, ".");
+  return {
+    captureAncestors,
+    finalize: async () => {
+      const final: SourcePackageProofEntry[] = [];
+      for (const [logicalPath, initial] of [...captured].sort(([left], [right]) => compareCodeUnits(left, right))) {
+        const current = await captureFilesystemPathProof(initial.path, logicalPath);
+        if (current.type !== "directory" || !sameSourceProofEntry(initial.proof, current)) {
+          throw new Error(`Managed runtime resolution path ${logicalPath} changed while it was inspected.`);
+        }
+        final.push(current);
+      }
+      return final;
+    },
+  };
+}
+
+function pathInsideRoot(root: string, path: string): boolean {
+  const pathRelative = relative(root, path);
+  return pathRelative === ""
+    || (pathRelative !== ".." && !pathRelative.startsWith(`..${sep}`) && !isAbsolute(pathRelative));
+}
+
+function portableResolutionPath(root: string, path: string): string {
+  const pathRelative = relative(root, path);
+  return pathRelative === "" ? "." : pathRelative.split(sep).join("/");
+}
+
 function sourcePackageRelativePath(root: string, path: string): string {
   const pathRelative = relative(root, path);
   if (pathRelative === "" || pathRelative === ".") return ".";
@@ -826,18 +1161,19 @@ function dependencyRequirements(metadata: InstalledPackageMetadata): readonly [s
   for (const name of Object.keys(metadata.peerDependencies)) {
     if (!requirements.has(name)) requirements.set(name, metadata.optionalPeers.has(name));
   }
-  return [...requirements].sort(([left], [right]) => left.localeCompare(right));
+  return [...requirements].sort(([left], [right]) => compareCodeUnits(left, right));
 }
 
 async function resolveInstalledDependencyPackageRoot(
   packageRoot: string,
   dependencyName: string,
-): Promise<string | undefined> {
+): Promise<ResolvedInstalledDependency | undefined> {
   const segments = packageNameSegments(dependencyName);
   let cursor = resolve(packageRoot);
   for (;;) {
     const candidate = join(cursor, "node_modules", ...segments);
     try {
+      const proof = await captureFilesystemPathProof(candidate, dependencyName);
       const canonical = await realpath(candidate);
       const details = await lstat(canonical);
       if (!details.isDirectory() || details.isSymbolicLink()) {
@@ -852,7 +1188,14 @@ async function resolveInstalledDependencyPackageRoot(
           `Installed dependency path ${candidate} declares ${metadata.name}, expected ${dependencyName}.`,
         );
       }
-      return canonical;
+      const [proofAfter, canonicalAfter] = await Promise.all([
+        captureFilesystemPathProof(candidate, dependencyName),
+        realpath(candidate),
+      ]);
+      if (canonicalAfter !== canonical || !sameSourceProofEntry(proof, proofAfter)) {
+        throw new Error(`Installed dependency ${dependencyName} at ${candidate} changed while it was resolved.`);
+      }
+      return { candidatePath: candidate, packageRoot: canonical, proof: proofAfter };
     } catch (error) {
       if (!isErrno(error, "ENOENT") && !isErrno(error, "ENOTDIR")) throw error;
     }
@@ -975,6 +1318,7 @@ function runtimeLayoutForRoot(layout: RuntimeLayout, root: string): RuntimeLayou
 async function acquireRuntimeLock(
   layout: RuntimeLayout,
   identity: RuntimeIdentity,
+  additionalPackages: readonly ManagedRuntimeAdditionalPackage[],
   deps: ManagedBackgroundRuntimeDeps,
 ): Promise<RuntimeLockIdentity | undefined> {
   const deadline = deps.now() + LOCK_WAIT_TIMEOUT_MS;
@@ -1002,7 +1346,7 @@ async function acquireRuntimeLock(
       if (!isErrno(error, "EEXIST")) throw error;
     }
 
-    if (await verifyRuntime(layout, identity)) return undefined;
+    if (await verifyRuntime(layout, identity, additionalPackages)) return undefined;
     let stale = false;
     try {
       const lockDetails = await assertPrivateRuntimeLockDirectory(layout.lockDir);
@@ -1103,6 +1447,7 @@ async function removeSameRuntimeLockDirectory(path: string, identity: RuntimeLoc
 async function quarantineInvalidRuntime(
   layout: RuntimeLayout,
   identity: RuntimeIdentity,
+  additionalPackages: readonly ManagedRuntimeAdditionalPackage[],
   deps: ManagedBackgroundRuntimeDeps,
 ): Promise<void> {
   try {
@@ -1111,7 +1456,7 @@ async function quarantineInvalidRuntime(
     if (isErrno(error, "ENOENT")) return;
     throw error;
   }
-  if (await verifyRuntime(layout, identity)) return;
+  if (await verifyRuntime(layout, identity, additionalPackages)) return;
   await mkdir(dirname(layout.quarantineDir), { recursive: true, mode: 0o700 });
   await rename(layout.installRoot, layout.quarantineDir);
   await chmod(layout.quarantineDir, 0o700).catch(() => undefined);
@@ -1124,25 +1469,68 @@ async function promoteStaging(
   layout: RuntimeLayout,
   staged: RuntimeLayout,
   identity: RuntimeIdentity,
-): Promise<void> {
+  additionalPackages: readonly ManagedRuntimeAdditionalPackage[],
+): Promise<boolean> {
   try {
     await rename(staged.installRoot, layout.installRoot);
+    return true;
   } catch (error) {
     // A concurrent installer can win after a stale-lock recovery. Its result is
     // acceptable only if it independently verifies against the same identity.
-    if (!(await verifyRuntime(layout, identity))) throw error;
+    if (!(await verifyRuntime(layout, identity, additionalPackages))) throw error;
     await rm(staged.installRoot, { recursive: true, force: true });
+    return false;
   }
 }
 
-async function verifyRuntime(layout: RuntimeLayout, identity: RuntimeIdentity): Promise<boolean> {
+async function verifyRuntime(
+  layout: RuntimeLayout,
+  identity: RuntimeIdentity,
+  additionalPackages: readonly ManagedRuntimeAdditionalPackage[],
+): Promise<boolean> {
+  const marker = await verifiedRuntimeMarker(layout, identity);
+  if (marker === undefined) return false;
+  try {
+    const packageSource = dirname(dirname(layout.cliPath));
+    const runtimeAdditionalPackages = additionalPackages.map(({ packageName }) => ({
+      packageName,
+      packageSource: join(layout.installRoot, "node_modules", ...packageNameSegments(packageName)),
+    }));
+    const closure = await captureExecutionClosure(packageSource, runtimeAdditionalPackages, layout.installRoot);
+    return closure.sourceClosureSha256 === identity.sourceClosureSha256
+      && closure.filesystemProofSha256 === marker.executionProofSha256;
+  } catch {
+    return false;
+  }
+}
+
+async function verifiedRuntimeMarker(
+  layout: RuntimeLayout,
+  identity: RuntimeIdentity,
+): Promise<RuntimeMarker | undefined> {
   try {
     const root = await lstat(layout.installRoot);
-    if (!root.isDirectory() || root.isSymbolicLink() || !ownedPrivately(root)) return false;
-    if (!(await verifyInstalledPackage(layout, identity))) return false;
+    if (!root.isDirectory() || root.isSymbolicLink() || !ownedPrivately(root)) return undefined;
+    if (!(await verifyInstalledPackage(layout, identity))) return undefined;
     await assertRegularFile(layout.markerPath, "managed runtime marker");
     const marker = JSON.parse(await readFile(layout.markerPath, "utf8")) as Partial<RuntimeMarker>;
-    return marker.schema === "mono-agent.managed-runtime.v3"
+    const exactKeys = [
+      "schema",
+      "packageName",
+      "closureManifestSha256",
+      "executionProofSha256",
+      "packageVersion",
+      "cliSha256",
+      "sourceClosureSha256",
+      "nodeAbi",
+      "platform",
+      "arch",
+      "installedAt",
+    ];
+    const installedAtMs = typeof marker.installedAt === "string" ? Date.parse(marker.installedAt) : Number.NaN;
+    const valid = Object.keys(marker).length === exactKeys.length
+      && exactKeys.every((key) => Object.hasOwn(marker, key))
+      && marker.schema === "mono-agent.managed-runtime.v4"
       && marker.packageName === PACKAGE_NAME
       && marker.packageVersion === identity.packageVersion
       && marker.cliSha256 === identity.cliSha256
@@ -1151,9 +1539,20 @@ async function verifyRuntime(layout: RuntimeLayout, identity: RuntimeIdentity): 
       && marker.platform === identity.platform
       && marker.arch === identity.arch
       && typeof marker.closureManifestSha256 === "string"
+      && /^[0-9a-f]{64}$/u.test(marker.closureManifestSha256)
+      && typeof marker.executionProofSha256 === "string"
+      && /^[0-9a-f]{64}$/u.test(marker.executionProofSha256)
+      && typeof marker.installedAt === "string"
+      && Number.isFinite(installedAtMs)
+      && new Date(installedAtMs).toISOString() === marker.installedAt
+      // Promotion writes this sentinel before the final filesystem proof is
+      // rebound. It must remain unverifiable even when the filesystem records
+      // both writes with indistinguishable timestamp precision.
+      && marker.installedAt !== PROVISIONAL_RUNTIME_INSTALLED_AT
       && await verifyClosureManifest(layout, marker.closureManifestSha256);
+    return valid ? marker as RuntimeMarker : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -1222,7 +1621,7 @@ async function captureRuntimeClosureManifest(layout: RuntimeLayout): Promise<Run
 
   const visit = async (directory: string): Promise<void> => {
     const children = await readdir(directory, { withFileTypes: true });
-    children.sort((left, right) => left.name.localeCompare(right.name));
+    children.sort((left, right) => compareCodeUnits(left.name, right.name));
     for (const child of children) {
       const path = join(directory, child.name);
       if (excluded.has(resolve(path))) continue;
@@ -1262,7 +1661,7 @@ async function captureRuntimeClosureManifest(layout: RuntimeLayout): Promise<Run
   };
 
   await visit(layout.installRoot);
-  entries.sort((left, right) => left.path.localeCompare(right.path));
+  entries.sort((left, right) => compareCodeUnits(left.path, right.path));
   return { schema: "mono-agent.execution-closure.v1", entries };
 }
 
@@ -1329,6 +1728,43 @@ async function writePrivateJson(path: string, value: unknown): Promise<void> {
   await chmod(path, 0o600);
 }
 
+async function writeFinalizedRuntimeMarker(
+  path: string,
+  marker: RuntimeMarker,
+  deps: ManagedBackgroundRuntimeDeps,
+): Promise<void> {
+  // Persist the post-proof boundary. If a write crosses into another second,
+  // advance and rewrite so every process from the finalization window remains
+  // in the marker's rejected whole-second interval.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const boundaryMs = deps.now();
+    await writePrivateJson(path, {
+      ...marker,
+      installedAt: new Date(boundaryMs).toISOString(),
+    });
+    if (Math.floor(deps.now() / 1_000) === Math.floor(boundaryMs / 1_000)) return;
+  }
+  throw new Error("Could not publish a stable managed runtime launch boundary.");
+}
+
+async function waitForManagedRuntimeLaunchBoundary(
+  layout: RuntimeLayout,
+  identity: RuntimeIdentity,
+  deps: ManagedBackgroundRuntimeDeps,
+): Promise<void> {
+  const marker = await verifiedRuntimeMarker(layout, identity);
+  if (marker === undefined) {
+    throw new Error("The managed runtime marker became invalid before launch.");
+  }
+  const boundaryMs = Date.parse(marker.installedAt);
+  const safeStartMs = (Math.floor(boundaryMs / 1_000) + 1) * 1_000;
+  const nowMs = deps.now();
+  if (safeStartMs - nowMs > 5_000) {
+    throw new Error("The managed runtime launch boundary is implausibly far in the future.");
+  }
+  if (nowMs < safeStartMs) await deps.sleep(safeStartMs - nowMs);
+}
+
 function privateJsonContents(value: unknown): string {
   return `${JSON.stringify(value, undefined, 2)}\n`;
 }
@@ -1354,6 +1790,27 @@ async function ensurePrivateRuntimeAncestors(home: string, versionAbiDir: string
     if (!ownedPrivately(secured)) {
       throw new Error(`Managed runtime ancestor ${path} could not be secured to mode 0700.`);
     }
+  }
+}
+
+async function verifyPrivateRuntimeAncestors(home: string, versionAbiDir: string): Promise<boolean> {
+  const base = join(home, ".mono-agent");
+  const pathRelative = relative(base, versionAbiDir);
+  if (pathRelative === "" || pathRelative === ".." || pathRelative.startsWith(`..${sep}`) || isAbsolute(pathRelative)) {
+    return false;
+  }
+  const paths = [base];
+  for (const segment of pathRelative.split(/[\\/]/u).filter(Boolean)) {
+    paths.push(join(paths.at(-1)!, segment));
+  }
+  try {
+    for (const path of paths) {
+      const details = await lstat(path);
+      if (!details.isDirectory() || details.isSymbolicLink() || !ownedPrivately(details)) return false;
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -1399,6 +1856,10 @@ function safeSegment(value: string): string {
 
 function sha256(value: Buffer): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
