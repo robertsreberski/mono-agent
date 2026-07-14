@@ -24,6 +24,8 @@ export interface SlackShortcutConfig {
   readonly channelId?: string;
   /** Optional message posted instantly on invocation, before the run (e.g. "🔄 Syncing…"). */
   readonly ackText?: string;
+  /** When true, post the result as a threaded reply under the ack. Requires `ackText`. Default off. */
+  readonly threadReply?: boolean;
 }
 
 /** An App Home tab button: clicking it runs `prompt`; `label` is the button text. */
@@ -35,6 +37,8 @@ export interface SlackHomeButtonConfig {
   readonly channelId?: string;
   /** Optional message posted instantly on click, before the run. */
   readonly ackText?: string;
+  /** When true, post the result as a threaded reply under the ack. Requires `ackText`. Default off. */
+  readonly threadReply?: boolean;
 }
 
 /** App Home tab config: whether to publish it, an optional header, and its buttons. */
@@ -282,6 +286,7 @@ function normalizeShortcutConfig(entry: unknown, index: number): SlackShortcutCo
   const prompt = record.prompt;
   const channelId = record.channelId;
   const ackText = record.ackText;
+  const threadReply = record.threadReply;
   if (typeof callbackId !== "string" || callbackId.trim().length === 0) {
     throw invalidConfig("slack.shortcuts entries require a non-empty callbackId.", { index });
   }
@@ -294,7 +299,13 @@ function normalizeShortcutConfig(entry: unknown, index: number): SlackShortcutCo
   if (ackText !== undefined && (typeof ackText !== "string" || ackText.trim().length === 0)) {
     throw invalidConfig("slack.shortcuts ackText must be a non-empty string when set.", { index });
   }
-  const config: { callbackId: string; prompt: string; channelId?: string; ackText?: string } = {
+  if (threadReply !== undefined && typeof threadReply !== "boolean") {
+    throw invalidConfig("slack.shortcuts threadReply must be a boolean when set.", { index });
+  }
+  if (threadReply === true && ackText === undefined) {
+    throw invalidConfig("slack.shortcuts threadReply requires ackText — the result threads under the ack message.", { index });
+  }
+  const config: { callbackId: string; prompt: string; channelId?: string; ackText?: string; threadReply?: boolean } = {
     callbackId,
     prompt,
   };
@@ -303,6 +314,9 @@ function normalizeShortcutConfig(entry: unknown, index: number): SlackShortcutCo
   }
   if (ackText !== undefined) {
     config.ackText = ackText;
+  }
+  if (threadReply !== undefined) {
+    config.threadReply = threadReply;
   }
   return config;
 }
@@ -369,6 +383,7 @@ function normalizeHomeButtonConfig(entry: unknown, index: number): SlackHomeButt
   const prompt = record.prompt;
   const channelId = record.channelId;
   const ackText = record.ackText;
+  const threadReply = record.threadReply;
   if (typeof actionId !== "string" || actionId.trim().length === 0) {
     throw invalidConfig("slack.homeTab.buttons entries require a non-empty actionId.", { index });
   }
@@ -384,7 +399,20 @@ function normalizeHomeButtonConfig(entry: unknown, index: number): SlackHomeButt
   if (ackText !== undefined && (typeof ackText !== "string" || ackText.trim().length === 0)) {
     throw invalidConfig("slack.homeTab.buttons ackText must be a non-empty string when set.", { index });
   }
-  const config: { actionId: string; label: string; prompt: string; channelId?: string; ackText?: string } = {
+  if (threadReply !== undefined && typeof threadReply !== "boolean") {
+    throw invalidConfig("slack.homeTab.buttons threadReply must be a boolean when set.", { index });
+  }
+  if (threadReply === true && ackText === undefined) {
+    throw invalidConfig("slack.homeTab.buttons threadReply requires ackText — the result threads under the ack message.", { index });
+  }
+  const config: {
+    actionId: string;
+    label: string;
+    prompt: string;
+    channelId?: string;
+    ackText?: string;
+    threadReply?: boolean;
+  } = {
     actionId,
     label,
     prompt,
@@ -394,6 +422,9 @@ function normalizeHomeButtonConfig(entry: unknown, index: number): SlackHomeButt
   }
   if (ackText !== undefined) {
     config.ackText = ackText;
+  }
+  if (threadReply !== undefined) {
+    config.threadReply = threadReply;
   }
   return config;
 }

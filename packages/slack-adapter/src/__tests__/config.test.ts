@@ -292,6 +292,112 @@ describe("loadSlackAdapterConfig", () => {
     });
   });
 
+  it("carries threadReply through on a Home button and a shortcut", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "json-bot-token",
+          appToken: "json-app-token",
+          allowedChannelIds: ["D111"],
+          shortcuts: [{ callbackId: "sync_now", prompt: "Run the sync.", channelId: "D111", ackText: "…", threadReply: true }],
+          homeTab: {
+            enabled: true,
+            buttons: [{ actionId: "draft", label: "📝 Draft", prompt: "Draft it.", channelId: "D111", ackText: "…", threadReply: true }],
+          },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const config = await loadSlackAdapterConfig({ env: {}, jsonPath: path });
+
+    expect(config.shortcuts[0]?.threadReply).toBe(true);
+    expect(config.homeTab.buttons[0]?.threadReply).toBe(true);
+  });
+
+  it("rejects a non-boolean slack.homeTab button threadReply", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "json-bot-token",
+          appToken: "json-app-token",
+          allowedChannelIds: ["D111"],
+          homeTab: { enabled: true, buttons: [{ actionId: "draft", label: "📝", prompt: "Draft it.", ackText: "…", threadReply: "yes" }] },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(loadSlackAdapterConfig({ env: {}, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+  });
+
+  it("rejects a non-boolean slack.shortcuts threadReply", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "json-bot-token",
+          appToken: "json-app-token",
+          allowedChannelIds: ["D111"],
+          shortcuts: [{ callbackId: "sync_now", prompt: "Run.", ackText: "…", threadReply: 1 }],
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(loadSlackAdapterConfig({ env: {}, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+  });
+
+  it("rejects threadReply without ackText (nothing to thread under) on a button and a shortcut", async () => {
+    const buttonPath = join(dir, "button.config.json");
+    await writeFile(
+      buttonPath,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "json-bot-token",
+          appToken: "json-app-token",
+          allowedChannelIds: ["D111"],
+          homeTab: { enabled: true, buttons: [{ actionId: "draft", label: "📝", prompt: "Draft it.", threadReply: true }] },
+        },
+      })}\n`,
+      "utf8",
+    );
+    await expect(loadSlackAdapterConfig({ env: {}, jsonPath: buttonPath })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+
+    const shortcutPath = join(dir, "shortcut.config.json");
+    await writeFile(
+      shortcutPath,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "json-bot-token",
+          appToken: "json-app-token",
+          allowedChannelIds: ["D111"],
+          shortcuts: [{ callbackId: "sync_now", prompt: "Run.", threadReply: true }],
+        },
+      })}\n`,
+      "utf8",
+    );
+    await expect(loadSlackAdapterConfig({ env: {}, jsonPath: shortcutPath })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+  });
+
   it("rejects duplicate slack.shortcuts callbackId", async () => {
     const path = join(dir, "mono-agent.config.json");
     await writeFile(
