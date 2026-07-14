@@ -16,6 +16,7 @@ All three are configured in `mono-agent.config.json`; enforcement depends on the
 | --- | --- | --- | --- |
 | Which tools the model may call | `@mono-agent/agent-harness` | `tools.allowedTools` / `tools.disallowedTools` | [Tool Policy](/tools/policy/) |
 | Attaching external MCP servers | `@mono-agent/agent-harness` | `tools.mcpConfigPath` → `mcp.json` | [MCP Servers](/tools/mcp/) |
+| Returning trusted asynchronous results | `@mono-agent/agent-app` + harness | `tools.continuationServers` + `continuations.*` | [Durable continuations](/tools/durable-continuations/) |
 | Confining what tools touch | `@mono-agent/runtime-adapter` | `sandbox.*` | [Sandbox](/tools/sandbox/) |
 
 ## At a glance
@@ -50,6 +51,7 @@ Equivalent environment overrides exist for headless deploys:
 | `tools.allowedTools` | `MONO_AGENT_ALLOWED_TOOLS` |
 | `tools.disallowedTools` | `MONO_AGENT_DISALLOWED_TOOLS` |
 | `tools.mcpConfigPath` | `MONO_AGENT_MCP_CONFIG_PATH` |
+| `tools.continuationServers` | `MONO_AGENT_CONTINUATION_SERVERS` |
 | `sandbox.mode` | `MONO_AGENT_SANDBOX_MODE` |
 | `sandbox.network.mode` / `.allowlist` | `MONO_AGENT_SANDBOX_NETWORK` / `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST` |
 | `sandbox.fallback` | `MONO_AGENT_SANDBOX_FALLBACK` |
@@ -80,6 +82,7 @@ mode are warned and ignored.
 
 - **[Tool Policy](/tools/policy/)** — allowlist/denylist semantics, built-in tools, naming MCP tools, and how approval gates relate (the latter is `code`-only — see [programmatic/](/programmatic/approval-and-structured-output/)).
 - **[MCP Servers](/tools/mcp/)** — authoring `mcp.json`, stdio/sse/http transports, how servers are inlined for SDK runtimes versus path-forwarded for CLI runtimes.
+- **[Durable continuations](/tools/durable-continuations/)** — trusted claim capabilities, immutable later results, tool-free synthesis, native delivery, and recovery.
 - **[Sandbox](/tools/sandbox/)** — native srt confinement, filesystem scopes, network modes, and the fail-closed vs unsafe-host-process fallback.
 
 For app-owned send tools (`SlackSendMessage`, `TelegramSendMessage`) that route through enabled channel adapters, see [Delivery & Send Tools](/channels/delivery-and-send-tools/).

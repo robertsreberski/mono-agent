@@ -141,7 +141,7 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "recipes", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "audit-runs", "metrics", "memory"] as const;
+const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "recipes", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "audit-runs", "metrics", "memory", "continuations"] as const;
 
 type ReadinessProbeFailure = Extract<ReadinessProbeResult, { readonly ok: false }>;
 
@@ -230,6 +230,8 @@ interface ParsedCliArgs {
   readonly strict?: boolean;
   /** memory: max rows for search/top/entity preview. */
   readonly limit?: number;
+  /** continuations list: opaque keyset cursor from the previous page. */
+  readonly cursor?: string;
   /** web: bind host (default 127.0.0.1). */
   readonly host?: string;
   /** web: bind port (default 4599). */
@@ -319,6 +321,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let json = false;
   let strict = false;
   let limit: number | undefined;
+  let cursor: string | undefined;
   let host: string | undefined;
   let port: number | undefined;
   let open: boolean | undefined;
@@ -407,12 +410,17 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--limit": {
         const raw = requireValue(rest, ++i, flag);
         const parsed = Number(raw);
-        if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
-          throw new Error("--limit must be an integer between 1 and 100.");
+        const maximum = cmd === "continuations" ? 500 : 100;
+        if (!Number.isInteger(parsed) || parsed < 1 || parsed > maximum) {
+          throw new Error(`--limit must be an integer between 1 and ${String(maximum)}.`);
         }
         limit = parsed;
         break;
       }
+      case "--cursor":
+        cursor = requireValue(rest, ++i, flag).trim();
+        if (cursor.length === 0 || cursor.length > 512) throw new Error("--cursor must be 1-512 characters.");
+        break;
       case "--host":
         host = requireValue(rest, ++i, flag);
         break;
@@ -633,8 +641,14 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (includeMemory && cmd !== "audit-runs" && cmd !== "metrics" && cmd !== "backfill" && cmd !== "web") {
     throw new Error("--include-memory is only supported for `mono-agent audit-runs`, `mono-agent metrics`, `mono-agent backfill`, and `mono-agent web`.");
   }
-  if (limit !== undefined && cmd !== "memory") {
-    throw new Error("--limit is only supported for `mono-agent memory`.");
+  if (limit !== undefined && cmd !== "memory" && cmd !== "continuations") {
+    throw new Error("--limit is only supported for `mono-agent memory` and `mono-agent continuations list`.");
+  }
+  if ((limit !== undefined || cursor !== undefined) && cmd === "continuations" && (positionals[0] ?? "list") !== "list") {
+    throw new Error("--limit and --cursor are only supported for `mono-agent continuations list`.");
+  }
+  if (cursor !== undefined && cmd !== "continuations") {
+    throw new Error("--cursor is only supported for `mono-agent continuations list`.");
   }
   if (strict && (cmd !== "memory" || (positionals[0] ?? "stats") !== "audit")) {
     throw new Error("--strict is only supported for `mono-agent memory audit`.");
@@ -701,6 +715,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(json ? { json } : {}),
     ...(strict ? { strict } : {}),
     ...(limit === undefined ? {} : { limit }),
+    ...(cursor === undefined ? {} : { cursor }),
     ...(agent === undefined ? {} : { agent }),
     ...(conversation === undefined ? {} : { conversation }),
     ...(local ? { local } : {}),
@@ -936,6 +951,15 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "operation. It returns metadata only and requires rebuild before restart.",
     ],
   },
+  {
+    signature:
+      "mono-agent continuations [list [--limit <n>] [--cursor <opaque>]|health|retry <id>|cancel <id>|resolve <id> delivered|not-delivered|dead-lettered [delivery-id]] [--json]",
+    lines: [
+      "Inspect and operate the authenticated durable-continuation service.",
+      "Ambiguous delivery cannot be retried until it is explicitly resolved;",
+      "no command accepts or changes a channel destination.",
+    ],
+  },
 ];
 
 const HELP_NOTES = `Background mode runs the agent under launchd, keeping it alive across logins
@@ -1125,6 +1149,18 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     }
     case "install-skill":
       return await runInstallSkill(args);
+    case "continuations": {
+      const { runContinuationCommand } = await import("./continuation-command.js");
+      return await runContinuationCommand({
+        cwd: process.cwd(),
+        configPath: resolve(process.cwd(), args.configPath ?? "mono-agent.config.json"),
+        env: process.env,
+        positionals: args.positionals,
+        ...(args.json === true ? { json: true } : {}),
+        ...(args.limit === undefined ? {} : { limit: args.limit }),
+        ...(args.cursor === undefined ? {} : { cursor: args.cursor }),
+      });
+    }
     case "backfill":
       return await runBackfill({
         ...(args.configPath === undefined ? {} : { configPath: args.configPath }),

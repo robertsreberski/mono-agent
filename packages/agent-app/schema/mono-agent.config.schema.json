@@ -799,6 +799,18 @@
           "default": [],
           "uniqueItems": true
         },
+        "continuationServers": {
+          "description": "Configures continuationServers for the tools section.",
+          "examples": [
+            [
+              "example"
+            ]
+          ],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "mcpCallTimeoutMs": {
           "description": "Configures mcpCallTimeoutMs for the tools section.",
           "examples": [
@@ -1168,6 +1180,196 @@
               ],
               "type": "boolean",
               "default": true
+            }
+          }
+        }
+      }
+    },
+    "continuations": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the durable continuation service when continuation functionality is configured."
+        },
+        "host": {
+          "type": "string",
+          "enum": [
+            "127.0.0.1",
+            "::1",
+            "localhost"
+          ],
+          "default": "127.0.0.1",
+          "description": "Loopback-only continuation service host."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 4319,
+          "description": "Fixed continuation service port; 0 is intentionally invalid."
+        },
+        "stateDir": {
+          "type": "string",
+          "minLength": 1,
+          "default": ".mono-agent/continuations",
+          "description": "Owner-only durable continuation state directory."
+        },
+        "namedRoutes": {
+          "type": "object",
+          "default": {},
+          "propertyNames": {
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "mode",
+                  "conversationId"
+                ],
+                "properties": {
+                  "mode": {
+                    "const": "notify_if_actionable"
+                  },
+                  "conversationId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "mode",
+                  "conversationId"
+                ],
+                "properties": {
+                  "mode": {
+                    "const": "capture"
+                  },
+                  "conversationId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "mode"
+                ],
+                "properties": {
+                  "mode": {
+                    "const": "silent"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "detachedServices": {
+          "type": "array",
+          "default": [],
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "tokenEnv"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "tokenEnv": {
+                "type": "string",
+                "pattern": "^[A-Z_][A-Z0-9_]*$"
+              }
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "properties": {
+            "maxActiveRecords": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000,
+              "default": 10000
+            },
+            "maxActivePerOrigin": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000,
+              "default": 500
+            },
+            "maxConcurrent": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 256,
+              "default": 16
+            },
+            "synthesisTimeoutMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400000,
+              "default": 600000
+            },
+            "deliveryTimeoutMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400000,
+              "default": 120000
+            },
+            "operatorPageSize": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100
+            }
+          }
+        },
+        "retention": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "properties": {
+            "terminalMaxRecords": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "default": 50000
+            },
+            "terminalMaxAgeMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "default": 31536000000
+            },
+            "capturedTextMaxRecords": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "default": 1000
+            },
+            "capturedTextMaxAgeMs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "default": 2592000000
             }
           }
         }

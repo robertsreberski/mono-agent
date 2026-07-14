@@ -9,6 +9,7 @@ import type {
   RunningChannel,
 } from "@mono-agent/agent-contracts";
 import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
+import { AgentHarnessFailureError } from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
   CronAdapterConfig,
@@ -88,6 +89,16 @@ export type MonoAgentAppLogger = ChannelLogger;
 export type { ChannelLogger, ChannelStatus, NotifyDeliveryResult, NotifyDestination, RunningChannel } from "@mono-agent/agent-contracts";
 export type ChannelStartInput<TConfig> = ContractChannelStartInput<TConfig, MonoAgentConfig>;
 export type ChannelDriver<TConfig = unknown> = ContractChannelDriver<TConfig, MonoAgentConfig>;
+
+/** Host-neutral pre-model outcome returned by a channel continuation adapter. */
+export type ContinuationChannelSynthesisResult =
+  | { readonly kind: "synthesized"; readonly text: string }
+  | {
+      readonly kind: "unavailable";
+      readonly code: string;
+      readonly reason: string;
+      readonly retryAfterMs?: number;
+    };
 
 /** The channel ids this app can drive from config (third-party drivers add their own). */
 export const BUILTIN_CHANNEL_IDS = [
@@ -252,7 +263,8 @@ export function createTelegramChannelDriver(
         // this chat's own harness and is delivered through the normal stream.
         // Enforces the adapter allowlist so a payload-supplied destination cannot
         // reach a chat the operator never allowlisted.
-        notify: async ({ conversationId, text, verbatim }) => {
+        notify: async (request) => {
+          const { conversationId, text, verbatim } = request;
           const chatId = telegramChatIdFromConversation(conversationId);
           if (chatId === undefined) {
             input.logger?.warn?.("Telegram proactive notify skipped: unparseable destination.", { conversationId });
@@ -431,7 +443,9 @@ export function createSlackChannelDriver(
         // on that conversation's own harness and is delivered through the stream.
         // Enforces the adapter allowlist so a payload-supplied destination cannot
         // reach a channel the operator never allowlisted.
-        notify: async ({ conversationId, text, verbatim }) => {
+        notify: async (request) => {
+          const { conversationId, text, verbatim } = request;
+          const { deliveryKey } = request;
           const target = slackTargetFromConversation(conversationId);
           if (target === undefined) {
             input.logger?.warn?.("Slack proactive notify skipped: unparseable destination.", { conversationId });
@@ -449,7 +463,81 @@ export function createSlackChannelDriver(
             target.channelId,
             target.threadTs,
             text,
-            verbatim === undefined ? undefined : { verbatim },
+            verbatim === undefined && deliveryKey === undefined
+              ? undefined
+              : {
+                  ...(verbatim === undefined ? {} : { verbatim }),
+                  ...(deliveryKey === undefined ? {} : { deliveryKey }),
+                },
+          );
+        },
+        synthesizeContinuation: async (continuationInput: {
+          readonly continuationId: string;
+          readonly originRunId: string;
+          readonly historyBoundary?: string;
+          readonly originConversationId: string;
+          readonly replyToConversationId: string;
+          readonly prompt: string;
+        }) => {
+          const target = slackTargetFromConversation(continuationInput.replyToConversationId);
+          if (target === undefined) throw new Error("Unparseable Slack continuation destination.");
+          const normalized = target.channelId.trim().toLowerCase();
+          const allowed = input.config.allowAllChannels
+            || input.config.allowedChannelIds.some((id) => id.trim().toLowerCase() === normalized);
+          if (!allowed) throw new Error("Slack continuation destination is not in the adapter allowlist.");
+          try {
+            const text = await result.adapter.synthesizeContinuation({
+              conversationId: continuationInput.originConversationId,
+              replyToConversationId: continuationInput.replyToConversationId,
+              channelId: target.channelId,
+              ...(target.threadTs === undefined ? {} : { threadTs: target.threadTs }),
+              prompt: continuationInput.prompt,
+              continuation: {
+                continuationId: continuationInput.continuationId,
+                originRunId: continuationInput.originRunId,
+                ...(continuationInput.historyBoundary === undefined
+                  ? {}
+                  : { historyBoundary: continuationInput.historyBoundary }),
+                toolsDisabled: true,
+                deferHistoryCommit: true,
+              },
+            });
+            return { kind: "synthesized", text } satisfies ContinuationChannelSynthesisResult;
+          } catch (error) {
+            if (error instanceof adapter.SerialQueueFullError) {
+              return {
+                kind: "unavailable",
+                code: "destination_queue_full",
+                reason: error.message,
+                retryAfterMs: 1_000,
+              } satisfies ContinuationChannelSynthesisResult;
+            }
+            if (error instanceof AgentHarnessFailureError && error.failure.kind === "history_boundary_not_found") {
+              return {
+                kind: "unavailable",
+                code: "origin_history_not_ready",
+                reason: "The originating run has not committed its continuation history boundary yet.",
+                retryAfterMs: 1_000,
+              } satisfies ContinuationChannelSynthesisResult;
+            }
+            throw error;
+          }
+        },
+        recordContinuationHistory: async (continuationInput: {
+          readonly conversationId: string;
+          readonly text: string;
+          readonly deliveryKey: string;
+        }) => {
+          const target = slackTargetFromConversation(continuationInput.conversationId);
+          if (target === undefined) return { recorded: false as const, code: "unparseable_slack_destination" };
+          const normalized = target.channelId.trim().toLowerCase();
+          const allowed = input.config.allowAllChannels
+            || input.config.allowedChannelIds.some((id) => id.trim().toLowerCase() === normalized);
+          if (!allowed) return { recorded: false as const, code: "slack_destination_not_allowlisted" };
+          return await result.adapter.recordContinuationHistory(
+            continuationInput.conversationId,
+            continuationInput.text,
+            continuationInput.deliveryKey,
           );
         },
       };

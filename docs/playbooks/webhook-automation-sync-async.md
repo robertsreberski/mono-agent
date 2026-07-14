@@ -80,21 +80,17 @@ You are triaging an inbound support ticket. Classify and summarize.
 
 `path` is required; `name` defaults to the filename stem, `mode` to `defaultMode`, `enabled` to `true`, and `notify` to `false`. This mirrors how [cron](/channels/cron/) jobs can be authored as `cron/*.md` files.
 
-## Async callback: deliver a result back into a chat
+## Native notification from an async webhook
 
-Polling is fine for a script, but when the original request came from a **chat** the result can be pushed back into that conversation when the work finishes — no agent-facing tool involved. Set `notify: true` on the endpoint; its final answer is then delivered **verbatim** to a destination resolved in this order:
+An operator-owned automation can push an async webhook run's own final answer into a configured chat — no agent-facing tool involved. Set `notify: true` on the endpoint; its final answer is then delivered **verbatim** to a destination resolved in this order:
 
 1. the endpoint's configured `notifyConversationId`, if set; otherwise
-2. the inbound request's own `conversationId`, when the payload names a deliverable chat (`telegram:…` / `slack:…`) — this is the async-callback case; otherwise
+2. the inbound request's own `conversationId`, when a trusted caller deliberately supplies a deliverable chat (`telegram:…` / `slack:…`); otherwise
 3. the single notify-capable destination, when exactly one exists.
 
-This makes the webhook the inbound half of an async callback:
+For example, an authenticated automation that already owns its destination can call the endpoint with a fixed `conversationId`; when the endpoint finishes, its answer is recorded in that conversation's history. The destination remains bounded by the owning channel's allowlist, and a payload-supplied id outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAll*`) is refused. If there is nothing worth sending, the agent replies with exactly `NOTHING_TO_REPORT` and no notification is delivered.
 
-1. In a Telegram/Slack chat, the agent starts a long-running external job and asks the service to call back, embedding the current conversation id (from the [Session context block](/context/assembly/#session)) in the callback request.
-2. The service finishes and `POST`s to a `notify: true` webhook endpoint here, carrying that id in the body as `conversationId` (e.g. `"conversationId": "telegram:42"`).
-3. The endpoint runs its prompt; its final answer is delivered verbatim back into the original chat and recorded to that conversation's history, so a reply resumes with it in context — no polling required.
-
-The destination is bounded by the owning channel's allowlist, so a payload-supplied id outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAll*`) is refused. If there is nothing worth sending, the agent replies with exactly `NOTHING_TO_REPORT` and no notification is delivered. See [Native proactive notification](/channels/delivery-and-send-tools/#native-proactive-notification-cronwebhook-turns).
+This generic webhook feature does **not** prove that a later result belongs to the chat that initiated external work. For that workflow, select the external MCP service under `tools.continuationServers` and use a [durable continuation](/tools/durable-continuations/). The host then retains the origin/thread and gives the service an opaque claim capability; the model does not copy a conversation ID or choose the callback destination. See [Native proactive notification](/channels/delivery-and-send-tools/#native-proactive-notification-cronwebhook-turns).
 
 ## Steps
 
@@ -117,5 +113,6 @@ The destination is bounded by the owning channel's allowlist, so a payload-suppl
 - [Webhook channel](/channels/webhook/) — full key reference, endpoint files, prompts, and env overrides.
 - [Cron](/channels/cron/) — scheduled turns; shares the `*.md` authoring pattern and the `prompt` concept.
 - [Delivery and send tools](/channels/delivery-and-send-tools/) — how answers are returned across channels.
+- [Durable continuations](/tools/durable-continuations/) — origin-bound later results for chat-delegated work.
 - [Config blueprint](/config/blueprint/) — the annotated `mono-agent.config.json`.
 - [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md) — build this agent from one config.

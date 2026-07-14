@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ChannelDeliveryError,
   ResilientMessageStream,
   type ChannelSendOutcome,
   type ChannelTransport,
@@ -182,6 +183,22 @@ describe("ResilientMessageStream", () => {
     expect(posts[0]?.text).toBe("the answer"); // not MD(the answer)
   });
 
+  it.each([
+    ["permanent", { kind: "fatal", failureCertainty: "not_delivered" } as const],
+    ["retryable", { kind: "retry", failureCertainty: "not_delivered" } as const],
+    ["unknown", { kind: "retry", failureCertainty: "unknown" } as const],
+  ])("preserves a %s exhausted-delivery disposition", async (disposition, failure) => {
+    const transport = new FakeTransport({ failures: { 1: failure, 2: failure } });
+    const stream = new ResilientMessageStream({
+      transport,
+      finalOnly: true,
+      maxSendRetries: 0,
+      sleep: noSleep,
+    });
+
+    await expect(stream.finish("undelivered answer")).rejects.toMatchObject({ disposition });
+  });
+
   it("does not post anything until the first write (lazy first send)", async () => {
     const transport = new FakeTransport();
     const stream = makeStream(transport);
@@ -311,6 +328,24 @@ describe("ResilientMessageStream", () => {
       (p) => p.text.includes("x"),
     );
     expect(overflowPosts.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("fails final delivery when an overflow chunk cannot be posted", async () => {
+    const transport = new FakeTransport({
+      maxMessageChars: 32,
+      failures: { 2: { kind: "fatal" } },
+    });
+    const stream = new ResilientMessageStream({
+      transport,
+      finalOnly: true,
+      maxSendRetries: 0,
+      sleep: noSleep,
+    });
+
+    await expect(stream.finish("x".repeat(70))).rejects.toBeInstanceOf(ChannelDeliveryError);
+    expect(transport.calls).toEqual([
+      { op: "post", text: "x".repeat(32), markdown: true },
+    ]);
   });
 
   it("stops retrying once aborted", async () => {

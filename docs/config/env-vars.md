@@ -143,8 +143,15 @@ They are tolerated so stale environments do not break startup, but they are igno
 | `MONO_AGENT_DISALLOWED_TOOLS` | `tools.disallowedTools` | Denylist (deny wins; overlap rejected). |
 | `MONO_AGENT_MCP_CONFIG_PATH` | `tools.mcpConfigPath` | Path to `mcp.json`. See [../tools/mcp.md](/tools/mcp/). |
 | `MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS` | `tools.mcpRequestContextServers` | Comma-separated stdio MCP server names that receive trusted request-scoped context and progress capabilities. |
+| `MONO_AGENT_CONTINUATION_SERVERS` | `tools.continuationServers` | Comma-separated stdio or loopback-HTTP MCP server names that receive trusted request-bound continuation claim capabilities. See [durable continuations](/tools/durable-continuations/). |
 | `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | `tools.mcpCallTimeoutMs` | Inactivity timeout per MCP tool call; tool progress notifications reset it. Default 120000. |
 | `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | `tools.mcpCallMaxTotalTimeoutMs` | Hard wall clock per MCP tool call that progress cannot extend. Default 2700000 (45 min). |
+
+### Durable continuations
+
+The host service itself is configured through the `continuations` JSON block. `continuations.detachedServices[].tokenEnv` names an operator-chosen environment variable containing that service's bearer; there is deliberately no fixed environment variable that accepts a raw detached token. Selected MCP servers receive reserved run-scoped `MONO_AGENT_CONTINUATION_CLAIM_*` variables or `x-mono-agent-continuation-claim-*` headers from the host. Those values are runtime capabilities, not operator overrides, and configured spoof values are replaced.
+
+See [Durable continuations](/tools/durable-continuations/) for the complete configuration and protocol.
 
 ## Interaction (AskUser + tool progress)
 

@@ -785,6 +785,11 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
             details: {
               server: serverName,
               tool: sourceTool.name,
+              // pi-agent-core treats a resolved execute() call as successful.
+              // Preserve the MCP protocol's explicit error bit in details so
+              // the harness after-tool hook can replace that default without
+              // throwing away the bounded content or structuredContent below.
+              ...(out?.isError === true ? { mcp_result_is_error: true } : {}),
               mcp_call_duration_ms: mcpCallDurationMs,
               result_truncated: mcpContentWasTruncated(out, { textLimit, imageInlineMaxBytes }),
               raw: compactRawMcpResult(out),

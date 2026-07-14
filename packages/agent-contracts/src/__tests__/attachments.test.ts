@@ -42,4 +42,22 @@ describe("multimodal attachment contracts", () => {
     expect(withAttachments.attachments?.[0]?.kind).toBe("image");
     expect(withoutAttachments.attachments).toBeUndefined();
   });
+
+  it("keeps reply targets and continuation synthesis controls host-side", () => {
+    const request: AgentRequestBase = {
+      conversationId: "slack:C1:thread#2026-07-14",
+      text: "synthesize the completed delegation",
+      abortSignal: new AbortController().signal,
+      replyTo: { conversationId: "slack:C1:thread" },
+      continuation: {
+        continuationId: "continuation-1",
+        originRunId: "run-origin",
+        toolsDisabled: true,
+        deferHistoryCommit: true,
+      },
+    };
+
+    expect(request.replyTo?.conversationId).toBe("slack:C1:thread");
+    expect(request.continuation?.originRunId).toBe("run-origin");
+  });
 });

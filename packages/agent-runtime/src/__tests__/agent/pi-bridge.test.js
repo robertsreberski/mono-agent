@@ -423,6 +423,34 @@ describe("pi MCP tool helpers", () => {
     }
   });
 
+  it("preserves MCP protocol errors and bounded structured content for the Pi harness hook", async () => {
+    const connectSpy = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const listSpy = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [{ name: "failing_thing", description: "d", inputSchema: { type: "object", properties: {} } }],
+    });
+    const callSpy = vi.spyOn(McpClient.prototype, "callTool").mockResolvedValue({
+      isError: true,
+      content: [{ type: "text", text: "permission denied" }],
+      structuredContent: { code: "denied", diagnostic: "x".repeat(20_000) },
+    });
+    try {
+      const { tools } = await initPiMcpTools(
+        { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+        new Set(),
+      );
+      const result = await tools.find((entry) => entry.name === "failing_thing").execute("call-error", {}, undefined);
+
+      expect(result.content).toEqual([{ type: "text", text: "permission denied" }]);
+      expect(result.details.mcp_result_is_error).toBe(true);
+      expect(result.details.raw).toMatchObject({ truncated: true });
+      expect(JSON.stringify(result.details.raw).length).toBeLessThan(10_000);
+    } finally {
+      connectSpy.mockRestore();
+      listSpy.mockRestore();
+      callSpy.mockRestore();
+    }
+  });
+
   it("attaches onprogress so the SDK resets its inactivity timeout, and forwards progress to onToolProgress", async () => {
     // Without an onprogress callback the MCP SDK never attaches a progressToken,
     // so resetTimeoutOnProgress is dead code and every long tool call dies at the

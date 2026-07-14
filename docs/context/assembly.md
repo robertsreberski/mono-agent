@@ -16,7 +16,7 @@ The context builder in `@mono-agent/agent-harness` concatenates sections in a fi
 |---|---------|--------|-----------------|
 | 1 | Core Guardrails | `context.soulPath`, else the built-in default soul | Yes |
 | 2 | Identity | `context.identityPath` | Yes (identity is required) |
-| 3 | Session | the current turn's `conversationId` + delivery/callback guidance | Yes |
+| 3 | Session | host-owned delivery and callback-safety guidance | Yes |
 | 4 | Conversation History | in-memory history store | Optional (empty on first turn) |
 | 5 | Skill Index | name/description of selected skills | Optional |
 | 6 | Selected Skill Instructions | full `SKILL.md` bodies of selected skills | Optional |
@@ -53,9 +53,9 @@ Skills are loaded from `<skillsRoot>/<name>/SKILL.md`, one per entry in `selecte
 
 ## Session
 
-The **Session** block (section 3) is auto-generated each turn (coverage `auto`, no config) and tells the agent which conversation it is currently handling — the turn's `conversationId`, with any daily-rollover date suffix stripped so the id is the stable, deliverable one.
+The **Session** block (section 3) is auto-generated each turn (coverage `auto`, no config). It tells the agent whether this is an interactive push conversation or a request-driven scheduled/webhook/API turn, but it deliberately does not reveal the physical channel, thread, callback URL, or delivery token.
 
-- For a deliverable push destination (`telegram:` / `slack:`), it also tells the agent how to wire an **async callback**: if the agent starts a long-running external operation, it can ask the service to include `"conversationId": "<id>"` in the JSON body of its callback to an inbound webhook, and the follow-up is routed back to this same conversation. See [Webhook](/channels/webhook/).
+- For a deliverable push destination (`telegram:` / `slack:`), the host separately retains an `AgentReplyTarget` containing the physical channel/thread. That target is not added to the prompt, tool arguments, or run artifacts. The Session block explicitly forbids copying, requesting, inferring, or passing a conversation/channel ID, callback URL, or delivery token. A selected trusted MCP service can claim a [durable continuation](/tools/durable-continuations/) without the model seeing the route.
 - For non-push conversations (cron / webhook / openai-api / a2a), it instead clarifies that this conversation cannot itself receive a proactive follow-up. Cron jobs and webhook endpoints with `notify: true` deliver their successful final answer to the resolved Telegram/Slack destination — the harness injects guidance on those turns that the final reply is delivered verbatim and how to stay silent. See [Delivery and send tools](/channels/delivery-and-send-tools/).
 - When memory is configured, it also states that persistence is host-owned: the agent acknowledges memory requests and lets post-turn capture write them, without editing memory Markdown, SQLite, manifests, generations, or indexes through tools.
 
@@ -126,5 +126,6 @@ Assembly produces the prompt; **compaction** keeps it within the model's context
 - [Skills](/context/skills/) — sections 5–6 and the skill index
 - [Capture and recall](/memory/capture-and-recall/) — the user-message memory injection and `MemoryRecall`
 - [Delivery and send tools](/channels/delivery-and-send-tools/) — native cron/webhook notify the Session block references
+- [Durable continuations](/tools/durable-continuations/) — host-only reply targets and later asynchronous delivery
 - [Tools and guards](/runtime/tools-and-guards/) — the bloat guard in context
 - [Composition](/programmatic/composition/) — custom history store and per-request runtime options

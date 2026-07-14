@@ -101,6 +101,150 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     description: "Whether tool progress posts are relayed to channel status messages.",
   },
   {
+    jsonPath: "continuations.enabled",
+    env: "--",
+    type: "boolean",
+    defaultLabel: "true",
+    defaultValue: true,
+    example: true,
+    description: "Enables the host-owned durable continuation service when the block is configured.",
+  },
+  {
+    jsonPath: "continuations.host",
+    env: "--",
+    type: "string",
+    defaultLabel: "127.0.0.1",
+    defaultValue: "127.0.0.1",
+    example: "127.0.0.1",
+    description: "Loopback bind host; non-loopback values are rejected.",
+  },
+  {
+    jsonPath: "continuations.port",
+    env: "--",
+    type: "integer",
+    defaultLabel: "4319",
+    defaultValue: 4319,
+    example: 4319,
+    description: "Fixed loopback continuation service port (1-65535); persisted result/status URLs and the operator CLI remain valid across restarts.",
+  },
+  {
+    jsonPath: "continuations.stateDir",
+    env: "--",
+    type: "string",
+    defaultLabel: ".mono-agent/continuations",
+    defaultValue: ".mono-agent/continuations",
+    example: ".mono-agent/continuations",
+    description: "Owner-only per-record continuation store and token-derivation secret.",
+  },
+  {
+    jsonPath: "continuations.namedRoutes",
+    env: "--",
+    type: "object",
+    defaultLabel: "{}",
+    defaultValue: {},
+    example: { verification: { mode: "capture", conversationId: "slack:D123" } },
+    description: "Host-owned detached delivery policies: notify_if_actionable, capture, or silent.",
+  },
+  {
+    jsonPath: "continuations.detachedServices",
+    env: "--",
+    type: "array",
+    defaultLabel: "[]",
+    defaultValue: [],
+    example: [{ name: "work-control", tokenEnv: "WORK_CONTROL_CONTINUATION_TOKEN" }],
+    description: "Detached service names and the environment variable holding each bearer; raw tokens never belong in config.",
+  },
+  {
+    jsonPath: "continuations.limits.maxActiveRecords",
+    env: "--",
+    type: "integer",
+    defaultLabel: "10000",
+    defaultValue: 10_000,
+    example: 10_000,
+    description: "Global admission ceiling for non-terminal durable continuations.",
+  },
+  {
+    jsonPath: "continuations.limits.maxActivePerOrigin",
+    env: "--",
+    type: "integer",
+    defaultLabel: "500",
+    defaultValue: 500,
+    example: 500,
+    description: "Admission ceiling for one immutable run or detached-route claim origin.",
+  },
+  {
+    jsonPath: "continuations.limits.maxConcurrent",
+    env: "--",
+    type: "integer",
+    defaultLabel: "16",
+    defaultValue: 16,
+    example: 16,
+    description: "Maximum independently tracked continuation workers; one hung provider cannot occupy the whole service.",
+  },
+  {
+    jsonPath: "continuations.limits.synthesisTimeoutMs",
+    env: "--",
+    type: "integer",
+    defaultLabel: "600000",
+    defaultValue: 600_000,
+    example: 600_000,
+    description: "Hard synthesis timeout; an ambiguous timeout is dead-lettered and never synthesized twice.",
+  },
+  {
+    jsonPath: "continuations.limits.deliveryTimeoutMs",
+    env: "--",
+    type: "integer",
+    defaultLabel: "120000",
+    defaultValue: 120_000,
+    example: 120_000,
+    description: "Hard native-delivery and history-only commit timeout; ambiguous sends are never replayed automatically.",
+  },
+  {
+    jsonPath: "continuations.limits.operatorPageSize",
+    env: "--",
+    type: "integer",
+    defaultLabel: "100",
+    defaultValue: 100,
+    example: 100,
+    description: "Maximum keyset-paginated records returned by one operator list request.",
+  },
+  {
+    jsonPath: "continuations.retention.terminalMaxRecords",
+    env: "--",
+    type: "integer",
+    defaultLabel: "50000",
+    defaultValue: 50_000,
+    example: 50_000,
+    description: "Maximum retained terminal metadata/idempotency tombstones after payload compaction.",
+  },
+  {
+    jsonPath: "continuations.retention.terminalMaxAgeMs",
+    env: "--",
+    type: "integer",
+    defaultLabel: "31536000000",
+    defaultValue: 31_536_000_000,
+    example: 31_536_000_000,
+    description: "Maximum age in milliseconds for terminal continuation tombstones.",
+  },
+  {
+    jsonPath: "continuations.retention.capturedTextMaxRecords",
+    env: "--",
+    type: "integer",
+    defaultLabel: "1000",
+    defaultValue: 1_000,
+    example: 1_000,
+    description: "Maximum delivered capture continuations whose synthesized text remains retrievable.",
+  },
+  {
+    jsonPath: "continuations.retention.capturedTextMaxAgeMs",
+    env: "--",
+    type: "integer",
+    defaultLabel: "2592000000",
+    defaultValue: 2_592_000_000,
+    example: 2_592_000_000,
+    description: "Maximum age in milliseconds for retained captured synthesis text.",
+  },
+  {
     jsonPath: "channels.plugins",
     env: "--",
     type: "array",
@@ -236,6 +380,7 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
   setRequired(root, ["runtime"], ["model"]);
   setRequired(root, ["context"], ["identityPath"]);
   setMemoryTierSchema(root);
+  setContinuationSchema(root);
   setSchemaPath(root, ["channels", "plugins"], {
     type: "array",
     description: "External channel plugins loaded by package name.",
@@ -261,6 +406,106 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
     properties: {
       $schema: { type: "string" },
       ...root,
+    },
+  };
+}
+
+function setContinuationSchema(root: Record<string, JsonSchema>): void {
+  root.continuations = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      enabled: {
+        type: "boolean",
+        default: true,
+        description: "Enable the durable continuation service when continuation functionality is configured.",
+      },
+      host: {
+        type: "string",
+        enum: ["127.0.0.1", "::1", "localhost"],
+        default: "127.0.0.1",
+        description: "Loopback-only continuation service host.",
+      },
+      port: {
+        type: "integer",
+        minimum: 1,
+        maximum: 65_535,
+        default: 4319,
+        description: "Fixed continuation service port; 0 is intentionally invalid.",
+      },
+      stateDir: {
+        type: "string",
+        minLength: 1,
+        default: ".mono-agent/continuations",
+        description: "Owner-only durable continuation state directory.",
+      },
+      namedRoutes: {
+        type: "object",
+        default: {},
+        propertyNames: { minLength: 1, maxLength: 128 },
+        additionalProperties: {
+          oneOf: [
+            continuationDestinationRouteSchema("notify_if_actionable"),
+            continuationDestinationRouteSchema("capture"),
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["mode"],
+              properties: { mode: { const: "silent" } },
+            },
+          ],
+        },
+      },
+      detachedServices: {
+        type: "array",
+        default: [],
+        uniqueItems: true,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["name", "tokenEnv"],
+          properties: {
+            name: { type: "string", minLength: 1, maxLength: 128 },
+            tokenEnv: { type: "string", pattern: "^[A-Z_][A-Z0-9_]*$" },
+          },
+        },
+      },
+      limits: {
+        type: "object",
+        additionalProperties: false,
+        default: {},
+        properties: {
+          maxActiveRecords: { type: "integer", minimum: 1, maximum: 1_000_000, default: 10_000 },
+          maxActivePerOrigin: { type: "integer", minimum: 1, maximum: 1_000_000, default: 500 },
+          maxConcurrent: { type: "integer", minimum: 1, maximum: 256, default: 16 },
+          synthesisTimeoutMs: { type: "integer", minimum: 1, maximum: 86_400_000, default: 600_000 },
+          deliveryTimeoutMs: { type: "integer", minimum: 1, maximum: 86_400_000, default: 120_000 },
+          operatorPageSize: { type: "integer", minimum: 1, maximum: 500, default: 100 },
+        },
+      },
+      retention: {
+        type: "object",
+        additionalProperties: false,
+        default: {},
+        properties: {
+          terminalMaxRecords: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 50_000 },
+          terminalMaxAgeMs: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 31_536_000_000 },
+          capturedTextMaxRecords: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 1_000 },
+          capturedTextMaxAgeMs: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 2_592_000_000 },
+        },
+      },
+    },
+  };
+}
+
+function continuationDestinationRouteSchema(mode: "notify_if_actionable" | "capture"): JsonSchema {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["mode", "conversationId"],
+    properties: {
+      mode: { const: mode },
+      conversationId: { type: "string", minLength: 1 },
     },
   };
 }
@@ -401,6 +646,7 @@ export function findUnknownAppConfigWarnings(json: object): readonly string[] {
       "telegram.commands",
       "telegram.reactions",
       "telegram.quietHours",
+      "continuations.namedRoutes",
     ],
   });
 }

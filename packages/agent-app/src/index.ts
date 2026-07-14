@@ -67,6 +67,62 @@ export type {
   MonoAgentAppOptions,
   TraceabilityStatus,
 } from "./app.js";
+export {
+  continuationOperatorToken,
+  ContinuationProtocolError,
+  ContinuationSynthesisUnavailableError,
+  startContinuationService,
+} from "./continuation-service.js";
+export type { ContinuationRetentionOptions, ContinuationStoreStats } from "./continuation-store.js";
+export type {
+  ContinuationServiceHandle,
+  ContinuationServiceLogger,
+  ContinuationServiceOptions,
+  ContinuationSynthesisAvailability,
+} from "./continuation-service.js";
+export {
+  DEFAULT_CONTINUATION_SERVICE_PORT,
+  loadContinuationSettings,
+} from "./continuation-config.js";
+export type { ContinuationSettings } from "./continuation-config.js";
+export { runContinuationCommand } from "./continuation-command.js";
+export type { RunContinuationCommandOptions } from "./continuation-command.js";
+export {
+  canonicalContinuationJson,
+  CONTINUATION_CLAIM_TOKEN_ENV,
+  CONTINUATION_CLAIM_TOKEN_HEADER,
+  CONTINUATION_CLAIM_URL_ENV,
+  CONTINUATION_CLAIM_URL_HEADER,
+  CONTINUATION_FINGERPRINT_ENV,
+  CONTINUATION_FINGERPRINT_HEADER,
+  CONTINUATION_MODE_ENV,
+  CONTINUATION_MODE_HEADER,
+  CONTINUATION_STATES,
+  DEFAULT_CONTINUATION_LIMITS,
+  continuationDigest,
+  isContinuationMode,
+  isContinuationState,
+  normalizeContinuationReplyTarget,
+  TERMINAL_CONTINUATION_STATES,
+} from "./continuations.js";
+export type {
+  ContinuationClaimCapability,
+  ContinuationDeliveryReceipt,
+  ContinuationHealthSnapshot,
+  ContinuationHistoryRecordInput,
+  ContinuationHistoryRecordResult,
+  ContinuationLimits,
+  ContinuationMode,
+  ContinuationNativeDeliveryInput,
+  ContinuationNativeDeliveryResult,
+  ContinuationState,
+  ContinuationStatusSnapshot,
+  ContinuationSynthesisInput,
+  ContinuationSynthesisResult,
+  ContinuationTerminalState,
+  IssueContinuationCapabilityInput,
+  NamedContinuationRoute,
+} from "./continuations.js";
 export { initMonoAgentFolder } from "./init.js";
 export type {
   InitFileChange,
