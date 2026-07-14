@@ -1,5 +1,33 @@
 # Release notes
 
+## 0.9.2 — Reliable context, polling, provenance, and memory maintenance (2026-07-14)
+
+### Highlights
+
+- `ReadSkill` now loads a selected skill completely instead of silently
+  truncating larger instruction files at the former 64 KiB boundary, while
+  retaining the existing path and selection guards.
+- Telegram long polling tolerates sustained transient network failures through
+  a 90-second retry window. grammY's internal retry logger is disabled so raw
+  Bot API URLs and credentials cannot bypass the framework's redaction layer.
+- Runtime dependency provenance ignores only mutable
+  `node_modules/.vite/vitest` result caches. Sibling `.vite` content, JavaScript,
+  native addons, modes, and safe symlink targets remain attested.
+- Operators can prepare a sealed, content-free explicit-ID memory-forget plan,
+  apply it only while the agent is stopped, and restore from a full owner-only
+  backup. Stale plans, unsafe paths, drift, tampering, and interrupted root
+  swaps fail closed or recover automatically.
+
+### Compatibility
+
+- Existing agent configuration remains compatible; the reliability changes are
+  active without new configuration.
+- Memory forget is intentionally an offline maintenance operation. Stop the
+  configured agent before apply or restore, and retain the generated backup
+  until post-cleanup strict audit and live verification are complete.
+- All 21 catalog-publishable packages move together to 0.9.2. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.9.1 — Durable A2A dispatch admission (2026-07-14)
 
 ### Highlights

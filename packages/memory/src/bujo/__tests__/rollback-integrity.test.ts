@@ -130,6 +130,10 @@ describe("managed rollback logical integrity", () => {
       expect(mainAfter === undefined || mainAfter === mainBefore).toBe(true);
       expect(resolveActiveMemoryDbPath(root)).toBe(activeBefore);
     },
+    // This case performs two full rebuilds plus intentional SQLite lock/WAL
+    // contention. Node 24's parallel repository gate can exceed Vitest's
+    // generic five-second default even though focused runs finish in ~3s.
+    15_000,
   );
 
   it("rejects a WAL-only vector change to the new candidate before manifest activation", async () => {
