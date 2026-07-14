@@ -122,6 +122,52 @@ describe("SlackMessageStream", () => {
     expect(posted[0]?.ts).toBe("100.000001");
   });
 
+  it("labels confirmed status and answer writes separately", async () => {
+    const api = new FakeSlackApi();
+    const receipts: Array<{ contentKind: string; operation: string; ts: string }> = [];
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C9",
+      finalOnly: false,
+      editDebounceMs: 0,
+      onDeliveryReceipt: (receipt) => {
+        receipts.push({
+          contentKind: receipt.contentKind,
+          operation: receipt.operation,
+          ts: receipt.ts,
+        });
+      },
+    });
+
+    await stream.status("Still working");
+    await stream.finish("the answer");
+
+    expect(receipts).toEqual([
+      { contentKind: "status", operation: "post", ts: "100.000001" },
+      { contentKind: "answer", operation: "edit", ts: "100.000001" },
+    ]);
+  });
+
+  it("does not retry a confirmed Slack post when its observer fails", async () => {
+    const api = new FakeSlackApi();
+    const warn = vi.fn();
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C9",
+      finalOnly: true,
+      onPosted: () => { throw new Error("posted-message index unavailable"); },
+      logger: { warn },
+    });
+
+    await expect(stream.finish("confirmed once")).resolves.toBeUndefined();
+
+    expect(api.postMessageCalls).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith(
+      "Slack post observer failed after confirmed delivery.",
+      { reason: "posted-message index unavailable" },
+    );
+  });
+
   it("keeps a default final-only Slack reply above the shared 3,800-char default in one message", async () => {
     const api = new FakeSlackApi();
     const stream = new SlackMessageStream({
@@ -144,6 +190,7 @@ describe("SlackMessageStream", () => {
       channelId: "C1",
       threadTs: "172.000001",
       finalOnly: true,
+      clientMsgId: "5d465a3c-f7f3-4ac3-9eb6-9afc290211fa",
     });
     const finalText = `${"a".repeat(40_000)}tail`;
 
@@ -152,6 +199,63 @@ describe("SlackMessageStream", () => {
     expect(api.updateCalls).toHaveLength(0);
     expect(api.postMessageCalls.map((call) => call.text.length)).toEqual([40_000, 4]);
     expect(api.postMessageCalls.every((call) => call.thread_ts === "172.000001")).toBe(true);
+    const firstIds = api.postMessageCalls.map((call) => call.client_msg_id);
+    expect(firstIds).toHaveLength(2);
+    expect(firstIds[0]).toMatch(/^[a-f0-9-]{36}$/u);
+    expect(firstIds[1]).toMatch(/^[a-f0-9-]{36}$/u);
+    expect(firstIds[1]).not.toBe(firstIds[0]);
+
+    const retriedApi = new FakeSlackApi();
+    const retriedStream = new SlackMessageStream({
+      api: retriedApi,
+      channelId: "C1",
+      threadTs: "172.000001",
+      finalOnly: true,
+      clientMsgId: "5d465a3c-f7f3-4ac3-9eb6-9afc290211fa",
+    });
+    await retriedStream.finish(finalText);
+    expect(retriedApi.postMessageCalls.map((call) => call.client_msg_id)).toEqual(firstIds);
+  });
+
+  it("reuses the logical post client_msg_id when Slack retries before returning a receipt", async () => {
+    const postCalls: SlackChatPostMessageParams[] = [];
+    let attempt = 0;
+    const api: SlackWebApi = {
+      async authTest() {
+        return { ok: true as const };
+      },
+      async appsConnectionsOpen() {
+        return { ok: true as const, url: "wss://slack.test/socket" };
+      },
+      async downloadFile() {
+        return new Uint8Array();
+      },
+      async chatPostMessage(params) {
+        postCalls.push(params);
+        attempt += 1;
+        if (attempt === 1) {
+          throw slackApiError({ kind: "network", method: "chat.postMessage" });
+        }
+        return { ok: true as const, channel: params.channel, ts: "173.000001" };
+      },
+      async chatUpdate(params) {
+        return { ok: true as const, channel: params.channel, ts: params.ts, text: params.text };
+      },
+    };
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C1",
+      finalOnly: true,
+      clientMsgId: "5d465a3c-f7f3-4ac3-9eb6-9afc290211fa",
+      maxSendRetries: 1,
+      retryBaseDelayMs: 0,
+    });
+
+    await expect(stream.finish("durable answer")).resolves.toBeUndefined();
+
+    expect(postCalls).toHaveLength(2);
+    expect(postCalls[0]?.client_msg_id).toMatch(/^[a-f0-9-]{36}$/u);
+    expect(postCalls[1]?.client_msg_id).toBe(postCalls[0]?.client_msg_id);
   });
 
   it("flushes final output and sends overflow chunks as thread replies (no labels)", async () => {
@@ -631,37 +735,58 @@ describe("classifySlackError", () => {
   it("classifies ratelimited / 429 as retry with the honored retry-after", () => {
     expect(
       classifySlackError(slackApiError({ slackError: "ratelimited", status: 429, retryAfterMs: 3000 })),
-    ).toEqual({ kind: "retry", retryAfterMs: 3000 });
-    expect(classifySlackError(slackApiError({ status: 429 }))).toEqual({ kind: "retry" });
+    ).toEqual({ kind: "retry", retryAfterMs: 3000, failureCertainty: "not_delivered" });
+    expect(classifySlackError(slackApiError({ status: 429 }))).toEqual({
+      kind: "retry",
+      failureCertainty: "not_delivered",
+    });
   });
 
   it("classifies missing/non-editable messages as recreate", () => {
     expect(classifySlackError(slackApiError({ slackError: "message_not_found" }))).toEqual({
       kind: "recreate",
+      failureCertainty: "not_delivered",
     });
     expect(classifySlackError(slackApiError({ slackError: "cant_update_message" }))).toEqual({
       kind: "recreate",
+      failureCertainty: "not_delivered",
     });
     expect(classifySlackError(slackApiError({ slackError: "edit_window_closed" }))).toEqual({
       kind: "recreate",
+      failureCertainty: "not_delivered",
     });
   });
 
   it("classifies markup errors as reformat-plain", () => {
     expect(classifySlackError(slackApiError({ slackError: "invalid_blocks" }))).toEqual({
       kind: "reformat_plain",
+      failureCertainty: "not_delivered",
     });
   });
 
   it("classifies network/5xx/aborted appropriately", () => {
-    expect(classifySlackError(slackApiError({ kind: "network" }))).toEqual({ kind: "retry" });
+    expect(classifySlackError(slackApiError({ kind: "network" }))).toEqual({
+      kind: "retry",
+      failureCertainty: "unknown",
+    });
     expect(classifySlackError(slackApiError({ kind: "http", status: 503 }))).toEqual({
       kind: "retry",
+      failureCertainty: "unknown",
     });
-    expect(classifySlackError(slackApiError({ kind: "aborted" }))).toEqual({ kind: "fatal" });
+    expect(classifySlackError(slackApiError({ kind: "aborted" }))).toEqual({
+      kind: "fatal",
+      failureCertainty: "unknown",
+    });
+    expect(classifySlackError(slackApiError({ slackError: "channel_not_found" }))).toEqual({
+      kind: "fatal",
+      failureCertainty: "not_delivered",
+    });
   });
 
   it("retries unknown non-SlackApiError failures conservatively", () => {
-    expect(classifySlackError(new Error("boom"))).toEqual({ kind: "retry" });
+    expect(classifySlackError(new Error("boom"))).toEqual({
+      kind: "retry",
+      failureCertainty: "unknown",
+    });
   });
 });

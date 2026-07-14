@@ -126,6 +126,24 @@ describe("parseCliArgs", () => {
     });
   });
 
+  it("parses continuation operator commands without interpreting their positional contract", () => {
+    expect(parseCliArgs(["continuations", "resolve", "continuation-1", "not-delivered", "--json"]))
+      .toMatchObject({
+        command: "continuations",
+        positionals: ["resolve", "continuation-1", "not-delivered"],
+        json: true,
+      });
+    expect(parseCliArgs(["continuations", "list", "--limit", "50", "--cursor", "opaque-page-two"]))
+      .toMatchObject({
+        command: "continuations",
+        positionals: ["list"],
+        limit: 50,
+        cursor: "opaque-page-two",
+      });
+    expect(() => parseCliArgs(["continuations", "health", "--cursor", "invalid-here"]))
+      .toThrow(/only supported for `mono-agent continuations list`/u);
+  });
+
   it("parses start with config and env file", () => {
     expect(
       parseCliArgs(["start", "--config", "agent.json", "--env-file", ".env.local"]),

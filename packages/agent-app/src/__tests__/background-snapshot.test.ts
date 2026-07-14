@@ -455,13 +455,13 @@ describe("background operational environment", () => {
   it("selects only the non-secret allowlist and fingerprints values deterministically", () => {
     const env = {
       PATH: "/safe/bin",
-      HOME: "/home/test",
+      HOME: "/home/u",
       MONO_AGENT_MODEL: "must-not-persist",
       OPENAI_API_KEY: "must-not-persist",
     };
-    expect(selectBackgroundOperationalEnvironment(env)).toEqual({ HOME: "/home/test", PATH: "/safe/bin" });
+    expect(selectBackgroundOperationalEnvironment(env)).toEqual({ HOME: "/home/u", PATH: "/safe/bin" });
     expect(fingerprintBackgroundOperationalEnvironment(env)).toBe(
-      fingerprintBackgroundOperationalEnvironment({ HOME: "/home/test", PATH: "/safe/bin" }),
+      fingerprintBackgroundOperationalEnvironment({ HOME: "/home/u", PATH: "/safe/bin" }),
     );
     expect(fingerprintBackgroundOperationalEnvironment({ HOME: "/other", PATH: "/safe/bin" })).not.toBe(
       fingerprintBackgroundOperationalEnvironment(env),

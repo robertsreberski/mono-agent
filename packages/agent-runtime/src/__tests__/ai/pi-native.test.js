@@ -25,6 +25,7 @@ import {
   fauxThinking,
   fauxToolCall,
 } from "@earendil-works/pi-ai";
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createDynamicCredentialStore,
@@ -423,6 +424,50 @@ describe("pi-native AgentHarness bridge", () => {
     // ...and it is STILL emitted to the live event stream (existing behavior preserved).
     const events = onEvent.mock.calls.map(([event]) => event);
     expect(events.some((event) => event?.warning_kind === "mcp_init_failed")).toBe(true);
+  });
+
+  it("propagates MCP CallToolResult.isError into tool-result and timing events", async () => {
+    const model = setup();
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("failing_thing", {}, { id: "mcp-error-1" })]),
+      fauxAssistantMessage([fauxText("handled")]),
+    ]);
+    const connectSpy = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const listSpy = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [{ name: "failing_thing", description: "d", inputSchema: { type: "object", properties: {} } }],
+    });
+    const callSpy = vi.spyOn(McpClient.prototype, "callTool").mockResolvedValue({
+      isError: true,
+      content: [{ type: "text", text: "permission denied" }],
+      structuredContent: { code: "denied" },
+    });
+    const closeSpy = vi.spyOn(McpClient.prototype, "close").mockResolvedValue(undefined);
+    const onEvent = vi.fn();
+    try {
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "try it" }],
+        mcpServers: { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+        onEvent,
+      }));
+
+      expect(result.error).toBeNull();
+      const events = onEvent.mock.calls.map(([event]) => event);
+      expect(events.find((event) => event.type === "tool_timing" && event.tool_use_id === "mcp-error-1"))
+        .toMatchObject({ is_error: true });
+      const toolResult = events
+        .flatMap((event) => event?.message?.content || [])
+        .find((block) => block.type === "tool_result" && block.tool_use_id === "mcp-error-1");
+      expect(toolResult).toMatchObject({ is_error: true, content: "permission denied" });
+      expect(toolResult.raw_result.details.raw).toMatchObject({
+        isError: true,
+        structuredContent: { code: "denied" },
+      });
+    } finally {
+      connectSpy.mockRestore();
+      listSpy.mockRestore();
+      callSpy.mockRestore();
+      closeSpy.mockRestore();
+    }
   });
 
   it("captures structured output through the StructuredOutput tool", async () => {

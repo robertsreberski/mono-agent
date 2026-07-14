@@ -29,6 +29,22 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `context.skillMaxBytes` | `integer` | `MONO_AGENT_SKILL_MAX_BYTES` | 48000 | `48000` | Configures skillMaxBytes for the context section. |
 | `context.skillsRoot` | `string` | `MONO_AGENT_SKILLS_ROOT` | unset | `example` | Configures skillsRoot for the context section. |
 | `context.soulPath` | `string` | `MONO_AGENT_SOUL_PATH` | unset | `example` | Configures soulPath for the context section. |
+| `continuations.detachedServices` | `array` | `--` | [] | `[{"name":"work-control","tokenEnv":"WORK_CONTROL_CONTINUATION_TOKEN"}]` | Detached service names and the environment variable holding each bearer; raw tokens never belong in config. |
+| `continuations.enabled` | `boolean` | `--` | true | `true` | Enables the host-owned durable continuation service when the block is configured. |
+| `continuations.host` | `string` | `--` | 127.0.0.1 | `127.0.0.1` | Loopback bind host; non-loopback values are rejected. |
+| `continuations.limits.deliveryTimeoutMs` | `integer` | `--` | 120000 | `120000` | Hard native-delivery and history-only commit timeout; ambiguous sends are never replayed automatically. |
+| `continuations.limits.maxActivePerOrigin` | `integer` | `--` | 500 | `500` | Admission ceiling for one immutable run or detached-route claim origin. |
+| `continuations.limits.maxActiveRecords` | `integer` | `--` | 10000 | `10000` | Global admission ceiling for non-terminal durable continuations. |
+| `continuations.limits.maxConcurrent` | `integer` | `--` | 16 | `16` | Maximum independently tracked continuation workers; one hung provider cannot occupy the whole service. |
+| `continuations.limits.operatorPageSize` | `integer` | `--` | 100 | `100` | Maximum keyset-paginated records returned by one operator list request. |
+| `continuations.limits.synthesisTimeoutMs` | `integer` | `--` | 600000 | `600000` | Hard synthesis timeout; an ambiguous timeout is dead-lettered and never synthesized twice. |
+| `continuations.namedRoutes` | `object` | `--` | {} | `{"verification":{"mode":"capture","conversationId":"slack:D123"}}` | Host-owned detached delivery policies: notify_if_actionable, capture, or silent. |
+| `continuations.port` | `integer` | `--` | 4319 | `4319` | Fixed loopback continuation service port (1-65535); persisted result/status URLs and the operator CLI remain valid across restarts. |
+| `continuations.retention.capturedTextMaxAgeMs` | `integer` | `--` | 2592000000 | `2592000000` | Maximum age in milliseconds for retained captured synthesis text. |
+| `continuations.retention.capturedTextMaxRecords` | `integer` | `--` | 1000 | `1000` | Maximum delivered capture continuations whose synthesized text remains retrievable. |
+| `continuations.retention.terminalMaxAgeMs` | `integer` | `--` | 31536000000 | `31536000000` | Maximum age in milliseconds for terminal continuation tombstones. |
+| `continuations.retention.terminalMaxRecords` | `integer` | `--` | 50000 | `50000` | Maximum retained terminal metadata/idempotency tombstones after payload compaction. |
+| `continuations.stateDir` | `string` | `--` | .mono-agent/continuations | `.mono-agent/continuations` | Owner-only per-record continuation store and token-derivation secret. |
 | `cron.conversationId` | `string` | `MONO_AGENT_CRON_CONVERSATION_ID` | unset | `example` | Configures conversationId for the cron section. |
 | `cron.dir` | `string` | `MONO_AGENT_CRON_DIR` | cron | `cron` | Configures dir for the cron section. |
 | `cron.effort` | `string` | `MONO_AGENT_CRON_EFFORT` | unset | `example` | Configures effort for the cron section. |
@@ -153,6 +169,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `telegram.transcription.timeoutMs` | `integer` | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_TIMEOUT_MS` | unset | `1` | Configures transcription.timeoutMs for the telegram section. |
 | `telegram.transport.ipFamily` | `integer` | `MONO_AGENT_TELEGRAM_IP_FAMILY` | unset | `example` | Configures transport.ipFamily for the telegram section. |
 | `tools.allowedTools` | `string[]` | `MONO_AGENT_ALLOWED_TOOLS` | ["*"] | `["Read","Grep"]` | Configures allowedTools for the tools section. |
+| `tools.continuationServers` | `string[]` | `MONO_AGENT_CONTINUATION_SERVERS` | unset | `["example"]` | Configures continuationServers for the tools section. |
 | `tools.disallowedTools` | `string[]` | `MONO_AGENT_DISALLOWED_TOOLS` | [] | `["Read","Grep"]` | Configures disallowedTools for the tools section. |
 | `tools.mcpCallMaxTotalTimeoutMs` | `integer` | `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | 2700000 | `2700000` | Configures mcpCallMaxTotalTimeoutMs for the tools section. |
 | `tools.mcpCallTimeoutMs` | `integer` | `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | 120000 | `120000` | Configures mcpCallTimeoutMs for the tools section. |

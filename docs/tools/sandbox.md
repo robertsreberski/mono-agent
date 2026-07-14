@@ -50,6 +50,18 @@ mono-agent validate --preset code-sandbox
 
 Managed setup installs exact `@anthropic-ai/sandbox-runtime` 0.0.64 dependencies from the checked-in lock into an owner-only version/hash directory under the user's cache. It does not modify `PATH`, global npm packages, system packages, or another user's files. Installation uses a private identity-bound lock, stages with scripts disabled, verifies the complete tree against an independently pinned digest, and atomically promotes it. The install marker records that trusted digest but cannot define it, so rewriting the tree and marker still fails closed. An unsafe/corrupt existing tree is quarantined and repaired only inside that managed cache.
 
+The managed cache must be on a local filesystem with working BSD advisory file
+locks. Network-mounted cache overrides such as NFS or CIFS are unsupported for
+managed setup because their lock semantics can differ across clients.
+
+:::caution[Managed-SRT 0.9 lock migration]
+The first managed-SRT setup under 0.9 is an offline protocol migration when a
+0.8-or-earlier process may still run for the same user. Stop all such agents
+and setup commands first, and keep them stopped through the first 0.9 sandbox
+setup. Older versions do not acquire 0.9's permanent OS-level guard, so
+mixed-version setup or repair is unsupported.
+:::
+
 Selecting managed SRT during guided init always runs this idempotent managed
 setup and its functional postcondition, even when a compatible external `srt`
 already exists on `PATH`. External SRT remains a status/check and runtime

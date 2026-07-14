@@ -20,6 +20,8 @@ interface SchemaNode {
   readonly enum?: readonly string[];
   readonly const?: string;
   readonly default?: unknown;
+  readonly minimum?: number;
+  readonly maximum?: number;
   readonly minLength?: number;
   readonly maxLength?: number;
   readonly minProperties?: number;
@@ -27,6 +29,7 @@ interface SchemaNode {
   readonly items?: SchemaNode;
   readonly allOf?: readonly SchemaNode[];
   readonly anyOf?: readonly SchemaNode[];
+  readonly oneOf?: readonly SchemaNode[];
   readonly if?: SchemaNode;
   readonly then?: SchemaNode;
   readonly not?: SchemaNode;
@@ -71,12 +74,20 @@ describe("config reference", () => {
           },
         ],
       },
+      continuations: {
+        port: 4319,
+        namedRoutes: {
+          owner: { mode: "notify_if_actionable", conversationId: "slack:D1" },
+        },
+        retryForever: true,
+      },
     });
 
     expect(warnings).toEqual([
       "[WARN] Unknown config key runtime.session.idleMs in mono-agent.config.json - it is ignored.",
       "[WARN] Unknown config key traceability.heartBeatMs in mono-agent.config.json - it is ignored.",
       "[WARN] Unknown config key console in mono-agent.config.json - it is ignored.",
+      "[WARN] Unknown config key continuations.retryForever in mono-agent.config.json - it is ignored.",
     ]);
   });
 
@@ -115,6 +126,25 @@ describe("config reference", () => {
     expect(schemaNode(schema, "sandbox", "mode").enum).toEqual(["native", "off"]);
     expect(schemaNode(schema, "sandbox", "network", "mode").enum).toEqual(["none", "localhost", "allowlist"]);
     expect(schemaNode(schema, "sandbox", "fallback").enum).toEqual(["fail-closed", "unsafe-host-process"]);
+  });
+
+  it("models durable continuations as a strict fixed-port host-owned block", () => {
+    const schema = buildMonoAgentConfigSchema() as SchemaNode;
+    const continuations = schemaNode(schema, "continuations");
+    const port = schemaNode(continuations, "port");
+    const routes = schemaNode(continuations, "namedRoutes") as SchemaNode & {
+      readonly additionalProperties?: SchemaNode;
+    };
+    const detached = schemaNode(continuations, "detachedServices");
+
+    expect((continuations as SchemaNode & { readonly additionalProperties?: boolean }).additionalProperties).toBe(false);
+    expect(schemaNode(continuations, "host").enum).toEqual(["127.0.0.1", "::1", "localhost"]);
+    expect(port).toMatchObject({ type: "integer", minimum: 1, maximum: 65_535, default: 4319 });
+    expect(routes.additionalProperties?.oneOf).toHaveLength(3);
+    expect(routes.additionalProperties?.oneOf?.[0]?.required).toEqual(["mode", "conversationId"]);
+    expect(routes.additionalProperties?.oneOf?.[1]?.required).toEqual(["mode", "conversationId"]);
+    expect(routes.additionalProperties?.oneOf?.[2]?.required).toEqual(["mode"]);
+    expect(detached.items?.required).toEqual(["name", "tokenEnv"]);
   });
 
   it("models the strict built-in memory tier prerequisites and incompatibilities", () => {

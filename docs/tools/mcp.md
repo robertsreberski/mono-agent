@@ -26,10 +26,11 @@ Point `tools.mcpConfigPath` at an `mcp.json` file describing one or more MCP ser
 | --- | --- | --- |
 | `tools.mcpConfigPath` | string | Path to an `mcp.json`. Resolved against the workspace, not the config file. |
 | `tools.mcpRequestContextServers` | string[] | Opt-in stdio server names that receive trusted per-run producing-conversation, run-id, output-directory, current-request attachment, and scoped progress context. HTTP/SSE and unlisted servers are unchanged. |
+| `tools.continuationServers` | string[] | Opt-in stdio or loopback-HTTP server names that receive a host-bound claim capability for durable asynchronous results. Remote HTTP, SSE, and unlisted servers fail closed or remain unchanged. |
 | `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `WebFetch`, `WebSearch`) and policy-gated app-owned tools such as `RunHistory` and adapter send tools. Omit (or `["*"]`) for allow-all; a specific list narrows to those names. Does not affect external MCP-server tools. |
 | `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, `RunHistory`, and adapter send tools. On the pi-native runtime it does **not** filter external MCP-server tools (see below). |
 
-Env var: `MONO_AGENT_MCP_CONFIG_PATH` overrides `tools.mcpConfigPath`.
+Environment overrides: `MONO_AGENT_MCP_CONFIG_PATH` sets `tools.mcpConfigPath`, `MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS` selects request-context stdio servers, and `MONO_AGENT_CONTINUATION_SERVERS` selects continuation-capable stdio/loopback-HTTP servers.
 
 `mcpConfigPath` resolves against the **workspace** (`runtime.workspace`, default `"."`), so a relative path like `./mcp.json` is read from the same folder the agent operates in. Keep the file beside your `mono-agent.config.json` and reference it relatively for portability.
 
@@ -114,9 +115,24 @@ redirect it. Configured spoof values lose to the trusted overlay, the shared MCP
 config is not mutated, and the bridge master URL/token are explicitly blanked for
 opted project MCPs.
 
-:::tip
-:::
 You can also inline servers directly in config via `tools.mcpServers` (an object keyed by server name) instead of a separate file. The file (`mcpConfigPath`) and the inline form (`mcpServers`) carry the same per-server schema.
+
+## Durable continuation context
+
+`tools.continuationServers` is a separate trust decision from `tools.mcpRequestContextServers`. It lets one selected stdio or loopback-HTTP MCP service claim a host-bound continuation during the originating request, then submit an immutable result later. The host retains the channel/thread destination and runs the eventual synthesis and native delivery; the model and A2A payload never receive that routing authority.
+
+```json
+{
+  "tools": {
+    "mcpConfigPath": "./mcp.json",
+    "continuationServers": ["work-control"]
+  }
+}
+```
+
+For stdio, mono-agent overwrites `MONO_AGENT_CONTINUATION_CLAIM_URL`, `_TOKEN`, `_FINGERPRINT`, and `_MODE`. For loopback HTTP it overwrites the matching `x-mono-agent-continuation-claim-*` headers. Only `localhost`, `127.0.0.1`, and `::1` HTTP endpoints are supported; selecting SSE or a remote HTTP server raises a capability error before provider work starts.
+
+The claim credential is short-lived and tied to the run, selected server, origin history, physical reply target, and mode. It must be exchanged while the MCP request is active. See [Durable continuations](/tools/durable-continuations/) for configuration, endpoint shapes, retries, named routes, and recovery.
 
 ## Runtime support
 
@@ -166,5 +182,6 @@ For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/po
 - [Tools & guards](/runtime/tools-and-guards/) — built-in tool catalog and runtime guards.
 - [Capture & recall](/memory/capture-and-recall/) — `MemoryRecall`, an app-injected MCP tool.
 - [Artifacts and traces](/observability/artifacts-and-traces/) — the run records projected safely by `RunHistory`.
+- [Durable continuations](/tools/durable-continuations/) — trusted asynchronous claim, result, synthesis, and delivery.
 - [Slack team bot with MCP tools](/playbooks/slack-team-bot-mcp-tools/) — end-to-end playbook wiring MCP servers into a channel agent.
 - Need to register MCP servers from code instead of config? See [Programmatic composition](/programmatic/composition/).

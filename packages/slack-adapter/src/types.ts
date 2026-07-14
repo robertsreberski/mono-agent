@@ -26,6 +26,8 @@ export interface SlackChatPostMessageParams {
   channel: SlackChannelId;
   text: string;
   thread_ts?: SlackMessageTs;
+  /** Stable UUID used by Slack to suppress duplicate chat.postMessage retries. */
+  client_msg_id?: string;
   mrkdwn?: boolean;
   unfurl_links?: boolean;
   unfurl_media?: boolean;

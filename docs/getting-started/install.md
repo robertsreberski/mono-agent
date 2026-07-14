@@ -128,6 +128,17 @@ Then continue with the [Quickstart](/getting-started/quickstart/) to start the a
 
 ## Updating
 
+:::caution[One-time managed-SRT upgrade to 0.9]
+When upgrading from 0.8 or earlier to 0.9 or later on macOS, treat the
+managed-SRT lock-protocol transition as offline. Before replacing packages,
+stop every background and foreground mono-agent process for this OS user and
+wait for any older `mono-agent init` or `mono-agent sandbox setup` command to
+exit. Keep old processes stopped until the new-version packages are installed
+and the first new-version `mono-agent sandbox setup` completes. Versions 0.8
+and earlier do not acquire the permanent OS-level guard introduced in 0.9, so
+old and new setup or repair must never overlap.
+:::
+
 Update global installs with npm:
 
 ```bash

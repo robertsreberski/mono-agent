@@ -281,6 +281,11 @@ export interface MonoAgentConfig {
      * context. Unlisted servers preserve the legacy static environment.
      */
     readonly mcpRequestContextServers?: readonly string[];
+    /**
+     * Names of stdio or loopback-HTTP MCP servers allowed to receive a
+     * host-minted, destination-bound continuation claim capability.
+     */
+    readonly continuationServers?: readonly string[];
     /** Inactivity timeout per MCP tool call; progress notifications reset it. Runtime default: 120s. */
     readonly mcpCallTimeoutMs?: number;
     /** Hard wall clock per MCP tool call that progress cannot extend. Runtime default: 45 min. */

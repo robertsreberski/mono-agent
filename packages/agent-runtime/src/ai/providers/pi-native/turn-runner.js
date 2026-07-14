@@ -191,6 +191,14 @@ export function buildTurnHarness(runState, {
     steeringMode,
     followUpMode: steeringMode,
   });
+  // MCP `CallToolResult.isError` is a successful protocol response, so pi's
+  // execute() promise resolves. The bridge records that bit in result details;
+  // this after-tool hook restores the error flag while preserving the already
+  // bounded content/details verbatim. Downstream tool_execution_end and timing
+  // events therefore report the failure accurately.
+  harness.on("tool_result", (event) => /** @type {any} */ (event?.details)?.mcp_result_is_error === true
+    ? { isError: true }
+    : undefined);
   runState.harness = harness;
 
   harness.subscribe(createStreamSubscriber(runState, { onEvent, options, toolLimits, harness }));

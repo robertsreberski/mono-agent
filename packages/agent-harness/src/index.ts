@@ -4,6 +4,11 @@ export type { LiveSessionManager, LiveSessionManagerOptions, LiveSessionRunLifec
 export { createInMemoryHistoryStore } from "./history.js";
 export { NoopRunRecorder } from "./recorder.js";
 export { createRuntimeSessionStore } from "./sessions.js";
+export {
+  classifyContinuationMcpServerTransport,
+  isStdioMcpServerSpec,
+} from "./mcp-server-transport.js";
+export type { ContinuationMcpServerTransport } from "./mcp-server-transport.js";
 export type {
   RuntimeSessionEvictReason,
   RuntimeSessionRecord,
@@ -21,6 +26,10 @@ export type {
   AgentHarnessFailure,
   AgentHarnessOptions,
   AgentHarnessMcpRequestContextOptions,
+  AgentHarnessContinuationClaimCapability,
+  AgentHarnessContinuationClaimCapabilityIssuer,
+  AgentHarnessContinuationContextOptions,
+  AgentHarnessContinuationMode,
   AgentHarnessProgressCapability,
   AgentHarnessProgressCapabilityIssuer,
   AgentHarnessRecorderFactoryInput,

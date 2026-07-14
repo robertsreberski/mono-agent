@@ -3,6 +3,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import {
   chmod,
   copyFile,
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -11,6 +12,7 @@ import {
   readdir,
   rm,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -41,10 +43,16 @@ import {
   type ManagedSrtHooks,
   type SandboxManagerOptions,
 } from "../sandbox-manager.js";
+import type { ProcessIncarnation } from "../process-incarnation.js";
 
 const resourceRoot = fileURLToPath(new URL("../../resources/srt", import.meta.url));
 const tempDirs: string[] = [];
 let trustedNodePath = "";
+const TEST_PROCESS_INCARNATION: ProcessIncarnation = {
+  schema: "mono-agent.process-incarnation.v1",
+  bootSessionId: "managed-srt-test-boot",
+  processStartId: "managed-srt-test-process",
+};
 
 async function tempDir(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "managed-srt-test-"));
@@ -117,9 +125,54 @@ function options(cacheRoot: string, hooks: ManagedSrtHooks = {}): SandboxManager
     hooks: {
       installDependencies: fakeInstall,
       expectedTreeSha256: hashFixtureTree,
+      currentProcessIncarnation: async () => TEST_PROCESS_INCARNATION,
+      isSameProcessIncarnation: (pid, expected) => pid === process.pid
+        && expected.bootSessionId === TEST_PROCESS_INCARNATION.bootSessionId
+        && expected.processStartId === TEST_PROCESS_INCARNATION.processStartId,
       ...hooks,
     },
   };
+}
+
+function installLockPath(cacheRoot: string): string {
+  return resolve(dirname(managedSrtInstallRoot({ cacheRoot, platform: "darwin" })), ".install.lock");
+}
+
+function installGuardPath(cacheRoot: string): string {
+  return resolve(dirname(managedSrtInstallRoot({ cacheRoot, platform: "darwin" })), ".install.guard");
+}
+
+function installLockOwner(input: {
+  readonly token?: string;
+  readonly pid?: number;
+  readonly incarnation?: ProcessIncarnation;
+} = {}) {
+  return {
+    schemaVersion: 2 as const,
+    pid: input.pid ?? process.pid,
+    uid: process.getuid?.() ?? null,
+    token: input.token ?? randomUUID(),
+    startedAt: new Date().toISOString(),
+    incarnation: input.incarnation ?? TEST_PROCESS_INCARNATION,
+  };
+}
+
+async function writeDirectoryInstallLock(
+  lockPath: string,
+  owner = installLockOwner(),
+): Promise<void> {
+  await mkdir(lockPath, { recursive: true, mode: 0o700 });
+  await chmod(lockPath, 0o700);
+  await writeFile(resolve(lockPath, "owner.json"), `${JSON.stringify(owner)}\n`, { mode: 0o600 });
+}
+
+async function settleSetups(
+  setups: readonly Promise<Awaited<ReturnType<typeof setupManagedSrt>>>[],
+): Promise<Awaited<ReturnType<typeof setupManagedSrt>>[]> {
+  const settled = await Promise.allSettled(setups);
+  const rejected = settled.find((result) => result.status === "rejected");
+  if (rejected?.status === "rejected") throw rejected.reason;
+  return settled.map((result) => (result as PromiseFulfilledResult<Awaited<ReturnType<typeof setupManagedSrt>>>).value);
 }
 
 describe("managed SRT setup", () => {
@@ -163,7 +216,7 @@ describe("managed SRT setup", () => {
       },
     };
 
-    const results = await Promise.all([
+    const results = await settleSetups([
       setupManagedSrt({ ...options(cacheRoot, hooks), verify: false }),
       setupManagedSrt({ ...options(cacheRoot, hooks), verify: false }),
       setupManagedSrt({ ...options(cacheRoot, hooks), verify: false }),
@@ -172,6 +225,202 @@ describe("managed SRT setup", () => {
     expect(installs).toBe(1);
     expect(results.every((result) => result.status.state === "ready")).toBe(true);
     expect(results.filter((result) => result.installed)).toHaveLength(1);
+  });
+
+  it("keeps the real OS guard locked after its helper exits until the holder handle closes", async () => {
+    const cacheRoot = await tempDir();
+    let guardHeldResolve!: () => void;
+    const guardHeld = new Promise<void>((resolvePromise) => { guardHeldResolve = resolvePromise; });
+    let closeHolderResolve!: () => void;
+    const closeHolder = new Promise<void>((resolvePromise) => { closeHolderResolve = resolvePromise; });
+    const holder = setupManagedSrt({
+      ...options(cacheRoot, {
+        async afterInstallGuardAcquired() {
+          guardHeldResolve();
+          await closeHolder;
+        },
+      }),
+      verify: false,
+    });
+    await guardHeld;
+
+    const [contenderOutcome] = await Promise.allSettled([
+      setupManagedSrt({
+        ...options(cacheRoot, { installGuardTimeoutMs: 0 }),
+        verify: false,
+      }),
+    ]);
+    closeHolderResolve();
+    const [holderOutcome] = await Promise.allSettled([holder]);
+
+    expect(contenderOutcome).toMatchObject({
+      status: "rejected",
+      reason: {
+        code: "managed_srt_lock_unsafe",
+        message: expect.stringContaining("Timed out waiting 0 milliseconds"),
+      },
+    });
+    expect(holderOutcome).toMatchObject({ status: "fulfilled", value: { status: { state: "ready" } } });
+    await expect(setupManagedSrt({ ...options(cacheRoot), verify: false }))
+      .resolves.toMatchObject({ status: { state: "ready" } });
+    const guard = await lstat(installGuardPath(cacheRoot));
+    expect(guard.isFile()).toBe(true);
+    expect(guard.nlink).toBe(1);
+    expect(guard.mode & 0o077).toBe(0);
+  });
+
+  it("holds the OS guard across a paused post-mkdir publication and drains every contender", async () => {
+    const cacheRoot = await tempDir();
+    let createdResolve!: () => void;
+    const created = new Promise<void>((resolvePromise) => { createdResolve = resolvePromise; });
+    let secondAttemptResolve!: () => void;
+    const secondAttempt = new Promise<void>((resolvePromise) => { secondAttemptResolve = resolvePromise; });
+    let publishResolve!: () => void;
+    const allowPublish = new Promise<void>((resolvePromise) => { publishResolve = resolvePromise; });
+    let pauseFirstCreator = true;
+    let installs = 0;
+    let guardAttempts = 0;
+    let guardAcquisitions = 0;
+    let lockInspections = 0;
+    const hooks: ManagedSrtHooks = {
+      async beforeInstallGuardAcquire() {
+        guardAttempts += 1;
+        if (guardAttempts === 2) secondAttemptResolve();
+      },
+      async afterInstallGuardAcquired() {
+        guardAcquisitions += 1;
+      },
+      async afterInstallLockDirectoryCreated() {
+        if (!pauseFirstCreator) return;
+        pauseFirstCreator = false;
+        createdResolve();
+        await allowPublish;
+      },
+      async afterInstallLockInspected() {
+        lockInspections += 1;
+      },
+      async installDependencies(stagingRoot) {
+        installs += 1;
+        await fakeInstall(stagingRoot);
+      },
+    };
+
+    const first = setupManagedSrt({ ...options(cacheRoot, hooks), verify: false });
+    await created;
+    const second = setupManagedSrt({ ...options(cacheRoot, hooks), verify: false });
+    await secondAttempt;
+    const installsBeforePublish = installs;
+    const guardAcquisitionsBeforePublish = guardAcquisitions;
+    publishResolve();
+
+    const results = await settleSetups([first, second]);
+    expect(installsBeforePublish).toBe(0);
+    expect(guardAcquisitionsBeforePublish).toBe(1);
+    expect(guardAcquisitions).toBe(2);
+    expect(lockInspections).toBe(0);
+    expect(installs).toBe(1);
+    expect(results.every((result) => result.status.state === "ready")).toBe(true);
+    expect((await readdir(dirname(managedSrtInstallRoot({ cacheRoot, platform: "darwin" }))))
+      .filter((name) => name.startsWith(".install.lock"))).toEqual([]);
+  });
+
+  it("recovers an ownerless directory only after the five-minute crash grace", async () => {
+    const cacheRoot = await tempDir();
+    const lockPath = installLockPath(cacheRoot);
+    await mkdir(lockPath, { recursive: true, mode: 0o700 });
+    await chmod(dirname(lockPath), 0o700);
+    const stale = new Date(Date.now() - 6 * 60_000);
+    await utimes(lockPath, stale, stale);
+
+    const result = await setupManagedSrt({ ...options(cacheRoot), verify: false });
+
+    expect(result.status.state).toBe("ready");
+    expect((await readdir(dirname(lockPath))).filter((name) => name.startsWith(".install.lock"))).toEqual([]);
+  });
+
+  it("does not steal a fresh ownerless directory during the 150-second acquisition wait", async () => {
+    const cacheRoot = await tempDir();
+    const lockPath = installLockPath(cacheRoot);
+    await mkdir(lockPath, { recursive: true, mode: 0o700 });
+    await chmod(dirname(lockPath), 0o700);
+    let now = (await lstat(lockPath)).mtimeMs;
+
+    await expect(setupManagedSrt({
+      ...options(cacheRoot, {
+        now: () => now,
+        sleep: async () => { now += 150_001; },
+      }),
+      verify: false,
+    })).rejects.toMatchObject({
+      code: "managed_srt_lock_unsafe",
+      message: expect.stringContaining("fresh ownerless"),
+    });
+    expect((await lstat(lockPath)).isDirectory()).toBe(true);
+  });
+
+  it("recovers a v2 lock when the PID belongs to a different process incarnation", async () => {
+    const cacheRoot = await tempDir();
+    const lockPath = installLockPath(cacheRoot);
+    await writeDirectoryInstallLock(lockPath, installLockOwner({
+      incarnation: {
+        schema: "mono-agent.process-incarnation.v1",
+        bootSessionId: TEST_PROCESS_INCARNATION.bootSessionId,
+        processStartId: "prior-use-of-the-same-pid",
+      },
+    }));
+
+    const result = await setupManagedSrt({ ...options(cacheRoot), verify: false });
+
+    expect(result.status.state).toBe("ready");
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it("keeps a contender outside inspection until the owner finishes install and release", async () => {
+    const cacheRoot = await tempDir();
+    let installStartedResolve!: () => void;
+    const installStarted = new Promise<void>((resolvePromise) => { installStartedResolve = resolvePromise; });
+    let finishInstallResolve!: () => void;
+    const finishInstall = new Promise<void>((resolvePromise) => { finishInstallResolve = resolvePromise; });
+    let secondAttemptResolve!: () => void;
+    const secondAttempt = new Promise<void>((resolvePromise) => { secondAttemptResolve = resolvePromise; });
+    let guardAttempts = 0;
+    let guardAcquisitions = 0;
+    let lockInspections = 0;
+    let installs = 0;
+    const hooks: ManagedSrtHooks = {
+      async beforeInstallGuardAcquire() {
+        guardAttempts += 1;
+        if (guardAttempts === 2) secondAttemptResolve();
+      },
+      async afterInstallGuardAcquired() {
+        guardAcquisitions += 1;
+      },
+      async installDependencies(stagingRoot) {
+        installs += 1;
+        installStartedResolve();
+        await finishInstall;
+        await fakeInstall(stagingRoot);
+      },
+      async afterInstallLockInspected() {
+        lockInspections += 1;
+      },
+    };
+
+    const owner = setupManagedSrt({ ...options(cacheRoot, hooks), verify: false });
+    await installStarted;
+    const contender = setupManagedSrt({ ...options(cacheRoot, hooks), verify: false });
+    await secondAttempt;
+    const acquisitionsWhileOwnerActive = guardAcquisitions;
+    finishInstallResolve();
+    const [ownerOutcome, contenderOutcome] = await Promise.allSettled([owner, contender]);
+
+    expect(ownerOutcome).toMatchObject({ status: "fulfilled", value: { status: { state: "ready" } } });
+    expect(contenderOutcome).toMatchObject({ status: "fulfilled", value: { status: { state: "ready" } } });
+    expect(acquisitionsWhileOwnerActive).toBe(1);
+    expect(guardAcquisitions).toBe(2);
+    expect(lockInspections).toBe(0);
+    expect(installs).toBe(1);
+    expect(existsSync(installLockPath(cacheRoot))).toBe(false);
   });
 
   it("cleans staging and its owned lock when installation is interrupted", async () => {
@@ -198,6 +447,69 @@ describe("managed SRT setup", () => {
     await expect(install).rejects.toMatchObject({ code: "managed_srt_install_failed" });
     const versionRoot = dirname(managedSrtInstallRoot({ cacheRoot, platform: "darwin" }));
     expect((await readdir(versionRoot)).filter((name) => name.includes("staging") || name === ".install.lock")).toEqual([]);
+  });
+
+  it("aggregates the primary install, install-lock release, and guard-close failures", async () => {
+    const cacheRoot = await tempDir();
+    let caught: unknown;
+    try {
+      await setupManagedSrt({
+        ...options(cacheRoot, {
+          async installDependencies() {
+            throw new Error("dependency installation exploded");
+          },
+          async beforeInstallLockReleaseRename() {
+            throw new Error("install lock release exploded");
+          },
+          async beforeInstallGuardClose() {
+            throw new Error("install guard close exploded");
+          },
+        }),
+        verify: false,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).message).toContain("dependency installation exploded");
+    expect((caught as AggregateError).message).toContain("install lock release exploded");
+    expect((caught as AggregateError).message).toContain("install guard close exploded");
+    const failures = (caught as AggregateError).errors as unknown[];
+    expect(failures).toHaveLength(3);
+    expect(failures.map((error) => error instanceof Error ? error.message : String(error))).toEqual([
+      expect.stringContaining("dependency installation exploded"),
+      "install lock release exploded",
+      "install guard close exploded",
+    ]);
+  });
+
+  it("preserves both the primary install failure and a staging-cleanup failure", async () => {
+    const cacheRoot = await tempDir();
+    let caught: unknown;
+    try {
+      await setupManagedSrt({
+        ...options(cacheRoot, {
+          async installDependencies() {
+            throw new Error("primary install failure");
+          },
+          async beforeInstallStagingCleanup() {
+            throw new Error("staging cleanup failure");
+          },
+        }),
+        verify: false,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).message).toContain("primary install failure");
+    expect((caught as AggregateError).message).toContain("staging cleanup failure");
+    expect((caught as AggregateError).errors).toEqual([
+      expect.objectContaining({ message: expect.stringContaining("primary install failure") }),
+      expect.objectContaining({ message: "staging cleanup failure" }),
+    ]);
   });
 
   it("rejects a modified bundled lock before starting installation", async () => {
@@ -334,6 +646,278 @@ describe("managed SRT setup", () => {
     expect(existsSync(resolve(versionRoot, ".install.lock"))).toBe(false);
   });
 
+  it("waits through a legacy create-before-write publication instead of parsing an empty file", async () => {
+    const cacheRoot = await tempDir();
+    const lockPath = installLockPath(cacheRoot);
+    await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
+    await chmod(dirname(lockPath), 0o700);
+    await writeFile(lockPath, "", { mode: 0o600 });
+    const legacy = {
+      schemaVersion: 1,
+      pid: process.pid,
+      uid: process.getuid?.() ?? null,
+      token: randomUUID(),
+      startedAt: new Date().toISOString(),
+    };
+    let sleeps = 0;
+
+    const result = await setupManagedSrt({
+      ...options(cacheRoot, {
+        processIsAlive: () => "alive",
+        async sleep() {
+          sleeps += 1;
+          if (sleeps === 1) {
+            await writeFile(lockPath, `${JSON.stringify(legacy)}\n`, { mode: 0o600 });
+          } else {
+            await rm(lockPath, { force: true });
+          }
+        },
+      }),
+      verify: false,
+    });
+
+    expect(result.status.state).toBe("ready");
+    expect(sleeps).toBe(2);
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it("never steals a legacy lock whose old writer did not publish its final newline", async () => {
+    const cacheRoot = await tempDir();
+    const lockPath = installLockPath(cacheRoot);
+    await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
+    await chmod(dirname(lockPath), 0o700);
+    const partial = `{"schemaVersion":1,"pid":${process.pid}`;
+    await writeFile(lockPath, partial, { mode: 0o600 });
+    let now = 10_000;
+
+    await expect(setupManagedSrt({
+      ...options(cacheRoot, {
+        now: () => now,
+        sleep: async (milliseconds) => { now += milliseconds + 150_000; },
+      }),
+      verify: false,
+    })).rejects.toMatchObject({
+      code: "managed_srt_lock_unsafe",
+      message: expect.stringContaining("did not finish publishing"),
+    });
+    expect(await readFile(lockPath, "utf8")).toBe(partial);
+  });
+
+  it("rejects an oversized lock owner record before JSON parsing", async () => {
+    const cacheRoot = await tempDir();
+    const lockPath = installLockPath(cacheRoot);
+    await mkdir(lockPath, { recursive: true, mode: 0o700 });
+    await chmod(dirname(lockPath), 0o700);
+    await writeFile(resolve(lockPath, "owner.json"), `${"x".repeat(4 * 1024 + 1)}\n`, { mode: 0o600 });
+
+    await expect(setupManagedSrt({ ...options(cacheRoot), verify: false })).rejects.toMatchObject({
+      code: "managed_srt_lock_unsafe",
+      message: expect.stringContaining("exceeds 4096 bytes"),
+    });
+    expect(existsSync(lockPath)).toBe(true);
+  });
+
+  it("leaves permissive, hard-linked, and malformed completed legacy locks untouched", async () => {
+    const fixtures: Array<{
+      readonly label: string;
+      readonly arrange: (lockPath: string) => Promise<void>;
+    }> = [
+      {
+        label: "group-writable legacy file",
+        async arrange(lockPath) {
+          await writeFile(lockPath, `${JSON.stringify({
+            schemaVersion: 1,
+            pid: 999_999,
+            uid: process.getuid?.() ?? null,
+            token: randomUUID(),
+            startedAt: new Date().toISOString(),
+          })}\n`, { mode: 0o600 });
+          await chmod(lockPath, 0o660);
+        },
+      },
+      {
+        label: "hard-linked legacy file",
+        async arrange(lockPath) {
+          await writeFile(lockPath, `${JSON.stringify({
+            schemaVersion: 1,
+            pid: 999_999,
+            uid: process.getuid?.() ?? null,
+            token: randomUUID(),
+            startedAt: new Date().toISOString(),
+          })}\n`, { mode: 0o600 });
+          await link(lockPath, `${lockPath}.copy`);
+        },
+      },
+      {
+        label: "malformed completed legacy file",
+        async arrange(lockPath) {
+          await writeFile(lockPath, "not-json\n", { mode: 0o600 });
+        },
+      },
+    ];
+
+    for (const fixture of fixtures) {
+      const cacheRoot = await tempDir();
+      const lockPath = installLockPath(cacheRoot);
+      await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
+      await chmod(dirname(lockPath), 0o700);
+      await fixture.arrange(lockPath);
+      await expect(
+        setupManagedSrt({ ...options(cacheRoot), verify: false }),
+        fixture.label,
+      ).rejects.toMatchObject({ code: "managed_srt_lock_unsafe" });
+      expect(existsSync(lockPath), fixture.label).toBe(true);
+    }
+  });
+
+  it("keeps a replacement v2 lock at the fixed path when stale quarantine loses the race", async () => {
+    const cacheRoot = await tempDir();
+    const lockPath = installLockPath(cacheRoot);
+    const staleOwner = installLockOwner({
+      incarnation: {
+        schema: "mono-agent.process-incarnation.v1",
+        bootSessionId: TEST_PROCESS_INCARNATION.bootSessionId,
+        processStartId: "stale-process",
+      },
+    });
+    const replacementOwner = installLockOwner();
+    await writeDirectoryInstallLock(lockPath, staleOwner);
+    let replaced = false;
+
+    await expect(setupManagedSrt({
+      ...options(cacheRoot, {
+        async beforeStaleInstallLockRename(path) {
+          if (replaced) return;
+          replaced = true;
+          await rm(path, { recursive: true, force: true });
+          await writeDirectoryInstallLock(path, replacementOwner);
+        },
+      }),
+      verify: false,
+    })).rejects.toMatchObject({ code: "managed_srt_lock_unsafe" });
+
+    expect(JSON.parse(await readFile(resolve(lockPath, "owner.json"), "utf8"))).toMatchObject({
+      token: replacementOwner.token,
+    });
+  });
+
+  it("keeps a replacement v2 lock at the fixed path when release loses the race", async () => {
+    const cacheRoot = await tempDir();
+    const replacementOwner = installLockOwner();
+    let replaced = false;
+
+    await expect(setupManagedSrt({
+      ...options(cacheRoot, {
+        async beforeInstallLockReleaseRename(path) {
+          if (replaced) return;
+          replaced = true;
+          await rm(path, { recursive: true, force: true });
+          await writeDirectoryInstallLock(path, replacementOwner);
+        },
+      }),
+      verify: false,
+    })).rejects.toMatchObject({ code: "managed_srt_lock_unsafe" });
+
+    const lockPath = installLockPath(cacheRoot);
+    expect(JSON.parse(await readFile(resolve(lockPath, "owner.json"), "utf8"))).toMatchObject({
+      token: replacementOwner.token,
+    });
+  });
+
+  it("rejects symlink, permissive-mode, hard-linked, and malformed v2 lock state", async () => {
+    const fixtures: Array<{
+      readonly label: string;
+      readonly arrange: (cacheRoot: string, lockPath: string) => Promise<void>;
+    }> = [
+      {
+        label: "symlinked lock path",
+        async arrange(_cacheRoot, lockPath) {
+          const outside = await tempDir();
+          await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
+          await chmod(dirname(lockPath), 0o700);
+          await symlink(outside, lockPath);
+        },
+      },
+      {
+        label: "group-writable lock directory",
+        async arrange(_cacheRoot, lockPath) {
+          await writeDirectoryInstallLock(lockPath);
+          await chmod(lockPath, 0o770);
+        },
+      },
+      {
+        label: "hard-linked owner record",
+        async arrange(_cacheRoot, lockPath) {
+          await writeDirectoryInstallLock(lockPath);
+          await link(resolve(lockPath, "owner.json"), resolve(lockPath, "owner-copy.json"));
+        },
+      },
+      {
+        label: "malformed atomically published owner",
+        async arrange(_cacheRoot, lockPath) {
+          await mkdir(lockPath, { recursive: true, mode: 0o700 });
+          await chmod(dirname(lockPath), 0o700);
+          await writeFile(resolve(lockPath, "owner.json"), "{}\n", { mode: 0o600 });
+        },
+      },
+    ];
+
+    for (const fixture of fixtures) {
+      const cacheRoot = await tempDir();
+      const lockPath = installLockPath(cacheRoot);
+      await fixture.arrange(cacheRoot, lockPath);
+      await expect(
+        setupManagedSrt({ ...options(cacheRoot), verify: false }),
+        fixture.label,
+      ).rejects.toMatchObject({ code: "managed_srt_lock_unsafe" });
+      expect(existsSync(lockPath), fixture.label).toBe(true);
+    }
+  });
+
+  it("leaves symlinked, permissive, and hard-linked permanent guards untouched", async () => {
+    const fixtures: Array<{
+      readonly label: string;
+      readonly arrange: (guardPath: string) => Promise<void>;
+    }> = [
+      {
+        label: "symlinked guard",
+        async arrange(guardPath) {
+          const outside = await tempDir();
+          const target = resolve(outside, "guard-target");
+          await writeFile(target, "", { mode: 0o600 });
+          await symlink(target, guardPath);
+        },
+      },
+      {
+        label: "group-writable guard",
+        async arrange(guardPath) {
+          await writeFile(guardPath, "", { mode: 0o600 });
+          await chmod(guardPath, 0o660);
+        },
+      },
+      {
+        label: "hard-linked guard",
+        async arrange(guardPath) {
+          await writeFile(guardPath, "", { mode: 0o600 });
+          await link(guardPath, `${guardPath}.copy`);
+        },
+      },
+    ];
+
+    for (const fixture of fixtures) {
+      const cacheRoot = await tempDir();
+      const guardPath = installGuardPath(cacheRoot);
+      await mkdir(dirname(guardPath), { recursive: true, mode: 0o700 });
+      await chmod(dirname(guardPath), 0o700);
+      await fixture.arrange(guardPath);
+      await expect(
+        setupManagedSrt({ ...options(cacheRoot), verify: false }),
+        fixture.label,
+      ).rejects.toMatchObject({ code: "managed_srt_lock_unsafe" });
+      expect(existsSync(guardPath), fixture.label).toBe(true);
+    }
+  });
+
   it("cleans a private staging directory left by a crashed installer after taking the lock", async () => {
     const cacheRoot = await tempDir();
     const installRoot = managedSrtInstallRoot({ cacheRoot, platform: "darwin" });
@@ -349,7 +933,7 @@ describe("managed SRT setup", () => {
     expect(existsSync(staleStaging)).toBe(false);
   });
 
-  it("leaves a stale lock untouched if its identity changes during the unlink race", async () => {
+  it("leaves a stale lock untouched if its identity changes during the quarantine race", async () => {
     const cacheRoot = await tempDir();
     const installRoot = managedSrtInstallRoot({ cacheRoot, platform: "darwin" });
     const versionRoot = dirname(installRoot);

@@ -12,6 +12,7 @@ import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } fro
 import {
   assertExecutionModeCompatible,
   defaultExecutionModeForModel,
+  isValidMcpServerName,
   modelReferenceKey,
   monoRuntimeSupportsSessionResume,
   parseMonoRuntimeModelReference,
@@ -25,6 +26,7 @@ import type { BuiltAgentContext, ContextBlockInput, HistoryMessage, SkillIndexEn
 import { NoopRunRecorder } from "./recorder.js";
 import { createLiveSessionManager } from "./live-session.js";
 import type { LiveSessionManager, LiveSessionRunLifecycle } from "./live-session.js";
+import { classifyContinuationMcpServerTransport, isStdioMcpServerSpec } from "./mcp-server-transport.js";
 import { createSemaphore } from "./semaphore.js";
 import type { Semaphore } from "./semaphore.js";
 import { createRuntimeSessionStore } from "./sessions.js";
@@ -40,7 +42,12 @@ import type {
   AgentHarnessSessionEvent,
   ExternalRunSummary,
 } from "./types.js";
-import type { AgentHarnessMcpRequestContextOptions, AgentHarnessProgressCapability } from "./types.js";
+import type {
+  AgentHarnessContinuationClaimCapability,
+  AgentHarnessContinuationContextOptions,
+  AgentHarnessMcpRequestContextOptions,
+  AgentHarnessProgressCapability,
+} from "./types.js";
 import { createSkillsCache } from "./skills/index.js";
 import type { SkillsCache } from "./skills/index.js";
 import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "./tool-policy/index.js";
@@ -160,7 +167,22 @@ export class MonoAgentHarness implements AgentHarness {
    * evict and the append. No model call; memory capture is deliberately skipped
    * (a delivered notification is conversation history, not a recall-worthy fact).
    */
-  async appendVerbatimTurn(conversationId: string, text: string): Promise<void> {
+  async appendVerbatimTurn(
+    conversationId: string,
+    text: string,
+    options?: { readonly idempotencyKey?: string },
+  ): Promise<void> {
+    const idempotencyKey = options?.idempotencyKey?.trim();
+    if (idempotencyKey !== undefined && idempotencyKey.length > 0) {
+      const history = await this.options.historyStore?.load(conversationId) ?? [];
+      const prior = history.find((message) => message.idempotencyKey === idempotencyKey);
+      if (prior !== undefined) {
+        if (prior.role !== "assistant" || prior.content !== text) {
+          throw new Error("Verbatim history idempotency key conflicts with existing content.");
+        }
+        return;
+      }
+    }
     try {
       await this.sessionStore?.evict(conversationId, "stale");
     } catch {
@@ -168,8 +190,17 @@ export class MonoAgentHarness implements AgentHarness {
     }
     const timestamp = this.options.now?.().toISOString() ?? new Date().toISOString();
     await this.options.historyStore?.append(conversationId, [
-      { role: "user", content: VERBATIM_DELIVERY_STIMULUS, timestamp },
-      { role: "assistant", content: text, timestamp },
+      {
+        role: "user",
+        content: VERBATIM_DELIVERY_STIMULUS,
+        timestamp,
+      },
+      {
+        role: "assistant",
+        content: text,
+        timestamp,
+        ...(idempotencyKey === undefined || idempotencyKey.length === 0 ? {} : { idempotencyKey }),
+      },
     ]);
   }
 
@@ -193,7 +224,8 @@ export class MonoAgentHarness implements AgentHarness {
     // the runtime/session-key decision taken later in runRuntime.
     const proactiveIsolated = this.isProactiveIsolated(request);
     const modelOverrideIsolated = requestOverridesModel(request, this.options.model);
-    const isolated = proactiveIsolated || modelOverrideIsolated;
+    const continuationIsolated = request.continuation !== undefined;
+    const isolated = proactiveIsolated || modelOverrideIsolated || continuationIsolated;
     const recorder = this.options.recorderFactory?.({
       runId,
       conversationId: request.conversationId,
@@ -259,7 +291,11 @@ export class MonoAgentHarness implements AgentHarness {
         emit(withSessionBoundaryTimestamp(request.sessionBoundary, this.nowIso()));
       }
       if (isolated) {
-        const reason = proactiveIsolated ? "proactive" : "model_override";
+        const reason = continuationIsolated
+          ? "continuation"
+          : proactiveIsolated
+            ? "proactive"
+            : "model_override";
         emit({
           type: "session_boundary",
           kind: "isolated",
@@ -458,12 +494,14 @@ export class MonoAgentHarness implements AgentHarness {
 
       // Persist the ORIGINAL caption + redacted attachment metadata (persistText),
       // NOT the expanded prompt with inlined document text.
-      await this.persistSuccessfulTurn(
-        request.conversationId,
-        persistText,
-        text,
-        { runId, ...(runSource.source === undefined ? {} : { source: runSource.source }), emit },
-      );
+      if (request.continuation?.deferHistoryCommit !== true) {
+        await this.persistSuccessfulTurn(
+          request.conversationId,
+          persistText,
+          text,
+          { runId, ...(runSource.source === undefined ? {} : { source: runSource.source }), emit },
+        );
+      }
       // Memory persistence degradation is emitted above, while the recorder is
       // still open. Commit exactly one terminal summary only after every
       // run-scoped event has been recorded/exported/broadcast.
@@ -633,7 +671,9 @@ export class MonoAgentHarness implements AgentHarness {
     readonly history: readonly HistoryMessage[];
     readonly historyOmitted: boolean;
   }> {
-    const history = options.omitHistory ? [] : await this.loadHistory(request.conversationId);
+    const history = options.omitHistory
+      ? []
+      : await this.loadHistory(request.conversationId, request.continuation);
     // Recalled memory deliberately does NOT go into the system prompt. It rides on
     // the per-turn USER MESSAGE instead (see runRuntime): the user message is the
     // one field every runtime re-sends verbatim each turn, so memory survives
@@ -641,7 +681,9 @@ export class MonoAgentHarness implements AgentHarness {
     // turn (e.g. codex-app sends developerInstructions only on a fresh thread).
     // Keeping it out of the system prompt also leaves that prompt stable across a
     // session, which is better for provider prompt caching.
-    const memory = await this.loadMemory(request.conversationId, request.userMessage, options.turnId, emit);
+    const memory = request.continuation === undefined
+      ? await this.loadMemory(request.conversationId, request.userMessage, options.turnId, emit)
+      : undefined;
     const selectedSkills = await this.loadSkills();
     const context = await loadContextFromFiles({
       identityPath: this.options.identityPath,
@@ -688,8 +730,33 @@ export class MonoAgentHarness implements AgentHarness {
     return this.options.skillDisclosure ?? "full";
   }
 
-  private async loadHistory(conversationId: string): Promise<readonly HistoryMessage[]> {
-    return this.options.historyStore?.load(conversationId) ?? [];
+  private async loadHistory(
+    conversationId: string,
+    continuation?: AgentHarnessRequest["continuation"],
+  ): Promise<readonly HistoryMessage[]> {
+    const history = await this.options.historyStore?.load(conversationId) ?? [];
+    if (continuation === undefined) {
+      return history;
+    }
+    const boundary = continuation.historyBoundary;
+    if (boundary === undefined) {
+      return history;
+    }
+    let boundaryIndex = -1;
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      if (history[index]?.runId === boundary) {
+        boundaryIndex = index;
+        break;
+      }
+    }
+    if (boundaryIndex < 0) {
+      throw new AgentHarnessError(
+        "history_boundary_not_found",
+        "The continuation history boundary is no longer available.",
+        { continuationId: continuation.continuationId, historyBoundary: boundary },
+      );
+    }
+    return history.slice(0, boundaryIndex + 1);
   }
 
   /**
@@ -864,6 +931,7 @@ export class MonoAgentHarness implements AgentHarness {
     let requestExtension: AgentHarnessRuntimeOptionsExtension | undefined;
     let requestExtensionCleanup: Promise<void> | undefined;
     let mcpProgressCapability: AgentHarnessProgressCapability | undefined;
+    let mcpContinuationCapabilities: readonly AgentHarnessContinuationClaimCapability[] = [];
     let mcpRunOutputCleanup: (() => Promise<void>) | undefined;
     let settlementCleanup: Promise<void> | undefined;
     // Admission precedes per-request extension setup. Extensions may allocate
@@ -894,6 +962,13 @@ export class MonoAgentHarness implements AgentHarness {
             await mcpProgressCapability?.release();
           } catch (error) {
             failures.push(error);
+          }
+          for (const capability of mcpContinuationCapabilities) {
+            try {
+              await capability.release();
+            } catch (error) {
+              failures.push(error);
+            }
           }
           if (failures.length > 0) {
             throw failures[0];
@@ -948,6 +1023,15 @@ export class MonoAgentHarness implements AgentHarness {
         staticRuntimeOptions,
         requestRuntimeOptions,
       );
+      if (request.continuation?.toolsDisabled === true) {
+        // Host-authoritative continuation synthesis is side-effect free. This
+        // final override runs after every static/request policy layer so neither
+        // a model nor an app extension can re-enable built-ins or MCP tools.
+        merged.allowedTools = [];
+        merged.disallowedTools = ["*"];
+        merged.mcpServers = {};
+        delete merged.mcpConfigPath;
+      }
       const requestContext = await injectMcpRequestContext({
         options: this.options.mcpRequestContext,
         mcpServers: merged.mcpServers,
@@ -961,6 +1045,17 @@ export class MonoAgentHarness implements AgentHarness {
         merged.mcpServers = requestContext.mcpServers;
         mcpProgressCapability = requestContext.progressCapability;
         mcpRunOutputCleanup = requestContext.cleanup;
+      }
+      const continuationContext = await injectMcpContinuationContext({
+        options: this.options.continuationContext,
+        mcpServers: merged.mcpServers,
+        conversationId: request.conversationId,
+        replyTo: request.replyTo,
+        runId,
+      });
+      if (continuationContext !== undefined) {
+        merged.mcpServers = continuationContext.mcpServers;
+        mcpContinuationCapabilities = continuationContext.capabilities;
       }
       // Register abort cleanup only after every run-scoped resource is assigned;
       // otherwise an abort racing capability issuance could memoize cleanup before
@@ -1149,8 +1244,8 @@ export class MonoAgentHarness implements AgentHarness {
       // its original history entry if the app-owned enricher fails.
     }
     await this.options.historyStore?.append(conversationId, [
-      { role: "user", content: userMessage, timestamp },
-      { role: "assistant", content: assistantHistoryText, timestamp },
+      { role: "user", content: userMessage, timestamp, runId: options.runId },
+      { role: "assistant", content: assistantHistoryText, timestamp, runId: options.runId },
     ]);
 
     const mode = this.options.memoryWriteMode;
@@ -1259,6 +1354,15 @@ function validateOptions(options: AgentHarnessOptions): void {
       throw new TypeError("mcpRequestContext.runOutputRoot must be a non-empty path.");
     }
   }
+  if (options.continuationContext !== undefined) {
+    if (!Array.isArray(options.continuationContext.serverNames)
+      || options.continuationContext.serverNames.some((name) => typeof name !== "string" || name.trim().length === 0)) {
+      throw new TypeError("continuationContext.serverNames must contain non-empty strings.");
+    }
+    if (typeof options.continuationContext.capabilityIssuer?.issueContinuationClaimCapability !== "function") {
+      throw new TypeError("continuationContext.capabilityIssuer must issue continuation claim capabilities.");
+    }
+  }
 }
 
 const SAFE_RUN_OUTPUT_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u;
@@ -1271,6 +1375,20 @@ const MCP_REQUEST_CONTEXT_RESERVED_ENV = {
   attachmentsRoot: "MONO_AGENT_MCP_ATTACHMENTS_ROOT",
   allowedAttachmentPaths: "MONO_AGENT_MCP_ALLOWED_ATTACHMENT_PATHS",
   allowedAttachmentIdentities: "MONO_AGENT_MCP_ALLOWED_ATTACHMENT_IDENTITIES",
+} as const;
+
+const MCP_CONTINUATION_RESERVED_ENV = {
+  url: "MONO_AGENT_CONTINUATION_CLAIM_URL",
+  token: "MONO_AGENT_CONTINUATION_CLAIM_TOKEN",
+  fingerprint: "MONO_AGENT_CONTINUATION_CLAIM_FINGERPRINT",
+  mode: "MONO_AGENT_CONTINUATION_CLAIM_MODE",
+} as const;
+
+const MCP_CONTINUATION_RESERVED_HEADERS = {
+  url: "x-mono-agent-continuation-claim-url",
+  token: "x-mono-agent-continuation-claim-token",
+  fingerprint: "x-mono-agent-continuation-claim-fingerprint",
+  mode: "x-mono-agent-continuation-claim-mode",
 } as const;
 
 async function injectMcpRequestContext(input: {
@@ -1291,7 +1409,8 @@ async function injectMcpRequestContext(input: {
   }
   const selected = new Set(input.options.serverNames);
   const selectedStdio = Object.entries(input.mcpServers).filter(
-    (entry): entry is [string, Record<string, unknown>] => selected.has(entry[0]) && isStdioMcpServerSpec(entry[1]),
+    (entry): entry is [string, Record<string, unknown>] =>
+      selected.has(entry[0]) && isValidMcpServerName(entry[0]) && isStdioMcpServerSpec(entry[1]),
   );
   if (selectedStdio.length === 0) {
     return undefined;
@@ -1370,6 +1489,140 @@ async function injectMcpRequestContext(input: {
   };
 }
 
+async function injectMcpContinuationContext(input: {
+  readonly options: AgentHarnessContinuationContextOptions | undefined;
+  readonly mcpServers: unknown;
+  readonly conversationId: string;
+  readonly replyTo: AgentHarnessRequest["replyTo"];
+  readonly runId: string;
+}): Promise<{
+  readonly mcpServers: Record<string, unknown>;
+  readonly capabilities: readonly AgentHarnessContinuationClaimCapability[];
+} | undefined> {
+  if (input.options === undefined || input.options.serverNames.length === 0 || !isRecord(input.mcpServers)) {
+    return undefined;
+  }
+
+  const selected = new Set(input.options.serverNames);
+  const entries = Object.entries(input.mcpServers).filter(([name]) => selected.has(name));
+  if (entries.length === 0) {
+    return undefined;
+  }
+
+  const capabilities: AgentHarnessContinuationClaimCapability[] = [];
+  const mcpServers: Record<string, unknown> = { ...input.mcpServers };
+  try {
+    for (const [serverName, rawSpec] of entries) {
+      if (!isValidMcpServerName(serverName) || !isRecord(rawSpec)) {
+        throw unsupportedContinuationServer(serverName);
+      }
+      const transport = classifyContinuationMcpServerTransport(rawSpec);
+      if (transport === "unsupported") {
+        throw unsupportedContinuationServer(serverName);
+      }
+
+      const capability = await input.options.capabilityIssuer.issueContinuationClaimCapability({
+        runId: input.runId,
+        serverName,
+        conversationId: input.conversationId,
+        ...(input.replyTo === undefined
+          ? {}
+          : { replyTo: input.replyTo, historyBoundary: input.runId }),
+      });
+      if (capability !== undefined) {
+        capabilities.push(capability);
+        validateContinuationCapability(capability, serverName);
+      }
+
+      if (transport === "stdio") {
+        const trustedEnv = {
+          [MCP_CONTINUATION_RESERVED_ENV.url]: capability?.url ?? "",
+          [MCP_CONTINUATION_RESERVED_ENV.token]: capability?.token ?? "",
+          [MCP_CONTINUATION_RESERVED_ENV.fingerprint]: capability?.fingerprint ?? "",
+          [MCP_CONTINUATION_RESERVED_ENV.mode]: capability?.mode ?? "",
+        };
+        mcpServers[serverName] = cloneStdioMcpServerWithEnv(rawSpec, trustedEnv);
+      } else {
+        mcpServers[serverName] = cloneHttpMcpServerWithContinuationHeaders(rawSpec, capability);
+      }
+    }
+  } catch (error) {
+    await Promise.allSettled(capabilities.map(async (capability) => capability.release()));
+    throw error;
+  }
+
+  return { mcpServers, capabilities };
+}
+
+function unsupportedContinuationServer(serverName: string): AgentHarnessError {
+  return new AgentHarnessError(
+    "unsupported_continuation_server",
+    `Continuation server ${serverName} must use stdio or loopback HTTP.`,
+    { serverName },
+  );
+}
+
+function validateContinuationCapability(
+  capability: AgentHarnessContinuationClaimCapability,
+  serverName: string,
+): void {
+  if (typeof capability.url !== "string" || !isLoopbackUrl(capability.url)) {
+    throw new AgentHarnessError(
+      "invalid_continuation_capability",
+      "Continuation claim capabilities must use a loopback HTTP URL.",
+      { serverName },
+    );
+  }
+  if (typeof capability.token !== "string" || capability.token.trim().length === 0
+    || typeof capability.fingerprint !== "string" || capability.fingerprint.trim().length === 0
+    || !(["reply", "notify_if_actionable", "silent", "capture"] as const).includes(capability.mode)) {
+    throw new AgentHarnessError(
+      "invalid_continuation_capability",
+      "Continuation claim capabilities must include a token, fingerprint, and supported mode.",
+      { serverName },
+    );
+  }
+  if (typeof capability.release !== "function") {
+    throw new AgentHarnessError(
+      "invalid_continuation_capability",
+      "Continuation claim capabilities must provide release().",
+      { serverName },
+    );
+  }
+}
+
+function isLoopbackUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    return (url.protocol === "http:" || url.protocol === "https:")
+      && (host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1");
+  } catch {
+    return false;
+  }
+}
+
+function cloneHttpMcpServerWithContinuationHeaders(
+  spec: Record<string, unknown>,
+  capability: AgentHarnessContinuationClaimCapability | undefined,
+): Record<string, unknown> {
+  const reserved = new Set<string>(Object.values(MCP_CONTINUATION_RESERVED_HEADERS));
+  const configuredHeaders = isRecord(spec.headers)
+    ? Object.fromEntries(
+        Object.entries(spec.headers).filter(([name]) => !reserved.has(name.toLowerCase())),
+      )
+    : {};
+  const trustedHeaders = capability === undefined
+    ? {}
+    : {
+        [MCP_CONTINUATION_RESERVED_HEADERS.url]: capability.url,
+        [MCP_CONTINUATION_RESERVED_HEADERS.token]: capability.token,
+        [MCP_CONTINUATION_RESERVED_HEADERS.fingerprint]: capability.fingerprint,
+        [MCP_CONTINUATION_RESERVED_HEADERS.mode]: capability.mode,
+      };
+  return { ...spec, headers: { ...configuredHeaders, ...trustedHeaders } };
+}
+
 function fileIdentity(stats: { readonly dev: number; readonly ino: number }): FileIdentity {
   return { dev: stats.dev, ino: stats.ino };
 }
@@ -1396,12 +1649,6 @@ async function removeOwnedDirectory(path: string, expected: FileIdentity): Promi
   await rm(path, { recursive: true, force: true });
 }
 
-function isStdioMcpServerSpec(value: unknown): value is Record<string, unknown> {
-  if (!isRecord(value)) return false;
-  return value.type === "stdio"
-    || (typeof value.command === "string" && value.type !== "http" && value.type !== "sse");
-}
-
 function cloneStdioMcpServerWithEnv(
   spec: Record<string, unknown>,
   trustedEnv: Readonly<Record<string, string>>,
@@ -1426,6 +1673,21 @@ function validateRequest(request: AgentHarnessRequest): void {
   }
   if (!(request.abortSignal instanceof AbortSignal)) {
     throw new TypeError("abortSignal is required.");
+  }
+  if (request.replyTo !== undefined
+    && (typeof request.replyTo.conversationId !== "string" || request.replyTo.conversationId.trim().length === 0)) {
+    throw new TypeError("replyTo.conversationId must be a non-empty string.");
+  }
+  if (request.continuation !== undefined) {
+    const continuation = request.continuation;
+    if (typeof continuation.continuationId !== "string" || continuation.continuationId.trim().length === 0
+      || typeof continuation.originRunId !== "string" || continuation.originRunId.trim().length === 0
+      || (continuation.historyBoundary !== undefined
+        && (typeof continuation.historyBoundary !== "string" || continuation.historyBoundary.trim().length === 0))
+      || continuation.toolsDisabled !== true
+      || continuation.deferHistoryCommit !== true) {
+      throw new TypeError("continuation must contain valid host-only synthesis controls.");
+    }
   }
 }
 
@@ -1843,15 +2105,10 @@ function cloneExternalSummaryValue(
 }
 
 /**
- * A small "Session" context block telling the agent the conversationId of the turn
- * it is currently handling. When that id is a deliverable push destination
- * (`telegram:`/`slack:`), a live agent that kicks off a long-running external
- * operation can embed this id in the callback it asks the service to make, so the
- * eventual result can be delivered back to THIS conversation (the inbound webhook
- * turn reads the id from the payload and routes a follow-up here). For non-push
- * conversations (cron/webhook/openai-api/a2a) the block instead clarifies that this
- * conversation cannot itself receive a proactive follow-up. The daily-rollover
- * bucket suffix is stripped so the id is the stable, deliverable one.
+ * Host-owned delivery guidance for the current turn. Physical channel and thread
+ * identities deliberately stay out of model context: an opted-in MCP server gets
+ * an opaque destination-bound claim capability instead. A model may promise a
+ * later reply only after such a tool confirms that the continuation was registered.
  */
 function sessionContextBlock(
   conversationId: string,
@@ -1863,12 +2120,12 @@ function sessionContextBlock(
   const memoryGuidance = hostManagedMemory ? HOST_MANAGED_MEMORY_GUIDANCE : undefined;
   if (deliverable) {
     return [
-      `You are currently handling the conversation \`${baseId}\`.`,
-      `If you start a long-running external operation and want its result delivered back to THIS conversation later, have the service include \`"conversationId": "${baseId}"\` in the JSON body of its callback to your inbound webhook — the follow-up will be routed here.`,
+      "You are handling an interactive push conversation. The host owns its exact channel and thread destination.",
+      "Never copy, request, infer, or pass a conversation id, channel id, callback URL, or delivery token. You may promise a later reply only after a continuation-capable tool explicitly confirms that a destination-bound continuation was registered; otherwise finish synchronously or explain that background delivery was not scheduled.",
       memoryGuidance,
     ].filter((part) => part !== undefined).join("\n\n");
   }
-  const base = `You are currently handling the conversation \`${baseId}\`. This is a request-driven run (scheduled, webhook, or API) with no interactive user attached to this conversation.`;
+  const base = "This is a request-driven run (scheduled, webhook, or API) with no interactive user attached to a deliverable push conversation. Do not invent or infer a callback destination.";
   const notifyGuidance = notifyDeliveryGuidance(metadata);
   return [base, notifyGuidance, memoryGuidance]
     .filter((part) => part !== undefined)

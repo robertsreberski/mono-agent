@@ -45,6 +45,37 @@ describe("createAgentResponder", () => {
     expect(calls).toEqual(["submit"]);
   });
 
+  it("forwards host-only reply and continuation controls without changing the session bucket", async () => {
+    let seen: AgentHarnessRequest | undefined;
+    const harness: AgentHarness = {
+      run: async (request) => {
+        seen = request;
+        return okResponse(request.conversationId);
+      },
+    };
+    const responder = createAgentResponder({
+      harness,
+      rollover: "daily",
+      rolloverTimezone: "UTC",
+      now: () => new Date("2026-07-14T12:00:00Z"),
+    });
+
+    await responder.respond({
+      ...baseRequest("slack:C1:thread"),
+      replyTo: { conversationId: "slack:C1:thread" },
+      continuation: {
+        continuationId: "continuation-1",
+        originRunId: "run-origin",
+        toolsDisabled: true,
+        deferHistoryCommit: true,
+      },
+    }, noopStream());
+
+    expect(seen?.conversationId).toBe("slack:C1:thread#2026-07-14");
+    expect(seen?.replyTo).toEqual({ conversationId: "slack:C1:thread" });
+    expect(seen?.continuation).toMatchObject({ continuationId: "continuation-1", originRunId: "run-origin" });
+  });
+
   it("falls back to harness.run when submit is absent", async () => {
     const calls: string[] = [];
     const harness: AgentHarness = {
@@ -61,11 +92,11 @@ describe("createAgentResponder", () => {
   });
 
   it("deliverVerbatim delegates to harness.appendVerbatimTurn under the same bucketed id as respond()", async () => {
-    const verbatim: Array<[string, string]> = [];
+    const verbatim: Array<[string, string, string | undefined]> = [];
     const harness: AgentHarness = {
       run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
-      appendVerbatimTurn: async (conversationId: string, text: string) => {
-        verbatim.push([conversationId, text]);
+      appendVerbatimTurn: async (conversationId: string, text: string, options) => {
+        verbatim.push([conversationId, text, options?.idempotencyKey]);
       },
     };
     const responder = createAgentResponder({
@@ -75,10 +106,10 @@ describe("createAgentResponder", () => {
       now: () => new Date("2026-06-24T10:00:00Z"),
     });
 
-    await responder.deliverVerbatim!("telegram:42", "Morning brief.");
+    await responder.deliverVerbatim!("telegram:42", "Morning brief.", { idempotencyKey: "delivery:one" });
 
     // Bucketed identically to respond(), so a later reply resumes with it in context.
-    expect(verbatim).toEqual([["telegram:42#2026-06-24", "Morning brief."]]);
+    expect(verbatim).toEqual([["telegram:42#2026-06-24", "Morning brief.", "delivery:one"]]);
   });
 
   it("streams each assistant text delta to stream.append in order (no batching)", async () => {

@@ -44,6 +44,20 @@ export type ChannelStatus =
 export interface NotifyDeliveryResult {
   readonly delivered: boolean;
   readonly reason?: string;
+  /** Stable machine-readable outcome for durable host delivery. */
+  readonly code?: string;
+  /** Whether the host may safely retry without operator inspection. */
+  readonly retryable?: boolean;
+  /** The channel may have accepted the post, so automatic replay is unsafe. */
+  readonly ambiguous?: boolean;
+  /** Channel-native delivery identity, when the adapter can prove one. */
+  readonly deliveryId?: string;
+  /** Adapter/channel id that produced the receipt. */
+  readonly channelId?: string;
+  /** Whether the confirmed native delivery was also recorded in durable conversation history. */
+  readonly historyRecorded?: boolean;
+  /** Machine-readable history degradation when native delivery succeeded but history recording did not. */
+  readonly historyErrorCode?: string;
 }
 
 /** A conversation a native cron/webhook notification can be delivered to. */
@@ -113,6 +127,8 @@ export interface RunningChannel {
      * it, `text` is run as a turn on the destination's harness.
      */
     readonly verbatim?: boolean;
+    /** Stable host identity used by adapters that support duplicate suppression. */
+    readonly deliveryKey?: string;
   }): Promise<NotifyDeliveryResult>;
 }
 
@@ -183,7 +199,7 @@ export interface ChannelStartInput<TConfig, TCore = unknown> {
   readonly notifyDestination?: (
     conversationId: string,
     text: string,
-    options?: { readonly verbatim?: boolean },
+    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
   ) => Promise<NotifyDeliveryResult>;
   /** Candidate destinations for native delivery inference. */
   readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;

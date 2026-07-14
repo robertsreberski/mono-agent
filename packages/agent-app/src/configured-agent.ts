@@ -105,6 +105,8 @@ export interface ConfiguredAgentHarnessOptions {
   readonly turnHistoryEnricher?: AgentHarnessOptions["turnHistoryEnricher"];
   /** App-owned issuer for request-scoped project-MCP progress credentials. */
   readonly progressCapabilityIssuer?: NonNullable<AgentHarnessOptions["mcpRequestContext"]>["progressCapabilityIssuer"];
+  /** App-owned issuer for destination-bound asynchronous continuation claims. */
+  readonly continuationCapabilityIssuer?: NonNullable<AgentHarnessOptions["continuationContext"]>["capabilityIssuer"];
   readonly createRunId?: AgentHarnessOptions["createRunId"];
   readonly now?: AgentHarnessOptions["now"];
   readonly runtimeOptions?: AgentHarnessOptions["runtimeOptions"];
@@ -466,6 +468,14 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
             ...(options.progressCapabilityIssuer === undefined
               ? {}
               : { progressCapabilityIssuer: options.progressCapabilityIssuer }),
+          },
+        }),
+    ...(config.tools.continuationServers === undefined || options.continuationCapabilityIssuer === undefined
+      ? {}
+      : {
+          continuationContext: {
+            serverNames: config.tools.continuationServers,
+            capabilityIssuer: options.continuationCapabilityIssuer,
           },
         }),
     ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),

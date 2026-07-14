@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, type BigIntStats } from "node:fs";
 import {
   chmod,
   copyFile,
@@ -14,7 +14,7 @@ import {
   rename,
   rm,
   stat,
-  unlink,
+  type FileHandle,
 } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
@@ -33,6 +33,13 @@ import {
   type SandboxPolicy,
 } from "@mono-agent/runtime-adapter";
 
+import {
+  currentProcessIncarnation,
+  isSameProcessIncarnation as matchesProcessIncarnation,
+  processIncarnationFromJson,
+} from "./process-incarnation.js";
+import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incarnation.js";
+
 const execFileAsync = promisify(execFile);
 
 export const MANAGED_SRT_PACKAGE = "@anthropic-ai/sandbox-runtime";
@@ -41,8 +48,14 @@ export const MANAGED_SRT_LOCK_SHA256 = "0f34561ddc700ad43c31f254beb0e1e4b87bae61
 export const MANAGED_SRT_MARKER = ".mono-agent-srt.json";
 
 const MANAGED_SRT_RESOURCE_ROOT = fileURLToPath(new URL("../resources/srt", import.meta.url));
+const INSTALL_GUARD_NAME = ".install.guard";
 const INSTALL_LOCK_NAME = ".install.lock";
+const INSTALL_LOCK_OWNER_NAME = "owner.json";
 const INSTALL_LOCK_WAIT_MS = 150_000;
+const INSTALL_LOCK_POLL_MS = 100;
+const INSTALL_LOCK_OWNERLESS_GRACE_MS = 5 * 60_000;
+const INSTALL_LOCK_RECORD_MAX_BYTES = 4 * 1024;
+const INSTALL_GUARD_TIMEOUT_EXIT = 75;
 
 export type SandboxManagerErrorCode =
   | "managed_srt_unsupported"
@@ -100,8 +113,27 @@ export interface ManagedSrtSetupResult {
 
 export interface ManagedSrtHooks {
   readonly installDependencies?: (stagingRoot: string, signal: AbortSignal | undefined) => Promise<void>;
+  /** Legacy v1 file-lock liveness seam. V2 directory locks use process incarnation instead. */
   readonly processIsAlive?: (pid: number) => "alive" | "dead" | "unknown";
+  /** Test/embed seams for persistent v2 install-lock ownership. */
+  readonly currentProcessIncarnation?: () => Promise<ProcessIncarnation>;
+  readonly isSameProcessIncarnation?: SameProcessIncarnation;
+  readonly ownerlessGraceMs?: number;
+  readonly now?: () => number;
+  readonly installGuardTimeoutMs?: number;
   readonly sleep?: (milliseconds: number, signal: AbortSignal | undefined) => Promise<void>;
+  readonly beforeInstallGuardAcquire?: (guardPath: string) => Promise<void>;
+  readonly afterInstallGuardAcquired?: (guardPath: string) => Promise<void>;
+  readonly beforeInstallGuardClose?: (guardPath: string) => Promise<void>;
+  readonly beforeInstallStagingCleanup?: (stagingRoot: string) => Promise<void>;
+  /** Narrow deterministic seams for lock publication and pathname-race tests. */
+  readonly afterInstallLockDirectoryCreated?: (lockPath: string) => Promise<void>;
+  readonly afterInstallLockInspected?: (
+    lockPath: string,
+    kind: "ownerless" | "owned" | "legacy" | "legacy-publishing",
+  ) => Promise<void>;
+  readonly beforeStaleInstallLockRename?: (lockPath: string) => Promise<void>;
+  readonly beforeInstallLockReleaseRename?: (lockPath: string) => Promise<void>;
   /** Test-only fixture seam; production always uses the independently pinned tree digest. */
   readonly expectedTreeSha256?: (installRoot: string) => Promise<string>;
 }
@@ -124,7 +156,7 @@ export interface ManagedSrtSetupOptions extends SandboxManagerOptions {
   readonly verify?: boolean;
 }
 
-interface InstallLockRecord {
+interface LegacyInstallLockRecord {
   readonly schemaVersion: 1;
   readonly pid: number;
   readonly uid: number | null;
@@ -132,11 +164,61 @@ interface InstallLockRecord {
   readonly startedAt: string;
 }
 
-interface HeldInstallLock {
-  readonly path: string;
+interface InstallLockRecord {
+  readonly schemaVersion: 2;
+  readonly pid: number;
+  readonly uid: number | null;
   readonly token: string;
+  readonly startedAt: string;
+  readonly incarnation: ProcessIncarnation;
+}
+
+interface InstallLockIdentity {
   readonly dev: bigint;
   readonly ino: bigint;
+}
+
+interface SecureInstallLockOwner {
+  readonly record: InstallLockRecord;
+  readonly content: string;
+  readonly identity: InstallLockIdentity;
+}
+
+type ExistingInstallLock =
+  | {
+    readonly kind: "owned";
+    readonly identity: InstallLockIdentity;
+    readonly owner: SecureInstallLockOwner;
+  }
+  | {
+    readonly kind: "ownerless";
+    readonly identity: InstallLockIdentity;
+    readonly mtimeMs: number;
+  }
+  | {
+    readonly kind: "legacy";
+    readonly identity: InstallLockIdentity;
+    readonly record: LegacyInstallLockRecord;
+    readonly content: string;
+  }
+  | {
+    readonly kind: "legacy-publishing";
+    readonly identity: InstallLockIdentity;
+    readonly content: string;
+  };
+
+interface HeldInstallLock {
+  readonly path: string;
+  readonly identity: InstallLockIdentity;
+  readonly owner: SecureInstallLockOwner;
+  readonly beforeRelease?: (lockPath: string) => Promise<void>;
+}
+
+interface HeldInstallGuard {
+  readonly path: string;
+  readonly handle: FileHandle;
+  readonly identity: InstallLockIdentity;
+  readonly beforeClose?: (guardPath: string) => Promise<void>;
 }
 
 export function managedSrtInstallRoot(options: SandboxManagerOptions = {}): string {
@@ -231,88 +313,106 @@ export async function setupManagedSrt(options: ManagedSrtSetupOptions = {}): Pro
   }
 
   const installRoot = managedSrtInstallRoot(options);
-  let initial = await inspectManagedOnly(options);
-  if (initial.state === "ready") {
-    const check = options.verify === false ? undefined : await checkSandboxRuntime(options);
-    return { installed: false, repaired: false, status: initial, ...(check === undefined ? {} : { check }) };
-  }
-
-  const heldLock = await acquireInstallLock(options);
+  const heldGuard = await acquireInstallGuard(options);
+  let heldLock: HeldInstallLock | undefined;
   let stagingRoot: string | undefined;
-  let repaired = false;
+  let result: ManagedSrtSetupResult | undefined;
+  let primaryError: unknown;
   try {
-    throwIfAborted(options.signal);
-    await cleanupStaleStaging(managedSrtVersionRoot(options));
-    initial = await inspectManagedOnly(options);
+    let initial = await inspectManagedOnly(options);
     if (initial.state === "ready") {
       const check = options.verify === false ? undefined : await checkSandboxRuntime(options);
-      return { installed: false, repaired: false, status: initial, ...(check === undefined ? {} : { check }) };
-    }
-    if (initial.state === "corrupt") {
-      await quarantineManagedInstall(installRoot);
-      repaired = true;
-    }
-
-    stagingRoot = resolve(
-      managedSrtVersionRoot(options),
-      `.${MANAGED_SRT_LOCK_SHA256}.staging.${process.pid}.${randomUUID()}`,
-    );
-    await mkdir(stagingRoot, { mode: 0o700 });
-    await stageInstallResources(options.resourceRoot ?? MANAGED_SRT_RESOURCE_ROOT, stagingRoot);
-    throwIfAborted(options.signal);
-
-    if (options.hooks?.installDependencies !== undefined) {
-      await options.hooks.installDependencies(stagingRoot, options.signal);
+      result = { installed: false, repaired: false, status: initial, ...(check === undefined ? {} : { check }) };
     } else {
-      await runNpmCi(stagingRoot, options);
-    }
-    throwIfAborted(options.signal);
+      heldLock = await acquireInstallLock(options);
+      let repaired = false;
+      throwIfAborted(options.signal);
+      await cleanupStaleStaging(managedSrtVersionRoot(options));
+      initial = await inspectManagedOnly(options);
+      if (initial.state === "ready") {
+        const check = options.verify === false ? undefined : await checkSandboxRuntime(options);
+        result = { installed: false, repaired: false, status: initial, ...(check === undefined ? {} : { check }) };
+      } else {
+        if (initial.state === "corrupt") {
+          await quarantineManagedInstall(installRoot);
+          repaired = true;
+        }
 
-    await rm(resolve(stagingRoot, "node_modules", ".bin"), { recursive: true, force: true });
-    await makeTreePrivateAndRejectLinks(stagingRoot);
-    await writeInstallMarker(stagingRoot, options);
-    await verifyManagedInstall(stagingRoot, options);
+        stagingRoot = resolve(
+          managedSrtVersionRoot(options),
+          `.${MANAGED_SRT_LOCK_SHA256}.staging.${process.pid}.${randomUUID()}`,
+        );
+        await mkdir(stagingRoot, { mode: 0o700 });
+        await stageInstallResources(options.resourceRoot ?? MANAGED_SRT_RESOURCE_ROOT, stagingRoot);
+        throwIfAborted(options.signal);
 
-    try {
-      await rename(stagingRoot, installRoot);
-      stagingRoot = undefined;
-    } catch (error) {
-      if (!isNodeError(error, "EEXIST") && !isNodeError(error, "ENOTEMPTY")) {
-        throw error;
+        if (options.hooks?.installDependencies !== undefined) {
+          await options.hooks.installDependencies(stagingRoot, options.signal);
+        } else {
+          await runNpmCi(stagingRoot, options);
+        }
+        throwIfAborted(options.signal);
+
+        await rm(resolve(stagingRoot, "node_modules", ".bin"), { recursive: true, force: true });
+        await makeTreePrivateAndRejectLinks(stagingRoot);
+        await writeInstallMarker(stagingRoot, options);
+        await verifyManagedInstall(stagingRoot, options);
+
+        try {
+          await rename(stagingRoot, installRoot);
+          stagingRoot = undefined;
+        } catch (error) {
+          if (!isNodeError(error, "EEXIST") && !isNodeError(error, "ENOTEMPTY")) {
+            throw error;
+          }
+          // A legacy actor can only win this race by bypassing our v0.9 guard.
+          // Accept its result solely if it independently passes the integrity check.
+          await verifyManagedInstall(installRoot, options);
+        }
+
+        const status = await inspectManagedOnly(options);
+        if (status.state !== "ready") {
+          throw new SandboxManagerError(
+            "managed_srt_install_failed",
+            `Managed SRT did not validate after atomic installation: ${status.message}`,
+            { installRoot },
+          );
+        }
+        const check = options.verify === false ? undefined : await checkSandboxRuntime(options);
+        result = { installed: true, repaired, status, ...(check === undefined ? {} : { check }) };
       }
-      // Another actor can only win this race by bypassing our lock. Accept its
-      // result solely if it independently passes the full integrity check.
-      await verifyManagedInstall(installRoot, options);
     }
-
-    const status = await inspectManagedOnly(options);
-    if (status.state !== "ready") {
-      throw new SandboxManagerError(
-        "managed_srt_install_failed",
-        `Managed SRT did not validate after atomic installation: ${status.message}`,
-        { installRoot },
-      );
-    }
-    const check = options.verify === false ? undefined : await checkSandboxRuntime(options);
-    return { installed: true, repaired, status, ...(check === undefined ? {} : { check }) };
   } catch (error) {
-    if (error instanceof SandboxManagerError) {
-      throw error;
-    }
-    throw new SandboxManagerError(
-      "managed_srt_install_failed",
-      `Managed SRT installation failed without changing PATH or system packages: ${errorMessage(error)}`,
-      { installRoot, cause: errorMessage(error) },
-    );
-  } finally {
+    primaryError = managedSrtSetupFailure(error, installRoot);
+  }
+
+  const completionErrors: unknown[] = [];
+  if (primaryError !== undefined) completionErrors.push(primaryError);
+  if (stagingRoot !== undefined) {
     try {
-      if (stagingRoot !== undefined) {
-        await rm(stagingRoot, { recursive: true, force: true });
-      }
-    } finally {
-      await releaseInstallLock(heldLock);
+      await options.hooks?.beforeInstallStagingCleanup?.(stagingRoot);
+      await rm(stagingRoot, { recursive: true, force: true });
+    } catch (error) {
+      completionErrors.push(error);
     }
   }
+  if (heldLock !== undefined) {
+    try {
+      await releaseInstallLock(heldLock);
+    } catch (error) {
+      completionErrors.push(error);
+    }
+  }
+  try {
+    await closeInstallGuard(heldGuard);
+  } catch (error) {
+    completionErrors.push(error);
+  }
+  throwCompletionErrors(completionErrors);
+  if (result === undefined) {
+    throw new Error("Managed SRT setup completed without a result.");
+  }
+  return result;
 }
 
 export async function checkSandboxRuntime(options: SandboxManagerOptions = {}): Promise<SandboxCheckResult> {
@@ -760,162 +860,763 @@ async function cleanupStaleStaging(versionRoot: string): Promise<void> {
   }
 }
 
+async function acquireInstallGuard(options: SandboxManagerOptions): Promise<HeldInstallGuard> {
+  const guardPath = resolve(managedSrtVersionRoot(options), INSTALL_GUARD_NAME);
+  const timeoutMs = options.hooks?.installGuardTimeoutMs ?? INSTALL_LOCK_WAIT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+    throw installLockUnsafe(guardPath, "Install-guard timeout must be a non-negative finite duration.");
+  }
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(
+      guardPath,
+      fsConstants.O_RDWR | fsConstants.O_CREAT | (fsConstants.O_NOFOLLOW ?? 0),
+      0o600,
+    );
+    const beforeHandle = await handle.stat({ bigint: true });
+    assertPrivateInstallGuardDetails(beforeHandle, guardPath);
+    const identity = installLockIdentity(beforeHandle);
+    const beforePath = await lstat(guardPath, { bigint: true });
+    assertPrivateInstallGuardDetails(beforePath, guardPath);
+    if (!sameInstallLockIdentity(beforePath, identity)) {
+      throw installLockUnsafe(guardPath, "Install-guard path did not identify the opened file before locking.");
+    }
+
+    await options.hooks?.beforeInstallGuardAcquire?.(guardPath);
+    await acquireInstallGuardOsLock(handle, guardPath, timeoutMs, options);
+
+    const afterHandle = await handle.stat({ bigint: true });
+    assertPrivateInstallGuardDetails(afterHandle, guardPath);
+    if (!sameInstallLockIdentity(afterHandle, identity)) {
+      throw installLockUnsafe(guardPath, "Opened install-guard identity changed while acquiring its OS lock.");
+    }
+    const afterPath = await lstat(guardPath, { bigint: true });
+    assertPrivateInstallGuardDetails(afterPath, guardPath);
+    if (!sameInstallLockIdentity(afterPath, identity)) {
+      throw installLockUnsafe(guardPath, "Install-guard path changed while its OS lock was acquired.");
+    }
+    await options.hooks?.afterInstallGuardAcquired?.(guardPath);
+    return {
+      path: guardPath,
+      handle,
+      identity,
+      ...(options.hooks?.beforeInstallGuardClose === undefined
+        ? {}
+        : { beforeClose: options.hooks.beforeInstallGuardClose }),
+    };
+  } catch (error) {
+    const primary = error instanceof SandboxManagerError || error instanceof AggregateError
+      ? error
+      : installLockUnsafe(guardPath, errorMessage(error));
+    if (handle === undefined) {
+      throw primary;
+    }
+    try {
+      await handle.close();
+    } catch (closeError) {
+      throw aggregateFailures(
+        [primary, stageFailure("Install-guard handle close failed", closeError)],
+        "Managed SRT install-guard acquisition and handle close both failed.",
+      );
+    }
+    throw primary;
+  }
+}
+
+async function acquireInstallGuardOsLock(
+  handle: FileHandle,
+  guardPath: string,
+  timeoutMs: number,
+  options: SandboxManagerOptions,
+): Promise<void> {
+  const startedAt = process.hrtime.bigint();
+  const elapsedMs = (): number => Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+  // These helpers provide advisory descriptor locks for the local user cache.
+  // Network filesystems with non-local flock semantics are deliberately unsupported.
+  const helper = process.platform === "darwin"
+    ? { command: "/usr/bin/lockf", args: ["-s", "-t", "0", "3"] }
+    : process.platform === "linux"
+      ? { command: "/usr/bin/flock", args: ["-E", String(INSTALL_GUARD_TIMEOUT_EXIT), "-x", "-n", "3"] }
+      : undefined;
+  if (helper === undefined) {
+    throw installLockUnsafe(guardPath, `No supported install-guard helper exists on ${process.platform}.`);
+  }
+
+  while (true) {
+    throwIfAborted(options.signal);
+    const outcome = await runInstallGuardHelperAttempt(handle, helper);
+    if (outcome.code === 0) {
+      throwIfAborted(options.signal);
+      return;
+    }
+    if (outcome.code !== INSTALL_GUARD_TIMEOUT_EXIT) {
+      throw installLockUnsafe(
+        guardPath,
+        `Install-guard helper failed (${outcome.signal ?? `exit ${String(outcome.code)}`}): ${outcome.stderr.trim() || "no diagnostic output"}`,
+        { helper: helper.command, exitCode: outcome.code, signal: outcome.signal },
+      );
+    }
+    throwIfAborted(options.signal);
+    const elapsed = elapsedMs();
+    if (elapsed >= timeoutMs) {
+      throw installLockUnsafe(
+        guardPath,
+        `Timed out waiting ${timeoutMs} milliseconds for the managed SRT install guard.`,
+        { helper: helper.command, exitCode: outcome.code },
+      );
+    }
+    await abortableSleep(
+      Math.min(INSTALL_LOCK_POLL_MS, Math.max(0, timeoutMs - elapsed)),
+      options.signal,
+    );
+  }
+}
+
+async function runInstallGuardHelperAttempt(
+  handle: FileHandle,
+  helper: { readonly command: string; readonly args: readonly string[] },
+): Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null; readonly stderr: string }> {
+  return await new Promise((resolvePromise, reject) => {
+    const child = spawn(helper.command, helper.args, {
+      stdio: ["ignore", "ignore", "pipe", handle.fd],
+    });
+    let stderr = "";
+    let spawnError: Error | undefined;
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      if (stderr.length < INSTALL_LOCK_RECORD_MAX_BYTES) {
+        stderr += chunk.slice(0, INSTALL_LOCK_RECORD_MAX_BYTES - stderr.length);
+      }
+    });
+    child.once("error", (error) => { spawnError = error; });
+    child.once("close", (code, childSignal) => {
+      if (spawnError !== undefined) {
+        reject(spawnError);
+      } else {
+        resolvePromise({ code, signal: childSignal, stderr });
+      }
+    });
+  });
+}
+
+async function closeInstallGuard(guard: HeldInstallGuard): Promise<void> {
+  const errors: unknown[] = [];
+  try {
+    await guard.beforeClose?.(guard.path);
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    const handleDetails = await guard.handle.stat({ bigint: true });
+    assertPrivateInstallGuardDetails(handleDetails, guard.path);
+    const pathDetails = await lstat(guard.path, { bigint: true });
+    assertPrivateInstallGuardDetails(pathDetails, guard.path);
+    if (!sameInstallLockIdentity(handleDetails, guard.identity)
+      || !sameInstallLockIdentity(pathDetails, guard.identity)) {
+      throw installLockUnsafe(guard.path, "Install-guard identity changed while the guarded operation was active.");
+    }
+  } catch (error) {
+    errors.push(error instanceof SandboxManagerError
+      ? error
+      : installLockUnsafe(guard.path, errorMessage(error)));
+  }
+  try {
+    await guard.handle.close();
+  } catch (error) {
+    errors.push(error);
+  }
+  throwCompletionErrors(errors, "Managed SRT install-guard validation or close failed.");
+}
+
+function assertPrivateInstallGuardDetails(details: BigIntStats, path: string): void {
+  if (!details.isFile()
+    || details.isSymbolicLink()
+    || details.nlink !== 1n
+    || (details.mode & 0o077n) !== 0n) {
+    throw new Error(`install guard ${path} must be an owner-only single-link regular file`);
+  }
+  if (process.getuid !== undefined && details.uid !== BigInt(process.getuid())) {
+    throw new Error(`install guard ${path} is not owned by the current user`);
+  }
+}
+
 async function acquireInstallLock(options: SandboxManagerOptions): Promise<HeldInstallLock> {
   const lockPath = resolve(managedSrtVersionRoot(options), INSTALL_LOCK_NAME);
-  const deadline = Date.now() + INSTALL_LOCK_WAIT_MS;
+  const now = options.hooks?.now ?? Date.now;
+  const ownerlessGraceMs = options.hooks?.ownerlessGraceMs ?? INSTALL_LOCK_OWNERLESS_GRACE_MS;
+  if (!Number.isFinite(ownerlessGraceMs) || ownerlessGraceMs < 0) {
+    throw new SandboxManagerError(
+      "managed_srt_lock_unsafe",
+      "Managed SRT install-lock ownerless grace must be a non-negative finite duration.",
+      { ownerlessGraceMs },
+    );
+  }
+  const deadline = now() + INSTALL_LOCK_WAIT_MS;
+  const incarnation = await (options.hooks?.currentProcessIncarnation ?? currentProcessIncarnation)();
+  const isSameProcess = options.hooks?.isSameProcessIncarnation ?? matchesProcessIncarnation;
+
   while (true) {
     throwIfAborted(options.signal);
     const token = randomUUID();
-    let handle;
+    let createdIdentity: InstallLockIdentity | undefined;
     try {
-      handle = await open(
-        lockPath,
-        fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0),
-        0o600,
-      );
+      await mkdir(lockPath, { mode: 0o700 });
+      const created = await assertPrivateInstallLockDirectory(lockPath);
+      createdIdentity = installLockIdentity(created);
+      await options.hooks?.afterInstallLockDirectoryCreated?.(lockPath);
+      await assertSamePrivateInstallLockDirectory(lockPath, createdIdentity);
       const record: InstallLockRecord = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         pid: process.pid,
         uid: process.getuid?.() ?? null,
         token,
-        startedAt: new Date().toISOString(),
+        startedAt: new Date(now()).toISOString(),
+        incarnation,
       };
-      await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8");
-      await handle.sync();
-      const lockStat = await handle.stat({ bigint: true });
-      await handle.close();
-      return { path: lockPath, token, dev: lockStat.dev, ino: lockStat.ino };
+      const owner = await publishInstallLockOwner(lockPath, createdIdentity, record);
+      await syncPrivateInstallLockDirectory(lockPath, createdIdentity);
+      await assertSamePrivateInstallLockDirectory(lockPath, createdIdentity);
+      return {
+        path: lockPath,
+        identity: createdIdentity,
+        owner,
+        ...(options.hooks?.beforeInstallLockReleaseRename === undefined
+          ? {}
+          : { beforeRelease: options.hooks.beforeInstallLockReleaseRename }),
+      };
     } catch (error) {
-      await handle?.close().catch(() => undefined);
+      if (createdIdentity !== undefined) {
+        try {
+          await abandonCreatedInstallLock(lockPath, createdIdentity);
+        } catch (cleanupError) {
+          throw aggregateFailures(
+            [error, stageFailure("Failed install-lock acquisition cleanup", cleanupError)],
+            `Managed SRT install-lock acquisition and cleanup both failed at ${lockPath}.`,
+          );
+        }
+      }
       if (!isNodeError(error, "EEXIST")) {
         throw error;
       }
     }
 
-    let existing: Awaited<ReturnType<typeof readSecureInstallLock>>;
-    try {
-      existing = await readSecureInstallLock(lockPath);
-    } catch (error) {
-      if (isNodeError(error, "ENOENT")) {
+    const existing = await inspectExistingInstallLock(lockPath);
+    if (existing === undefined) continue;
+    await options.hooks?.afterInstallLockInspected?.(lockPath, existing.kind);
+
+    if (existing.kind === "ownerless") {
+      if (now() - existing.mtimeMs >= ownerlessGraceMs) {
+        await quarantineStaleInstallLock(lockPath, existing, options);
         continue;
       }
-      throw error;
-    }
-    const liveness = options.hooks?.processIsAlive?.(existing.record.pid) ?? processLiveness(existing.record.pid);
-    if (liveness === "dead") {
-      try {
-        await unlinkLockIfUnchanged(lockPath, existing);
-      } catch (error) {
-        if (!isNodeError(error, "ENOENT")) {
-          throw error;
-        }
+      if (now() >= deadline) {
+        throw installLockUnsafe(
+          lockPath,
+          "Another installer left a fresh ownerless SRT install lock in its bounded publication window.",
+        );
       }
-      continue;
+    } else if (existing.kind === "owned") {
+      let sameOwner: boolean;
+      try {
+        sameOwner = await isSameProcess(existing.owner.record.pid, existing.owner.record.incarnation);
+      } catch (error) {
+        throw installLockUnsafe(
+          lockPath,
+          `Cannot prove the SRT install lock owner's process incarnation: ${errorMessage(error)}`,
+        );
+      }
+      if (!sameOwner) {
+        await quarantineStaleInstallLock(lockPath, existing, options);
+        continue;
+      }
+      if (now() >= deadline) {
+        throw installLockUnsafe(
+          lockPath,
+          `Another live process incarnation (PID ${existing.owner.record.pid}) still owns the SRT install lock.`,
+          { pid: existing.owner.record.pid },
+        );
+      }
+    } else if (existing.kind === "legacy-publishing") {
+      if (now() >= deadline) {
+        throw installLockUnsafe(
+          lockPath,
+          "A legacy SRT installer did not finish publishing its lock record; the incomplete lock was left untouched.",
+        );
+      }
+    } else {
+      const liveness = options.hooks?.processIsAlive?.(existing.record.pid)
+        ?? processLiveness(existing.record.pid);
+      if (liveness === "dead") {
+        await quarantineStaleInstallLock(lockPath, existing, options);
+        continue;
+      }
+      if (liveness === "unknown") {
+        throw installLockUnsafe(
+          lockPath,
+          `Cannot prove whether legacy SRT install lock owner PID ${existing.record.pid} is alive; refusing to remove it.`,
+          { pid: existing.record.pid },
+        );
+      }
+      if (now() >= deadline) {
+        throw installLockUnsafe(
+          lockPath,
+          `Another live legacy process (PID ${existing.record.pid}) still owns the SRT install lock.`,
+          { pid: existing.record.pid },
+        );
+      }
     }
-    if (liveness === "unknown") {
-      throw new SandboxManagerError(
-        "managed_srt_lock_unsafe",
-        `Cannot prove whether SRT install lock owner PID ${existing.record.pid} is alive; refusing to remove it.`,
-        { lockPath, pid: existing.record.pid },
-      );
-    }
-    if (Date.now() >= deadline) {
-      throw new SandboxManagerError(
-        "managed_srt_lock_unsafe",
-        `Another live process (PID ${existing.record.pid}) still owns the SRT install lock.`,
-        { lockPath, pid: existing.record.pid },
-      );
-    }
-    await (options.hooks?.sleep ?? abortableSleep)(100, options.signal);
+    await (options.hooks?.sleep ?? abortableSleep)(INSTALL_LOCK_POLL_MS, options.signal);
   }
 }
 
-async function readSecureInstallLock(lockPath: string): Promise<{
-  readonly record: InstallLockRecord;
-  readonly content: string;
-  readonly dev: bigint;
-  readonly ino: bigint;
-}> {
+async function inspectExistingInstallLock(lockPath: string): Promise<ExistingInstallLock | undefined> {
+  try {
+    const details = await lstat(lockPath, { bigint: true });
+    if (details.isSymbolicLink()) {
+      throw new Error("lock path must not be a symbolic link");
+    }
+    assertInstallLockOwned(details, lockPath);
+    const identity = installLockIdentity(details);
+
+    if (details.isDirectory()) {
+      assertPrivateInstallLockDirectoryDetails(details, lockPath);
+      const owner = await readSecureInstallLockOwner(resolve(lockPath, INSTALL_LOCK_OWNER_NAME));
+      if (owner === "detached") return undefined;
+      const current = await samePrivateInstallLockDirectory(lockPath, identity);
+      if (!current) return undefined;
+      if (owner === undefined) {
+        const ownerlessDetails = await assertSamePrivateInstallLockDirectory(lockPath, identity);
+        return { kind: "ownerless", identity, mtimeMs: Number(ownerlessDetails.mtimeMs) };
+      }
+      return { kind: "owned", identity, owner };
+    }
+
+    if (details.isFile()) {
+      return await readSecureLegacyInstallLock(lockPath, identity);
+    }
+    throw new Error("lock path must be a private directory or a legacy regular file");
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return undefined;
+    if (error instanceof SandboxManagerError) throw error;
+    throw installLockUnsafe(lockPath, errorMessage(error));
+  }
+}
+
+async function publishInstallLockOwner(
+  lockPath: string,
+  identity: InstallLockIdentity,
+  record: InstallLockRecord,
+): Promise<SecureInstallLockOwner> {
+  const ownerPath = resolve(lockPath, INSTALL_LOCK_OWNER_NAME);
+  const temporaryPath = resolve(lockPath, `.owner.${process.pid}.${record.token}.tmp`);
+  const handle = await open(
+    temporaryPath,
+    fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | (fsConstants.O_NOFOLLOW ?? 0),
+    0o600,
+  );
+  try {
+    await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8");
+    await handle.sync();
+    assertPrivateInstallLockOwnerDetails(await handle.stat({ bigint: true }), temporaryPath);
+  } finally {
+    await handle.close();
+  }
+  await assertSamePrivateInstallLockDirectory(lockPath, identity);
+  await rename(temporaryPath, ownerPath);
+  await assertSamePrivateInstallLockDirectory(lockPath, identity);
+  const owner = await readSecureInstallLockOwner(ownerPath);
+  if (owner === undefined || owner === "detached" || owner.record.token !== record.token) {
+    throw installLockUnsafe(lockPath, "The atomically published owner record could not be verified.");
+  }
+  return owner;
+}
+
+async function readSecureInstallLockOwner(
+  ownerPath: string,
+): Promise<SecureInstallLockOwner | "detached" | undefined> {
+  let handle;
+  try {
+    handle = await open(ownerPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return undefined;
+    throw error;
+  }
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (before.nlink === 0n) return "detached";
+    assertPrivateInstallLockOwnerDetails(before, ownerPath);
+    const content = await readBoundedInstallLockRecord(handle, ownerPath);
+    const after = await handle.stat({ bigint: true });
+    if (after.nlink === 0n) return "detached";
+    assertPrivateInstallLockOwnerDetails(after, ownerPath);
+    if (!sameInstallLockIdentity(after, installLockIdentity(before))) {
+      throw new Error("owner record identity changed while it was read");
+    }
+    let parsed: Partial<InstallLockRecord>;
+    try {
+      parsed = JSON.parse(content) as Partial<InstallLockRecord>;
+    } catch (error) {
+      throw new Error(`owner record JSON is malformed: ${errorMessage(error)}`);
+    }
+    const incarnation = processIncarnationFromJson(parsed.incarnation);
+    if (!validInstallLockRecordFields(parsed, 2) || incarnation === undefined) {
+      throw new Error("owner record is malformed or belongs to another user");
+    }
+    const valid = parsed as InstallLockRecord;
+    return {
+      record: {
+        schemaVersion: 2,
+        pid: valid.pid,
+        uid: valid.uid,
+        token: valid.token,
+        startedAt: valid.startedAt,
+        incarnation,
+      },
+      content,
+      identity: installLockIdentity(after),
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function readSecureLegacyInstallLock(
+  lockPath: string,
+  observedIdentity: InstallLockIdentity,
+): Promise<ExistingInstallLock | undefined> {
   let handle;
   try {
     handle = await open(lockPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-    const lockStat = await handle.stat({ bigint: true });
-    if (!lockStat.isFile() || lockStat.nlink !== 1n || (lockStat.mode & 0o077n) !== 0n) {
-      throw new Error("lock is not an owner-only single-link regular file");
+    const before = await handle.stat({ bigint: true });
+    if (!sameInstallLockIdentity(before, observedIdentity) || before.nlink === 0n) return undefined;
+    assertPrivateLegacyInstallLockDetails(before, lockPath);
+    const content = await readBoundedInstallLockRecord(handle, lockPath);
+    const after = await handle.stat({ bigint: true });
+    if (after.nlink === 0n) return undefined;
+    assertPrivateLegacyInstallLockDetails(after, lockPath);
+    if (!sameInstallLockIdentity(after, observedIdentity)) return undefined;
+    if (!content.endsWith("\n")) {
+      if (!(await sameInstallLockPathIdentity(lockPath, observedIdentity))) return undefined;
+      return {
+        kind: "legacy-publishing",
+        identity: observedIdentity,
+        content,
+      };
     }
-    if (process.getuid !== undefined && lockStat.uid !== BigInt(process.getuid())) {
-      throw new Error("lock owner differs from the current user");
+    let parsed: Partial<LegacyInstallLockRecord>;
+    try {
+      parsed = JSON.parse(content) as Partial<LegacyInstallLockRecord>;
+    } catch (error) {
+      throw new Error(`legacy lock JSON is incomplete or malformed: ${errorMessage(error)}`);
     }
-    const content = await handle.readFile("utf8");
-    const record = JSON.parse(content) as InstallLockRecord;
-    if (
-      record.schemaVersion !== 1
-      || !Number.isSafeInteger(record.pid)
-      || record.pid <= 0
-      || typeof record.token !== "string"
-      || !/^[a-f0-9-]{36}$/iu.test(record.token)
-      || typeof record.startedAt !== "string"
-      || (record.uid !== null && !Number.isSafeInteger(record.uid))
-      || (process.getuid !== undefined && record.uid !== process.getuid())
-    ) {
-      throw new Error("lock record is malformed or belongs to another user");
+    if (!validInstallLockRecordFields(parsed, 1)) {
+      throw new Error("legacy lock record is malformed or belongs to another user");
     }
-    return { record, content, dev: lockStat.dev, ino: lockStat.ino };
-  } catch (error) {
-    if (isNodeError(error, "ENOENT")) {
-      throw error;
-    }
-    throw new SandboxManagerError(
-      "managed_srt_lock_unsafe",
-      `SRT install lock is unsafe and was left untouched: ${errorMessage(error)}`,
-      { lockPath, cause: errorMessage(error) },
-    );
+    const valid = parsed as LegacyInstallLockRecord;
+    if (!(await sameInstallLockPathIdentity(lockPath, observedIdentity))) return undefined;
+    return {
+      kind: "legacy",
+      identity: observedIdentity,
+      record: {
+        schemaVersion: 1,
+        pid: valid.pid,
+        uid: valid.uid,
+        token: valid.token,
+        startedAt: valid.startedAt,
+      },
+      content,
+    };
   } finally {
     await handle?.close().catch(() => undefined);
   }
 }
 
-async function unlinkLockIfUnchanged(
+async function readBoundedInstallLockRecord(handle: FileHandle, path: string): Promise<string> {
+  const buffer = Buffer.alloc(INSTALL_LOCK_RECORD_MAX_BYTES + 1);
+  let offset = 0;
+  while (offset < buffer.length) {
+    const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  if (offset > INSTALL_LOCK_RECORD_MAX_BYTES) {
+    throw new Error(`lock record ${path} exceeds ${INSTALL_LOCK_RECORD_MAX_BYTES} bytes`);
+  }
+  return buffer.subarray(0, offset).toString("utf8");
+}
+
+function validInstallLockRecordFields(
+  record: Partial<InstallLockRecord> | Partial<LegacyInstallLockRecord>,
+  schemaVersion: 1 | 2,
+): boolean {
+  return record.schemaVersion === schemaVersion
+    && typeof record.pid === "number"
+    && Number.isSafeInteger(record.pid)
+    && record.pid > 0
+    && typeof record.token === "string"
+    && /^[a-f0-9-]{36}$/iu.test(record.token)
+    && typeof record.startedAt === "string"
+    && Number.isFinite(Date.parse(record.startedAt))
+    && (record.uid === null || (typeof record.uid === "number" && Number.isSafeInteger(record.uid)))
+    && (process.getuid === undefined || record.uid === process.getuid());
+}
+
+async function quarantineStaleInstallLock(
   lockPath: string,
-  expected: Awaited<ReturnType<typeof readSecureInstallLock>>,
-): Promise<void> {
-  const current = await readSecureInstallLock(lockPath);
-  if (
-    current.dev !== expected.dev
-    || current.ino !== expected.ino
-    || current.content !== expected.content
-    || current.record.token !== expected.record.token
-  ) {
-    throw new SandboxManagerError(
-      "managed_srt_lock_unsafe",
-      "SRT install lock changed during stale-lock verification; it was left untouched.",
-      { lockPath },
+  expected: ExistingInstallLock,
+  options: SandboxManagerOptions,
+): Promise<boolean> {
+  await options.hooks?.beforeStaleInstallLockRename?.(lockPath);
+  const current = await inspectExistingInstallLock(lockPath);
+  if (current === undefined) return false;
+  if (!sameExistingInstallLock(current, expected)) {
+    throw installLockUnsafe(
+      lockPath,
+      "SRT install lock changed during stale-lock verification; the replacement was left untouched.",
     );
   }
-  await unlink(lockPath);
+  const quarantinePath = `${lockPath}.stale.${process.pid}.${randomUUID()}`;
+  try {
+    await rename(lockPath, quarantinePath);
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return false;
+    throw error;
+  }
+  const moved = await inspectExistingInstallLock(quarantinePath);
+  if (moved === undefined || !sameExistingInstallLock(moved, expected)) {
+    throw installLockUnsafe(
+      lockPath,
+      `The stale lock changed across quarantine and was retained at ${quarantinePath}.`,
+      { quarantinePath },
+    );
+  }
+  await rm(quarantinePath, { recursive: true, force: true });
+  return true;
 }
 
 async function releaseInstallLock(lock: HeldInstallLock): Promise<void> {
-  if (!(await pathExists(lock.path))) {
-    return;
+  const expected: ExistingInstallLock = {
+    kind: "owned",
+    identity: lock.identity,
+    owner: lock.owner,
+  };
+  const observed = await inspectExistingInstallLock(lock.path);
+  if (observed === undefined || !sameExistingInstallLock(observed, expected)) {
+    throw installLockUnsafe(
+      lock.path,
+      "SRT install lock identity or owner changed before release; another lock was left untouched.",
+    );
   }
-  let current: Awaited<ReturnType<typeof readSecureInstallLock>>;
+  await lock.beforeRelease?.(lock.path);
+  const current = await inspectExistingInstallLock(lock.path);
+  if (current === undefined || !sameExistingInstallLock(current, expected)) {
+    throw installLockUnsafe(
+      lock.path,
+      "SRT install lock changed at the release boundary; the replacement was left untouched.",
+    );
+  }
+  const releasedPath = `${lock.path}.released.${process.pid}.${randomUUID()}`;
   try {
-    current = await readSecureInstallLock(lock.path);
+    await rename(lock.path, releasedPath);
   } catch (error) {
     if (isNodeError(error, "ENOENT")) {
-      return;
+      throw installLockUnsafe(lock.path, "SRT install lock disappeared during release.");
     }
     throw error;
   }
-  if (current.dev !== lock.dev || current.ino !== lock.ino || current.record.token !== lock.token) {
-    throw new SandboxManagerError(
-      "managed_srt_lock_unsafe",
-      "SRT install lock identity changed; refusing to remove another process's lock.",
-      { lockPath: lock.path },
+  const moved = await inspectExistingInstallLock(releasedPath);
+  if (moved === undefined || !sameExistingInstallLock(moved, expected)) {
+    throw installLockUnsafe(
+      lock.path,
+      `SRT install lock changed across release and was retained at ${releasedPath}.`,
+      { releasedPath },
     );
   }
-  await unlink(lock.path);
+  await rm(releasedPath, { recursive: true, force: true });
+}
+
+async function abandonCreatedInstallLock(
+  lockPath: string,
+  identity: InstallLockIdentity,
+): Promise<void> {
+  if (!(await samePrivateInstallLockDirectory(lockPath, identity))) return;
+  const abandonedPath = `${lockPath}.abandoned.${process.pid}.${randomUUID()}`;
+  try {
+    await rename(lockPath, abandonedPath);
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return;
+    throw error;
+  }
+  const moved = await lstat(abandonedPath, { bigint: true });
+  if (!sameInstallLockIdentity(moved, identity)) {
+    throw installLockUnsafe(
+      lockPath,
+      `A failed acquisition changed across quarantine and was retained at ${abandonedPath}.`,
+      { abandonedPath },
+    );
+  }
+  await rm(abandonedPath, { recursive: true, force: true });
+}
+
+async function assertPrivateInstallLockDirectory(path: string): Promise<BigIntStats> {
+  const details = await lstat(path, { bigint: true });
+  assertPrivateInstallLockDirectoryDetails(details, path);
+  return details;
+}
+
+function assertPrivateInstallLockDirectoryDetails(details: BigIntStats, path: string): void {
+  if (!details.isDirectory() || details.isSymbolicLink()) {
+    throw new Error("lock path must be a real directory");
+  }
+  assertInstallLockOwned(details, path);
+  if ((details.mode & 0o077n) !== 0n) {
+    throw new Error("lock directory must be owner-only (mode 0700)");
+  }
+}
+
+function assertPrivateInstallLockOwnerDetails(details: BigIntStats, path: string): void {
+  if (!details.isFile() || details.isSymbolicLink() || details.nlink !== 1n || (details.mode & 0o077n) !== 0n) {
+    throw new Error(`lock owner ${path} must be an owner-only single-link regular file`);
+  }
+  assertInstallLockOwned(details, path);
+}
+
+function assertPrivateLegacyInstallLockDetails(details: BigIntStats, path: string): void {
+  if (!details.isFile() || details.isSymbolicLink() || details.nlink !== 1n || (details.mode & 0o077n) !== 0n) {
+    throw new Error(`legacy lock ${path} must be an owner-only single-link regular file`);
+  }
+  assertInstallLockOwned(details, path);
+}
+
+function assertInstallLockOwned(details: BigIntStats, path: string): void {
+  if (process.getuid !== undefined && details.uid !== BigInt(process.getuid())) {
+    throw new Error(`lock path ${path} is not owned by the current user`);
+  }
+}
+
+async function assertSamePrivateInstallLockDirectory(
+  path: string,
+  identity: InstallLockIdentity,
+): Promise<BigIntStats> {
+  const details = await assertPrivateInstallLockDirectory(path);
+  if (!sameInstallLockIdentity(details, identity)) {
+    throw installLockUnsafe(path, "SRT install lock directory identity changed.");
+  }
+  return details;
+}
+
+async function samePrivateInstallLockDirectory(
+  path: string,
+  identity: InstallLockIdentity,
+): Promise<boolean> {
+  try {
+    return sameInstallLockIdentity(await assertPrivateInstallLockDirectory(path), identity);
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return false;
+    throw error;
+  }
+}
+
+async function sameInstallLockPathIdentity(
+  path: string,
+  identity: InstallLockIdentity,
+): Promise<boolean> {
+  try {
+    return sameInstallLockIdentity(await lstat(path, { bigint: true }), identity);
+  } catch (error) {
+    if (isNodeError(error, "ENOENT")) return false;
+    throw error;
+  }
+}
+
+async function syncPrivateInstallLockDirectory(
+  path: string,
+  identity: InstallLockIdentity,
+): Promise<void> {
+  const handle = await open(
+    path,
+    fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0) | (fsConstants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    const details = await handle.stat({ bigint: true });
+    assertPrivateInstallLockDirectoryDetails(details, path);
+    if (!sameInstallLockIdentity(details, identity)) {
+      throw installLockUnsafe(path, "SRT install lock changed before its owner publication was synced.");
+    }
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+function installLockIdentity(
+  details: { readonly dev: bigint; readonly ino: bigint },
+): InstallLockIdentity {
+  return { dev: details.dev, ino: details.ino };
+}
+
+function sameInstallLockIdentity(
+  details: { readonly dev: bigint; readonly ino: bigint },
+  identity: InstallLockIdentity,
+): boolean {
+  return details.dev === identity.dev && details.ino === identity.ino;
+}
+
+function sameExistingInstallLock(left: ExistingInstallLock, right: ExistingInstallLock): boolean {
+  if (left.kind !== right.kind || !sameInstallLockIdentity(left.identity, right.identity)) return false;
+  if (left.kind === "ownerless" && right.kind === "ownerless") return true;
+  if (left.kind === "owned" && right.kind === "owned") {
+    return left.owner.record.token === right.owner.record.token
+      && left.owner.content === right.owner.content
+      && sameInstallLockIdentity(left.owner.identity, right.owner.identity);
+  }
+  if (left.kind === "legacy" && right.kind === "legacy") {
+    return left.record.token === right.record.token && left.content === right.content;
+  }
+  return left.kind === "legacy-publishing"
+    && right.kind === "legacy-publishing"
+    && left.content === right.content;
+}
+
+function installLockUnsafe(
+  lockPath: string,
+  cause: string,
+  details: Readonly<Record<string, unknown>> = {},
+): SandboxManagerError {
+  return new SandboxManagerError(
+    "managed_srt_lock_unsafe",
+    `SRT install lock is unsafe and was left untouched: ${cause}`,
+    { lockPath, cause, ...details },
+  );
+}
+
+function managedSrtSetupFailure(error: unknown, installRoot: string): unknown {
+  if (error instanceof SandboxManagerError || error instanceof AggregateError) return error;
+  return new SandboxManagerError(
+    "managed_srt_install_failed",
+    `Managed SRT installation failed without changing PATH or system packages: ${errorMessage(error)}`,
+    { installRoot, cause: errorMessage(error) },
+  );
+}
+
+function stageFailure(stage: string, error: unknown): Error {
+  return new Error(`${stage}: ${errorMessage(error)}`, { cause: error });
+}
+
+function throwCompletionErrors(
+  errors: readonly unknown[],
+  message = "Managed SRT setup and one or more cleanup or release stages failed.",
+): void {
+  if (errors.length === 0) return;
+  if (errors.length === 1) throw errors[0];
+  throw aggregateFailures(errors, message);
+}
+
+function aggregateFailures(errors: readonly unknown[], message: string): AggregateError {
+  const summary = errors
+    .map((error) => errorMessage(error).replace(/\s+/gu, " ").slice(0, 500))
+    .join(" | ");
+  return new AggregateError(errors, `${message} Failures: ${summary}`);
 }
 
 function processLiveness(pid: number): "alive" | "dead" | "unknown" {
