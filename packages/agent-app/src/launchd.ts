@@ -99,23 +99,15 @@ export function escapeXml(value: string): string {
  * process.env. Only the explicit, non-secret operational allowlist is restored.
  */
 export function buildPlistXml(input: PlistInput): string {
-  const environmentArguments = Object.entries(input.environment)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `${key}=${value}`);
-  const programArguments = [
-    "/usr/bin/env",
-    "-i",
-    ...environmentArguments,
-    input.nodePath,
-    input.cliPath,
-    "start",
-    "--foreground",
-    "--config",
-    input.configPath,
-    ...(input.envFile === undefined ? [] : ["--env-file", input.envFile]),
-    "--expected-background-snapshot",
-    input.expectedBackgroundSnapshot,
-  ];
+  const programArguments = buildLaunchdProgramArguments(input);
+  for (const [name, value] of [
+    ["launchd label", input.label],
+    ["working directory", input.cwd],
+    ["stdout path", input.stdoutPath],
+    ["stderr path", input.stderrPath],
+  ] as const) {
+    assertControlFree(value, name);
+  }
   const argsXml = programArguments.map((arg) => `    <string>${escapeXml(arg)}</string>`).join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -148,6 +140,45 @@ ${argsXml}
 </dict>
 </plist>
 `;
+}
+
+/** Exact argv persisted by the managed LaunchAgent producer. */
+export function buildLaunchdProgramArguments(input: PlistInput): readonly string[] {
+  const environmentArguments = Object.entries(input.environment)
+    .sort(([left], [right]) => compareCodeUnits(left, right))
+    .map(([key, value]) => {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)) {
+        throw new Error("Launchd environment names must use the portable identifier grammar.");
+      }
+      assertControlFree(value, `launchd environment ${key}`);
+      return `${key}=${value}`;
+    });
+  const arguments_ = [
+    "/usr/bin/env",
+    "-i",
+    ...environmentArguments,
+    input.nodePath,
+    input.cliPath,
+    "start",
+    "--foreground",
+    "--config",
+    input.configPath,
+    ...(input.envFile === undefined ? [] : ["--env-file", input.envFile]),
+    "--expected-background-snapshot",
+    input.expectedBackgroundSnapshot,
+  ];
+  for (const argument of arguments_) assertControlFree(argument, "launchd program argument");
+  return arguments_;
+}
+
+function assertControlFree(value: string, label: string): void {
+  if (/[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new Error(`${label} must not contain control characters.`);
+  }
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /**

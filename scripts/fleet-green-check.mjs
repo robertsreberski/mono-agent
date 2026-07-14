@@ -26,21 +26,22 @@
 //               is a non-RED "idle?" warning. `--strict-runs` fails on ANY
 //               failed run; `--min-runs <n>` fails a too-quiet instance.
 //
-// Each probe retains and uses ProgramArguments[0] (Node), [1] (cli.js), the
-// service's exact absolute --config/--env-file values, and its PATH from that
-// instance's plist. Neither the ambient `node`, a cli.js inferred from this
-// checkout, cwd-default configuration, nor the checker's ambient PATH is proof
-// of the launchd runtime. With --expect-sha every selected process, checkout,
-// and build marker must match that full sha exactly. Loaded-code proof is
-// mandatory for every selected service.
+// Each probe retains and uses the exact Node + cli.js invocation, including the
+// hardened `/usr/bin/env -i` wrapper emitted by current managed LaunchAgents,
+// the service's exact absolute --config/--env-file values, and its complete
+// allowlisted operational environment. Neither the ambient `node`, a cli.js inferred from this checkout,
+// cwd-default configuration, nor the checker's ambient PATH is proof of the
+// launchd runtime. With --expect-sha every selected process, checkout, and build
+// marker must match that full sha exactly. Loaded-code proof is mandatory for
+// every selected service.
 //
 // Verdict: `VERDICT: GREEN <date> sha <short>` or `VERDICT: RED <date> — <reason>`.
 // Exits non-zero on RED so a wrapper can alert. No comment posted = not a green
 // day; the 7-consecutive-day counter is human-audited from the dated comments.
 
-import { readdirSync } from "node:fs";
+import { lstatSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -49,14 +50,17 @@ const ISSUE_NUMBER = "119";
 const REPO = "robertsreberski/mono-agent";
 const LABEL_PREFIX = "com.mono-agent.";
 const LABEL_PATTERN = /^com\.mono-agent\.[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/u;
+const MAX_LABEL_FOLDER_SEGMENT = 40;
 const CLI_MARKER = "/packages/agent-app/";
 const DEFAULT_EXPECT_NODE = "24.15.0";
 const DEFAULT_EXPECT_ABI = "137";
 const BUILD_PROVENANCE_PROBE = fileURLToPath(new URL("./build-provenance-probe.mjs", import.meta.url));
+const MANAGED_RUNTIME_ATTESTATION_PROBE = fileURLToPath(new URL("./managed-runtime-attestation-probe.mjs", import.meta.url));
 const COMMAND_TIMEOUT_MS = Object.freeze({
   plist: 5_000,
   service: 5_000,
   loaded: 30_000,
+  attestation: 120_000,
   process: 5_000,
   runtime: 5_000,
   validate: 30_000,
@@ -204,10 +208,62 @@ const PROCESS_MONTH_INDEX = new Map([
   ["Jul", 6], ["Aug", 7], ["Sep", 8], ["Oct", 9], ["Nov", 10], ["Dec", 11],
 ]);
 const PROCESS_WEEKDAYS = Object.freeze(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]);
-const CLOSED_GIT_ENVIRONMENT = Object.freeze({ PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" });
-const CLOSED_SYSTEM_ENVIRONMENT = CLOSED_GIT_ENVIRONMENT;
+const CLOSED_SYSTEM_ENVIRONMENT = Object.freeze({ PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" });
+const CLOSED_GIT_ENVIRONMENT = Object.freeze({
+  PATH: "/usr/bin:/bin",
+  LANG: "C",
+  LC_ALL: "C",
+  GIT_OPTIONAL_LOCKS: "0",
+});
 const PLUTIL = "/usr/bin/plutil";
 const LAUNCHCTL = "/bin/launchctl";
+const ENV = "/usr/bin/env";
+const MANAGED_BACKGROUND_WORKER_ENV = "MONO_AGENT_MANAGED_WORKER";
+// Keep this fail-closed list aligned with BACKGROUND_OPERATIONAL_ENV_NAMES in
+// packages/agent-app/src/background-environment.ts. The lifecycle marker is
+// added by managedBackgroundEnvironment rather than the public allowlist.
+export const MANAGED_BACKGROUND_ENV_NAMES = new Set([
+  "APPDATA",
+  "COLORTERM",
+  "COMSPEC",
+  "ComSpec",
+  "FORCE_COLOR",
+  "HOME",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "LANG",
+  "LANGUAGE",
+  "LC_ALL",
+  "LC_CTYPE",
+  "LOCALAPPDATA",
+  "LOGNAME",
+  MANAGED_BACKGROUND_WORKER_ENV,
+  "NO_COLOR",
+  "PATH",
+  "PATHEXT",
+  "PROGRAMDATA",
+  "SHELL",
+  "SYSTEMROOT",
+  "SystemRoot",
+  "TEMP",
+  "TERM",
+  "TMP",
+  "TMPDIR",
+  "USER",
+  "USERNAME",
+  "USERPROFILE",
+]);
+const MANAGED_PLIST_KEYS = Object.freeze([
+  "Label",
+  "ProgramArguments",
+  "WorkingDirectory",
+  "RunAtLoad",
+  "KeepAlive",
+  "StandardOutPath",
+  "StandardErrorPath",
+  "ThrottleInterval",
+  "ProcessType",
+]);
 
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested under scripts/__tests__).
@@ -442,6 +498,27 @@ export function parseBuildProvenanceProbe(text, exitCode) {
   };
 }
 
+export function parseManagedRuntimeAttestationProbe(text, exitCode) {
+  const report = parseJsonObject(text);
+  if (report === null || report.schemaVersion !== 1 || typeof report.status !== "string") {
+    return { status: "malformed" };
+  }
+  if (report.status === "unsafe") {
+    return exitCode === 1 && hasExactKeys(report, ["schemaVersion", "status"])
+      ? { status: "unsafe" }
+      : { status: "malformed" };
+  }
+  if (report.status !== "ok"
+    || exitCode !== 0
+    || !hasExactKeys(report, ["schemaVersion", "status", "fingerprint", "installedAt"])
+    || typeof report.fingerprint !== "string"
+    || !BUILD_MARKER_FINGERPRINT_PATTERN.test(report.fingerprint)
+    || !isValidIsoInstant(report.installedAt)) {
+    return { status: "malformed" };
+  }
+  return { status: "ok", fingerprint: report.fingerprint, installedAt: report.installedAt };
+}
+
 export function parseProcessStart(text, exitCode) {
   if (exitCode !== 0 || typeof text !== "string") {
     return { ran: false };
@@ -484,6 +561,63 @@ export function evaluateLoaded(loaded, service, runtime, expected = {}) {
   if (loaded.checkoutUnavailable === true) {
     return { status: "fail", note: "deploy checkout unavailable" };
   }
+  if (loaded.launchDefinitionInitial?.timedOut === true) {
+    return { status: "fail", note: "loaded launch definition probe timed out" };
+  }
+  if (loaded.launchDefinitionInitial?.status !== "ok") {
+    return { status: "fail", note: "loaded launch definition unavailable" };
+  }
+  if (loaded.processStart?.timedOut === true) {
+    return { status: "fail", note: "process start probe timed out" };
+  }
+  if (loaded.processStart?.ran !== true) {
+    return { status: "fail", note: "process start unavailable" };
+  }
+  if (loaded.processIdentity?.timedOut === true) {
+    return { status: "fail", note: "process identity probe timed out" };
+  }
+  if (loaded.processIdentity?.ran !== true) {
+    return { status: "fail", note: "process identity unavailable" };
+  }
+  if (loaded.managed !== true && loaded.processIdentity.argvMatches !== true) {
+    return { status: "fail", note: "process arguments do not match plist" };
+  }
+  if (loaded.processIdentity.executableMatches !== true) {
+    return { status: "fail", note: "process executable does not match plist" };
+  }
+  if (loaded.processIdentity.cwdMatches !== true) {
+    return { status: "fail", note: "process working directory does not match plist" };
+  }
+  if (typeof loaded.checkoutInitial?.error === "string") {
+    const timedOut = loaded.checkoutInitial.error === "checkout probe timed out";
+    const changed = loaded.checkoutInitial.error === "checkout changed during probe";
+    return {
+      status: "fail",
+      note: timedOut ? "checkout probe timed out" : changed ? "checkout changed during probe" : "checkout probe unavailable",
+    };
+  }
+  if (loaded.checkoutInitial?.clean !== true) {
+    return { status: "fail", note: "deploy checkout dirty" };
+  }
+  if (loaded.markerInitial?.timedOut === true) {
+    return { status: "fail", note: "build marker probe timed out" };
+  }
+  if (loaded.markerInitial?.status !== "ok") {
+    const notes = {
+      missing: "build marker missing",
+      unsafe: "build marker unsafe",
+      malformed: "build marker malformed",
+    };
+    return { status: "fail", note: notes[loaded.markerInitial?.status] ?? "build marker malformed" };
+  }
+  if (loaded.managed === true) {
+    if (loaded.runtimeAttestationInitial?.timedOut === true) {
+      return { status: "fail", note: "managed runtime attestation timed out" };
+    }
+    if (loaded.runtimeAttestationInitial?.status !== "ok") {
+      return { status: "fail", note: "managed runtime attestation failed" };
+    }
+  }
   if (loaded.serviceRecheck?.timedOut === true) {
     return { status: "fail", note: "service recheck timed out" };
   }
@@ -491,6 +625,35 @@ export function evaluateLoaded(loaded, service, runtime, expected = {}) {
     || loaded.serviceRecheck?.pid !== service.pid
     || loaded.serviceRecheck?.lastExitStatus !== service.lastExitStatus) {
     return { status: "fail", note: "service changed during probe" };
+  }
+  if (loaded.launchDefinitionInitial?.timedOut === true
+    || loaded.launchDefinitionFinal?.timedOut === true
+    || loaded.launchDefinitionTerminal?.timedOut === true) {
+    return { status: "fail", note: "loaded launch definition probe timed out" };
+  }
+  if (loaded.launchDefinitionInitial?.status !== "ok"
+    || loaded.launchDefinitionFinal?.status !== "ok"
+    || loaded.launchDefinitionTerminal?.status !== "ok") {
+    return { status: "fail", note: "loaded launch definition unavailable" };
+  }
+  if (loaded.launchDefinitionInitial.fingerprint !== loaded.launchDefinitionFinal.fingerprint
+    || loaded.launchDefinitionFinal.fingerprint !== loaded.launchDefinitionTerminal.fingerprint) {
+    return { status: "fail", note: "loaded launch definition changed during probe" };
+  }
+  if (loaded.managed === true) {
+    if (loaded.runtimeAttestationInitial?.timedOut === true || loaded.runtimeAttestationFinal?.timedOut === true) {
+      return { status: "fail", note: "managed runtime attestation timed out" };
+    }
+    if (loaded.runtimeAttestationInitial?.status !== "ok"
+      || loaded.runtimeAttestationFinal?.status !== "ok") {
+      return { status: "fail", note: "managed runtime attestation failed" };
+    }
+    if (loaded.runtimeAttestationInitial.fingerprint !== loaded.runtimeAttestationFinal.fingerprint) {
+      return { status: "fail", note: "managed runtime changed during probe" };
+    }
+    if (loaded.runtimeAttestationInitial.installedAt !== loaded.runtimeAttestationFinal.installedAt) {
+      return { status: "fail", note: "managed runtime install changed during probe" };
+    }
   }
   if (loaded.markerInitial?.timedOut === true || loaded.markerFinal?.timedOut === true) {
     return { status: "fail", note: "build marker probe timed out" };
@@ -576,14 +739,23 @@ export function evaluateLoaded(loaded, service, runtime, expected = {}) {
   if (loaded.processIdentity?.ran !== true) {
     return { status: "fail", note: "process identity unavailable" };
   }
-  if (loaded.processIdentity.argvMatches !== true) {
+  if (loaded.managed !== true && loaded.processIdentity.argvMatches !== true) {
     return { status: "fail", note: "process arguments do not match plist" };
+  }
+  if (loaded.managed === true && loaded.processIdentity.executableMatches !== true) {
+    return { status: "fail", note: "process executable does not match plist" };
   }
   if (loaded.processIdentity.cwdMatches !== true) {
     return { status: "fail", note: "process working directory does not match plist" };
   }
   if (loaded.processStart.startedAtMs <= Date.parse(initialMarker.marker.completedAt)) {
     return { status: "fail", note: "process predates build" };
+  }
+  if (loaded.managed === true
+    && loaded.processStart.startedAtMs <= Math.floor(
+      Date.parse(loaded.runtimeAttestationInitial.installedAt) / 1_000,
+    ) * 1_000) {
+    return { status: "fail", note: "process predates managed runtime" };
   }
   return { status: "pass", note: "" };
 }
@@ -940,6 +1112,11 @@ export function buildFleetReport(input) {
         reason = `${row.name}: ${row.service.note}`;
         break;
       }
+      if (row.loaded.status === "fail"
+        && !(row.loaded.note === "build/runtime mismatch" && row.runtime.status === "fail")) {
+        reason = `${row.name}: ${row.loaded.note}`;
+        break;
+      }
       if (row.runtime.status === "fail") {
         reason = `${row.name}: ${row.runtime.note}`;
         break;
@@ -978,6 +1155,8 @@ export function buildFleetReport(input) {
       .filter((sha) => typeof sha === "string"));
     if (checkoutShas.size > 1) {
       reason = `instances span ${checkoutShas.size} deploy revisions`;
+    } else if (shaKnown && checkoutShas.size === 1 && !checkoutShas.has(deployedSha)) {
+      reason = `deployed sha ${shortSha(deployedSha)} differs from loaded checkout`;
     }
   }
   if (reason === null && rows.length === 0) {
@@ -1028,41 +1207,179 @@ function managedPlistTopologyFingerprint(entries) {
   return sha256(JSON.stringify(managed));
 }
 
-function readValidatedLaunchdPlist(plistPath, filenameLabel, runCommand) {
+function readValidatedLaunchdPlist(plistPath, filenameLabel, runCommand, inspectPath) {
+  const directoryPath = dirname(plistPath);
+  const directoryInitial = inspectPath(directoryPath, "directory");
+  const plistInitial = inspectPath(plistPath, "plist");
+  if (directoryInitial === null || plistInitial === null) return { status: "unavailable" };
   const result = runCommand(PLUTIL, ["-convert", "json", "-o", "-", plistPath], {
     timeout: COMMAND_TIMEOUT_MS.plist,
     environment: CLOSED_SYSTEM_ENVIRONMENT,
   });
   if (result.timedOut === true) return { status: "unavailable", timedOut: true };
   if (result.status !== 0 || typeof result.stdout !== "string") return { status: "unavailable" };
+  const directoryFinal = inspectPath(directoryPath, "directory");
+  const plistFinal = inspectPath(plistPath, "plist");
+  if (directoryFinal !== directoryInitial || plistFinal !== plistInitial) {
+    return { status: "unavailable" };
+  }
 
   const plist = parseJsonObject(result.stdout);
   if (plist === null || typeof plist.Label !== "string" || plist.Label !== filenameLabel) {
     return { status: "unavailable" };
   }
   const dir = typeof plist.WorkingDirectory === "string"
-    && !plist.WorkingDirectory.includes("\0")
+    && !/[\u0000-\u001f\u007f]/u.test(plist.WorkingDirectory)
     && isAbsolute(plist.WorkingDirectory)
     ? plist.WorkingDirectory
     : null;
   const program = parseLaunchdProgramArguments(plist.ProgramArguments);
-  const pathEnv = parseLaunchdPathEnvironment(plist.EnvironmentVariables);
+  const managedPathEnv = program?.pathEnv;
+  const pathEnv = managedPathEnv
+    ?? parseLaunchdPathEnvironment(plist.EnvironmentVariables);
   if (program === null || pathEnv === null || dir === null) return { status: "unavailable" };
+  if (typeof program.configPath !== "string"
+    || deriveLaunchdLabel(program.configPath) !== filenameLabel) {
+    return { status: "unavailable" };
+  }
+  // Current managed plists carry their closed environment exclusively inside
+  // `/usr/bin/env -i`; accepting a second environment source would weaken the
+  // exact process/environment proof.
+  if (managedPathEnv !== undefined && plist.EnvironmentVariables !== undefined) {
+    return { status: "unavailable" };
+  }
+  if (program.managed === true
+    ? !isExactManagedPlist(plist, plistPath, filenameLabel)
+    : !isExactLegacyPlist(plist, plistPath, filenameLabel)) {
+    return { status: "unavailable" };
+  }
 
-  const closedShape = { label: filenameLabel, dir, pathEnv, ...program };
+  const closedShape = {
+    label: filenameLabel,
+    plistPath,
+    dir,
+    pathEnv,
+    stdoutPath: plist.StandardOutPath,
+    stderrPath: plist.StandardErrorPath,
+    ...program,
+  };
   return {
     status: "ok",
-    fingerprint: sha256(result.stdout),
+    fingerprint: sha256(JSON.stringify({
+      converted: result.stdout,
+      directoryIdentity: directoryFinal,
+      plistIdentity: plistFinal,
+    })),
     shapeFingerprint: sha256(JSON.stringify(closedShape)),
     entry: closedShape,
   };
+}
+
+export function inspectCanonicalLaunchdPath(path, kind) {
+  try {
+    const details = lstatSync(path, { bigint: true });
+    const currentUid = typeof process.getuid === "function" ? BigInt(process.getuid()) : details.uid;
+    const mode = Number(details.mode & 0o777n);
+    if (details.uid !== currentUid || details.isSymbolicLink()) return null;
+    if (kind === "directory") {
+      if (!details.isDirectory() || (mode & 0o077) !== 0) return null;
+    } else if (!details.isFile() || details.nlink !== 1n || mode !== 0o600) {
+      return null;
+    }
+    return sha256(JSON.stringify({
+      dev: details.dev.toString(),
+      ino: details.ino.toString(),
+      mode: details.mode.toString(),
+      nlink: details.nlink.toString(),
+      size: details.size.toString(),
+      mtimeNs: details.mtimeNs.toString(),
+      ctimeNs: details.ctimeNs.toString(),
+    }));
+  } catch {
+    return null;
+  }
+}
+
+function inspectExecutablePath(path) {
+  try {
+    const details = lstatSync(path, { bigint: true });
+    if (!details.isFile() || details.isSymbolicLink()) return null;
+    const identity = {
+      device: details.dev.toString(),
+      inode: details.ino.toString(),
+    };
+    return {
+      ...identity,
+      fingerprint: sha256(JSON.stringify({
+        ...identity,
+        mode: details.mode.toString(),
+        size: details.size.toString(),
+        mtimeNs: details.mtimeNs.toString(),
+        ctimeNs: details.ctimeNs.toString(),
+      })),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isExactManagedPlist(plist, plistPath, label) {
+  const paths = canonicalLaunchdPaths(plistPath, label);
+  return hasExactKeys(plist, MANAGED_PLIST_KEYS)
+    && paths !== null
+    && hasExactLaunchdLifecycle(plist, paths);
+}
+
+function isExactLegacyPlist(plist, plistPath, label) {
+  const paths = canonicalLaunchdPaths(plistPath, label);
+  return hasExactKeys(plist, [...MANAGED_PLIST_KEYS, "EnvironmentVariables"])
+    && paths !== null
+    && hasExactLaunchdLifecycle(plist, paths);
+}
+
+function hasExactLaunchdLifecycle(plist, paths) {
+  return plist.RunAtLoad === true
+    && isRecord(plist.KeepAlive)
+    && hasExactKeys(plist.KeepAlive, ["SuccessfulExit"])
+    && plist.KeepAlive.SuccessfulExit === false
+    && plist.ProcessType === "Interactive"
+    && plist.ThrottleInterval === 10
+    && plist.StandardOutPath === paths.stdoutPath
+    && plist.StandardErrorPath === paths.stderrPath;
+}
+
+function canonicalLaunchdPaths(plistPath, label) {
+  if (typeof plistPath !== "string" || !isAbsolute(plistPath)) return null;
+  const launchAgentsDir = dirname(plistPath);
+  const libraryDir = dirname(launchAgentsDir);
+  const home = dirname(libraryDir);
+  if (basename(launchAgentsDir) !== "LaunchAgents"
+    || basename(libraryDir) !== "Library"
+    || plistPath !== join(home, "Library", "LaunchAgents", `${label}.plist`)) return null;
+  return {
+    stdoutPath: join(home, ".mono-agent", "logs", `${label}.out.log`),
+    stderrPath: join(home, ".mono-agent", "logs", `${label}.err.log`),
+  };
+}
+
+export function deriveLaunchdLabel(configPath) {
+  const resolved = resolve(configPath);
+  const folder = basename(dirname(resolved))
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/gu, "-")
+    .replace(/-+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, MAX_LABEL_FOLDER_SEGMENT)
+    .replace(/-+$/gu, "");
+  const hash = createHash("sha256").update(resolved).digest("hex").slice(0, 8);
+  return `${LABEL_PREFIX}${folder.length === 0 ? "agent" : folder}-${hash}`;
 }
 
 // ---------------------------------------------------------------------------
 // Impure layer (thin, untested-live).
 // ---------------------------------------------------------------------------
 
-function discoverInstances(launchAgentsDir, runCommand, readdir) {
+function discoverInstances(launchAgentsDir, runCommand, readdir, inspectPath) {
   const byLabel = new Map();
   let invalidLabelIndex = 0;
   let entries;
@@ -1096,7 +1413,7 @@ function discoverInstances(launchAgentsDir, runCommand, readdir) {
       });
       continue;
     }
-    const validated = readValidatedLaunchdPlist(plistPath, filenameLabel, runCommand);
+    const validated = readValidatedLaunchdPlist(plistPath, filenameLabel, runCommand, inspectPath);
     if (validated.timedOut === true) {
       byLabel.set(filenameLabel, { label: filenameLabel, dir: null, nodePath: null, cliPath: null, discoveryError: "plist probe timed out" });
       continue;
@@ -1122,13 +1439,88 @@ function discoverInstances(launchAgentsDir, runCommand, readdir) {
 }
 
 /**
- * Accept only the launchd shape emitted by buildPlistXml (plus older default-
- * config plists). Unknown, duplicate, relative, or value-less flags fail the
- * whole instance closed; none of their values are retained in the report.
+ * Accept only the current hardened launchd shape emitted by buildPlistXml plus
+ * legacy direct-Node plists. Unknown environment names, duplicate assignments,
+ * unknown flags, relative paths, and missing values fail the instance closed.
+ * Managed environment values are retained only for exact child-probe execution
+ * and never rendered. Legacy direct-Node arguments remain whitespace-free;
+ * managed arguments are compared structurally through launchctl print.
  */
 export function parseLaunchdProgramArguments(value) {
   if (!Array.isArray(value)
-    || value.some((entry) => typeof entry !== "string" || /[\s\0]/u.test(entry))) return null;
+    || value.some((entry) => typeof entry !== "string" || /[\u0000-\u001f\u007f]/u.test(entry))) return null;
+
+  if (value[0] === ENV) {
+    return parseManagedLaunchdProgramArguments(value);
+  }
+  if (value.some((entry) => /\s/u.test(entry))) return null;
+  const parsed = parseLaunchdWorkerInvocation(value, false);
+  return parsed === null || !sameOrderedStrings(value, canonicalWorkerArguments(parsed, false)) ? null : {
+    ...parsed,
+    managed: false,
+    launchdProgramArguments: [...value],
+    programArguments: [...value],
+  };
+}
+
+function parseManagedLaunchdProgramArguments(value) {
+  if (value[1] !== "-i") return null;
+  const environment = new Map();
+  const names = [];
+  let index = 2;
+  while (index < value.length && !isAbsolute(value[index])) {
+    const assignment = value[index];
+    const separator = assignment.indexOf("=");
+    if (separator <= 0) return null;
+    const name = assignment.slice(0, separator);
+    const environmentValue = assignment.slice(separator + 1);
+    if (!MANAGED_BACKGROUND_ENV_NAMES.has(name) || environment.has(name)) return null;
+    environment.set(name, environmentValue);
+    names.push(name);
+    index += 1;
+  }
+  if (names.some((name, position) => position > 0 && compareCodeUnits(names[position - 1], name) > 0)) {
+    return null;
+  }
+  const pathEnv = environment.get("PATH");
+  if (typeof pathEnv !== "string" || pathEnv.length === 0
+    || environment.get(MANAGED_BACKGROUND_WORKER_ENV) !== "1") return null;
+
+  const workerArguments = value.slice(index);
+  const parsed = parseLaunchdWorkerInvocation(workerArguments, true);
+  const managedEnvironment = Object.fromEntries(environment);
+  delete managedEnvironment[MANAGED_BACKGROUND_WORKER_ENV];
+  return parsed === null
+    || !sameOrderedStrings(workerArguments, canonicalWorkerArguments(parsed, true)) ? null : {
+    ...parsed,
+    // `/usr/bin/env` execs Node in place. ps therefore exposes the worker argv,
+    // while the persisted plist fingerprint separately proves the wrapper.
+    programArguments: workerArguments,
+    launchdProgramArguments: [...value],
+    managed: true,
+    managedEnvironment,
+    pathEnv,
+  };
+}
+
+function canonicalWorkerArguments(parsed, managed) {
+  return [
+    parsed.nodePath,
+    parsed.cliPath,
+    "start",
+    "--foreground",
+    "--config",
+    parsed.configPath,
+    ...(parsed.envFile === undefined ? [] : ["--env-file", parsed.envFile]),
+    ...(managed ? ["--expected-background-snapshot", parsed.expectedBackgroundSnapshot] : []),
+  ];
+}
+
+function sameOrderedStrings(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function parseLaunchdWorkerInvocation(value, managed) {
   const [nodePath, cliPath, command, ...tail] = value;
   if (typeof nodePath !== "string" || nodePath.includes("\0") || !isAbsolute(nodePath)
     || typeof cliPath !== "string" || cliPath.includes("\0")
@@ -1140,11 +1532,20 @@ export function parseLaunchdProgramArguments(value) {
   let foreground = false;
   let configPath;
   let envFile;
+  let expectedBackgroundSnapshot;
   for (let index = 0; index < tail.length; index += 1) {
     const flag = tail[index];
     if (flag === "--foreground") {
       if (foreground) return null;
       foreground = true;
+      continue;
+    }
+    if (flag === "--expected-background-snapshot") {
+      const snapshot = tail[index + 1];
+      if (!managed || expectedBackgroundSnapshot !== undefined
+        || typeof snapshot !== "string" || !/^[A-Za-z0-9_-]+$/u.test(snapshot)) return null;
+      expectedBackgroundSnapshot = snapshot;
+      index += 1;
       continue;
     }
     if (flag !== "--config" && flag !== "--env-file") return null;
@@ -1159,11 +1560,16 @@ export function parseLaunchdProgramArguments(value) {
       envFile = path;
     }
   }
+  if (managed && (!foreground || configPath === undefined || expectedBackgroundSnapshot === undefined)) {
+    return null;
+  }
 
   return {
     nodePath,
     cliPath,
-    programArguments: [...value],
+    configPath,
+    envFile,
+    expectedBackgroundSnapshot,
     probeArgs: [
       ...(configPath === undefined ? [] : ["--config", configPath]),
       ...(envFile === undefined ? [] : ["--env-file", envFile]),
@@ -1171,11 +1577,11 @@ export function parseLaunchdProgramArguments(value) {
   };
 }
 
-/**
- * Managed plists intentionally expose only PATH. Reject any other environment
- * shape without retaining or rendering its values, then apply the exact PATH
- * to every runtime/CLI probe.
- */
+function compareCodeUnits(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** Legacy direct-Node plists carry only PATH in EnvironmentVariables. */
 export function parseLaunchdPathEnvironment(value) {
   if (!isRecord(value) || !hasExactKeys(value, ["PATH"])) return null;
   return typeof value.PATH === "string" && value.PATH.length > 0 && !value.PATH.includes("\0")
@@ -1183,7 +1589,15 @@ export function parseLaunchdPathEnvironment(value) {
     : null;
 }
 
-function collectInstance(entry, since, runCommand, initialMarkerProbes) {
+function collectInstance(
+  entry,
+  since,
+  runCommand,
+  initialMarkerProbes,
+  deployRepo,
+  trustedNodePath,
+  inspectExecutable,
+) {
   if (typeof entry.discoveryError === "string") {
     const service = launchctlList(entry.label, runCommand);
     return {
@@ -1199,50 +1613,133 @@ function collectInstance(entry, since, runCommand, initialMarkerProbes) {
     };
   }
   const service = launchctlList(entry.label, runCommand);
-  const repo = deriveRepoFromCliPath(entry.cliPath);
+  const repo = repoForEntry(entry, deployRepo);
+  const probeEnvironment = probeEnvironmentForEntry(entry);
+  let runtime = { ran: false };
   const persistedPlist = {
     plistFingerprint: entry.plistFingerprint,
     plistShapeFingerprint: entry.plistShapeFingerprint,
+    managed: entry.managed === true,
   };
   let loaded = { ran: false, ...persistedPlist };
   if (typeof service.pid === "number") {
-    if (repo === null || entry.nodePath === null || typeof entry.pathEnv !== "string") {
+    if (repo === null || entry.nodePath === null || probeEnvironment === null) {
       loaded = { ran: true, checkoutUnavailable: true, ...persistedPlist };
     } else {
+      const checkoutInitial = readDeployCheckout(repo, runCommand);
+      const launchDefinitionInitial = launchctlPrint(entry, service.pid, runCommand);
+      const processStart = runProcessStartProbe(service.pid, runCommand);
+      const processIdentity = runProcessIdentityProbe(
+        service.pid,
+        entry.programArguments,
+        entry.dir,
+        entry.nodePath,
+        entry.managed,
+        inspectExecutable,
+        runCommand,
+      );
+      const initialExecutionBoundaryApproved = isInitialExecutionBoundaryApproved(
+        entry,
+        checkoutInitial,
+        launchDefinitionInitial,
+        processIdentity,
+      );
+      const markerInitial = initialExecutionBoundaryApproved
+        ? runCachedBuildMarkerProbe(
+            initialMarkerProbes,
+            trustedNodePath,
+            repo,
+            probeEnvironment,
+            runCommand,
+          )
+        : { status: "unsafe" };
+      if (initialExecutionBoundaryApproved
+        && isDeployExecutionApproved(checkoutInitial, markerInitial)) {
+        runtime = runRuntimeProbe(entry.nodePath, probeEnvironment, runCommand);
+      }
+      const deployExecutionApproved = initialExecutionBoundaryApproved
+        && isDeployExecutionApproved(checkoutInitial, markerInitial, runtime);
       loaded = {
         ran: true,
         ...persistedPlist,
-        markerInitial: runCachedBuildMarkerProbe(
-          initialMarkerProbes,
-          entry.nodePath,
-          repo,
-          entry.pathEnv,
-          runCommand,
-        ),
-        checkoutInitial: readDeployCheckout(repo, runCommand),
-        processStart: runProcessStartProbe(service.pid, runCommand),
-        processIdentity: runProcessIdentityProbe(
-          service.pid,
-          entry.programArguments,
-          entry.dir,
-          runCommand,
-        ),
+        initialExecutionBoundaryApproved,
+        markerInitial,
+        ...(entry.managed === true ? {
+          runtimeAttestationInitial: deployExecutionApproved
+            ? runManagedRuntimeAttestation(entry, repo, runtime, probeEnvironment, trustedNodePath, runCommand)
+            : { status: "unsafe" },
+        } : {}),
+        checkoutInitial,
+        launchDefinitionInitial,
+        processStart,
+        processIdentity,
       };
     }
   }
-  const runtime = entry.nodePath === null || typeof entry.pathEnv !== "string"
-    ? { ran: false }
-    : runRuntimeProbe(entry.nodePath, entry.pathEnv, runCommand);
   let validate = { ran: false };
   let memory = { ran: false };
   let metrics = { ran: false };
-  if (entry.dir !== null && entry.nodePath !== null && entry.cliPath !== null && typeof entry.pathEnv === "string") {
+  if (entry.dir !== null
+    && entry.nodePath !== null
+    && entry.cliPath !== null
+    && probeEnvironment !== null
+    && isCliExecutionApproved(entry, loaded, runtime)) {
     const probeArgs = Array.isArray(entry.probeArgs) ? entry.probeArgs : [];
-    validate = runValidate(entry.nodePath, entry.cliPath, entry.dir, entry.pathEnv, probeArgs, runCommand);
-    memory = runMemoryAudit(entry.nodePath, entry.cliPath, entry.dir, entry.pathEnv, probeArgs, runCommand);
-    metrics = runMetrics(entry.nodePath, entry.cliPath, entry.dir, entry.pathEnv, probeArgs, since, runCommand);
+    validate = runValidate(entry.nodePath, entry.cliPath, entry.dir, probeEnvironment, probeArgs, runCommand);
+    memory = runMemoryAudit(entry.nodePath, entry.cliPath, entry.dir, probeEnvironment, probeArgs, runCommand);
+    metrics = runMetrics(entry.nodePath, entry.cliPath, entry.dir, probeEnvironment, probeArgs, since, runCommand);
   }
   return { label: entry.label, dir: entry.dir, service, loaded, runtime, validate, memory, metrics };
+}
+
+function isCliExecutionApproved(entry, loaded, runtime) {
+  return loaded.ran === true
+    && loaded.initialExecutionBoundaryApproved === true
+    && loaded.launchDefinitionInitial?.status === "ok"
+    && isDeployExecutionApproved(loaded.checkoutInitial, loaded.markerInitial, runtime)
+    && (entry.managed !== true || loaded.runtimeAttestationInitial?.status === "ok");
+}
+
+function isInitialExecutionBoundaryApproved(
+  entry,
+  checkout,
+  launchDefinition,
+  processIdentity,
+) {
+  return checkout?.error === null
+    && checkout.clean === true
+    && typeof checkout.sha === "string"
+    && launchDefinition?.status === "ok"
+    && processIdentity?.ran === true
+    && processIdentity.cwdMatches === true
+    && processIdentity.executableMatches === true
+    && (entry.managed === true || processIdentity.argvMatches === true);
+}
+
+function isDeployExecutionApproved(checkout, marker, runtime) {
+  return marker?.status === "ok"
+    && marker.marker?.sourceState === "clean"
+    && marker.outputDigest === marker.marker.outputDigest
+    && marker.dependencyDigest === marker.marker.dependencyDigest
+    && typeof checkout?.sha === "string"
+    && checkout.error === null
+    && checkout.clean === true
+    && checkout.sha === marker.marker.gitSha
+    && (runtime === undefined
+      || (runtime.ran === true
+        && runtime.node === marker.marker.nodeVersion
+        && runtime.abi === marker.marker.nodeAbi));
+}
+
+function repoForEntry(entry, deployRepo) {
+  return entry.managed === true ? deployRepo : deriveRepoFromCliPath(entry.cliPath);
+}
+
+function probeEnvironmentForEntry(entry) {
+  if (entry.managed === true) {
+    return isRecord(entry.managedEnvironment) ? { ...entry.managedEnvironment } : null;
+  }
+  return typeof entry.pathEnv === "string" ? buildLaunchdProbeEnvironment(entry.pathEnv) : null;
 }
 
 function launchctlList(label, runCommand) {
@@ -1256,10 +1753,75 @@ function launchctlList(label, runCommand) {
   return parseLaunchctlList(result.stdout ?? "", result.status);
 }
 
-function runBuildMarkerProbe(nodePath, repo, pathEnv, runCommand) {
+export function parseLaunchctlPrint(text, exitCode, expected) {
+  if (exitCode !== 0 || typeof text !== "string" || !isRecord(expected)) {
+    return { status: "unavailable" };
+  }
+  const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
+  const oneValue = (name) => {
+    const prefix = `\t${name} = `;
+    const matches = lines.filter((line) => line.startsWith(prefix));
+    if (matches.length !== 1) return null;
+    const value = matches[0].slice(prefix.length);
+    return value.length > 0 && !/[\u0000-\u001f\u007f]/u.test(value) ? value : null;
+  };
+  const blockStarts = lines
+    .map((line, index) => line === "\targuments = {" ? index : -1)
+    .filter((index) => index >= 0);
+  if (blockStarts.length !== 1) return { status: "unavailable" };
+  const blockStart = blockStarts[0];
+  const blockEnd = lines.indexOf("\t}", blockStart + 1);
+  if (blockEnd <= blockStart + 1) return { status: "unavailable" };
+  const args = lines.slice(blockStart + 1, blockEnd).map((line) =>
+    line.startsWith("\t\t") ? line.slice(2) : null);
+  if (args.some((arg) => typeof arg !== "string" || arg.length === 0 || /[\u0000-\u001f\u007f]/u.test(arg))) {
+    return { status: "unavailable" };
+  }
+  const path = oneValue("path");
+  const program = oneValue("program");
+  const workingDirectory = oneValue("working directory");
+  const stdoutPath = oneValue("stdout path");
+  const stderrPath = oneValue("stderr path");
+  const pidText = oneValue("pid");
+  const pid = typeof pidText === "string" && /^\d+$/u.test(pidText) ? Number(pidText) : Number.NaN;
+  if (path !== expected.plistPath
+    || program !== expected.launchdProgramArguments?.[0]
+    || workingDirectory !== expected.dir
+    || stdoutPath !== expected.stdoutPath
+    || stderrPath !== expected.stderrPath
+    || !Number.isSafeInteger(pid)
+    || pid !== expected.pid
+    || !Array.isArray(expected.launchdProgramArguments)
+    || args.length !== expected.launchdProgramArguments.length
+    || args.some((arg, index) => arg !== expected.launchdProgramArguments[index])) {
+    return { status: "unavailable" };
+  }
+  return {
+    status: "ok",
+    fingerprint: sha256(JSON.stringify({ path, program, args, workingDirectory, stdoutPath, stderrPath, pid })),
+  };
+}
+
+function launchctlPrint(entry, pid, runCommand) {
+  const result = runCommand(LAUNCHCTL, ["print", `gui/${typeof process.getuid === "function" ? process.getuid() : ""}/${entry.label}`], {
+    timeout: COMMAND_TIMEOUT_MS.service,
+    environment: CLOSED_SYSTEM_ENVIRONMENT,
+  });
+  if (result.timedOut === true) return { status: "unavailable", timedOut: true };
+  return parseLaunchctlPrint(result.stdout ?? "", result.status, {
+    plistPath: entry.plistPath,
+    launchdProgramArguments: entry.launchdProgramArguments,
+    dir: entry.dir,
+    stdoutPath: entry.stdoutPath,
+    stderrPath: entry.stderrPath,
+    pid,
+  });
+}
+
+function runBuildMarkerProbe(nodePath, repo, probeEnvironment, runCommand) {
   const result = runCommand(nodePath, [BUILD_PROVENANCE_PROBE, repo], {
     timeout: COMMAND_TIMEOUT_MS.loaded,
-    pathEnv,
+    environment: probeEnvironment,
   });
   if (result.timedOut === true) {
     return Object.freeze({ status: "malformed", timedOut: true });
@@ -1271,13 +1833,38 @@ function runBuildMarkerProbe(nodePath, repo, pathEnv, runCommand) {
   });
 }
 
-function runCachedBuildMarkerProbe(cache, nodePath, repo, pathEnv, runCommand) {
-  const key = JSON.stringify([nodePath, repo, pathEnv]);
+function runCachedBuildMarkerProbe(cache, nodePath, repo, probeEnvironment, runCommand) {
+  const key = JSON.stringify([nodePath, repo, sha256(JSON.stringify(probeEnvironment))]);
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
-  const probe = runBuildMarkerProbe(nodePath, repo, pathEnv, runCommand);
+  const probe = runBuildMarkerProbe(nodePath, repo, probeEnvironment, runCommand);
   cache.set(key, probe);
   return probe;
+}
+
+function runManagedRuntimeAttestation(entry, repo, runtime, probeEnvironment, trustedNodePath, runCommand) {
+  if (entry.managed !== true
+    || runtime?.ran !== true
+    || typeof entry.configPath !== "string"
+    || typeof entry.expectedBackgroundSnapshot !== "string") {
+    return { status: "unsafe" };
+  }
+  const result = runCommand(trustedNodePath, [
+    MANAGED_RUNTIME_ATTESTATION_PROBE,
+    repo,
+    entry.cliPath,
+    entry.dir,
+    entry.configPath,
+    entry.envFile ?? "",
+    entry.expectedBackgroundSnapshot,
+    runtime.abi,
+  ], {
+    cwd: repo,
+    timeout: COMMAND_TIMEOUT_MS.attestation,
+    environment: probeEnvironment,
+  });
+  if (result.timedOut === true) return { status: "malformed", timedOut: true };
+  return parseManagedRuntimeAttestationProbe(result.stdout ?? "", result.status);
 }
 
 function runProcessStartProbe(pid, runCommand) {
@@ -1291,32 +1878,93 @@ function runProcessStartProbe(pid, runCommand) {
   return parseProcessStart(result.stdout ?? "", result.status);
 }
 
-function runProcessIdentityProbe(pid, expectedArguments, expectedCwd, runCommand) {
+function runProcessIdentityProbe(
+  pid,
+  expectedArguments,
+  expectedCwd,
+  expectedNodePath,
+  managed,
+  inspectExecutable,
+  runCommand,
+) {
   if (!Array.isArray(expectedArguments) || typeof expectedCwd !== "string") {
     return { ran: false };
   }
   const environment = { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" };
-  const command = runCommand("/bin/ps", ["-ww", "-p", String(pid), "-o", "command="], {
-    timeout: COMMAND_TIMEOUT_MS.process,
-    environment,
-  });
+  const command = managed === true ? null : runCommand("/bin/ps", ["-ww", "-p", String(pid), "-o", "command="], {
+      timeout: COMMAND_TIMEOUT_MS.process,
+      environment,
+    });
   const cwd = runCommand("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], {
     timeout: COMMAND_TIMEOUT_MS.process,
     environment,
   });
-  if (command.timedOut === true || cwd.timedOut === true) {
+  const expectedExecutableInitial = inspectExecutable(expectedNodePath);
+  const executable = runCommand("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "txt", "-FfDin"], {
+    timeout: COMMAND_TIMEOUT_MS.process,
+    environment,
+  });
+  if (command?.timedOut === true || cwd.timedOut === true || executable.timedOut === true) {
     return { ran: false, timedOut: true };
   }
-  const actualCommand = parseExactSingleLine(command.stdout ?? "", command.status);
   const actualCwd = parseLsofCwd(cwd.stdout ?? "", cwd.status, pid);
-  if (actualCommand === null || actualCwd === null) {
+  if (actualCwd === null) {
     return { ran: false };
   }
+  const expectedExecutableFinal = inspectExecutable(expectedNodePath);
+  const actualExecutable = parseLsofExecutable(
+    executable.stdout ?? "",
+    executable.status,
+    pid,
+    expectedNodePath,
+  );
+  if (expectedExecutableInitial === null
+    || expectedExecutableFinal === null
+    || expectedExecutableInitial.fingerprint !== expectedExecutableFinal.fingerprint
+    || actualExecutable === null) return { ran: false };
+  const executableMatches = actualExecutable.device === expectedExecutableFinal.device
+    && actualExecutable.inode === expectedExecutableFinal.inode;
+  if (managed === true) {
+    return {
+      ran: true,
+      executableMatches,
+      cwdMatches: actualCwd === expectedCwd,
+    };
+  }
+  const actualCommand = parseExactSingleLine(command?.stdout ?? "", command?.status);
+  if (actualCommand === null) return { ran: false };
   return {
     ran: true,
     argvMatches: actualCommand === expectedArguments.join(" "),
+    executableMatches,
     cwdMatches: actualCwd === expectedCwd,
   };
+}
+
+function parseLsofExecutable(text, exitCode, pid, expectedPath) {
+  if (exitCode !== 0 || typeof text !== "string") return null;
+  const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
+  if (lines[0] !== `p${pid}`) return null;
+  const matches = [];
+  for (let index = 1; index < lines.length;) {
+    if (lines[index] !== "ftxt") return null;
+    const device = lines[index + 1];
+    const inode = lines[index + 2];
+    const name = lines[index + 3];
+    if (!/^D0x[0-9a-f]+$/u.test(device ?? "")
+      || !/^i\d+$/u.test(inode ?? "")
+      || typeof name !== "string"
+      || !name.startsWith("n")
+      || /[\r\0]/u.test(name)) return null;
+    if (name.slice(1) === expectedPath) {
+      matches.push({
+        device: BigInt(device.slice(1)).toString(),
+        inode: inode.slice(1),
+      });
+    }
+    index += 4;
+  }
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function parseExactSingleLine(text, exitCode) {
@@ -1335,11 +1983,11 @@ function parseLsofCwd(text, exitCode, pid) {
   return lines[2].slice(1);
 }
 
-function runRuntimeProbe(nodePath, pathEnv, runCommand) {
+function runRuntimeProbe(nodePath, probeEnvironment, runCommand) {
   const result = runCommand(nodePath, [
     "-p",
     "JSON.stringify({node:process.versions.node,abi:process.versions.modules})",
-  ], { timeout: COMMAND_TIMEOUT_MS.runtime, pathEnv });
+  ], { timeout: COMMAND_TIMEOUT_MS.runtime, environment: probeEnvironment });
   if (result.timedOut === true) {
     return { ran: false, timedOut: true };
   }
@@ -1354,11 +2002,11 @@ function runRuntimeProbe(nodePath, pathEnv, runCommand) {
   return { ran: true, node: parsed.node, abi: parsed.abi };
 }
 
-function runValidate(nodePath, cliPath, dir, pathEnv, probeArgs, runCommand) {
+function runValidate(nodePath, cliPath, dir, probeEnvironment, probeArgs, runCommand) {
   const result = runCommand(nodePath, [cliPath, "validate", "--json", ...probeArgs], {
     cwd: dir,
     timeout: COMMAND_TIMEOUT_MS.validate,
-    pathEnv,
+    environment: probeEnvironment,
   });
   if (result.timedOut === true) {
     return { ran: false, timedOut: true };
@@ -1370,11 +2018,11 @@ function runValidate(nodePath, cliPath, dir, pathEnv, probeArgs, runCommand) {
   return { ran: true, exitCode: result.status, validJson: true, ok: parsed.ok };
 }
 
-function runMemoryAudit(nodePath, cliPath, dir, pathEnv, probeArgs, runCommand) {
+function runMemoryAudit(nodePath, cliPath, dir, probeEnvironment, probeArgs, runCommand) {
   const result = runCommand(nodePath, [cliPath, "memory", "audit", "--strict", "--json", ...probeArgs], {
     cwd: dir,
     timeout: COMMAND_TIMEOUT_MS.memory,
-    pathEnv,
+    environment: probeEnvironment,
   });
   if (result.timedOut === true) {
     return { ran: false, timedOut: true };
@@ -1382,11 +2030,11 @@ function runMemoryAudit(nodePath, cliPath, dir, pathEnv, probeArgs, runCommand) 
   return parseMemoryAudit(result.stdout ?? "", result.status);
 }
 
-function runMetrics(nodePath, cliPath, dir, pathEnv, probeArgs, since, runCommand) {
+function runMetrics(nodePath, cliPath, dir, probeEnvironment, probeArgs, since, runCommand) {
   const result = runCommand(nodePath, [cliPath, "metrics", "--since", since, "--json", ...probeArgs], {
     cwd: dir,
     timeout: COMMAND_TIMEOUT_MS.metrics,
-    pathEnv,
+    environment: probeEnvironment,
   });
   if (result.timedOut === true) {
     return { ran: false, error: "metrics command timed out" };
@@ -1423,13 +2071,15 @@ function readDeployCheckout(repo, runCommand) {
   if (repo === null) {
     return { sha: null, clean: false, error: null };
   }
-  const headInitial = runCommand("/usr/bin/git", ["-C", repo, "rev-parse", "HEAD"], {
+  const headInitial = runCommand("/usr/bin/git", ["-C", repo, "-c", "core.fsmonitor=false", "rev-parse", "HEAD"], {
     timeout: COMMAND_TIMEOUT_MS.git,
     environment: CLOSED_GIT_ENVIRONMENT,
   });
   const status = runCommand("/usr/bin/git", [
     "-C",
     repo,
+    "-c",
+    "core.fsmonitor=false",
     "status",
     "--porcelain=v1",
     "--untracked-files=normal",
@@ -1437,7 +2087,7 @@ function readDeployCheckout(repo, runCommand) {
     timeout: COMMAND_TIMEOUT_MS.git,
     environment: CLOSED_GIT_ENVIRONMENT,
   });
-  const headFinal = runCommand("/usr/bin/git", ["-C", repo, "rev-parse", "HEAD"], {
+  const headFinal = runCommand("/usr/bin/git", ["-C", repo, "-c", "core.fsmonitor=false", "rev-parse", "HEAD"], {
     timeout: COMMAND_TIMEOUT_MS.git,
     environment: CLOSED_GIT_ENVIRONMENT,
   });
@@ -1488,8 +2138,9 @@ export function runCommandSync(command, args, options = {}) {
 }
 
 /**
- * Recreate the non-secret user-launchd baseline needed by Node and filesystem
- * probes. In particular, never inherit shell-only MONO_AGENT_* overrides,
+ * Recreate the legacy non-secret user-launchd baseline needed by Node and filesystem
+ * probes. Current managed plists instead pass their exact parsed environment.
+ * In particular, never inherit shell-only MONO_AGENT_* overrides,
  * provider credentials, NODE_OPTIONS, proxy variables, or credential-store
  * selectors that are absent from the managed plist. The CLI loads the exact
  * plist --env-file itself.
@@ -1512,6 +2163,9 @@ export async function runFleetGreenCheck(options = {}) {
   const runCommand = options.runCommand ?? runCommandSync;
   const launchAgentsDir = options.launchAgentsDir ?? join(homedir(), "Library", "LaunchAgents");
   const readdir = options.readdir ?? readdirSync;
+  const inspectLaunchdPath = options.inspectLaunchdPath ?? inspectCanonicalLaunchdPath;
+  const inspectExecutable = options.inspectExecutablePath ?? inspectExecutablePath;
+  const trustedNodePath = options.trustedNodePath ?? process.execPath;
   const now = options.now ?? new Date();
 
   let args;
@@ -1526,7 +2180,7 @@ export async function runFleetGreenCheck(options = {}) {
     return { exitCode: 0 };
   }
 
-  const discovery = discoverInstances(launchAgentsDir, runCommand, readdir);
+  const discovery = discoverInstances(launchAgentsDir, runCommand, readdir, inspectLaunchdPath);
   const discovered = discovery.byLabel;
   const selectedLabels = args.labels ?? args.expectLabels ?? [...discovered.keys()];
   const initialFleetLabelError = evaluateExpectedLabels(discovered.keys(), args.expectLabels);
@@ -1538,40 +2192,83 @@ export async function runFleetGreenCheck(options = {}) {
 
   const selected = selectedLabels.map((label) => {
     const entry = discovered.get(label) ?? { label, dir: null, nodePath: null, cliPath: null };
-    return { entry, instance: collectInstance(entry, since, runCommand, initialMarkerProbes) };
+    return {
+      entry,
+      instance: collectInstance(
+        entry,
+        since,
+        runCommand,
+        initialMarkerProbes,
+        deployRepo,
+        trustedNodePath,
+        inspectExecutable,
+      ),
+    };
   });
   const instances = selected.map(({ instance }) => instance);
-  // Refresh every per-instance process identity only after all expensive rows
-  // complete. Provenance and checkout remain open until the terminal phases;
-  // no shared cache weakens these instance-specific checks.
+  // Keep the rows that can participate in the provenance and terminal
+  // launchd/process bracket. No cached worker CLI is invoked unless the
+  // initial managed attestation already approved it in collectInstance.
   const provenanceSelections = [];
   for (const { entry, instance } of selected) {
     if (instance.loaded.ran !== true
+      || instance.loaded.initialExecutionBoundaryApproved !== true
       || instance.loaded.checkoutUnavailable === true
       || typeof instance.service.pid !== "number"
       || entry.nodePath === null
-      || typeof entry.pathEnv !== "string") {
+      || probeEnvironmentForEntry(entry) === null) {
       continue;
     }
-    const repo = deriveRepoFromCliPath(entry.cliPath);
+    const repo = repoForEntry(entry, deployRepo);
     if (repo === null) continue;
-    instance.loaded.processIdentity = runProcessIdentityProbe(
-      instance.service.pid,
-      entry.programArguments,
-      entry.dir,
+    const probeEnvironment = probeEnvironmentForEntry(entry);
+    if (probeEnvironment === null) continue;
+    provenanceSelections.push({ entry, instance, repo, probeEnvironment });
+  }
+
+  // Complete the expensive source/runtime proof before the terminal launchd
+  // bracket so a deploy cannot hide inside a long attestation window.
+  const finalMarkerProbes = new Map();
+  for (const { entry, instance, repo, probeEnvironment } of provenanceSelections) {
+    if (entry.managed === true) {
+      instance.loaded.runtimeAttestationFinal = runManagedRuntimeAttestation(
+        entry,
+        repo,
+        instance.runtime,
+        probeEnvironment,
+        trustedNodePath,
+        runCommand,
+      );
+    }
+    instance.loaded.markerFinal = runCachedBuildMarkerProbe(
+      finalMarkerProbes,
+      trustedNodePath,
+      repo,
+      probeEnvironment,
       runCommand,
     );
-    provenanceSelections.push({ entry, instance, repo });
   }
-  // The persisted launchd definition is proof, not merely discovery input.
-  // Re-convert the canonical filename after every expensive/runtime probe and
-  // compare both its exact converted bytes and its accepted closed shape.
+
+  // Bind every instance to the checkout state observed after terminal build
+  // provenance. Each read brackets status with HEAD to reject an internal
+  // checkout switch, while remaining independent across instances.
+  for (const { instance, repo } of provenanceSelections) {
+    instance.loaded.checkoutFinal = readDeployCheckout(repo, runCommand);
+  }
+
+  // Terminal bracket: loaded definition A -> persisted plist/topology -> loaded
+  // definition B -> actual executable/cwd -> service pid. After the final
+  // service read no filesystem or process observation is allowed.
+  for (const { entry, instance } of provenanceSelections) {
+    instance.loaded.launchDefinitionFinal = launchctlPrint(entry, instance.service.pid, runCommand);
+  }
   for (const { entry, instance } of selected) {
     if (typeof entry.plistFingerprint !== "string" || typeof entry.plistShapeFingerprint !== "string") continue;
     const rechecked = readValidatedLaunchdPlist(
       join(launchAgentsDir, `${entry.label}.plist`),
       entry.label,
       runCommand,
+      inspectLaunchdPath,
     );
     instance.loaded.plistRecheck = rechecked.status === "ok"
       ? {
@@ -1594,28 +2291,18 @@ export async function runFleetGreenCheck(options = {}) {
       : "fleet plist topology changed during probe";
   const fleetLabelError = initialFleetLabelError ?? topologyError;
 
-  // Terminal dependency/output proof is shared only by exact deployment
-  // identity and occurs after all row, identity, plist, and topology work.
-  const finalMarkerProbes = new Map();
-  for (const { entry, instance, repo } of provenanceSelections) {
-    instance.loaded.markerFinal = runCachedBuildMarkerProbe(
-      finalMarkerProbes,
+  for (const { entry, instance } of provenanceSelections) {
+    instance.loaded.launchDefinitionTerminal = launchctlPrint(entry, instance.service.pid, runCommand);
+    instance.loaded.processIdentity = runProcessIdentityProbe(
+      instance.service.pid,
+      entry.programArguments,
+      entry.dir,
       entry.nodePath,
-      repo,
-      entry.pathEnv,
+      entry.managed,
+      inspectExecutable,
       runCommand,
     );
   }
-
-  // Bind every instance to the checkout state observed after terminal build
-  // provenance. Each read brackets status with HEAD to reject an internal
-  // checkout switch, while remaining independent across instances.
-  for (const { instance, repo } of provenanceSelections) {
-    instance.loaded.checkoutFinal = readDeployCheckout(repo, runCommand);
-  }
-
-  // Launchd state is the actual final external fleet probe. Nothing may read
-  // plist, topology, process identity, provenance, or checkout after this pass.
   for (const instance of instances) {
     instance.loaded.serviceRecheck = launchctlList(instance.label, runCommand);
   }
@@ -1681,7 +2368,8 @@ function usage() {
     `  --expect-abi    Require each plist Node to report this modules ABI (default ${DEFAULT_EXPECT_ABI}).`,
     "  --strict-runs   Fail runs-24h on ANY failed run, not just untolerated ones.",
     "  --min-runs <n>  Fail an instance with fewer than n runs in the window.",
-    "  --repo <path>   Override only the deploy checkout used for the sha probe.",
+    "  --repo <path>   Pin the deploy checkout used for build/sha provenance; required",
+    "                  when managed plists execute a copied runtime outside Git.",
   ].join("\n");
 }
 

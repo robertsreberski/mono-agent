@@ -68,7 +68,21 @@ export async function loadBackgroundSnapshotKey(
   configPath: string,
   options: BackgroundSnapshotKeyOptions = {},
 ): Promise<Buffer> {
-  return await readBackgroundSnapshotKey(await backgroundSnapshotKeyPath(configPath, options));
+  return await readBackgroundSnapshotKey(await existingBackgroundSnapshotKeyPath(configPath, options));
+}
+
+/** Resolve an existing proof key without creating or repairing any ancestor. */
+export async function existingBackgroundSnapshotKeyPath(
+  configPath: string,
+  options: BackgroundSnapshotKeyOptions = {},
+): Promise<string> {
+  const home = await realpath(resolve(options.homeDir ?? accountHomeDirectory()));
+  let root = home;
+  for (const segment of [".mono-agent", "background-snapshot-keys"]) {
+    root = join(root, segment);
+    await verifyOwnerDirectory(root, segment === "background-snapshot-keys");
+  }
+  return join(root, `${deriveLaunchdLabel(configPath)}.key`);
 }
 
 export async function backgroundSnapshotKeyPath(
@@ -139,6 +153,28 @@ async function secureOwnerDirectory(path: string, stripAcl: boolean): Promise<vo
   const after = await lstat(path);
   if (!sameFilesystemIdentity(before, after) || !after.isDirectory() || (after.mode & 0o077) !== 0) {
     throw new Error(`Background snapshot key directory ${path} changed while it was secured.`);
+  }
+  assertCurrentUserOwns(after, path, "Background snapshot key directory");
+}
+
+async function verifyOwnerDirectory(path: string, verifyAcl: boolean): Promise<void> {
+  const before = await lstat(path);
+  if (!before.isDirectory() || before.isSymbolicLink()) {
+    throw new Error(`Background snapshot key directory ${path} must be a real directory.`);
+  }
+  assertCurrentUserOwns(before, path, "Background snapshot key directory");
+  if ((before.mode & 0o077) !== 0) {
+    throw new Error(`Background snapshot key directory ${path} must be owner-private.`);
+  }
+  if (verifyAcl) {
+    await verifyNoMacAcl(path, "Background snapshot key directory");
+  }
+  const after = await lstat(path);
+  if (!sameFilesystemIdentity(before, after)
+    || !after.isDirectory()
+    || after.isSymbolicLink()
+    || (after.mode & 0o077) !== 0) {
+    throw new Error(`Background snapshot key directory ${path} changed while it was verified.`);
   }
   assertCurrentUserOwns(after, path, "Background snapshot key directory");
 }
