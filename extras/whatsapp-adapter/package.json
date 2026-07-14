@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/whatsapp-adapter",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "WhatsApp communication adapter for host-compatible runtimes using Baileys.",
   "type": "module",
   "license": "UNLICENSED",
@@ -26,7 +26,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.9.1",
+    "@mono-agent/agent-contracts": "workspace:0.9.2",
     "@whiskeysockets/baileys": "^7.0.0-rc11"
   },
   "publishConfig": {
