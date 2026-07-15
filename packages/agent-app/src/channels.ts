@@ -653,6 +653,13 @@ export function createWebhookChannelDriver(
     async start(input) {
       const endpoints = input.config.endpoints.filter((endpoint) => endpoint.enabled);
       const endpointByName = new Map(endpoints.map((endpoint) => [endpoint.name, endpoint]));
+      const inferredNotifyDestination = endpoints.some(
+        (endpoint) => endpoint.notify === true && endpoint.notifyConversationId === undefined,
+      )
+        ? await inferUniqueNotifyDestination({
+            ...(input.listNotifyDestinations === undefined ? {} : { listNotifyDestinations: input.listNotifyDestinations }),
+          })
+        : undefined;
       const adapterModule = await loadWebhookModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startWebhookAdapter;
       const adapter = await adapterFactory({
@@ -673,6 +680,9 @@ export function createWebhookChannelDriver(
             ...(endpoint.prompt === undefined ? {} : { prompt: endpoint.prompt }),
             ...(endpoint.notify === undefined ? {} : { notify: endpoint.notify }),
             ...(endpoint.notifyConversationId === undefined ? {} : { notifyConversationId: endpoint.notifyConversationId }),
+            ...(endpoint.notify === true && endpoint.notifyConversationId === undefined && inferredNotifyDestination !== undefined
+              ? { notifyFallbackConversationId: inferredNotifyDestination }
+              : {}),
             ...(endpoint.model === undefined ? {} : { model: endpoint.model }),
             ...(endpoint.effort === undefined ? {} : { effort: endpoint.effort }),
           })),
@@ -1033,6 +1043,13 @@ export function createCronChannelDriver(
     async start(input) {
       const jobs = input.config.jobs.filter((job) => job.enabled);
       const jobById = new Map(jobs.map((job) => [job.id, job]));
+      const inferredNotifyDestination = jobs.some(
+        (job) => job.notify === true && job.notifyConversationId === undefined,
+      )
+        ? await inferUniqueNotifyDestination({
+            ...(input.listNotifyDestinations === undefined ? {} : { listNotifyDestinations: input.listNotifyDestinations }),
+          })
+        : undefined;
       const adapterModule = await loadCronModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startCronAdapter;
       const adapter = adapterFactory({
@@ -1056,6 +1073,9 @@ export function createCronChannelDriver(
           ...(job.maxRunMs === undefined ? {} : { maxRunMs: job.maxRunMs }),
           ...(job.notify === undefined ? {} : { notify: job.notify }),
           ...(job.notifyConversationId === undefined ? {} : { notifyConversationId: job.notifyConversationId }),
+          ...(job.notify === true && job.notifyConversationId === undefined && inferredNotifyDestination !== undefined
+            ? { notifyFallbackConversationId: inferredNotifyDestination }
+            : {}),
           ...(job.model === undefined ? {} : { model: job.model }),
           ...(job.effort === undefined ? {} : { effort: job.effort }),
         })),
@@ -1250,6 +1270,16 @@ async function resolveNativeCronNotifyDestination(input: {
     return undefined;
   }
   return destinations[0]?.conversationId;
+}
+
+async function inferUniqueNotifyDestination(input: {
+  readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
+}): Promise<string | undefined> {
+  if (input.listNotifyDestinations === undefined) {
+    return undefined;
+  }
+  const destinations = await input.listNotifyDestinations();
+  return destinations.length === 1 ? destinations[0]?.conversationId : undefined;
 }
 
 async function deliverNativeWebhookNotification(input: {

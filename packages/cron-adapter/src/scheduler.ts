@@ -38,6 +38,8 @@ export interface CronJob {
   readonly notify?: boolean;
   /** Optional destination conversationId for native notification delivery. */
   readonly notifyConversationId?: string;
+  /** Host-resolved fallback destination used only when notifyConversationId is absent. */
+  readonly notifyFallbackConversationId?: string;
   /** Per-job runtime model override (raw string; parsed/validated by the app). */
   readonly model?: string;
   /** Per-job reasoning effort override (raw string; validated by the app). */
@@ -377,6 +379,9 @@ function startRun(
     conversationId: job.conversationId ?? `cron:${job.id}`,
     text: job.prompt,
     abortSignal: controller.signal,
+    ...(job.notify === true
+      ? toReplyTarget(job.notifyConversationId ?? job.notifyFallbackConversationId)
+      : {}),
     metadata: {
       cron: {
         jobId: job.id,
@@ -502,6 +507,10 @@ function startRun(
         await emitResult(options, result);
       });
     });
+}
+
+function toReplyTarget(conversationId: string | undefined): Pick<AgentRequestBase, "replyTo"> {
+  return conversationId === undefined ? {} : { replyTo: { conversationId } };
 }
 
 function drainNext(

@@ -175,6 +175,10 @@ describe("webhook channel driver — native notification delivery", () => {
       },
     });
 
+    expect(captured.endpoints).toEqual([
+      expect.objectContaining({ notifyFallbackConversationId: "slack:C1" }),
+    ]);
+
     captured.onResult?.(succeededStatus("Webhook digest"), webhookRequest());
 
     await vi.waitFor(() =>

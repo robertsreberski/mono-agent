@@ -221,6 +221,10 @@ describe("cron channel driver — native notification delivery", () => {
       },
     });
 
+    expect(captured.jobs).toEqual([
+      expect.objectContaining({ notifyFallbackConversationId: "slack:C1" }),
+    ]);
+
     await captured.onResult?.(succeededResult("Digest"));
 
     await vi.waitFor(() =>

@@ -115,6 +115,8 @@ export interface WebhookEndpointOption {
   readonly notify?: boolean;
   /** Optional destination conversationId for native notification delivery. */
   readonly notifyConversationId?: string;
+  /** Host-resolved fallback used after an explicit endpoint or deliverable request conversation. */
+  readonly notifyFallbackConversationId?: string;
   /** Per-endpoint runtime model override (raw string; a request body `model` wins). */
   readonly model?: string;
   /** Per-endpoint reasoning effort override (raw string; a request body `effort` wins). */
@@ -176,6 +178,7 @@ interface ResolvedEndpoint {
   readonly prompt?: string;
   readonly notify?: boolean;
   readonly notifyConversationId?: string;
+  readonly notifyFallbackConversationId?: string;
   readonly model?: string;
   readonly effort?: string;
   readonly statusBasePath: string;
@@ -339,6 +342,13 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       conversationId: body.conversationId,
       text: composePromptText(endpoint.prompt, body.text),
       abortSignal: controller.signal,
+      ...(endpoint.notify !== true
+        ? {}
+        : toReplyTarget(
+            endpoint.notifyConversationId
+              ?? (isDeliverableConversation(body.conversationId) ? body.conversationId : undefined)
+              ?? endpoint.notifyFallbackConversationId,
+          )),
       metadata: {
         webhook: {
           requestId,
@@ -792,6 +802,7 @@ function resolveEndpoints(options: WebhookAdapterOptions): readonly ResolvedEndp
       ...(endpoint.prompt === undefined ? {} : { prompt: endpoint.prompt }),
       ...(endpoint.notify === undefined ? {} : { notify: endpoint.notify }),
       ...(endpoint.notifyConversationId === undefined ? {} : { notifyConversationId: endpoint.notifyConversationId }),
+      ...(endpoint.notifyFallbackConversationId === undefined ? {} : { notifyFallbackConversationId: endpoint.notifyFallbackConversationId }),
       ...(endpoint.model === undefined ? {} : { model: endpoint.model }),
       ...(endpoint.effort === undefined ? {} : { effort: endpoint.effort }),
     };
@@ -819,6 +830,14 @@ function statusBasePathFor(path: string): string {
 /** Prepend an endpoint's `prompt` (pre-instructions) to the posted text, if any. */
 function composePromptText(prompt: string | undefined, text: string): string {
   return prompt === undefined || prompt.length === 0 ? text : `${prompt}\n\n${text}`;
+}
+
+function isDeliverableConversation(conversationId: string): boolean {
+  return conversationId.startsWith("telegram:") || conversationId.startsWith("slack:");
+}
+
+function toReplyTarget(conversationId: string | undefined): Pick<AgentRequestBase, "replyTo"> {
+  return conversationId === undefined ? {} : { replyTo: { conversationId } };
 }
 
 function validatePositiveInteger(value: number | undefined, name: string): void {
