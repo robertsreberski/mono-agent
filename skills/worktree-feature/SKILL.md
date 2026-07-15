@@ -88,12 +88,17 @@ gh pr checks <n> --watch --interval 30
 Commits are authored as `robertsreberski@gmail.com` (enforced by the local
 `.githooks/pre-commit`; see AGENTS.local.md).
 
-**After merge (mandatory), not optional.** The instant `gh pr merge` confirms
-merged, clean up both sides — remove the worktree and delete the local branch
-(the remote branch self-deletes only when `delete_branch_on_merge` is on; see
-`repo-hygiene-gc`). Skipped per-feature cleanups are exactly how the repo
-regressed from 2 branches / 3 worktrees to 47 branches / 50 worktrees. The
-commands are under *Compare against base / cleanup* below.
+**After merge (mandatory), not optional.** The instant the PR is merged, clean
+up both sides. Do not trust `gh pr merge`'s exit status or commit ancestry as the
+proof: squash merges create a new commit, so `git branch -d` correctly refuses
+the original head. Query the exact PR and require its API state, branch name,
+and head SHA to match before force-deleting that one local branch. The remote
+branch self-deletes only when `delete_branch_on_merge` is on; see
+`repo-hygiene-gc`.
+
+Skipped per-feature cleanups are exactly how the repo regressed from 2 branches
+/ 3 worktrees to 47 branches / 50 worktrees. Run the cleanup block under
+*Compare against base / cleanup* below as part of finishing every merged PR.
 
 ## Compare against base / cleanup
 
@@ -103,13 +108,36 @@ Check whether a failure pre-exists on main without touching your tree:
 git worktree add --detach /tmp/<name>-base-check <commit>
 ```
 
-When merged (run immediately — this is the mandatory post-merge step):
+When merged, record the exact PR number, branch, and worktree. Run this
+immediately from the feature worktree. The API query returns an empty proof for
+an open/closed-unmerged PR, and every command after it is gated by `&&`:
 
 ```bash
-git worktree remove ~/.config/superpowers/worktrees/mono-agent/<name>
-git branch -d <branch>          # local branch; remote self-deletes only with delete_branch_on_merge on
+repo=robertsreberski/mono-agent
+pr=<number>
+branch=<branch>
+worktree=~/.config/superpowers/worktrees/mono-agent/<name>
+repo_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+proof="$(gh pr view "$pr" --repo "$repo" \
+  --json state,mergedAt,headRefName,headRefOid \
+  --jq 'select(.state == "MERGED" and .mergedAt != null) | [.headRefName, .headRefOid] | join(" ")')"
+api_branch="${proof%% *}"
+api_head="${proof#* }"
+local_head="$(git -C "$repo_root" rev-parse "refs/heads/$branch")"
+
+test "$api_branch" = "$branch" &&
+test "$api_head" = "$local_head" &&
+test -z "$(git -C "$worktree" status --porcelain)" &&
+cd "$repo_root" &&
+git worktree remove "$worktree" &&
+git branch -D -- "$branch" &&
 git worktree prune
 ```
+
+Any failed proof or dirty worktree stops the chain. Investigate it; never add
+`--force` to `git worktree remove`, and never weaken the API/HEAD checks. `-D`
+is intentional only after this proof because squash-merged heads are not
+ancestors of `main`.
 
 For a periodic *bulk* sweep of accumulated merged branches/worktrees (not just
 this one), use the `repo-hygiene-gc` skill.

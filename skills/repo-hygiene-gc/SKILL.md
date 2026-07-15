@@ -7,19 +7,20 @@ description: Periodic branch/worktree garbage collection plus the post-merge cle
 
 The frozen `main` deploy checkout stays put, but every feature spins up its own
 branch + worktree under `~/.config/superpowers/worktrees/mono-agent/` (see
-`worktree-feature`). Nothing reaps them automatically, and the remote never
-self-cleans because `delete_branch_on_merge` is off. Goal-loop velocity buries
-the repo fast: #167 verified a clean **2 branches / 3 worktrees**, and 8 days of
-continued waves regressed it to **47 branches / 50 worktrees**
+`worktree-feature`). Local worktrees are never reaped automatically, and remote
+branches accumulated while `delete_branch_on_merge` was off. Goal-loop velocity
+buries the repo fast: #167 verified a clean **2 branches / 3 worktrees**, and 8
+days of continued waves regressed it to **47 branches / 50 worktrees**
 (`git branch --list | wc -l` = 47, `git worktree list | wc -l` = 50). This is the
 janitorial sweep `worktree-feature` doesn't own.
 
-## One-time: turn on server-side auto-delete
+## Verify server-side auto-delete
 
-So merged **remote** branches auto-delete on merge. Confirm it is off, then flip it:
+Merged **remote** branches should auto-delete on merge. #292 enabled the setting;
+verify it remains on, and restore it only if it has drifted:
 
 ```bash
-gh api repos/robertsreberski/mono-agent --jq .delete_branch_on_merge   # => false until fixed
+gh api repos/robertsreberski/mono-agent --jq .delete_branch_on_merge   # => true
 gh api -X PATCH repos/robertsreberski/mono-agent -F delete_branch_on_merge=true
 ```
 
@@ -40,12 +41,15 @@ this cannot drop live work.
 
 ## Worktree sweep
 
-For each worktree whose branch is merged, remove it, then prune stale registrations:
+Prune registrations whose directories are already gone, then audit every live
+worktree before removal. A worktree is removable only when it is clean and its
+exact branch tip is the head of an API-confirmed merged PR. The proof block in
+*Post-merge protocol* is the canonical removal path:
 
 ```bash
-git worktree list                       # audit
-git worktree remove <path>              # per merged worktree
-git worktree prune                      # drop registrations for dirs already gone
+git worktree prune
+git worktree list
+git -C <path> status --porcelain
 ```
 
 `git worktree list` shows the frozen `main` deploy checkout as its first row —
@@ -54,17 +58,64 @@ never remove that one; only sweep the feature worktrees under
 
 ## Post-merge protocol (prevents regrowth)
 
-This is the discipline that keeps the sweep from ever having 45 branches to catch
-up on. After any `gh pr merge` confirms merged:
+This is the discipline that keeps the sweep from ever having 45 branches to
+catch up on. After a PR merges, prove the exact PR state, branch name, and head
+SHA before removing a clean worktree and force-deleting its squash-merged local
+branch:
 
 ```bash
-git worktree remove ~/.config/superpowers/worktrees/mono-agent/<name>
-git branch -d <branch>
+repo=robertsreberski/mono-agent
+pr=<number>
+branch=<branch>
+worktree=~/.config/superpowers/worktrees/mono-agent/<name>
+repo_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+proof="$(gh pr view "$pr" --repo "$repo" \
+  --json state,mergedAt,headRefName,headRefOid \
+  --jq 'select(.state == "MERGED" and .mergedAt != null) | [.headRefName, .headRefOid] | join(" ")')"
+api_branch="${proof%% *}"
+api_head="${proof#* }"
+local_head="$(git -C "$repo_root" rev-parse "refs/heads/$branch")"
+
+test "$api_branch" = "$branch" &&
+test "$api_head" = "$local_head" &&
+test -z "$(git -C "$worktree" status --porcelain)" &&
+cd "$repo_root" &&
+git worktree remove "$worktree" &&
+git branch -D -- "$branch" &&
+git worktree prune
 ```
 
 Paired with the `delete_branch_on_merge` setting, remote and local both self-clean
 per feature. (This same step is folded into `worktree-feature`'s "Ship" flow — the
 bulk sweep here is the safety net for when it was skipped.)
+
+## Historical squash-merge sweep
+
+Inventory first; do not pipe a list of old branch names directly into
+`git branch -D`. Branch names can be reused, and a merged PR with the same name
+does not prove the current tip was merged. For each candidate, list its PRs and
+select the one whose `headRefOid` exactly equals the current local or remote tip:
+
+```bash
+branch=<candidate>
+gh pr list --repo robertsreberski/mono-agent --state all --head "$branch" \
+  --limit 100 --json number,state,mergedAt,headRefName,headRefOid,url
+git rev-parse "refs/heads/$branch"
+git rev-parse "refs/remotes/origin/$branch"
+```
+
+Use that PR number with the canonical proof block above. If the remote branch
+still exists after local cleanup, delete it only with a lease bound to the
+API-confirmed head SHA, so a concurrently advanced branch is preserved:
+
+```bash
+git push --force-with-lease="refs/heads/$branch:$api_head" \
+  origin ":refs/heads/$branch"
+```
+
+Keep every dirty worktree, branch without an exact merged-PR/head match, and
+closed-unmerged or open PR branch. Record the survivor and its reason instead
+of guessing.
 
 ## Cadence
 
@@ -80,17 +131,8 @@ git worktree list | wc -l
 
 - **Squash-merged branches are invisible to `git branch --merged`.** PRs squashed
   into `main` land as a new commit whose SHA the branch never contained, so
-  `--merged` reports them as unmerged and `git branch -d` refuses them — exactly how
-  branches pile up. Catch them by their merged PR instead, then force-delete only
-  those the API confirms merged:
-
-```bash
-gh pr list --state merged --limit 100 --json headRefName --jq '.[].headRefName' \
-  | while read -r b; do git branch -D "$b" 2>/dev/null; done
-```
-
-  `git branch -D` is force delete — gate it on the merged-PR list above; never run
-  it blind across branches.
+  `--merged` reports them as unmerged and `git branch -d` refuses them. Use the
+  exact API/branch/head proof above; never force-delete a bulk list of names.
 - **A worktree's branch can't be deleted while the worktree exists** — `git branch -d`
   errors with the branch checked out elsewhere. Remove the worktree first, then the
   branch (the order in the post-merge protocol).
