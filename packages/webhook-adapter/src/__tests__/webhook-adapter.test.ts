@@ -153,7 +153,7 @@ describe("Webhook adapter", () => {
     const results: unknown[] = [];
     const responder: AgentResponder = {
       async respond(request, stream) {
-        seen.push(request.metadata?.webhook);
+        seen.push(request);
         await stream.append(`digest: ${request.text}`);
         return {};
       },
@@ -184,8 +184,14 @@ describe("Webhook adapter", () => {
       await expect(response.json()).resolves.toMatchObject({ status: "succeeded", text: "digest: payload" });
       expect(seen).toEqual([
         expect.objectContaining({
-          endpointName: "digest",
-          nativeNotify: { enabled: true, conversationId: "telegram:42" },
+          conversationId: "c1",
+          replyTo: { conversationId: "telegram:42" },
+          metadata: {
+            webhook: expect.objectContaining({
+              endpointName: "digest",
+              nativeNotify: { enabled: true, conversationId: "telegram:42" },
+            }),
+          },
         }),
       ]);
       expect(results).toEqual([
@@ -194,6 +200,40 @@ describe("Webhook adapter", () => {
           webhook: expect.objectContaining({ endpointName: "digest" }),
         }),
       ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("prefers a deliverable request conversation over the host-inferred fallback", async () => {
+    const seen: unknown[] = [];
+    const responder: AgentResponder = {
+      async respond(request, stream) {
+        seen.push(request.replyTo);
+        await stream.append("ok");
+        return {};
+      },
+    };
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      endpoints: [{
+        name: "callback",
+        path: "/callback",
+        mode: "sync",
+        notify: true,
+        notifyFallbackConversationId: "slack:C-FALLBACK",
+      }],
+      responder,
+    });
+
+    try {
+      const response = await fetch(
+        `${server.url}/callback`,
+        postJson({ text: "payload", conversationId: "slack:C-REQUEST", mode: "sync" }),
+      );
+      expect(response.status).toBe(200);
+      expect(seen).toEqual([{ conversationId: "slack:C-REQUEST" }]);
     } finally {
       await server.stop();
     }

@@ -15,7 +15,7 @@ describe("Cron adapter", () => {
     const calls: unknown[] = [];
     const responder: AgentResponder = {
       async respond(request, stream) {
-        calls.push(request.metadata?.cron);
+        calls.push(request);
         await stream.append(`ran: ${request.text}`);
         return {};
       },
@@ -46,16 +46,22 @@ describe("Cron adapter", () => {
       await vi.advanceTimersByTimeAsync(60_000);
       expect(calls).toEqual([
         expect.objectContaining({
-          jobId: "heartbeat",
-          expression: "* * * * *",
-          nativeNotify: {
-            enabled: true,
-            conversationId: "telegram:42",
+          conversationId: "cron:heartbeat",
+          replyTo: { conversationId: "telegram:42" },
+          metadata: {
+            cron: expect.objectContaining({
+              jobId: "heartbeat",
+              expression: "* * * * *",
+              nativeNotify: {
+                enabled: true,
+                conversationId: "telegram:42",
+              },
+              model: "claude:claude-opus-4-8",
+              effort: "high",
+              scheduledAt: "1970-01-01T00:01:00.000Z",
+              startedAt: "1970-01-01T00:01:00.000Z",
+            }),
           },
-          model: "claude:claude-opus-4-8",
-          effort: "high",
-          scheduledAt: "1970-01-01T00:01:00.000Z",
-          startedAt: "1970-01-01T00:01:00.000Z",
         }),
       ]);
       expect(results).toEqual([
