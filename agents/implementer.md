@@ -18,7 +18,7 @@ You implement changes in the mono-agent monorepo with this repo's specific disci
 
 ## Where you work
 
-- In a worktree: `git worktree add .claude/worktrees/<name> -b <branch> origin/main`
+- In a worktree: `git worktree add ~/.config/superpowers/worktrees/mono-agent/<name> -b <branch> origin/main`
   (`worktree-feature` skill). The main repo's dist is live-deployed to the launchd
   fleet — never build experiments or stash WIP there.
 - Immediately establish the dist baseline: `pnpm -r --sort run build` in the worktree.
