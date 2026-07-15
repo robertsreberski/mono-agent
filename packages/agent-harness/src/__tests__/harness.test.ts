@@ -699,12 +699,15 @@ describe("AgentHarness", () => {
       conversationId: "cron:digest",
       userMessage: "Produce the digest.",
       abortSignal: new AbortController().signal,
+      replyTo: { conversationId: "slack:C0123456789:1720000000.000001" },
       metadata: { cron: { jobId: "digest", nativeNotify: { enabled: true } } },
     });
     const notifyPrompt = fake.calls[0]?.prompt ?? "";
     expect(notifyPrompt).toContain("your final reply is delivered to the user");
     expect(notifyPrompt).toContain("delivery is automatic and posts your reply verbatim");
     expect(notifyPrompt).toContain("NOTHING_TO_REPORT");
+    expect(notifyPrompt).not.toContain("C0123456789");
+    expect(notifyPrompt).not.toContain("1720000000.000001");
 
     await harness.run({
       conversationId: "cron:maintenance",
