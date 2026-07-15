@@ -211,6 +211,10 @@ Most channels are opt-in via their `enabled` flag (default off). The operator su
 | `MONO_AGENT_TELEGRAM_ATTACHMENT_MAX_BYTES` | `telegram.attachments.maxBytes` | Inbound attachment download cap (bytes). Default 20 MiB (the hosted API's hard limit); raise it only with a self-hosted server. |
 | `MONO_AGENT_TELEGRAM_ATTACHMENT_DOWNLOAD_TIMEOUT_MS` | `telegram.attachments.downloadTimeoutMs` | Per-file download timeout (ms) on the URL branch; default `30000`, `0` disables. |
 | `MONO_AGENT_TELEGRAM_UPLOAD_MAX_BYTES` | `telegram.attachments.maxUploadBytes` | Upload cap (bytes) for `TelegramSendFile`; default 20 MiB. |
+| `MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT` | `telegram.transcription.endpoint` | Full HTTP(S) URL of an OpenAI-compatible `POST /v1/audio/transcriptions` route. Unset disables transcription. |
+| `MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL` | `telegram.transcription.model` | Model name sent with each transcription request; required when the endpoint is set. |
+| `MONO_AGENT_TELEGRAM_TRANSCRIPTION_LANGUAGE` | `telegram.transcription.language` | Optional ISO-639 language hint. |
+| `MONO_AGENT_TELEGRAM_TRANSCRIPTION_TIMEOUT_MS` | `telegram.transcription.timeoutMs` | Per-call timeout in milliseconds (`1`–`3600000`); default `120000`, independent of the attachment download timeout. |
 
 ### Slack
 
