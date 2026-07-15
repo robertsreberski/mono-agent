@@ -148,6 +148,7 @@ describe("WhatsAppAdapter", () => {
     });
     expect(capturedRequest).toMatchObject({
       conversationId: "whatsapp:123@s.whatsapp.net",
+      replyTo: { conversationId: "whatsapp:123@s.whatsapp.net" },
       chatJid: "123@s.whatsapp.net",
       senderJid: "123@s.whatsapp.net",
       text: "hello",
@@ -217,6 +218,7 @@ describe("WhatsAppAdapter", () => {
     });
     expect(capturedRequest).toMatchObject({
       conversationId: "whatsapp:456@g.us",
+      replyTo: { conversationId: "whatsapp:456@g.us" },
       chatKind: "group",
       participantJid: "participant@s.whatsapp.net",
       text: "help me",

@@ -1034,11 +1034,7 @@ export class MonoAgentHarness implements AgentHarness {
     const context = await loadContextFromFiles({
       identityPath: this.options.identityPath,
       userMessage: request.userMessage,
-      session: sessionContextBlock(
-        request.conversationId,
-        request.metadata,
-        this.options.memory !== undefined,
-      ),
+      session: sessionContextBlock(request, this.options.memory !== undefined),
       ...(this.options.soulPath === undefined ? {} : { soulPath: this.options.soulPath }),
       ...(history.length === 0 ? {} : { history }),
       ...(this.options.skillsRoot !== undefined
@@ -2659,12 +2655,10 @@ function cloneExternalSummaryValue(
  * later reply only after such a tool confirms that the continuation was registered.
  */
 function sessionContextBlock(
-  conversationId: string,
-  metadata?: Record<string, unknown>,
+  request: Pick<AgentHarnessRequest, "metadata" | "replyTo">,
   hostManagedMemory = false,
 ): string {
-  const baseId = conversationId.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
-  const deliverable = baseId.startsWith("telegram:") || baseId.startsWith("slack:");
+  const deliverable = request.replyTo !== undefined && !hasRequestDrivenTrigger(request.metadata);
   const memoryGuidance = hostManagedMemory ? HOST_MANAGED_MEMORY_GUIDANCE : undefined;
   if (deliverable) {
     return [
@@ -2674,10 +2668,14 @@ function sessionContextBlock(
     ].filter((part) => part !== undefined).join("\n\n");
   }
   const base = "This is a request-driven run (scheduled, webhook, or API) with no interactive user attached to a deliverable push conversation. Do not invent or infer a callback destination.";
-  const notifyGuidance = notifyDeliveryGuidance(metadata);
+  const notifyGuidance = notifyDeliveryGuidance(request.metadata);
   return [base, notifyGuidance, memoryGuidance]
     .filter((part) => part !== undefined)
     .join("\n\n");
+}
+
+function hasRequestDrivenTrigger(metadata: Record<string, unknown> | undefined): boolean {
+  return metadata?.cron !== undefined || metadata?.webhook !== undefined;
 }
 
 const HOST_MANAGED_MEMORY_GUIDANCE = [

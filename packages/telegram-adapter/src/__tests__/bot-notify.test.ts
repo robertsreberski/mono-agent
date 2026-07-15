@@ -83,6 +83,7 @@ describe("createTelegramBot notify (proactive)", () => {
 
     expect(result).toEqual({ delivered: true });
     expect(captured?.conversationId).toBe("telegram:42");
+    expect(captured?.replyTo).toEqual({ conversationId: "telegram:42" });
     expect(captured?.text).toBe("Compose and report the morning brief.");
     const sent = calls.filter((call) => call.method === "sendMessage");
     expect(sent.at(-1)?.payload).toMatchObject({
