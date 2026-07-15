@@ -16,6 +16,10 @@ The content was mined from real development-session history (Claude Code +
 Codex sessions on this repo, June–July 2026): command frequencies, exact
 observed command forms, and the gotchas that repeatedly cost time (worktree
 dist resolution, npm registry proxy, fleet-dist deploys, pi version behavior).
+Three skills (`dead-code-audit`, `repo-hygiene-gc`, `ops-log-hygiene`) plus
+amendments across all eight originals were derived from the 2026-07-15
+v1-freeze audit (`audit/agent-workflow-improvements.md`), which codified the
+recurring failure shapes the audit proved out.
 
 | Skill | Use when |
 |---|---|
@@ -27,3 +31,6 @@ dist resolution, npm registry proxy, fleet-dist deploys, pi version behavior).
 | `docs-sync` | Updating docs/ + website; PR-range docs audits |
 | `pi-upstream-recon` | Reading vendored pi source before building; pi bumps |
 | `new-package` | Adding a package that passes `check:architecture` first try |
+| `dead-code-audit` | Prove-or-remove sweeps: dead exports, orphaned wiring, deprecation removability |
+| `repo-hygiene-gc` | Periodic branch/worktree GC + the post-merge cleanup protocol |
+| `ops-log-hygiene` | Live-fleet log health: size caps, crash-loop tails, restart-churn detection |

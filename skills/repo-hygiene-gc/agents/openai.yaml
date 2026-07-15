@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repo Hygiene GC"
+  short_description: "Sweep merged branches and worktrees"
+  default_prompt: "Use $repo-hygiene-gc to sweep merged branches and worktrees and keep the repo clean."

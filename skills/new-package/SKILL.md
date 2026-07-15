@@ -65,3 +65,69 @@ section, adapter-neutrality violation in agent-contracts.
   more, that's a design smell — re-read the ladder before widening.
 - User-facing packages need docs: `PACKAGES.md`, feature-registry entry, maybe a
   playbook (hand off to the `docs-sync` skill).
+
+## Adapter & channel checks (when the package is a channel driver)
+
+When the new package is a channel driver, or adds a new `ChannelId`:
+
+- **Adapter-neutrality — grep the ENTIRE core surface, not one package.** The
+  mechanical arch guard only scans `packages/agent-contracts/src` for two literals
+  (`telegram`, `whatsapp`), and that scope/word-list never grew as channels were
+  added. Run a standing check of both the contracts AND the harness for a
+  hardcoded reference to any shipped channel id, sourced from the channel catalog
+  rather than fixed literals:
+
+  ```bash
+  grep -riE "\b(telegram|whatsapp|slack|discord)\b" \
+    packages/agent-contracts/src packages/agent-harness/src --include=*.ts | grep -v __tests__
+  ```
+
+  `ChannelId` is `string`, open by design (third-party drivers pick their own id),
+  so core code must branch on capability, never on a literal id.
+
+- **Interactive-channel harness classification.** If the channel produces
+  interactive (human-attended) conversations, confirm the harness's per-turn
+  model-facing framing recognizes it — `sessionContextBlock` in
+  `packages/agent-harness/src/harness.ts`, plus any sibling logic keyed off the
+  `conversationId` shape. Do not assume a hardcoded string-prefix allowlist
+  elsewhere already covers the new id.
+
+## Design checks (prove it in the same diff)
+
+- **Singleton lock? Reuse the shared choreography.** If the package needs a
+  singleton lock, do not re-derive the mkdir / `owner.json` / incarnation /
+  quarantine dance — reuse `packages/agent-app/src/process-incarnation.ts`, the
+  shared liveness primitive. Four current copies (worker lease, CLI lifecycle
+  lock, managed-runtime install lock, SRT install lock) already share it and only
+  duplicate the directory/rename choreography; don't add a fifth.
+- **New runtime-resolution surface ⇒ a `doctor`/`validate` line.** If the package
+  adds a new place mono-agent decides "which physical package/closure is this" at
+  runtime (like `managed-runtime-packages.ts`'s app-vs-cwd resolution), add a
+  `doctor`/`validate` detail line naming what was resolved and from where —
+  otherwise the resolution is invisible when it picks the wrong one.
+- **Sibling test-shape parity.** When the package has two structurally-parallel
+  sub-modules, diff their `__tests__/` listings and add any missing counterpart;
+  a gap there is an untested path. `operator-adapter`'s `live/` was missing the
+  `config.test.ts` that `tui/` has, so `live/config.ts`'s secret-redaction path
+  went untested.
+
+  ```bash
+  diff <(ls packages/<pkg>/src/tui/__tests__) <(ls packages/<pkg>/src/live/__tests__)
+  ```
+
+- **MCP stateless-HTTP cleanup ordering.** For a rung-4 MCP server/tool using
+  `@modelcontextprotocol/sdk`, register the response close listener **before**
+  calling `handleRequest`, not after — the SDK examples show this order and
+  `agent-orchestrator` (`extras/agent-orchestrator/src/index.ts`) got it backwards:
+
+  ```js
+  res.on("close", () => { transport.close(); server.close(); });  // wire cleanup first
+  await transport.handleRequest(req, res, body);
+  ```
+
+## Gotchas
+
+- **A `demos/` dir without a `package.json` is by design** — it is a seed/template
+  agent, not a workspace package, so it won't appear in the catalog and shouldn't.
+  Read its own README before flagging it as dead/incomplete (`demos/final-agent`
+  is the canonical example).
