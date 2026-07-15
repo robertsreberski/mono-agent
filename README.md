@@ -448,3 +448,8 @@ flowchart TB
   AgentRuntime --> CodexCli
   AgentRuntime --> PiSdk
 ```
+
+## License
+
+Mono-agent and every publishable package in this workspace are licensed under
+`GPL-3.0-only`. See [LICENSE](./LICENSE) for the complete terms.

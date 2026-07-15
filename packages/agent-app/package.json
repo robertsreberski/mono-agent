@@ -3,7 +3,7 @@
   "version": "0.11.2",
   "description": "Config-first mono-agent host: builds a responder and starts every configured communication channel and traceability from one mono-agent.config.json.",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "GPL-3.0-only",
   "private": false,
   "engines": {
     "node": ">=22.19.0"

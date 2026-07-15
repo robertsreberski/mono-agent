@@ -12,6 +12,7 @@ description: Run the mono-agent verification gate — full repo green or fast si
 ```bash
 pnpm run check:secrets
 pnpm run check:oss-hygiene
+pnpm run check:licenses
 pnpm run check:codex-discoverability  # skills/agents Codex parity (wired into CI + verify:all by PR #142)
 pnpm run check:architecture     # catalog + README sections + dependency categories
 pnpm run build                  # packages + demos, then strict deploy-output marker on POSIX/macOS

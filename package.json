@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Small agent framework building blocks under the @mono-agent scope.",
+  "license": "GPL-3.0-only",
   "type": "module",
   "engines": {
     "node": ">=22.19.0",
@@ -14,6 +15,7 @@
     "check:node": "node scripts/node-version.mjs",
     "check:secrets": "node scripts/check-secrets.mjs",
     "check:oss-hygiene": "node scripts/check-oss-hygiene.mjs",
+    "check:licenses": "node scripts/check-license-consistency.mjs",
     "check:codex-discoverability": "node scripts/check-codex-discoverability.mjs",
     "check:architecture": "node scripts/check-package-architecture.mjs",
     "verify:consumers": "node scripts/verify-consumers.mjs",

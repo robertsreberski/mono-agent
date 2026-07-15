@@ -67,16 +67,16 @@ pnpm --filter @mono-agent/agent-runtime test -- src/__tests__/ai/pi-native.test.
 ## Vendoring & pin guards
 
 - **License consistency across the vendoring boundary.** `agent-runtime` is
-  designed to be vendored-as-source into a second host (worklab), and it is the
-  one workspace package licensed `GPL-3.0-only` while every other package is
-  `UNLICENSED`. When auditing or porting anything across that boundary, diff the
-  `license` field on both sides before treating a "wrap a copyleft kernel behind
-  a differently-licensed facade" pattern as settled — each `package.json` is
-  internally consistent even when the cross-boundary metadata is not:
+  designed to be vendored-as-source into a second host (worklab). Mono-agent's
+  root and all publishable workspace packages are deliberately aligned on
+  `GPL-3.0-only`; keep that alignment explicit when auditing or porting across
+  the boundary. Run the repository guard, then compare the target host's
+  metadata before treating a copied kernel as license-compatible:
 
 ```bash
+pnpm run check:licenses
 grep -H '"license"' packages/agent-runtime/package.json packages/agent-app/package.json
-# agent-runtime => GPL-3.0-only ; agent-app (and every other package) => UNLICENSED
+# both => GPL-3.0-only
 ```
 
 - **`minimumReleaseAge` must be set before an exclude means anything.**
