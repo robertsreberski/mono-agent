@@ -669,6 +669,7 @@ describe("createTelegramBot", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({
       conversationId: "telegram:42",
+      replyTo: { conversationId: "telegram:42" },
       chatId: 42,
       messageId: 10,
       updateId: 1,

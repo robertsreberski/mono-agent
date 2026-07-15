@@ -500,8 +500,10 @@ function buildAgentRequest(
     metadata.participantJid = message.participantJid;
   }
 
+  const conversationId = `whatsapp:${message.chatJid}`;
   const request: AgentRequest = {
-    conversationId: `whatsapp:${message.chatJid}`,
+    conversationId,
+    replyTo: { conversationId },
     chatJid: message.chatJid,
     remoteJid: message.remoteJid,
     chatKind: message.chatKind,
