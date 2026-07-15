@@ -1,5 +1,22 @@
 # Release notes
 
+## 0.11.1 — Release provenance and continuation documentation (2026-07-15)
+
+### Fixed
+
+- Reconciles the repository release history with the already-published 0.10.0
+  and 0.11.0 package sets, preserving their original commits and tags.
+- Clarifies that interactive continuation delivery synthesizes from the
+  immutable origin snapshot prepared and bound by the originating run, rather
+  than reconstructing context from mutable latest history.
+
+### Compatibility
+
+- Runtime behavior is unchanged from 0.11.0; this patch release carries the
+  documentation correction and a complete, traceable lockstep release surface.
+- All 21 catalog-publishable packages move together to 0.11.1. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.11.0 — Durable conversation and continuation context (2026-07-14)
 
 ### Highlights
