@@ -120,6 +120,25 @@ describe("loadTelegramAdapterConfig", () => {
     });
   });
 
+  it("ignores malformed sendTools config while disabled", async () => {
+    const config = await loadTelegramAdapterConfig({
+      env: {},
+      json: {
+        telegram: {
+          enabled: false,
+          sendTools: { scope: "bogus" },
+        },
+      },
+    });
+
+    expect(config).toEqual({
+      enabled: false,
+      botToken: "",
+      allowedChatIds: [],
+      allowAllChats: false,
+    });
+  });
+
   it("parses transport.ipFamily and pollWatchdogMs from JSON", async () => {
     const path = join(dir, "mono-agent.config.json");
     await writeFile(
