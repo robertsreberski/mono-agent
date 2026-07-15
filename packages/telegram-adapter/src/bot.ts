@@ -1063,8 +1063,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       if (controller.signal.aborted) {
         return { delivered: false, reason: "cancelled" };
       }
+      const conversationId = `telegram:${String(chatId)}`;
       const request: AgentRequest = {
-        conversationId: `telegram:${String(chatId)}`,
+        conversationId,
+        replyTo: { conversationId },
         chatId,
         messageId: 0,
         updateId: 0,

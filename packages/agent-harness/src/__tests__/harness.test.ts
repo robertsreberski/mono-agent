@@ -496,6 +496,7 @@ describe("AgentHarness", () => {
 
     const response = await harness.run({
       conversationId: "telegram:1",
+      replyTo: { conversationId: "telegram:1" },
       userMessage: "What changed?",
       abortSignal: new AbortController().signal,
     });
@@ -529,6 +530,89 @@ describe("AgentHarness", () => {
     expect(fake.calls[0]?.prompt).toContain("# Skill: research");
     expect(fake.calls[0]?.options).toMatchObject({ allowedTools: ["Read"], disallowedTools: ["Bash"], maxTurns: 3 });
     await expect(historyStore.load("telegram:1")).resolves.toHaveLength(3);
+  });
+
+  it("classifies push delivery structurally without exposing routing ids", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
+    let runNumber = 0;
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      createRunId: () => `run-delivery-${String(runNumber += 1)}`,
+    });
+    type DeliveryScenario = {
+      readonly name: string;
+      readonly conversationId: string;
+      readonly replyTo?: { readonly conversationId: string };
+      readonly metadata?: Record<string, unknown>;
+      readonly expected: "interactive" | "request-driven";
+    };
+    const scenarios: readonly DeliveryScenario[] = [
+      {
+        name: "WhatsApp push conversation",
+        conversationId: "whatsapp:123@s.whatsapp.net",
+        replyTo: { conversationId: "whatsapp:123@s.whatsapp.net" },
+        expected: "interactive",
+      },
+      {
+        name: "third-party push conversation",
+        conversationId: "discord:channel-7",
+        replyTo: { conversationId: "discord:channel-7" },
+        expected: "interactive",
+      },
+      {
+        name: "OpenAI API request",
+        conversationId: "openai-api:request-1",
+        metadata: { openaiApi: { requestId: "request-1" } },
+        expected: "request-driven",
+      },
+      {
+        name: "TUI request",
+        conversationId: "operator-session-1",
+        metadata: { source: "tui", tuiRequestId: "tui-request-1" },
+        expected: "request-driven",
+      },
+      {
+        name: "notify-enabled cron request",
+        conversationId: "cron:daily-brief",
+        replyTo: { conversationId: "whatsapp:notify@s.whatsapp.net" },
+        metadata: { cron: { jobId: "daily-brief", nativeNotify: { enabled: true } } },
+        expected: "request-driven",
+      },
+      {
+        name: "notify-enabled webhook request",
+        conversationId: "webhook:deploy-event",
+        replyTo: { conversationId: "telegram:42" },
+        metadata: { webhook: { endpointName: "deploy-event", nativeNotify: { enabled: true } } },
+        expected: "request-driven",
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      await harness.run({
+        conversationId: scenario.conversationId,
+        userMessage: "Classify this turn.",
+        abortSignal: new AbortController().signal,
+        ...(scenario.replyTo === undefined ? {} : { replyTo: scenario.replyTo }),
+        ...(scenario.metadata === undefined ? {} : { metadata: scenario.metadata }),
+      });
+      const prompt = fake.calls.at(-1)?.prompt ?? "";
+      if (scenario.expected === "interactive") {
+        expect(prompt, scenario.name).toContain("You are handling an interactive push conversation");
+        expect(prompt, scenario.name).not.toContain("This is a request-driven run");
+      } else {
+        expect(prompt, scenario.name).toContain("This is a request-driven run");
+        expect(prompt, scenario.name).not.toContain("You are handling an interactive push conversation");
+      }
+      expect(prompt, scenario.name).not.toContain(scenario.conversationId);
+      if (scenario.replyTo !== undefined) {
+        expect(prompt, scenario.name).not.toContain(scenario.replyTo.conversationId);
+      }
+    }
   });
 
   it("enriches only durable assistant history while preserving outward text and memory text", async () => {

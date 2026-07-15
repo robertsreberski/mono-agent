@@ -240,8 +240,10 @@ export function buildAgentRequest(
   if (input.attachments.length > 0) {
     telegramMetadata.attachments = input.attachments;
   }
+  const conversationId = `telegram:${String(message.chat.id)}`;
   const request: AgentRequest = {
-    conversationId: `telegram:${String(message.chat.id)}`,
+    conversationId,
+    replyTo: { conversationId },
     chatId: message.chat.id,
     messageId: message.message_id,
     updateId: update.update_id,
