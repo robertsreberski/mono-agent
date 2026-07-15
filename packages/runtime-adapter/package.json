@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/runtime-adapter",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "description": "Typed runtime facade over @mono-agent/agent-runtime.",
   "type": "module",
   "license": "UNLICENSED",
@@ -26,8 +26,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.11.1",
-    "@mono-agent/agent-runtime": "workspace:0.11.1"
+    "@mono-agent/agent-contracts": "workspace:0.11.2",
+    "@mono-agent/agent-runtime": "workspace:0.11.2"
   },
   "publishConfig": {
     "access": "public"
