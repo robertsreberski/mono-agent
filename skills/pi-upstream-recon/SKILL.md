@@ -9,6 +9,15 @@ Standing rule: **prefer native upstream implementations.** Before hand-rolling
 runtime/provider/session/compaction/TUI machinery, check whether pi already
 ships it — and check the LATEST version's API, never memory of an old one.
 
+This rule is not pi-specific — it applies to **any** provider adapter. Before
+hand-rolling output-shape recovery (JSON repair, retry-on-malformed,
+`parseJsonLoose`/`parseJsonExact`-style scanners) for a provider, check that
+provider's native structured-output / JSON mode first. The memory package
+hand-rolled `parseJsonLoose`/`parseJsonExact` in `packages/memory/src/bujo/json.ts`
+instead of setting Ollama's `format: "json"` on the `/api/generate` request in
+`ollama-llm.ts` — the native flag constrains the model to valid JSON at the
+source, which is strictly better than repairing malformed output after the fact.
+
 ## Locate the vendored source
 
 ```bash
@@ -54,6 +63,32 @@ pnpm --filter @mono-agent/agent-runtime test -- src/__tests__/ai/pi-native.test.
 
 4. Full gate (`verify-green` skill), then live smoke (`live-smoke` skill) with a
    real pi model — pi regressions are exactly the class unit tests miss.
+
+## Vendoring & pin guards
+
+- **License consistency across the vendoring boundary.** `agent-runtime` is
+  designed to be vendored-as-source into a second host (worklab), and it is the
+  one workspace package licensed `GPL-3.0-only` while every other package is
+  `UNLICENSED`. When auditing or porting anything across that boundary, diff the
+  `license` field on both sides before treating a "wrap a copyleft kernel behind
+  a differently-licensed facade" pattern as settled — each `package.json` is
+  internally consistent even when the cross-boundary metadata is not:
+
+```bash
+grep -H '"license"' packages/agent-runtime/package.json packages/agent-app/package.json
+# agent-runtime => GPL-3.0-only ; agent-app (and every other package) => UNLICENSED
+```
+
+- **`minimumReleaseAge` must be set before an exclude means anything.**
+  `pnpm-workspace.yaml`'s `minimumReleaseAgeExclude` (pi + the `claude-agent-sdk`
+  platform binaries) only does something if a global `minimumReleaseAge` cooldown
+  is actually configured; without it the exclude is inert from the moment it is
+  added. Confirm the cooldown is nonzero **before** adding or trusting an exclude
+  entry:
+
+```bash
+pnpm config get minimumReleaseAge   # must be nonzero; today it returns `undefined` — the exclude is currently inert
+```
 
 ## Reading discipline
 

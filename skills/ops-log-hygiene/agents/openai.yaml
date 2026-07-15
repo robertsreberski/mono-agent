@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ops Log Hygiene"
+  short_description: "Keep live-fleet logs bounded and crash-loop free"
+  default_prompt: "Use $ops-log-hygiene to check live-fleet log health after any deploy or restart."

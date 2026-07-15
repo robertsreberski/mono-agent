@@ -30,6 +30,33 @@ Then refresh the lockfile:
 pnpm install
 ```
 
+Two things `validateRelease` does **not** cover — check them by hand during the bump:
+
+- **Root devDependency pins (#228).** The gate verifies every `packages/*`/`extras/*`
+  version and their internal deps, but not the root `package.json`'s own
+  `@mono-agent/*` devDependency pins. A pin left at the old version is invisible to
+  the release gate — spot-check it against the target:
+
+  ```bash
+  # substitute <target-version> with the version you are cutting
+  grep -oE '"@mono-agent/[^"]+": *"workspace:[^"]+"' package.json | grep -v 'workspace:<target-version>'
+  # non-empty output = a root devDep pin the release gate will NOT catch (#228)
+  ```
+
+- **Stale hand-authored `_VERSION` literals.** A version string typed into source
+  drifts silently: `TUI_PACKAGE_VERSION` fell 11 minor versions behind before anyone
+  noticed. Grep for hand-authored version constants during every bump:
+
+  ```bash
+  grep -rnE "_VERSION\s*[:=]\s*[\"'][0-9]" packages/*/src extras/*/src --include="*.ts" | grep -v __tests__
+  ```
+
+  The ones meant to mirror their own package version (`TUI_PACKAGE_VERSION`) must be
+  bumped, or — better — replaced with a build-time read of `package.json` so they
+  can never drift again. Constants that version something independent
+  (`MANAGED_SRT_VERSION`, `PROJECT_SKILL_VERSION`) are not release-coupled; don't
+  bump those.
+
 ## 2. Preflight (exactly what CI will run)
 
 ```bash
@@ -56,6 +83,20 @@ The workflow: validate → check:architecture → build → typecheck → test �
 publish (NPM_TOKEN) → verify metadata → smoke-installs `@mono-agent/tui` and
 `@mono-agent/agent-app` CLIs from the public registry.
 
+**Supply-chain attestation.** Neither this skill nor the release scripts request
+npm provenance today, so every package ships **unattested**. The publish step
+should carry `--provenance` (or move to npm trusted publishing) so each tarball
+gets a signed provenance attestation bound to the CI run:
+
+```bash
+npm publish <tarball> --access <access> --tag <tag> --provenance
+```
+
+`--provenance` only produces a real attestation from a supported CI with OIDC
+(GitHub Actions, `permissions: id-token: write`); a bare local `npm publish
+--provenance` cannot generate one, which is another reason the local path in §4 is
+not the normal one.
+
 ## 4. Post-verify (registry gotcha)
 
 The local AutoProxxy `.npmrc` breaks npm reads/writes against npmjs. Always pin
@@ -77,5 +118,21 @@ failure (the CI smoke step retries for ~150s).
   (`fleet-deploy` skill) so live agents match the published version.
 - Package deprecations are done via the npm web UI, not the CLI (works around
   the proxy npmrc).
+- **Downstream fleets: one version-derivation point.** When documenting how a
+  downstream consumer/fleet tracks lockstep releases, have it derive the expected
+  `@mono-agent` version at runtime from its own `package.json` (read
+  `dependencies["@mono-agent/agent-app"]`) rather than duplicating the release
+  string as a literal. One live instance hardcodes the version in **6 separate
+  files** — every bump then needs 6 edits and any missed one drifts silently.
 - Update memory/docs notes recording the release (version, date, anything
   retired or newly published).
+
+## Deprecation aliases carry a removal version
+
+Every deprecation alias/flag must ship with a target removal version (or date) in
+the same commit that introduces it — a deprecation message with no sunset is never
+removed. `--recipe`, `--fallback-models`, and `LEGACY_TOOL_ALIASES` each shipped a
+"deprecated, use X" message but no removal target, so they linger indefinitely.
+Record the sunset in the deprecation message and/or a `@deprecated` JSDoc tag
+naming the version it comes out in, and note the pending removal in this release's
+notes so it actually lands on a later cut.

@@ -65,6 +65,13 @@ pnpm -C website install
 
 ## Ship
 
+**Before shipping — new durable state?** If this PR adds a new on-disk store
+under `.mono-agent/` (session history, continuation ledger, memory index, …),
+confirm an existing purge/reset/clear surface covers it too — a CLI command, the
+`doctor`/`validate` status, and any docs boundary/reset table. A durable store
+that nothing can clear and no boundary doc mentions is a merge blocker; v0.11.0
+durable conversation-history shipped ahead of its boundary-rules table.
+
 Verify with the `verify-green` skill first. Then:
 
 ```bash
@@ -81,6 +88,13 @@ gh pr checks <n> --watch --interval 30
 Commits are authored as `robertsreberski@gmail.com` (enforced by the local
 `.githooks/pre-commit`; see AGENTS.local.md).
 
+**After merge (mandatory), not optional.** The instant `gh pr merge` confirms
+merged, clean up both sides — remove the worktree and delete the local branch
+(the remote branch self-deletes only when `delete_branch_on_merge` is on; see
+`repo-hygiene-gc`). Skipped per-feature cleanups are exactly how the repo
+regressed from 2 branches / 3 worktrees to 47 branches / 50 worktrees. The
+commands are under *Compare against base / cleanup* below.
+
 ## Compare against base / cleanup
 
 Check whether a failure pre-exists on main without touching your tree:
@@ -89,9 +103,13 @@ Check whether a failure pre-exists on main without touching your tree:
 git worktree add --detach /tmp/<name>-base-check <commit>
 ```
 
-When merged:
+When merged (run immediately — this is the mandatory post-merge step):
 
 ```bash
 git worktree remove ~/.config/superpowers/worktrees/mono-agent/<name>
+git branch -d <branch>          # local branch; remote self-deletes only with delete_branch_on_merge on
 git worktree prune
 ```
+
+For a periodic *bulk* sweep of accumulated merged branches/worktrees (not just
+this one), use the `repo-hygiene-gc` skill.

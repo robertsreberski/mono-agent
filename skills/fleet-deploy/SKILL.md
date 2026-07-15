@@ -150,8 +150,10 @@ node scripts/fleet-green-check.mjs --labels com.mono-agent.bogus  # simulate RED
 The expected runtime defaults are Node `24.15.0` and modules ABI `137`; keep
 them explicit in deploy evidence and update them deliberately during a fleet
 runtime migration. Generic auto-discovery checks every matching plist it finds;
-it cannot prove that a removed plist still belongs to the fleet. The installed
-nightly job and all deployment evidence therefore use `--expect-labels` with the
+it cannot prove that a removed plist still belongs to the fleet. The nightly
+`fleet-green-check` job — *if it is actually installed*, which this skill has
+before wrongly assumed as fact (re-verify it against `launchctl list`; see
+Gotchas) — and all deployment evidence therefore use `--expect-labels` with the
 exact four-label set above. Missing or extra labels drive RED before any row can
 be treated as healthy. `--expect-sha` accepts a full SHA and applies it
 independently to every instance; multiple deploy checkouts do not weaken that
@@ -226,6 +228,33 @@ rm ~/Library/LaunchAgents/<label>.plist
   in the exact second the marker is published, the strict comparison may report
   `process predates build`; restart that instance once more after the clock has
   advanced rather than weakening or editing the marker.
+- **Re-verify the nightly green-check job is actually installed — don't trust
+  this doc.** "Daily green check" describes a job that runs nightly, but that
+  claim has drifted *documented-but-not-installed*. Confirm the LaunchAgent is
+  loaded on the real host before assuming the 7-day counter is advancing:
+
+```bash
+launchctl list | grep -i fleet-green   # a matching row => loaded; empty => NOT installed
+```
+
+  Empty output means the counter is silently frozen (no `gh issue comment 119`,
+  so those days never count). Reinstall/verify the job, then treat green days
+  from there.
+- **Credential rotation is validate-after-write, not validate-at-next-start.**
+  Immediately after writing any owner-only env file (`.brain.env`, per-service
+  secrets), re-read it and re-run the exact check the consuming service performs
+  (e.g. token length ≥ its minimum), failing the rotation command itself on a bad
+  value. The generators are correct (`openssl rand -hex 32` /
+  `randomBytes(32).toString("hex")` = 64 hex chars), yet a sub-32-char token once
+  reached `.brain.env` — hand-edited outside the generator — and crash-looped the
+  service. Do not defer discovery to the next process start:
+
+```bash
+# after writing .brain.env, before walking away — re-read and re-validate the rotated value:
+val=$(grep -E '^<SECRET_VAR>=' .brain.env | cut -d= -f2-)
+[ "${#val}" -ge 32 ] || { echo "rotated secret too short: ${#val} chars — rotation FAILED"; false; }
+```
+
 - **Package layout is 17 directories under `packages/` (16 core + the
   `create-mono-agent` alias) and four publishable plugin extras under `extras/`.** After a
   consolidation deploy, retired packages leave behind their git-ignored `dist/`

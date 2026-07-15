@@ -71,6 +71,35 @@ curl -fsS http://127.0.0.1:4599/api/instances    # assert on the JSON body
 # LAN variant: web --host 0.0.0.0 --port 4599 --allow-non-loopback --no-open
 ```
 
+## D. Readiness-probe worker (real Worker vs a fake provider)
+
+`packages/agent-app/dist/readiness-probe-worker.js` runs each model route's live
+probe turn in an isolated `worker_threads.Worker`; the unit suite only reaches it
+through a synthetic `run`/`workerUrl` seam, so the real file is smoke-only.
+`mono-agent init` spawns it as its route probe — point the primary model's local
+provider at a fake OpenAI-compatible server so the worker completes a real turn
+without a paid provider:
+
+```bash
+REPO=$(git rev-parse --show-toplevel)
+# 1. Fake OpenAI-compatible provider on :11499 — answers the probe's /v1/chat/completions.
+node -e 'require("http").createServer((q,s)=>{let b="";q.on("data",c=>b+=c);q.on("end",()=>{s.writeHead(200,{"content-type":"application/json"});s.end(JSON.stringify({id:"p",object:"chat.completion",choices:[{index:0,message:{role:"assistant",content:"ready"},finish_reason:"stop"}]}))})}).listen(11499,"127.0.0.1")' & FAKE=$!
+
+# 2. Init a throwaway agent whose ollama-compat route resolves to the fake (ollama base -> <root>/v1).
+SMOKE=$(mktemp -d /tmp/mono-agent-smoke.XXXX) && cd "$SMOKE"
+MONO_AGENT_LOCAL_PROVIDER_TYPE=ollama MONO_AGENT_LOCAL_PROVIDER_BASE_URL=http://127.0.0.1:11499 \
+  node "$REPO/packages/agent-app/dist/cli.js" init --model pi:ollama:probe-model 2>&1 | tail -25
+# init's route probe forks the REAL readiness-probe-worker.js; a "verified"/route-ready line
+# (not a timeout) proves the worker spawned, ran a turn, and posted a result back.
+
+kill "$FAKE" 2>/dev/null; rm -rf "$SMOKE"
+```
+
+The worker drains its own stdout/stderr and lets only structured messages cross
+`workerData`, so a hang that ends in a `timeout` verdict (rather than a
+`verified`/`provider_failed` result) means the worker never posted back — that
+Worker transport is exactly what this scenario proves and no unit test can.
+
 ## Gotchas
 
 - pi 0.80 reports provider failures as a terse "Connection error." — failover
