@@ -60,7 +60,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Webhook (sync/async HTTP invoke + status polling) | config | `webhook` section |
 | OpenAI-compatible API (/v1/models, /v1/chat/completions, SSE, bearer) | config | `openaiApi` section |
 | Telegram (long polling, chat allowlist) | config | `telegram` section |
-| Slack (Socket Mode, channel allowlist, mention handling) | config | `slack` section |
+| Slack (Socket Mode, channel allowlist, mention handling, config-driven shortcuts, and App Home actions) | config | `slack` section; `slack.shortcuts[]` and `slack.homeTab` are JSON-only |
 | External channel plugins | config | `channels.plugins[]: { package, id?, label?, config? }`; package must export `createChannelDriver(options)` or a default driver factory |
 | WhatsApp (Baileys, QR login, group mention/any triggers) | config | `channels.plugins[].package: "@mono-agent/whatsapp-adapter"` plus plugin `config.{enabled,allowedChatJids,allowAllChats,groupMode,botJids,mentionTextAliases,stripMentionText}` |
 | A2A provider (Agent Card, JSON-RPC + REST, streaming, bearer, opt-in durable dispatch identity) | config | `channels.plugins[].package: "@mono-agent/a2a-adapter"` plus plugin `config.provider` (including `idempotency.{namespace,stateDir,retentionMs,maxRecords}`), `config.agent`, `config.skill`; `config.enabled` is canonical |

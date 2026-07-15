@@ -49,6 +49,8 @@ The heartbeat and reconnect behavior are **on by default and need no configurati
 | `botUserIds` | string[] | — | The bot's Slack user ID(s), used to detect real `@bot` mentions. |
 | `mentionTextAliases` | string[] | — | Plain-text aliases (e.g. `@agent`) that also trigger a response. |
 | `stripMentionText` | boolean | `true` | Strip the mention/alias text from the prompt before the agent sees it. |
+| `shortcuts` | object[] | `[]` | JSON-only global/message shortcut bindings that run configured prompts. See [Shortcuts](#shortcuts). |
+| `homeTab` | object | `{ "enabled": false, "buttons": [] }` | JSON-only App Home header/buttons. See [App Home](#app-home). |
 
 :::caution
 Both `botToken` and `appToken` are required when `enabled: true`. If either is missing, or if neither `allowedChannelIds` nor `allowAllChannels` is set, the channel reports `waiting_for_config` instead of starting.
@@ -56,7 +58,10 @@ Both `botToken` and `appToken` are required when `enabled: true`. If either is m
 
 ### Environment variables
 
-Every key has an env override (env precedence: process env > `mono-agent.config.json` > defaults).
+Every scalar key above has an env override (env precedence: process env >
+`mono-agent.config.json` > defaults). `slack.shortcuts` and `slack.homeTab` are
+structured, JSON-only fields: configure them in `mono-agent.config.json`; they
+have no environment-variable form.
 
 | Key | Env var |
 | --- | --- |
@@ -72,6 +77,93 @@ Every key has an env override (env precedence: process env > `mono-agent.config.
 :::tip
 Keep tokens out of `mono-agent.config.json` in shared repos — set `MONO_AGENT_SLACK_BOT_TOKEN` / `MONO_AGENT_SLACK_APP_TOKEN` from your secret store or `.env` instead.
 :::
+
+### Shortcuts
+
+`slack.shortcuts` binds Slack **global** or **message** shortcut callback IDs to
+prompts. Register the shortcut in your Slack app with a callback ID that exactly
+matches `callbackId`; invoking it runs `prompt` as a proactive agent turn.
+
+```json
+{
+  "slack": {
+    "enabled": true,
+    "botToken": "xoxb-...",
+    "appToken": "xapp-...",
+    "allowedChannelIds": ["C0123"],
+    "shortcuts": [
+      {
+        "callbackId": "triage_request",
+        "prompt": "Triage this Slack request and propose the next action.",
+        "channelId": "C0123",
+        "ackText": "Triage started…",
+        "threadReply": true
+      }
+    ]
+  }
+}
+```
+
+| Field | Required | Purpose |
+| --- | --- | --- |
+| `callbackId` | yes | Exact Slack shortcut `callback_id`; values must be unique (case-insensitive). |
+| `prompt` | yes | Prompt run when the shortcut is invoked. |
+| `channelId` | no | Pins delivery to this allowed channel. Without it, a message shortcut uses its source channel and thread; a global shortcut falls back to the first `allowedChannelIds` entry. With `allowAllChannels: true` and no explicit allowlist, a global shortcut needs `channelId` or it is ignored because no default destination exists. |
+| `ackText` | no | Best-effort message posted immediately before the run. The turn still runs if this post fails. |
+| `threadReply` | no | Default `false`. With `ackText`, threads the final result under that acknowledgement when there is no source thread. Setting it to `true` without `ackText` is invalid. |
+
+Every resolved destination still passes `allowedChannelIds` / `allowAllChannels`.
+If `channelId` redirects a message shortcut to a different channel, the result is
+top-level there rather than reusing the source channel's thread timestamp.
+
+### App Home
+
+`slack.homeTab` publishes a persistent App Home view when Slack sends an
+`app_home_opened` event. An optional Markdown header is followed by one button
+per configured entry; clicking a button runs its prompt through the same
+allowlisted proactive-delivery path as a shortcut.
+
+```json
+{
+  "slack": {
+    "enabled": true,
+    "botToken": "xoxb-...",
+    "appToken": "xapp-...",
+    "allowedChannelIds": ["C0123"],
+    "homeTab": {
+      "enabled": true,
+      "headerText": "*Quick actions*",
+      "buttons": [
+        {
+          "actionId": "build_digest",
+          "label": "Build digest",
+          "prompt": "Build today's team digest.",
+          "channelId": "C0123",
+          "ackText": "Building the digest…",
+          "threadReply": true
+        }
+      ]
+    }
+  }
+}
+```
+
+| Field | Required | Purpose |
+| --- | --- | --- |
+| `enabled` | yes | Publishes the view on open when `true`; defaults to `false` when `homeTab` is absent. |
+| `headerText` | no | Markdown header rendered above the buttons. |
+| `buttons` | no | Button bindings. An enabled Home tab must contain at least a header or one button. |
+| `buttons[].actionId` | yes | Button routing ID; values must be unique (case-insensitive). |
+| `buttons[].label` | yes | Plain-text button label. |
+| `buttons[].prompt` | yes | Prompt run when the button is clicked. |
+| `buttons[].channelId` | no | Pins delivery to this allowed channel. A Home click has no source channel, so omission falls back to the first `allowedChannelIds` entry; with allow-all and no explicit allowlist, set it explicitly. |
+| `buttons[].ackText` | no | Best-effort immediate acknowledgement before the run. |
+| `buttons[].threadReply` | no | Default `false`; requires `ackText` and threads the result under it. |
+
+App Home publishing is best-effort: a `views.publish` failure is logged and does
+not fail the responder. Enable **Interactivity & Shortcuts** for shortcut/button
+payloads, enable the app's **Home Tab**, and subscribe to the `app_home_opened`
+bot event. Socket Mode carries those payloads, so no public request URL is needed.
 
 ### Resilience tuning
 
@@ -113,9 +205,11 @@ The heartbeat watchdog and reconnect loop work out of the box, but every thresho
 1. Create a Slack app at <https://api.slack.com/apps> (from scratch, in your target workspace).
 2. **Socket Mode** → enable it. This generates an **app-level token** (`xapp-...`) with the `connections:write` scope → this is your `appToken`.
 3. **OAuth & Permissions** → add bot token scopes, then install the app to the workspace. The install yields the **bot token** (`xoxb-...`) → this is your `botToken`. Typical scopes: `app_mentions:read`, `chat:write`, `reactions:write` (for the 👀 indicator), and `channels:history` / `groups:history` to read messages in the channels you allow.
-4. **Event Subscriptions** → subscribe to the `app_mention` (and, if you want non-mention messages handled in allowed channels, `message.channels`) bot events.
-5. Invite the bot into each channel you list in `allowedChannelIds` (`/invite @your-bot`).
-6. Find the bot's user ID for `botUserIds` (Slack user profile → "Copy member ID", starts with `U`) and the channel IDs for `allowedChannelIds` (channel details → bottom of the About tab, starts with `C`).
+4. **Event Subscriptions** → subscribe to the `app_mention` (and, if you want non-mention messages handled in allowed channels, `message.channels`) bot events. Add `app_home_opened` when using `slack.homeTab`.
+5. **Interactivity & Shortcuts** → enable interactivity when using `slack.shortcuts` or App Home buttons. Create each global/message shortcut with a callback ID matching its configured `callbackId`. Socket Mode carries the interaction payloads; no request URL is needed.
+6. **App Home** → enable the Home Tab when using `slack.homeTab`.
+7. Invite the bot into each channel you list in `allowedChannelIds` (`/invite @your-bot`).
+8. Find the bot's user ID for `botUserIds` (Slack user profile → "Copy member ID", starts with `U`) and the channel IDs for `allowedChannelIds` (channel details → bottom of the About tab, starts with `C`).
 
 After configuring, validate and start:
 

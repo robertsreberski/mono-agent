@@ -8,7 +8,7 @@ Communication adapter.
 
 ## Responsibility
 
-Adapt Slack Socket Mode events into structural agent requests and streamed Slack replies. The package owns Slack-specific credentials, channel allowlists, mention cleanup, Web API calls, and Socket Mode message handling.
+Adapt Slack Socket Mode events into structural agent requests and streamed Slack replies. The package owns Slack-specific credentials, channel allowlists, mention cleanup, config-driven shortcuts and App Home actions, Web API calls, and Socket Mode message handling.
 
 ## Install / Usage
 
@@ -30,6 +30,43 @@ applies inside a Slack **AI-assistant thread** and requires the app to have the
 **Agents & AI Apps** feature enabled plus the **`assistant:write`** scope; in
 regular channels/DMs (or without the scope) the call errors and the adapter uses
 the reaction instead — no configuration needed for the fallback.
+
+## Shortcuts and App Home
+
+`slack.shortcuts` binds global or message shortcut callback IDs to prompts.
+`slack.homeTab` publishes an optional header and prompt-running buttons when the
+Home tab opens. Both fields are structured JSON-only configuration; they have no
+environment-variable form.
+
+```json
+{
+  "slack": {
+    "shortcuts": [
+      {
+        "callbackId": "triage_request",
+        "prompt": "Triage this Slack request.",
+        "channelId": "C0123"
+      }
+    ],
+    "homeTab": {
+      "enabled": true,
+      "headerText": "*Quick actions*",
+      "buttons": [
+        {
+          "actionId": "build_digest",
+          "label": "Build digest",
+          "prompt": "Build today's team digest.",
+          "channelId": "C0123"
+        }
+      ]
+    }
+  }
+}
+```
+
+Destinations still pass the Slack channel allowlist. See the canonical
+[Slack channel guide](../../docs/channels/slack.md#shortcuts) for all fields,
+routing behavior, and Slack app setup.
 
 ## Public API
 
