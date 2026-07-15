@@ -8,7 +8,7 @@ sidebar:
 
 Durable continuations let a trusted MCP service finish work after the originating agent run has returned and deliver one later answer to the original channel conversation. The host, rather than the model, binds the reply destination, persists delivery state, runs one tool-free synthesis turn, and records a receipt only after native delivery succeeds.
 
-Use continuations for delegated work whose lifetime is longer than one MCP call. They are different from native cron/webhook notification: native notification delivers the producing run's final text, while a continuation accepts a later external result and reconstructs the original conversation before delivery.
+Use continuations for delegated work whose lifetime is longer than one MCP call. They are different from native cron/webhook notification: native notification delivers the producing run's final text, while an interactive continuation accepts a later external result and synthesizes from the immutable origin snapshot prepared and bound by the originating run.
 
 ## Configure a trusted continuation server
 
