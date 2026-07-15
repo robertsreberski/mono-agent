@@ -31,7 +31,7 @@ second path.
 ## 2 Findings
 
 **F1 (P1) — 1.23GB of launchd stderr accumulated unrotated, mixing three code-provenance eras.**
-`/Users/robertsreberski/.mono-agent/logs/com.mono-agent.personal-agent-059657c8.err.log.1` is
+`/Users/example/.mono-agent/logs/com.mono-agent.personal-agent-059657c8.err.log.1` is
 1,233,420,489 bytes. Its content spans `scheduledAt` timestamps from `2026-06-15` to `2026-07-06` (three
 weeks) with zero rotation, contains 4,254 Telegram `getUpdates` timeout/restart cycles and 61
 `EADDRINUSE: address already in use 127.0.0.1:4400` startup-crash entries, and mixes stack traces from
@@ -49,7 +49,7 @@ The live launchd plist (`~/Library/LaunchAgents/com.mono-agent.personal-agent-05
 version-pinned, immutable snapshot:
 `~/.mono-agent/runtimes/agent-app/0.11.2/darwin-arm64-abi-137/.../node_modules/@mono-agent/agent-app/dist/cli.js`
 (confirmed `package.json` version `0.11.2`, matching framework repo HEAD `5f27a0ec`). But
-`bin/mono-agent:7`, `bin/agent-watchdog:25` (`const CLI = '/Users/robertsreberski/Personal_Repositories/mono-agent/packages/agent-app/dist/cli.js';`),
+`bin/mono-agent:7`, `bin/agent-watchdog:25` (`const CLI = '/Users/example/Personal_Repositories/mono-agent/packages/agent-app/dist/cli.js';`),
 and `bin/session-web:5` all hardcode the **mutable monorepo checkout's own dist**, not the pinned
 snapshot. At audit time both happen to be `0.11.2` (no live drift), but nothing enforces that — the
 monorepo is the same actively-developed repo this very audit runs against. A routine `pnpm build` on a

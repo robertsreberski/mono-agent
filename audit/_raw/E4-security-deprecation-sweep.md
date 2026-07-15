@@ -140,17 +140,17 @@ Classification key: **removable-now** (safe to delete, nothing depends on it) / 
 ## 7 Coverage note
 
 Files read in full or in targeted-line depth for this sweep:
-- `/Users/robertsreberski/Personal_Repositories/mono-agent/.gitleaks.toml`
-- `/Users/robertsreberski/Personal_Repositories/mono-agent/scripts/check-secrets.mjs`
-- `/Users/robertsreberski/Personal_Repositories/mono-agent/scripts/check-oss-hygiene.mjs`
-- `/Users/robertsreberski/Personal_Repositories/mono-agent/.github/workflows/ci.yml`
-- `/Users/robertsreberski/Personal_Repositories/mono-agent/.github/workflows/npm-release.yml`
-- `/Users/robertsreberski/Personal_Repositories/mono-agent/pnpm-workspace.yaml`
-- `/Users/robertsreberski/Personal_Repositories/mono-agent/package.json` (scripts section)
-- `/Users/robertsreberski/Personal_Repositories/mono-agent/scripts/node-version.mjs`
-- `/Users/robertsreberski/Personal_Repositories/mono-agent/scripts/release/publish-release.mjs` (publish-invocation section)
-- `/Users/robertsreberski/Personal_Repositories/mono-agent/packages/agent-contracts/src/host-safety.ts` (full)
-- `/Users/robertsreberski/Personal_Repositories/mono-agent/mono-agent.config.json` (shape only, via a script that never printed values)
+- `/Users/example/Personal_Repositories/mono-agent/.gitleaks.toml`
+- `/Users/example/Personal_Repositories/mono-agent/scripts/check-secrets.mjs`
+- `/Users/example/Personal_Repositories/mono-agent/scripts/check-oss-hygiene.mjs`
+- `/Users/example/Personal_Repositories/mono-agent/.github/workflows/ci.yml`
+- `/Users/example/Personal_Repositories/mono-agent/.github/workflows/npm-release.yml`
+- `/Users/example/Personal_Repositories/mono-agent/pnpm-workspace.yaml`
+- `/Users/example/Personal_Repositories/mono-agent/package.json` (scripts section)
+- `/Users/example/Personal_Repositories/mono-agent/scripts/node-version.mjs`
+- `/Users/example/Personal_Repositories/mono-agent/scripts/release/publish-release.mjs` (publish-invocation section)
+- `/Users/example/Personal_Repositories/mono-agent/packages/agent-contracts/src/host-safety.ts` (full)
+- `/Users/example/Personal_Repositories/mono-agent/mono-agent.config.json` (shape only, via a script that never printed values)
 - Targeted `grep -n`/`sed -n` line-level reads (context around each hit, not full-file reads) across all 61 files listed in §4b's ledger table, plus the 3 `@deprecated` files in §4a
 - Additional context reads: `packages/agent-app/src/configured-agent.ts` (memory-operation labeling section), `packages/memory/src/bujo/cli.ts` (full `main()` for the `reflect`/`migrate` command dispatch), `packages/memory/src/bujo/reconcile.ts` (full file, to resolve the `planLegacyAction` classification), `packages/agent-harness/src/harness.ts` (skill-disclosure and memory-persist branches), `packages/agent-app/src/sandbox-manager.ts` (install-lock section + git-blame for the v0.9 guard), `packages/cron-adapter/src/scheduler.ts` (scheduleNext), `packages/agent-app/src/channels.ts` (cron adapter wiring section)
 - Live-instance configs inspected for shape/permissions only (no values read or printed): `~/personal-agent/mono-agent.config.json`, `~/personal-agent/.env` (key names only), `~/a8c-agents/*/mono-agent.config.json` (8 instances), `~/a8c-agents/*/.env` (8 instances), `~/a8c-agents/.proactive.env`, `~/a8c-agents/.control.env`, `~/a8c-agents/.a2a.env`, `~/a8c-agents/.brain.env` (permissions only)
