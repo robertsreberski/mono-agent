@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   AgentResponseCancelledError,
   ChannelUserCancelReason,
+  assertAgentContinuationOriginContext,
   createChannelUserCancelReason,
   isAgentResponseCancelledError,
   isChannelUserCancelReason,
@@ -13,6 +14,34 @@ import {
 } from "../index.js";
 
 describe("shared agent contracts", () => {
+  it("accepts only an exact, canonical continuation origin snapshot", () => {
+    const capturedAt = "2026-07-14T12:00:00.000Z";
+    const snapshot = {
+      schemaVersion: 1,
+      conversationId: "slack:D1:1.1#2026-07-14",
+      originRunId: "run-1",
+      historyBoundary: "run-1",
+      capturedAt,
+      messages: [
+        { role: "user", content: "delegate", timestamp: capturedAt, runId: "run-1" },
+        { role: "assistant", content: "I will return.", timestamp: capturedAt, runId: "run-1" },
+      ],
+    };
+    expect(() => assertAgentContinuationOriginContext(snapshot)).not.toThrow();
+    expect(() => assertAgentContinuationOriginContext({ ...snapshot, unexpected: true })).toThrow(/invalid envelope/u);
+    expect(() => assertAgentContinuationOriginContext({
+      ...snapshot,
+      capturedAt: "2026-07-14 12:00:00Z",
+    })).toThrow(/invalid envelope/u);
+    expect(() => assertAgentContinuationOriginContext({
+      ...snapshot,
+      messages: [
+        { ...snapshot.messages[0], unexpected: true },
+        snapshot.messages[1],
+      ],
+    })).toThrow(/invalid message/u);
+  });
+
   it("defines a structural responder and message stream contract", async () => {
     const chunks: string[] = [];
     const stream: AgentMessageStream = {

@@ -21,8 +21,11 @@ export interface LiveSessionManager {
   cancel(conversationId: string, reason?: unknown): void;
   /** Number of turns queued behind the active one. */
   pendingCount(conversationId: string): number;
-  /** Abort everything and refuse further work (graceful shutdown). */
-  dispose(): void;
+  /**
+   * Abort uncommitted work, refuse further turns, and wait for any turn that
+   * already crossed its durable commit boundary to finish publishing.
+   */
+  dispose(): Promise<void>;
 }
 
 export interface LiveSessionManagerOptions {
@@ -55,6 +58,7 @@ interface QueuedTurn {
 interface ConversationQueue {
   readonly pending: QueuedTurn[];
   draining: boolean;
+  drainPromise: Promise<void> | undefined;
   activeController: AbortController | undefined;
   activeTurn: QueuedTurn | undefined;
   activeCommitted: boolean;
@@ -68,7 +72,14 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
   function queueFor(conversationId: string): ConversationQueue {
     let queue = conversations.get(conversationId);
     if (queue === undefined) {
-      queue = { pending: [], draining: false, activeController: undefined, activeTurn: undefined, activeCommitted: false };
+      queue = {
+        pending: [],
+        draining: false,
+        drainPromise: undefined,
+        activeController: undefined,
+        activeTurn: undefined,
+        activeCommitted: false,
+      };
       conversations.set(conversationId, queue);
     }
     return queue;
@@ -140,6 +151,19 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
     }
   }
 
+  function startDrain(conversationId: string, queue: ConversationQueue): void {
+    if (queue.drainPromise !== undefined) {
+      return;
+    }
+    const promise = drain(conversationId, queue);
+    queue.drainPromise = promise;
+    void promise.finally(() => {
+      if (queue.drainPromise === promise) {
+        queue.drainPromise = undefined;
+      }
+    }).catch(() => undefined);
+  }
+
   return {
     enqueue(conversationId: string, request: AgentHarnessRequest): Promise<AgentHarnessResponse> {
       if (disposed) {
@@ -178,7 +202,7 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
         turn.detachAbort = () => request.abortSignal.removeEventListener("abort", onAbort);
         queue.pending.push(turn);
       });
-      void drain(conversationId, queue);
+      startDrain(conversationId, queue);
       return promise;
     },
     cancel(conversationId: string, reason?: unknown): void {
@@ -213,21 +237,29 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
     pendingCount(conversationId: string): number {
       return conversations.get(conversationId)?.pending.length ?? 0;
     },
-    dispose(): void {
+    async dispose(): Promise<void> {
       disposed = true;
+      const committedDrains: Promise<void>[] = [];
       for (const [conversationId, queue] of conversations) {
-        if (!queue.activeCommitted) {
+        const activeCommitted = queue.activeCommitted;
+        if (!activeCommitted) {
           queue.activeController?.abort();
           // Shutdown does not wait for an uncommitted runner to honor the abort.
           queue.activeTurn?.reject(new AgentResponseCancelledError("Live session manager has been disposed."));
+        } else if (queue.drainPromise !== undefined) {
+          // Once markCommitted() has fired, cancellation is deliberately too
+          // late. Keep the continuation store alive until that turn finishes
+          // history publication, recorder settlement, and origin activation.
+          committedDrains.push(queue.drainPromise);
         }
         const dropped = queue.pending.splice(0);
         for (const turn of dropped) {
           turn.detachAbort();
           turn.reject(new AgentResponseCancelledError("Live session manager has been disposed."));
         }
-        if (!queue.activeCommitted) conversations.delete(conversationId);
+        if (!activeCommitted) conversations.delete(conversationId);
       }
+      await Promise.allSettled(committedDrains);
     },
   };
 }

@@ -3,6 +3,7 @@ export type RuntimeSessionEvictReason = "idle_timeout" | "stale" | "replaced" | 
 export interface RuntimeSessionRecord {
   readonly conversationId: string;
   readonly providerSessionId: string;
+  providerSessionRevision?: number;
   readonly createdAt: number;
   lastActivityAt: number;
   busy: boolean;
@@ -11,6 +12,7 @@ export interface RuntimeSessionRecord {
 export interface RuntimeSessionSnapshot {
   readonly conversationId: string;
   readonly providerSessionId: string;
+  readonly providerSessionRevision?: number;
   readonly createdAt: number;
   readonly lastActivityAt: number;
   readonly busy: boolean;
@@ -38,13 +40,20 @@ export interface RuntimeSessionStore {
    * acquired record), in which case the save is skipped: the in-flight run's
    * session must not be disposed out from under it.
    */
-  save(conversationId: string, providerSessionId: string, owner?: RuntimeSessionRecord): void;
+  save(
+    conversationId: string,
+    providerSessionId: string,
+    owner?: RuntimeSessionRecord,
+    providerSessionRevision?: number,
+  ): void;
   /**
    * When `providerSessionId` is given, evicts only if it still matches the
    * stored record — a stale-resume eviction must not retire a session some
    * other run replaced it with.
    */
   evict(conversationId: string, reason: RuntimeSessionEvictReason, providerSessionId?: string): Promise<void>;
+  /** Forget only this process's mapping after the runtime handle was refreshed explicitly. */
+  forget(conversationId: string, providerSessionId?: string): boolean;
   /** Read-only snapshot for detached status and diagnostics. */
   list?(): readonly RuntimeSessionSnapshot[];
   /** Evicts everything and latches the store shut: later save/acquire no-op. */
@@ -137,13 +146,26 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
       armTimer(conversationId, stored);
       return true;
     },
-    save(conversationId: string, providerSessionId: string, owner?: RuntimeSessionRecord): void {
+    save(
+      conversationId: string,
+      providerSessionId: string,
+      owner?: RuntimeSessionRecord,
+      providerSessionRevision?: number,
+    ): void {
       if (disposed) {
         return;
+      }
+      if (
+        providerSessionRevision !== undefined
+        && (!Number.isSafeInteger(providerSessionRevision) || providerSessionRevision < 0)
+      ) {
+        throw new TypeError("providerSessionRevision must be a non-negative safe integer when present.");
       }
       const stored = entries.get(conversationId);
       if (stored !== undefined && stored.record.providerSessionId === providerSessionId) {
         stored.record.lastActivityAt = now();
+        if (providerSessionRevision === undefined) delete stored.record.providerSessionRevision;
+        else stored.record.providerSessionRevision = providerSessionRevision;
         if (!stored.record.busy) {
           armTimer(conversationId, stored);
         }
@@ -162,6 +184,7 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
         record: {
           conversationId,
           providerSessionId,
+          ...(providerSessionRevision === undefined ? {} : { providerSessionRevision }),
           createdAt: timestamp,
           lastActivityAt: timestamp,
           busy: false,
@@ -180,6 +203,14 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
         return;
       }
       await evictStored(conversationId, reason);
+    },
+    forget(conversationId: string, providerSessionId?: string): boolean {
+      const stored = entries.get(conversationId);
+      if (stored === undefined) return false;
+      if (providerSessionId !== undefined && stored.record.providerSessionId !== providerSessionId) return false;
+      entries.delete(conversationId);
+      if (stored.timer !== undefined) clearTimeout(stored.timer);
+      return true;
     },
     list(): readonly RuntimeSessionSnapshot[] {
       return [...entries.values()].map((stored) => ({ ...stored.record }));

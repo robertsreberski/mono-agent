@@ -369,7 +369,7 @@ describe("AgentHarness attachments", () => {
     expect(latency?.durationMs).toBeGreaterThanOrEqual(0);
   });
 
-  it("passes piSessionsRoot through to the runtime when configured", async () => {
+  it("does not pass piSessionsRoot without a crash-safe history coordinator", async () => {
     const identityPath = await identityFixture();
     const fake = createCapturingRuntime();
     const harness = createAgentHarness({
@@ -382,7 +382,7 @@ describe("AgentHarness attachments", () => {
 
     await harness.run({ conversationId: "c1", userMessage: "hi", abortSignal: new AbortController().signal });
 
-    expect((fake.calls[0]?.options as { piSessionsRoot?: string }).piSessionsRoot).toBe("/tmp/pi-sessions");
+    expect((fake.calls[0]?.options as { piSessionsRoot?: string }).piSessionsRoot).toBeUndefined();
   });
 
   it("accepts an attachment-only request (empty userMessage) and synthesizes a prompt", async () => {

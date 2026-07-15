@@ -65,6 +65,24 @@ export interface A2AConsumerSendMessageInput {
   readonly timeoutMs?: number;
 }
 
+export type A2AConsumerDispatchMessageInput = Omit<
+  A2AConsumerSendMessageInput,
+  "idempotencyKey" | "returnImmediately" | "stream"
+> & {
+  /** Stable identity is mandatory for a durable dispatch lifecycle. */
+  readonly idempotencyKey: string;
+};
+
+export interface A2AConsumerDispatchObservationOptions {
+  readonly signal?: AbortSignal;
+  /** Observation-only timeout. It does not cancel or bound remote work. */
+  readonly timeoutMs?: number;
+}
+
+export interface A2AConsumerDispatchCancelOptions {
+  readonly signal?: AbortSignal;
+}
+
 export interface A2AConsumerResponseMetadata {
   readonly a2a: {
     readonly remoteAgentUrl: string;
@@ -80,6 +98,31 @@ export interface A2AConsumerResponseMetadata {
 export interface A2AConsumerResponse extends AgentResponse {
   readonly text?: string;
   readonly metadata: A2AConsumerResponseMetadata;
+}
+
+export type A2AConsumerTerminalOutcome =
+  | {
+      readonly status: "completed";
+      readonly response: A2AConsumerResponse;
+    }
+  | {
+      readonly status: "failed" | "canceled" | "rejected" | "auth_required" | "input_required";
+      readonly response: A2AConsumerResponse;
+      readonly error: A2AConsumerError;
+    };
+
+export interface A2AConsumerDispatch {
+  /** Latest authoritative snapshot observed by this handle. */
+  readonly current: A2AConsumerResponse;
+  /**
+   * Join the admitted execution and wait for a protocol terminal state.
+   * Aborting or timing out this observer never cancels the remote task.
+   */
+  observeTerminal(
+    options?: A2AConsumerDispatchObservationOptions,
+  ): Promise<A2AConsumerTerminalOutcome>;
+  /** Explicitly cancel the admitted task and return its terminal outcome. */
+  cancel(options?: A2AConsumerDispatchCancelOptions): Promise<A2AConsumerTerminalOutcome>;
 }
 
 export interface A2AConsumerResponderOptions extends A2AConsumerOptions {
@@ -152,6 +195,38 @@ export class A2AConsumer {
     }
   }
 
+  async dispatchMessage(
+    input: A2AConsumerDispatchMessageInput,
+  ): Promise<A2AConsumerDispatch> {
+    if (typeof input.idempotencyKey !== "string") {
+      throw new A2AConsumerError(
+        "invalid_idempotency_key",
+        "A2A dispatchMessage requires an idempotencyKey.",
+        { field: "idempotencyKey" },
+      );
+    }
+    const request = cloneDispatchRequest(buildSendMessageRequest({
+      ...input,
+      returnImmediately: true,
+      stream: false,
+    }));
+    const current = await this.sendDispatchProjection(request, {
+      returnImmediately: true,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+    });
+
+    return new A2AConsumerDispatchHandle({
+      current,
+      observe: async (options) => await this.sendDispatchProjection(request, {
+        returnImmediately: false,
+        ...(options?.signal === undefined ? {} : { signal: options.signal }),
+        ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      }),
+      cancel: async (taskId, signal) => await this.cancelDispatchTask(taskId, signal),
+    });
+  }
+
   async cancelTask(taskId: string, signal?: AbortSignal): Promise<A2AConsumerResponse> {
     const options = signal === undefined ? undefined : { signal } satisfies RequestOptions;
     try {
@@ -161,6 +236,72 @@ export class A2AConsumer {
         protocolVersion: this.client.protocolVersion,
         allowPending: true,
         allowCanceled: true,
+      });
+    } catch (error) {
+      throw normalizeConsumerError(error);
+    }
+  }
+
+  private async sendDispatchProjection(
+    request: SendMessageRequest,
+    projection: {
+      readonly returnImmediately: boolean;
+      readonly signal?: AbortSignal;
+      readonly timeoutMs?: number;
+    },
+  ): Promise<A2AConsumerResponse> {
+    const timeoutContext = signalWithTimeout(
+      projection.signal,
+      projection.timeoutMs ?? this.timeoutMs,
+    );
+    const options = requestOptionsForIdempotency(true, timeoutContext.signal);
+
+    try {
+      let agentCard = this.agentCard;
+      let client = this.client;
+      if (this.refreshConnection !== undefined) {
+        const refreshed = await this.refreshConnection(timeoutContext.signal);
+        agentCard = refreshed.agentCard;
+        client = refreshed.client;
+      }
+      assertIdempotencySupported(agentCard);
+      const result = await client.sendMessage(
+        projectSendMessageRequest(request, projection.returnImmediately),
+        options,
+      );
+      return responseFromResult(result, {
+        agentUrl: this.agentUrl,
+        protocolVersion: client.protocolVersion,
+        allowPending: true,
+        allowTerminalFailures: true,
+        allowEmptyResponse: true,
+      });
+    } catch (error) {
+      throw normalizeConsumerError(error, {
+        agentUrl: this.agentUrl,
+        timeoutContext,
+      });
+    } finally {
+      timeoutContext.cleanup();
+    }
+  }
+
+  private async cancelDispatchTask(
+    taskId: string,
+    signal?: AbortSignal,
+  ): Promise<A2AConsumerResponse> {
+    const options = signal === undefined ? undefined : { signal } satisfies RequestOptions;
+    try {
+      const client = this.refreshConnection === undefined
+        ? this.client
+        : (await this.refreshConnection(signal)).client;
+      const task = await client.cancelTask({ id: taskId, tenant: "", metadata: {} }, options);
+      return responseFromResult(task, {
+        agentUrl: this.agentUrl,
+        protocolVersion: client.protocolVersion,
+        allowPending: true,
+        allowTerminalFailures: true,
+        allowEmptyResponse: true,
       });
     } catch (error) {
       throw normalizeConsumerError(error);
@@ -262,6 +403,20 @@ export async function sendA2AMessage(
   return await consumer.sendMessage(input);
 }
 
+export async function dispatchA2AMessage(
+  input: A2AConsumerOptions & A2AConsumerDispatchMessageInput,
+): Promise<A2AConsumerDispatch> {
+  const consumer = await createA2AConsumer({
+    agentUrl: input.agentUrl,
+    ...(input.bearerToken === undefined ? {} : { bearerToken: input.bearerToken }),
+    ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
+    ...(input.preferredTransports === undefined
+      ? {}
+      : { preferredTransports: input.preferredTransports }),
+  });
+  return await consumer.dispatchMessage(input);
+}
+
 export function createA2AConsumerResponder(
   options: A2AConsumerResponderOptions,
 ): AgentResponder<AgentRequestBase, AgentMessageStream, AgentResponse> {
@@ -320,6 +475,37 @@ function buildSendMessageRequest(input: A2AConsumerSendMessageInput): SendMessag
   };
 }
 
+function cloneDispatchRequest(request: SendMessageRequest): SendMessageRequest {
+  try {
+    return structuredClone(request);
+  } catch (error) {
+    throw new A2AConsumerError(
+      "send_failed",
+      "A2A dispatch payload must be structured-cloneable so it can be observed safely.",
+      { reason: error instanceof Error ? error.message : String(error) },
+    );
+  }
+}
+
+function projectSendMessageRequest(
+  request: SendMessageRequest,
+  returnImmediately: boolean,
+): SendMessageRequest {
+  if (request.configuration === undefined) {
+    throw new A2AConsumerError(
+      "send_failed",
+      "A2A dispatch request is missing its response projection configuration.",
+    );
+  }
+  return {
+    ...request,
+    configuration: {
+      ...request.configuration,
+      returnImmediately,
+    },
+  };
+}
+
 function textMessage(input: {
   readonly text: string;
   readonly contextId: string;
@@ -362,15 +548,24 @@ function responseFromResult(
     readonly protocolVersion: string;
     readonly allowPending: boolean;
     readonly allowCanceled?: boolean;
+    readonly allowTerminalFailures?: boolean;
+    readonly allowEmptyResponse?: boolean;
   },
 ): A2AConsumerResponse {
   if (isTask(result)) {
-    const failure = failureForTask(result, context.allowCanceled === true);
+    const failure = context.allowTerminalFailures === true
+      ? undefined
+      : failureForTask(result, context.allowCanceled === true);
     if (failure !== undefined) {
       throw failure;
     }
     const text = textFromTask(result);
-    if (text === undefined && !context.allowPending && result.status?.state === TaskState.TASK_STATE_COMPLETED) {
+    if (
+      text === undefined
+      && context.allowEmptyResponse !== true
+      && !context.allowPending
+      && result.status?.state === TaskState.TASK_STATE_COMPLETED
+    ) {
       throw new A2AConsumerError(
         "empty_a2a_response",
         "Remote A2A task completed without text output.",
@@ -392,7 +587,7 @@ function responseFromResult(
   }
 
   const text = textFromMessage(result);
-  if (text === undefined) {
+  if (text === undefined && context.allowEmptyResponse !== true) {
     throw new A2AConsumerError(
       "empty_a2a_response",
       "Remote A2A message did not contain text output.",
@@ -400,7 +595,7 @@ function responseFromResult(
     );
   }
   return {
-    text,
+    ...(text === undefined ? {} : { text }),
     metadata: {
       a2a: {
         remoteAgentUrl: context.agentUrl,
@@ -464,6 +659,147 @@ function failureForTask(task: Task, allowCanceled: boolean): A2AConsumerError | 
   }
   if (state === TaskState.TASK_STATE_INPUT_REQUIRED) {
     return new A2AConsumerError("remote_input_required", text ?? "Remote A2A task requires input.", { taskId: task.id });
+  }
+  return undefined;
+}
+
+class A2AConsumerDispatchHandle implements A2AConsumerDispatch {
+  private currentResponse: A2AConsumerResponse;
+  private readonly observe: (
+    options: A2AConsumerDispatchObservationOptions | undefined,
+  ) => Promise<A2AConsumerResponse>;
+  private readonly cancelTask: (
+    taskId: string,
+    signal: AbortSignal | undefined,
+  ) => Promise<A2AConsumerResponse>;
+
+  constructor(input: {
+    readonly current: A2AConsumerResponse;
+    readonly observe: (
+      options: A2AConsumerDispatchObservationOptions | undefined,
+    ) => Promise<A2AConsumerResponse>;
+    readonly cancel: (
+      taskId: string,
+      signal: AbortSignal | undefined,
+    ) => Promise<A2AConsumerResponse>;
+  }) {
+    this.currentResponse = input.current;
+    this.observe = input.observe;
+    this.cancelTask = input.cancel;
+  }
+
+  get current(): A2AConsumerResponse {
+    return this.currentResponse;
+  }
+
+  async observeTerminal(
+    options?: A2AConsumerDispatchObservationOptions,
+  ): Promise<A2AConsumerTerminalOutcome> {
+    const currentOutcome = terminalOutcomeFromResponse(this.currentResponse);
+    if (currentOutcome !== undefined) {
+      return currentOutcome;
+    }
+    const response = await this.observe(options);
+    this.currentResponse = response;
+    return requireTerminalOutcome(response);
+  }
+
+  async cancel(
+    options?: A2AConsumerDispatchCancelOptions,
+  ): Promise<A2AConsumerTerminalOutcome> {
+    const currentOutcome = terminalOutcomeFromResponse(this.currentResponse);
+    if (currentOutcome !== undefined) {
+      return currentOutcome;
+    }
+    const taskId = this.currentResponse.metadata.a2a.taskId;
+    if (taskId === undefined || taskId.length === 0) {
+      throw new A2AConsumerError(
+        "send_failed",
+        "The admitted A2A dispatch has no task id and cannot be canceled.",
+      );
+    }
+    const response = await this.cancelTask(taskId, options?.signal);
+    this.currentResponse = response;
+    const canceledOutcome = terminalOutcomeFromResponse(response);
+    if (canceledOutcome !== undefined) {
+      return canceledOutcome;
+    }
+    return await this.observeTerminal(
+      options?.signal === undefined ? undefined : { signal: options.signal },
+    );
+  }
+}
+
+function terminalOutcomeFromResponse(
+  response: A2AConsumerResponse,
+): A2AConsumerTerminalOutcome | undefined {
+  const state = response.metadata.a2a.state;
+  if (state === undefined) {
+    return response.metadata.a2a.messageId === undefined
+      ? undefined
+      : { status: "completed", response };
+  }
+  if (state === "TASK_STATE_COMPLETED") {
+    return { status: "completed", response };
+  }
+  const terminalFailure = terminalFailureForState(state);
+  if (terminalFailure === undefined) {
+    return undefined;
+  }
+  return {
+    status: terminalFailure.status,
+    response,
+    error: new A2AConsumerError(
+      terminalFailure.code,
+      response.text ?? terminalFailure.message,
+      {
+        ...(response.metadata.a2a.taskId === undefined
+          ? {}
+          : { taskId: response.metadata.a2a.taskId }),
+        state,
+      },
+    ),
+  };
+}
+
+function requireTerminalOutcome(response: A2AConsumerResponse): A2AConsumerTerminalOutcome {
+  const outcome = terminalOutcomeFromResponse(response);
+  if (outcome !== undefined) {
+    return outcome;
+  }
+  throw new A2AConsumerError(
+    "send_failed",
+    "A2A terminal observation returned a non-terminal response.",
+    {
+      ...(response.metadata.a2a.taskId === undefined
+        ? {}
+        : { taskId: response.metadata.a2a.taskId }),
+      ...(response.metadata.a2a.state === undefined
+        ? {}
+        : { state: response.metadata.a2a.state }),
+    },
+  );
+}
+
+function terminalFailureForState(state: string): {
+  readonly status: "failed" | "canceled" | "rejected" | "auth_required" | "input_required";
+  readonly code: "remote_failed" | "remote_canceled" | "remote_rejected" | "remote_auth_required" | "remote_input_required";
+  readonly message: string;
+} | undefined {
+  if (state === "TASK_STATE_FAILED") {
+    return { status: "failed", code: "remote_failed", message: "Remote A2A task failed." };
+  }
+  if (state === "TASK_STATE_CANCELED") {
+    return { status: "canceled", code: "remote_canceled", message: "Remote A2A task was canceled." };
+  }
+  if (state === "TASK_STATE_REJECTED") {
+    return { status: "rejected", code: "remote_rejected", message: "Remote A2A task was rejected." };
+  }
+  if (state === "TASK_STATE_AUTH_REQUIRED") {
+    return { status: "auth_required", code: "remote_auth_required", message: "Remote A2A task requires authentication." };
+  }
+  if (state === "TASK_STATE_INPUT_REQUIRED") {
+    return { status: "input_required", code: "remote_input_required", message: "Remote A2A task requires input." };
   }
   return undefined;
 }
@@ -594,7 +930,14 @@ function requestOptionsFor(
   input: A2AConsumerSendMessageInput,
   signal: AbortSignal | undefined,
 ): RequestOptions | undefined {
-  const serviceParameters = input.idempotencyKey === undefined
+  return requestOptionsForIdempotency(input.idempotencyKey !== undefined, signal);
+}
+
+function requestOptionsForIdempotency(
+  keyed: boolean,
+  signal: AbortSignal | undefined,
+): RequestOptions | undefined {
+  const serviceParameters = !keyed
     ? undefined
     : ServiceParameters.create(withA2AExtensions(A2A_IDEMPOTENCY_EXTENSION_URI));
   if (signal === undefined && serviceParameters === undefined) {

@@ -149,11 +149,19 @@ describe("runtime adapter provider sessions", () => {
     expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("codex:gpt-5.5"))).toBe(true);
   });
 
-  it("exposes session disposal on the mono runtime", async () => {
+  it("exposes session sync, strict refresh, disposal, and invalidation on the mono runtime", async () => {
     const runtime = createMonoRuntime();
+    expect(typeof runtime.syncSession).toBe("function");
+    expect(typeof runtime.refreshSession).toBe("function");
+    expect(typeof runtime.retireDurableSession).toBe("function");
     expect(typeof runtime.disposeSession).toBe("function");
+    expect(typeof runtime.invalidateSession).toBe("function");
     expect(typeof runtime.disposeAllSessions).toBe("function");
+    await expect(runtime.syncSession?.("no-such-session")).resolves.toBeFalsy();
+    await expect(runtime.refreshSession?.("no-such-session")).resolves.toBeUndefined();
+    await expect(runtime.retireDurableSession?.("no-such-session", "/tmp/mono-agent-no-sessions")).resolves.toBeUndefined();
     await expect(runtime.disposeSession?.("no-such-session")).resolves.toBeFalsy();
+    await expect(runtime.invalidateSession?.("no-such-session")).resolves.toBeFalsy();
     await expect(runtime.disposeAllSessions?.()).resolves.toBeUndefined();
   });
 });
@@ -182,7 +190,7 @@ describe("runtime adapter OpenCode routing", () => {
 });
 
 describe("runtime adapter fallback chain", () => {
-  it("builds a router-backed runtime that still exposes session disposal", async () => {
+  it("builds a router-backed runtime that still exposes session lifecycle", async () => {
     const runtime = createMonoRuntime({
       fallbackChain: [
         { model: parseMonoRuntimeModelReference("claude:claude-sonnet-4-6") },
@@ -191,7 +199,11 @@ describe("runtime adapter fallback chain", () => {
     });
     expect(typeof runtime.run).toBe("function");
     expect(typeof runtime.configureTools).toBe("function");
+    await expect(runtime.syncSession?.("no-such-session")).resolves.toBeFalsy();
+    await expect(runtime.refreshSession?.("no-such-session")).resolves.toBeUndefined();
+    await expect(runtime.retireDurableSession?.("no-such-session", "/tmp/mono-agent-no-sessions-router")).resolves.toBeUndefined();
     await expect(runtime.disposeSession?.("no-such-session")).resolves.toBeFalsy();
+    await expect(runtime.invalidateSession?.("no-such-session")).resolves.toBeFalsy();
     await expect(runtime.disposeAllSessions?.()).resolves.toBeUndefined();
   });
 

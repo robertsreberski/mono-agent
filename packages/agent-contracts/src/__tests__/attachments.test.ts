@@ -52,6 +52,7 @@ describe("multimodal attachment contracts", () => {
       continuation: {
         continuationId: "continuation-1",
         originRunId: "run-origin",
+        originContextPolicy: "detached_latest",
         toolsDisabled: true,
         deferHistoryCommit: true,
       },

@@ -16,7 +16,7 @@ Provides five runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, Op
 - `ai/providers/claude-sdk-discovery.js` — isolated Claude SDK model discovery without importing ambient auth/config
 - `createRouterRuntime({ chain, routeSafety, resolveAttempt })` — ordered fallback routing with exact route effort and bounded safety/failover telemetry
 - Provider bridges for `claude` (SDK + CLI), `codex` (app-server), `pi` (Pi SDK), and `opencode`
-- Provider session support: bridges accept `sessionId` in run options and report `provider_session_id`; the runtime exposes `disposeSession` / `disposeAllSessions`
+- Provider session support: bridges accept `sessionId` in run options and report `provider_session_id`; the runtime exposes best-effort disposal, strict cold-refresh, exact-id durable retirement, invalidation, and whole-runtime shutdown operations
 - Sandbox-aware built-in tools and stdio MCP startup through an injectable `RuntimeSandbox` seam (`agent/sandbox-seam.js`) — no direct dependency on `@mono-agent/runtime-adapter`
 
 ## Dependency Boundary
@@ -219,6 +219,10 @@ Returns:
 
 - `run(systemPrompt, options)` — async, runs one agent turn against the chosen backend.
 - `configureTools(next)` — update the tool runtime context after construction.
+- `syncSession(id)` — fsync provider-owned durable state before canonical history commits.
+- `refreshSession(id)` — guarantee the next resume cannot reuse process-local state; absence succeeds and cleanup uncertainty rejects.
+- `retireDurableSession(id, sessionsRoot)` — delete and verify every exact-id durable Pi transcript, including cold duplicates.
+- `disposeSession(id)` / `invalidateSession(id)` / `disposeAllSessions()` — ordinary best-effort eviction, destructive live invalidation, and shutdown cleanup.
 
 ### `runtime.run(systemPrompt, options)`
 

@@ -30,9 +30,16 @@
 
 import { resolveRuntimeBridge } from "./ai/runtime/registry.js";
 import { createObserverHub } from "./ai/observer.js";
-import { disposeAllProviderSessions, disposeProviderSession } from "./ai/runtime/sessions.js";
+import {
+  disposeAllProviderSessions,
+  disposeProviderSession,
+  invalidateProviderSession,
+  refreshProviderSession,
+  syncProviderSession,
+} from "./ai/runtime/sessions.js";
 import { createToolContext, updateToolContext } from "./agent/tools/shared/tool-context.js";
 import { resolveRuntimeBrand } from "./runtime-brand.js";
+import { retireDurableNativeSession } from "./ai/providers/pi-native/session-lifecycle.js";
 
 /**
  * @typedef {import('./ai/types.js').AgentRuntimeHostOptions} AgentRuntimeHostOptions
@@ -175,8 +182,20 @@ export function createRuntime(host = {}) {
     configureTools(next = {}) {
       updateToolContext(toolContext, pickPresent(next, TOOL_RUNTIME_KEYS));
     },
+    async syncSession(providerSessionId) {
+      return syncProviderSession(providerSessionId);
+    },
+    async refreshSession(providerSessionId) {
+      return refreshProviderSession(providerSessionId);
+    },
+    async retireDurableSession(providerSessionId, sessionsRoot) {
+      return retireDurableNativeSession(providerSessionId, sessionsRoot);
+    },
     async disposeSession(providerSessionId) {
       return disposeProviderSession(providerSessionId);
+    },
+    async invalidateSession(providerSessionId) {
+      return invalidateProviderSession(providerSessionId);
     },
     async disposeAllSessions() {
       return disposeAllProviderSessions();

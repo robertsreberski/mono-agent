@@ -1,5 +1,6 @@
 import type {
   AgentResponder,
+  AgentContinuationOriginContext,
   ChannelConfigViewSection,
   ChannelDriver as ContractChannelDriver,
   ChannelId as ContractChannelId,
@@ -475,6 +476,8 @@ export function createSlackChannelDriver(
           readonly continuationId: string;
           readonly originRunId: string;
           readonly historyBoundary?: string;
+          readonly originContextPolicy: "pinned" | "detached_latest";
+          readonly originContext?: AgentContinuationOriginContext;
           readonly originConversationId: string;
           readonly replyToConversationId: string;
           readonly prompt: string;
@@ -486,21 +489,35 @@ export function createSlackChannelDriver(
             || input.config.allowedChannelIds.some((id) => id.trim().toLowerCase() === normalized);
           if (!allowed) throw new Error("Slack continuation destination is not in the adapter allowlist.");
           try {
+            const continuation = continuationInput.originContextPolicy === "pinned"
+              ? (() => {
+                  if (continuationInput.historyBoundary === undefined || continuationInput.originContext === undefined) {
+                    throw new Error("Pinned Slack continuation input is missing its immutable origin context.");
+                  }
+                  return {
+                    continuationId: continuationInput.continuationId,
+                    originRunId: continuationInput.originRunId,
+                    historyBoundary: continuationInput.historyBoundary,
+                    originContextPolicy: "pinned" as const,
+                    originContext: continuationInput.originContext,
+                    toolsDisabled: true as const,
+                    deferHistoryCommit: true as const,
+                  };
+                })()
+              : {
+                  continuationId: continuationInput.continuationId,
+                  originRunId: continuationInput.originRunId,
+                  originContextPolicy: "detached_latest" as const,
+                  toolsDisabled: true as const,
+                  deferHistoryCommit: true as const,
+                };
             const text = await result.adapter.synthesizeContinuation({
               conversationId: continuationInput.originConversationId,
               replyToConversationId: continuationInput.replyToConversationId,
               channelId: target.channelId,
               ...(target.threadTs === undefined ? {} : { threadTs: target.threadTs }),
               prompt: continuationInput.prompt,
-              continuation: {
-                continuationId: continuationInput.continuationId,
-                originRunId: continuationInput.originRunId,
-                ...(continuationInput.historyBoundary === undefined
-                  ? {}
-                  : { historyBoundary: continuationInput.historyBoundary }),
-                toolsDisabled: true,
-                deferHistoryCommit: true,
-              },
+              continuation,
             });
             return { kind: "synthesized", text } satisfies ContinuationChannelSynthesisResult;
           } catch (error) {

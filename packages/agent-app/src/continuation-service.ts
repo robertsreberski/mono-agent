@@ -2,11 +2,16 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
+import {
+  assertAgentContinuationOriginContext,
+  type AgentContinuationOriginContext,
+} from "@mono-agent/agent-contracts";
 
 import {
   type ContinuationStore,
   type ContinuationRetentionOptions,
   type DurableContinuationRecord,
+  type ContinuationOriginContextReference,
   acquireContinuationStoreLock,
   loadOrCreateContinuationSecret,
   openContinuationStore,
@@ -51,6 +56,7 @@ const MAX_OPERATOR_PAGE_SIZE = 500;
 const MAX_CLAIM_BODY_BYTES = 16 * 1024;
 const MAX_TASK_KEY_CHARS = 256;
 const MAX_TEXT_CHARS = 200_000;
+const ORIGIN_CONTEXT_UNAVAILABLE_TEXT = "The background task finished, but I could not safely restore the original conversation context. Please ask me to check the result again.";
 
 interface ClaimBinding {
   readonly serverName: string;
@@ -60,6 +66,11 @@ interface ClaimBinding {
   readonly historyBoundary?: string;
   readonly mode: ContinuationMode;
   readonly fingerprint: string;
+  closed: boolean;
+  settled: boolean;
+  inFlightOperations: number;
+  drainPromise?: Promise<void>;
+  resolveDrain?: () => void;
 }
 
 export interface ContinuationServiceLogger {
@@ -108,6 +119,20 @@ export type ContinuationSynthesisAvailability =
       readonly code: string;
       readonly reason: string;
       readonly retryAfterMs?: number;
+    };
+
+type ResolvedOriginContext =
+  | { readonly kind: "pending" }
+  | { readonly kind: "unavailable" }
+  | { readonly kind: "invalid"; readonly code: string }
+  | {
+      readonly kind: "ready";
+      readonly policy: "pinned";
+      readonly snapshot: AgentContinuationOriginContext;
+    }
+  | {
+      readonly kind: "ready";
+      readonly policy: "detached_latest";
     };
 
 /**
@@ -212,6 +237,7 @@ class ContinuationService {
   private readonly instanceId = randomUUID();
   private readonly operatorToken: string;
   private readonly claimBindings = new Map<string, ClaimBinding>();
+  private readonly activeClaimBindings = new Set<ClaimBinding>();
   private readonly namedRoutes: Readonly<Record<string, NamedContinuationRoute>>;
   private readonly detachedServiceTokenHashes: ReadonlyMap<string, string>;
   private readonly maxResultBytes: number;
@@ -224,12 +250,17 @@ class ContinuationService {
   private readonly logger: ContinuationServiceLogger | undefined;
   private readonly lifecycleAbort = new AbortController();
   private readonly inFlight = new Map<string, Promise<boolean>>();
+  private readonly activeHttpRequests = new Set<Promise<void>>();
+  private activeHandleOperations = 0;
+  private handleDrainPromise: Promise<void> | undefined;
+  private resolveHandleDrain: (() => void) | undefined;
   private readonly resolvingUnknown = new Set<string>();
   private dispatchTail: Promise<void> = Promise.resolve();
   private server: Server | undefined;
   private baseUrl = "";
   private worker: ReturnType<typeof setInterval> | undefined;
   private stopped = false;
+  private stopPromise: Promise<void> | undefined;
 
   constructor(
     private readonly store: ContinuationStore,
@@ -254,9 +285,11 @@ class ContinuationService {
 
   async start(host: string, port: number): Promise<ContinuationServiceHandle> {
     const server = createServer((request, response) => {
-      void this.handleRequest(request, response).catch((error: unknown) => {
+      const operation = this.handleRequest(request, response).catch((error: unknown) => {
         this.handleRequestError(response, error);
       });
+      this.activeHttpRequests.add(operation);
+      void operation.finally(() => { this.activeHttpRequests.delete(operation); });
     });
     this.server = server;
     await new Promise<void>((resolve, reject) => {
@@ -283,21 +316,23 @@ class ContinuationService {
         runId: input.runId,
         originConversationId: input.conversationId,
         ...(input.replyTo === undefined ? {} : { replyToConversationId: input.replyTo.conversationId }),
-        ...(input.historyBoundary === undefined ? {} : { historyBoundary: input.historyBoundary }),
+        historyBoundary: input.historyBoundary ?? input.runId,
         mode: "reply",
       }),
       issueRunClaimCapability: (input) => this.issueRunClaimCapability(input),
-      status: async (id) => statusOf(await this.store.get(id)),
-      list: async () => (await this.store.list()).map(statusOfRequired),
-      health: async () => await this.health(),
-      processDue: async (limit) => await this.processDue(limit),
-      retry: async (id, retryOptions) => await this.retry(id, retryOptions),
-      cancel: async (id) => await this.cancel(id),
-      resolveUnknown: async (id, outcome) => await this.resolveUnknown(id, outcome),
-      capturedText: async (id) => {
+      status: async (id) => await this.runHandleOperation(async () => statusOf(await this.store.get(id))),
+      list: async () => await this.runHandleOperation(async () => (await this.store.list()).map(statusOfRequired)),
+      health: async () => await this.runHandleOperation(async () => await this.health()),
+      processDue: async (limit) => await this.runHandleOperation(async () => await this.processDue(limit)),
+      retry: async (id, retryOptions) => await this.runHandleOperation(async () => await this.retry(id, retryOptions)),
+      cancel: async (id) => await this.runHandleOperation(async () => await this.cancel(id)),
+      resolveUnknown: async (id, outcome) => await this.runHandleOperation(
+        async () => await this.resolveUnknown(id, outcome),
+      ),
+      capturedText: async (id) => await this.runHandleOperation(async () => {
         const record = await this.store.get(id);
         return record?.mode === "capture" && record.state === "delivered" ? record.synthesizedText : undefined;
-      },
+      }),
       stop: async () => await this.stop(),
     };
   }
@@ -305,6 +340,10 @@ class ContinuationService {
   issueRunClaimCapability(input: IssueContinuationCapabilityInput): ContinuationClaimCapability {
     if (this.stopped) throw new Error("Continuation service is stopped.");
     const mode = input.mode ?? "reply";
+    // Request-bound capabilities are always interactive and therefore always
+    // pin an origin boundary. Context-free detached work has a separate,
+    // host-authenticated named-route endpoint.
+    const historyBoundary = input.historyBoundary ?? input.runId;
     const replyToConversationId = input.replyToConversationId
       ?? (mode === "reply" || mode === "notify_if_actionable"
         ? normalizeContinuationReplyTarget(input.originConversationId)
@@ -318,19 +357,24 @@ class ContinuationService {
       input.runId,
       input.originConversationId,
       replyToConversationId ?? "",
-      input.historyBoundary ?? "",
+      historyBoundary,
       mode,
     ].join("\0"));
     const token = randomBytes(24).toString("base64url");
-    this.claimBindings.set(token, {
+    const binding: ClaimBinding = {
       serverName: input.serverName,
       originRunId: input.runId,
       originConversationId: input.originConversationId,
       ...(replyToConversationId === undefined ? {} : { replyToConversationId }),
-      ...(input.historyBoundary === undefined ? {} : { historyBoundary: input.historyBoundary }),
+      historyBoundary,
       mode,
       fingerprint,
-    });
+      closed: false,
+      settled: false,
+      inFlightOperations: 0,
+    };
+    this.claimBindings.set(token, binding);
+    this.activeClaimBindings.add(binding);
     const url = `${this.baseUrl}/v1/continuations/claim`;
     let released = false;
     return {
@@ -350,12 +394,211 @@ class ContinuationService {
         [CONTINUATION_FINGERPRINT_ENV]: fingerprint,
         [CONTINUATION_MODE_ENV]: mode,
       }),
-      release: () => {
+      requiresOriginContext: async () => await this.requiresOriginContext(binding),
+      finalizeOriginContext: async (snapshot) => await this.finalizeOriginContext(binding, snapshot),
+      activateOriginContext: async () => await this.activateOriginContext(binding),
+      abandonOriginContext: async () => await this.abandonOriginContext(binding),
+      release: async () => {
         if (released) return;
         released = true;
-        this.claimBindings.delete(token);
+        await this.closeClaimBinding(token, binding);
       },
     };
+  }
+
+  private async runHandleOperation<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.stopped) throw new Error("Continuation service is stopped.");
+    this.activeHandleOperations += 1;
+    try {
+      return await operation();
+    } finally {
+      this.activeHandleOperations -= 1;
+      if (this.stopped && this.activeHandleOperations === 0) {
+        this.resolveHandleDrain?.();
+        this.resolveHandleDrain = undefined;
+        this.handleDrainPromise = undefined;
+      }
+    }
+  }
+
+  private async drainHandleOperations(): Promise<void> {
+    if (this.activeHandleOperations === 0) return;
+    this.handleDrainPromise ??= new Promise<void>((resolve) => { this.resolveHandleDrain = resolve; });
+    await this.handleDrainPromise;
+  }
+
+  private async closeClaimBinding(token: string, binding: ClaimBinding): Promise<void> {
+    binding.closed = true;
+    if (this.claimBindings.get(token) === binding) this.claimBindings.delete(token);
+    if (binding.inFlightOperations === 0) return;
+    binding.drainPromise ??= new Promise<void>((resolve) => { binding.resolveDrain = resolve; });
+    await binding.drainPromise;
+  }
+
+  private beginClaim(binding: ClaimBinding): () => void {
+    if (binding.closed) {
+      throw new ContinuationProtocolError(401, "invalid_claim_capability", "Invalid or expired claim capability.");
+    }
+    binding.inFlightOperations += 1;
+    let finished = false;
+    return () => {
+      if (finished) return;
+      finished = true;
+      binding.inFlightOperations -= 1;
+      if (binding.closed && binding.inFlightOperations === 0) {
+        binding.resolveDrain?.();
+        delete binding.resolveDrain;
+        delete binding.drainPromise;
+      }
+    };
+  }
+
+  private async requiresOriginContext(binding: ClaimBinding): Promise<boolean> {
+    if (this.stopped || binding.settled) return false;
+    if (!binding.closed) {
+      throw new Error("Continuation claims must be revoked before origin settlement is inspected.");
+    }
+    if (binding.inFlightOperations > 0) {
+      binding.drainPromise ??= new Promise<void>((resolve) => { binding.resolveDrain = resolve; });
+      await binding.drainPromise;
+    }
+    const finishOperation = this.beginOriginSettlementOperation(binding);
+    if (finishOperation === undefined) return false;
+    try {
+      if (binding.historyBoundary === undefined) {
+        this.settleClaimBinding(binding);
+        return false;
+      }
+      const required = (await this.store.list()).some((record) =>
+        record.claimFingerprint === binding.fingerprint
+        && !TERMINAL_CONTINUATION_STATES.has(record.state));
+      if (!required) this.settleClaimBinding(binding);
+      return required;
+    } finally {
+      finishOperation();
+    }
+  }
+
+  private beginOriginSettlementOperation(binding: ClaimBinding): (() => void) | undefined {
+    if (this.stopped || binding.settled) return undefined;
+    if (!binding.closed) {
+      throw new Error("Continuation claims must be revoked before origin settlement begins.");
+    }
+    if (binding.inFlightOperations !== 0) {
+      throw new Error("Continuation capability release has not finished draining admitted work.");
+    }
+    binding.inFlightOperations += 1;
+    let finished = false;
+    return () => {
+      if (finished) return;
+      finished = true;
+      binding.inFlightOperations -= 1;
+      if (binding.closed && binding.inFlightOperations === 0) {
+        binding.resolveDrain?.();
+        delete binding.resolveDrain;
+        delete binding.drainPromise;
+      }
+    };
+  }
+
+  private settleClaimBinding(binding: ClaimBinding): void {
+    binding.settled = true;
+    this.activeClaimBindings.delete(binding);
+  }
+
+  private async finalizeOriginContext(
+    binding: ClaimBinding,
+    snapshot: AgentContinuationOriginContext,
+  ): Promise<void> {
+    const finishOperation = this.beginOriginSettlementOperation(binding);
+    if (finishOperation === undefined) return;
+    try {
+      if (binding.historyBoundary === undefined) return;
+      assertAgentContinuationOriginContext(snapshot);
+      if (snapshot.conversationId !== binding.originConversationId
+        || snapshot.originRunId !== binding.originRunId
+        || snapshot.historyBoundary !== binding.historyBoundary) {
+        throw new Error("Continuation origin context does not match its immutable claim binding.");
+      }
+      const matching = (await this.store.list()).filter((record) =>
+        record.claimFingerprint === binding.fingerprint
+        && !TERMINAL_CONTINUATION_STATES.has(record.state));
+      if (matching.length === 0) return;
+      const pin = await this.store.stageOriginContext(snapshot);
+      try {
+        await this.store.mutate((records) => {
+          const candidates = [...records.values()].filter((record) =>
+            record.claimFingerprint === binding.fingerprint
+            && !TERMINAL_CONTINUATION_STATES.has(record.state));
+          for (const record of candidates) {
+            if (record.originContextState === "pinned"
+              || (record.originContextState === "pending" && record.originContextRef !== undefined)) {
+              if (record.originContextDigest !== pin.reference.digest
+                || record.originContextRef?.digest !== pin.reference.digest) {
+                throw new Error("Continuation origin context conflicts with an existing pinned snapshot.");
+              }
+              continue;
+            }
+            if (record.originContextState !== "pending") {
+              throw new Error(`Continuation origin context cannot be finalized from ${record.originContextState}.`);
+            }
+            record.originContextRef = pin.reference;
+            record.originContextDigest = pin.reference.digest;
+            record.originContextMessageCount = pin.reference.messageCount;
+            record.originContextFingerprint = continuationDigest(
+              `mono-agent-origin-context-binding-v2\0${record.claimFingerprint}\0${pin.reference.digest}`,
+            );
+            record.originContextBindingMac = originContextBindingMac(this.secret, record, pin.reference);
+            record.updatedAt = this.now().toISOString();
+          }
+        });
+      } finally {
+        await pin.release();
+      }
+    } finally {
+      finishOperation();
+    }
+  }
+
+  private async activateOriginContext(binding: ClaimBinding): Promise<void> {
+    const finishOperation = this.beginOriginSettlementOperation(binding);
+    if (finishOperation === undefined) return;
+    try {
+      await this.store.activateOriginContextGroup({
+        claimFingerprint: binding.fingerprint,
+        activatedAt: this.now().toISOString(),
+      });
+      this.settleClaimBinding(binding);
+    } finally {
+      finishOperation();
+    }
+  }
+
+  private async abandonOriginContext(binding: ClaimBinding): Promise<void> {
+    const finishOperation = this.beginOriginSettlementOperation(binding);
+    if (finishOperation === undefined) return;
+    const at = this.now().toISOString();
+    try {
+      await this.store.mutate((records) => {
+        for (const record of records.values()) {
+          if (record.claimFingerprint !== binding.fingerprint
+            || record.originContextState !== "pending") continue;
+          record.originContextState = "abandoned";
+          delete record.originContextRef;
+          record.updatedAt = at;
+          record.lastError = errorRecord(
+            "origin_context_unavailable",
+            "The origin run did not commit its pinned continuation context.",
+            at,
+          );
+          delete record.nextAttemptAt;
+        }
+      });
+      this.settleClaimBinding(binding);
+      if (this.autoProcess) void this.processDue().catch(() => undefined);
+    } finally {
+      finishOperation();
+    }
   }
 
   async recover(startup = false): Promise<void> {
@@ -365,6 +608,8 @@ class ContinuationService {
       !TERMINAL_CONTINUATION_STATES.has(record.state)
       && (startup || !this.inFlight.has(record.continuationId))
       && (
+        (startup && record.originContextState === "pending")
+        ||
         (startup && record.leaseOwner !== undefined)
         || Date.parse(record.deadline) <= now
         || (record.leaseUntil !== undefined && Date.parse(record.leaseUntil) <= now)
@@ -374,6 +619,17 @@ class ContinuationService {
     await this.store.mutate((records) => {
       for (const record of records.values()) {
         if (TERMINAL_CONTINUATION_STATES.has(record.state)) continue;
+        if (startup && record.originContextState === "pending") {
+          record.originContextState = "abandoned";
+          delete record.originContextRef;
+          record.updatedAt = this.now().toISOString();
+          record.lastError = errorRecord(
+            "origin_context_unavailable",
+            "The service restarted before the origin context was pinned.",
+            record.updatedAt,
+          );
+          clearLease(record);
+        }
         // A configured operation timeout may intentionally exceed the lease.
         // The process-lifetime store lock prevents another owner, while this
         // map proves the current owner is still supervising the attempt.
@@ -466,13 +722,37 @@ class ContinuationService {
     if (leased === undefined) return false;
     this.throwIfStopping();
     let record = leased;
+    // Even modes that need no model or channel text must not settle before the
+    // originating run publishes (or abandons) its context boundary. Otherwise
+    // a fast silent result can become terminal and poison origin settlement.
+    if (record.originContextState === "pending") {
+      await this.deferOriginContext(record.continuationId);
+      return true;
+    }
     if (record.synthesizedText === undefined && record.mode !== "silent") {
-      const available = await this.synthesisAvailable(record);
-      if (!available.ready) {
-        await this.deferSynthesis(record.continuationId, available.code, available.reason, available.retryAfterMs);
+      const originContext = await this.resolveOriginContext(record);
+      if (originContext.kind === "pending") {
+        await this.deferOriginContext(record.continuationId);
         return true;
       }
-      record = await this.synthesize(record);
+      if (originContext.kind === "invalid") {
+        await this.deadLetter(
+          record.continuationId,
+          originContext.code,
+          "Pinned continuation binding failed integrity verification; native delivery was blocked.",
+        );
+        return true;
+      }
+      if (originContext.kind === "unavailable") {
+        record = await this.prepareOriginContextFallback(record.continuationId);
+      } else {
+        const available = await this.synthesisAvailable(record, originContext);
+        if (!available.ready) {
+          await this.deferSynthesis(record.continuationId, available.code, available.reason, available.retryAfterMs);
+          return true;
+        }
+        record = await this.synthesize(record, originContext);
+      }
       if (record.state !== "ready_to_deliver") return true;
     } else if (record.state !== "ready_to_deliver") {
       record = await this.markReady(record.continuationId);
@@ -503,13 +783,16 @@ class ContinuationService {
     return true;
   }
 
-  private async synthesisAvailable(record: DurableContinuationRecord): Promise<ContinuationSynthesisAvailability> {
+  private async synthesisAvailable(
+    record: DurableContinuationRecord,
+    originContext: Extract<ResolvedOriginContext, { readonly kind: "ready" }>,
+  ): Promise<ContinuationSynthesisAvailability> {
     if (this.options.synthesisPreflight === undefined) return { ready: true };
     try {
       return await this.runBoundedOperation(
         "synthesis",
         Math.min(this.limits.synthesisTimeoutMs, 30_000),
-        async () => await this.options.synthesisPreflight?.(synthesisInput(record)) ?? { ready: true },
+        async () => await this.options.synthesisPreflight?.(synthesisInput(record, originContext)) ?? { ready: true },
       );
     } catch (error) {
       if (error instanceof ContinuationServiceStoppingError) throw error;
@@ -521,6 +804,91 @@ class ContinuationService {
         reason: safeReason(error),
       };
     }
+  }
+
+  private async resolveOriginContext(record: DurableContinuationRecord): Promise<ResolvedOriginContext> {
+    if (record.originContextState === "detached_latest") {
+      return { kind: "ready", policy: "detached_latest" };
+    }
+    if (record.originContextState === "pending") return { kind: "pending" };
+    if (record.originContextState !== "pinned" || record.originContextRef === undefined) {
+      return { kind: "unavailable" };
+    }
+    const expectedFingerprint = continuationDigest(
+      `mono-agent-origin-context-binding-v2\0${record.claimFingerprint}\0${record.originContextRef.digest}`,
+    );
+    const expectedMac = originContextBindingMac(this.secret, record, record.originContextRef);
+    if (record.originContextDigest !== record.originContextRef.digest
+      || record.originContextFingerprint !== expectedFingerprint
+      || record.originContextBindingMac !== expectedMac) {
+      return { kind: "invalid", code: "origin_context_binding_invalid" };
+    }
+    let snapshot: AgentContinuationOriginContext | undefined;
+    try {
+      snapshot = await this.store.loadOriginContext(record.originContextRef);
+    } catch {
+      // Filesystem identity/permission failures are indistinguishable from a
+      // corrupt snapshot at this trust boundary. Fail closed into the same
+      // deterministic no-model delivery instead of retrying or dead-lettering.
+      await this.markOriginContextUnavailable(record.continuationId, "origin_context_unreadable");
+      return { kind: "unavailable" };
+    }
+    if (snapshot === undefined
+      || snapshot.conversationId !== record.originConversationId
+      || snapshot.originRunId !== record.originRunId
+      || snapshot.historyBoundary !== record.historyBoundary) {
+      await this.markOriginContextUnavailable(record.continuationId, "origin_context_missing_or_corrupt");
+      return { kind: "unavailable" };
+    }
+    return { kind: "ready", policy: "pinned", snapshot };
+  }
+
+  private async markOriginContextUnavailable(id: string, code: string): Promise<void> {
+    await this.store.mutate((records) => {
+      const current = requireRecord(records, id);
+      requireLease(current, this.instanceId);
+      current.originContextState = "abandoned";
+      delete current.originContextRef;
+      current.updatedAt = this.now().toISOString();
+      current.lastError = errorRecord(code, "Pinned origin context is unavailable.", current.updatedAt);
+    });
+  }
+
+  private async deferOriginContext(id: string): Promise<DurableContinuationRecord> {
+    return await this.store.mutate((records) => {
+      const current = requireRecord(records, id);
+      requireLease(current, this.instanceId);
+      current.synthesisDeferrals += 1;
+      const at = this.now();
+      current.state = "result_received";
+      current.updatedAt = at.toISOString();
+      current.nextAttemptAt = new Date(at.getTime() + backoffMs(
+        current.synthesisDeferrals,
+        1_000,
+        5 * 60 * 1_000,
+      )).toISOString();
+      current.lastError = errorRecord(
+        "origin_context_pending",
+        "The origin run has not committed its pinned context yet.",
+        current.updatedAt,
+      );
+      clearLease(current);
+      return structuredClone(current);
+    });
+  }
+
+  private async prepareOriginContextFallback(id: string): Promise<DurableContinuationRecord> {
+    return await this.store.mutate((records) => {
+      const current = requireRecord(records, id);
+      requireLease(current, this.instanceId);
+      current.synthesizedText = ORIGIN_CONTEXT_UNAVAILABLE_TEXT;
+      current.completionKind = "origin_context_unavailable";
+      current.state = "ready_to_deliver";
+      current.updatedAt = this.now().toISOString();
+      delete current.nextAttemptAt;
+      delete current.synthesisStartedAt;
+      return structuredClone(current);
+    });
   }
 
   private async deferSynthesis(
@@ -573,7 +941,10 @@ class ContinuationService {
     });
   }
 
-  private async synthesize(record: DurableContinuationRecord): Promise<DurableContinuationRecord> {
+  private async synthesize(
+    record: DurableContinuationRecord,
+    originContext: Extract<ResolvedOriginContext, { readonly kind: "ready" }>,
+  ): Promise<DurableContinuationRecord> {
     const startedAt = this.now().toISOString();
     const prepared = await this.store.mutate((records) => {
       this.throwIfStopping();
@@ -590,7 +961,7 @@ class ContinuationService {
       const result = await this.runBoundedOperation(
         "synthesis",
         this.limits.synthesisTimeoutMs,
-        async () => await this.options.synthesize(synthesisInput(prepared)),
+        async () => await this.options.synthesize(synthesisInput(prepared, originContext)),
       );
       this.throwIfStopping();
       const text = result.text.trim();
@@ -601,6 +972,7 @@ class ContinuationService {
         const current = requireRecord(records, prepared.continuationId);
         requireLease(current, this.instanceId);
         current.synthesizedText = text;
+        current.completionKind = "synthesized";
         if (result.actionable !== undefined) current.actionable = result.actionable;
         current.state = "ready_to_deliver";
         current.updatedAt = this.now().toISOString();
@@ -936,7 +1308,15 @@ class ContinuationService {
       const binding = this.claimBindings.get(token);
       if (binding === undefined) throw new ContinuationProtocolError(401, "invalid_claim_capability", "Invalid or expired claim capability.");
       const body = await readJson(request, MAX_CLAIM_BODY_BYTES);
-      sendJson(response, 200, await this.claim(binding, body));
+      // Do not count a slow request body as admitted work. Recheck and enter
+      // the drain only after the complete bounded body exists; release() then
+      // either revokes it or waits for its durable mutation to finish.
+      const finishClaim = this.beginClaim(binding);
+      try {
+        sendJson(response, 200, await this.claim(binding, body));
+      } finally {
+        finishClaim();
+      }
       return;
     }
     if (request.method === "POST" && url.pathname === "/v1/continuations/detached/claim") {
@@ -1020,6 +1400,9 @@ class ContinuationService {
       ...(route.conversationId === undefined ? {} : { replyToConversationId: route.conversationId }),
       mode: route.mode,
       fingerprint,
+      closed: false,
+      settled: true,
+      inFlightOperations: 0,
     }, claim, routeName);
   }
 
@@ -1069,6 +1452,7 @@ class ContinuationService {
         originConversationId: binding.originConversationId,
         ...(binding.replyToConversationId === undefined ? {} : { replyToConversationId: binding.replyToConversationId }),
         ...(binding.historyBoundary === undefined ? {} : { historyBoundary: binding.historyBoundary }),
+        originContextState: binding.historyBoundary === undefined ? "detached_latest" : "pending",
         mode: binding.mode,
         ...(routeName === undefined ? {} : { routeName }),
         taskKey: claim.taskKey,
@@ -1080,6 +1464,7 @@ class ContinuationService {
         deadline: claim.deadline,
         state: "claimed",
         synthesisAttempts: 0,
+        synthesisDeferrals: 0,
         deliveryAttempts: 0,
       };
       records.set(continuationId, next);
@@ -1202,11 +1587,17 @@ class ContinuationService {
   }
 
   private async stop(): Promise<void> {
-    if (this.stopped) return;
+    this.stopPromise ??= this.stopOnce();
+    await this.stopPromise;
+  }
+
+  private async stopOnce(): Promise<void> {
     this.stopped = true;
     this.lifecycleAbort.abort();
     if (this.worker !== undefined) clearInterval(this.worker);
     this.worker = undefined;
+    const bindings = [...this.activeClaimBindings];
+    for (const binding of bindings) binding.closed = true;
     this.claimBindings.clear();
     const server = this.server;
     this.server = undefined;
@@ -1214,8 +1605,47 @@ class ContinuationService {
       if (server !== undefined) {
         await closeContinuationServer(server);
       }
+      while (this.activeHttpRequests.size > 0) {
+        await Promise.allSettled([...this.activeHttpRequests]);
+      }
+      await this.drainHandleOperations();
+      await Promise.all(bindings.map(async (binding) => {
+        if (binding.inFlightOperations === 0) return;
+        binding.drainPromise ??= new Promise<void>((resolve) => { binding.resolveDrain = resolve; });
+        await binding.drainPromise;
+      }));
       await this.dispatchTail.catch(() => undefined);
       await Promise.allSettled([...this.inFlight.values()]);
+      const fingerprints = new Set(bindings.map((binding) => binding.fingerprint));
+      if (fingerprints.size > 0) {
+        const at = this.now().toISOString();
+        try {
+          await this.store.mutate((records) => {
+            for (const record of records.values()) {
+              if (!fingerprints.has(record.claimFingerprint) || record.originContextState !== "pending") continue;
+              record.originContextState = "abandoned";
+              delete record.originContextRef;
+              record.updatedAt = at;
+              record.lastError = errorRecord(
+                "origin_context_unavailable",
+                "The origin service stopped before its pinned continuation context committed.",
+                at,
+              );
+              delete record.nextAttemptAt;
+              clearLease(record);
+            }
+          });
+        } catch (error) {
+          // A prior durable transaction may already have poisoned this store.
+          // Shutdown must still revoke stale closures and release OS ownership;
+          // restart recovery deterministically abandons any remaining pending
+          // origin records before processing them.
+          this.logger?.warn?.("Continuation origin settlement will finish during restart recovery.", {
+            reason: safeReason(error),
+          });
+        }
+      }
+      for (const binding of bindings) this.settleClaimBinding(binding);
     } finally {
       await this.releaseStoreLock();
     }
@@ -1262,6 +1692,13 @@ function statusOfRequired(record: DurableContinuationRecord): ContinuationStatus
     updatedAt: record.updatedAt,
     deadline: record.deadline,
     attempts: { synthesis: record.synthesisAttempts, delivery: record.deliveryAttempts },
+    synthesisDeferrals: record.synthesisDeferrals,
+    originContext: {
+      state: record.originContextState,
+      ...(record.originContextDigest === undefined ? {} : { digest: record.originContextDigest }),
+      ...(record.originContextMessageCount === undefined ? {} : { messageCount: record.originContextMessageCount }),
+    },
+    ...(record.completionKind === undefined ? {} : { completionKind: record.completionKind }),
     ...(record.nextAttemptAt === undefined ? {} : { nextAttemptAt: record.nextAttemptAt }),
     ...(record.lastError === undefined ? {} : { lastError: record.lastError }),
     ...(record.receipt === undefined ? {} : { receipt: record.receipt }),
@@ -1274,16 +1711,57 @@ function requireRecord(records: Map<string, DurableContinuationRecord>, id: stri
   return record;
 }
 
-function synthesisInput(record: DurableContinuationRecord): ContinuationSynthesisInput {
-  return {
+function synthesisInput(
+  record: DurableContinuationRecord,
+  originContext: Extract<ResolvedOriginContext, { readonly kind: "ready" }>,
+): ContinuationSynthesisInput {
+  const common = {
     continuationId: record.continuationId,
     originConversationId: record.originConversationId,
     originRunId: record.originRunId,
     ...(record.replyToConversationId === undefined ? {} : { replyToConversationId: record.replyToConversationId }),
-    ...(record.historyBoundary === undefined ? {} : { historyBoundary: record.historyBoundary }),
     mode: record.mode,
     payload: record.resultPayload,
   };
+  if (originContext.policy === "detached_latest") {
+    return { ...common, originContextPolicy: "detached_latest" };
+  }
+  if (record.historyBoundary === undefined) {
+    throw new Error(`Pinned continuation ${record.continuationId} is missing its history boundary.`);
+  }
+  return {
+    ...common,
+    historyBoundary: record.historyBoundary,
+    originContextPolicy: "pinned",
+    originContext: originContext.snapshot,
+  };
+}
+
+function originContextBindingMac(
+  secret: Uint8Array,
+  record: DurableContinuationRecord,
+  reference: ContinuationOriginContextReference,
+): string {
+  return createHmac("sha256", secret).update(canonicalContinuationJson({
+    version: 2,
+    continuationId: record.continuationId,
+    claimFingerprint: record.claimFingerprint,
+    serverName: record.serverName,
+    originRunId: record.originRunId,
+    originConversationId: record.originConversationId,
+    replyToConversationId: record.replyToConversationId ?? null,
+    historyBoundary: record.historyBoundary ?? null,
+    mode: record.mode,
+    routeName: record.routeName ?? null,
+    taskKey: record.taskKey,
+    taskHash: record.taskHash,
+    resultTokenHash: record.resultTokenHash,
+    createdAt: record.createdAt,
+    deadline: record.deadline,
+    originContextDigest: reference.digest,
+    originContextBytes: reference.bytes,
+    originContextMessageCount: reference.messageCount,
+  })).digest("hex");
 }
 
 function requireLease(record: DurableContinuationRecord, owner: string): void {

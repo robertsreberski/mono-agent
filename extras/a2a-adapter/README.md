@@ -57,6 +57,26 @@ const response = await sendA2AMessage({
 });
 ```
 
+For supervised long-running work, admit once and observe the same durable
+execution independently:
+
+```ts
+import { dispatchA2AMessage } from "@mono-agent/a2a-adapter";
+
+const dispatch = await dispatchA2AMessage({
+  agentUrl: "http://127.0.0.1:4300/.well-known/agent-card.json",
+  text: "Long-running work",
+  idempotencyKey: "stable-logical-dispatch-43",
+  timeoutMs: 10_000,
+});
+
+const outcome = await dispatch.observeTerminal({ timeoutMs: 120_000 });
+```
+
+Observer timeout or cancellation does not cancel the remote task. Use
+`dispatch.cancel()` for explicit remote cancellation. Protocol terminal states
+resolve as typed outcomes; transport and idempotency-integrity failures reject.
+
 `idempotencyKey` is an opt-in mono-agent A2A extension. Before sending, the
 consumer requires the named/versioned capability in the remote Agent Card, so a
 generic peer cannot silently ignore the key. Long-lived consumers re-check the
@@ -105,6 +125,7 @@ omits the namespace; they never silently start without the advertised guard.
 - `createChannelDriver`
 - `createA2AAgentCard`
 - `createA2AConsumer`
+- `dispatchA2AMessage`
 - `discoverA2AAgent`
 - `sendA2AMessage`
 - `createA2AConsumerResponder`

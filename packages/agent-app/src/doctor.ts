@@ -80,6 +80,10 @@ import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
 const execFile = promisify(execFileCallback);
 
+const CONTINUATION_V2_ROLLBACK_GUARD = "UPGRADED-TO-RECORDS-V3";
+const CONTINUATION_V2_ROLLBACK_GUARD_CONTENT =
+  "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n";
+
 export type ValidationStatus = "ok" | "waiting" | "disabled" | "error";
 
 export interface ValidationSection {
@@ -2117,7 +2121,7 @@ async function inspectContinuationState(stateDir: string): Promise<{
     return { status: "error", details: [secretError] };
   }
 
-  const manifestPath = join(stateDir, "continuation-store-v2.json");
+  const manifestPath = join(stateDir, "continuation-store-v3.json");
   let manifestInfo;
   try {
     manifestInfo = await lstat(manifestPath);
@@ -2138,19 +2142,29 @@ async function inspectContinuationState(stateDir: string): Promise<{
     } catch (error) {
       return { status: "error", details: [`Continuation store manifest contains invalid JSON: ${continuationReason(error)}`] };
     }
-    if (!isContinuationStoreManifest(manifest)) {
+    if (!isContinuationStoreManifest(
+      manifest,
+      CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
+      "per-record-v3",
+    )) {
       return { status: "error", details: ["Continuation store manifest has an unsupported or malformed schema."] };
     }
-    const recordsDirectoryError = await inspectContinuationRecordsDirectory(join(stateDir, "records-v2"));
+    const recordsDirectoryError = await inspectContinuationRecordsDirectory(join(stateDir, "records-v3"));
     if (recordsDirectoryError !== undefined) return { status: "error", details: [recordsDirectoryError] };
-    const transaction = await inspectContinuationTransaction(join(stateDir, "continuation-transaction-v2.json"));
+    const transaction = await inspectContinuationTransaction(join(stateDir, "continuation-transaction-v3.json"));
     if (!transaction.valid) return { status: "error", details: [transaction.detail] };
+    const rollbackGuard = await inspectContinuationRollbackGuard(
+      join(stateDir, "records-v2", CONTINUATION_V2_ROLLBACK_GUARD),
+      true,
+    );
+    if (!rollbackGuard.valid) return { status: "error", details: [rollbackGuard.detail] };
     const owner = await inspectContinuationOwnerDatabase(join(stateDir, "continuations-owner.sqlite"));
     if (!owner.valid) return { status: "error", details: [owner.detail] };
     details.push(
-      `Store v2: ${String(manifest.stats.records)} retained; ${String(manifest.stats.active)} active; ${String(manifest.stats.unresolvedDelivery)} delivery unknown; ${String(manifest.stats.deadLettered)} dead-lettered; ${String(manifest.stats.historyDegraded)} history-degraded deliveries; ${String(manifest.stats.terminalTombstones)} terminal tombstones; ${String(manifest.stats.capturedText)} captured answers.`,
+      `Store v3: ${String(manifest.stats.records)} retained; ${String(manifest.stats.active)} active; ${String(manifest.stats.unresolvedDelivery)} delivery unknown; ${String(manifest.stats.deadLettered)} dead-lettered; ${String(manifest.stats.historyDegraded)} history-degraded deliveries; ${String(manifest.stats.terminalTombstones)} terminal tombstones; ${String(manifest.stats.capturedText)} captured answers.`,
       `Retention: at most ${String(manifest.stats.limits.terminalMaxRecords)} terminal tombstones and ${String(manifest.stats.limits.capturedTextMaxRecords)} captured answers.`,
       transaction.detail,
+      rollbackGuard.detail,
       owner.detail,
     );
     return {
@@ -2162,6 +2176,54 @@ async function inspectContinuationState(stateDir: string): Promise<{
         : "ok",
       details,
     };
+  }
+
+  const legacyManifestPath = join(stateDir, "continuation-store-v2.json");
+  let legacyManifestInfo;
+  try {
+    legacyManifestInfo = await lstat(legacyManifestPath);
+  } catch (error) {
+    if (continuationFsCode(error) !== "ENOENT") {
+      return { status: "error", details: [`Legacy continuation store manifest cannot be inspected: ${continuationReason(error)}`] };
+    }
+  }
+  if (legacyManifestInfo !== undefined) {
+    if (!legacyManifestInfo.isFile() || legacyManifestInfo.isSymbolicLink()) {
+      return { status: "error", details: ["Legacy continuation store manifest must be a regular file, not a symlink."] };
+    }
+    const manifestSecurityError = continuationOwnershipError(legacyManifestInfo, "legacy store manifest", 0o600);
+    if (manifestSecurityError !== undefined) return { status: "error", details: [manifestSecurityError] };
+    let legacyManifest: unknown;
+    try {
+      legacyManifest = JSON.parse(await readFile(legacyManifestPath, "utf8")) as unknown;
+    } catch (error) {
+      return { status: "error", details: [`Legacy continuation store manifest contains invalid JSON: ${continuationReason(error)}`] };
+    }
+    if (!isContinuationStoreManifest(legacyManifest, 2, "per-record-v2")) {
+      return { status: "error", details: ["Legacy continuation store manifest has an unsupported or malformed schema."] };
+    }
+    const legacyRecordsDirectory = join(stateDir, "records-v2");
+    const recordsDirectoryError = await inspectContinuationRecordsDirectory(legacyRecordsDirectory, {
+      allowV2RollbackGuard: true,
+    });
+    if (recordsDirectoryError !== undefined) return { status: "error", details: [recordsDirectoryError] };
+    const transaction = await inspectContinuationTransaction(join(stateDir, "continuation-transaction-v2.json"));
+    if (!transaction.valid) return { status: "error", details: [transaction.detail] };
+    const rollbackGuard = await inspectContinuationRollbackGuard(
+      join(legacyRecordsDirectory, CONTINUATION_V2_ROLLBACK_GUARD),
+      false,
+    );
+    if (!rollbackGuard.valid) return { status: "error", details: [rollbackGuard.detail] };
+    const owner = await inspectContinuationOwnerDatabase(join(stateDir, "continuations-owner.sqlite"));
+    if (!owner.valid) return { status: "error", details: [owner.detail] };
+    details.push(
+      `Legacy store v2 awaiting v3 migration: ${String(legacyManifest.stats.records)} retained; ${String(legacyManifest.stats.active)} active; ${String(legacyManifest.stats.unresolvedDelivery)} delivery unknown; ${String(legacyManifest.stats.deadLettered)} dead-lettered; ${String(legacyManifest.stats.historyDegraded)} history-degraded deliveries; ${String(legacyManifest.stats.terminalTombstones)} terminal tombstones; ${String(legacyManifest.stats.capturedText)} captured answers.`,
+      `Retention: at most ${String(legacyManifest.stats.limits.terminalMaxRecords)} terminal tombstones and ${String(legacyManifest.stats.limits.capturedTextMaxRecords)} captured answers.`,
+      transaction.detail,
+      rollbackGuard.detail,
+      owner.detail,
+    );
+    return { status: "waiting", details };
   }
 
   const storePath = join(stateDir, "continuations-v1.json");
@@ -2204,7 +2266,7 @@ async function inspectContinuationState(stateDir: string): Promise<{
   const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
   const pending = counts.claimed + counts.result_received + counts.synthesizing + counts.ready_to_deliver + counts.delivery_retry;
   details.push(
-    `Legacy ledger awaiting v2 migration: ${String(total)} total; ${String(pending)} pending; ${String(counts.delivery_unknown)} delivery unknown; ${String(counts.dead_lettered)} dead-lettered.`,
+    `Legacy ledger awaiting v3 migration: ${String(total)} total; ${String(pending)} pending; ${String(counts.delivery_unknown)} delivery unknown; ${String(counts.dead_lettered)} dead-lettered.`,
   );
   const owner = await inspectContinuationOwnerDatabase(join(stateDir, "continuations-owner.sqlite"));
   details.push(owner.detail);
@@ -2259,7 +2321,10 @@ async function inspectContinuationOwnerDatabase(path: string): Promise<{
   return { valid: true, detail: "OS-backed exclusive ownership is released automatically on clean stop or process death." };
 }
 
-async function inspectContinuationRecordsDirectory(path: string): Promise<string | undefined> {
+async function inspectContinuationRecordsDirectory(
+  path: string,
+  options: { readonly allowV2RollbackGuard?: boolean } = {},
+): Promise<string | undefined> {
   let info;
   try {
     info = await lstat(path);
@@ -2275,6 +2340,7 @@ async function inspectContinuationRecordsDirectory(path: string): Promise<string
   if (directorySecurityError !== undefined) return directorySecurityError;
   try {
     for (const entry of await readdir(path, { withFileTypes: true })) {
+      if (options.allowV2RollbackGuard && entry.name === CONTINUATION_V2_ROLLBACK_GUARD) continue;
       if (!entry.name.endsWith(".json") && !(entry.name.startsWith(".") && entry.name.endsWith(".tmp"))) {
         return `Continuation record directory contains an unexpected entry: ${entry.name}.`;
       }
@@ -2289,6 +2355,44 @@ async function inspectContinuationRecordsDirectory(path: string): Promise<string
     return `Continuation record directory cannot be inspected: ${continuationReason(error)}`;
   }
   return undefined;
+}
+
+async function inspectContinuationRollbackGuard(
+  path: string,
+  required: boolean,
+): Promise<{ readonly valid: boolean; readonly detail: string }> {
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    if (continuationFsCode(error) === "ENOENT") {
+      return required
+        ? { valid: false, detail: "Continuation v2 rollback guard is missing from the v3 store." }
+        : { valid: true, detail: "The v2 rollback guard is not installed; the current runtime will install it during v3 migration." };
+    }
+    return { valid: false, detail: `Continuation v2 rollback guard cannot be inspected: ${continuationReason(error)}` };
+  }
+  if (!info.isFile() || info.isSymbolicLink()) {
+    return { valid: false, detail: "Continuation v2 rollback guard must be a regular file, not a symlink." };
+  }
+  const securityError = continuationOwnershipError(info, "v2 rollback guard", 0o600);
+  if (securityError !== undefined) return { valid: false, detail: securityError };
+  if (info.size > 4 * 1024) {
+    return { valid: false, detail: "Continuation v2 rollback guard exceeds its safety limit." };
+  }
+  let contents: string;
+  try {
+    contents = await readFile(path, "utf8");
+  } catch (error) {
+    return { valid: false, detail: `Continuation v2 rollback guard cannot be read: ${continuationReason(error)}` };
+  }
+  if (contents !== CONTINUATION_V2_ROLLBACK_GUARD_CONTENT) {
+    return { valid: false, detail: "Continuation v2 rollback guard contents are invalid." };
+  }
+  return {
+    valid: true,
+    detail: "The owner-only v2 rollback guard prevents older runtimes from opening stale continuation records.",
+  };
 }
 
 async function inspectContinuationTransaction(path: string): Promise<{
@@ -2339,7 +2443,11 @@ function isContinuationLedger(value: unknown): value is {
     && isDoctorObject(value.records);
 }
 
-function isContinuationStoreManifest(value: unknown): value is {
+function isContinuationStoreManifest(
+  value: unknown,
+  schemaVersion: number,
+  format: "per-record-v2" | "per-record-v3",
+): value is {
   readonly schemaVersion: number;
   readonly generation: string;
   readonly stats: {
@@ -2357,10 +2465,10 @@ function isContinuationStoreManifest(value: unknown): value is {
   };
 } {
   if (!isDoctorObject(value)
-    || value.schemaVersion !== CONTINUATION_RECORD_STORE_SCHEMA_VERSION
+    || value.schemaVersion !== schemaVersion
     || typeof value.generation !== "string"
     || !isDoctorObject(value.stats)
-    || value.stats.format !== "per-record-v2"
+    || value.stats.format !== format
     || !isDoctorObject(value.stats.limits)) return false;
   return [
     value.stats.records,
