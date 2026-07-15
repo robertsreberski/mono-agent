@@ -1,5 +1,23 @@
 # Release notes
 
+## 0.11.2 — Reliable native-notify continuations (2026-07-15)
+
+### Fixed
+
+- Preserves the logical cron or webhook conversation for durable history while
+  binding continuation follow-ups to the host-resolved physical notification
+  destination.
+- Applies webhook notification precedence consistently: configured destination,
+  deliverable request conversation, then a uniquely inferred fallback.
+- Keeps physical reply destinations host-only and out of model-visible prompts.
+
+### Compatibility
+
+- No configuration changes are required. Existing explicit notification
+  destinations continue to take precedence.
+- All 21 catalog-publishable packages move together to 0.11.2. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.11.1 — Release provenance and continuation documentation (2026-07-15)
 
 ### Fixed
