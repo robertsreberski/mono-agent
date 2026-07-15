@@ -1,0 +1,77 @@
+# 07 · Bujo memory capture & recall pipeline
+
+**Scope:** `packages/memory/src/bujo/` — completed-turn capture (strict/non-strict), LLM-backed extraction, the Ollama adapter, recall-evidence direct-fact matching, the `consolidate` ritual, and their JSON parsing/normalization helpers. **Maturity grade: B (verifier-adjusted).** The crash-safe admit→pending→{dead|resolved} capture ledger and its retry/dead-letter machinery are excellent and confirmed honest end-to-end (no silent turn loss); the verifier lowered two P2 legibility findings to P3, corrected the reachability story on the "dead" non-strict capture path (it is a bypassed-but-published contract path, not orphaned code), rejected the sole proposed freeze-blocker (strict-capture fails closed), and surfaced one new P2 finding — a whole capture-queue subsystem that is dead in the shipped bujo host. No finding in this territory blocks v1.
+
+## Findings
+
+### F1 — [P1] [verifier: AMENDED] — Strict completed-turn capture has no markdown-fence tolerance; the built-in Ollama adapter never requests JSON mode
+`packages/memory/src/bujo/capture-batch.ts:101-106` (`extractCapturePlanStrict`) feeds the model completion straight into `parseJsonExact` (`json.ts:36-132`), a bare recursive-descent parser that requires the cursor to reach end-of-text with no trailing content — any ```` ```json ``` ```` wrapper throws `"trailing data after JSON value"`. This is the only production-wired intelligent-capture path (`BujoMemoryStore.captureCompletedTurn` → `captureTurnStrict`, confirmed live via `store.ts:973,571`). The built-in Ollama adapter (`ollama-llm.ts:25-30`) never sets `format: "json"` in its request body, despite Ollama natively supporting JSON mode for exactly this failure class. Why it matters: "bring any model" is a named yardstick clause, and the built-in/default/simplest-to-configure memory-LLM backend is exactly the audience most likely to trip a fence-happy local model. Verifier confirmed all the evidence but corrected the disposition: the path **fails closed** — the deterministic host summary is still written (no data loss), the failure is surfaced via `warn()` and lands in an inspectable dead-letter after ~44h of retries — so "honest ops" holds. The proposed freeze-blocker (B1-1) was **rejected**; this is a real fix-worthy gap, not a v1 blocker.
+```ts
+try {
+  parsed = parseJsonExact<unknown>(raw);
+} catch {
+  throw outputError("capture-extract", "completion is not exact JSON");
+```
+
+### F2 — [P2] [verifier: AMENDED] — Dead-in-shipped-product capture-pipeline duplication sitting in the public API surface
+`distill()` (`distill.ts:22`, re-exported `index.ts:101`) and `extractEntities()` (`entities.ts:103`, re-exported `index.ts:106`) are exported from the package's canonical public surface with zero non-test callers anywhere in the monorepo — verifier-confirmed dead by repo-wide grep. The auditor additionally treated `capture.ts`'s non-strict `captureTurn` and `capture-batch.ts`'s non-strict `extractCapturePlan` as dead because `BujoMemoryStore.capture()` has no caller. Verifier found this reasoning **incomplete**: both are also reachable via `scheduleCapture()` → `captureQueue` → `captureAccepted` → `captureTurn` (`store.ts:717,955,803`), and `scheduleCapture` is a **published optional contract method** (`agent-contracts/memory.ts:65`) with a live wrapper (`memory-retrieval.ts:182`). They are dead specifically because the harness only calls `scheduleCapture` in the `persistCompletedTurn === undefined` fallback branch (`harness.ts:1660-1679`), and `BujoMemoryStore` always defines `persistCompletedTurn` (`store.ts:449`) — so this is a **bypassed compat path**, not orphaned code. The core premise point stands regardless: `index.ts`'s exports would reasonably read as supported composable primitives to an external plugin author, and using them diverges from the real pipeline's behavior (double LLM calls, no cross-entity id scoping).
+
+### F3 — [P3] [verifier: AMENDED from P2] — `consolidate` ritual's name and result shape imply active cleanup it never performs, undocumented
+`consolidateBujoMemory` (`consolidate.ts:18-32`) permanently hardcodes `decayed: 0`, `superseded: 0`, `markdownInvalidated: 0` — it only counts duplicate-text groups and rewrites `index.md`/`future-log.md`. Confirmed live: called from `store.ts:829`, scheduled by default every 2 hours whenever tier is `bujo` (`memory-rituals.ts:18`, `0 */2 * * *`). Nothing reads the three zero fields; `packages/memory/README.md` never mentions `consolidate`. Verifier confirmed all the facts but downgraded severity: the function's own docstring is accurate ("Projection-only… reported, never folded") and the fields are honestly zero rather than faked, so the operator-deception risk is overstated — the real gap is naming plus README silence, a legibility nit rather than an honesty gap.
+```ts
+/**
+ * Projection-only compatibility maintenance.
+ * Duplicate groups are reported, never folded...
+ */
+export async function consolidateBujoMemory(deps: ConsolidateDeps): Promise<ConsolidateResult> {
+```
+
+### F4 — [P3] [verifier: AMENDED from P2] — `recall-evidence.ts`'s automatic-injection gate is a 344-line hand-rolled mini-parser with ad hoc exceptions
+Five `DirectFactQuery` shapes are matched via interacting regexes, a stopword/alias table, and one-off literal exceptions baked into general helpers — e.g. the identical `"atlas"` carve-out repeated in both `canonicalName` (`recall-evidence.ts:340-343`) and `canonicalConcept` (`:332-337`). Verifier confirmed this is live production code (`selectAnswerBearingRecallHits` → `parseDirectFactQuery` → `canonicalName`, used by `recall.ts:5`, not test-only) and confirmed the exceptions exist as described. Severity lowered because the design intent is documented at the file's top (`:1-8`: intentionally not a general NL parser, unmatched records still reachable via the default-on `MemoryRecall` tool) and it fails **closed** (under-recall only, never wrong-recall) — the fix is doc-only, not a behavioral risk.
+
+### F5 — [P3] [verifier: CONFIRMED] — Unicode-unsafe truncation and an inconsistent length bound in the non-strict candidate normalizer
+`normalizeCandidateText` (`distill.ts:66-70`) does `.slice(0, 280)` — a UTF-16 code-unit cut that can split an astral character (emoji, CJK extension-B) into a lone unpaired surrogate, which Node then mangles to a replacement character on UTF-8 write. `recall.ts:88-93`'s `clampToBytes` already shows the correct byte-safe pattern in the same codebase. Separately, the capture prompts advertise a "160 Unicode code points" limit while this function's actual cap is 280 UTF-16 units — mismatched units and values. Verifier confirmed the bug and additionally confirmed this is reachable on the **live strict path**: `reconcile.ts:567/680` call it on reconcile-decision text that gets persisted. Narrow trigger condition keeps severity at P3, but it is a real, fixable correctness bug on a live path (not purely the dead non-strict pipeline).
+```ts
+const text = value.normalize("NFKC").replace(/\s+/gu, " ").replace(/<!--mem/gu, "").trim().slice(0, 280);
+```
+
+### F6 — [P3] [verifier: CONFIRMED] — `parseJsonLoose`'s fence-body extraction falls back to the *entire* original text on a truncated fence
+`firstFenceBody` (`json.ts:216-224`): when an opening fence is never closed, the function returns the whole original completion (`text`) instead of `text.slice(start)` — the unterminated fenced content only. Combined with the downstream bracket-scanner picking the largest complete JSON candidate anywhere in the body, a truncated fenced answer can cause the loose parser to silently return an unrelated, complete-but-wrong JSON blob (e.g. restated instructions) instead of reporting "no result." Verifier confirmed the bug and confirmed it currently has **zero production impact** since `parseJsonLoose` is only reachable via the non-strict path that is dead-in-shipped-product per F2/NEW-1 — still a valid one-line fix for exported public API.
+```ts
+const end = text.indexOf("```", start);
+return end === -1 ? text : text.slice(start, end);
+```
+
+### NEW-1 — [P2] [verifier: NEW] — The entire best-effort capture queue is created-but-never-fed for a bujo store
+`initializeCaptureQueue()` runs for every writable bujo store (`store.ts:331`), building `captureQueue`/`CaptureJob`/`activeCaptureController` and the `captureAccepted` → `captureTurn` processor (`store.ts:945-964`). Its only feeder is `scheduleCapture` (`store.ts:717`), which the shipped harness invokes only in the `persistCompletedTurn === undefined` fallback branch (`harness.ts:1677`) — and `BujoMemoryStore` always defines `persistCompletedTurn` (`store.ts:449`). So for the bujo store, the entire queue plus `captureAccepted`, `captureTurn`, `extractCapturePlan`, `distill`, `extractEntities`, and `parseJsonLoose` form **one dead-in-shipped-product subsystem**, reachable only through the public `scheduleCapture`/`capture()` surface. This enlarges the cleanup scope named in F2 beyond the two originally-named functions, and is the mechanical reason F2's "reachable only via `BujoMemoryStore.capture()`" framing was incomplete.
+
+## Dead code & deprecation
+
+**Proven dead (verifier-confirmed by repo-wide grep):**
+- `distill()` (`distill.ts:22`) — zero non-test callers. `grep -rn "\bdistill\b" --include="*.ts" packages extras demos scripts website | grep -v __tests__ | grep -v /dist/ | grep -v .test.ts` → only definition + `index.ts:101` re-export.
+- `extractEntities()` (`entities.ts:103`) — zero non-test callers. Same grep pattern → only definition + `index.ts:106` re-export.
+- `compareLocated()` (`capture-intake.ts:1972`) — `grep -in comparelocated` → single hit, the definition. No caller anywhere.
+
+**REFUTED as simple dead code (verifier correction — do not delete on the auditor's original reasoning):**
+- `captureTurn` (`capture.ts:29-31`) and `extractCapturePlan` (`capture-batch.ts:45-79`) are **not** orphaned code. They are reachable via the published `scheduleCapture` optional contract method (`agent-contracts/memory.ts:65`), which the harness invokes for any memory store that does not define `persistCompletedTurn`. They are dead specifically *for the bujo store* because `BujoMemoryStore` always defines `persistCompletedTurn`, bypassing the queue. Removing them requires deciding `scheduleCapture`'s fate on the bujo store, not a mechanical delete-unused-symbol pass. See NEW-1 for the fuller subsystem this belongs to.
+
+**Suspected (unproven):** none remaining in this territory beyond the above.
+
+**Deprecation:** No `@deprecated`-tagged items exist within this part's file list. `index.ts`'s phase-numbered section comments (`// Phase 2 capture pipeline`, `// Phase 3 rituals`, `// Phase 4 built-in LLM adapter`) show `distill`/`extractEntities` are superseded "Phase 2" primitives never marked as such — confirmed by the verifier as a real implicit-legacy-surface gap, aligned with F2.
+
+## Actionable steps
+
+| ID | What | Why | How | Effort | Acceptance check | Freeze-blocking |
+|---|---|---|---|---|---|---|
+| B1-1 | Add fence tolerance to strict completed-turn capture and/or request Ollama JSON mode | F1 — "bring any model" flagship path silently dead-letters for fence-happy local models (fails closed, not a data-loss bug) | Pass `format: "json"` in `ollama-llm.ts`'s request body; add a bounded, still-fail-closed fence-strip pre-pass before `parseJsonExact` in `extractCapturePlanStrict` | M | New `strict-capture.test.ts` case: a fenced, otherwise-valid completion succeeds; assert the Ollama request body includes `format` | n |
+| B1-2 | Remove or clearly re-scope the dead `distill()`/`extractEntities()` exports | F2 — lean core / no orphaned public API for plugin authors | Delete both plus their `index.ts` re-exports, or add an explicit "legacy primitive" doc comment + README note | S | Repo-wide grep shows zero remaining runtime dependents; `index.ts` no longer silently exports unused symbols as first-class API | n |
+| B1-3 | Decide the fate of the `scheduleCapture`/queue fallback path for the bujo store (enlarged scope per NEW-1: queue + `captureTurn` + `extractCapturePlan` + their dependents) | F2 / NEW-1 — "honest ops": nothing tells an operator this whole subsystem is bypassed for the shipped bujo store | Either wire `scheduleCapture` into a concrete bujo trigger, or explicitly document in README/index.ts that it is a compat fallback unused by the shipped host (and stop initializing the queue for stores that define `persistCompletedTurn`) | M | A live call site + integration test exists, or the README/contract doc explicitly states the fallback is inert for `BujoMemoryStore` | n |
+| B1-4 | Trim or rename the `consolidate` ritual's misleading result shape | F3 — scheduled default-on ritual whose name/fields imply cleanup it never does (docstring is accurate; gap is naming + README silence) | Shrink `ConsolidateResult` to the field actually computed (`duplicateGroups`), or restore real fold/decay behavior if intended; add a short README paragraph documenting the true (report-only) behavior | S | Type change compiles; README gains a "consolidate" section describing actual behavior | n |
+| B1-5 | Add a design-rationale map to `recall-evidence.ts` | F4 — legibility; design is sound and fails closed, just unmapped for a new reader | Add a doc comment enumerating the 5 recognized `DirectFactQuery` shapes with one example each; move the hardcoded exception list (e.g. `"atlas"`) to a documented, extensible table | M | A new reader can map each shape to an example in under 5 minutes from the file's top comment; existing tests stay green | n |
+| B1-6 | Fix Unicode-unsafe truncation in `normalizeCandidateText` | F5 — correctness bug reachable on the live strict path via `reconcile.ts` | Truncate by code point (or reuse `recall.ts`'s byte-safe `clampToBytes` pattern); align the cap with the 160-code-point contract stated in the prompts | S | New `distill.test.ts` case with an astral character straddling the truncation boundary produces a well-formed string (no lone surrogates) | n |
+| B1-7 | Fix `firstFenceBody`'s unterminated-fence fallback | F6 — can return an unrelated JSON blob instead of "no result" on truncated model output; currently zero production impact but valid public-API fix | Change `end === -1 ? text : ...` to `end === -1 ? text.slice(start) : ...` | S | New `json.test.ts` case: a response with an unrelated complete JSON object before an unterminated fence must not return that earlier object | n |
+| B1-8 | Delete dead `compareLocated()`; consider a repo-wide unused-code lint | Dead code — lean core; `noUnusedLocals` is off in `tsconfig.base.json` so the compiler doesn't catch this class | Remove the function now (S); separately file a tracking issue to evaluate `noUnusedLocals`/an unused-vars lint repo-wide (L) | S/L | Function removed; tracking issue filed for the broader lint change | n |
+
+## Quarantine (refuted/unproven)
+
+No B1 finding was fully REFUTED by the verifier — F1 through F6 were CONFIRMED or AMENDED (severity/reasoning corrections only), and one NEW finding (NEW-1) was added. The one item requiring a de-fanged read is the dead-code classification of `captureTurn`/`extractCapturePlan`: the auditor's original "dead, zero callers" framing was corrected (see Dead code section above) — these are bypassed-but-published-contract paths, not orphaned code, and should not be deleted on the "simple dead code" rationale.

@@ -1,0 +1,68 @@
+# 04 · Channels & IO (agent-app channel wiring & proactive IO)
+
+**Scope:** the composition layer turning adapter packages into running channels (`channels.ts` and its seven driver factories), plus the proactive-notify/interaction machinery (adapter-send tools, interaction bridge, notify-destinations, posted-message-index) that lets an agent push into Telegram/Slack. **Maturity grade: B+ (verifier-adjusted: unchanged).** This is a well-documented, security-conscious layer (TOCTOU-hardened file uploads, interaction-bridge bearer scoping, drift-guarded lazy-load gate, a small and sound PR #256 fix) whose issues are all coverage gaps, drift risks, and file-size legibility concerns rather than active correctness defects — none of the seven findings survived verification as freeze-blocking, and one (F7) remains an unproven-but-plausible edge case exactly as the original auditor hedged it.
+
+## Findings
+
+**F1 — [P2] [verifier: CONFIRMED] — Dead maintenance routine leaves `posted-message-index.jsonl` unbounded.**
+`packages/agent-app/src/posted-message-index.ts:128` (`compactPostedMessageIndex`) is fully implemented and unit-tested but never called from any production path. Every `SlackSendMessage` tool call (`adapter-send-tools.ts:722`, append site also confirmed at `channels.ts:434`) appends a line to this file with no compaction ever triggered; `lookupProducingConversation`'s linear scan degrades as it grows. The `.jsonl` is deliberately excluded from `.summary.json` artifact scanners, so `artifact-retention.ts` never prunes it either — there is no bounding path anywhere. Premise: "honest ops" / bounded, self-maintaining local state.
+```
+export async function compactPostedMessageIndex(
+  indexPath: string,
+  maxEntries: number = DEFAULT_COMPACT_MAX_ENTRIES,
+```
+Verifier note: growth is real but slow (~150 B/entry, Slack-send-heavy agents only); sev P2 is defensible but borderline P3 given the narrow trigger.
+
+**F2 — [P2] [verifier: CONFIRMED] — Proactive adapter-tool sends still are not recorded into destination conversation history (tracked upstream as #201, confirmed still open).**
+`registerTelegramSendTool` and `registerSlackSendTool` (`adapter-send-tools.ts:678-791`) both post directly through the adapter client and return a tool result — neither appends the delivered text as an assistant turn to the *destination* conversation's history. `SlackSendMessage` links back to the *producing* conversation via `appendPostedMessage`, but the destination's own history never gains the sent text. Verifier confirmed via `gh issue view 201` (OPEN, label P2, title matches) and independently re-read `adapter-send-tools.ts:678-791`. Correctly scoped to the model-visible tool path only — native cron/webhook `notify:true` verbatim delivery records history via a different (`app.ts`) path.
+
+**F3 — [P2] [verifier: CONFIRMED] — Slack driver's continuation allowlist + error-mapping wrapper has no direct unit test in agent-app.**
+`createSlackChannelDriver`'s `synthesizeContinuation` and `recordContinuationHistory` (`channels.ts:475-559`) enforce the channel allowlist and translate `SerialQueueFullError`/`AgentHarnessFailureError("history_boundary_not_found")` into structured results before ever reaching the adapter — this is load-bearing security logic (a continuation reply target that bypassed the allowlist could post to a channel the operator never approved). Verifier re-read the logic and confirmed it is currently correct (allowlist check + both error mappings present and right), and confirmed the coverage gap by grep: `synthesizeContinuation`/`recordContinuationHistory` → only `app.test.ts:256` (a mock stub); `recordContinuationHistory` → zero hits in `packages/agent-app/src/__tests__/`. Framed as regression-risk coverage of already-correct logic, not an active defect.
+
+**F4 — [P3] [verifier: CONFIRMED] — `isDeliverableConversation` is duplicated verbatim in two packages.**
+```
+function isDeliverableConversation(conversationId: string): boolean {
+  return conversationId.startsWith("telegram:") || conversationId.startsWith("slack:");
+}
+```
+Byte-identical bodies confirmed at `channels.ts:1000-1002` and `packages/webhook-adapter/src/server.ts:835-837` (added in the same PR #256 commit). `proactive-notify.ts`'s `PUSH_CHANNEL_BY_SCHEME` (`:15-19`) is a related-but-wider list that also adds `whatsapp`. Three independent "which schemes are deliverable" lists across two packages, with nothing enforcing consistency — a future WhatsApp notify hook would need updating in three places.
+
+**F5 — [P3] [verifier: CONFIRMED] — `channels.ts` is ~1,550 lines mixing seven channel-driver factories with cron/webhook notification-delivery logic and Telegram error-text formatting.**
+The file contains `createTelegramChannelDriver`, `createSlackChannelDriver`, `createWebhookChannelDriver`, `createOpenAIApiChannelDriver`, `createTuiChannelDriver`, `createLiveChannelDriver`, `createCronChannelDriver`, plus ~250 lines of native-notify delivery/cooldown logic and ~100 lines of Telegram failure-text formatting, all in one module. Verifier confirmed line count via `wc -l` (1550; original finding said 1551, off-by-one, immaterial). Legibility item against "a competent stranger must be able to understand the core"; post-freeze.
+
+**F6 — [P3] [verifier: CONFIRMED] — `resolveNotifyDestinations` rescans the whole artifact directory on every native-notify resolution with no explicit destination.**
+`notify-destinations.ts:44` → `seen-conversations.ts:34` (`listSeenNotifyDestinations`) reads every `*.summary.json` in the artifact dir and stats up to 2,000 of them (batched at 64 concurrent) on every call, invoked once per completed cron/webhook run whose `notify:true` job/endpoint has no explicit `notifyConversationId`. Verifier confirmed the readdir+stat pattern and that an in-code comment explains filenames carry no time ordering, so a full pass is genuinely required. Bounded, not a correctness bug — a scale/perf note for busy long-lived instances.
+
+**F7 — [P3, PLAUSIBLE] [verifier: UNPROVEN — matches auditor's own hedge] — `notifyFallbackConversationId` is snapshotted once at channel `start()`, while actual delivery is re-resolved dynamically per run; the two can drift.**
+In PR #256 (`channels.ts:656-662` webhook, `:1046-1052` cron; verifier locates the same logic at `:659`/`:684` webhook, `:1049`/`:1077` cron), `inferUniqueNotifyDestination` runs once at channel `start()` and is baked as a static `notifyFallbackConversationId` used to set the run's `replyTo` continuation-registration target. Meanwhile the actual delivery destination (`resolveNativeCronNotifyDestination`/`resolveNativeWebhookNotifyDestination`) is recomputed fresh per completed run. If the set of "seen" notify-capable conversations changes between channel start and a run's completion, the `replyTo` used for continuation-registration could point at a stale destination that no longer matches where the notification actually lands. Verifier confirmed the mechanical claim (both resolution call sites and cadences) but, like the original auditor, could not fully trace the downstream `replyTo` consequence inside `agent-harness`/adapter code — stays UNPROVEN/PLAUSIBLE, not freeze-blocking.
+
+## Dead code & deprecation
+
+**Proven dead:**
+- `packages/agent-app/src/posted-message-index.ts:128` — `compactPostedMessageIndex`. Exported, unit-tested, never called from production. Proof (auditor, confirmed by verifier): `grep -rn compactPostedMessageIndex --include=*.ts . ` (excluding `node_modules`, `/dist/`) returns exactly two files — the definition (`posted-message-index.ts`) and its own test file (`posted-message-index.test.ts`). Zero production call sites; not re-exported. See F1 / A4-1.
+
+**Confirmed NOT dead (checked, kept in production):**
+- `channelIdForConversation`, `formatChannelFactValue`, `findTriggerOverrideIssues` — traced to production call sites.
+- `issueProgressCapability`/`releaseRun`/`enrichAssistantHistory` (`interaction-bridge.ts`) — look dead from a naive grep of `app.ts` alone, but are consumed indirectly through the `turnHistoryEnricher`/`progressCapabilityIssuer` typed interfaces in `agent-harness/src/harness.ts` (`:858`, `:1616`, `:1854-1856`). Verifier independently confirmed all three call sites. Do not remove.
+
+**Deprecation — kept, load-bearing:**
+- `LEGACY_TOOL_ALIASES` (consumed by `adapter-send-tools.ts:1478-1480`'s `legacyAliasesFor`) keeps pre-rename snake_case tool names (e.g. `telegram_send_photo`) matching the collapsed canonical `TelegramSendFile` tool in `allowedTools`/`disallowedTools`. Verifier confirmed additional consumption at `modules/known-tools.ts:61,83,93`. This is backward compatibility, not removable dead code — no `@deprecated` markers exist in scope otherwise.
+
+No entries were refuted as dead by the verifier in this territory (nothing to quarantine on this axis).
+
+## Actionable steps
+
+| ID | What | Why | How | Effort | Acceptance check | Freeze-blocking |
+|---|---|---|---|---|---|---|
+| A4-1 | Wire `compactPostedMessageIndex` into a real call site | A built, tested compaction routine that never runs is a silent unbounded-growth bug on any live instance using `SlackSendMessage` | Call it from the Slack channel driver's `start()` (mirroring `pruneTraceSources` in `web-command.ts`), or from `appendPostedMessage`'s caller on a periodic/every-N-writes basis | S | A live Slack-tool-enabled agent's `posted-message-index.jsonl` stays ≤ `DEFAULT_COMPACT_MAX_ENTRIES` after sustained use; existing compaction unit tests keep passing | n |
+| A4-2 | Land (or explicitly re-confirm scope of) GH #201 — record proactive `TelegramSendMessage`/`SlackSendMessage` sends into destination history | Continuity: a user asking "what did you just send me?" in the destination chat should get a correct answer | Per issue's "Desired behavior": a host-visible post-tool-result hook records delivered text as an assistant turn in the destination conversation, without double-recording ordinary replies/native notify/AskUser | M | New focused Telegram + Slack tests: proactive send → destination reply → replayed history contains the sent text; existing notify/AskUser/posted-message-index tests stay green | n |
+| A4-3 | Add direct unit tests for the Slack driver's `synthesizeContinuation`/`recordContinuationHistory` allowlist + error-mapping wrapper | Load-bearing security logic (allowlist enforcement) with a confirmed, findable coverage gap (verifier: currently correct, but untested) | New test file exercising `createSlackChannelDriver` directly: reject a non-allowlisted destination for both methods; assert `SerialQueueFullError`→`destination_queue_full` and `history_boundary_not_found`→`origin_history_not_ready` mappings | S | New tests fail on a reverted allowlist check and pass on current code | n |
+| A4-4 | De-duplicate the "is this conversationId a deliverable push destination" predicate | DRY / drift risk across `channels.ts`, `webhook-adapter/server.ts`, and `proactive-notify.ts`'s `PUSH_CHANNEL_BY_SCHEME` (verifier confirmed byte-identical duplication) | Extract one shared helper (e.g. into `@mono-agent/agent-contracts`) that all three consult; keep `whatsapp` explicitly excluded from the webhook/cron async-callback list with a comment referencing "no notify hook yet" | S | grep shows one definition, three call sites; existing tests for all three unaffected | n |
+| A4-5 | Split `channels.ts` into one file per channel driver (+ a small `native-notify.ts` for the cron/webhook delivery helpers) | Legibility premise: a lean, understandable core is easier to audit as 7-8 focused files than one ~1,550-line file | Mechanical extraction behind the existing `ChannelDriver`/export surface; no behavior change | M | `check:architecture` and full test suite stay green; `git diff --stat` shows only file moves + import path changes | n |
+| A4-6 | Verify `notifyFallbackConversationId`'s start-time snapshot can't drift from the dynamically-resolved delivery destination | Correctness of the just-landed PR #256 fix under the multi-destination edge case (F7, still UNPROVEN per verifier — treat as "verify or document," not "fix") | Either re-resolve the fallback per-run (not just once at start) or document why the snapshot is intentionally sticky | M | A test that adds a second seen/allowlisted destination mid-lifecycle and asserts `replyTo` and actual delivery destination always agree | n |
+| A4-7 | Bound or cache the artifact-directory scan behind native-notify destination inference | Scale/perf note for busy long-lived instances (verifier confirmed the readdir+stat cost is real though bounded) | Cache `listSeenNotifyDestinations` results for a short TTL (mirroring the TUI's `LOCAL_MODEL_DISCOVERY_TTL_MS` pattern already used elsewhere in this same package), invalidated on new runs | S | Existing destination-inference tests stay correct; a synthetic large-artifact-dir benchmark shows reduced per-notification stat calls | n |
+
+## Quarantine (refuted/unproven)
+
+- No findings in this territory were REFUTED by the verifier.
+- **F7** (notify-fallback snapshot-vs-dynamic-resolution drift) remains **UNPROVEN** rather than confirmed or refuted: the mechanical claim (once-at-start snapshot vs. per-run dynamic re-resolution) is verified, but the downstream `replyTo` consequence lives inside `agent-harness`/adapter code that neither the original auditor nor the verifier fully traced. Kept as a PLAUSIBLE, non-blocking finding (A4-6) pending someone with harness/continuation ownership tracing the actual consequence — do not treat as either confirmed-active-bug or dismissed.
