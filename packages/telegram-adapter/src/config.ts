@@ -182,7 +182,6 @@ export async function loadTelegramAdapterConfig(
     false,
     invalidConfig,
   );
-  const sendTools = readTelegramSendTools(json);
 
   // A disabled channel never validates its credentials: the status surface reads
   // it as "disabled", not "waiting for config". Only an enabled channel demands
@@ -193,7 +192,6 @@ export async function loadTelegramAdapterConfig(
       botToken: "",
       allowedChatIds,
       allowAllChats,
-      ...(sendTools === undefined ? {} : { sendTools }),
     };
   }
 
@@ -219,6 +217,7 @@ export async function loadTelegramAdapterConfig(
           min: 0,
           max: 3_600_000,
         });
+  const sendTools = readTelegramSendTools(json);
   const quietHours = readTelegramQuietHours(json);
   const commands = readTelegramCommands(json);
   const reactions = readTelegramReactions(json, env);
