@@ -198,6 +198,56 @@ describe("loadSlackAdapterConfig", () => {
     });
   });
 
+  it("ignores malformed shortcuts config while disabled", async () => {
+    const config = await loadSlackAdapterConfig({
+      env: {},
+      json: {
+        slack: {
+          enabled: false,
+          shortcuts: { callbackId: "sync_now", prompt: "Run the sync." },
+        },
+      },
+    });
+
+    expect(config).toEqual({
+      enabled: false,
+      botToken: "",
+      appToken: "",
+      allowedChannelIds: [],
+      allowAllChannels: false,
+      botUserIds: [],
+      mentionTextAliases: [],
+      stripMentionText: false,
+      shortcuts: [],
+      homeTab: { enabled: false, buttons: [] },
+    });
+  });
+
+  it("ignores malformed homeTab config while disabled", async () => {
+    const config = await loadSlackAdapterConfig({
+      env: {},
+      json: {
+        slack: {
+          enabled: false,
+          homeTab: "not-an-object",
+        },
+      },
+    });
+
+    expect(config).toEqual({
+      enabled: false,
+      botToken: "",
+      appToken: "",
+      allowedChannelIds: [],
+      allowAllChannels: false,
+      botUserIds: [],
+      mentionTextAliases: [],
+      stripMentionText: false,
+      shortcuts: [],
+      homeTab: { enabled: false, buttons: [] },
+    });
+  });
+
   it("loads slack.shortcuts bindings from JSON", async () => {
     const path = join(dir, "mono-agent.config.json");
     await writeFile(

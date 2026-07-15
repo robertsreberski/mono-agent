@@ -144,10 +144,6 @@ export async function loadSlackAdapterConfig(
 ): Promise<SlackAdapterConfig> {
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
   const env = layerSlackJsonOntoEnv(json, input.env);
-  // Shortcut bindings and the Home tab are structured config, so they are read
-  // straight from the JSON section rather than via env layering.
-  const shortcuts = readSlackShortcuts(json);
-  const homeTab = readSlackHomeTab(json);
   const enabled = readBoolean(env.MONO_AGENT_SLACK_ENABLED, "MONO_AGENT_SLACK_ENABLED", false, invalidConfig);
   const allowedChannelIds = readCsv(env.MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS);
   const allowAllChannels = readBoolean(
@@ -178,8 +174,8 @@ export async function loadSlackAdapterConfig(
       botUserIds,
       mentionTextAliases,
       stripMentionText,
-      shortcuts,
-      homeTab,
+      shortcuts: [],
+      homeTab: { enabled: false, buttons: [] },
     };
   }
 
@@ -192,6 +188,11 @@ export async function loadSlackAdapterConfig(
       { env: "MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS" },
     );
   }
+
+  // Shortcut bindings and the Home tab are structured config, so they are read
+  // straight from the JSON section rather than via env layering.
+  const shortcuts = readSlackShortcuts(json);
+  const homeTab = readSlackHomeTab(json);
 
   return {
     enabled: true,
