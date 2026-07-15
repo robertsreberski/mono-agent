@@ -51,6 +51,7 @@ Use this path when the agent needs identity, selected skills, history, and optio
 | Memory substrate (schema, migrations, FTS+vector db, RRF) | `@mono-agent/memory/store` | SQLite storage, BM25 FTS, optional vector index, hybrid recall; re-exports `MemoryStore`/`MemoryBlock`/`MemoryWriteResult` from `@mono-agent/agent-contracts` |
 | Memory engine (all tiers: lite/journal/bujo) | `@mono-agent/memory/bujo` | `BujoMemoryStore` — tier-aware: FTS recall (lite), hybrid recall + static salience (journal), LLM capture/reconcile + entity graph + projection-only scheduled consolidation (bujo) |
 | Embedding providers | `@mono-agent/memory/search` | Exclusive Ollama/LM Studio/OpenAI embedding providers used by the store subpath for vector recall; `agent-app` owns guided typed discovery and the real readiness probe |
+| External Supermemory backend | `@mono-agent/memory-supermemory` (optional plugin) | Explicitly installed lockstep package selected by `memory.backend: "supermemory"`; proxies the shared `MemoryStore` / `MemoryRecall` contracts to local or hosted Supermemory for server-side extraction, consolidation, and hybrid recall |
 | Recall tool surface | `@mono-agent/agent-app` (bundled) | Auto-provisions read-only `MemoryRecall` for every configured tier and direct configured responder; automatic/tool recall share the same store and per-turn query cache |
 
 Mono-agent selected skills are not auto-selected by description. The host chooses `context.selectedSkills`, and the harness loads those exact bodies.
@@ -110,6 +111,7 @@ Adapters must not import the harness, runtime adapter, memory package (`@mono-ag
 Use:
 
 - `@mono-agent/tui` for the pi-tui operator console (`mono-agent tui`): live chat with full stream-event insight, recorded-run replay, config view.
+- `@mono-agent/session-web` for the read-only Session Recorder web PWA served by `mono-agent web`, including local artifact paging and live relay aggregation.
 - `@mono-agent/operator-adapter` for the loopback NDJSON stream endpoint the console connects to (`tui` config section, on by default) and the live SSE endpoint `mono-agent web` observes (`live` config section, on by default).
 - `@mono-agent/observability` for JSONL event artifacts, summaries, trace-source registration, and the `@mono-agent/observability/otel` Phoenix OTLP exporter configured via `observability.exporters`.
 

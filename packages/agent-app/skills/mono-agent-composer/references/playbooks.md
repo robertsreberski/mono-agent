@@ -98,21 +98,20 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 **Steps:** `mono-agent init` (webhook already enabled) → add `endpoints[]` (or `webhook/*.md` files; unique names AND paths) → `validate` → `start`.
 **Smoke:** `POST /webhook/invoke` for an immediate body; `POST /webhook/jobs` → 202 + status URL → poll until the result returns.
 
-## 6. Cron digest with proactive Slack notify
+## 6. Cron digest with native notify
 **For:** a data analyst wanting a scheduled briefing pushed to the team.
-**Goal:** a timezone-aware cron job that builds a daily digest with shared history and posts it to Slack.
-**Features:** `cron.scheduled-prompts`, `agent-app.adapter-send-tools`, `slack.socket-mode`, `memory.journal`.
+**Goal:** a timezone-aware cron job that builds a daily digest with shared history and delivers its final answer verbatim through native notification.
+**Features:** `cron.scheduled-prompts`, `channel.native-notify`, `slack.socket-mode`, `memory.journal`.
 
 ```json
 {
   "runtime": { "model": "claude:claude-sonnet-4-6" },
   "slack": { "enabled": true, "botToken": "xoxb-...", "appToken": "xapp-...", "allowedChannelIds": ["C012345"] },
-  "tools": { "allowedTools": ["SlackSendMessage", "WebSearch"] },
-  "cron": { "jobs": [{ "id": "morning-digest", "enabled": true, "expression": "0 9 * * *", "timezone": "America/New_York", "prompt": "Build the morning digest and post it to #team via SlackSendMessage.", "conversationId": "daily-digest" }] }
+  "cron": { "jobs": [{ "id": "morning-digest", "enabled": true, "expression": "0 9 * * *", "timezone": "America/New_York", "prompt": "Build the morning digest. Your final answer is the digest to notify.", "conversationId": "daily-digest", "notify": true, "notifyConversationId": "slack:C012345" }] }
 }
 ```
-**Steps:** `mono-agent init` → add slack + `SlackSendMessage` → add the cron job (or `cron/morning-digest.md`) with `conversationId` + IANA timezone → `validate` → `start`.
-**Smoke:** trigger a one-off tick; confirm `SlackSendMessage` posts the digest to the allowed channel and `conversationId` shares context across ticks.
+**Steps:** `mono-agent init` → add the destination adapter and allowlist → add the cron job (or `cron/morning-digest.md`) with `conversationId`, IANA timezone, `notify: true`, and optional `notifyConversationId` → `validate` → `start`.
+**Smoke:** trigger a one-off tick; confirm the final answer lands verbatim in the allowed destination with no tool call and `conversationId` shares context across ticks. Return `NOTHING_TO_REPORT` to test the silent path.
 
 ## 7. A2A provider + consumer pair
 **For:** a platform integrator connecting two agents over A2A.

@@ -8,9 +8,11 @@ Every framework capability and how a composed agent reaches it. This table is th
 | --- | --- | --- |
 | Model backends: claude (sdk/cli), codex (cli direct fallback), pi sdk providers (OpenAI, OpenAI-Codex preferred when Pi auth exists, Copilot, OpenRouter, OpenCode-through-Pi, Ollama, LM Studio, ...), plus hand-authored opencode runtime refs (cli, `opencode:<provider>:<model>` via the OpenCode server) | config | `runtime.model` |
 | Backup models on retryable provider failure | config | `runtime.fallbackModels` |
-| Execution mode (sdk/cli), effort, max turns, workspace | config + cli | `runtime.executionMode`, `runtime.effort` (`mono-agent init --effort <level>`; unsupported for direct OpenCode SDK 1.x), `runtime.maxTurns`, `runtime.workspace` |
+| Route-safety contract for primary and fallback models | config | `runtime.routeSafety`: `uniform` (default) or `per-route-native` |
+| Execution mode (sdk/cli), effort, max turns, workspace | config + cli | `runtime.executionMode`, `runtime.effort` (`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` / `ultra`; `mono-agent init --effort <level>`; unsupported for direct OpenCode SDK 1.x), `runtime.maxTurns`, `runtime.workspace` |
 | Tool-permission posture for CLI backends (direct OpenCode asks/rejects unanswered by default; configure explicitly) | config | `runtime.permissionMode` |
 | Continuous provider sessions with idle eviction | config | `runtime.session.{mode,idleTimeoutMs}` |
+| Per-channel run admission/execution bounds | config | `concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns` |
 | Local providers (Ollama / LM Studio / OpenAI-compatible) | config | `providers.local[]` |
 | Pi OAuth credentials | config | `providers.piAuthPath` |
 | Tool-output bloat guard, cost tracking | auto | built into every run |
@@ -31,6 +33,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Lite memory (FTS keyword recall + rapid-log capture; no external deps) | config | `memory.mode: "lite"`, `path`, `maxBytes`, `writeMode` |
 | Journal memory (hybrid recall BM25+vector + static canonical salience; needs configured embeddings) | config | `memory.mode: "journal"`, `path`, `memory.embeddings.{provider,endpoint,model,dim,apiKeyEnv}` (`provider: "ollama" | "lmstudio" | "openai"`; exclusive, no cross-provider fallback) |
 | BuJo memory (journal + LLM capture/reconcile ADD/UPDATE/SUPERSEDE/NOOP + entity graph + auto-scheduled consolidation; needs embeddings + an app-level `memory.llm`) | config | `memory.mode: "bujo"`, `path`; selected Ollama/LM Studio/OpenAI embeddings are independent from explicit `memory.llm` with `provider: "ollama"` (`model`, optional `endpoint`) or `provider: "agent-host"` (`model` is an SDK runtime model ref, optional `executionMode: "sdk"`) — see `docs/memory/index.md` |
+| Supermemory external backend (server-side extraction/consolidation; async ingestion; explicitly installed plugin) | config | `memory.backend: "supermemory"`, `memory.writeMode`, `memory.supermemory.{baseUrl,apiKey,apiKeyEnv,container,timeoutMs,exposeMcpServer}`; install the exact matching `@mono-agent/memory-supermemory` version |
 | BuJo consolidation auto-scheduler (projection-only `index.md` refresh + empty `future-log.md` stub + duplicate-group reporting; in-app, no external cron needed) | config | `memory.consolidation.{enabled,cron}` (default `0 */2 * * *`); env `MONO_AGENT_MEMORY_CONSOLIDATION_CRON`, `MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED` |
 | Memory out-of-band maintenance CLI (rebuild/recall/index/legacy reflect/migrate) | cli | `memory-bujo <subcommand> <root>`; opt-in `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` (`ollama`/`lmstudio`/`openai`), `_MODEL`, and `_DIM` for semantic recall; advanced `migrate` remains Ollama-only, outside guided init, and requires `MONO_AGENT_MEMORY_LLM_MODEL` (optional `_ENDPOINT`) |
 | Config-aware memory preview CLI (stats/today/show/search/top plus metadata-only audit; local search warns and falls back to FTS-only when embeddings are down) | cli | `mono-agent memory stats\|today\|show <date>\|search <query>\|top\|audit [--limit <n>] [--json]` |
@@ -47,6 +50,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | MCP servers (stdio/sse/http) from a JSON file | config | `tools.mcpConfigPath` |
 | Durable origin-bound continuations for trusted stdio/loopback-HTTP MCP services | config + auto | `tools.continuationServers` + `continuations.*`; interactive claims pin a bounded immutable origin snapshot before commit, exact rollover buckets are preserved, v3 state is restart-safe, and unavailable/legacy snapshots use a fixed zero-model fallback |
 | Adapter-derived send tools for enabled Slack/Telegram adapters | config | auto-available under allow-all once the channel is enabled; a **specific** `tools.allowedTools` must include `SlackSendMessage` / `TelegramSendMessage`; valid `slack.*` / `telegram.*` config and existing adapter allowlists provide credentials and destination bounds |
+| Human-in-the-loop interaction bridge for blocking asks and MCP progress | config + auto | `interaction.bridge.{host,port}`, `interaction.askUser.timeoutMs`, `interaction.progress.enabled`; env `MONO_AGENT_INTERACTION_BRIDGE_HOST`, `MONO_AGENT_INTERACTION_BRIDGE_PORT`, `MONO_AGENT_ASK_USER_TIMEOUT_MS`, `MONO_AGENT_PROGRESS_ENABLED` |
 | Sandbox on/off + srt engine (Pi-owned tools; direct Codex has its own sandbox, Claude/direct OpenCode reject native mono policy) | config | `sandbox.mode` |
 | Network policy (none/localhost/allowlist/all) | config | `sandbox.network.{mode,allowlist}` |
 | Filesystem scopes (readable/writable roots, deny-write globs) | config | `sandbox.readableRoots`, `sandbox.writableRoots`, `sandbox.denyWrite` |
@@ -57,7 +61,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 
 | Capability | Coverage | Where |
 | --- | --- | --- |
-| Webhook (sync/async HTTP invoke + status polling) | config | `webhook` section |
+| Webhook (sync/async HTTP invoke + status polling) | config | `webhook` section; endpoint overrides at `webhook.endpoints[].{model,effort}` |
 | OpenAI-compatible API (/v1/models, /v1/chat/completions, SSE, bearer) | config | `openaiApi` section |
 | Telegram (long polling, chat allowlist) | config | `telegram` section |
 | Slack (Socket Mode, channel allowlist, mention handling, config-driven shortcuts, and App Home actions) | config | `slack` section; `slack.shortcuts[]` and `slack.homeTab` are JSON-only |
@@ -67,7 +71,9 @@ Every framework capability and how a composed agent reaches it. This table is th
 | A2A consumer settings (remote agent URLs, timeouts) and calls | config + code | same A2A plugin entry's `config.consumer`; calls via `sendA2AMessage({ idempotencyKey })` or `createA2AConsumerResponder({ idempotencyKeyForRequest })` |
 | TUI stream endpoint (operator console transport) | config | `tui.{enabled,host,port,basePath,allowNonLoopback,apiKey}`; default on, loopback |
 | Live event relay (read-only run-event SSE for web) | config | `live.{enabled,host,port,basePath,allowNonLoopback,apiKey}`; default on, loopback |
-| Cron jobs (five-field expressions, timezones, overlap skip) | config | `cron.jobs[]`, single-job `MONO_AGENT_CRON_*`, or one markdown file per job in `cron.dir` / `MONO_AGENT_CRON_DIR` (default `cron/`) |
+| Cron jobs (five-field expressions, timezones, overlap skip) | config | `cron.jobs[]`, including per-job `model` / `effort`; single-job `MONO_AGENT_CRON_*`, or one markdown file per job in `cron.dir` / `MONO_AGENT_CRON_DIR` (default `cron/`) |
+| Per-trigger runtime model and effort overrides | config + code | `cron.jobs[].{model,effort}`; `webhook.endpoints[].{model,effort}` plus request body `{model,effort}` (request wins) |
+| Native final-answer notification for cron/webhook | config | per job/endpoint `notify`, optional `notifyConversationId`; cron may set `notifyFailureCooldownHours`; default off and destination allowlists still apply |
 | Channel message texts / stream tuning (welcome, debounce, ...) | code | channel driver overrides |
 | Custom transports | code | implement `ChannelDriver`, pass via `startMonoAgentApp({ drivers })` |
 
@@ -80,7 +86,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Phoenix trace viewer (OTLP exporter; local JSONL artifacts are the fallback) | config | `observability.exporters` (phoenix entry) |
 | Operator console (live chat with thinking/tool/telemetry insight, run replay, config view) | cli | `mono-agent tui [--agent <label>]`; agents serve the `tui` stream endpoint by default (`tui.enabled`, loopback) |
 | Managed proposal-only configuration conversation | cli + tool | macOS `mono-agent tui --configure` attaches to the authoritative background agent; `/configure`; separate configuration/ordinary conversation ids; host-gated `ProposeAgentConfiguration`; approval restarts and waits for readiness, failed start rolls files/agent back. `--local` is ordinary chat only; off macOS configuration is manual |
-| Session Recorder web PWA (read-only run browser) | cli | `mono-agent web [--host] [--port] [--no-open] [--allow-non-loopback] [--include-memory]`; consumes the default-on `live` relay and local artifacts; memory runs are opt-in |
+| Session Recorder web PWA (read-only run browser) | cli | `mono-agent web [--host] [--port] [--no-open] [--allow-non-loopback] [--show-auth-url] [--include-memory] [--max-runs <n>] [--config]`; package `@mono-agent/session-web`; non-loopback/non-interactive auth uses `MONO_AGENT_WEB_AUTH_TOKEN` |
 | Setup presets (saved answer-sets: generate config + `.env.example` + checklist) | cli | `mono-agent presets list\|show <id>`, `mono-agent init --preset <id> --yes` (`recipes`/`--recipe` deprecated aliases) |
 | Interactive setup wizard (preset/custom; exact `IDENTITY.md` → `## Role` prompt/outcome; walks model→channels→memory→tools→sandbox→observability; Journal/BuJo explicitly choose Ollama or LM Studio service root/model/dimension/optional auth env using typed discovery and a real probe; macOS starts the background agent before temporary configuration) | cli | `mono-agent init` (no flags, on a TTY; `setup` alias); manual embedding entry still requires readiness probe; flags/non-TTY stay scaffold-only; unsupported platforms use manual configuration/foreground start/ordinary TUI |
 | Tools reporting + no-tools guardrail (allow-all → `All tools allowed`; explicit empty `allowedTools: []` → `waiting`; unknown-tool "did you mean"; send-tool/channel cross-checks) | cli | part of `mono-agent validate`/`doctor`; the wizard's tools step |
