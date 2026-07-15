@@ -12,8 +12,44 @@
 
 import { InMemorySessionRepo, JsonlSessionRepo } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import { open } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { createSessionRegistry } from "../../runtime/sessions.js";
 import { createSessionLiveness } from "../../runtime/session-liveness.js";
+
+async function syncPath(path) {
+  const handle = await open(path, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function syncDurableTranscript(entry) {
+  if (!entry.durable) return;
+  const path = entry.metadata?.path;
+  if (typeof path !== "string" || !path) {
+    throw new Error("Durable Pi session metadata is missing its JSONL path");
+  }
+  // pi-core appends through short-lived file descriptors. Re-open the live
+  // JSONL and fsync it, then fsync its containing directory so both transcript
+  // bytes and the directory entry are stable before host history commits.
+  await syncPath(path);
+  await syncPath(dirname(path));
+}
+
+async function invalidateNativeSession(entry) {
+  await entry.repo.delete(entry.metadata);
+  if (entry.durable) {
+    const path = entry.metadata?.path;
+    if (typeof path !== "string" || !path) {
+      throw new Error("Durable Pi session metadata is missing its JSONL path");
+    }
+    // Make the unlink durable before the registry forgets the busy marker.
+    await syncPath(dirname(path));
+  }
+}
 
 // Live pi-native sessions, keyed by provider session id. Entries are
 // { session, metadata, repo, durable, busy } — identical shape and lifecycle
@@ -25,11 +61,21 @@ import { createSessionLiveness } from "../../runtime/session-liveness.js";
 const nativeSessionRepo = new InMemorySessionRepo();
 const nativeSessions = createSessionRegistry({
   isBusy: (entry) => entry.busy === true,
-  onEvict: async (entry) => {
+  onSync: syncDurableTranscript,
+  onEvict: async (entry, reason) => {
+    // Ordinary disposal/TTL only drops the live handle so durable sessions can
+    // reopen after restart. Explicit invalidation means the host rejected the
+    // turn before canonical history commit; that poisoned transcript must be
+    // deleted too or it could silently reappear on the next stable-id resume.
+    if (reason === "invalidated") {
+      // Destructive invalidation is an honest API: deletion (and, for JSONL,
+      // parent-directory fsync) must finish before registry removal, and any
+      // failure must reach the caller so it cannot assume cleanup succeeded.
+      await invalidateNativeSession(entry);
+      return;
+    }
     if (entry.durable) return;
-    try {
-      await entry.repo.delete(entry.metadata);
-    } catch { /* best-effort */ }
+    await entry.repo.delete(entry.metadata);
   },
 });
 const liveness = createSessionLiveness(nativeSessions);
@@ -48,6 +94,46 @@ export function resolveDurableNativeSessionRepo(piSessionsRoot) {
     durableNativeSessionRepos.set(root, repo);
   }
   return repo;
+}
+
+/**
+ * Permanently retire every durable Pi transcript with this exact logical id.
+ * This is intentionally stronger than live-session invalidation: history
+ * rotation and retention can retire an epoch after its registry entry was
+ * already evicted or after a process restart. Absence is success; any cleanup
+ * or verification uncertainty rejects so canonical history remains reachable.
+ */
+export async function retireDurableNativeSession(providerSessionId, piSessionsRoot) {
+  if (!isSafeSessionId(providerSessionId)) {
+    throw new TypeError("providerSessionId must be a safe, non-empty session id");
+  }
+  if (typeof piSessionsRoot !== "string" || !piSessionsRoot.trim()) {
+    throw new TypeError("piSessionsRoot must be a non-empty path");
+  }
+
+  // First guarantee this process cannot keep writing through a stale handle.
+  // Other processes are serialized by the history coordinator and must pass
+  // the same cold-refresh barrier before their next turn.
+  await nativeSessions.refresh(providerSessionId);
+
+  const repo = resolveDurableNativeSessionRepo(piSessionsRoot);
+  if (!repo) throw new Error("Durable Pi session repository is unavailable");
+  const matches = (await repo.list()).filter((entry) => entry?.id === providerSessionId);
+  const changedDirectories = new Set();
+  for (const metadata of matches) {
+    if (typeof metadata?.path !== "string" || !metadata.path) {
+      throw new Error(`Durable Pi session ${providerSessionId} has invalid metadata`);
+    }
+    await repo.delete(metadata);
+    changedDirectories.add(dirname(metadata.path));
+  }
+  for (const directory of changedDirectories) await syncPath(directory);
+  if (changedDirectories.size > 0) await syncPath(resolve(piSessionsRoot));
+
+  const remaining = (await repo.list()).filter((entry) => entry?.id === providerSessionId);
+  if (remaining.length > 0) {
+    throw new Error(`Durable Pi session ${providerSessionId} could not be retired completely`);
+  }
 }
 
 // Defense in depth (R4): create-on-miss passes the caller-controlled session id

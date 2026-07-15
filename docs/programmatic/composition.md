@@ -93,12 +93,14 @@ it is absent; other configurations keep it outside the app dependency closure.
 | `runtime` | `MonoRuntimeLike` | Inject a custom or shared runtime instead of building one from `runtime.model` |
 | `model` / `executionMode` | `RuntimeModelReference` / `string` | Override the config's primary model / execution mode |
 | `memory` | `MemoryStore` | Supply a memory store instead of provisioning from `config.memory` |
-| `historyStore` | `ConversationHistoryStore` | Plug in durable conversation history (default is a bounded in-memory store) |
+| `historyStore` | `ConversationHistoryStore` | Replace the configured app's owner-only disk-backed 64-message history store with a custom implementation |
 | `turnHistoryEnricher` | `AgentHarnessTurnHistoryEnricher` | App-owned hook for adding run-scoped interaction evidence only to replay history; outward responses and memory capture keep the original assistant text |
 | `runtimeOptions` | static run options | Extra runtime options merged for every run (no `model`/`messages`/`abortSignal`/`executionMode`/`onEvent`) |
 | `runtimeOptionsForRequest` | `(input) => extension` | Per-request run options (see below) |
 
 `createConfiguredAgentRuntime(config)` and `createConfiguredAgentHarness(options)` are also exported if you want the runtime or harness without the responder wrapper.
+
+A custom `historyStore` keeps provider sessions process-local unless it implements the crash-safe `beginProviderSessionTurn` transaction and advertises `providerSessionRetirement: "fail-closed"`. That marker is a promise that epoch rotation, dirty-fence recovery, and retention can durably retire every exact provider id before canonical history makes it unreachable. The harness withholds `piSessionsRoot` when either half is missing.
 
 ## Injecting a custom runtime (`MonoRuntimeLike`)
 
@@ -166,10 +168,10 @@ const responder = await createConfiguredAgentResponder({
 });
 ```
 
-The callback receives `{ request, runId, context }` (the inbound request, the run id, and the already-built `BuiltAgentContext`). It returns a `runtimeOptions` object — the same shape as static `runtimeOptions`, so it cannot set `model`, `messages`, `abortSignal`, `executionMode`, or `onEvent` — plus an optional `cleanup` hook.
+The callback receives `{ request, runId, context }` (the inbound request, the run id, and the already-built `BuiltAgentContext`). It returns a partial `runtimeOptions` object plus an optional `cleanup` hook. `messages`, `abortSignal`, `executionMode`, `onEvent`, provider-session ids, keep-alive fields, and `piSessionsRoot` remain harness-owned. `model` and `effort` are accepted for the configured cron/webhook/TUI override path.
 
 :::note
-Request-scoped options apply at the harness **run boundary**: they are resolved after context assembly and merged just before the provider call, then `cleanup` runs when the turn finishes. They cannot change model or execution mode (those are fixed per harness); use a custom runtime or separate harnesses for that.
+Request-scoped options apply at the harness **run boundary**: they are resolved after context assembly and merged just before the provider call, then `cleanup` runs when the turn finishes. A model-changing option under continuous-session mode must match a valid model already declared in the request's cron, webhook, or TUI metadata, because that declaration isolates the turn before history assembly. An undeclared late model change fails before provider execution; otherwise a warm session could have omitted history for the wrong runtime. Execution mode remains harness-derived from the effective model.
 :::
 
 ## Dropping to the harness

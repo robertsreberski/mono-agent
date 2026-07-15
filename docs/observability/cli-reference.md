@@ -476,10 +476,10 @@ every recorded run stays reachable through "Load older" regardless of the
 Each run's detail view carries a **Context (this turn)** section that surfaces
 the context every provider call was driven with: recalled long-term memory (with
 its source), the replayed prior conversation messages (role-badged), and the
-full compiled system prompt behind a collapsible raw view. When the provider
-session already held the transcript — a warm in-process session or a durable
-cross-restart resume (also turn 1 of a brand-new conversation under a derived
-durable session id) — it reads *context carried by the provider session*. Runs
+full compiled system prompt behind a collapsible raw view. When a confirmed
+warm in-process provider session already held the transcript, it reads
+*context carried by the provider session*. Cold durable reopens report the
+canonical history loaded for that turn, including an authoritative empty history. Runs
 recorded before this feature fall back to the raw compiled prompt only; runs with
 neither show no section.
 

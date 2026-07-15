@@ -161,14 +161,13 @@ describe("AgentHarness turn_context synthetic event", () => {
     expect(tc[0]!.history).toBeUndefined();
   });
 
-  it("reports historyOmitted:true on a durable resume with no locally-loaded history (restart wipe)", async () => {
+  it("reports authoritative empty history instead of claiming a custom store's uncoordinated durable resume", async () => {
     const identityPath = await identityFixture();
     const piSessionsRoot = await mkdtemp(join(tmpdir(), "agent-harness-turn-context-pi-"));
     tempDirs.push(piSessionsRoot);
-    // Empty history store models a post-restart harness whose in-memory history is
-    // wiped, while the durable on-disk pi session still carries the transcript. With
-    // piSessionsRoot set the harness derives a STABLE durable resumeSessionId from
-    // the conversationId, so resumeSessionId is set even though 0 history loaded here.
+    // A custom in-memory history store cannot coordinate crash-safe provider
+    // epochs. Even with piSessionsRoot configured, the harness must not claim an
+    // unverified JSONL transcript carries context after restart.
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
     const fake = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-durable" }));
     const recorder = new SpyRecorder();
@@ -181,12 +180,11 @@ describe("AgentHarness turn_context synthetic event", () => {
 
     const tc = turnContextEvents(recorder.events);
     expect(tc).toHaveLength(1);
-    // A derived durable resumeSessionId is set but no history was loaded -> the
-    // provider session carries the transcript, so we must NOT report "0 prior
-    // messages" (which reads as an empty conversation).
-    expect(tc[0]!.historyOmitted).toBe(true);
+    expect(tc[0]!.historyOmitted).toBe(false);
     expect(tc[0]!.historyCount).toBe(0);
     expect(tc[0]!.history).toBeUndefined();
+    expect(fake.calls[0]?.options.sessionId).toBeUndefined();
+    expect(fake.calls[0]?.options.piSessionsRoot).toBeUndefined();
   });
 
   it("double-fires on the resume-replay retry, the second carrying replayed history", async () => {

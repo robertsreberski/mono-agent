@@ -27,7 +27,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Selected skills from a skills root | config | `context.skillsRoot`, `context.selectedSkills` |
 | Generated project configuration skills with progressive disclosure | config + cli | init selects `mono-agent-configure` + `mono-agent-memory` under `./skills` with `context.skillDisclosure: "index"`; drift: `mono-agent install-skill --project --check\|--update` |
 | Per-skill byte cap | config | `context.skillMaxBytes` |
-| Conversation history (bounded in-memory) | auto | 12 messages by default; twice a positive `runtime.maxTurns`; custom store via code |
+| Conversation history (owner-only durable store) | auto | 64 messages per exact conversation id independent of `runtime.maxTurns`; aggregate defaults 256 MiB / 10,000 conversations / 365 inactive days; staged atomic publication and post-commit pruning; custom store via code |
 | Lite memory (FTS keyword recall + rapid-log capture; no external deps) | config | `memory.mode: "lite"`, `path`, `maxBytes`, `writeMode` |
 | Journal memory (hybrid recall BM25+vector + salience decay; needs configured embeddings) | config | `memory.mode: "journal"`, `path`, `memory.embeddings.{provider,endpoint,model,dim,apiKeyEnv}` (`provider: "ollama" | "lmstudio" | "openai"`; exclusive, no cross-provider fallback) |
 | BuJo memory (journal + LLM capture/reconcile ADD/UPDATE/SUPERSEDE/NOOP + entity graph + auto-scheduled consolidation; needs embeddings + an app-level `memory.llm`) | config | `memory.mode: "bujo"`, `path`; selected Ollama/LM Studio/OpenAI embeddings are independent from explicit `memory.llm` with `provider: "ollama"` (`model`, optional `endpoint`) or `provider: "agent-host"` (`model` is an SDK runtime model ref, optional `executionMode: "sdk"`) — see `docs/memory/index.md` |
@@ -45,6 +45,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Allow-all tool policy (omitted / `["*"]` = all tools; `[]` = none) | config | default `tools.allowedTools`; the harness no-policy safety net is `failClosedToolPolicy()` |
 | Tool allow/deny lists (deny wins, even under allow-all; pi doesn't deny external MCP tools) | config | `tools.allowedTools`, `tools.disallowedTools` |
 | MCP servers (stdio/sse/http) from a JSON file | config | `tools.mcpConfigPath` |
+| Durable origin-bound continuations for trusted stdio/loopback-HTTP MCP services | config + auto | `tools.continuationServers` + `continuations.*`; interactive claims pin a bounded immutable origin snapshot before commit, exact rollover buckets are preserved, v3 state is restart-safe, and unavailable/legacy snapshots use a fixed zero-model fallback |
 | Adapter-derived send tools for enabled Slack/Telegram adapters | config | auto-available under allow-all once the channel is enabled; a **specific** `tools.allowedTools` must include `SlackSendMessage` / `TelegramSendMessage`; valid `slack.*` / `telegram.*` config and existing adapter allowlists provide credentials and destination bounds |
 | Sandbox on/off + srt engine (Pi-owned tools; direct Codex has its own sandbox, Claude/direct OpenCode reject native mono policy) | config | `sandbox.mode` |
 | Network policy (none/localhost/allowlist/all) | config | `sandbox.network.{mode,allowlist}` |

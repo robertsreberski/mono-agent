@@ -145,6 +145,22 @@ describe("createRuntimeSessionStore", () => {
     expect(store.acquire("conv-1")).toMatchObject({ providerSessionId: "ps-1" });
   });
 
+  it("tracks the durable provider revision and can forget a refreshed local handle without provider eviction", () => {
+    const onEvict = vi.fn();
+    const store = createRuntimeSessionStore({ idleTimeoutMs: 60_000, onEvict });
+    store.save("conv-1", "ps-1", undefined, 3);
+    expect(store.acquire("conv-1")).toMatchObject({
+      providerSessionId: "ps-1",
+      providerSessionRevision: 3,
+    });
+    const held = store.list()[0];
+    expect(held).toMatchObject({ providerSessionRevision: 3, busy: true });
+    expect(store.forget("conv-1", "wrong-id")).toBe(false);
+    expect(store.forget("conv-1", "ps-1")).toBe(true);
+    expect(store.list()).toEqual([]);
+    expect(onEvict).not.toHaveBeenCalled();
+  });
+
   it("scoped evict only retires the record when the provider session id still matches", async () => {
     const onEvict = vi.fn();
     const store = createRuntimeSessionStore({ idleTimeoutMs: 60_000, onEvict });

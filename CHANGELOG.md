@@ -1,5 +1,90 @@
 # Release notes
 
+## 0.11.0 — Durable conversation and continuation context (2026-07-14)
+
+### Highlights
+
+- Configured agents now keep the latest 64 messages for each exact conversation
+  id in an owner-only, disk-backed history store. The bound is independent of
+  `runtime.maxTurns`, and cold processes recover the history without requiring
+  provider-session resume.
+- Interactive continuation claims pin one immutable origin snapshot before the
+  origin turn commits. The host closes and drains claim admission, prepares the
+  bounded snapshot, finalizes its durable binding, activates the whole origin
+  group only after successful commit, and abandons pending claims when the
+  origin fails.
+- Continuation synthesis consumes the pinned snapshot and preserves an explicit
+  prior-day rollover bucket. It no longer depends on mutable latest history
+  that can disappear on restart or be rebucketed after midnight.
+- Missing, abandoned, legacy, or unreadable/corrupt origin snapshot blobs use
+  one fixed zero-model response instead of an unbounded history-read retry
+  loop. An invalid immutable binding HMAC is treated as state tampering and is
+  dead-lettered without native delivery. Status exposes the origin-context
+  state and the `origin_context_unavailable` completion kind.
+- Per-record continuation state moves to v3 with content-addressed owner-only
+  snapshot blobs, a 256 MiB aggregate blob quota, digest/HMAC binding,
+  crash-recoverable group activation, stricter filesystem identity checks, and
+  an old-reader rollback guard.
+- Durable Pi resume is now coordinated by the canonical history record. Before
+  a provider can mutate JSONL, history fsyncs a separate bounded dirty fence
+  under a cross-process conversation lock without changing or pruning
+  canonical history. A successful turn fsyncs the provider file and directory,
+  atomically commits history with the clean epoch and transcript revision, then
+  clears the fence. Processes compare that revision with their warm handle and
+  cold-reopen every unconfirmed handle—even after a harness reload with an
+  empty local map—so serialized A/B/A writers cannot branch from outdated
+  process memory. Missing, legacy, fenced, host-only-appended, or
+  unsynchronized state rotates a random provider epoch.
+- Provider sessions are explicitly invalidated when any pre-history commit
+  stage fails. Durable Pi invalidation waits for JSONL deletion and parent
+  directory fsync, propagates cleanup failures, and blocks cold reopen while
+  cleanup is in flight. History rotation and retention also retire every exact
+  cold/live provider id before it becomes unreachable; dirty fences double as
+  crash-recovery retirement journals, while a fence whose canonical revision
+  proves the turn committed is cleared without deleting its valid transcript.
+
+### Compatibility
+
+- The configured app's default history changes from a process-local 12-message
+  (or `2 * maxTurns`) window to a restart-durable 64-message window. Programs
+  that inject `historyStore` retain their custom behavior. Default files live
+  in the owner-only `history/` directory next to the configured artifact
+  directory; each serialized message is capped at 64 KiB.
+- The default history store is bounded across conversations as well: 256 MiB,
+  10,000 conversations, and 365 days of inactivity. It stages and fsyncs a
+  completed turn before the semantic commit, never evicts committed history on
+  prepare/abort, and independently caps all live unpublished stages at 256 MiB
+  by default (`maxStagedBytes` can tune the programmatic store). Dead or
+  markerless stages are reclaimed immediately, including after an abort-cleanup
+  failure. It prunes oldest inactive files only after publication and uses
+  an owner-only fixed 16-shard cross-process lock table so separate
+  channel/worker processes cannot lose same-conversation or root-retention
+  updates or create unbounded lock files. Legacy per-conversation SQLite locks
+  are honored without unlinking or creating new ones. Failed fresh turns leave
+  a bounded crash fence rather than a counted history record, so they cannot
+  evict successful conversations; inactive fences carry the exact provider id
+  needed for fail-closed reclamation.
+- Programmatic custom history stores that do not implement
+  `beginProviderSessionTurn` and advertise fail-closed provider-session
+  retirement keep ordinary process-local warm sessions, and the harness
+  deliberately withholds `piSessionsRoot`: crash-safe durable provider resume
+  requires both the history-owned epoch transaction and exact-id transcript
+  retirement. Ordinary host-only history appends retire and rotate that epoch
+  before a later model turn.
+- Interactive origin snapshots retain at most 64 messages, 64 KiB of content
+  per message, and 256 KiB total. If the completed origin turn cannot fit, the
+  origin request fails before success is committed; older whole turns are
+  evicted first under ordinary size pressure.
+- Opening an existing v1/v2 continuation store migrates it idempotently and
+  installs a guard that makes 0.10 and older runtimes fail closed. Do not remove
+  the guard or point an older runtime at upgraded state; restore the complete
+  pre-upgrade state directory for a runtime rollback.
+- Legacy interactive records that lack an immutable snapshot cannot recreate
+  past context retroactively. They remain idempotently recoverable and deliver
+  the deterministic zero-model fallback.
+- All 21 catalog-publishable packages move together to 0.11.0. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.10.0 — Durable A2A lifecycle joins (2026-07-14)
 
 ### Highlights

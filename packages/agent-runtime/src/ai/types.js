@@ -322,7 +322,11 @@
  * The object `createRuntime`/`createRouterRuntime` return.
  * @property {(systemPrompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>} run
  * @property {(next?: AgentRuntimeToolOptions) => void} configureTools
- * @property {(providerSessionId: string) => Promise<boolean|void>} disposeSession
+ * @property {(providerSessionId: string) => Promise<boolean>} syncSession
+ * @property {(providerSessionId: string) => Promise<void>} refreshSession Guarantees the id has no reusable process-local handle; rejects on failure.
+ * @property {(providerSessionId: string, sessionsRoot: string) => Promise<void>} retireDurableSession Permanently deletes every durable transcript with the exact id; absence is success.
+ * @property {(providerSessionId: string) => Promise<boolean>} disposeSession
+ * @property {(providerSessionId: string) => Promise<boolean>} invalidateSession
  * @property {() => Promise<void>} disposeAllSessions
  */
 

@@ -77,7 +77,7 @@ The service starts when the `continuations` block is present or at least one `to
 
 ## Trusted request binding
 
-Channel drivers attach a host-only `replyTo: { conversationId }` to `AgentRequestBase`. This physical route is separate from `conversationId`, which may include a daily rollover bucket used for history and provider sessions. `replyTo` and continuation controls are not included in model prompts or tool arguments.
+Channel drivers attach a host-only `replyTo: { conversationId }` to `AgentRequestBase`. This physical route is separate from `conversationId`, which may include a daily rollover bucket used for history and provider sessions. `replyTo` and continuation controls are not included in model prompts or tool arguments. The exact origin id is immutable: a continuation synthesized after midnight keeps an explicit prior-day `#YYYY-MM-DD` bucket instead of being silently moved into the current day.
 
 For each selected MCP server, mono-agent issues a short-lived claim capability bound to the run, server name, exact origin history, physical reply route, and delivery mode. After all MCP option layers are merged, the host overwrites these reserved values.
 
@@ -95,7 +95,7 @@ For loopback HTTP:
 - `x-mono-agent-continuation-claim-fingerprint`
 - `x-mono-agent-continuation-claim-mode`
 
-Configured values with those names are discarded. The claim credential is revoked when the originating run and its tool clients settle, so the service must claim the continuation during that MCP request. A model-provided channel ID, callback URL, or copied request header has no routing authority.
+Configured values with those names are discarded. The service must claim the continuation during that MCP request. When the tool clients settle, the host first closes the capability to new claims and drains any already-admitted claim mutation before deciding whether origin context is required. A slow request that has not completed claim admission cannot race capability release and create a late, permanently pending continuation. A model-provided channel ID, callback URL, or copied request header has no routing authority.
 
 ## Claim, result, and status protocol
 
@@ -114,6 +114,17 @@ Content-Type: application/json
 ```
 
 The response contains `continuationId`, `resultUrl`, `statusUrl`, an opaque result `token`, `expiresAt`, and the bound `fingerprint`. Repeating the same claim is idempotent; reusing its identity with a different task hash, deadline, or binding returns a conflict. Deadlines must be in the future and no more than 30 days away. Terminal claim/result idempotency lasts for the configured tombstone retention horizon, so that horizon should exceed the longest producer retry or reconciliation window.
+
+### Origin settlement lifecycle
+
+Interactive claims use a host-owned prepare/commit protocol. The producer does not control these steps:
+
+1. **Prepare the completed turn.** If at least one active claim remains after the claim capability is closed and drained, the harness builds one immutable origin snapshot from the exact conversation bucket. It contains whole retained history turns and ends with the completed origin user/assistant pair. The snapshot is capped at 64 messages, 64 KiB of content per message, and 256 KiB total. Size pressure removes whole oldest turns; it never truncates message content or separates a user/assistant pair.
+2. **Finalize before origin commit.** The host writes the snapshot as a content-addressed owner-only blob and binds its digest to each active claim. This happens before provider-session, conversation-history, and successful-run commit. If validation, storage, or the 256 MiB aggregate blob quota fails, the origin turn fails without publishing a success whose callback context was never secured.
+3. **Activate after origin commit.** Only after the origin turn's normal durable commit succeeds does the host publish a group activation marker. That marker is the semantic commit point for every active claim from the same origin run and history boundary; restart recovery finishes any interrupted per-record materialization. A result received early remains deferred while the snapshot is prepared and activated. This rule applies to `silent` as well as model-backed modes.
+4. **Abandon on pre-commit failure.** If the origin run is cancelled or fails before commit, the host marks still-pending claims abandoned. They do not wait indefinitely for mutable history. Modes that would normally synthesize use the deterministic origin-context fallback described below.
+
+The status response exposes the origin context as `pending`, `pinned`, `abandoned`, `detached_latest`, `legacy_missing`, or `scrubbed`. `pending` is preparation state, not permission to synthesize from whatever history happens to exist later.
 
 When work finishes, submit one immutable JSON result:
 
@@ -162,7 +173,9 @@ claimed -> result_received -> synthesizing -> ready_to_deliver -> delivered
 
 Terminal alternatives are `delivery_unknown`, `expired`, `cancelled`, and `dead_lettered`.
 
-For `reply`, `notify_if_actionable`, and `capture`, mono-agent reconstructs conversation history through the originating run boundary and frames the callback payload as untrusted data. The synthesis request has `toolsDisabled: true` and `deferHistoryCommit: true`; it cannot call MCP, built-in, or adapter send tools. A detached route without a history boundary uses the latest available history for its configured conversation.
+For an interactive `reply`, `notify_if_actionable`, or `capture`, mono-agent passes the pinned snapshot directly to the synthesis turn. It does not reconstruct the origin from mutable latest history and it preserves the exact rollover bucket captured by the origin run. The callback payload is framed as untrusted data. The synthesis request has `toolsDisabled: true` and `deferHistoryCommit: true`; it cannot call MCP, built-in, or adapter send tools. A detached named route deliberately has policy `detached_latest` and uses the latest bounded durable history for its configured conversation because it has no interactive origin snapshot.
+
+If an interactive snapshot is absent, abandoned, unreadable, corrupt, or fails its content-digest check while its immutable record binding remains authentic, mono-agent does not call the synthesis model and does not keep retrying for history that cannot reappear. It durably prepares the fixed answer `The background task finished, but I could not safely restore the original conversation context. Please ask me to check the result again.`, records `completionKind: "origin_context_unavailable"`, and continues through the normal capture or delivery path. Records migrated from older continuation formats that had a history boundary but no immutable snapshot are explicitly classified as `legacy_missing` and take the same zero-model path. A failed binding HMAC instead proves that immutable claim metadata was altered; that record is dead-lettered and nothing is delivered.
 
 The generated text is persisted before channel delivery. `reply` uses native verbatim delivery to the bound channel/thread with a stable delivery key. A confirmed native post returns a receipt containing the delivery time and, when supplied by the adapter, channel and delivery IDs. The receipt also carries `historyRecorded`; if the post succeeded but the later history append failed, it remains `delivered` with `historyRecorded: false` and a bounded `historyErrorCode`. That state is health-degraded but is never retried, because reposting a confirmed message would duplicate user-visible output. `capture` retains the synthesized text without posting; `silent` skips synthesis; a non-actionable `notify_if_actionable` result records a `suppressed` receipt.
 
@@ -213,7 +226,9 @@ await app.resolveContinuationDelivery?.(continuationId, {
 
 `retryContinuation(id, { allowUnknown: true })` exists for an operator who has independently proved that replay is safe. It is not a substitute for resolving an ambiguous channel outcome. `cancelContinuation` is idempotent only for an already-cancelled item; other terminal states are preserved.
 
-The owner-only store lives in `stateDir`: the directory and per-record directory are mode `0700`; per-record files, the bounded write-ahead transaction, manifest, ownership database, and persistent token-derivation secret are mode `0600`. Symlinks and non-regular files are rejected. Each record is atomically replaced and fsynced, interrupted transactions replay idempotently, and process-lifetime ownership uses an OS-released SQLite exclusive lock rather than a stale pathname lock. Terminal payloads are compacted into bounded idempotency tombstones; captured text has a separate bounded retention window. Continuations are not run artifacts and are not removed by artifact retention.
+The owner-only store lives in `stateDir` and reports format `per-record-v3`. State, record, origin-blob, and activation-marker directories are mode `0700`; per-record files, bounded write-ahead transactions, manifests, blobs, ownership database, and the persistent token-derivation secret are mode `0600`. Symlinks, extra hard links, wrong ownership, permissive modes, non-regular files, and descriptor identity changes fail closed. Each record is atomically replaced and fsynced, interrupted transactions replay idempotently, and process-lifetime ownership uses an OS-released SQLite exclusive lock rather than a stale pathname lock. Snapshot blobs are content-addressed, digest- and HMAC-bound to their immutable claim, and swept after the last durable reference disappears. Terminal payloads are compacted into bounded idempotency tombstones; captured text has a separate bounded retention window. Continuations are not run artifacts and are not removed by artifact retention.
+
+Opening v3 state migrates v1/v2 evidence idempotently and writes an explicit rollback guard into `records-v2` before v3 becomes active. A 0.10 or older runtime therefore fails closed instead of reopening a stale mutable v2 view after an upgrade. Do not remove that guard or run an older mono-agent against an upgraded continuation state directory; restore the complete pre-upgrade state directory if a runtime rollback is required.
 
 ## Security and compatibility
 
@@ -224,6 +239,7 @@ The owner-only store lives in `stateDir`: the directory and per-record directory
 - A2A `contextId` remains task/session correlation, not a delivery route. A2A payloads do not carry continuation credentials.
 - Native cron/webhook `notify: true` remains the correct path for delivering the producing run's final answer. Existing webhook endpoints may still use an explicit operator-configured `notifyConversationId`; models should not copy conversation IDs to construct asynchronous callbacks.
 - Existing MCP servers receive no continuation authority until explicitly selected. Existing run status remains succeeded or failed independently of any later continuation state.
+- Upgraded legacy continuation records are retained for audit and idempotency, but interactive records without a v3 origin snapshot cannot recover historical context retroactively. They use the deterministic zero-model fallback rather than mutable latest history.
 
 ## Related pages
 

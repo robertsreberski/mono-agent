@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import type { AgentContinuationOriginContext } from "@mono-agent/agent-contracts";
 
 /** Delivery behavior bound by the host before an asynchronous task is delegated. */
 export type ContinuationMode = "reply" | "notify_if_actionable" | "silent" | "capture";
@@ -65,18 +66,30 @@ export interface ContinuationSynthesisResult {
   readonly actionable?: boolean;
 }
 
-export interface ContinuationSynthesisInput {
+interface ContinuationSynthesisInputBase {
   readonly continuationId: string;
   /** Exact history identity, including a rollover bucket when one exists. */
   readonly originConversationId: string;
   readonly originRunId: string;
   /** Bound destination/synthesis conversation when the mode has one. */
   readonly replyToConversationId?: string;
-  readonly historyBoundary?: string;
   readonly mode: ContinuationMode;
   /** Untrusted external result. Callers must frame it as data, never instructions. */
   readonly payload: unknown;
 }
+
+export type ContinuationSynthesisInput = ContinuationSynthesisInputBase & (
+  | {
+      readonly historyBoundary: string;
+      readonly originContextPolicy: "pinned";
+      readonly originContext: AgentContinuationOriginContext;
+    }
+  | {
+      readonly historyBoundary?: never;
+      readonly originContextPolicy: "detached_latest";
+      readonly originContext?: never;
+    }
+);
 
 export interface ContinuationNativeDeliveryInput {
   readonly continuationId: string;
@@ -128,7 +141,15 @@ export interface ContinuationClaimCapability {
   headers(): Readonly<Record<string, string>>;
   /** Reserved environment for trusted stdio MCP request-context injection. */
   env(): Readonly<Record<string, string>>;
-  release(): void;
+  /** True only when a drained capability owns an active interactive claim. */
+  requiresOriginContext(): Promise<boolean>;
+  /** Valid after release(): durably bind the completed origin turn to all claims. */
+  finalizeOriginContext(snapshot: AgentContinuationOriginContext): Promise<void>;
+  /** Make the prepared snapshot eligible for synthesis after origin commit. */
+  activateOriginContext(): Promise<void>;
+  /** Valid after release(): permanently mark claims whose origin run did not commit. */
+  abandonOriginContext(): Promise<void>;
+  release(): Promise<void>;
 }
 
 export interface IssueContinuationCapabilityInput {
@@ -153,6 +174,13 @@ export interface ContinuationStatusSnapshot {
     readonly synthesis: number;
     readonly delivery: number;
   };
+  readonly synthesisDeferrals: number;
+  readonly originContext: {
+    readonly state: "pending" | "pinned" | "abandoned" | "detached_latest" | "legacy_missing" | "scrubbed";
+    readonly digest?: string;
+    readonly messageCount?: number;
+  };
+  readonly completionKind?: "synthesized" | "origin_context_unavailable";
   readonly nextAttemptAt?: string;
   readonly lastError?: {
     readonly code: string;
@@ -170,7 +198,7 @@ export interface ContinuationHealthSnapshot {
   readonly due: number;
   readonly oldestPendingAt?: string;
   readonly storage: {
-    readonly format: "per-record-v2";
+    readonly format: "per-record-v3";
     readonly records: number;
     readonly active: number;
     readonly unresolvedDelivery: number;

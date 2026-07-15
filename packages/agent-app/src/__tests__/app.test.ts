@@ -203,6 +203,20 @@ describe("startMonoAgentApp", () => {
       readonly resultUrl: string;
       readonly token: string;
     };
+    await capability.release();
+    const capturedAt = "2026-07-14T12:00:00.000Z";
+    await capability.finalizeOriginContext({
+      schemaVersion: 1,
+      conversationId: "slack:D1:171.5",
+      originRunId: "run-restart-queued",
+      historyBoundary: "run-restart-queued",
+      capturedAt,
+      messages: [
+        { role: "user", content: "Delegate this work.", timestamp: capturedAt, runId: "run-restart-queued" },
+        { role: "assistant", content: "I will return with the result.", timestamp: capturedAt, runId: "run-restart-queued" },
+      ],
+    });
+    await capability.activateOriginContext();
     const payload = { status: "complete", finding: "fresh evidence" };
     const resultResponse = await fetch(claim.resultUrl, {
       method: "PUT",

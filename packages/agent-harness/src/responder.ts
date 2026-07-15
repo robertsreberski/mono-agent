@@ -105,7 +105,12 @@ export function createAgentResponder(options: {
                   : {}),
               });
             }
-            const activeBucket = bucket(request.conversationId);
+            // A continuation carries an immutable origin history identity. If
+            // that identity already has an explicit daily bucket, preserve it
+            // even when synthesis runs on a later calendar day.
+            const activeBucket = request.continuation !== undefined && hasDailyBucket(request.conversationId)
+              ? request.conversationId
+              : bucket(request.conversationId);
             activeBucketByBaseConversation.set(serializationKey, activeBucket);
             try {
               return await respondOnce(request, stream, activeBucket);
@@ -131,13 +136,13 @@ export function createAgentResponder(options: {
     bucketed: string,
   ): Promise<AgentResponse> {
     const runtimeEventStream = createRuntimeEventStream(stream);
-    const boundary = rolloverBoundaryForRequest({
+    const boundary = request.continuation === undefined ? rolloverBoundaryForRequest({
       conversationId: request.conversationId,
       bucketedConversationId: bucketed,
       rollover: options.rollover,
       lastBucketByBaseConversation,
       now,
-    });
+    }) : undefined;
     const notice = boundary !== undefined && options.rolloverNotice === true
       ? `${sessionRolloverNotice(boundary)}\n\n`
       : undefined;
@@ -537,6 +542,10 @@ const DAILY_BUCKET_SUFFIX_RE = /#\d{4}-\d{2}-\d{2}$/u;
 
 function stripDailyBucket(conversationId: string): string {
   return conversationId.replace(DAILY_BUCKET_SUFFIX_RE, "");
+}
+
+function hasDailyBucket(conversationId: string): boolean {
+  return DAILY_BUCKET_SUFFIX_RE.test(conversationId);
 }
 
 function responseSerializationKey(conversationId: string, rollover: SessionRollover | undefined): string {
