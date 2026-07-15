@@ -1,6 +1,6 @@
 import { normalizeCandidate, type CandidateMemory } from "./distill.js";
 import { normalizeExtraction, type ExtractedEntity, type ExtractedRelation } from "./entities.js";
-import { parseJsonExact, parseJsonLoose } from "./json.js";
+import { MAX_MODEL_JSON_CHARS, parseJsonExact, parseJsonLoose } from "./json.js";
 import type { LlmComplete } from "./llm.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 
@@ -19,6 +19,8 @@ interface RawCapturePlan {
   readonly entities?: unknown;
   readonly relations?: unknown;
 }
+
+const SINGLE_JSON_FENCE = /^[\t\n\r ]*```(?:[jJ][sS][oO][nN])?[\t ]*\r?\n([\s\S]*?)\r?\n```[\t\n\r ]*$/;
 
 const prompt = (text: string): string => `Extract one bounded, durable memory plan from the completed turn below.
 Return ONLY one exact JSON object with exactly these root keys:
@@ -100,7 +102,7 @@ export async function extractCapturePlanStrict(
   abortSignal?.throwIfAborted();
   let parsed: unknown;
   try {
-    parsed = parseJsonExact<unknown>(raw);
+    parsed = parseJsonExact<unknown>(stripSingleJsonFence(raw));
   } catch {
     throw outputError("capture-extract", "completion is not exact JSON");
   }
@@ -141,6 +143,14 @@ export async function extractCapturePlanStrict(
     candidateTokenSets.push(tokens);
   }
   return { candidates, entities, relations };
+}
+
+function stripSingleJsonFence(raw: string): string {
+  // Keep the exact parser's limit on the complete untrusted model response;
+  // stripping a small wrapper must not let an over-bound response through.
+  if (raw.length > MAX_MODEL_JSON_CHARS) return raw;
+  const body = SINGLE_JSON_FENCE.exec(raw)?.[1];
+  return body ?? raw;
 }
 
 const STRICT_ENTITY_ID = /^[a-z][a-z0-9-]{0,31}:[a-z0-9]+(?:-[a-z0-9]+)*$/u;

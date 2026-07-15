@@ -25,7 +25,7 @@ export function createOllamaLlm(opts: { model: string; endpoint?: string; timeou
         const res = await fetch(`${endpoint}/api/generate`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ model: opts.model, prompt, stream: false }),
+          body: JSON.stringify({ model: opts.model, prompt, stream: false, format: "json" }),
           signal: ctrl.signal,
         });
         if (!res.ok) throw new Error(`ollama /api/generate ${res.status}`);
