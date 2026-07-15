@@ -3,7 +3,7 @@
   "version": "0.11.2",
   "description": "Loopback operator adapters for mono-agent: full-fidelity TUI NDJSON turns and read-only live SSE run-event streams.",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "GPL-3.0-only",
   "private": false,
   "engines": {
     "node": ">=22.19.0"

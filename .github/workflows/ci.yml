@@ -51,6 +51,9 @@ jobs:
       - name: Check OSS hygiene
         run: pnpm run check:oss-hygiene
 
+      - name: Check license consistency
+        run: pnpm run check:licenses
+
       - name: Check Codex discoverability
         run: pnpm run check:codex-discoverability
 
