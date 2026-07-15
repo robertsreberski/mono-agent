@@ -36,8 +36,9 @@ separate provider subpath or a `pi-sdk` compatibility export.
 
 A full mono-agent and Worklab merge is rejected for the current v1 path:
 
-- **License and deployment mismatch:** mono-agent is GPLv3 while Worklab has
-  private deployment needs.
+- **License and distribution boundary:** mono-agent and all of its publishable
+  packages are `GPL-3.0-only`. Worklab remains a separately deployed product;
+  any distribution of the shared kernel must comply with those terms.
 - **Package-manager and release-model mismatch:** mono-agent publishes npm
   packages from a pnpm workspace; Worklab's workspace model and deployment needs
   are different.
@@ -64,6 +65,8 @@ separate product. The operating lesson transfers; the runtime fork does not.
 ## Consequences
 
 - Worklab depends on `@mono-agent/agent-runtime` for provider execution.
+- The shared kernel remains `GPL-3.0-only`, matching the rest of mono-agent's
+  publishable package graph and the repository-level `LICENSE`.
 - Mono-agent keeps the runtime package as the ecosystem kernel and avoids
   Worklab-specific product concepts in the core runtime.
 - Additive runtime exports are acceptable when they expose existing files and do
