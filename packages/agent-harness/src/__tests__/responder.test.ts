@@ -66,6 +66,7 @@ describe("createAgentResponder", () => {
       continuation: {
         continuationId: "continuation-1",
         originRunId: "run-origin",
+        originContextPolicy: "detached_latest",
         toolsDisabled: true,
         deferHistoryCommit: true,
       },
@@ -74,6 +75,35 @@ describe("createAgentResponder", () => {
     expect(seen?.conversationId).toBe("slack:C1:thread#2026-07-14");
     expect(seen?.replyTo).toEqual({ conversationId: "slack:C1:thread" });
     expect(seen?.continuation).toMatchObject({ continuationId: "continuation-1", originRunId: "run-origin" });
+  });
+
+  it("preserves an explicit prior-day origin bucket for continuation synthesis", async () => {
+    let seen: AgentHarnessRequest | undefined;
+    const responder = createAgentResponder({
+      harness: {
+        run: async (request) => {
+          seen = request;
+          return okResponse(request.conversationId);
+        },
+      },
+      rollover: "daily",
+      rolloverTimezone: "UTC",
+      now: () => new Date("2026-07-15T12:00:00Z"),
+    });
+
+    await responder.respond({
+      ...baseRequest("slack:C1:thread#2026-07-14"),
+      continuation: {
+        continuationId: "continuation-prior-day",
+        originRunId: "run-prior-day",
+        originContextPolicy: "detached_latest",
+        toolsDisabled: true,
+        deferHistoryCommit: true,
+      },
+    }, noopStream());
+
+    expect(seen?.conversationId).toBe("slack:C1:thread#2026-07-14");
+    expect(seen?.sessionBoundary).toBeUndefined();
   });
 
   it("falls back to harness.run when submit is absent", async () => {

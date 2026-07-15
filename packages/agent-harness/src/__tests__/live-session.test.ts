@@ -315,10 +315,37 @@ describe("createLiveSessionManager", () => {
 
     const queued = manager.enqueue("c1", req("c1"));
     await flush();
-    manager.dispose();
+    await manager.dispose();
 
     await expect(queued).rejects.toSatisfy(isAgentResponseCancelledError);
     await expect(manager.enqueue("c1", req("c1"))).rejects.toSatisfy(isAgentResponseCancelledError);
+  });
+
+  it("waits for an already-committed active turn to finish during disposal", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let committed!: () => void;
+    const committedSignal = new Promise<void>((resolve) => { committed = resolve; });
+    const manager = createLiveSessionManager({
+      run: async (_request, lifecycle) => {
+        lifecycle.markCommitted();
+        committed();
+        await gate;
+        return response("published");
+      },
+    });
+
+    const active = manager.enqueue("c1", req("c1"));
+    await committedSignal;
+    let disposed = false;
+    const disposing = manager.dispose().then(() => { disposed = true; });
+    await flush();
+
+    expect(disposed).toBe(false);
+    release();
+    await expect(active).resolves.toMatchObject({ text: "published" });
+    await disposing;
+    expect(disposed).toBe(true);
   });
 
   it("unlinks and rejects a queued turn when its own signal aborts, leaving the active turn running", async () => {

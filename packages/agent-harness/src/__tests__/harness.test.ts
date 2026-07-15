@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createChannelUserCancelReason } from "@mono-agent/agent-contracts";
 import type {
+  AgentContinuationOriginContext,
   MemoryCompletedTurn,
   MemoryCompletedTurnResult,
   MemoryStore,
@@ -1793,6 +1794,10 @@ describe("AgentHarness", () => {
               token: `token-${input.serverName}`,
               fingerprint: `fingerprint-${input.serverName}`,
               mode: "reply",
+              requiresOriginContext: async () => false,
+              finalizeOriginContext: async () => {},
+              activateOriginContext: async () => {},
+              abandonOriginContext: async () => {},
               release: () => { released.push(input.serverName); },
             };
           },
@@ -1841,6 +1846,247 @@ describe("AgentHarness", () => {
     expect(released).toEqual(["stdio", "loopback"]);
     expect(stdio.env.MONO_AGENT_CONTINUATION_CLAIM_TOKEN).toBe("spoofed");
     expect(loopback.headers["X-Mono-Agent-Continuation-Claim-Token"]).toBe("spoofed-case-insensitive");
+  });
+
+  it("pins the exact redacted completed origin turn before activating continuation work", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const history = createInMemoryHistoryStore({ maxMessages: 20 });
+    await history.append("slack:C1:thread#2026-07-14", [
+      { role: "user", content: "Earlier question", timestamp: "2026-07-14T08:00:00.000Z", runId: "run-earlier" },
+      { role: "assistant", content: "Earlier answer", timestamp: "2026-07-14T08:00:00.000Z", runId: "run-earlier" },
+    ]);
+    const lifecycle: string[] = [];
+    let snapshot: AgentContinuationOriginContext | undefined;
+    const recorder = new class extends FakeRecorder {
+      override async finish(result: RuntimeResultLike): Promise<RunSummary> {
+        lifecycle.push("recorder_finish");
+        return await super.finish(result);
+      }
+    }("run-origin-snapshot", "slack:C1:thread#2026-07-14");
+    const fake = createFakeRuntime(async () => ({ text: "Origin acknowledgement" }));
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: history,
+      attachmentsDir: join(dir, "attachments"),
+      createRunId: () => "run-origin-snapshot",
+      now: () => new Date("2026-07-14T09:00:00.000Z"),
+      recorderFactory: () => recorder,
+      runtimeOptions: { mcpServers: { control: { command: "a8c-control" } } },
+      continuationContext: {
+        serverNames: ["control"],
+        capabilityIssuer: {
+          issueContinuationClaimCapability() {
+            return {
+              url: "http://127.0.0.1:43125/continuations/claim",
+              token: "origin-token",
+              fingerprint: "origin-fingerprint",
+              mode: "reply" as const,
+              async requiresOriginContext() { return true; },
+              async finalizeOriginContext(value) {
+                lifecycle.push("finalize");
+                snapshot = structuredClone(value);
+              },
+              async activateOriginContext() { lifecycle.push("activate"); },
+              async abandonOriginContext() { lifecycle.push("abandon"); },
+              release() { lifecycle.push("release"); },
+            };
+          },
+        },
+      },
+      turnHistoryEnricher: {
+        enrichAssistantHistory({ assistantText }) {
+          return `[Verified interaction]\n${assistantText}`;
+        },
+        releaseRun() {},
+      },
+    }).run({
+      conversationId: "slack:C1:thread#2026-07-14",
+      replyTo: { conversationId: "slack:C1:thread" },
+      userMessage: "Safe caption",
+      attachments: [{
+        kind: "document",
+        mimeType: "text/plain",
+        name: "private.txt",
+        data: Buffer.from("PRIVATE RAW BYTES", "utf8").toString("base64"),
+        text: "PRIVATE EXPANDED DOCUMENT TEXT",
+      }],
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response).toMatchObject({ text: "Origin acknowledgement" });
+    expect(lifecycle).toEqual(["release", "finalize", "recorder_finish", "activate"]);
+    expect(snapshot).toBeDefined();
+    expect(snapshot).toMatchObject({
+      conversationId: "slack:C1:thread#2026-07-14",
+      originRunId: "run-origin-snapshot",
+      historyBoundary: "run-origin-snapshot",
+      capturedAt: "2026-07-14T09:00:00.000Z",
+    });
+    expect(snapshot?.messages.slice(0, 2)).toEqual([
+      { role: "user", content: "Earlier question", timestamp: "2026-07-14T08:00:00.000Z", runId: "run-earlier" },
+      { role: "assistant", content: "Earlier answer", timestamp: "2026-07-14T08:00:00.000Z", runId: "run-earlier" },
+    ]);
+    expect(snapshot?.messages.at(-2)?.content).toContain("Safe caption");
+    expect(snapshot?.messages.at(-2)?.content).toContain("private.txt");
+    expect(snapshot?.messages.at(-1)?.content).toBe("[Verified interaction]\nOrigin acknowledgement");
+    expect(JSON.stringify(snapshot)).not.toContain("PRIVATE EXPANDED DOCUMENT TEXT");
+    expect(JSON.stringify(snapshot)).not.toContain("PRIVATE RAW BYTES");
+    expect(String(fake.calls[0]?.options.messages?.at(-1)?.content)).toContain("PRIVATE EXPANDED DOCUMENT TEXT");
+    await expect(history.load("slack:C1:thread#2026-07-14")).resolves.toEqual(snapshot?.messages);
+  });
+
+  it("does not build a bounded origin snapshot when no continuation was claimed", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const history = createInMemoryHistoryStore({ maxMessages: 64 });
+    const oversized = "x".repeat(64 * 1024 + 1);
+    let finalized = 0;
+    const fake = createFakeRuntime(async () => ({ text: oversized }));
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: history,
+      runtimeOptions: { mcpServers: { control: { command: "a8c-control" } } },
+      continuationContext: {
+        serverNames: ["control"],
+        capabilityIssuer: {
+          issueContinuationClaimCapability() {
+            return {
+              url: "http://127.0.0.1:43125/continuations/claim",
+              token: "unused-token",
+              fingerprint: "unused-fingerprint",
+              mode: "reply" as const,
+              requiresOriginContext: async () => false,
+              finalizeOriginContext: async () => { finalized += 1; },
+              activateOriginContext: async () => {},
+              abandonOriginContext: async () => {},
+              release: async () => {},
+            };
+          },
+        },
+      },
+    }).run({
+      conversationId: "slack:C1:thread#2026-07-14",
+      replyTo: { conversationId: "slack:C1:thread" },
+      userMessage: "ordinary request",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response.failure).toBeUndefined();
+    expect(response.text).toBe(oversized);
+    expect(finalized).toBe(0);
+    expect((await history.load("slack:C1:thread#2026-07-14")).at(-1)?.content).toBe(oversized);
+  });
+
+  it("keeps recorder success authoritative when origin activation fails", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const lifecycle: string[] = [];
+    const fake = createFakeRuntime(async () => ({ text: "accepted" }));
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      runtimeOptions: { mcpServers: { control: { command: "a8c-control" } } },
+      continuationContext: {
+        serverNames: ["control"],
+        capabilityIssuer: {
+          issueContinuationClaimCapability() {
+            return {
+              url: "http://127.0.0.1:43125/continuations/claim",
+              token: "claimed-token",
+              fingerprint: "claimed-fingerprint",
+              mode: "reply" as const,
+              requiresOriginContext: async () => true,
+              finalizeOriginContext: async () => { lifecycle.push("finalize"); },
+              activateOriginContext: async () => {
+                lifecycle.push("activate");
+                throw new Error("durable activation unavailable");
+              },
+              abandonOriginContext: async () => { lifecycle.push("abandon"); },
+              release: async () => { lifecycle.push("release"); },
+            };
+          },
+        },
+      },
+    }).run({
+      conversationId: "slack:C1:thread#2026-07-14",
+      replyTo: { conversationId: "slack:C1:thread" },
+      userMessage: "delegate this",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response).toMatchObject({ text: "accepted" });
+    expect(response.failure).toBeUndefined();
+    expect(lifecycle).toEqual(["release", "finalize", "activate", "abandon"]);
+  });
+
+  it("preserves a committed answer and activates its continuation when recorder publication fails", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const history = createInMemoryHistoryStore({ maxMessages: 20 });
+    const lifecycle: string[] = [];
+    const fake = createFakeRuntime(async () => ({ text: "durably accepted" }));
+    const recorder: RunRecorder = {
+      onEvent() {},
+      async prepareFinish() {},
+      async commitFinish() {
+        lifecycle.push("recorder");
+        throw new Error("recorder export unavailable");
+      },
+      async finish() {
+        throw new Error("legacy recorder export unavailable");
+      },
+      async fail() {
+        lifecycle.push("fail");
+        throw new Error("must not report a committed answer as failed");
+      },
+    };
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: history,
+      recorderFactory: () => recorder,
+      runtimeOptions: { mcpServers: { control: { command: "a8c-control" } } },
+      continuationContext: {
+        serverNames: ["control"],
+        capabilityIssuer: {
+          issueContinuationClaimCapability() {
+            return {
+              url: "http://127.0.0.1:43125/continuations/claim",
+              token: "recorder-token",
+              fingerprint: "recorder-fingerprint",
+              mode: "reply" as const,
+              async requiresOriginContext() { return true; },
+              async finalizeOriginContext() { lifecycle.push("finalize"); },
+              async activateOriginContext() { lifecycle.push("activate"); },
+              async abandonOriginContext() { lifecycle.push("abandon"); },
+              async release() { lifecycle.push("release"); },
+            };
+          },
+        },
+      },
+    }).run({
+      conversationId: "slack:C1:recorder#2026-07-14",
+      replyTo: { conversationId: "slack:C1:recorder" },
+      userMessage: "delegate this",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response).toMatchObject({ text: "durably accepted" });
+    expect(response.failure).toBeUndefined();
+    expect(response.metadata.summary).toBeUndefined();
+    expect(lifecycle).toEqual(["release", "finalize", "recorder", "activate"]);
+    expect((await history.load("slack:C1:recorder#2026-07-14")).at(-1)?.content).toBe("durably accepted");
   });
 
   it("rejects a selected non-loopback HTTP continuation server before provider execution", async () => {
@@ -1916,6 +2162,10 @@ describe("AgentHarness", () => {
               token: "detached-token",
               fingerprint: "detached-fingerprint",
               mode: "notify_if_actionable",
+              requiresOriginContext: async () => false,
+              finalizeOriginContext: async () => {},
+              activateOriginContext: async () => {},
+              abandonOriginContext: async () => {},
               release: () => {},
             };
           },
@@ -1957,6 +2207,7 @@ describe("AgentHarness", () => {
     });
 
     await harness.run({ conversationId: "slack:C1", userMessage: "origin question", abortSignal: new AbortController().signal });
+    const originHistory = await history.load("slack:C1");
     await harness.run({ conversationId: "slack:C1", userMessage: "later question", abortSignal: new AbortController().signal });
     const before = await history.load("slack:C1");
     const response = await harness.run({
@@ -1966,7 +2217,16 @@ describe("AgentHarness", () => {
       continuation: {
         continuationId: "continuation-1",
         originRunId: "run-origin",
+        originContextPolicy: "pinned",
         historyBoundary: "run-origin",
+        originContext: {
+          schemaVersion: 1,
+          conversationId: "slack:C1",
+          originRunId: "run-origin",
+          historyBoundary: "run-origin",
+          capturedAt: originHistory[1]?.timestamp ?? "",
+          messages: originHistory,
+        },
         toolsDisabled: true,
         deferHistoryCommit: true,
       },
@@ -2010,6 +2270,7 @@ describe("AgentHarness", () => {
       continuation: {
         continuationId: "continuation-detached",
         originRunId: "proactive-origin-for-trace-only",
+        originContextPolicy: "detached_latest",
         toolsDisabled: true,
         deferHistoryCommit: true,
       },

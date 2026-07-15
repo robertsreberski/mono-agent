@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/operator-adapter",
-  "version": "0.9.2",
+  "version": "0.11.0",
   "description": "Loopback operator adapters for mono-agent: full-fidelity TUI NDJSON turns and read-only live SSE run-event streams.",
   "type": "module",
   "license": "UNLICENSED",
@@ -26,7 +26,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.9.2",
+    "@mono-agent/agent-contracts": "workspace:0.11.0",
     "express": "^5.1.0"
   },
   "devDependencies": {

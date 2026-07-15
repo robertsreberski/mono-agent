@@ -191,7 +191,22 @@ export interface RuntimeRunOptions {
 export interface MonoRuntimeLike {
   run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>;
   configureTools?(next?: RuntimeToolOptions): void;
-  disposeSession?(providerSessionId: string): Promise<boolean | void>;
+  /** Flush provider-owned durable transcript state before host history commit. */
+  syncSession?(providerSessionId: string): Promise<boolean>;
+  /**
+   * Guarantee that the next resume cannot reuse process-local provider state.
+   * Resolves for both removed and already-absent handles; rejects if the
+   * guarantee cannot be made. Durable provider transcripts remain intact.
+   */
+  refreshSession?(providerSessionId: string): Promise<void>;
+  /**
+   * Permanently remove every provider transcript with this exact id from the
+   * supplied durable sessions root. Absence is success; uncertainty rejects.
+   */
+  retireDurableSession?(providerSessionId: string, sessionsRoot: string): Promise<void>;
+  disposeSession?(providerSessionId: string): Promise<boolean>;
+  /** Permanently discard live and durable provider transcript state. */
+  invalidateSession?(providerSessionId: string): Promise<boolean>;
   disposeAllSessions?(): Promise<void>;
 }
 

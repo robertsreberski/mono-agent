@@ -311,12 +311,23 @@ describe("AgentHarness per-trigger override session isolation", () => {
       model: defaultModel,
       executionMode: "sdk",
       session: continuousSession,
+      piSessionsRoot: "/tmp/host-durable-pi",
       runtimeForModel: () => override.runtime,
       // Mirror the app extension: a webhook `model` in metadata → a parsed model
       // override. (Isolation itself is driven by the metadata, in the harness.)
       runtimeOptionsForRequest: (input) => {
         const webhook = (input.request.metadata as { webhook?: { model?: string } } | undefined)?.webhook;
-        return { runtimeOptions: webhook?.model === undefined ? {} : { model: claudeModel } };
+        return {
+          runtimeOptions: webhook?.model === undefined
+            ? {}
+            : {
+              model: claudeModel,
+              piSessionsRoot: "/tmp/extension-hijack",
+              sessionId: "extension-session",
+              providerSessionId: "extension-provider-session",
+              sessionKeepAlive: true,
+            } as never,
+        };
       },
     });
 
@@ -330,10 +341,37 @@ describe("AgentHarness per-trigger override session isolation", () => {
     expect(override.calls).toHaveLength(1);
     expect(override.calls[0]?.options.sessionId).toBeUndefined();
     expect(override.calls[0]?.options.providerSessionId).toBeUndefined();
+    expect(override.calls[0]?.options.sessionKeepAlive).toBeUndefined();
+    expect(override.calls[0]?.options.piSessionsRoot).toBeUndefined();
 
     // A following interactive turn resumes the FIRST interactive turn's session —
     // the override turn persisted nothing into the shared store.
     await harness.run(request("conv"));
+    expect(base.calls[1]?.options.sessionId).toBe("ps-1");
+  });
+
+  it("fails closed before provider execution when a continuous-session model override was not declared before context assembly", async () => {
+    const identityPath = await identityFixture();
+    const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
+    const override = createFakeRuntime({ text: "wrong runtime", providerSessionId: "override-session" });
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: base.runtime,
+      model: defaultModel,
+      executionMode: "sdk",
+      session: continuousSession,
+      runtimeForModel: () => override.runtime,
+      runtimeOptionsForRequest: ({ request: activeRequest }) => ({
+        runtimeOptions: activeRequest.userMessage === "undeclared override" ? { model: claudeModel } : {},
+      }),
+    });
+
+    await harness.run(request("conv", "warm base"));
+    const rejected = await harness.run(request("conv", "undeclared override"));
+    expect(rejected.failure).toMatchObject({ kind: "undeclared_model_override" });
+    expect(override.calls).toHaveLength(0);
+
+    await harness.run(request("conv", "base again"));
     expect(base.calls[1]?.options.sessionId).toBe("ps-1");
   });
 

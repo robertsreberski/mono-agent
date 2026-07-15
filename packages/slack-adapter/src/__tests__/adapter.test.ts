@@ -413,7 +413,19 @@ describe("SlackAdapter", () => {
       continuation: {
         continuationId: "c-1",
         originRunId: "run-1",
+        originContextPolicy: "pinned",
         historyBoundary: "run-1",
+        originContext: {
+          schemaVersion: 1,
+          conversationId: "slack:D1:171.5#2026-07-14",
+          originRunId: "run-1",
+          historyBoundary: "run-1",
+          capturedAt: "2026-07-14T10:00:00.000Z",
+          messages: [
+            { role: "user", content: "delegate", timestamp: "2026-07-14T10:00:00.000Z", runId: "run-1" },
+            { role: "assistant", content: "accepted", timestamp: "2026-07-14T10:00:00.000Z", runId: "run-1" },
+          ],
+        },
         toolsDisabled: true,
         deferHistoryCommit: true,
       },
@@ -455,7 +467,19 @@ describe("SlackAdapter", () => {
       continuation: {
         continuationId: "continuation-over-cap",
         originRunId: "origin-run",
+        originContextPolicy: "pinned",
         historyBoundary: "origin-run",
+        originContext: {
+          schemaVersion: 1,
+          conversationId: "slack:D1:171.5",
+          originRunId: "origin-run",
+          historyBoundary: "origin-run",
+          capturedAt: "2026-07-14T10:00:00.000Z",
+          messages: [
+            { role: "user", content: "delegate", timestamp: "2026-07-14T10:00:00.000Z", runId: "origin-run" },
+            { role: "assistant", content: "accepted", timestamp: "2026-07-14T10:00:00.000Z", runId: "origin-run" },
+          ],
+        },
         toolsDisabled: true,
         deferHistoryCommit: true,
       },

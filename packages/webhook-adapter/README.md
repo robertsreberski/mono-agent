@@ -54,7 +54,7 @@ Webhook response metadata contains channel-safe run diagnostics such as the run 
 
 Each endpoint may carry a `prompt` (pre-instructions, same role as a cron job's prompt). When set, the adapter forms the agent's user message as `prompt` + `\n\n` + the posted `text`. The webhook imposes no correlation scheme of its own: it forwards the request's `conversationId` and arbitrary `metadata` through unchanged, so a `prompt` plus filesystem/skill conventions can drive any workflow (e.g. matching incoming results to request files on disk).
 
-> Loopback note: a webhook is request/response — the resumed turn's output is returned on the POST's own HTTP response (sync) or status endpoint (async). History is in-memory per channel harness, and `createConfiguredAgentResponder` applies auto-compaction + daily session rollover, so a result returning long after it was scheduled may resume with compacted context. Skills that need durable correlation should record state in memory or on disk.
+> Loopback note: a webhook is request/response — the resumed turn's output is returned on the POST's own HTTP response (sync) or status endpoint (async). `createConfiguredAgentResponder` keeps the latest 64 messages for each exact conversation bucket in owner-only durable storage and applies auto-compaction + daily session rollover. The async request-status table itself remains in memory, and provider sessions may still compact or rotate, so workflows that need correlation beyond the bounded history should record it in long-term memory or their own durable state.
 
 ## Configuring multiple endpoints (host config)
 
