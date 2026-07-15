@@ -195,23 +195,33 @@ describe("validateMonoAgentFolder", () => {
     expect(section.details.join("\n")).not.toContain("PRIVATE ANSWER");
   });
 
-  it("reports bounded v2 storage and history degradation without reading record payloads", async () => {
+  it("reports bounded v3 storage and history degradation without reading record payloads", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const stateDir = join(dir, ".mono-agent", "continuations");
-    const recordsDir = join(stateDir, "records-v2");
+    const recordsDir = join(stateDir, "records-v3");
+    const legacyRecordsDir = join(stateDir, "records-v2");
     await mkdir(recordsDir, { recursive: true, mode: 0o700 });
+    await mkdir(legacyRecordsDir, { recursive: true, mode: 0o700 });
     await chmod(stateDir, 0o700);
     await chmod(recordsDir, 0o700);
+    await chmod(legacyRecordsDir, 0o700);
     const recordPath = join(recordsDir, "opaque.json");
-    await writeFile(recordPath, JSON.stringify({ resultPayload: "TOP SECRET V2" }), { mode: 0o600 });
+    await writeFile(recordPath, JSON.stringify({ resultPayload: "TOP SECRET V3" }), { mode: 0o600 });
     await chmod(recordPath, 0o600);
-    const manifestPath = join(stateDir, "continuation-store-v2.json");
+    const rollbackGuardPath = join(legacyRecordsDir, "UPGRADED-TO-RECORDS-V3");
+    await writeFile(
+      rollbackGuardPath,
+      "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n",
+      { mode: 0o600 },
+    );
+    await chmod(rollbackGuardPath, 0o600);
+    const manifestPath = join(stateDir, "continuation-store-v3.json");
     await writeFile(manifestPath, JSON.stringify({
-      schemaVersion: 2,
-      generation: "generation-v2",
+      schemaVersion: 3,
+      generation: "generation-v3",
       updatedAt: new Date().toISOString(),
       stats: {
-        format: "per-record-v2",
+        format: "per-record-v3",
         records: 4,
         active: 1,
         unresolvedDelivery: 0,
@@ -239,10 +249,124 @@ describe("validateMonoAgentFolder", () => {
 
     const section = sectionById(report, "continuations");
     expect(section.status).toBe("waiting");
+    expect(section.details.join("\n")).toContain("Store v3");
     expect(section.details.join("\n")).toContain("4 retained; 1 active");
     expect(section.details.join("\n")).toContain("1 history-degraded deliveries");
     expect(section.details.join("\n")).toContain("at most 50000 terminal tombstones");
-    expect(section.details.join("\n")).not.toContain("TOP SECRET V2");
+    expect(section.details.join("\n")).toContain("rollback guard prevents older runtimes");
+    expect(section.details.join("\n")).not.toContain("TOP SECRET V3");
+  });
+
+  it("reports a legacy v2 store as awaiting migration before and after its exact rollback guard is installed", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    const recordsDir = join(stateDir, "records-v2");
+    await mkdir(recordsDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    await chmod(recordsDir, 0o700);
+    const recordPath = join(recordsDir, "opaque.json");
+    await writeFile(recordPath, JSON.stringify({ resultPayload: "TOP SECRET LEGACY" }), { mode: 0o600 });
+    await chmod(recordPath, 0o600);
+    const rollbackGuardPath = join(recordsDir, "UPGRADED-TO-RECORDS-V3");
+    await writeFile(
+      rollbackGuardPath,
+      "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n",
+      { mode: 0o600 },
+    );
+    await chmod(rollbackGuardPath, 0o600);
+    const manifestPath = join(stateDir, "continuation-store-v2.json");
+    await writeFile(manifestPath, JSON.stringify({
+      schemaVersion: 2,
+      generation: "generation-v2",
+      updatedAt: new Date().toISOString(),
+      stats: {
+        format: "per-record-v2",
+        records: 1,
+        active: 1,
+        unresolvedDelivery: 0,
+        deadLettered: 0,
+        terminalTombstones: 0,
+        compacted: 0,
+        capturedText: 0,
+        historyDegraded: 0,
+        limits: {
+          terminalMaxRecords: 50_000,
+          terminalMaxAgeMs: 31_536_000_000,
+          capturedTextMaxRecords: 1_000,
+          capturedTextMaxAgeMs: 2_592_000_000,
+        },
+      },
+    }), { mode: 0o600 });
+    await chmod(manifestPath, 0o600);
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      continuations: {},
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const section = sectionById(report, "continuations");
+    expect(section.status).toBe("waiting");
+    expect(section.details.join("\n")).toContain("Legacy store v2 awaiting v3 migration");
+    expect(section.details.join("\n")).toContain("rollback guard prevents older runtimes");
+    expect(section.details.join("\n")).not.toContain("TOP SECRET LEGACY");
+
+    await rm(rollbackGuardPath);
+    const beforeMigration = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const beforeMigrationSection = sectionById(beforeMigration, "continuations");
+    expect(beforeMigrationSection.status).toBe("waiting");
+    expect(beforeMigrationSection.details.join("\n")).toContain("will install it during v3 migration");
+  });
+
+  it("rejects a forged v2 rollback guard beside an active v3 store", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    const recordsDir = join(stateDir, "records-v3");
+    const legacyRecordsDir = join(stateDir, "records-v2");
+    await mkdir(recordsDir, { recursive: true, mode: 0o700 });
+    await mkdir(legacyRecordsDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    await chmod(recordsDir, 0o700);
+    await chmod(legacyRecordsDir, 0o700);
+    const rollbackGuardPath = join(legacyRecordsDir, "UPGRADED-TO-RECORDS-V3");
+    await writeFile(rollbackGuardPath, "not a real rollback guard\n", { mode: 0o600 });
+    await chmod(rollbackGuardPath, 0o600);
+    const manifestPath = join(stateDir, "continuation-store-v3.json");
+    await writeFile(manifestPath, JSON.stringify({
+      schemaVersion: 3,
+      generation: "generation-v3",
+      updatedAt: new Date().toISOString(),
+      stats: {
+        format: "per-record-v3",
+        records: 0,
+        active: 0,
+        unresolvedDelivery: 0,
+        deadLettered: 0,
+        terminalTombstones: 0,
+        compacted: 0,
+        capturedText: 0,
+        historyDegraded: 0,
+        limits: {
+          terminalMaxRecords: 50_000,
+          terminalMaxAgeMs: 31_536_000_000,
+          capturedTextMaxRecords: 1_000,
+          capturedTextMaxAgeMs: 2_592_000_000,
+        },
+      },
+    }), { mode: 0o600 });
+    await chmod(manifestPath, 0o600);
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      continuations: {},
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const section = sectionById(report, "continuations");
+    expect(section.status).toBe("error");
+    expect(section.details.join("\n")).toContain("rollback guard contents are invalid");
   });
 
   it("reports adapter-derived send tools when enabled adapter configs are valid", async () => {

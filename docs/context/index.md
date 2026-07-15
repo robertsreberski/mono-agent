@@ -17,7 +17,7 @@ Each turn the agent builds a prompt from these layers:
 | Identity | `IDENTITY.md` (or path) | config | `context.identityPath` |
 | Soul (optional) | `SOUL.md` (or path) | config | `context.soulPath` |
 | Session | host-owned delivery and callback-safety guidance; physical route withheld | auto | none (auto-generated) |
-| Conversation history | bounded in-memory store | auto / code | 12 messages by default; twice a positive `runtime.maxTurns` |
+| Conversation history | owner-only durable store | auto / code | 64 messages per exact conversation id, independent of `runtime.maxTurns` |
 | Selected skills | `<skillsRoot>/<name>/SKILL.md` | config | `context.skillsRoot`, `context.selectedSkills` |
 
 Identity is the only required piece of `context` — `context.identityPath` is the one field in this section you cannot omit. Everything else is opt-in.
@@ -59,11 +59,11 @@ There is **no auto-selection of skills** — a skill is loaded only if its exact
 ## How each layer behaves
 
 - **Identity & soul** are plain markdown loaded into every prompt. Identity carries role and boundaries; soul is an optional secondary voice/guardrail document. See [Identity & Soul](/context/identity-and-soul/).
-- **Conversation history** assembly is automatic (coverage `auto`): an in-memory store retaining 12 messages by default, or twice `runtime.maxTurns` when a positive cap is configured. To swap in a custom store you must use the programmatic path — `createConfiguredAgentResponder({ historyStore })` (coverage `code`); see [Programmatic](/programmatic/).
+- **Conversation history** assembly is automatic (coverage `auto`): an owner-only, disk-backed store retains the latest 64 messages for each exact conversation id, independent of `runtime.maxTurns`, and survives process restarts. To swap in a custom store you must use the programmatic path — `createConfiguredAgentResponder({ historyStore })` (coverage `code`); see [Programmatic](/programmatic/).
 - **Selected skills** are loaded explicitly and each is capped at `context.skillMaxBytes` bytes (default 48000, valid range 256–1,000,000). See [Skills](/context/skills/).
 
 :::caution
-The default history window is bounded independently from an unlimited provider run. Pair it with runtime compaction (`runtime.context-compaction`) so longer provider-owned sessions stay within the model window. See [Sessions & Concurrency](/runtime/sessions-concurrency/).
+The default history window is bounded independently from the provider turn limit. Pair it with runtime compaction (`runtime.context-compaction`) so longer provider-owned sessions stay within the model window. See [Sessions & Concurrency](/runtime/sessions-concurrency/).
 :::
 
 ## In this section

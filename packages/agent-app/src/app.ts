@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { loadToolPolicyFromJsonFileSync } from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createLiveEventBus } from "@mono-agent/agent-contracts";
-import type { AgentResponder, RunEventBus } from "@mono-agent/agent-contracts";
+import type { AgentContinuationOriginContext, AgentResponder, RunEventBus } from "@mono-agent/agent-contracts";
 import { pruneTraceSources, reconcileStaleRunArtifacts, registerTraceSource } from "@mono-agent/observability";
 import type {
   TraceSourceHandle,
@@ -459,10 +459,10 @@ class MonoAgentAppController implements MonoAgentApp {
       // that already entered is generation-fenced and is deliberately not
       // awaited, so config reload cannot hang behind native/filesystem work.
       this.invalidateMemoryHealthRefresh();
-      await this.stopContinuationService();
       for (const driver of this.drivers) {
         await this.stopChannel(driver.id, `${reason}:reload`);
       }
+      await this.stopContinuationService();
       // Tool policy/runtime-family changes must re-evaluate implicit AskUser.
       // Clearing the cached promise also prevents stale bridge env from a Pi
       // config leaking into a reloaded direct-OpenCode responder.
@@ -1084,6 +1084,8 @@ class MonoAgentAppController implements MonoAgentApp {
       continuationId: input.continuationId,
       originRunId: input.originRunId,
       ...(input.historyBoundary === undefined ? {} : { historyBoundary: input.historyBoundary }),
+      originContextPolicy: input.originContextPolicy,
+      ...(input.originContext === undefined ? {} : { originContext: input.originContext }),
       originConversationId: input.originConversationId,
       replyToConversationId: conversationId,
       prompt: continuationSynthesisPrompt(input.payload, input.mode),
@@ -1161,10 +1163,10 @@ class MonoAgentAppController implements MonoAgentApp {
     // Stop the periodic audit before the first teardown await. Already-entered
     // computation is generation-fenced and must never delay shutdown.
     this.invalidateMemoryHealthRefresh();
-    await this.stopContinuationService();
     for (const driver of this.drivers) {
       await this.stopChannel(driver.id, "stop");
     }
+    await this.stopContinuationService();
     await this.stopInteractionBridge();
     this.stopMemoryRituals();
     this.stopArtifactRetentionScheduler();
@@ -2092,6 +2094,8 @@ interface ContinuationRunningChannel extends RunningChannel {
     readonly continuationId: string;
     readonly originRunId: string;
     readonly historyBoundary?: string;
+    readonly originContextPolicy: "pinned" | "detached_latest";
+    readonly originContext?: AgentContinuationOriginContext;
     readonly originConversationId: string;
     readonly replyToConversationId: string;
     readonly prompt: string;

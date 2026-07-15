@@ -13,7 +13,7 @@
 // and `piResolvedModels` seams (the faux provider is not in pi's builtin
 // catalog, so it is reachable only through an explicit collection).
 
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -24,9 +24,17 @@ import {
   fauxThinking,
   fauxToolCall,
 } from "@earendil-works/pi-ai";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
-import { disposeProviderSession } from "../../ai/runtime/sessions.js";
+import {
+  resolveDurableNativeSessionRepo,
+  retireDurableNativeSession,
+} from "../../ai/providers/pi-native/session-lifecycle.js";
+import {
+  disposeProviderSession,
+  invalidateProviderSession,
+  syncProviderSession,
+} from "../../ai/runtime/sessions.js";
 
 let faux = null;
 let fauxModels = null;
@@ -91,9 +99,68 @@ function countJsonlFiles(root) {
   return count;
 }
 
+function findJsonlFiles(root) {
+  const paths = [];
+  for (const dirent of readdirSync(root, { withFileTypes: true })) {
+    const full = join(root, dirent.name);
+    if (dirent.isDirectory()) paths.push(...findJsonlFiles(full));
+    else if (dirent.name.endsWith(".jsonl")) paths.push(full);
+  }
+  return paths;
+}
+
 describe("pi-native sessions", () => {
   const sessionsRoot = mkdtempSync(join(tmpdir(), "pi-native-sessions-"));
   afterAll(() => rmSync(sessionsRoot, { recursive: true, force: true }));
+
+  it("retires every cold duplicate for an exact durable id and treats absence as success", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-native-retire-"));
+    const id = "a".repeat(64);
+    try {
+      for (const [index, cwd] of ["/workspace/one", "/workspace/two"].entries()) {
+        const directory = join(root, `cwd-${index}`);
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(join(directory, `2026-07-14T00-00-0${index}-000Z_${id}.jsonl`), `${JSON.stringify({
+          type: "session",
+          version: 3,
+          id,
+          timestamp: `2026-07-14T00:00:0${index}.000Z`,
+          cwd,
+        })}\n`);
+      }
+      expect(countJsonlFiles(root)).toBe(2);
+
+      await expect(retireDurableNativeSession(id, root)).resolves.toBeUndefined();
+      expect(countJsonlFiles(root)).toBe(0);
+      await expect(retireDurableNativeSession(id, root)).resolves.toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates durable retirement failures instead of acknowledging partial cleanup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-native-retire-failure-"));
+    const id = "b".repeat(64);
+    const directory = join(root, "cwd");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, `2026-07-14T00-00-00-000Z_${id}.jsonl`), `${JSON.stringify({
+      type: "session",
+      version: 3,
+      id,
+      timestamp: "2026-07-14T00:00:00.000Z",
+      cwd: "/workspace",
+    })}\n`);
+    const repo = resolveDurableNativeSessionRepo(root);
+    const originalDelete = repo.delete.bind(repo);
+    repo.delete = vi.fn().mockRejectedValueOnce(new Error("injected unlink failure"));
+    try {
+      await expect(retireDurableNativeSession(id, root)).rejects.toThrow("injected unlink failure");
+      expect(countJsonlFiles(root)).toBe(1);
+    } finally {
+      repo.delete = originalDelete;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it("forwards streamed thinking once and reports reasoning in per-run capabilities", async () => {
     const model = setup({ reasoning: true });
@@ -375,6 +442,183 @@ describe("pi-native sessions", () => {
       "assistant:reply-1",
       "user:turn-2",
     ]);
+  });
+
+  it("invalidates both live and durable transcript state rejected by the host", async () => {
+    const model = setup();
+    const sessionId = "host-rejected-stable-id";
+    const root = mkdtempSync(join(tmpdir(), "pi-native-invalidate-"));
+    try {
+      faux.setResponses([fauxAssistantMessage([fauxText("hidden-reply")])]);
+      const first = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "rejected-turn" }],
+        sessionKeepAlive: true,
+        sessionId,
+        piSessionsRoot: root,
+      }));
+      expect(first.error).toBeNull();
+      expect(countJsonlFiles(root)).toBe(1);
+
+      await expect(invalidateProviderSession(sessionId)).resolves.toBe(true);
+      expect(countJsonlFiles(root)).toBe(0);
+
+      let freshContext = null;
+      faux.setResponses([
+        (context) => { freshContext = context; return fauxAssistantMessage([fauxText("clean-reply")]); },
+      ]);
+      const second = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "clean-turn" }],
+        sessionKeepAlive: true,
+        sessionId,
+        piSessionsRoot: root,
+      }));
+      expect(second.error).toBeNull();
+      expect(transcriptOf(freshContext)).toEqual(["user:clean-turn"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fsyncs a live durable JSONL session before host history commit", async () => {
+    const model = setup();
+    const sessionId = "host-sync-stable-id";
+    const root = mkdtempSync(join(tmpdir(), "pi-native-sync-"));
+    try {
+      faux.setResponses([fauxAssistantMessage([fauxText("reply")])]);
+      const first = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "durable-turn" }],
+        sessionKeepAlive: true,
+        sessionId,
+        piSessionsRoot: root,
+      }));
+      expect(first.error).toBeNull();
+      expect(findJsonlFiles(root)).toHaveLength(1);
+
+      // This exercises the real file-handle sync followed by parent-directory
+      // sync in the Pi registry's onSync barrier.
+      await expect(syncProviderSession(sessionId)).resolves.toBe(true);
+      expect(findJsonlFiles(root)).toHaveLength(1);
+    } finally {
+      await invalidateProviderSession(sessionId).catch(() => {});
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates Pi sync failure and keeps the session unavailable until invalidated", async () => {
+    const model = setup();
+    const sessionId = "host-sync-failure-id";
+    const root = mkdtempSync(join(tmpdir(), "pi-native-sync-failure-"));
+    try {
+      faux.setResponses([fauxAssistantMessage([fauxText("reply")])]);
+      const first = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "durable-turn" }],
+        sessionKeepAlive: true,
+        sessionId,
+        piSessionsRoot: root,
+      }));
+      expect(first.error).toBeNull();
+      const [jsonl] = findJsonlFiles(root);
+      rmSync(jsonl);
+
+      await expect(syncProviderSession(sessionId)).rejects.toThrow();
+
+      let invoked = false;
+      faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
+      const blocked = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "must-not-reopen" }],
+        sessionKeepAlive: true,
+        sessionId,
+        piSessionsRoot: root,
+      }));
+      expect(blocked.failureKind).toBe("session_busy");
+      expect(invoked).toBe(false);
+
+      await expect(invalidateProviderSession(sessionId)).resolves.toBe(true);
+    } finally {
+      await invalidateProviderSession(sessionId).catch(() => {});
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not cold-reopen a Pi JSONL while destructive invalidation is unlinking it", async () => {
+    const model = setup();
+    const sessionId = "host-invalidation-race-id";
+    const root = mkdtempSync(join(tmpdir(), "pi-native-invalidation-race-"));
+    const repo = resolveDurableNativeSessionRepo(root);
+    const originalDelete = repo.delete;
+    let releaseDelete;
+    let deleteStarted;
+    const deleteGate = new Promise((resolve) => { releaseDelete = resolve; });
+    const started = new Promise((resolve) => { deleteStarted = resolve; });
+    try {
+      faux.setResponses([fauxAssistantMessage([fauxText("poisoned")])]);
+      const first = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "rejected-turn" }],
+        sessionKeepAlive: true,
+        sessionId,
+        piSessionsRoot: root,
+      }));
+      expect(first.error).toBeNull();
+      expect(findJsonlFiles(root)).toHaveLength(1);
+
+      repo.delete = vi.fn(async (metadata) => {
+        deleteStarted();
+        await deleteGate;
+        return originalDelete.call(repo, metadata);
+      });
+      const invalidation = invalidateProviderSession(sessionId);
+      await started;
+
+      let invoked = false;
+      faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
+      const contender = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "racing-turn" }],
+        sessionKeepAlive: true,
+        sessionId,
+        piSessionsRoot: root,
+      }));
+      expect(contender.failureKind).toBe("session_busy");
+      expect(invoked).toBe(false);
+
+      releaseDelete();
+      await expect(invalidation).resolves.toBe(true);
+      expect(findJsonlFiles(root)).toHaveLength(0);
+    } finally {
+      releaseDelete?.();
+      repo.delete = originalDelete;
+      await invalidateProviderSession(sessionId).catch(() => {});
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a Pi durable-delete failure and succeeds only after cleanup can complete", async () => {
+    const model = setup();
+    const sessionId = "host-invalidation-failure-id";
+    const root = mkdtempSync(join(tmpdir(), "pi-native-invalidation-failure-"));
+    const repo = resolveDurableNativeSessionRepo(root);
+    const originalDelete = repo.delete;
+    try {
+      faux.setResponses([fauxAssistantMessage([fauxText("poisoned")])]);
+      const first = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "rejected-turn" }],
+        sessionKeepAlive: true,
+        sessionId,
+        piSessionsRoot: root,
+      }));
+      expect(first.error).toBeNull();
+
+      repo.delete = vi.fn().mockRejectedValue(new Error("unlink denied"));
+      await expect(invalidateProviderSession(sessionId)).rejects.toThrow("unlink denied");
+      expect(findJsonlFiles(root)).toHaveLength(1);
+
+      repo.delete = originalDelete;
+      await expect(invalidateProviderSession(sessionId)).resolves.toBe(true);
+      expect(findJsonlFiles(root)).toHaveLength(0);
+    } finally {
+      repo.delete = originalDelete;
+      await invalidateProviderSession(sessionId).catch(() => {});
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("resumes a durable session across a restart by a caller-derived stable id (create-on-miss then reopen-from-disk) (F9)", async () => {

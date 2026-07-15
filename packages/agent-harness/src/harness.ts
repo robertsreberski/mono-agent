@@ -1,9 +1,10 @@
-import { createHash } from "node:crypto";
 import { lstat, mkdir, open, realpath, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import type { AgentAttachment } from "@mono-agent/agent-contracts";
+import type { AgentAttachment, AgentContinuationOriginContext } from "@mono-agent/agent-contracts";
 import {
+  AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGES,
+  assertAgentContinuationOriginContext,
   isChannelUserCancelReason,
   NOTHING_TO_REPORT_SENTINEL,
 } from "@mono-agent/agent-contracts";
@@ -40,7 +41,9 @@ import type {
   AgentHarnessRuntimeOptionsExtension,
   AgentHarnessSessionBoundary,
   AgentHarnessSessionEvent,
+  ConversationHistoryProviderSessionTurn,
   ExternalRunSummary,
+  PreparedHistoryAppend,
 } from "./types.js";
 import type {
   AgentHarnessContinuationClaimCapability,
@@ -280,10 +283,32 @@ export class MonoAgentHarness implements AgentHarness {
     this.pendingRuns += 1;
     let left = false;
     let conversationCommitStarted = false;
+    const continuationCapabilities: AgentHarnessContinuationClaimCapability[] = [];
+    let continuationOriginSettled = false;
+    let preparedHistoryAppend: PreparedHistoryAppend | undefined;
+    let providerHistoryTurn: ConversationHistoryProviderSessionTurn | undefined;
+    let coordinatedProviderSessionId: string | undefined;
+    let coordinatedProviderSessionRevision: number | undefined;
+    let providerHistoryOwnershipTransferred = false;
+    let providerSessionSynced = false;
+    let coordinatedProviderAttemptEligibleForSync = false;
+    let providerAttemptStarted = false;
+    const providerAttemptSessionIds = new Set<string>();
+    let runtimeResult: RuntimeResult | undefined;
     const leavePending = (): void => {
       if (!left) {
         left = true;
         this.pendingRuns -= 1;
+      }
+    };
+    const noteProviderStart = (providerSessionId: string | undefined): void => {
+      providerAttemptStarted = true;
+      if (providerSessionId !== undefined) providerAttemptSessionIds.add(providerSessionId);
+      leavePending();
+    };
+    const noteProviderResultSession = (providerSessionId: unknown): void => {
+      if (typeof providerSessionId === "string" && providerSessionId.trim().length > 0) {
+        providerAttemptSessionIds.add(providerSessionId);
       }
     };
     try {
@@ -331,33 +356,107 @@ export class MonoAgentHarness implements AgentHarness {
         persistUserMessage: persistText,
         attachmentContext,
       } = await this.applyAttachments(request, runId, emit);
-      // Resume id: prefer a live in-memory session record; otherwise, when
-      // durable pi sessions are configured, derive a STABLE fs-safe id from the
-      // conversationId so a turn resumes the on-disk JSONL transcript across a
-      // restart (the in-memory conversationId→providerSessionId map is lost on
-      // restart). pi-native creates-on-miss with this id, so a first turn for a
-      // never-seen conversation still opens a durable session under this id.
-      // An isolated proactive run skips the durable resume-id derivation entirely
-      // (sessionRecord is already undefined), so resumeSessionId stays undefined
-      // and the turn opens no shared/durable session to resume.
-      let resumeSessionId = sessionRecord?.providerSessionId
-        ?? (!isolated && this.sessionsEnabled() && this.options.piSessionsRoot !== undefined
-          ? deriveDurableSessionId(request.conversationId)
-          : undefined);
-      // Omit history ONLY for a confirmed LIVE session record — it already holds
-      // the conversation, so replaying history would double-count (the warm-resume
-      // optimization). For a DERIVED durable id (cold/cross-restart resume) we do
-      // NOT know whether the on-disk session exists, so we still send history:
-      // pi-native ignores it when it successfully resumes the JSONL (the session
-      // carries the transcript) and SEEDS it when it creates-on-miss — so a
-      // create-on-miss on an existing conversation never loses prior context.
-      let prepared = await this.prepareContext(activeRequest, { omitHistory: sessionRecord !== undefined, turnId: runId }, emit);
+      // Durable Pi transcripts are safe to resume across a restart only when the
+      // canonical history store owns their epoch and dirty/clean transaction.
+      // Merely hashing a conversation id is insufficient: a crash can persist Pi
+      // JSONL before host history, and the stale transcript would then resurrect.
+      // Custom history stores keep process-local warm sessions, but never receive
+      // piSessionsRoot unless they implement this coordinator contract.
+      const historyStore = this.options.historyStore;
+      const beginProviderSessionTurn = historyStore?.beginProviderSessionTurn?.bind(historyStore);
+      const durableProviderSessionsEnabled = !isolated
+        && this.sessionsEnabled()
+        && this.options.model.sdk === "pi"
+        && this.options.piSessionsRoot !== undefined
+        && historyStore?.providerSessionRetirement === "fail-closed"
+        && beginProviderSessionTurn !== undefined;
+      if (durableProviderSessionsEnabled) {
+        providerHistoryTurn = await beginProviderSessionTurn(request.conversationId, runId);
+        coordinatedProviderSessionId = providerHistoryTurn.providerSessionId;
+        coordinatedProviderSessionRevision = providerHistoryTurn.providerSessionRevision;
+      }
+
+      let resumeSessionId = providerHistoryTurn?.providerSessionId ?? sessionRecord?.providerSessionId;
+      const confirmedWarmSession = sessionRecord !== undefined
+        && sessionRecord.providerSessionId === resumeSessionId
+        && (providerHistoryTurn === undefined
+          || sessionRecord.providerSessionRevision === providerHistoryTurn.providerSessionRevision);
+
+      if (providerHistoryTurn !== undefined && !confirmedWarmSession) {
+        // A durable coordinator can prove which epoch/revision is canonical,
+        // but it cannot see module-global provider handles. Every unconfirmed
+        // resume therefore needs a strict runtime refresh, including a newly
+        // constructed harness whose local RuntimeSessionStore is empty. Without
+        // this barrier, that harness could adopt an older live Pi object for the
+        // same epoch and silently bypass the now-current JSONL on disk.
+        if (this.options.runtime.refreshSession === undefined) {
+          if (sessionRecord?.providerSessionId === providerHistoryTurn.providerSessionId) {
+            this.sessionStore?.forget(request.conversationId, sessionRecord.providerSessionId);
+          }
+          throw new AgentHarnessError(
+            "provider_session_refresh_unavailable",
+            "A durable provider session cannot be cold-reopened safely by this runtime.",
+          );
+        }
+        try {
+          await this.options.runtime.refreshSession(providerHistoryTurn.providerSessionId);
+        } catch (error) {
+          if (sessionRecord?.providerSessionId === providerHistoryTurn.providerSessionId) {
+            this.sessionStore?.forget(request.conversationId, sessionRecord.providerSessionId);
+          }
+          throw error;
+        }
+        if (sessionRecord?.providerSessionId === providerHistoryTurn.providerSessionId) {
+          this.sessionStore?.forget(request.conversationId, sessionRecord.providerSessionId);
+        }
+      }
+
+      if (sessionRecord !== undefined && !confirmedWarmSession) {
+        if (
+          providerHistoryTurn !== undefined
+          && sessionRecord.providerSessionId === providerHistoryTurn.providerSessionId
+        ) {
+          // The strict durable refresh above already dropped this exact stale
+          // mapping while preserving its provider-owned transcript.
+        } else {
+          // A dirty/migrated/missing host record rotates the provider epoch. Drop a
+          // stale process-local mapping immediately; it can never be authoritative
+          // for the newly-issued durable provider id.
+          await this.retireRunResultSession(
+            request.conversationId,
+            sessionRecord,
+            sessionRecord.providerSessionId,
+          );
+        }
+      }
+
+      // Omit history only for a confirmed live mapping to the exact epoch-owned
+      // provider id. A cold cross-restart reopen still receives canonical history
+      // so create-on-miss can seed a complete transcript.
+      let prepared = await this.prepareContext(activeRequest, { omitHistory: confirmedWarmSession, turnId: runId }, emit);
       context = prepared.context;
 
-      let runtimeResult: RuntimeResult | undefined;
       let resumeError: unknown;
       try {
-        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, resumeSessionId, prepared.skillDisclosureNames, prepared.history, prepared.historyOmitted, attachmentContext, leavePending);
+        coordinatedProviderAttemptEligibleForSync = providerHistoryTurn !== undefined
+          && resumeSessionId === providerHistoryTurn.providerSessionId;
+        runtimeResult = await this.runRuntime(
+          activeRequest,
+          recorder,
+          context,
+          prepared.memory,
+          runId,
+          resumeSessionId,
+          providerHistoryTurn === undefined ? undefined : this.options.piSessionsRoot,
+          isolated,
+          prepared.skillDisclosureNames,
+          prepared.history,
+          prepared.historyOmitted,
+          attachmentContext,
+          continuationCapabilities,
+          () => noteProviderStart(resumeSessionId),
+        );
+        noteProviderResultSession(runtimeResult.providerSessionId);
       } catch (error) {
         if (resumeSessionId === undefined || request.abortSignal.aborted) {
           throw error;
@@ -381,11 +480,33 @@ export class MonoAgentHarness implements AgentHarness {
           reason: shouldRetrySessionResumeError(resumeError) ? "resume_error" : "runtime_result",
           timestamp: this.nowIso(),
         });
-        await this.sessionStore?.evict(request.conversationId, "stale", resumeSessionId);
+        await this.retireRunResultSession(
+          request.conversationId,
+          sessionRecord,
+          ...providerAttemptSessionIds,
+          resumeSessionId,
+        );
         resumeSessionId = undefined;
+        coordinatedProviderAttemptEligibleForSync = false;
         prepared = await this.prepareContext(activeRequest, { omitHistory: false, turnId: runId }, emit);
         context = prepared.context;
-        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, undefined, prepared.skillDisclosureNames, prepared.history, prepared.historyOmitted, attachmentContext, leavePending);
+        runtimeResult = await this.runRuntime(
+          activeRequest,
+          recorder,
+          context,
+          prepared.memory,
+          runId,
+          undefined,
+          undefined,
+          isolated,
+          prepared.skillDisclosureNames,
+          prepared.history,
+          prepared.historyOmitted,
+          attachmentContext,
+          continuationCapabilities,
+          () => noteProviderStart(undefined),
+        );
+        noteProviderResultSession(runtimeResult.providerSessionId);
       }
       if (runtimeResult === undefined) {
         throw resumeError ?? new Error("Runtime did not produce a result.");
@@ -396,11 +517,16 @@ export class MonoAgentHarness implements AgentHarness {
       // BEFORE we commit it. Committing a cancelled turn would bake it into the
       // warm session + history + memory, diverging from what the caller (whose
       // promise the LiveSessionManager rejects) believes happened. So when the
-      // signal is aborted here, skip saveSession + persistSuccessfulTurn,
+      // signal is aborted here, skip saveSession + durable turn persistence,
       // evict/dispose any returned provider session (mirrors the empty-turn
       // retirement below), and return a cancelled failure instead.
       if (request.abortSignal.aborted) {
-        await this.retireRunResultSession(request.conversationId, sessionRecord, runtimeResult.providerSessionId);
+        await this.retireRunResultSession(
+          request.conversationId,
+          sessionRecord,
+          ...providerAttemptSessionIds,
+          runtimeResult?.providerSessionId,
+        );
         const summary = await recorder.finish({
           ...runtimeResult,
           systemPrompt: context.prompt,
@@ -420,6 +546,15 @@ export class MonoAgentHarness implements AgentHarness {
 
       const failure = failureFromRuntimeResult(runtimeResult);
       if (failure !== undefined) {
+        // Failure-shaped results may still have appended provider transcript
+        // state. Canonical history rejects the turn, so retire every attempted
+        // identity and leave a durable coordinator turn dirty for epoch rotation.
+        await this.retireRunResultSession(
+          request.conversationId,
+          sessionRecord,
+          ...providerAttemptSessionIds,
+          runtimeResult.providerSessionId,
+        );
         const summary = await recorder.finish({
           ...runtimeResult,
           systemPrompt: context.prompt,
@@ -427,9 +562,6 @@ export class MonoAgentHarness implements AgentHarness {
           failureKind: failure.kind,
           error: failure.message,
         });
-        if (sessionRecord !== undefined && shouldRetireSessionAfterFailure(failure.kind)) {
-          await this.sessionStore?.evict(request.conversationId, "stale", sessionRecord.providerSessionId);
-        }
         return { metadata: responseMetadata(runId, request, context, summary, runtimeResult), failure };
       }
 
@@ -439,7 +571,12 @@ export class MonoAgentHarness implements AgentHarness {
         // Empty turns are not appended to history, so a retained provider
         // session would diverge from the history store. Retire it instead;
         // the next message replays history into a fresh session.
-        await this.retireRunResultSession(request.conversationId, sessionRecord, runtimeResult.providerSessionId);
+        await this.retireRunResultSession(
+          request.conversationId,
+          sessionRecord,
+          ...providerAttemptSessionIds,
+          runtimeResult.providerSessionId,
+        );
         return {
           metadata: responseMetadata(runId, request, context, summary, runtimeResult),
           failure: {
@@ -460,7 +597,12 @@ export class MonoAgentHarness implements AgentHarness {
         // An isolated proactive turn must not warm the shared conversation's
         // session. Retire its one-shot provider session before the final commit
         // check so an abort during disposal still persists no history/memory.
-        await this.retireRunResultSession(request.conversationId, sessionRecord, runtimeResult.providerSessionId);
+        await this.retireRunResultSession(
+          request.conversationId,
+          sessionRecord,
+          ...providerAttemptSessionIds,
+          runtimeResult.providerSessionId,
+        );
       }
 
       // Final pre-commit cancellation check (R9). After this synchronous check,
@@ -469,7 +611,123 @@ export class MonoAgentHarness implements AgentHarness {
       // rolled back safely.
       if (request.abortSignal.aborted) {
         if (!isolated) {
-          await this.retireRunResultSession(request.conversationId, sessionRecord, runtimeResult.providerSessionId);
+          await this.retireRunResultSession(
+            request.conversationId,
+            sessionRecord,
+            ...providerAttemptSessionIds,
+            runtimeResult.providerSessionId,
+          );
+        }
+        const summary = await commitRecorderFinish(recorder, {
+          ...successResult,
+          cancelled: true,
+          failureKind: cancellationFailureKind(request.abortSignal),
+        });
+        return {
+          metadata: responseMetadata(runId, request, context, summary, runtimeResult),
+          failure: {
+            kind: "cancelled",
+            message: "Agent request was cancelled during the turn.",
+            details: runtimeResult,
+          },
+        };
+      }
+
+      // Build and durably prepare the bounded continuation snapshot before the
+      // conversation commit boundary. A size/quota/storage failure must not
+      // leave a warm provider session or history entry behind a failed reply.
+      let completedTurn: Awaited<ReturnType<MonoAgentHarness["buildSuccessfulTurn"]>> | undefined;
+      const claimedContinuationCapabilities = request.continuation?.deferHistoryCommit === true
+        ? []
+        : await continuationCapabilitiesRequiringOriginContext(continuationCapabilities);
+      if (request.continuation?.deferHistoryCommit !== true) {
+        completedTurn = await this.buildSuccessfulTurn(
+          request.conversationId,
+          persistText,
+          text,
+          runId,
+        );
+        try {
+          if (providerHistoryTurn !== undefined) {
+            const providerSessionId = typeof runtimeResult.providerSessionId === "string"
+              ? runtimeResult.providerSessionId.trim()
+              : "";
+            if (
+              providerSessionId.length > 0
+              && providerSessionId === providerHistoryTurn.providerSessionId
+              && coordinatedProviderAttemptEligibleForSync
+              && this.options.runtime.syncSession !== undefined
+            ) {
+              try {
+                providerSessionSynced = await this.options.runtime.syncSession(providerSessionId) === true;
+              } catch {
+                providerSessionSynced = false;
+              }
+            }
+            if (!providerSessionSynced) {
+              // The answer can still commit through canonical host history, but
+              // this provider epoch must never resume. prepareCommit(false)
+              // rotates the next epoch; destructive cleanup is only reclamation.
+              await this.retireRunResultSession(
+                request.conversationId,
+                sessionRecord,
+                ...providerAttemptSessionIds,
+                providerHistoryTurn.providerSessionId,
+                runtimeResult.providerSessionId,
+              );
+            }
+            preparedHistoryAppend = await providerHistoryTurn.prepareCommit(
+              completedTurn.messages,
+              { providerSessionSynced },
+            );
+            providerHistoryOwnershipTransferred = true;
+            providerHistoryTurn = undefined;
+          } else {
+            preparedHistoryAppend = await this.options.historyStore?.prepareAppend?.(
+              request.conversationId,
+              completedTurn.messages,
+            );
+          }
+          if (claimedContinuationCapabilities.length > 0) {
+            const priorHistory = prepared.historyOmitted
+              ? await this.loadHistory(request.conversationId)
+              : prepared.history;
+            await finalizeContinuationOriginContexts(
+              claimedContinuationCapabilities,
+              buildContinuationOriginContext({
+                conversationId: request.conversationId,
+                runId,
+                capturedAt: completedTurn.capturedAt,
+                priorHistory,
+                completedTurn: completedTurn.messages,
+              }),
+            );
+          }
+        } catch (error) {
+          await preparedHistoryAppend?.abort().catch(() => undefined);
+          preparedHistoryAppend = undefined;
+          if (!isolated) {
+            await this.retireRunResultSession(
+              request.conversationId,
+              sessionRecord,
+              ...providerAttemptSessionIds,
+              runtimeResult.providerSessionId,
+            );
+          }
+          throw error;
+        }
+      }
+
+      // Preparation above can perform bounded durable I/O. Cancellation still
+      // wins until the synchronous commit marker below.
+      if (request.abortSignal.aborted) {
+        if (!isolated) {
+          await this.retireRunResultSession(
+            request.conversationId,
+            sessionRecord,
+            ...providerAttemptSessionIds,
+            runtimeResult.providerSessionId,
+          );
         }
         const summary = await commitRecorderFinish(recorder, {
           ...successResult,
@@ -488,14 +746,45 @@ export class MonoAgentHarness implements AgentHarness {
 
       conversationCommitStarted = true;
       lifecycle?.markCommitted();
-      if (!isolated) {
-        this.saveSession(request.conversationId, runtimeResult.providerSessionId, sessionRecord);
+      if (completedTurn !== undefined) {
+        try {
+          if (preparedHistoryAppend !== undefined) {
+            await preparedHistoryAppend.commit();
+            preparedHistoryAppend = undefined;
+          } else {
+            await this.options.historyStore?.append(request.conversationId, completedTurn.messages);
+          }
+        } catch (error) {
+          // A failed history publication must never leave a provider session
+          // that contains an answer the durable conversation does not. Retire
+          // both newly-created and already-warm session identities before the
+          // failed turn is exposed.
+          if (!isolated) {
+            await this.retireRunResultSession(
+              request.conversationId,
+              sessionRecord,
+              ...providerAttemptSessionIds,
+              runtimeResult.providerSessionId,
+            );
+          }
+          throw error;
+        }
+      }
+      if (!isolated && (!providerHistoryOwnershipTransferred || providerSessionSynced)) {
+        this.saveSession(
+          request.conversationId,
+          providerHistoryOwnershipTransferred ? coordinatedProviderSessionId : runtimeResult.providerSessionId,
+          sessionRecord,
+          providerHistoryOwnershipTransferred && providerSessionSynced
+            ? (coordinatedProviderSessionRevision as number) + 1
+            : undefined,
+        );
       }
 
-      // Persist the ORIGINAL caption + redacted attachment metadata (persistText),
-      // NOT the expanded prompt with inlined document text.
-      if (request.continuation?.deferHistoryCommit !== true) {
-        await this.persistSuccessfulTurn(
+      // Persist memory from the ORIGINAL caption + redacted attachment
+      // metadata (persistText), never the expanded provider prompt.
+      if (completedTurn !== undefined) {
+        await this.persistSuccessfulMemory(
           request.conversationId,
           persistText,
           text,
@@ -505,12 +794,41 @@ export class MonoAgentHarness implements AgentHarness {
       // Memory persistence degradation is emitted above, while the recorder is
       // still open. Commit exactly one terminal summary only after every
       // run-scoped event has been recorded/exported/broadcast.
-      const summary = await commitRecorderFinish(recorder, successResult);
+      // Durable history/session state is already authoritative here. Recorder
+      // export failure must not retroactively turn the provider answer into a
+      // failed response or abandon a continuation whose origin was committed.
+      const summary = await safeRecorderCommitFinish(recorder, successResult);
+      try {
+        await activateContinuationOriginContexts(claimedContinuationCapabilities);
+      } catch {
+        // Recorder success is authoritative once committed. A failed activation
+        // degrades only the callback: close still-pending claims so they take
+        // the deterministic zero-model fallback instead of contradicting the
+        // already-succeeded origin response.
+        await Promise.allSettled(claimedContinuationCapabilities.map(async (capability) => {
+          await capability.abandonOriginContext();
+        }));
+      }
+      continuationOriginSettled = true;
       return {
         text,
         metadata: responseMetadata(runId, request, context, summary, runtimeResult),
       };
     } catch (error) {
+      // A provider may already have persisted its transcript before any of the
+      // host's pre-commit stages (recorder preparation, continuation binding,
+      // or history staging) fail. Invalidate that cache generically so a later
+      // warm or durable resume cannot replay an answer absent from canonical
+      // conversation history.
+      if (!conversationCommitStarted && providerAttemptStarted) {
+        await this.retireRunResultSession(
+          request.conversationId,
+          sessionRecord,
+          ...providerAttemptSessionIds,
+          providerHistoryTurn?.providerSessionId,
+          runtimeResult?.providerSessionId,
+        );
+      }
       const cancelledBeforeCommit = request.abortSignal.aborted && !conversationCommitStarted;
       const failure = failureFromThrownError(error, cancelledBeforeCommit);
       const summary = cancelledBeforeCommit
@@ -521,6 +839,13 @@ export class MonoAgentHarness implements AgentHarness {
         failure,
       };
     } finally {
+      await preparedHistoryAppend?.abort().catch(() => undefined);
+      await providerHistoryTurn?.abort().catch(() => undefined);
+      if (!continuationOriginSettled && continuationCapabilities.length > 0) {
+        await Promise.allSettled(continuationCapabilities.map(async (capability) => {
+          await capability.abandonOriginContext();
+        }));
+      }
       // App-owned retrieval services use this to discard the normalized query
       // cache after the whole logical turn (including any resume retry), not
       // after one provider attempt.
@@ -563,7 +888,7 @@ export class MonoAgentHarness implements AgentHarness {
     // store's onEvict disposes each provider session individually).
     // runtime.disposeAllSessions is intentionally NOT called here: the provider
     // registries are process-global and other harnesses may share them.
-    this.liveSessionManager?.dispose();
+    await this.liveSessionManager?.dispose();
     await this.sessionStore?.disposeAll();
   }
 
@@ -599,14 +924,19 @@ export class MonoAgentHarness implements AgentHarness {
     return this.supportsResumeCache;
   }
 
-  private saveSession(conversationId: string, providerSessionId: unknown, owner: RuntimeSessionRecord | undefined): void {
+  private saveSession(
+    conversationId: string,
+    providerSessionId: unknown,
+    owner: RuntimeSessionRecord | undefined,
+    providerSessionRevision?: number,
+  ): void {
     if (!this.sessionsEnabled()) {
       return;
     }
     if (typeof providerSessionId !== "string" || providerSessionId.trim().length === 0) {
       return;
     }
-    this.sessionStore?.save(conversationId, providerSessionId, owner);
+    this.sessionStore?.save(conversationId, providerSessionId, owner, providerSessionRevision);
     const snapshot = this.sessionStoreSnapshot();
     const saved = snapshot.find((entry) => entry.conversationId === conversationId && entry.providerSessionId === providerSessionId);
     if (saved !== undefined) {
@@ -634,26 +964,42 @@ export class MonoAgentHarness implements AgentHarness {
   }
 
   /**
-   * Retires the provider session attached to a turn that will NOT be committed
+   * Invalidates the provider session attached to a turn that will NOT be committed
    * (cancelled mid-turn or empty-text). Evicts a confirmed warm sessionRecord
-   * via the store (its onEvict disposes the provider session), otherwise
-   * disposes the freshly returned providerSessionId directly. Shared by all
+   * via the store and permanently discards its provider transcript, otherwise
+   * invalidates the freshly returned providerSessionId directly. Ordinary
+   * disposal deliberately preserves durable provider caches; invalidation is
+   * required here because canonical host history rejected this turn. Shared by all
    * three non-commit exits (post-runtime abort guard, the empty-text branch,
    * and the pre-commit abort recheck) so they stay consistent.
    */
   private async retireRunResultSession(
     conversationId: string,
     sessionRecord: RuntimeSessionRecord | undefined,
-    providerSessionId: unknown,
+    ...providerSessionIds: readonly unknown[]
   ): Promise<void> {
+    if (!this.sessionsEnabled()) return;
+    const ids = new Set<string>();
+    if (sessionRecord !== undefined) ids.add(sessionRecord.providerSessionId);
+    for (const providerSessionId of providerSessionIds) {
+      if (typeof providerSessionId === "string" && providerSessionId.trim().length > 0) {
+        ids.add(providerSessionId);
+      }
+    }
+    for (const id of ids) {
+      try {
+        if (this.options.runtime.invalidateSession !== undefined) {
+          await this.options.runtime.invalidateSession(id);
+        } else {
+          await this.options.runtime.disposeSession?.(id);
+        }
+      } catch {
+        // Provider cleanup is best-effort; the host session mapping is still
+        // evicted below so this process cannot warm-resume rejected state.
+      }
+    }
     if (sessionRecord !== undefined) {
       await this.sessionStore?.evict(conversationId, "stale", sessionRecord.providerSessionId);
-    } else if (this.sessionsEnabled() && typeof providerSessionId === "string" && providerSessionId.trim().length > 0) {
-      try {
-        await this.options.runtime.disposeSession?.(providerSessionId);
-      } catch {
-        // Bridge TTL backstop reclaims it eventually.
-      }
     }
   }
 
@@ -734,6 +1080,20 @@ export class MonoAgentHarness implements AgentHarness {
     conversationId: string,
     continuation?: AgentHarnessRequest["continuation"],
   ): Promise<readonly HistoryMessage[]> {
+    if (continuation?.originContext !== undefined) {
+      const snapshot = continuation.originContext;
+      assertAgentContinuationOriginContext(snapshot);
+      if (snapshot.conversationId !== conversationId
+        || snapshot.originRunId !== continuation.originRunId
+        || snapshot.historyBoundary !== continuation.historyBoundary) {
+        throw new AgentHarnessError(
+          "origin_context_binding_mismatch",
+          "The pinned continuation origin context does not match this synthesis turn.",
+          { continuationId: continuation.continuationId },
+        );
+      }
+      return snapshot.messages.map((message) => ({ ...message }));
+    }
     const history = await this.options.historyStore?.load(conversationId) ?? [];
     if (continuation === undefined) {
       return history;
@@ -921,10 +1281,13 @@ export class MonoAgentHarness implements AgentHarness {
     memory: ContextBlockInput | undefined,
     runId: string,
     resumeSessionId: string | undefined,
+    durablePiSessionsRoot: string | undefined,
+    sessionIsolated: boolean,
     skillDisclosureNames: readonly string[],
     history: readonly HistoryMessage[],
     historyOmitted: boolean,
     attachmentContext: AttachmentRequestContext,
+    continuationCapabilities: AgentHarnessContinuationClaimCapability[],
     onProviderStart?: () => void,
   ): Promise<RuntimeResult> {
     const hostOnEvent = request.onEvent;
@@ -1023,6 +1386,15 @@ export class MonoAgentHarness implements AgentHarness {
         staticRuntimeOptions,
         requestRuntimeOptions,
       );
+      // Provider-session identity and durable storage are host-owned. Strip all
+      // extension/static values unconditionally, then add only the decisions
+      // made by the coordinated harness below. Conditional object spreads do
+      // not remove pre-existing keys when their guard is false.
+      delete merged.piSessionsRoot;
+      delete merged.sessionKeepAlive;
+      delete merged.sessionIdleTimeoutMs;
+      delete merged.sessionId;
+      delete merged.providerSessionId;
       if (request.continuation?.toolsDisabled === true) {
         // Host-authoritative continuation synthesis is side-effect free. This
         // final override runs after every static/request policy layer so neither
@@ -1056,6 +1428,7 @@ export class MonoAgentHarness implements AgentHarness {
       if (continuationContext !== undefined) {
         merged.mcpServers = continuationContext.mcpServers;
         mcpContinuationCapabilities = continuationContext.capabilities;
+        continuationCapabilities.push(...continuationContext.capabilities);
       }
       // Register abort cleanup only after every run-scoped resource is assigned;
       // otherwise an abort racing capability issuance could memoize cleanup before
@@ -1071,6 +1444,22 @@ export class MonoAgentHarness implements AgentHarness {
       // the precedence is explicit. Non-override turns are byte-for-byte unchanged.
       const overrideModel = isRuntimeModelReference(merged.model) ? merged.model : undefined;
       const effectiveModel = overrideModel ?? this.options.model;
+      if (
+        !sessionIsolated
+        && this.sessionsEnabled()
+        && overrideModel !== undefined
+        && !sameRuntimeModel(overrideModel, this.options.model)
+      ) {
+        // Context/session isolation must be decided before history assembly. A
+        // model-changing extension that was not declared by the request's
+        // cron/webhook/TUI metadata arrives too late: a warm turn may already
+        // have omitted canonical history. Fail before provider execution rather
+        // than mixing model lineage or saving an id owned by another runtime.
+        throw new AgentHarnessError(
+          "undeclared_model_override",
+          "A model-changing runtimeOptionsForRequest result must be declared in request metadata before context assembly.",
+        );
+      }
       // executionMode for an override turn: keep the host's configured mode when the
       // override model supports it (so a host running e.g. claude in cli mode is not
       // silently flipped to sdk for a same-family override), else fall back to that
@@ -1104,9 +1493,12 @@ export class MonoAgentHarness implements AgentHarness {
         ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
         ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
         ...(this.options.maxTurns === undefined ? {} : { maxTurns: this.options.maxTurns }),
-        // Durable provider-session root (pi-native): when set, sessions persist to
-        // disk so resume recovers from there instead of re-sending full history.
-        ...(this.options.piSessionsRoot === undefined ? {} : { piSessionsRoot: this.options.piSessionsRoot }),
+        // Durable provider-session root is forwarded only for a host-history
+        // coordinated turn. Custom stores and isolated runs cannot safely make
+        // provider JSONL authoritative across a crash, so they stay in-memory.
+        ...(durablePiSessionsRoot === undefined || runtime !== this.options.runtime
+          ? {}
+          : { piSessionsRoot: durablePiSessionsRoot }),
         // Progressive skill disclosure (index mode): pass the discovered skill names
         // and the skills root so pi-native's getPiBuiltinTools creates the on-demand
         // `ReadSkill` tool. These live after the merge so request extensions cannot
@@ -1170,15 +1562,10 @@ export class MonoAgentHarness implements AgentHarness {
       // resume-replay retry (the second carries the replayed history); consumers are
       // last-wins.
       //
-      // Durable cross-restart resume: a restart wipes the in-memory history store,
-      // so prepareContext loads 0 messages, but the harness still resumes the
-      // on-disk provider session (resumeSessionId set) which carries the full prior
-      // transcript. Reporting historyOmitted:false there would read as "history
-      // loaded and empty" (an empty conversation), which is wrong — the model saw
-      // the transcript via the provider session. So treat a resume with no locally
-      // loaded history as omitted too.
-      const contextCarriedByProviderSession = resumeSessionId !== undefined && history.length === 0;
-      const turnContextEvent = buildTurnContextEvent(history, historyOmitted || contextCarriedByProviderSession, memory);
+      // `historyOmitted` is true only for a confirmed live warm mapping. A cold
+      // epoch-owned reopen may create its JSONL on miss, so an empty canonical
+      // history must remain distinguishable from intentionally omitted history.
+      const turnContextEvent = buildTurnContextEvent(history, historyOmitted, memory);
       recorder.onEvent(turnContextEvent);
       hostOnEvent?.(turnContextEvent);
       // Bracket the provider call so observability can separate provider+tool+IO
@@ -1213,15 +1600,46 @@ export class MonoAgentHarness implements AgentHarness {
     }
   }
 
+  /** Build the redacted, enriched bytes shared by history and continuation snapshots. */
+  private async buildSuccessfulTurn(
+    conversationId: string,
+    userMessage: string,
+    assistantText: string,
+    runId: string,
+  ): Promise<{
+    readonly capturedAt: string;
+    readonly messages: readonly [HistoryMessage, HistoryMessage];
+  }> {
+    const capturedAt = this.options.now?.().toISOString() ?? new Date().toISOString();
+    let assistantHistoryText = assistantText;
+    try {
+      assistantHistoryText = await this.options.turnHistoryEnricher?.enrichAssistantHistory({
+        runId,
+        conversationId,
+        assistantText,
+      }) ?? assistantText;
+    } catch {
+      // Enrichment is additive. A successful provider answer still commits its
+      // original bytes when the optional app-owned enrichment fails.
+    }
+    return {
+      capturedAt,
+      messages: [
+        { role: "user", content: userMessage, timestamp: capturedAt, runId },
+        { role: "assistant", content: assistantHistoryText, timestamp: capturedAt, runId },
+      ],
+    };
+  }
+
   /**
-   * Persists the turn to history + memory. `userMessage` here is the
+   * Persists additive memory after durable conversation history commits. `userMessage` here is the
    * PERSIST text (original caption + redacted attachment metadata), NOT the
    * provider-facing expanded prompt — see applyAttachments. Keeping the
    * expanded prompt (absolute paths + up to 8KB extracted document body) out of
    * durable history/memory prevents sensitive content leaking into future
    * prompts replayed from history or into memory recall.
    */
-  private async persistSuccessfulTurn(
+  private async persistSuccessfulMemory(
     conversationId: string,
     userMessage: string,
     assistantText: string,
@@ -1231,23 +1649,6 @@ export class MonoAgentHarness implements AgentHarness {
       readonly emit?: (event: RuntimeEventLike) => void;
     },
   ): Promise<void> {
-    const timestamp = this.options.now?.().toISOString() ?? new Date().toISOString();
-    let assistantHistoryText = assistantText;
-    try {
-      assistantHistoryText = await this.options.turnHistoryEnricher?.enrichAssistantHistory({
-        runId: options.runId,
-        conversationId,
-        assistantText,
-      }) ?? assistantText;
-    } catch {
-      // Enrichment is additive. A successful provider answer must still commit
-      // its original history entry if the app-owned enricher fails.
-    }
-    await this.options.historyStore?.append(conversationId, [
-      { role: "user", content: userMessage, timestamp, runId: options.runId },
-      { role: "assistant", content: assistantHistoryText, timestamp, runId: options.runId },
-    ]);
-
     const mode = this.options.memoryWriteMode;
     if (this.options.memory !== undefined && (mode === "append-host-summary" || mode === "capture")) {
       if (shouldSkipMemoryPersistence(userMessage, assistantText, options)) {
@@ -1320,6 +1721,9 @@ function sessionEventFromRecord(
     kind,
     conversationId: record.conversationId,
     providerSessionId: record.providerSessionId,
+    ...(record.providerSessionRevision === undefined
+      ? {}
+      : { providerSessionRevision: record.providerSessionRevision }),
     createdAt: record.createdAt,
     lastActivityAt: record.lastActivityAt,
     busy: record.busy,
@@ -1589,6 +1993,139 @@ function validateContinuationCapability(
       { serverName },
     );
   }
+  if (typeof capability.finalizeOriginContext !== "function"
+    || typeof capability.requiresOriginContext !== "function"
+    || typeof capability.activateOriginContext !== "function"
+    || typeof capability.abandonOriginContext !== "function") {
+    throw new AgentHarnessError(
+      "invalid_continuation_capability",
+      "Continuation claim capabilities must provide durable origin-context finalization.",
+      { serverName },
+    );
+  }
+}
+
+async function continuationCapabilitiesRequiringOriginContext(
+  capabilities: readonly AgentHarnessContinuationClaimCapability[],
+): Promise<AgentHarnessContinuationClaimCapability[]> {
+  const required = await Promise.all(capabilities.map(async (capability) => ({
+    capability,
+    required: await capability.requiresOriginContext(),
+  })));
+  return required.filter((entry) => entry.required).map((entry) => entry.capability);
+}
+
+async function activateContinuationOriginContexts(
+  capabilities: readonly AgentHarnessContinuationClaimCapability[],
+): Promise<void> {
+  await Promise.all(capabilities.map(async (capability) => {
+    await capability.activateOriginContext();
+  }));
+}
+
+async function finalizeContinuationOriginContexts(
+  capabilities: readonly AgentHarnessContinuationClaimCapability[],
+  snapshot: AgentContinuationOriginContext,
+): Promise<void> {
+  // One origin run may expose more than one continuation-capable MCP server.
+  // Every issuer must durably pin the same completed snapshot before the origin
+  // answer is returned; partial success is treated as a failed origin turn.
+  await Promise.all(capabilities.map(async (capability) => {
+    await capability.finalizeOriginContext(snapshot);
+  }));
+}
+
+function buildContinuationOriginContext(input: {
+  readonly conversationId: string;
+  readonly runId: string;
+  readonly capturedAt: string;
+  readonly priorHistory: readonly HistoryMessage[];
+  readonly completedTurn: readonly [HistoryMessage, HistoryMessage];
+}): AgentContinuationOriginContext {
+  // Preserve exact bytes for the newest bounded host-history projection. An
+  // overlarge/invalid older message is omitted as a whole; content is never
+  // silently truncated. The completed origin turn itself must fit or the run
+  // fails closed before reporting success.
+  const availableMessages = AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGES - input.completedTurn.length;
+  const priorGroups = continuationSnapshotHistoryGroups(input.priorHistory)
+    .filter((group) => group.every(isContinuationSnapshotHistoryMessage));
+  const selectedGroups: HistoryMessage[][] = [];
+  let selectedCount = 0;
+  for (let index = priorGroups.length - 1; index >= 0; index -= 1) {
+    const group = priorGroups[index] as HistoryMessage[];
+    if (selectedCount + group.length > availableMessages) break;
+    selectedGroups.unshift(group);
+    selectedCount += group.length;
+  }
+  while (true) {
+    const prior = selectedGroups.flat();
+    const snapshot: AgentContinuationOriginContext = {
+      schemaVersion: 1,
+      conversationId: input.conversationId,
+      originRunId: input.runId,
+      historyBoundary: input.runId,
+      capturedAt: input.capturedAt,
+      messages: [...prior, ...input.completedTurn],
+    };
+    try {
+      assertAgentContinuationOriginContext(snapshot);
+      return snapshot;
+    } catch (error) {
+      if (selectedGroups.length === 0) throw error;
+      // Size pressure evicts an entire oldest host turn. Never leave an
+      // assistant reply without its user message (or vice versa).
+      selectedGroups.shift();
+    }
+  }
+}
+
+function continuationSnapshotHistoryGroups(messages: readonly HistoryMessage[]): HistoryMessage[][] {
+  const groups: HistoryMessage[][] = [];
+  for (let index = 0; index < messages.length;) {
+    const message = messages[index] as HistoryMessage;
+    if (typeof message.runId === "string" && message.runId.length > 0) {
+      const group = [message];
+      index += 1;
+      while (index < messages.length && messages[index]?.runId === message.runId) {
+        group.push(messages[index] as HistoryMessage);
+        index += 1;
+      }
+      groups.push(group);
+      continue;
+    }
+    const next = messages[index + 1];
+    if (message.role === "user" && next?.role === "assistant" && next.runId === undefined) {
+      groups.push([message, next]);
+      index += 2;
+      continue;
+    }
+    // Legacy history can contain standalone system/tool entries. Retain them
+    // atomically; only user/assistant pairs are inferred as a turn.
+    groups.push([message]);
+    index += 1;
+  }
+  return groups;
+}
+
+function isContinuationSnapshotHistoryMessage(message: HistoryMessage): boolean {
+  try {
+    const timestamp = "2026-01-01T00:00:00.000Z";
+    assertAgentContinuationOriginContext({
+      schemaVersion: 1,
+      conversationId: "validation",
+      originRunId: "validation-run",
+      historyBoundary: "validation-run",
+      capturedAt: timestamp,
+      messages: [
+        { ...message },
+        { role: "user", content: "validation", timestamp, runId: "validation-run" },
+        { role: "assistant", content: "validation", timestamp, runId: "validation-run" },
+      ],
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isLoopbackUrl(value: string): boolean {
@@ -1682,12 +2219,16 @@ function validateRequest(request: AgentHarnessRequest): void {
     const continuation = request.continuation;
     if (typeof continuation.continuationId !== "string" || continuation.continuationId.trim().length === 0
       || typeof continuation.originRunId !== "string" || continuation.originRunId.trim().length === 0
+      || (continuation.originContextPolicy !== "pinned" && continuation.originContextPolicy !== "detached_latest")
       || (continuation.historyBoundary !== undefined
         && (typeof continuation.historyBoundary !== "string" || continuation.historyBoundary.trim().length === 0))
+      || (continuation.originContextPolicy === "pinned" && continuation.originContext === undefined)
+      || (continuation.originContextPolicy === "detached_latest" && continuation.originContext !== undefined)
       || continuation.toolsDisabled !== true
       || continuation.deferHistoryCommit !== true) {
       throw new TypeError("continuation must contain valid host-only synthesis controls.");
     }
+    if (continuation.originContext !== undefined) assertAgentContinuationOriginContext(continuation.originContext);
   }
 }
 
@@ -1862,10 +2403,6 @@ function failureFromRuntimeResult(result: RuntimeResult): AgentHarnessFailure | 
   return undefined;
 }
 
-function shouldRetireSessionAfterFailure(kind: string): boolean {
-  return kind !== "cancelled";
-}
-
 function failureFromThrownError(error: unknown, wasAborted: boolean): AgentHarnessFailure {
   if (wasAborted) {
     return { kind: "cancelled", message: "Agent request was cancelled.", details: errorToDetails(error) };
@@ -1906,6 +2443,17 @@ async function commitRecorderFinish(recorder: RunRecorder, result: RuntimeResult
   return recorder.commitFinish === undefined
     ? await recorder.finish(result)
     : await recorder.commitFinish(result);
+}
+
+async function safeRecorderCommitFinish(
+  recorder: RunRecorder,
+  result: RuntimeResultLike,
+): Promise<RunSummary | undefined> {
+  try {
+    return await commitRecorderFinish(recorder, result);
+  } catch {
+    return undefined;
+  }
 }
 
 function normalizeAssistantText(text: unknown): string | undefined {
@@ -2345,12 +2893,10 @@ const TURN_CONTEXT_DECODER = new TextDecoder();
 /**
  * Builds the synthetic `turn_context` event: what context THIS turn was driven
  * with. `historyCount` is the number of loaded prior messages (0 when omitted);
- * `historyOmitted` is true when the provider session carries the transcript (a
- * warm in-process session, or a durable cross-restart resume with no locally
- * loaded history) so no history was replayed here. Known accepted edge: the very
- * first turn of a brand-new conversation with a derived durable id
- * (create-on-miss) also reports `historyOmitted:true` with 0 history — acceptable,
- * as the provider session is the transcript's home from that turn on. The
+ * `historyOmitted` is true only when a confirmed live warm provider session
+ * carries the transcript, so no host history was replayed. A cold durable reopen
+ * reports the canonical history it loaded (including an authoritative empty
+ * history) because its epoch-owned JSONL may be created on miss. The
  * `history`/`memory` keys are omitted entirely when empty. Each entry is clamped
  * for display, flagging `truncated`. The current user message is deliberately NOT
  * included (it is the run's userInput).
@@ -2522,21 +3068,6 @@ function formatAttachmentBytes(bytes: number): string {
 
 function createDefaultRunId(): string {
   return `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-/**
- * Derives a STABLE, fs-safe, collision-resistant provider-session id from a
- * conversationId. Used (only when durable pi sessions are configured) as the
- * resume id so a conversation reopens its on-disk JSONL transcript across a
- * process restart — the in-memory conversationId→providerSessionId map is lost
- * on restart, so without a deterministic id the harness would orphan the JSONL
- * and start a fresh session. The output is sha256 hex (lowercase a-f0-9 only),
- * which is always a safe filename component for pi's JsonlSessionRepo
- * (`${timestamp}_${id}.jsonl`); 32 hex chars = 128 bits, far below any realistic
- * collision risk.
- */
-function deriveDurableSessionId(conversationId: string): string {
-  return createHash("sha256").update(conversationId).digest("hex").slice(0, 32);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

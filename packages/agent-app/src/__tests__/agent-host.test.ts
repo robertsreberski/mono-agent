@@ -21,7 +21,11 @@ import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
-import { createToolPolicy } from "@mono-agent/agent-harness";
+import {
+  createToolPolicy,
+  type ConversationHistoryStore,
+  type HistoryMessage,
+} from "@mono-agent/agent-harness";
 
 /** Deterministic non-zero fake embeddings (dim 64) — keeps journal/bujo-tier tests hermetic (no Ollama). */
 const fakeEmbeddings: EmbeddingProvider = {
@@ -880,6 +884,81 @@ describe("agent host composition helpers", () => {
 
     expect(response.text).toBe("Unlimited answer");
     expect(fake.calls[0]?.options.maxTurns).toBeUndefined();
+  });
+
+  it("restarts with the default 64-message durable history when maxTurns is unlimited", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, ".mono-agent", "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const config = monoConfig({ dir, identityPath, artifactDir });
+    const { maxTurns: _maxTurns, ...unlimitedRuntime } = config.runtime;
+    const unlimitedConfig = { ...config, runtime: unlimitedRuntime } as MonoAgentConfig;
+    let turn = 0;
+    const firstRuntime = createFakeRuntime(async () => ({ text: `answer-${++turn}` }));
+    const firstHarness = await createConfiguredAgentHarness({ config: unlimitedConfig, runtime: firstRuntime.runtime });
+
+    for (let index = 1; index <= 7; index += 1) {
+      await firstHarness.run({
+        conversationId: "conversation-restart",
+        userMessage: `question-${index}`,
+        abortSignal: new AbortController().signal,
+      });
+    }
+
+    const restartedRuntime = createFakeRuntime(async () => ({ text: "answer-after-restart" }));
+    const restartedHarness = await createConfiguredAgentHarness({
+      config: unlimitedConfig,
+      runtime: restartedRuntime.runtime,
+    });
+    await restartedHarness.run({
+      conversationId: "conversation-restart",
+      userMessage: "question-after-restart",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(restartedRuntime.calls[0]?.options.maxTurns).toBeUndefined();
+    expect(restartedRuntime.calls[0]?.prompt).toContain("question-1");
+    expect(restartedRuntime.calls[0]?.prompt).toContain("answer-1");
+    const historyEntries = await readdir(join(dir, ".mono-agent", "history"));
+    expect(historyEntries.filter((name) => name.endsWith(".history.json"))).toHaveLength(1);
+    expect(historyEntries).toContain(".locks");
+  });
+
+  it("continues to honor a caller-supplied conversation history store", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, ".mono-agent", "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const persisted: HistoryMessage[] = [];
+    let loads = 0;
+    const historyStore: ConversationHistoryStore = {
+      async load() {
+        loads += 1;
+        return [...persisted];
+      },
+      async append(_conversationId: string, messages: readonly HistoryMessage[]) {
+        persisted.push(...messages);
+      },
+    };
+    const harness = await createConfiguredAgentHarness({
+      config: monoConfig({ dir, identityPath, artifactDir }),
+      runtime: createFakeRuntime(async () => ({ text: "custom-store-answer" })).runtime,
+      historyStore,
+    });
+
+    await harness.run({
+      conversationId: "custom-store",
+      userMessage: "custom-store-question",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(loads).toBeGreaterThan(0);
+    expect(persisted.map((message) => message.content)).toEqual([
+      "custom-store-question",
+      "custom-store-answer",
+    ]);
+    await expect(readdir(join(dir, ".mono-agent", "history"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("overrides config model and executionMode when supplied at composition time", async () => {

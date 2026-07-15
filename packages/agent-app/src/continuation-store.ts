@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { constants as fsConstants, type Stats } from "node:fs";
 import {
   chmod,
   lstat,
@@ -11,6 +12,13 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import {
+  AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_BYTES,
+  AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGE_BYTES,
+  AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGES,
+  assertAgentContinuationOriginContext,
+  type AgentContinuationOriginContext,
+} from "@mono-agent/agent-contracts";
 
 import type {
   ContinuationDeliveryReceipt,
@@ -22,21 +30,51 @@ import {
   continuationDigest,
   isContinuationMode,
   isContinuationState,
+  TERMINAL_CONTINUATION_STATES,
 } from "./continuations.js";
 
 export const CONTINUATION_STORE_SCHEMA_VERSION = 1;
-export const CONTINUATION_RECORD_STORE_SCHEMA_VERSION = 2;
+export const CONTINUATION_RECORD_STORE_SCHEMA_VERSION = 3;
 
-const RECORDS_DIRECTORY = "records-v2";
-const TRANSACTION_FILE = "continuation-transaction-v2.json";
-const MANIFEST_FILE = "continuation-store-v2.json";
+const RECORDS_DIRECTORY = "records-v3";
+const TRANSACTION_FILE = "continuation-transaction-v3.json";
+const MANIFEST_FILE = "continuation-store-v3.json";
+const LEGACY_RECORDS_DIRECTORY = "records-v2";
+const LEGACY_TRANSACTION_FILE = "continuation-transaction-v2.json";
+const V2_ROLLBACK_GUARD = "UPGRADED-TO-RECORDS-V3";
+const ORIGIN_CONTEXT_GROUPS_DIRECTORY = "origin-context-groups-v1";
 const OWNER_DATABASE_FILE = "continuations-owner.sqlite";
+const ORIGIN_CONTEXTS_DIRECTORY = "origin-context-v1";
 const MAX_RECORD_BYTES = 2 * 1024 * 1024;
 const MAX_TRANSACTION_BYTES = 16 * 1024 * 1024;
 const DEFAULT_TERMINAL_MAX_RECORDS = 50_000;
 const DEFAULT_TERMINAL_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1_000;
 const DEFAULT_CAPTURED_TEXT_MAX_RECORDS = 1_000;
 const DEFAULT_CAPTURED_TEXT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
+export const MAX_CONTINUATION_ORIGIN_CONTEXT_BYTES = AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_BYTES;
+export const MAX_CONTINUATION_ORIGIN_CONTEXT_MESSAGES = AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGES;
+export const MAX_CONTINUATION_ORIGIN_CONTEXT_MESSAGE_BYTES = AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGE_BYTES;
+export const MAX_CONTINUATION_ORIGIN_CONTEXT_STORE_BYTES = 256 * 1024 * 1024;
+
+export type ContinuationOriginContextState =
+  | "pending"
+  | "pinned"
+  | "abandoned"
+  | "detached_latest"
+  | "legacy_missing"
+  | "scrubbed";
+
+export interface ContinuationOriginContextReference {
+  readonly schemaVersion: 1;
+  readonly digest: string;
+  readonly bytes: number;
+  readonly messageCount: number;
+}
+
+export interface ContinuationOriginContextPin {
+  readonly reference: ContinuationOriginContextReference;
+  release(): Promise<void>;
+}
 
 export interface ContinuationRetentionOptions {
   /** Metadata/idempotency tombstones retained after terminal compaction. Default 50,000. */
@@ -50,7 +88,7 @@ export interface ContinuationRetentionOptions {
 }
 
 export interface ContinuationStoreStats {
-  readonly format: "per-record-v2";
+  readonly format: "per-record-v3";
   readonly records: number;
   readonly active: number;
   readonly unresolvedDelivery: number;
@@ -80,6 +118,16 @@ export interface DurableContinuationRecord {
   readonly originConversationId: string;
   readonly replyToConversationId?: string;
   readonly historyBoundary?: string;
+  originContextState: ContinuationOriginContextState;
+  originContextRef?: ContinuationOriginContextReference;
+  /** Retained after terminal snapshot scrubbing for audit/idempotency. */
+  originContextDigest?: string;
+  originContextMessageCount?: number;
+  /** Domain-separated binding of the v1 claim fingerprint and pinned digest. */
+  originContextFingerprint?: string;
+  /** Store-only HMAC over the immutable claim, route, task, and snapshot binding. */
+  originContextBindingMac?: string;
+  completionKind?: "synthesized" | "origin_context_unavailable";
   readonly mode: ContinuationMode;
   readonly routeName?: string;
   readonly taskKey: string;
@@ -94,6 +142,7 @@ export interface DurableContinuationRecord {
   resultPayloadHash?: string;
   resultPayload?: unknown;
   synthesisAttempts: number;
+  synthesisDeferrals: number;
   synthesisStartedAt?: string;
   synthesizedText?: string;
   actionable?: boolean;
@@ -122,7 +171,7 @@ interface ResolvedContinuationRetention {
 }
 
 interface ContinuationRecordTransaction {
-  readonly schemaVersion: typeof CONTINUATION_RECORD_STORE_SCHEMA_VERSION;
+  readonly schemaVersion: 2 | typeof CONTINUATION_RECORD_STORE_SCHEMA_VERSION;
   readonly generation: string;
   readonly createdAt: string;
   readonly writes: readonly DurableContinuationRecord[];
@@ -136,6 +185,18 @@ interface ContinuationStoreManifest {
   readonly stats: ContinuationStoreStats;
 }
 
+interface ContinuationOriginContextGroupCommit {
+  readonly schemaVersion: 1;
+  readonly groupKey: string;
+  readonly originRunId: string;
+  readonly originConversationId: string;
+  readonly historyBoundary: string;
+  readonly snapshotDigest: string;
+  readonly memberCount: number;
+  readonly memberSetDigest: string;
+  readonly activatedAt: string;
+}
+
 export interface ContinuationStore {
   readonly path: string;
   get(id: string): Promise<DurableContinuationRecord | undefined>;
@@ -146,6 +207,18 @@ export interface ContinuationStore {
     readonly taskKey: string;
   }): Promise<DurableContinuationRecord | undefined>;
   stats(): Promise<ContinuationStoreStats>;
+  stageOriginContext(snapshot: AgentContinuationOriginContext): Promise<ContinuationOriginContextPin>;
+  loadOriginContext(reference: ContinuationOriginContextReference): Promise<AgentContinuationOriginContext | undefined>;
+  /**
+   * Atomically publishes every prepared context in one immutable origin group.
+   * A compact durable group marker is the semantic commit point, so activation
+   * remains all-or-nothing even when materializing the individual records takes
+   * more than one bounded transaction.
+   */
+  activateOriginContextGroup(input: {
+    readonly claimFingerprint: string;
+    readonly activatedAt: string;
+  }): Promise<void>;
   mutate<T>(operation: (records: Map<string, DurableContinuationRecord>) => T | Promise<T>): Promise<T>;
 }
 
@@ -226,38 +299,84 @@ export async function openContinuationStore(
   await ensureOwnerOnlyDirectory(stateDir);
   const recordsDir = join(stateDir, RECORDS_DIRECTORY);
   await ensureOwnerOnlyDirectory(recordsDir);
+  const legacyRecordsDir = join(stateDir, LEGACY_RECORDS_DIRECTORY);
+  await ensureOwnerOnlyDirectory(legacyRecordsDir);
+  const originContextsDir = join(stateDir, ORIGIN_CONTEXTS_DIRECTORY);
+  await ensureOwnerOnlyDirectory(originContextsDir);
+  const originContextGroupsDir = join(stateDir, ORIGIN_CONTEXT_GROUPS_DIRECTORY);
+  await ensureOwnerOnlyDirectory(originContextGroupsDir);
   const transactionPath = join(stateDir, TRANSACTION_FILE);
   const manifestPath = join(stateDir, MANIFEST_FILE);
   const legacyPath = join(stateDir, "continuations-v1.json");
+  const legacyTransactionPath = join(stateDir, LEGACY_TRANSACTION_FILE);
+  const rollbackGuardPath = join(legacyRecordsDir, V2_ROLLBACK_GUARD);
   const policy = resolveRetention(options.retention);
   const now = options.now ?? (() => new Date());
 
-  const recoveredGeneration = await recoverRecordTransaction(recordsDir, transactionPath);
+  const manifestExists = await continuationPathExists(manifestPath);
+  if (manifestExists) await assertV3Manifest(manifestPath);
+  // Finish any v2 transaction before installing the rollback guard. Once the
+  // guard exists, v0.10 fails closed while v3 deliberately leaves the v2/v1
+  // evidence untouched for audit and manual recovery.
+  if (!await continuationPathExists(rollbackGuardPath)) {
+    await recoverRecordTransaction(legacyRecordsDir, legacyTransactionPath, 2);
+  }
+  const recoveredGeneration = await recoverRecordTransaction(
+    recordsDir,
+    transactionPath,
+    CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
+  );
   const records = await loadRecordDirectory(recordsDir);
   const beforeOpen = cloneRecords(records);
-  const legacyExists = await continuationPathExists(legacyPath);
-  if (legacyExists) {
-    const legacy = await loadLegacyStore(legacyPath);
-    for (const [id, record] of legacy) {
-      const current = records.get(id);
-      if (current === undefined) {
-        records.set(id, record);
-      } else if (canonicalContinuationJson(current) !== canonicalContinuationJson(record)) {
-        throw new Error(`Legacy and v2 continuation records conflict for id ${id}; refusing lossy migration.`);
-      }
+  normalizeLegacyContinuationRecords(records);
+  if (!manifestExists) {
+    const migrationSource = await loadRecordDirectory(legacyRecordsDir, new Set([V2_ROLLBACK_GUARD]));
+    normalizeLegacyContinuationRecords(migrationSource);
+    if (await continuationPathExists(legacyPath)) {
+      const legacy = await loadLegacyStore(legacyPath);
+      normalizeLegacyContinuationRecords(legacy);
+      mergeMigrationRecords(migrationSource, legacy, "v1 and v2");
     }
+    // Install the old-reader poison before the first v3 record becomes active.
+    // A crash on either side is restart-safe: v3 repeats a semantic merge, and
+    // v0.10 cannot start against a stale v2 snapshot.
+    if (!await continuationPathExists(rollbackGuardPath)) {
+      await writeTextAtomic(
+        rollbackGuardPath,
+        "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n",
+        4 * 1024,
+      );
+    }
+    mergeMigrationRecords(records, migrationSource, "v2 and v3");
   }
+  const committedOriginGroups = await applyOriginContextGroupCommits(originContextGroupsDir, records);
   applyRetention(records, policy, now());
   const migrationGeneration = await persistRecordChanges(recordsDir, transactionPath, beforeOpen, records);
-  if (legacyExists) {
-    await rm(legacyPath, { force: true });
-    await syncDirectory(stateDir);
-  }
   let generation = migrationGeneration ?? recoveredGeneration ?? randomUUID();
   await persistManifest(manifestPath, generation, continuationStoreStats(records, policy), now());
+  await removeOriginContextGroupCommits(originContextGroupsDir, committedOriginGroups);
+  await sweepOriginContextBlobs(originContextsDir, referencedOriginContextDigests(records), new Set());
 
   let tail: Promise<void> = Promise.resolve();
+  let originTail: Promise<void> = Promise.resolve();
+  // Multiple capabilities from one origin run intentionally stage the same
+  // content-addressed snapshot concurrently. Track leases, not just presence:
+  // one failed/finalized caller must not sweep the blob while another caller
+  // still owns an uncommitted pin for the same digest.
+  const pendingOriginPins = new Map<string, number>();
   let poisoned: unknown;
+
+  async function withOriginLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = originTail;
+    let release!: () => void;
+    originTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
 
   async function locked<T>(operation: (current: Map<string, DurableContinuationRecord>) => T | Promise<T>): Promise<T> {
     const previous = tail;
@@ -283,10 +402,21 @@ export async function openContinuationStore(
       if (committedGeneration !== undefined) generation = committedGeneration;
       replaceRecords(records, draft);
       await persistManifest(manifestPath, generation, continuationStoreStats(records, policy), now());
+      await withOriginLock(async () => {
+        await sweepOriginContextBlobs(
+          originContextsDir,
+          referencedOriginContextDigests(records),
+          new Set(pendingOriginPins.keys()),
+        );
+      });
       return result;
     } catch (error) {
       try {
-        const recovered = await recoverRecordTransaction(recordsDir, transactionPath);
+        const recovered = await recoverRecordTransaction(
+          recordsDir,
+          transactionPath,
+          CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
+        );
         if (recovered !== undefined) generation = recovered;
         replaceRecords(records, await loadRecordDirectory(recordsDir));
       } catch (recoveryError) {
@@ -295,6 +425,93 @@ export async function openContinuationStore(
       }
       poisoned = error;
       throw error;
+    } finally {
+      release();
+    }
+  }
+
+  async function activateOriginContextGroup(input: {
+    readonly claimFingerprint: string;
+    readonly activatedAt: string;
+  }): Promise<void> {
+    if (!requiredString(input.claimFingerprint) || !requiredDate(input.activatedAt)) {
+      throw new Error("Continuation origin-context activation has an invalid claim or timestamp.");
+    }
+    const previous = tail;
+    let release!: () => void;
+    tail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    if (poisoned !== undefined) {
+      release();
+      throw new Error("Continuation store requires restart after a failed durable transaction.", { cause: poisoned });
+    }
+    const before = cloneRecords(records);
+    const draft = cloneRecords(records);
+    let commit: ContinuationOriginContextGroupCommit | undefined;
+    let markerPath: string | undefined;
+    let published = false;
+    try {
+      commit = prepareOriginContextGroupCommit(draft, input);
+      if (commit === undefined) return;
+      markerPath = join(originContextGroupsDir, `${commit.groupKey}.json`);
+      if (await continuationPathExists(markerPath)) {
+        const existing = await loadOriginContextGroupCommit(markerPath);
+        if (canonicalContinuationJson(existing) !== canonicalContinuationJson(commit)) {
+          throw new Error("Continuation origin-context group activation conflicts with an existing commit marker.");
+        }
+      } else {
+        // The marker is the semantic commit point. It is deliberately compact:
+        // the member-set digest makes one fsync atomic for groups whose record
+        // materialization spans arbitrarily many bounded transaction batches.
+        await writeJsonAtomic(markerPath, commit, true, 64 * 1024);
+      }
+      published = true;
+      applyOriginContextGroupCommit(draft, commit);
+      replaceRecords(records, draft);
+
+      try {
+        const committedGeneration = await persistRecordChanges(recordsDir, transactionPath, before, draft);
+        if (committedGeneration !== undefined) generation = committedGeneration;
+        await persistManifest(manifestPath, generation, continuationStoreStats(records, policy), now());
+        await rm(markerPath, { force: true });
+        await syncDirectory(originContextGroupsDir);
+      } catch (materializationError) {
+        // Publication already committed. Recover the bounded materialization if
+        // possible and keep the group marker as the restart-time source of
+        // truth. Never report an ambiguous activation failure to a caller that
+        // might then abandon an already-published group.
+        try {
+          const recovered = await recoverRecordTransaction(
+            recordsDir,
+            transactionPath,
+            CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
+          );
+          if (recovered !== undefined) generation = recovered;
+          const recoveredRecords = await loadRecordDirectory(recordsDir);
+          normalizeLegacyContinuationRecords(recoveredRecords);
+          applyOriginContextGroupCommit(recoveredRecords, commit);
+          replaceRecords(records, recoveredRecords);
+        } catch (recoveryError) {
+          poisoned = new AggregateError(
+            [materializationError, recoveryError],
+            "Continuation origin-context activation committed but requires restart to recover.",
+          );
+        }
+        poisoned ??= materializationError;
+      }
+      await withOriginLock(async () => {
+        await sweepOriginContextBlobs(
+          originContextsDir,
+          referencedOriginContextDigests(records),
+          new Set(pendingOriginPins.keys()),
+        );
+      });
+    } catch (error) {
+      if (!published) throw error;
+      // The fsynced marker means activation is no longer ambiguous. Preserve
+      // that success contract and force a restart for any unexpected local
+      // maintenance failure after the commit point.
+      poisoned ??= error;
     } finally {
       release();
     }
@@ -323,6 +540,74 @@ export async function openContinuationStore(
       await tail;
       return continuationStoreStats(records, policy);
     },
+    async stageOriginContext(snapshot) {
+      assertAgentContinuationOriginContext(snapshot);
+      const canonical = canonicalContinuationJson(snapshot);
+      const bytes = Buffer.byteLength(canonical, "utf8");
+      if (snapshot.messages.length > MAX_CONTINUATION_ORIGIN_CONTEXT_MESSAGES) {
+        throw new Error(`Continuation origin context exceeds its ${String(MAX_CONTINUATION_ORIGIN_CONTEXT_MESSAGES)} message limit.`);
+      }
+      if (snapshot.messages.some((message) =>
+        Buffer.byteLength(message.content, "utf8") > MAX_CONTINUATION_ORIGIN_CONTEXT_MESSAGE_BYTES)) {
+        throw new Error(`Continuation origin context contains a message over its ${String(MAX_CONTINUATION_ORIGIN_CONTEXT_MESSAGE_BYTES)} byte limit.`);
+      }
+      if (bytes > MAX_CONTINUATION_ORIGIN_CONTEXT_BYTES) {
+        throw new Error(`Continuation origin context exceeds its ${String(MAX_CONTINUATION_ORIGIN_CONTEXT_BYTES)} byte limit.`);
+      }
+      const digest = originContextDigest(canonical);
+      const reference = { schemaVersion: 1, digest, bytes, messageCount: snapshot.messages.length } as const;
+      pendingOriginPins.set(digest, (pendingOriginPins.get(digest) ?? 0) + 1);
+      try {
+        await withOriginLock(async () => {
+          const path = join(originContextsDir, `${digest}.json`);
+          if (await continuationPathExists(path)) {
+            const existing = await readOriginContextCanonical(path, reference);
+            if (existing !== canonical) throw new Error("Continuation origin context digest collision or content conflict.");
+            return;
+          }
+          const aggregate = await originContextStoreBytes(originContextsDir);
+          if (aggregate + bytes > MAX_CONTINUATION_ORIGIN_CONTEXT_STORE_BYTES) {
+            throw new Error(`Continuation origin context store exceeds its ${String(MAX_CONTINUATION_ORIGIN_CONTEXT_STORE_BYTES)} byte quota.`);
+          }
+          await writeTextAtomic(path, canonical, MAX_CONTINUATION_ORIGIN_CONTEXT_BYTES);
+        });
+      } catch (error) {
+        releasePendingOriginPin(pendingOriginPins, digest);
+        throw error;
+      }
+      let released = false;
+      return {
+        reference,
+        async release() {
+          if (released) return;
+          released = true;
+          releasePendingOriginPin(pendingOriginPins, digest);
+          await withOriginLock(async () => {
+            await sweepOriginContextBlobs(
+              originContextsDir,
+              referencedOriginContextDigests(records),
+              new Set(pendingOriginPins.keys()),
+            );
+          });
+        },
+      };
+    },
+    async loadOriginContext(reference) {
+      if (!isOriginContextReference(reference)) return undefined;
+      return await withOriginLock(async () => {
+        const path = join(originContextsDir, `${reference.digest}.json`);
+        try {
+          const canonical = await readOriginContextCanonical(path, reference);
+          return JSON.parse(canonical) as AgentContinuationOriginContext;
+        } catch (error) {
+          if (isMissing(error) || error instanceof SyntaxError || error instanceof OriginContextCorruptionError) {
+            return undefined;
+          }
+          throw error;
+        }
+      });
+    },
+    activateOriginContextGroup,
     mutate: locked,
   };
 }
@@ -405,11 +690,18 @@ async function loadLegacyStore(path: string): Promise<Map<string, DurableContinu
   return new Map(Object.entries(parsed.records).map(([id, record]) => [id, record]));
 }
 
-async function loadRecordDirectory(path: string): Promise<Map<string, DurableContinuationRecord>> {
+async function loadRecordDirectory(
+  path: string,
+  ignoredEntries: ReadonlySet<string> = new Set(),
+): Promise<Map<string, DurableContinuationRecord>> {
   const records = new Map<string, DurableContinuationRecord>();
   let removedTemporary = false;
   for (const entry of await readdir(path, { withFileTypes: true })) {
     const filePath = join(path, entry.name);
+    if (ignoredEntries.has(entry.name)) {
+      await assertOwnerOnlyRegularFile(filePath, "Continuation migration guard");
+      continue;
+    }
     if (entry.name.startsWith(".") && entry.name.endsWith(".tmp")) {
       if (!entry.isFile() || entry.isSymbolicLink()) {
         throw new Error(`Continuation temporary record is not a regular file: ${filePath}`);
@@ -445,6 +737,184 @@ async function loadRecordDirectory(path: string): Promise<Map<string, DurableCon
   return records;
 }
 
+function mergeMigrationRecords(
+  target: Map<string, DurableContinuationRecord>,
+  source: Map<string, DurableContinuationRecord>,
+  label: string,
+): void {
+  // Both sides must be normalized before the semantic comparison. Otherwise a
+  // crash after persisting defaults (for example synthesisDeferrals=0) makes a
+  // restart falsely report a migration conflict against the equivalent v1/v2
+  // representation that omitted those fields.
+  normalizeLegacyContinuationRecords(target);
+  normalizeLegacyContinuationRecords(source);
+  for (const [id, record] of source) {
+    const current = target.get(id);
+    if (current === undefined) {
+      target.set(id, structuredClone(record));
+    } else if (canonicalContinuationJson(current) !== canonicalContinuationJson(record)) {
+      throw new Error(`${label} continuation records conflict for id ${id}; refusing lossy migration.`);
+    }
+  }
+}
+
+async function assertV3Manifest(path: string): Promise<void> {
+  const raw = await readBoundedOwnerOnlyFile(path, 1024 * 1024, "Continuation v3 manifest");
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Continuation v3 manifest contains invalid JSON: ${path}`, { cause: error });
+  }
+  if (!isObject(value)
+    || value.schemaVersion !== CONTINUATION_RECORD_STORE_SCHEMA_VERSION
+    || !requiredString(value.generation)
+    || !requiredDate(value.updatedAt)
+    || !isObject(value.stats)) {
+    throw new Error(`Continuation v3 manifest has a malformed schema: ${path}`);
+  }
+}
+
+function prepareOriginContextGroupCommit(
+  records: Map<string, DurableContinuationRecord>,
+  input: { readonly claimFingerprint: string; readonly activatedAt: string },
+): ContinuationOriginContextGroupCommit | undefined {
+  const seeds = [...records.values()].filter((record) => record.claimFingerprint === input.claimFingerprint);
+  if (seeds.length === 0) return undefined;
+  const seed = seeds[0] as DurableContinuationRecord;
+  if (seed.originContextState === "detached_latest") return undefined;
+  if (seed.historyBoundary === undefined) {
+    throw new Error("A pinned continuation origin group must have an immutable history boundary.");
+  }
+  const candidates = [...records.values()].filter((record) =>
+    record.originRunId === seed.originRunId
+    && record.originConversationId === seed.originConversationId
+    && record.historyBoundary === seed.historyBoundary
+    && !TERMINAL_CONTINUATION_STATES.has(record.state));
+  if (candidates.length === 0) return undefined;
+  const digests = new Set<string>();
+  for (const record of candidates) {
+    if ((record.originContextState !== "pending" && record.originContextState !== "pinned")
+      || record.originContextRef === undefined
+      || record.originContextDigest !== record.originContextRef.digest
+      || record.originContextBindingMac === undefined) {
+      throw new Error("Continuation origin context was not durably prepared for activation.");
+    }
+    digests.add(record.originContextRef.digest);
+  }
+  if (digests.size !== 1) {
+    throw new Error("Continuation origin claims were prepared with conflicting snapshots.");
+  }
+  if (candidates.every((record) => record.originContextState === "pinned")) return undefined;
+  const snapshotDigest = [...digests][0];
+  if (snapshotDigest === undefined) throw new Error("Continuation origin group has no snapshot digest.");
+  const memberIds = candidates.map((record) => record.continuationId).sort();
+  const groupIdentity = {
+    originRunId: seed.originRunId,
+    originConversationId: seed.originConversationId,
+    historyBoundary: seed.historyBoundary,
+  };
+  return {
+    schemaVersion: 1,
+    groupKey: continuationDigest(
+      `mono-agent-origin-context-group-v1\0${canonicalContinuationJson(groupIdentity)}`,
+    ),
+    ...groupIdentity,
+    snapshotDigest,
+    memberCount: memberIds.length,
+    memberSetDigest: continuationDigest(
+      `mono-agent-origin-context-members-v1\0${canonicalContinuationJson(memberIds)}`,
+    ),
+    activatedAt: input.activatedAt,
+  };
+}
+
+function applyOriginContextGroupCommit(
+  records: Map<string, DurableContinuationRecord>,
+  commit: ContinuationOriginContextGroupCommit,
+): void {
+  const candidates = [...records.values()].filter((record) =>
+    record.originRunId === commit.originRunId
+    && record.originConversationId === commit.originConversationId
+    && record.historyBoundary === commit.historyBoundary
+    && !TERMINAL_CONTINUATION_STATES.has(record.state));
+  const memberIds = candidates.map((record) => record.continuationId).sort();
+  const memberSetDigest = continuationDigest(
+    `mono-agent-origin-context-members-v1\0${canonicalContinuationJson(memberIds)}`,
+  );
+  if (candidates.length !== commit.memberCount || memberSetDigest !== commit.memberSetDigest) {
+    throw new Error("Continuation origin-context group commit member set does not match durable records.");
+  }
+  for (const record of candidates) {
+    if ((record.originContextState !== "pending" && record.originContextState !== "pinned")
+      || record.originContextRef?.digest !== commit.snapshotDigest
+      || record.originContextDigest !== commit.snapshotDigest
+      || record.originContextBindingMac === undefined) {
+      throw new Error("Continuation origin-context group commit does not match its prepared records.");
+    }
+  }
+  for (const record of candidates) {
+    if (record.originContextState === "pinned") continue;
+    record.originContextState = "pinned";
+    record.updatedAt = commit.activatedAt;
+    if (record.lastError?.code === "origin_context_pending") delete record.lastError;
+    delete record.nextAttemptAt;
+  }
+}
+
+async function applyOriginContextGroupCommits(
+  directory: string,
+  records: Map<string, DurableContinuationRecord>,
+): Promise<readonly string[]> {
+  const applied: string[] = [];
+  let removedTemporary = false;
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.name.startsWith(".") && entry.name.endsWith(".tmp")) {
+      if (!entry.isFile() || entry.isSymbolicLink()) {
+        throw new Error(`Continuation origin-context group temporary is not a regular file: ${path}`);
+      }
+      await rm(path, { force: true });
+      removedTemporary = true;
+      continue;
+    }
+    if (!/^[a-f0-9]{64}\.json$/u.test(entry.name) || !entry.isFile() || entry.isSymbolicLink()) {
+      throw new Error(`Unexpected entry in continuation origin-context group directory: ${path}`);
+    }
+    const commit = await loadOriginContextGroupCommit(path);
+    if (`${commit.groupKey}.json` !== entry.name) {
+      throw new Error(`Continuation origin-context group filename does not match its key: ${path}`);
+    }
+    applyOriginContextGroupCommit(records, commit);
+    applied.push(path);
+  }
+  if (removedTemporary) await syncDirectory(directory);
+  return applied;
+}
+
+async function loadOriginContextGroupCommit(path: string): Promise<ContinuationOriginContextGroupCommit> {
+  const raw = await readBoundedOwnerOnlyFile(path, 64 * 1024, "Continuation origin-context group commit");
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Continuation origin-context group commit contains invalid JSON: ${path}`, { cause: error });
+  }
+  if (!isOriginContextGroupCommit(value)) {
+    throw new Error(`Continuation origin-context group commit has a malformed schema: ${path}`);
+  }
+  return value;
+}
+
+async function removeOriginContextGroupCommits(
+  directory: string,
+  paths: readonly string[],
+): Promise<void> {
+  if (paths.length === 0) return;
+  for (const path of paths) await rm(path, { force: true });
+  await syncDirectory(directory);
+}
+
 async function persistRecordChanges(
   recordsDir: string,
   transactionPath: string,
@@ -468,7 +938,11 @@ async function persistRecordChanges(
   return generation;
 }
 
-async function recoverRecordTransaction(recordsDir: string, transactionPath: string): Promise<string | undefined> {
+async function recoverRecordTransaction(
+  recordsDir: string,
+  transactionPath: string,
+  expectedSchemaVersion: 2 | typeof CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
+): Promise<string | undefined> {
   if (!await continuationPathExists(transactionPath)) return undefined;
   const raw = await readBoundedOwnerOnlyFile(transactionPath, MAX_TRANSACTION_BYTES, "Continuation transaction");
   let value: unknown;
@@ -477,7 +951,7 @@ async function recoverRecordTransaction(recordsDir: string, transactionPath: str
   } catch (error) {
     throw new Error(`Continuation transaction contains invalid JSON: ${transactionPath}`, { cause: error });
   }
-  if (!isRecordTransaction(value)) {
+  if (!isRecordTransaction(value, expectedSchemaVersion)) {
     throw new Error(`Continuation transaction has a malformed schema: ${transactionPath}`);
   }
   await applyRecordTransaction(recordsDir, value);
@@ -543,6 +1017,149 @@ async function writeJsonAtomic(
     await handle?.close().catch(() => undefined);
     await rm(temporary, { force: true }).catch(() => undefined);
   }
+}
+
+async function writeTextAtomic(path: string, body: string, maxBytes: number): Promise<void> {
+  if (Buffer.byteLength(body, "utf8") > maxBytes) {
+    throw new Error(`Durable continuation file exceeds its ${String(maxBytes)} byte safety limit: ${path}`);
+  }
+  const temporary = join(dirname(path), `.${continuationDigest(path).slice(0, 12)}-${process.pid}-${randomUUID()}.tmp`);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(temporary, "wx", 0o600);
+    await handle.writeFile(body, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temporary, path);
+    if (process.platform !== "win32") await chmod(path, 0o600);
+    await syncDirectory(dirname(path));
+  } finally {
+    await handle?.close().catch(() => undefined);
+    await rm(temporary, { force: true }).catch(() => undefined);
+  }
+}
+
+class OriginContextCorruptionError extends Error {}
+
+function originContextDigest(canonical: string): string {
+  return continuationDigest(`mono-agent-origin-context-v1\0${canonical}`);
+}
+
+async function readOriginContextCanonical(
+  path: string,
+  reference: ContinuationOriginContextReference,
+): Promise<string> {
+  let canonical: string;
+  try {
+    const loaded = await readBoundedOwnerOnlyFileWithStats(
+      path,
+      MAX_CONTINUATION_ORIGIN_CONTEXT_BYTES,
+      "Continuation origin context",
+    );
+    if (loaded.bytes !== reference.bytes) {
+      throw new OriginContextCorruptionError("Continuation origin context size does not match its reference.");
+    }
+    canonical = loaded.text;
+  } catch (error) {
+    if (error instanceof OriginContextCorruptionError || isMissing(error)) throw error;
+    throw new OriginContextCorruptionError("Continuation origin context is not a safe owner-only file.", { cause: error });
+  }
+  if (Buffer.byteLength(canonical, "utf8") !== reference.bytes
+    || originContextDigest(canonical) !== reference.digest) {
+    throw new OriginContextCorruptionError("Continuation origin context digest does not match its reference.");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(canonical) as unknown;
+  } catch (error) {
+    throw new OriginContextCorruptionError("Continuation origin context is not valid JSON.", { cause: error });
+  }
+  if (canonicalContinuationJson(parsed) !== canonical) {
+    throw new OriginContextCorruptionError("Continuation origin context is not canonically encoded.");
+  }
+  try {
+    assertAgentContinuationOriginContext(parsed);
+  } catch (error) {
+    throw new OriginContextCorruptionError("Continuation origin context has an invalid schema.", { cause: error });
+  }
+  if (parsed.messages.length !== reference.messageCount) {
+    throw new OriginContextCorruptionError("Continuation origin context message count does not match its reference.");
+  }
+  return canonical;
+}
+
+function referencedOriginContextDigests(
+  records: Map<string, DurableContinuationRecord>,
+): ReadonlySet<string> {
+  return new Set([...records.values()].flatMap((record) =>
+    record.originContextRef === undefined ? [] : [record.originContextRef.digest]));
+}
+
+function releasePendingOriginPin(pins: Map<string, number>, digest: string): void {
+  const count = pins.get(digest);
+  if (count === undefined) return;
+  if (count <= 1) pins.delete(digest);
+  else pins.set(digest, count - 1);
+}
+
+async function sweepOriginContextBlobs(
+  directory: string,
+  referenced: ReadonlySet<string>,
+  pending: ReadonlySet<string>,
+): Promise<void> {
+  let changed = false;
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.name.startsWith(".") && entry.name.endsWith(".tmp")) {
+      if (!entry.isFile() && !entry.isSymbolicLink()) {
+        throw new Error(`Continuation origin-context temporary is not a regular file: ${path}`);
+      }
+      await rm(path, { force: true });
+      changed = true;
+      continue;
+    }
+    const match = /^([a-f0-9]{64})\.json$/u.exec(entry.name);
+    if (match?.[1] !== undefined && !referenced.has(match[1]) && !pending.has(match[1])) {
+      // Once no durable record references a blob, unlink it without opening or
+      // following it. This also lets the safe-fallback path clean up a blob
+      // whose mode/identity was corrupted instead of poisoning record storage.
+      await rm(path, { force: true, recursive: true });
+      changed = true;
+      continue;
+    }
+    if (match?.[1] === undefined) {
+      throw new Error(`Unexpected entry in continuation origin-context directory: ${path}`);
+    }
+    // A referenced blob is untrusted payload, not store metadata. Do not let a
+    // corrupt mode, hard link, symlink, or non-file poison startup; the
+    // descriptor-stable load path will classify it as unavailable and the
+    // service can emit its deterministic zero-model fallback.
+    if (!entry.isFile() || entry.isSymbolicLink()) continue;
+    try {
+      await assertOwnerOnlyRegularFile(path, "Continuation origin context");
+    } catch {
+      continue;
+    }
+  }
+  if (changed) await syncDirectory(directory);
+}
+
+async function originContextStoreBytes(directory: string): Promise<number> {
+  let total = 0;
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.name.startsWith(".") && entry.name.endsWith(".tmp")) continue;
+    if (!/^[a-f0-9]{64}\.json$/u.test(entry.name)) {
+      throw new Error(`Unexpected entry in continuation origin-context directory: ${join(directory, entry.name)}`);
+    }
+    if (!entry.isFile() || entry.isSymbolicLink()) continue;
+    const info = await lstat(join(directory, entry.name));
+    total += info.size;
+    if (total > MAX_CONTINUATION_ORIGIN_CONTEXT_STORE_BYTES) {
+      throw new Error("Continuation origin context store exceeds its aggregate byte quota.");
+    }
+  }
+  return total;
 }
 
 async function syncDirectory(path: string): Promise<void> {
@@ -654,6 +1271,14 @@ const SETTLED_TERMINAL_STATES = new Set<ContinuationState>([
   "dead_lettered",
 ]);
 
+const ORIGIN_CONTEXT_SCRUB_STATES = new Set<ContinuationState>([
+  "delivery_unknown",
+  "delivered",
+  "expired",
+  "cancelled",
+  "dead_lettered",
+]);
+
 function applyRetention(
   records: Map<string, DurableContinuationRecord>,
   policy: ResolvedContinuationRetention,
@@ -670,6 +1295,12 @@ function applyRetention(
   const retainedCaptureText = new Set(captures.map((record) => record.continuationId));
 
   for (const record of records.values()) {
+    if (ORIGIN_CONTEXT_SCRUB_STATES.has(record.state) && record.originContextRef !== undefined) {
+      record.originContextDigest ??= record.originContextRef.digest;
+      record.originContextMessageCount ??= record.originContextRef.messageCount;
+      delete record.originContextRef;
+      record.originContextState = "scrubbed";
+    }
     if (!SETTLED_TERMINAL_STATES.has(record.state)) continue;
     if (record.resultPayload !== undefined) {
       delete record.resultPayload;
@@ -704,7 +1335,7 @@ function continuationStoreStats(
 ): ContinuationStoreStats {
   const values = [...records.values()];
   return {
-    format: "per-record-v2",
+    format: "per-record-v3",
     records: values.length,
     active: values.filter((record) => !SETTLED_TERMINAL_STATES.has(record.state) && record.state !== "delivery_unknown").length,
     unresolvedDelivery: values.filter((record) => record.state === "delivery_unknown").length,
@@ -745,7 +1376,16 @@ async function continuationPathExists(path: string): Promise<boolean> {
 
 async function assertOwnerOnlyRegularFile(path: string, label: string): Promise<void> {
   const info = await lstat(path);
+  assertOwnerOnlySingleLinkStats(info, path, label);
+}
+
+function assertOwnerOnlySingleLinkStats(
+  info: Stats,
+  path: string,
+  label: string,
+): void {
   if (!info.isFile() || info.isSymbolicLink()) throw new Error(`${label} is not a regular file: ${path}`);
+  if (info.nlink !== 1) throw new Error(`${label} must have exactly one filesystem link: ${path}`);
   if (typeof process.getuid === "function" && info.uid !== process.getuid()) {
     throw new Error(`${label} is not owned by the current user: ${path}`);
   }
@@ -755,15 +1395,48 @@ async function assertOwnerOnlyRegularFile(path: string, label: string): Promise<
 }
 
 async function readBoundedOwnerOnlyFile(path: string, maxBytes: number, label: string): Promise<string> {
-  await assertOwnerOnlyRegularFile(path, label);
-  const info = await lstat(path);
-  if (info.size > maxBytes) throw new Error(`${label} exceeds its ${String(maxBytes)} byte safety limit: ${path}`);
-  return await readFile(path, "utf8");
+  return (await readBoundedOwnerOnlyFileWithStats(path, maxBytes, label)).text;
 }
 
-function isRecordTransaction(value: unknown): value is ContinuationRecordTransaction {
+async function readBoundedOwnerOnlyFileWithStats(
+  path: string,
+  maxBytes: number,
+  label: string,
+): Promise<{ readonly text: string; readonly bytes: number }> {
+  const pathInfo = await lstat(path);
+  assertOwnerOnlySingleLinkStats(pathInfo, path, label);
+  const flags = fsConstants.O_RDONLY
+    | (process.platform === "win32" ? 0 : fsConstants.O_NOFOLLOW);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(path, flags);
+    const before = await handle.stat();
+    assertOwnerOnlySingleLinkStats(before, path, label);
+    if (before.dev !== pathInfo.dev || before.ino !== pathInfo.ino) {
+      throw new Error(`${label} changed identity while it was opened: ${path}`);
+    }
+    if (before.size > maxBytes) {
+      throw new Error(`${label} exceeds its ${String(maxBytes)} byte safety limit: ${path}`);
+    }
+    const body = await handle.readFile();
+    const after = await handle.stat();
+    assertOwnerOnlySingleLinkStats(after, path, label);
+    if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size
+      || body.byteLength !== before.size) {
+      throw new Error(`${label} changed while it was being read: ${path}`);
+    }
+    return { text: body.toString("utf8"), bytes: body.byteLength };
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+function isRecordTransaction(
+  value: unknown,
+  expectedSchemaVersion: 2 | typeof CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
+): value is ContinuationRecordTransaction {
   if (!isObject(value)
-    || value.schemaVersion !== CONTINUATION_RECORD_STORE_SCHEMA_VERSION
+    || value.schemaVersion !== expectedSchemaVersion
     || !requiredString(value.generation)
     || !requiredDate(value.createdAt)
     || !Array.isArray(value.writes)
@@ -786,6 +1459,17 @@ function isStoreFile(value: unknown): value is ContinuationStoreFile {
   return Object.entries(value.records).every(([id, record]) => id.length > 0 && isRecord(record, id));
 }
 
+function normalizeLegacyContinuationRecords(records: Map<string, DurableContinuationRecord>): void {
+  for (const record of records.values()) {
+    if (record.originContextState === undefined) {
+      record.originContextState = record.historyBoundary === undefined
+        ? "detached_latest"
+        : "legacy_missing";
+    }
+    if (record.synthesisDeferrals === undefined) record.synthesisDeferrals = 0;
+  }
+}
+
 function isRecord(value: unknown, id: string): value is DurableContinuationRecord {
   if (!isObject(value)) return false;
   return value.continuationId === id
@@ -794,6 +1478,18 @@ function isRecord(value: unknown, id: string): value is DurableContinuationRecor
     && requiredString(value.originConversationId)
     && optionalString(value.replyToConversationId)
     && optionalString(value.historyBoundary)
+    && (value.originContextState === undefined || isOriginContextState(value.originContextState))
+    && (value.originContextRef === undefined || isOriginContextReference(value.originContextRef))
+    && (value.originContextDigest === undefined || isSha256(value.originContextDigest))
+    && (value.originContextMessageCount === undefined
+      || (Number.isSafeInteger(value.originContextMessageCount)
+        && Number(value.originContextMessageCount) >= 0
+        && Number(value.originContextMessageCount) <= MAX_CONTINUATION_ORIGIN_CONTEXT_MESSAGES))
+    && (value.originContextFingerprint === undefined || isSha256(value.originContextFingerprint))
+    && (value.originContextBindingMac === undefined || isSha256(value.originContextBindingMac))
+    && (value.completionKind === undefined
+      || value.completionKind === "synthesized"
+      || value.completionKind === "origin_context_unavailable")
     && isContinuationMode(value.mode)
     && optionalString(value.routeName)
     && requiredString(value.taskKey)
@@ -806,6 +1502,8 @@ function isRecord(value: unknown, id: string): value is DurableContinuationRecor
     && isContinuationState(value.state)
     && Number.isInteger(value.synthesisAttempts)
     && Number(value.synthesisAttempts) >= 0
+    && (value.synthesisDeferrals === undefined
+      || (Number.isSafeInteger(value.synthesisDeferrals) && Number(value.synthesisDeferrals) >= 0))
     && Number.isInteger(value.deliveryAttempts)
     && Number(value.deliveryAttempts) >= 0
     && optionalString(value.resultIdempotencyKey)
@@ -820,6 +1518,53 @@ function isRecord(value: unknown, id: string): value is DurableContinuationRecor
     && optionalDate(value.compactedAt)
     && (value.lastError === undefined || isLastError(value.lastError))
     && (value.receipt === undefined || isReceipt(value.receipt));
+}
+
+function isOriginContextState(value: unknown): value is ContinuationOriginContextState {
+  return value === "pending"
+    || value === "pinned"
+    || value === "abandoned"
+    || value === "detached_latest"
+    || value === "legacy_missing"
+    || value === "scrubbed";
+}
+
+function isOriginContextReference(value: unknown): value is ContinuationOriginContextReference {
+  return isObject(value)
+    && value.schemaVersion === 1
+    && isSha256(value.digest)
+    && Number.isSafeInteger(value.bytes)
+    && Number(value.bytes) > 0
+    && Number(value.bytes) <= MAX_CONTINUATION_ORIGIN_CONTEXT_BYTES
+    && Number.isSafeInteger(value.messageCount)
+    && Number(value.messageCount) >= 2
+    && Number(value.messageCount) <= MAX_CONTINUATION_ORIGIN_CONTEXT_MESSAGES;
+}
+
+function isOriginContextGroupCommit(value: unknown): value is ContinuationOriginContextGroupCommit {
+  if (!isObject(value)
+    || value.schemaVersion !== 1
+    || !isSha256(value.groupKey)
+    || !requiredString(value.originRunId)
+    || !requiredString(value.originConversationId)
+    || !requiredString(value.historyBoundary)
+    || !isSha256(value.snapshotDigest)
+    || !Number.isSafeInteger(value.memberCount)
+    || Number(value.memberCount) < 1
+    || !isSha256(value.memberSetDigest)
+    || !requiredDate(value.activatedAt)) return false;
+  const expectedKey = continuationDigest(
+    `mono-agent-origin-context-group-v1\0${canonicalContinuationJson({
+      originRunId: value.originRunId,
+      originConversationId: value.originConversationId,
+      historyBoundary: value.historyBoundary,
+    })}`,
+  );
+  return value.groupKey === expectedKey;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
 }
 
 function isLastError(value: unknown): boolean {

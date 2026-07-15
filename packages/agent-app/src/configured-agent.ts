@@ -1,7 +1,7 @@
 import {
   createAgentHarness,
   createAgentResponder,
-  createInMemoryHistoryStore,
+  createDurableHistoryStore,
   createToolPolicy,
   loadToolPolicyFromJsonFileSync,
 } from "@mono-agent/agent-harness";
@@ -425,6 +425,19 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
       : { isolateProactive: config.runtime.session.isolateProactive }),
     ...(options.onSessionEvent === undefined ? {} : { onSessionEvent: options.onSessionEvent }),
   };
+  const piSessionsRoot = config.providers?.piNative?.piSessionsRoot;
+  const retireDurableSession = runtime.retireDurableSession?.bind(runtime);
+  const historyStore = options.historyStore ?? createDurableHistoryStore({
+    root: resolvePath(config.artifacts.dir, "..", "history"),
+    maxMessages: DEFAULT_HISTORY_MAX_MESSAGES,
+    ...(piSessionsRoot === undefined || retireDurableSession === undefined
+      ? {}
+      : {
+          retireProviderSession: async (providerSessionId: string): Promise<void> => {
+            await retireDurableSession(providerSessionId, piSessionsRoot);
+          },
+        }),
+  });
 
   return createAgentHarness({
     identityPath: config.context.identityPath,
@@ -482,7 +495,7 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
     ...(options.onMemoryWarning === undefined ? {} : { onMemoryWarning: options.onMemoryWarning }),
-    historyStore: options.historyStore ?? createInMemoryHistoryStore({ maxMessages: historyMaxMessages(config.runtime.maxTurns) }),
+    historyStore,
     ...(options.turnHistoryEnricher === undefined ? {} : { turnHistoryEnricher: options.turnHistoryEnricher }),
     // Inbound channel attachments are saved here (under the artifacts dir, which
     // sits inside a sandbox-readable root) so the agent can open them by path.
@@ -528,11 +541,7 @@ export async function createConfiguredAgentResponder(options: ConfiguredAgentRes
   }) as AgentResponder;
 }
 
-const DEFAULT_HISTORY_MAX_MESSAGES = 12;
-
-function historyMaxMessages(maxTurns: number | undefined): number {
-  return maxTurns === undefined || maxTurns <= 0 ? DEFAULT_HISTORY_MAX_MESSAGES : maxTurns * 2;
-}
+const DEFAULT_HISTORY_MAX_MESSAGES = 64;
 
 function hasConfiguredFallback(config: MonoAgentConfig): boolean {
   return (config.runtime.fallbacks?.length ?? 0) > 0

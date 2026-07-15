@@ -1,5 +1,6 @@
 import type {
   AgentAttachment,
+  AgentContinuationOriginContext,
   AgentContinuationTurn,
   AgentReplyTarget,
   MemoryStore,
@@ -14,9 +15,64 @@ import type { ToolPolicy } from "./tool-policy/index.js";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary" | "capture";
 
+/** A validated history replacement prepared before the turn commit boundary. */
+export interface PreparedHistoryAppend {
+  /** Atomically publish the prepared history. Idempotent after success. */
+  commit(): Promise<void>;
+  /** Remove unpublished staging bytes. Idempotent and a no-op after commit. */
+  abort(): Promise<void>;
+}
+
+export interface ProviderSessionTurnCommitOptions {
+  /** Whether the provider durably synchronized the completed turn into this session. */
+  readonly providerSessionSynced: boolean;
+}
+
+/** A conversation-exclusive provider turn owned by durable history state. */
+export interface ConversationHistoryProviderSessionTurn {
+  /** Epoch-derived, filesystem-safe provider session id for this turn. */
+  readonly providerSessionId: string;
+  /** Durable transcript revision present before this turn starts. */
+  readonly providerSessionRevision: number;
+  /**
+   * Stage history and provider-session cleanliness as one atomic replacement.
+   * The turn lock remains held until the returned append commits or aborts.
+   */
+  prepareCommit(
+    messages: readonly HistoryMessage[],
+    options: ProviderSessionTurnCommitOptions,
+  ): Promise<PreparedHistoryAppend>;
+  /** Leave the durable session dirty and release the exclusive turn lock. */
+  abort(): Promise<void>;
+}
+
 export interface ConversationHistoryStore {
+  /**
+   * Present only when epoch rotation/retention can fail closed while removing
+   * provider-owned durable transcripts that canonical history supersedes.
+   */
+  readonly providerSessionRetirement?: "fail-closed" | undefined;
   load(conversationId: string): Promise<readonly HistoryMessage[]>;
   append(conversationId: string, messages: readonly HistoryMessage[]): Promise<void>;
+  /**
+   * Optional transactional path used by the harness to validate and fsync a
+   * turn before it marks the conversation committed. Stores that omit it keep
+   * the legacy append contract; the harness still appends before warming a
+   * provider session and retires that session on failure.
+   */
+  prepareAppend?(
+    conversationId: string,
+    messages: readonly HistoryMessage[],
+  ): Promise<PreparedHistoryAppend>;
+  /**
+   * Optional crash-safe provider-session transaction. Durable stores mark the
+   * session dirty before returning and serialize this conversation across
+   * processes until commit or abort.
+   */
+  beginProviderSessionTurn?(
+    conversationId: string,
+    runId: string,
+  ): Promise<ConversationHistoryProviderSessionTurn>;
 }
 
 export interface InMemoryHistoryStoreOptions {
@@ -117,6 +173,8 @@ export type AgentHarnessSessionEventKind = "acquired" | "released" | "saved" | "
 export interface AgentHarnessSessionSnapshot {
   readonly conversationId: string;
   readonly providerSessionId: string;
+  /** Durable provider transcript revision held by this process, when coordinated. */
+  readonly providerSessionRevision?: number;
   readonly createdAt: number;
   readonly lastActivityAt: number;
   readonly busy: boolean;
@@ -126,6 +184,7 @@ export interface AgentHarnessSessionEvent {
   readonly kind: AgentHarnessSessionEventKind;
   readonly conversationId: string;
   readonly providerSessionId?: string;
+  readonly providerSessionRevision?: number;
   readonly createdAt?: number;
   readonly lastActivityAt?: number;
   readonly busy?: boolean;
@@ -216,6 +275,20 @@ export interface AgentHarnessContinuationClaimCapability {
   readonly token: string;
   readonly fingerprint: string;
   readonly mode: AgentHarnessContinuationMode;
+  /**
+   * Report whether a drained capability has any active interactive claims that
+   * need the completed origin turn. Valid after `release()`.
+   */
+  requiresOriginContext(): boolean | Promise<boolean>;
+  /**
+   * Persist the completed origin turn into every claim made with this
+   * capability. This handle remains valid after `release()` revokes the token.
+   */
+  finalizeOriginContext(snapshot: AgentContinuationOriginContext): void | Promise<void>;
+  /** Publish a prepared snapshot only after the origin run commits successfully. */
+  activateOriginContext(): void | Promise<void>;
+  /** Permanently close claimed continuations whose origin run did not commit. */
+  abandonOriginContext(): void | Promise<void>;
   /** Revoke the capability. Safe to call more than once. */
   release(): void | Promise<void>;
 }
@@ -287,8 +360,9 @@ export interface AgentHarnessOptions {
   readonly maxTurns?: number;
   /**
    * Durable pi-native session root directory. When set, provider sessions are
-   * persisted to disk (JSONL) so a turn can resume across restarts instead of
-   * falling back to a full conversation-history re-send. Unset = in-memory only.
+   * persisted to disk (JSONL) only when the history store implements the
+   * crash-safe provider-session turn transaction. Custom stores without that
+   * contract remain in-memory. Unset = in-memory only.
    */
   readonly piSessionsRoot?: string;
   readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "executionMode" | "onEvent">;
@@ -350,12 +424,15 @@ export interface AgentHarnessRuntimeOptionsInput {
 
 export interface AgentHarnessRuntimeOptionsExtension {
   // `model`/`effort` are allowed so a per-request extension can override them for
-  // a single turn (cron/webhook per-trigger model). The harness applies them with
-  // precedence over its defaults. `Partial` keeps every field optional (an
+  // a single turn (cron/webhook/TUI per-trigger model). In continuous-session
+  // mode, a model change must already be declared in that request metadata so
+  // the harness isolates it before assembling context. `Partial` keeps every field optional (an
   // extension that sets only `mcpServers` stays valid). `messages`/`abortSignal`/
   // `onEvent` and `executionMode` stay harness-owned: executionMode is derived
   // from the effective model + host config in the harness, so an extension must
-  // not set it.
+  // not set it. Provider-session ids, keep-alive fields, and piSessionsRoot are
+  // accepted structurally for compatibility but stripped and replaced by the
+  // harness's coordinated decision.
   readonly runtimeOptions?: Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "executionMode">>;
   /**
    * Authoritative request-scoped tool boundary. When present, it replaces the

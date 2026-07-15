@@ -14,7 +14,9 @@
 // API:
 //   createRouterRuntime({ host, chain })
 //     returns { run(systemPrompt, options) } plus configureTools /
-//     disposeSession / disposeAllSessions delegated to the inner runtime,
+//     syncSession / refreshSession / retireDurableSession / disposeSession /
+//     invalidateSession / disposeAllSessions
+//     delegated to the inner runtime,
 //     so the router is a drop-in replacement for createRuntime(host).
 //
 //   chain entries:
@@ -388,12 +390,42 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
       // attempts use their isolated route runtime, and applying one route's
       // policy to this shared standby would defeat that isolation.
     },
+    async syncSession(providerSessionId) {
+      let synced = false;
+      for (const runtime of allRuntimes(inner, routeRuntimes)) {
+        synced = Boolean(await runtime.syncSession?.(providerSessionId)) || synced;
+      }
+      return synced;
+    },
+    async refreshSession(providerSessionId) {
+      for (const runtime of allRuntimes(inner, routeRuntimes)) {
+        if (typeof runtime.refreshSession !== "function") {
+          throw new Error("A routed runtime cannot guarantee a cold provider-session reopen");
+        }
+        await runtime.refreshSession(providerSessionId);
+      }
+    },
+    async retireDurableSession(providerSessionId, sessionsRoot) {
+      for (const runtime of allRuntimes(inner, routeRuntimes)) {
+        if (typeof runtime.retireDurableSession !== "function") {
+          throw new Error("A routed runtime cannot retire durable provider-session state");
+        }
+        await runtime.retireDurableSession(providerSessionId, sessionsRoot);
+      }
+    },
     async disposeSession(providerSessionId) {
       let disposed = false;
       for (const runtime of allRuntimes(inner, routeRuntimes)) {
         disposed = Boolean(await runtime.disposeSession?.(providerSessionId)) || disposed;
       }
       return disposed;
+    },
+    async invalidateSession(providerSessionId) {
+      let invalidated = false;
+      for (const runtime of allRuntimes(inner, routeRuntimes)) {
+        invalidated = Boolean(await runtime.invalidateSession?.(providerSessionId)) || invalidated;
+      }
+      return invalidated;
     },
     async disposeAllSessions() {
       await Promise.all(allRuntimes(inner, routeRuntimes).map(async (runtime) => runtime.disposeAllSessions?.()));

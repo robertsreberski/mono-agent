@@ -90,7 +90,7 @@ The entity graph that BuJo capture maintains is part of the BuJo capture pipelin
 | `agent.public-name` | config | `agent.name` | `MONO_AGENT_NAME` | [Identity & soul](/context/identity-and-soul/#public-agent-name) | — |
 | `context.identity` | config | `context.identityPath` | `MONO_AGENT_IDENTITY_PATH` | [Identity & soul](/context/identity-and-soul/) | — |
 | `context.soul` | config | `context.soulPath` | `MONO_AGENT_SOUL_PATH` | [Identity & soul](/context/identity-and-soul/) | — |
-| `context.history` | auto | (12 messages by default; twice a positive `runtime.maxTurns`; custom store via `code`; completed blocking asks retain a bounded interaction transcript) | `MONO_AGENT_MAX_TURNS` | [Assembly](/context/assembly/) | — |
+| `context.history` | auto | (owner-only disk-backed store; 64 messages per exact conversation id independent of `runtime.maxTurns`; aggregate committed defaults 256 MiB / 10,000 conversations / 365 inactive days plus an independent 256 MiB live-stage cap; staged atomic publication, immediate markerless-stage recovery, fixed-shard cross-process locking, bounded pre-provider dirty-fence retirement journals, provider epoch/revision coordination, exact-id durable transcript retirement, and post-commit pruning; custom store via `code`; completed blocking asks retain a bounded interaction transcript) | — | [Assembly](/context/assembly/) | — |
 | `skills.selected-activation` | config | `context.skillsRoot`, `context.selectedSkills` | `MONO_AGENT_SKILLS_ROOT`, `MONO_AGENT_SELECTED_SKILLS` | [Skills](/context/skills/) | [Slack team bot + MCP tools](/playbooks/slack-team-bot-mcp-tools/) |
 | `skills.byte-capping` | config | `context.skillMaxBytes` | `MONO_AGENT_SKILL_MAX_BYTES` | [Skills](/context/skills/) | — |
 

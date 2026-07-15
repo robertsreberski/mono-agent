@@ -250,8 +250,32 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
     configureTools(next?: RuntimeToolOptions): void {
       runtime.configureTools?.(next === undefined ? undefined : ({ ...next } as unknown as KernelToolOptions));
     },
-    async disposeSession(providerSessionId: string): Promise<boolean | void> {
-      return runtime.disposeSession?.(providerSessionId);
+    async syncSession(providerSessionId: string): Promise<boolean> {
+      return await runtime.syncSession?.(providerSessionId) === true;
+    },
+    async refreshSession(providerSessionId: string): Promise<void> {
+      if (typeof runtime.refreshSession !== "function") {
+        throw new RuntimeAdapterError(
+          "runtime_backend_unavailable",
+          "The runtime cannot guarantee a cold provider-session reopen.",
+        );
+      }
+      await runtime.refreshSession(providerSessionId);
+    },
+    async retireDurableSession(providerSessionId: string, sessionsRoot: string): Promise<void> {
+      if (typeof runtime.retireDurableSession !== "function") {
+        throw new RuntimeAdapterError(
+          "runtime_backend_unavailable",
+          "The runtime cannot retire durable provider-session state.",
+        );
+      }
+      await runtime.retireDurableSession(providerSessionId, sessionsRoot);
+    },
+    async disposeSession(providerSessionId: string): Promise<boolean> {
+      return Boolean(await runtime.disposeSession?.(providerSessionId));
+    },
+    async invalidateSession(providerSessionId: string): Promise<boolean> {
+      return Boolean(await runtime.invalidateSession?.(providerSessionId));
     },
     async disposeAllSessions(): Promise<void> {
       await runtime.disposeAllSessions?.();

@@ -17,7 +17,7 @@ The context builder in `@mono-agent/agent-harness` concatenates sections in a fi
 | 1 | Core Guardrails | `context.soulPath`, else the built-in default soul | Yes |
 | 2 | Identity | `context.identityPath` | Yes (identity is required) |
 | 3 | Session | host-owned delivery and callback-safety guidance | Yes |
-| 4 | Conversation History | in-memory history store | Optional (empty on first turn) |
+| 4 | Conversation History | owner-only durable history store | Optional (empty on first turn) |
 | 5 | Skill Index | name/description of selected skills | Optional |
 | 6 | Selected Skill Instructions | full `SKILL.md` bodies of selected skills | Optional |
 | 7 | Current User Message | the inbound request text, with any recalled memory appended | Yes |
@@ -80,10 +80,12 @@ Every configured memory tier also exposes the read-only `MemoryRecall` tool by d
 
 ## Conversation history
 
-Coverage: `auto`. History is kept in an **in-memory store**. The default retains the latest 12 messages; a positive turn cap retains up to twice that many messages. The history section renders prior `system`/`user`/`assistant`/`tool` messages for the conversation in order.
+Coverage: `auto`. History is kept in an **owner-only, disk-backed store**. The default retains the latest 64 messages for each exact conversation id, with aggregate retention bounded to 256 MiB, 10,000 conversations, and 365 days of inactivity. Live unpublished stages have a separate 256 MiB aggregate cap, so many prepared or crash-abandoned turns cannot grow the store without bound. A completed turn is staged before commit and atomically published; cancelled preparations do not evict committed history. Oldest inactive conversation files are pruned only after a successful publication. These bounds are independent of the provider's turn limit: changing `runtime.maxTurns` does not change the history window. The history section renders prior `system`/`user`/`assistant`/`tool` messages for the conversation in order.
 
-- `runtime.maxTurns` (`MONO_AGENT_MAX_TURNS`) is `0` or omitted for an **unlimited provider run**; set `1`–`100` to cap turns per run. This does not disable history: unlimited runs use the bounded 12-message history default.
+- `runtime.maxTurns` (`MONO_AGENT_MAX_TURNS`) is `0` or omitted for an **unlimited provider run**; set `1`–`100` to cap turns per run. It neither disables nor resizes the bounded 64-message history.
 - History is keyed per conversation. Channels reuse a stable conversation id; for cron, share one with `cron.jobs[].conversationId` so ticks accumulate the same history (see [Cron](/channels/cron/)).
+
+The configured app stores history under an owner-only `history/` directory next to the configured artifact directory (normally `.mono-agent/history`). Conversation ids are retained inside the records but never used as path components; filenames are SHA-256-derived. The directory is mode `0700`, files are mode `0600`, each serialized message is capped at 64 KiB, and replacements are written atomically and fsynced. Owner-only SQLite lock files serialize same-conversation updates and root-wide retention across processes; dead owners and markerless stages are recovered immediately without an elapsed-time lease. A cold process therefore replays the same bounded history after restart even when no provider session can be resumed.
 
 Completed blocking `AskUser` and `TelegramAskButtons` interactions are also preserved in the assistant-side history copy. The compact interaction transcript records the question, button options when present, the outcome, and the user's typed answer or selected label when present, before the final assistant text. It is explicitly labelled untrusted historical data, normalizes structural line separators, and retains the newest complete entries when bounded. That means a later cold/stateless provider call can replay what happened instead of seeing only the trigger and final response.
 
@@ -97,13 +99,13 @@ Use active conversation history first for the current exchange. Use `MemoryRecal
 }
 ```
 
-:::caution
-The in-memory store does not survive a process restart. For durable provider-side resume across restarts, configure pi-native sessions with `providers.piNative.piSessionsRoot` (see [Sessions and concurrency](/runtime/sessions-concurrency/)); for a fully custom, persisted history store you supply your own implementation in code (below).
+:::note
+Durable conversation history remains canonical when provider-side session resume is enabled. With the default store and `providers.piNative.piSessionsRoot`, each conversation record owns a random provider epoch and transcript revision. The store fsyncs a separate bounded dirty fence before provider execution, fsyncs the completed Pi JSONL transcript, then commits the new history and incremented clean revision before clearing the fence. A crash, missing/legacy record, host-only history append, or failed provider sync rotates the epoch before another resume; a cross-process revision mismatch cold-reopens stale process memory. See [Sessions and concurrency](/runtime/sessions-concurrency/).
 :::
 
 ### Custom history store (code only)
 
-Replacing the in-memory history store is a `code` capability: pass `historyStore` to `createConfiguredAgentResponder`. See [Composition](/programmatic/composition/).
+Replacing the default durable history store is a `code` capability: pass `historyStore` to `createConfiguredAgentResponder`. A custom store keeps process-local warm sessions. To opt into durable Pi JSONL resume it must also implement the crash-safe `beginProviderSessionTurn` transaction; otherwise the harness intentionally withholds `piSessionsRoot`. See [Composition](/programmatic/composition/).
 
 ## Truncation and bloat guards
 

@@ -113,11 +113,11 @@ Direct authenticated HTTP does not depend on Tailscale Serve. Serve is optional;
 A run's detail view includes a **Context (this turn)** section showing what each
 provider call was actually driven with: any recalled long-term memory (with its
 source), the prior conversation messages that were replayed (role-badged), and
-the full compiled system prompt behind a collapsible raw view. When the
-transcript was carried by the provider session instead of locally-loaded history
-— a warm in-process session, or a durable cross-restart resume — the section
-reads *context carried by the provider session* (this also appears on turn 1 of
-a brand-new conversation under a derived durable session id). Recordings made
+the full compiled system prompt behind a collapsible raw view. When a confirmed
+warm in-process session carried the transcript instead of host-loaded history,
+the section reads *context carried by the provider session*. Cold durable
+reopens report the canonical history loaded for the turn, including an
+authoritative empty history. Recordings made
 before this feature degrade gracefully: they show only the raw compiled-prompt
 fallback, and runs with neither context nor a recorded prompt show no section.
 
