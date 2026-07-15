@@ -63,27 +63,62 @@ catch up on. After a PR merges, prove the exact PR state, branch name, and head
 SHA before removing a clean worktree and force-deleting its squash-merged local
 branch:
 
+<!-- merged-worktree-cleanup:start -->
 ```bash
-repo=robertsreberski/mono-agent
-pr=<number>
-branch=<branch>
-worktree=~/.config/superpowers/worktrees/mono-agent/<name>
-repo_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
-proof="$(gh pr view "$pr" --repo "$repo" \
-  --json state,mergedAt,headRefName,headRefOid \
-  --jq 'select(.state == "MERGED" and .mergedAt != null) | [.headRefName, .headRefOid] | join(" ")')"
-api_branch="${proof%% *}"
-api_head="${proof#* }"
-local_head="$(git -C "$repo_root" rev-parse "refs/heads/$branch")"
+cleanup_merged_worktree() {
+  local repo="$1"
+  local pr="$2"
+  local branch="$3"
+  local worktree="$4"
+  local repo_common_dir repo_root proof api_branch api_head local_head
+  local worktree_common_dir worktree_root supplied_worktree
+  local worktree_branch worktree_head worktree_status
 
-test "$api_branch" = "$branch" &&
-test "$api_head" = "$local_head" &&
-test -z "$(git -C "$worktree" status --porcelain)" &&
-cd "$repo_root" &&
-git worktree remove "$worktree" &&
-git branch -D -- "$branch" &&
-git worktree prune
+  git check-ref-format --branch "$branch" >/dev/null || return 1
+  repo_common_dir="$(git rev-parse --path-format=absolute --git-common-dir)" || return 1
+  repo_common_dir="$(cd "$repo_common_dir" && pwd -P)" || return 1
+  repo_root="$(dirname "$repo_common_dir")"
+
+  proof="$(gh pr view "$pr" --repo "$repo" \
+    --json state,mergedAt,headRefName,headRefOid \
+    --jq 'select(.state == "MERGED" and .mergedAt != null) | [.headRefName, .headRefOid] | join(" ")')" || return 1
+  test -n "$proof" || return 1
+  api_branch="${proof%% *}"
+  api_head="${proof#* }"
+  local_head="$(git -C "$repo_root" rev-parse --verify "refs/heads/$branch^{commit}")" || return 1
+
+  worktree_common_dir="$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir)" || return 1
+  worktree_common_dir="$(cd "$worktree_common_dir" && pwd -P)" || return 1
+  worktree_root="$(git -C "$worktree" rev-parse --path-format=absolute --show-toplevel)" || return 1
+  worktree_root="$(cd "$worktree_root" && pwd -P)" || return 1
+  supplied_worktree="$(cd "$worktree" && pwd -P)" || return 1
+  worktree_branch="$(git -C "$worktree" symbolic-ref --quiet --short HEAD)" || return 1
+  worktree_head="$(git -C "$worktree" rev-parse --verify HEAD)" || return 1
+  worktree_status="$(git -C "$worktree" status --porcelain)" || return 1
+
+  test "$api_branch" = "$branch" || return 1
+  test "$api_head" = "$local_head" || return 1
+  test "$worktree_common_dir" = "$repo_common_dir" || return 1
+  test "$worktree_root" = "$supplied_worktree" || return 1
+  test "$worktree_branch" = "$api_branch" || return 1
+  test "$worktree_head" = "$api_head" || return 1
+  test -z "$worktree_status" || return 1
+
+  git -C "$repo_root" worktree remove "$worktree" || return 1
+  git -C "$repo_root" update-ref -d "refs/heads/$branch" "$api_head" || return 1
+  git -C "$repo_root" worktree prune
+}
 ```
+<!-- merged-worktree-cleanup:end -->
+
+```bash
+cleanup_merged_worktree \
+  robertsreberski/mono-agent <number> <branch> \
+  ~/.config/superpowers/worktrees/mono-agent/<name>
+```
+
+The local deletion is an atomic compare-and-delete against the reviewed OID. If
+the ref advances after proof, deletion fails and the advanced branch remains.
 
 Paired with the `delete_branch_on_merge` setting, remote and local both self-clean
 per feature. (This same step is folded into `worktree-feature`'s "Ship" flow — the
@@ -108,10 +143,22 @@ Use that PR number with the canonical proof block above. If the remote branch
 still exists after local cleanup, delete it only with a lease bound to the
 API-confirmed head SHA, so a concurrently advanced branch is preserved:
 
+<!-- remote-branch-compare-delete:start -->
 ```bash
-git push --force-with-lease="refs/heads/$branch:$api_head" \
-  origin ":refs/heads/$branch"
+delete_remote_branch_at_head() {
+  local branch="$1"
+  local api_head="$2"
+
+  git check-ref-format --branch "$branch" >/dev/null || return 1
+  test -n "$api_head" || return 1
+  git push --force-with-lease="refs/heads/$branch:$api_head" \
+    origin ":refs/heads/$branch"
+}
 ```
+<!-- remote-branch-compare-delete:end -->
+
+Run `delete_remote_branch_at_head "$branch" "$api_head"` only after the exact
+API proof above.
 
 Keep every dirty worktree, branch without an exact merged-PR/head match, and
 closed-unmerged or open PR branch. Record the survivor and its reason instead
@@ -133,9 +180,9 @@ git worktree list | wc -l
   into `main` land as a new commit whose SHA the branch never contained, so
   `--merged` reports them as unmerged and `git branch -d` refuses them. Use the
   exact API/branch/head proof above; never force-delete a bulk list of names.
-- **A worktree's branch can't be deleted while the worktree exists** — `git branch -d`
-  errors with the branch checked out elsewhere. Remove the worktree first, then the
-  branch (the order in the post-merge protocol).
+- **A worktree's branch can't be deleted while the worktree exists.** Remove the
+  worktree first, then compare-and-delete the branch with `git update-ref -d`
+  (the order in the post-merge protocol).
 - **Prune before you trust the list.** A worktree dir deleted by hand still shows in
   `git worktree list` as a stale row until `git worktree prune` clears it — run prune
   before counting for the double-digit trigger.
