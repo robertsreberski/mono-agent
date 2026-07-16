@@ -78,6 +78,22 @@ interaction fields are structured and JSON-only: configure them in
 Keep tokens out of every source `mono-agent.config.json`, including ignored or untracked development configs. Set `MONO_AGENT_SLACK_BOT_TOKEN` / `MONO_AGENT_SLACK_APP_TOKEN` from your secret store or `.env` instead.
 :::
 
+### Silent delivery and quiet hours
+
+Slack does not expose a bot-controlled notification-suppression field on
+`chat.postMessage`. Programmatic adapter callers may pass `silent: true` through
+`SlackNotifyOptions` / `SlackMessageStreamOptions` for cross-channel option
+parity, but the post still uses normal Slack notification behavior and the
+adapter emits an explicit warning when a logger is configured
+(`silentRequested: true`, `silentApplied: false`). It deliberately does not send
+an invented `silent` or `disable_notification` field.
+
+There is no `slack.quietHours` config key because mono-agent cannot honestly
+enforce that promise at the Slack transport boundary. Slack client/workspace
+notification settings remain authoritative. If guaranteed quiet hours are a
+hard requirement, the programmatic caller must skip or defer the Slack delivery
+instead of relying on `silent: true`.
+
 ### Shortcuts
 
 `slack.shortcuts` binds Slack **global** or **message** shortcut callback IDs to
