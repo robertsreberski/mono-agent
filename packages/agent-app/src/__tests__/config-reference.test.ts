@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { CONFIG_ENV_KEYS } from "@mono-agent/config";
+import type { ConfigViewFieldId } from "@mono-agent/config";
 import { loadSlackAdapterConfig } from "@mono-agent/slack-adapter";
 import { describe, expect, it } from "vitest";
 
@@ -11,9 +13,102 @@ import {
   buildMonoAgentConfigSchema,
   findUnknownAppConfigWarnings,
   MONO_AGENT_CONFIG_SCHEMA_URL,
+  schemaForField,
 } from "../config-reference.js";
+import type { ConfigReferenceType } from "../config-reference.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> = {
+  "agent.name": "string",
+  "runtime.model": "string",
+  "runtime.fallbackModels": "string[]",
+  "runtime.fallbacks": "array",
+  "runtime.routeSafety": "string",
+  "runtime.executionMode": "string",
+  "runtime.effort": "string",
+  "runtime.permissionMode": "string",
+  "runtime.maxTurns": "integer",
+  "runtime.workspace": "string",
+  "runtime.session.mode": "string",
+  "runtime.session.idleTimeoutMs": "integer",
+  "runtime.session.rollover": "string",
+  "runtime.session.rolloverTimezone": "string",
+  "runtime.session.rolloverNotice": "boolean",
+  "runtime.session.isolateProactive": "boolean",
+  "concurrency.maxConcurrentRuns": "integer",
+  "concurrency.maxPendingRuns": "integer",
+  "context.identityPath": "string",
+  "context.soulPath": "string",
+  "context.skillsRoot": "string",
+  "context.selectedSkills": "string[]",
+  "context.skillMaxBytes": "integer",
+  "context.skillDisclosure": "string",
+  "memory.backend": "string",
+  "memory.mode": "string",
+  "memory.path": "string",
+  "memory.maxBytes": "integer",
+  "memory.writeMode": "string",
+  "memory.supermemory.baseUrl": "string",
+  "memory.supermemory.apiKey": "string",
+  "memory.supermemory.apiKeyEnv": "string",
+  "memory.supermemory.container": "string",
+  "memory.supermemory.timeoutMs": "integer",
+  "memory.supermemory.exposeMcpServer": "boolean",
+  "memory.embeddings.provider": "string",
+  "memory.embeddings.model": "string",
+  "memory.embeddings.endpoint": "string",
+  "memory.embeddings.apiKey": "string",
+  "memory.embeddings.apiKeyEnv": "string",
+  "memory.embeddings.dim": "integer",
+  "memory.embeddings.timeoutMs": "integer",
+  "memory.embeddings.circuitBreaker.failureThreshold": "integer",
+  "memory.embeddings.circuitBreaker.cooldownMs": "integer",
+  "memory.llm.provider": "string",
+  "memory.llm.model": "string",
+  "memory.llm.executionMode": "string",
+  "memory.llm.trace": "boolean",
+  "memory.llm.timeoutMs": "integer",
+  "memory.llm.endpoint": "string",
+  "memory.recallTool.enabled": "boolean",
+  "memory.consolidation.enabled": "boolean",
+  "memory.consolidation.cron": "string",
+  "tools.allowedTools": "string[]",
+  "tools.disallowedTools": "string[]",
+  "tools.mcpConfigPath": "string",
+  "tools.mcpRequestContextServers": "string[]",
+  "tools.continuationServers": "string[]",
+  "tools.mcpCallTimeoutMs": "integer",
+  "tools.mcpCallMaxTotalTimeoutMs": "integer",
+  "sandbox.mode": "string",
+  "sandbox.network.mode": "string",
+  "sandbox.network.allowlist": "string[]",
+  "sandbox.readableRoots": "string[]",
+  "sandbox.writableRoots": "string[]",
+  "sandbox.denyWrite": "string[]",
+  "sandbox.fallback": "string",
+  "sandbox.unsafeAllowHostProcess": "boolean",
+  "artifacts.dir": "string",
+  "artifacts.retention.maxAgeDays": "integer",
+  "artifacts.retention.maxCount": "integer",
+  "artifacts.retention.dryRun": "boolean",
+  "artifacts.memoryRetention.maxAgeDays": "integer",
+  "artifacts.memoryRetention.maxCount": "integer",
+  "artifacts.memoryRetention.dryRun": "boolean",
+  "traceability.registryDir": "string",
+  "traceability.sourceId": "string",
+  "traceability.sourceLabel": "string",
+  "traceability.heartbeatMs": "integer",
+  "traceability.staleAfterMs": "integer",
+  "traceability.globalDiscovery": "boolean",
+  "observability.exporters": "array",
+  "providers.piAuthPath": "string",
+  "providers.piNative.transport": "string",
+  "providers.piNative.piMaxRetries": "integer",
+  "providers.piNative.maxRetryDelayMs": "integer",
+  "providers.piNative.piSessionsRoot": "string",
+  "providers.local": "array",
+};
 
 interface SchemaNode {
   readonly type?: string;
@@ -96,6 +191,28 @@ describe("config reference", () => {
     const root = repoRoot();
     const schema = readFileSync(join(root, "packages/agent-app/schema/mono-agent.config.schema.json"), "utf8");
     expect(schema).toBe(`${JSON.stringify(buildMonoAgentConfigSchema(), null, 2)}\n`);
+  });
+
+  it("keeps every core field's inferred type aligned with the hand-written fidelity table", () => {
+    const registryIds = Object.keys(CONFIG_ENV_KEYS).sort() as ConfigViewFieldId[];
+    const expectedIds = Object.keys(EXPECTED_CORE_FIELD_TYPES).sort();
+    expect(expectedIds).toEqual(registryIds);
+
+    const coreFields = allConfigReferenceFields().filter((field) =>
+      Object.prototype.hasOwnProperty.call(CONFIG_ENV_KEYS, field.jsonPath),
+    );
+    expect(coreFields).toHaveLength(registryIds.length);
+    const fieldsById = new Map(coreFields.map((field) => [field.jsonPath, field]));
+
+    for (const id of registryIds) {
+      const field = fieldsById.get(id);
+      expect(field, `missing config reference field for ${id}`).toBeDefined();
+      const expectedType = EXPECTED_CORE_FIELD_TYPES[id];
+      expect(field?.type, `${id} inferred ConfigReferenceType`).toBe(expectedType);
+      expect(schemaForField(field!).type, `${id} generated JSON-Schema type`).toBe(
+        jsonSchemaTypeFor(expectedType),
+      );
+    }
   });
 
   it("models required core keys and important numeric/object shapes in the schema", () => {
@@ -283,6 +400,10 @@ function schemaNode(schema: SchemaNode, ...path: readonly string[]): SchemaNode 
     current = next;
   }
   return current;
+}
+
+function jsonSchemaTypeFor(type: ConfigReferenceType): Exclude<ConfigReferenceType, "string[]"> {
+  return type === "string[]" ? "array" : type;
 }
 
 function memoryTierRule(memory: SchemaNode, mode: string): SchemaNode {

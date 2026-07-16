@@ -347,7 +347,7 @@ export interface ConfigReferenceField {
   readonly secret?: boolean;
 }
 
-type ConfigReferenceType = "string" | "integer" | "boolean" | "string[]" | "object" | "array";
+export type ConfigReferenceType = "string" | "integer" | "boolean" | "string[]" | "object" | "array";
 
 interface JsonSchema {
   readonly [key: string]: unknown;
@@ -751,7 +751,7 @@ function isSchemaObject(value: unknown): value is JsonSchema & { properties: Rec
   return isPlainObject(value) && isPlainObject(value.properties);
 }
 
-function schemaForField(field: ConfigReferenceField): JsonSchema {
+export function schemaForField(field: ConfigReferenceField): JsonSchema {
   const schema: Record<string, unknown> = {
     description: field.description,
     examples: [field.example],
