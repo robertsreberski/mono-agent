@@ -15,7 +15,9 @@ const RUN_HISTORY_SECOND_PASS_CONTRACT = [
   "in that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible;",
   "numeric values under `apikey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted.",
   "assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel.",
+  "an optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted.",
 ].join(" ");
+const BACKFILL_INPUT_CONTRACT = "backfill forwards persisted `summary.userinput`";
 
 function repoRoot(): string {
   let dir = here;
@@ -105,7 +107,7 @@ function typeFieldDoc(relativePath: string, typeName: string, fieldName: string)
 
 function functionDoc(relativePath: string, functionName: string): string {
   const source = readRepoFile(relativePath);
-  const functionPattern = new RegExp(`\\bfunction\\s+${functionName}\\s*\\(`, "u");
+  const functionPattern = new RegExp(`\\b(?:export\\s+)?(?:async\\s+)?function\\s+${functionName}\\s*\\(`, "u");
   const functionMatch = functionPattern.exec(source);
   if (functionMatch === null) {
     throw new Error(`${relativePath} is missing function ${JSON.stringify(functionName)}`);
@@ -221,6 +223,27 @@ describe("observability redaction docs parity", () => {
     expect(rawStringContent).toContain("raw string input is retained free text");
     expect(rawStringContent).toContain("capped for display");
     expect(rawStringContent).toContain("not content-scanned or scrubbed");
+  });
+
+  it("keeps persisted backfill input forwarding and its export bound explicit", () => {
+    const surfaces = [
+      interfaceFieldDoc("packages/observability/src/types.ts", "RunExportContext", "userInput"),
+      functionDoc("packages/observability/src/otel/spans.ts", "buildRunReadableSpans"),
+      functionDoc("packages/agent-app/src/backfill.ts", "backfillRuns"),
+    ];
+
+    for (const surface of surfaces) {
+      expect(surface).toContain(BACKFILL_INPUT_CONTRACT);
+    }
+    expect(surfaces[0]).toContain("bounded at the phoenix span boundary");
+    expect(surfaces[1]).toContain("utf-8-aware export boundary");
+
+    const implementationDocs = normalized([
+      readRepoFile("packages/observability/src/types.ts"),
+      readRepoFile("packages/observability/src/otel/spans.ts"),
+      readRepoFile("packages/agent-app/src/backfill.ts"),
+    ].join("\n"));
+    expect(implementationDocs).not.toMatch(/absent for backfill|backfill lacks it|not recorded in artifacts/iu);
   });
 
   it("keeps every published bare-prose field explicit about bounds without claiming content scrubbing", () => {

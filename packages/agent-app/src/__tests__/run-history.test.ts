@@ -618,6 +618,128 @@ describe("RunHistory MCP tool", () => {
     }
   });
 
+  it("only exempts a complete exact [redacted] assignment sentinel in real MCP projections", async () => {
+    const artifactDir = await tempDir();
+    const conversationId = "webhook:run-history-redacted-sentinel";
+    await writeRun({
+      artifactDir,
+      runId: "redacted-sentinel-run",
+      conversationId,
+      startedAt: "2026-07-12T08:00:00.000Z",
+      events: [
+        {
+          type: "assistant",
+          message: {
+            content: [
+              { type: "tool_use", id: "tool-tainted", name: "Inspect", input: {} },
+              { type: "tool_use", id: "tool-sentinel-suffix", name: "Inspect", input: {} },
+              { type: "tool_use", id: "tool-case-variant", name: "Inspect", input: {} },
+              { type: "tool_use", id: "tool-exact", name: "Inspect", input: {} },
+            ],
+          },
+        },
+        {
+          type: "user",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool-tainted",
+                content: [
+                  { type: "text", text: "OPENAI_API_" },
+                  { type: "image", data: "non-text-separator" },
+                  { type: "text", text: "KEY=secret" },
+                ],
+              },
+              {
+                type: "tool_result",
+                tool_use_id: "tool-sentinel-suffix",
+                content: [
+                  { type: "text", text: "status: password=[redacted]" },
+                  { type: "image", data: "non-text-separator" },
+                  { type: "text", text: "suffix" },
+                ],
+              },
+              {
+                type: "tool_result",
+                tool_use_id: "tool-case-variant",
+                content: [{ type: "text", text: "status: password=[REDACTED]" }],
+              },
+              {
+                type: "tool_result",
+                tool_use_id: "tool-exact",
+                content: [{ type: "text", text: 'status: password="[redacted]"' }],
+              },
+            ],
+          },
+        },
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "OPENAI_API_" }] },
+        },
+        {
+          type: "runtime_warning",
+          warning_kind: "separator",
+          message: "A warning separates assistant text fragments.",
+        },
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "KEY=secret" }] },
+        },
+      ],
+    });
+
+    const history = await openHistoryClient(artifactDir, conversationId);
+    try {
+      const result = await history.client.callTool({
+        name: RUN_HISTORY_TOOL_NAME,
+        arguments: { action: "inspect", runId: "redacted-sentinel-run" },
+      });
+      const body = structured<{
+        readonly timeline: ReadonlyArray<Record<string, unknown>>;
+        readonly finalOutput: string;
+      }>(result);
+      const taintedTool = body.timeline.find((entry) => entry.toolUseId === "tool-tainted") as {
+        readonly result: { readonly content: unknown };
+      };
+      const exactTool = body.timeline.find((entry) => entry.toolUseId === "tool-exact") as {
+        readonly result: { readonly content: unknown };
+      };
+      const sentinelSuffixTool = body.timeline.find((entry) => entry.toolUseId === "tool-sentinel-suffix") as {
+        readonly result: { readonly content: unknown };
+      };
+      const caseVariantTool = body.timeline.find((entry) => entry.toolUseId === "tool-case-variant") as {
+        readonly result: { readonly content: unknown };
+      };
+
+      expect(taintedTool.result.content).toEqual([
+        { type: "text", text: "[tool result omitted because it contained private run-artifact internals]" },
+        { type: "image", data: "non-text-separator" },
+        { type: "text", text: "[tool result omitted because it contained private run-artifact internals]" },
+      ]);
+      expect(sentinelSuffixTool.result.content).toEqual(taintedTool.result.content);
+      expect(caseVariantTool.result.content).toBe(
+        "[tool result omitted because it contained private run-artifact internals]",
+      );
+      expect(exactTool.result.content).toBe('status: password="[redacted]"');
+      expect(body.timeline
+        .filter((entry) => entry.kind === "assistant")
+        .map((entry) => entry.text)).toEqual([
+        "[diagnostic omitted because it contained private run-artifact internals]",
+        "[diagnostic omitted because it contained private run-artifact internals]",
+      ]);
+      expect(body.finalOutput).toBe(
+        "[diagnostic omitted because it contained private run-artifact internals]",
+      );
+      const serialized = JSON.stringify(result);
+      expect(serialized).not.toContain("OPENAI_API_");
+      expect(serialized).not.toContain("KEY=secret");
+      expect(serialized).not.toContain("[redacted]suffix");
+    } finally {
+      await history.close();
+    }
+  });
+
   it("returns safe errors for invalid, missing, foreign, current, and running run ids", async () => {
     const artifactDir = await tempDir();
     const conversationId = "tui:one";

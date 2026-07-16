@@ -15,6 +15,7 @@ const SENSITIVE_KEY_PATTERN =
 
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
+const TRUNCATION_SUFFIX_PATTERN = /…\[truncated ([1-9]\d*) bytes\]$/u;
 const MAX_REDACTION_NODES = 10_000;
 const MAX_ARRAY_ITEMS = 1_000;
 const MAX_OBJECT_KEYS = 1_000;
@@ -103,6 +104,27 @@ export function truncateString(value: string, maxStringBytes: number): string {
   const encoded = TEXT_ENCODER.encode(value);
   if (encoded.length <= maxStringBytes) {
     return value;
+  }
+  // Recorder summaries can pass through another redaction/export boundary
+  // during backfill. Preserve a marker we emitted previously instead of
+  // replacing its original omitted-byte count with the marker's own size.
+  // A canonical retained head ends at most three bytes below the cap because a
+  // UTF-8 code point occupies at most four bytes.
+  const existingMarker = TRUNCATION_SUFFIX_PATTERN.exec(value);
+  if (existingMarker !== null) {
+    const omittedBytes = Number(existingMarker[1]);
+    const retainedBytes = TEXT_ENCODER.encode(value.slice(0, existingMarker.index)).length;
+    const originalBytes = retainedBytes + omittedBytes;
+    if (
+      Number.isSafeInteger(omittedBytes)
+      && Number.isSafeInteger(originalBytes)
+      && existingMarker.index + existingMarker[0].length === value.length
+      && retainedBytes <= maxStringBytes
+      && maxStringBytes - retainedBytes <= 3
+      && originalBytes > maxStringBytes
+    ) {
+      return value;
+    }
   }
   // Cut on a UTF-8 boundary so the kept text never EXCEEDS the byte cap and never
   // splits a multi-byte code point. Slicing the string by `maxStringBytes` UTF-16

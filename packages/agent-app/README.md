@@ -223,7 +223,9 @@ sanitizer. In that second pass, numeric values under `credential`, `private_key`
 and `bearer` can remain visible; numeric values under `apiKey`, `token`,
 `client_secret`, `password`, `authorization`, and `cookie` are redacted.
 Assignment-shaped password or secret prose is content-scanned and replaced with
-the diagnostic or tool-result omission sentinel. Results exclude the
+the diagnostic or tool-result omission sentinel. An optionally quoted assignment
+value is exempt only when its complete value is exactly `[redacted]`; any prefix
+or suffix is omitted. Results exclude the
 current/running run, other conversations or rollover buckets, system prompts,
 reasoning, recalled memory, turn-context payloads, and raw artifact paths;
 historical text is marked untrusted.

@@ -145,4 +145,22 @@ describe("truncateString", () => {
     expect(encoder.encode(head).length).toBeLessThanOrEqual(64);
     expect(out).toBe(`${"観".repeat(21)}…[truncated 27 bytes]`);
   });
+
+  it("preserves its canonical omitted-byte marker across repeated boundaries", () => {
+    const once = truncateString("x".repeat(100_000), 4_096);
+    const multibyteOnce = truncateString("観".repeat(100_000), 4_096);
+
+    expect(once).toBe(`${"x".repeat(4_096)}…[truncated 95904 bytes]`);
+    expect(truncateString(once, 4_096)).toBe(once);
+    expect(multibyteOnce).toBe(`${"観".repeat(1_365)}…[truncated 295905 bytes]`);
+    expect(truncateString(multibyteOnce, 4_096)).toBe(multibyteOnce);
+  });
+
+  it("does not trust a marker whose claimed original value fit within the boundary", () => {
+    const impossibleMarker = `${"x".repeat(4_093)}…[truncated 1 bytes]`;
+
+    expect(truncateString(impossibleMarker, 4_096)).toBe(
+      `${"x".repeat(4_093)}……[truncated 19 bytes]`,
+    );
+  });
 });

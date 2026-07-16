@@ -553,29 +553,18 @@ function sanitizeAssistantTimelineGroups(
   entries: readonly ProjectedTimelineEntry[],
   artifactDir: string,
 ): ProjectedTimelineEntry[] {
-  const out: ProjectedTimelineEntry[] = [];
-  let assistantGroup: Array<Extract<ProjectedTimelineEntry, { kind: "assistant" }>> = [];
-  const flush = (): void => {
-    if (assistantGroup.length === 0) return;
-    const sensitive = containsVisibleSensitiveText(
-      assistantGroup.map((entry) => entry.text).join(""),
-      artifactDir,
-    );
-    out.push(...(sensitive
-      ? assistantGroup.map((entry) => ({ ...entry, text: PRIVATE_DIAGNOSTIC_OMISSION }))
-      : assistantGroup));
-    assistantGroup = [];
-  };
-  for (const entry of entries) {
-    if (entry.kind === "assistant") {
-      assistantGroup.push(entry);
-      continue;
-    }
-    flush();
-    out.push(entry);
-  }
-  flush();
-  return out;
+  // Treat every assistant text returned by one inspection as a single security
+  // group. Warnings/tool entries remain visible separators to the model, not
+  // trustworthy barriers: `OPENAI_API_` + warning + `KEY=secret` must be
+  // evaluated exactly like adjacent streamed text fragments.
+  const assistantText = entries
+    .filter((entry): entry is Extract<ProjectedTimelineEntry, { kind: "assistant" }> => entry.kind === "assistant")
+    .map((entry) => entry.text)
+    .join("");
+  if (!containsVisibleSensitiveText(assistantText, artifactDir)) return [...entries];
+  return entries.map((entry) => entry.kind === "assistant"
+    ? { ...entry, text: PRIVATE_DIAGNOSTIC_OMISSION }
+    : entry);
 }
 
 function projectRuntimeSignal(
@@ -755,6 +744,13 @@ function normalizeToolResultContent(content: unknown, artifactDir: string): unkn
     texts.push(block.text);
   }
   if (allText) return sanitizeToolResultText(texts.join(""), artifactDir);
+  // Non-text blocks are model-visible separators, not security boundaries.
+  // Scan every text fragment together before preserving the mixed block shape.
+  if (containsPrivateArtifactText(texts.join(""), artifactDir)) {
+    return content.map((block) => isRecord(block) && block.type === "text" && typeof block.text === "string"
+      ? { ...block, text: PRIVATE_TOOL_RESULT_OMISSION }
+      : block);
+  }
   return content.map((block) => isRecord(block) && block.type === "text" && typeof block.text === "string"
     ? { ...block, text: sanitizeToolResultText(block.text, artifactDir) }
     : block);
@@ -791,18 +787,29 @@ function parseStructuredToolText(text: string): unknown | undefined {
 }
 
 function containsCredentialAssignment(text: string): boolean {
-  const assignment = /(?:^|[^a-z0-9_.-])(["'`]?)([a-z0-9_.-]+(?:[ \t]+[a-z0-9_.-]+){0,5})\1\s*[:=]\s*/giu;
+  // Keep the leading boundary zero-width. If it is consumed by a preceding
+  // benign assignment (`status: password=...`), global matching resumes at the
+  // credential key and must still be able to inspect it.
+  const assignment = /(?:^|(?<=[^a-z0-9_.-]))(["'`]?)([a-z0-9_.-]+(?:[ \t]+[a-z0-9_.-]+){0,5})\1\s*[:=]\s*/giu;
   for (const match of text.matchAll(assignment)) {
     const key = match[2];
     if (key === undefined || !isCredentialKey(key)) continue;
     const value = text.slice((match.index ?? 0) + match[0].length).trimStart();
-    const unquoted = value.replace(/^["'`]/u, "");
-    if (/^\[redacted\]/iu.test(unquoted)) continue;
+    if (isExactRedactedSentinel(value)) continue;
     // Treat an empty assignment as sensitive too: adjacent model text blocks
     // can otherwise reconstruct `KEY=` + `secret` after separate checks pass.
     return true;
   }
   return false;
+}
+
+function isExactRedactedSentinel(value: string): boolean {
+  const trimmed = value.trim();
+  if (/^\[redacted\]$/u.test(trimmed)) return true;
+  const quote = trimmed[0];
+  return (quote === '"' || quote === "'" || quote === "`")
+    && trimmed.at(-1) === quote
+    && /^\[redacted\]$/u.test(trimmed.slice(1, -1));
 }
 
 function isCredentialKey(key: string): boolean {

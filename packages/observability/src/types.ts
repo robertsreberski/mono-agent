@@ -184,9 +184,10 @@ export interface RunExportContext {
   readonly includeSensitiveData: boolean;
   /**
    * The user's prompt for this run, used as the root span's `input.value` so the
-   * trace shows what was asked. Available on the live path (threaded from the
-   * request); absent for backfill (not recorded in artifacts). This is retained
-   * free text and is not content-scanned or scrubbed.
+   * trace shows what was asked. Live export threads the request value directly;
+   * backfill forwards persisted `summary.userInput` when the artifact carries
+   * it (older artifacts may omit it). This retained free text is bounded at the
+   * Phoenix span boundary, but is not content-scanned or scrubbed.
    */
   readonly userInput?: string;
   /**
