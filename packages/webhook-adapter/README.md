@@ -21,10 +21,11 @@ pnpm --filter @mono-agent/webhook-adapter run build
 ```ts
 import { startWebhookAdapter } from "@mono-agent/webhook-adapter";
 
+const apiKey = process.env.MONO_AGENT_WEBHOOK_API_KEY;
 const webhook = await startWebhookAdapter({
   host: "127.0.0.1",
   port: 4310,
-  apiKey: process.env.MONO_AGENT_WEBHOOK_API_KEY,
+  ...(apiKey === undefined ? {} : { apiKey }),
   responder,
   endpoints: [
     { name: "invoke", path: "/webhook/invoke" },
@@ -41,7 +42,7 @@ await startWebhookAdapter({ host: "127.0.0.1", port: 4310, path: "/webhook/invok
 
 For programmatic native-notify composition, an endpoint can set an explicit `notifyConversationId`, a pre-resolved `notifyFallbackConversationId`, or the adapter options can provide `resolveNotifyFallbackConversationId`. The resolver runs once per invocation after explicit and deliverable request destinations are considered. Its selected route is attached to the responder-facing request's host-only `replyTo`, retained privately by the run, and reconstructed on a separate completion request for `onResult`; responder mutation therefore cannot redirect, suppress, or inject final delivery. The resolver receives the request's optional `AbortSignal`, and the adapter also races its promise against that signal so disconnect/stop can reclaim the slot even when resolver code does not cooperate.
 
-Send a sync invocation:
+Send a sync invocation (omit the `authorization` header when `apiKey` is not configured):
 
 ```bash
 curl -X POST "$WEBHOOK_URL/webhook/invoke" \
@@ -52,7 +53,7 @@ curl -X POST "$WEBHOOK_URL/webhook/invoke" \
 
 Async mode returns `202` with `requestId` and `statusUrl`; status is process-local memory and is not durable across restarts.
 
-`apiKey` is optional for loopback-only use. When configured, every invocation and async status lookup requires `Authorization: Bearer <key>`; malformed, missing, and incorrect credentials receive the same `401` response. Any non-loopback bind requires both `allowNonLoopback: true` and a non-empty key. Host config reads the key from `webhook.apiKey` / `MONO_AGENT_WEBHOOK_API_KEY`, redacts it from config views, and should normally keep it in the environment rather than committed JSON.
+`apiKey` is optional for loopback-only use. When configured, every invocation and async status lookup requires `Authorization: Bearer <key>`; authentication runs before invocation-body parsing, so malformed, missing, and incorrect credentials receive the same `401` response without decoding the JSON body. Any non-loopback bind requires both `allowNonLoopback: true` and a non-empty key. Host config reads the key from `webhook.apiKey` / `MONO_AGENT_WEBHOOK_API_KEY`, redacts it from config views, and should normally keep it in the environment rather than committed JSON.
 
 Webhook response metadata contains channel-safe run diagnostics such as the run id and status. Compiled system prompts are retained only in local run artifacts and are never returned by this external HTTP API. As defense in depth, the adapter removes `metadata.summary.systemPrompt` even when a custom responder supplies it; sibling summary fields and unrelated metadata are preserved.
 

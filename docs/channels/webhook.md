@@ -58,7 +58,7 @@ The actual bound host/port (when `port: 0`) is printed in the start log. In **sy
 The webhook server binds to loopback by default. A non-loopback `host` (e.g. `0.0.0.0`) is rejected unless `allowNonLoopback: true` **and** a non-empty `apiKey` are both set. The built-in static bearer protects every invoke and status route, but public exposure still needs TLS, rate limiting, key rotation, and any provider-specific signature verification at a reverse proxy or integration boundary you control.
 :::
 
-When `apiKey` is set, callers send `Authorization: Bearer <key>`. Missing, malformed, and incorrect bearer values all receive the same HTTP `401`; token comparison uses the shared timing-safe contract. The adapter removes authorization, cookies, proxy authorization, and `x-api-key` from request metadata before the responder or artifacts can observe it. Leaving the key unset preserves the existing unauthenticated loopback behavior.
+When `apiKey` is set, callers send `Authorization: Bearer <key>`. Authentication runs before JSON body parsing, so missing, malformed, and incorrect bearer values all receive the same HTTP `401` without decoding the body; token comparison uses the shared timing-safe contract. The adapter removes `authorization`, `cookie`, `set-cookie`, `proxy-authorization`, and `x-api-key` from request metadata before the responder or artifacts can observe them. Leaving the key unset preserves the existing unauthenticated loopback behavior.
 
 ## Request and response
 

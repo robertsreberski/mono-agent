@@ -62,6 +62,26 @@ describe("loadWebhookAdapterConfig", () => {
     });
   });
 
+  it("treats JSON apiKey strings literally and only uses the documented env override", async () => {
+    const pseudoReference = "env:MONO_AGENT_WEBHOOK_API_KEY";
+    const json = {
+      webhook: {
+        enabled: true,
+        host: "127.0.0.1",
+        apiKey: pseudoReference,
+      },
+    };
+
+    const jsonOnly = await loadWebhookAdapterConfig({ env: {}, json });
+    expect(jsonOnly.apiKey).toBe(pseudoReference);
+
+    const withEnvOverride = await loadWebhookAdapterConfig({
+      env: { MONO_AGENT_WEBHOOK_API_KEY: "actual-env-key" },
+      json,
+    });
+    expect(withEnvOverride.apiKey).toBe("actual-env-key");
+  });
+
   it("defaults to a single /webhook/invoke endpoint when nothing is configured", async () => {
     const config = await loadWebhookAdapterConfig({ env: {} });
     expect(config.endpoints).toEqual([{ name: "default", path: "/webhook/invoke", mode: "sync", enabled: true }]);

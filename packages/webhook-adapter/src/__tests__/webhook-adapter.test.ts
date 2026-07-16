@@ -106,6 +106,7 @@ describe("Webhook adapter", () => {
           "content-type": "application/json",
           authorization: `Bearer ${apiKey}`,
           cookie: "session=fixture-cookie-secret",
+          "set-cookie": "session=fixture-response-cookie-secret",
           "proxy-authorization": "Bearer fixture-proxy-secret",
           "x-api-key": "fixture-secondary-secret",
           "x-request-id": "safe-request-id",
@@ -122,6 +123,7 @@ describe("Webhook adapter", () => {
       ]);
       expect(seenHeaders[0]).not.toHaveProperty("headers.authorization");
       expect(seenHeaders[0]).not.toHaveProperty("headers.cookie");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.set-cookie");
       expect(seenHeaders[0]).not.toHaveProperty("headers.proxy-authorization");
       expect(seenHeaders[0]).not.toHaveProperty("headers.x-api-key");
 
@@ -139,10 +141,87 @@ describe("Webhook adapter", () => {
       const logged = JSON.stringify(Object.values(logger).map((mock) => mock.mock.calls));
       expect(logged).not.toContain(apiKey);
       expect(logged).not.toContain("fixture-cookie-secret");
+      expect(logged).not.toContain("fixture-response-cookie-secret");
       expect(logged).not.toContain("fixture-proxy-secret");
       expect(logged).not.toContain("fixture-secondary-secret");
     } finally {
       await server.stop();
+    }
+  });
+
+  it("authenticates protected invocations before parsing malformed or oversized JSON", async () => {
+    const responder = {
+      respond: vi.fn(async () => ({ text: "must not run" })),
+    } satisfies AgentResponder;
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      apiKey: "fixture-webhook-key",
+      responder,
+      logger,
+    });
+    const malformedBody = '{"text":';
+    const oversizedBody = JSON.stringify({ text: "x".repeat(1_048_576) });
+
+    try {
+      for (const body of [malformedBody, oversizedBody]) {
+        for (const authorization of [undefined, "Bearer wrong-key"]) {
+          const response = await fetch(server.invokeUrl, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              ...(authorization === undefined ? {} : { authorization }),
+            },
+            body,
+          });
+          expect(response.status).toBe(401);
+          await expect(response.json()).resolves.toEqual({
+            status: "unauthorized",
+            error: "Invalid API key.",
+          });
+        }
+      }
+
+      for (const body of [malformedBody, oversizedBody]) {
+        const authorized = await fetch(server.invokeUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer fixture-webhook-key",
+          },
+          body,
+        });
+        expect(authorized.status).toBe(400);
+        await expect(authorized.json()).resolves.toMatchObject({ status: "failed" });
+      }
+
+      expect(responder.respond).not.toHaveBeenCalled();
+      expect(Object.values(logger).flatMap((mock) => mock.mock.calls)).toEqual([]);
+    } finally {
+      await server.stop();
+    }
+
+    const keyless = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      responder: echoResponder(),
+    });
+    try {
+      const response = await fetch(keyless.invokeUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: malformedBody,
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ status: "failed" });
+    } finally {
+      await keyless.stop();
     }
   });
 

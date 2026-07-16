@@ -18,6 +18,7 @@ import {
   isLoopbackHost,
   listen,
   readAuthorizationBearer,
+  sanitizeInboundHttpHeaders,
 } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
@@ -252,14 +253,6 @@ const DEFAULT_PATH = "/webhook/invoke";
 const DEFAULT_MODE: WebhookInvocationMode = "sync";
 const DEFAULT_RETENTION_MS = 300_000;
 const DEFAULT_MAX_STORED_REQUESTS = 100;
-const SENSITIVE_REQUEST_HEADERS = new Set([
-  "authorization",
-  "cookie",
-  "set-cookie",
-  "proxy-authorization",
-  "x-api-key",
-]);
-
 export async function startWebhookAdapter(options: WebhookAdapterOptions): Promise<WebhookAdapterStartResult> {
   validateOptions(options);
   const host = options.host ?? DEFAULT_HOST;
@@ -289,22 +282,28 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
   const activeByRun = new Map<string, ActiveRun>();
   const statuses = new Map<string, StoredStatus>();
 
-  app.use(express.json({ limit: "1mb" }));
+  const parseJsonBody = express.json({ limit: "1mb" });
   for (const endpoint of endpoints) {
-    app.post(endpoint.path, (req, res) => {
-      if (!authorize(req, res, apiKey)) {
-        return;
-      }
-      void handleInvoke(req, res, endpoint).catch((error: unknown) => {
-        options.logger?.error?.("Webhook invocation failed before response.", {
-          endpoint: endpoint.name,
-          error: errorToMessage(error),
-        });
-        if (!res.headersSent) {
-          res.status(500).json({ status: "failed", error: errorToMessage(error) });
+    app.post(
+      endpoint.path,
+      (req, res, next) => {
+        if (authorize(req, res, apiKey)) {
+          next();
         }
-      });
-    });
+      },
+      parseJsonBody,
+      (req, res) => {
+        void handleInvoke(req, res, endpoint).catch((error: unknown) => {
+          options.logger?.error?.("Webhook invocation failed before response.", {
+            endpoint: endpoint.name,
+            error: errorToMessage(error),
+          });
+          if (!res.headersSent) {
+            res.status(500).json({ status: "failed", error: errorToMessage(error) });
+          }
+        });
+      },
+    );
   }
   // Register one status route per UNIQUE base path (endpoints sharing a parent
   // directory share a status route; lookups hit the shared, requestId-keyed store).
@@ -389,7 +388,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
           path: req.path,
           receivedAt,
           ...(req.socket.remoteAddress === undefined ? {} : { remoteAddress: req.socket.remoteAddress }),
-          headers: sanitizeRequestHeaders(req.headers),
+          headers: sanitizeInboundHttpHeaders(req.headers),
           ...(body.metadata === undefined ? {} : { payloadMetadata: body.metadata }),
           ...(endpoint.notify === true
             ? {
@@ -503,18 +502,6 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       await close(server);
     },
   };
-}
-
-function sanitizeRequestHeaders(
-  headers: Record<string, string | string[] | undefined>,
-): Record<string, string | string[] | undefined> {
-  const sanitized: Record<string, string | string[] | undefined> = {};
-  for (const [name, value] of Object.entries(headers)) {
-    if (!SENSITIVE_REQUEST_HEADERS.has(name.toLowerCase())) {
-      sanitized[name] = value;
-    }
-  }
-  return sanitized;
 }
 
 function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {

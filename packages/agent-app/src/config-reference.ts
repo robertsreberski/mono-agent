@@ -1043,7 +1043,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "slack.botToken": "env:MONO_AGENT_SLACK_BOT_TOKEN",
     "slack.appToken": "env:MONO_AGENT_SLACK_APP_TOKEN",
     "slack.stripMentionText": false,
-    "webhook.apiKey": "env:MONO_AGENT_WEBHOOK_API_KEY",
+    "webhook.apiKey": "set-via-MONO_AGENT_WEBHOOK_API_KEY",
     "openaiApi.apiKey": "env:MONO_AGENT_OPENAI_API_KEY",
   };
   if (examples[id] !== undefined) {
