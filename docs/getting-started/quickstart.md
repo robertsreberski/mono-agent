@@ -161,7 +161,12 @@ Check the config section by section before starting:
 mono-agent validate
 ```
 
-`validate` (`app.cli-validate`) prints a per-section report — core, runtime provenance and routes, provider credentials, context, memory, tools, sandbox, observability, and every channel — each tagged with a status:
+`validate` (`app.cli-validate`) prints a per-section report — core, runtime,
+provenance and routes, provider credentials, context, memory, tools, sandbox,
+observability, runs health, managed launchd logs, secret placement, and every
+channel — each tagged with a status. The launchd-log section reports active,
+retained, and total bytes for every safely inspected stream, reports unsafe or
+unreadable inventory as unavailable, and never rotates or changes permissions:
 
 | Status | Meaning | Action |
 | --- | --- | --- |

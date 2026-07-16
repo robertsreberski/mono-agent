@@ -187,6 +187,27 @@ names its full closure id plus sanitized install metadata; other executions repo
 `dev (unmanaged)`. With `--consumer`, this remains the validator CLI's provenance,
 not an attestation of a separately running daemon.
 
+Managed launchd stdout/stderr use a fixed automatic policy: each active file
+and each of three retained generations is capped at 5 MiB. A separate one-shot
+LaunchAgent checks every five minutes. When maintenance is needed it takes the
+same per-config lifecycle lock, verifies the existing main plist, proves the
+worker stopped, and commits owner-only bounded tails through per-agent,
+fsynced deterministic stages plus a recoverable journal. A separate per-agent
+lifecycle intent is atomically published as `stopping` before bootout, promoted
+to `stopped` only after launchd unload and every observed PID's death, and
+changed to `restoring` before bootstrap invalidates that old stop proof. It is
+removed only after the exact plist is rechecked and its worker is live. An
+interrupted pre-proof pass whose launchd PID is gone fails closed; durable
+`stopped` rotation can resume without authorizing another agent or an intentionally
+stopped service.
+Start and restart perform
+the same stopped-writer maintenance before loading helper then worker; stop
+unloads the helper first and removes both definitions. Unsafe paths or a changed
+plist fail closed without following links or resurrecting a stopped service.
+`mono-agent validate` / `doctor` only inspect metadata and report exact active,
+retained, and total bytes for safely inspected files; unsafe or unreadable byte
+inventory is unavailable. They never rotate or chmod logs.
+
 Guided readiness uses a worker-reproducible environment rather than the launching
 shell: durable `.env` values, entered selected secrets, the resolved Pi auth path,
 and operational values such as `PATH`/`HOME`. Shell-only provider credentials and

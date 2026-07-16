@@ -52,6 +52,40 @@ The LaunchAgent enters Node through `/usr/bin/env -i` and restores only the revi
 
 Every worker must acquire one owner-only canonical per-config lifetime lease. Canonicalization covers HOME variants, symlink-parent and filename-case aliases, and PID reuse. An existing launchd worker therefore cannot be duplicated by a second managed start or a manual foreground start of the same config.
 
+### Bounded launchd logs
+
+The controller installs a separate scheduled one-shot LaunchAgent beside each
+managed worker. It has no `KeepAlive`, sends its own output to `/dev/null`, and
+checks a fixed policy every five minutes: the active stdout/stderr file and each
+of three retained generations may hold at most 5 MiB. It shares the worker's
+per-config lifecycle lock. A maintenance pass first verifies the owner-private
+main plist and read-only log inventory; only when maintenance is necessary does
+it atomically publish a bounded, owner-only, per-agent `stopping` intent, unload
+the main job, and prove every PID observed through launchd bootout dead. Only
+then does it atomically promote that intent to `stopped`. A pre-proof crash with
+no remaining launchd PID fails closed instead of treating unload as death proof.
+It then validates every
+directory as a current-user-owned real directory and every log file as a
+current-user-owned, non-symlinked, single-link regular file, installs fsynced
+owner-only bounded tails by identity-checked atomic rename,
+publishes a per-agent fsynced journal before the first target rename, and
+requires the exact main-plist identity and content fingerprint to remain
+unchanged, changes the intent to `restoring` before bootstrap invalidates the
+old stop proof, and clears it only after the replacement worker is live.
+Deterministic stages and payload hashes make a partial commit retry the same
+transaction exactly once; only a durable `stopped` intent authorizes recovered
+rotation, and a missing lifecycle intent never authorizes resurrection.
+
+Start/restart unload the scheduler before the worker and run the same maintenance
+inside the stopped window before loading scheduler then worker. Stop unloads the
+scheduler first and removes both definitions only after both jobs and observed
+PIDs are gone. An unsafe path, stop failure, write/fsync/rename failure, or plist
+race returns an error; after the worker has stopped, failure leaves it stopped
+instead of claiming success or entering a restart loop. `validate` and `doctor`
+only read path metadata and report exact sizes for safely inspected files;
+unsafe or unreadable byte inventory is unavailable. They never repair
+permissions or rotate.
+
 ### Frozen inputs and startup proof
 
 Before app or channel loading, managed startup freezes the attested config, Identity, optional Soul, and external MCP authority file into private read-only runtime inputs. Trace and status records still identify the canonical operator-facing config path.

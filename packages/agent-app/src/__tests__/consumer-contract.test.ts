@@ -83,6 +83,10 @@ describe("golden consumer config contracts", () => {
           "status": "disabled",
         },
         {
+          "id": "launchd-logs",
+          "status": "disabled",
+        },
+        {
           "id": "channel:telegram",
           "status": "waiting",
         },
@@ -168,6 +172,10 @@ describe("golden consumer config contracts", () => {
         },
         {
           "id": "runs",
+          "status": "disabled",
+        },
+        {
+          "id": "launchd-logs",
           "status": "disabled",
         },
         {

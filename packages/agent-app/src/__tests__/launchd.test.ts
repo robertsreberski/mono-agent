@@ -4,17 +4,22 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildLaunchdMaintenancePlistXml,
+  buildLaunchdMaintenanceProgramArguments,
   buildPlistXml,
   buildLaunchdProgramArguments,
   defaultPathEnv,
   deriveLaunchdLabel,
+  deriveLaunchdMaintenanceLabel,
   domainTarget,
   escapeXml,
+  launchdMaintenancePathsFor,
   launchdPathsFor,
+  MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
   parseLaunchdServicePid,
   serviceTarget,
 } from "../launchd.js";
-import type { PlistInput } from "../launchd.js";
+import type { MaintenancePlistInput, PlistInput } from "../launchd.js";
 
 function plistInput(overrides: Partial<PlistInput> = {}): PlistInput {
   return {
@@ -27,6 +32,22 @@ function plistInput(overrides: Partial<PlistInput> = {}): PlistInput {
     stdoutPath: "/home/u/.mono-agent/logs/com.mono-agent.demo-0a1b2c3d.out.log",
     stderrPath: "/home/u/.mono-agent/logs/com.mono-agent.demo-0a1b2c3d.err.log",
     environment: { PATH: "/usr/bin:/bin" },
+    ...overrides,
+  };
+}
+
+function maintenanceInput(overrides: Partial<MaintenancePlistInput> = {}): MaintenancePlistInput {
+  return {
+    label: "com.mono-agent-maintenance.demo-0a1b2c3d",
+    nodePath: "/usr/local/bin/node",
+    cliPath: "/opt/app/dist/cli.js",
+    configPath: "/work/demo/mono-agent.config.json",
+    cwd: "/work/demo",
+    environment: {
+      PATH: "/usr/bin:/bin",
+      [MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV]: "1",
+    },
+    intervalSeconds: 300,
     ...overrides,
   };
 }
@@ -80,6 +101,25 @@ describe("launchdPathsFor", () => {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
     }
+  });
+});
+
+describe("launchd maintenance identity", () => {
+  it("derives a stable helper label outside fleet instance discovery", () => {
+    const main = "com.mono-agent.demo-0a1b2c3d";
+    expect(deriveLaunchdMaintenanceLabel(main)).toBe("com.mono-agent-maintenance.demo-0a1b2c3d");
+    expect(deriveLaunchdMaintenanceLabel(main)).not.toMatch(/^com\.mono-agent\./u);
+    expect(() => deriveLaunchdMaintenanceLabel("org.example.agent")).toThrow(/canonical mono-agent label/u);
+    expect(() => deriveLaunchdMaintenanceLabel("com.mono-agent.")).toThrow(/canonical mono-agent label/u);
+    expect(() => deriveLaunchdMaintenanceLabel("com.mono-agent.Demo"))
+      .toThrow(/canonical mono-agent label/u);
+  });
+
+  it("places the helper plist beside the main LaunchAgent", () => {
+    expect(launchdMaintenancePathsFor("com.mono-agent.demo-0a1b2c3d", "/home/u")).toEqual({
+      label: "com.mono-agent-maintenance.demo-0a1b2c3d",
+      plistPath: "/home/u/Library/LaunchAgents/com.mono-agent-maintenance.demo-0a1b2c3d.plist",
+    });
   });
 });
 
@@ -169,6 +209,40 @@ describe("buildPlistXml", () => {
     expect(() => buildLaunchdProgramArguments(plistInput({
       environment: { "PATH=shadow": "/private", PATH: "/usr/bin:/bin" },
     }))).toThrow(/portable identifier grammar/u);
+  });
+});
+
+describe("buildLaunchdMaintenancePlistXml", () => {
+  it("pins a closed one-shot command with no helper logs or KeepAlive", () => {
+    const input = maintenanceInput();
+    const args = buildLaunchdMaintenanceProgramArguments(input);
+    const xml = buildLaunchdMaintenancePlistXml(input);
+
+    expect(args).toEqual([
+      "/usr/bin/env",
+      "-i",
+      `${MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV}=1`,
+      "PATH=/usr/bin:/bin",
+      "/usr/local/bin/node",
+      "/opt/app/dist/cli.js",
+      "__launchd-log-maintenance",
+      "--config",
+      "/work/demo/mono-agent.config.json",
+    ]);
+    expect(xml).toContain("<key>StartInterval</key>\n  <integer>300</integer>");
+    expect(xml).toContain("<key>StandardOutPath</key>\n  <string>/dev/null</string>");
+    expect(xml).toContain("<key>StandardErrorPath</key>\n  <string>/dev/null</string>");
+    expect(xml).not.toContain("<key>RunAtLoad</key>");
+    expect(xml).not.toContain("<key>KeepAlive</key>");
+    expect(xml).not.toContain("--env-file");
+    expect(xml).not.toContain("--expected-background-snapshot");
+  });
+
+  it("rejects invalid intervals and control characters", () => {
+    expect(() => buildLaunchdMaintenancePlistXml(maintenanceInput({ intervalSeconds: 0 })))
+      .toThrow(/positive safe integer/u);
+    expect(() => buildLaunchdMaintenancePlistXml(maintenanceInput({ cwd: "/work/bad\npath" })))
+      .toThrow(/control characters/u);
   });
 });
 

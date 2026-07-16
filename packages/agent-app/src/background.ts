@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
 import { type FileHandle, lstat, mkdir, open, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -18,16 +18,31 @@ import { formatChannelFactValue } from "./channel-fact-format.js";
 import {
   bootout,
   bootstrap,
+  buildLaunchdMaintenancePlistXml,
   buildPlistXml,
   defaultPathEnv,
   deriveLaunchdLabel,
+  deriveLaunchdMaintenanceLabel,
   isLoaded,
   launchdServiceInfo,
   launchdPathsFor,
+  MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
   makeLaunchctlRunner,
 } from "./launchd.js";
 import type { LaunchctlResult, LaunchctlRunner, LaunchdPaths } from "./launchd.js";
 import { selectBackgroundOperationalEnvironment } from "./background-environment.js";
+import {
+  beginLaunchdLogMaintenanceIntent,
+  clearLaunchdLogMaintenanceIntent,
+  inspectLaunchdLogs,
+  LAUNCHD_LOG_MAINTENANCE_INTERVAL_SECONDS,
+  markLaunchdLogMaintenanceRestoring,
+  markLaunchdLogMaintenanceStopped,
+  markLaunchdLogMaintenanceStopping,
+  readLaunchdLogMaintenanceIntent,
+  rotateStoppedLaunchdLogs,
+} from "./launchd-logs.js";
+import type { LaunchdLogInspection, LaunchdLogMaintenanceIntent } from "./launchd-logs.js";
 import {
   ensureManagedBackgroundRuntime,
   MANAGED_BACKGROUND_WORKER_ENV,
@@ -61,6 +76,10 @@ export type {
   BackgroundWorkerLease,
   BackgroundWorkerLeaseOptions,
 } from "./background-worker-lease.js";
+export {
+  LAUNCHD_LOG_MAX_BYTES,
+  LAUNCHD_LOG_ROTATION_COUNT,
+} from "./launchd-logs.js";
 
 /**
  * Background-service orchestration for the mono-agent CLI. The interactive
@@ -97,6 +116,11 @@ export interface InstanceTarget {
   readonly requireTui?: boolean;
 }
 
+export interface BackgroundLifecycleTarget {
+  readonly label: string;
+  readonly paths: LaunchdPaths;
+}
+
 export interface ResolveInstanceTargetInput {
   readonly args: BackgroundCliArgs;
   readonly env: Record<string, string | undefined>;
@@ -116,6 +140,19 @@ export function managedBackgroundEnvironment(
     // This is a lifecycle marker, not a config override. It tells cli.ts to
     // discard launchd's ambient environment before loading the chosen dotenv.
     [MANAGED_BACKGROUND_WORKER_ENV]: "1",
+  };
+}
+
+/** Exact non-secret environment for the scheduled one-shot log maintainer. */
+export function managedLaunchdLogMaintenanceEnvironment(
+  env: Readonly<Record<string, string | undefined>>,
+): Readonly<Record<string, string>> {
+  return {
+    ...selectBackgroundOperationalEnvironment(env),
+    // This unattended helper needs only pinned system tools. Do not persist a
+    // caller-controlled PATH that could shadow launchctl on a later run.
+    PATH: "/usr/bin:/bin",
+    [MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV]: "1",
   };
 }
 
@@ -194,8 +231,37 @@ export interface BackgroundDeps {
   readonly writeFile: (path: string, data: string) => Promise<void>;
   readonly mkdir: (path: string) => Promise<void>;
   readonly rm: (path: string) => Promise<void>;
-  readonly stat: (path: string) => Promise<{ readonly size: number }>;
-  readonly rename: (oldPath: string, newPath: string) => Promise<void>;
+  readonly inspectLaunchdLogs: (
+    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
+  ) => Promise<LaunchdLogInspection>;
+  readonly rotateStoppedLaunchdLogs: (
+    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
+  ) => Promise<void>;
+  readonly readLaunchdLogMaintenanceIntent: (
+    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
+  ) => Promise<LaunchdLogMaintenanceIntent | undefined>;
+  readonly beginLaunchdLogMaintenanceIntent: (
+    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
+    intent: LaunchdLogMaintenanceIntent,
+  ) => Promise<void>;
+  readonly markLaunchdLogMaintenanceStopped: (
+    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
+    expected: LaunchdLogMaintenanceIntent,
+  ) => Promise<LaunchdLogMaintenanceIntent>;
+  readonly markLaunchdLogMaintenanceRestoring: (
+    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
+    expected: LaunchdLogMaintenanceIntent,
+  ) => Promise<LaunchdLogMaintenanceIntent>;
+  readonly markLaunchdLogMaintenanceStopping: (
+    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
+    expected: LaunchdLogMaintenanceIntent,
+  ) => Promise<LaunchdLogMaintenanceIntent>;
+  readonly clearLaunchdLogMaintenanceIntent: (
+    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
+    expected?: LaunchdLogMaintenanceIntent,
+  ) => Promise<void>;
+  /** Read and fingerprint the exact owner-private plist without mutating it. */
+  readonly verifyLaunchdPlist: (path: string) => Promise<string>;
   /** True when a pid is still alive (or alive but owned by another user). */
   readonly isAlive: (pid: number) => boolean;
   /** Install/verify an immutable CLI outside npm/npx's disposable cache. */
@@ -205,7 +271,7 @@ export interface BackgroundDeps {
     target: InstanceTarget,
   ) => Promise<readonly ManagedRuntimeAdditionalPackage[]>;
   /** Fail closed when another lifecycle command owns this config label. */
-  readonly acquireLifecycleLock: (target: InstanceTarget) => Promise<(() => Promise<void>) | undefined>;
+  readonly acquireLifecycleLock: (target: BackgroundLifecycleTarget) => Promise<(() => Promise<void>) | undefined>;
   /** Prove a metadata-advertised TUI endpoint is actually reachable. */
   readonly probeTui: (source: TraceSourceListItem) => Promise<boolean>;
   readonly captureSnapshot?: (target: InstanceTarget) => Promise<BackgroundSnapshot>;
@@ -226,8 +292,24 @@ export function defaultBackgroundDeps(): BackgroundDeps {
     writeFile: writeOwnerPrivateLaunchdFile,
     mkdir: ensureOwnerPrivateLaunchdDirectory,
     rm: (path) => rm(path, { force: true }),
-    stat: inspectOwnerPrivateLaunchdLog,
-    rename,
+    inspectLaunchdLogs: async (paths) => await inspectLaunchdLogs(paths),
+    rotateStoppedLaunchdLogs: async (paths) => {
+      await rotateStoppedLaunchdLogs(paths);
+    },
+    readLaunchdLogMaintenanceIntent: async (paths) => await readLaunchdLogMaintenanceIntent(paths),
+    beginLaunchdLogMaintenanceIntent: async (paths, intent) => {
+      await beginLaunchdLogMaintenanceIntent(paths, intent);
+    },
+    markLaunchdLogMaintenanceStopped: async (paths, expected) =>
+      await markLaunchdLogMaintenanceStopped(paths, expected),
+    markLaunchdLogMaintenanceRestoring: async (paths, expected) =>
+      await markLaunchdLogMaintenanceRestoring(paths, expected),
+    markLaunchdLogMaintenanceStopping: async (paths, expected) =>
+      await markLaunchdLogMaintenanceStopping(paths, expected),
+    clearLaunchdLogMaintenanceIntent: async (paths, expected) => {
+      await clearLaunchdLogMaintenanceIntent(paths, expected);
+    },
+    verifyLaunchdPlist: inspectOwnerPrivateLaunchdPlist,
     isAlive: (pid) => {
       try {
         process.kill(pid, 0);
@@ -268,8 +350,6 @@ export interface ReadyPollOptions extends PollOptions {
 }
 
 const DEFAULT_POLL: PollOptions = { timeoutMs: 18_000, intervalMs: 400 };
-export const LAUNCHD_LOG_MAX_BYTES = 5 * 1024 * 1024;
-export const LAUNCHD_LOG_ROTATION_COUNT = 3;
 
 export type BackgroundLaunchAction = "started" | "restarted";
 
@@ -332,6 +412,288 @@ export async function forceRestartBackground(
       ));
     });
   }
+}
+
+/**
+ * Private one-shot invoked only by the scheduled maintenance LaunchAgent. It
+ * never creates or rewrites a service definition. It does not resurrect an
+ * intentionally stopped service; the sole exception is recovery authorized by
+ * its own durable lifecycle intent after a prior maintainer died post-bootout.
+ */
+export async function maintainLaunchdLogs(
+  target: BackgroundLifecycleTarget,
+  deps: BackgroundDeps,
+  poll: PollOptions = DEFAULT_POLL,
+): Promise<number> {
+  const release = await deps.acquireLifecycleLock(target);
+  if (release === undefined) {
+    // Controller start/restart/stop owns the same lock. Skipping this periodic
+    // pass is expected and avoids making launchd record a false maintenance
+    // failure; the next interval retries from a fresh inventory.
+    return 0;
+  }
+  try {
+    const uid = deps.getuid();
+    const service = await launchdServiceInfo(deps.runner, target.label, uid);
+
+    let inspection: LaunchdLogInspection;
+    try {
+      inspection = await deps.inspectLaunchdLogs(target.paths);
+    } catch (error) {
+      reportMaintenanceFailure(target, deps, "inspect launchd logs", error);
+      return 1;
+    }
+    let maintenanceIntent: LaunchdLogMaintenanceIntent | undefined;
+    try {
+      maintenanceIntent = await deps.readLaunchdLogMaintenanceIntent(target.paths);
+    } catch (error) {
+      reportMaintenanceFailure(target, deps, "read durable launchd-log maintenance intent", error);
+      return 1;
+    }
+    if (inspection.pendingMaintenance && maintenanceIntent === undefined) {
+      reportMaintenanceFailure(
+        target,
+        deps,
+        "read durable launchd-log maintenance intent",
+        new Error("The maintenance marker disappeared after inventory."),
+      );
+      return 1;
+    }
+    if (!service.loaded && maintenanceIntent === undefined) return 0;
+
+    let originalPlistIdentity: string;
+    try {
+      originalPlistIdentity = await deps.verifyLaunchdPlist(target.paths.plistPath);
+    } catch (error) {
+      reportMaintenanceFailure(target, deps, "verify the existing main LaunchAgent", error);
+      return 1;
+    }
+    if (maintenanceIntent !== undefined
+      && (maintenanceIntent.label !== target.label
+        || maintenanceIntent.plistFingerprint !== originalPlistIdentity)) {
+      reportMaintenanceFailure(
+        target,
+        deps,
+        "authenticate durable launchd-log maintenance intent",
+        new Error("The pending intent does not match the exact main LaunchAgent definition."),
+      );
+      return 1;
+    }
+    if (maintenanceIntent?.phase === "stopping" && !service.loaded) {
+      reportMaintenanceFailure(
+        target,
+        deps,
+        "recover interrupted launchd-log maintenance",
+        new Error("The prior maintainer did not durably prove every old writer PID dead; refusing rotation."),
+      );
+      return 1;
+    }
+    if (maintenanceIntent?.phase === "restoring") {
+      const replacement = await launchdServiceInfo(deps.runner, target.label, uid);
+      if (!replacement.loaded || replacement.pid === undefined || !deps.isAlive(replacement.pid)) {
+        reportMaintenanceFailure(
+          target,
+          deps,
+          "recover interrupted launchd-log restoration",
+          new Error("The replacement writer identity was lost before live-worker proof; refusing stale rotation authority."),
+        );
+        return 1;
+      }
+      try {
+        await deps.clearLaunchdLogMaintenanceIntent(target.paths, maintenanceIntent);
+      } catch (error) {
+        reportMaintenanceFailure(target, deps, "clear recovered launchd-log restoration intent", error);
+        return 1;
+      }
+      return 0;
+    }
+    if (maintenanceIntent?.phase === "stopped" && service.loaded) {
+      reportMaintenanceFailure(
+        target,
+        deps,
+        "recover interrupted launchd-log maintenance",
+        new Error("launchd reports a writer loaded after durable stopped-writer proof; refusing rotation."),
+      );
+      return 1;
+    }
+
+    if (!inspection.canMaintain) {
+      deps.stderr(ui.errorLine(`Scheduled log maintenance refused unsafe paths for ${target.label}.`));
+      for (const issue of inspection.issues) deps.stderr(ui.style.dim(issue) + "\n");
+      return 1;
+    }
+    if (!inspection.needsMaintenance && maintenanceIntent === undefined) return 0;
+
+    if (maintenanceIntent === undefined) {
+      maintenanceIntent = {
+        version: 1,
+        phase: "stopping",
+        label: target.label,
+        plistFingerprint: originalPlistIdentity,
+      };
+      try {
+        await deps.beginLaunchdLogMaintenanceIntent(target.paths, maintenanceIntent);
+      } catch (error) {
+        reportMaintenanceFailure(target, deps, "publish durable launchd-log maintenance intent", error);
+        return 1;
+      }
+    }
+
+    if (maintenanceIntent.phase === "stopping") {
+      const stopped = await unloadLaunchdService(
+        target.label,
+        service,
+        uniquePids([service.pid]),
+        deps,
+        uid,
+        poll,
+      );
+      if (!stopped.ok) {
+        reportMaintenanceFailure(
+          target,
+          deps,
+          "prove the launchd log writer stopped",
+          stopped.failure,
+        );
+        return 1;
+      }
+      try {
+        maintenanceIntent = await deps.markLaunchdLogMaintenanceStopped(target.paths, maintenanceIntent);
+      } catch (error) {
+        reportMaintenanceFailure(target, deps, "record durable stopped-writer proof", error);
+        return 1;
+      }
+    } else {
+      const current = await launchdServiceInfo(deps.runner, target.label, uid);
+      if (current.loaded || (current.pid !== undefined && deps.isAlive(current.pid))) {
+        reportMaintenanceFailure(
+          target,
+          deps,
+          "recheck durable stopped-writer proof",
+          new Error("launchd exposed a live writer before recovered rotation."),
+        );
+        return 1;
+      }
+    }
+
+    try {
+      await deps.rotateStoppedLaunchdLogs(target.paths);
+      // Close the pathname-replacement race before handing the definition to
+      // launchctl. A changed/symlinked plist leaves the worker stopped.
+      const currentPlistIdentity = await deps.verifyLaunchdPlist(target.paths.plistPath);
+      if (currentPlistIdentity !== originalPlistIdentity) {
+        throw new Error("The main LaunchAgent plist changed during stopped-writer maintenance.");
+      }
+    } catch (error) {
+      reportMaintenanceFailure(target, deps, "commit bounded stopped-writer logs", error);
+      return 1;
+    }
+
+    try {
+      maintenanceIntent = await deps.markLaunchdLogMaintenanceRestoring(target.paths, maintenanceIntent);
+    } catch (error) {
+      reportMaintenanceFailure(target, deps, "invalidate stopped-writer proof before restoration", error);
+      return 1;
+    }
+
+    const booted = await bootstrap(deps.runner, target.paths.plistPath, uid);
+    const observedRestorePids = new Set<number>();
+    const running = await pollUntil(deps, poll, async () => {
+      const current = await launchdServiceInfo(deps.runner, target.label, uid);
+      if (current.pid !== undefined) observedRestorePids.add(current.pid);
+      return current.loaded && current.pid !== undefined && deps.isAlive(current.pid);
+    });
+    if (!running) {
+      const current = await launchdServiceInfo(deps.runner, target.label, uid);
+      if (current.pid !== undefined) observedRestorePids.add(current.pid);
+      const cleanedUp = await unloadLaunchdService(
+        target.label,
+        current,
+        [...observedRestorePids],
+        deps,
+        uid,
+        poll,
+      );
+      reportMaintenanceFailure(
+        target,
+        deps,
+        "restore the exact main LaunchAgent after rotation",
+        lifecycleFailure(booted, "launchd did not expose a live replacement worker"),
+      );
+      if (!cleanedUp.ok) {
+        reportMaintenanceFailure(
+          target,
+          deps,
+          "remove the failed replacement worker",
+          cleanedUp.failure,
+        );
+      }
+      return 1;
+    }
+    try {
+      const restoredPlistIdentity = await deps.verifyLaunchdPlist(target.paths.plistPath);
+      if (restoredPlistIdentity !== originalPlistIdentity) {
+        throw new Error("The main LaunchAgent plist changed while launchd restored the worker.");
+      }
+    } catch (error) {
+      const restoredService = await launchdServiceInfo(deps.runner, target.label, uid);
+      const stoppedAgain = await unloadLaunchdService(
+        target.label,
+        restoredService,
+        uniquePids([restoredService.pid, ...observedRestorePids]),
+        deps,
+        uid,
+        poll,
+      );
+      reportMaintenanceFailure(target, deps, "prove the restored main LaunchAgent definition", error);
+      if (!stoppedAgain.ok) {
+        reportMaintenanceFailure(
+          target,
+          deps,
+          "stop the worker after its definition changed",
+          stoppedAgain.failure,
+        );
+      }
+      return 1;
+    }
+    try {
+      await deps.clearLaunchdLogMaintenanceIntent(target.paths, maintenanceIntent);
+    } catch (error) {
+      reportMaintenanceFailure(target, deps, "clear durable launchd-log maintenance intent", error);
+      return 1;
+    }
+    return 0;
+  } finally {
+    await release().catch((error: unknown) => {
+      deps.stderr(ui.errorLine(
+        `Could not release lifecycle lock for ${target.label}: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+    });
+  }
+}
+
+function reportMaintenanceFailure(
+  target: BackgroundLifecycleTarget,
+  deps: BackgroundDeps,
+  action: string,
+  error: unknown,
+): void {
+  deps.stderr(ui.errorLine(
+    `Scheduled log maintenance could not ${action} for ${target.label}: ${maintenanceErrorMessage(error)}`,
+  ));
+}
+
+function maintenanceErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null) {
+    const result = error as { readonly code?: unknown; readonly stdout?: unknown; readonly stderr?: unknown };
+    const detail = [result.stderr, result.stdout]
+      .find((value): value is string => typeof value === "string" && value.trim().length > 0)
+      ?.trim();
+    if (detail !== undefined) return detail;
+    if (typeof result.code === "number") return `launchctl exited ${result.code}`;
+  }
+  return String(error);
 }
 
 /**
@@ -414,22 +776,61 @@ async function ensureBackgroundReadyUnlocked(
     return { ok: false, action: "start", reason: "ownership" };
   }
 
-  let sinceMs: number;
+  let sinceMs = deps.now();
   try {
     await prepareLaunchdDirectories(launchTarget, deps);
-    await rotateLaunchdLogs(launchTarget.paths, deps);
-    await writePlist(launchTarget, deps);
-    sinceMs = deps.now();
   } catch (error) {
-    reportLifecycleException(launchTarget, deps, "prepare the LaunchAgent", error);
+    reportLifecycleException(launchTarget, deps, "prepare the LaunchAgent directories", error);
     return { ok: false, action: "start", reason: "preparation" };
   }
   let outcome: LaunchOutcome;
+  let prepared = false;
   try {
-    outcome = await bootstrapOrRestart(launchTarget, deps, uid, poll);
+    let interruptedMaintenance = await deps.readLaunchdLogMaintenanceIntent(launchTarget.paths);
+    if (interruptedMaintenance?.phase === "stopping" || interruptedMaintenance?.phase === "restoring") {
+      const current = await launchdServiceInfo(deps.runner, launchTarget.label, uid);
+      if (!current.loaded) {
+        throw new Error(
+          "Interrupted launchd-log maintenance lost its writer PID before durable stopped-writer proof; refusing restart.",
+        );
+      }
+    }
+    outcome = await bootstrapOrRestart(launchTarget, deps, uid, poll, async () => {
+      const stoppedIntent = interruptedMaintenance;
+      if (stoppedIntent?.phase === "stopped") {
+        interruptedMaintenance = await deps.markLaunchdLogMaintenanceStopping(
+          launchTarget.paths,
+          stoppedIntent,
+        );
+      }
+    }, async (mainStopProven) => {
+      const stoppingIntent = interruptedMaintenance;
+      if (stoppingIntent?.phase === "stopping" || stoppingIntent?.phase === "restoring") {
+        if (!mainStopProven) {
+          throw new Error("The controller could not renew stopped-writer proof for interrupted log maintenance.");
+        }
+        interruptedMaintenance = await deps.markLaunchdLogMaintenanceStopped(
+          launchTarget.paths,
+          stoppingIntent,
+        );
+      }
+      await deps.rotateStoppedLaunchdLogs(launchTarget.paths);
+      // A controller may be completing a maintainer that died after bootout.
+      // Once journal recovery finishes under the stopped-writer proof, cancel
+      // its old restore authority before replacing either plist.
+      await deps.clearLaunchdLogMaintenanceIntent(launchTarget.paths, interruptedMaintenance);
+      await writePlists(launchTarget, deps);
+      sinceMs = deps.now();
+      prepared = true;
+    });
   } catch (error) {
-    reportLifecycleException(launchTarget, deps, "start the LaunchAgent", error);
-    return { ok: false, action: "start", reason: "launchctl" };
+    reportLifecycleException(
+      launchTarget,
+      deps,
+      prepared ? "start the LaunchAgent" : "prepare the stopped LaunchAgent",
+      error,
+    );
+    return { ok: false, action: "start", reason: prepared ? "launchctl" : "preparation" };
   }
   const action = outcome.restarted ? "restart" as const : "start" as const;
   if (!outcome.ok) {
@@ -475,11 +876,12 @@ async function prepareLaunchdDirectories(target: InstanceTarget, deps: Backgroun
   await deps.mkdir(target.paths.launchAgentsDir);
 }
 
-async function writePlist(target: InstanceTarget, deps: BackgroundDeps): Promise<void> {
+async function writePlists(target: InstanceTarget, deps: BackgroundDeps): Promise<void> {
   if (target.expectedSnapshot === undefined) {
     throw new Error("A managed LaunchAgent requires an approved background snapshot.");
   }
-  const xml = buildPlistXml({
+  const maintenance = maintenancePathsForTarget(target);
+  const mainXml = buildPlistXml({
     label: target.label,
     nodePath: target.nodePath,
     cliPath: target.cliPath,
@@ -491,38 +893,20 @@ async function writePlist(target: InstanceTarget, deps: BackgroundDeps): Promise
     stderrPath: target.paths.stderrPath,
     environment: target.environment,
   });
-  await deps.writeFile(target.paths.plistPath, xml);
-}
-
-async function rotateLaunchdLogs(paths: LaunchdPaths, deps: BackgroundDeps): Promise<void> {
-  await Promise.all([
-    rotateLaunchdLog(paths.stdoutPath, deps),
-    rotateLaunchdLog(paths.stderrPath, deps),
-  ]);
-}
-
-async function rotateLaunchdLog(path: string, deps: BackgroundDeps): Promise<void> {
-  let size: number;
-  try {
-    size = (await deps.stat(path)).size;
-  } catch (error) {
-    if (isErrno(error, "ENOENT")) return;
-    throw error;
-  }
-  if (size <= LAUNCHD_LOG_MAX_BYTES) {
-    return;
-  }
-
-  await deps.rm(`${path}.${LAUNCHD_LOG_ROTATION_COUNT}`);
-  for (let index = LAUNCHD_LOG_ROTATION_COUNT; index >= 1; index -= 1) {
-    const source = index === 1 ? path : `${path}.${index - 1}`;
-    const destination = `${path}.${index}`;
-    try {
-      await deps.rename(source, destination);
-    } catch {
-      // Missing or locked rotation segment: leave it for the next launch cycle.
-    }
-  }
+  const maintenanceXml = buildLaunchdMaintenancePlistXml({
+    label: maintenance.label,
+    nodePath: target.nodePath,
+    cliPath: target.cliPath,
+    configPath: target.configPath,
+    // The agent folder may be renamed or removed while its already-running
+    // worker still owns log descriptors. Keep the scheduler's cwd in the
+    // durable account state tree; its config argument is already absolute.
+    cwd: dirname(target.paths.logDir),
+    environment: managedLaunchdLogMaintenanceEnvironment(target.environment),
+    intervalSeconds: LAUNCHD_LOG_MAINTENANCE_INTERVAL_SECONDS,
+  });
+  await deps.writeFile(target.paths.plistPath, mainXml);
+  await deps.writeFile(maintenance.plistPath, maintenanceXml);
 }
 
 async function ensureOwnerPrivateLaunchdDirectory(path: string): Promise<void> {
@@ -620,28 +1004,54 @@ async function writeOwnerPrivateLaunchdFile(path: string, data: string): Promise
   }
 }
 
-async function inspectOwnerPrivateLaunchdLog(path: string): Promise<Stats> {
+async function inspectOwnerPrivateLaunchdPlist(path: string): Promise<string> {
   const handle = await open(
     path,
-    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
   );
   try {
     const before = await handle.stat();
-    assertOwnerRegularFile(before, path, "LaunchAgent log");
-    await handle.chmod(0o600);
-    const secured = await handle.stat();
-    if (!sameFilesystemIdentity(before, secured)) {
-      throw new Error(`LaunchAgent log ${path} changed while it was secured.`);
+    assertOwnerRegularFile(before, path, "LaunchAgent plist");
+    if ((before.mode & 0o777) !== 0o600) {
+      throw new Error(`LaunchAgent plist ${path} must be owner-only.`);
     }
-    assertOwnerRegularFile(secured, path, "LaunchAgent log");
+    if (!Number.isSafeInteger(before.size) || before.size < 1 || before.size > 1024 * 1024) {
+      throw new Error(`LaunchAgent plist ${path} has an unsafe size.`);
+    }
+    const contents = await readExactFileHandle(handle, before.size, "LaunchAgent plist");
+    const after = await handle.stat();
+    assertOwnerRegularFile(after, path, "LaunchAgent plist");
+    if ((after.mode & 0o777) !== 0o600
+      || !sameFileSnapshot(before, after)
+      || contents.length !== before.size) {
+      throw new Error(`LaunchAgent plist ${path} changed while it was read.`);
+    }
     const current = await lstat(path);
-    if (!sameFilesystemIdentity(secured, current)) {
-      throw new Error(`LaunchAgent log ${path} changed while it was secured.`);
+    assertOwnerRegularFile(current, path, "LaunchAgent plist");
+    if ((current.mode & 0o777) !== 0o600 || !sameFileSnapshot(after, current)) {
+      throw new Error(`LaunchAgent plist ${path} changed while it was inspected.`);
     }
-    return secured;
+    return [
+      String(after.dev),
+      String(after.ino),
+      String(after.size),
+      createHash("sha256").update(contents).digest("hex"),
+    ].join(":");
   } finally {
     await handle.close();
   }
+}
+
+async function readExactFileHandle(handle: FileHandle, size: number, description: string): Promise<Buffer> {
+  if (!Number.isSafeInteger(size) || size < 0) throw new Error(`${description} has an unsafe size.`);
+  const contents = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < size) {
+    const result = await handle.read(contents, offset, size - offset, offset);
+    if (result.bytesRead === 0) throw new Error(`${description} ended while its bounded contents were read.`);
+    offset += result.bytesRead;
+  }
+  return contents;
 }
 
 function assertOwnerDirectory(details: Stats, path: string, description: string): void {
@@ -671,11 +1081,19 @@ function sameFilesystemIdentity(left: Stats, right: Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-interface LaunchOutcome {
-  readonly ok: boolean;
-  readonly restarted: boolean;
-  readonly failure?: LaunchctlResult;
+function sameFileSnapshot(left: Stats, right: Stats): boolean {
+  return sameFilesystemIdentity(left, right)
+    && left.uid === right.uid
+    && left.nlink === right.nlink
+    && left.mode === right.mode
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
 }
+
+type LaunchOutcome =
+  | { readonly ok: true; readonly restarted: boolean }
+  | { readonly ok: false; readonly restarted: boolean; readonly failure: LaunchctlResult };
 
 /**
  * Idempotent: bootstrap when not loaded. A loaded job is always fully removed
@@ -687,53 +1105,192 @@ async function bootstrapOrRestart(
   deps: BackgroundDeps,
   uid: number,
   poll: PollOptions,
+  beforeMainBootout: () => Promise<void>,
+  whileStopped: (mainStopProven: boolean) => Promise<void>,
 ): Promise<LaunchOutcome> {
-  const service = await launchdServiceInfo(deps.runner, target.label, uid);
-  if (!service.loaded) {
-    const booted = await bootstrap(deps.runner, target.paths.plistPath, uid);
-    if (booted.code === 0 || (await isLoaded(deps.runner, target.label, uid))) {
-      return { ok: true, restarted: false };
-    }
-    return { ok: false, restarted: false, failure: booted };
+  const maintenance = maintenancePathsForTarget(target);
+  const [service, maintenanceService] = await Promise.all([
+    launchdServiceInfo(deps.runner, target.label, uid),
+    launchdServiceInfo(deps.runner, maintenance.label, uid),
+  ]);
+  const restarted = service.loaded;
+
+  // Stop the scheduler first. A helper that is already running either holds
+  // this lifecycle lock (so the controller could not enter) or is waiting to
+  // acquire it; bootout plus PID death prevents a post-stop resurrection.
+  const maintenanceStopped = await unloadLaunchdService(
+    maintenance.label,
+    maintenanceService,
+    uniquePids([maintenanceService.pid]),
+    deps,
+    uid,
+    poll,
+  );
+  if (!maintenanceStopped.ok) {
+    return { ok: false, restarted, failure: maintenanceStopped.failure };
   }
 
-  const oldSources = await findInstances(target, deps);
-  const oldPids = uniquePids([
-    service.pid,
-    // A cleanly stopped manifest can outlive its process long enough for the OS
-    // to reuse that pid for unrelated work. It is historical evidence, not an
-    // ownership claim, so never wait for its recycled pid during restart.
-    ...oldSources
-      .filter((source) => source.health !== "stopped")
-      .map((source) => source.pid),
-  ]);
-  const removed = await bootout(deps.runner, target.label, uid);
-  const unloaded = await pollUntil(
+  let mainStopProven = false;
+  if (service.loaded) {
+    const oldSources = await findInstances(target, deps);
+    const oldPids = uniquePids([
+      service.pid,
+      // A cleanly stopped manifest can outlive its process long enough for the OS
+      // to reuse that pid for unrelated work. It is historical evidence, not an
+      // ownership claim, so never wait for its recycled pid during restart.
+      ...oldSources
+        .filter((source) => source.health !== "stopped")
+        .map((source) => source.pid),
+    ]);
+    const mainStopped = await unloadLaunchdService(
+      target.label,
+      service,
+      oldPids,
+      deps,
+      uid,
+      poll,
+      beforeMainBootout,
+    );
+    if (!mainStopped.ok) {
+      const restoreFailure = await restoreMaintenanceDefinition(
+        maintenanceService.loaded,
+        maintenance,
+        deps,
+        uid,
+        poll,
+      );
+      return {
+        ok: false,
+        restarted: true,
+        failure: restoreFailure === undefined
+          ? mainStopped.failure
+          : lifecycleFailure(
+              mainStopped.failure,
+              `scheduled maintenance restoration failed: ${maintenanceErrorMessage(restoreFailure)}`,
+            ),
+      };
+    }
+    mainStopProven = true;
+  }
+
+  await whileStopped(mainStopProven);
+
+  const maintenanceBooted = await bootstrap(deps.runner, maintenance.plistPath, uid);
+  const maintenanceLoaded = await pollUntil(
     deps,
     poll,
-    async () => !(await launchdServiceInfo(deps.runner, target.label, uid)).loaded,
+    async () => await isLoaded(deps.runner, maintenance.label, uid),
   );
-  if (!unloaded) {
+  if (!maintenanceLoaded) {
     return {
       ok: false,
-      restarted: true,
-      failure: lifecycleFailure(removed, "launchd still reports the previous service as loaded after bootout"),
-    };
-  }
-  const stopped = await pollUntil(deps, poll, async () => oldPids.every((pid) => !deps.isAlive(pid)));
-  if (!stopped) {
-    return {
-      ok: false,
-      restarted: true,
-      failure: lifecycleFailure(removed, `previous worker pid(s) ${oldPids.join(", ")} remained alive after bootout`),
+      restarted,
+      failure: lifecycleFailure(maintenanceBooted, "scheduled log maintenance did not report loaded"),
     };
   }
 
   const booted = await bootstrap(deps.runner, target.paths.plistPath, uid);
   if (booted.code === 0 || (await isLoaded(deps.runner, target.label, uid))) {
-    return { ok: true, restarted: true };
+    return { ok: true, restarted };
   }
-  return { ok: false, restarted: true, failure: booted };
+  const maintenanceServiceAfterFailure = await launchdServiceInfo(deps.runner, maintenance.label, uid);
+  const maintenanceRemoval = await unloadLaunchdService(
+    maintenance.label,
+    maintenanceServiceAfterFailure,
+    uniquePids([maintenanceServiceAfterFailure.pid]),
+    deps,
+    uid,
+    poll,
+  );
+  return {
+    ok: false,
+    restarted,
+    failure: lifecycleFailure(
+      booted,
+      maintenanceRemoval.ok
+        ? "main service did not load; scheduled maintenance was unloaded"
+        : `main service did not load; scheduled maintenance cleanup failed: ${maintenanceErrorMessage(maintenanceRemoval.failure)}`,
+    ),
+  };
+}
+
+type UnloadLaunchdServiceResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly failure: LaunchctlResult };
+
+async function unloadLaunchdService(
+  label: string,
+  service: { readonly loaded: boolean; readonly pid?: number },
+  ownedPids: readonly number[],
+  deps: BackgroundDeps,
+  uid: number,
+  poll: PollOptions,
+  beforeLoadedBootout?: () => Promise<void>,
+): Promise<UnloadLaunchdServiceResult> {
+  const observedPids = new Set(uniquePids([service.pid, ...ownedPids]));
+  try {
+    await beforeLoadedBootout?.();
+  } catch (error) {
+    return {
+      ok: false,
+      failure: { code: 1, stdout: "", stderr: maintenanceErrorMessage(error) },
+    };
+  }
+  // Refresh immediately before bootout. The caller may have spent time on
+  // inventory or plist verification while KeepAlive replaced its entry PID.
+  let current = await launchdServiceInfo(deps.runner, label, uid);
+  if (current.pid !== undefined) observedPids.add(current.pid);
+  let removed: LaunchctlResult;
+  if (current.loaded) {
+    removed = await bootout(deps.runner, label, uid);
+  } else {
+    removed = { code: 0, stdout: "", stderr: "" };
+  }
+  // Keep launchd state and process liveness in one predicate. In particular,
+  // retain every KeepAlive replacement pid exposed while bootout converges;
+  // proving only the entry snapshot dead is not a stopped-writer proof.
+  const stopped = await pollUntil(deps, poll, async () => {
+    current = await launchdServiceInfo(deps.runner, label, uid);
+    if (current.pid !== undefined) observedPids.add(current.pid);
+    return !current.loaded && [...observedPids].every((pid) => !deps.isAlive(pid));
+  });
+  if (!stopped) {
+    const livePids = [...observedPids].filter((pid) => deps.isAlive(pid));
+    const detail = current.loaded
+      ? `launchd still reports ${label} loaded after bootout`
+      : `${label} pid(s) ${livePids.join(", ")} remained alive after bootout`;
+    return {
+      ok: false,
+      failure: lifecycleFailure(removed, detail),
+    };
+  }
+  return { ok: true };
+}
+
+function maintenancePathsForTarget(target: BackgroundLifecycleTarget): {
+  readonly label: string;
+  readonly plistPath: string;
+} {
+  const label = deriveLaunchdMaintenanceLabel(target.label);
+  return { label, plistPath: resolve(target.paths.launchAgentsDir, `${label}.plist`) };
+}
+
+async function restoreMaintenanceDefinition(
+  wasLoaded: boolean,
+  maintenance: { readonly label: string; readonly plistPath: string },
+  deps: BackgroundDeps,
+  uid: number,
+  poll: PollOptions,
+): Promise<LaunchctlResult | undefined> {
+  if (!wasLoaded) return undefined;
+  const restored = await bootstrap(deps.runner, maintenance.plistPath, uid);
+  const returned = await pollUntil(
+    deps,
+    poll,
+    async () => await isLoaded(deps.runner, maintenance.label, uid),
+  );
+  if (returned) return undefined;
+  return lifecycleFailure(restored, "scheduled maintenance did not return after the main stop failed");
 }
 
 async function findOwnershipConflict(
@@ -812,8 +1369,27 @@ async function stopBackgroundUnlocked(
   poll: PollOptions,
 ): Promise<number> {
   const uid = deps.getuid();
+  const maintenance = maintenancePathsForTarget(target);
   const existing = await findInstances(target, deps);
-  const service = await launchdServiceInfo(deps.runner, target.label, uid);
+  const [service, maintenanceService] = await Promise.all([
+    launchdServiceInfo(deps.runner, target.label, uid),
+    launchdServiceInfo(deps.runner, maintenance.label, uid),
+  ]);
+  let maintenanceIntent: LaunchdLogMaintenanceIntent | undefined;
+  try {
+    maintenanceIntent = await deps.readLaunchdLogMaintenanceIntent(target.paths);
+  } catch (error) {
+    deps.stderr(ui.errorLine(`Failed to inspect pending launchd-log maintenance for ${target.label}.`));
+    deps.stderr(ui.style.dim(error instanceof Error ? error.message : String(error)) + "\n");
+    return 1;
+  }
+  if ((maintenanceIntent?.phase === "stopping" || maintenanceIntent?.phase === "restoring") && !service.loaded) {
+    deps.stderr(ui.errorLine(
+      `Refusing to erase interrupted launchd-log maintenance for ${target.label} without stopped-writer proof.`,
+    ));
+    deps.stderr(ui.hint("Confirm the prior worker is gone, then restore or remove the owner-private maintenance marker explicitly."));
+    return 1;
+  }
   const liveTracePids = uniquePids(existing
     .filter((source) => source.health !== "stopped" && source.pid !== undefined && deps.isAlive(source.pid))
     .map((source) => source.pid));
@@ -825,30 +1401,79 @@ async function stopBackgroundUnlocked(
     return 1;
   }
 
-  const result = await bootout(deps.runner, target.label, uid);
-  const unloaded = await pollUntil(
+  const maintenanceStopped = await unloadLaunchdService(
+    maintenance.label,
+    maintenanceService,
+    uniquePids([maintenanceService.pid]),
     deps,
+    uid,
     poll,
-    async () => !(await launchdServiceInfo(deps.runner, target.label, uid)).loaded,
   );
-  const ownedPids = uniquePids([service.pid, ...liveTracePids]);
-  const stopped = await pollUntil(deps, poll, async () => ownedPids.every((pid) => !deps.isAlive(pid)));
-  if (!unloaded || !stopped) {
-    deps.stderr(ui.errorLine(
-      `Failed to prove ${target.label} stopped${result.code === 0 ? "" : ` (launchctl bootout exited ${result.code})`}.`,
-    ));
-    const detail = (result.stderr || result.stdout).trim();
-    if (detail.length > 0) {
-      deps.stderr(ui.style.dim(detail) + "\n");
-    }
-    if (!unloaded) deps.stderr(ui.style.dim("launchd still reports the service as loaded.\n"));
-    if (!stopped) deps.stderr(ui.style.dim(`Worker pid(s) ${ownedPids.join(", ")} are still alive.\n`));
-    deps.stderr(ui.hint("The LaunchAgent plist was preserved so the service remains recoverable. Inspect status/logs and retry."));
+  if (!maintenanceStopped.ok) {
+    deps.stderr(ui.errorLine(`Failed to stop scheduled log maintenance for ${target.label}.`));
+    const detail = (maintenanceStopped.failure.stderr || maintenanceStopped.failure.stdout).trim();
+    if (detail.length > 0) deps.stderr(ui.style.dim(detail) + "\n");
+    deps.stderr(ui.hint("Both LaunchAgent plists were preserved. Retry stop after the maintenance helper exits."));
     return 1;
   }
 
-  // Remove the plist only after both launchd ownership and process death are
-  // proven. This prevents a failed stop from destroying its recovery handle.
+  const ownedPids = uniquePids([service.pid, ...liveTracePids]);
+  const mainStopped = await unloadLaunchdService(
+    target.label,
+    service,
+    ownedPids,
+    deps,
+    uid,
+    poll,
+    async () => {
+      const stoppedIntent = maintenanceIntent;
+      if (stoppedIntent?.phase === "stopped") {
+        maintenanceIntent = await deps.markLaunchdLogMaintenanceStopping(target.paths, stoppedIntent);
+      }
+    },
+  );
+  if (!mainStopped.ok) {
+    const result = mainStopped.failure;
+    const maintenanceRestoreFailure = await restoreMaintenanceDefinition(
+      maintenanceService.loaded,
+      maintenance,
+      deps,
+      uid,
+      poll,
+    );
+    deps.stderr(ui.errorLine(
+      `Failed to prove ${target.label} stopped${result?.code === undefined || result.code === 0 ? "" : ` (launchctl bootout exited ${result.code})`}.`,
+    ));
+    const detail = (result?.stderr || result?.stdout || "").trim();
+    if (detail.length > 0) {
+      deps.stderr(ui.style.dim(detail) + "\n");
+    }
+    if (maintenanceRestoreFailure !== undefined) {
+      deps.stderr(ui.style.yellow(
+        `Scheduled log maintenance also could not be restored: ${maintenanceErrorMessage(maintenanceRestoreFailure)}`,
+      ) + "\n");
+    }
+    deps.stderr(ui.hint("Both LaunchAgent plists were preserved so the service remains recoverable. Inspect status/logs and retry."));
+    return 1;
+  }
+
+  try {
+    // Explicit stop cancels any interrupted maintainer's restore authority
+    // only after both jobs and every observed pid are proven gone.
+    if (maintenanceIntent?.phase === "stopping" || maintenanceIntent?.phase === "restoring") {
+      maintenanceIntent = await deps.markLaunchdLogMaintenanceStopped(target.paths, maintenanceIntent);
+    }
+    await deps.clearLaunchdLogMaintenanceIntent(target.paths, maintenanceIntent);
+  } catch (error) {
+    deps.stderr(ui.errorLine(`Failed to clear pending launchd-log maintenance for ${target.label}.`));
+    deps.stderr(ui.style.dim(error instanceof Error ? error.message : String(error)) + "\n");
+    deps.stderr(ui.hint("Both LaunchAgent plists were preserved; retry stop after the owner-private marker is inspectable."));
+    return 1;
+  }
+
+  // Remove both definitions only after the helper and worker are unloaded and
+  // every observed PID is dead. The helper can never resurrect a stopped job.
+  await deps.rm(maintenance.plistPath);
   await deps.rm(target.paths.plistPath);
   for (const source of existing) await maybeUnlinkDeadManifest(target, deps, source);
 
@@ -1364,7 +1989,7 @@ export interface FilesystemLifecycleLockOptions {
 }
 
 export async function acquireFilesystemLifecycleLock(
-  target: InstanceTarget,
+  target: BackgroundLifecycleTarget,
   options: FilesystemLifecycleLockOptions = {},
 ): Promise<(() => Promise<void>) | undefined> {
   const pid = options.pid ?? process.pid;

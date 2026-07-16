@@ -10,14 +10,95 @@ import * as memoryStore from "@mono-agent/memory/store";
 
 import { canonicalContinuationJson, continuationDigest } from "../continuations.js";
 import { MAX_RECORD_BYTES } from "../continuation-store-types.js";
-import { validateMonoAgentFolder } from "../doctor.js";
+import { launchdLogsSectionFromInspection, validateMonoAgentFolder } from "../doctor.js";
 import type { SdkAuthStatusExecFile } from "../doctor.js";
+import type { LaunchdLogInspection } from "../launchd-logs.js";
 import { agentAppPackageVersion } from "../package-version.js";
 
 let dir: string;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "agent-app-doctor-"));
+});
+
+describe("launchd log doctor section", () => {
+  it("reports exact active, retained, and total bytes without mutating inventory", () => {
+    const inspection: LaunchdLogInspection = {
+      stdout: {
+        activeBytes: 123,
+        retainedBytes: 456,
+        totalBytes: 579,
+        byteAccountingComplete: true,
+        files: [{ generation: 0, state: "ok", bytes: 123 }],
+      },
+      stderr: {
+        activeBytes: 7,
+        retainedBytes: 11,
+        totalBytes: 18,
+        byteAccountingComplete: true,
+        files: [{ generation: 0, state: "ok", bytes: 7 }],
+      },
+      present: true,
+      canMaintain: true,
+      needsMaintenance: false,
+      pendingTransaction: false,
+      pendingMaintenance: false,
+      issues: [],
+    };
+
+    const section = launchdLogsSectionFromInspection(inspection);
+
+    expect(section.status).toBe("ok");
+    expect(section.details).toContain("stdout: active=123 bytes, retained=456 bytes, total=579 bytes.");
+    expect(section.details).toContain("stderr: active=7 bytes, retained=11 bytes, total=18 bytes.");
+    expect(inspection.stdout.activeBytes).toBe(123);
+  });
+
+  it("warns on unsafe or oversized inventory and marks absent inventory disabled", () => {
+    const maxBytes = 5 * 1024 * 1024;
+    const waiting = launchdLogsSectionFromInspection({
+      stdout: {
+        activeBytes: maxBytes + 1,
+        retainedBytes: 0,
+        totalBytes: maxBytes + 1,
+        byteAccountingComplete: false,
+        files: [{ generation: 0, state: "unsafe", bytes: maxBytes + 1, issue: "symbolic link" }],
+      },
+      stderr: {
+        activeBytes: maxBytes + 2,
+        retainedBytes: 0,
+        totalBytes: maxBytes + 2,
+        byteAccountingComplete: true,
+        files: [{ generation: 0, state: "ok", bytes: maxBytes + 2 }],
+      },
+      present: true,
+      canMaintain: false,
+      needsMaintenance: true,
+      pendingTransaction: false,
+      pendingMaintenance: false,
+      issues: ["stdout: symbolic link"],
+    });
+    expect(waiting.status).toBe("waiting");
+    expect(waiting.details.join(" ")).toContain("maintenance limit");
+    expect(waiting.details.join(" ")).toContain("symbolic link");
+    expect(waiting.details).toContain(
+      "stdout: byte inventory unavailable because one or more paths could not be inspected safely.",
+    );
+    expect(waiting.details.join(" ")).not.toContain(`stdout: active=${String(maxBytes + 1)}`);
+
+    const disabled = launchdLogsSectionFromInspection({
+      stdout: { activeBytes: 0, retainedBytes: 0, totalBytes: 0, byteAccountingComplete: true, files: [] },
+      stderr: { activeBytes: 0, retainedBytes: 0, totalBytes: 0, byteAccountingComplete: true, files: [] },
+      present: false,
+      canMaintain: true,
+      needsMaintenance: false,
+      pendingTransaction: false,
+      pendingMaintenance: false,
+      issues: [],
+    });
+    expect(disabled.status).toBe("disabled");
+    expect(disabled.details).toContain("No managed launchd log files exist yet.");
+  });
 });
 
 afterEach(async () => {

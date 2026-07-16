@@ -6,6 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { describeChannelStatus, loadCliEnvFile, monoAgentVersion, parseCliArgs, renderHelp, runCli } from "../cli.js";
 import { MANAGED_BACKGROUND_WORKER_ENV } from "../background-runtime.js";
+import {
+  INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+  MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
+} from "../launchd.js";
 
 const tempDirs: string[] = [];
 
@@ -179,6 +183,55 @@ describe("parseCliArgs", () => {
       expectedBackgroundSnapshot: "encoded-snapshot",
     });
     expect(renderHelp()).not.toContain("--expected-background-snapshot");
+  });
+
+  it("keeps the scheduled log-maintenance command narrow and out of public help and errors", async () => {
+    expect(parseCliArgs([
+      INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+      "--config",
+      "/work/demo/mono-agent.config.json",
+    ])).toMatchObject({
+      command: INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+      configPath: "/work/demo/mono-agent.config.json",
+      positionals: [],
+    });
+    expect(() => parseCliArgs([INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND, "--env-file", ".env"]))
+      .toThrow(/accepts only --config/u);
+    expect(renderHelp()).not.toContain(INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND);
+    try {
+      parseCliArgs(["not-a-command"]);
+      throw new Error("expected parseCliArgs to reject the unknown command");
+    } catch (error) {
+      expect(String(error)).not.toContain(INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND);
+    }
+
+    const previous = process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV];
+    delete process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV];
+    try {
+      const unauthorized = await captureCli(() => runCli([
+        INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+        "--config",
+        "/work/demo/mono-agent.config.json",
+      ]));
+      expect(unauthorized.code).toBe(2);
+      expect(unauthorized.stderr).toContain("reserved for its managed LaunchAgent");
+    } finally {
+      if (previous !== undefined) process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV] = previous;
+    }
+  });
+
+  it("does not let the maintenance marker authorize a different command", async () => {
+    const previous = process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV];
+    process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV] = "1";
+    try {
+      const result = await captureCli(() => runCli(["version"]));
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("cannot authorize another CLI command");
+      expect(result.stdout).toBe("");
+    } finally {
+      if (previous === undefined) delete process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV];
+      else process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV] = previous;
+    }
   });
 
   it("rejects the internal snapshot outside launchd and makes a missing managed snapshot non-restarting", async () => {

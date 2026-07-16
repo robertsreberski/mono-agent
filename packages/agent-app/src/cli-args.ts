@@ -7,9 +7,11 @@ import {
 import type { EffortLevel, RouteSafetyMode } from "@mono-agent/config";
 
 import type { InstallSkillTarget } from "./install-skill.js";
+import { INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND } from "./launchd.js";
 import type { CodexLoginMode } from "./provider-setup.js";
 
-const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "recipes", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "audit-runs", "metrics", "memory", "continuations"] as const;
+const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "recipes", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "audit-runs", "metrics", "memory", "continuations"] as const;
+const KNOWN_COMMANDS = [...PUBLIC_COMMANDS, INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND] as const;
 
 // `doctor`/`setup`/`recipes` never reach routing: parseCliArgs normalizes them to
 // `validate`/`init`/`presets`. `help`/`version` are synthetic commands (not in
@@ -135,7 +137,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     return { command: "version", positionals: [], force: false, foreground: false, follow: false, all: false, dryRun: false, includeMemory: false };
   }
   if (!(KNOWN_COMMANDS as readonly string[]).includes(command)) {
-    throw new Error(`Unknown command \`${command}\`. Expected ${KNOWN_COMMANDS.join(", ")}.`);
+    throw new Error(`Unknown command \`${command}\`. Expected ${PUBLIC_COMMANDS.join(", ")}.`);
   }
   // `doctor`/`setup`/`recipes` are aliases; normalize here so every downstream
   // path (routing, env-file resolution, --consumer) applies unchanged. `doctor`
@@ -150,6 +152,17 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
           ? "presets"
           : command
   ) as CliCommand;
+  if (
+    cmd === INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND
+    && !(
+      rest.length === 2
+      && rest[0] === "--config"
+      && rest[1] !== undefined
+      && !rest[1].startsWith("--")
+    )
+  ) {
+    throw new Error("The internal launchd log maintenance command accepts only --config <path> and requires it.");
+  }
   const isLogs = cmd === "logs";
 
   let configPath: string | undefined;
