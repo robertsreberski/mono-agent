@@ -7,6 +7,10 @@ on:
 
 permissions:
   contents: read
+  # Static OIDC readiness. The current staged all-package promotion still uses
+  # NPM_TOKEN for `npm dist-tag add`, which npm trusted publishing does not
+  # support; release docs keep the tokenless/public-provenance item blocked.
+  id-token: write
 
 concurrency:
   group: npm-release-${{ github.ref }}
@@ -42,6 +46,11 @@ jobs:
 
       - name: Check pnpm release-age policy
         run: node scripts/pnpm-release-age-policy.mjs
+
+      - name: Install npm with trusted-publishing support
+        # Trusted publishing requires npm >=11.5.1. Keep the release runner on
+        # the exact minimum Node while pinning a qualifying npm CLI explicitly.
+        run: npm install --global npm@11.12.1
 
       - name: Check Node support floor
         run: pnpm run check:node

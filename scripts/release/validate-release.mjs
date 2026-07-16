@@ -20,6 +20,10 @@ const ROOT_DEPENDENCY_SECTIONS = [
   ...DEPENDENCY_SECTIONS,
   "devDependencies",
 ];
+export const RELEASE_REPOSITORY = Object.freeze({
+  type: "git",
+  url: "git+https://github.com/robertsreberski/mono-agent.git",
+});
 
 function argValue(name, argv = process.argv.slice(2)) {
   const index = argv.indexOf(name);
@@ -84,6 +88,15 @@ export function validateRelease({
     }
     if (pkg.packageJson.engines?.node !== SUPPORTED_NODE_ENGINE) {
       issues.push(`${pkg.name} engines.node must be ${SUPPORTED_NODE_ENGINE}; found ${pkg.packageJson.engines?.node ?? "(missing)"}`);
+    }
+    const repository = pkg.packageJson.repository;
+    if (repository?.type !== RELEASE_REPOSITORY.type
+      || repository?.url !== RELEASE_REPOSITORY.url
+      || repository?.directory !== pkg.relativeDir) {
+      issues.push(
+        `${pkg.name} repository must be ${RELEASE_REPOSITORY.type} ${RELEASE_REPOSITORY.url} `
+        + `at ${pkg.relativeDir}`,
+      );
     }
   }
 
