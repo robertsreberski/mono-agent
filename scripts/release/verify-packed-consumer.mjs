@@ -7,6 +7,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { MINIMUM_NODE_VERSION, SUPPORTED_NODE_ENGINE } from "../node-version.mjs";
+import { assertPackedDependencyResolution } from "./dependency-policy.mjs";
 import { packReleasePackage } from "./pack-release.mjs";
 import { REPO_ROOT } from "./package-graph.mjs";
 import { validateRelease } from "./validate-release.mjs";
@@ -81,6 +82,7 @@ export function runPackedConsumerVerification(options = {}) {
     fs.writeFileSync(templatePath, `${JSON.stringify(consumerManifest, null, 2)}\n`);
 
     run("npm", ["install", "--no-audit", "--no-fund", "--package-lock=false"], consumerDir, options.spawn);
+    assertPackedDependencyResolution(consumerDir, publishablePackages);
     run("npm", ["run", "smoke"], consumerDir, options.spawn);
     console.log(
       `Packed consumer installed ${packedPackages.length} mono-agent ${version} tarballs on Node.js ${process.versions.node}.`,

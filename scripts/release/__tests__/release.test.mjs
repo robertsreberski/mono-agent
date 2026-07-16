@@ -203,6 +203,35 @@ describe("release graph validation", () => {
     }
   });
 
+  test("rejects floating Pi dependencies in every publishable consumer", () => {
+    const app = packageRecord({
+      name: "@mono-agent/agent-app",
+      dependencies: { "@earendil-works/pi-ai": "^0.80.5" },
+    });
+    const runtime = packageRecord({
+      name: "@mono-agent/agent-runtime",
+      dependencies: {
+        "@earendil-works/pi-agent-core": "~0.80.5",
+        "@earendil-works/pi-ai": "0.80.8",
+      },
+    });
+
+    try {
+      validateRelease({
+        tag: "v1.2.3",
+        packages: [app, runtime],
+        silent: true,
+      });
+      throw new Error("validateRelease did not reject floating Pi dependencies");
+    } catch (error) {
+      expect(error.issues).toEqual([
+        "@mono-agent/agent-app dependencies.@earendil-works/pi-ai must pin known-compatible version 0.80.5 exactly; found ^0.80.5",
+        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-agent-core must pin known-compatible version 0.80.5 exactly; found ~0.80.5",
+        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-ai must pin known-compatible version 0.80.5 exactly; found 0.80.8",
+      ]);
+    }
+  });
+
   test("detects cycles before publishing", () => {
     const one = packageRecord({
       name: "@mono-agent/one",
