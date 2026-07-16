@@ -236,6 +236,7 @@ new agent.
         "prompt": "Respond to this request:",
         "model": "claude:claude-sonnet-4-6", // optional per-trigger override
         "effort": "high",                  // same eight-level effort enum as runtime
+        "maxRunMs": 3600000,               // endpoint override; 0 disables only this watchdog
         "notify": true,                     // deliver the successful final answer verbatim
         // Explicit destination; if omitted, infer only with exactly one candidate.
         // Zero or multiple candidates skip with a warning.
@@ -243,7 +244,8 @@ new agent.
       }
     ],
     "retentionMs": 300000,                 // async status retention
-    "maxStoredRequests": 100
+    "maxStoredRequests": 100,
+    "maxRunMs": 1200000                    // fallback when an endpoint omits maxRunMs
   },
 
   "openaiApi": {

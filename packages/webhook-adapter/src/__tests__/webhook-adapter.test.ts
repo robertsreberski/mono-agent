@@ -1658,6 +1658,155 @@ describe("Webhook adapter", () => {
     }
   });
 
+  it("times out endpoints independently using each override before the adapter fallback", async () => {
+    const results = new Map<string, unknown>();
+    const hangingResponder: AgentResponder = { respond: () => new Promise<never>(() => {}) };
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      maxRunMs: 200,
+      endpoints: [
+        { name: "short", path: "/short", mode: "async", maxRunMs: 100 },
+        { name: "long", path: "/long", mode: "async", maxRunMs: 300 },
+      ],
+      responder: hangingResponder,
+      onResult: (status, request) => {
+        results.set(request.metadata.webhook.endpointName, status);
+      },
+    });
+    vi.useFakeTimers();
+
+    try {
+      const [shortAccepted, longAccepted] = await Promise.all([
+        fetch(`${server.url}/short`, postJson({ text: "short", conversationId: "short-run" })),
+        fetch(`${server.url}/long`, postJson({ text: "long", conversationId: "long-run" })),
+      ]);
+      expect(shortAccepted.status).toBe(202);
+      expect(longAccepted.status).toBe(202);
+      expect(server.activeRequestCount).toBe(2);
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(results.size).toBe(0);
+      expect(server.activeRequestCount).toBe(2);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(results.get("short")).toMatchObject({ status: "failed", error: expect.stringContaining("100ms") });
+      expect(results.has("long")).toBe(false);
+      expect(server.activeRequestCount).toBe(1);
+
+      // Total elapsed is now the 200ms adapter fallback. The long endpoint's
+      // explicit 300ms override must still own its independent watchdog.
+      await vi.advanceTimersByTimeAsync(100);
+      expect(results.has("long")).toBe(false);
+      expect(server.activeRequestCount).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(results.get("long")).toMatchObject({ status: "failed", error: expect.stringContaining("300ms") });
+      expect(server.activeRequestCount).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      await server.stop();
+    }
+  });
+
+  it("uses an endpoint maxRunMs override for sync requests", async () => {
+    let markResponderStarted!: () => void;
+    const responderStarted = new Promise<void>((resolve) => { markResponderStarted = resolve; });
+    const hangingResponder: AgentResponder = {
+      respond() {
+        markResponderStarted();
+        return new Promise<never>(() => {});
+      },
+    };
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      maxRunMs: 300,
+      endpoints: [{ name: "sync", path: "/sync", mode: "sync", maxRunMs: 100 }],
+      responder: hangingResponder,
+    });
+    vi.useFakeTimers();
+
+    try {
+      let responseSettled = false;
+      const responsePromise = fetch(
+        `${server.url}/sync`,
+        postJson({ text: "sync", conversationId: "sync-run" }),
+      ).then((response) => {
+        responseSettled = true;
+        return response;
+      });
+      await responderStarted;
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(responseSettled).toBe(false);
+      expect(server.activeRequestCount).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      const response = await responsePromise;
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toMatchObject({
+        status: "failed",
+        error: expect.stringContaining("100ms"),
+      });
+      expect(server.activeRequestCount).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      await server.stop();
+    }
+  });
+
+  it("uses the adapter fallback only when maxRunMs is absent and preserves endpoint zero as disabled", async () => {
+    const results = new Map<string, unknown>();
+    const responder: AgentResponder = {
+      async respond(request) {
+        if (request.text === "disabled") {
+          await new Promise<void>((resolve) => setTimeout(resolve, 200));
+          return { text: "completed without a watchdog" };
+        }
+        return await new Promise<never>(() => {});
+      },
+    };
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      maxRunMs: 100,
+      endpoints: [
+        { name: "fallback", path: "/fallback", mode: "async" },
+        { name: "disabled", path: "/disabled", mode: "async", maxRunMs: 0 },
+      ],
+      responder,
+      onResult: (status, request) => {
+        results.set(request.metadata.webhook.endpointName, status);
+      },
+    });
+    vi.useFakeTimers();
+
+    try {
+      const [fallbackAccepted, disabledAccepted] = await Promise.all([
+        fetch(`${server.url}/fallback`, postJson({ text: "fallback", conversationId: "fallback-run" })),
+        fetch(`${server.url}/disabled`, postJson({ text: "disabled", conversationId: "disabled-run" })),
+      ]);
+      expect(fallbackAccepted.status).toBe(202);
+      expect(disabledAccepted.status).toBe(202);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(results.get("fallback")).toMatchObject({ status: "failed", error: expect.stringContaining("100ms") });
+      expect(results.has("disabled")).toBe(false);
+      expect(server.activeRequestCount).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(results.get("disabled")).toMatchObject({
+        status: "succeeded",
+        text: "completed without a watchdog",
+      });
+      expect(server.activeRequestCount).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      await server.stop();
+    }
+  });
+
   it("reports cancelled when a responder resolves after the run was aborted", async () => {
     let resolveResult: ((status: { status: string }) => void) | undefined;
     const resultPromise = new Promise<{ status: string }>((resolve) => { resolveResult = resolve; });
@@ -1775,6 +1924,21 @@ describe("Webhook adapter", () => {
 });
 
 describe("Webhook adapter multi-endpoint", () => {
+  it.each([-1, 1.5, 86_400_001, Number.NaN])(
+    "rejects invalid programmatic endpoint maxRunMs value %s",
+    async (maxRunMs) => {
+      await expect(startWebhookAdapter({
+        host: "127.0.0.1",
+        port: 0,
+        endpoints: [{ name: "invalid", path: "/invalid", maxRunMs }],
+        responder: echoResponder(),
+      })).rejects.toMatchObject({
+        code: "invalid_config",
+        details: { endpointName: "invalid", maxRunMs },
+      });
+    },
+  );
+
   it("serves multiple endpoints on one server and prepends each endpoint's prompt", async () => {
     const seen: Array<{ text: string; endpoint: string | undefined }> = [];
     const responder: AgentResponder = {

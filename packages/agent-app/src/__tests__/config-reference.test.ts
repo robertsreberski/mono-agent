@@ -227,6 +227,11 @@ describe("config reference", () => {
     expect(schemaNode(schema, "memory", "embeddings", "circuitBreaker", "failureThreshold").type).toBe("integer");
     expect(schemaNode(schema, "cron", "jobs").items?.required).toEqual(["id", "expression", "prompt"]);
     expect(schemaNode(schema, "webhook", "endpoints").items?.required).toEqual(["path"]);
+    expect(schemaNode(schema, "webhook", "endpoints").items?.properties?.maxRunMs).toMatchObject({
+      type: "integer",
+      minimum: 0,
+      maximum: 86_400_000,
+    });
     expect(schemaNode(schema, "agent", "name")).toMatchObject({
       type: "string",
       minLength: 1,

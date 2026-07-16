@@ -115,8 +115,9 @@ export const NATIVE_NOTIFY_CALLBACK_CHANNEL_IDS = Object.freeze(["telegram", "sl
 
 /**
  * One HTTP endpoint of the webhook server. Multiple endpoints share one server,
- * host and port; each has its own POST path, default mode, and optional `prompt`
- * (pre-instructions prepended to the incoming request text).
+ * host and port; each has its own POST path, default mode, optional `prompt`
+ * (pre-instructions prepended to the incoming request text), and optional run
+ * watchdog override.
  */
 export interface WebhookEndpointOption {
   readonly name: string;
@@ -137,6 +138,12 @@ export interface WebhookEndpointOption {
   readonly model?: string;
   /** Per-endpoint reasoning effort override (raw string; a request body `effort` wins). */
   readonly effort?: string;
+  /**
+   * Per-endpoint wall-clock run bound in milliseconds. Wins over the adapter
+   * fallback. Must be an integer from 0 to 86,400,000; set 0 to disable the
+   * watchdog for this endpoint.
+   */
+  readonly maxRunMs?: number;
 }
 
 export interface WebhookAdapterOptions {
@@ -148,10 +155,11 @@ export interface WebhookAdapterOptions {
   readonly retentionMs?: number;
   readonly maxStoredRequests?: number;
   /**
-   * Wall-clock bound (ms) for a single webhook run. On timeout the request
-   * signal is aborted and the conversation's slot is reclaimed even if the
-   * responder never settles. Omit or set <= 0 to disable. Matters most for
-   * async runs, which have no client disconnect to bound them.
+   * Adapter-level wall-clock fallback (ms) for a webhook run. An endpoint's
+   * `maxRunMs` wins. On timeout the request signal is aborted and the
+   * conversation's slot is reclaimed even if the responder never settles.
+   * Omit or set <= 0 to disable. Matters most for async runs, which have no
+   * client disconnect to bound them.
    */
   readonly maxRunMs?: number;
   readonly responder: AgentResponder<WebhookInvocationRequest, AgentMessageStream, AgentResponse>;
@@ -207,6 +215,7 @@ interface ResolvedEndpoint {
   readonly notifyFallbackConversationId?: string;
   readonly model?: string;
   readonly effort?: string;
+  readonly maxRunMs?: number;
   readonly statusBasePath: string;
 }
 
@@ -261,6 +270,7 @@ const DEFAULT_PATH = "/webhook/invoke";
 const DEFAULT_MODE: WebhookInvocationMode = "sync";
 const DEFAULT_RETENTION_MS = 300_000;
 const DEFAULT_MAX_STORED_REQUESTS = 100;
+const MAX_RUN_MS = 86_400_000;
 const FORCE_CLOSE_AFTER_MS = 250;
 export async function startWebhookAdapter(options: WebhookAdapterOptions): Promise<WebhookAdapterStartResult> {
   validateOptions(options);
@@ -401,6 +411,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
     });
     const statusUrl = `${endpoint.statusBasePath}/${requestId}`;
     const runKey = `${endpoint.name}:${body.conversationId}`;
+    const maxRunMs = endpoint.maxRunMs ?? options.maxRunMs;
     const controller = new AbortController();
 
     if (activeByRun.has(runKey)) {
@@ -484,6 +495,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
         runKey,
         active,
         options,
+        ...(maxRunMs === undefined ? {} : { maxRunMs }),
         retentionMs,
         maxStoredRequests,
       });
@@ -507,6 +519,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       runKey,
       active,
       options,
+      ...(maxRunMs === undefined ? {} : { maxRunMs }),
       retentionMs,
       maxStoredRequests,
     });
@@ -629,6 +642,7 @@ async function runResponder(input: {
   readonly runKey: string;
   readonly active: ActiveRun;
   readonly options: WebhookAdapterOptions;
+  readonly maxRunMs?: number;
   readonly retentionMs: number;
   readonly maxStoredRequests: number;
 }): Promise<WebhookInvocationStatus> {
@@ -642,7 +656,7 @@ async function runResponder(input: {
   // disconnect — cannot hold the conversation's slot (activeByRun) forever. On
   // timeout we abort the request signal AND win the race below, so the slot is
   // reclaimed even if the responder never settles.
-  const maxRunMs = input.options.maxRunMs;
+  const maxRunMs = input.maxRunMs;
   let timedOut = false;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   let selectedNotifyConversationId: string | undefined;
@@ -1007,6 +1021,7 @@ function resolveEndpoints(options: WebhookAdapterOptions): readonly ResolvedEndp
 
   const resolved = source.map((endpoint): ResolvedEndpoint => {
     const path = normalizePath(endpoint.path);
+    validateEndpointMaxRunMs(endpoint.maxRunMs, endpoint.name);
     return {
       name: endpoint.name,
       path,
@@ -1018,12 +1033,26 @@ function resolveEndpoints(options: WebhookAdapterOptions): readonly ResolvedEndp
       ...(endpoint.notifyFallbackConversationId === undefined ? {} : { notifyFallbackConversationId: endpoint.notifyFallbackConversationId }),
       ...(endpoint.model === undefined ? {} : { model: endpoint.model }),
       ...(endpoint.effort === undefined ? {} : { effort: endpoint.effort }),
+      ...(endpoint.maxRunMs === undefined ? {} : { maxRunMs: endpoint.maxRunMs }),
     };
   });
 
   assertUnique(resolved.map((endpoint) => endpoint.name), "name");
   assertUnique(resolved.map((endpoint) => endpoint.path), "path");
   return resolved;
+}
+
+function validateEndpointMaxRunMs(value: number | undefined, endpointName: string): void {
+  if (value === undefined) {
+    return;
+  }
+  if (!Number.isInteger(value) || value < 0 || value > MAX_RUN_MS) {
+    throw new WebhookAdapterError(
+      "invalid_config",
+      `Webhook endpoint maxRunMs must be an integer from 0 to ${String(MAX_RUN_MS)} milliseconds.`,
+      { endpointName, maxRunMs: value },
+    );
+  }
 }
 
 function assertUnique(values: readonly string[], label: string): void {

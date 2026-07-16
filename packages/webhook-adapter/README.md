@@ -6,7 +6,7 @@ Category: `communication`
 
 ## Responsibility
 
-HTTP webhook invocation adapter for agent hosts. It starts a small HTTP server, validates JSON invocation requests, maps them into structural `AgentResponder` calls, and returns either a synchronous result or an in-memory async request status. One server can serve **multiple named endpoints**, each with its own path, mode, and optional `prompt`.
+HTTP webhook invocation adapter for agent hosts. It starts a small HTTP server, validates JSON invocation requests, maps them into structural `AgentResponder` calls, and returns either a synchronous result or an in-memory async request status. One server can serve **multiple named endpoints**, each with its own path, mode, optional `prompt`, and run-watchdog override.
 
 ## Port ownership
 
@@ -26,10 +26,11 @@ const webhook = await startWebhookAdapter({
   host: "127.0.0.1",
   port: 4310,
   ...(apiKey === undefined ? {} : { apiKey }),
+  maxRunMs: 1_200_000,
   responder,
   endpoints: [
     { name: "invoke", path: "/webhook/invoke" },
-    { name: "deep-research", path: "/webhook/deep-research", mode: "async", prompt: "Check deep-research/requests/*.md, match the incoming payload, address it, then move the file to deep-research/researched/." },
+    { name: "deep-research", path: "/webhook/deep-research", mode: "async", maxRunMs: 3_600_000, prompt: "Check deep-research/requests/*.md, match the incoming payload, address it, then move the file to deep-research/researched/." },
   ],
 });
 ```
@@ -73,12 +74,13 @@ Each endpoint may carry a `prompt` (pre-instructions, same role as a cron job's 
 ---
 path: /webhook/deep-research
 mode: async
+maxRunMs: 3600000
 ---
 Check deep-research/requests/*.md, match the incoming payload to an existing
 request, address it, then move that file to deep-research/researched/.
 ```
 
-Folder endpoints are merged with config endpoints; a duplicate `name` or `path` is a hard error.
+Folder endpoints are merged with config endpoints; a duplicate `name` or `path` is a hard error. An endpoint `maxRunMs` overrides the adapter-level fallback. Set it to `0` to disable the watchdog for only that endpoint; positive values bound that endpoint independently (config range `0`–`86400000`).
 
 ## Public API
 

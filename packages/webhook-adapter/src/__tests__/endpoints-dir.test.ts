@@ -58,6 +58,7 @@ describe("parseWebhookEndpointMarkdown", () => {
         "path: /delegate",
         "model: claude:claude-opus-4-8",
         "effort: high",
+        "maxRunMs: 45000",
         "---",
         "Run the delegated deep research.",
       ].join("\n"),
@@ -66,7 +67,29 @@ describe("parseWebhookEndpointMarkdown", () => {
 
     expect(endpoint.model).toBe("claude:claude-opus-4-8");
     expect(endpoint.effort).toBe("high");
+    expect(endpoint.maxRunMs).toBe(45_000);
   });
+
+  it("preserves maxRunMs zero as an explicit per-endpoint watchdog disable", () => {
+    const endpoint = parseWebhookEndpointMarkdown(
+      "unbounded.md",
+      "---\npath: /unbounded\nmaxRunMs: 0\n---\nRun until complete.",
+      "async",
+    );
+
+    expect(endpoint.maxRunMs).toBe(0);
+  });
+
+  it.each(["-1", "1.5", "86400001", "forever"])(
+    "rejects invalid maxRunMs frontmatter value %s",
+    (maxRunMs) => {
+      expect(() => parseWebhookEndpointMarkdown(
+        "invalid-timeout.md",
+        `---\npath: /invalid\nmaxRunMs: ${maxRunMs}\n---\nRun.`,
+        "sync",
+      )).toThrowError(/maxRunMs/u);
+    },
+  );
 
   it("defaults name to the filename stem and mode to the provided default", () => {
     const endpoint = parseWebhookEndpointMarkdown("results.md", "---\npath: /results\n---\nFile it.", "async");
