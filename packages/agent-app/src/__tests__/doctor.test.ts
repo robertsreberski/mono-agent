@@ -113,12 +113,35 @@ describe("validateMonoAgentFolder", () => {
 
     expect(report.ok).toBe(true);
     expect(sectionById(report, "core").status).toBe("ok");
+    expect(sectionById(report, "runtime-provenance").details)
+      .toContain("Runtime provenance: dev (unmanaged).");
     const runtime = sectionById(report, "runtime");
     expect(runtime.status).toBe("ok");
     expect(runtime.details.join("\n")).toContain("Fallback model claude:claude-sonnet-4-6");
     expect(sectionById(report, "channel:webhook").status).toBe("ok");
     expect(report.sections.some((section) => section.id === "channel:a2a")).toBe(false);
     expect(sectionById(report, "channel:telegram").status).toBe("disabled");
+  });
+
+  it("reports runtime provenance even when core config cannot load", async () => {
+    const configPath = join(dir, "missing.config.json");
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      drivers: [],
+      liveness: false,
+      allowFilesystemWrites: false,
+    });
+
+    expect(sectionById(report, "core").status).toBe("error");
+    expect(sectionById(report, "runtime-provenance")).toEqual({
+      id: "runtime-provenance",
+      label: "Runtime provenance",
+      status: "ok",
+      details: ["Runtime provenance: dev (unmanaged)."],
+    });
   });
 
   it("reports fixed-port continuation configuration without creating state during read-only validation", async () => {

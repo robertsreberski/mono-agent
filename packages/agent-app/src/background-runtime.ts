@@ -44,6 +44,16 @@ export interface ManagedBackgroundRuntime {
   readonly nodeAbi: string;
 }
 
+export interface ManagedRuntimeProvenanceVerificationInput {
+  readonly packageRoot: string;
+  readonly packageVersion: string;
+  readonly cliSha256: string;
+  readonly sourceClosureSha256: string;
+  readonly nodeAbi: string;
+  readonly platform: NodeJS.Platform;
+  readonly arch: string;
+}
+
 /** One config-selected package that is loaded dynamically rather than declared by agent-app. */
 export interface ManagedRuntimeAdditionalPackage {
   readonly packageName: string;
@@ -407,6 +417,46 @@ export async function ensureManagedBackgroundRuntime(
     return runtimeResult(layout, identity, input.nodePath);
   } finally {
     await removeSameRuntimeLockDirectory(layout.lockDir, acquired).catch(() => undefined);
+  }
+}
+
+/**
+ * Canonically verify the installed package and current closure manifest behind
+ * a provenance marker. This intentionally does not install, repair, or compare
+ * against a deploy checkout; it only validates the managed snapshot executing
+ * the caller.
+ */
+export async function verifyManagedRuntimeClosureForProvenance(
+  input: ManagedRuntimeProvenanceVerificationInput,
+): Promise<boolean> {
+  try {
+    if (
+      !isExactVersion(input.packageVersion)
+      || !/^[0-9a-f]{64}$/u.test(input.cliSha256)
+      || !/^[0-9a-f]{64}$/u.test(input.sourceClosureSha256)
+    ) {
+      return false;
+    }
+    const packageRoot = resolve(input.packageRoot);
+    const installRoot = dirname(dirname(dirname(packageRoot)));
+    if (join(installRoot, "node_modules", "@mono-agent", "agent-app") !== packageRoot) return false;
+
+    const identity: RuntimeIdentity = {
+      packageVersion: input.packageVersion,
+      cliSha256: input.cliSha256,
+      sourceClosureSha256: input.sourceClosureSha256,
+      nodeAbi: input.nodeAbi,
+      platform: input.platform,
+      arch: input.arch,
+    };
+    const appRuntimeRoot = dirname(dirname(dirname(installRoot)));
+    const home = dirname(dirname(dirname(appRuntimeRoot)));
+    const layout = runtimeLayout(home, identity, "provenance", 0);
+    if (layout.installRoot !== installRoot || layout.cliPath !== join(packageRoot, "dist", "cli.js")) return false;
+    if (!(await verifyPrivateRuntimeAncestors(home, layout.versionAbiDir))) return false;
+    return await verifiedRuntimeMarker(layout, identity) !== undefined;
+  } catch {
+    return false;
   }
 }
 

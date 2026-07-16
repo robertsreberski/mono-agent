@@ -76,6 +76,7 @@ import { piAuthRecoveryCommand } from "./provider-setup.js";
 import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "./pi-auth-store-inspection.js";
 import { checkManagedProjectSkills, managedProjectSkillsExist } from "./project-skills.js";
 import { configuredRuntimeFallbackModels, configuredRuntimeModels } from "./runtime-routes.js";
+import { runtimeProvenanceDetail } from "./runtime-provenance.js";
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
 const execFile = promisify(execFileCallback);
@@ -173,6 +174,8 @@ export async function validateMonoAgentFolder(
     }
     sections.push({ id: "core", label: "Core config", status: "error", details: [error.message] });
   }
+
+  sections.push(await runtimeProvenanceSection());
 
   if (coreConfig !== undefined) {
     const staticTriggerCredentialRefs = await collectStaticTriggerCredentialRefs(drivers, options);
@@ -560,6 +563,15 @@ function applyToolChannelCrossChecks(
     return;
   }
   sections[toolsIndex] = { ...current, status, details: [...current.details, ...extraDetails] };
+}
+
+async function runtimeProvenanceSection(): Promise<ValidationSection> {
+  return {
+    id: "runtime-provenance",
+    label: "Runtime provenance",
+    status: "ok",
+    details: [await runtimeProvenanceDetail()],
+  };
 }
 
 function runtimeSection(config: MonoAgentConfig): ValidationSection {
