@@ -95,10 +95,7 @@ describe("consolidateBujoMemory", () => {
     providerUnavailable = true;
 
     await expect(consolidateBujoMemory({ root, db, now })).resolves.toEqual({
-      decayed: 0,
       duplicateGroups: 1,
-      superseded: 0,
-      markdownInvalidated: 0,
     });
 
     expect(embeddingCalls).toBe(callsBefore);
@@ -144,7 +141,7 @@ describe("consolidateBujoMemory", () => {
 
     const result = await consolidateBujoMemory({ root, db, now });
 
-    expect(result).toEqual({ decayed: 0, duplicateGroups: 0, superseded: 0, markdownInvalidated: 0 });
+    expect(result).toEqual({ duplicateGroups: 0 });
     expect(existsSync(intentPath)).toBe(true);
     expect(readFileSync(intentPath, "utf8")).toBe(intentBefore);
     expect(db.get(bullet.id)?.status).toBe("open");
@@ -181,7 +178,7 @@ describe("consolidateBujoMemory", () => {
 
     const result = await consolidateBujoMemory({ root, db, now });
 
-    expect(result).toEqual({ decayed: 0, duplicateGroups: 0, superseded: 0, markdownInvalidated: 0 });
+    expect(result).toEqual({ duplicateGroups: 0 });
     expect(readFileSync(monthly, "utf8")).toBe(monthlyBefore);
     expect(db.get(bullet.id)?.salience).toBe(0.2);
     db.close();

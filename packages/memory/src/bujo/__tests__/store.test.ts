@@ -386,7 +386,7 @@ describe("BujoMemoryStore — tier derivation", () => {
     const result = await store.consolidate();
 
     expect(store.tier()).toBe("journal");
-    expect(result).toEqual({ decayed: 0, duplicateGroups: 1, superseded: 0, markdownInvalidated: 0 });
+    expect(result).toEqual({ duplicateGroups: 1 });
     expect(readFileSync(join(root, "future-log.md"), "utf8")).toBe("# Future Log\n");
     const hits = await store.recall("opt-in memory", { topK: 5 });
     expect(hits).toHaveLength(2);
