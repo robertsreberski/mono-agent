@@ -220,6 +220,21 @@ describe("mono-agent-composer reference parity", () => {
     expect(row?.[3]).toBe("`cron.scheduled-prompts`");
   });
 
+  it("keeps per-job cron scheduling distinct from shared harness bounds", () => {
+    const cronChannel = readRepoFile("docs/channels/cron.md");
+    const overlap = section(cronChannel, "Configured overlap: ticks are skipped, never queued");
+    const watchdog = section(cronChannel, "Run watchdog: a wedged run is aborted, not left to starve");
+
+    expect(overlap).toContain("Scheduler overlap state is tracked per job");
+    expect(overlap).toContain("shared agent-app harness admission and execution limits");
+    expect(overlap).toContain("serialize work across different jobs or reject a run");
+    expect(watchdog).toContain("scheduler slot it reclaims are **per job**");
+    expect(watchdog).toContain("shared agent-app harness admission and execution limits");
+    expect(watchdog).toContain("delay sibling provider work or reject it");
+    expect(cronChannel).not.toContain("never block one another");
+    expect(cronChannel).not.toContain("does not affect its siblings");
+  });
+
   it("documents every interaction-bridge auto-start path", () => {
     const surfaces = [
       [rowWithRegistryId(registry, "interaction.bridge"), "feature registry"],
