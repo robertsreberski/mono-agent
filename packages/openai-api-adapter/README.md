@@ -39,6 +39,8 @@ Behavior change note: clients that previously sent `metadata.conversation_id` to
 
 Open WebUI caveat: title and tag generation requests go to the same backend and can carry the same chat id header, landing as extra turns in the conversation's session. Point Open WebUI's Task Model (Admin Settings → Interface) at a separate lightweight model, or disable automatic title/tag generation.
 
+Sampling parameter caveat: `temperature`, `top_p`, `max_tokens`, `max_completion_tokens`, `stop`, `seed`, `logit_bias`, `presence_penalty`, and `frequency_penalty` are preserved in `metadata.openaiApi.parameters` for compatibility, but the adapter does not currently apply them to the configured runtime. Absent parameters and explicit OpenAI defaults are quiet. A supplied non-default value emits a `runtime_warning` containing only the ignored parameter names, then the request continues with the runtime's configured values. Streaming responses render it as a reasoning delta; non-stream JSON responses include the structured event in the additive `mono_agent.events` extension. Open WebUI sampling sliders are therefore currently inert.
+
 Streaming responders may send structured stream events through `AgentMessageStream.event()`. Assistant thoughts are emitted as `delta.reasoning_content` so OpenWebUI can render them separately from the final answer. Internally executed tools are rendered as OpenWebUI `<details type="tool_calls">` content blocks after completion. The adapter intentionally does not emit `delta.tool_calls` or `finish_reason: "tool_calls"` for host-owned tools because those fields ask the client to execute tools.
 
 ## OpenWebUI Upload Support

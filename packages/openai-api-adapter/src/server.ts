@@ -154,6 +154,31 @@ const UNSUPPORTED_CHAT_REQUEST_FIELDS = [
   "audio",
   "modalities",
 ] as const;
+const OPENAI_CHAT_PARAMETER_KEYS = [
+  "temperature",
+  "top_p",
+  "max_tokens",
+  "max_completion_tokens",
+  "stop",
+  "seed",
+  "logit_bias",
+  "presence_penalty",
+  "frequency_penalty",
+] as const;
+type OpenAIChatParameterKey = (typeof OPENAI_CHAT_PARAMETER_KEYS)[number];
+type RuntimeWarningEvent = Extract<AgentStreamEvent, { readonly type: "runtime_warning" }>;
+const OPENAI_CHAT_PARAMETER_DEFAULTS: Readonly<Record<OpenAIChatParameterKey, unknown>> = {
+  temperature: 1,
+  top_p: 1,
+  max_tokens: null,
+  max_completion_tokens: null,
+  stop: null,
+  seed: null,
+  logit_bias: null,
+  presence_penalty: 0,
+  frequency_penalty: 0,
+};
+const UNSUPPORTED_SAMPLING_WARNING_KIND = "openai_api_sampling_parameters_ignored";
 
 export async function startOpenAIApiAdapter(
   options: OpenAIApiAdapterOptions,
@@ -444,12 +469,14 @@ async function runJsonResponder(input: {
       new OpenAIApiAdapterError("invalid_config", "Cannot write to a finished OpenAI API stream."),
   });
   try {
+    const samplingWarning = await emitUnsupportedSamplingWarning(input.request, stream, input.options.logger);
     const response = await input.options.responder.respond(input.request, stream);
     await stream.finish(response.text);
     input.response.status(200).json(chatCompletion({
       id: `chatcmpl-${input.requestId}`,
       model: input.model,
       content: stream.text,
+      ...(samplingWarning === undefined ? {} : { events: [samplingWarning] }),
     }));
   } catch (error) {
     const cancelled = input.request.abortSignal.aborted || isAgentResponseCancelledError(error);
@@ -503,6 +530,7 @@ async function runStreamingResponder(input: {
   stream.start();
 
   try {
+    await emitUnsupportedSamplingWarning(input.request, stream, input.options.logger);
     const response = await input.options.responder.respond(input.request, stream);
     await stream.finish(response.text);
   } catch (error) {
@@ -976,19 +1004,8 @@ function firstHeaderValue(value: string | string[] | undefined): string | undefi
 }
 
 function readParameters(body: Record<string, unknown>): Record<string, unknown> {
-  const parameterKeys = [
-    "temperature",
-    "top_p",
-    "max_tokens",
-    "max_completion_tokens",
-    "stop",
-    "seed",
-    "logit_bias",
-    "presence_penalty",
-    "frequency_penalty",
-  ];
   const parameters: Record<string, unknown> = {};
-  for (const key of parameterKeys) {
+  for (const key of OPENAI_CHAT_PARAMETER_KEYS) {
     if (body[key] !== undefined) {
       parameters[key] = body[key];
     }
@@ -996,10 +1013,43 @@ function readParameters(body: Record<string, unknown>): Record<string, unknown> 
   return parameters;
 }
 
+async function emitUnsupportedSamplingWarning(
+  request: OpenAIApiChatRequest,
+  stream: AgentMessageStream,
+  logger: OpenAIApiAdapterLogger | undefined,
+): Promise<RuntimeWarningEvent | undefined> {
+  const ignoredParameters = OPENAI_CHAT_PARAMETER_KEYS.filter((key) =>
+    hasOwn(request.metadata.openaiApi.parameters, key)
+    && request.metadata.openaiApi.parameters[key] !== OPENAI_CHAT_PARAMETER_DEFAULTS[key]);
+  if (ignoredParameters.length === 0) {
+    return;
+  }
+
+  const event: AgentStreamEvent = {
+    type: "runtime_warning",
+    warningKind: UNSUPPORTED_SAMPLING_WARNING_KIND,
+    message: `OpenAI API sampling parameters are currently unsupported and were not applied: ${ignoredParameters.join(", ")}.`,
+    metadata: {
+      openaiApi: {
+        ignoredParameters,
+      },
+    },
+  };
+  logger?.warn?.("OpenAI API sampling parameters were ignored.", {
+    requestId: request.metadata.openaiApi.requestId,
+    conversationId: request.conversationId,
+    warningKind: event.warningKind,
+    ignoredParameters,
+  });
+  await stream.event?.(event);
+  return event;
+}
+
 function chatCompletion(input: {
   readonly id: string;
   readonly model: string;
   readonly content: string;
+  readonly events?: readonly RuntimeWarningEvent[];
 }): Record<string, unknown> {
   return {
     id: input.id,
@@ -1016,6 +1066,13 @@ function chatCompletion(input: {
         finish_reason: "stop",
       },
     ],
+    ...(input.events === undefined || input.events.length === 0
+      ? {}
+      : {
+          mono_agent: {
+            events: input.events,
+          },
+        }),
   };
 }
 
