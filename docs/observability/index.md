@@ -12,7 +12,7 @@ Every mono-agent run gets local JSONL artifacts and can optionally be exported t
 
 | Surface | What it is | Coverage | Page |
 | --- | --- | --- | --- |
-| JSONL run artifacts | Per-run `run-*.events.jsonl` + `run-*.summary.json`, secrets redacted | config / auto | [Run artifacts & traces](/observability/artifacts-and-traces/) |
+| JSONL run artifacts | Per-run `run-*.events.jsonl` + `run-*.summary.json`; sensitive object-key values redacted, free text retained | config / auto | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Trace-source registry | Heartbeat manifest so dashboards discover live agents | config | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Phoenix exporter + backfill | Best-effort OTLP/HTTP export of run lifecycles; retroactive backfill | config / cli | [Phoenix export & backfill](/observability/phoenix-and-backfill/) |
 | `mono-agent` CLI | init / validate / start / stop / logs / restart / tui / web / backfill / audit-runs / metrics / install-skill | cli | [CLI reference](/observability/cli-reference/) |
@@ -21,7 +21,7 @@ Every mono-agent run gets local JSONL artifacts and can optionally be exported t
 
 ## JSONL run artifacts (always on)
 
-Run artifacts are created for every run regardless of whether any exporter is configured. At `start()`, the recorder performs separate atomic replacements for an empty events file and a `running` summary, then buffers redacted events in memory with a 4,096-byte default cap per string. Terminal `finish()`/`fail()` uses separate atomic replacements for that bounded events snapshot first and the summary second. These writes provide no append, checkpoint, fsync, or cross-file transaction guarantee, so a crash can lose buffered events and stale-run reconciliation can report only persisted data. The artifacts also carry the metrics other tools build on: per-run usage/cost/cache (`observability.cost-tracking`), per-turn `provider_bridge_latency`, per-tool `tool_timing` (`execution_ms`), and `mcp_call_duration_ms` on MCP results — letting you separate model-reasoning time from tool/MCP time.
+Run artifacts are created for every run regardless of whether any exporter is configured. At `start()`, the recorder performs separate atomic replacements for an empty events file and a `running` summary, then buffers events in memory with a 4,096-byte default cap per string. Non-numeric values under sensitive-looking object keys are redacted, but free-text content is not scanned or scrubbed; prompts, replies, tool prose, error text, and the compiled system prompt therefore remain private operator data. Terminal `finish()`/`fail()` uses separate atomic replacements for that bounded events snapshot first and the summary second. These writes provide no append, checkpoint, fsync, or cross-file transaction guarantee, so a crash can lose buffered events and stale-run reconciliation can report only persisted data. The artifacts also carry the metrics other tools build on: per-run usage/cost/cache (`observability.cost-tracking`), per-turn `provider_bridge_latency`, per-tool `tool_timing` (`execution_ms`), and `mcp_call_duration_ms` on MCP results — letting you separate model-reasoning time from tool/MCP time.
 
 ```json
 {
@@ -70,7 +70,7 @@ Adding a Phoenix exporter turns each run lifecycle into a semantic OpenInference
 Omitting the `observability.exporters` entry keeps only the local JSONL artifacts. The whole array can be supplied via `MONO_AGENT_OBSERVABILITY_EXPORTERS` (a JSON array). Already-recorded runs can be exported retroactively with `mono-agent backfill (--run <id> | --all)`, reusing the live OTLP mapping with historical timestamps; deterministic per-run ids make re-export overwrite rather than duplicate.
 
 :::caution
-Phoenix export is best-effort and metadata-only by default. Set `includeSensitiveData: true` on the exporter only if you intend span input/output values to carry prompt and tool payloads.
+Phoenix export is best-effort and metadata-only by default. Set `includeSensitiveData: true` on the exporter only if you intend span input/output values to carry prompt and tool payloads. The opt-in still redacts non-numeric values under sensitive-looking object keys and caps strings, but it does not content-scan free text.
 :::
 
 See [Phoenix export & backfill](/observability/phoenix-and-backfill/) for the full exporter options, `validate` compatibility check, and backfill flags.

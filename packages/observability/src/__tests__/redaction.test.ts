@@ -11,15 +11,55 @@ describe("redactJsonValue", () => {
     });
   });
 
+  it.each([
+    "credential",
+    "serviceCredentials",
+    "CREDENTIAL",
+    "private_key",
+    "private-key",
+    "privateKey",
+    "PRIVATE_KEY",
+    "client_secret",
+    "client-secret",
+    "clientSecret",
+    "CLIENT_SECRET",
+    "bearer",
+    "oauthBearer",
+    "BEARER",
+  ])("redacts the %s key family across common naming styles", (key) => {
+    expect(redactJsonValue({ [key]: "fixture-value" })).toEqual({ [key]: "[redacted]" });
+  });
+
+  it("does not content-scan free text whose object keys are not sensitive", () => {
+    const freeText =
+      "credential=fixture private_key=fixture client_secret=fixture authorization=Bearer fixture-value";
+
+    expect(redactJsonValue({ systemPrompt: freeText, userInput: freeText, toolOutput: freeText })).toEqual({
+      systemPrompt: freeText,
+      userInput: freeText,
+      toolOutput: freeText,
+    });
+  });
+
   it("keeps numeric values under sensitive-looking keys (token COUNTS, not secrets)", () => {
     // `*_tokens` match /token/ but are usage counts we need for cost observability;
     // secrets are always strings, so only the string token is redacted.
     expect(
-      redactJsonValue({ input_tokens: 100, output_tokens: 20, cache_read_tokens: 8, cost_usd: 0.5, token: "secret-abc" }),
+      redactJsonValue({
+        input_tokens: 100,
+        output_tokens: 20,
+        cache_read_tokens: 8,
+        credentialCount: 2,
+        bearerCount: 1,
+        cost_usd: 0.5,
+        token: "fixture-value",
+      }),
     ).toEqual({
       input_tokens: 100,
       output_tokens: 20,
       cache_read_tokens: 8,
+      credentialCount: 2,
+      bearerCount: 1,
       cost_usd: 0.5,
       token: "[redacted]",
     });

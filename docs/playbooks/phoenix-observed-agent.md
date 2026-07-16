@@ -19,7 +19,7 @@ Run an agent locally with the TUI, attempt a best-effort terminal-batched Phoeni
 ## Features used
 
 - [`observability.phoenix-exporter`](/observability/phoenix-and-backfill/) — additive, best-effort OTLP/HTTP protobuf export of each run as a semantic timeline (config).
-- [`observability.jsonl-artifacts`](/observability/artifacts-and-traces/) — empty events plus a `running` summary at start, then redacted and capped `run-*.summary.json` + `run-*.events.jsonl` snapshots at finish/fail; a pre-terminal crash can lose buffered events (config).
+- [`observability.jsonl-artifacts`](/observability/artifacts-and-traces/) — empty events plus a `running` summary at start, then key-redacted and capped `run-*.summary.json` + `run-*.events.jsonl` snapshots at finish/fail; non-numeric values under sensitive-looking object keys are redacted while free text is retained, and a pre-terminal crash can lose buffered events (config).
 - [`observability.trace-registry`](/observability/artifacts-and-traces/) — heartbeat manifests that `mono-agent status` reads (config).
 - [`tui.chat`](/observability/tui/) — the operator console: live chat with thinking/tool/telemetry insight, run replay, and a config view (cli).
 
@@ -55,7 +55,7 @@ Run an agent locally with the TUI, attempt a best-effort terminal-batched Phoeni
 The exporters array can also be supplied via the `MONO_AGENT_OBSERVABILITY_EXPORTERS` env var (a JSON array of exporter objects). The local recorder is independent of Phoenix: it creates an empty-event start snapshot and replaces it with redacted, capped events at finish/fail. Phoenix adds a best-effort terminal batch; exporter failure does not change the run outcome, and process death before terminal persistence can leave neither terminal batch nor buffered JSONL events.
 
 :::caution
-With `includeSensitiveData: false`, exported spans are metadata-only and prompt/result payloads are redacted; set it to `true` only against a trusted local Phoenix.
+With `includeSensitiveData: false`, exported spans are metadata-only and raw prompt/result payloads are withheld. Set it to `true` only against a trusted local Phoenix: sensitive object-key values are redacted and strings capped, but free-text content is not scanned or scrubbed. Local JSONL artifacts retain that private free text regardless of exporter configuration.
 :::
 
 ## Steps
@@ -70,7 +70,7 @@ With `includeSensitiveData: false`, exported spans are metadata-only and prompt/
 ## Smoke test
 
 :::tip
-Complete one prompt in the TUI; confirm a redacted JSONL artifact is written AND the trace appears in Phoenix with merged tool spans and the correct project name.
+Complete one prompt in the TUI; confirm a JSONL artifact is written AND the trace appears in Phoenix with merged tool spans and the correct project name.
 :::
 
 ## Related

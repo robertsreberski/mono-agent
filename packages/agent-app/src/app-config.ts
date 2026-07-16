@@ -246,8 +246,9 @@ export function phoenixAppBaseUrl(endpoint: string): string | undefined {
 
 export function describeSensitiveDataExportWarning(endpoint: string): string {
   return [
-    "[WARN] includeSensitiveData=true exports redacted/capped user input, assistant replies,",
-    `tool args/results, and system prompt to Phoenix at ${endpoint}; substantive run content leaves this machine.`,
+    "[WARN] includeSensitiveData=true exports user input, assistant replies, tool args/results, and system prompt",
+    `to Phoenix at ${endpoint}; non-numeric values under sensitive-looking object keys are redacted and strings are capped,`,
+    "but free-text content is not scanned or scrubbed. Substantive run content leaves this machine.",
   ].join(" ");
 }
 

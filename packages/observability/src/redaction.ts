@@ -2,14 +2,16 @@ import { DEFAULT_MAX_STRING_BYTES } from "./guards.js";
 
 /**
  * Node-free redaction + truncation helpers shared by the recorder and the
- * export-mapping surface. Sensitive keys collapse to `[redacted]`, circular
- * references to `[circular]`, and deeply nested values to `[max-depth]`; long
- * strings are truncated by UTF-8 byte length. Kept import-free of `node:*`
+ * export-mapping surface. Non-numeric values under sensitive-looking object
+ * keys collapse to `[redacted]`; free-text content is not scanned. Circular
+ * references collapse to `[circular]`, deeply nested values to `[max-depth]`,
+ * and long strings are truncated by UTF-8 byte length. Kept import-free of `node:*`
  * (the prior `Buffer.byteLength` call is replaced with `TextEncoder`) so the
  * mapping module can stay browser-safe.
  */
 
-const SENSITIVE_KEY_PATTERN = /(token|secret|password|authorization|api[_-]?key|cookie)/iu;
+const SENSITIVE_KEY_PATTERN =
+  /(token|password|authorization|api[_-]?key|cookie|credentials?|private[_-]?key|client[_-]?secret|bearer|secret)/iu;
 
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();

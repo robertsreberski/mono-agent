@@ -18,7 +18,7 @@ When you add a `phoenix` entry to `observability.exporters[]`, the host exports 
 - **Root spans carry rich roll-up attributes** — model, token counts, cost, and duration on every run (see [Per-run attributes](#per-run-attributes)).
 - **Per-run span ids are deterministic**, so re-exporting the same run is idempotent — it overwrites rather than duplicates.
 
-Export is **metadata-only by default**: span inputs/outputs are exported, but raw message/tool payloads are withheld unless you opt in (see `includeSensitiveData`). Failures are bounded by `timeoutMs` and are swallowed — a Phoenix outage cannot fail or stall a run.
+Export is **metadata-only by default**: span inputs/outputs are exported, but raw message/tool payloads are withheld unless you opt in (see `includeSensitiveData`). With the opt-in enabled, non-numeric values under sensitive-looking object keys are redacted and strings are capped, but free-text content is not scanned or scrubbed. Failures are bounded by `timeoutMs` and are swallowed — a Phoenix outage cannot fail or stall a run.
 
 :::note
 The transport lives in the `@mono-agent/observability/otel` subpath (built on `@opentelemetry/otlp-transformer`). Coverage: **config**.
@@ -32,18 +32,18 @@ Every exported run span — channel and memory alike — carries roll-up attribu
 - `llm.token_count.prompt` / `.completion` / `.total`, plus `.prompt_details.cache_read` / `.cache_write` — token usage including prompt-cache hits.
 - `mono.agent.cost_usd` — run cost (prefers the observer aggregate, falls back to `usage.cost_usd`).
 - `mono.agent.duration_ms` — wall-clock duration.
-- The system prompt as `llm.input_messages.0.message.{role,content}` (plus `llm.system` / `mono.agent.system_prompt`) — exported **only when `includeSensitiveData: true`**, redacted and capped at 32 KB. For channel runs this is the compiled identity prompt; for memory runs it is the maintenance prompt.
+- The system prompt as `llm.input_messages.0.message.{role,content}` (plus `llm.system` / `mono.agent.system_prompt`) — exported **only when `includeSensitiveData: true`**, capped at 32 KB, and not content-scanned or scrubbed. For channel runs this is the compiled identity prompt; for memory runs it is the maintenance prompt.
 
 On a **failed / cancelled / interrupted** run, the root span also carries always-on operational metadata describing *why* it failed — so you can filter and read the cause in Phoenix without opening the JSONL:
 
-- `mono.agent.error.message` — the underlying provider/runtime error text (e.g. `503 Service Unavailable`), redacted and capped at 500 chars.
+- `mono.agent.error.message` — the underlying provider/runtime error text (e.g. `503 Service Unavailable`), capped at 500 chars and not content-scanned or scrubbed.
 - `mono.agent.failover.count` — the number of failover attempts the router made.
 - `mono.agent.failover.detail` — the per-attempt chain rendered as `model → reason (req id)`, e.g. `pi:openai-codex:gpt-5.6-terra → timeout, pi:opencode-go:kimi-k2.6 → server_error (req abc123)`. `reason` prefers the retryable subkind, falling back to the raw failure kind.
 
 These three attributes are **operational metadata, not gated content** — they are emitted regardless of `includeSensitiveData`, but only on non-success runs (succeeded runs omit them entirely). The failed-run root span's status **message** is also the composed failure detail (e.g. `provider_unavailable_exhausted: pi:openai-codex:gpt-5.6-terra → timeout, pi:opencode-go:kimi-k2.6 → server_error (req …); last error: 503 Service Unavailable …`) instead of the bare failure kind, so operators can read the cause straight from the span status.
 
 :::note
-The secret-redaction pass that runs before export no longer clobbers numeric token *counts*: fields like `input_tokens` match the `/token/` secret pattern but are numbers, so usage now survives into spans and summaries. (Secrets are strings; numeric values are skipped.)
+The key-based redaction pass that runs before export skips numeric values, so token *counts* survive into spans and summaries even though fields like `input_tokens` match the `/token/` key pattern. Matching non-numeric object-key values are replaced with `[redacted]`.
 :::
 
 ### Memory-maintenance runs
@@ -81,7 +81,7 @@ Add one `phoenix` entry to `observability.exporters[]`. Omit the whole `observab
 | `type` | string | — | Must be `"phoenix"`. |
 | `endpoint` | string | — | OTLP/HTTP traces URL, e.g. `http://127.0.0.1:6006/v1/traces`. |
 | `projectName` | string | trace source label/id | Sets `openinference.project.name`; groups runs under a project in Phoenix. |
-| `includeSensitiveData` | boolean | `false` | When `false`, raw message/tool payloads are withheld (metadata-only). Set `true` to export full inputs/outputs. |
+| `includeSensitiveData` | boolean | `false` | When `false`, raw message/tool payloads are withheld (metadata-only). When `true`, substantive inputs/outputs are exported with sensitive object-key values redacted and strings capped; free text is not content-scanned. |
 | `headers` | object | — | Extra HTTP headers, e.g. an auth token for Phoenix Cloud. Keep secrets as placeholders in committed config. |
 | `timeoutMs` | number | — | Per-export request timeout; bounds how long a failing export can block. |
 

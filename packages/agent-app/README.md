@@ -215,8 +215,10 @@ allow-all on MCP-capable routes; a restrictive `tools.allowedTools` must name
 `disallowedTools` can remove it. Direct OpenCode and other MCP-incompatible
 routes suppress it. Its `list` and `inspect` actions can read only completed
 prior runs in the exact current conversation bucket and return bounded,
-redacted, normalized evidence. They exclude the current/running run, other
-conversations or rollover buckets, system prompts, reasoning, recalled memory,
+normalized evidence with non-numeric values under sensitive-looking object keys
+redacted. Retained free text is not content-scanned. Results exclude the
+current/running run, other conversations or rollover buckets, system prompts,
+reasoning, recalled memory,
 turn-context payloads, and raw artifact paths; historical text is marked
 untrusted.
 
