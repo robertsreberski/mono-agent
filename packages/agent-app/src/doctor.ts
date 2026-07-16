@@ -2368,8 +2368,8 @@ async function inspectContinuationState(
     const owner = await inspectContinuationOwnerDatabase(join(stateDir, "continuations-owner.sqlite"));
     if (!owner.valid) return { status: "error", details: [owner.detail] };
     details.push(
-      `Store v3: ${String(manifest.stats.records)} retained; ${String(manifest.stats.active)} active; ${String(manifest.stats.unresolvedDelivery)} delivery unknown; ${String(manifest.stats.deadLettered)} dead-lettered; ${String(manifest.stats.historyDegraded)} history-degraded deliveries; ${String(manifest.stats.terminalTombstones)} terminal tombstones; ${String(manifest.stats.capturedText)} captured answers.`,
-      `Retention: at most ${String(manifest.stats.limits.terminalMaxRecords)} terminal tombstones and ${String(manifest.stats.limits.capturedTextMaxRecords)} captured answers.`,
+      `Store v3: ${String(manifest.stats.records)} retained; ${String(manifest.stats.active)} active; ${String(manifest.stats.unresolvedDelivery)} delivery unknown; ${String(manifest.stats.deadLettered)} dead-lettered; ${String(manifest.stats.historyDegraded)} history-degraded deliveries; ${String(manifest.stats.terminalTombstones)} terminal tombstones; ${String(manifest.stats.compacted)} compacted; ${String(manifest.stats.capturedText)} captured answers.`,
+      `Retention: at most ${String(manifest.stats.limits.terminalMaxRecords)} terminal tombstones with a maximum age of ${String(manifest.stats.limits.terminalMaxAgeMs)} ms and ${String(manifest.stats.limits.capturedTextMaxRecords)} captured answers with a maximum age of ${String(manifest.stats.limits.capturedTextMaxAgeMs)} ms.`,
       transaction.detail,
       rollbackGuard.detail,
       originGroups.detail,
@@ -2419,6 +2419,7 @@ async function inspectContinuationState(
     }
   }
   let legacyManifestExists = false;
+  let legacyManifestDetails: readonly string[] | undefined;
   if (legacyManifestInfo !== undefined) {
     legacyManifestExists = true;
     if (!legacyManifestInfo.isFile() || legacyManifestInfo.isSymbolicLink()) {
@@ -2439,6 +2440,10 @@ async function inspectContinuationState(
     if (!isContinuationStoreManifest(legacyManifest, 2, "per-record-v2")) {
       return { status: "error", details: ["Legacy continuation store manifest has an unsupported or malformed schema."] };
     }
+    legacyManifestDetails = [
+      `Legacy store v2 awaiting v3 migration: ${String(legacyManifest.stats.records)} retained; ${String(legacyManifest.stats.active)} active; ${String(legacyManifest.stats.unresolvedDelivery)} delivery unknown; ${String(legacyManifest.stats.deadLettered)} dead-lettered; ${String(legacyManifest.stats.historyDegraded)} history-degraded deliveries; ${String(legacyManifest.stats.terminalTombstones)} terminal tombstones; ${String(legacyManifest.stats.compacted)} compacted; ${String(legacyManifest.stats.capturedText)} captured answers.`,
+      `Retention: at most ${String(legacyManifest.stats.limits.terminalMaxRecords)} terminal tombstones with a maximum age of ${String(legacyManifest.stats.limits.terminalMaxAgeMs)} ms and ${String(legacyManifest.stats.limits.capturedTextMaxRecords)} captured answers with a maximum age of ${String(legacyManifest.stats.limits.capturedTextMaxAgeMs)} ms.`,
+    ];
   }
 
   const legacyV1Path = join(stateDir, "continuations-v1.json");
@@ -2503,9 +2508,7 @@ async function inspectContinuationState(
     const owner = await inspectContinuationOwnerDatabase(join(stateDir, "continuations-owner.sqlite"));
     if (!owner.valid) return { status: "error", details: [owner.detail] };
     details.push(
-      legacyManifestExists
-        ? "Legacy store v2 awaiting v3 migration."
-        : "Continuation records are awaiting completion of the v3 manifest.",
+      ...(legacyManifestDetails ?? ["Continuation records are awaiting completion of the v3 manifest."]),
       ...(unmanifestedV2Transaction.pending ? [unmanifestedV2Transaction.detail] : []),
       ...(unmanifestedV3Transaction.pending ? [unmanifestedV3Transaction.detail] : []),
       rollbackGuard.detail,
@@ -3072,10 +3075,13 @@ function isContinuationStoreManifest(
     readonly deadLettered: number;
     readonly historyDegraded: number;
     readonly terminalTombstones: number;
+    readonly compacted: number;
     readonly capturedText: number;
     readonly limits: {
       readonly terminalMaxRecords: number;
+      readonly terminalMaxAgeMs: number;
       readonly capturedTextMaxRecords: number;
+      readonly capturedTextMaxAgeMs: number;
     };
   };
 } {
