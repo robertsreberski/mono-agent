@@ -623,8 +623,7 @@ export interface DownloadTelegramAttachmentsOptions {
   /**
    * Per-file download timeout (ms) for the default downloader, composed with the
    * run abort signal. Defaults to 30000. Only consulted by the built-in
-   * downloader; custom downloaders manage their own timeouts. Also bounds each
-   * auto-transcription call (below).
+   * downloader; custom downloaders manage their own timeouts.
    */
   readonly downloadTimeoutMs?: number;
   /**
