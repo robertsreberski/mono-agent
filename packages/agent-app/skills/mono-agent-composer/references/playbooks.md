@@ -153,15 +153,23 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
 **Features:** `orchestrator.ask-collaborator`, `harness.request-runtime-options`, `runtime.custom`.
 
 ```ts
-const ext = createCollaboratorToolRuntimeExtension({
-  collaborators: [
-    { id: "researcher", label: "Research", responder: researcher },
-    { id: "writer", label: "Writer", responder: writer },
-  ],
-  conversationId, maxCalls: 10,
+const orchestrator = await createConfiguredAgentResponder({
+  config,
+  runtimeOptionsForRequest: async (input) => {
+    const extension = await createCollaboratorToolRuntimeExtension({
+      collaborators: [
+        { id: "researcher", label: "Research", responder: researcher },
+        { id: "writer", label: "Writer", responder: writer },
+      ],
+      conversationId: input.request.conversationId,
+      originalUserMessage: input.request.userMessage,
+      abortSignal: input.request.abortSignal,
+      maxCalls: 10,
+    });
+    // The harness invokes cleanup after success, failure, or request abort.
+    return { runtimeOptions: extension.runtimeOptions, cleanup: extension.cleanup };
+  },
 });
-// pass ext.runtimeOptions via createConfiguredAgentResponder({ runtimeOptionsForRequest })
-// call ext.cleanup() on disposal to close the ephemeral MCP server
 ```
 **Smoke:** give a compound task ("research X then write a summary"); confirm the artifact shows `AskCollaborator` delegating to both, and `cleanup()` closes the MCP port.
 

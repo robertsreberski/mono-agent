@@ -82,7 +82,7 @@ const collaborators: readonly OrchestratorCollaborator[] = [
   },
 ];
 
-const orchestrator = createConfiguredAgentResponder({
+const orchestrator = await createConfiguredAgentResponder({
   config: orchestratorCoreConfig,
   runtime: orchestratorRuntime,
   runtimeOptionsForRequest: async (input) => {

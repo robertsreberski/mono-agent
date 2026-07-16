@@ -30,15 +30,17 @@ This capability is **code-only** — there is no `mono-agent.config.json` key fo
 // The extension is request-scoped: create it inside runtimeOptionsForRequest
 // (one ephemeral MCP server per turn) and return its cleanup so the host
 // tears the server down when the turn ends. Do not reuse one across requests.
-const orchestrator = createConfiguredAgentResponder({
+const orchestrator = await createConfiguredAgentResponder({
   config,
   runtimeOptionsForRequest: async (input) => {
-    const extension = createCollaboratorToolRuntimeExtension({
+    const extension = await createCollaboratorToolRuntimeExtension({
       collaborators: [
         { id: "researcher", label: "Researcher", responder: researcherResponder },
         { id: "writer", label: "Writer", responder: writerResponder },
       ],
-      conversationId: input.conversationId,
+      conversationId: input.request.conversationId,
+      originalUserMessage: input.request.userMessage,
+      abortSignal: input.request.abortSignal,
       maxCalls: 10,
     });
     return { runtimeOptions: extension.runtimeOptions, cleanup: extension.cleanup };
@@ -49,7 +51,7 @@ const orchestrator = createConfiguredAgentResponder({
 ## Steps
 
 1. Build collaborator responders (one `createConfiguredAgentResponder` per specialist, or A2A consumers).
-2. Inside `runtimeOptionsForRequest`, call `createCollaboratorToolRuntimeExtension` with the collaborators, `conversationId`, and `maxCalls`.
+2. Inside `runtimeOptionsForRequest`, call `createCollaboratorToolRuntimeExtension` with the required `collaborators`, `conversationId`, `originalUserMessage`, and `abortSignal` fields (plus optional `maxCalls`).
 3. Return `{ runtimeOptions: extension.runtimeOptions, cleanup: extension.cleanup }` from the callback so the host attaches the loopback tool and closes the ephemeral MCP server when the turn ends.
 4. Run the orchestrator with a task that requires delegation.
 5. Inspect the run artifact for `AskCollaborator` calls.
