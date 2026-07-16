@@ -63,6 +63,7 @@
     "@mono-agent/webhook-adapter": "workspace:0.11.3",
     "@mono-agent/whatsapp-adapter": "workspace:0.11.3",
     "typescript": "^5.8.3",
-    "vitest": "^3.1.4"
+    "vitest": "^3.1.4",
+    "yaml": "^2.9.0"
   }
 }
