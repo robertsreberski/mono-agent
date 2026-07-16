@@ -13,6 +13,7 @@ import {
   publishablePackages,
   sortForPublish,
 } from "./package-graph.mjs";
+import { releaseDependencyPinIssues } from "./dependency-policy.mjs";
 
 const TAG_RE = /^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?)$/;
 
@@ -72,6 +73,8 @@ export function validateRelease({
       issues.push(`${pkg.name} engines.node must be ${SUPPORTED_NODE_ENGINE}; found ${pkg.packageJson.engines?.node ?? "(missing)"}`);
     }
   }
+
+  issues.push(...releaseDependencyPinIssues(publishable));
 
   for (const pkg of publishable) {
     if (pkg.version !== version) {

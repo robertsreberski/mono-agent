@@ -190,7 +190,7 @@ falls back to its own env vars, exactly as returning `undefined` from the old ho
 did). **No host action needed** — `resolvePiApiKey` behaves as before.
 
 Dependency bump: **`@earendil-works/pi-ai` and `@earendil-works/pi-agent-core` are
-now `^0.80.x`** (were `^0.79.1`). Compaction is driven natively (section 3).
+now `0.80.5`** (were `^0.79.1`). Compaction is driven natively (section 3).
 
 ## 11. Exports map: wildcards removed (explicit deep-path map)
 
@@ -254,9 +254,9 @@ Run these before/at the port:
    in `src/`.)*
 2. **Dependencies.** Post-decoupling the kernel has **zero workspace-package
    deps**; only the third-party pins need aligning: `@earendil-works/pi-ai` +
-   `@earendil-works/pi-agent-core` (`^0.80.x`), `@modelcontextprotocol/sdk`,
+   `@earendil-works/pi-agent-core` (`0.80.5`), `@modelcontextprotocol/sdk`,
    `@opencode-ai/sdk`, `@anthropic-ai/claude-agent-sdk`, `zod`.
-3. **Pi bump `^0.74.0` → `^0.80.x` in lockstep.** worklab tests that use old pi
+3. **Pi bump `^0.74.0` → `0.80.5` in lockstep.** worklab tests that use old pi
    APIs are rewritten at the port. Do not restore the old `pi-sdk.js` deep
    import; use `generatePiNativeResponse` from `@mono-agent/agent-runtime/ai`.
 4. **Sandbox.** worklab passes **no** `sandbox` implementation → `passthroughSandbox`,

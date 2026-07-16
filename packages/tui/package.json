@@ -29,7 +29,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@earendil-works/pi-tui": "^0.79.1",
+    "@earendil-works/pi-tui": "0.79.10",
     "@mono-agent/agent-contracts": "workspace:0.11.3",
     "@mono-agent/config": "workspace:0.11.3",
     "@mono-agent/observability": "workspace:0.11.3"
