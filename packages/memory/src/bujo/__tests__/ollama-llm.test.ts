@@ -19,7 +19,7 @@ describe("createOllamaLlm", () => {
     expect(llm.id).toBe("ollama:llama3.2");
   });
 
-  it("posts to <endpoint>/api/generate with {model, prompt, stream:false}", async () => {
+  it("posts to <endpoint>/api/generate with native JSON mode", async () => {
     const fakeFetch = makeFetch(200, { response: "hello" });
     vi.stubGlobal("fetch", fakeFetch);
 
@@ -29,7 +29,12 @@ describe("createOllamaLlm", () => {
     expect(fakeFetch).toHaveBeenCalledOnce();
     const [url, init] = (fakeFetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
     expect(url).toBe("http://localhost:11434/api/generate");
-    expect(JSON.parse(init.body as string)).toEqual({ model: "llama3.2", prompt: "test prompt", stream: false });
+    expect(JSON.parse(init.body as string)).toEqual({
+      model: "llama3.2",
+      prompt: "test prompt",
+      stream: false,
+      format: "json",
+    });
   });
 
   it("returns data.response on success", async () => {
