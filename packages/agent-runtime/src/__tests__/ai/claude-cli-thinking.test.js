@@ -219,6 +219,20 @@ describe("claude-cli — buildCliCommand flags", () => {
     expect(spec.args).toContain("model_reasoning_effort=xhigh");
   });
 
+  it("forwards effort ultra unchanged to the codex CLI config sink", () => {
+    const spec = buildCliCommand({
+      sdk: "codex",
+      model: "gpt-5-codex",
+      effort: "ultra",
+      systemPrompt: "sys",
+      prompt: "hi",
+      cwd: "/tmp",
+    });
+    expect(spec.args.filter((arg) => arg.startsWith("model_reasoning_effort="))).toEqual([
+      "model_reasoning_effort=ultra",
+    ]);
+  });
+
   it("keeps native --effort max for the claude-code CLI", () => {
     const spec = buildCliCommand({
       sdk: "claude-code",
