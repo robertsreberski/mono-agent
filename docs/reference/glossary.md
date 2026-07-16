@@ -26,7 +26,7 @@ The underlying runtime/provider that actually runs the model. mono-agent support
 
 ## Bloat guard
 
-The automatic 256KB truncation of oversized tool output, with the full result persisted to an artifact file instead of being inlined into context. It is built in (coverage: `auto`) and writes to `artifacts.dir`. Images get a separate, larger budget. See [Tools and guards](/runtime/tools-and-guards/).
+The automatic 256KB truncation of oversized tool output, with each original block offered to a separate best-effort artifact sink instead of being inlined into context. It is built in (coverage: `auto`); successfully saved blocks land under `artifacts.dir/tool-output/`, while a missing or failed sink leaves only the compact truncation summary. Images get a separate, larger budget. See [Tools and guards](/runtime/tools-and-guards/).
 
 ## BuJo
 

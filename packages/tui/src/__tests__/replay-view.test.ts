@@ -596,7 +596,7 @@ describe("ReplayView detail mode", () => {
     expect(trimmedLines(view)).not.toContain("{");
   });
 
-  it("shows a coalesced thinking item as chat's ∴ thought cell, reconstructing the FULL text (not the truncated summary) and its own duration span", async () => {
+  it("shows a coalesced thinking item as chat's ∴ thought cell, joining retained raw-event text instead of the compacted summary", async () => {
     await writeLongThinkingFixture("run-long-thinking");
     const view = setup();
     view.setArtifactDir(dir);

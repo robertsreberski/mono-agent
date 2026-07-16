@@ -404,7 +404,7 @@ For `logs`, `-f` means **follow**; for `start`, `-f` means **foreground**. A `--
 
 ## `tui`
 
-Opens the [operator console](/observability/tui/) from **any directory**: live chat with full thinking/tool/telemetry insight, recorded-run replay, and a source-annotated config view. Discovers running agents via the trace-source registry — zero running agents prints a `mono-agent start` hint and exits `1`, one connects directly, several open an in-TUI picker. Requires an interactive TTY.
+Opens the [operator console](/observability/tui/) from **any directory**: live chat with structured thinking/tool/telemetry insight, bounded recorded-run replay, and a source-annotated config view. Discovers running agents via the trace-source registry — zero running agents prints a `mono-agent start` hint and exits `1`, one connects directly, several open an in-TUI picker. Requires an interactive TTY.
 
 ```bash
 mono-agent tui                          # discover + connect

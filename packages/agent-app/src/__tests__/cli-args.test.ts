@@ -405,6 +405,8 @@ describe("parseCliArgs", () => {
     expect(renderHelp()).toContain("direct opencode:<provider>:<model>");
     expect(renderHelp()).toContain("hand-authored runtime backend config");
     expect(renderHelp()).toContain("mono-agent web");
+    expect(renderHelp()).toContain("live chat with structured");
+    expect(renderHelp()).not.toContain("live chat with full");
     expect(renderHelp()).toContain("--allow-non-loopback");
     expect(renderHelp()).toContain("MONO_AGENT_WEB_AUTH_TOKEN");
     expect(renderHelp()).toContain("--show-auth-url");

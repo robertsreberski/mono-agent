@@ -6,8 +6,8 @@ Category: `operator-surface`
 
 ## Responsibility
 
-pi-tui operator console for mono-agent: live chat with **full insight into the
-agent's thinking process** — reasoning blocks, tool calls with
+pi-tui operator console for mono-agent: live chat with structured insight into the
+agent's thinking process — reasoning blocks, tool calls with
 arguments/progress/results/timing, token usage, cost, provider lifecycle and
 failover — plus recorded-run replay and a read-only source-annotated config
 view. Built on `@earendil-works/pi-tui` differential rendering (no React/Ink).
@@ -80,7 +80,7 @@ carries the paths).
 | View | Content |
 | --- | --- |
 | chat | Streaming markdown answer, collapsed thinking cells (`ctrl+t` expands), tool panels (pending → success/error with args/progress/result/duration), warnings/failover notices, status bar (model · tokens · cost · hints). |
-| replay | Recorded runs from the agent's artifact dir; open any run for its full coalesced event timeline (any channel's turns, nothing dropped). |
+| replay | Recorded runs from the agent's artifact dir; open any run for the redacted, bounded events that reached terminal JSONL persistence. Recorder-capped payload tails and RAM-buffered events lost to a crash cannot be replayed. |
 | config | Redacted, source-annotated resolved config (same builder as `mono-agent config`). |
 | agents | Running-instance picker over the trace-source registry. |
 

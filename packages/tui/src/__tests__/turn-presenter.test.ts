@@ -82,6 +82,21 @@ describe("TurnPresenter", () => {
     expect(status()).toContain("$0.012");
   });
 
+  it("does not promise artifact recovery when a streamed tool payload was truncated", async () => {
+    const { presenter, rendered } = setup();
+    await presenter.event({ type: "tool_call_started", id: "t1", name: "read_file" });
+    await presenter.event({
+      type: "tool_call_completed",
+      id: "t1",
+      content: "bounded preview",
+      metadata: { truncated: true },
+    });
+
+    const text = rendered();
+    expect(text).toContain("payload truncated for streaming; replay may also be bounded");
+    expect(text).not.toContain("full data in run artifacts");
+  });
+
   it("expands thinking on demand with the full text", async () => {
     const { presenter, transcript, rendered } = setup();
     await presenter.event({ type: "assistant_thought", text: "secret reasoning here" });

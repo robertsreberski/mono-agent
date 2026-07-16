@@ -110,12 +110,12 @@ Adapters must not import the harness, runtime adapter, memory package (`@mono-ag
 
 Use:
 
-- `@mono-agent/tui` for the pi-tui operator console (`mono-agent tui`): live chat with full stream-event insight, recorded-run replay, config view.
+- `@mono-agent/tui` for the pi-tui operator console (`mono-agent tui`): live chat with structured stream-event insight, recorded-run replay, and config view. Remote event frames have a strict 256 KiB UTF-8 NDJSON cap: assistant-thought/tool-call payload fields are reduced and remeasured, while another oversized variant or a reducible event whose minimal form still does not fit becomes a bounded `oversized_event` marker. Other frame kinds are unaffected, and replay contains only redacted, capped events that reached terminal JSONL persistence.
 - `@mono-agent/session-web` for the read-only Session Recorder web PWA served by `mono-agent web`, including local artifact paging and live relay aggregation.
 - `@mono-agent/operator-adapter` for the loopback NDJSON stream endpoint the console connects to (`tui` config section, on by default) and the live SSE endpoint `mono-agent web` observes (`live` config section, on by default).
 - `@mono-agent/observability` for JSONL event artifacts, summaries, trace-source registration, and the `@mono-agent/observability/otel` Phoenix OTLP exporter configured via `observability.exporters`.
 
-Traceability is local-first. A running host registers a source manifest; `mono-agent status` reads the trace-source registry to report live sources, and artifacts are keyed by `(sourceId, runId)` so duplicate run ids do not collide. Phoenix is the recommended trace viewer when an `observability.exporters` (phoenix) entry is configured; local JSONL artifacts are the fallback otherwise.
+Traceability is local-first. A running host registers a source manifest; `mono-agent status` reads the trace-source registry to report live sources, and artifacts are keyed by `(sourceId, runId)` so duplicate run ids do not collide. Phoenix is the recommended trace viewer when an `observability.exporters` (phoenix) entry is configured; its terminal-batched export is best-effort. Independently, the local recorder writes empty events plus a `running` summary at start and a redacted, capped snapshot at finish/fail. Events stay in RAM between those boundaries, so a crash can lose them. Without Phoenix, those bounded terminal JSONL snapshots are the only local run record.
 
 ## Multi-Agent Join
 

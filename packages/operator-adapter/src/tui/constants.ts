@@ -9,8 +9,11 @@ export const DEFAULT_BASE_PATH = "/tui";
 export const TUI_WIRE_SCHEMA = 1;
 
 /**
- * Upper bound for one serialized NDJSON frame. Oversized payloads (huge tool
- * results / progress chunks) are truncated with a marker rather than stalling
- * or ballooning the socket; the full data remains in the run's JSONL artifacts.
+ * Strict UTF-8 byte maximum for one serialized event frame, including its NDJSON
+ * newline. Oversized assistant-thought and tool-call payloads are field-reduced;
+ * any other oversized event, or a reducible event whose minimal form does not
+ * fit, becomes a bounded `oversized_event` marker. Other frame kinds are not
+ * governed by this cap. JSONL replay has independent redaction/string caps and
+ * a terminal-only event-file boundary, so it is not a full-payload recovery path.
  */
 export const MAX_FRAME_BYTES = 256 * 1024;

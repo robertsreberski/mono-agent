@@ -109,7 +109,7 @@ interface InstanceState {
   readonly artifactTimers: Map<string, ReturnType<typeof setTimeout>>;
   /** Last observed summary-file signature per retained disk run. */
   readonly diskRunSignatures: Map<string, DiskRunSignature>;
-  /** Runs whose cached session contains full detail read from the disk artifact. */
+  /** Runs whose cached session contains persisted, bounded detail read from the disk artifact. */
   readonly detailLoaded: Set<string>;
   /** Per-instance cap on retained sessions (mirrors {@link SessionAggregator.maxRunsPerInstance}). */
   readonly maxRunsPerInstance: number;

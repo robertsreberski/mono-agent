@@ -558,7 +558,7 @@ export function DetailView({ id, onBack }: Props) {
         )}
         {detail?.loading && (
           <div role="status" aria-live="polite" style={{ marginBottom: 16, border: "1px solid rgba(232,162,74,.22)", borderRadius: 12, padding: "11px 14px", background: "rgba(232,162,74,.06)", color: "#D7B278", fontFamily: FONT_MONO, fontSize: 11, letterSpacing: ".08em", textTransform: "uppercase" }}>
-            Loading full detail
+            Loading persisted detail
           </div>
         )}
         {/* engine strip */}

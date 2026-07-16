@@ -117,6 +117,13 @@ export interface ReconcileStaleRunsResult {
  * `startedBeforeMs` belong to the live process and are left untouched — so this is safe to call
  * once at startup, before new runs begin. Read-only-safe and best-effort: a bad file is skipped
  * with a warning, never thrown.
+ *
+ * Reconciliation repairs summary status only and can report only persisted artifacts. The JSONL
+ * recorder creates empty events plus a running summary at `start()`, buffers later events in
+ * memory, then uses separate atomic replacements for the redacted/bounded events snapshot and
+ * terminal summary at `finish()`/`fail()`. Event strings use a 4,096-byte default cap. A crash can
+ * thus yield `process_death` with `eventCount: 0` even after events occurred. The host's live
+ * broadcast is best-effort visibility for connected clients, not recovery.
  */
 export async function reconcileStaleRunArtifacts(
   artifactDir: string,
