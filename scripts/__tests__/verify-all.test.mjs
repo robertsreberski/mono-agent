@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
+import { Scalar, isAlias, isMap, isScalar, isSeq, parseDocument } from "yaml";
 
 import { MINIMUM_NODE_VERSION } from "../node-version.mjs";
 import {
@@ -268,6 +269,134 @@ describe("verify-all", () => {
     expect(() => expectCiParity(mutatedSource)).toThrow();
   });
 
+  it("reads quoted keys, spaced colons, and dash-alone step mappings semantically", () => {
+    const source = readCiWorkflow();
+    const architecture = [
+      "      - name: Check package architecture",
+      "        run: pnpm run check:architecture",
+    ].join("\n");
+    const alternateYaml = [
+      "      -",
+      "        \"name\" : Check package architecture",
+      "        \"run\" : \"pnpm run check:architecture\"",
+    ].join("\n");
+
+    expectCiParity(replaceExactly(source, architecture, alternateYaml));
+  });
+
+  it("rejects extra dash-alone steps with quoted execution keys", () => {
+    const source = readCiWorkflow();
+    const architecture = [
+      "      - name: Check package architecture",
+      "        run: pnpm run check:architecture",
+    ].join("\n");
+    const hiddenDuplicate = [
+      "      -",
+      "        \"run\" : pnpm run check:architecture",
+    ].join("\n");
+    const mutatedSource = replaceExactly(
+      source,
+      architecture,
+      `${architecture}\n\n${hiddenDuplicate}`,
+    );
+
+    expect(() => expectCiParity(mutatedSource)).toThrow();
+  });
+
+  it("rejects alternate YAML spellings of hidden with, if, and continue-on-error fields", () => {
+    const source = readCiWorkflow();
+    const architecture = [
+      "      - name: Check package architecture",
+      "        run: pnpm run check:architecture",
+    ].join("\n");
+    const mutations = [
+      [
+        "      - name: Check package architecture",
+        "        \"with\" :",
+        "          cache: pnpm",
+        "        run: pnpm run check:architecture",
+      ].join("\n"),
+      [
+        "      - name: Check package architecture",
+        "        \"if\" : ${{ github.ref == 'refs/heads/main' }}",
+        "        run: pnpm run check:architecture",
+      ].join("\n"),
+      [
+        "      - name: Check package architecture",
+        "        \"continue-on-error\" : true",
+        "        run: pnpm run check:architecture",
+      ].join("\n"),
+    ];
+
+    for (const mutation of mutations) {
+      const mutatedSource = replaceExactly(source, architecture, mutation);
+      expect(() => expectCiParity(mutatedSource)).toThrow();
+    }
+  });
+
+  it("rejects YAML aliases, merge keys, and duplicate semantic keys", () => {
+    const source = readCiWorkflow();
+    const architecture = [
+      "      - name: Check package architecture",
+      "        run: pnpm run check:architecture",
+    ].join("\n");
+    const anchoredAlias = [
+      "      - &architecture-step",
+      "        name: Check package architecture",
+      "        run: pnpm run check:architecture",
+      "      - *architecture-step",
+    ].join("\n");
+    const mergeKey = [
+      "      - name: Check package architecture",
+      "        <<: { continue-on-error: true }",
+      "        run: pnpm run check:architecture",
+    ].join("\n");
+    const duplicateKey = [
+      "      - name: Check package architecture",
+      "        run: pnpm run check:architecture",
+      "        \"run\" : pnpm run typecheck",
+    ].join("\n");
+
+    expect(() => parseCiVerifyJob(replaceExactly(source, architecture, anchoredAlias)))
+      .toThrow(/YAML anchors|YAML aliases/u);
+    expect(() => parseCiVerifyJob(replaceExactly(source, architecture, mergeKey)))
+      .toThrow(/YAML merge keys|strict YAML/u);
+    expect(() => parseCiVerifyJob(replaceExactly(source, architecture, duplicateKey)))
+      .toThrow(/strict YAML|Duplicate YAML field/u);
+  });
+
+  it("rejects unmodeled execution fields on the workflow and verify job", () => {
+    const source = readCiWorkflow();
+    const jobOriginal = [
+      "    timeout-minutes: 60",
+      "    strategy:",
+    ].join("\n");
+    const jobDefaults = [
+      "    timeout-minutes: 60",
+      "    \"defaults\" : { run: { shell: bash } }",
+      "    strategy:",
+    ].join("\n");
+    const workflowOriginal = [
+      "permissions:",
+      "  contents: read",
+      "",
+      "concurrency:",
+    ].join("\n");
+    const workflowDefaults = [
+      "permissions:",
+      "  contents: read",
+      "",
+      "\"defaults\" : { run: { shell: bash } }",
+      "",
+      "concurrency:",
+    ].join("\n");
+
+    expect(() => parseCiVerifyJob(replaceExactly(source, jobOriginal, jobDefaults)))
+      .toThrow(/Unsupported CI verify job field/u);
+    expect(() => parseCiVerifyJob(replaceExactly(source, workflowOriginal, workflowDefaults)))
+      .toThrow(/Unsupported CI workflow field/u);
+  });
+
   it("treats display names as non-semantic metadata", () => {
     const source = readCiWorkflow();
     const actionsRenamed = replaceExactly(
@@ -454,56 +583,88 @@ function expectCiParity(source) {
 }
 
 function parseCiVerifyJob(source) {
-  const verifyStart = source.indexOf("  verify:\n");
-  const websiteStart = source.indexOf("  website:\n", verifyStart);
-  if (verifyStart < 0 || websiteStart < 0) {
-    throw new Error("ci.yml must contain verify and website jobs.");
+  const document = parseDocument(source, {
+    keepSourceTokens: true,
+    merge: false,
+    prettyErrors: false,
+    strict: true,
+    stringKeys: true,
+    uniqueKeys: true,
+    version: "1.2",
+  });
+  const parseProblems = [...document.errors, ...document.warnings];
+  if (parseProblems.length > 0) {
+    throw new Error(`ci.yml must be strict YAML: ${parseProblems.map((problem) => problem.message).join("; ")}`);
   }
 
-  const verifyJob = source.slice(verifyStart, websiteStart);
-  const matrixSource = /^        node-version: (\[[^\n]+\])$/mu.exec(verifyJob)?.[1];
-  if (matrixSource === undefined) {
-    throw new Error("The CI verify job must declare its Node matrix inline.");
+  const root = requireYamlMap(document.contents, "ci.yml root");
+  assertNoYamlIndirection(root, "ci.yml");
+  const rootFields = readYamlMap(root, "ci.yml root");
+  assertExactMapFields(rootFields, ["name", "on", "permissions", "concurrency", "jobs"], "CI workflow");
+  const jobs = requireMapField(rootFields, "jobs", "ci.yml root");
+  const jobFields = readYamlMap(jobs, "ci.yml jobs");
+  assertExactMapFields(jobFields, ["verify", "website"], "CI workflow jobs");
+  const verifyJob = requireMapField(jobFields, "verify", "ci.yml jobs");
+  requireYamlMap(jobFields.get("website"), "ci.yml website job");
+
+  const verifyFields = readYamlMap(verifyJob, "CI verify job");
+  assertExactMapFields(
+    verifyFields,
+    ["name", "runs-on", "timeout-minutes", "strategy", "steps"],
+    "CI verify job",
+  );
+  requireStringField(verifyFields, "name", "CI verify job");
+  if (requireScalarField(verifyFields, "runs-on", "CI verify job") !== "ubuntu-latest") {
+    throw new Error("The CI verify job must run on ubuntu-latest.");
   }
-  const matrixVersions = JSON.parse(matrixSource);
-  if (!Array.isArray(matrixVersions) || !matrixVersions.every((version) => typeof version === "string")) {
-    throw new Error("The CI Node matrix must be a string array.");
+  if (requireScalarField(verifyFields, "timeout-minutes", "CI verify job") !== 60) {
+    throw new Error("The CI verify job timeout must remain 60 minutes.");
+  }
+
+  const strategy = requireMapField(verifyFields, "strategy", "CI verify job");
+  const strategyFields = readYamlMap(strategy, "CI verify strategy");
+  assertExactMapFields(strategyFields, ["fail-fast", "matrix"], "CI verify strategy");
+  if (requireScalarField(strategyFields, "fail-fast", "CI verify strategy") !== false) {
+    throw new Error("The CI verify matrix must keep fail-fast disabled so every Node leg reports.");
+  }
+  const matrix = requireMapField(strategyFields, "matrix", "CI verify strategy");
+  const matrixFields = readYamlMap(matrix, "CI verify matrix");
+  assertExactMapFields(matrixFields, ["node-version"], "CI verify matrix");
+  const nodeVersions = requireYamlSeq(matrixFields.get("node-version"), "CI Node matrix");
+  const matrixVersions = nodeVersions.items.map((node, index) => (
+    requireYamlString(node, `CI Node matrix item ${index + 1}`)
+  ));
+  if (matrixVersions.length === 0 || new Set(matrixVersions).size !== matrixVersions.length) {
+    throw new Error("The CI Node matrix must be a non-empty unique string array.");
+  }
+
+  const steps = requireYamlSeq(verifyFields.get("steps"), "CI verify steps").items;
+  if (steps.length === 0) {
+    throw new Error("The CI verify job must contain at least one step.");
   }
 
   const gates = [];
   const environmentCounts = new Map(ENVIRONMENT_RUN_STEPS.map((step) => [step.key, 0]));
   const actionCounts = new Map(ACTION_STEPS.map((step) => [step.key, 0]));
   const actionOrder = [];
-  const stepsStart = verifyJob.indexOf("    steps:\n");
-  if (stepsStart < 0) {
-    throw new Error("The CI verify job must contain a steps list.");
-  }
-  const steps = verifyJob
-    .slice(stepsStart + "    steps:\n".length)
-    .split(/^      - /mu)
-    .slice(1)
-    .map((step) => `        ${step}`);
-  if (steps.length === 0) {
-    throw new Error("The CI verify job must contain at least one step.");
-  }
-
-  for (const [stepIndex, step] of steps.entries()) {
-    const fields = parseStepFields(step);
-    const name = fields.get("name")?.value ?? "<unnamed>";
-    const continueOnError = fields.get("continue-on-error")?.value;
-    if (continueOnError !== undefined && continueOnError !== "false") {
+  for (const [stepIndex, stepNode] of steps.entries()) {
+    const step = requireYamlMap(stepNode, `CI verify step ${stepIndex + 1}`);
+    const fields = readYamlMap(step, `CI verify step ${stepIndex + 1}`);
+    const name = optionalStringField(fields, "name", `CI verify step ${stepIndex + 1}`) ?? "<unnamed>";
+    const continueOnError = fields.get("continue-on-error");
+    if (continueOnError !== undefined && (!isScalar(continueOnError) || continueOnError.value !== false)) {
       throw new Error(`CI step must fail fast: ${name}`);
     }
 
-    const run = readRunCommand(step, fields);
-    if (run === undefined) {
-      assertOnlyStepFields(fields, USES_STEP_FIELDS, name);
-      const usesField = fields.get("uses");
-      if (usesField === undefined) {
-        throw new Error(`Unclassified non-executable CI step: ${name}`);
-      }
+    const hasRun = fields.has("run");
+    const hasUses = fields.has("uses");
+    if (hasRun === hasUses) {
+      throw new Error(`CI step must declare exactly one of run or uses: ${name}`);
+    }
 
-      const uses = normalizeYamlScalar(usesField.value, `uses on ${name}`);
+    if (hasUses) {
+      assertOnlyStepFields(fields, USES_STEP_FIELDS, name);
+      const uses = requireStringField(fields, "uses", `CI action step ${name}`);
       const actionStep = ACTION_STEPS.find((candidate) => candidate.uses === uses);
       if (actionStep === undefined) {
         throw new Error(`Unclassified CI action step: ${uses}`);
@@ -511,15 +672,21 @@ function parseCiVerifyJob(source) {
       if (stepIndex !== actionStep.position) {
         throw new Error(`${actionStep.key} action must remain at verify-step position ${actionStep.position + 1}.`);
       }
-      const condition = fields.get("if")?.value ?? ALWAYS;
+      const condition = optionalStringField(fields, "if", `CI action step ${name}`) ?? ALWAYS;
       if (condition !== ALWAYS) {
         throw new Error(`CI action condition drifted: ${actionStep.key}`);
       }
-      const id = fields.get("id")?.value;
+      const id = optionalStringField(fields, "id", `CI action step ${name}`);
       if (id !== actionStep.id) {
         throw new Error(`CI action id drifted: ${actionStep.key}`);
       }
-      const withInputs = parseWithInputs(step, fields, name);
+      let withInputs;
+      try {
+        withInputs = parseWithInputs(fields.get("with"), name);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(`CI action inputs drifted: ${actionStep.key} (${reason})`);
+      }
       if (!sameStringRecord(withInputs, actionStep.withInputs)) {
         throw new Error(`CI action inputs drifted: ${actionStep.key}`);
       }
@@ -529,7 +696,8 @@ function parseCiVerifyJob(source) {
     }
 
     assertOnlyStepFields(fields, RUN_STEP_FIELDS, name);
-    const condition = fields.get("if")?.value ?? ALWAYS;
+    const condition = optionalStringField(fields, "if", `CI run step ${name}`) ?? ALWAYS;
+    const run = readRunCommand(fields.get("run"), name);
     const normalizedCommand = normalizeRunCommand(run.command);
     const environmentStep = ENVIRONMENT_RUN_STEPS.find((candidate) => (
       candidate.command === normalizedCommand && candidate.style === run.style
@@ -538,7 +706,7 @@ function parseCiVerifyJob(source) {
       if (condition !== ALWAYS) {
         throw new Error(`Environment step condition drifted: ${name}`);
       }
-      const id = fields.get("id")?.value;
+      const id = optionalStringField(fields, "id", `CI environment step ${name}`);
       if (id !== environmentStep.id) {
         throw new Error(`Environment step id drifted: ${name}`);
       }
@@ -549,6 +717,9 @@ function parseCiVerifyJob(source) {
     const gate = classifyGate(normalizedCommand);
     if (gate === undefined) {
       throw new Error(`Unclassified CI run step: ${name}`);
+    }
+    if (fields.has("id")) {
+      throw new Error(`Gate step id drifted: ${name}`);
     }
     gates.push({ ...gate, condition });
   }
@@ -607,21 +778,109 @@ const ENVIRONMENT_RUN_STEPS = Object.freeze([
   }),
 ]);
 
-function parseStepFields(step) {
-  const lines = step.split("\n");
+function assertNoYamlIndirection(node, context) {
+  if (node === null || node === undefined) {
+    return;
+  }
+  if (isAlias(node)) {
+    throw new Error(`YAML aliases are not allowed in the CI parity contract: ${context}`);
+  }
+  if (node.anchor !== undefined) {
+    throw new Error(`YAML anchors are not allowed in the CI parity contract: ${context}`);
+  }
+  if (node.tag !== undefined) {
+    throw new Error(`Explicit YAML tags are not allowed in the CI parity contract: ${context}`);
+  }
+  if (isScalar(node)) {
+    return;
+  }
+  if (isMap(node)) {
+    for (const pair of node.items) {
+      if (isScalar(pair.key) && pair.key.value === "<<") {
+        throw new Error(`YAML merge keys are not allowed in the CI parity contract: ${context}`);
+      }
+      assertNoYamlIndirection(pair.key, `${context} key`);
+      assertNoYamlIndirection(pair.value, `${context}.${String(isScalar(pair.key) ? pair.key.value : "<key>")}`);
+    }
+    return;
+  }
+  if (isSeq(node)) {
+    for (const [index, item] of node.items.entries()) {
+      assertNoYamlIndirection(item, `${context}[${index}]`);
+    }
+    return;
+  }
+  throw new Error(`Unsupported YAML node in CI parity contract: ${context}`);
+}
+
+function requireYamlMap(node, context) {
+  if (!isMap(node)) {
+    throw new Error(`${context} must be a mapping.`);
+  }
+  return node;
+}
+
+function requireYamlSeq(node, context) {
+  if (!isSeq(node)) {
+    throw new Error(`${context} must be a sequence.`);
+  }
+  return node;
+}
+
+function requireYamlString(node, context) {
+  if (!isScalar(node) || typeof node.value !== "string") {
+    throw new Error(`${context} must be a string scalar.`);
+  }
+  return node.value;
+}
+
+function readYamlMap(node, context) {
   const fields = new Map();
-  for (const [lineIndex, line] of lines.entries()) {
-    const match = /^        ([a-z0-9-]+):(.*)$/u.exec(line);
-    if (match === null) {
-      continue;
+  for (const pair of requireYamlMap(node, context).items) {
+    const key = requireYamlString(pair.key, `${context} key`);
+    if (key === "<<") {
+      throw new Error(`YAML merge keys are not allowed in the CI parity contract: ${context}`);
     }
-    const [, key, source] = match;
     if (fields.has(key)) {
-      throw new Error(`Duplicate CI step field: ${key}`);
+      throw new Error(`Duplicate YAML field ${key}: ${context}`);
     }
-    fields.set(key, { lineIndex, value: source.trim() });
+    fields.set(key, pair.value);
   }
   return fields;
+}
+
+function requireMapField(fields, key, context) {
+  return requireYamlMap(fields.get(key), `${context}.${key}`);
+}
+
+function requireScalarField(fields, key, context) {
+  const node = fields.get(key);
+  if (!isScalar(node)) {
+    throw new Error(`${context}.${key} must be a scalar.`);
+  }
+  return node.value;
+}
+
+function requireStringField(fields, key, context) {
+  return requireYamlString(fields.get(key), `${context}.${key}`);
+}
+
+function optionalStringField(fields, key, context) {
+  return fields.has(key) ? requireStringField(fields, key, context) : undefined;
+}
+
+function assertExactMapFields(fields, expectedKeys, context) {
+  const expected = new Set(expectedKeys);
+  for (const key of fields.keys()) {
+    if (!expected.has(key)) {
+      throw new Error(`Unsupported ${context} field: ${key}`);
+    }
+  }
+  for (const key of expected) {
+    if (!fields.has(key)) {
+      throw new Error(`Missing ${context} field: ${key}`);
+    }
+  }
 }
 
 function assertOnlyStepFields(fields, allowedFields, name) {
@@ -632,60 +891,15 @@ function assertOnlyStepFields(fields, allowedFields, name) {
   }
 }
 
-function parseWithInputs(step, fields, name) {
-  const withField = fields.get("with");
-  if (withField === undefined) {
+function parseWithInputs(withNode, name) {
+  if (withNode === undefined) {
     return {};
   }
-  if (withField.value.length > 0) {
-    throw new Error(`Inline CI action inputs are not supported: ${name}`);
-  }
-
   const inputs = {};
-  const lines = step.split("\n");
-  for (const line of lines.slice(withField.lineIndex + 1)) {
-    if (/^        [a-z0-9-]+:/u.test(line)) {
-      break;
-    }
-    if (line.length === 0) {
-      continue;
-    }
-    const match = /^          ([a-z0-9-]+):\s*(.+)$/u.exec(line);
-    if (match === null) {
-      throw new Error(`Unmodeled nested CI action input on: ${name}`);
-    }
-    const [, key, source] = match;
-    if (Object.hasOwn(inputs, key)) {
-      throw new Error(`Duplicate CI action input ${key} on: ${name}`);
-    }
-    inputs[key] = normalizeYamlScalar(source, `${key} on ${name}`);
+  for (const [key, valueNode] of readYamlMap(withNode, `CI action inputs on ${name}`)) {
+    inputs[key] = requireYamlString(valueNode, `${key} on ${name}`);
   }
   return inputs;
-}
-
-function normalizeYamlScalar(source, context) {
-  const value = source.trim();
-  if (value.length === 0) {
-    throw new Error(`Empty YAML scalar: ${context}`);
-  }
-  if (value.startsWith("\"") || value.endsWith("\"")) {
-    try {
-      const parsed = JSON.parse(value);
-      if (typeof parsed !== "string") {
-        throw new Error("not a string");
-      }
-      return parsed;
-    } catch {
-      throw new Error(`Invalid double-quoted YAML scalar: ${context}`);
-    }
-  }
-  if (value.startsWith("'") || value.endsWith("'")) {
-    if (!value.startsWith("'") || !value.endsWith("'")) {
-      throw new Error(`Invalid single-quoted YAML scalar: ${context}`);
-    }
-    return value.slice(1, -1).replaceAll("''", "'");
-  }
-  return value;
 }
 
 function sameStringRecord(left, right) {
@@ -694,45 +908,27 @@ function sameStringRecord(left, right) {
   return JSON.stringify(leftEntries) === JSON.stringify(rightEntries);
 }
 
-function readRunCommand(step, fields) {
-  const run = fields.get("run");
-  if (run === undefined) {
-    return undefined;
-  }
-
-  if (run.value.startsWith(">")) {
+function readRunCommand(runNode, name) {
+  const command = requireYamlString(runNode, `run on ${name}`);
+  if (runNode.type === Scalar.BLOCK_FOLDED) {
     throw new Error("Folded CI run blocks are not supported because they change shell command boundaries.");
   }
-  if (run.value !== "|") {
-    if (run.value.startsWith("|")) {
-      throw new Error(`Unsupported literal CI run-block modifier: ${run.value}`);
-    }
-    if (run.value.length === 0) {
-      throw new Error("CI run steps must contain a command.");
-    }
-    return { command: run.value, style: "scalar" };
+  if (command.length === 0) {
+    throw new Error("CI run steps must contain a command.");
   }
-
-  const lines = step.split("\n");
-  const body = [];
-  for (const line of lines.slice(run.lineIndex + 1)) {
-    if (line.startsWith("          ")) {
-      body.push(line.slice(10));
-      continue;
+  if (runNode.type === Scalar.BLOCK_LITERAL) {
+    const header = runNode.srcToken?.type === "block-scalar"
+      ? runNode.srcToken.props.find((token) => token.type === "block-scalar-header")?.source
+      : undefined;
+    if (header !== "|") {
+      throw new Error(`Unsupported literal CI run-block modifier: ${header ?? "<unknown>"}`);
     }
-    if (line.length === 0) {
-      body.push("");
-      continue;
-    }
-    break;
+    return { command, style: "literal" };
   }
-  while (body.at(-1) === "") {
-    body.pop();
+  if (![Scalar.PLAIN, Scalar.QUOTE_DOUBLE, Scalar.QUOTE_SINGLE].includes(runNode.type)) {
+    throw new Error(`Unsupported CI run scalar style: ${runNode.type ?? "<unknown>"}`);
   }
-  if (body.length === 0) {
-    throw new Error("Literal CI run blocks must contain a command.");
-  }
-  return { command: body.join("\n"), style: "literal" };
+  return { command, style: "scalar" };
 }
 
 function normalizeRunCommand(command) {
