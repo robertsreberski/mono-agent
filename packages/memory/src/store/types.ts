@@ -49,6 +49,11 @@ export interface MemoryRecord {
   readonly dim?: number;
 }
 
+/**
+ * Edge kinds accepted by the store. The retired `about` kind remains in this
+ * published type and the SQLite schema so existing indexes can be read and
+ * normalized; no built-in production path emits it in v1.
+ */
 export type MemoryEdgeKind = "thread" | "about" | "supports" | "supersedes";
 
 export interface RecallHit {
