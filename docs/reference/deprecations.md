@@ -31,9 +31,10 @@ compatibility inputs; no removal version for those config forms is set here.
 
 | Compatibility path | Decision and rationale |
 | --- | --- |
+| `LEGACY_TOOL_ALIASES` snake_case names in `tools.allowedTools` / `tools.disallowedTools` | **Retain indefinitely.** Existing hand-written policy lists cannot be migrated automatically. Removing an alias could deny a tool an old allow-list intended to enable or, more seriously, stop an old deny-list entry from matching the canonical tool and broaden access. New configs emit only PascalCase names; the aliases are accepted as input but are never registered, emitted, or recommended. |
 | Managed-SRT schema-v1 install-lock reader | **Retain indefinitely.** `v0.9.0` and later write the v2 directory owner record with process incarnation identity, but a user may skip releases and encounter an owner-only v1 file left by a crashed v0.8-or-earlier installer. The legacy reader is bounded and fail-closed; new writes never use it. |
 | Lifecycle-lock owner record without process incarnation | **Retain indefinitely.** `v0.9.0` and later write incarnation identity. A skipped-version upgrade can still encounter older crash debris, so the conservative PID-only liveness fallback remains as a permanent reader while every new record takes the stronger path. |
 
-These two readers are compatibility decisions, not deprecation warnings. Their
-code comments repeat the v0.9.0 provenance and permanent-retention rationale at
-the branch that handles the old record.
+These readers and aliases are compatibility decisions, not pending removals.
+Their code comments repeat the provenance and permanent-retention rationale at
+the branch or map that handles the old input.

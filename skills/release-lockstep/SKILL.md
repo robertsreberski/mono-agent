@@ -130,10 +130,16 @@ failure (the CI smoke step retries for ~150s).
 
 ## Deprecation aliases carry a removal version
 
-Every deprecation alias/flag must ship with a target removal version (or date) in
-the same commit that introduces it — a deprecation message with no sunset is never
-removed. Record the sunset in the deprecation message and/or a `@deprecated`
-JSDoc tag naming the version it comes out in. Keep the canonical pending-removal
-and permanent-compatibility decisions in `docs/reference/deprecations.md`; when
-cutting a target release, remove every due implementation/test/doc surface and
-its tracker row together.
+Every deprecation alias/flag must ship with either a target removal version/date
+or an explicit permanent-retention decision in the same commit that introduces
+it. A deprecation with neither becomes accidental forever-compatibility. Record
+a sunset in the message and/or a `@deprecated` JSDoc tag; record permanent
+retention beside the compatibility branch or map. Keep both kinds of decision in
+`docs/reference/deprecations.md`; when cutting a target release, remove every due
+implementation/test/doc surface and its tracker row together.
+
+`LEGACY_TOOL_ALIASES` is the deliberate permanent decision recorded there:
+hand-written `allowedTools` / `disallowedTools` lists cannot be migrated safely,
+and dropping a legacy deny-list match could broaden access. Do not schedule that
+map for removal unless an explicit migration preserves both allow and deny
+semantics for every existing config.
