@@ -1,11 +1,25 @@
 import { describe, expect, test } from "vitest";
 
 import { Markdown, esc, md, mdInline } from "./markdown";
+import { FONT_MONO } from "./tokens";
 
 const ALLOWED_TAGS = new Set(["a", "code", "div", "em", "li", "ol", "strong", "ul"]);
+const RENDERER_OPENING_TAGS = new Set([
+  `<code style="font-family:${FONT_MONO};background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px;font-size:.88em;color:#D9C9A8;overflow-wrap:anywhere;word-break:break-word">`,
+  '<div style="height:7px">',
+  '<div style="font-weight:600;font-size:13px;color:#F2F0EA;margin:9px 0 3px">',
+  '<div style="font-weight:600;font-size:15px;color:#F2F0EA;margin:9px 0 3px">',
+  '<div style="font-weight:600;font-size:17px;color:#F2F0EA;margin:9px 0 3px">',
+  '<em style="color:#DAD7D0">',
+  '<li style="margin:3px 0">',
+  '<ol style="margin:4px 0;padding-left:19px">',
+  '<strong style="font-weight:600;color:#F2F0EA">',
+  '<ul style="margin:4px 0;padding-left:19px">',
+]);
 
 function expectOnlyRendererTags(html: string): void {
   const tagPattern = /<[^>]*>/gu;
+  const openTags: string[] = [];
   let cursor = 0;
 
   for (const match of html.matchAll(tagPattern)) {
@@ -20,20 +34,24 @@ function expectOnlyRendererTags(html: string): void {
 
     if (tag.startsWith("</")) {
       expect(tag).toMatch(/^<\/(?:a|code|div|em|li|ol|strong|ul)>$/u);
+      expect(openTags.at(-1), `unmatched or misnested closing tag: ${tag}`).toBe(parsed?.[1]);
+      openTags.pop();
     } else if (tag.startsWith("<a ")) {
       expect(tag).toMatch(
-        /^<a href="https?:\/\/[^"<>\s]+" target="_blank" rel="noopener" style="[^"<>]*">$/u,
+        /^<a href="https?:\/\/[^"<>\s]+" target="_blank" rel="noopener" style="color:#7FB0E4;text-decoration:underline;overflow-wrap:anywhere;word-break:break-word">$/u,
       );
     } else if (tag === "<div>") {
       expect(tag).toBe("<div>");
     } else {
-      expect(tag).toMatch(/^<(?:code|div|em|li|ol|strong|ul) style="[^"<>]*">$/u);
+      expect(RENDERER_OPENING_TAGS.has(tag), `unexpected renderer opening tag: ${tag}`).toBe(true);
     }
+    if (!tag.startsWith("</")) openTags.push(parsed?.[1] ?? "");
 
     cursor = index + tag.length;
   }
 
   expect(html.slice(cursor)).not.toMatch(/[<>]/u);
+  expect(openTags, "renderer tags must be balanced").toEqual([]);
 }
 
 describe("esc", () => {
@@ -99,6 +117,66 @@ describe("mdInline", () => {
 
     expect(html).toBe("&amp;lt;script&amp;gt;alert(&amp;quot;x&amp;quot;)&amp;lt;/script&amp;gt;");
     expect(html).not.toContain("<script");
+    expectOnlyRendererTags(html);
+  });
+
+  test("keeps raw renderer-tag lookalikes escaped instead of trusting their tag names", () => {
+    const input = [
+      "<a>anchor</a>",
+      "<code>code</code>",
+      "<div>div</div>",
+      '<em style="color:#DAD7D0">emphasis</em>',
+      "<li>item</li>",
+      "<ol>ordered</ol>",
+      "<strong>strong</strong>",
+      "<ul>unordered</ul>",
+    ].join(" ");
+    const html = mdInline(input);
+
+    expect(html).toBe(
+      "&lt;a&gt;anchor&lt;/a&gt; &lt;code&gt;code&lt;/code&gt; &lt;div&gt;div&lt;/div&gt; " +
+      "&lt;em style=&quot;color:#DAD7D0&quot;&gt;emphasis&lt;/em&gt; &lt;li&gt;item&lt;/li&gt; " +
+      "&lt;ol&gt;ordered&lt;/ol&gt; &lt;strong&gt;strong&lt;/strong&gt; &lt;ul&gt;unordered&lt;/ul&gt;",
+    );
+    expect(html).not.toMatch(/<(?:a|code|div|em|li|ol|strong|ul)(?:\s|>)/u);
+    expectOnlyRendererTags(html);
+  });
+
+  test("does not format markdown markers inside a serialized link href", () => {
+    const html = mdInline(
+      "[bold path](https://example.test/**segment**) [em path](https://example.test/*part*)",
+    );
+
+    expect(html).toContain('href="https://example.test/**segment**"');
+    expect(html).toContain('href="https://example.test/*part*"');
+    expect(html).not.toContain("<strong ");
+    expect(html).not.toContain("<em ");
+    expectOnlyRendererTags(html);
+  });
+
+  test("keeps inline fragments opaque and structurally balanced across token boundaries", () => {
+    const html = mdInline(
+      "`[literal](https://example.test) **not bold**` " +
+      "**[outer](https://example.test/outer)** [**inner**](https://example.test/inner)",
+    );
+
+    expect(html).toContain("[literal](https://example.test) **not bold**</code>");
+    expect(html.match(/<a /gu)).toHaveLength(2);
+    expect(html.match(/<strong /gu)).toHaveLength(2);
+    expectOnlyRendererTags(html);
+
+    const unmatchedAcrossLink = mdInline("[**x](https://example.test)**");
+    expect(unmatchedAcrossLink).toContain(">**x</a>**");
+    expectOnlyRendererTags(unmatchedAcrossLink);
+  });
+
+  test("restores protected fragments literally even when input resembles replacement syntax", () => {
+    const userToken = "\0 mono-agent-inline:0 \0";
+    const html = mdInline(`${userToken} \`$& $'\` [cash](https://example.test/$&)`);
+
+    expect(html).toMatch(/^\0 mono-agent-inline:0 \0 /u);
+    expect(html).toContain(">$& $'</code>");
+    expect(html).toContain('href="https://example.test/$&"');
     expectOnlyRendererTags(html);
   });
 });
