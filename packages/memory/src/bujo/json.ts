@@ -212,7 +212,7 @@ function advanceCandidate(candidate: CandidateScan, ch: string): "continue" | "c
   return candidate.stack.length === 0 ? "complete" : "continue";
 }
 
-/** Return the first complete fenced block, matching the previous decoder's precedence without an unbounded regex. */
+/** Return the first fenced body, or only its remainder when model output truncates before the closing fence. */
 function firstFenceBody(text: string): string {
   const fence = text.indexOf("```");
   if (fence === -1) return text;
@@ -220,5 +220,5 @@ function firstFenceBody(text: string): string {
   if (text.slice(start, start + 4).toLocaleLowerCase("en-US") === "json") start += 4;
   while (start < text.length && /\s/u.test(text[start] ?? "")) start += 1;
   const end = text.indexOf("```", start);
-  return end === -1 ? text : text.slice(start, end);
+  return end === -1 ? text.slice(start) : text.slice(start, end);
 }
