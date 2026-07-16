@@ -113,10 +113,15 @@ One collapse to know about: the two former Telegram file tools (`telegram_send_d
 
 ## Deprecations
 
-The old recipe surface still works, mapped forward:
+The deprecated recipe surface still works, mapped forward until its `v2.0.0` removal:
 
-- `mono-agent recipes list | show <id>` → alias of `mono-agent presets list | show <id>`.
-- `mono-agent setup` → alias of `mono-agent init`.
-- `mono-agent init --recipe <id>` and `mono-agent validate --recipe <id>` → the deprecated `--recipe` flag maps to the preset that replaced the recipe (with a deprecation notice), so `minimal-webhook` → `starter`, `personal-telegram-bujo` → `telegram-assistant`, `slack-team-bot` → `slack-bot`, `local-ollama-private` → `local-private`, and `sandboxed-code-agent` → `code-sandbox`. `personal-telegram-supermemory` is retired from core because its backend is now an explicitly installed plugin; use the plugin skill/playbook. The `local-lmstudio-private` recipe is also retired (mapping it onto the Ollama-based `local-private` preset would silently swap the runtime engine); reach LM Studio via `mono-agent init --model pi:lmstudio:<id>` or the wizard's "Other…" model choice, then choose LM Studio explicitly when Journal/BuJo asks for its embeddings service.
+- `mono-agent recipes list | show <id>` → deprecated alias of `mono-agent presets list | show <id>`; every accepted invocation warns that the alias will be removed in `v2.0.0`.
+- `mono-agent init --recipe <id>` and `mono-agent validate --recipe <id>` → the deprecated `--recipe` flag maps to the preset that replaced the recipe and, on accepted invocations, warns that the flag will be removed in `v2.0.0`, so `minimal-webhook` → `starter`, `personal-telegram-bujo` → `telegram-assistant`, `slack-team-bot` → `slack-bot`, `local-ollama-private` → `local-private`, and `sandboxed-code-agent` → `code-sandbox`. `personal-telegram-supermemory` is retired from core because its backend is now an explicitly installed plugin; use the plugin skill/playbook. The `local-lmstudio-private` recipe is also retired (mapping it onto the Ollama-based `local-private` preset would silently swap the runtime engine); reach LM Studio via `mono-agent init --model pi:lmstudio:<id>` or the wizard's "Other…" model choice, then choose LM Studio explicitly when Journal/BuJo asks for its embeddings service.
+
+`mono-agent setup` remains a separate alias of `mono-agent init`; it has no
+scheduled removal.
 
 The fully-retired blueprints — `full-safe`, `full-local-power`, `openai-api-gateway`, `cron-digest`, `a2a-provider`, and `phoenix-observed` — have no replacement preset. `--recipe` errors with a pointer to the wizard, because each is now either a single wizard choice (enable the `channel:openai-api`, `channel:cron`, `channel:a2a`, or `observability:phoenix` module) or a hand-assembled config the [composer skill](/context/skills/) builds from the capability modules and [playbooks](/playbooks/).
+
+The canonical deadlines and permanent legacy-reader decisions live in
+[Deprecations & compatibility decisions](/reference/deprecations/).

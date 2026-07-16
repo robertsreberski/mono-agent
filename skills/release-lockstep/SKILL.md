@@ -132,8 +132,8 @@ failure (the CI smoke step retries for ~150s).
 
 Every deprecation alias/flag must ship with a target removal version (or date) in
 the same commit that introduces it — a deprecation message with no sunset is never
-removed. `--recipe`, `--fallback-models`, and `LEGACY_TOOL_ALIASES` each shipped a
-"deprecated, use X" message but no removal target, so they linger indefinitely.
-Record the sunset in the deprecation message and/or a `@deprecated` JSDoc tag
-naming the version it comes out in, and note the pending removal in this release's
-notes so it actually lands on a later cut.
+removed. Record the sunset in the deprecation message and/or a `@deprecated`
+JSDoc tag naming the version it comes out in. Keep the canonical pending-removal
+and permanent-compatibility decisions in `docs/reference/deprecations.md`; when
+cutting a target release, remove every due implementation/test/doc surface and
+its tracker row together.

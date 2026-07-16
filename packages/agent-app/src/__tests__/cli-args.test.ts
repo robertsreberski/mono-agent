@@ -399,6 +399,7 @@ describe("parseCliArgs", () => {
     expect(renderHelp()).toContain("mono-agent init [--preset");
     expect(renderHelp()).toContain("Effort levels: none, minimal, low, medium, high, xhigh, max, ultra");
     expect(renderHelp()).toContain("--fallback-effort <provider-default|level>");
+    expect(renderHelp()).toContain("--fallback-models is deprecated and will be removed in v2.0.0");
     expect(renderHelp()).toContain("mono-agent sandbox status | setup | check");
     expect(renderHelp()).toContain("Guided Pi authentication");
     expect(renderHelp()).toContain("Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go");
@@ -476,6 +477,43 @@ describe("loadCliEnvFile", () => {
 describe("monoAgentVersion", () => {
   it("reports this package's semver version", () => {
     expect(monoAgentVersion()).toMatch(/^\d+\.\d+\.\d+/u);
+  });
+});
+
+describe("CLI deprecation deadlines", () => {
+  it("announces the v2.0.0 removal target for every legacy CLI surface", async () => {
+    const dir = await tempDir();
+    const recipes = await captureCli(() => runCli(["recipes", "list"]));
+    const recipeFlag = await captureCli(() => withCwd(
+      dir,
+      () => runCli(["validate", "--recipe", "minimal-webhook"]),
+    ));
+    const fallbackModelsFlag = await captureCli(() => withCwd(
+      dir,
+      () => runCli(["init", "--fallback-models", "codex:gpt-5.6-sol", "--dry-run"]),
+    ));
+
+    expect(recipes.stderr).toContain(
+      "`mono-agent recipes` is deprecated and will be removed in v2.0.0",
+    );
+    expect(recipeFlag.stderr).toContain(
+      "`--recipe` is deprecated and will be removed in v2.0.0",
+    );
+    expect(fallbackModelsFlag.stderr).toContain(
+      "`--fallback-models` is deprecated and will be removed in v2.0.0",
+    );
+  });
+
+  it("does not warn for canonical preset and fallback flags", async () => {
+    const dir = await tempDir();
+    const presets = await captureCli(() => runCli(["presets", "list"]));
+    const fallbacks = await captureCli(() => withCwd(
+      dir,
+      () => runCli(["init", "--fallback", "codex:gpt-5.6-sol", "--dry-run"]),
+    ));
+
+    expect(presets.stderr).not.toContain("will be removed in v2.0.0");
+    expect(fallbacks.stderr).not.toContain("will be removed in v2.0.0");
   });
 });
 

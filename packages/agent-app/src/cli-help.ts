@@ -21,6 +21,7 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "the step-by-step wizard; with --yes or any flag, writes the default/preset",
       "scaffold non-interactively. --preset seeds a blueprint, --with adds channels,",
       `Effort levels: ${EFFORT_LEVELS.join(", ")}; an omitted fallback effort uses that provider's default.`,
+      "--fallback-models is deprecated and will be removed in v2.0.0; repeat --fallback for new scripts.",
       "--auth runs supported provider auth/preflight before writing; --codex-auth device supports headless hosts.",
       "--dry-run previews only. Existing scaffold/config files are not overwritten;",
       "guided secret setup may securely update .env and .gitignore after explicit review.",
