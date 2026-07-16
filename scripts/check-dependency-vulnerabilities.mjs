@@ -10,6 +10,8 @@ import { packageCatalog } from "./package-catalog.mjs";
 
 const execFileAsync = promisify(execFile);
 const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024 * 1024;
+const MAX_ADVISORY_DEPENDENCY_PATH_STEPS = 100_000;
+const MAX_BULK_ADVISORIES = 1_000;
 const MAX_DIRECT_PRODUCTION_ENTRY_STEPS = 100_000;
 const MAX_PRODUCTION_PATHS_PER_PACKAGE_VERSION = 10_000;
 const MAX_PRODUCTION_SUBTREE_COUNT_STEPS = 100_000;
@@ -19,9 +21,32 @@ const MAX_WHY_PATHS_PER_TARGET = 10_000;
 const MAX_WHY_TRAVERSAL_STEPS_PER_TARGET = 100_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_TEMPORARY_ACCEPTANCE_DAYS = 90;
+const MAX_DISPOSITION_OWNER_BYTES = 200;
+const MAX_DISPOSITION_RATIONALE_BYTES = 4_096;
+const MAX_DIAGNOSTIC_CHARS = 500;
 const DATE_ONLY_PATTERN = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})$/u;
 const PNPM_VERSION_PATTERN = /^(?<major>0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const SEVERITY_RANK = Object.freeze({ low: 0, moderate: 1, high: 2, critical: 3 });
+const DISPOSITION_TOP_LEVEL_FIELDS = Object.freeze([
+  "advisories",
+  "minimumSeverity",
+  "reviewedAt",
+  "schemaVersion",
+]);
+const DISPOSITION_ADVISORY_FIELDS = Object.freeze([
+  "dependencyPaths",
+  "disposition",
+  "expiresAt",
+  "id",
+  "owner",
+  "package",
+  "rationale",
+  "severity",
+  "title",
+  "url",
+  "versions",
+  "vulnerableVersions",
+]);
 const DEFAULT_ROOT_PACKAGE_NAMES = packageCatalog
   .filter((entry) => entry.publishable === true)
   .map((entry) => entry.name)
@@ -36,7 +61,7 @@ export function parsePnpmProductionInventory(source) {
   // pnpm 10's parseable `--prod` output is compact and excludes root dev-only
   // packages. Parse registry package names from the virtual-store paths; local
   // workspace links never enter `.pnpm/` and are excluded deliberately.
-  const inventory = {};
+  const inventory = Object.create(null);
   for (const rawPath of source.split(/\r?\n/u)) {
     const packagePath = rawPath.trim();
     if (packagePath.length === 0 || !packagePath.replaceAll("\\", "/").includes("/node_modules/.pnpm/")) {
@@ -97,7 +122,7 @@ export function parsePnpmProductionGraph(source, options = {}) {
   }
 
   const { expandedNodes, subtreeCountState } = indexExpandedProductionNodes(document, rootsByPath);
-  const inventory = {};
+  const inventory = Object.create(null);
   const dependencyPaths = {};
   const traversalBudget = {
     pathCounts: new Map(),
@@ -608,19 +633,32 @@ export async function loadDependencyVulnerabilityDispositions(path = DEFAULT_DIS
 }
 
 export function normalizeDispositions(input) {
-  if (!isRecord(input) || input.schemaVersion !== 1 || input.minimumSeverity !== "high") {
+  if (!isRecord(input)) {
     throw new Error("dispositions must use schemaVersion 1 and minimumSeverity high.");
   }
-  if (typeof input.reviewedAt !== "string" || input.reviewedAt.length === 0 || !Array.isArray(input.advisories)) {
+  const document = snapshotDataRecord(input, "dispositions");
+  if (document.schemaVersion !== 1 || document.minimumSeverity !== "high") {
+    throw new Error("dispositions must use schemaVersion 1 and minimumSeverity high.");
+  }
+  assertExactFields(document, DISPOSITION_TOP_LEVEL_FIELDS, "dispositions");
+  if (typeof document.reviewedAt !== "string" || document.reviewedAt.length === 0
+    || !Array.isArray(document.advisories)) {
     throw new Error("dispositions must include reviewedAt and an advisories array.");
   }
-  const reviewedAtEpoch = parseDateOnly(input.reviewedAt, "dispositions reviewedAt");
+  const reviewedAtEpoch = parseDateOnly(document.reviewedAt, "dispositions reviewedAt");
+  const dispositionEntries = snapshotDataArray(document.advisories, "dispositions advisories");
 
   const seen = new Set();
-  const advisories = input.advisories.map((entry) => {
-    if (!isRecord(entry)) {
+  const advisories = dispositionEntries.map((inputEntry) => {
+    if (!isRecord(inputEntry)) {
       throw new Error("dispositions contain a malformed advisory entry.");
     }
+    const entry = snapshotDataRecord(inputEntry, "disposition advisory");
+    assertExactFields(
+      entry,
+      DISPOSITION_ADVISORY_FIELDS,
+      `disposition advisory ${String(entry.id)}`,
+    );
     const requiredStrings = [
       "package",
       "severity",
@@ -629,13 +667,24 @@ export function normalizeDispositions(input) {
       "vulnerableVersions",
       "disposition",
       "expiresAt",
+      "owner",
       "rationale",
     ];
     for (const field of requiredStrings) {
-      if (typeof entry[field] !== "string" || entry[field].length === 0) {
+      if (!isCanonicalNonEmptyString(entry[field])) {
         throw new Error(`disposition advisory ${String(entry.id)} is missing ${field}.`);
       }
     }
+    assertBoundedUtf8(
+      entry.owner,
+      MAX_DISPOSITION_OWNER_BYTES,
+      `disposition advisory ${String(entry.id)} owner`,
+    );
+    assertBoundedUtf8(
+      entry.rationale,
+      MAX_DISPOSITION_RATIONALE_BYTES,
+      `disposition advisory ${String(entry.id)} rationale`,
+    );
     if (entry.disposition !== "accepted-temporarily") {
       throw new Error(`disposition advisory ${String(entry.id)} must be accepted-temporarily.`);
     }
@@ -650,42 +699,69 @@ export function normalizeDispositions(input) {
         + `${MAX_TEMPORARY_ACCEPTANCE_DAYS} days.`,
       );
     }
-    if (!(entry.severity in SEVERITY_RANK) || SEVERITY_RANK[entry.severity] < SEVERITY_RANK.high) {
+    if (!isKnownSeverity(entry.severity) || SEVERITY_RANK[entry.severity] < SEVERITY_RANK.high) {
       throw new Error(`disposition advisory ${String(entry.id)} must be high or critical.`);
     }
-    if (!Array.isArray(entry.versions) || entry.versions.length === 0) {
+    if (!Array.isArray(entry.versions)) {
       throw new Error(`disposition advisory ${String(entry.id)} must pin at least one exact version.`);
     }
-    const versions = entry.versions.map((version) => {
-      if (typeof version !== "string" || version.length === 0) {
+    const versions = snapshotDataArray(
+      entry.versions,
+      `disposition advisory ${String(entry.id)} versions`,
+    ).map((version) => {
+      if (!isCanonicalNonEmptyString(version)) {
         throw new Error(`disposition advisory ${String(entry.id)} contains an invalid exact version.`);
       }
       return version;
     });
-    if (!Array.isArray(entry.dependencyPaths) || entry.dependencyPaths.length === 0
-      || entry.dependencyPaths.some((path) => typeof path !== "string" || path.length === 0)) {
+    if (versions.length === 0) {
+      throw new Error(`disposition advisory ${String(entry.id)} must pin at least one exact version.`);
+    }
+    if (new Set(versions).size !== versions.length) {
+      throw new Error(`disposition advisory ${String(entry.id)} contains duplicate exact versions.`);
+    }
+    if (!Array.isArray(entry.dependencyPaths)) {
       throw new Error(`disposition advisory ${String(entry.id)} must name its production dependency paths.`);
     }
-    if ((typeof entry.id !== "number" && typeof entry.id !== "string") || String(entry.id).length === 0) {
+    const dependencyPaths = snapshotDataArray(
+      entry.dependencyPaths,
+      `disposition advisory ${String(entry.id)} dependencyPaths`,
+    );
+    if (dependencyPaths.length === 0
+      || dependencyPaths.some((dependencyPath) => !isCanonicalNonEmptyString(dependencyPath))) {
+      throw new Error(`disposition advisory ${String(entry.id)} must name its production dependency paths.`);
+    }
+    if (new Set(dependencyPaths).size !== dependencyPaths.length) {
+      throw new Error(`disposition advisory ${String(entry.id)} contains duplicate production dependency paths.`);
+    }
+    if (!isValidAdvisoryId(entry.id)) {
       throw new Error("disposition advisory is missing id.");
     }
     const key = advisoryKey(entry.package, entry.id);
     if (seen.has(key)) {
-      throw new Error(`duplicate disposition for ${key}.`);
+      throw new Error(`duplicate disposition for ${advisoryLabel(entry.package, entry.id)}.`);
     }
     seen.add(key);
     return {
-      ...entry,
+      package: entry.package,
+      versions: [...versions].sort(),
       id: String(entry.id),
-      versions: [...new Set(versions)].sort(),
-      dependencyPaths: [...new Set(entry.dependencyPaths)].sort(),
+      severity: entry.severity,
+      title: entry.title,
+      url: entry.url,
+      vulnerableVersions: entry.vulnerableVersions,
+      disposition: entry.disposition,
+      expiresAt: entry.expiresAt,
+      dependencyPaths: [...dependencyPaths].sort(),
+      owner: entry.owner,
+      rationale: entry.rationale,
     };
   }).sort(compareAdvisories);
 
   return {
     schemaVersion: 1,
     minimumSeverity: "high",
-    reviewedAt: input.reviewedAt,
+    reviewedAt: document.reviewedAt,
     advisories,
   };
 }
@@ -693,7 +769,18 @@ export function normalizeDispositions(input) {
 export async function queryBulkAdvisories(inventory, options = {}) {
   const registryUrl = options.registryUrl ?? DEFAULT_AUDIT_REGISTRY_URL;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-  const endpoint = new URL("-/npm/v1/security/advisories/bulk", ensureTrailingSlash(registryUrl));
+  let endpoint;
+  try {
+    if (typeof registryUrl !== "string") {
+      throw new TypeError("registry URL must be a string");
+    }
+    endpoint = new URL("-/npm/v1/security/advisories/bulk", ensureTrailingSlash(registryUrl));
+  } catch {
+    throw new Error("bulk advisory registry URL is invalid.");
+  }
+  if (endpoint.username.length > 0 || endpoint.password.length > 0) {
+    throw new Error("bulk advisory registry URL must not include credentials.");
+  }
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error("bulk advisory timeout must be a positive finite number.");
@@ -752,7 +839,10 @@ export async function queryBulkAdvisories(inventory, options = {}) {
   }
 
   if (!response.ok) {
-    throw new Error(`bulk advisory endpoint ${endpoint.href} returned HTTP ${response.status}: ${source.slice(0, 500)}`);
+    throw new Error(
+      `bulk advisory endpoint returned HTTP ${response.status}: `
+      + boundedSingleLine(source, MAX_DIAGNOSTIC_CHARS),
+    );
   }
   try {
     const document = JSON.parse(source);
@@ -824,21 +914,18 @@ export function evaluateDependencyVulnerabilities({ productionGraph, report, dis
   if (!isRecord(report)) {
     throw new Error("bulk advisory report must be an object keyed by package name.");
   }
+  const normalizedReport = normalizeBulkAdvisoryReport(report, normalizedInventory);
 
   const active = [];
-  for (const [packageName, advisories] of Object.entries(report)) {
-    if (!(packageName in normalizedInventory)) {
-      throw new Error(`bulk advisory report returned package absent from inventory: ${packageName}.`);
-    }
-    if (!Array.isArray(advisories)) {
-      throw new Error(`bulk advisory report for ${packageName} is not an array.`);
-    }
+  const advisoryPathBudget = { steps: 0 };
+  for (const [packageName, advisories] of Object.entries(normalizedReport)) {
     for (const advisory of advisories) {
       const normalized = normalizeLiveAdvisory(
         packageName,
         normalizedInventory[packageName],
         normalizedGraph.dependencyPaths,
         advisory,
+        advisoryPathBudget,
       );
       if (SEVERITY_RANK[normalized.severity] >= SEVERITY_RANK.high) {
         active.push(normalized);
@@ -928,7 +1015,8 @@ export async function runDependencyVulnerabilityCheck(options = {}) {
       fetchImpl: options.fetchImpl,
       timeoutMs: options.timeoutMs,
     });
-    const highSeverityPackages = highSeverityReportPackageNames(report, normalizedGraph.inventory);
+    const normalizedReport = normalizeBulkAdvisoryReport(report, normalizedGraph.inventory);
+    const highSeverityPackages = highSeverityReportPackageNames(normalizedReport);
     const packagesMissingPaths = highSeverityPackages.filter((packageName) => (
       normalizedGraph.inventory[packageName].some((version) => (
         !Array.isArray(normalizedGraph.dependencyPaths[packageVersionKey(packageName, version)])
@@ -948,14 +1036,16 @@ export async function runDependencyVulnerabilityCheck(options = {}) {
       );
     const evaluation = evaluateDependencyVulnerabilities({
       productionGraph: graphWithPaths,
-      report,
+      report: normalizedReport,
       dispositions,
       now: options.now,
     });
     renderEvaluation(evaluation, { stdout, stderr });
     return { exitCode: evaluation.ok ? 0 : 1, evaluation };
   } catch (error) {
-    stderr.write(`dependency vulnerability check: FAILED — ${reasonOf(error)}\n`);
+    stderr.write(
+      `dependency vulnerability check: FAILED — ${boundedSingleLine(reasonOf(error), 2_000)}\n`,
+    );
     return { exitCode: 1, error };
   }
 }
@@ -977,13 +1067,14 @@ function renderEvaluation(evaluation, { stdout, stderr }) {
     for (const disposition of evaluation.expired) {
       stderr.write(
         `  EXPIRED [${disposition.severity}] ${disposition.package}@${disposition.versions.join(",")} `
-        + `${disposition.url} — temporary acceptance expired ${disposition.expiresAt}\n`,
+        + `${boundedSingleLine(disposition.url, MAX_DIAGNOSTIC_CHARS)} — temporary acceptance expired `
+        + `${disposition.expiresAt}\n`,
       );
     }
     for (const disposition of evaluation.stale) {
       stderr.write(
         `  STALE [${disposition.severity}] ${disposition.package}@${disposition.versions.join(",")} `
-        + `${disposition.url} — no matching active advisory\n`,
+        + `${boundedSingleLine(disposition.url, MAX_DIAGNOSTIC_CHARS)} — no matching active advisory\n`,
       );
     }
     return;
@@ -997,16 +1088,20 @@ function renderEvaluation(evaluation, { stdout, stderr }) {
     const disposition = evaluation.dispositions.advisories.find(
       (entry) => advisoryKey(entry.package, entry.id) === advisoryKey(advisory.package, advisory.id),
     );
-    stdout.write(`  DISPOSITIONED ${formatAdvisory(advisory)} — ${disposition.rationale}\n`);
+    stdout.write(
+      `  DISPOSITIONED ${formatAdvisory(advisory)} — owner `
+      + `${boundedSingleLine(disposition.owner, MAX_DISPOSITION_OWNER_BYTES)}; `
+      + `${boundedSingleLine(disposition.rationale, MAX_DISPOSITION_RATIONALE_BYTES)}\n`,
+    );
   }
 }
 
-function normalizeLiveAdvisory(packageName, versions, dependencyPaths, advisory) {
+function normalizeLiveAdvisory(packageName, versions, dependencyPaths, advisory, advisoryPathBudget) {
   if (!isRecord(advisory)) {
     throw new Error(`bulk advisory report for ${packageName} contains a malformed entry.`);
   }
   const severity = advisory.severity;
-  if (typeof severity !== "string" || !(severity in SEVERITY_RANK)) {
+  if (!isKnownSeverity(severity)) {
     throw new Error(`bulk advisory ${String(advisory.id)} for ${packageName} has an unknown severity.`);
   }
   const requiredStrings = ["title", "url", "vulnerable_versions"];
@@ -1015,19 +1110,28 @@ function normalizeLiveAdvisory(packageName, versions, dependencyPaths, advisory)
       throw new Error(`bulk advisory ${String(advisory.id)} for ${packageName} is missing ${field}.`);
     }
   }
-  if ((typeof advisory.id !== "number" && typeof advisory.id !== "string") || String(advisory.id).length === 0) {
+  if (!isValidAdvisoryId(advisory.id)) {
     throw new Error(`bulk advisory for ${packageName} is missing id.`);
   }
-  const advisoryDependencyPaths = SEVERITY_RANK[severity] >= SEVERITY_RANK.high
-    ? versions.flatMap((version) => {
+  const advisoryDependencyPaths = [];
+  if (SEVERITY_RANK[severity] >= SEVERITY_RANK.high) {
+    for (const version of versions) {
       const key = packageVersionKey(packageName, version);
       const paths = dependencyPaths[key];
       if (!Array.isArray(paths) || paths.length === 0) {
         throw new Error(`production dependency graph has no paths for advisory package ${key}.`);
       }
-      return paths;
-    }).sort()
-    : [];
+      advisoryPathBudget.steps += paths.length;
+      if (advisoryPathBudget.steps > MAX_ADVISORY_DEPENDENCY_PATH_STEPS) {
+        throw new Error(
+          `bulk advisory report exceeded ${MAX_ADVISORY_DEPENDENCY_PATH_STEPS} `
+          + "dependency-path expansion steps.",
+        );
+      }
+      advisoryDependencyPaths.push(...paths);
+    }
+    advisoryDependencyPaths.sort();
+  }
   return {
     package: packageName,
     versions: [...versions],
@@ -1043,7 +1147,11 @@ function normalizeLiveAdvisory(packageName, versions, dependencyPaths, advisory)
 function dispositionDifferences(advisory, disposition) {
   const differences = [];
   if (JSON.stringify(advisory.versions) !== JSON.stringify(disposition.versions)) {
-    differences.push(`exact versions changed (${disposition.versions.join(",")} -> ${advisory.versions.join(",")})`);
+    differences.push(
+      "exact versions changed ("
+      + `${boundedSingleLine(disposition.versions.join(","), MAX_DIAGNOSTIC_CHARS)} -> `
+      + `${boundedSingleLine(advisory.versions.join(","), MAX_DIAGNOSTIC_CHARS)})`,
+    );
   }
   if (JSON.stringify(advisory.dependencyPaths) !== JSON.stringify(disposition.dependencyPaths)) {
     differences.push("production dependency paths changed");
@@ -1056,31 +1164,68 @@ function dispositionDifferences(advisory, disposition) {
   return differences;
 }
 
-function highSeverityReportPackageNames(report, inventory) {
+function highSeverityReportPackageNames(report) {
+  return Object.entries(report)
+    .filter(([, advisories]) => advisories.some(
+      (advisory) => SEVERITY_RANK[advisory.severity] >= SEVERITY_RANK.high,
+    ))
+    .map(([packageName]) => packageName)
+    .sort();
+}
+
+function normalizeBulkAdvisoryReport(report, inventory) {
   if (!isRecord(report)) {
     throw new Error("bulk advisory report must be an object keyed by package name.");
   }
-  const packageNames = [];
-  for (const [packageName, advisories] of Object.entries(report)) {
-    if (!(packageName in inventory)) {
+  const document = snapshotDataRecord(report, "bulk advisory report");
+  const normalizedReport = Object.create(null);
+  const seenAdvisories = new Set();
+  let advisoryCount = 0;
+  for (const [packageName, inputAdvisories] of Object.entries(document)) {
+    if (!Object.hasOwn(inventory, packageName)) {
       throw new Error(`bulk advisory report returned package absent from inventory: ${packageName}.`);
     }
-    if (!Array.isArray(advisories)) {
+    if (!Array.isArray(inputAdvisories)) {
       throw new Error(`bulk advisory report for ${packageName} is not an array.`);
     }
-    let active = false;
-    for (const advisory of advisories) {
-      if (!isRecord(advisory) || typeof advisory.severity !== "string"
-        || !(advisory.severity in SEVERITY_RANK)) {
+    const advisories = snapshotDataArray(inputAdvisories, `bulk advisory report for ${packageName}`, {
+      maxLength: MAX_BULK_ADVISORIES - advisoryCount,
+      limitMessage: `bulk advisory report exceeded ${MAX_BULK_ADVISORIES} advisory entries.`,
+    });
+    advisoryCount += advisories.length;
+    normalizedReport[packageName] = advisories.map((inputAdvisory) => {
+      if (!isRecord(inputAdvisory)) {
         throw new Error(`bulk advisory report for ${packageName} contains an unknown severity.`);
       }
-      active ||= SEVERITY_RANK[advisory.severity] >= SEVERITY_RANK.high;
-    }
-    if (active) {
-      packageNames.push(packageName);
-    }
+      const advisory = snapshotDataRecord(inputAdvisory, `bulk advisory report for ${packageName} entry`);
+      if (!isKnownSeverity(advisory.severity)) {
+        throw new Error(`bulk advisory report for ${packageName} contains an unknown severity.`);
+      }
+      if (!isValidAdvisoryId(advisory.id)) {
+        throw new Error(`bulk advisory report for ${packageName} contains an advisory without an id.`);
+      }
+      for (const field of ["title", "url", "vulnerable_versions"]) {
+        if (typeof advisory[field] !== "string" || advisory[field].length === 0) {
+          throw new Error(`bulk advisory ${String(advisory.id)} for ${packageName} is missing ${field}.`);
+        }
+      }
+      const key = advisoryKey(packageName, advisory.id);
+      if (seenAdvisories.has(key)) {
+        throw new Error(
+          `bulk advisory report contains duplicate advisory ${advisoryLabel(packageName, advisory.id)}.`,
+        );
+      }
+      seenAdvisories.add(key);
+      return {
+        id: advisory.id,
+        severity: advisory.severity,
+        title: advisory.title,
+        url: advisory.url,
+        vulnerable_versions: advisory.vulnerable_versions,
+      };
+    });
   }
-  return packageNames.sort();
+  return normalizedReport;
 }
 
 function parseArgs(argv) {
@@ -1129,7 +1274,11 @@ function commandFailureDetail(result) {
 }
 
 function formatAdvisory(advisory) {
-  return `[${advisory.severity}] ${advisory.package}@${advisory.versions.join(",")} ${advisory.url}`;
+  return `[${advisory.severity}] `
+    + `${boundedSingleLine(`${advisory.package}@${advisory.versions.join(",")}`, MAX_DIAGNOSTIC_CHARS)} `
+    + `${boundedSingleLine(advisory.id, MAX_DIAGNOSTIC_CHARS)} `
+    + `${boundedSingleLine(advisory.title, MAX_DIAGNOSTIC_CHARS)} `
+    + boundedSingleLine(advisory.url, MAX_DIAGNOSTIC_CHARS);
 }
 
 function compareAdvisories(left, right) {
@@ -1137,6 +1286,10 @@ function compareAdvisories(left, right) {
 }
 
 function advisoryKey(packageName, id) {
+  return JSON.stringify([packageName, String(id)]);
+}
+
+function advisoryLabel(packageName, id) {
   return `${packageName}:${String(id)}`;
 }
 
@@ -1586,6 +1739,100 @@ function parseDateOnly(value, description) {
     throw new Error(`${description} must be a valid YYYY-MM-DD date.`);
   }
   return epoch;
+}
+
+function assertExactFields(value, expectedFields, description) {
+  const expected = new Set(expectedFields);
+  const unknown = Object.keys(value).filter((field) => !expected.has(field)).sort();
+  if (unknown.length > 0) {
+    throw new Error(`${description} contains unknown fields: ${unknown.join(", ")}.`);
+  }
+  const missing = expectedFields.filter((field) => !Object.hasOwn(value, field)).sort();
+  if (missing.length > 0) {
+    throw new Error(`${description} is missing required own fields: ${missing.join(", ")}.`);
+  }
+}
+
+function snapshotDataRecord(value, description) {
+  if (!isRecord(value)) {
+    throw new Error(`${description} must be a data object.`);
+  }
+  const snapshot = Object.create(null);
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string") {
+      throw new Error(`${description} must contain only enumerable string data fields.`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || descriptor.enumerable !== true || !Object.hasOwn(descriptor, "value")) {
+      throw new Error(`${description} must contain only enumerable string data fields.`);
+    }
+    snapshot[key] = descriptor.value;
+  }
+  return snapshot;
+}
+
+function snapshotDataArray(value, description, options = {}) {
+  if (!Array.isArray(value)) {
+    throw new Error(`${description} must be an array.`);
+  }
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+  if (lengthDescriptor === undefined || !Object.hasOwn(lengthDescriptor, "value")
+    || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) {
+    throw new Error(`${description} must be a dense data array.`);
+  }
+  const maxLength = options.maxLength ?? Number.MAX_SAFE_INTEGER;
+  if (lengthDescriptor.value > maxLength) {
+    throw new Error(options.limitMessage ?? `${description} exceeds ${maxLength} entries.`);
+  }
+  const snapshot = [];
+  for (let index = 0; index < lengthDescriptor.value; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (descriptor === undefined || descriptor.enumerable !== true || !Object.hasOwn(descriptor, "value")) {
+      throw new Error(`${description} must be a dense data array.`);
+    }
+    snapshot.push(descriptor.value);
+  }
+  return snapshot;
+}
+
+function assertBoundedUtf8(value, maxBytes, description) {
+  if (Buffer.byteLength(value, "utf8") > maxBytes) {
+    throw new Error(`${description} exceeds ${maxBytes} UTF-8 bytes.`);
+  }
+}
+
+function isCanonicalNonEmptyString(value) {
+  return typeof value === "string"
+    && value.length > 0
+    && value === value.trim()
+    && !/[\p{Cc}\p{Default_Ignorable_Code_Point}\u2028\u2029]/u.test(value);
+}
+
+function isKnownSeverity(value) {
+  return typeof value === "string" && Object.hasOwn(SEVERITY_RANK, value);
+}
+
+function isValidAdvisoryId(value) {
+  return typeof value === "number"
+    ? Number.isSafeInteger(value) && value >= 0
+    : isCanonicalNonEmptyString(value);
+}
+
+function boundedSingleLine(value, maxChars) {
+  const escaped = String(value).replace(
+    /[\p{Cc}\p{Default_Ignorable_Code_Point}\u2028\u2029]/gu,
+    (character) => {
+      if (character === "\n") return "\\n";
+      if (character === "\r") return "\\r";
+      if (character === "\t") return "\\t";
+      const codePoint = character.codePointAt(0);
+      const hexadecimal = codePoint.toString(16);
+      return codePoint <= 0xffff
+        ? `\\u${hexadecimal.padStart(4, "0")}`
+        : `\\u{${hexadecimal}}`;
+    },
+  );
+  return escaped.length <= maxChars ? escaped : `${escaped.slice(0, maxChars - 1)}…`;
 }
 
 function utcDayEpoch(value) {

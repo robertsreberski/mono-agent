@@ -34,11 +34,13 @@ describe("dependency vulnerability gate", () => {
       "/repo/packages/portable-fixture",
       "/repo/node_modules/.pnpm/ws@8.20.1/node_modules/ws",
       "/repo/node_modules/.pnpm/ws@8.20.1/node_modules/ws",
+      "/repo/node_modules/.pnpm/constructor@1.0.0/node_modules/constructor",
       "/repo/node_modules/.pnpm/@img+sharp-win32-arm64@0.34.5/node_modules/@img/sharp-win32-arm64",
       "C:\\repo\\node_modules\\.pnpm\\@vscode+ripgrep-win32-x64@1.18.0\\node_modules\\@vscode\\ripgrep-win32-x64",
     ].join("\n"))).toEqual({
       "@img/sharp-win32-arm64": ["0.34.5"],
       "@vscode/ripgrep-win32-x64": ["1.18.0"],
+      constructor: ["1.0.0"],
       ws: ["8.20.1"],
     });
   });
@@ -1133,6 +1135,7 @@ describe("dependency vulnerability gate", () => {
     expect(result.exitCode).toBe(0);
     expect(stdout.text).toContain("1 high-or-critical advisories, all exactly dispositioned");
     expect(stdout.text).toContain("DISPOSITIONED [high] ws@8.20.1");
+    expect(stdout.text).toContain("owner fixture-security-owner");
   });
 
   it("fails closed on invented paths, version drift, stale entries, and expiry", async () => {
@@ -1166,6 +1169,44 @@ describe("dependency vulnerability gate", () => {
     expect(versionMismatch.exitCode).toBe(1);
     expect(versionStderr.text).toContain("exact versions changed");
 
+    const hostileVersion = "8.20.2\n::error file=ci.yml::forged\u001b[31m";
+    const hostileVersionStderr = sink();
+    const hostileVersionMismatch = await runDependencyVulnerabilityCheck({
+      argv: [],
+      productionGraph: graphFor("ws", hostileVersion, `fixture -> ws@${hostileVersion}`),
+      dispositions: dispositionFor("ws", "8.20.1", advisory, ["fixture -> ws@8.20.1"]),
+      queryAdvisories: async () => ({ ws: [advisory] }),
+      now: NOW,
+      stdout: sink(),
+      stderr: hostileVersionStderr,
+    });
+    expect(hostileVersionMismatch.exitCode).toBe(1);
+    expect(hostileVersionStderr.text).toContain(
+      "8.20.2\\n::error file=ci.yml::forged\\u001b[31m",
+    );
+    expect(hostileVersionStderr.text).not.toContain("\n::error file=ci.yml::forged");
+    expect(hostileVersionStderr.text).not.toContain("\u001b");
+
+    for (const { field, liveField, value } of [
+      { field: "severity", liveField: "severity", value: "critical" },
+      { field: "title", liveField: "title", value: "Changed advisory title" },
+      { field: "url", liveField: "url", value: "https://github.com/advisories/GHSA-changed" },
+      { field: "vulnerableVersions", liveField: "vulnerable_versions", value: ">=8 <9" },
+    ]) {
+      const metadataStderr = sink();
+      const metadataMismatch = await runDependencyVulnerabilityCheck({
+        argv: [],
+        productionGraph: graph,
+        dispositions: dispositionFor("ws", "8.20.1", advisory, ["fixture -> ws@8.20.1"]),
+        queryAdvisories: async () => ({ ws: [{ ...advisory, [liveField]: value }] }),
+        now: NOW,
+        stdout: sink(),
+        stderr: metadataStderr,
+      });
+      expect(metadataMismatch.exitCode).toBe(1);
+      expect(metadataStderr.text).toContain(`${field} changed`);
+    }
+
     const staleStderr = sink();
     const stale = await runDependencyVulnerabilityCheck({
       argv: [],
@@ -1193,9 +1234,10 @@ describe("dependency vulnerability gate", () => {
     expect(expiredStderr.text).toContain(`temporary acceptance expired ${EXPIRES_AT}`);
   });
 
-  it("strictly validates review and expiry dates and caps temporary acceptance at 90 days", () => {
+  it("strictly validates the temporary-disposition schema, ownership, and expiry", () => {
     const advisory = wsAdvisory();
     const valid = dispositionFor("ws", "8.20.1", advisory, ["fixture -> ws@8.20.1"]);
+    const entry = valid.advisories[0];
 
     expect(() => normalizeDispositions({ ...valid, reviewedAt: "not-a-date" }))
       .toThrow("reviewedAt must be a valid YYYY-MM-DD date");
@@ -1209,6 +1251,83 @@ describe("dependency vulnerability gate", () => {
       ...valid,
       advisories: [{ ...valid.advisories[0], expiresAt: "2026-10-15" }],
     })).toThrow("within 90 days");
+
+    for (const severity of ["constructor", "toString", "__proto__"]) {
+      expect(() => normalizeDispositions({
+        ...valid,
+        advisories: [{ ...entry, severity }],
+      })).toThrow("must be high or critical");
+    }
+    expect(() => normalizeDispositions({ ...valid, unexpectedPolicy: true }))
+      .toThrow("dispositions contains unknown fields: unexpectedPolicy");
+    expect(() => normalizeDispositions({
+      ...valid,
+      advisories: [{ ...entry, unexpectedPolicy: true }],
+    })).toThrow("contains unknown fields: unexpectedPolicy");
+    expect(() => normalizeDispositions({
+      ...valid,
+      advisories: [{ ...entry, owner: "   " }],
+    })).toThrow("is missing owner");
+    expect(() => normalizeDispositions({
+      ...valid,
+      advisories: [{ ...entry, owner: "owner\n::warning::forged" }],
+    })).toThrow("is missing owner");
+    for (const owner of ["\u200B", "\uFE0F"]) {
+      expect(() => normalizeDispositions({
+        ...valid,
+        advisories: [{ ...entry, owner }],
+      })).toThrow("is missing owner");
+    }
+    expect(() => normalizeDispositions({
+      ...valid,
+      advisories: [{ ...entry, owner: "x".repeat(201) }],
+    })).toThrow("owner exceeds 200 UTF-8 bytes");
+    expect(() => normalizeDispositions({
+      ...valid,
+      advisories: [{ ...entry, rationale: "\n" }],
+    })).toThrow("is missing rationale");
+    expect(() => normalizeDispositions({
+      ...valid,
+      advisories: [{ ...entry, rationale: "\u2060" }],
+    })).toThrow("is missing rationale");
+    expect(() => normalizeDispositions({
+      ...valid,
+      advisories: [{ ...entry, rationale: "x".repeat(4_097) }],
+    })).toThrow("rationale exceeds 4096 UTF-8 bytes");
+    expect(() => normalizeDispositions({
+      ...valid,
+      advisories: [{ ...entry, versions: ["8.20.1", "8.20.1"] }],
+    })).toThrow("contains duplicate exact versions");
+    expect(() => normalizeDispositions({
+      ...valid,
+      advisories: [{
+        ...entry,
+        dependencyPaths: ["fixture -> ws@8.20.1", "fixture -> ws@8.20.1"],
+      }],
+    })).toThrow("contains duplicate production dependency paths");
+
+    const inheritedTopLevel = { ...valid };
+    delete inheritedTopLevel.reviewedAt;
+    Object.setPrototypeOf(inheritedTopLevel, { reviewedAt: valid.reviewedAt });
+    expect(() => normalizeDispositions(inheritedTopLevel))
+      .toThrow("dispositions is missing required own fields: reviewedAt");
+
+    const inheritedOwner = { ...entry };
+    delete inheritedOwner.owner;
+    Object.setPrototypeOf(inheritedOwner, { owner: entry.owner });
+    expect(() => normalizeDispositions({ ...valid, advisories: [inheritedOwner] }))
+      .toThrow("is missing required own fields: owner");
+
+    const accessorEntry = { ...entry };
+    Object.defineProperty(accessorEntry, "id", {
+      enumerable: true,
+      get() {
+        return entry.id;
+      },
+    });
+    expect(() => normalizeDispositions({ ...valid, advisories: [accessorEntry] }))
+      .toThrow("must contain only enumerable string data fields");
+    expect(normalizeDispositions(valid).advisories[0].owner).toBe("fixture-security-owner");
   });
 
   it("fails closed across the real bulk HTTP transport, size, shape, JSON, and timeout boundaries", async () => {
@@ -1223,6 +1342,30 @@ describe("dependency vulnerability gate", () => {
       fetchImpl: async () => httpResponse("registry unavailable", { status: 503, raw: true }),
     })).rejects.toThrow("returned HTTP 503: registry unavailable");
 
+    const credentialFetch = vi.fn();
+    const credentialError = await queryBulkAdvisories(inventory, {
+      registryUrl: "https://leaky-user:leaky-password@registry.example.invalid/private-token/",
+      fetchImpl: credentialFetch,
+    }).catch((error) => error);
+    expect(credentialError).toBeInstanceOf(Error);
+    expect(credentialError.message).toBe("bulk advisory registry URL must not include credentials.");
+    expect(credentialError.message).not.toContain("leaky-user");
+    expect(credentialError.message).not.toContain("leaky-password");
+    expect(credentialFetch).not.toHaveBeenCalled();
+
+    const hostileHttpError = await queryBulkAdvisories(inventory, {
+      fetchImpl: async () => httpResponse(
+        "registry unavailable\n::warning file=ci.yml::forged\u001b[31m",
+        { status: 503, raw: true },
+      ),
+    }).catch((error) => error);
+    expect(hostileHttpError).toBeInstanceOf(Error);
+    expect(hostileHttpError.message).toContain(
+      "registry unavailable\\n::warning file=ci.yml::forged\\u001b[31m",
+    );
+    expect(hostileHttpError.message).not.toContain("\n");
+    expect(hostileHttpError.message).not.toContain("\u001b");
+
     await expect(queryBulkAdvisories(inventory, {
       fetchImpl: async () => httpResponse("{broken", { raw: true }),
     })).rejects.toThrow("bulk advisory response was not valid JSON");
@@ -1230,6 +1373,24 @@ describe("dependency vulnerability gate", () => {
     await expect(queryBulkAdvisories(inventory, {
       fetchImpl: async () => ({ ok: true, status: 200, text: "not-a-function" }),
     })).rejects.toThrow("bulk advisory endpoint returned a malformed HTTP response");
+
+    await expect(queryBulkAdvisories(inventory, {
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        body: {
+          getReader() {
+            return {
+              async read() {
+                return { done: false, value: "not bytes" };
+              },
+              cancel() {},
+              releaseLock() {},
+            };
+          },
+        },
+      }),
+    })).rejects.toThrow("bulk advisory endpoint returned a non-byte response chunk");
 
     await expect(queryBulkAdvisories(inventory, {
       fetchImpl: async () => httpResponse([]),
@@ -1273,13 +1434,230 @@ describe("dependency vulnerability gate", () => {
     expect(requestSignal.aborted).toBe(true);
 
     vi.useFakeTimers();
+    let timeoutSignal;
     const pending = queryBulkAdvisories(inventory, {
       timeoutMs: 25,
-      fetchImpl: async () => await new Promise(() => {}),
+      fetchImpl: async (_url, request) => {
+        timeoutSignal = request.signal;
+        return await new Promise(() => {});
+      },
     });
     const rejection = expect(pending).rejects.toThrow("bulk advisory request timed out after 25ms");
     await vi.advanceTimersByTimeAsync(25);
     await rejection;
+    expect(timeoutSignal.aborted).toBe(true);
+  });
+
+  it.each(["constructor", "toString", "__proto__", "unknown-severity"])(
+    "fails closed on an unowned live severity key: %s",
+    async (severity) => {
+      const stderr = sink();
+      const result = await runDependencyVulnerabilityCheck({
+        argv: [],
+        productionGraph: graphFor("ws", "8.20.1", "fixture -> ws@8.20.1"),
+        dispositions: emptyDispositions(),
+        fetchImpl: async () => httpResponse({
+          ws: [{ ...wsAdvisory(), severity }],
+        }),
+        now: NOW,
+        stdout: sink(),
+        stderr,
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(stderr.text).toContain("contains an unknown severity");
+    },
+  );
+
+  it.each(["constructor", "toString", "__proto__"])(
+    "fails closed on a prototype-key package absent from inventory: %s",
+    async (packageName) => {
+      const stderr = sink();
+      const result = await runDependencyVulnerabilityCheck({
+        argv: [],
+        productionGraph: graphFor("ws", "8.20.1", "fixture -> ws@8.20.1"),
+        dispositions: emptyDispositions(),
+        fetchImpl: async () => httpResponse({ [packageName]: [] }),
+        now: NOW,
+        stdout: sink(),
+        stderr,
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(stderr.text).toContain(`package absent from inventory: ${packageName}`);
+    },
+  );
+
+  it("rejects malformed, duplicate, and over-budget live advisory reports before expansion", () => {
+    const graph = graphFor("ws", "8.20.1", "fixture -> ws@8.20.1");
+    const advisory = wsAdvisory();
+
+    expect(() => evaluateDependencyVulnerabilities({
+      productionGraph: graph,
+      report: { ws: {} },
+      dispositions: emptyDispositions(),
+      now: NOW,
+    })).toThrow("bulk advisory report for ws is not an array");
+    expect(() => evaluateDependencyVulnerabilities({
+      productionGraph: graph,
+      report: { ws: [null] },
+      dispositions: emptyDispositions(),
+      now: NOW,
+    })).toThrow("contains an unknown severity");
+    expect(() => evaluateDependencyVulnerabilities({
+      productionGraph: graph,
+      report: { ws: [{ ...advisory, title: "" }] },
+      dispositions: emptyDispositions(),
+      now: NOW,
+    })).toThrow("is missing title");
+    expect(() => evaluateDependencyVulnerabilities({
+      productionGraph: graph,
+      report: { ws: [advisory, { ...advisory, id: String(advisory.id) }] },
+      dispositions: emptyDispositions(),
+      now: NOW,
+    })).toThrow(`duplicate advisory ws:${advisory.id}`);
+
+    const accessorReport = {};
+    Object.defineProperty(accessorReport, "ws", {
+      enumerable: true,
+      get() {
+        return [advisory];
+      },
+    });
+    expect(() => evaluateDependencyVulnerabilities({
+      productionGraph: graph,
+      report: accessorReport,
+      dispositions: emptyDispositions(),
+      now: NOW,
+    })).toThrow("must contain only enumerable string data fields");
+
+    const accessorArray = [];
+    Object.defineProperty(accessorArray, "0", {
+      enumerable: true,
+      get() {
+        return advisory;
+      },
+    });
+    expect(() => evaluateDependencyVulnerabilities({
+      productionGraph: graph,
+      report: { ws: accessorArray },
+      dispositions: emptyDispositions(),
+      now: NOW,
+    })).toThrow("must be a dense data array");
+
+    const tooMany = Array.from({ length: 1_001 }, (_, index) => ({
+      id: `GHSA-fixture-${index}`,
+      severity: "low",
+      title: `Low fixture ${index}`,
+      url: `https://github.com/advisories/GHSA-fixture-${index}`,
+      vulnerable_versions: "*",
+    }));
+    expect(() => evaluateDependencyVulnerabilities({
+      productionGraph: graph,
+      report: { ws: tooMany },
+      dispositions: emptyDispositions(),
+      now: NOW,
+    })).toThrow("exceeded 1000 advisory entries");
+
+    const dependencyPaths = Array.from(
+      { length: 1_001 },
+      (_, index) => `fixture-${index} -> ws@8.20.1`,
+    );
+    const pathHeavyGraph = {
+      inventory: { ws: ["8.20.1"] },
+      dependencyPaths: { "ws@8.20.1": dependencyPaths },
+    };
+    const pathHeavyReport = {
+      ws: Array.from({ length: 100 }, (_, index) => ({
+        ...advisory,
+        id: `GHSA-path-heavy-${index}`,
+      })),
+    };
+    expect(() => evaluateDependencyVulnerabilities({
+      productionGraph: pathHeavyGraph,
+      report: pathHeavyReport,
+      dispositions: emptyDispositions(),
+      now: NOW,
+    })).toThrow("exceeded 100000 dependency-path expansion steps");
+  });
+
+  it("rejects malformed high advisories before collecting dependency paths", async () => {
+    const collectDependencyPaths = vi.fn(async () => {
+      throw new Error("dependency-path collection must not run");
+    });
+    const stderr = sink();
+    const result = await runDependencyVulnerabilityCheck({
+      argv: [],
+      productionGraph: { inventory: { ws: ["8.20.1"] }, dependencyPaths: {} },
+      dispositions: emptyDispositions(),
+      queryAdvisories: async () => ({ ws: [{ ...wsAdvisory(), title: "" }] }),
+      collectDependencyPaths,
+      now: NOW,
+      stdout: sink(),
+      stderr,
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(stderr.text).toContain("is missing title");
+    expect(collectDependencyPaths).not.toHaveBeenCalled();
+  });
+
+  it("keeps package and advisory identities collision-free", () => {
+    const live = { ...wsAdvisory(), id: "b:c" };
+    const dispositionAdvisory = { ...live, id: "c" };
+    const evaluation = evaluateDependencyVulnerabilities({
+      productionGraph: {
+        inventory: { a: ["1.0.0"], "a:b": ["1.0.0"] },
+        dependencyPaths: { "a@1.0.0": ["fixture -> a@1.0.0"] },
+      },
+      report: { a: [live] },
+      dispositions: dispositionFor(
+        "a:b",
+        "1.0.0",
+        dispositionAdvisory,
+        ["fixture -> a@1.0.0"],
+      ),
+      now: NOW,
+    });
+
+    expect(evaluation.ok).toBe(false);
+    expect(evaluation.unreviewed.map((entry) => entry.package)).toEqual(["a"]);
+    expect(evaluation.stale.map((entry) => entry.package)).toEqual(["a:b"]);
+  });
+
+  it("escapes and bounds remote advisory fields before CI rendering", async () => {
+    const packageName = "ws\n::notice file=ci.yml::package";
+    const version = "8.20.1\u001b[31m";
+    const stderr = sink();
+    const result = await runDependencyVulnerabilityCheck({
+      argv: [],
+      productionGraph: graphFor(
+        packageName,
+        version,
+        `fixture -> ${packageName}@${version}`,
+      ),
+      dispositions: emptyDispositions(),
+      queryAdvisories: async () => ({
+        [packageName]: [{
+          ...wsAdvisory(),
+          title: "forged\n::error file=ci.yml::title\u001b[31m\u202ertl\u202c",
+          url: `https://example.invalid/\n::warning::url\u001b[31m\u2066${"x".repeat(600)}`,
+        }],
+      }),
+      now: NOW,
+      stdout: sink(),
+      stderr,
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(stderr.text).toContain("ws\\n::notice file=ci.yml::package@8.20.1\\u001b[31m");
+    expect(stderr.text).toContain("forged\\n::error file=ci.yml::title\\u001b[31m\\u202ertl\\u202c");
+    expect(stderr.text).toContain("https://example.invalid/\\n::warning::url\\u001b[31m\\u2066");
+    expect(stderr.text).not.toContain("\u001b");
+    expect(stderr.text).not.toContain("\u202e");
+    expect(stderr.text).not.toContain("\n::warning::url");
+    expect(stderr.text).not.toContain("\n::notice file=ci.yml::package");
+    expect(stderr.text).toContain("…");
   });
 
   it("ignores low/moderate advisories while high/critical findings trip", () => {
@@ -1323,6 +1701,7 @@ describe("dependency vulnerability gate", () => {
     expect(dispositions.advisories).toHaveLength(4);
     expect(new Set(dispositions.advisories.map((entry) => `${entry.package}:${entry.id}`)).size).toBe(4);
     expect(new Set(dispositions.advisories.map((entry) => entry.expiresAt))).toEqual(new Set([EXPIRES_AT]));
+    expect(new Set(dispositions.advisories.map((entry) => entry.owner))).toEqual(new Set(["robertsreberski"]));
   });
 });
 
@@ -1476,6 +1855,7 @@ function dispositionFor(packageName, version, advisory, dependencyPaths) {
       disposition: "accepted-temporarily",
       expiresAt: EXPIRES_AT,
       dependencyPaths,
+      owner: "fixture-security-owner",
       rationale: "Exact test-only disposition with a bounded expiry.",
     }],
   };
