@@ -1,0 +1,60 @@
+{
+  "detected": [
+    {
+      "name": "six-digit identifier lower bound",
+      "id": "123456",
+      "tail": {
+        "character": "A",
+        "count": 33,
+        "suffix": "-_"
+      }
+    },
+    {
+      "name": "ten-digit identifier upper bound",
+      "id": "1234567890",
+      "tail": {
+        "character": "B",
+        "count": 33,
+        "suffix": "-_"
+      }
+    }
+  ],
+  "ignored": [
+    {
+      "name": "five-digit identifier",
+      "id": "12345",
+      "tail": {
+        "character": "C",
+        "count": 33,
+        "suffix": "-_"
+      }
+    },
+    {
+      "name": "eleven-digit identifier",
+      "id": "12345678901",
+      "tail": {
+        "character": "D",
+        "count": 33,
+        "suffix": "-_"
+      }
+    },
+    {
+      "name": "34-character credential tail",
+      "id": "123456",
+      "tail": {
+        "character": "E",
+        "count": 32,
+        "suffix": "-_"
+      }
+    },
+    {
+      "name": "36-character credential tail",
+      "id": "123456",
+      "tail": {
+        "character": "F",
+        "count": 34,
+        "suffix": "-_"
+      }
+    }
+  ]
+}

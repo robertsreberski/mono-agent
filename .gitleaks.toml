@@ -3,6 +3,13 @@ title = "mono-agent gitleaks config"
 [extend]
 useDefault = true
 
+[[rules]]
+id = "telegram-bot-token"
+description = "Telegram Bot API token"
+regex = '''(?:^|[^A-Za-z0-9_])([0-9]{6,10}:[A-Za-z0-9_-]{35})(?:$|[^A-Za-z0-9_-])'''
+secretGroup = 1
+tags = ["api", "telegram"]
+
 [[allowlists]]
 description = "Generated dependency lockfiles"
 paths = [
