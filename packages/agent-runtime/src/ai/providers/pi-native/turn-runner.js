@@ -172,6 +172,7 @@ export function buildTurnHarness(runState, {
   systemPrompt,
   outputSchema,
   tools,
+  transport,
   maxRetries,
   maxRetryDelayMs,
   steeringMode,
@@ -187,7 +188,7 @@ export function buildTurnHarness(runState, {
     thinkingLevel,
     systemPrompt: appendStructuredOutputInstruction(systemPrompt, outputSchema, options.prompts),
     tools,
-    streamOptions: { maxRetries, maxRetryDelayMs },
+    streamOptions: { transport, maxRetries, maxRetryDelayMs },
     steeringMode,
     followUpMode: steeringMode,
   });

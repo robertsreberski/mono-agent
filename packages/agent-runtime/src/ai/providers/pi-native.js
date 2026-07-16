@@ -76,6 +76,7 @@ import {
   startLiveInput,
   thinkingLevelForEffort,
 } from "./pi-native/turn-runner.js";
+import { resolvePiTransport } from "./pi-native/transport.js";
 
 async function resolveApiKey(provider, { apiKeys, resolvePiApiKey, runtimeWarnings }) {
   if (apiKeys?.has(provider)) return apiKeys.get(provider);
@@ -302,6 +303,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   let structuredOutputFinalizationRetryAttempts = 0;
   let structuredOutputFinalizationRetryReason = null;
   let structuredOutputFinalizationRetryFailed = false;
+  const piTransport = resolvePiTransport(options.piTransport);
 
   const onEvent = (event) => emitCaptured(events, options.onEvent, event);
   const approvalManager = options.onToolApprovalRequest
@@ -316,7 +318,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     : null;
 
   if (options.abortSignal?.aborted) {
-    return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId });
+    return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport });
   }
 
   const durableRepo = resolveDurableNativeSessionRepo(options.piSessionsRoot);
@@ -341,6 +343,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       events,
       runtimeWarnings,
       start,
+      piTransport,
     });
     if (resolvedSession.done) return resolvedSession.result;
 
@@ -432,6 +435,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       systemPrompt,
       outputSchema: options.outputSchema,
       tools,
+      transport: piTransport,
       maxRetries,
       maxRetryDelayMs,
       steeringMode: toolSteeringMode,
@@ -484,7 +488,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       // and closes MCP clients. For a resume no transcript was appended yet
       // (prompt never ran), so the live session needs no rollback.
       await discardUncommittedSession(runState, { durableRepo });
-      return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId });
+      return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport });
     }
 
     // Compaction policy against the LIVE model's context window, then proactive
@@ -619,6 +623,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       runAssistantCount,
       externalAbort: runState.externalAbort,
       maxRetries,
+      piTransport,
       lastToolName: runState.lastToolName,
       structuredRetry,
       contextCompactionDiagnostics: runState.compaction.diagnostics,
@@ -737,6 +742,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       providerSessionId,
       runtimeWarnings,
       isRetryable,
+      piTransport,
     });
   } finally {
     if (runState.sessionEntry) runState.sessionEntry.busy = false;

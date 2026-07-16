@@ -79,6 +79,7 @@ MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS=4
 | `MONO_AGENT_LOCAL_PROVIDERS_JSON` | `providers.local[]` | Full JSON array of local providers (id, type, baseUrl, apiKey/apiKeyEnv, models). |
 | `MONO_AGENT_LOCAL_PROVIDER_*` | `providers.local[]` | Single-provider field overrides. |
 | `MONO_AGENT_PI_AUTH_PATH` | `providers.piAuthPath` | Pi credential file; a non-empty value wins over JSON and loses only to `auth login --pi-auth-path`. Default `~/.pi/agent/auth.json`; `~` expands to home and relative paths resolve from the agent/invocation working directory. |
+| `MONO_AGENT_PI_TRANSPORT` | `providers.piNative.transport` | Preferred Pi transport: `auto` (default), `sse`, `websocket`, or `websocket-cached`; unsupported providers ignore it. |
 | `MONO_AGENT_PI_MAX_RETRIES` | `providers.piNative.piMaxRetries` | Pi-native transport retries, 0-8, default 2. |
 | `MONO_AGENT_MAX_RETRY_DELAY_MS` | `providers.piNative.maxRetryDelayMs` | Default 60000. |
 | `MONO_AGENT_PI_SESSIONS_ROOT` | `providers.piNative.piSessionsRoot` | Durable JSONL session storage (e.g. `.mono-agent/sessions`); unset = in-memory. |

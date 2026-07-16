@@ -8,6 +8,7 @@ import { loadAppCoreConfig } from "./app-config.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import type { WizardPlan } from "./wizard/answers.js";
 import type {
+  PiTransport,
   RuntimeEventLike,
   RuntimeModelReference,
   RuntimeResult,
@@ -289,6 +290,7 @@ interface ReadinessWorkerRuntimeSpec {
   readonly workspace: string;
   readonly artifactDir: string;
   readonly piAuthPath?: string;
+  readonly piTransport?: PiTransport;
 }
 
 function isReadinessWorkerMessage(value: unknown): value is ReadinessWorkerMessage {
@@ -349,6 +351,7 @@ function startReadinessWorker(input: {
         workspace: input.runtime.workspace,
         artifactDir: input.runtime.artifactDir,
         ...(input.runtime.piAuthPath === undefined ? {} : { piAuthPath: input.runtime.piAuthPath }),
+        ...(input.runtime.piTransport === undefined ? {} : { piTransport: input.runtime.piTransport }),
       },
     },
     env: { ...input.env },
@@ -809,6 +812,9 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
       abortSignal: controller.signal,
       cwd: dir,
       maxTurns: 1,
+      ...(loaded.providers?.piNative?.transport === undefined
+        ? {}
+        : { piTransport: loaded.providers.piNative.transport }),
       allowedTools: [],
       disallowedTools: [],
       mcpServers: {},
@@ -861,6 +867,9 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
             ...(loaded.providers?.piAuthPath === undefined
               ? {}
               : { piAuthPath: loaded.providers.piAuthPath }),
+            ...(loaded.providers?.piNative?.transport === undefined
+              ? {}
+              : { piTransport: loaded.providers.piNative.transport }),
           },
           env: overlay,
           ...(options.workerUrl === undefined ? {} : { workerUrl: options.workerUrl }),

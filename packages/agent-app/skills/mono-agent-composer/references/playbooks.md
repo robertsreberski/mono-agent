@@ -209,7 +209,7 @@ const ext = createCollaboratorToolRuntimeExtension({
 ```json
 {
   "runtime": { "model": "claude:claude-sonnet-4-6", "fallbackModels": ["pi:openai-codex:gpt-5.5", "pi:ollama:gemma4:31b"], "session": { "mode": "continuous" } },
-  "providers": { "local": [{ "id": "ollama", "type": "ollama", "baseUrl": "http://localhost:11434", "enabled": true }], "piNative": { "piMaxRetries": 2, "maxRetryDelayMs": 60000, "piSessionsRoot": ".mono-agent/sessions" } }
+  "providers": { "local": [{ "id": "ollama", "type": "ollama", "baseUrl": "http://localhost:11434", "enabled": true }], "piNative": { "transport": "auto", "piMaxRetries": 2, "maxRetryDelayMs": 60000, "piSessionsRoot": ".mono-agent/sessions" } }
 }
 ```
 **Steps:** `ollama pull gemma4:31b` → `mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:openai-codex:gpt-5.5,pi:ollama:gemma4:31b` → add `providers.local` + `piNative.piSessionsRoot` → `validate` → `start`.

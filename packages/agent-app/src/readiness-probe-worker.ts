@@ -1,7 +1,8 @@
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 
-import { createMonoRuntime, createPiOAuthApiKeyResolver } from "@mono-agent/runtime-adapter";
+import { createMonoRuntime, createPiOAuthApiKeyResolver, PI_TRANSPORTS } from "@mono-agent/runtime-adapter";
 import type {
+  PiTransport,
   RuntimeEventLike,
   RuntimeModelReference,
   RuntimeResult,
@@ -35,6 +36,7 @@ interface ReadinessWorkerData {
     readonly workspace: string;
     readonly artifactDir: string;
     readonly piAuthPath?: string;
+    readonly piTransport?: PiTransport;
   };
 }
 
@@ -96,6 +98,7 @@ function readWorkerData(value: unknown): ReadinessWorkerData | undefined {
     || typeof runtime.workspace !== "string"
     || typeof runtime.artifactDir !== "string"
     || (runtime.piAuthPath !== undefined && typeof runtime.piAuthPath !== "string")
+    || (runtime.piTransport !== undefined && !PI_TRANSPORTS.includes(runtime.piTransport as PiTransport))
   ) {
     return undefined;
   }
@@ -108,6 +111,7 @@ function readWorkerData(value: unknown): ReadinessWorkerData | undefined {
       workspace: runtime.workspace,
       artifactDir: runtime.artifactDir,
       ...(runtime.piAuthPath === undefined ? {} : { piAuthPath: runtime.piAuthPath }),
+      ...(runtime.piTransport === undefined ? {} : { piTransport: runtime.piTransport as PiTransport }),
     },
   };
 }
@@ -287,6 +291,7 @@ async function run(): Promise<void> {
       abortSignal: controller.signal,
       cwd: data.cwd,
       maxTurns: 1,
+      ...(data.runtime.piTransport === undefined ? {} : { piTransport: data.runtime.piTransport }),
       allowedTools: [],
       disallowedTools: [],
       mcpServers: {},

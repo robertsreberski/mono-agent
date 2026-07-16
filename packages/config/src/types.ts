@@ -1,4 +1,4 @@
-import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type { LocalProviderDefinition, PiTransport, RuntimeExecutionMode, RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
 import type { RedactedSecretValue } from "@mono-agent/agent-contracts";
 
@@ -329,6 +329,8 @@ export interface MonoAgentConfig {
 
 /** Tuning knobs for the pi-native provider bridge. */
 export interface PiNativeProviderConfig {
+  /** Preferred Pi provider transport (default auto; unsupported providers ignore it). */
+  readonly transport?: PiTransport;
   /** Max retry attempts for the pi provider transport (0-8; default 2). */
   readonly piMaxRetries?: number;
   /** Maximum delay between retry attempts, in milliseconds (default 60000). */

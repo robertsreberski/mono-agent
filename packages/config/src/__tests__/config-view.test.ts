@@ -179,6 +179,22 @@ describe("buildMonoAgentConfigView", () => {
     expect(field(sections, "observability.exporters")).toBeDefined();
   });
 
+  it("shows the Pi transport source and compatibility default", () => {
+    expect(field(buildView(baseEnv), "providers.piNative.transport")).toMatchObject({
+      value: "auto",
+      source: "default",
+    });
+    expect(field(buildView(baseEnv, { providers: { piNative: { transport: "sse" } } }), "providers.piNative.transport"))
+      .toMatchObject({ value: "sse", source: "json" });
+    expect(field(
+      buildView(
+        { ...baseEnv, MONO_AGENT_PI_TRANSPORT: "websocket" },
+        { providers: { piNative: { transport: "sse" } } },
+      ),
+      "providers.piNative.transport",
+    )).toMatchObject({ value: "websocket", source: "env" });
+  });
+
   it("redacts the embeddings api key and never leaks the value", () => {
     const sections = buildView({
       ...baseEnv,

@@ -151,12 +151,13 @@ describe("layerJsonOntoEnv", () => {
     const layered = layerJsonOntoEnv(
       {
         providers: {
-          piNative: { piMaxRetries: 4, maxRetryDelayMs: 30000, piSessionsRoot: ".mono-agent/sessions" },
+          piNative: { transport: "sse", piMaxRetries: 4, maxRetryDelayMs: 30000, piSessionsRoot: ".mono-agent/sessions" },
         },
       },
       {},
     );
     expect(layered.MONO_AGENT_PI_MAX_RETRIES).toBe("4");
+    expect(layered.MONO_AGENT_PI_TRANSPORT).toBe("sse");
     expect(layered.MONO_AGENT_MAX_RETRY_DELAY_MS).toBe("30000");
     expect(layered.MONO_AGENT_PI_SESSIONS_ROOT).toBe(".mono-agent/sessions");
   });

@@ -109,6 +109,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `providers.piNative.maxRetryDelayMs` | `integer` | `MONO_AGENT_MAX_RETRY_DELAY_MS` | 60000 | `60000` | Configures piNative.maxRetryDelayMs for the providers section. |
 | `providers.piNative.piMaxRetries` | `integer` | `MONO_AGENT_PI_MAX_RETRIES` | 2 | `2` | Configures piNative.piMaxRetries for the providers section. |
 | `providers.piNative.piSessionsRoot` | `string` | `MONO_AGENT_PI_SESSIONS_ROOT` | unset | `example` | Configures piNative.piSessionsRoot for the providers section. |
+| `providers.piNative.transport` | `string` | `MONO_AGENT_PI_TRANSPORT` | auto | `sse` | Preferred Pi provider transport: auto, sse, websocket, or websocket-cached. Providers without multiple transports ignore it. |
 | `runtime.effort` | `string` | `MONO_AGENT_EFFORT` | unset | `medium` | Configures effort for the runtime section. |
 | `runtime.executionMode` | `string` | `MONO_AGENT_EXECUTION_MODE` | inferred | `inferred` | Configures executionMode for the runtime section. |
 | `runtime.fallbackModels` | `string[]` | `MONO_AGENT_FALLBACK_MODELS` | [] | `["pi:ollama:gemma4:31b"]` | Legacy fallback list whose routes inherit runtime.effort. Prefer runtime.fallbacks for new configs. |

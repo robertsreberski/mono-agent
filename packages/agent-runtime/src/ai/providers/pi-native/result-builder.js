@@ -94,9 +94,9 @@ export function emitCapabilitiesResolved(onEvent, { sdk, model, capabilitiesUsed
 
 /**
  * The aborted-run result (entry pre-check / pre-request abort). Pure factory.
- * @param {{resolved: any, options: any, events: any[], runtimeWarnings: any[], start: number, providerSessionId: string}} params
+ * @param {{resolved: any, options: any, events: any[], runtimeWarnings: any[], start: number, providerSessionId: string, piTransport: string}} params
  */
-export function abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId }) {
+export function abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId, piTransport }) {
   return {
     text: null,
     thinking: "",
@@ -116,6 +116,7 @@ export function abortedResult({ resolved, options, events, runtimeWarnings, star
       provider_session_id: providerSessionId,
       pi_stop_reason: "aborted",
       pi_engine: "native",
+      pi_transport_requested: piTransport,
       external_abort: true,
     },
   };
@@ -201,6 +202,7 @@ export function buildErrorResult(params) {
     providerSessionId,
     runtimeWarnings,
     isRetryable,
+    piTransport,
   } = params;
   return {
     text: assistantTexts.join("") || null,
@@ -221,6 +223,7 @@ export function buildErrorResult(params) {
       max_turns_hit: maxTurnsHit,
       provider_session_id: providerSessionId,
       pi_engine: "native",
+      pi_transport_requested: piTransport,
       pi_error_retryable: isRetryable,
     },
     failureKind: externalAbort ? null : failureKindForPiError(errorMessage, {}, { maxTurnsHit }),
@@ -230,6 +233,7 @@ export function buildErrorResult(params) {
       provider_session_id: providerSessionId,
       pi_stop_reason: externalAbort ? "aborted" : "error",
       pi_engine: "native",
+      pi_transport_requested: piTransport,
       max_turns_hit: maxTurnsHit,
       turn_count: turnCount,
       external_abort: externalAbort,
@@ -252,6 +256,7 @@ export function buildDiagnostics(params) {
     runAssistantCount,
     externalAbort,
     maxRetries,
+    piTransport,
     lastToolName,
     structuredRetry,
     contextCompactionDiagnostics,
@@ -265,6 +270,7 @@ export function buildDiagnostics(params) {
     turn_count: turnCount || runAssistantCount,
     external_abort: externalAbort,
     pi_max_retries: maxRetries,
+    pi_transport_requested: piTransport,
     ...(lastToolName ? { last_tool_name: lastToolName } : {}),
     ...structuredOutputRetryDiagnostics(
       structuredRetry.attempts,

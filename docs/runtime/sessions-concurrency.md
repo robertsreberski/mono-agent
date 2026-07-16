@@ -4,7 +4,7 @@ sidebar:
   order: 5
 ---
 
-This page covers how the runtime keeps provider sessions warm per conversation, how it bounds in-flight work with admission and execution limits, and the Pi-native transport knobs for retries and durable on-disk sessions. Every option here is `config` coverage with a matching `MONO_AGENT_*` env var unless noted.
+This page covers how the runtime keeps provider sessions warm per conversation, how it bounds in-flight work with admission and execution limits, and the Pi-native transport knobs for transport selection, retries, and durable on-disk sessions. Every option here is `config` coverage with a matching `MONO_AGENT_*` env var unless noted.
 
 ## The four "session" meanings
 
@@ -95,10 +95,11 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 
 ## Pi-native tuning
 
-`providers.piNative` tunes the Pi-native transport: retry behavior on transient provider failures, and optional durable session storage. These apply to `pi:<provider>:<model>` backends. All fields are optional.
+`providers.piNative` tunes the Pi-native provider path: transport selection, retry behavior on transient provider failures, and optional durable session storage. These apply to `pi:<provider>:<model>` backends. All fields are optional.
 
 | Key | Range / Default | Meaning |
 | --- | --- | --- |
+| `providers.piNative.transport` | `auto` (default), `sse`, `websocket`, `websocket-cached` | Preferred provider transport; providers without multiple transports ignore it |
 | `providers.piNative.piMaxRetries` | `0`–`8`, default `2` | Transient provider-transport retries |
 | `providers.piNative.maxRetryDelayMs` | default `60000` | Backoff cap between retries (ms) |
 | `providers.piNative.piSessionsRoot` | path; unset = in-memory | Durable JSONL session store enabling resume across restarts |
@@ -107,6 +108,7 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 {
   "providers": {
     "piNative": {
+      "transport": "sse",
       "piMaxRetries": 2,
       "maxRetryDelayMs": 60000,
       "piSessionsRoot": ".mono-agent/sessions"
@@ -115,7 +117,9 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 }
 ```
 
-Env vars: `MONO_AGENT_PI_MAX_RETRIES`, `MONO_AGENT_MAX_RETRY_DELAY_MS`, `MONO_AGENT_PI_SESSIONS_ROOT`.
+Env vars: `MONO_AGENT_PI_TRANSPORT`, `MONO_AGENT_PI_MAX_RETRIES`, `MONO_AGENT_MAX_RETRY_DELAY_MS`, `MONO_AGENT_PI_SESSIONS_ROOT`.
+
+`auto` preserves Pi's provider-specific default and fallback behavior. An explicit mode is host-authoritative for configured agents: request-scoped runtime extensions cannot replace it. Every Pi result records the normalized choice as `diagnostics.pi_transport_requested`; this is the requested mode, not a claim that a provider with only one transport changed its wire protocol.
 
 ### Durable sessions and restart
 

@@ -1091,6 +1091,20 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "transport": {
+              "description": "Preferred Pi provider transport: auto, sse, websocket, or websocket-cached. Providers without multiple transports ignore it.",
+              "examples": [
+                "sse"
+              ],
+              "type": "string",
+              "default": "auto",
+              "enum": [
+                "auto",
+                "sse",
+                "websocket",
+                "websocket-cached"
+              ]
+            },
             "piMaxRetries": {
               "description": "Configures piNative.piMaxRetries for the providers section.",
               "examples": [

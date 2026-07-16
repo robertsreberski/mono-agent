@@ -47,6 +47,7 @@ up an auditable safety contract.
       }
     ],
     "piNative": {
+      "transport": "auto",
       "piMaxRetries": 2,
       "maxRetryDelayMs": 60000
     }

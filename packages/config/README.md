@@ -81,6 +81,10 @@ MONO_AGENT_PI_AUTH_PATH=/Users/example/.pi/agent/auth.json
 Only the path is stored in config. Token contents stay in the auth JSON file and
 are never included in `redactMonoAgentConfig()`.
 
+Pi-native transport selection is optional and defaults to `auto`. Configure
+`providers.piNative.transport` or `MONO_AGENT_PI_TRANSPORT` with `auto`, `sse`,
+`websocket`, or `websocket-cached`; unsupported providers ignore the choice.
+
 ## Local Providers
 
 Core config can also define local Pi providers under `providers.local`. The primary supported path is Ollama:
@@ -185,7 +189,7 @@ Enforced network modes are `none`, `localhost`, and `allowlist`. `allowlist` rea
 - `readMonoAgentConfigJson`, `writeMonoAgentConfigJson`
 - `buildMonoAgentConfigView`, `CONFIG_ENV_KEYS` — the single source-annotated view of a resolved config (env/json/default per field), used by the TUI config pane and `mono-agent config`
 - `EFFORT_LEVELS`, `ROUTE_SAFETY_MODES`, `PERMISSION_MODES`
-- `MonoAgentConfig`, `MonoAgentConfigJson`, `RedactedMonoAgentConfig`, `MonoAgentConfigError`
+- `MonoAgentConfig`, `MonoAgentConfigJson`, `PiNativeProviderConfig`, `RedactedMonoAgentConfig`, `MonoAgentConfigError`
 
 ## Dependency Boundary
 

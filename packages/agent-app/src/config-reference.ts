@@ -12,6 +12,7 @@ import {
 } from "@mono-agent/config";
 import type { ConfigViewFieldId, MonoAgentConfigJson } from "@mono-agent/config";
 import {
+  PI_TRANSPORTS,
   SANDBOX_FALLBACKS,
   SANDBOX_MODES,
   SANDBOX_NETWORK_MODES,
@@ -808,6 +809,8 @@ function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.enum = SANDBOX_NETWORK_MODES.filter((mode) => mode !== "all");
   } else if (field.jsonPath === "sandbox.fallback") {
     schema.enum = SANDBOX_FALLBACKS;
+  } else if (field.jsonPath === "providers.piNative.transport") {
+    schema.enum = PI_TRANSPORTS;
   } else if (field.jsonPath === "telegram.sendTools.scope") {
     schema.enum = ["producing-conversation"];
   } else if (field.jsonPath === "telegram.sendTools.pathScope") {
@@ -891,6 +894,9 @@ function inferType(id: string): ConfigReferenceType {
   if (id === "runtime.fallbacks") {
     return "array";
   }
+  if (id === "providers.piNative.transport") {
+    return "string";
+  }
   if (id.endsWith("Models") || id.endsWith("Tools") || id.endsWith("Servers") || id.endsWith("Roots") || id.endsWith("allowlist") || id.endsWith("denyWrite") || id.endsWith("selectedSkills") || id.endsWith("Ids") || id.endsWith("Aliases")) {
     return "string[]";
   }
@@ -967,6 +973,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "traceability.globalDiscovery": true,
     "providers.piNative.piMaxRetries": 2,
     "providers.piNative.maxRetryDelayMs": 60_000,
+    "providers.piNative.transport": "auto",
     "telegram.enabled": false,
     "telegram.allowAllChats": false,
     "slack.enabled": false,
@@ -1029,6 +1036,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "traceability.sourceLabel": "My Agent",
     "tools.mcpRequestContextServers": ["transcribe"],
     "providers.piAuthPath": "~/.pi/agent/auth.json",
+    "providers.piNative.transport": "sse",
     "telegram.botToken": "env:MONO_AGENT_TELEGRAM_BOT_TOKEN",
     "slack.botToken": "env:MONO_AGENT_SLACK_BOT_TOKEN",
     "slack.appToken": "env:MONO_AGENT_SLACK_APP_TOKEN",
@@ -1084,6 +1092,9 @@ function descriptionFor(id: string): string {
   }
   if (id === "tools.mcpRequestContextServers") {
     return "Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context.";
+  }
+  if (id === "providers.piNative.transport") {
+    return "Preferred Pi provider transport: auto, sse, websocket, or websocket-cached. Providers without multiple transports ignore it.";
   }
   return `Configures ${name.length > 0 ? name : id} for the ${section} section.`;
 }

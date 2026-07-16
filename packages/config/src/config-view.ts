@@ -147,6 +147,7 @@ export const CONFIG_ENV_KEYS = {
   "traceability.globalDiscovery": "MONO_AGENT_TRACE_GLOBAL_DISCOVERY",
   "observability.exporters": "MONO_AGENT_OBSERVABILITY_EXPORTERS",
   "providers.piAuthPath": "MONO_AGENT_PI_AUTH_PATH",
+  "providers.piNative.transport": "MONO_AGENT_PI_TRANSPORT",
   "providers.piNative.piMaxRetries": "MONO_AGENT_PI_MAX_RETRIES",
   "providers.piNative.maxRetryDelayMs": "MONO_AGENT_MAX_RETRY_DELAY_MS",
   "providers.piNative.piSessionsRoot": "MONO_AGENT_PI_SESSIONS_ROOT",
@@ -998,6 +999,12 @@ function buildProvidersSection(input: BuildMonoAgentConfigViewInput): ConfigView
         label: "Pi auth path",
         value: providers?.piAuthPath ?? PLACEHOLDER,
         jsonPresent: json.providers?.piAuthPath !== undefined,
+      }),
+      toField(env, {
+        id: "providers.piNative.transport",
+        label: "Pi transport",
+        value: providers?.piNative?.transport ?? "auto",
+        jsonPresent: json.providers?.piNative?.transport !== undefined,
       }),
       toField(env, {
         id: "providers.piNative.piMaxRetries",

@@ -266,6 +266,7 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.numTurns).toBe(1);
     expect(result.diagnostics.provider_session_id).toBe(result.providerSessionId);
     expect(result.diagnostics.pi_engine).toBe("native");
+    expect(result.diagnostics.pi_transport_requested).toBe("auto");
 
     const events = onEvent.mock.calls.map(([event]) => event);
     expect(events[0]).toMatchObject({ type: "provider_request_started", sdk: "pi", runtime: "pi" });
@@ -276,6 +277,27 @@ describe("pi-native AgentHarness bridge", () => {
       .filter((block) => block?.type === "text")
       .map((block) => block.text);
     expect(textBlocks.join("")).toContain("hello world");
+  });
+
+  it("forwards the requested transport to Pi and reports it in diagnostics", async () => {
+    const model = setup();
+    faux.setResponses([fauxAssistantMessage([fauxText("over sse")])]);
+    const originalStreamSimple = faux.provider.streamSimple.bind(faux.provider);
+    let observedTransport;
+    faux.provider.streamSimple = (requestModel, context, options) => {
+      observedTransport = options?.transport;
+      return originalStreamSimple(requestModel, context, options);
+    };
+
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "say hi" }],
+      piTransport: "sse",
+    }));
+
+    expect(result.error).toBeNull();
+    expect(result.text).toBe("over sse");
+    expect(observedTransport).toBe("sse");
+    expect(result.diagnostics.pi_transport_requested).toBe("sse");
   });
 
   it("delivers final-turn images to the model as image content blocks (not dropped)", async () => {

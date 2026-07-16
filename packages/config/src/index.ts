@@ -31,6 +31,7 @@ export type {
   MemoryWriteMode,
   MonoAgentConfig,
   ObservabilityExporterConfig,
+  PiNativeProviderConfig,
   PermissionMode,
   RouteSafetyMode,
   RuntimeFallbackConfig,

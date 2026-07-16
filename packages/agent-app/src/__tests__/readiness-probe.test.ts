@@ -35,6 +35,10 @@ async function syntheticReadinessWorker(): Promise<{ readonly url: URL; readonly
       parentPort.postMessage(workerData.runtime?.effort === "max"
         ? { type: "result", hasText: true, cancelled: false }
         : { type: "error", message: "worker effort did not match" });
+    } else if (mode === "transport") {
+      parentPort.postMessage(workerData.runtime?.piTransport === "sse"
+        ? { type: "result", hasText: true, cancelled: false }
+        : { type: "error", message: "worker Pi transport did not match" });
     } else if (mode === "ignore-abort") {
       setInterval(() => {}, 10_000);
     } else {
@@ -217,6 +221,35 @@ describe("runReadinessProbe", () => {
       await expect(runReadinessProbe({
         plan: effortPlan,
         hostEnv: { READINESS_WORKER_TEST_MODE: "effort" },
+        workerUrl: synthetic.url,
+      })).resolves.toEqual({ ok: true });
+    } finally {
+      await synthetic.cleanup();
+    }
+  });
+
+  it("probes with the configured Pi transport in injected and worker execution", async () => {
+    const configJson = structuredClone(plan.configJson) as Record<string, unknown>;
+    configJson.providers = {
+      ...((configJson.providers as Record<string, unknown> | undefined) ?? {}),
+      piNative: { transport: "sse" },
+    };
+    const transportPlan = { ...plan, configJson: configJson as never };
+
+    await expect(runReadinessProbe({
+      plan: transportPlan,
+      run: async ({ config, options }) => {
+        expect(config.providers?.piNative?.transport).toBe("sse");
+        expect(options.piTransport).toBe("sse");
+        return { text: "ready" };
+      },
+    })).resolves.toEqual({ ok: true });
+
+    const synthetic = await syntheticReadinessWorker();
+    try {
+      await expect(runReadinessProbe({
+        plan: transportPlan,
+        hostEnv: { READINESS_WORKER_TEST_MODE: "transport" },
         workerUrl: synthetic.url,
       })).resolves.toEqual({ ok: true });
     } finally {

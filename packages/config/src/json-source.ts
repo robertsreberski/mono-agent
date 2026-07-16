@@ -4,6 +4,7 @@ import {
   writeSettingsJson,
 } from "@mono-agent/agent-contracts";
 import type { SettingsJson, SettingsJsonValue } from "@mono-agent/agent-contracts";
+import type { PiTransport } from "@mono-agent/runtime-adapter";
 
 import { MonoAgentConfigError } from "./config.js";
 import type { MemoryBackend, MemoryEmbeddingsProvider, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";
@@ -79,6 +80,7 @@ export type MonoAgentProvidersJson = {
   readonly piAuthPath?: string;
   readonly local?: readonly MonoAgentLocalProviderJson[];
   readonly piNative?: {
+    readonly transport?: PiTransport;
     readonly piMaxRetries?: number;
     readonly maxRetryDelayMs?: number;
     readonly piSessionsRoot?: string;

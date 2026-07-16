@@ -158,6 +158,10 @@ export interface RuntimePromptOverrides {
   readonly liveInputGuidance?: (body: string) => string;
 }
 
+/** Provider transport requested for Pi-native runs. Unsupported providers ignore it. */
+export const PI_TRANSPORTS = ["auto", "sse", "websocket", "websocket-cached"] as const;
+export type PiTransport = (typeof PI_TRANSPORTS)[number];
+
 export interface RuntimeRunOptions {
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];
@@ -180,6 +184,7 @@ export interface RuntimeRunOptions {
   /** Per-run prompt-fragment overrides. */
   readonly prompts?: RuntimePromptOverrides;
   // Pi-native provider knobs (optional; ignored by other bridges).
+  readonly piTransport?: PiTransport;
   readonly piMaxRetries?: number;
   readonly maxRetryDelayMs?: number;
   readonly piSessionsRoot?: string;
