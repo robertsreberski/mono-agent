@@ -96,6 +96,8 @@ To allow every chat instead of an explicit allowlist, set `allowAllChats` and dr
 
 In both cases the chat must pass the allowlist: it must appear in `allowedChatJids`, or `allowAllChats` must be `true`. A chat that is not allowed is silently ignored.
 
+The bundled event runner derives a queue from each usable, trimmed `remoteJid`; messages without one share a fallback queue. Within a queue it awaits both the message handler and its result callback before starting the next message. Different queues can enter the adapter concurrently, so one chat is not held behind another by the event runner, although configured runtime limits can still serialize the underlying agent turns. Completion and result-callback order across different chats is not guaranteed to match global receive order. A later message in the same chat, including `/cancel`, does not overtake the in-flight handler.
+
 :::tip
 `groupMode: "any"` in a busy group will run the agent on every message. Pair it with a tight `allowedChatJids` and consider [concurrency limits](/runtime/sessions-concurrency/) before enabling it.
 :::
