@@ -190,12 +190,14 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: {
         ...baseEnv,
+        MONO_AGENT_PI_TRANSPORT: "sse",
         MONO_AGENT_PI_MAX_RETRIES: "4",
         MONO_AGENT_MAX_RETRY_DELAY_MS: "30000",
         MONO_AGENT_PI_SESSIONS_ROOT: ".mono-agent/sessions",
       },
     });
     expect(config.providers?.piNative).toEqual({
+      transport: "sse",
       piMaxRetries: 4,
       maxRetryDelayMs: 30_000,
       piSessionsRoot: join("/repo", ".mono-agent", "sessions"),
@@ -212,6 +214,15 @@ describe("loadMonoAgentConfig", () => {
       loadMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_PI_MAX_RETRIES: "99" },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+  });
+
+  it("rejects an invalid pi transport", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_PI_TRANSPORT: "long-polling" },
       }),
     ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
   });
@@ -617,6 +628,7 @@ describe("loadMonoAgentConfig", () => {
       cwd: "/repo",
       env: {
         ...baseEnv,
+        MONO_AGENT_PI_TRANSPORT: "websocket-cached",
         MONO_AGENT_PI_MAX_RETRIES: "4",
         MONO_AGENT_MAX_RETRY_DELAY_MS: "30000",
         MONO_AGENT_PI_SESSIONS_ROOT: ".mono-agent/sessions",
@@ -624,6 +636,7 @@ describe("loadMonoAgentConfig", () => {
     });
     const redacted = redactMonoAgentConfig(config);
     expect(redacted.providers?.piNative).toEqual({
+      transport: "websocket-cached",
       piMaxRetries: 4,
       maxRetryDelayMs: 30_000,
       piSessionsRoot: join("/repo", ".mono-agent", "sessions"),

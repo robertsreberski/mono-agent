@@ -177,6 +177,7 @@ function sessionUnavailableResult({
   errorMessage,
   failureKind,
   piErrorCode,
+  piTransport,
 }) {
   return {
     text: null,
@@ -196,6 +197,7 @@ function sessionUnavailableResult({
       provider_session_id: sessionId,
       pi_error_code: piErrorCode,
       pi_engine: "native",
+      pi_transport_requested: piTransport,
     },
   };
 }
@@ -221,6 +223,7 @@ export async function resolveSession(runState, {
   events,
   runtimeWarnings,
   start,
+  piTransport,
 }) {
   // Resume check first: a session miss must stay cheap (no tool/MCP/harness
   // init). This mirrors the legacy bridge's fail-fast contract.
@@ -307,6 +310,7 @@ export async function resolveSession(runState, {
             errorMessage: `Pi session ${requestedSessionId} is not live`,
             failureKind: "session_not_found",
             piErrorCode: "pi_session_not_found",
+            piTransport,
           }),
         };
       }
@@ -344,6 +348,7 @@ export async function resolveSession(runState, {
               : `Pi session ${requestedSessionId} is busy with another turn`,
             failureKind: missing ? "session_not_found" : "session_busy",
             piErrorCode: missing ? "pi_session_not_found" : "pi_session_busy",
+            piTransport,
           }),
         };
       }

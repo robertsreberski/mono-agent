@@ -7,10 +7,11 @@ import {
   isRuntimeExecutionMode,
   modelReferenceKey,
   parseMonoRuntimeModelReference,
+  PI_TRANSPORTS,
   RuntimeAdapterError,
   validateLocalProviderDefinition,
 } from "@mono-agent/runtime-adapter";
-import type { LocalProviderDefinition, LocalProviderModelDefinition, RuntimeExecutionMode } from "@mono-agent/runtime-adapter";
+import type { LocalProviderDefinition, LocalProviderModelDefinition, PiTransport, RuntimeExecutionMode } from "@mono-agent/runtime-adapter";
 import {
   SANDBOX_FALLBACKS,
   SANDBOX_MODES,
@@ -1583,6 +1584,7 @@ function readPiNativeProviderConfig(
   cwd: string,
 ): PiNativeProviderConfig | undefined {
   const hasAny = [
+    env.MONO_AGENT_PI_TRANSPORT,
     env.MONO_AGENT_PI_MAX_RETRIES,
     env.MONO_AGENT_MAX_RETRY_DELAY_MS,
     env.MONO_AGENT_PI_SESSIONS_ROOT,
@@ -1590,10 +1592,20 @@ function readPiNativeProviderConfig(
   if (!hasAny) {
     return undefined;
   }
+  const transport = normalizeOptionalString(env.MONO_AGENT_PI_TRANSPORT) === undefined
+    ? undefined
+    : readChoice<PiTransport>(
+        env.MONO_AGENT_PI_TRANSPORT,
+        "MONO_AGENT_PI_TRANSPORT",
+        PI_TRANSPORTS,
+        "auto",
+        invalidEnv,
+      );
   const piMaxRetries = readOptionalInteger(env.MONO_AGENT_PI_MAX_RETRIES, "MONO_AGENT_PI_MAX_RETRIES", { min: 0, max: 8 });
   const maxRetryDelayMs = readOptionalInteger(env.MONO_AGENT_MAX_RETRY_DELAY_MS, "MONO_AGENT_MAX_RETRY_DELAY_MS", { min: 100, max: 3_600_000 });
   const piSessionsRoot = readOptionalPath(env.MONO_AGENT_PI_SESSIONS_ROOT, cwd);
   return {
+    ...(transport === undefined ? {} : { transport }),
     ...(piMaxRetries === undefined ? {} : { piMaxRetries }),
     ...(maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs }),
     ...(piSessionsRoot === undefined ? {} : { piSessionsRoot }),

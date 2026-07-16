@@ -15,7 +15,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Per-channel run admission/execution bounds | config | `concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns` | `runtime.concurrency` |
 | Local providers (Ollama / LM Studio / OpenAI-compatible) | config | `providers.local[]` | `runtime.local-providers` |
 | Pi OAuth credentials | config | `providers.piAuthPath` | `runtime.pi-credentials` |
-| Pi-native retry and durable provider-session tuning | config | `providers.piNative.{piMaxRetries,maxRetryDelayMs,piSessionsRoot}` | `runtime.pi-native-tuning` |
+| Pi-native transport, retry, and durable provider-session tuning | config | `providers.piNative.{transport,piMaxRetries,maxRetryDelayMs,piSessionsRoot}` | `runtime.pi-native-tuning` |
 | Tool-output bloat guard, cost tracking | auto | built into every run | — |
 | Context handling / auto-compaction | provider + auto | delegated to the provider; the pi bridge drives `AgentHarness.compact()` (proactive before a near-window turn + reactive recovery on overflow). Runs report `context_compaction_applied: true` / `false` / `null` | — |
 | Structured output (JSON schema), live input steering | code | harness `runtimeOptions` | — |

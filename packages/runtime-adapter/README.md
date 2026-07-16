@@ -37,6 +37,7 @@ const backends = listMonoRuntimeBackends();
   can supply route-local provider options without exposing credentials in route telemetry.
 - Sandbox policy helpers: `createSandboxPolicy`, `failClosedSandboxPolicy`, `mergeSandboxPolicies`, `prepareSandboxedCommand`, plus managed SRT resolution/integrity helpers
 - `RuntimeAdapterError`
+- `PI_TRANSPORTS` and `PiTransport` for the typed Pi-native provider transport choice
 - Runtime backend, model, execution mode, message, event, sandbox, tool, and result types
 - Local provider types for Ollama, LM Studio, and OpenAI-compatible gateways
 
