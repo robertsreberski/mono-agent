@@ -21,8 +21,9 @@ export interface SlackShortcutConfig {
   readonly callbackId: string;
   readonly prompt: string;
   /**
-   * Optional destination. Otherwise use the message source, then the first
-   * allowed channel; a global shortcut goes directly to that allowed fallback.
+   * Optional destination. When omitted, a message shortcut uses its source
+   * channel and is refused if that source is unauthorized. A source-less global
+   * shortcut uses the first explicit `allowedChannelIds` entry.
    */
   readonly channelId?: string;
   /** Optional message posted instantly on invocation, before the run (e.g. "🔄 Syncing…"). */

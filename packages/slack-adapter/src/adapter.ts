@@ -177,10 +177,11 @@ export interface SlackShortcutBinding {
   readonly prompt: string;
   /**
    * Destination channel for the run's reply. When omitted, a MESSAGE shortcut
-   * falls back to its source channel and then the first allowlisted channel; a
-   * GLOBAL shortcut falls back directly to that first allowlisted channel. With
-   * `allowAllChannels` and no explicit allowlist, a global shortcut needs a
-   * `channelId`. Pin it to bound the destination.
+   * uses its source channel and is refused if that source is unauthorized; it
+   * does not retry an allowlist default. A source-less GLOBAL shortcut uses the
+   * first explicit `allowedChannelIds` entry. With `allowAllChannels` and no
+   * explicit allowlist, a global shortcut needs a `channelId`. Pin it to bound
+   * the destination.
    */
   readonly channelId?: SlackChannelId;
   /**
