@@ -31,18 +31,13 @@ Then refresh the lockfile:
 pnpm install
 ```
 
-Two things `validateRelease` does **not** cover — check them by hand during the bump:
+`validateRelease` enforces the private root manifest too: every `@mono-agent/*`
+reference in `dependencies`, `optionalDependencies`, `peerDependencies`, and
+`devDependencies` must use the exact `workspace:<new>` release range. This
+includes plugin-tier extras; stale and floating root workspace ranges fail the
+release gate.
 
-- **Root devDependency pins (#228).** The gate verifies every `packages/*`/`extras/*`
-  version and their internal deps, but not the root `package.json`'s own
-  `@mono-agent/*` devDependency pins. A pin left at the old version is invisible to
-  the release gate — spot-check it against the target:
-
-  ```bash
-  # substitute <target-version> with the version you are cutting
-  grep -oE '"@mono-agent/[^"]+": *"workspace:[^"]+"' package.json | grep -v 'workspace:<target-version>'
-  # non-empty output = a root devDep pin the release gate will NOT catch (#228)
-  ```
+One release-coupled surface remains manual:
 
 - **Stale hand-authored `_VERSION` literals.** A version string typed into source
   drifts silently: `TUI_PACKAGE_VERSION` fell 11 minor versions behind before anyone
