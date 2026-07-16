@@ -3,7 +3,20 @@ import { MEMORY_STATUSES, MEMORY_TYPES } from "./types.js";
 export const REPLAY_LIFECYCLE_STATE_INDEX = "idx_memories_replay_projection_state";
 export const REPLAY_EDGE_STATE_INDEX = "idx_edges_replay_projection_state";
 
-/** Ordered DDL applied once at open. `${dim}` is substituted with the configured dimension. */
+/**
+ * SQLite schema-evolution contract:
+ *
+ * - `CREATE ... IF NOT EXISTS` is safe for appending a new table or index.
+ * - Never add a column by editing an existing create statement alone: SQLite
+ *   leaves every existing `memory.db` unchanged in that case.
+ * - Add explicit, idempotent open-time migration work for an existing table
+ *   before changing its fresh-database definition. Because SQLite appends an
+ *   added column, append it at the end of that create statement too so fresh
+ *   and upgraded databases retain the same column order.
+ * - Keep the cumulative-schema regression in `schema-evolution.test.ts` green.
+ *
+ * `${dim}` is substituted with the configured vector dimension.
+ */
 export function migrations(dim: number): readonly string[] {
   return [
     `CREATE TABLE IF NOT EXISTS memories (
