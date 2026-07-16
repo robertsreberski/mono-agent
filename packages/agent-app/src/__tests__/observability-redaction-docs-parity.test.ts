@@ -5,10 +5,16 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const REDACTION_CONTRACT = [
+const SHARED_REDACTION_CONTRACT = [
   "non-numeric values under sensitive-looking object keys are redacted;",
   "numeric values under matched keys are retained;",
   "free text is not content-scanned",
+].join(" ");
+const RUN_HISTORY_SECOND_PASS_CONTRACT = [
+  "`runhistory` then applies an additional projection sanitizer.",
+  "in that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible;",
+  "numeric values under `apikey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted.",
+  "assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel.",
 ].join(" ");
 
 function repoRoot(): string {
@@ -36,6 +42,16 @@ function lineContaining(relativePath: string, anchor: string): string {
     throw new Error(`${relativePath} is missing anchor ${JSON.stringify(anchor)}`);
   }
   return normalized(line);
+}
+
+function paragraphContaining(relativePath: string, anchor: string): string {
+  const paragraph = readRepoFile(relativePath)
+    .split(/\n\s*\n/gu)
+    .find((candidate) => candidate.includes(anchor));
+  if (paragraph === undefined) {
+    throw new Error(`${relativePath} is missing paragraph anchor ${JSON.stringify(anchor)}`);
+  }
+  return normalized(paragraph);
 }
 
 function markdownSection(relativePath: string, heading: string): string {
@@ -66,22 +82,25 @@ describe("observability redaction docs parity", () => {
     ] as const;
 
     for (const [relativePath, anchor] of surfaces) {
-      expect(lineContaining(relativePath, anchor), `${relativePath}: ${anchor}`).toContain(REDACTION_CONTRACT);
+      expect(lineContaining(relativePath, anchor), `${relativePath}: ${anchor}`).toContain(SHARED_REDACTION_CONTRACT);
     }
   });
 
-  it("keeps RunHistory's safe projection explicit without promising all matched-key values disappear", () => {
-    const mcpSection = markdownSection("docs/tools/mcp.md", "`RunHistory`: prior-run evidence");
-    const artifactSection = markdownSection(
-      "docs/observability/artifacts-and-traces.md",
-      "Agent-facing prior-run evidence (`RunHistory`)",
-    );
-    const packageReadme = normalized(readRepoFile("packages/agent-app/README.md"));
+  it("distinguishes RunHistory's second sanitizer from shared observability redaction", () => {
+    const surfaces = [
+      markdownSection("docs/tools/mcp.md", "`RunHistory`: prior-run evidence"),
+      markdownSection(
+        "docs/observability/artifacts-and-traces.md",
+        "Agent-facing prior-run evidence (`RunHistory`)",
+      ),
+      lineContaining("docs/reference/feature-registry.md", "| `agent-app.run-history-tool` |"),
+      paragraphContaining("packages/agent-app/README.md", "`RunHistory` requires no config key."),
+    ];
 
-    for (const surface of [mcpSection, artifactSection, packageReadme]) {
-      expect(surface).toContain(REDACTION_CONTRACT);
+    for (const surface of surfaces) {
+      expect(surface).toContain(SHARED_REDACTION_CONTRACT);
+      expect(surface).toContain(RUN_HISTORY_SECOND_PASS_CONTRACT);
     }
-    expect(mcpSection).not.toMatch(/never returns[^.]*sensitive-key values/u);
   });
 
   it("documents the current separator misses and substring false positives as follow-up", () => {

@@ -215,13 +215,18 @@ allow-all on MCP-capable routes; a restrictive `tools.allowedTools` must name
 `disallowedTools` can remove it. Direct OpenCode and other MCP-incompatible
 routes suppress it. Its `list` and `inspect` actions can read only completed
 prior runs in the exact current conversation bucket and return bounded,
-normalized evidence. Non-numeric values under sensitive-looking object keys
+normalized evidence. Structured projected values first pass through the shared
+observability redactor: non-numeric values under sensitive-looking object keys
 are redacted; numeric values under matched keys are retained; free text is not
-content-scanned. Results exclude the
+content-scanned or scrubbed. `RunHistory` then applies an additional projection
+sanitizer. In that second pass, numeric values under `credential`, `private_key`,
+and `bearer` can remain visible; numeric values under `apiKey`, `token`,
+`client_secret`, `password`, `authorization`, and `cookie` are redacted.
+Assignment-shaped password or secret prose is content-scanned and replaced with
+the diagnostic or tool-result omission sentinel. Results exclude the
 current/running run, other conversations or rollover buckets, system prompts,
-reasoning, recalled memory,
-turn-context payloads, and raw artifact paths; historical text is marked
-untrusted.
+reasoning, recalled memory, turn-context payloads, and raw artifact paths;
+historical text is marked untrusted.
 
 For missing context, the agent should use active conversation history first,
 `MemoryRecall` for intentionally captured durable facts, and `RunHistory` for

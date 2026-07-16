@@ -519,6 +519,105 @@ describe("RunHistory MCP tool", () => {
     }
   });
 
+  it("applies its extra key and prose sanitizers after shared observability redaction", async () => {
+    const artifactDir = await tempDir();
+    const conversationId = "webhook:run-history-redaction-split";
+    await writeRun({
+      artifactDir,
+      runId: "redaction-split-run",
+      conversationId,
+      startedAt: "2026-07-12T08:00:00.000Z",
+      events: [
+        {
+          type: "assistant",
+          message: {
+            content: [{
+              type: "tool_use",
+              id: "tool-redaction-split",
+              name: "Inspect",
+              input: {
+                credential: 271828,
+                private_key: 314159,
+                bearer: 161803,
+                apiKey: 101,
+                token: 202,
+                client_secret: 303,
+                password: 404,
+                authorization: 505,
+                cookie: 606,
+              },
+            }],
+          },
+          timestamp: "2026-07-12T08:00:01.000Z",
+        },
+        {
+          type: "user",
+          message: {
+            content: [{
+              type: "tool_result",
+              tool_use_id: "tool-redaction-split",
+              content: [{ type: "text", text: "password=tool-prose-value" }],
+            }],
+          },
+          timestamp: "2026-07-12T08:00:02.000Z",
+        },
+        {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "password=free-text-value" }],
+          },
+          timestamp: "2026-07-12T08:00:03.000Z",
+        },
+      ],
+    });
+
+    const history = await openHistoryClient(artifactDir, conversationId);
+    try {
+      const result = await history.client.callTool({
+        name: RUN_HISTORY_TOOL_NAME,
+        arguments: { action: "inspect", runId: "redaction-split-run" },
+      });
+      const body = structured<{
+        readonly timeline: ReadonlyArray<Record<string, unknown>>;
+        readonly finalOutput: string;
+      }>(result);
+      const tool = body.timeline.find((entry) => entry.kind === "tool") as {
+        readonly input: Record<string, unknown>;
+        readonly result: { readonly content: unknown };
+      };
+
+      expect(tool.input).toEqual({
+        credential: 271828,
+        private_key: 314159,
+        bearer: 161803,
+        apiKey: "[redacted]",
+        token: "[redacted]",
+        client_secret: "[redacted]",
+        password: "[redacted]",
+        authorization: "[redacted]",
+        cookie: "[redacted]",
+      });
+      expect(tool.result.content).toBe(
+        "[tool result omitted because it contained private run-artifact internals]",
+      );
+      expect(body.timeline).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: "assistant",
+          text: "[diagnostic omitted because it contained private run-artifact internals]",
+        }),
+      ]));
+      expect(body.finalOutput).toBe(
+        "[diagnostic omitted because it contained private run-artifact internals]",
+      );
+
+      const serialized = JSON.stringify(result);
+      expect(serialized).not.toContain("tool-prose-value");
+      expect(serialized).not.toContain("free-text-value");
+    } finally {
+      await history.close();
+    }
+  });
+
   it("returns safe errors for invalid, missing, foreign, current, and running run ids", async () => {
     const artifactDir = await tempDir();
     const conversationId = "tui:one";
