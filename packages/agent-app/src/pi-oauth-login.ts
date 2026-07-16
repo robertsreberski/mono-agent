@@ -1,4 +1,5 @@
-import { chmod, readFile, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { open, type FileHandle } from "node:fs/promises";
 import { createInterface } from "node:readline";
 
 import {
@@ -36,6 +37,7 @@ export async function runPiOAuthLogin(
   if (provider === undefined || provider.id !== providerId) {
     throw new Error(`Unknown bundled Pi OAuth provider: ${providerId}`);
   }
+  assertPiOAuthLoginPersistenceSupported(process.platform);
 
   const readline = options.io === undefined
     ? createInterface({ input: process.stdin, output: process.stdout })
@@ -74,28 +76,69 @@ export async function runPiOAuthLogin(
     const credentials = await provider.login(callbacks);
     const authPath = options.authPath ?? "auth.json";
     const auth = await readAuth(authPath);
-    await writeFile(authPath, `${JSON.stringify({
+    await writeAuth(authPath, `${JSON.stringify({
       ...auth,
       [providerId]: { type: "oauth", ...credentials },
-    }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-    await chmod(authPath, 0o600);
+    }, null, 2)}\n`);
     io.write(`\nCredentials saved to ${authPath}\n`);
   } finally {
     readline?.close();
   }
 }
 
+/** @internal Exported only for deterministic platform-policy tests. */
+export function assertPiOAuthLoginPersistenceSupported(platform: NodeJS.Platform): void {
+  if (platform === "win32") {
+    throw new Error(
+      "Direct Pi OAuth credential persistence is unavailable on Windows because symlink-safe owner-only writes cannot be verified.",
+    );
+  }
+}
+
 async function readAuth(path: string): Promise<Record<string, unknown>> {
+  let handle: FileHandle | undefined;
   let contents: string;
   try {
-    contents = await readFile(path, "utf8");
+    handle = await open(
+      path,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+    );
+    if (!(await handle.stat()).isFile()) {
+      throw new Error(`${path} must be a regular file.`);
+    }
+    contents = await handle.readFile("utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
     throw error;
+  } finally {
+    await handle?.close();
   }
   const parsed: unknown = JSON.parse(contents);
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error(`${path} must contain a JSON object.`);
   }
   return parsed as Record<string, unknown>;
+}
+
+async function writeAuth(path: string, contents: string): Promise<void> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(
+      path,
+      fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK | fsConstants.O_CREAT,
+      0o600,
+    );
+    if (!(await handle.stat()).isFile()) {
+      throw new Error(`${path} must be a regular file.`);
+    }
+    // Tighten an existing file through the already-open inode before replacing
+    // its contents, so new credentials are never exposed under an old mode.
+    await handle.chmod(0o600);
+    // O_WRONLY opens at offset zero. Truncate explicitly so a shorter JSON
+    // replacement cannot retain bytes from the prior credential store.
+    await handle.truncate(0);
+    await handle.writeFile(contents, "utf8");
+  } finally {
+    await handle?.close();
+  }
 }
