@@ -1,5 +1,6 @@
 import WebSocket from "ws";
 
+import { redactSlackErrorMessage } from "./log-redaction.js";
 import type {
   SlackEventCallback,
   SlackInteractivityPayload,
@@ -297,7 +298,7 @@ export class SlackSocketModeRunner {
           return;
         }
         this.logger?.warn?.("Slack Socket Mode connection failed; backing off.", {
-          error: error instanceof Error ? error.message : String(error),
+          error: redactSlackErrorMessage(error),
           backoffMs: this.currentBackoffMs,
         });
         await abortableDelay(this.jitteredDelay(this.currentBackoffMs), options.signal);
@@ -527,7 +528,7 @@ export class SlackSocketModeRunner {
         }
         void this.handleEnvelope(socket, envelope).catch((error: unknown) => {
           this.logger?.error?.("Slack Socket Mode envelope handling failed.", {
-            error: error instanceof Error ? error.message : String(error),
+            error: redactSlackErrorMessage(error),
           });
         });
       });
@@ -536,7 +537,7 @@ export class SlackSocketModeRunner {
       });
       socket.on("error", (error: unknown) => {
         reportLost("socket_error");
-        settle(() => reject(error instanceof Error ? error : new Error(String(error))));
+        settle(() => reject(asSlackSocketError(error)));
       });
 
       if (signal?.aborted === true) {
@@ -577,6 +578,10 @@ export class SlackSocketModeRunner {
     const result = await this.handler.handleEventCallback(envelope.payload);
     await this.onEventResult?.(result);
   }
+}
+
+function asSlackSocketError(error: unknown): Error {
+  return new Error(redactSlackErrorMessage(error));
 }
 
 function parseSocketEnvelope(data: unknown): SlackSocketModeEnvelope | undefined {

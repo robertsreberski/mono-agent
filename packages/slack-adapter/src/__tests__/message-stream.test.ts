@@ -875,4 +875,20 @@ describe("classifySlackError", () => {
       failureCertainty: "unknown",
     });
   });
+
+  it("does not invoke Proxy prototype traps while classifying unknown failures", () => {
+    const descriptorHook = vi.fn(() => { throw new Error("hostile descriptor hook"); });
+    const prototypeHook = vi.fn(() => { throw new Error("hostile prototype hook"); });
+    const proxyPrototype = new Proxy({}, {
+      getOwnPropertyDescriptor: descriptorHook,
+      getPrototypeOf: prototypeHook,
+    });
+
+    expect(classifySlackError(Object.create(proxyPrototype))).toEqual({
+      kind: "retry",
+      failureCertainty: "unknown",
+    });
+    expect(descriptorHook).not.toHaveBeenCalled();
+    expect(prototypeHook).not.toHaveBeenCalled();
+  });
 });

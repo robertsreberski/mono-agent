@@ -1,3 +1,5 @@
+import { types as nodeUtilTypes } from "node:util";
+
 import {
   SlackAdapter,
   type AgentResponder,
@@ -9,6 +11,11 @@ import {
   type SlackHomeTabOptions,
   type SlackShortcutBinding,
 } from "./adapter.js";
+import {
+  createSecretSafeSlackLogger,
+  redactSlackErrorMessage,
+  redactSlackSecretText,
+} from "./log-redaction.js";
 import { SlackWebApiClient } from "./slack-client.js";
 import {
   SlackSocketModeRunner,
@@ -18,6 +25,8 @@ import {
   type SlackWebSocketFactory,
 } from "./socket-mode-runner.js";
 import type { SlackChannelId, SlackUserId, SlackWebApi } from "./types.js";
+
+const PROMISE_THEN = Promise.prototype.then;
 
 export interface SlackAdapterStartLogger extends SlackAdapterLogger, SlackSocketModeRunnerLogger {}
 
@@ -67,9 +76,17 @@ export interface SlackAdapterStartOptions {
   readonly heartbeat?: SlackSocketModeRunnerHeartbeatOptions;
   /** Observe every Socket Mode event handling result. */
   readonly onEventResult?: (result: SlackEventHandlingResult) => void | Promise<void>;
-  /** Called once when the connection drops into the reconnect/backoff loop (degraded). Wire to the app's onDegraded. */
+  /**
+   * Called once when the connection drops into the reconnect/backoff loop
+   * (degraded). Credential-like reason material is redacted, and callback
+   * failures are isolated from reconnect recovery. Wire to the app's onDegraded.
+   */
   readonly onConnectionLost?: (reason: string) => void;
-  /** Called once a reconnect has stayed up for the stability window after a prior loss (recovered). Wire to onRecovered. */
+  /**
+   * Called once a reconnect has stayed up for the stability window after a
+   * prior loss (recovered). Callback failures are isolated from recovery.
+   * Wire to onRecovered.
+   */
   readonly onConnectionRestored?: () => void;
   /** Injected RNG for backoff jitter; defaults to Math.random. Tests inject a deterministic value. */
   readonly random?: () => number;
@@ -120,8 +137,16 @@ export async function startSlackAdapter(
     ...(options.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: options.requestTimeoutMs }),
   });
 
-  const adapter = new SlackAdapter(buildAdapterOptions(api, options));
-  const runner = new SlackSocketModeRunner(buildRunnerOptions(api, adapter, options));
+  const knownSecrets = [options.botToken, options.appToken] as const;
+  const logger = createSecretSafeSlackLogger(options.logger, knownSecrets);
+  const adapter = new SlackAdapter(buildAdapterOptions(api, options, logger));
+  const runner = new SlackSocketModeRunner(buildRunnerOptions(
+    api,
+    adapter,
+    options,
+    logger,
+    knownSecrets,
+  ));
 
   const controller = new AbortController();
   // Fire-and-forget the reconnect loop. The runner resolves only when the
@@ -129,8 +154,8 @@ export async function startSlackAdapter(
   const loop = runner.start({ signal: controller.signal });
   // Prevent unhandled rejections if the loop ever throws; stop() observes it too.
   loop.catch((error: unknown) => {
-    options.logger?.error?.("Slack Socket Mode runner stopped unexpectedly.", {
-      error: error instanceof Error ? error.message : String(error),
+    logger?.error?.("Slack Socket Mode runner stopped unexpectedly.", {
+      error: redactSlackErrorMessage(error),
     });
   });
 
@@ -163,6 +188,7 @@ function defaultCreateApi(input: SlackApiFactoryInput): SlackWebApi {
 function buildAdapterOptions(
   api: SlackWebApi,
   options: SlackAdapterStartOptions,
+  logger: SlackAdapterStartLogger | undefined,
 ): ConstructorParameters<typeof SlackAdapter>[0] {
   const adapterOptions: ConstructorParameters<typeof SlackAdapter>[0] = {
     api,
@@ -198,8 +224,8 @@ function buildAdapterOptions(
   if (options.homeTab !== undefined) {
     adapterOptions.homeTab = options.homeTab;
   }
-  if (options.logger !== undefined) {
-    adapterOptions.logger = options.logger;
+  if (logger !== undefined) {
+    adapterOptions.logger = logger;
   }
   if (options.resolvePostIndex !== undefined) {
     adapterOptions.resolvePostIndex = options.resolvePostIndex;
@@ -214,6 +240,8 @@ function buildRunnerOptions(
   api: SlackWebApi,
   adapter: SlackAdapter,
   options: SlackAdapterStartOptions,
+  logger: SlackAdapterStartLogger | undefined,
+  knownSecrets: readonly string[],
 ): ConstructorParameters<typeof SlackSocketModeRunner>[0] {
   const runnerOptions: ConstructorParameters<typeof SlackSocketModeRunner>[0] = {
     api,
@@ -231,11 +259,19 @@ function buildRunnerOptions(
   if (options.onEventResult !== undefined) {
     runnerOptions.onEventResult = options.onEventResult;
   }
-  if (options.onConnectionLost !== undefined) {
-    runnerOptions.onConnectionLost = options.onConnectionLost;
+  const onConnectionLost = options.onConnectionLost;
+  if (onConnectionLost !== undefined) {
+    runnerOptions.onConnectionLost = (reason) => {
+      invokeHostCallbackSafely(() => {
+        return onConnectionLost(redactSlackSecretText(reason, knownSecrets));
+      });
+    };
   }
-  if (options.onConnectionRestored !== undefined) {
-    runnerOptions.onConnectionRestored = options.onConnectionRestored;
+  const onConnectionRestored = options.onConnectionRestored;
+  if (onConnectionRestored !== undefined) {
+    runnerOptions.onConnectionRestored = () => {
+      invokeHostCallbackSafely(onConnectionRestored);
+    };
   }
   if (options.random !== undefined) {
     runnerOptions.random = options.random;
@@ -249,19 +285,30 @@ function buildRunnerOptions(
       try {
         const result = await adapter.handleInteraction(payload);
         if (result.kind === "triggered") {
-          options.logger?.info?.("Slack interaction triggered.", { result });
+          logger?.info?.("Slack interaction triggered.", { result });
         } else {
-          options.logger?.debug?.("Slack interaction ignored.", { result });
+          logger?.debug?.("Slack interaction ignored.", { result });
         }
       } catch (error) {
-        options.logger?.error?.("Slack interaction handling failed.", {
-          error: error instanceof Error ? error.message : String(error),
+        logger?.error?.("Slack interaction handling failed.", {
+          error: redactSlackErrorMessage(error),
         });
       }
     };
   }
-  if (options.logger !== undefined) {
-    runnerOptions.logger = options.logger;
+  if (logger !== undefined) {
+    runnerOptions.logger = logger;
   }
   return runnerOptions;
+}
+
+function invokeHostCallbackSafely(callback: () => unknown): void {
+  try {
+    const outcome = callback();
+    if (nodeUtilTypes.isPromise(outcome)) {
+      Reflect.apply(PROMISE_THEN, outcome, [undefined, () => undefined]);
+    }
+  } catch {
+    // Host observability callbacks cannot stop Socket Mode reconnect recovery.
+  }
 }

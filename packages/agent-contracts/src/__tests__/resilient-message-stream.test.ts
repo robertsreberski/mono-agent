@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   ChannelDeliveryError,
@@ -113,6 +113,60 @@ function makeStream(
 }
 
 describe("ResilientMessageStream", () => {
+  it("does not invoke hostile error accessors while logging activity failures", async () => {
+    const messageGetter = vi.fn(() => { throw new Error("hostile message getter"); });
+    const proxyDescriptorGetter = vi.fn(() => { throw new Error("hostile descriptor getter"); });
+    const proxyPrototypeGetter = vi.fn(() => { throw new Error("hostile prototype getter"); });
+    const hostileError = new Error("safe");
+    Object.defineProperty(hostileError, "message", {
+      configurable: true,
+      get: messageGetter,
+    });
+    const transport = new FakeTransport();
+    transport.indicateActivity = async () => { throw hostileError; };
+    const debug = vi.fn();
+    const stream = new ResilientMessageStream({
+      transport,
+      editDebounceMs: 0,
+      sleep: noSleep,
+      finalOnly: true,
+      logger: { debug },
+    });
+
+    await stream.status("Thinking...");
+
+    const proxyTransport = new FakeTransport();
+    const proxyPrototype = new Proxy({}, {
+      getOwnPropertyDescriptor: proxyDescriptorGetter,
+      getPrototypeOf: proxyPrototypeGetter,
+    });
+    proxyTransport.indicateActivity = async () => {
+      throw Object.create(proxyPrototype) as object;
+    };
+    const proxyStream = new ResilientMessageStream({
+      transport: proxyTransport,
+      editDebounceMs: 0,
+      sleep: noSleep,
+      finalOnly: true,
+      logger: { debug },
+    });
+    await proxyStream.status("Still thinking...");
+
+    expect(messageGetter).not.toHaveBeenCalled();
+    expect(proxyDescriptorGetter).not.toHaveBeenCalled();
+    expect(proxyPrototypeGetter).not.toHaveBeenCalled();
+    expect(debug).toHaveBeenNthCalledWith(
+      1,
+      "Resilient stream activity indicator failed (ignored).",
+      { error: "[Error details unavailable]" },
+    );
+    expect(debug).toHaveBeenNthCalledWith(
+      2,
+      "Resilient stream activity indicator failed (ignored).",
+      { error: "[Error details unavailable]" },
+    );
+  });
+
   it("finalOnly mode: no interim posts/edits, indicates activity, posts the final answer once", async () => {
     const transport = new FakeTransport();
     const stream = new ResilientMessageStream({

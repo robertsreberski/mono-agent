@@ -1,7 +1,5 @@
 import {
   createChannelUserCancelReason,
-  isAgentResponseCancelledError,
-  isChannelUserCancelReason,
   type AgentAttachment,
   type AgentContinuationTurn,
   type AgentRequestBase,
@@ -10,6 +8,11 @@ import {
 } from "@mono-agent/agent-contracts";
 import { createHash } from "node:crypto";
 
+import {
+  isSafeSlackPrototypeInstance,
+  readSafeSlackDataProperty,
+  redactSlackErrorMessage,
+} from "./log-redaction.js";
 import {
   SlackDeliveryError,
   SlackMessageStream,
@@ -465,11 +468,27 @@ export class SerialQueue {
 }
 
 function isSerialQueueFullError(error: unknown): error is SerialQueueFullError {
-  return error instanceof SerialQueueFullError;
+  return isSafeSlackPrototypeInstance(error, SerialQueueFullError.prototype);
+}
+
+function isSlackDeliveryError(error: unknown): error is SlackDeliveryError {
+  return isSafeSlackPrototypeInstance(error, SlackDeliveryError.prototype);
+}
+
+function isAgentResponseCancelledError(error: unknown): boolean {
+  return readSafeSlackDataProperty(error, "agentResponseCancelled") === true;
+}
+
+function isChannelUserCancelReason(reason: unknown): boolean {
+  return readSafeSlackDataProperty(reason, "channelUserCancel") === true;
 }
 
 function slackNotifyFailure(error: SlackDeliveryError, confirmedAnswer: boolean): SlackNotifyResult {
-  if (confirmedAnswer || error.disposition === "unknown") {
+  const disposition = readSafeSlackDataProperty(error, "disposition");
+  if (
+    confirmedAnswer
+    || (disposition !== "retryable" && disposition !== "permanent")
+  ) {
     return {
       delivered: false,
       reason: "delivery outcome is unknown",
@@ -478,7 +497,7 @@ function slackNotifyFailure(error: SlackDeliveryError, confirmedAnswer: boolean)
       ambiguous: true,
     };
   }
-  if (error.disposition === "retryable") {
+  if (disposition === "retryable") {
     return {
       delivered: false,
       reason: "Slack temporarily refused delivery",
@@ -495,8 +514,10 @@ function slackNotifyFailure(error: SlackDeliveryError, confirmedAnswer: boolean)
 }
 
 function slackDeliveryErrorCode(error: SlackDeliveryError, fallback: string): string {
-  if (error.cause instanceof SlackApiError) {
-    const code = error.cause.slackError?.trim();
+  const cause = readSafeSlackDataProperty(error, "cause");
+  if (isSafeSlackPrototypeInstance(cause, SlackApiError.prototype)) {
+    const rawCode = readSafeSlackDataProperty(cause, "slackError");
+    const code = typeof rawCode === "string" ? rawCode.trim() : undefined;
     if (code !== undefined && code.length > 0 && code.length <= 128) return code;
   }
   return fallback;
@@ -893,7 +914,7 @@ export class SlackAdapter {
       return { recorded: true };
     } catch (error) {
       this.logger?.warn?.("Slack continuation history-only commit failed.", {
-        error: error instanceof Error ? error.message : String(error),
+        error: redactSlackErrorMessage(error),
       });
       return { recorded: false, code: "history_record_failed" };
     }
@@ -1016,7 +1037,7 @@ export class SlackAdapter {
       } catch (error) {
         this.logger?.warn?.("Slack interaction ack message failed (continuing with the run).", {
           id,
-          error: error instanceof Error ? error.message : String(error),
+          error: redactSlackErrorMessage(error),
         });
       }
     }
@@ -1063,7 +1084,7 @@ export class SlackAdapter {
     } catch (error) {
       this.logger?.error?.("Failed to publish the Slack App Home tab.", {
         userId,
-        error: error instanceof Error ? error.message : String(error),
+        error: redactSlackErrorMessage(error),
       });
       return { kind: "error", eventId: callback.event_id, error };
     }
@@ -1192,10 +1213,10 @@ export class SlackAdapter {
       try {
         await stream.finish(text);
       } catch (error) {
-        if (error instanceof SlackDeliveryError) {
+        if (isSlackDeliveryError(error)) {
           const failure = slackNotifyFailure(error, answerReceipt !== undefined);
           this.logger?.error?.("Slack verbatim notify delivery failed.", {
-            error: error.message,
+            error: redactSlackErrorMessage(error),
             disposition: failure.ambiguous === true
               ? "unknown"
               : failure.retryable === true ? "retryable" : "permanent",
@@ -1206,7 +1227,7 @@ export class SlackAdapter {
           return { delivered: false, reason: "cancelled", code: "cancelled", retryable: false };
         }
         this.logger?.error?.("Slack verbatim notify delivery failed.", {
-          error: error instanceof Error ? error.message : String(error),
+          error: redactSlackErrorMessage(error),
         });
         return { delivered: false, reason: "delivery failed", code: "delivery_failed", retryable: true };
       }
@@ -1226,7 +1247,7 @@ export class SlackAdapter {
       } catch (error) {
         historyErrorCode = "history_record_failed";
         this.logger?.warn?.("Slack verbatim notify history record failed.", {
-          error: error instanceof Error ? error.message : String(error),
+          error: redactSlackErrorMessage(error),
         });
       }
       return {
@@ -1298,7 +1319,7 @@ export class SlackAdapter {
           return { delivered: false, reason: "cancelled", code: "cancelled", retryable: false };
         }
         this.logger?.error?.("Slack proactive notify failed.", {
-          error: error instanceof Error ? error.message : String(error),
+          error: redactSlackErrorMessage(error),
         });
         return { delivered: false, reason: "responder failed", code: "responder_failed", retryable: true };
       }
@@ -1312,10 +1333,10 @@ export class SlackAdapter {
       try {
         await stream.finish(answer);
       } catch (error) {
-        if (error instanceof SlackDeliveryError) {
+        if (isSlackDeliveryError(error)) {
           const failure = slackNotifyFailure(error, answerReceipt !== undefined);
           this.logger?.error?.("Slack proactive delivery failed after a successful AI run.", {
-            error: error.message,
+            error: redactSlackErrorMessage(error),
             disposition: failure.ambiguous === true
               ? "unknown"
               : failure.retryable === true ? "retryable" : "permanent",
@@ -1326,7 +1347,7 @@ export class SlackAdapter {
           return { delivered: false, reason: "cancelled", code: "cancelled", retryable: false };
         }
         this.logger?.error?.("Slack proactive delivery failed after a successful AI run.", {
-          error: error instanceof Error ? error.message : String(error),
+          error: redactSlackErrorMessage(error),
         });
         return { delivered: false, reason: "delivery failed", code: "delivery_failed", retryable: true };
       }
@@ -1454,7 +1475,7 @@ export class SlackAdapter {
       }
 
       this.logger?.error?.("Slack adapter responder failed.", {
-        error: error instanceof Error ? error.message : String(error),
+        error: redactSlackErrorMessage(error),
       });
       await finishSafely(stream, this.messages.errorText, this.logger);
       return { kind: "error", eventId: event.eventId, channelId: event.channelId, error };
@@ -1470,7 +1491,9 @@ export class SlackAdapter {
   ): Promise<void> {
     const acknowledgedByCommand =
       isChannelUserCancelReason(signal.reason) ||
-      (isAgentResponseCancelledError(error) && isChannelUserCancelReason(error.reason));
+      (isAgentResponseCancelledError(error) && isChannelUserCancelReason(
+        readSafeSlackDataProperty(error, "reason"),
+      ));
     if (!acknowledgedByCommand) {
       await finishSafely(stream, this.messages.cancelledText, this.logger);
     }
@@ -1531,7 +1554,7 @@ export class SlackAdapter {
       } catch (error) {
         this.logger?.warn?.("Failed to download a Slack file (skipped).", {
           id: file.id,
-          error: error instanceof Error ? error.message : String(error),
+          error: redactSlackErrorMessage(error),
         });
         continue;
       }
@@ -1799,7 +1822,7 @@ async function finishSafely(
     await stream.finish(text);
   } catch (error) {
     logger?.error?.("Failed to send Slack terminal stream message.", {
-      error: error instanceof Error ? error.message : String(error),
+      error: redactSlackErrorMessage(error),
     });
   }
 }
