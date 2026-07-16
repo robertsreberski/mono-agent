@@ -1,7 +1,13 @@
 import { join, resolve } from "node:path";
 
 import { artifactDirForKind } from "./artifact-scope.js";
-import { DEFAULT_MAX_STRING_BYTES, mkdir, safeArtifactName, writeJsonAtomic } from "./artifact-fs.js";
+import {
+  DEFAULT_MAX_STRING_BYTES,
+  mkdir,
+  safeArtifactName,
+  sweepOrphanedAtomicWriteTemps,
+  writeJsonAtomic,
+} from "./artifact-fs.js";
 import { errorFailureKind, errorToJson, redactJsonValue, truncateString } from "./redaction.js";
 import { normalizeFailoverHistory } from "./run-export-mapping.js";
 import type { JsonlRunRecorderOptions, RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "./types.js";
@@ -120,8 +126,7 @@ class JsonlRunRecorder implements RunRecorder {
     // Keep preparation non-terminal: it may yield for filesystem setup, giving
     // the harness a real cancellation checkpoint without exposing a succeeded
     // run before history/memory persistence has had a chance to emit warnings.
-    this.preparePromise ??= mkdir(this.artifactDir, { recursive: true }).then(() => undefined);
-    await this.preparePromise;
+    await this.prepareArtifactDirectory();
   }
 
   async commitFinish(result: RuntimeResultLike): Promise<RunSummary> {
@@ -316,7 +321,7 @@ class JsonlRunRecorder implements RunRecorder {
       throw new ObservabilityError("artifact_write_failed", "Recorder artifact paths were not generated.");
     }
     try {
-      await mkdir(this.artifactDir, { recursive: true });
+      await this.prepareArtifactDirectory();
       // The summary and event array were snapshotted together before this
       // asynchronous write entered the queue, so eventCount can never describe
       // a newer/older in-memory state than its companion JSONL contents.
@@ -329,6 +334,14 @@ class JsonlRunRecorder implements RunRecorder {
         cause: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  private async prepareArtifactDirectory(): Promise<void> {
+    this.preparePromise ??= (async () => {
+      await mkdir(this.artifactDir, { recursive: true });
+      await sweepOrphanedAtomicWriteTemps(this.artifactDir);
+    })();
+    await this.preparePromise;
   }
 }
 
