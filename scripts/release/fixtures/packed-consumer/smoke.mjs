@@ -1,39 +1,65 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import {
+  parsePackedSmokeArgs,
+  publicExportSpecifiers,
+} from "./public-exports.mjs";
+
 const manifest = JSON.parse(await readFile(new URL("./package.json", import.meta.url), "utf8"));
-const packageNames = Object.keys(manifest.dependencies ?? {}).sort();
-const importSpecifiers = packageNames.flatMap((name) => {
-  if (name === "create-mono-agent") return [];
-  if (name === "@mono-agent/memory") {
-    return [
-      "@mono-agent/memory/store",
-      "@mono-agent/memory/search",
-      "@mono-agent/memory/bujo",
-    ];
-  }
-  return [name];
-});
+const { target } = parsePackedSmokeArgs(process.argv.slice(2));
+const dependencyNames = Object.keys(manifest.dependencies ?? {}).sort();
+if (target !== null && !dependencyNames.includes(target)) {
+  throw new Error(`Packed smoke target ${target} is not installed as a direct consumer dependency.`);
+}
+const packageNames = target === null ? dependencyNames : [target];
+const packageManifests = new Map();
+for (const name of packageNames) {
+  packageManifests.set(name, await readInstalledManifest(name));
+}
+const importSpecifiers = packageNames.flatMap((name) =>
+  publicExportSpecifiers(name, packageManifests.get(name)));
 
 for (const specifier of importSpecifiers) {
-  await import(specifier);
+  if (specifier.endsWith("/package.json")) {
+    await import(specifier, { with: { type: "json" } });
+  } else {
+    await import(specifier);
+  }
 }
 
-const cliPaths = [
-  { parts: ["@mono-agent", "agent-app", "dist", "cli.js"], args: ["--help"], statuses: [0] },
-  { parts: ["@mono-agent", "tui", "dist", "bin", "mono-agent-tui.js"], args: ["--help"], statuses: [0] },
-  { parts: ["@mono-agent", "memory", "dist", "bujo", "cli.js"], args: [], statuses: [2] },
-  { parts: ["create-mono-agent", "dist", "bin", "mono-agent.js"], args: ["--help"], statuses: [0] },
+const cliSmokes = [
+  { packageName: "@mono-agent/agent-app", binName: "mono-agent", args: ["--help"], statuses: [0] },
+  { packageName: "@mono-agent/tui", binName: "mono-agent-tui", args: ["--help"], statuses: [0] },
+  { packageName: "@mono-agent/memory", binName: "memory-bujo", args: [], statuses: [2] },
+  { packageName: "create-mono-agent", binName: "create-mono-agent", args: ["--help"], statuses: [0] },
 ];
-for (const entry of cliPaths) {
-  const cli = join(process.cwd(), "node_modules", ...entry.parts);
+const selectedCliSmokes = cliSmokes.filter((entry) => packageNames.includes(entry.packageName));
+for (const entry of selectedCliSmokes) {
+  const packageJson = packageManifests.get(entry.packageName);
+  const relativeCli = typeof packageJson.bin === "string"
+    ? packageJson.bin
+    : packageJson.bin?.[entry.binName];
+  if (typeof relativeCli !== "string") {
+    throw new Error(`Packed ${entry.packageName} is missing bin ${entry.binName}.`);
+  }
+  const cli = join(installedPackageDirectory(entry.packageName), relativeCli);
   const { status, stderr } = await runNodeCli(cli, entry.args);
   if (!entry.statuses.includes(status)) {
     throw new Error(`${cli} ${entry.args.join(" ")} exited ${status}: ${stderr}`);
   }
 }
 
-console.log(`Packed consumer imported ${importSpecifiers.length} public entry points and ran ${cliPaths.length} CLIs.`);
+const scope = target === null ? "consumer" : `isolated ${target} consumer`;
+console.log(`Packed ${scope} imported ${importSpecifiers.length} public export(s) and ran ${selectedCliSmokes.length} CLI(s).`);
+
+async function readInstalledManifest(name) {
+  return JSON.parse(await readFile(join(installedPackageDirectory(name), "package.json"), "utf8"));
+}
+
+function installedPackageDirectory(name) {
+  return join(process.cwd(), "node_modules", ...name.split("/"));
+}
 
 async function runNodeCli(cli, args) {
   const { spawn } = await import("node:child_process");

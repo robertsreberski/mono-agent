@@ -15,6 +15,7 @@ import {
   parsePnpmPackOutput,
 } from "../pack-release.mjs";
 import {
+  RELEASE_REPOSITORY,
   releaseVersionFromTag,
   validateRelease,
 } from "../validate-release.mjs";
@@ -47,13 +48,15 @@ function packageRecord({
   optionalDependencies = {},
   peerDependencies = {},
   nodeEngine = SUPPORTED_NODE_ENGINE,
+  repository,
 }) {
+  const relativeDir = `packages/${name.split("/").pop()}`;
   return {
     name,
     version,
     private: privatePackage,
     publishConfig,
-    relativeDir: `packages/${name.split("/").pop()}`,
+    relativeDir,
     location: "workspace",
     catalogEntry: { publishable },
     packageJson: {
@@ -61,6 +64,9 @@ function packageRecord({
       version,
       private: privatePackage,
       publishConfig,
+      repository: repository === undefined
+        ? { ...RELEASE_REPOSITORY, directory: relativeDir }
+        : repository,
       ...(nodeEngine === null ? {} : { engines: { node: nodeEngine } }),
       dependencies,
       optionalDependencies,
@@ -209,6 +215,32 @@ describe("release graph validation", () => {
         ".nvmrc must be 22.19.0; found 22.18.0",
         "@mono-agent/agent-contracts engines.node must be >=22.19.0; found (missing)",
         "@mono-agent/agent-runtime engines.node must be >=22.19.0; found >=20",
+      ]);
+    }
+  });
+
+  test("requires exact public repository metadata for every publishable package", () => {
+    const missing = packageRecord({
+      name: "@mono-agent/agent-contracts",
+      repository: null,
+    });
+    const wrongDirectory = packageRecord({
+      name: "@mono-agent/agent-runtime",
+      repository: { ...RELEASE_REPOSITORY, directory: "packages/wrong" },
+    });
+
+    try {
+      validateRelease({
+        tag: "v1.2.3",
+        packages: [missing, wrongDirectory],
+        rootPackageJson: rootPackageRecord(),
+        silent: true,
+      });
+      throw new Error("validateRelease did not reject stale repository metadata");
+    } catch (error) {
+      expect(error.issues).toEqual([
+        "@mono-agent/agent-contracts repository must be git git+https://github.com/robertsreberski/mono-agent.git at packages/agent-contracts",
+        "@mono-agent/agent-runtime repository must be git git+https://github.com/robertsreberski/mono-agent.git at packages/agent-runtime",
       ]);
     }
   });
@@ -479,6 +511,18 @@ describe("current launch manifest", () => {
     );
     expect(migration).toContain(`Pi bump \`^0.74.0\` → \`${piAi}\` in lockstep`);
     expect(migration).not.toContain("`^0.80.x`");
+  });
+
+  test("keeps the release workflow statically ready for npm OIDC without claiming tokenless promotion", () => {
+    const workflow = fs.readFileSync(
+      new URL("../../../.github/workflows/npm-release.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain("id-token: write");
+    expect(workflow).toContain("npm install --global npm@11.12.1");
+    expect(workflow).toContain("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}");
+    expect(workflow).toContain("pnpm run release:publish -- --tag \"$GITHUB_REF_NAME\"");
   });
 });
 

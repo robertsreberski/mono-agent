@@ -12,7 +12,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const execFileAsync = promisify(execFile);
 
 describe("verify-consumers", () => {
-  it("is wired exactly once immediately after the CI build step", async () => {
+  it("is wired exactly once after the CI build-time deep-import gate", async () => {
     const [workflow, packageJsonText] = await Promise.all([
       readFile(resolve(repoRoot, ".github/workflows/ci.yml"), "utf8"),
       readFile(resolve(repoRoot, "package.json"), "utf8"),
@@ -30,6 +30,9 @@ describe("verify-consumers", () => {
     const expectedSequence = [
       "      - name: Build packages and demos",
       "        run: pnpm run build",
+      "",
+      "      - name: Check agent-runtime deep imports",
+      "        run: pnpm run check:deep-imports",
       "",
       "      - name: Verify consumer contracts",
       `        run: ${command}`,

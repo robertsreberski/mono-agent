@@ -67,6 +67,23 @@ git diff --check
 Do not tag until all of the above are green locally. `release:test` also catches
 package-count drift (a package missing from the release graph).
 
+`release:consumer` proves the packed public surface rather than a hand-picked
+sample. It installs all 21 tarballs together, derives every concrete runtime
+specifier from each installed package's `exports` (and legacy `main`) field,
+imports all of them, and retains the four established packed CLI smokes.
+Wildcard exports fail the gate until the verifier can enumerate them
+deterministically. It then installs
+each tarball in its own consumer with only that package as a direct dependency,
+pins every declared transitive `@mono-agent/*` edge to the same frozen tarball
+set, verifies the installed internal dependency closure, and imports that
+package's full public surface again. This second pass detects undeclared
+internal imports that an all-packages-at-the-root install would mask.
+
+Release validation also requires every publishable manifest to carry the exact
+GitHub repository URL plus its workspace-relative `repository.directory`.
+The packed consumer rechecks that metadata after installation, so npm receives
+the metadata required to bind a package to its repository.
+
 ## 3. Tag → CI publishes
 
 ```bash
@@ -76,22 +93,42 @@ gh run watch <id>            # or: gh run view <id> --json status,conclusion
 ```
 
 The workflow: validate → check:architecture → build → typecheck → test → pack →
-publish (NPM_TOKEN) → verify metadata → smoke-installs `@mono-agent/tui` and
-`@mono-agent/agent-app` CLIs from the public registry.
+full packed-surface and isolated-consumer proof → staged publish (`NPM_TOKEN`) →
+verify metadata → smoke-installs the TUI, app, and create-package CLIs from the
+public registry.
 
-**Supply-chain attestation.** Neither this skill nor the release scripts request
-npm provenance today, so every package ships **unattested**. The publish step
-should carry `--provenance` (or move to npm trusted publishing) so each tarball
-gets a signed provenance attestation bound to the CI run:
+**Trusted-publishing readiness is not a tokenless release claim.** The workflow
+grants `id-token: write`, pins npm `11.12.1` (trusted publishing requires npm
+`>=11.5.1`), and the package manifests carry exact repository metadata. Those
+are static prerequisites only. The current publisher still requires
+`NPM_TOKEN`: it first publishes every immutable tarball under a staging tag,
+verifies all integrities, and only then promotes every package with `npm
+dist-tag add`. npm trusted publishing supports `npm publish`/`npm stage publish`,
+not `npm dist-tag`, so removing the token would break the all-package promotion
+guarantee.
+
+Do not report tokenless publishing or public provenance until all of these are
+true and verified in a supported GitHub Actions run:
+
+- a trusted publisher is configured on npm for every one of the 21 package
+  names and this exact workflow;
+- the staged all-package promotion has a supported tokenless replacement, or
+  the remaining token boundary is stated explicitly;
+- the GitHub repository and npm packages meet npm's public-provenance
+  requirements; and
+- `npm view <name>@<version> dist.attestations --json` confirms the published
+  attestations for the entire lockstep set.
+
+If the existing token path is deliberately retained, `--provenance` can request
+an attestation for the publish operation:
 
 ```bash
 npm publish <tarball> --access <access> --tag <tag> --provenance
 ```
 
-`--provenance` only produces a real attestation from a supported CI with OIDC
-(GitHub Actions, `permissions: id-token: write`); a bare local `npm publish
---provenance` cannot generate one, which is another reason the local path in §4 is
-not the normal one.
+That flag only produces a real attestation from supported CI with OIDC; a bare
+local `npm publish --provenance` cannot prove this gate, which is another reason
+the local path in §4 is not the normal one.
 
 ## 4. Post-verify (registry gotcha)
 
