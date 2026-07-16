@@ -4,7 +4,6 @@ import {
   chmod,
   link,
   lstat,
-  mkdir,
   mkdtemp,
   readFile,
   rename,
@@ -49,6 +48,16 @@ function deterministicEntries(count: number): string {
       ts: `${String(index)}.0`,
       conversationId: `conv-${String(index)}`,
       writtenAt: new Date(start + index).toISOString(),
+    }),
+  ).join("\n")}\n`;
+}
+
+function legacyEntriesWithoutWrittenAt(count: number): string {
+  return `${Array.from({ length: count }, (_, index) =>
+    JSON.stringify({
+      channelId: `C${String(index)}`,
+      ts: `${String(index)}.0`,
+      conversationId: `conv-${String(index)}`,
     }),
   ).join("\n")}\n`;
 }
@@ -365,7 +374,7 @@ describe("posted-message-index", () => {
     expect(await lookupProducingConversation(indexPath, "C-long-0", "long.0")).toBeUndefined();
   });
 
-  it("serializes an append behind compaction so atomic replacement cannot lose it", async () => {
+  it("serializes an append behind compaction so the descriptor rewrite cannot lose it", async () => {
     await writeFile(indexPath, deterministicEntries(10), "utf8");
     let releaseReplace!: () => void;
     const replaceGate = new Promise<void>((resolve) => {
@@ -419,22 +428,276 @@ describe("posted-message-index", () => {
     expect(await readFile(indexPath, "utf8")).toBe(replacement);
   });
 
+  it("cannot install a source inode swapped after the final promotion checks", async () => {
+    const original = deterministicEntries(10);
+    const savedOriginal = join(dir, "saved-original-index.jsonl");
+    const attacker = "ATTACKER-CONTENT\n";
+    let attackerFingerprint: Record<string, number> | undefined;
+    await writeFile(indexPath, original, "utf8");
+    const originalIndexFingerprint = await pathFingerprint(indexPath);
+
+    await compactPostedMessageIndex(indexPath, 3, {
+      afterPromotionChecks: async (path) => {
+        expect(path).toBe(indexPath);
+        await rename(path, savedOriginal);
+        await writeFile(path, attacker, { encoding: "utf8", mode: 0o600 });
+        attackerFingerprint = await pathFingerprint(path);
+      },
+    });
+
+    const compactedOriginalFingerprint = await pathFingerprint(savedOriginal);
+    expect(compactedOriginalFingerprint).toMatchObject({
+      dev: originalIndexFingerprint.dev,
+      ino: originalIndexFingerprint.ino,
+      mode: originalIndexFingerprint.mode,
+      nlink: originalIndexFingerprint.nlink,
+    });
+    expect(nonEmptyLineCount(await readFile(savedOriginal, "utf8"))).toBe(3);
+    expect(await readFile(savedOriginal, "utf8")).not.toContain("ATTACKER-CONTENT");
+    expect(await readFile(indexPath, "utf8")).toBe(attacker);
+    expect(await pathFingerprint(indexPath)).toEqual(attackerFingerprint);
+  });
+
+  it("does not overwrite or unlink a destination hard link raced after final checks", async () => {
+    const original = deterministicEntries(10);
+    const originalBackup = join(dir, "post-check-original-index.jsonl");
+    const victimPath = join(dir, "post-check-destination-victim.txt");
+    const victim = "destination victim must remain byte-identical\n";
+    let racedCandidateFingerprint: Record<string, number> | undefined;
+    let racedVictimFingerprint: Record<string, number> | undefined;
+    await writeFile(indexPath, original, "utf8");
+    await writeFile(victimPath, victim, { encoding: "utf8", mode: 0o600 });
+
+    await compactPostedMessageIndex(indexPath, 3, {
+      afterPromotionChecks: async () => {
+        await rename(indexPath, originalBackup);
+        await link(victimPath, indexPath);
+        racedCandidateFingerprint = await pathFingerprint(indexPath);
+        racedVictimFingerprint = await pathFingerprint(victimPath);
+      },
+    });
+
+    expect(await readFile(indexPath, "utf8")).toBe(victim);
+    expect(await readFile(victimPath, "utf8")).toBe(victim);
+    expect(await pathFingerprint(indexPath)).toEqual(racedCandidateFingerprint);
+    expect(await pathFingerprint(victimPath)).toEqual(racedVictimFingerprint);
+    expect(racedVictimFingerprint?.nlink).toBe(2);
+    expect(nonEmptyLineCount(await readFile(originalBackup, "utf8"))).toBe(3);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "preserves a production append across a coordinator split during prepare",
+    async () => {
+      await writeFile(indexPath, deterministicEntries(10), "utf8");
+      const lockPath = `${indexPath}.lock.sqlite`;
+      const savedLockPath = `${lockPath}.pre-split`;
+      const builtModuleUrl = new URL("../../dist/posted-message-index.js", import.meta.url).href;
+
+      await compactPostedMessageIndex(indexPath, 3, {
+        afterPrepareBody: async () => {
+          await rename(lockPath, savedLockPath);
+          const child = spawn(
+            process.execPath,
+            [
+              "--input-type=module",
+              "--eval",
+              [
+                "const { appendPostedMessage } = await import(process.argv[1]);",
+                "await appendPostedMessage(process.argv[2], {",
+                '  channelId: "C-split",',
+                '  ts: "split.1",',
+                '  conversationId: "conv-split",',
+                "});",
+              ].join("\n"),
+              builtModuleUrl,
+              indexPath,
+            ],
+            { stdio: ["ignore", "ignore", "ignore"] },
+          );
+          const [exitCode, signal] = await once(child, "exit");
+          expect(exitCode).toBe(0);
+          expect(signal).toBeNull();
+        },
+      });
+
+      expect(await lookupProducingConversation(indexPath, "C-split", "split.1"))
+        .toBe("conv-split");
+      await compactPostedMessageIndex(indexPath, 3);
+      expect(nonEmptyLineCount(await readFile(indexPath, "utf8"))).toBe(3);
+      expect(await lookupProducingConversation(indexPath, "C-split", "split.1"))
+        .toBe("conv-split");
+      expect((await stat(savedLockPath)).nlink).toBe(1);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "fails closed on a coordinator split after the final promotion checks",
+    async () => {
+      await writeFile(indexPath, deterministicEntries(10), "utf8");
+      const lockPath = `${indexPath}.lock.sqlite`;
+      const savedLockPath = `${lockPath}.post-check-split`;
+      const builtModuleUrl = new URL("../../dist/posted-message-index.js", import.meta.url).href;
+
+      await compactPostedMessageIndex(indexPath, 3, {
+        afterPromotionChecks: async () => {
+          await rename(lockPath, savedLockPath);
+          const child = spawn(
+            process.execPath,
+            [
+              "--input-type=module",
+              "--eval",
+              [
+                "const { appendPostedMessage } = await import(process.argv[1]);",
+                "await appendPostedMessage(process.argv[2], {",
+                '  channelId: "C-post-check-split",',
+                '  ts: "split.2",',
+                '  conversationId: "conv-post-check-split",',
+                "});",
+              ].join("\n"),
+              builtModuleUrl,
+              indexPath,
+            ],
+            { stdio: ["ignore", "ignore", "ignore"] },
+          );
+          const [exitCode, signal] = await once(child, "exit");
+          expect(exitCode).toBe(0);
+          expect(signal).toBeNull();
+        },
+      });
+
+      expect(nonEmptyLineCount(await readFile(indexPath, "utf8"))).toBe(3);
+      expect(await lookupProducingConversation(indexPath, "C-post-check-split", "split.2"))
+        .toBeUndefined();
+
+      await appendPostedMessage(indexPath, {
+        channelId: "C-post-check-split",
+        ts: "split.2",
+        conversationId: "conv-post-check-split",
+      });
+      expect(await lookupProducingConversation(indexPath, "C-post-check-split", "split.2"))
+        .toBe("conv-post-check-split");
+      expect((await stat(savedLockPath)).nlink).toBe(1);
+    },
+  );
+
+  it("recovers a durable prepared compaction before the next locked reader", async () => {
+    const original = deterministicEntries(10);
+    await writeFile(indexPath, original, "utf8");
+
+    await compactPostedMessageIndex(indexPath, 3, {
+      afterPromotionChecks: async () => {
+        throw new Error("simulate process death after durable prepare");
+      },
+    });
+    expect((await stat(indexPath)).size).toBeGreaterThan(Buffer.byteLength(original));
+
+    expect(await lookupProducingConversation(indexPath, "C9", "9.0")).toBe("conv-9");
+    expect(nonEmptyLineCount(await readFile(indexPath, "utf8"))).toBe(3);
+    expect(await lookupProducingConversation(indexPath, "C0", "0.0")).toBeUndefined();
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "recovers an expanding compaction killed after its replacement prefix is durable",
+    async () => {
+      const original = legacyEntriesWithoutWrittenAt(10);
+      const expandedBody = `${Array.from({ length: 9 }, (_, index) =>
+        JSON.stringify({
+          channelId: `C${String(index)}`,
+          ts: `${String(index)}.0`,
+          conversationId: `conv-${String(index)}`,
+          writtenAt: "",
+        }),
+      ).join("\n")}\n`;
+      expect(Buffer.byteLength(expandedBody)).toBeGreaterThan(Buffer.byteLength(original));
+      await writeFile(indexPath, original, "utf8");
+      const builtModuleUrl = new URL("../../dist/posted-message-index.js", import.meta.url).href;
+      let child: ReturnType<typeof spawn> | undefined = spawn(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          [
+            "const { compactPostedMessageIndex } = await import(process.argv[1]);",
+            "await compactPostedMessageIndex(process.argv[2], 9, {",
+            "  afterRewriteSync: async () => {",
+            '    process.stdout.write("prefix-synced\\n");',
+            "    setInterval(() => undefined, 1_000);",
+            "    await new Promise(() => undefined);",
+            "  },",
+            "});",
+          ].join("\n"),
+          builtModuleUrl,
+          indexPath,
+        ],
+        { stdio: ["ignore", "pipe", "ignore"] },
+      );
+      try {
+        const exit = once(child, "exit");
+        const [ready] = await once(child.stdout!, "data");
+        expect(String(ready)).toContain("prefix-synced");
+
+        expect(child.kill("SIGKILL")).toBe(true);
+        const [exitCode, signal] = await exit;
+        child = undefined;
+        expect(exitCode).toBeNull();
+        expect(signal).toBe("SIGKILL");
+        expect((await stat(indexPath)).size).toBeGreaterThan(Buffer.byteLength(original));
+
+        expect(await lookupProducingConversation(indexPath, "C0", "0.0")).toBe("conv-0");
+        expect(nonEmptyLineCount(await readFile(indexPath, "utf8"))).toBe(9);
+      } finally {
+        child?.kill("SIGKILL");
+      }
+    },
+  );
+
+  it("retries safely after compaction is interrupted before the commit footer", async () => {
+    const original = deterministicEntries(10);
+    await writeFile(indexPath, original, "utf8");
+
+    await compactPostedMessageIndex(indexPath, 3, {
+      afterPrepareBody: async () => {
+        throw new Error("simulate death before the commit footer");
+      },
+    });
+
+    expect((await readFile(indexPath, "utf8")).startsWith(original)).toBe(true);
+    expect(await lookupProducingConversation(indexPath, "C9", "9.0")).toBe("conv-9");
+
+    await compactPostedMessageIndex(indexPath, 3);
+    expect(nonEmptyLineCount(await readFile(indexPath, "utf8"))).toBe(3);
+    expect(await lookupProducingConversation(indexPath, "C0", "0.0")).toBeUndefined();
+  });
+
+  it("terminates an incomplete non-newline trailer before the next append", async () => {
+    const tornTrailer = '{"marker":"mono-agent-posted-index-compaction"';
+    await writeFile(indexPath, `${deterministicEntries(3)}${tornTrailer}`, "utf8");
+
+    await appendPostedMessage(
+      indexPath,
+      { channelId: "C-after-torn", ts: "torn.1", conversationId: "conv-after-torn" },
+      at("2027-03-02T00:00:00.000Z"),
+      10,
+    );
+
+    const raw = await readFile(indexPath, "utf8");
+    expect(raw).toContain(`${tornTrailer}\n{`);
+    expect(await lookupProducingConversation(indexPath, "C-after-torn", "torn.1"))
+      .toBe("conv-after-torn");
+  });
+
   it("preserves the original index when compaction fails", async () => {
     const original = deterministicEntries(DEFAULT_COMPACT_MAX_ENTRIES + 1);
     await writeFile(indexPath, original, "utf8");
 
     await compactPostedMessageIndex(indexPath, DEFAULT_COMPACT_MAX_ENTRIES, {
-      beforeCreateTemporary: async (temporaryPath) => {
-        // A pre-existing directory forces exclusive temp creation to fail without
-        // relying on platform-specific permissions.
-        await mkdir(temporaryPath);
+      beforePrepare: async () => {
+        throw new Error("injected prepare failure");
       },
     });
 
     expect(await readFile(indexPath, "utf8")).toBe(original);
 
-    // The failed attempt's random candidate cannot poison the next maintenance
-    // run; a fresh exclusive temp completes normally.
     await compactPostedMessageIndex(indexPath);
     expect(nonEmptyLineCount(await readFile(indexPath, "utf8")))
       .toBe(DEFAULT_COMPACT_MAX_ENTRIES);
@@ -449,8 +712,8 @@ describe("posted-message-index", () => {
       at("2027-04-01T00:00:00.000Z"),
       DEFAULT_COMPACT_MAX_ENTRIES,
       {
-        beforeCreateTemporary: async (temporaryPath) => {
-          await mkdir(temporaryPath);
+        beforePrepare: async () => {
+          throw new Error("injected prepare failure");
         },
       },
     );
@@ -518,30 +781,6 @@ describe("posted-message-index", () => {
       expect(await pathFingerprint(candidatePath)).toEqual(candidateBefore);
     });
 
-    it(`rejects a pre-planted ${kind} at the compaction temporary without touching index or victim`, async () => {
-      const original = deterministicEntries(10);
-      const victimPath = join(dir, `temp-${kind.replace(" ", "-")}-victim.txt`);
-      const victim = `temp ${kind} victim\n`;
-      await writeFile(indexPath, original, "utf8");
-      await writeFile(victimPath, victim, "utf8");
-      let candidatePath = "";
-      let victimBefore: Record<string, number> | undefined;
-      let candidateBefore: Record<string, number> | undefined;
-
-      await compactPostedMessageIndex(indexPath, 3, {
-        beforeCreateTemporary: async (temporaryPath) => {
-          candidatePath = temporaryPath;
-          await plantAlias(kind, victimPath, candidatePath);
-          victimBefore = await pathFingerprint(victimPath);
-          candidateBefore = await pathFingerprint(candidatePath);
-        },
-      });
-
-      expect(await readFile(victimPath, "utf8")).toBe(victim);
-      expect(await readFile(indexPath, "utf8")).toBe(original);
-      expect(await pathFingerprint(victimPath)).toEqual(victimBefore);
-      expect(await pathFingerprint(candidatePath)).toEqual(candidateBefore);
-    });
   }
 
   it.skipIf(process.platform === "win32")(
@@ -563,13 +802,19 @@ describe("posted-message-index", () => {
   );
 
   it.skipIf(process.platform === "win32")(
-    "keeps the index and SQLite coordinator owner-only without filesystem journal sidecars",
+    "keeps the index and coordinator owner-only without SQLite sidecars",
     async () => {
       await appendPostedMessage(indexPath, {
         channelId: "C-secure",
         ts: "secure.1",
         conversationId: "conv-secure",
       });
+      await appendPostedMessage(indexPath, {
+        channelId: "C-secure",
+        ts: "secure.2",
+        conversationId: "conv-secure",
+      });
+      await compactPostedMessageIndex(indexPath, 1);
 
       const indexInfo = await stat(indexPath);
       const lockInfo = await stat(`${indexPath}.lock.sqlite`);

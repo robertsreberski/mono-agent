@@ -1,7 +1,7 @@
-import { randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import type { Stats } from "node:fs";
-import { lstat, mkdir, open, rename } from "node:fs/promises";
+import { lstat, mkdir, open } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { dirname, join, parse, resolve, sep } from "node:path";
 
@@ -18,13 +18,15 @@ import { dirname, join, parse, resolve, sep } from "node:path";
  * producing conversationId`; the consumer (inbound dispatch) looks it up and
  * aliases the reply onto the producing conversation.
  *
- * Storage is an append-only JSONL file inside the run-artifact dir. Appenders,
- * startup maintenance, and compaction serialize through one owner-only SQLite
- * coordinator. The index, coordinator, and compaction temporary are all opened
- * no-follow and must remain current-owner, regular, single-link files. The
- * `.jsonl` index and its `.lock.sqlite` coordinator are ignored by the
- * `.summary.json` artifact scanners (see `seen-conversations.ts`), so they never
- * collide with run-artifact tooling.
+ * Storage is a JSONL file inside the run-artifact dir. Appenders, readers,
+ * startup maintenance, recovery, and compaction serialize through one
+ * owner-only SQLite coordinator. Compaction appends a durable recovery trailer
+ * to the verified index inode, then rewrites that same inode through its pinned
+ * descriptor; it never promotes or later reopens a source pathname. The index
+ * and coordinator are opened no-follow and must remain current-owner, regular,
+ * single-link files. These files are ignored by the `.summary.json` artifact
+ * scanners (see `seen-conversations.ts`), so they never collide with run-artifact
+ * tooling.
  */
 
 export const POSTED_MESSAGE_INDEX_FILENAME = "posted-message-index.jsonl";
@@ -37,6 +39,10 @@ const COMPACT_HEADROOM_DIVISOR = 10;
 const INDEX_LOCK_WAIT_MS = 2000;
 const MAX_LOCK_FILE_BYTES = 64 * 1024;
 const SQLITE_SIDECAR_SUFFIXES = ["-journal", "-wal", "-shm"] as const;
+const COMPACTION_TRAILER_MARKER = "mono-agent-posted-index-compaction";
+const COMPACTION_TRAILER_SCHEMA_VERSION = 1;
+const COMPACTION_TRAILER_MAX_BYTES = 4096;
+const COMPACTION_SEPARATOR = Buffer.from("\n", "utf8");
 const inProcessIndexTails = new Map<string, Promise<void>>();
 const inProcessIndexStates = new Map<string, LoadedPostedMessageIndexState>();
 
@@ -62,12 +68,38 @@ interface PostedMessageIndexSnapshot extends LoadedPostedMessageIndexState {
 
 interface PostedMessageIndexLock {
   readonly directoryIdentity: DirectoryIdentity;
+  readonly path: string;
+  readonly identity: FileIdentity;
   release(): Promise<void>;
 }
 
 interface PostedMessageIndexCompactionHooks {
-  readonly beforeCreateTemporary?: (path: string) => Promise<void>;
+  readonly beforePrepare?: () => Promise<void>;
+  /** Test-only boundary after recovery bytes but before the commit footer. */
+  readonly afterPrepareBody?: () => Promise<void>;
   readonly beforeReplace?: () => Promise<void>;
+  /** Test-only boundary after the final pathname checks and before pinned-FD rewrite. */
+  readonly afterPromotionChecks?: (indexPath: string) => Promise<void>;
+  /** Test-only boundary after the replacement prefix is durable but before truncate. */
+  readonly afterRewriteSync?: () => Promise<void>;
+}
+
+interface CompactionTrailerRecord {
+  readonly marker: typeof COMPACTION_TRAILER_MARKER;
+  readonly schemaVersion: typeof COMPACTION_TRAILER_SCHEMA_VERSION;
+  readonly targetDev: number;
+  readonly targetIno: number;
+  readonly lockDev: number;
+  readonly lockIno: number;
+  readonly originalSize: number;
+  readonly bodyLength: number;
+  readonly bodySha256: string;
+  readonly entryCount: number;
+}
+
+interface PreparedCompaction {
+  readonly record: CompactionTrailerRecord;
+  readonly body: Buffer;
 }
 
 export interface PostedMessageEntry {
@@ -94,9 +126,9 @@ export function basePostedConversationId(conversationId: string): string {
 /**
  * Record that `conversationId` posted a message at `(channelId, ts)`. Appenders in
  * both the adapter and its stdio child share a filesystem lock with compaction, so
- * a temp-file rename cannot discard a completed concurrent append. Once the cap is
- * reached, compaction drops a batch of oldest entries before appending; this keeps
- * the file at or below the cap without a full rewrite on every later send.
+ * a rewrite cannot discard a completed concurrent append. Once the cap is reached,
+ * compaction drops a batch of oldest entries before appending; this keeps the file
+ * at or below the cap without a full rewrite on every later send.
  *
  * Best-effort: a failed index write or lock acquisition must never fail the Slack
  * post, so this function swallows errors. The stored conversationId is de-bucketed
@@ -125,7 +157,8 @@ export async function appendPostedMessage(
   const line = `${JSON.stringify(record)}\n`;
   const lineBytes = Buffer.byteLength(line);
   const cap = normalizedAppendCap(maxEntries);
-  await withPostedMessageIndexLock(indexPath, async (directoryIdentity) => {
+  await withPostedMessageIndexLock(indexPath, async (lock) => {
+    const { directoryIdentity } = lock;
     const identity = await ensureOwnerOnlyFile(indexPath, directoryIdentity, true);
     if (identity === undefined) {
       return;
@@ -138,7 +171,7 @@ export async function appendPostedMessage(
       const compacted = await compactPostedMessageIndexUnlocked(
         indexPath,
         amortizedCompactTarget(cap),
-        directoryIdentity,
+        lock,
         compactionHooks,
       );
       if (compacted === undefined) {
@@ -180,16 +213,19 @@ export async function lookupProducingConversation(
   if (wantChannel.length === 0 || wantTs.length === 0) {
     return undefined;
   }
-  let match: PostedMessageEntry | undefined;
-  for (const entry of await readEntries(indexPath)) {
-    if (entry.channelId !== wantChannel || entry.ts !== wantTs) {
-      continue;
+  return await withPostedMessageIndexLock(indexPath, async ({ directoryIdentity }) => {
+    let match: PostedMessageEntry | undefined;
+    const entries = (await tryReadIndexSnapshot(indexPath, directoryIdentity))?.entries ?? [];
+    for (const entry of entries) {
+      if (entry.channelId !== wantChannel || entry.ts !== wantTs) {
+        continue;
+      }
+      if (match === undefined || entry.writtenAt >= match.writtenAt) {
+        match = entry;
+      }
     }
-    if (match === undefined || entry.writtenAt >= match.writtenAt) {
-      match = entry;
-    }
-  }
-  return match?.conversationId;
+    return match?.conversationId;
+  });
 }
 
 /**
@@ -203,11 +239,11 @@ export async function compactPostedMessageIndex(
   maxEntries: number = DEFAULT_COMPACT_MAX_ENTRIES,
   hooks: PostedMessageIndexCompactionHooks = {},
 ): Promise<void> {
-  await withPostedMessageIndexLock(indexPath, async (directoryIdentity) => {
+  await withPostedMessageIndexLock(indexPath, async (lock) => {
     const compacted = await compactPostedMessageIndexUnlocked(
       indexPath,
       normalizedCompactionCap(maxEntries),
-      directoryIdentity,
+      lock,
       hooks,
     );
     if (compacted !== undefined) {
@@ -219,9 +255,10 @@ export async function compactPostedMessageIndex(
 async function compactPostedMessageIndexUnlocked(
   indexPath: string,
   maxEntries: number,
-  directoryIdentity: DirectoryIdentity,
+  lock: PostedMessageIndexLock,
   hooks: PostedMessageIndexCompactionHooks = {},
 ): Promise<LoadedPostedMessageIndexState | undefined> {
+  const { directoryIdentity } = lock;
   const snapshot = await tryReadIndexSnapshot(indexPath, directoryIdentity);
   if (snapshot === undefined) {
     return undefined;
@@ -241,59 +278,564 @@ async function compactPostedMessageIndexUnlocked(
   const kept = [...latest.values()]
     .sort((a, b) => (a.writtenAt < b.writtenAt ? 1 : a.writtenAt > b.writtenAt ? -1 : 0))
     .slice(0, maxEntries);
-  const body = kept.map((entry) => JSON.stringify(entry)).join("\n");
-  const nextBody = kept.length === 0 ? "" : `${body}\n`;
-  const nextSize = Buffer.byteLength(nextBody);
-  // A random name prevents a crashed compactor's secure stale temp from
-  // permanently blocking future maintenance. Exclusive creation below remains
-  // the authoritative defense if a candidate is planted after its name exists.
-  const tmpPath = `${indexPath}.tmp-${String(process.pid)}-${randomBytes(16).toString("hex")}`;
-  let temporary: FileHandle | undefined;
-  let temporaryIdentity: FileIdentity | undefined;
+  const nextBytes = encodePostedMessageEntries(kept);
+  let target: FileHandle | undefined;
+  let appendTarget: FileHandle | undefined;
 
   try {
     await assertDirectoryIdentity(dirname(indexPath), directoryIdentity);
-    await hooks.beforeCreateTemporary?.(tmpPath);
-    // O_EXCL makes a pre-planted symlink, hard link, file, or directory a
-    // fail-closed EEXIST. O_NOFOLLOW covers platforms where an implementation
-    // does not give O_EXCL the documented final-component symlink protection.
-    temporary = await open(
-      tmpPath,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlag() | nonBlockFlag(),
-      0o600,
-    );
-    await temporary.writeFile(nextBody, "utf8");
-    await temporary.chmod(0o600);
-    await temporary.sync();
-    const written = await temporary.stat();
-    assertSecureFile(written, tmpPath);
-    if (written.size !== nextSize) {
-      throw new Error(`Posted-message index temporary ${tmpPath} was not written completely.`);
-    }
-    temporaryIdentity = identityOf(written);
-
     await hooks.beforeReplace?.();
+    target = await openPinnedIndexForRewrite(
+      indexPath,
+      snapshot.identity,
+      snapshot.size,
+      directoryIdentity,
+    );
+    appendTarget = await openPinnedIndexForAppend(
+      indexPath,
+      snapshot.identity,
+      snapshot.size,
+      directoryIdentity,
+    );
+    await hooks.beforePrepare?.();
+    const prepared = await prepareCompaction(
+      target,
+      appendTarget,
+      indexPath,
+      snapshot.identity,
+      lock,
+      snapshot.size,
+      nextBytes,
+      kept.length,
+      hooks.afterPrepareBody,
+    );
+
     await assertFileIdentity(indexPath, snapshot.identity);
-    await assertFileIdentity(tmpPath, temporaryIdentity);
+    await assertLockFileIdentity(lock.path, lock.identity);
+    await assertNoSqliteSidecars(lock.path, directoryIdentity);
     await assertDirectoryIdentity(dirname(indexPath), directoryIdentity);
-    await temporary.close();
-    temporary = undefined;
-    await rename(tmpPath, indexPath);
+    await hooks.afterPromotionChecks?.(indexPath);
+
+    // There is intentionally no pathname rename or sidecar source here. The
+    // recovery bytes and destination are both pinned inside the verified index
+    // inode. A later path swap cannot change the prepared bytes or redirect the
+    // rewrite into the raced pathname. The footer also binds recovery to this
+    // exact coordinator inode, so a replacement lock domain cannot append while
+    // the transaction is prepared. The footer remains beyond the maximum rewrite
+    // extent until the new prefix is durable, so process death at any rewrite
+    // boundary is recoverable before the next locked reader or writer.
+    await rewritePinnedIndex(
+      target,
+      indexPath,
+      snapshot.identity,
+      prepared.body,
+      hooks.afterRewriteSync,
+    );
+    await assertFileIdentity(indexPath, snapshot.identity);
+    await assertLockFileIdentity(lock.path, lock.identity);
+    await assertNoSqliteSidecars(lock.path, directoryIdentity);
+    await assertDirectoryIdentity(dirname(indexPath), directoryIdentity);
     await fsyncDirectory(dirname(indexPath), directoryIdentity);
-    const replaced = await lstat(indexPath);
-    assertSecureFile(replaced, indexPath);
-    assertSameIdentity(temporaryIdentity, replaced, indexPath);
-    return { count: kept.length, size: nextSize, identity: temporaryIdentity };
+    return { count: kept.length, size: nextBytes.byteLength, identity: snapshot.identity };
   } catch {
-    // Never unlink a path after a failed identity check: without unlinkat(2), a
-    // same-user swap between check and unlink could delete an unrelated victim.
-    // A securely-created stale temp has a one-use random name and is inert to
-    // future attempts; a pre-planted path is never opened, chmodded, written,
-    // renamed, or removed.
+    // Best-effort and fail-closed. No catch path unlinks or renames a pathname. A
+    // complete trailer remains on the intended inode for locked recovery; an
+    // interrupted prepare happens before any original byte is rewritten and is
+    // treated as ordinary ignored JSONL tail data on the next operation.
     return undefined;
   } finally {
-    await temporary?.close().catch(() => undefined);
+    await appendTarget?.close().catch(() => undefined);
+    await target?.close().catch(() => undefined);
   }
+}
+
+async function recoverPreparedCompaction(
+  indexPath: string,
+  lock: PostedMessageIndexLock,
+): Promise<boolean> {
+  const { directoryIdentity } = lock;
+  let target: FileHandle | undefined;
+  try {
+    const targetIdentity = await ensureOwnerOnlyFile(indexPath, directoryIdentity, false);
+    if (targetIdentity === undefined) {
+      return true;
+    }
+    target = await openPinnedIndexForRewrite(
+      indexPath,
+      targetIdentity,
+      undefined,
+      directoryIdentity,
+    );
+    const prepared = await readPreparedCompaction(
+      target,
+      indexPath,
+      targetIdentity,
+      lock.identity,
+    );
+    if (prepared === undefined) {
+      if (await terminateIncompleteCompactionTail(target, indexPath, targetIdentity)) {
+        inProcessIndexStates.delete(indexPath);
+      }
+      await assertFileIdentity(indexPath, targetIdentity);
+      await assertLockFileIdentity(lock.path, lock.identity);
+      await assertNoSqliteSidecars(lock.path, directoryIdentity);
+      await assertDirectoryIdentity(dirname(indexPath), directoryIdentity);
+      return true;
+    }
+    await assertFileIdentity(indexPath, targetIdentity);
+    await assertLockFileIdentity(lock.path, lock.identity);
+    await assertNoSqliteSidecars(lock.path, directoryIdentity);
+    await assertDirectoryIdentity(dirname(indexPath), directoryIdentity);
+    await rewritePinnedIndex(target, indexPath, targetIdentity, prepared.body);
+    await assertFileIdentity(indexPath, targetIdentity);
+    await assertLockFileIdentity(lock.path, lock.identity);
+    await assertNoSqliteSidecars(lock.path, directoryIdentity);
+    await fsyncDirectory(dirname(indexPath), directoryIdentity);
+    inProcessIndexStates.set(indexPath, {
+      count: prepared.record.entryCount,
+      size: prepared.body.byteLength,
+      identity: targetIdentity,
+    });
+    return true;
+  } catch {
+    inProcessIndexStates.delete(indexPath);
+    return false;
+  } finally {
+    await target?.close().catch(() => undefined);
+  }
+}
+
+async function prepareCompaction(
+  handle: FileHandle,
+  appendHandle: FileHandle,
+  indexPath: string,
+  targetIdentity: FileIdentity,
+  lock: PostedMessageIndexLock,
+  originalSize: number,
+  body: Buffer,
+  entryCount: number,
+  afterBody?: () => Promise<void>,
+): Promise<PreparedCompaction> {
+  const before = await handle.stat();
+  assertSecureFile(before, indexPath);
+  assertSameIdentity(targetIdentity, before, indexPath);
+  const appendBefore = await appendHandle.stat();
+  assertSecureFile(appendBefore, indexPath);
+  assertSameIdentity(targetIdentity, appendBefore, indexPath);
+  if (before.size !== originalSize) {
+    throw new Error(`Posted-message index ${indexPath} changed before compaction prepare.`);
+  }
+  if (appendBefore.size !== originalSize) {
+    throw new Error(`Posted-message index ${indexPath} changed before compaction append.`);
+  }
+  const record: CompactionTrailerRecord = {
+    marker: COMPACTION_TRAILER_MARKER,
+    schemaVersion: COMPACTION_TRAILER_SCHEMA_VERSION,
+    targetDev: targetIdentity.dev,
+    targetIno: targetIdentity.ino,
+    lockDev: lock.identity.dev,
+    lockIno: lock.identity.ino,
+    originalSize,
+    bodyLength: body.byteLength,
+    bodySha256: sha256(body),
+    entryCount,
+  };
+  const footer = encodeCompactionTrailer(record);
+  const bodyOffset = compactionRecoveryBodyOffset(originalSize, body.byteLength);
+  const footerOffset = bodyOffset + body.byteLength;
+  const preparedSize = footerOffset + footer.byteLength;
+  if (
+    !Number.isSafeInteger(bodyOffset)
+    || !Number.isSafeInteger(footerOffset)
+    || !Number.isSafeInteger(preparedSize)
+  ) {
+    throw new Error(`Posted-message index ${indexPath} compaction offsets are unsafe.`);
+  }
+  const padding = Buffer.alloc(bodyOffset - originalSize, 0x0a);
+  const recoveryBytes = Buffer.concat([padding, body]);
+  await assertLockFileIdentity(lock.path, lock.identity);
+  await assertNoSqliteSidecars(lock.path, lock.directoryIdentity);
+  await appendBuffer(appendHandle, recoveryBytes);
+  // Recovery bytes must be durable before the footer commits them. If this sync
+  // or the following hook is interrupted, the original prefix is untouched and
+  // the uncommitted JSONL-compatible tail can be retried safely.
+  await appendHandle.sync();
+  const bodyWritten = await handle.stat();
+  assertSecureFile(bodyWritten, indexPath);
+  assertSameIdentity(targetIdentity, bodyWritten, indexPath);
+  if (bodyWritten.size !== footerOffset) {
+    throw new Error(`Posted-message index ${indexPath} compaction body was interleaved.`);
+  }
+  await afterBody?.();
+  const beforeFooter = await handle.stat();
+  assertSecureFile(beforeFooter, indexPath);
+  assertSameIdentity(targetIdentity, beforeFooter, indexPath);
+  if (beforeFooter.size !== footerOffset) {
+    throw new Error(`Posted-message index ${indexPath} changed before compaction commit.`);
+  }
+  await assertLockFileIdentity(lock.path, lock.identity);
+  await assertNoSqliteSidecars(lock.path, lock.directoryIdentity);
+  await appendBuffer(appendHandle, footer);
+  await appendHandle.sync();
+  const committed = await handle.stat();
+  assertSecureFile(committed, indexPath);
+  assertSameIdentity(targetIdentity, committed, indexPath);
+  if (committed.size !== preparedSize) {
+    throw new Error(`Posted-message index ${indexPath} compaction footer was interleaved.`);
+  }
+
+  const prepared = await readPreparedCompaction(
+    handle,
+    indexPath,
+    targetIdentity,
+    lock.identity,
+  );
+  if (
+    prepared === undefined
+    || !sameCompactionTrailerRecord(prepared.record, record)
+    || !prepared.body.equals(body)
+  ) {
+    throw new Error(`Posted-message index ${indexPath} did not durably prepare compaction.`);
+  }
+  return prepared;
+}
+
+async function openPinnedIndexForRewrite(
+  indexPath: string,
+  expectedIdentity: FileIdentity,
+  expectedSize: number | undefined,
+  directoryIdentity: DirectoryIdentity,
+): Promise<FileHandle> {
+  await assertFileIdentity(indexPath, expectedIdentity);
+  const handle = await open(indexPath, fsConstants.O_RDWR | noFollowFlag() | nonBlockFlag());
+  try {
+    const info = await handle.stat();
+    assertSecureFile(info, indexPath);
+    assertSameIdentity(expectedIdentity, info, indexPath);
+    if (expectedSize !== undefined && info.size !== expectedSize) {
+      throw new Error(`Posted-message index ${indexPath} changed before compaction.`);
+    }
+    await assertFileIdentity(indexPath, expectedIdentity);
+    await assertDirectoryIdentity(dirname(indexPath), directoryIdentity);
+    return handle;
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function openPinnedIndexForAppend(
+  indexPath: string,
+  expectedIdentity: FileIdentity,
+  expectedSize: number,
+  directoryIdentity: DirectoryIdentity,
+): Promise<FileHandle> {
+  await assertFileIdentity(indexPath, expectedIdentity);
+  const handle = await open(
+    indexPath,
+    fsConstants.O_WRONLY | fsConstants.O_APPEND | noFollowFlag() | nonBlockFlag(),
+  );
+  try {
+    const info = await handle.stat();
+    assertSecureFile(info, indexPath);
+    assertSameIdentity(expectedIdentity, info, indexPath);
+    if (info.size !== expectedSize) {
+      throw new Error(`Posted-message index ${indexPath} changed before compaction append open.`);
+    }
+    await assertFileIdentity(indexPath, expectedIdentity);
+    await assertDirectoryIdentity(dirname(indexPath), directoryIdentity);
+    return handle;
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function rewritePinnedIndex(
+  handle: FileHandle,
+  indexPath: string,
+  expectedIdentity: FileIdentity,
+  body: Buffer,
+  afterPrefixSync?: () => Promise<void>,
+): Promise<void> {
+  const before = await handle.stat();
+  assertSecureFile(before, indexPath);
+  assertSameIdentity(expectedIdentity, before, indexPath);
+  // Keep the recovery footer intact until the complete replacement prefix is
+  // durable. A crash before truncate is replayed; a crash after truncate sees
+  // the already-synced replacement bytes at their final length.
+  await writeBufferAt(handle, body, 0);
+  await handle.sync();
+  await afterPrefixSync?.();
+  await handle.truncate(body.byteLength);
+  await handle.sync();
+  const after = await handle.stat();
+  assertSecureFile(after, indexPath);
+  assertSameIdentity(expectedIdentity, after, indexPath);
+  if (after.size !== body.byteLength) {
+    throw new Error(`Posted-message index ${indexPath} compaction rewrite was incomplete.`);
+  }
+}
+
+async function readPreparedCompaction(
+  handle: FileHandle,
+  indexPath: string,
+  expectedIdentity: FileIdentity,
+  expectedLockIdentity: FileIdentity,
+): Promise<PreparedCompaction | undefined> {
+  const info = await handle.stat();
+  assertSecureFile(info, indexPath);
+  assertSameIdentity(expectedIdentity, info, indexPath);
+  const located = await readLastCompactionTrailerLine(handle, info.size);
+  if (located === undefined) {
+    return undefined;
+  }
+  const record = decodeCompactionTrailer(located.line);
+  if (record === undefined) {
+    return undefined;
+  }
+  const footer = encodeCompactionTrailer(record);
+  if (!footer.subarray(0, footer.byteLength - 1).equals(located.line)) {
+    throw new Error(`Posted-message index ${indexPath} has a non-canonical compaction trailer.`);
+  }
+  const bodyOffset = compactionRecoveryBodyOffset(record.originalSize, record.bodyLength);
+  const expectedFooterOffset = bodyOffset + record.bodyLength;
+  const expectedPreparedSize = expectedFooterOffset + footer.byteLength;
+  if (
+    !Number.isSafeInteger(expectedFooterOffset)
+    || !Number.isSafeInteger(expectedPreparedSize)
+    || located.offset !== expectedFooterOffset
+    || info.size !== expectedPreparedSize
+    || record.targetDev !== expectedIdentity.dev
+    || record.targetIno !== expectedIdentity.ino
+    || record.lockDev !== expectedLockIdentity.dev
+    || record.lockIno !== expectedLockIdentity.ino
+  ) {
+    throw new Error(`Posted-message index ${indexPath} has a mismatched compaction trailer.`);
+  }
+  const body = await readBufferAt(
+    handle,
+    record.bodyLength,
+    bodyOffset,
+  );
+  if (body === undefined || sha256(body) !== record.bodySha256) {
+    throw new Error(`Posted-message index ${indexPath} failed its compaction body digest.`);
+  }
+  const entries = parseEntries(body.toString("utf8"));
+  if (entries.length !== record.entryCount || !encodePostedMessageEntries(entries).equals(body)) {
+    throw new Error(`Posted-message index ${indexPath} has invalid compaction entries.`);
+  }
+  return { record, body };
+}
+
+async function readLastCompactionTrailerLine(
+  handle: FileHandle,
+  size: number,
+): Promise<{ readonly line: Buffer; readonly offset: number } | undefined> {
+  if (size === 0) {
+    return undefined;
+  }
+  const readLength = Math.min(size, COMPACTION_TRAILER_MAX_BYTES + 1);
+  const tail = await readBufferAt(handle, readLength, size - readLength);
+  if (tail === undefined || tail[tail.byteLength - 1] !== 0x0a) {
+    return undefined;
+  }
+  const lineEnd = tail.byteLength - 1;
+  const precedingNewline = tail.lastIndexOf(0x0a, lineEnd - 1);
+  if (precedingNewline < 0 && readLength < size) {
+    return undefined;
+  }
+  const lineStart = precedingNewline + 1;
+  const line = tail.subarray(lineStart, lineEnd);
+  if (line.byteLength === 0 || line.byteLength > COMPACTION_TRAILER_MAX_BYTES) {
+    return undefined;
+  }
+  return { line, offset: size - readLength + lineStart };
+}
+
+async function terminateIncompleteCompactionTail(
+  handle: FileHandle,
+  indexPath: string,
+  expectedIdentity: FileIdentity,
+): Promise<boolean> {
+  const before = await handle.stat();
+  assertSecureFile(before, indexPath);
+  assertSameIdentity(expectedIdentity, before, indexPath);
+  if (before.size === 0) {
+    return false;
+  }
+  const last = await readBufferAt(handle, 1, before.size - 1);
+  if (last === undefined || last[0] === 0x0a) {
+    return false;
+  }
+  await writeBufferAt(handle, COMPACTION_SEPARATOR, before.size);
+  await handle.sync();
+  const after = await handle.stat();
+  assertSecureFile(after, indexPath);
+  assertSameIdentity(expectedIdentity, after, indexPath);
+  if (after.size !== before.size + COMPACTION_SEPARATOR.byteLength) {
+    throw new Error(`Posted-message index ${indexPath} tail repair was incomplete.`);
+  }
+  return true;
+}
+
+function encodeCompactionTrailer(record: CompactionTrailerRecord): Buffer {
+  const encoded = Buffer.from(`${JSON.stringify({
+    ...record,
+    checksum: compactionTrailerChecksum(record),
+  })}\n`, "utf8");
+  if (encoded.byteLength > COMPACTION_TRAILER_MAX_BYTES) {
+    throw new Error("Posted-message index compaction trailer is too large.");
+  }
+  return encoded;
+}
+
+function decodeCompactionTrailer(bytes: Buffer): CompactionTrailerRecord | undefined {
+  const text = bytes.toString("utf8");
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  if (raw.marker !== COMPACTION_TRAILER_MARKER) {
+    return undefined;
+  }
+  const expectedKeys = [
+    "bodyLength",
+    "bodySha256",
+    "checksum",
+    "entryCount",
+    "lockDev",
+    "lockIno",
+    "marker",
+    "originalSize",
+    "schemaVersion",
+    "targetDev",
+    "targetIno",
+  ];
+  if (JSON.stringify(Object.keys(raw).sort()) !== JSON.stringify(expectedKeys)) {
+    throw new Error("Posted-message index compaction trailer has unexpected fields.");
+  }
+  if (
+    raw.schemaVersion !== COMPACTION_TRAILER_SCHEMA_VERSION
+    || !isNonNegativeSafeInteger(raw.targetDev)
+    || !isNonNegativeSafeInteger(raw.targetIno)
+    || !isNonNegativeSafeInteger(raw.lockDev)
+    || !isNonNegativeSafeInteger(raw.lockIno)
+    || !isNonNegativeSafeInteger(raw.originalSize)
+    || !isNonNegativeSafeInteger(raw.bodyLength)
+    || typeof raw.bodySha256 !== "string"
+    || !isNonNegativeSafeInteger(raw.entryCount)
+    || typeof raw.checksum !== "string"
+  ) {
+    throw new Error("Posted-message index compaction trailer has invalid fields.");
+  }
+  const record: CompactionTrailerRecord = {
+    marker: COMPACTION_TRAILER_MARKER,
+    schemaVersion: COMPACTION_TRAILER_SCHEMA_VERSION,
+    targetDev: raw.targetDev,
+    targetIno: raw.targetIno,
+    lockDev: raw.lockDev,
+    lockIno: raw.lockIno,
+    originalSize: raw.originalSize,
+    bodyLength: raw.bodyLength,
+    bodySha256: raw.bodySha256,
+    entryCount: raw.entryCount,
+  };
+  if (
+    !/^[0-9a-f]{64}$/u.test(record.bodySha256)
+    || raw.checksum !== compactionTrailerChecksum(record)
+  ) {
+    throw new Error("Posted-message index compaction trailer failed its checksum.");
+  }
+  return record;
+}
+
+function compactionTrailerChecksum(record: CompactionTrailerRecord): string {
+  return sha256(Buffer.from(JSON.stringify(record), "utf8"));
+}
+
+function sameCompactionTrailerRecord(
+  left: CompactionTrailerRecord,
+  right: CompactionTrailerRecord,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function compactionRecoveryBodyOffset(originalSize: number, bodyLength: number): number {
+  const afterOriginal = originalSize + COMPACTION_SEPARATOR.byteLength;
+  const offset = Math.max(afterOriginal, bodyLength);
+  if (!Number.isSafeInteger(afterOriginal) || !Number.isSafeInteger(offset)) {
+    throw new Error("Posted-message index compaction recovery offset is unsafe.");
+  }
+  return offset;
+}
+
+function encodePostedMessageEntries(entries: readonly PostedMessageEntry[]): Buffer {
+  const body = entries.map((entry) => JSON.stringify(entry)).join("\n");
+  return Buffer.from(entries.length === 0 ? "" : `${body}\n`, "utf8");
+}
+
+async function appendBuffer(handle: FileHandle, buffer: Buffer): Promise<void> {
+  let written = 0;
+  while (written < buffer.byteLength) {
+    const result = await handle.write(
+      buffer,
+      written,
+      buffer.byteLength - written,
+      null,
+    );
+    if (result.bytesWritten <= 0) {
+      throw new Error("Posted-message index append made no progress.");
+    }
+    written += result.bytesWritten;
+  }
+}
+
+async function writeBufferAt(handle: FileHandle, buffer: Buffer, position: number): Promise<void> {
+  let written = 0;
+  while (written < buffer.byteLength) {
+    const result = await handle.write(
+      buffer,
+      written,
+      buffer.byteLength - written,
+      position + written,
+    );
+    if (result.bytesWritten <= 0) {
+      throw new Error("Posted-message index write made no progress.");
+    }
+    written += result.bytesWritten;
+  }
+}
+
+async function readBufferAt(
+  handle: FileHandle,
+  length: number,
+  position: number,
+): Promise<Buffer | undefined> {
+  const buffer = Buffer.alloc(length);
+  let read = 0;
+  while (read < length) {
+    const result = await handle.read(buffer, read, length - read, position + read);
+    if (result.bytesRead <= 0) {
+      return undefined;
+    }
+    read += result.bytesRead;
+  }
+  return buffer;
+}
+
+function sha256(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 function normalizedAppendCap(maxEntries: number): number {
@@ -336,10 +878,10 @@ async function loadPostedMessageIndexState(
   return snapshot;
 }
 
-async function withPostedMessageIndexLock(
+async function withPostedMessageIndexLock<T>(
   indexPath: string,
-  action: (directoryIdentity: DirectoryIdentity) => Promise<void>,
-): Promise<void> {
+  action: (lock: PostedMessageIndexLock) => Promise<T>,
+): Promise<T | undefined> {
   // Avoid blocking this process's event loop on its own synchronous SQLite lock;
   // the OS-backed lock below then serializes the adapter against stdio children.
   const prior = inProcessIndexTails.get(indexPath) ?? Promise.resolve();
@@ -353,15 +895,19 @@ async function withPostedMessageIndexLock(
   try {
     const lock = await acquirePostedMessageIndexLock(indexPath);
     if (lock === undefined) {
-      return;
+      return undefined;
     }
     try {
-      await action(lock.directoryIdentity);
+      if (!await recoverPreparedCompaction(indexPath, lock)) {
+        return undefined;
+      }
+      return await action(lock);
     } finally {
       await lock.release();
     }
   } catch {
     // Best-effort; a posted-message index failure never fails the Slack post.
+    return undefined;
   } finally {
     releaseQueue();
     if (inProcessIndexTails.get(indexPath) === tail) {
@@ -443,6 +989,8 @@ function postedMessageIndexLock(
   let released = false;
   return {
     directoryIdentity,
+    path: lockPath,
+    identity: lockIdentity,
     async release() {
       if (released) {
         return;
@@ -473,19 +1021,6 @@ function isSqliteBusy(error: unknown): boolean {
 
 async function delay(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
-}
-
-async function readEntries(indexPath: string): Promise<readonly PostedMessageEntry[]> {
-  let directoryIdentity: DirectoryIdentity | undefined;
-  try {
-    directoryIdentity = await existingIndexDirectoryIdentity(indexPath);
-  } catch {
-    return [];
-  }
-  if (directoryIdentity === undefined) {
-    return [];
-  }
-  return (await tryReadIndexSnapshot(indexPath, directoryIdentity))?.entries ?? [];
 }
 
 async function tryReadIndexSnapshot(
