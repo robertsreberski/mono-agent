@@ -45,6 +45,8 @@ describe("check-consumer-docs-consistency", () => {
       "WhatsApp and A2A are external channel plugins/extras.",
       "Use memory.llm.provider: \"agent-host\" for SDK memory capture.",
       "Run memory-bujo recall ./memory \"question\" for manual maintenance.",
+      "JSONL artifacts become the completed-run record after terminal persistence; events buffer in memory before then.",
+      "JSONL artifacts are not a source of truth for in-flight runs.",
       "",
     ].join("\n"));
 
@@ -52,6 +54,45 @@ describe("check-consumer-docs-consistency", () => {
 
     expect(result.userDocsChecked).toBe(1);
     expect(result.issues).toEqual([]);
+  });
+
+  it("flags absolute JSONL durability claims across authoritative repo docs", async () => {
+    const repoRoot = await tempRepo();
+    await writeRepoDoc(repoRoot, "README.md", [
+      "# Framework",
+      "",
+      "The local JSONL artifacts remain the local fallback and source of truth.",
+      "",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "docs/observability/phoenix-and-backfill.md", [
+      "# Phoenix",
+      "",
+      "Read from the always-on run record.",
+      "See the always-on JSONL run record for backfill.",
+      "",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "docs/config/folder-layout.md", [
+      "# Layout",
+      "",
+      "Artifacts are the always-on local traceability fallback.",
+      "",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/observability/README.md", [
+      "# Observability",
+      "",
+      "Raw `.events.jsonl` artifacts stay append-only.",
+      "",
+    ].join("\n"));
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+
+    expect(result.checked).toBe(0);
+    expect(result.userDocsChecked).toBe(4);
+    expect(result.issues).toHaveLength(5);
+    expect(result.issues.join("\n")).toContain("JSONL artifacts as a source of truth");
+    expect(result.issues.join("\n")).toContain("always-on JSONL run record");
+    expect(result.issues.join("\n")).toContain("always-on local traceability fallback");
+    expect(result.issues.join("\n")).toContain("append-only JSONL run artifact");
   });
 
   it("flags retired pre-v1 names in supplied consumer README files", async () => {

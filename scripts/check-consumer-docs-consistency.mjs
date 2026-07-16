@@ -4,7 +4,13 @@ import { constants } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const userDocRoots = ["AGENTS.md", "README.md", "PACKAGES.md", "docs"];
+const userDocRoots = [
+  "AGENTS.md",
+  "README.md",
+  "PACKAGES.md",
+  "docs",
+  "packages/observability/README.md",
+];
 
 const monoPackage = (...nameParts) => `@mono-agent/${nameParts.join("-")}`;
 const packageDir = (...nameParts) => `packages/${nameParts.join("-")}`;
@@ -84,6 +90,27 @@ const retiredDocReferences = [
   },
 ];
 
+const misleadingArtifactDurabilityClaims = [
+  {
+    label: "JSONL artifacts as a source of truth",
+    pattern:
+      /\b(?:local\s+)?JSONL(?:\s+run)?\s+artifacts?\b(?:(?!\bnot\b)[^\n.!?]){0,200}\bsource of truth\b/iu,
+  },
+  {
+    label: "always-on JSONL run record",
+    pattern: /\balways-on(?:\s+JSONL)?\s+run record\b/iu,
+  },
+  {
+    label: "always-on local traceability fallback",
+    pattern: /\balways-on local traceability fallback\b/iu,
+  },
+  {
+    label: "append-only JSONL run artifact",
+    pattern:
+      /\bappend-only\b[^\n.!?]{0,100}\b(?:JSONL|event stream|run artifacts?)\b|\b(?:JSONL|event stream|run artifacts?)\b[^\n.!?]{0,100}\bappend-only\b/iu,
+  },
+];
+
 const retiredSurfaces = [
   {
     label: "@mono-agent/memory-mcp",
@@ -113,6 +140,7 @@ export async function checkConsumerDocsConsistency(consumerPaths, options = {}) 
     const userDocRecords = options.userDocRecords ?? await readUserDocRecords(repoRoot);
     userDocsChecked = userDocRecords.length;
     issues.push(...scanRetiredDocReferences(userDocRecords));
+    issues.push(...scanMisleadingArtifactDurabilityClaims(userDocRecords));
   }
 
   for (const rawPath of consumerPaths) {
@@ -255,6 +283,23 @@ function scanRetiredDocReferences(records) {
   return issues;
 }
 
+function scanMisleadingArtifactDurabilityClaims(records) {
+  const issues = [];
+  for (const record of records) {
+    for (const claim of misleadingArtifactDurabilityClaims) {
+      for (const match of findPatternMatches(claim.pattern, record.text)) {
+        const location = lineAndColumn(record.text, match.index);
+        issues.push(
+          `${record.path}:${location.line}:${location.column}: uses absolute artifact durability wording ` +
+            `"${claim.label}". Describe the start snapshot, in-memory buffering, separate terminal ` +
+            "replacements, and crash-loss/reconciliation boundary instead.",
+        );
+      }
+    }
+  }
+  return issues;
+}
+
 function findPatternMatches(pattern, text) {
   const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
   const regex = new RegExp(pattern.source, flags);
@@ -292,7 +337,9 @@ function usage() {
     "Usage:",
     `  node ${bin} [--consumer <path> ...]`,
     "",
-    "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md) for retired pre-v1 surfaces.",
+    "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, and the observability README)",
+    "for retired pre-v1 surfaces",
+    "and absolute JSONL artifact-durability claims that contradict the recorder write boundary.",
     "Each optional consumer folder should contain README.md and mono-agent.config.json.",
   ].join("\n");
 }
