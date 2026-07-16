@@ -10,7 +10,11 @@ import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
 import type { ChannelDriver, ContinuationChannelSynthesisResult } from "../channels.js";
-import { appendPostedMessage, lookupProducingConversation } from "../posted-message-index.js";
+import {
+  appendPostedMessage,
+  compactPostedMessageIndex,
+  lookupProducingConversation,
+} from "../posted-message-index.js";
 import { unconfiguredChannelView } from "./shared.js";
 
 type SlackAdapterModule = typeof import("@mono-agent/slack-adapter");
@@ -69,6 +73,12 @@ export function createSlackChannelDriver(
       const adapter = await loadSlackModule();
       const startAdapter = overrides.startAdapter ?? adapter.startSlackAdapter;
       const indexPath = input.postedMessageIndexPath;
+      // Run the exported maintenance path at the real Slack-driver lifecycle seam.
+      // This is local, best-effort filesystem work and completes before the
+      // adapter opens any remote transport.
+      if (indexPath !== undefined) {
+        await compactPostedMessageIndex(indexPath);
+      }
       const reconnect: {
         initialMs?: number;
         maxMs?: number;
