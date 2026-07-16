@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import {
   checkOllamaModel,
   DEFAULT_FINAL_DEMO_DEPLOY_MODEL,
@@ -208,7 +211,10 @@ function printHelp(): void {
   console.log(`Usage: pnpm run deploy:final -- [options]\n\nWrites a local final-demo deployment config, checks Ollama for Gemma 4, then starts the headless A2A provider with traceability enabled. Config edits apply on restart.\n\nOptions:\n  --model <tag>        Ollama model tag (default: ${DEFAULT_FINAL_DEMO_DEPLOY_MODEL})\n  --ollama-url <url>   Ollama base URL (default: ${DEFAULT_FINAL_DEMO_OLLAMA_BASE_URL})\n  --config <path>      Generated config path (default: ./.mono-agent/deploy/final-agent-gemma4.config.json)\n  --a2a-port <port>    A2A provider port (default: 0, choose a free loopback port)\n  --no-start           Write files and verify Ollama, but do not start the demo\n  -h, --help           Show this help`);
 }
 
-void main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
-  process.exit(1);
-});
+const isCli = process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+if (isCli) {
+  void main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    process.exit(1);
+  });
+}
