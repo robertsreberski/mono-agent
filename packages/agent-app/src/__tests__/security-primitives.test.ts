@@ -478,7 +478,7 @@ describe("shared security primitives", () => {
     const dir = await root();
     const path = join(dir, "publication-interval.lock");
     const ownerPath = join(path, "owner.json");
-    const temporaryPath = join(path, `.owner.${String(process.pid)}.publishing-owner.tmp`);
+    const temporaryPath = join(path, ".owner.mono-agent-publication.tmp");
     const content = `${JSON.stringify({
       schema: "mono-agent.test-lock.v1",
       pid: process.pid,
@@ -571,7 +571,7 @@ describe("shared security primitives", () => {
     const dir = await root();
     const path = join(dir, "stuck-owner-publication.lock");
     const ownerPath = join(path, "owner.json");
-    const temporaryPath = join(path, `.owner.${String(process.pid)}.stuck-owner.tmp`);
+    const temporaryPath = join(path, ".owner.mono-agent-publication.tmp");
     const content = `${JSON.stringify({
       schema: "mono-agent.test-lock.v1",
       pid: process.pid,
