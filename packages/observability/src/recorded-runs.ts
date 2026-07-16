@@ -119,11 +119,12 @@ export interface ReconcileStaleRunsResult {
  * with a warning, never thrown.
  *
  * Reconciliation repairs summary status only and can report only persisted artifacts. The JSONL
- * recorder creates empty events plus a running summary at `start()`, buffers later events in
- * memory, then uses separate atomic replacements for the key-redacted/bounded events snapshot and
- * terminal summary at `finish()`/`fail()`. Event strings use a 4,096-byte default cap. A crash can
- * thus yield `process_death` with `eventCount: 0` even after events occurred. The host's live
- * broadcast is best-effort visibility for connected clients, not recovery.
+ * recorder creates empty events plus a running summary at `start()`, then schedules key-redacted,
+ * bounded running snapshots after 25 new events or five seconds and writes a terminal snapshot at
+ * `finish()`/`fail()`. Each boundary replaces events first and summary second. A crash can retain
+ * only the last completed prefix, lose the unsaved tail, leave newer events beside the prior
+ * summary, or still yield `eventCount: 0` when no incremental pair completed. The host's live
+ * broadcast is best-effort visibility for connected clients, not disk recovery.
  */
 export async function reconcileStaleRunArtifacts(
   artifactDir: string,

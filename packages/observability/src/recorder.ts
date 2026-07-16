@@ -11,6 +11,15 @@ import type { JsonlRunRecorderOptions, RunRecorder, RunSummary, RuntimeEventLike
 // (identity + skills + recalled memory) is large and would otherwise be gutted.
 const SYSTEM_PROMPT_MAX_BYTES = 32_000;
 
+// A run normally emits dozens to low hundreds of events. Scheduling a redacted
+// JSONL snapshot every 25 events bounds the unscheduled crash tail without
+// awaiting filesystem I/O in the synchronous event path; the time bound covers
+// sparse runs. Filesystem failure and in-flight I/O remain best-effort.
+// Exported from this module (but not the package entrypoint) so recorder tests
+// can assert the exact internal policy without duplicating magic numbers.
+export const RUN_CHECKPOINT_EVENT_INTERVAL = 25;
+export const RUN_CHECKPOINT_TIME_INTERVAL_MS = 5_000;
+
 // `redactJsonValue` is re-exported so existing importers (recorder.test.ts
 // imports it via "../recorder.js") keep their import surface unchanged.
 export { redactJsonValue };
@@ -47,6 +56,11 @@ class JsonlRunRecorder implements RunRecorder {
   private readonly sourceDetail: string | undefined;
   private preparePromise: Promise<void> | undefined;
   private terminalPromise: Promise<RunSummary> | undefined;
+  private writeTail: Promise<void> = Promise.resolve();
+  private checkpointPromise: Promise<void> | undefined;
+  private checkpointTimer: ReturnType<typeof setTimeout> | undefined;
+  private checkpointRequested = false;
+  private lastCheckpointAttemptEventCount = 0;
 
   constructor(options: JsonlRunRecorderOptions) {
     this.runId = normalizeId(options.runId, "runId");
@@ -76,7 +90,10 @@ class JsonlRunRecorder implements RunRecorder {
   }
 
   async start(): Promise<RunSummary> {
-    return await this.writeArtifacts(this.buildSummary("running", undefined, {}));
+    const events = [...this.events];
+    this.lastCheckpointAttemptEventCount = events.length;
+    this.clearCheckpointTimer();
+    return await this.enqueueArtifactWrite(this.buildSummary("running", undefined, {}), events);
   }
 
   onEvent(event: RuntimeEventLike): void {
@@ -87,6 +104,16 @@ class JsonlRunRecorder implements RunRecorder {
     this.events.push(
       hasUsableTimestamp ? redacted : { ...redacted, timestamp: new Date(this.clock()).toISOString() },
     );
+    try {
+      if (this.events.length - this.lastCheckpointAttemptEventCount >= RUN_CHECKPOINT_EVENT_INTERVAL) {
+        this.requestCheckpoint();
+      } else {
+        this.armCheckpointTimer();
+      }
+    } catch {
+      // Incremental checkpoint scheduling is best-effort and must not turn an
+      // otherwise accepted runtime event into a run failure.
+    }
   }
 
   async prepareFinish(_result: RuntimeResultLike): Promise<void> {
@@ -122,9 +149,99 @@ class JsonlRunRecorder implements RunRecorder {
 
   private async commitTerminal(build: () => RunSummary): Promise<RunSummary> {
     // Assign before awaiting so concurrent/repeated terminal calls share one
-    // write and can never publish conflicting terminal summaries.
-    this.terminalPromise ??= this.writeArtifacts(build());
+    // write and can never publish conflicting terminal summaries. Queue it
+    // behind any already-scheduled running checkpoint so that checkpoint can
+    // never race in later and downgrade the terminal summary back to running.
+    if (this.terminalPromise === undefined) {
+      this.clearCheckpointTimer();
+      this.checkpointRequested = false;
+      const summary = build();
+      this.terminalPromise = this.enqueueArtifactWrite(summary, [...this.events]);
+    }
     return await this.terminalPromise;
+  }
+
+  private armCheckpointTimer(): void {
+    if (
+      this.terminalPromise !== undefined
+      || this.checkpointTimer !== undefined
+      || this.events.length <= this.lastCheckpointAttemptEventCount
+    ) {
+      return;
+    }
+    this.checkpointTimer = setTimeout(() => {
+      this.checkpointTimer = undefined;
+      try {
+        this.requestCheckpoint();
+      } catch {
+        // Incremental persistence is best-effort. A timer/checkpoint failure
+        // must never surface as an uncaught exception or change the run result.
+      }
+    }, RUN_CHECKPOINT_TIME_INTERVAL_MS);
+    // A pending checkpoint is useful only while the process remains alive; it
+    // must not keep an otherwise-idle agent process open by itself.
+    const timer = this.checkpointTimer;
+    if (typeof timer === "object" && timer !== null && "unref" in timer) {
+      (timer as { unref: () => void }).unref();
+    }
+  }
+
+  private clearCheckpointTimer(): void {
+    if (this.checkpointTimer === undefined) return;
+    clearTimeout(this.checkpointTimer);
+    this.checkpointTimer = undefined;
+  }
+
+  private requestCheckpoint(): void {
+    if (this.terminalPromise !== undefined || this.events.length <= this.lastCheckpointAttemptEventCount) {
+      return;
+    }
+    if (this.checkpointPromise !== undefined) {
+      // Coalesce any number of threshold/timer hits while one snapshot is in
+      // flight. Its completion schedules one newest-state follow-up.
+      this.checkpointRequested = true;
+      this.clearCheckpointTimer();
+      return;
+    }
+
+    this.clearCheckpointTimer();
+    this.checkpointRequested = false;
+    const events = [...this.events];
+    this.lastCheckpointAttemptEventCount = events.length;
+    const write = this.enqueueArtifactWrite(this.buildSummary("running", undefined, {}), events);
+    let tracked: Promise<void>;
+    tracked = write.then(
+      () => this.checkpointSettled(tracked),
+      () => this.checkpointSettled(tracked),
+    );
+    this.checkpointPromise = tracked;
+    // Checkpoint failures are intentionally swallowed: onEvent is synchronous
+    // and incremental persistence must not create an unhandled rejection. A
+    // later event/timer or the required terminal write gets a fresh attempt.
+    void tracked.catch(() => undefined);
+  }
+
+  private checkpointSettled(checkpoint: Promise<void>): void {
+    if (this.checkpointPromise !== checkpoint) return;
+    this.checkpointPromise = undefined;
+    if (this.terminalPromise !== undefined) {
+      this.checkpointRequested = false;
+      this.clearCheckpointTimer();
+      return;
+    }
+    if (this.events.length <= this.lastCheckpointAttemptEventCount) {
+      this.checkpointRequested = false;
+      return;
+    }
+    const writeImmediately =
+      this.checkpointRequested
+      || this.events.length - this.lastCheckpointAttemptEventCount >= RUN_CHECKPOINT_EVENT_INTERVAL;
+    this.checkpointRequested = false;
+    if (writeImmediately) {
+      this.requestCheckpoint();
+    } else {
+      this.armCheckpointTimer();
+    }
   }
 
   private buildSummary(status: RunSummary["status"], failureKind: string | undefined, result: RuntimeResultLike): RunSummary {
@@ -181,14 +298,29 @@ class JsonlRunRecorder implements RunRecorder {
     return [join(this.artifactDir, `${base}.events.jsonl`), join(this.artifactDir, `${base}.summary.json`)];
   }
 
-  private async writeArtifacts(summary: RunSummary): Promise<RunSummary> {
+  private enqueueArtifactWrite(summary: RunSummary, events: readonly RuntimeEventLike[]): Promise<RunSummary> {
+    const write = this.writeTail.then(async () => await this.writeArtifacts(summary, events));
+    // Keep the queue usable after a best-effort checkpoint failure. The caller
+    // still observes its own write rejection when the write is required
+    // (start/finalization), while later writes are not poisoned by it.
+    this.writeTail = write.then(
+      () => undefined,
+      () => undefined,
+    );
+    return write;
+  }
+
+  private async writeArtifacts(summary: RunSummary, events: readonly RuntimeEventLike[]): Promise<RunSummary> {
     const [eventsPath, summaryPath] = summary.artifactPaths;
     if (eventsPath === undefined || summaryPath === undefined) {
       throw new ObservabilityError("artifact_write_failed", "Recorder artifact paths were not generated.");
     }
     try {
       await mkdir(this.artifactDir, { recursive: true });
-      const eventsJsonl = this.events.map((event) => JSON.stringify(event)).join("\n");
+      // The summary and event array were snapshotted together before this
+      // asynchronous write entered the queue, so eventCount can never describe
+      // a newer/older in-memory state than its companion JSONL contents.
+      const eventsJsonl = events.map((event) => JSON.stringify(event)).join("\n");
       await writeJsonAtomic(eventsPath, eventsJsonl.length === 0 ? "" : `${eventsJsonl}\n`);
       await writeJsonAtomic(summaryPath, `${JSON.stringify(summary, null, 2)}\n`);
       return summary;

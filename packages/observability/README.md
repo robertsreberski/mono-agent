@@ -217,6 +217,22 @@ split that same cap between the beginning and end while preserving original
 event indexes so an omitted middle remains detectable. Head-tail reads stream
 into a fixed-size ring and refuse event artifacts above the 16 MiB safety bound.
 
+The JSONL recorder writes an initial `running` snapshot, then schedules a
+checkpoint of the key-redacted event trail after 25 new events or five seconds
+from the first uncheckpointed event, whichever comes first. Checkpoints are
+serialized and fire-and-forget: `onEvent` does not await filesystem I/O,
+repeated triggers coalesce behind an in-flight write, and an incremental
+filesystem failure never changes the run result. A terminal `finish` / `fail`
+write waits behind any queued checkpoint and is always last, so a late `running`
+snapshot cannot overwrite a completed status.
+
+This is bounded crash-prefix recovery, not a guarantee that the whole live
+trail survives. With a healthy local filesystem, fewer than 25 newly accepted
+events (or roughly five seconds of sparse events) remain unscheduled; write
+latency and filesystem failure are not bounded. The events file is atomically
+replaced before the summary file, but those two renames are not one transaction:
+a death between them can leave a newer event prefix beside the prior summary.
+
 ## OTLP / Phoenix Subpath
 
 `@mono-agent/observability/otel` exposes the optional network exporter:
@@ -236,10 +252,11 @@ best-effort, and isolated from the JSONL recorder.
 
 ## Timeline Display
 
-`.events.jsonl` artifacts contain one key-redacted, bounded event per line after a
-terminal recorder boundary. Event strings use a 4,096-byte default cap. The
-recorder replaces that terminal snapshot at the boundary; it does not append
-events while a run is in progress. UI surfaces that need readable
+`.events.jsonl` artifacts contain one key-redacted, bounded event per line from
+the latest successful recorder boundary. Event strings use a 4,096-byte default
+cap. The recorder replaces an empty snapshot at start, best-effort `running`
+snapshots during the run, and the terminal snapshot at finish/fail; it does not
+append individual events. UI surfaces that need readable
 timelines can call `combineRecordedRunEvents()` to collapse adjacent assistant
 `thinking` or visible `text` stream chunks into bounded display rows while
 preserving raw source index ranges and event counts. Browser bundles can import
@@ -268,14 +285,14 @@ heartbeat or update cannot overwrite the stopped manifest.
 Running sources become `stale` when their heartbeat is older than the configured stale interval. Stopped and failed sources remain listed so the dashboard can distinguish a clean shutdown from a crashed or misconfigured host. The registry reader validates source/run ids against path traversal, ignores malformed manifests with warnings, and reuses the recorded-run reader's redaction and bounded-read limits.
 
 Stale-run reconciliation repairs summary status from persisted data only. At
-`start()`, the JSONL recorder performs separate atomic replacements for an empty
-events file and a `running` summary. It then buffers key-redacted events in memory.
-Terminal `finish()`/`fail()` uses separate atomic replacements for the bounded
-events snapshot first and the summary second. These writes provide no append,
-checkpoint, fsync, or cross-file transaction guarantee: a process death can lose
-buffered events and reconcile as `process_death` with `eventCount: 0`. The app's
-live broadcast gives connected TUI/web clients best-effort visibility, not
-recovery or post-mortem evidence.
+`start()`, the JSONL recorder separately replaces an empty events file and a
+`running` summary. It then schedules best-effort, key-redacted `running`
+snapshots after 25 new events or five seconds and writes the terminal snapshot
+at finish/fail. Every boundary replaces events first and summary second; there
+is no append, fsync, power-loss, or cross-file transaction guarantee. A process
+death can retain the last completed prefix, lose the unsaved tail, leave newer
+events beside the prior summary, or still reconcile with `eventCount: 0` if no
+incremental pair completed. Live broadcast is visibility, not disk recovery.
 
 ## Run Export Contract
 
