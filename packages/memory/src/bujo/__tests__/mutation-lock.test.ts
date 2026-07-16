@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,7 +6,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { openMemoryDb, type MemoryDb, type MemoryRecord } from "../../store/index.js";
 import { recoverDurableMutationState } from "../mutation-lock.js";
-import { initializeReplayProjection } from "../replay-projection.js";
+import {
+  REPLAY_PROJECTION_FILE,
+  initializeReplayProjection,
+  prepareReplayProjectionPublication,
+  publishPreparedReplayProjection,
+  replayProjectionDbReplacement,
+  type ReplayProjectionV1,
+} from "../replay-projection.js";
 
 const CREATED_AT = "2026-07-01T00:00:00.000Z";
 const REPLAY_AT = "2026-07-02T00:00:00.000Z";
@@ -40,6 +47,9 @@ function memory(id: string, overrides: Partial<MemoryRecord> = {}): MemoryRecord
 }
 
 type ReplaySeed = (db: MemoryDb) => void;
+type ExactReplaySeed = (db: MemoryDb) => ReplayProjectionV1;
+
+const AUTHORITY_ID = "a".repeat(64);
 
 const replayStateCases: ReadonlyArray<readonly [string, ReplaySeed]> = [
   ["validTo lifecycle", (db) => db.upsertLexical(memory("subject", { validTo: REPLAY_AT }))],
@@ -53,6 +63,56 @@ const replayStateCases: ReadonlyArray<readonly [string, ReplaySeed]> = [
   }))],
   ["thread edge", (db) => db.addEdge("subject", "target", "thread", 0.8, REPLAY_AT)],
   ["supersedes edge", (db) => db.addEdge("subject", "target", "supersedes", 1, REPLAY_AT)],
+];
+
+const exactReplayCases: ReadonlyArray<readonly [string, ExactReplaySeed]> = [
+  ["terminal lifecycle", (db) => {
+    db.upsertLexical(memory("subject", { status: "dropped" }));
+    return {
+      schemaVersion: 1,
+      terminals: [{
+        id: "subject",
+        at: REPLAY_AT,
+        authorityKind: "migration",
+        authorityId: AUTHORITY_ID,
+      }],
+      supersedes: [],
+      threads: [],
+    };
+  }],
+  ["complete supersession lifecycle and edge", (db) => {
+    db.upsertLexical(memory("subject", { status: "invalidated" }));
+    db.upsertLexical(memory("target", { createdAt: REPLAY_AT }));
+    return {
+      schemaVersion: 1,
+      terminals: [],
+      supersedes: [{
+        src: "subject",
+        dst: "target",
+        at: REPLAY_AT,
+        authorityKind: "migration",
+        authorityId: AUTHORITY_ID,
+      }],
+      threads: [],
+    };
+  }],
+  ["thread edge", (db) => {
+    db.upsertLexical(memory("subject"));
+    db.upsertLexical(memory("target"));
+    return {
+      schemaVersion: 1,
+      terminals: [],
+      supersedes: [],
+      threads: [{
+        src: "subject",
+        dst: "target",
+        weight: 0.8,
+        at: REPLAY_AT,
+        authorityKind: "migration",
+        authorityId: AUTHORITY_ID,
+      }],
+    };
+  }],
 ];
 
 describe.each(["lite", "journal"] as const)("%s durable mutation recovery", (tier) => {
@@ -91,6 +151,27 @@ describe.each(["lite", "journal"] as const)("%s durable mutation recovery", (tie
       db.close();
     }
   });
+
+  it.each(["valid", "malformed"] as const)("does not consume a %s BuJo sidecar", (sidecar) => {
+    const root = tempRoot();
+    const db = openMemoryDb({ path: join(root, "memory.db") });
+    try {
+      db.upsertLexical(memory("subject"));
+      db.upsertLexical(memory("target"));
+      if (sidecar === "valid") {
+        initializeReplayProjection(root);
+      } else {
+        writeFileSync(join(root, REPLAY_PROJECTION_FILE), "{not-json", { mode: 0o600 });
+      }
+
+      expect(recoverDurableMutationState(root, db, tier)).toEqual({ captureReplayed: 0 });
+      db.addEdge("subject", "target", "thread", 0.8, REPLAY_AT);
+      expect(() => recoverDurableMutationState(root, db, tier))
+        .toThrow(`memory-bujo: ${tier} rejects BuJo replay-owned lifecycle and edges.`);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe("BuJo durable mutation recovery", () => {
@@ -124,6 +205,27 @@ describe("BuJo durable mutation recovery", () => {
 
       expect(() => recoverDurableMutationState(root, db, "bujo"))
         .toThrow(/memory-replay-projection:/u);
+      expect(boundedProbe).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(exactReplayCases)("accepts exact nonempty %s", (_label, seed) => {
+    const root = tempRoot();
+    const db = openMemoryDb({ path: join(root, "memory.db") });
+    try {
+      const projection = seed(db);
+      db.replaceReplayProjection(replayProjectionDbReplacement(projection));
+      publishPreparedReplayProjection(root, prepareReplayProjectionPublication(
+        root,
+        projection,
+        { requireMissing: true },
+      ));
+      const boundedProbe = vi.spyOn(db, "hasReplayProjectionState")
+        .mockImplementation(() => { throw new Error("non-BuJo replay probe sentinel"); });
+
+      expect(recoverDurableMutationState(root, db, "bujo")).toEqual({ captureReplayed: 0 });
       expect(boundedProbe).not.toHaveBeenCalled();
     } finally {
       db.close();
