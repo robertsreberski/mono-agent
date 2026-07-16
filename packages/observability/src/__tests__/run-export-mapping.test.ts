@@ -352,6 +352,26 @@ describe("buildEventSpanAttributes", () => {
     expect(JSON.stringify(result.payload)).toContain("[redacted]");
   });
 
+  it("redacts secret-shaped free text from event summaries and payloads only when opted in", () => {
+    const fixture = ["ghp", "_", "A".repeat(36)].join("");
+    const event = { type: "assistant_message", role: "assistant", text: `returned ${fixture}` };
+
+    const optedIn = buildEventSpanAttributes(
+      event,
+      0,
+      makeContext({ includeSensitiveData: true, contentPatternRedaction: true }),
+    );
+    expect(optedIn.attributes["mono.agent.event.summary"]).toContain("returned [redacted]");
+    expect(JSON.stringify(optedIn.payload)).not.toContain(fixture);
+
+    const defaultMode = buildEventSpanAttributes(
+      event,
+      0,
+      makeContext({ includeSensitiveData: true }),
+    );
+    expect(defaultMode.attributes["mono.agent.event.summary"]).toContain(fixture);
+  });
+
   it("omits the content-derived summary attribute in metadata-only mode but keeps the structural label", () => {
     const result = buildEventSpanAttributes(
       { type: "assistant_message", role: "assistant", text: "the secret answer is 42" },
@@ -372,6 +392,31 @@ describe("buildEventSpanAttributes", () => {
       makeContext({ includeSensitiveData: true }),
     );
     expect(result.attributes["mono.agent.event.summary"]).toContain("the secret answer is 42");
+  });
+
+  it("redacts secret-shaped assistant and tool content across semantic spans", () => {
+    const fixture = ["xox", "b-", "A".repeat(24)].join("");
+    const spans = buildEventSpans(
+      [
+        { type: "assistant", message: { content: [{ type: "text", text: `reply ${fixture}` }] } },
+        {
+          type: "assistant",
+          message: { content: [{ type: "tool_use", id: "tool-1", name: "Read", input: `input ${fixture}` }] },
+        },
+        {
+          type: "user",
+          message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: `output ${fixture}` }] },
+        },
+      ],
+      makeContext({ includeSensitiveData: true, contentPatternRedaction: true }),
+    );
+
+    expect(JSON.stringify(spans)).not.toContain(fixture);
+    expect(spans).toHaveLength(2);
+    expect(spans[0]?.attributes["output.value"]).toBe("reply [redacted]");
+    expect(spans[0]?.attributes["mono.agent.event.summary"]).toBe("reply [redacted]");
+    expect(spans[1]?.attributes["input.value"]).toBe("input [redacted]");
+    expect(spans[1]?.attributes["output.value"]).toBe("output [redacted]");
   });
 });
 

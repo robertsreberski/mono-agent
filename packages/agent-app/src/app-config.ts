@@ -204,6 +204,16 @@ function parseExporter(value: unknown, source: string): ResolvedExporter {
           });
         })();
 
+  const contentPatternRedaction = record.contentPatternRedaction === undefined
+    ? false
+    : typeof record.contentPatternRedaction === "boolean"
+      ? record.contentPatternRedaction
+      : (() => {
+          throw new MonoAgentConfigError("invalid_env", `${source}.contentPatternRedaction must be true or false.`, {
+            env: source,
+          });
+        })();
+
   const timeoutMs = record.timeoutMs === undefined
     ? DEFAULT_PHOENIX_TIMEOUT_MS
     : validateExporterTimeout(record.timeoutMs, source);
@@ -223,6 +233,7 @@ function parseExporter(value: unknown, source: string): ResolvedExporter {
     endpoint,
     ...(headers === undefined ? {} : { headers }),
     includeSensitiveData,
+    contentPatternRedaction,
     timeoutMs,
     ...(projectName === undefined ? {} : { projectName }),
   };
@@ -248,7 +259,8 @@ export function describeSensitiveDataExportWarning(endpoint: string): string {
   return [
     "[WARN] includeSensitiveData=true exports user input, assistant replies, tool args/results, and system prompt",
     `to Phoenix at ${endpoint}; non-numeric values under sensitive-looking object keys are redacted;`,
-    "numeric values under matched keys are retained; free text is not content-scanned or scrubbed. Strings are capped.",
+    "numeric values under matched keys are retained; free text is not content-scanned by default.",
+    "contentPatternRedaction=true replaces a closed set of high-confidence credential shapes. Strings are capped.",
     "Substantive run content leaves this machine.",
   ].join(" ");
 }

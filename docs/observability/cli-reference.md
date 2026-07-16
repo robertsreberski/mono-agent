@@ -365,7 +365,7 @@ mono-agent start --foreground
 On start the CLI prints per-section status blocks:
 
 - **instance** — the resolved config path and traceability status (`running (source <id>)`, or `<kind>: <reason>`).
-- **observability** — the exporter status: when configured, the Phoenix endpoint, the Phoenix app URL, any last warning/error, and where JSONL artifacts remain local. When `includeSensitiveData` is enabled it surfaces an explicit yellow `[WARN] includeSensitiveData=true exports user input, assistant replies, tool args/results, and system prompt to Phoenix at <endpoint>; non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. Strings are capped. Substantive run content leaves this machine.` line (also emitted across `validate` / `status` / background output). The export remains a valid opt-in — this warning does not flip `report.ok` or the `validate` status.
+- **observability** — the exporter status: when configured, the Phoenix endpoint, the Phoenix app URL, any last warning/error, and where JSONL artifacts remain local. When `includeSensitiveData` is enabled it surfaces an explicit yellow `[WARN] includeSensitiveData=true exports user input, assistant replies, tool args/results, and system prompt to Phoenix at <endpoint>; non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned by default. contentPatternRedaction=true replaces a closed set of high-confidence credential shapes. Strings are capped. Substantive run content leaves this machine.` line (also emitted across `validate` / `status` / background output). The export remains a valid opt-in — this warning does not flip `report.ok` or the `validate` status.
 - **channels** — one line per configured channel with a status badge: `running` (plus a `key=value` summary of its facts) or `<kind>: <reason>` (e.g. `disabled`, `waiting`, `degraded`). A channel rendered `degraded: <reason>` carries a warning badge — it is a non-fatal, still-serving state where the live transport dropped but the responder is kept alive and the adapter is self-recovering (e.g. a Telegram poll crash on a network switch). `degraded` counts as an active/serving transport (not idle, not failed) and flips back to `running` once the transport recovers.
 - **runs health** — in foreground mode, the active selected skills, local artifact directory, total recorded summaries, last runs with relative ages, status counts, stale/process-gone `running` summaries, and compact failure-kind counts with explanations.
 
@@ -614,6 +614,7 @@ The exporter is configured under `observability.exporters[]` (env `MONO_AGENT_OB
         "endpoint": "http://localhost:6006",
         "projectName": "support-agent",
         "includeSensitiveData": false,
+        "contentPatternRedaction": false,
         "headers": {},
         "timeoutMs": 5000
       }

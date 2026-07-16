@@ -195,7 +195,7 @@ new agent.
   // pre-terminal crash can lose buffered events.
   "observability": {
     "exporters": [
-      { "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces" }
+      { "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces", "contentPatternRedaction": false }
     ]
   },
 

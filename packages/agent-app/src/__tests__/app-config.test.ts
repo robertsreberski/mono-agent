@@ -18,12 +18,13 @@ import {
 const ACCOUNT_TRACE_REGISTRY = join(userInfo().homedir, ".mono-agent", "trace-sources");
 
 describe("describeSensitiveDataExportWarning", () => {
-  it("states the key-based redaction boundary without promising free-text scrubbing", () => {
+  it("states the default key-based boundary and the separate content-scan opt-in", () => {
     const warning = describeSensitiveDataExportWarning("http://127.0.0.1:6006/v1/traces");
 
     expect(warning).toContain("non-numeric values under sensitive-looking object keys are redacted");
     expect(warning).toContain("numeric values under matched keys are retained");
-    expect(warning).toContain("free text is not content-scanned or scrubbed");
+    expect(warning).toContain("free text is not content-scanned by default");
+    expect(warning).toContain("contentPatternRedaction=true replaces a closed set");
     expect(warning).toContain("Substantive run content leaves this machine");
   });
 });

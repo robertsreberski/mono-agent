@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type {
   ObservabilityExporterConfig,
   PhoenixExporterConfig,
+  RedactJsonValueOptions,
   RunExportContext,
   RunExportEventContext,
   RunExporter,
@@ -11,6 +12,11 @@ import type {
 } from "../index.js";
 
 describe("run-export contracts", () => {
+  it("exports content-pattern redaction options from the package root", () => {
+    const options: RedactJsonValueOptions = { contentPatternRedaction: true };
+    expect(options.contentPatternRedaction).toBe(true);
+  });
+
   it("constructs a RunExportContext with optional fields omitted", () => {
     const context: RunExportContext = {
       runId: "run-1",
@@ -32,8 +38,10 @@ describe("run-export contracts", () => {
       configPath: "/tmp/config.json",
       artifactDir: "/tmp/artifacts",
       includeSensitiveData: true,
+      contentPatternRedaction: true,
     };
     expect(context.sourceLabel).toBe("Source One");
+    expect(context.contentPatternRedaction).toBe(true);
   });
 
   it("RunExportEventContext extends RunExportContext with eventIndex", () => {
@@ -113,11 +121,13 @@ describe("run-export contracts", () => {
       endpoint: "http://127.0.0.1:6006/v1/traces",
       headers: { authorization: "secret" },
       includeSensitiveData: false,
+      contentPatternRedaction: true,
       timeoutMs: 5000,
     };
     const config: ObservabilityExporterConfig = phoenix;
     expect(config.type).toBe("phoenix");
     expect(config.headers?.authorization).toBe("secret");
+    expect(config.contentPatternRedaction).toBe(true);
   });
 
   it("constructs a minimal PhoenixExporterConfig (type only)", () => {

@@ -102,6 +102,7 @@ export type MonoAgentObservabilityExporterJson = {
   readonly endpoint?: string;
   readonly headers?: { readonly [k: string]: string };
   readonly includeSensitiveData?: boolean;
+  readonly contentPatternRedaction?: boolean;
   readonly timeoutMs?: number;
 };
 

@@ -69,10 +69,14 @@ export function createPhoenixRunExporter(
     const endMs = now();
     const startedMs = startMs ?? endMs;
     const projectName = resolveProjectName(config, context);
+    const exportContext: RunExportContext = {
+      ...context,
+      contentPatternRedaction: config.contentPatternRedaction ?? context.contentPatternRedaction ?? false,
+    };
     const spans = buildRunReadableSpans({
       summary,
       events,
-      context,
+      context: exportContext,
       projectName,
       startTimeUnixNanos: BigInt(Math.trunc(startedMs)) * 1_000_000n,
       endTimeUnixNanos: BigInt(Math.trunc(endMs)) * 1_000_000n,

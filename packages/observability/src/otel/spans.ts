@@ -8,7 +8,7 @@ import {
 } from "../run-export-mapping.js";
 import type { SpanAttributes } from "../run-export-mapping.js";
 import { DEFAULT_MAX_STRING_BYTES } from "../guards.js";
-import { truncateString } from "../redaction.js";
+import { redactJsonValue, truncateString } from "../redaction.js";
 import type {
   RecordedRunEventCategory,
   RunExportContext,
@@ -33,6 +33,14 @@ const STATUS_CODE_UNSET = 0;
 const STATUS_CODE_ERROR = 2;
 
 const MIME_TEXT = "text/plain";
+const SYSTEM_PROMPT_MAX_BYTES = 32_000;
+
+function scanRetainedContent(value: string, context: RunExportContext, maxStringBytes: number): string {
+  if (context.contentPatternRedaction !== true) {
+    return value;
+  }
+  return redactJsonValue(value, maxStringBytes, { contentPatternRedaction: true }) as string;
+}
 
 export interface BuildRunReadableSpansInput {
   readonly summary: RunSummary;
@@ -130,7 +138,9 @@ function makeSpan(input: SpanInput): ReadableSpan {
  * request prompt through `context.userInput`; backfill forwards persisted
  * `summary.userInput` when present. The shared mapper bounds either source at
  * this UTF-8-aware export boundary without mutating the recorder summary or
- * rewriting a canonical recorder truncation marker.
+ * rewriting a canonical recorder truncation marker. Free text is not
+ * content-scanned by default; `contentPatternRedaction` enables the closed
+ * high-confidence scan over retained outbound values.
  */
 export function buildRunReadableSpans(input: BuildRunReadableSpansInput): ReadableSpan[] {
   const { summary, events, context, projectName, startTimeUnixNanos, endTimeUnixNanos, idFactory } =
@@ -169,24 +179,35 @@ export function buildRunReadableSpans(input: BuildRunReadableSpansInput): Readab
   // provider message — so a failed trace reads "failed (provider_unavailable_exhausted:
   // gpt-5.5 → timeout, kimi-k2.6 → server_error; last error: 503 …)" instead of a
   // bare kind. Undefined for a clean run.
-  const failureDetail = composeFailureDetail(summary, { maxErrorChars: 300 });
+  const failureDetailRaw = composeFailureDetail(summary, { maxErrorChars: 300 });
+  const failureDetail = failureDetailRaw === undefined
+    ? undefined
+    : scanRetainedContent(failureDetailRaw, context, DEFAULT_MAX_STRING_BYTES);
   const statusText =
     failureDetail === undefined ? summary.status : `${summary.status} (${failureDetail})`;
   const lastMessage = [...eventSpans].reverse().find((mapping) => mapping.category === "message");
   const finalReply = lastMessage === undefined ? "" : String(lastMessage.attributes["output.value"] ?? "");
   const rootInput =
     context.includeSensitiveData && context.userInput !== undefined && context.userInput.length > 0
-      ? truncateString(context.userInput, DEFAULT_MAX_STRING_BYTES)
+      ? scanRetainedContent(
+          truncateString(context.userInput, DEFAULT_MAX_STRING_BYTES),
+          context,
+          DEFAULT_MAX_STRING_BYTES,
+        )
       : `run ${summary.runId} · ${summary.conversationId}`;
-  const rootOutput = context.includeSensitiveData && finalReply.length > 0 ? finalReply : statusText;
+  const rootOutput = scanRetainedContent(
+    context.includeSensitiveData && finalReply.length > 0 ? finalReply : statusText,
+    context,
+    DEFAULT_MAX_STRING_BYTES,
+  );
 
   // System instructions are run content, so they ride the same sensitive gate as
   // the conversation input/output. The retained free-text string is already
-  // capped at persist time (the recorder's dedicated system-prompt cap), but it
-  // is not content-scanned or scrubbed.
+  // capped at persist time (the recorder's dedicated system-prompt cap). It is
+  // not content-scanned by default; the exporter opt-in applies here.
   const systemPrompt =
     context.includeSensitiveData && typeof summary.systemPrompt === "string" && summary.systemPrompt.length > 0
-      ? summary.systemPrompt
+      ? scanRetainedContent(summary.systemPrompt, context, SYSTEM_PROMPT_MAX_BYTES)
       : undefined;
 
   const warningsCount = countRuntimeWarnings(events);

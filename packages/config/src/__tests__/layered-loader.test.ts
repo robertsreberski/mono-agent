@@ -645,7 +645,12 @@ describe("layerJsonOntoEnv", () => {
 
   it("translates JSON observability.exporters to MONO_AGENT_OBSERVABILITY_EXPORTERS", () => {
     const exporters = [
-      { type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces", includeSensitiveData: false },
+      {
+        type: "phoenix",
+        endpoint: "http://127.0.0.1:6006/v1/traces",
+        includeSensitiveData: true,
+        contentPatternRedaction: true,
+      },
     ];
     const layered = layerJsonOntoEnv({ observability: { exporters } }, {});
     expect(JSON.parse(layered.MONO_AGENT_OBSERVABILITY_EXPORTERS ?? "[]")).toEqual(exporters);

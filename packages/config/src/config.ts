@@ -1257,6 +1257,7 @@ function normalizeExporterFromUnknown(value: unknown, source: string): Observabi
   const endpoint = endpointRaw === undefined ? DEFAULT_PHOENIX_ENDPOINT : validateEndpoint(endpointRaw, source);
   const headers = readStringRecord(value.headers, "headers", source);
   const includeSensitiveData = readObjectBoolean(value, "includeSensitiveData", false, source);
+  const contentPatternRedaction = readObjectBoolean(value, "contentPatternRedaction", false, source);
   const timeoutMs = readObjectInteger(value, "timeoutMs", source, { min: 1, max: 60_000 });
   const projectName = readObjectString(value, "projectName", source, false);
   return {
@@ -1264,6 +1265,7 @@ function normalizeExporterFromUnknown(value: unknown, source: string): Observabi
     endpoint,
     ...(headers === undefined ? {} : { headers }),
     includeSensitiveData,
+    contentPatternRedaction,
     timeoutMs: timeoutMs ?? DEFAULT_PHOENIX_TIMEOUT_MS,
     ...(projectName === undefined ? {} : { projectName }),
   };

@@ -6,6 +6,7 @@ export {
 export type {
   ObservabilityErrorCode,
   ObservabilityErrorDetails,
+  RedactJsonValueOptions,
 } from "./recorder.js";
 export {
   createCompositeRunRecorder,

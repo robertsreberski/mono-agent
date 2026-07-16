@@ -70,7 +70,7 @@ Adding a Phoenix exporter turns each run lifecycle into a semantic OpenInference
 Omitting the `observability.exporters` entry keeps only the local JSONL artifacts. The whole array can be supplied via `MONO_AGENT_OBSERVABILITY_EXPORTERS` (a JSON array). Already-recorded runs can be exported retroactively with `mono-agent backfill (--run <id> | --all)`, reusing the live OTLP mapping with historical timestamps; deterministic per-run ids make re-export overwrite rather than duplicate.
 
 :::caution
-Phoenix export is best-effort and metadata-only by default. Set `includeSensitiveData: true` on the exporter only if you intend span input/output values to carry prompt and tool payloads. With the opt-in, non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. Strings are capped.
+Phoenix export is best-effort and metadata-only by default. Set `includeSensitiveData: true` on the exporter only if you intend span input/output values to carry prompt and tool payloads. With sensitive export enabled, non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned by default. The separate `contentPatternRedaction: true` opt-in replaces a closed set of high-confidence credential shapes in retained outbound text. Strings are capped, and the scan does not make an untrusted collector safe.
 :::
 
 See [Phoenix export & backfill](/observability/phoenix-and-backfill/) for the full exporter options, `validate` compatibility check, and backfill flags.
