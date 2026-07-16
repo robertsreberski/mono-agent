@@ -6,7 +6,7 @@ sidebar:
 
 # TUI stream endpoint
 
-This channel serves the loopback NDJSON stream the [`mono-agent tui`](/observability/tui/) operator console connects to. Unlike the [OpenAI-compatible API](/channels/openai-api/) (which flattens events into Chat Completions chunks), it preserves structured `AgentStreamEvent` kinds — thinking deltas, tool calls with arguments/progress/results/timing, token usage, cost, provider lifecycle and failover, warnings — subject to the per-frame payload bound described below.
+This channel serves the loopback NDJSON stream the [`mono-agent tui`](/observability/tui/) operator console connects to. Unlike the [OpenAI-compatible API](/channels/openai-api/) (which flattens events into Chat Completions chunks), it preserves structured `AgentStreamEvent` kinds — thinking deltas, tool calls with arguments/progress/results/timing, token usage, cost, provider lifecycle and failover, warnings — subject to the serialized event-frame cap described below.
 
 Coverage: `config` (the `tui` section of `mono-agent.config.json`).
 
@@ -94,7 +94,7 @@ The `live` channel is the sibling default-on operator surface consumed by `mono-
 | `POST {basePath}/v1/turns` | Body `{ conversationId, text, metadata? }`. Responds with chunked `application/x-ndjson`, one frame per stream callback: `status`, `append`, `replace`, `event` (any `AgentStreamEvent`), then a terminal `finish` (final text + response metadata) or `error` (`cancelled` flagged). Closing the socket aborts the in-flight turn. |
 | `POST {basePath}/v1/conversations/:id/cancel` | Explicit cancel (`202`; `501` if the responder has no cancel). |
 
-Frames are defined in `@mono-agent/agent-contracts` (`stream-wire`); parsing is tolerant in both directions, so version-skewed console/agent pairs keep talking (unknown frame kinds and event types pass through). When a serialized event frame crosses the 256 KiB threshold, the adapter attempts field-level payload reduction and adds a truncation marker. This reducer does not apply to other frame kinds and does not enforce a strict post-reduction byte maximum. Replay does not restore the omitted tail: the JSONL recorder separately redacts and caps each event string at 4,096 bytes by default, buffers events in RAM, and replaces the events file only at terminal `finish()`/`fail()`. A crash before that boundary can therefore leave no in-flight events to replay. The tool-bloat guard may separately save oversized tool-result blocks under `tool-output/` when its persistence callback succeeds; those files are not the run's JSONL event stream and do not recover arbitrary streamed payloads. See the [artifact write-boundary contract](/observability/artifacts-and-traces/).
+Frames are defined in `@mono-agent/agent-contracts` (`stream-wire`); parsing is tolerant in both directions, so version-skewed console/agent pairs keep talking (unknown frame kinds and event types pass through). A serialized event frame over 256 KiB is field-reduced with a truncation marker and remeasured until the complete UTF-8 NDJSON line, including its newline, is at most 256 KiB. If unbounded metadata still prevents that fit, the adapter emits a small `oversized_event` marker instead. Other frame kinds do not use this cap. Replay does not restore the omitted tail: the JSONL recorder separately redacts and caps each event string at 4,096 bytes by default, buffers events in RAM, and replaces the events file only at terminal `finish()`/`fail()`. A crash before that boundary can therefore leave no in-flight events to replay. The tool-bloat guard may separately save oversized tool-result blocks under `tool-output/` when its persistence callback succeeds; those files are not the run's JSONL event stream and do not recover arbitrary streamed payloads. See the [artifact write-boundary contract](/observability/artifacts-and-traces/).
 
 How the endpoint is discovered: the running channel's summary (`baseUrl`) is folded into the agent's trace-source manifest at `metadata.channels.tui.baseUrl`, which `mono-agent tui` reads from the registry.
 
@@ -102,7 +102,7 @@ How the endpoint is discovered: the running channel's summary (`baseUrl`) is fol
 
 - A console conversation uses its own `conversationId`, so it runs concurrently with every other channel; reusing an existing id (e.g. a Telegram conversation's) is possible and queues behind that conversation's in-flight turn.
 - Managed macOS configuration uses a separate opaque configuration conversation id and never reuses the ordinary chat id. The proposal-only extension is scoped to that request; after the proposal/review outcome, the console moves to a fresh ordinary conversation while the background endpoint stays authoritative.
-- Loopback-only by default; binding further requires `allowNonLoopback` **and** should always pair with `apiKey`. Remember this endpoint streams tool arguments and results up to the wire bound — it is an operator surface by design.
+- Loopback-only by default; binding further requires `allowNonLoopback` **and** should always pair with `apiKey`. Remember this endpoint streams tool arguments and results: the event-frame cap reduces oversized payloads but is not a redaction boundary, so this remains an operator surface by design.
 
 ## Related
 

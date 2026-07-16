@@ -206,25 +206,50 @@ describe("check-consumer-docs-consistency", () => {
     await writeRepoDoc(repoRoot, "packages/operator-adapter/src/tui/constants.ts", [
       "// Upper bound for one serialized NDJSON frame.",
     ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/agent-app/src/cli.ts", [
+      "const help = [",
+      "  'Open the operator console: live chat with full',",
+      "  'thinking/tool/telemetry insight, replay, and config.',",
+      "];",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/operator-adapter/package.json", JSON.stringify({
+      description: "Loopback operator adapters: full-fidelity TUI NDJSON turns and live SSE.",
+    }));
+    await writeRepoDoc(repoRoot, "packages/session-web/webapp/src/views/DetailView.tsx", [
+      "<div>Loading full detail</div>",
+    ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/tui/package.json", JSON.stringify({
       description: "live chat with full stream-event insight",
     }));
     await writeRepoDoc(repoRoot, "scripts/package-catalog.mjs", [
-      "const responsibility = 'live chat with full stream-event insight';",
+      "const responsibility = 'full-fidelity TUI NDJSON turns';",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "docs/channels/tui.md", [
+      "# TUI channel",
+      "Structured event kinds are subject to the per-frame payload bound.",
+      "Tool arguments and results stream up to the wire bound.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "docs/observability/tui.md", [
+      "# TUI",
+      "Remote mode transports callbacks through the bounded wire protocol.",
+      "Oversized remote event frames trigger reduction at the 256 KiB threshold; it is not a strict maximum.",
     ].join("\n"));
 
     const result = await checkConsumerDocsConsistency([], { repoRoot });
     const reported = result.issues.join("\n");
 
-    expect(result.userDocsChecked).toBe(8);
-    expect(result.artifactContractSourcesChecked).toBe(5);
+    expect(result.userDocsChecked).toBe(10);
+    expect(result.artifactContractSourcesChecked).toBe(8);
     expect(reported).toContain("full stream-event insight");
     expect(reported).toContain("guaranteed every-run Phoenix stream");
     expect(reported).toContain("guaranteed every-run Phoenix export");
     expect(reported).toContain("always-written JSONL artifacts");
     expect(reported).toContain("unbounded session artifact detail");
     expect(reported).toContain("verbatim complete TUI event stream");
-    expect(reported).toContain("strict 256 KiB TUI frame cap");
+    expect(reported).toContain("broad TUI wire-bound claim");
+    expect(reported).toContain("non-enforced TUI event reduction threshold");
+    expect(reported).toContain("full thinking/tool/telemetry help insight");
+    expect(reported).toContain("full-fidelity TUI NDJSON metadata");
     expect(reported).toContain("guaranteed tool-output artifact persistence");
     for (const relativePath of [
       "docs/reference/feature-registry.md",
@@ -237,9 +262,14 @@ describe("check-consumer-docs-consistency", () => {
       "packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md",
       "packages/session-web/src/history.ts",
       "packages/session-web/src/aggregator.ts",
+      "packages/session-web/webapp/src/views/DetailView.tsx",
+      "packages/agent-app/src/cli.ts",
+      "packages/operator-adapter/package.json",
       "packages/operator-adapter/src/tui/constants.ts",
       "packages/tui/package.json",
       "scripts/package-catalog.mjs",
+      "docs/channels/tui.md",
+      "docs/observability/tui.md",
     ]) {
       expect(reported).toContain(relativePath);
     }
@@ -261,7 +291,7 @@ describe("check-consumer-docs-consistency", () => {
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/package-map.md", [
       "# Package map",
-      "Oversized remote event frames trigger field reduction at the 256 KiB threshold; it is not a strict maximum.",
+      "Serialized remote event frames are remeasured to a strict 256 KiB UTF-8 NDJSON cap; other frame kinds are unaffected.",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md", [
       "# Discovery",
@@ -277,6 +307,21 @@ describe("check-consumer-docs-consistency", () => {
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/session-web/src/aggregator.ts", [
       "// Tracks sessions whose persisted, bounded detail has been loaded.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/agent-app/src/cli.ts", [
+      "const help = 'live chat with structured thinking/tool/telemetry insight';",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/operator-adapter/package.json", JSON.stringify({
+      description: "Loopback operator adapters: structured TUI NDJSON turns and live SSE.",
+    }));
+    await writeRepoDoc(repoRoot, "packages/session-web/webapp/src/views/DetailView.tsx", [
+      "<div>Loading persisted detail</div>",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "docs/channels/tui.md", [
+      "# TUI channel",
+      "Serialized event frames are capped at 256 KiB after UTF-8 NDJSON encoding; non-event frames are unaffected.",
+      "The full on-disk history remains pageable, subject to its documented retention contract.",
+      "The full terminal-result replay horizon remains available after successful persistence.",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/tui/package.json", JSON.stringify({
       description: "live chat with structured stream-event insight and bounded replay",

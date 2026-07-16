@@ -906,7 +906,7 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     signature: "mono-agent tui [--agent <label|sourceId>] [--conversation <id>]\n" +
       "               [--configure | --local]",
     lines: [
-      "Open the operator console from any directory: live chat with full",
+      "Open the operator console from any directory: live chat with structured",
       "thinking/tool/telemetry insight, recorded-run replay, and config view.",
       "Discovers running agents via the trace-source registry; one running",
       "agent connects directly, several open a picker.",

@@ -17,6 +17,8 @@ const userDocRoots = [
 ];
 
 const artifactContractSourcePaths = [
+  "packages/agent-app/src/cli.ts",
+  "packages/operator-adapter/package.json",
   "packages/operator-adapter/src/tui/constants.ts",
   "packages/operator-adapter/src/tui/server.ts",
   "packages/tui/src/ui/app.ts",
@@ -25,6 +27,7 @@ const artifactContractSourcePaths = [
   "packages/tui/src/ui/views/replay.ts",
   "packages/session-web/src/aggregator.ts",
   "packages/session-web/src/history.ts",
+  "packages/session-web/webapp/src/views/DetailView.tsx",
   "packages/tui/package.json",
   "scripts/package-catalog.mjs",
 ];
@@ -150,6 +153,15 @@ const misleadingArtifactDurabilityClaims = [
     pattern: /\bfull\s+stream-event\s+insight\b/iu,
   },
   {
+    label: "full thinking/tool/telemetry help insight",
+    pattern:
+      /\blive chat with full(?:[\s"',]+)thinking\/tool\/telemetry insight\b/iu,
+  },
+  {
+    label: "full-fidelity TUI NDJSON metadata",
+    pattern: /\bfull[- ]fidelity\s+TUI\s+NDJSON\s+(?:turns?|frames?|stream)\b/iu,
+  },
+  {
     label: "guaranteed every-run Phoenix stream",
     pattern:
       /\bevery\s+run(?:\s+lifecycle)?\s+streams?\s+to\s+(?:a\s+)?\[?Phoenix\b|\bstream\s+every\s+run(?:\s+lifecycle)?\s+to\s+Phoenix\b/iu,
@@ -166,12 +178,17 @@ const misleadingArtifactDurabilityClaims = [
   {
     label: "unbounded session artifact detail",
     pattern:
-      /\bfull\s+timelines?\s+are\s+loaded\b|\b(?:use\s+\{@link\s+readInstanceSession\}\s+for|contains?)\s+full\s+detail\b|\bA\s+single\s+run\s+read\s+in\s+full\b|\bfuller\s+\(redacted\)\s+payload\b/iu,
+      /\bfull\s+timelines?\s+are\s+loaded\b|\b(?:use\s+\{@link\s+readInstanceSession\}\s+for|contains?|loading)\s+full\s+detail\b|\bA\s+single\s+run\s+read\s+in\s+full\b|\bfuller\s+\(redacted\)\s+payload\b/iu,
   },
   {
-    label: "strict 256 KiB TUI frame cap",
+    label: "broad TUI wire-bound claim",
     pattern:
-      /\b(?:a\s+single|remote\s+(?:NDJSON\s+|TUI\s+)?|structured\s+`?AgentStreamEvent`?\s+)?frames?\s+(?:are\s+|is\s+)?capped\s+at\s+256\s+KiB\b|\bupper\s+bound\s+for\s+one\s+serialized\s+NDJSON\s+frame\b/iu,
+      /\bper-frame payload bound\b|\bup to the wire bound\b|\bbounded wire protocol\b|\bupper\s+bound\s+for\s+one\s+serialized\s+NDJSON\s+frame\b/iu,
+  },
+  {
+    label: "non-enforced TUI event reduction threshold",
+    pattern:
+      /\b(?:serialized\s+|oversized\s+|remote\s+)?event frames?\b[^\n.!?]{0,220}\b256\s+KiB\b[^\n.!?]{0,220}\bnot\s+a\s+strict\s+(?:byte\s+)?(?:maximum|cap)\b/iu,
   },
   {
     label: "guaranteed tool-output artifact persistence",

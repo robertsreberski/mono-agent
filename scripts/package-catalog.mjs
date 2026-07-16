@@ -150,7 +150,7 @@ export const packageCatalog = [
     name: "@mono-agent/operator-adapter",
     category: "communication",
     channelIds: ["tui", "live"],
-    responsibility: "Exposes local operator endpoints: full-fidelity TUI NDJSON turns and read-only live SSE run-event streams.",
+    responsibility: "Exposes local operator endpoints: structured TUI NDJSON turns and read-only live SSE run-event streams.",
     allowedDependencyCategories: ["core"],
     publishable: true,
   },

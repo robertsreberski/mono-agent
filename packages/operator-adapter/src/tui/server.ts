@@ -260,7 +260,8 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
 /**
  * Serializes each AgentMessageStream callback as one NDJSON frame. Writes are
  * fire-and-forget: a slow TUI must never stall the harness, so backpressure is
- * absorbed by the socket buffer and oversized event payloads are truncated.
+ * absorbed by the socket buffer. Oversized event frames are truncated to the
+ * exported UTF-8 byte cap; non-event frames retain their existing behavior.
  */
 class NdjsonMessageStream implements AgentMessageStream {
   constructor(private readonly res: Response) {}
@@ -271,7 +272,7 @@ class NdjsonMessageStream implements AgentMessageStream {
     }
     let line = serializeAgentStreamFrame(frame);
     if (Buffer.byteLength(line, "utf8") > MAX_FRAME_BYTES && frame.kind === "event") {
-      line = serializeAgentStreamFrame({ kind: "event", event: truncateEvent(frame.event) });
+      line = serializeCappedEventFrame(frame.event);
     }
     this.res.write(line);
   }
@@ -300,37 +301,40 @@ class NdjsonMessageStream implements AgentMessageStream {
 
 /**
  * Shrink the unbounded fields (tool results / progress) of an oversized event
- * and mark the truncation. JSONL replay is independently redacted/bounded and
- * terminally persisted, so this omitted tail is not guaranteed recoverable.
+ * and mark the truncation. The caller chooses a character budget by measuring
+ * the fully serialized UTF-8 frame. JSONL replay is independently redacted/
+ * bounded and terminally persisted, so this omitted tail is not guaranteed
+ * recoverable.
  */
-function truncateEvent(event: AgentStreamEvent): AgentStreamEvent {
-  const cap = MAX_FRAME_BYTES / 2;
+function truncateEvent(event: AgentStreamEvent, maxPayloadChars: number): AgentStreamEvent {
   if (event.type === "tool_call_progress") {
     return {
       ...event,
-      partialResult: truncateUnknown(event.partialResult, cap),
+      partialResult: truncateUnknown(event.partialResult, maxPayloadChars),
       metadata: { ...event.metadata, truncated: true },
     };
   }
   if (event.type === "tool_call_completed") {
     return {
       ...event,
-      content: truncateUnknown(event.content, cap),
-      ...(event.arguments === undefined ? {} : { arguments: truncateUnknown(event.arguments, cap) }),
+      content: truncateUnknown(event.content, maxPayloadChars),
+      ...(event.arguments === undefined
+        ? {}
+        : { arguments: truncateUnknown(event.arguments, maxPayloadChars) }),
       metadata: { ...event.metadata, truncated: true },
     };
   }
   if (event.type === "tool_call_started") {
     return {
       ...event,
-      arguments: truncateUnknown(event.arguments, cap),
+      arguments: truncateUnknown(event.arguments, maxPayloadChars),
       metadata: { ...event.metadata, truncated: true },
     };
   }
   if (event.type === "assistant_thought") {
     return {
       ...event,
-      text: event.text.slice(0, cap),
+      text: event.text.slice(0, maxPayloadChars),
       metadata: { ...event.metadata, truncated: true },
     };
   }
@@ -341,6 +345,49 @@ function truncateEvent(event: AgentStreamEvent): AgentStreamEvent {
     data: { originalType: event.type, preview: JSON.stringify(event).slice(0, 1024) },
     metadata: { truncated: true },
   };
+}
+
+/**
+ * Find the largest tested character budget whose complete serialized event
+ * frame fits the byte cap. Measuring the final line on every iteration keeps
+ * multibyte text, JSON escaping, metadata, and the trailing newline inside the
+ * contract instead of treating a JS character count as a byte count.
+ */
+function serializeCappedEventFrame(event: AgentStreamEvent): string {
+  let lower = 0;
+  let upper = MAX_FRAME_BYTES;
+  let best: string | undefined;
+
+  while (lower <= upper) {
+    const maxPayloadChars = Math.floor((lower + upper) / 2);
+    const candidate = serializeAgentStreamFrame({
+      kind: "event",
+      event: truncateEvent(event, maxPayloadChars),
+    });
+    if (Buffer.byteLength(candidate, "utf8") <= MAX_FRAME_BYTES) {
+      best = candidate;
+      lower = maxPayloadChars + 1;
+    } else {
+      upper = maxPayloadChars - 1;
+    }
+  }
+
+  if (best !== undefined) {
+    return best;
+  }
+
+  // A huge metadata object can keep every field-reduced variant oversized.
+  // Drop it behind a small, explicit event marker rather than violating the
+  // encoded-frame cap.
+  return serializeAgentStreamFrame({
+    kind: "event",
+    event: {
+      type: "runtime_telemetry",
+      kind: "oversized_event",
+      data: { originalType: event.type.slice(0, 128) },
+      metadata: { truncated: true },
+    },
+  });
 }
 
 function truncateUnknown(value: unknown, cap: number): string {
