@@ -44,6 +44,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check production dependency vulnerabilities
+        if: ${{ matrix.node-version == '22.19.0' }}
+        run: pnpm run check:dependency-vulnerabilities
+
       - name: Check secrets
         run: |
           docker run --rm \

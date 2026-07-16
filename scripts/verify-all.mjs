@@ -11,6 +11,7 @@ const repoGate = [
   { label: "check:secrets", command: "pnpm", args: ["run", "check:secrets"] },
   { label: "check:oss-hygiene", command: "pnpm", args: ["run", "check:oss-hygiene"] },
   { label: "check:licenses", command: "pnpm", args: ["run", "check:licenses"] },
+  { label: "check:dependency-vulnerabilities", command: "pnpm", args: ["run", "check:dependency-vulnerabilities"] },
   { label: "check:codex-discoverability", command: "pnpm", args: ["run", "check:codex-discoverability"] },
   { label: "check:architecture", command: "pnpm", args: ["run", "check:architecture"] },
   { label: "build", command: "pnpm", args: ["run", "build"] },
@@ -113,7 +114,7 @@ function usage() {
     "Usage:",
     "  pnpm run verify:all",
     "",
-    "Runs check:node, check:pnpm-policy, check:secrets, check:oss-hygiene, check:licenses, check:codex-discoverability, check:architecture, build, typecheck, test, test:demo, git diff --check, then verify:consumers.",
+    "Runs check:node, check:pnpm-policy, check:secrets, check:oss-hygiene, check:licenses, check:dependency-vulnerabilities, check:codex-discoverability, check:architecture, build, typecheck, test, test:demo, git diff --check, then verify:consumers.",
   ].join("\n");
 }
 

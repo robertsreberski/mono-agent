@@ -31,6 +31,7 @@ describe("verify-all", () => {
       "check:secrets",
       "check:oss-hygiene",
       "check:licenses",
+      "check:dependency-vulnerabilities",
       "check:codex-discoverability",
       "check:architecture",
       "build",
