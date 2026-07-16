@@ -10,6 +10,7 @@ import {
   packageRelativePath,
 } from "./package-catalog.mjs";
 import { findAdapterNeutralityErrors } from "./lib/adapter-neutrality.mjs";
+import { findPackagePublicApiDocErrors } from "./lib/public-api-docs.mjs";
 
 const root = process.cwd();
 const packageScope = "@mono-agent/";
@@ -179,6 +180,7 @@ for (const staleReference of staleReferences) {
 }
 
 errors.push(...findAdapterNeutralityErrors({ root, channelIds: SHIPPED_CHANNEL_IDS }));
+errors.push(...findPackagePublicApiDocErrors({ root, catalog: packageCatalog }));
 
 if (errors.length > 0) {
   console.error("Package architecture check failed:");

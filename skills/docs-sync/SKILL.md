@@ -39,26 +39,34 @@ site.
 node scripts/check-consumer-docs-consistency.mjs
 ```
 
-## Per-PR drift checks (grep before closing the pass)
+## Per-PR drift checks
 
 Run these against the PR diff; each one caught a real doc regression.
 
-**README `## Public API` ↔ `src/index.ts` parity.** When a diff touches
-`packages/*/src/index.ts` (adds/removes an `export {…} from`), diff the touched
-package's README `## Public API` section too and flag any new export missing from
-it. As an occasional whole-package sweep, confirm each README-listed symbol still
-exists (and is imported by ≥1 other workspace package or carries a
-deprecated/experimental label):
+**README `## Public API` ↔ package exports parity.** Public API inventories are
+generated for every catalog package from its `package.json` export map and the
+corresponding TypeScript/JavaScript source entrypoints. This covers root and
+subpath exports, re-exports, and type-only exports without a hand-maintained
+package or symbol list. Narrative prose and examples outside the classified
+inventory markers remain hand-authored.
+
+After changing an export map or source barrel, regenerate the inventories. A
+second run must report zero changed files, and the architecture gate must pass:
 
 ```bash
-# any line printed = README lists a symbol src/index.ts no longer exports
-comm -23 \
-  <(sed -n '/^## Public API/,/^## /p' packages/<pkg>/README.md | grep -oE '`[A-Za-z_][A-Za-z0-9_]*`' | tr -d '`' | sort -u) \
-  <(grep -oE '[A-Za-z_][A-Za-z0-9_]*' packages/<pkg>/src/index.ts | sort -u)
+pnpm run generate:public-api-docs
+pnpm run generate:public-api-docs # must report 0 files updated
+pnpm run check:architecture
 ```
 
-Caught the observability README drift, the `*FieldGroup` staleness in 3 READMEs,
-the missing `toCronJobs` bullet, and the dead memory search API.
+Do not edit content between `public-api-inventory` or
+`public-api-js-subpaths` markers by hand. The architecture gate rejects missing
+or invented exports, stale `*FieldGroup` README identifiers, and drift between a
+classified MIGRATION subpath inventory and its package export map.
+
+This check caught the observability README drift, stale `*FieldGroup` names,
+the missing `toCronJobs` export, the phantom `AgentMessageStreamResult`, and the
+agent-runtime deep-subpath count drift.
 
 **Rename ⇒ grep the old name across docs.** When a PR renames/removes an exported
 symbol, grep the old name before closing the pass — README samples and docs prose
