@@ -180,6 +180,13 @@ name the canonical config. Readiness requires one live launchd-owned trace PID,
 the exact durable snapshot, and, for configuration, a reachable TUI endpoint.
 Stop succeeds only after both launchd unload and worker death are proven.
 
+`mono-agent validate` (and its `doctor` alias) reports the provenance of the CLI
+producing the report in its Runtime provenance section: a private managed marker
+whose freshly recomputed installed closure and coherent current manifest validate
+names its full closure id plus sanitized install metadata; other executions report
+`dev (unmanaged)`. With `--consumer`, this remains the validator CLI's provenance,
+not an attestation of a separately running daemon.
+
 Guided readiness uses a worker-reproducible environment rather than the launching
 shell: durable `.env` values, entered selected secrets, the resolved Pi auth path,
 and operational values such as `PATH`/`HOME`. Shell-only provider credentials and
