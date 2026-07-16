@@ -353,7 +353,7 @@ describe("validateMonoAgentFolder", () => {
     await mkdir(stateDir, { recursive: true, mode: 0o700 });
     await chmod(stateDir, 0o700);
     const recordId = "doctor-retention-growth";
-    const record = {
+    const record: Record<string, unknown> = {
       ...doctorPreparedContinuationRecord({
         id: recordId,
         originRunId: "run-doctor-retention-growth",
@@ -371,7 +371,7 @@ describe("validateMonoAgentFolder", () => {
     };
     delete record.originContextRef;
     const emptyReasonBytes = Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`, "utf8");
-    record.lastError.reason = "x".repeat(MAX_RECORD_BYTES - emptyReasonBytes);
+    (record.lastError as Record<string, unknown>).reason = "x".repeat(MAX_RECORD_BYTES - emptyReasonBytes);
     expect(Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`, "utf8")).toBe(MAX_RECORD_BYTES);
     await writeFile(join(stateDir, "continuations-v1.json"), JSON.stringify({
       schemaVersion: 1,
@@ -1036,7 +1036,7 @@ describe("validateMonoAgentFolder", () => {
     const oversizedMarker = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
     expect(sectionById(oversizedMarker, "continuations").details.join("\n")).toContain("exceeds its safety limit");
     await rm(markerPath);
-    await rm(groupsDir);
+    await rm(groupsDir, { recursive: true });
 
     const guardPath = join(stateDir, "records-v2", "UPGRADED-TO-RECORDS-V3");
     const guardAlias = join(stateDir, "guard-alias");
