@@ -107,11 +107,41 @@ describe("buildRunsHealthDisplay", () => {
     const staleLine = lineStarting(display.details, "[WARN] Stale running runs");
     expect(staleLine).toContain("run-stale");
     expect(staleLine).not.toContain("run-at-boundary");
+    expect(staleLine).not.toContain("run-fresh");
     expect(staleLine).not.toContain("run-invalid-time");
     expect(staleLine).not.toContain("run-missing-time");
     const ownerGoneLine = lineStarting(display.details, "[WARN] Running summaries while process is gone:");
     for (const run of [stale, atBoundary, fresh, invalidTimestamp, missingTimestamp]) {
       expect(ownerGoneLine).toContain(run.runId);
+    }
+  });
+
+  it("keeps old completed and fresh running summaries healthy while the owner is alive or unspecified", () => {
+    const runs = [
+      recordedRun("run-old-succeeded", "succeeded", {
+        startedAt: new Date(NOW_MS - RUNS_HEALTH_STALE_RUNNING_MS - 1).toISOString(),
+      }),
+      recordedRun("run-fresh", "running", {
+        startedAt: new Date(NOW_MS - 1_000).toISOString(),
+      }),
+    ];
+    const displayForOwner = (runOwnerAlive?: boolean) => buildRunsHealthDisplay({
+      artifactDir: "/agent/.mono-agent/artifacts",
+      runs,
+      warnings: [],
+      ...(runOwnerAlive === undefined ? {} : { runOwnerAlive }),
+      nowMs: NOW_MS,
+    });
+
+    for (const display of [displayForOwner(true), displayForOwner()]) {
+      expect(display.status).toBe("ok");
+      expect(
+        display.details.some((detail) => detail.startsWith("[WARN] Stale running runs")),
+      ).toBe(false);
+      expect(
+        display.details.some((detail) => detail.startsWith("[WARN] Running summaries while process is gone:")),
+      ).toBe(false);
+      expect(display.details).toContain("Failure kinds: none in recent window.");
     }
   });
 

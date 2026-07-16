@@ -168,4 +168,17 @@ describe("Slack continuation channel wrapper", () => {
       retryAfterMs: 1_000,
     });
   });
+
+  it("rethrows an unrelated AgentHarnessFailureError without mapping it to history readiness", async () => {
+    const error = new AgentHarnessFailureError({
+      kind: "provider_unavailable",
+      message: "The selected provider is unavailable.",
+    });
+    const running = await startWrapper({
+      synthesizeContinuation: vi.fn(async () => { throw error; }),
+      recordContinuationHistory: vi.fn(),
+    });
+
+    await expect(running.synthesizeContinuation(synthesisInput())).rejects.toBe(error);
+  });
 });
