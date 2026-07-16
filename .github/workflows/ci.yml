@@ -16,8 +16,8 @@ concurrency:
 jobs:
   verify:
     name: Verify (Node ${{ matrix.node-version }})
-    # scripts/__tests__/verify-all.test.mjs enforces setup-action, ordered argv,
-    # failure-policy, and Node-condition parity; VERIFY_GATE_DELTA declares exceptions.
+    # scripts/__tests__/verify-all.test.mjs enforces the complete ordered action,
+    # environment, and exact run-script projection; VERIFY_GATE_DELTA declares exceptions.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:

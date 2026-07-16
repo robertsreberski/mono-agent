@@ -5,14 +5,14 @@ import { Scalar, isAlias, isMap, isScalar, isSeq, parseDocument } from "yaml";
 
 import { MINIMUM_NODE_VERSION } from "../node-version.mjs";
 import {
+  CI_RELEASE_TAG_EXPRESSION,
   VERIFY_GATE_DELTA,
   createRepoGate,
   readReleaseSmokeTag,
   runVerifyAll,
 } from "../verify-all.mjs";
 
-const RELEASE_TAG_PLACEHOLDER = "<release-tag>";
-const ALWAYS = "always";
+const EXPECTED_CI_NODE_MATRIX = Object.freeze([MINIMUM_NODE_VERSION, "24"]);
 const CI_CHECKOUT_STEP = [
   "      - name: Checkout",
   "        uses: actions/checkout@v4",
@@ -458,8 +458,8 @@ describe("verify-all", () => {
       `${CI_CHECKOUT_STEP}\n\n${CI_ACTION_SEQUENCE}`,
     );
 
-    expect(() => parseCiVerifyJob(missingSetup)).toThrow();
-    expect(() => parseCiVerifyJob(duplicateCheckout)).toThrow();
+    expect(() => expectCiParity(missingSetup)).toThrow();
+    expect(() => expectCiParity(duplicateCheckout)).toThrow();
   });
 
   it("rejects CI action reordering and movement past run steps", () => {
@@ -531,58 +531,204 @@ describe("verify-all", () => {
       expect(() => parseCiVerifyJob(mutatedSource)).toThrow(/Unclassified CI run step/u);
     }
   });
+
+  it("rejects CI environment-step reordering", () => {
+    const source = readCiWorkflow();
+    const corepack = [
+      "      - name: Enable Corepack",
+      "        run: corepack enable",
+    ].join("\n");
+    const nodeCheck = [
+      "      - name: Check Node support floor",
+      "        run: pnpm run check:node",
+    ].join("\n");
+    const install = [
+      "      - name: Install dependencies",
+      "        run: pnpm install --frozen-lockfile",
+    ].join("\n");
+    const secrets = [
+      "      - name: Check secrets",
+      "        run: |",
+      "          docker run --rm \\",
+      "            -v \"$PWD:/repo\" \\",
+      "            ghcr.io/gitleaks/gitleaks:v8.30.1 \\",
+      "            dir --redact --no-banner --config /repo/.gitleaks.toml /repo",
+    ].join("\n");
+    const releaseTag = [
+      "      - name: Derive release smoke tag",
+      "        id: release-smoke",
+      "        run: |",
+      "          set -euo pipefail",
+      "          VERSION=\"$(node -e \"process.stdout.write(require('./packages/agent-app/package.json').version)\")\"",
+      "          echo \"tag=v${VERSION}\" >> \"$GITHUB_OUTPUT\"",
+    ].join("\n");
+    const releaseValidate = [
+      "      - name: Validate release package graph",
+      `        run: pnpm run release:validate -- --tag "${CI_RELEASE_TAG_EXPRESSION}"`,
+    ].join("\n");
+    const mutations = [
+      replaceExactly(source, `${corepack}\n\n${nodeCheck}`, `${nodeCheck}\n\n${corepack}`),
+      replaceExactly(source, `${install}\n\n${secrets}`, `${secrets}\n\n${install}`),
+      replaceExactly(
+        source,
+        `${releaseTag}\n\n${releaseValidate}`,
+        `${releaseValidate}\n\n${releaseTag}`,
+      ),
+    ];
+
+    for (const mutation of mutations) {
+      expect(() => expectCiParity(mutation)).toThrow();
+    }
+  });
+
+  it("rejects shell-source mutations that a lossy tokenizer could erase", () => {
+    const source = readCiWorkflow();
+    const gitCheck = "        run: git diff --check";
+    const gitleaksFirstLine = "          docker run --rm \\";
+    const gitleaksMount = "            -v \"$PWD:/repo\" \\";
+    const mutations = [
+      replaceExactly(source, gitCheck, ["        run: |", "          git", "          diff --check"].join("\n")),
+      replaceExactly(source, gitleaksFirstLine, "          docker run --rm"),
+      replaceExactly(source, gitCheck, "        run: git diff --check \"\""),
+      replaceExactly(
+        source,
+        gitleaksMount,
+        "            -v '$PWD:/repo' \\",
+      ),
+      replaceExactly(
+        source,
+        gitleaksMount,
+        "            -v \"$PWD:/r\\epo\" \\",
+      ),
+    ];
+
+    for (const mutation of mutations) {
+      expect(() => expectCiParity(mutation)).toThrow();
+    }
+  });
+
+  it("rejects action-input, condition, and release-tag sentinel collisions", () => {
+    const source = readCiWorkflow();
+    const matrixInput = "          node-version: \"${{ matrix.node-version }}\"";
+    const architecture = [
+      "      - name: Check package architecture",
+      "        run: pnpm run check:architecture",
+    ].join("\n");
+    const releaseValidate = `        run: pnpm run release:validate -- --tag "${CI_RELEASE_TAG_EXPRESSION}"`;
+    const mutations = [
+      replaceExactly(source, matrixInput, `${matrixInput}\n          __proto__: poisoned`),
+      replaceExactly(
+        source,
+        architecture,
+        [
+          "      - name: Check package architecture",
+          "        if: always",
+          "        run: pnpm run check:architecture",
+        ].join("\n"),
+      ),
+      replaceExactly(
+        source,
+        releaseValidate,
+        "        run: pnpm run release:validate -- --tag \"<release-tag>\"",
+      ),
+    ];
+
+    for (const mutation of mutations) {
+      expect(() => expectCiParity(mutation)).toThrow();
+    }
+  });
+
+  it("rejects YAML version and tag directives", () => {
+    const source = readCiWorkflow();
+    const mutations = [
+      `%YAML 1.1\n---\n${source}`,
+      `%TAG !review! tag:review.invalid,2026:\n---\n${source}`,
+    ];
+
+    for (const mutation of mutations) {
+      expect(() => parseCiVerifyJob(mutation)).toThrow(/directives are not allowed/u);
+    }
+  });
+
+  it("rejects every noncanonical CI Node matrix value", () => {
+    const source = readCiWorkflow();
+    const matrix = "        node-version: [\"22.19.0\", \"24\"]";
+
+    for (const replacement of ["20", "99", "future"]) {
+      const mutation = replaceExactly(
+        source,
+        matrix,
+        `        node-version: ["22.19.0", "${replacement}"]`,
+      );
+      expect(() => parseCiVerifyJob(mutation)).toThrow(/must remain exactly/u);
+    }
+  });
 });
 
 function expectCiParity(source) {
-  const { gates: ciGates, matrixVersions } = parseCiVerifyJob(source);
+  const { steps: ciSteps, matrixVersions } = parseCiVerifyJob(source);
   const allDeltaEntries = [
+    ...VERIFY_GATE_DELTA.ciSetup,
     ...VERIFY_GATE_DELTA.ciOnly,
     ...VERIFY_GATE_DELTA.commandDifferences,
     ...VERIFY_GATE_DELTA.matrixDifferences,
   ];
   expect(allDeltaEntries.every((entry) => entry.reason.length > 0)).toBe(true);
-  expect(matrixVersions).toContain(MINIMUM_NODE_VERSION);
-  expect(matrixVersions.some((version) => version !== MINIMUM_NODE_VERSION)).toBe(true);
+  expect(matrixVersions).toEqual(EXPECTED_CI_NODE_MATRIX);
 
-  expect(ciGates
-    .filter((gate) => gate.condition !== ALWAYS)
-    .map((gate) => ({ label: gate.label, condition: gate.condition })))
+  expect(ciSteps
+    .filter((step) => step.kind === "gate" && step.condition !== undefined)
+    .map((step) => ({ label: step.label, condition: step.condition })))
     .toEqual(VERIFY_GATE_DELTA.matrixDifferences.map((entry) => ({
       label: entry.label,
       condition: entry.ciCondition,
     })));
 
   for (const nodeVersion of matrixVersions) {
-    const actualCiGate = projectCiGate(ciGates, nodeVersion);
-    let expectedCiGate = createRepoGate({
-      releaseTag: RELEASE_TAG_PLACEHOLDER,
+    const actualCiSteps = projectCiSteps(ciSteps, nodeVersion);
+    let expectedCiSteps = createRepoGate({
+      releaseTag: CI_RELEASE_TAG_EXPRESSION,
       nodeVersion,
-    }).map(toGateDescriptor);
+    }).map(toGateStep);
 
     for (const entry of VERIFY_GATE_DELTA.matrixDifferences) {
       if (nodeVersion !== entry.ciNodeVersion) {
-        expectedCiGate = removeExactGate(expectedCiGate, entry.verifyAllOnlyGate, nodeVersion);
+        expectedCiSteps = removeExactGate(expectedCiSteps, entry.verifyAllOnlyGate, nodeVersion);
       }
     }
 
     for (const entry of VERIFY_GATE_DELTA.ciOnly) {
-      const anchorIndexes = indexesOfLabel(expectedCiGate, entry.after);
+      const anchorIndexes = indexesOfStepKey(expectedCiSteps, entry.after);
       expect(anchorIndexes, `CI-only ${entry.gate.label} anchor on Node ${nodeVersion}`).toHaveLength(1);
-      expectedCiGate.splice(anchorIndexes[0] + 1, 0, toGateDescriptor(entry.gate));
+      expectedCiSteps.splice(anchorIndexes[0] + 1, 0, toGateStep(entry.gate));
     }
 
     for (const entry of VERIFY_GATE_DELTA.commandDifferences) {
-      const indexes = indexesOfLabel(expectedCiGate, entry.label);
+      const indexes = indexesOfStepKey(expectedCiSteps, entry.label);
       expect(indexes, `command delta ${entry.label} on Node ${nodeVersion}`).toHaveLength(1);
-      expect(expectedCiGate[indexes[0]]).toEqual(toGateDescriptor(entry.verifyAll));
-      expectedCiGate[indexes[0]] = toGateDescriptor(entry.ci);
+      expect(expectedCiSteps[indexes[0]]).toEqual(toGateStep(entry.verifyAll));
+      expectedCiSteps[indexes[0]] = toGateStep(entry.ci);
     }
 
-    expect(actualCiGate, `CI semantic gate for Node ${nodeVersion}`).toEqual(expectedCiGate);
+    for (const entry of VERIFY_GATE_DELTA.ciSetup) {
+      const setupStep = { kind: "setup", key: entry.key };
+      if (entry.after === null) {
+        expectedCiSteps.unshift(setupStep);
+        continue;
+      }
+      const anchorIndexes = indexesOfStepKey(expectedCiSteps, entry.after);
+      expect(anchorIndexes, `CI setup ${entry.key} anchor on Node ${nodeVersion}`).toHaveLength(1);
+      expectedCiSteps.splice(anchorIndexes[0] + 1, 0, setupStep);
+    }
+
+    expect(actualCiSteps, `CI semantic step sequence for Node ${nodeVersion}`).toEqual(expectedCiSteps);
   }
 }
 
 function parseCiVerifyJob(source) {
+  if (/^(?:\uFEFF)?%(?:YAML|TAG)\b/mu.test(source)) {
+    throw new Error("YAML version and tag directives are not allowed in the CI parity contract.");
+  }
   const document = parseDocument(source, {
     keepSourceTokens: true,
     merge: false,
@@ -595,6 +741,13 @@ function parseCiVerifyJob(source) {
   const parseProblems = [...document.errors, ...document.warnings];
   if (parseProblems.length > 0) {
     throw new Error(`ci.yml must be strict YAML: ${parseProblems.map((problem) => problem.message).join("; ")}`);
+  }
+  const directiveTags = Object.entries(document.directives.tags);
+  if (document.directives.yaml.explicit === true
+    || directiveTags.length !== 1
+    || directiveTags[0][0] !== "!!"
+    || directiveTags[0][1] !== "tag:yaml.org,2002:") {
+    throw new Error("YAML version and tag directives are not allowed in the CI parity contract.");
   }
 
   const root = requireYamlMap(document.contents, "ci.yml root");
@@ -634,8 +787,8 @@ function parseCiVerifyJob(source) {
   const matrixVersions = nodeVersions.items.map((node, index) => (
     requireYamlString(node, `CI Node matrix item ${index + 1}`)
   ));
-  if (matrixVersions.length === 0 || new Set(matrixVersions).size !== matrixVersions.length) {
-    throw new Error("The CI Node matrix must be a non-empty unique string array.");
+  if (JSON.stringify(matrixVersions) !== JSON.stringify(EXPECTED_CI_NODE_MATRIX)) {
+    throw new Error(`The CI Node matrix must remain exactly ${JSON.stringify(EXPECTED_CI_NODE_MATRIX)}.`);
   }
 
   const steps = requireYamlSeq(verifyFields.get("steps"), "CI verify steps").items;
@@ -643,10 +796,7 @@ function parseCiVerifyJob(source) {
     throw new Error("The CI verify job must contain at least one step.");
   }
 
-  const gates = [];
-  const environmentCounts = new Map(ENVIRONMENT_RUN_STEPS.map((step) => [step.key, 0]));
-  const actionCounts = new Map(ACTION_STEPS.map((step) => [step.key, 0]));
-  const actionOrder = [];
+  const parsedSteps = [];
   for (const [stepIndex, stepNode] of steps.entries()) {
     const step = requireYamlMap(stepNode, `CI verify step ${stepIndex + 1}`);
     const fields = readYamlMap(step, `CI verify step ${stepIndex + 1}`);
@@ -672,8 +822,8 @@ function parseCiVerifyJob(source) {
       if (stepIndex !== actionStep.position) {
         throw new Error(`${actionStep.key} action must remain at verify-step position ${actionStep.position + 1}.`);
       }
-      const condition = optionalStringField(fields, "if", `CI action step ${name}`) ?? ALWAYS;
-      if (condition !== ALWAYS) {
+      const condition = optionalStringField(fields, "if", `CI action step ${name}`);
+      if (condition !== undefined) {
         throw new Error(`CI action condition drifted: ${actionStep.key}`);
       }
       const id = optionalStringField(fields, "id", `CI action step ${name}`);
@@ -687,60 +837,41 @@ function parseCiVerifyJob(source) {
         const reason = error instanceof Error ? error.message : String(error);
         throw new Error(`CI action inputs drifted: ${actionStep.key} (${reason})`);
       }
-      if (!sameStringRecord(withInputs, actionStep.withInputs)) {
+      if (!sameStringMap(withInputs, actionStep.withInputs)) {
         throw new Error(`CI action inputs drifted: ${actionStep.key}`);
       }
-      actionCounts.set(actionStep.key, actionCounts.get(actionStep.key) + 1);
-      actionOrder.push(actionStep.key);
+      parsedSteps.push({ kind: "setup", key: actionStep.key });
       continue;
     }
 
     assertOnlyStepFields(fields, RUN_STEP_FIELDS, name);
-    const condition = optionalStringField(fields, "if", `CI run step ${name}`) ?? ALWAYS;
+    const condition = optionalStringField(fields, "if", `CI run step ${name}`);
     const run = readRunCommand(fields.get("run"), name);
-    const normalizedCommand = normalizeRunCommand(run.command);
-    const environmentStep = ENVIRONMENT_RUN_STEPS.find((candidate) => (
-      candidate.command === normalizedCommand && candidate.style === run.style
+    const runContract = CI_RUN_STEP_CONTRACTS.find((candidate) => (
+      candidate.command === run.command && candidate.style === run.style
     ));
-    if (environmentStep !== undefined) {
-      if (condition !== ALWAYS) {
+    if (runContract === undefined) {
+      throw new Error(`Unclassified CI run step: ${name}`);
+    }
+    if (runContract.kind === "setup") {
+      if (condition !== undefined) {
         throw new Error(`Environment step condition drifted: ${name}`);
       }
       const id = optionalStringField(fields, "id", `CI environment step ${name}`);
-      if (id !== environmentStep.id) {
+      if (id !== runContract.id) {
         throw new Error(`Environment step id drifted: ${name}`);
       }
-      environmentCounts.set(environmentStep.key, environmentCounts.get(environmentStep.key) + 1);
+      parsedSteps.push({ kind: "setup", key: runContract.key });
       continue;
     }
 
-    const gate = classifyGate(normalizedCommand);
-    if (gate === undefined) {
-      throw new Error(`Unclassified CI run step: ${name}`);
-    }
     if (fields.has("id")) {
       throw new Error(`Gate step id drifted: ${name}`);
     }
-    gates.push({ ...gate, condition });
+    parsedSteps.push({ ...toGateStep(runContract.gate), condition });
   }
 
-  for (const environmentStep of ENVIRONMENT_RUN_STEPS) {
-    const count = environmentCounts.get(environmentStep.key);
-    if (count !== 1) {
-      throw new Error(`Expected exactly one ${environmentStep.key} environment step; found ${count}.`);
-    }
-  }
-  for (const actionStep of ACTION_STEPS) {
-    const count = actionCounts.get(actionStep.key);
-    if (count !== 1) {
-      throw new Error(`Expected exactly one ${actionStep.key} action; found ${count}.`);
-    }
-  }
-  if (JSON.stringify(actionOrder) !== JSON.stringify(ACTION_STEPS.map((step) => step.key))) {
-    throw new Error(`CI action order drifted: ${actionOrder.join(", ")}`);
-  }
-
-  return { gates, matrixVersions };
+  return { steps: parsedSteps, matrixVersions };
 }
 
 const RUN_STEP_FIELDS = new Set(["name", "id", "if", "continue-on-error", "run"]);
@@ -751,30 +882,127 @@ const ACTION_STEPS = Object.freeze([
     key: "checkout",
     position: 0,
     uses: "actions/checkout@v4",
-    withInputs: Object.freeze({}),
+    withInputs: Object.freeze([]),
   }),
   Object.freeze({
     key: "Node setup",
     position: 1,
     uses: "actions/setup-node@v4",
-    withInputs: Object.freeze({
-      "node-version": "${{ matrix.node-version }}",
-    }),
+    withInputs: Object.freeze([
+      Object.freeze(["node-version", "${{ matrix.node-version }}"]),
+    ]),
   }),
 ]);
 
-const ENVIRONMENT_RUN_STEPS = Object.freeze([
-  Object.freeze({ key: "corepack setup", command: "corepack enable", style: "scalar" }),
-  Object.freeze({ key: "dependency install", command: "pnpm install --frozen-lockfile", style: "scalar" }),
-  Object.freeze({
-    key: "release-tag derivation",
-    id: "release-smoke",
-    style: "literal",
-    command: [
+const CI_RUN_STEP_CONTRACTS = Object.freeze([
+  setupRunContract("corepack setup", "corepack enable"),
+  gateRunContract("pnpm run check:node", {
+    label: "check:node",
+    command: "pnpm",
+    args: ["run", "check:node"],
+  }),
+  setupRunContract("dependency install", "pnpm install --frozen-lockfile"),
+  gateRunContract(literalScript([
+    "docker run --rm \\",
+    "  -v \"$PWD:/repo\" \\",
+    "  ghcr.io/gitleaks/gitleaks:v8.30.1 \\",
+    "  dir --redact --no-banner --config /repo/.gitleaks.toml /repo",
+  ]), {
+    label: "check:secrets",
+    command: "docker",
+    args: [
+      "run",
+      "--rm",
+      "-v",
+      "$PWD:/repo",
+      "ghcr.io/gitleaks/gitleaks:v8.30.1",
+      "dir",
+      "--redact",
+      "--no-banner",
+      "--config",
+      "/repo/.gitleaks.toml",
+      "/repo",
+    ],
+  }, "literal"),
+  gateRunContract("pnpm run check:oss-hygiene", {
+    label: "check:oss-hygiene",
+    command: "pnpm",
+    args: ["run", "check:oss-hygiene"],
+  }),
+  gateRunContract("pnpm run check:licenses", {
+    label: "check:licenses",
+    command: "pnpm",
+    args: ["run", "check:licenses"],
+  }),
+  gateRunContract("pnpm run check:codex-discoverability", {
+    label: "check:codex-discoverability",
+    command: "pnpm",
+    args: ["run", "check:codex-discoverability"],
+  }),
+  setupRunContract("release-tag derivation", literalScript([
       "set -euo pipefail",
       "VERSION=\"$(node -e \"process.stdout.write(require('./packages/agent-app/package.json').version)\")\"",
       "echo \"tag=v${VERSION}\" >> \"$GITHUB_OUTPUT\"",
-    ].join("\n"),
+    ]), "literal", "release-smoke"),
+  gateRunContract(`pnpm run release:validate -- --tag "${CI_RELEASE_TAG_EXPRESSION}"`, {
+    label: "release:validate",
+    command: "pnpm",
+    args: ["run", "release:validate", "--", "--tag", CI_RELEASE_TAG_EXPRESSION],
+  }),
+  gateRunContract("pnpm run check:architecture", {
+    label: "check:architecture",
+    command: "pnpm",
+    args: ["run", "check:architecture"],
+  }),
+  gateRunContract("pnpm run build", {
+    label: "build",
+    command: "pnpm",
+    args: ["run", "build"],
+  }),
+  gateRunContract("pnpm run verify:consumers --skip-build", {
+    label: "verify:consumers",
+    command: "pnpm",
+    args: ["run", "verify:consumers", "--skip-build"],
+  }),
+  gateRunContract(`pnpm run release:pack -- --tag "${CI_RELEASE_TAG_EXPRESSION}"`, {
+    label: "release:pack",
+    command: "pnpm",
+    args: ["run", "release:pack", "--", "--tag", CI_RELEASE_TAG_EXPRESSION],
+  }),
+  gateRunContract(`pnpm run release:consumer -- --tag "${CI_RELEASE_TAG_EXPRESSION}" --require-minimum`, {
+    label: "release:consumer",
+    command: "pnpm",
+    args: ["run", "release:consumer", "--", "--tag", CI_RELEASE_TAG_EXPRESSION, "--require-minimum"],
+  }),
+  gateRunContract("pnpm run typecheck", {
+    label: "typecheck",
+    command: "pnpm",
+    args: ["run", "typecheck"],
+  }),
+  gateRunContract("pnpm test", {
+    label: "test",
+    command: "pnpm",
+    args: ["test"],
+  }),
+  gateRunContract("pnpm run build:demo", {
+    label: "build:demo",
+    command: "pnpm",
+    args: ["run", "build:demo"],
+  }),
+  gateRunContract("pnpm run typecheck:demo", {
+    label: "typecheck:demo",
+    command: "pnpm",
+    args: ["run", "typecheck:demo"],
+  }),
+  gateRunContract("pnpm run test:demo", {
+    label: "test:demo",
+    command: "pnpm",
+    args: ["run", "test:demo"],
+  }),
+  gateRunContract("git diff --check", {
+    label: "git diff --check",
+    command: "git",
+    args: ["diff", "--check"],
   }),
 ]);
 
@@ -893,19 +1121,20 @@ function assertOnlyStepFields(fields, allowedFields, name) {
 
 function parseWithInputs(withNode, name) {
   if (withNode === undefined) {
-    return {};
+    return new Map();
   }
-  const inputs = {};
+  const inputs = new Map();
   for (const [key, valueNode] of readYamlMap(withNode, `CI action inputs on ${name}`)) {
-    inputs[key] = requireYamlString(valueNode, `${key} on ${name}`);
+    inputs.set(key, requireYamlString(valueNode, `${key} on ${name}`));
   }
   return inputs;
 }
 
-function sameStringRecord(left, right) {
-  const leftEntries = Object.entries(left).sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
-  const rightEntries = Object.entries(right).sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
-  return JSON.stringify(leftEntries) === JSON.stringify(rightEntries);
+function sameStringMap(left, rightEntries) {
+  const leftEntries = [...left.entries()].sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
+  const sortedRightEntries = [...rightEntries]
+    .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
+  return JSON.stringify(leftEntries) === JSON.stringify(sortedRightEntries);
 }
 
 function readRunCommand(runNode, name) {
@@ -931,104 +1160,32 @@ function readRunCommand(runNode, name) {
   return { command, style: "scalar" };
 }
 
-function normalizeRunCommand(command) {
-  return command
-    .replace(/\\\r?\n\s*/gu, " ")
-    .split(/\r?\n/gu)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .join("\n");
-}
-
-function classifyGate(commandSource) {
-  const words = parseShellWords(commandSource.replaceAll("\n", " "));
-  if (words[0] === "pnpm" && words[1] === "run" && words[2] !== undefined) {
-    return toGateDescriptor({
-      label: words[2],
-      command: words[0],
-      args: words.slice(1),
-    });
-  }
-  if (words[0] === "pnpm" && words[1] === "test") {
-    return toGateDescriptor({ label: "test", command: "pnpm", args: words.slice(1) });
-  }
-  if (words[0] === "git" && words[1] === "diff" && words[2] === "--check" && words.length === 3) {
-    return toGateDescriptor({ label: "git diff --check", command: "git", args: words.slice(1) });
-  }
-  if (words[0] === "docker" && words.some((word) => word.startsWith("ghcr.io/gitleaks/gitleaks:"))) {
-    return toGateDescriptor({ label: "check:secrets", command: "docker", args: words.slice(1) });
-  }
-  return undefined;
-}
-
-function parseShellWords(source) {
-  const words = [];
-  let word = "";
-  let quote;
-  let escaping = false;
-
-  for (const character of source) {
-    if (escaping) {
-      word += character;
-      escaping = false;
-      continue;
-    }
-    if (character === "\\" && quote !== "'") {
-      escaping = true;
-      continue;
-    }
-    if (quote !== undefined) {
-      if (character === quote) {
-        quote = undefined;
-      } else {
-        word += character;
-      }
-      continue;
-    }
-    if (character === "\"" || character === "'") {
-      quote = character;
-      continue;
-    }
-    if (/\s/u.test(character)) {
-      if (word.length > 0) {
-        words.push(word);
-        word = "";
-      }
-      continue;
-    }
-    word += character;
-  }
-
-  if (escaping || quote !== undefined) {
-    throw new Error(`Unterminated shell token in: ${source}`);
-  }
-  if (word.length > 0) {
-    words.push(word);
-  }
-  return words;
-}
-
-function projectCiGate(gates, nodeVersion) {
+function projectCiSteps(steps, nodeVersion) {
   const projected = [];
-  for (const gate of gates) {
-    if (gate.condition === ALWAYS) {
-      projected.push(toGateDescriptor(gate));
+  for (const step of steps) {
+    if (step.kind === "setup") {
+      projected.push(step);
       continue;
     }
 
-    const delta = VERIFY_GATE_DELTA.matrixDifferences.find((entry) => entry.label === gate.label);
-    if (delta === undefined || gate.condition !== delta.ciCondition) {
-      throw new Error(`Undocumented CI condition for ${gate.label}: ${gate.condition}`);
+    if (step.condition === undefined) {
+      projected.push(toGateStep(step));
+      continue;
+    }
+
+    const delta = VERIFY_GATE_DELTA.matrixDifferences.find((entry) => entry.label === step.label);
+    if (delta === undefined || step.condition !== delta.ciCondition) {
+      throw new Error(`Undocumented CI condition for ${step.label}: ${step.condition}`);
     }
     if (nodeVersion === delta.ciNodeVersion) {
-      projected.push(toGateDescriptor(gate));
+      projected.push(toGateStep(step));
     }
   }
   return projected;
 }
 
 function removeExactGate(gates, expectedGate, nodeVersion) {
-  const normalizedExpected = toGateDescriptor(expectedGate);
+  const normalizedExpected = toGateStep(expectedGate);
   const indexes = gates
     .map((gate, index) => sameGate(gate, normalizedExpected) ? index : -1)
     .filter((index) => index >= 0);
@@ -1036,9 +1193,9 @@ function removeExactGate(gates, expectedGate, nodeVersion) {
   return gates.filter((_gate, index) => index !== indexes[0]);
 }
 
-function indexesOfLabel(gates, label) {
-  return gates
-    .map((gate, index) => gate.label === label ? index : -1)
+function indexesOfStepKey(steps, key) {
+  return steps
+    .map((step, index) => (step.kind === "setup" ? step.key : step.label) === key ? index : -1)
     .filter((index) => index >= 0);
 }
 
@@ -1048,14 +1205,34 @@ function sameGate(left, right) {
     && JSON.stringify(left.args) === JSON.stringify(right.args);
 }
 
-function toGateDescriptor(gate) {
+function toGateStep(gate) {
   return {
+    kind: "gate",
     label: gate.label,
     command: gate.command,
-    args: [...gate.args].map((arg) => arg === "${{ steps.release-smoke.outputs.tag }}"
-      ? RELEASE_TAG_PLACEHOLDER
-      : arg),
+    args: [...gate.args],
   };
+}
+
+function literalScript(lines) {
+  return `${lines.join("\n")}\n`;
+}
+
+function setupRunContract(key, command, style = "scalar", id = undefined) {
+  return Object.freeze({ kind: "setup", key, command, style, id });
+}
+
+function gateRunContract(command, gate, style = "scalar") {
+  return Object.freeze({
+    kind: "gate",
+    command,
+    style,
+    gate: Object.freeze({
+      label: gate.label,
+      command: gate.command,
+      args: Object.freeze([...gate.args]),
+    }),
+  });
 }
 
 function replaceExactly(source, original, replacement) {

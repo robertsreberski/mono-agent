@@ -7,14 +7,43 @@ import { fileURLToPath } from "node:url";
 import { MINIMUM_NODE_VERSION } from "./node-version.mjs";
 import { runVerifyConsumers } from "./verify-consumers.mjs";
 
+export const CI_RELEASE_TAG_EXPRESSION = "${{ steps.release-smoke.outputs.tag }}";
+
 /**
  * Intentional semantic differences from the CI verify job.
  *
- * scripts/__tests__/verify-all.test.mjs checks the complete ordered command
- * descriptors for every CI Node-matrix leg. CI setup actions are verified as
- * exact environment semantics; the separate website job is not a repo gate.
+ * scripts/__tests__/verify-all.test.mjs checks the complete ordered action,
+ * environment, and gate sequence for every CI Node-matrix leg. The separate
+ * website job is not a repo gate.
  */
 export const VERIFY_GATE_DELTA = Object.freeze({
+  ciSetup: Object.freeze([
+    Object.freeze({
+      key: "checkout",
+      after: null,
+      reason: "CI checks out the source tree; local verify:all runs in the caller's existing checkout.",
+    }),
+    Object.freeze({
+      key: "Node setup",
+      after: "checkout",
+      reason: "CI selects each exact Node-matrix runtime; local verify:all uses the active supported runtime.",
+    }),
+    Object.freeze({
+      key: "corepack setup",
+      after: "Node setup",
+      reason: "CI enables Corepack in its clean runner; local verify:all assumes the selected pnpm is already available.",
+    }),
+    Object.freeze({
+      key: "dependency install",
+      after: "check:node",
+      reason: "CI installs the frozen workspace after proving the Node floor; local verify:all uses the caller's installed workspace.",
+    }),
+    Object.freeze({
+      key: "release-tag derivation",
+      after: "check:codex-discoverability",
+      reason: "CI exports the manifest-derived smoke tag for later steps; local verify:all reads that manifest value in-process.",
+    }),
+  ]),
   ciOnly: Object.freeze([
     Object.freeze({
       gate: Object.freeze({
@@ -85,7 +114,7 @@ export const VERIFY_GATE_DELTA = Object.freeze({
       verifyAllOnlyGate: Object.freeze({
         label: "release:consumer",
         command: "pnpm",
-        args: Object.freeze(["run", "release:consumer", "--", "--tag", "<release-tag>"]),
+        args: Object.freeze(["run", "release:consumer", "--", "--tag", CI_RELEASE_TAG_EXPRESSION]),
       }),
       reason: "CI runs the packed consumer only on the minimum-Node leg; verify:all also smoke-tests it on newer supported Node versions without --require-minimum.",
     }),
