@@ -258,7 +258,7 @@ export interface MonoAgentConfig {
     readonly writeMode: MemoryWriteMode;
     /** Supermemory external backend config; required when `backend` is `"supermemory"`. */
     readonly supermemory?: MemorySupermemoryConfig;
-    /** Embedding provider for semantic memory_search; keyword fallback when unset. */
+    /** Embedding provider for semantic memory recall; keyword fallback when unset. */
     readonly embeddings?: MemoryEmbeddingsConfig;
     /** LLM for bujo capture and effective tier selection. */
     readonly llm?: MemoryLlmConfig;
