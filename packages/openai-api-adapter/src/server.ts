@@ -166,6 +166,7 @@ const OPENAI_CHAT_PARAMETER_KEYS = [
   "frequency_penalty",
 ] as const;
 type OpenAIChatParameterKey = (typeof OPENAI_CHAT_PARAMETER_KEYS)[number];
+type RuntimeWarningEvent = Extract<AgentStreamEvent, { readonly type: "runtime_warning" }>;
 const OPENAI_CHAT_PARAMETER_DEFAULTS: Readonly<Record<OpenAIChatParameterKey, unknown>> = {
   temperature: 1,
   top_p: 1,
@@ -468,13 +469,14 @@ async function runJsonResponder(input: {
       new OpenAIApiAdapterError("invalid_config", "Cannot write to a finished OpenAI API stream."),
   });
   try {
-    await emitUnsupportedSamplingWarning(input.request, stream, input.options.logger);
+    const samplingWarning = await emitUnsupportedSamplingWarning(input.request, stream, input.options.logger);
     const response = await input.options.responder.respond(input.request, stream);
     await stream.finish(response.text);
     input.response.status(200).json(chatCompletion({
       id: `chatcmpl-${input.requestId}`,
       model: input.model,
       content: stream.text,
+      ...(samplingWarning === undefined ? {} : { events: [samplingWarning] }),
     }));
   } catch (error) {
     const cancelled = input.request.abortSignal.aborted || isAgentResponseCancelledError(error);
@@ -1015,7 +1017,7 @@ async function emitUnsupportedSamplingWarning(
   request: OpenAIApiChatRequest,
   stream: AgentMessageStream,
   logger: OpenAIApiAdapterLogger | undefined,
-): Promise<void> {
+): Promise<RuntimeWarningEvent | undefined> {
   const ignoredParameters = OPENAI_CHAT_PARAMETER_KEYS.filter((key) =>
     hasOwn(request.metadata.openaiApi.parameters, key)
     && request.metadata.openaiApi.parameters[key] !== OPENAI_CHAT_PARAMETER_DEFAULTS[key]);
@@ -1040,12 +1042,14 @@ async function emitUnsupportedSamplingWarning(
     ignoredParameters,
   });
   await stream.event?.(event);
+  return event;
 }
 
 function chatCompletion(input: {
   readonly id: string;
   readonly model: string;
   readonly content: string;
+  readonly events?: readonly RuntimeWarningEvent[];
 }): Record<string, unknown> {
   return {
     id: input.id,
@@ -1062,6 +1066,13 @@ function chatCompletion(input: {
         finish_reason: "stop",
       },
     ],
+    ...(input.events === undefined || input.events.length === 0
+      ? {}
+      : {
+          mono_agent: {
+            events: input.events,
+          },
+        }),
   };
 }
 

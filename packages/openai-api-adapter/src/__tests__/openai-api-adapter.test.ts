@@ -249,6 +249,165 @@ describe("OpenAI API adapter", () => {
     }
   });
 
+  it("keeps absent and explicit-default non-stream sampling parameters quiet", async () => {
+    const seenParameters: unknown[] = [];
+    const warn = vi.fn();
+    const responder: AgentResponder<OpenAIApiChatRequest> = {
+      async respond(request, stream) {
+        seenParameters.push(request.metadata.openaiApi.parameters);
+        await stream.append("defaults accepted");
+        return {};
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      responder,
+      logger: { warn },
+    });
+
+    try {
+      const requests = [
+        {},
+        {
+          stream: false,
+          temperature: 1,
+          top_p: 1,
+          max_tokens: null,
+          max_completion_tokens: null,
+          stop: null,
+          seed: null,
+          logit_bias: null,
+          presence_penalty: 0,
+          frequency_penalty: 0,
+        },
+      ];
+      const bodies: Record<string, unknown>[] = [];
+      for (const parameters of requests) {
+        const response = await fetch(`${server.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "agent",
+            messages: [{ role: "user", content: "Use defaults" }],
+            ...parameters,
+          }),
+        });
+        expect(response.status).toBe(200);
+        bodies.push(await response.json() as Record<string, unknown>);
+      }
+
+      for (const body of bodies) {
+        expect(body).toMatchObject({
+          object: "chat.completion",
+          choices: [{ message: { role: "assistant", content: "defaults accepted" } }],
+        });
+        expect(body).not.toHaveProperty("mono_agent");
+      }
+      expect(seenParameters).toEqual([
+        {},
+        {
+          temperature: 1,
+          top_p: 1,
+          max_tokens: null,
+          max_completion_tokens: null,
+          stop: null,
+          seed: null,
+          logit_bias: null,
+          presence_penalty: 0,
+          frequency_penalty: 0,
+        },
+      ]);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it.each([
+    ["omitted without an operator logger", undefined, false],
+    ["false with an operator logger", false, true],
+  ] as const)("returns a names-only warning extension when non-stream mode is %s", async (
+    _label,
+    streamValue,
+    withLogger,
+  ) => {
+    const lifecycle: string[] = [];
+    const warn = vi.fn(() => lifecycle.push("warn"));
+    const responder: AgentResponder<OpenAIApiChatRequest> = {
+      async respond(_request, stream) {
+        lifecycle.push("respond");
+        await stream.append("runtime response");
+        return {};
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      responder,
+      ...(withLogger ? { logger: { warn } } : {}),
+    });
+
+    try {
+      const response = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          ...(streamValue === undefined ? {} : { stream: streamValue }),
+          messages: [{ role: "user", content: "Ignore unsupported controls" }],
+          temperature: 0.2,
+          stop: ["DO_NOT_LEAK_STOP_VALUE"],
+          logit_bias: { DO_NOT_LEAK_LOGIT_KEY: 99 },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body).toMatchObject({
+        object: "chat.completion",
+        choices: [{ message: { role: "assistant", content: "runtime response" } }],
+        mono_agent: {
+          events: [
+            {
+              type: "runtime_warning",
+              warningKind: "openai_api_sampling_parameters_ignored",
+              message:
+                "OpenAI API sampling parameters are currently unsupported and were not applied: temperature, stop, logit_bias.",
+              metadata: {
+                openaiApi: {
+                  ignoredParameters: ["temperature", "stop", "logit_bias"],
+                },
+              },
+            },
+          ],
+        },
+      });
+      expect(lifecycle).toEqual(withLogger ? ["warn", "respond"] : ["respond"]);
+      if (withLogger) {
+        expect(warn).toHaveBeenCalledOnce();
+        expect(warn).toHaveBeenCalledWith(
+          "OpenAI API sampling parameters were ignored.",
+          expect.objectContaining({
+            warningKind: "openai_api_sampling_parameters_ignored",
+            ignoredParameters: ["temperature", "stop", "logit_bias"],
+          }),
+        );
+      } else {
+        expect(warn).not.toHaveBeenCalled();
+      }
+      const serializedWarning = JSON.stringify((body.mono_agent as { events: unknown }).events);
+      expect(serializedWarning).not.toContain("0.2");
+      expect(serializedWarning).not.toContain("DO_NOT_LEAK_STOP_VALUE");
+      expect(serializedWarning).not.toContain("DO_NOT_LEAK_LOGIT_KEY");
+      expect(serializedWarning).not.toContain("99");
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("accepts chat completion requests posted directly to the configured base URL", async () => {
     const seen: unknown[] = [];
     const responder: AgentResponder = {
