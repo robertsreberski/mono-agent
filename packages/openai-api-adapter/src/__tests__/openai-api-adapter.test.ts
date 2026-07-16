@@ -4,7 +4,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import { isWildcardHost, type AgentResponder } from "@mono-agent/agent-contracts";
 
-import { startOpenAIApiAdapter, type OpenAIApiChatRequest } from "../index.js";
+import {
+  DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
+  MAX_TOOL_SSE_FRAME_BYTES,
+  startOpenAIApiAdapter,
+  type OpenAIApiChatRequest,
+} from "../index.js";
 
 describe("OpenAI API adapter", () => {
   it("serves OpenAI-compatible model discovery for OpenWebUI", async () => {
@@ -991,6 +996,469 @@ describe("OpenAI API adapter", () => {
     }
   });
 
+  it.each([
+    {
+      label: "ASCII-heavy",
+      payload: "x".repeat(256 * 1024 + 512),
+    },
+    {
+      label: "HTML/JSON/control-escape-heavy",
+      payload: "\\\"\u0000\n\r\t&<>".repeat(32 * 1024),
+    },
+  ])("bounds the complete SSE frame for simultaneous $label tool payloads", async ({ payload }) => {
+    const argumentTail = "ARGUMENT-TAIL-MUST-NOT-LEAK";
+    const resultTail = "RESULT-TAIL-MUST-NOT-LEAK";
+    const argumentsValue = Object.freeze({
+      query: `${payload}${argumentTail}`,
+    });
+    const resultValue = Object.freeze({
+      output: `${payload}${resultTail}`,
+    });
+    const argumentsSnapshot = structuredClone(argumentsValue);
+    const resultSnapshot = structuredClone(resultValue);
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.event?.({
+          type: "tool_call_started",
+          id: "call-oversized",
+          name: "read_large_payload",
+          arguments: argumentsValue,
+        });
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "call-oversized",
+          content: resultValue,
+          isError: false,
+        });
+        return { text: "bounded" };
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      responder,
+    });
+
+    try {
+      const response = await postChat(server.baseUrl, {
+        stream: true,
+        messages: [{ role: "user", content: "Bound the tool payloads" }],
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      const payloads = sseDataPayloads(body);
+      expect(payloads.at(-1)).toBe("[DONE]");
+      const chunks = payloads.slice(0, -1).map((payload) => JSON.parse(payload) as Record<string, unknown>);
+      const detailsFrames = toolDetailsSseFrames(body);
+      expect(detailsFrames).toHaveLength(1);
+      expect(Buffer.byteLength(detailsFrames[0]!, "utf8")).toBeLessThanOrEqual(
+        MAX_TOOL_SSE_FRAME_BYTES,
+      );
+      const details = toolDetailsContent(chunks);
+      const projected = parseToolDetails(details);
+      const argumentsJson = JSON.stringify(argumentsValue);
+      const resultJson = JSON.stringify(resultValue);
+
+      expectAccurateToolPayloadProjection(
+        projected.arguments,
+        Buffer.byteLength(argumentsJson, "utf8"),
+      );
+      expectAccurateToolPayloadProjection(
+        projected.result,
+        Buffer.byteLength(resultJson, "utf8"),
+      );
+      expect(projected.arguments.__monoAgentTruncation.maxBytes)
+        .toBeLessThan(DEFAULT_MAX_TOOL_PAYLOAD_BYTES);
+      expect(projected.arguments.__monoAgentTruncation.maxBytes).toBeGreaterThan(0);
+      expect(projected.result.__monoAgentTruncation.maxBytes)
+        .toBe(projected.arguments.__monoAgentTruncation.maxBytes);
+      expect(body).not.toContain(argumentTail);
+      expect(body).not.toContain(resultTail);
+      expect(body.trim().endsWith("data: [DONE]")).toBe(true);
+      expect(argumentsValue).toEqual(argumentsSnapshot);
+      expect(resultValue).toEqual(resultSnapshot);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("maximizes retained payload across a raw/projection transition", async () => {
+    const argumentsValue = "a".repeat(400_000);
+    const resultValue = "\"".repeat(80_000);
+    const defaultObservation = await observeStreamedToolDetails({
+      argumentsValue,
+      resultValue,
+    });
+    const lowerCapObservation = await observeStreamedToolDetails({
+      argumentsValue,
+      resultValue,
+      maxToolPayloadBytes: 100_000,
+    });
+
+    expect(defaultObservation.frameBytes).toBeLessThanOrEqual(MAX_TOOL_SSE_FRAME_BYTES);
+    expect(lowerCapObservation.frameBytes).toBeLessThanOrEqual(MAX_TOOL_SSE_FRAME_BYTES);
+    expect(defaultObservation.terminalDone).toBe(true);
+    expect(lowerCapObservation.terminalDone).toBe(true);
+    expect(lowerCapObservation.resultText).toBe(resultValue);
+
+    const lowerArguments = parseToolPayloadProjection(lowerCapObservation.argumentsText);
+    expect(lowerArguments.__monoAgentTruncation).toMatchObject({
+      maxBytes: 100_000,
+      originalBytes: 400_000,
+      retainedBytes: 100_000,
+      omittedBytes: 300_000,
+    });
+    expect(retainedToolDetailsBytes(lowerCapObservation)).toBe(180_000);
+    expect(defaultObservation.resultText).toBe(resultValue);
+    const defaultArguments = parseToolPayloadProjection(defaultObservation.argumentsText);
+    const selectedMaxBytes = defaultArguments.__monoAgentTruncation.maxBytes;
+    expect(selectedMaxBytes).toBeGreaterThanOrEqual(100_000);
+    expect(selectedMaxBytes).toBeLessThan(DEFAULT_MAX_TOOL_PAYLOAD_BYTES);
+    expect(defaultArguments.__monoAgentTruncation.retainedBytes).toBe(selectedMaxBytes);
+    expect(retainedToolDetailsBytes(defaultObservation)).toBe(selectedMaxBytes + 80_000);
+    expect(hypotheticalToolDetailsFrameBytes(
+      defaultObservation,
+      defaultObservation.argumentsText,
+      defaultObservation.resultText,
+    )).toBe(defaultObservation.frameBytes);
+
+    const nextMaxBytes = selectedMaxBytes + 1;
+    const nextArgumentsText = JSON.stringify({
+      __monoAgentTruncation: {
+        truncated: true,
+        maxBytes: nextMaxBytes,
+        originalBytes: 400_000,
+        retainedBytes: nextMaxBytes,
+        omittedBytes: 400_000 - nextMaxBytes,
+      },
+      preview: "a".repeat(nextMaxBytes),
+    });
+    expect(hypotheticalToolDetailsFrameBytes(
+      defaultObservation,
+      nextArgumentsText,
+      resultValue,
+    )).toBeGreaterThan(MAX_TOOL_SSE_FRAME_BYTES);
+  });
+
+  it.each([
+    {
+      label: "result control payload",
+      argumentsValue: "a".repeat(400_000),
+      resultValue: "\n".repeat(80_000),
+      exactField: "result" as const,
+    },
+    {
+      label: "arguments control payload",
+      argumentsValue: "\t".repeat(80_000),
+      resultValue: "a".repeat(400_000),
+      exactField: "arguments" as const,
+    },
+  ])("does not lose retained bytes around the $label transition", async (testCase) => {
+    const belowTransition = await observeStreamedToolDetails({
+      argumentsValue: testCase.argumentsValue,
+      resultValue: testCase.resultValue,
+      maxToolPayloadBytes: 79_999,
+    });
+    const atTransition = await observeStreamedToolDetails({
+      argumentsValue: testCase.argumentsValue,
+      resultValue: testCase.resultValue,
+      maxToolPayloadBytes: 80_000,
+    });
+    const defaultObservation = await observeStreamedToolDetails({
+      argumentsValue: testCase.argumentsValue,
+      resultValue: testCase.resultValue,
+    });
+
+    for (const observation of [belowTransition, atTransition, defaultObservation]) {
+      expect(observation.frameBytes).toBeLessThanOrEqual(MAX_TOOL_SSE_FRAME_BYTES);
+      expect(observation.terminalDone).toBe(true);
+    }
+    expect(retainedToolDetailsBytes(atTransition))
+      .toBeGreaterThanOrEqual(retainedToolDetailsBytes(belowTransition));
+    expect(retainedToolDetailsBytes(defaultObservation))
+      .toBeGreaterThanOrEqual(retainedToolDetailsBytes(atTransition));
+    if (testCase.exactField === "result") {
+      expect(atTransition.resultText).toBe(testCase.resultValue);
+    } else {
+      expect(atTransition.argumentsText).toBe(testCase.argumentsValue);
+    }
+  });
+
+  it("searches a raw transition even when the zero-budget frame does not fit", async () => {
+    const argumentsValue = "x";
+    const resultValue = "r".repeat(400_000);
+    const toolCallId = "call-transition";
+    const zeroBudget = await observeStreamedToolDetails({
+      argumentsValue,
+      resultValue,
+      maxToolPayloadBytes: 0,
+      toolCallId,
+    });
+    const oneByteBudget = await observeStreamedToolDetails({
+      argumentsValue,
+      resultValue,
+      maxToolPayloadBytes: 1,
+      toolCallId,
+    });
+    expect(zeroBudget.frameBytes).toBeGreaterThan(oneByteBudget.frameBytes);
+
+    const paddingBytes = MAX_TOOL_SSE_FRAME_BYTES - oneByteBudget.frameBytes;
+    expect(paddingBytes).toBeGreaterThan(0);
+    const transitionObservation = await observeStreamedToolDetails({
+      argumentsValue,
+      resultValue,
+      toolCallId: `${toolCallId}${"i".repeat(paddingBytes)}`,
+    });
+
+    expect(transitionObservation.frameBytes).toBe(MAX_TOOL_SSE_FRAME_BYTES);
+    expect(transitionObservation.terminalDone).toBe(true);
+    expect(transitionObservation.argumentsText).toBe(argumentsValue);
+    expect(parseToolPayloadProjection(
+      transitionObservation.resultText,
+    ).__monoAgentTruncation).toMatchObject({
+      maxBytes: 1,
+      originalBytes: 400_000,
+      retainedBytes: 1,
+      omittedBytes: 399_999,
+    });
+  });
+
+  it("preserves a leading U+FEFF while truncating on UTF-8 code-point boundaries", async () => {
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.event?.({
+          type: "tool_call_started",
+          id: "call-unicode",
+          name: "unicode_tool",
+          arguments: "\uFEFFA🧠Z",
+        });
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "call-unicode",
+          content: "\uFEFFX€Z",
+        });
+        return { text: "done" };
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      maxToolPayloadBytes: 4,
+      responder,
+    });
+
+    try {
+      const response = await postChat(server.baseUrl, {
+        stream: true,
+        messages: [{ role: "user", content: "Unicode boundary" }],
+      });
+      const projected = parseToolDetails(toolDetailsContent(
+        sseDataPayloads(await response.text())
+          .filter((payload) => payload !== "[DONE]")
+          .map((payload) => JSON.parse(payload) as Record<string, unknown>),
+      ));
+
+      expect(projected.arguments.preview).toBe("\uFEFFA");
+      expect(projected.arguments.__monoAgentTruncation).toMatchObject({
+        truncated: true,
+        maxBytes: 4,
+        originalBytes: 9,
+        retainedBytes: 4,
+        omittedBytes: 5,
+      });
+      expect(projected.result.preview).toBe("\uFEFFX");
+      expect(projected.result.__monoAgentTruncation).toMatchObject({
+        truncated: true,
+        maxBytes: 4,
+        originalBytes: 8,
+        retainedBytes: 4,
+        omittedBytes: 4,
+      });
+      expect(projected.arguments.preview).not.toContain("�");
+      expect(projected.result.preview).not.toContain("�");
+      expect(projected.arguments.preview).not.toMatch(/\p{Cs}/u);
+      expect(projected.result.preview).not.toMatch(/\p{Cs}/u);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("emits metadata-only streaming projections at a zero cap without mutating inputs", async () => {
+    const argumentTail = "ZERO-CAP-ARGUMENT-TAIL";
+    const resultTail = "ZERO-CAP-RESULT-TAIL";
+    const argumentsValue = Object.freeze({ query: `secret-${argumentTail}` });
+    const resultValue = Object.freeze({ output: `secret-${resultTail}` });
+    const argumentsSnapshot = structuredClone(argumentsValue);
+    const resultSnapshot = structuredClone(resultValue);
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.event?.({
+          type: "tool_call_started",
+          id: "call-zero-cap",
+          name: "metadata_only",
+          arguments: argumentsValue,
+        });
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "call-zero-cap",
+          content: resultValue,
+        });
+        return { text: "done" };
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      maxToolPayloadBytes: 0,
+      responder,
+    });
+
+    try {
+      const response = await postChat(server.baseUrl, {
+        stream: true,
+        messages: [{ role: "user", content: "Metadata only" }],
+      });
+      const body = await response.text();
+      const detailsFrames = toolDetailsSseFrames(body);
+      expect(detailsFrames).toHaveLength(1);
+      expect(Buffer.byteLength(detailsFrames[0]!, "utf8"))
+        .toBeLessThanOrEqual(MAX_TOOL_SSE_FRAME_BYTES);
+      expect(body.trim().endsWith("data: [DONE]")).toBe(true);
+      const projected = parseToolDetails(toolDetailsContent(
+        sseDataPayloads(body)
+          .filter((payload) => payload !== "[DONE]")
+          .map((payload) => JSON.parse(payload) as Record<string, unknown>),
+      ));
+      const argumentsJson = JSON.stringify(argumentsValue);
+      const resultJson = JSON.stringify(resultValue);
+
+      expect(projected.arguments.preview).toBe("");
+      expect(projected.arguments.__monoAgentTruncation).toEqual({
+        truncated: true,
+        maxBytes: 0,
+        originalBytes: Buffer.byteLength(argumentsJson, "utf8"),
+        retainedBytes: 0,
+        omittedBytes: Buffer.byteLength(argumentsJson, "utf8"),
+      });
+      expect(projected.result.preview).toBe("");
+      expect(projected.result.__monoAgentTruncation).toEqual({
+        truncated: true,
+        maxBytes: 0,
+        originalBytes: Buffer.byteLength(resultJson, "utf8"),
+        retainedBytes: 0,
+        omittedBytes: Buffer.byteLength(resultJson, "utf8"),
+      });
+      expect(body).not.toContain(argumentTail);
+      expect(body).not.toContain(resultTail);
+      expect(argumentsValue).toEqual(argumentsSnapshot);
+      expect(resultValue).toEqual(resultSnapshot);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("preserves exact small tool payloads without truncation metadata", async () => {
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.event?.({
+          type: "tool_call_started",
+          id: "call-small",
+          name: "small_tool",
+          arguments: "🧠",
+        });
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "call-small",
+          content: "éé",
+        });
+        return { text: "done" };
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      maxToolPayloadBytes: 4,
+      responder,
+    });
+
+    try {
+      const response = await postChat(server.baseUrl, {
+        stream: true,
+        messages: [{ role: "user", content: "Small payload" }],
+      });
+      const details = parseToolDetailsText(toolDetailsContent(
+        sseDataPayloads(await response.text())
+          .filter((payload) => payload !== "[DONE]")
+          .map((payload) => JSON.parse(payload) as Record<string, unknown>),
+      ));
+
+      expect(details).toEqual({ arguments: "🧠", result: "éé" });
+      expect(JSON.stringify(details)).not.toContain("__monoAgentTruncation");
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it.each([
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    DEFAULT_MAX_TOOL_PAYLOAD_BYTES + 1,
+  ])("rejects invalid maxToolPayloadBytes configuration (%s)", async (maxToolPayloadBytes) => {
+    await expect(startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      maxToolPayloadBytes,
+      responder: echoResponder(),
+    })).rejects.toMatchObject({ code: "invalid_config" });
+  });
+
+  it("does not apply the SSE tool cap to non-streaming responses", async () => {
+    const finalText = `non-streaming ${"🧠".repeat(32)}`;
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "call-json",
+          arguments: "x".repeat(256 * 1024 + 1),
+          content: "y".repeat(256 * 1024 + 1),
+        });
+        await stream.append(finalText);
+        return { text: finalText };
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      maxToolPayloadBytes: 0,
+      responder,
+    });
+
+    try {
+      const response = await postChat(server.baseUrl, {
+        stream: false,
+        messages: [{ role: "user", content: "JSON response" }],
+      });
+
+      expect(response.status).toBe(200);
+      const json = await response.json() as {
+        choices: Array<{ message: { content: string } }>;
+      };
+      expect(json.choices[0]?.message.content).toBe(finalText);
+      expect(JSON.stringify(json)).not.toContain("__monoAgentTruncation");
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("streams internally executed tool progress before the tool completes", async () => {
     const releaseTool = deferred<void>();
     const responder: AgentResponder = {
@@ -1632,6 +2100,246 @@ function wildcardLocalhostLookup(
   queueMicrotask(() => {
     (done as (error: null, address: string, family: number) => void)(null, "0.0.0.0", 4);
   });
+}
+
+interface ParsedToolPayloadProjection {
+  readonly __monoAgentTruncation: {
+    readonly truncated: true;
+    readonly maxBytes: number;
+    readonly originalBytes: number;
+    readonly retainedBytes: number;
+    readonly omittedBytes: number;
+  };
+  readonly preview: string;
+}
+
+interface StreamedToolDetailsObservation {
+  readonly argumentsText: string;
+  readonly resultText: string;
+  readonly chunk: Record<string, unknown>;
+  readonly frameBytes: number;
+  readonly terminalDone: boolean;
+}
+
+async function observeStreamedToolDetails(input: {
+  readonly argumentsValue: unknown;
+  readonly resultValue: unknown;
+  readonly maxToolPayloadBytes?: number;
+  readonly toolCallId?: string;
+}): Promise<StreamedToolDetailsObservation> {
+  const toolCallId = input.toolCallId ?? "call-transition";
+  const responder: AgentResponder = {
+    async respond(_request, stream) {
+      await stream.event?.({
+        type: "tool_call_started",
+        id: toolCallId,
+        name: "transition_probe",
+        arguments: input.argumentsValue,
+      });
+      await stream.event?.({
+        type: "tool_call_completed",
+        id: toolCallId,
+        content: input.resultValue,
+      });
+      return { text: "done" };
+    },
+  };
+  const server = await startOpenAIApiAdapter({
+    host: "127.0.0.1",
+    port: 0,
+    modelId: "agent",
+    ...(input.maxToolPayloadBytes === undefined
+      ? {}
+      : { maxToolPayloadBytes: input.maxToolPayloadBytes }),
+    responder,
+  });
+
+  try {
+    const response = await postChat(server.baseUrl, {
+      stream: true,
+      messages: [{ role: "user", content: "Transition probe" }],
+    });
+    const body = await response.text();
+    const frames = toolDetailsSseFrames(body);
+    if (frames.length !== 1) {
+      throw new Error(`Expected one tool-details SSE frame, received ${String(frames.length)}.`);
+    }
+    const chunks = sseDataPayloads(body)
+      .filter((payload) => payload !== "[DONE]")
+      .map((payload) => JSON.parse(payload) as Record<string, unknown>);
+    const chunk = toolDetailsChunk(chunks);
+    const content = toolDetailsContent([chunk]);
+    const details = parseToolDetailsText(content);
+    return {
+      argumentsText: details.arguments,
+      resultText: details.result,
+      chunk,
+      frameBytes: Buffer.byteLength(frames[0]!, "utf8"),
+      terminalDone: body.trim().endsWith("data: [DONE]"),
+    };
+  } finally {
+    await server.stop();
+  }
+}
+
+function retainedToolDetailsBytes(observation: StreamedToolDetailsObservation): number {
+  return retainedToolPayloadTextBytes(observation.argumentsText)
+    + retainedToolPayloadTextBytes(observation.resultText);
+}
+
+function retainedToolPayloadTextBytes(text: string): number {
+  if (!text.startsWith("{\"__monoAgentTruncation\":")) {
+    return Buffer.byteLength(text, "utf8");
+  }
+  return parseToolPayloadProjection(text).__monoAgentTruncation.retainedBytes;
+}
+
+function parseToolPayloadProjection(text: string): ParsedToolPayloadProjection {
+  const parsed = JSON.parse(text) as unknown;
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error("Expected a tool-payload projection object.");
+  }
+  const projection = parsed as Partial<ParsedToolPayloadProjection>;
+  const truncation = projection.__monoAgentTruncation;
+  if (
+    typeof projection.preview !== "string"
+    || typeof truncation !== "object"
+    || truncation === null
+    || truncation.truncated !== true
+    || typeof truncation.retainedBytes !== "number"
+  ) {
+    throw new Error("Expected tool-payload truncation metadata.");
+  }
+  return projection as ParsedToolPayloadProjection;
+}
+
+function hypotheticalToolDetailsFrameBytes(
+  observation: StreamedToolDetailsObservation,
+  argumentsText: string,
+  resultText: string,
+): number {
+  const chunk = structuredClone(observation.chunk) as unknown as {
+    choices: Array<{ delta: Record<string, unknown> }>;
+  };
+  const choice = chunk.choices[0];
+  if (choice === undefined) {
+    throw new Error("Expected one Chat Completions choice.");
+  }
+  choice.delta.content = [
+    `<details type="tool_calls" done="true" id="call-transition" name="transition_probe" arguments="${escapeHtmlAttributeForTest(argumentsText)}">`,
+    "<summary>Tool Executed</summary>",
+    escapeHtmlTextForTest(resultText),
+    "</details>",
+    "",
+  ].join("\n");
+  return Buffer.byteLength(`data: ${JSON.stringify(chunk)}\n\n`, "utf8");
+}
+
+function escapeHtmlAttributeForTest(value: string): string {
+  return escapeHtmlTextForTest(value).replace(/"/gu, "&quot;");
+}
+
+function escapeHtmlTextForTest(value: string): string {
+  return value
+    .replace(/&/gu, "&amp;")
+    .replace(/</gu, "&lt;")
+    .replace(/>/gu, "&gt;");
+}
+
+function sseDataPayloads(body: string): readonly string[] {
+  return body
+    .split("\n")
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => line.slice("data: ".length));
+}
+
+function toolDetailsSseFrames(body: string): readonly string[] {
+  return body
+    .split("\n\n")
+    .filter((frame) => frame.includes("<details type=\\\"tool_calls\\\""))
+    .map((frame) => `${frame}\n\n`);
+}
+
+function expectAccurateToolPayloadProjection(
+  projection: ParsedToolPayloadProjection,
+  originalBytes: number,
+): void {
+  const retainedBytes = Buffer.byteLength(projection.preview, "utf8");
+  expect(projection.__monoAgentTruncation).toEqual({
+    truncated: true,
+    maxBytes: projection.__monoAgentTruncation.maxBytes,
+    originalBytes,
+    retainedBytes,
+    omittedBytes: originalBytes - retainedBytes,
+  });
+  expect(retainedBytes).toBeLessThanOrEqual(projection.__monoAgentTruncation.maxBytes);
+}
+
+function toolDetailsChunk(chunks: readonly Record<string, unknown>[]): Record<string, unknown> {
+  for (const chunk of chunks) {
+    const choices = chunk.choices;
+    if (!Array.isArray(choices)) {
+      continue;
+    }
+    const choice = choices[0];
+    if (typeof choice !== "object" || choice === null) {
+      continue;
+    }
+    const delta = (choice as { readonly delta?: unknown }).delta;
+    if (typeof delta !== "object" || delta === null) {
+      continue;
+    }
+    const content = (delta as { readonly content?: unknown }).content;
+    if (typeof content === "string" && content.startsWith("<details type=\"tool_calls\"")) {
+      return chunk;
+    }
+  }
+  throw new Error("Expected one OpenWebUI tool details chunk.");
+}
+
+function toolDetailsContent(chunks: readonly Record<string, unknown>[]): string {
+  const chunk = toolDetailsChunk(chunks);
+  const choice = (chunk.choices as Array<{ readonly delta?: unknown }>)[0];
+  const delta = choice?.delta as { readonly content?: unknown } | undefined;
+  if (typeof delta?.content !== "string") {
+    throw new Error("Expected OpenWebUI tool details content.");
+  }
+  return delta.content;
+}
+
+function parseToolDetails(content: string): {
+  readonly arguments: ParsedToolPayloadProjection;
+  readonly result: ParsedToolPayloadProjection;
+} {
+  const parsed = parseToolDetailsText(content);
+  return {
+    arguments: JSON.parse(parsed.arguments) as ParsedToolPayloadProjection,
+    result: JSON.parse(parsed.result) as ParsedToolPayloadProjection,
+  };
+}
+
+function parseToolDetailsText(content: string): {
+  readonly arguments: string;
+  readonly result: string;
+} {
+  const argumentsMatch = / arguments="([^"]*)">/u.exec(content);
+  const summaryEnd = content.indexOf("</summary>\n");
+  const detailsEnd = content.lastIndexOf("\n</details>");
+  if (argumentsMatch?.[1] === undefined || summaryEnd < 0 || detailsEnd < 0) {
+    throw new Error("OpenWebUI tool details chunk has an unexpected shape.");
+  }
+  return {
+    arguments: decodeHtml(argumentsMatch[1]),
+    result: decodeHtml(content.slice(summaryEnd + "</summary>\n".length, detailsEnd)),
+  };
+}
+
+function decodeHtml(value: string): string {
+  return value
+    .replace(/&quot;/gu, "\"")
+    .replace(/&lt;/gu, "<")
+    .replace(/&gt;/gu, ">")
+    .replace(/&amp;/gu, "&");
 }
 
 function echoResponder(): AgentResponder {
