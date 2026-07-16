@@ -76,12 +76,18 @@ External `MemoryStore` implementations can opt into the same contract with
 `persistCompletedTurn`. Stores without it retain the legacy `appendHostSummary` plus optional
 `scheduleCapture` behavior. The bundled Supermemory backend implements the strong method as one
 awaited, run-id-keyed remote upsert and propagates admission failure to the harness warning path.
-Within one store lifetime, exact retries are returned as duplicates without a second request and a
-run id reused with different payload bytes fails before any request. The exact check keeps two
-SHA-256 digests per distinct run for that process lifetime, without retaining raw ids or content.
-Across process restarts, the
-remote API's stable custom id preserves one logical upsert, but it does not expose a conditional
-create/read result that lets mono-agent distinguish a new document from a retry.
+Within one store process, the 10,000 most recently completed or exactly retried run fingerprints
+are retained in a bounded LRU by default. An exact retained retry is returned as a duplicate
+without a second request and refreshes its position; a retained run id reused with different
+payload bytes fails before any request. Failed and still-in-flight admissions do not consume the
+completed-entry budget, while concurrent exact retries remain coalesced separately. Each retained
+entry is only two SHA-256 digests, without raw ids or content. After LRU eviction or process
+restart, the remote stable custom id still makes a retry converge on one logical upsert, but the
+remote API does not expose a conditional create/read result that lets mono-agent classify that
+request as a duplicate or detect an older conflicting payload. A different post-eviction payload
+can therefore replace the remote document at the same stable id. That first request becomes the
+new in-flight/local fingerprint, so its exact concurrent retries coalesce and concurrent
+alternatives still fail as conflicts.
 
 ### Strict tier write behavior
 
