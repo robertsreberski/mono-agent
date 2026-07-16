@@ -45,7 +45,7 @@ There is no bot token: WhatsApp links your own account as a paired device. Keep 
 | `config.groupMode` | `"mention"` \| `"any"` | `"mention"` | Trigger rule for group messages (DMs always trigger — see below). |
 | `config.botJids` | string[] | `[]` | Your linked account's JID(s), used to detect @mentions of the agent in groups. |
 | `config.mentionTextAliases` | string[] | `[]` | Extra text aliases (e.g. `@agent`) that count as a mention even without a native WhatsApp mention. |
-| `config.stripMentionText` | boolean | `false` | When `true`, the matched mention/alias text is removed from the message before it reaches the agent. |
+| `config.stripMentionText` | boolean | conditional | When `true`, the matched mention/alias text is removed from the message before it reaches the agent. When unset, defaults to `true` only when `mentionTextAliases` is non-empty; `botJids` alone does not enable stripping, so otherwise it defaults to `false`. |
 
 Full annotated example:
 
