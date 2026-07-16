@@ -776,6 +776,13 @@ describe("shared security primitives", () => {
     expect(message.length).toBeLessThanOrEqual(400);
   });
 
+  it("keeps an existing redaction marker stable after an explicit secret replacement", () => {
+    expect(redactSecrets("secret=fixture-secret", {
+      fallback: "provider failed",
+      environment: { PROVIDER_SECRET: "fixture-secret" },
+    })).toBe("secret=[REDACTED]");
+  });
+
   it("scrubs structured credentials and applies the same safe bound to fallbacks", () => {
     const structured = redactSecrets(
       'https://user:pass@example.test/?token=short-token https://username-token@example.test/ https://user@realm:opaque@host.test/ {"client_secret":"shh","refresh_token":"refresh-value"} Authorization: Basic dXNlcjpwYXNz',

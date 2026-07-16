@@ -45,7 +45,7 @@ export function redactSecrets(value: unknown, options: RedactSecretsOptions): st
       .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [REDACTED]")
       .replace(/\b(Authorization\s*:\s*)Basic\s+[^\s,;]+/giu, "$1Basic [REDACTED]")
       .replace(
-        /\b(api[ _-]?key|(?:access|auth|refresh|session)[ _-]?token|authorization|client[ _-]?secret|password|secret|token)(["']?\s*[=:]\s*["']?)([^\s,;}\]"']+)/giu,
+        /\b(api[ _-]?key|(?:access|auth|refresh|session)[ _-]?token|authorization|client[ _-]?secret|password|secret|token)(["']?\s*[=:]\s*["']?)(?!\[REDACTED\])([^\s,;}\]"']+)/giu,
         (_match, label: string, separator: string) => `${label}${separator}[REDACTED]`,
       )
       .replace(

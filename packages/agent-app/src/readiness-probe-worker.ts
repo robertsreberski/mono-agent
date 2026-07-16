@@ -170,6 +170,7 @@ export function safeWorkerMessage(
     environment,
   });
 }
+
 function normalizedEventType(value: unknown): string {
   return typeof value === "string"
     ? value.replace(/([a-z0-9])([A-Z])/gu, "$1_$2").replace(/[./-]+/gu, "_").toLowerCase()
