@@ -1,5 +1,8 @@
 import { MEMORY_STATUSES, MEMORY_TYPES } from "./types.js";
 
+export const REPLAY_LIFECYCLE_STATE_INDEX = "idx_memories_replay_projection_state";
+export const REPLAY_EDGE_STATE_INDEX = "idx_edges_replay_projection_state";
+
 /** Ordered DDL applied once at open. `${dim}` is substituted with the configured dimension. */
 export function migrations(dim: number): readonly string[] {
   return [
@@ -72,6 +75,10 @@ export function migrations(dim: number): readonly string[] {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     )`,
+    `CREATE INDEX IF NOT EXISTS ${REPLAY_LIFECYCLE_STATE_INDEX} ON memories(id)
+      WHERE valid_to IS NOT NULL OR superseded_by IS NOT NULL OR superseded_at IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS ${REPLAY_EDGE_STATE_INDEX} ON edges(kind)
+      WHERE kind IN ('thread','supersedes')`,
   ];
 }
 
