@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it, vi } from "vitest";
 
 const deploymentMocks = vi.hoisted(() => ({
@@ -98,6 +100,29 @@ const INVALID_PORTS = Object.freeze([
 
 describe("final demo deploy CLI args", () => {
   it("does not execute deployment readiness when imported for argument parsing", () => {
+    expect(deploymentMocks.checkOllamaModel).not.toHaveBeenCalled();
+  });
+
+  it("executes the actual --help entrypoint without readiness when the direct-run guard matches", async () => {
+    const originalArgv = process.argv;
+    const scriptPath = fileURLToPath(new URL("../deploy-cli.ts", import.meta.url));
+    const logs: string[] = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(" "));
+    });
+
+    try {
+      process.argv = [process.execPath, scriptPath, "--help"];
+      vi.resetModules();
+      await import("../deploy-cli.js");
+    } finally {
+      process.argv = originalArgv;
+      logSpy.mockRestore();
+    }
+
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain("Usage: pnpm run deploy:final -- [options]");
+    expect(logs[0]).toContain("--no-start");
     expect(deploymentMocks.checkOllamaModel).not.toHaveBeenCalled();
   });
 
