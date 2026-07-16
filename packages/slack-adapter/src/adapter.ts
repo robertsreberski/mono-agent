@@ -168,18 +168,20 @@ export interface SlackAdapterLogger extends SlackMessageStreamLogger {
  * Binds a Slack shortcut `callback_id` to a prompt. When a user invokes that
  * shortcut, the adapter runs the prompt as a proactive turn — the same machinery
  * as a cron/webhook nudge — making the shortcut a persistent one-click trigger
- * for an agent routine. A GLOBAL shortcut carries no channel, so `channelId`
- * must say where the reply goes; a MESSAGE shortcut falls back to its source
- * channel when `channelId` is omitted.
+ * for an agent routine. When `channelId` is omitted, a MESSAGE shortcut uses its
+ * source channel and a GLOBAL shortcut uses the first allowlisted channel; a
+ * global shortcut needs `channelId` only when no allowlist default exists.
  */
 export interface SlackShortcutBinding {
   readonly callbackId: string;
   readonly prompt: string;
   /**
-   * Destination channel for the run's reply. Required for global shortcuts.
-   * For a MESSAGE shortcut this falls back to the invoking channel — so under
-   * `allowAllChannels` the invoker chooses where operator-authored output lands;
-   * pin `channelId` to bound the destination.
+   * Destination channel for the run's reply. When omitted, a MESSAGE shortcut
+   * uses its source channel and is refused if that source is unauthorized; it
+   * does not retry an allowlist default. A source-less GLOBAL shortcut uses the
+   * first explicit `allowedChannelIds` entry. With `allowAllChannels` and no
+   * explicit allowlist, a global shortcut needs a `channelId`. Pin it to bound
+   * the destination.
    */
   readonly channelId?: SlackChannelId;
   /**

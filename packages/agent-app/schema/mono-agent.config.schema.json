@@ -1737,12 +1737,13 @@
       "additionalProperties": false,
       "properties": {
         "shortcuts": {
-          "description": "Slack shortcut definitions handled by the Slack adapter.",
+          "description": "JSON-only global/message Slack shortcut bindings; there is no environment-variable form.",
           "examples": [
             [
               {
                 "callbackId": "triage",
-                "prompt": "Triage this Slack request."
+                "prompt": "Prepare the daily support triage checklist.",
+                "channelId": "C0123"
               }
             ]
           ],
@@ -1754,10 +1755,19 @@
           "default": []
         },
         "homeTab": {
-          "description": "Slack app home tab configuration.",
+          "description": "JSON-only Slack App Home configuration; enabled is optional (default false), buttons is optional (default []), and there is no environment-variable form.",
           "examples": [
             {
-              "enabled": true
+              "enabled": true,
+              "headerText": "*Quick actions*",
+              "buttons": [
+                {
+                  "actionId": "triage",
+                  "label": "Triage",
+                  "prompt": "Triage today's requests.",
+                  "channelId": "C0123"
+                }
+              ]
             }
           ],
           "type": "object",

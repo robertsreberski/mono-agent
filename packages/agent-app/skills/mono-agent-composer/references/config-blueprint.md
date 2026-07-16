@@ -212,7 +212,28 @@ my-agent/
     "allowAllChannels": false,
     "botUserIds": ["U0BOT"],               // mention detection
     "mentionTextAliases": ["@agent"],
-    "stripMentionText": true
+    "stripMentionText": true,
+    "shortcuts": [                         // slack.shortcuts: JSON-only; callbackId matches the Slack app
+      {
+        "callbackId": "triage_request",
+        "prompt": "Prepare the daily support triage checklist.",
+        "channelId": "C0123",
+        "ackText": "Triage started…",
+        "threadReply": true
+      }
+    ],
+    "homeTab": {                           // slack.homeTab: JSON-only; enable App Home + app_home_opened
+      "enabled": true,
+      "headerText": "*Quick actions*",
+      "buttons": [
+        {
+          "actionId": "build_digest",
+          "label": "Build digest",
+          "prompt": "Build today's team digest.",
+          "channelId": "C0123"
+        }
+      ]
+    }
   },
 
   "channels": {
