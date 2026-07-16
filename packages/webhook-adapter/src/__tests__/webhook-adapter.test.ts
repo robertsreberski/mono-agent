@@ -913,12 +913,14 @@ describe("Webhook adapter", () => {
     });
     let server!: Awaited<ReturnType<typeof startWebhookAdapter>>;
     let stopPromise: Promise<void> | undefined;
-    const resolveNotifyFallbackConversationId = vi.fn(() => {
+    let resolverCallCount = 0;
+    const resolveNotifyFallbackConversationId = (): Promise<string | undefined> => {
+      resolverCallCount += 1;
       // stop() aborts the current request synchronously before its first await,
       // so the resolver race receives an already-aborted signal.
       stopPromise = server.stop();
       return discardedResolver;
-    });
+    };
     server = await startWebhookAdapter({
       host: "127.0.0.1",
       port: 0,
@@ -938,6 +940,7 @@ describe("Webhook adapter", () => {
       expect(stopPromise).toBeDefined();
       await stopPromise;
 
+      expect(resolverCallCount).toBe(1);
       expect(thenSpy).toHaveBeenCalledOnce();
       expect(responder.respond).not.toHaveBeenCalled();
       expect(server.activeRequestCount).toBe(0);

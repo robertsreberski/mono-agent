@@ -742,7 +742,9 @@ describe("Cron adapter", () => {
     let resolverCallCount = 0;
     let options!: Parameters<typeof handleTick>[2];
     const responder = {
-      respond: vi.fn(async () => ({ text: "done" })),
+      respond: vi.fn(
+        async (_request: Parameters<AgentResponder["respond"]>[0]) => ({ text: "done" }),
+      ),
     } satisfies AgentResponder;
     const results: Array<{ kind: string; scheduledAt?: string; notifyConversationId?: string }> = [];
     options = {
