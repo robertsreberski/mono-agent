@@ -2,7 +2,19 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
+import * as cronAdapter from "../index.js";
+import type { CronJobResult } from "../index.js";
+
 const readmeUrl = new URL("../../README.md", import.meta.url);
+
+const documentedCronJobResultKinds = {
+  succeeded: true,
+  failed: true,
+  cancelled: true,
+  skipped: true,
+  queued: true,
+  dropped: true,
+} as const satisfies Record<CronJobResult["kind"], true>;
 
 function section(page: string, heading: string): string {
   const marker = `## ${heading}`;
@@ -34,12 +46,15 @@ describe("cron adapter README parity", () => {
     const readme = await readFile(readmeUrl, "utf8");
     const publicApi = section(readme, "Public API");
     const responsibility = section(readme, "Responsibility");
+    const publicApiExports = [...publicApi.matchAll(/^- `([^`]+)`$/gmu)]
+      .map((match) => match[1])
+      .sort();
+    const resultKinds = Object.keys(documentedCronJobResultKinds);
+    const naturalResultKinds = `${resultKinds.slice(0, -1).join(", ")}, or ${resultKinds.at(-1)}`;
+    const resultInventory = responsibility.match(/reports explicit ([^.\n]+) results\./u)?.[1];
 
-    expect(publicApi).toContain("`CRON_CONFIG_FIELDS`");
-    expect(publicApi).toContain("`toCronJobs`");
+    expect(publicApiExports).toEqual(Object.keys(cronAdapter).sort());
     expect(readme).not.toContain("`cronFieldGroup`");
-    expect(responsibility).toContain(
-      "succeeded, failed, cancelled, skipped, queued, or dropped results",
-    );
+    expect(resultInventory).toBe(naturalResultKinds);
   });
 });

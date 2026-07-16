@@ -211,9 +211,13 @@ describe("mono-agent-composer reference parity", () => {
     );
 
     expect(row).toHaveLength(4);
+    expect(row?.[0]).toBe(
+      "Cron jobs (five-field expressions, timezones; agent-app pins overlap to skip)",
+    );
     expect(row?.[1]).toBe("config + code");
     expect(row?.[2]).toContain("per-job `model` / `effort`");
     expect(row?.[2]).toContain("programmatic-only `startCronAdapter` options");
+    expect(row?.[3]).toBe("`cron.scheduled-prompts`");
   });
 
   it("documents every interaction-bridge auto-start path", () => {
