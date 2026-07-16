@@ -14,6 +14,8 @@ import {
   DEFAULT_TERMINAL_MAX_RECORDS,
   MAX_CONTINUATION_ORIGIN_CONTEXT_BYTES,
   MAX_CONTINUATION_ORIGIN_CONTEXT_MESSAGES,
+  MAX_GENERATION_BYTES,
+  MAX_RECORD_BYTES,
   type ContinuationOriginContextGroupCommit,
   type ContinuationOriginContextReference,
   type ContinuationOriginContextState,
@@ -94,6 +96,9 @@ export function applyRetention(
   for (const [id, record] of records) {
     if (SETTLED_TERMINAL_STATES.has(record.state) && !retainedTerminalIds.has(id)) records.delete(id);
   }
+  for (const record of records.values()) {
+    assertRecordFitsV3(record, "Continuation retained record");
+  }
 }
 
 function newestFirst(left: DurableContinuationRecord, right: DurableContinuationRecord): number {
@@ -144,7 +149,7 @@ export function isRecordTransaction(
 ): value is ContinuationRecordTransaction {
   if (!isObject(value)
     || value.schemaVersion !== expectedSchemaVersion
-    || !requiredString(value.generation)
+    || !isDurableGeneration(value.generation)
     || !requiredDate(value.createdAt)
     || !Array.isArray(value.writes)
     || !Array.isArray(value.deletes)) return false;
@@ -174,6 +179,17 @@ export function normalizeLegacyContinuationRecords(records: Map<string, DurableC
         : "legacy_missing";
     }
     if (record.synthesisDeferrals === undefined) record.synthesisDeferrals = 0;
+    assertRecordFitsV3(record, "Continuation normalized record");
+  }
+}
+
+export function assertRecordFitsV3(
+  record: DurableContinuationRecord,
+  label = "Continuation record",
+): void {
+  const bytes = Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+  if (bytes > MAX_RECORD_BYTES) {
+    throw new Error(`${label} exceeds its ${String(MAX_RECORD_BYTES)} byte safety limit: ${record.continuationId}`);
   }
 }
 
@@ -304,6 +320,10 @@ export function isObject(value: unknown): value is Record<string, unknown> {
 
 export function requiredString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
+}
+
+export function isDurableGeneration(value: unknown): value is string {
+  return requiredString(value) && Buffer.byteLength(value, "utf8") <= MAX_GENERATION_BYTES;
 }
 
 function optionalString(value: unknown): boolean {

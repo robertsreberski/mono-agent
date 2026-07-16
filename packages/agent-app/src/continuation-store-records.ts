@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { lstat, readdir, readFile, rm } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { canonicalContinuationJson, continuationDigest } from "./continuations.js";
@@ -11,8 +11,9 @@ import {
   writeJsonAtomic,
 } from "./continuation-store-fs.js";
 import {
-  isMissing,
+  assertRecordFitsV3,
   isObject,
+  isDurableGeneration,
   isRecord,
   isRecordTransaction,
   isStoreFile,
@@ -22,6 +23,8 @@ import {
 } from "./continuation-store-policy.js";
 import {
   CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
+  MAX_LEGACY_STORE_BYTES,
+  MAX_MANIFEST_BYTES,
   MAX_RECORD_BYTES,
   MAX_TRANSACTION_BYTES,
   type ContinuationRecordTransaction,
@@ -31,23 +34,7 @@ import {
 } from "./continuation-store-types.js";
 
 export async function loadLegacyStore(path: string): Promise<Map<string, DurableContinuationRecord>> {
-  let raw: string;
-  try {
-    const info = await lstat(path);
-    if (!info.isFile() || info.isSymbolicLink()) {
-      throw new Error(`Continuation store is not a regular file: ${path}`);
-    }
-    if (typeof process.getuid === "function" && info.uid !== process.getuid()) {
-      throw new Error(`Continuation store is not owned by the current user: ${path}`);
-    }
-    if (process.platform !== "win32" && (info.mode & 0o077) !== 0) {
-      throw new Error(`Continuation store permissions are not owner-only: ${path}`);
-    }
-    raw = await readFile(path, "utf8");
-  } catch (error) {
-    if (isMissing(error)) return new Map();
-    throw error;
-  }
+  const raw = await readBoundedOwnerOnlyFile(path, MAX_LEGACY_STORE_BYTES, "Continuation legacy store");
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -57,7 +44,12 @@ export async function loadLegacyStore(path: string): Promise<Map<string, Durable
   if (!isStoreFile(parsed)) {
     throw new Error(`Continuation store has an unsupported or malformed schema: ${path}`);
   }
-  return new Map(Object.entries(parsed.records).map(([id, record]) => [id, record]));
+  const records = new Map<string, DurableContinuationRecord>();
+  for (const [id, record] of Object.entries(parsed.records)) {
+    assertRecordFitsV3(record, "Continuation legacy record");
+    records.set(id, record);
+  }
+  return records;
 }
 
 export async function loadRecordDirectory(
@@ -76,6 +68,7 @@ export async function loadRecordDirectory(
       if (!entry.isFile() || entry.isSymbolicLink()) {
         throw new Error(`Continuation temporary record is not a regular file: ${filePath}`);
       }
+      await readBoundedOwnerOnlyFile(filePath, MAX_RECORD_BYTES, "Continuation temporary record");
       await rm(filePath, { force: true });
       removedTemporary = true;
       continue;
@@ -124,8 +117,8 @@ export function mergeMigrationRecords(
   }
 }
 
-export async function assertV3Manifest(path: string): Promise<void> {
-  const raw = await readBoundedOwnerOnlyFile(path, 1024 * 1024, "Continuation v3 manifest");
+export async function assertV3Manifest(path: string): Promise<ContinuationStoreManifest> {
+  const raw = await readBoundedOwnerOnlyFile(path, MAX_MANIFEST_BYTES, "Continuation v3 manifest");
   let value: unknown;
   try {
     value = JSON.parse(raw);
@@ -134,11 +127,13 @@ export async function assertV3Manifest(path: string): Promise<void> {
   }
   if (!isObject(value)
     || value.schemaVersion !== CONTINUATION_RECORD_STORE_SCHEMA_VERSION
-    || !requiredString(value.generation)
+    || !isDurableGeneration(value.generation)
     || !requiredDate(value.updatedAt)
+    || (value.rollbackGuardRequired !== undefined && typeof value.rollbackGuardRequired !== "boolean")
     || !isObject(value.stats)) {
     throw new Error(`Continuation v3 manifest has a malformed schema: ${path}`);
   }
+  return value as unknown as ContinuationStoreManifest;
 }
 
 export async function persistRecordChanges(
@@ -146,6 +141,7 @@ export async function persistRecordChanges(
   transactionPath: string,
   before: Map<string, DurableContinuationRecord>,
   after: Map<string, DurableContinuationRecord>,
+  beforeCommit?: () => Promise<void>,
 ): Promise<string | undefined> {
   const writes = [...after.values()].filter((record) => {
     const prior = before.get(record.continuationId);
@@ -153,8 +149,10 @@ export async function persistRecordChanges(
   }).map((record) => structuredClone(record));
   const deletes = [...before.keys()].filter((id) => !after.has(id));
   if (writes.length === 0 && deletes.length === 0) return undefined;
+  const transactions = createTransactionBatches(writes, deletes);
+  await beforeCommit?.();
   let generation: string | undefined;
-  for (const transaction of createTransactionBatches(writes, deletes)) {
+  for (const transaction of transactions) {
     await writeJsonAtomic(transactionPath, transaction, true, MAX_TRANSACTION_BYTES);
     await applyRecordTransaction(recordsDir, transaction);
     await rm(transactionPath, { force: true });
@@ -209,13 +207,18 @@ export async function persistManifest(
   generation: string,
   stats: ContinuationStoreStats,
   now: Date,
+  rollbackGuardRequired: boolean,
 ): Promise<void> {
+  if (!isDurableGeneration(generation)) {
+    throw new Error("Continuation manifest generation is empty or exceeds its safety limit.");
+  }
   await writeJsonAtomic(path, {
     schemaVersion: CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
     generation,
     updatedAt: now.toISOString(),
+    rollbackGuardRequired,
     stats,
-  } satisfies ContinuationStoreManifest);
+  } satisfies ContinuationStoreManifest, true, MAX_MANIFEST_BYTES);
 }
 
 function createTransactionBatches(
@@ -228,12 +231,7 @@ function createTransactionBatches(
   const batches: ContinuationRecordTransaction[] = [];
   const createdAt = new Date().toISOString();
   for (const record of writes) {
-    const bytes = Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`, "utf8");
-    if (bytes > MAX_RECORD_BYTES) {
-      throw new Error(
-        `Continuation record exceeds its ${String(MAX_RECORD_BYTES)} byte safety limit: ${record.continuationId}`,
-      );
-    }
+    assertRecordFitsV3(record);
   }
   const changes: Change[] = [
     ...writes.map((record): Change => ({ kind: "write", record: structuredClone(record) })),

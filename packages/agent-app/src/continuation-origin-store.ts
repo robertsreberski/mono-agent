@@ -14,6 +14,7 @@ import {
   syncDirectory,
 } from "./continuation-store-fs.js";
 import {
+  assertRecordFitsV3,
   isMissing,
   isOriginContextGroupCommit,
 } from "./continuation-store-policy.js";
@@ -103,13 +104,25 @@ export function applyOriginContextGroupCommit(
       throw new Error("Continuation origin-context group commit does not match its prepared records.");
     }
   }
+  // Validate the complete projection before mutating any record. A durable
+  // marker must never describe a state that cannot fit the v3 record format,
+  // otherwise every restart would replay the same unmaterializable commit.
   for (const record of candidates) {
-    if (record.originContextState === "pinned") continue;
-    record.originContextState = "pinned";
-    record.updatedAt = commit.activatedAt;
-    if (record.lastError?.code === "origin_context_pending") delete record.lastError;
-    delete record.nextAttemptAt;
+    const projected = structuredClone(record);
+    applyOriginContextGroupProjection(projected, commit.activatedAt);
+    assertRecordFitsV3(projected, "Continuation activated record");
   }
+  for (const record of candidates) {
+    applyOriginContextGroupProjection(record, commit.activatedAt);
+  }
+}
+
+function applyOriginContextGroupProjection(record: DurableContinuationRecord, activatedAt: string): void {
+  if (record.originContextState === "pinned") return;
+  record.originContextState = "pinned";
+  record.updatedAt = activatedAt;
+  if (record.lastError?.code === "origin_context_pending") delete record.lastError;
+  delete record.nextAttemptAt;
 }
 
 export async function applyOriginContextGroupCommits(
@@ -124,6 +137,11 @@ export async function applyOriginContextGroupCommits(
       if (!entry.isFile() || entry.isSymbolicLink()) {
         throw new Error(`Continuation origin-context group temporary is not a regular file: ${path}`);
       }
+      // Atomic marker writes are bounded and owner-only. Treat leftover
+      // temporaries as cleanup-only evidence, but validate their filesystem
+      // identity before deleting so a swapped, linked, or forged entry cannot
+      // hide behind the recovery sweep.
+      await readBoundedOwnerOnlyFile(path, 64 * 1024, "Continuation origin-context group temporary");
       await rm(path, { force: true });
       removedTemporary = true;
       continue;
@@ -140,6 +158,21 @@ export async function applyOriginContextGroupCommits(
   }
   if (removedTemporary) await syncDirectory(directory);
   return applied;
+}
+
+export async function cleanOriginContextGroupTemporaries(directory: string): Promise<void> {
+  let removedTemporary = false;
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (!(entry.name.startsWith(".") && entry.name.endsWith(".tmp"))) continue;
+    const path = join(directory, entry.name);
+    if (!entry.isFile() || entry.isSymbolicLink()) {
+      throw new Error(`Continuation origin-context group temporary is not a regular file: ${path}`);
+    }
+    await readBoundedOwnerOnlyFile(path, 64 * 1024, "Continuation origin-context group temporary");
+    await rm(path, { force: true });
+    removedTemporary = true;
+  }
+  if (removedTemporary) await syncDirectory(directory);
 }
 
 export async function loadOriginContextGroupCommit(path: string): Promise<ContinuationOriginContextGroupCommit> {
