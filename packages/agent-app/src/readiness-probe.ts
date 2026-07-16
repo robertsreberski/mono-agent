@@ -6,6 +6,11 @@ import { Worker } from "node:worker_threads";
 
 import { loadAppCoreConfig } from "./app-config.js";
 import { validateMonoAgentFolder } from "./doctor.js";
+import {
+  isSensitiveEnvironmentName,
+  REDACTED_DIAGNOSTIC_MAX_CHARS,
+  redactSecrets,
+} from "./redact-secrets.js";
 import type { WizardPlan } from "./wizard/answers.js";
 import type {
   PiTransport,
@@ -17,10 +22,8 @@ import type {
 
 const CLOUD_READINESS_TIMEOUT_MS = 90_000;
 const LOCAL_READINESS_TIMEOUT_MS = 240_000;
-const MAX_SAFE_MESSAGE_CHARS = 400;
 const WORKER_SHUTDOWN_GRACE_MS = 1_000;
 const LOCAL_PI_PROVIDERS = new Set(["ollama", "lmstudio", "llamacpp"]);
-const SENSITIVE_ENV_NAME = /(api.?key|credential|password|secret|token)/iu;
 const SENSITIVE_FINGERPRINT_KEY = /(api.?key|authorization|cookie|credential|password|secret|token)/iu;
 
 type ReadinessRuntimeRunOptions = RuntimeRunOptions & {
@@ -156,52 +159,6 @@ export function readinessProbeEnvironment(
   };
 }
 
-function safeMessage(
-  value: unknown,
-  secretValues: Readonly<Record<string, string>>,
-  fallback: string,
-): string {
-  let message = typeof value === "string"
-    ? value
-    : value instanceof Error
-      ? value.message
-      : value === null || value === undefined
-        ? fallback
-        : String(value);
-  for (const secret of Object.values(secretValues)) {
-    if (secret.length >= 4) {
-      message = message.replaceAll(secret, "[REDACTED]");
-    }
-  }
-  message = message
-    .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [REDACTED]")
-    .replace(
-      /\b(api[ _-]?key|access[ _-]?token|auth[ _-]?token|password|secret)(\s*[=:]\s*)([^\s,;]+)/giu,
-      (_match, label: string, separator: string) => `${label}${separator}[REDACTED]`,
-    )
-    .replace(/\s+/gu, " ")
-    .trim();
-  if (message.length === 0) {
-    return fallback;
-  }
-  return message.length > MAX_SAFE_MESSAGE_CHARS
-    ? `${message.slice(0, MAX_SAFE_MESSAGE_CHARS - 1)}…`
-    : message;
-}
-
-function redactionValues(
-  hostEnv: Readonly<Record<string, string | undefined>>,
-  secretValues: Readonly<Record<string, string>>,
-): Readonly<Record<string, string>> {
-  const sensitiveHostValues = Object.fromEntries(
-    Object.entries(hostEnv).filter(
-      (entry): entry is [string, string] =>
-        SENSITIVE_ENV_NAME.test(entry[0]) && typeof entry[1] === "string" && entry[1].length > 0,
-    ),
-  );
-  return { ...sensitiveHostValues, ...secretValues };
-}
-
 const DIRECT_TOOL_EVENT_TYPES = new Set([
   "bash",
   "collab_agent_tool_call",
@@ -307,7 +264,7 @@ function isReadinessWorkerMessage(value: unknown): value is ReadinessWorkerMessa
     return true;
   }
   if (message.type === "error") {
-    return typeof message.message === "string" && message.message.length <= MAX_SAFE_MESSAGE_CHARS;
+    return typeof message.message === "string" && message.message.length <= REDACTED_DIAGNOSTIC_MAX_CHARS;
   }
   if (message.type === "tool") {
     return typeof message.action === "string" && DIRECT_TOOL_EVENT_TYPES.has(message.action);
@@ -316,9 +273,9 @@ function isReadinessWorkerMessage(value: unknown): value is ReadinessWorkerMessa
     && typeof message.hasText === "boolean"
     && typeof message.cancelled === "boolean"
     && (message.failureKind === undefined
-      || (typeof message.failureKind === "string" && message.failureKind.length <= MAX_SAFE_MESSAGE_CHARS))
+      || (typeof message.failureKind === "string" && message.failureKind.length <= REDACTED_DIAGNOSTIC_MAX_CHARS))
     && (message.errorMessage === undefined
-      || (typeof message.errorMessage === "string" && message.errorMessage.length <= MAX_SAFE_MESSAGE_CHARS));
+      || (typeof message.errorMessage === "string" && message.errorMessage.length <= REDACTED_DIAGNOSTIC_MAX_CHARS));
 }
 
 function workerResult(message: Extract<ReadinessWorkerMessage, { readonly type: "result" }>): RuntimeResult {
@@ -506,7 +463,7 @@ function selectedReadinessRoutes(
     Object.entries(options.hostEnv ?? process.env)
       .filter((entry): entry is [string, string] =>
         typeof entry[1] === "string"
-        && !SENSITIVE_ENV_NAME.test(entry[0])
+        && !isSensitiveEnvironmentName(entry[0])
         && !entry[0].startsWith("MONO_AGENT_")
       )
       .sort(([left], [right]) => left.localeCompare(right)),
@@ -717,7 +674,11 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
   }
   const dir = await mkdtemp(join(tmpdir(), "mono-agent-readiness-"));
   const secrets = options.secretValues ?? {};
-  const safeValues = redactionValues(options.hostEnv ?? process.env, secrets);
+  const redact = (value: unknown, fallback: string): string => redactSecrets(value, {
+    fallback,
+    secrets: Object.values(secrets),
+    environment: options.hostEnv ?? process.env,
+  });
   try {
     const config = structuredClone(options.plan.configJson) as Record<string, unknown>;
     config.tools = { allowedTools: [], disallowedTools: [] };
@@ -776,9 +737,8 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
       return {
         ok: false,
         kind: "invalid_plan",
-        message: safeMessage(
+        message: redact(
           validation.sections.flatMap((section) => section.details).join(" "),
-          safeValues,
           "The generated primary-model probe configuration is invalid.",
         ),
       };
@@ -947,7 +907,7 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
       return {
         ok: false,
         kind: "probe_failed",
-        message: safeMessage(outcome.error, safeValues, "The primary-model check failed unexpectedly."),
+        message: redact(outcome.error, "The primary-model check failed unexpectedly."),
       };
     }
     const result = outcome.result;
@@ -972,10 +932,9 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
       return {
         ok: false,
         kind: "provider_failed",
-        message: safeMessage(
+        message: redact(
           result.error,
-          safeValues,
-          `The selected model reported ${safeMessage(result.failureKind, safeValues, "a provider failure")}.`,
+          `The selected model reported ${redact(result.failureKind, "a provider failure")}.`,
         ),
       };
     }
@@ -983,7 +942,7 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
       return {
         ok: false,
         kind: "provider_failed",
-        message: safeMessage(result.error, safeValues, "The selected model reported an error."),
+        message: redact(result.error, "The selected model reported an error."),
       };
     }
     if ((result.text ?? "").trim().length === 0) {
@@ -998,7 +957,7 @@ async function runSingleReadinessProbe(options: ReadinessProbeOptions): Promise<
     return {
       ok: false,
       kind: "probe_failed",
-      message: safeMessage(error, safeValues, "The primary-model check failed unexpectedly."),
+      message: redact(error, "The primary-model check failed unexpectedly."),
     };
   } finally {
     await rm(dir, { recursive: true, force: true });

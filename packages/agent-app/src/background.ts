@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
-import { type FileHandle, lstat, mkdir, open, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { type FileHandle, lstat, mkdir, open, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import process from "node:process";
 
@@ -46,11 +46,10 @@ import {
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { resolveConfiguredManagedRuntimePackages } from "./managed-runtime-packages.js";
 import {
-  currentProcessIncarnation,
-  isSameProcessIncarnation as matchesProcessIncarnation,
   processIncarnationFromJson,
 } from "./process-incarnation.js";
 import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incarnation.js";
+import { acquireOwnerPrivateLock, validateOwnerPrivateLockInputs } from "./owner-private-lock.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import * as ui from "./ui.js";
 
@@ -1348,11 +1347,6 @@ function shellCommandArgument(value: string): string {
   return /^[a-zA-Z0-9_./:@%+=,-]+$/u.test(value) ? value : `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-interface LifecycleLockIdentity {
-  readonly dev: number | bigint;
-  readonly ino: number | bigint;
-}
-
 export interface FilesystemLifecycleLockOptions {
   readonly pid?: number;
   readonly now?: () => number;
@@ -1376,16 +1370,9 @@ export async function acquireFilesystemLifecycleLock(
   const pid = options.pid ?? process.pid;
   const now = options.now ?? (() => Date.now());
   const isProcessAlive = options.isProcessAlive ?? processIsAlive;
-  const incarnation = options.processIncarnation ?? await currentProcessIncarnation();
-  const isSameProcess = options.isSameProcessIncarnation ?? matchesProcessIncarnation;
   const ownerlessGraceMs = options.ownerlessGraceMs ?? 5 * 60_000;
   const randomToken = options.randomToken ?? randomUUID;
-  if (!Number.isSafeInteger(pid) || pid <= 0) {
-    throw new Error(`Lifecycle lock pid must be a positive safe integer; received ${String(pid)}.`);
-  }
-  if (!Number.isFinite(ownerlessGraceMs) || ownerlessGraceMs < 0) {
-    throw new Error("Lifecycle lock ownerless grace must be a non-negative finite duration.");
-  }
+  validateOwnerPrivateLockInputs("Lifecycle lock", pid, ownerlessGraceMs);
   const managedRoot = dirname(target.paths.logDir);
   const locksDir = resolve(managedRoot, "locks");
   for (const path of [managedRoot, locksDir]) {
@@ -1393,170 +1380,46 @@ export async function acquireFilesystemLifecycleLock(
   }
 
   const lockDir = resolve(locksDir, `${target.label}.lock`);
-  const ownerPath = resolve(lockDir, "owner.json");
-  const token = `${pid}-${now()}-${randomToken()}`;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    let createdIdentity: LifecycleLockIdentity | undefined;
-    try {
-      await mkdir(lockDir, { mode: 0o700 });
-      const created = await assertLifecycleLockDirectory(lockDir);
-      createdIdentity = lifecycleLockIdentity(created);
-      await writeFile(ownerPath, `${JSON.stringify({
-        pid,
-        token,
-        createdAt: new Date(now()).toISOString(),
-        incarnation,
-      })}\n`, {
-        encoding: "utf8",
-        flag: "wx",
-        mode: 0o600,
-      });
-      if (!(await sameLifecycleLockDirectory(lockDir, createdIdentity))) {
-        throw new Error(`Lifecycle lock ${lockDir} changed while its owner record was written.`);
-      }
-      const ownedIdentity = createdIdentity;
-      return async () => {
-        try {
-          if (!(await sameLifecycleLockDirectory(lockDir, ownedIdentity))) {
-            throw new Error(`Lifecycle lock ${lockDir} is no longer owned by this command.`);
-          }
-          const current = JSON.parse(await readFile(ownerPath, "utf8")) as { token?: unknown };
-          if (current.token !== token) {
-            throw new Error(`Lifecycle lock ${lockDir} is no longer owned by this command.`);
-          }
-          const releasedPath = resolve(
-            locksDir,
-            `${target.label}.released-${now()}-${pid}-${randomToken()}`,
-          );
-          if (!(await sameLifecycleLockDirectory(lockDir, ownedIdentity))) {
-            throw new Error(`Lifecycle lock ${lockDir} changed during release.`);
-          }
-          await rename(lockDir, releasedPath);
-          const moved = await lstat(releasedPath);
-          if (!sameLifecycleLockIdentity(moved, ownedIdentity)) {
-            await rename(releasedPath, lockDir).catch(() => undefined);
-            throw new Error(`Lifecycle lock ${lockDir} changed during release.`);
-          }
-          await rm(releasedPath, { recursive: true, force: true });
-        } catch (error) {
-          if (!isErrno(error, "ENOENT")) throw error;
-        }
+  const held = await acquireOwnerPrivateLock({
+    path: lockDir,
+    label: "Lifecycle lock",
+    schemaTag: "mono-agent.filesystem-lifecycle-lock.v1",
+    ownerlessGraceMs,
+    maxAcquireAttempts: 4,
+    pid,
+    now,
+    randomToken,
+    ...(options.processIncarnation === undefined ? {} : { processIncarnation: options.processIncarnation }),
+    ...(options.isSameProcessIncarnation === undefined
+      ? {}
+      : { isSameProcessIncarnation: options.isSameProcessIncarnation }),
+    parseLegacyOwner: (record) => {
+      if (typeof record.pid !== "number" || !Number.isSafeInteger(record.pid) || record.pid <= 0) return undefined;
+      const incarnation = processIncarnationFromJson(record.incarnation);
+      return {
+        pid: record.pid,
+        ...(incarnation === undefined ? {} : { incarnation }),
       };
-    } catch (error) {
-      if (createdIdentity !== undefined) {
-        await removeSameLifecycleLockDirectory(lockDir, createdIdentity).catch(() => undefined);
-      }
-      if (!isErrno(error, "EEXIST")) throw error;
-    }
-
-    let observed: Stats;
-    try {
-      observed = await assertLifecycleLockDirectory(lockDir);
-    } catch (error) {
-      if (isErrno(error, "ENOENT")) continue;
-      return undefined;
-    }
-    const observedIdentity = lifecycleLockIdentity(observed);
-    const owner = await readLifecycleLockOwner(ownerPath);
-    if (!(await sameLifecycleLockDirectory(lockDir, observedIdentity))) continue;
-    if (owner !== undefined) {
-      let sameOwner = true;
-      try {
-        // Permanent pre-v0.9.0 compatibility: a skipped-version upgrade can
-        // encounter crash debris without incarnation identity indefinitely.
-        // All owner records written since v0.9.0 take the stronger branch.
-        sameOwner = owner.incarnation === undefined
-          ? isProcessAlive(owner.pid)
-          : await isSameProcess(owner.pid, owner.incarnation);
-      } catch {
-        // A failed identity probe cannot authorize stealing another command's lock.
-        sameOwner = true;
-      }
-      if (sameOwner) return undefined;
-    }
-    if (owner === undefined) {
-      const lockAgeMs = now() - observed.mtimeMs;
-      // Another process may be between its atomic mkdir and owner.json write.
-      // Never steal that fresh ownerless lock; only recover abandoned debris.
-      if (lockAgeMs < ownerlessGraceMs) return undefined;
-    }
-    if (!(await sameLifecycleLockDirectory(lockDir, observedIdentity))) continue;
-    await options.beforeStaleLockRename?.();
-    const stalePath = resolve(locksDir, `${target.label}.stale-${now()}-${pid}-${randomToken()}`);
-    try {
-      await rename(lockDir, stalePath);
-    } catch (error) {
-      if (isErrno(error, "ENOENT") || isErrno(error, "EEXIST")) continue;
-      return undefined;
-    }
-    const moved = await lstat(stalePath);
-    if (!sameLifecycleLockIdentity(moved, observedIdentity)) {
-      // A contender replaced the path after our final identity check. Restore
-      // the directory we moved and fail closed; never delete its live lock.
-      await rename(stalePath, lockDir).catch(() => undefined);
-      return undefined;
-    }
-    await rm(stalePath, { recursive: true, force: true });
-  }
-  return undefined;
-}
-
-async function assertLifecycleLockDirectory(path: string): Promise<Stats> {
-  const details = await lstat(path);
-  if (!details.isDirectory() || details.isSymbolicLink()) {
-    throw new Error(`Lifecycle lock ${path} must be a real directory.`);
-  }
-  if (typeof process.getuid === "function" && details.uid !== process.getuid()) {
-    throw new Error(`Lifecycle lock ${path} is not owned by the current user.`);
-  }
-  return details;
-}
-
-function lifecycleLockIdentity(details: Stats): LifecycleLockIdentity {
-  return { dev: details.dev, ino: details.ino };
-}
-
-function sameLifecycleLockIdentity(details: Stats, identity: LifecycleLockIdentity): boolean {
-  return details.dev === identity.dev && details.ino === identity.ino;
-}
-
-async function sameLifecycleLockDirectory(
-  path: string,
-  identity: LifecycleLockIdentity,
-): Promise<boolean> {
-  try {
-    const details = await assertLifecycleLockDirectory(path);
-    return sameLifecycleLockIdentity(details, identity);
-  } catch {
-    return false;
-  }
-}
-
-async function removeSameLifecycleLockDirectory(
-  path: string,
-  identity: LifecycleLockIdentity,
-): Promise<void> {
-  if (await sameLifecycleLockDirectory(path, identity)) {
-    await rm(path, { recursive: true, force: true });
-  }
-}
-
-async function readLifecycleLockOwner(path: string): Promise<{
-  readonly pid: number;
-  readonly incarnation?: ProcessIncarnation;
-} | undefined> {
-  try {
-    const parsed = JSON.parse(await readFile(path, "utf8")) as { pid?: unknown; incarnation?: unknown };
-    const incarnation = processIncarnationFromJson(parsed.incarnation);
-    return typeof parsed.pid === "number" && Number.isSafeInteger(parsed.pid) && parsed.pid > 0
-      ? {
-          pid: parsed.pid,
-          ...(incarnation === undefined ? {} : { incarnation }),
-        }
-      : undefined;
-  } catch {
-    return undefined;
-  }
+    },
+    // Permanent pre-v0.9.0 compatibility: a skipped-version upgrade can
+    // encounter crash debris without incarnation identity indefinitely.
+    // All owner records written since v0.9.0 use the stronger shared schema.
+    allowCurrentUserLegacyOwnerMode: true,
+    isLegacyProcessAlive: isProcessAlive,
+    invalidOwner: "ownerless",
+    livenessError: () => "assume-live",
+    ...(options.beforeStaleLockRename === undefined
+      ? {}
+      : { beforeStaleRename: options.beforeStaleLockRename }),
+    staleRace: "return",
+    stalePath: ({ now: staleAt, pid: stalePid, token }) =>
+      resolve(locksDir, `${target.label}.stale-${staleAt}-${stalePid}-${token}`),
+    releasedPath: ({ now: releasedAt, pid: ownerPid, token }) =>
+      resolve(locksDir, `${target.label}.released-${releasedAt}-${ownerPid}-${token}`),
+    abandonedPath: ({ now: abandonedAt, pid: ownerPid, token }) =>
+      resolve(locksDir, `${target.label}.abandoned-${abandonedAt}-${ownerPid}-${token}`),
+  });
+  return held === undefined ? undefined : () => held.release();
 }
 
 function processIsAlive(pid: number): boolean {

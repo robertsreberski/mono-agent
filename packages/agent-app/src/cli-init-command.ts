@@ -48,7 +48,7 @@ import type {
 } from "./first-run-readiness.js";
 import {
   initMonoAgentFolder,
-  SecretEnvConcurrentModificationError,
+  secretEnvConcurrentModificationCause,
   verifySecretEnvPersistenceGuard,
 } from "./init.js";
 import type { InitMonoAgentFolderResult } from "./init.js";
@@ -1294,10 +1294,8 @@ async function firstRunSecretEnvGuardFailure(
 }
 
 function secretPersistenceRecoveryMessage(error: unknown): string {
-  if (!(error instanceof SecretEnvConcurrentModificationError)) {
-    return "";
-  }
-  return ` ${error.message}`;
+  const cause = secretEnvConcurrentModificationCause(error);
+  return cause === undefined ? "" : ` ${cause.message}`;
 }
 
 interface ReadinessProgress {
