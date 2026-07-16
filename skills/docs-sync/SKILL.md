@@ -98,8 +98,9 @@ F2/F3 misses).
 
 ## Build + verify
 
-`website/` is its own pnpm workspace (isolated from the root; root `pnpm build`
-and CI do NOT build it — this is a manual gate):
+`website/` is its own pnpm workspace. The root `pnpm build` does not build it;
+CI runs a dedicated parallel website job, and local reviewers must invoke this
+gate explicitly:
 
 ```bash
 pnpm -C website install                    # first time or after dep changes
