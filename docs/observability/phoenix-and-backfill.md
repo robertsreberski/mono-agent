@@ -18,7 +18,7 @@ When you add a `phoenix` entry to `observability.exporters[]`, the host exports 
 - **Root spans carry rich roll-up attributes** — model, token counts, cost, and duration on every run (see [Per-run attributes](#per-run-attributes)).
 - **Per-run span ids are deterministic**, so re-exporting the same run is idempotent — it overwrites rather than duplicates.
 
-Export is **metadata-only by default**: span inputs/outputs are exported, but raw message/tool payloads are withheld unless you opt in (see `includeSensitiveData`). With the opt-in enabled, non-numeric values under sensitive-looking object keys are redacted and strings are capped, but free-text content is not scanned or scrubbed. Failures are bounded by `timeoutMs` and are swallowed — a Phoenix outage cannot fail or stall a run.
+Export is **metadata-only by default**: span inputs/outputs are exported, but raw message/tool payloads are withheld unless you opt in (see `includeSensitiveData`). With the opt-in enabled, non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. Strings are capped. Failures are bounded by `timeoutMs` and are swallowed — a Phoenix outage cannot fail or stall a run.
 
 :::note
 The transport lives in the `@mono-agent/observability/otel` subpath (built on `@opentelemetry/otlp-transformer`). Coverage: **config**.
@@ -81,7 +81,7 @@ Add one `phoenix` entry to `observability.exporters[]`. Omit the whole `observab
 | `type` | string | — | Must be `"phoenix"`. |
 | `endpoint` | string | — | OTLP/HTTP traces URL, e.g. `http://127.0.0.1:6006/v1/traces`. |
 | `projectName` | string | trace source label/id | Sets `openinference.project.name`; groups runs under a project in Phoenix. |
-| `includeSensitiveData` | boolean | `false` | When `false`, raw message/tool payloads are withheld (metadata-only). When `true`, substantive inputs/outputs are exported with sensitive object-key values redacted and strings capped; free text is not content-scanned. |
+| `includeSensitiveData` | boolean | `false` | When `false`, raw message/tool payloads are withheld (metadata-only). When `true`, substantive inputs/outputs are exported and strings are capped: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. |
 | `headers` | object | — | Extra HTTP headers, e.g. an auth token for Phoenix Cloud. Keep secrets as placeholders in committed config. |
 | `timeoutMs` | number | — | Per-export request timeout; bounds how long a failing export can block. |
 

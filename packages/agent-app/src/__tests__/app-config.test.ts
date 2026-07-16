@@ -22,7 +22,8 @@ describe("describeSensitiveDataExportWarning", () => {
     const warning = describeSensitiveDataExportWarning("http://127.0.0.1:6006/v1/traces");
 
     expect(warning).toContain("non-numeric values under sensitive-looking object keys are redacted");
-    expect(warning).toContain("free-text content is not scanned or scrubbed");
+    expect(warning).toContain("numeric values under matched keys are retained");
+    expect(warning).toContain("free text is not content-scanned or scrubbed");
     expect(warning).toContain("Substantive run content leaves this machine");
   });
 });

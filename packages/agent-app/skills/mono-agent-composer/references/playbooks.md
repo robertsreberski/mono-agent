@@ -194,7 +194,7 @@ const ext = createCollaboratorToolRuntimeExtension({
 }
 ```
 **Steps:** start Phoenix (6006) → `init` → add artifacts/traceability/exporter → `validate` (POSTs an empty protobuf) → `start` (prints the Phoenix endpoint) → `mono-agent tui`.
-**Smoke:** complete a TUI prompt; confirm a JSONL artifact AND a Phoenix trace with merged tool spans under the project. Artifact/export redaction replaces sensitive object-key values and caps strings; it does not scan or scrub retained free text.
+**Smoke:** complete a TUI prompt; confirm a JSONL artifact AND a Phoenix trace with merged tool spans under the project. Artifact/export strings are capped; non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed.
 
 ## 11. Backfill historical runs to Phoenix
 **For:** an ops engineer onboarding observability after the fact.

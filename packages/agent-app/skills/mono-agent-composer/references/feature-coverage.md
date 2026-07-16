@@ -89,7 +89,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 
 | Capability | Coverage | Where | Registry config ids |
 | --- | --- | --- | --- |
-| JSONL run artifacts (events + summaries; sensitive object-key values redacted, strings capped, free text retained) | config | `artifacts.dir`, `artifacts.retention`, `artifacts.memoryRetention` | `observability.jsonl-artifacts` |
+| JSONL run artifacts (events + summaries; strings capped; non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned) | config | `artifacts.dir`, `artifacts.retention`, `artifacts.memoryRetention` | `observability.jsonl-artifacts` |
 | Trace-source registry (heartbeat manifests `mono-agent status` reads) | config | `traceability.{registryDir,sourceId,sourceLabel,heartbeatMs,staleAfterMs,globalDiscovery}` | `observability.trace-registry` |
 | Phoenix trace viewer (best-effort terminal-batched OTLP exporter; independent local JSONL has bounded terminal snapshots and can lose RAM-buffered events on crash) | config | `observability.exporters` (phoenix entry) | `observability.phoenix-exporter` |
 | Operator console (live chat with thinking/tool/telemetry insight, run replay, config view) | cli | `mono-agent tui [--agent <label>]`; agents serve the `tui` stream endpoint by default (`tui.enabled`, loopback) | — |

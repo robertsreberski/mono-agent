@@ -8,6 +8,8 @@ Category: `observability`
 
 Local JSONL run observability and host trace source discovery. It records runtime events and compact summaries, applies key-based redaction and string bounds, lists recorded runs, reads selected run detail for local operator surfaces, and lets running agent processes register their artifact directories plus optional content-free memory health in a file-backed trace registry. Redaction replaces non-numeric values under sensitive-looking object keys; it does not scan free text for secret-shaped content.
 
+Numeric values under matched keys are retained. Current matcher limitations remain follow-up work: space-, dot-, slash-, and colon-separated `private`/`api` + `key` spellings are not matched, while substring matching conservatively redacts string values under benign keys such as `credentialType`, `bearerStatus`, and `privateKeyboard`.
+
 ## Install / Usage
 
 ```bash
@@ -119,7 +121,7 @@ The package defines the `RunExporter` contract (`start`/`onEvent`/`finish`/`fail
 
 The `./run-export` subpath exposes the pure, node-free event-to-span attribute mapping (`buildRootSpanAttributes`, `buildEventSpanAttributes`, `countRuntimeWarnings`, `spanKindHint`) plus the exporter-config types. It imports only node-free helpers (guards, redaction, event-classify, content) so it is safe for browser graphs, exactly like `./event-timeline`.
 
-Privacy default is metadata-only: when `includeSensitiveData` is `false`, raw payloads are omitted and only summaries/labels are mapped. When `true`, non-numeric values under sensitive-looking object keys are redacted and strings are capped before export, but free-text user input, assistant replies, tool prose, error text, and system prompts are not content-scanned or scrubbed. Treat this flag as exporting substantive run content. The actual network transport (OTLP/HTTP protobuf, the Phoenix preset) lives behind the `@mono-agent/observability/otel` subpath.
+Privacy default is metadata-only: when `includeSensitiveData` is `false`, raw payloads are omitted and only summaries/labels are mapped. When `true`, non-numeric values under sensitive-looking object keys are redacted, numeric values under matched keys are retained, and strings are capped before export, but free-text user input, assistant replies, tool prose, error text, and system prompts are not content-scanned or scrubbed. Treat this flag as exporting substantive run content. The actual network transport (OTLP/HTTP protobuf, the Phoenix preset) lives behind the `@mono-agent/observability/otel` subpath.
 
 ## Dependency Boundary
 
