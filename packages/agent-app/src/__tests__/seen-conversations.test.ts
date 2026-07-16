@@ -28,6 +28,7 @@ describe("listSeenNotifyDestinations", () => {
     await summary("run-d", "cron:morning-brief", "2026-06-19T07:00:01Z"); // synthetic → filtered out
     await summary("run-e", "webhook:req-1", "2026-06-19T08:00:00Z"); // synthetic → filtered out
     await summary("run-f", "telegram:-1001234567890", "2026-06-17T00:00:00Z");
+    await summary("run-g", "whatsapp:15551234567", "2026-06-19T10:00:00Z"); // not notify-capable
 
     const result = await listSeenNotifyDestinations(dir);
 

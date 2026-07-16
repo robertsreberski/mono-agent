@@ -2,7 +2,9 @@ import type { NotifyDestination } from "@mono-agent/agent-contracts";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { ChannelId, MonoAgentAppLogger } from "./channels.js";
+import { channelIdForConversation } from "./proactive-notify.js";
 import { listSeenNotifyDestinations } from "./seen-conversations.js";
+import type { SeenConversation } from "./seen-conversations.js";
 
 // The destination contract moved to @mono-agent/agent-contracts; keep the
 // historical export from this module.
@@ -26,6 +28,8 @@ const NOTIFY_CAPABLE: ReadonlySet<ChannelId> = new Set<ChannelId>(["telegram", "
 export interface ResolveNotifyDestinationsInput {
   readonly input: MonoAgentAppConfigInput;
   readonly artifactDir: string;
+  /** App-lifetime cached sightings; omitted by standalone callers for a direct scan. */
+  readonly seenDestinations?: readonly SeenConversation[];
   /** Whether a given channel is currently running (only running channels can deliver). */
   readonly isRunning: (id: ChannelId) => boolean;
   readonly logger?: MonoAgentAppLogger | undefined;
@@ -47,7 +51,7 @@ export async function resolveNotifyDestinations(
   const out: NotifyDestination[] = [];
   const present = new Set<string>();
 
-  const seen = await listSeenNotifyDestinations(opts.artifactDir);
+  const seen = opts.seenDestinations ?? await listSeenNotifyDestinations(opts.artifactDir);
   for (const sighting of seen) {
     if (!NOTIFY_CAPABLE.has(sighting.channelId) || !opts.isRunning(sighting.channelId)) {
       continue;
@@ -72,6 +76,12 @@ export async function resolveNotifyDestinations(
   }
 
   return out;
+}
+
+/** Whether a run artifact can contribute a Telegram/Slack native-notify candidate. */
+export function isNotifyDestinationConversationId(conversationId: string | undefined): boolean {
+  const channelId = conversationId === undefined ? undefined : channelIdForConversation(conversationId);
+  return channelId !== undefined && NOTIFY_CAPABLE.has(channelId);
 }
 
 function addAllowlisted(
