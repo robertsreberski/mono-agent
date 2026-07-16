@@ -83,9 +83,34 @@ describe("packed consumer verification", () => {
       /resolved @earendil-works\/pi-ai@0\.80\.8 from @earendil-works\/pi-agent-core@0\.80\.5; expected 0\.80\.5/u,
     );
   });
+
+  test("rejects a packed Pi TUI manifest that can float", () => {
+    const fixture = packedDependencyFixture({ tuiPiRange: "^0.79.1" });
+
+    expect(() =>
+      assertPackedDependencyResolution(fixture.consumerDir, fixture.packages),
+    ).toThrow(
+      /Packed @mono-agent\/tui dependencies\.@earendil-works\/pi-tui must remain 0\.79\.10; found \^0\.79\.1/u,
+    );
+  });
+
+  test("rejects a different Pi TUI installed under the exact packed manifest", () => {
+    const fixture = packedDependencyFixture({ installedTuiVersion: "0.79.11" });
+
+    expect(() =>
+      assertPackedDependencyResolution(fixture.consumerDir, fixture.packages),
+    ).toThrow(
+      /resolved @earendil-works\/pi-tui@0\.79\.11 from @mono-agent\/tui; expected 0\.79\.10/u,
+    );
+  });
 });
 
-function packedDependencyFixture({ appPiRange = "0.80.5", nestedCorePiVersion } = {}) {
+function packedDependencyFixture({
+  appPiRange = "0.80.5",
+  installedTuiVersion = "0.79.10",
+  nestedCorePiVersion,
+  tuiPiRange = "0.79.10",
+} = {}) {
   const consumerDir = fs.mkdtempSync(path.join(os.tmpdir(), "packed-dependency-policy-"));
   temporaryDirectories.push(consumerDir);
   const modulesDir = path.join(consumerDir, "node_modules");
@@ -103,6 +128,11 @@ function packedDependencyFixture({ appPiRange = "0.80.5", nestedCorePiVersion } 
       "@earendil-works/pi-ai": "0.80.5",
     },
   });
+  writePackage(modulesDir, {
+    name: "@mono-agent/tui",
+    version: "1.2.3",
+    dependencies: { "@earendil-works/pi-tui": tuiPiRange },
+  });
   const coreDir = writePackage(modulesDir, {
     name: "@earendil-works/pi-agent-core",
     version: "0.80.5",
@@ -111,6 +141,10 @@ function packedDependencyFixture({ appPiRange = "0.80.5", nestedCorePiVersion } 
   writePackage(modulesDir, {
     name: "@earendil-works/pi-ai",
     version: "0.80.5",
+  });
+  writePackage(modulesDir, {
+    name: "@earendil-works/pi-tui",
+    version: installedTuiVersion,
   });
   if (nestedCorePiVersion !== undefined) {
     writePackage(path.join(coreDir, "node_modules"), {
@@ -135,6 +169,12 @@ function packedDependencyFixture({ appPiRange = "0.80.5", nestedCorePiVersion } 
             "@earendil-works/pi-agent-core": "0.80.5",
             "@earendil-works/pi-ai": "0.80.5",
           },
+        },
+      },
+      {
+        name: "@mono-agent/tui",
+        packageJson: {
+          dependencies: { "@earendil-works/pi-tui": "0.79.10" },
         },
       },
     ],
