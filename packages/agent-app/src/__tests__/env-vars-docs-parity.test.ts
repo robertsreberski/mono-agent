@@ -38,6 +38,7 @@ function codeEnvKeys(root: string): Set<string> {
     // Harness-owned request capability keys are injected into opted stdio MCPs;
     // they are real runtime env, although operators do not configure them.
     join(root, "packages/agent-harness/src/harness.ts"),
+    join(root, "packages/agent-harness/src/harness/mcp-context.ts"),
   ];
   for (const workspaceRoot of ["packages", "extras"]) {
     const workspaceDir = join(root, workspaceRoot);
