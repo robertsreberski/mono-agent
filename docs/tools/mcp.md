@@ -71,10 +71,12 @@ indirection for authenticated HTTP/SSE entries, so do not declare one unless a
 separate trusted mechanism supplies authentication without putting it in this
 file.
 
-Treat every declared stdio server as fully trusted: its child process inherits
-the agent process's entire environment, including unrelated credentials loaded
-from `.env` or `--env-file`, plus any literal per-server `env` entries. Do not
-use stdio inheritance as per-server secret isolation.
+Treat every declared stdio server as fully trusted. Environment delivery is
+runtime-dependent: some runtimes inherit the full agent process environment,
+including unrelated credentials loaded from `.env` or `--env-file`, while
+others launch from a restricted safe list. Literal per-server `env` entries are
+passed through. Do not rely on inherited variables for credential delivery or
+on a restricted runtime for per-server secret isolation.
 
 Run `mono-agent validate` to confirm the file is found; it reports the resolved
 `MCP config:` path or an `MCP config file is missing:` warning.

@@ -55,7 +55,7 @@ credential.
             "host": "127.0.0.1",
             "port": 4201,
             "publicBaseUrl": "https://agent.example.com",
-            "allowNonLoopback": false,
+            "allowNonLoopback": true,
             "requireBearer": true,
             "idempotency": {
               "namespace": "my-agent-production",
@@ -74,8 +74,7 @@ credential.
             "id": "main",
             "name": "Main",
             "description": "Primary skill.",
-            "tags": ["agent"],
-            "examples": ["Summarize this thread.", "Draft a reply."]
+            "tags": ["agent"]
           }
         }
       }
@@ -126,7 +125,6 @@ A single advertised skill on the Agent Card.
 | `name` | yes | Display name. |
 | `description` | yes | What the skill does. |
 | `tags` | no | String array for categorization. |
-| `examples` | no | Example prompts surfaced to callers. |
 
 ## Environment variables
 

@@ -42,7 +42,7 @@ files. Source that file only inside the short-lived launch subshell:
 DEMO_ENV=/absolute/path/outside-this-checkout/final-agent.env
 (
   set -a
-  . "$DEMO_ENV"
+  . "$DEMO_ENV" || exit
   set +a
   pnpm run demo:final
 )
@@ -231,19 +231,26 @@ such as a firewall, VPN, TLS-terminating reverse proxy, or private network. Set
 OpenWebUI's API key to the same environment value only when one is configured;
 otherwise leave the adapter key unset for loopback-only local use.
 
-Terminal smoke:
+Authenticated terminal smoke:
 
 ```bash
-curl http://127.0.0.1:4311/v1/models \
-  -H 'Authorization: Bearer demo-key'
+DEMO_ENV=/absolute/path/outside-this-checkout/final-agent.env
+(
+  set -a
+  . "$DEMO_ENV" || exit
+  set +a
+  : "${MONO_AGENT_OPENAI_API_KEY:?set MONO_AGENT_OPENAI_API_KEY in DEMO_ENV}"
+  curl http://127.0.0.1:4311/v1/models \
+    -H "Authorization: Bearer $MONO_AGENT_OPENAI_API_KEY"
 
-curl http://127.0.0.1:4311/v1/chat/completions \
-  -H 'Authorization: Bearer demo-key' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "agent",
-    "messages": [{ "role": "user", "content": "Reply with one sentence." }]
-  }'
+  curl http://127.0.0.1:4311/v1/chat/completions \
+    -H "Authorization: Bearer $MONO_AGENT_OPENAI_API_KEY" \
+    -H 'Content-Type: application/json' \
+    -d '{
+      "model": "agent",
+      "messages": [{ "role": "user", "content": "Reply with one sentence." }]
+    }'
+)
 ```
 
 ## A2A Local Smoke
@@ -285,7 +292,7 @@ From another local Mono host or a one-off package smoke, discover Agent A and se
 DEMO_ENV=/absolute/path/outside-this-checkout/final-agent.env
 (
   set -a
-  . "$DEMO_ENV"
+  . "$DEMO_ENV" || exit
   set +a
   node --input-type=module - <<'EOF'
 import { sendA2AMessage } from "@mono-agent/a2a-adapter";

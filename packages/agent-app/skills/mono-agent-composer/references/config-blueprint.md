@@ -310,7 +310,7 @@ my-agent/
             "host": "127.0.0.1",
             "port": 4201,
             "publicBaseUrl": "https://agent.example.com",
-            "allowNonLoopback": false,
+            "allowNonLoopback": true,
             "requireBearer": false,
             // Put MONO_AGENT_A2A_BEARER_TOKEN in .env when bearer auth is required.
             "idempotency": {              // optional; namespace explicitly enables the v1 extension
