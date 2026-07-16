@@ -6,6 +6,7 @@ import { categoryStyle } from "../components/event-list.js";
 import { AssistantCell, NoticeCell, ThinkingCell, UserCell } from "../components/transcript-cells.js";
 import { ToolPanel } from "../components/tool-panel.js";
 import { extractUsage, formatClock, formatDurationMs, formatTokens, formatUsd } from "../format.js";
+import { sessionBoundaryNotice } from "../session-boundary.js";
 import { styles } from "../theme.js";
 
 /** Canonical (not alphabetical) filter-category order matching the t/o/m/y/e keymap. */
@@ -141,8 +142,9 @@ export function buildPayloadHeader(item: ReplayTimelineItem): string {
  * Pretty-printed raw JSON body for the selected event, capped at today's
  * established line counts (12 collapsed / 40 expanded) with a
  * `… (+N more lines)` trailer when truncated. Used both as the WHOLE body for
- * runtime/telemetry items (no chat-style cell exists for those) and as the
- * optional strip appended below a chat-style cell once the pane is expanded.
+ * generic runtime/telemetry items (session boundaries and runtime warnings
+ * have notice cells) and as the optional strip appended below a chat-style
+ * cell once the pane is expanded.
  */
 export function buildRawPayloadBody(item: ReplayTimelineItem, expanded: boolean): string {
   const maxLines = expanded ? PAYLOAD_MAX_LINES_EXPANDED : PAYLOAD_MAX_LINES_COLLAPSED;
@@ -156,9 +158,10 @@ export function buildRawPayloadBody(item: ReplayTimelineItem, expanded: boolean)
  * The chat-style transcript cell for the selected event, reusing live chat's
  * OWN components (ThinkingCell/AssistantCell/UserCell/NoticeCell/ToolPanel) so
  * replay and live chat read as one interface. Returns `undefined` for
- * runtime/telemetry items (provider_request_*, run_config, cost,
- * capabilities…) and for a "tool" category item that -- despite the category
- * -- carries neither a `tool_use` nor a `tool_result` content block (e.g. a
+ * generic runtime/telemetry items (provider_request_*, run_config, cost,
+ * capabilities…; session boundaries and runtime warnings are exceptions) and
+ * for a "tool" category item that -- despite the category -- carries neither
+ * a `tool_use` nor a `tool_result` content block (e.g. a
  * `tool_update`/`tool_timing` progress event, classified "tool" purely by its
  * `type` string containing "tool"): callers fall back to
  * {@link buildRawPayloadBody} for both cases, exactly as before Part B.
@@ -193,6 +196,10 @@ export function buildDetailCell(
     return new NoticeCell(item.summary, "error");
   }
   if (item.category === "runtime") {
+    const boundaryNotice = sessionBoundaryNotice(item.payload);
+    if (boundaryNotice !== undefined) {
+      return new NoticeCell(boundaryNotice, "info");
+    }
     return item.type === "runtime_warning" ? new NoticeCell(item.summary, "warning") : undefined;
   }
   if (item.category === "tool") {

@@ -6,6 +6,8 @@ import { TUI } from "@earendil-works/pi-tui";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import type { ReplayTimelineItem } from "../data/replay.js";
+import { buildDetailCell } from "../ui/views/replay-detail.js";
 import { ReplayView } from "../ui/views/replay.js";
 import { stripAnsi, TestTerminal } from "./test-terminal.js";
 
@@ -41,6 +43,29 @@ function renderText(view: ReplayView): string {
  */
 function trimmedLines(view: ReplayView): string[] {
   return view.render(100).map((line) => stripAnsi(line).trim());
+}
+
+function runtimeTimelineItem(index: number, payload: Record<string, unknown>): ReplayTimelineItem {
+  const type = typeof payload.type === "string" ? payload.type : undefined;
+  return {
+    index,
+    ...(type === undefined ? {} : { type }),
+    category: "runtime",
+    timestamp: "2026-07-16T00:00:00.000Z",
+    label: type ?? "Runtime event",
+    summary: JSON.stringify(payload),
+    payload,
+    sourceEventCount: 1,
+    sourceEventStartIndex: index,
+    sourceEventEndIndex: index,
+    endTimestamp: "2026-07-16T00:00:00.000Z",
+    turnIndex: 0,
+  };
+}
+
+function renderDetailCell(item: ReplayTimelineItem): string | undefined {
+  const cell = buildDetailCell(item, [item], []);
+  return cell === undefined ? undefined : stripAnsi(cell.render(160).join("\n")).trim();
 }
 
 async function openRun(view: ReplayView, runId: string): Promise<void> {
@@ -225,6 +250,19 @@ async function writeCellShowcaseFixture(runId: string): Promise<void> {
     message: "provider degraded",
   });
   await recorder.finish({ text: "hello back" });
+}
+
+async function writeSessionBoundaryFixture(runId: string): Promise<void> {
+  const recorder = createJsonlRunRecorder({ runId, conversationId: "telegram:42#2026-07-16", artifactDir: dir });
+  recorder.onEvent({
+    type: "session_boundary",
+    timestamp: "2026-07-16T00:00:00.000Z",
+    kind: "rollover",
+    previousConversationId: "telegram:42#2026-07-15",
+    conversationId: "telegram:42#2026-07-16",
+    reason: "daily_rollover",
+  });
+  await recorder.finish({ text: "ready" });
 }
 
 /** cron run identified by sourceDetail (job id); no userInput. Fixed clock => deterministic 0ms duration. */
@@ -659,7 +697,7 @@ describe("ReplayView detail mode", () => {
     expect(text).toContain("file contents here"); // t2's result, the SECOND block in the batched event
   });
 
-  it("shows a plain user message as chat's UserCell and keeps runtime/telemetry items as raw JSON, except runtime_warning (NoticeCell)", async () => {
+  it("shows a plain user message as chat's UserCell, keeps generic runtime JSON, and notices runtime_warning", async () => {
     await writeCellShowcaseFixture("run-showcase");
     const view = setup();
     view.setArtifactDir(dir);
@@ -681,6 +719,61 @@ describe("ReplayView detail mode", () => {
     expect(trimmedLines(view)).not.toContain("{");
     text = stripAnsi(view.render(100).join("\n"));
     expect(text).toContain("⚠ provider degraded");
+  });
+
+  it("shows a recorded session boundary as a friendly collapsed notice while preserving raw expansion", async () => {
+    await writeSessionBoundaryFixture("run-boundary");
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+    await openRun(view, "run-boundary");
+
+    const collapsed = trimmedLines(view);
+    expect(collapsed).toContain(
+      "i session boundary: rollover · daily rollover · telegram:42#2026-07-15 -> telegram:42#2026-07-16",
+    );
+    expect(collapsed).not.toContain("{");
+
+    view.handleInput("\r");
+    expect(trimmedLines(view)).toContain("{");
+  });
+
+  it("renders only exact session-boundary replay events with the live friendly notice contract", () => {
+    const direct = runtimeTimelineItem(0, {
+      type: "session_boundary",
+      kind: "rollover",
+      previousConversationId: "telegram:42#2026-07-15",
+      conversationId: "telegram:42#2026-07-16",
+      reason: "daily_rollover",
+    });
+    expect(renderDetailCell(direct)).toBe(
+      "i session boundary: rollover · daily rollover · telegram:42#2026-07-15 -> telegram:42#2026-07-16",
+    );
+
+    const liveShape = runtimeTimelineItem(1, {
+      type: "runtime_telemetry",
+      kind: "session_boundary",
+      data: {
+        type: "session_boundary",
+        kind: "rollover",
+        previousConversationId: "telegram:42#2026-07-15",
+        conversationId: "telegram:42#2026-07-16",
+        reason: "daily_rollover",
+      },
+    });
+    expect(renderDetailCell(liveShape)).toBe(renderDetailCell(direct));
+
+    const adjacentSessionEvent = runtimeTimelineItem(2, {
+      type: "session_boundary_started",
+      kind: "rollover",
+    });
+    const unrelatedTelemetry = runtimeTimelineItem(3, {
+      type: "runtime_telemetry",
+      kind: "cache_hit",
+      data: { kind: "cache_hit", tokens: 400 },
+    });
+    expect(buildDetailCell(adjacentSessionEvent, [adjacentSessionEvent], [])).toBeUndefined();
+    expect(buildDetailCell(unrelatedTelemetry, [unrelatedTelemetry], [])).toBeUndefined();
   });
 
   it("esc from plain detail (no search, no expansion) returns to the list (regression)", async () => {
