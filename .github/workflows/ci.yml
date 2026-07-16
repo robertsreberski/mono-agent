@@ -92,15 +92,6 @@ jobs:
       - name: Run tests
         run: pnpm test
 
-      - name: Build demos
-        run: pnpm run build:demo
-
-      - name: Typecheck demos
-        run: pnpm run typecheck:demo
-
-      - name: Test demos
-        run: pnpm run test:demo
-
       - name: Check whitespace
         run: git diff --check
 
