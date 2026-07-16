@@ -34,6 +34,21 @@ const root = repoRoot();
 
 const cases = [
   {
+    label: "composer playbook Multi-agent orchestration",
+    docPath: "packages/agent-app/skills/mono-agent-composer/references/playbooks.md",
+    heading: "8. Multi-agent orchestration (`AskCollaborator`) — code",
+    prelude: `
+import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
+import type { AgentResponder } from "@mono-agent/agent-contracts";
+import type { MonoAgentConfig } from "@mono-agent/config";
+import { createCollaboratorToolRuntimeExtension } from "@mono-agent/agent-orchestrator";
+
+declare const config: MonoAgentConfig;
+declare const researcher: AgentResponder;
+declare const writer: AgentResponder;
+`,
+  },
+  {
     label: "playbook Configuration",
     docPath: "docs/playbooks/multi-agent-orchestration.md",
     heading: "Configuration",
@@ -71,6 +86,7 @@ describe("multi-agent documentation snippets", () => {
       const absoluteDocPath = join(root, testCase.docPath);
       const markdown = readFileSync(absoluteDocPath, "utf8");
       const snippet = typescriptSnippet(markdownSection(markdown, testCase.heading), testCase.docPath);
+      expectRequestScopedCollaboratorLifecycle(snippet, testCase.docPath);
       const source = `
 import type { AgentResponder as ExpectedAgentResponder } from "@mono-agent/agent-contracts";
 ${testCase.prelude}
@@ -84,6 +100,20 @@ void expectedOrchestrator;
     });
   }
 });
+
+function expectRequestScopedCollaboratorLifecycle(snippet: string, docPath: string): void {
+  const lifecycleFragments = [
+    "runtimeOptionsForRequest: async (input) => {",
+    "const extension = await createCollaboratorToolRuntimeExtension({",
+    "conversationId: input.request.conversationId",
+    "originalUserMessage: input.request.userMessage",
+    "abortSignal: input.request.abortSignal",
+    "return { runtimeOptions: extension.runtimeOptions, cleanup: extension.cleanup };",
+  ] as const;
+  for (const fragment of lifecycleFragments) {
+    expect(snippet, `${docPath} must preserve request-scoped collaborator lifecycle wiring`).toContain(fragment);
+  }
+}
 
 function markdownSection(markdown: string, heading: string): string {
   const marker = `## ${heading}`;

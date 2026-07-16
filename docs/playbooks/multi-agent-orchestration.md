@@ -51,7 +51,7 @@ const orchestrator = await createConfiguredAgentResponder({
 ## Steps
 
 1. Build collaborator responders (one `createConfiguredAgentResponder` per specialist, or A2A consumers).
-2. Inside `runtimeOptionsForRequest`, call `createCollaboratorToolRuntimeExtension` with the collaborators, `conversationId`, and `maxCalls`.
+2. Inside `runtimeOptionsForRequest`, call `createCollaboratorToolRuntimeExtension` with the required `collaborators`, `conversationId`, `originalUserMessage`, and `abortSignal` fields (plus optional `maxCalls`).
 3. Return `{ runtimeOptions: extension.runtimeOptions, cleanup: extension.cleanup }` from the callback so the host attaches the loopback tool and closes the ephemeral MCP server when the turn ends.
 4. Run the orchestrator with a task that requires delegation.
 5. Inspect the run artifact for `AskCollaborator` calls.
