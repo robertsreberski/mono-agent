@@ -113,7 +113,10 @@ describe("Slack log redaction", () => {
     ]) {
       logger?.error?.("request failed", { payload });
       expect(sink.mock.calls.at(-1)?.[1]).toEqual({
-        value: "[REDACTED_FRAGMENTED_CREDENTIAL]",
+        payload: {
+          left: "[REDACTED_FRAGMENTED_CREDENTIAL]",
+          right: "[REDACTED_FRAGMENTED_CREDENTIAL]",
+        },
       });
     }
   });
@@ -227,6 +230,10 @@ describe("Slack log redaction", () => {
     expect(serialized).not.toContain("[Circular]");
     expect(serialized).toContain("[Function]");
     expect(serialized).toContain("[Accessor]");
+    const logged = sink.mock.calls[0]?.[1];
+    expect((logged?.payload as Record<string, unknown>)?.toJSON).toBe("[Function]");
+    expect((logged?.error as Record<string, unknown>)?.throwing).toBe("[Accessor]");
+    expect((logged?.hostileArray as unknown[])?.[0]).toBe("[Accessor]");
     expect(messageGetter).not.toHaveBeenCalled();
     expect(hrefGetter).not.toHaveBeenCalled();
     expect(arrayGetter).not.toHaveBeenCalled();
@@ -340,10 +347,10 @@ describe("Slack log redaction", () => {
     cycle.self = cycle;
     const oversizedAlphabeticKey = "k".repeat(16_385);
     const oversizedNumericKey = "9".repeat(16_385);
-    const oversizedAlphabeticKeys: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-    oversizedAlphabeticKeys[oversizedAlphabeticKey] = BOT_TOKEN;
-    const oversizedNumericKeys: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-    oversizedNumericKeys[oversizedNumericKey] = BOT_TOKEN;
+    const oversizedAlphabeticFields: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    oversizedAlphabeticFields[oversizedAlphabeticKey] = BOT_TOKEN;
+    const oversizedNumericFields: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    oversizedNumericFields[oversizedNumericKey] = BOT_TOKEN;
     let dag: Record<string, unknown> = { status: "leaf" };
     for (let depth = 0; depth < 8; depth += 1) {
       dag = { left: dag, right: dag };
@@ -373,8 +380,8 @@ describe("Slack log redaction", () => {
       sparse,
       cycle,
       dag,
-      oversizedAlphabeticKeys,
-      oversizedNumericKeys,
+      oversizedAlphabeticFields,
+      oversizedNumericFields,
     });
 
     const logged = sink.mock.calls[0]?.[1];
@@ -414,9 +421,9 @@ describe("Slack log redaction", () => {
     const dagSerialized = JSON.stringify(logged?.dag) ?? "";
     expect(dagSerialized).toContain("[Repeated]");
     expect(dagSerialized.length).toBeLessThan(20_000);
-    for (const field of ["oversizedAlphabeticKeys", "oversizedNumericKeys"]) {
+    for (const field of ["oversizedAlphabeticFields", "oversizedNumericFields"]) {
       const safeOversizedKeys = logged?.[field] as Record<string, unknown>;
-      expect(Object.keys(safeOversizedKeys)).toEqual(["[SLACK_LOG_DETAILS_TRUNCATED]"]);
+      expect(Object.keys(safeOversizedKeys), field).toEqual(["[SLACK_LOG_DETAILS_TRUNCATED]"]);
       expect(safeOversizedKeys["[SLACK_LOG_DETAILS_TRUNCATED]"])
         .toBe("[SLACK_LOG_DETAILS_TRUNCATED]");
     }

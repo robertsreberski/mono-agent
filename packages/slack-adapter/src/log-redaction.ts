@@ -8,6 +8,20 @@ const REDACTED_FRAGMENTED_CREDENTIAL = "[REDACTED_FRAGMENTED_CREDENTIAL]";
 const OMITTED_BINARY_DATA = "[SLACK_LOG_BINARY_DATA_OMITTED]";
 const REPEATED_REFERENCE = "[Repeated]";
 const REDACTION_BOUNDARY_MARKERS = [REDACTED_SLACK_TOKEN, REDACTED_BEARER] as const;
+const PRESERVED_SLACK_LOG_MARKERS = new Set([
+  REDACTED_SLACK_TOKEN,
+  REDACTED_BEARER,
+  REDACTION_FAILED,
+  REDACTION_LIMIT,
+  REDACTED_FRAGMENTED_CREDENTIAL,
+  OMITTED_BINARY_DATA,
+  REPEATED_REFERENCE,
+  "[Accessor]",
+  "[BigInt]",
+  "[Circular]",
+  "[Function]",
+  "[Symbol]",
+]);
 const MAX_LOG_TEXT_CHARS = 16_384;
 const MAX_LOG_DEPTH = 16;
 const MAX_LOG_NODES = 256;
@@ -294,7 +308,8 @@ function sanitizeSlackLogRecord(
   };
   const sanitized = sanitizeSlackLogValue(record, knownSecrets, context, 0);
   if (context.fragmentedCredential) {
-    return { value: REDACTED_FRAGMENTED_CREDENTIAL };
+    const scrubbed = scrubFragmentedSlackLogValue(sanitized);
+    return isRecord(scrubbed) ? scrubbed : { value: scrubbed };
   }
   return isRecord(sanitized) ? sanitized : { value: sanitized };
 }
@@ -339,7 +354,7 @@ function sanitizeSlackLogValue(
     return REDACTION_FAILED;
   }
   if (depth >= MAX_LOG_DEPTH || context.remainingNodes <= 0) {
-    return REDACTION_LIMIT;
+    return Array.isArray(value) ? [REDACTION_LIMIT] : truncatedSlackLogRecord();
   }
   if (context.ancestors.has(value)) {
     return "[Circular]";
@@ -563,6 +578,46 @@ function hasCanonicalNumericProperty(propertyNames: readonly string[]): boolean 
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A credential assembled across multiple metadata values makes every ordinary
+ * string in that record unsafe. Preserve the already-sanitized structure and
+ * diagnostic placeholders while replacing all remaining text.
+ */
+function scrubFragmentedSlackLogValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return PRESERVED_SLACK_LOG_MARKERS.has(value)
+      ? value
+      : REDACTED_FRAGMENTED_CREDENTIAL;
+  }
+  if (Array.isArray(value)) {
+    const safe: unknown[] = [];
+    safe.length = value.length;
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (descriptor !== undefined && "value" in descriptor) {
+        safe[index] = scrubFragmentedSlackLogValue(descriptor.value);
+      }
+    }
+    return safe;
+  }
+  if (!isRecord(value)) return value;
+
+  const safe = Object.create(null) as Record<string, unknown>;
+  for (const key of Object.getOwnPropertyNames(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor !== undefined && "value" in descriptor) {
+      setSafeProperty(safe, key, scrubFragmentedSlackLogValue(descriptor.value));
+    }
+  }
+  return safe;
+}
+
+function truncatedSlackLogRecord(): Record<string, unknown> {
+  const safe = Object.create(null) as Record<string, unknown>;
+  setSafeProperty(safe, REDACTION_LIMIT, REDACTION_LIMIT);
+  return safe;
 }
 
 function snapshotKnownSecrets(knownSecrets: readonly string[]): readonly string[] | undefined {
