@@ -319,8 +319,8 @@ The A2A provider is loaded through `channels.plugins[]` with `package: "@mono-ag
 | `MONO_AGENT_A2A_AGENT_NAME` | plugin `config.agent.name` | Public Agent Card name; wins over the root agent name. |
 | `MONO_AGENT_A2A_AGENT_DESCRIPTION` | plugin `config.agent.description` | Agent Card description. |
 | `MONO_AGENT_A2A_AGENT_VERSION` | plugin `config.agent.version` | Agent Card version string. |
-| `MONO_AGENT_A2A_PROVIDER_ORGANIZATION` | plugin `config.agent.providerOrganization` | Optional provider organization advertised in the Agent Card. |
-| `MONO_AGENT_A2A_PROVIDER_URL` | plugin `config.agent.providerUrl` | Optional provider organization URL advertised in the Agent Card. |
+| `MONO_AGENT_A2A_PROVIDER_ORGANIZATION` | plugin `config.agent.providerOrganization` | Provider organization advertised only when `providerUrl` is also set. |
+| `MONO_AGENT_A2A_PROVIDER_URL` | plugin `config.agent.providerUrl` | Provider organization URL advertised only when `providerOrganization` is also set. |
 | `MONO_AGENT_A2A_SKILL_ID` | plugin `config.skill.id` | Advertised skill identifier. |
 | `MONO_AGENT_A2A_SKILL_NAME` | plugin `config.skill.name` | Advertised skill name. |
 | `MONO_AGENT_A2A_SKILL_DESCRIPTION` | plugin `config.skill.description` | Advertised skill description. |

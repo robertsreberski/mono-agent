@@ -95,9 +95,9 @@ Then inspect the recorded run via the local JSONL artifacts under `.mono-agent/d
 
 ## Minimal `mono-agent.config.json`
 
-Put `MONO_AGENT_TELEGRAM_BOT_TOKEN` in `.env` when Telegram is enabled. Do
-not commit bot tokens or provider credentials; the source-config example omits
-them.
+Export `MONO_AGENT_TELEGRAM_BOT_TOKEN` in the shell that launches the demo when
+Telegram is enabled. The direct demo entrypoint does not load `.env`. Do not
+commit bot tokens or provider credentials; the source-config example omits them.
 
 This demo is a programmatic host that passes the A2A driver directly so it can inject test and deployment seams; its A2A settings therefore live in the driver-local top-level `a2a` section. The CLI-equivalent `@mono-agent/agent-app` host loads A2A through `channels.plugins[]` instead; see the main [A2A channel docs](../../docs/channels/a2a.md).
 
@@ -200,7 +200,17 @@ Enable the OpenAI API adapter with a real runtime configuration:
 }
 ```
 
-Put `MONO_AGENT_OPENAI_API_KEY=demo-key` in the demo invocation folder's owner-only `.env` (`chmod 600 .env`) when client authentication is desired. Start the demo and use the printed OpenAI API base URL in OpenWebUI. If OpenWebUI runs in local Docker while the demo runs on the host, keep the adapter bound to host loopback (`127.0.0.1`) and use `http://host.docker.internal:4311/v1` from OpenWebUI instead of `http://127.0.0.1:4311/v1`. Only bind a non-loopback/public host when `allowNonLoopback` is explicitly enabled; that setup requires `MONO_AGENT_OPENAI_API_KEY` and should sit behind appropriate network protection such as a firewall, VPN, TLS-terminating reverse proxy, or private network. Set OpenWebUI's API key to the same environment value only when one is configured; otherwise leave the adapter key unset for loopback-only local use.
+Export `MONO_AGENT_OPENAI_API_KEY=demo-key` in the shell that launches the demo
+when client authentication is desired. Start the demo and use the printed
+OpenAI API base URL in OpenWebUI. If OpenWebUI runs in local Docker while the
+demo runs on the host, keep the adapter bound to host loopback (`127.0.0.1`) and
+use `http://host.docker.internal:4311/v1` from OpenWebUI instead of
+`http://127.0.0.1:4311/v1`. Only bind a non-loopback/public host when
+`allowNonLoopback` is explicitly enabled; that setup requires
+`MONO_AGENT_OPENAI_API_KEY` and should sit behind appropriate network protection
+such as a firewall, VPN, TLS-terminating reverse proxy, or private network. Set
+OpenWebUI's API key to the same environment value only when one is configured;
+otherwise leave the adapter key unset for loopback-only local use.
 
 Terminal smoke:
 
@@ -267,12 +277,12 @@ console.log(response.text);
 EOF
 ```
 
-For bearer authentication, set `MONO_AGENT_A2A_REQUIRE_BEARER=true` and
-`MONO_AGENT_A2A_BEARER_TOKEN` in Agent A's `.env`, then set
-`MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN` in the consumer environment. The
-example above reads the consumer token from that variable. The public Agent
-Card remains discoverable, but message/task endpoints require
-`Authorization: Bearer`.
+For bearer authentication, export `MONO_AGENT_A2A_REQUIRE_BEARER=true` and
+`MONO_AGENT_A2A_BEARER_TOKEN` in the shell that launches Agent A, then export
+`MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN` in the consumer environment. The direct
+demo entrypoint does not load `.env`; the example above reads the consumer token
+from the exported variable. The public Agent Card remains discoverable, but
+message/task endpoints require `Authorization: Bearer`.
 
 ## Ollama Local Provider
 
@@ -313,9 +323,11 @@ For artifact lookup, `MONO_AGENT_ARTIFACT_DIR` wins, then `artifacts.dir` from `
 
 For source discovery, `MONO_AGENT_TRACE_REGISTRY_DIR` wins, then `traceability.registryDir`, then `~/.mono-agent/trace-sources`. The default is intentionally host-shared so multiple agent processes from different working directories appear in one local dashboard. Source id and label can be set with `MONO_AGENT_TRACE_SOURCE_ID` / `MONO_AGENT_TRACE_SOURCE_LABEL` or `traceability.sourceId` / `traceability.sourceLabel`; otherwise the demo uses a deterministic path-derived id and the label `Final Agent Demo`. Heartbeat and stale intervals follow `MONO_AGENT_TRACE_HEARTBEAT_MS` / `MONO_AGENT_TRACE_STALE_AFTER_MS`, then `traceability.heartbeatMs` / `traceability.staleAfterMs`, then the built-in defaults.
 
-Useful env overrides:
+Useful env overrides. The direct demo entrypoint does not load `.env`; this
+shell block exports every assignment it contains:
 
 ```bash
+set -a
 MONO_AGENT_TELEGRAM_BOT_TOKEN=...
 MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS=...
 MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS=false
@@ -347,7 +359,7 @@ MONO_AGENT_OPENAI_API_HOST=127.0.0.1
 MONO_AGENT_OPENAI_API_PORT=4311
 MONO_AGENT_OPENAI_API_BASE_PATH=/v1
 MONO_AGENT_OPENAI_API_MODEL_ID=mono-agent
-# Keep this .env owner-only (chmod 600); use a strong value outside demos.
+# Use a strong value outside demos.
 MONO_AGENT_OPENAI_API_KEY=demo-key
 MONO_AGENT_CRON_ENABLED=true
 MONO_AGENT_CRON_EXPRESSION="0 * * * *"
@@ -356,6 +368,7 @@ MONO_AGENT_CRON_PROMPT="Run scheduled check."
 MONO_AGENT_TRACE_REGISTRY_DIR=~/.mono-agent/trace-sources
 MONO_AGENT_TRACE_SOURCE_ID=final-agent
 MONO_AGENT_TRACE_SOURCE_LABEL="Final Agent Demo"
+set +a
 ```
 
 ## Persistent memory (tiered bujo memory)

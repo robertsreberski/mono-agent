@@ -113,8 +113,8 @@ Populates the identity block of the Agent Card.
 | `name` | yes when no root name is available | Human-readable Agent Card name. Defaults from root `agent.name` / `MONO_AGENT_NAME`; plugin `config.agent.name` / `MONO_AGENT_A2A_AGENT_NAME` wins. |
 | `description` | yes | What the agent does. |
 | `version` | yes | Agent version string (e.g. `0.1.0`). |
-| `providerOrganization` | no | Organization that operates the agent. |
-| `providerUrl` | no | URL for the operating organization. |
+| `providerOrganization` | no | Organization that operates the agent. Emitted only when `providerUrl` is also set. |
+| `providerUrl` | no | URL for the operating organization. Emitted only when `providerOrganization` is also set. |
 
 ### `config.skill`
 
