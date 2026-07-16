@@ -12,6 +12,82 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
+type ProviderFactory = (fetchImpl: typeof fetch) => {
+  embed(texts: readonly string[]): Promise<number[][]>;
+};
+
+const providerFactories = [
+  ["Ollama", (fetchImpl) => new OllamaEmbeddingProvider({ model: "test-model", fetchImpl })],
+  ["LM Studio", (fetchImpl) => new LmStudioEmbeddingProvider({ model: "test-model", fetchImpl })],
+  ["OpenAI", (fetchImpl) => new OpenAIEmbeddingProvider({ model: "test-model", apiKey: "test-key", fetchImpl })],
+] as const satisfies readonly (readonly [string, ProviderFactory])[];
+
+async function rejectionOf<T>(promise: Promise<T>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected promise to reject");
+}
+
+describe("embedding provider failure taxonomy", () => {
+  it.each(providerFactories)("wraps malformed successful %s JSON as an invalid response with its cause", async (_label, createProvider) => {
+    const fetchImpl = (async () => new Response("{", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+
+    const error = await rejectionOf(createProvider(fetchImpl).embed(["text"]));
+
+    expect(error).toBeInstanceOf(MemorySearchError);
+    expect(error).toMatchObject({ code: "embedding_response_invalid" });
+    expect((error as Error).cause).toBeInstanceOf(SyntaxError);
+  });
+
+  it.each(providerFactories)("preserves non-parser %s body-read failures by identity", async (_label, createProvider) => {
+    const bodyReadFailure = new Error("response adapter invariant failed");
+    const fetchImpl = (async () => ({
+      ok: true,
+      text: async () => {
+        throw bodyReadFailure;
+      },
+    }) as unknown as Response) as typeof fetch;
+
+    expect(await rejectionOf(createProvider(fetchImpl).embed(["text"]))).toBe(bodyReadFailure);
+  });
+
+  it.each(providerFactories)("propagates a native disturbed %s response as a hard TypeError", async (_label, createProvider) => {
+    const response = jsonResponse({ embeddings: [[1]], data: [{ embedding: [1] }] });
+    await response.text();
+    const fetchImpl = (async () => response) as typeof fetch;
+
+    const error = await rejectionOf(createProvider(fetchImpl).embed(["text"]));
+
+    expect(error).toBeInstanceOf(TypeError);
+    expect(error).not.toBeInstanceOf(MemorySearchError);
+  });
+
+  it.each(providerFactories)("keeps non-OK %s responses in the request-failed category", async (_label, createProvider) => {
+    const fetchImpl = (async () => new Response("unavailable", { status: 503 })) as typeof fetch;
+
+    const error = await rejectionOf(createProvider(fetchImpl).embed(["text"]));
+
+    expect(error).toBeInstanceOf(MemorySearchError);
+    expect(error).toMatchObject({ code: "embedding_request_failed" });
+  });
+
+  it.each(providerFactories)("preserves structured %s network failures unchanged", async (_label, createProvider) => {
+    const cause = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+    const networkFailure = Object.assign(new TypeError("fetch failed"), { cause });
+    const fetchImpl = (async () => {
+      throw networkFailure;
+    }) as typeof fetch;
+
+    expect(await rejectionOf(createProvider(fetchImpl).embed(["text"]))).toBe(networkFailure);
+  });
+});
+
 describe("OllamaEmbeddingProvider", () => {
   it("posts to /api/embed and returns the embedding vectors", async () => {
     const calls: Array<{ url: string; body: unknown }> = [];
@@ -57,10 +133,7 @@ describe("OllamaEmbeddingProvider", () => {
     ["a NaN component", [[Number.NaN]]],
     ["an infinite component", [[Number.POSITIVE_INFINITY]]],
   ])("rejects %s from the shared response validator", async (_name, embeddings) => {
-    const fetchImpl = (async () => ({
-      ok: true,
-      json: async () => ({ embeddings }),
-    }) as Response) as typeof fetch;
+    const fetchImpl = (async () => jsonResponse({ embeddings })) as typeof fetch;
     const provider = new OllamaEmbeddingProvider({ model: "m", fetchImpl });
 
     await expect(provider.embed(["x"])).rejects.toThrow(/non-empty array of finite numbers/u);

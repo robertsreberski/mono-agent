@@ -15,6 +15,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
+import { MemorySearchError } from "@mono-agent/memory/search";
+import type { MemorySearchErrorCode } from "@mono-agent/memory/search";
 import type { EntityRecord, IndexMetadata, MemoryDb, MemoryRecord, MemoryStoreAudit, MemoryStoreStats } from "@mono-agent/memory/store";
 import { listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
@@ -48,6 +50,32 @@ const MEMORY_FORGET_SCHEMA_VERSION = 1;
 const MAX_FORGET_IDS = 32;
 const MAX_FORGET_PLAN_BYTES = 1024 * 1024;
 const MEMORY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u;
+const FTS_FALLBACK_MEMORY_SEARCH_CODES = new Set<MemorySearchErrorCode>([
+  "embedding_circuit_open",
+  "embedding_request_failed",
+  "embedding_response_invalid",
+  "invalid_embedding_options",
+]);
+const FTS_FALLBACK_NETWORK_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+const MAX_FTS_FALLBACK_CAUSE_CANDIDATES = 16;
+const INTRINSIC_ERROR = Error;
+const INTRINSIC_TYPE_ERROR = TypeError;
+const INTRINSIC_AGGREGATE_ERROR = AggregateError;
+const INTRINSIC_DOM_EXCEPTION = typeof DOMException === "undefined" ? undefined : DOMException;
+const DOM_EXCEPTION_NAME_GETTER = INTRINSIC_DOM_EXCEPTION === undefined
+  ? undefined
+  : Object.getOwnPropertyDescriptor(INTRINSIC_DOM_EXCEPTION.prototype, "name")?.get;
 const EMPTY_HEALTH_COUNTS = Object.freeze({
   pending: 0,
   due: 0,
@@ -1531,23 +1559,162 @@ async function recallWithFtsFallback(
   }
 }
 
-function isFtsFallbackEligible(settings: MemoryRecallSettings, error: unknown): settings is MemoryRecallBujoSettings {
+export function isFtsFallbackEligible(
+  settings: MemoryRecallSettings,
+  error: unknown,
+): settings is MemoryRecallBujoSettings {
   if ("supermemory" in settings || settings.embeddings === undefined) {
     return false;
   }
-  const record = typeof error === "object" && error !== null ? error as Record<string, unknown> : {};
-  const code = typeof record.code === "string" ? record.code : "";
-  if (code.startsWith("embedding_") || code === "invalid_embedding_options") {
+  if (isIntrinsicMemorySearchError(error)) {
+    const code = readErrorProperty(error, "code");
+    return code.ok
+      && typeof code.value === "string"
+      && FTS_FALLBACK_MEMORY_SEARCH_CODES.has(code.value as MemorySearchErrorCode);
+  }
+  if (isNativeAbortError(error)) {
     return true;
   }
-  const name = error instanceof Error ? error.name : "";
-  const message = reasonOf(error).toLocaleLowerCase("en-US");
-  return name === "AbortError" ||
-    name === "TypeError" ||
-    message.includes("fetch failed") ||
-    message.includes("embedding") ||
-    message.includes("econnrefused") ||
-    message.includes("enotfound");
+  if (!isIntrinsicTypeError(error) && !isIntrinsicAggregateError(error)) {
+    return false;
+  }
+  return hasNetworkFailureCause(error);
+}
+
+function hasNetworkFailureCause(error: Error): boolean {
+  const pending: Error[] = [];
+  const seen = new Set<Error>();
+  let candidateCount = 0;
+
+  const enqueue = (candidate: unknown): void => {
+    if (candidateCount >= MAX_FTS_FALLBACK_CAUSE_CANDIDATES) {
+      return;
+    }
+    candidateCount += 1;
+    if (!isIntrinsicError(candidate) || seen.has(candidate)) {
+      return;
+    }
+    seen.add(candidate);
+    pending.push(candidate);
+  };
+
+  const enqueueAggregateErrors = (aggregate: AggregateError): void => {
+    const errorsRead = readErrorProperty(aggregate, "errors");
+    if (!errorsRead.ok || !isArrayWithoutThrowing(errorsRead.value)) {
+      return;
+    }
+    const errors = errorsRead.value;
+    const lengthRead = readErrorProperty(errors, "length");
+    if (
+      !lengthRead.ok
+      || typeof lengthRead.value !== "number"
+      || !Number.isSafeInteger(lengthRead.value)
+      || lengthRead.value < 0
+    ) {
+      return;
+    }
+    const readable = Math.min(
+      lengthRead.value,
+      MAX_FTS_FALLBACK_CAUSE_CANDIDATES - candidateCount,
+    );
+    for (let index = 0; index < readable; index += 1) {
+      const entry = readErrorProperty(errors, String(index));
+      // A hostile array slot still consumes its bounded candidate position.
+      enqueue(entry.ok ? entry.value : undefined);
+    }
+  };
+
+  const enqueueChildren = (current: Error): void => {
+    const cause = readErrorProperty(current, "cause");
+    if (cause.ok && cause.value !== undefined) {
+      enqueue(cause.value);
+    }
+    if (isIntrinsicAggregateError(current)) {
+      enqueueAggregateErrors(current);
+    }
+  };
+
+  enqueueChildren(error);
+  while (pending.length > 0) {
+    const current = pending.shift();
+    if (current === undefined) {
+      continue;
+    }
+    const code = readErrorProperty(current, "code");
+    if (
+      code.ok
+      && typeof code.value === "string"
+      && FTS_FALLBACK_NETWORK_CODES.has(code.value.toUpperCase())
+    ) {
+      return true;
+    }
+    enqueueChildren(current);
+  }
+  return false;
+}
+
+type ErrorPropertyRead =
+  | { readonly ok: true; readonly value: unknown }
+  | { readonly ok: false };
+
+function readErrorProperty(value: object, key: PropertyKey): ErrorPropertyRead {
+  try {
+    return { ok: true, value: Reflect.get(value, key) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function isArrayWithoutThrowing(value: unknown): value is unknown[] {
+  try {
+    return Array.isArray(value);
+  } catch {
+    return false;
+  }
+}
+
+function isIntrinsicError(value: unknown): value is Error {
+  try {
+    return value instanceof INTRINSIC_ERROR;
+  } catch {
+    return false;
+  }
+}
+
+function isIntrinsicTypeError(value: unknown): value is TypeError {
+  try {
+    return value instanceof INTRINSIC_TYPE_ERROR;
+  } catch {
+    return false;
+  }
+}
+
+function isIntrinsicAggregateError(value: unknown): value is AggregateError {
+  try {
+    return value instanceof INTRINSIC_AGGREGATE_ERROR;
+  } catch {
+    return false;
+  }
+}
+
+function isIntrinsicMemorySearchError(value: unknown): value is MemorySearchError {
+  try {
+    return value instanceof MemorySearchError;
+  } catch {
+    return false;
+  }
+}
+
+function isNativeAbortError(value: unknown): boolean {
+  if (INTRINSIC_DOM_EXCEPTION === undefined || DOM_EXCEPTION_NAME_GETTER === undefined) {
+    return false;
+  }
+  try {
+    return value instanceof INTRINSIC_DOM_EXCEPTION
+      && Reflect.apply(DOM_EXCEPTION_NAME_GETTER, value, []) === "AbortError";
+  } catch {
+    return false;
+  }
 }
 
 function readLocalStats(db: MemoryDb, topEntitiesLimit: number): MemoryStoreStats {
