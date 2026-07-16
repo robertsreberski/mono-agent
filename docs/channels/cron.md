@@ -135,9 +135,11 @@ Pick an `expression` whose interval comfortably exceeds the job's typical runtim
 
 ## Run watchdog: a wedged run is aborted, not left to starve
 
-Skip-on-overlap protects against a *still-running* prior tick. A separate watchdog protects against a *wedged* one. If a run never settles (a hung responder, a stuck provider call), it would otherwise hold the job's slot forever and skip **every** future firing as "a prior run is still active." To prevent that, the cron channel runs each job under a **20-minute watchdog** (`maxRunMs`, default `1200000`): a run that does not finish in time is aborted and its slot reclaimed, so the next tick can fire.
+Skip-on-overlap protects against a *still-running* prior tick. A separate watchdog protects against a *wedged* one. If a run never settles (a hung destination resolver, responder, or provider call), it would otherwise hold the job's slot forever and skip **every** future firing as "a prior run is still active." To prevent that, the cron channel runs each job under a **20-minute watchdog** (`maxRunMs`, default `1200000`): a run that does not finish in time is aborted and its slot reclaimed, so the next tick can fire.
 
 The watchdog and the scheduler slot it reclaims are **per job**: a wedged run does not occupy a sibling job's cron overlap/watchdog slot. That isolation stops at scheduler admission; shared agent-app harness admission and execution limits may still delay sibling provider work or reject it when shared capacity is exhausted. Set `jobs[].maxRunMs` (or `maxRunMs` frontmatter) to override the default for a specific job. Programmatic callers can still set `maxRunMs` on `startCronAdapter` as the adapter-level fallback. An aborted run is recorded with an `interrupted` status — see [Run artifacts & traces](/observability/artifacts-and-traces/).
+
+Programmatic destination resolvers receive the run's `AbortSignal`, and their promise is raced against it independently of the watchdog. Consequently, overlap replacement or adapter stop reclaims a firing that is still resolving even when `maxRunMs` is unset and the resolver ignores the signal; later settlement is discarded.
 
 ## Sharing memory and history with `conversationId`
 

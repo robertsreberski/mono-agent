@@ -16,11 +16,6 @@ function suppressesNotification(text: string | undefined): boolean {
   return trimmed.length === 0 || trimmed.toUpperCase() === NOTHING_TO_REPORT_SENTINEL;
 }
 
-/** A conversation id backed by a built-in push channel with a notify hook. */
-function isDeliverableConversation(conversationId: string): boolean {
-  return conversationId.startsWith("telegram:") || conversationId.startsWith("slack:");
-}
-
 export async function deliverNativeCronNotification(input: {
   readonly job: CronJobConfig | undefined;
   readonly result: CronJobResult;
@@ -29,7 +24,6 @@ export async function deliverNativeCronNotification(input: {
     text: string,
     options?: { readonly verbatim?: boolean },
   ) => Promise<NotifyDeliveryResult>;
-  readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
   readonly logger?: MonoAgentAppLogger;
 }): Promise<void> {
   const job = input.job;
@@ -46,12 +40,11 @@ export async function deliverNativeCronNotification(input: {
       return;
     }
 
-    const destination = await resolveNativeCronNotifyDestination({
-      job,
-      ...(input.listNotifyDestinations === undefined ? {} : { listNotifyDestinations: input.listNotifyDestinations }),
-      ...(input.logger === undefined ? {} : { logger: input.logger }),
-    });
+    const destination = job.notifyConversationId ?? input.result.notifyConversationId;
     if (destination === undefined) {
+      input.logger?.warn?.("Native cron notification skipped: no destination was resolved for this run.", {
+        jobId: job.id,
+      });
       return;
     }
 
@@ -71,39 +64,23 @@ export async function deliverNativeCronNotification(input: {
   }
 }
 
-async function resolveNativeCronNotifyDestination(input: {
-  readonly job: CronJobConfig;
-  readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
-  readonly logger?: MonoAgentAppLogger;
-}): Promise<string | undefined> {
-  if (input.job.notifyConversationId !== undefined) {
-    return input.job.notifyConversationId;
-  }
-  if (input.listNotifyDestinations === undefined) {
-    input.logger?.warn?.("Native cron notification skipped: no destination is configured and no destination resolver is available.", {
-      jobId: input.job.id,
-    });
-    return undefined;
-  }
-  const destinations = await input.listNotifyDestinations();
-  if (destinations.length !== 1) {
-    input.logger?.warn?.("Native cron notification skipped: destination inference requires exactly one candidate.", {
-      jobId: input.job.id,
-      destinationCount: destinations.length,
-    });
-    return undefined;
-  }
-  return destinations[0]?.conversationId;
-}
-
 export async function inferUniqueNotifyDestination(input: {
   readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
+  readonly abortSignal?: AbortSignal;
 }): Promise<string | undefined> {
   if (input.listNotifyDestinations === undefined) {
     return undefined;
   }
+  throwIfAborted(input.abortSignal);
   const destinations = await input.listNotifyDestinations();
+  throwIfAborted(input.abortSignal);
   return destinations.length === 1 ? destinations[0]?.conversationId : undefined;
+}
+
+function throwIfAborted(abortSignal: AbortSignal | undefined): void {
+  if (abortSignal?.aborted === true) {
+    throw abortSignal.reason ?? new Error("Native notification destination resolution was aborted.");
+  }
 }
 
 export async function deliverNativeWebhookNotification(input: {
@@ -115,7 +92,6 @@ export async function deliverNativeWebhookNotification(input: {
     text: string,
     options?: { readonly verbatim?: boolean },
   ) => Promise<NotifyDeliveryResult>;
-  readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
   readonly logger?: MonoAgentAppLogger;
 }): Promise<void> {
   const endpoint = input.endpoint;
@@ -133,14 +109,9 @@ export async function deliverNativeWebhookNotification(input: {
       return;
     }
 
-    const destination = await resolveNativeWebhookNotifyDestination({
-      endpoint,
-      source,
-      requestConversationId: input.request.conversationId,
-      ...(input.listNotifyDestinations === undefined ? {} : { listNotifyDestinations: input.listNotifyDestinations }),
-      ...(input.logger === undefined ? {} : { logger: input.logger }),
-    });
+    const destination = input.request.replyTo?.conversationId;
     if (destination === undefined) {
+      input.logger?.warn?.("Native webhook notification skipped: no destination was resolved for this run.", source);
       return;
     }
 
@@ -158,32 +129,4 @@ export async function deliverNativeWebhookNotification(input: {
       reason: error instanceof Error ? error.message : String(error),
     });
   }
-}
-
-async function resolveNativeWebhookNotifyDestination(input: {
-  readonly endpoint: WebhookEndpointConfig;
-  readonly source: Record<string, unknown>;
-  readonly requestConversationId?: string;
-  readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
-  readonly logger?: MonoAgentAppLogger;
-}): Promise<string | undefined> {
-  if (input.endpoint.notifyConversationId !== undefined) {
-    return input.endpoint.notifyConversationId;
-  }
-  if (input.requestConversationId !== undefined && isDeliverableConversation(input.requestConversationId)) {
-    return input.requestConversationId;
-  }
-  if (input.listNotifyDestinations === undefined) {
-    input.logger?.warn?.("Native webhook notification skipped: no destination is configured and no destination resolver is available.", input.source);
-    return undefined;
-  }
-  const destinations = await input.listNotifyDestinations();
-  if (destinations.length !== 1) {
-    input.logger?.warn?.("Native webhook notification skipped: destination inference requires exactly one candidate.", {
-      ...input.source,
-      destinationCount: destinations.length,
-    });
-    return undefined;
-  }
-  return destinations[0]?.conversationId;
 }

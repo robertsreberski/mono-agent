@@ -1,12 +1,12 @@
 import {
   BufferedMessageStream,
   isAgentResponseCancelledError,
+  normalizeOptionalString,
   type AgentMessageStream,
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
 } from "@mono-agent/agent-contracts";
-import { normalizeOptionalString } from "@mono-agent/agent-contracts";
 
 import { validateCronExpression } from "./cron-expression.js";
 
@@ -38,7 +38,11 @@ export interface CronJob {
   readonly notify?: boolean;
   /** Optional destination conversationId for native notification delivery. */
   readonly notifyConversationId?: string;
-  /** Host-resolved fallback destination used only when notifyConversationId is absent. */
+  /**
+   * Pre-resolved fallback used only when notifyConversationId is absent.
+   * Programmatic hosts that need a live destination set should prefer the
+   * adapter-level per-run resolver.
+   */
   readonly notifyFallbackConversationId?: string;
   /** Per-job runtime model override (raw string; parsed/validated by the app). */
   readonly model?: string;
@@ -64,6 +68,8 @@ export type CronJobResult =
       readonly scheduledAt: string;
       readonly startedAt: string;
       readonly completedAt: string;
+      /** Physical native-notify route snapshotted before the responder started. */
+      readonly notifyConversationId?: string;
       readonly text?: string;
       readonly metadata?: Record<string, unknown>;
     }
@@ -105,6 +111,14 @@ export interface CronAdapterLogger {
 export interface CronAdapterOptions {
   readonly responder: AgentResponder<AgentRequestBase, AgentMessageStream, AgentResponse>;
   readonly jobs: readonly CronJob[];
+  /**
+   * Host-owned fallback resolver for native-notify jobs without an explicit or
+   * pre-resolved destination. It runs once per firing so the request's replyTo
+   * and the resulting delivery route share the same lifecycle snapshot. The
+   * optional signal allows cooperative cancellation; the adapter also races
+   * resolver settlement against it.
+   */
+  readonly resolveNotifyFallbackConversationId?: (abortSignal?: AbortSignal) => Promise<string | undefined>;
   readonly now?: () => Date;
   readonly onResult?: (result: CronJobResult) => void | Promise<void>;
   readonly logger?: CronAdapterLogger;
@@ -115,9 +129,10 @@ export interface CronAdapterOptions {
   /** What to do past maxQueueDepth. Default "preserve" (keep all, warn). */
   readonly overflow?: CronOverflowPolicy;
   /**
-   * Watchdog: if a run's responder does not settle within this many ms, abort it and reclaim the
-   * slot (`state.active`) so the job is not blocked forever. A hung responder otherwise leaves
-   * `state.active` set, and every future firing is skipped as "a prior run is still active".
+   * Watchdog: if a run does not settle within this many ms, abort it and reclaim the
+   * slot (`state.active`) so the job is not blocked forever. A hung resolver or
+   * responder otherwise leaves `state.active` set, and every future firing is
+   * skipped as "a prior run is still active".
    * Unset (default) disables the watchdog, preserving prior behavior.
    */
   readonly maxRunMs?: number;
@@ -375,37 +390,11 @@ function startRun(
     onClosed: () =>
       new CronAdapterError("stream_closed", "Cannot write to a finished cron stream."),
   });
-  const request: AgentRequestBase = {
-    conversationId: job.conversationId ?? `cron:${job.id}`,
-    text: job.prompt,
-    abortSignal: controller.signal,
-    ...(job.notify === true
-      ? toReplyTarget(job.notifyConversationId ?? job.notifyFallbackConversationId)
-      : {}),
-    metadata: {
-      cron: {
-        jobId: job.id,
-        expression: job.expression,
-        timezone: job.timezone ?? DEFAULT_TIMEZONE,
-        scheduledAt,
-        startedAt,
-        ...(job.notify === true
-          ? {
-              nativeNotify: {
-                enabled: true,
-                ...(job.notifyConversationId === undefined ? {} : { conversationId: job.notifyConversationId }),
-              },
-            }
-          : {}),
-        ...(job.model === undefined ? {} : { model: job.model }),
-        ...(job.effort === undefined ? {} : { effort: job.effort }),
-      } satisfies CronRequestMetadata,
-    },
-  };
 
-  // Finalize the run at most once. A hung responder (a promise that never settles AND ignores the
-  // abort signal) would otherwise leave `state.active` set forever, skipping every future firing.
-  // The watchdog below races the responder so the slot is always reclaimed; whichever path fires
+  // Finalize the run at most once. Hung run work (a resolver or responder promise
+  // that never settles AND ignores the abort signal) would otherwise leave
+  // `state.active` set forever, skipping every future firing.
+  // The watchdog below races the run pipeline so the slot is always reclaimed; whichever path fires
   // first wins, and the loser becomes a no-op. Clearing `state.active` + draining lives here so it
   // happens exactly once regardless of which path completes.
   let settled = false;
@@ -430,7 +419,7 @@ function startRun(
   if (effectiveMaxRunMs !== undefined && effectiveMaxRunMs > 0) {
     const limitMs = effectiveMaxRunMs;
     watchdog = setTimeout(() => {
-      // Signal the responder to stop, then reclaim the slot even if it never settles.
+      // Signal in-flight run work to stop, then reclaim the slot even if it never settles.
       controller.abort(new Error(`Cron job exceeded maxRunMs (${limitMs}ms).`));
       finalize(async () => {
         const result: CronJobResult = {
@@ -439,7 +428,7 @@ function startRun(
           scheduledAt,
           startedAt,
           completedAt: (options.now?.() ?? new Date()).toISOString(),
-          error: `Cron job timed out after ${limitMs}ms (responder did not settle); reclaiming the slot.`,
+          error: `Cron job timed out after ${limitMs}ms (run did not settle); reclaiming the slot.`,
         };
         options.logger?.error?.("Cron job timed out; reclaiming the slot.", { jobId: job.id, maxRunMs: limitMs });
         await emitResult(options, result);
@@ -449,8 +438,40 @@ function startRun(
     (watchdog as { unref?: () => void }).unref?.();
   }
 
-  void options.responder.respond(request, stream)
-    .then((response) => {
+  void resolveNotifyConversationId(job, options, controller.signal)
+    .then(async (notifyConversationId) => {
+      if (controller.signal.aborted) {
+        throw controller.signal.reason ?? new Error("Cron job was cancelled before responder start.");
+      }
+      const request: AgentRequestBase = {
+        conversationId: job.conversationId ?? `cron:${job.id}`,
+        text: job.prompt,
+        abortSignal: controller.signal,
+        ...(job.notify === true ? toReplyTarget(notifyConversationId) : {}),
+        metadata: {
+          cron: {
+            jobId: job.id,
+            expression: job.expression,
+            timezone: job.timezone ?? DEFAULT_TIMEZONE,
+            scheduledAt,
+            startedAt,
+            ...(job.notify === true
+              ? {
+                  nativeNotify: {
+                    enabled: true,
+                    ...(job.notifyConversationId === undefined ? {} : { conversationId: job.notifyConversationId }),
+                  },
+                }
+              : {}),
+            ...(job.model === undefined ? {} : { model: job.model }),
+            ...(job.effort === undefined ? {} : { effort: job.effort }),
+          } satisfies CronRequestMetadata,
+        },
+      };
+      const response = await options.responder.respond(request, stream);
+      return { response, notifyConversationId };
+    })
+    .then(({ response, notifyConversationId }) => {
       finalize(async () => {
         await stream.finish(response.text);
         // Guard against a responder that ignores/races the abort signal and still
@@ -481,6 +502,7 @@ function startRun(
           scheduledAt,
           startedAt,
           completedAt: (options.now?.() ?? new Date()).toISOString(),
+          ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
           ...(stream.text.length === 0 ? {} : { text: stream.text }),
           ...(response.metadata === undefined ? {} : { metadata: response.metadata }),
         };
@@ -500,13 +522,75 @@ function startRun(
           error: errorToMessage(error),
           ...(failureKind === undefined ? {} : { failureKind }),
         };
-        options.logger?.[cancelled ? "warn" : "error"]?.("Cron job responder failed.", {
+        options.logger?.[cancelled ? "warn" : "error"]?.("Cron job run failed.", {
           jobId: job.id,
           error: result.error,
         });
         await emitResult(options, result);
       });
     });
+}
+
+async function resolveNotifyConversationId(
+  job: CronJob,
+  options: CronAdapterOptions,
+  abortSignal: AbortSignal,
+): Promise<string | undefined> {
+  if (job.notify !== true) {
+    return undefined;
+  }
+  const configured = job.notifyConversationId ?? job.notifyFallbackConversationId;
+  if (configured !== undefined) {
+    return configured;
+  }
+  if (options.resolveNotifyFallbackConversationId === undefined) {
+    return undefined;
+  }
+  try {
+    const resolution = Promise.resolve(options.resolveNotifyFallbackConversationId(abortSignal));
+    return normalizeOptionalString(await raceAgainstAbort(resolution, abortSignal));
+  } catch (error) {
+    if (abortSignal.aborted) {
+      throw abortSignal.reason ?? error;
+    }
+    options.logger?.warn?.("Cron native-notify destination resolution failed; running without a reply target.", {
+      jobId: job.id,
+      error: errorToMessage(error),
+    });
+    return undefined;
+  }
+}
+
+/**
+ * Reject when the run is aborted even if host-owned resolver work ignores the
+ * signal. Attaching both settlement handlers also consumes a late resolver
+ * rejection after the abort path has already won.
+ */
+function raceAgainstAbort<T>(operation: Promise<T>, abortSignal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      abortSignal.removeEventListener("abort", onAbort);
+      reject(abortSignal.reason ?? new Error("Cron run was aborted."));
+    };
+    // Observe the resolver before consulting the signal. A host resolver can
+    // synchronously trigger replacement/stop and only then return its promise;
+    // its eventual rejection must still be consumed after abort wins.
+    void operation.then(
+      (value) => {
+        abortSignal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        abortSignal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+    if (abortSignal.aborted) {
+      onAbort();
+    } else {
+      abortSignal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
 }
 
 function toReplyTarget(conversationId: string | undefined): Pick<AgentRequestBase, "replyTo"> {

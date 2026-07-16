@@ -77,13 +77,13 @@ export function createCronChannelDriver(
     async start(input) {
       const jobs = input.config.jobs.filter((job) => job.enabled);
       const jobById = new Map(jobs.map((job) => [job.id, job]));
-      const inferredNotifyDestination = jobs.some(
-        (job) => job.notify === true && job.notifyConversationId === undefined,
-      )
-        ? await inferUniqueNotifyDestination({
-            ...(input.listNotifyDestinations === undefined ? {} : { listNotifyDestinations: input.listNotifyDestinations }),
-          })
-        : undefined;
+      const listNotifyDestinations = input.listNotifyDestinations;
+      const resolveNotifyFallbackConversationId = listNotifyDestinations === undefined
+        ? undefined
+        : async (abortSignal?: AbortSignal) => await inferUniqueNotifyDestination({
+            listNotifyDestinations,
+            ...(abortSignal === undefined ? {} : { abortSignal }),
+          });
       const adapterModule = await loadCronModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startCronAdapter;
       const adapter = adapterFactory({
@@ -99,12 +99,10 @@ export function createCronChannelDriver(
           ...(job.maxRunMs === undefined ? {} : { maxRunMs: job.maxRunMs }),
           ...(job.notify === undefined ? {} : { notify: job.notify }),
           ...(job.notifyConversationId === undefined ? {} : { notifyConversationId: job.notifyConversationId }),
-          ...(job.notify === true && job.notifyConversationId === undefined && inferredNotifyDestination !== undefined
-            ? { notifyFallbackConversationId: inferredNotifyDestination }
-            : {}),
           ...(job.model === undefined ? {} : { model: job.model }),
           ...(job.effort === undefined ? {} : { effort: job.effort }),
         })),
+        ...(resolveNotifyFallbackConversationId === undefined ? {} : { resolveNotifyFallbackConversationId }),
         onResult: (result) => {
           const level = result.kind === "failed" ? "error" : result.kind === "skipped" ? "warn" : "info";
           input.logger?.[level]?.("Cron job finished.", { result });
@@ -120,7 +118,6 @@ export function createCronChannelDriver(
             job: jobById.get(result.jobId),
             result,
             ...(input.notifyDestination === undefined ? {} : { notifyDestination: input.notifyDestination }),
-            ...(input.listNotifyDestinations === undefined ? {} : { listNotifyDestinations: input.listNotifyDestinations }),
             ...(input.logger === undefined ? {} : { logger: input.logger }),
           });
         },
