@@ -89,6 +89,9 @@ describe("Claude Agent SDK 0.3 effort and query contract", () => {
   });
 
   it("rejects ultra before query creation with an actionable typed result", async () => {
+    expect(() => claudeEffortOptions("ultra")).toThrowError(
+      'Claude Agent SDK does not support effort "ultra"',
+    );
     const result = await generateClaudeResponse("system", options({ effort: "ultra" }));
     expect(result).toMatchObject({
       failureKind: "skipped_capability_mismatch",

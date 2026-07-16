@@ -40,7 +40,7 @@ Guided init searches every bundled model for Pi Anthropic, GitHub Copilot, OpenA
 | `runtime.fallbacks` | `MONO_AGENT_FALLBACKS_JSON` | `[]` | ordered `{model, effort?}` routes; omitted effort = provider default |
 | `runtime.routeSafety` | `MONO_AGENT_ROUTE_SAFETY` | `uniform` | `uniform` or `per-route-native` |
 | `runtime.executionMode` | `MONO_AGENT_EXECUTION_MODE` | inferred from model | `sdk` or `cli` |
-| `runtime.effort` | `MONO_AGENT_EFFORT` | provider/model default when unset | `none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`; model support is narrower where advertised. Reasoning-capable `pi:*` maps `ultra` to LOW; Pi without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged; direct Claude rejects `ultra`; direct OpenCode rejects explicit effort. Ranking above `max` only prevents keyword downgrade |
+| `runtime.effort` | `MONO_AGENT_EFFORT` | provider/model default when unset | `none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`; model support is narrower where advertised. Reasoning-capable `pi:*` maps `ultra` to LOW; Pi without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged; Claude SDK rejects `ultra`; Claude CLI forwards `ultra` unchanged; direct OpenCode rejects explicit effort. Ranking above `max` only prevents keyword downgrade |
 | `runtime.permissionMode` | `MONO_AGENT_PERMISSION_MODE` | `default` | CLI backends; `default`/`plan`/`acceptEdits`/`bypassPermissions` |
 | `runtime.maxTurns` | `MONO_AGENT_MAX_TURNS` | `0` (unlimited) | `1`–`100` caps turns |
 | `runtime.workspace` | `MONO_AGENT_WORKSPACE` | `.` | working dir for runtime tools |
