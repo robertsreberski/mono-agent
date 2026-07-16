@@ -13,6 +13,9 @@ only `memory.mode` and the optional embeddings/LLM blocks differ.
 
 Weighing the built-in engine against an external memory service? See
 [Backends: BuJo vs Supermemory](/memory/backends-comparison/).
+Planning shared knowledge across several agents? See
+[Fleet-scale shared knowledge](/memory/backends-comparison/#fleet-scale-shared-knowledge)
+for the current framework boundary and external-service pattern.
 
 ## Memory Tiers
 
