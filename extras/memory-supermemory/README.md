@@ -52,12 +52,21 @@ const block = await store.load("conv-1", "preferences");
   markdown block capped at `maxBytes`. Degrades to `undefined` on any error.
 - `persistCompletedTurn` → one awaited `POST /v3/documents` containing the deterministic
   summary and optional full capture text. A SHA-256-derived custom id keyed only by `runId`
-  keeps remote retries on one logical upsert. During one store lifetime an exact retry returns
-  as a duplicate without another request, while conflicting reuse of a run id fails before a
-  request. That exact lifetime check retains only two SHA-256 digests per distinct run—never raw
-  run ids, conversation ids, or turn content. After a process restart the remote API does not
-  expose enough conditional/read state
-  to distinguish a new document from a retry. Success returns the stable custom id after remote
+  keeps remote retries on one logical upsert. The store retains a bounded LRU of the 10,000 most
+  recently completed or exactly retried run fingerprints by default. Direct constructor users can
+  tune `SupermemoryStoreOptions.completedTurnCacheMaxEntries` up to a hard limit of 1,000,000; the
+  standard factory and agent JSON/env config deliberately use the bounded default. An exact
+  retained retry returns as a duplicate without another request and refreshes its LRU position;
+  conflicting reuse of a retained run id fails before a request. Inserting past the bound evicts
+  the least-recently-used successful completion. Failed and still-in-flight admissions do not
+  consume that completed-entry budget, and concurrent exact retries remain coalesced separately.
+  The cache retains at most two SHA-256 digests per entry—never raw run ids, conversation ids, or
+  turn content. A retry after eviction or process restart repeats the same stable-id upsert, so it
+  still converges remotely on one logical document, but the remote API does not expose enough
+  conditional/read state for mono-agent to classify that request as a duplicate or detect an old
+  conflicting payload. A different post-eviction payload can therefore replace the remote document
+  at that stable id; once its request starts, it becomes the new in-flight/local fingerprint and
+  concurrent alternatives fail as conflicts. Success returns the stable custom id after remote
   admission, while any failure emits a constant content-free warning and is thrown so the harness
   can report degradation. Raw run and
   conversation ids are not placed in remote metadata. Documents over 1,000,000 bytes are
