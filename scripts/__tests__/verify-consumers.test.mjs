@@ -1,8 +1,41 @@
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import { runVerifyConsumers } from "../verify-consumers.mjs";
 
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
 describe("verify-consumers", () => {
+  it("is wired exactly once immediately after the CI build step", async () => {
+    const [workflow, packageJsonText] = await Promise.all([
+      readFile(resolve(repoRoot, ".github/workflows/ci.yml"), "utf8"),
+      readFile(resolve(repoRoot, "package.json"), "utf8"),
+    ]);
+    const packageJson = JSON.parse(packageJsonText);
+    const verifyStart = workflow.indexOf("  verify:\n");
+    const websiteStart = workflow.indexOf("\n  website:\n", verifyStart);
+
+    expect(packageJson.scripts?.["verify:consumers"]).toBe("node scripts/verify-consumers.mjs");
+    expect(verifyStart).toBeGreaterThanOrEqual(0);
+    expect(websiteStart).toBeGreaterThan(verifyStart);
+
+    const verifyJob = workflow.slice(verifyStart, websiteStart);
+    const command = "pnpm run verify:consumers --skip-build";
+    const expectedSequence = [
+      "      - name: Build packages and demos",
+      "        run: pnpm run build",
+      "",
+      "      - name: Verify consumer contracts",
+      `        run: ${command}`,
+    ].join("\n");
+
+    expect(verifyJob).toContain(expectedSequence);
+    expect(verifyJob.split(command)).toHaveLength(2);
+  });
+
   it("prints PASS lines and an ok summary when both golden consumers pass", async () => {
     const stdout = sink();
     const result = await runVerifyConsumers({
