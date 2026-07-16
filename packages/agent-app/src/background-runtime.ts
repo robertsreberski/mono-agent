@@ -244,6 +244,7 @@ interface SourcePackageProofEntry {
   readonly type: "directory" | "file" | "symlink";
   readonly dev: string;
   readonly ino: string;
+  readonly nlink: string;
   readonly mode: string;
   readonly size: string;
   readonly mtimeNs: string;
@@ -1171,6 +1172,7 @@ function sourceProofEntry(
     type,
     dev: details.dev.toString(),
     ino: details.ino.toString(),
+    nlink: details.nlink.toString(),
     mode: details.mode.toString(),
     size: details.size.toString(),
     mtimeNs: details.mtimeNs.toString(),
@@ -1185,6 +1187,7 @@ function sameSourceIdentity(left: BigIntStats, right: BigIntStats): boolean {
 
 function sameSourceStats(left: BigIntStats, right: BigIntStats): boolean {
   return sameSourceIdentity(left, right)
+    && left.nlink === right.nlink
     && left.mode === right.mode
     && left.size === right.size
     && left.mtimeNs === right.mtimeNs
@@ -2037,6 +2040,9 @@ async function fingerprintClosureFile(
   try {
     const before = await handle.stat({ bigint: true });
     if (!before.isFile()) throw new Error(`Managed runtime entry ${pathRelative} is not a regular file.`);
+    if (before.nlink !== 1n) {
+      throw new Error(`Managed runtime file ${pathRelative} must not have additional hard links.`);
+    }
     const bytes = await handle.readFile();
     const [after, pathAfter] = await Promise.all([
       handle.stat({ bigint: true }),
@@ -2046,6 +2052,8 @@ async function fingerprintClosureFile(
       !after.isFile()
       || !pathAfter.isFile()
       || pathAfter.isSymbolicLink()
+      || after.nlink !== 1n
+      || pathAfter.nlink !== 1n
       || !sameSourceStats(before, after)
       || !sameSourceStats(after, pathAfter)
     ) {

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import process from "node:process";
@@ -198,6 +198,14 @@ describe("runtimeProvenanceDetail", () => {
   it("rejects dependency tampering even when the manifest and marker are coherently rewritten", async () => {
     const fixture = await managedFixture("forged-manifest");
     await rewriteClosureManifestForDependency(fixture, "export const fixture = 'forged-manifest';\n");
+
+    await expect(runtimeProvenanceDetail(fixture.packageRoot)).resolves.toBe(UNMANAGED_DETAIL);
+  });
+
+  it("rejects a closure file hardlinked outside the private runtime", async () => {
+    const fixture = await managedFixture("external-hardlink");
+    const externalAlias = join(dir, "external-runtime-alias.js");
+    await link(fixture.dependencyPath, externalAlias);
 
     await expect(runtimeProvenanceDetail(fixture.packageRoot)).resolves.toBe(UNMANAGED_DETAIL);
   });
