@@ -134,6 +134,149 @@ describe("startSlackAdapter", () => {
     expect(sockets[0]?.closed).toBe(true);
   });
 
+  it("redacts configured Slack tokens at the composition-root logger boundary", async () => {
+    // Build credential-shaped fixtures at runtime so repository secret
+    // scanners do not mistake them for committed credentials.
+    const botToken = [
+      "xoxb",
+      "123456789012",
+      "123456789012",
+      "exampleBotSecret0123456789",
+    ].join("-");
+    const appToken = ["xapp", "1", "exampleAppSecret0123456789"].join("-");
+    const api = new FakeSlackApi();
+    const sockets: FakeWebSocket[] = [];
+    const error = vi.fn();
+    const warn = vi.fn();
+    const started = await startSlackAdapter(buildOptions({
+      botToken,
+      appToken,
+      createApi: () => api,
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      responder: responderFrom(async () => {
+        throw Object.assign(new Error(`request failed for ${botToken} with ${appToken}`), {
+          request: { headers: { Authorization: `Bearer ${appToken}` } },
+        });
+      }),
+      shortcuts: [{ callbackId: botToken, prompt: "Run the secret route." }],
+      logger: { error, warn },
+    }));
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0];
+      if (socket === undefined) {
+        throw new Error("expected a socket");
+      }
+      socket.emitOpen();
+      socket.emitMessage(socketEnvelope("E-secret", directMessage("hello")));
+      await vi.waitFor(() => expect(error).toHaveBeenCalled());
+      await expect(started.adapter.handleShortcut({
+        type: "shortcut",
+        callback_id: botToken,
+        trigger_id: "T-secret",
+        user: { id: "U-secret" },
+      })).resolves.toMatchObject({ kind: "ignored", reason: "missing_channel" });
+      expect(warn).toHaveBeenCalled();
+
+      const serialized = JSON.stringify([error.mock.calls, warn.mock.calls]);
+      expect(serialized).not.toContain(botToken);
+      expect(serialized).not.toContain(appToken);
+      expect(serialized).toContain("[REDACTED_SLACK_TOKEN]");
+    } finally {
+      await started.stop();
+    }
+  });
+
+  it("does not invoke hostile error accessors before the redacted logger boundary", async () => {
+    const api = new FakeSlackApi();
+    const sockets: FakeWebSocket[] = [];
+    const error = vi.fn();
+    const messageGetter = vi.fn(() => { throw new Error("hostile message getter"); });
+    const hostileError = new Error("safe");
+    Object.defineProperty(hostileError, "message", {
+      configurable: true,
+      get: messageGetter,
+    });
+    const proxyDescriptorHook = vi.fn(() => { throw new Error("hostile descriptor hook"); });
+    const proxyPrototypeHook = vi.fn(() => { throw new Error("hostile prototype hook"); });
+    const proxyPrototype = new Proxy({}, {
+      getOwnPropertyDescriptor: proxyDescriptorHook,
+      getPrototypeOf: proxyPrototypeHook,
+    });
+    let responderError: unknown = hostileError;
+    const started = await startSlackAdapter(buildOptions({
+      createApi: () => api,
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      responder: responderFrom(async () => { throw responderError; }),
+      logger: { error },
+    }));
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0];
+      if (socket === undefined) throw new Error("expected a socket");
+      socket.emitOpen();
+      socket.emitMessage(socketEnvelope("E-hostile", directMessage("hello")));
+      await vi.waitFor(() => expect(error).toHaveBeenCalled());
+
+      responderError = Object.create(proxyPrototype) as object;
+      socket.emitMessage(socketEnvelope("E-hostile-proxy", {
+        ...directMessage("hello again"),
+        event_id: "Ev-hostile-proxy",
+      }));
+      await vi.waitFor(() => expect(error).toHaveBeenCalledTimes(2));
+
+      expect(messageGetter).not.toHaveBeenCalled();
+      expect(proxyDescriptorHook).not.toHaveBeenCalled();
+      expect(proxyPrototypeHook).not.toHaveBeenCalled();
+      expect(JSON.stringify(error.mock.calls)).toContain("[SLACK_LOG_DETAILS_UNAVAILABLE]");
+    } finally {
+      await started.stop();
+    }
+  });
+
+  it("does not coerce hostile socket errors while reconnecting", async () => {
+    const api = new FakeSlackApi();
+    const sockets: FakeWebSocket[] = [];
+    const primitiveHook = vi.fn(() => { throw new Error("hostile coercion hook"); });
+    const prototypeHook = vi.fn(() => { throw new Error("hostile prototype hook"); });
+    const hostileSocketError = new Proxy({
+      [Symbol.toPrimitive]: primitiveHook,
+    }, {
+      getPrototypeOf: prototypeHook,
+    });
+    const started = await startSlackAdapter(buildOptions({
+      createApi: () => api,
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      responder: responderFrom(async () => ({ text: "ok" })),
+    }));
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      sockets[0]?.emitOpen();
+      sockets[0]?.emit("error", hostileSocketError);
+      await vi.waitFor(() => expect(sockets).toHaveLength(2));
+
+      expect(primitiveHook).not.toHaveBeenCalled();
+      expect(prototypeHook).not.toHaveBeenCalled();
+    } finally {
+      await started.stop();
+    }
+  });
+
   it("stop() is idempotent and tears down the runner loop", async () => {
     const api = new FakeSlackApi();
     const sockets: FakeWebSocket[] = [];
@@ -172,14 +315,21 @@ describe("startSlackAdapter", () => {
     ).rejects.toThrow(/allowedChannelIds/);
   });
 
-  it("forwards onConnectionLost/onConnectionRestored through to the Socket Mode runner", async () => {
+  it("sanitizes connection loss and contains host callback failures during recovery", async () => {
     vi.useFakeTimers();
     try {
+      const botToken = "test-bot-token";
+      const appToken = "test-app-token";
+      const socketTicket = "socket-ticket-secret";
       const api = new FakeSlackApi();
       const sockets: FakeWebSocket[] = [];
       const lost: string[] = [];
+      const info = vi.fn();
+      const warn = vi.fn();
       let restored = 0;
       const started = await startSlackAdapter(buildOptions({
+        botToken,
+        appToken,
         createApi: () => api,
         webSocketFactory: () => {
           const socket = new FakeWebSocket();
@@ -189,15 +339,38 @@ describe("startSlackAdapter", () => {
         responder: responderFrom(async () => ({ text: "ok" })),
         reconnect: { initialMs: 0, maxMs: 0, stabilityMs: 1000 },
         heartbeat: { intervalMs: 0, timeoutMs: 0 },
-        onConnectionLost: (reason) => { lost.push(reason); },
-        onConnectionRestored: () => { restored += 1; },
+        logger: { info, warn },
+        onConnectionLost: async (reason) => {
+          lost.push(reason);
+          throw new Error("host degraded callback failed");
+        },
+        onConnectionRestored: () => {
+          restored += 1;
+          throw new Error("host recovered callback failed");
+        },
       }));
 
       try {
         await vi.waitFor(() => expect(sockets).toHaveLength(1));
         sockets[0]?.emitOpen();
-        sockets[0]?.emitMessage({ type: "disconnect", reason: "too_many_websockets" });
-        await vi.waitFor(() => expect(lost).toEqual(["too_many_websockets"]));
+        sockets[0]?.emitMessage({
+          type: "disconnect",
+          reason: `too_many_websockets ${botToken} ${appToken} wss://wss.slack.com/link/?ticket=${socketTicket}`,
+        });
+        await vi.waitFor(() => expect(lost).toHaveLength(1));
+        await vi.waitFor(() => expect(info).toHaveBeenCalled());
+        await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+        expect(lost[0]).toContain("too_many_websockets");
+        expect(lost[0]).not.toContain(botToken);
+        expect(lost[0]).not.toContain(appToken);
+        expect(lost[0]).not.toContain(socketTicket);
+        const serializedLogs = JSON.stringify([info.mock.calls, warn.mock.calls]);
+        expect(info.mock.calls.some(([message]) => (
+          message === "Slack Socket Mode disconnect requested."
+        ))).toBe(true);
+        expect(serializedLogs).not.toContain(botToken);
+        expect(serializedLogs).not.toContain(appToken);
+        expect(serializedLogs).not.toContain(socketTicket);
         await vi.waitFor(() => expect(sockets).toHaveLength(2));
         sockets[1]?.emitOpen();
         await vi.advanceTimersByTimeAsync(1000);
