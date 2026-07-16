@@ -233,7 +233,10 @@ async function runCommandStdio(command, args, options) {
 function usage() {
   return [
     "Usage:",
-    "  pnpm run verify:consumers [-- --consumer <path>] [-- --skip-build]",
+    "  pnpm run verify:consumers",
+    "  pnpm run verify:consumers --skip-build",
+    "  pnpm run verify:consumers --consumer <path>",
+    "  pnpm run verify:consumers --consumer <path> --skip-build",
     "",
     "Default mode validates committed golden-consumer fixtures with liveness:false.",
     "--consumer <path> can be repeated to add read-only artifact audits for downstream folders.",
