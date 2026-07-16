@@ -116,7 +116,7 @@ The native sandbox's network allowlist is a separate egress boundary. App-owned 
 
 ### `AskUser` — blocking free-text ask (interaction bridge)
 
-`AskUser` is the free-text blocking ask: the tool call posts a question to the current conversation's chat and **waits for the user's next message**, which is returned as the tool result — so the agent keeps its full mid-turn context. It is channel-agnostic and backed by the app's **interaction bridge** (a loopback HTTP registry started automatically when `AskUser` or `TelegramAskButtons` is allowed — under the allow-all default, or listed in a specific `tools.allowedTools`; tune it via the `interaction` config block).
+`AskUser` is the free-text blocking ask: the tool call posts a question to the current conversation's chat and **waits for the user's next message**, which is returned as the tool result — so the agent keeps its full mid-turn context. It is channel-agnostic and backed by the app's **interaction bridge**. The loopback registry starts automatically when `AskUser` or `TelegramAskButtons` is allowed (under the allow-all default, or listed in a specific `tools.allowedTools`), when the `interaction` block or an interaction env override is configured, or when `interaction.progress.enabled` resolves true and `tools.mcpRequestContextServers` names at least one opted project MCP server.
 
 - While an ask is pending, the user's next **plain-text** message on that chat is consumed as the ANSWER (acknowledged with a 👍 reaction) and never runs as a turn; media and `/`-commands pass through normally, and `/cancel` fails the pending ask.
 - One pending ask per conversation: consolidate everything into a single question. A second concurrent ask returns an "already pending" result.

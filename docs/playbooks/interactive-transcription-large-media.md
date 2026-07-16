@@ -15,7 +15,7 @@ This playbook shows the capabilities unlocked by two composable framework featur
 The worked example is a **transcription assistant**: send it a voice note or a long recording, it asks who is speaking and in what language, transcribes via a local WhisperKit server (minutes for a long file), and returns the transcript as a document.
 
 :::note
-`AskUser` and tool progress are powered by the app's **interaction bridge** — a loopback HTTP registry `mono-agent` starts automatically when `AskUser` is allowed (or the `interaction` block is present). Nothing is exposed off-host. See [Delivery and Send Tools](/channels/delivery-and-send-tools/) and [Telegram](/channels/telegram/).
+`AskUser`, `TelegramAskButtons`, and tool progress are powered by the app's **interaction bridge**. The loopback registry starts automatically when either ask tool is allowed, when the `interaction` block or an interaction env override is configured, or when `interaction.progress.enabled` resolves true and `tools.mcpRequestContextServers` names at least one opted project MCP server. Nothing is exposed off-host. See [Delivery and Send Tools](/channels/delivery-and-send-tools/) and [Telegram](/channels/telegram/).
 :::
 
 ## Who this is for
@@ -29,7 +29,7 @@ A Telegram agent that: asks the user for context before it acts (blocking), runs
 ## Features used
 
 - **`AskUser`** — blocking, channel-agnostic "ask a question and wait for the reply" tool; available under the allow-all default, or name it in a specific `tools.allowedTools` (this playbook uses a specific list). One consolidated question per conversation; graceful timeout. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
-- **`interaction`** — the app-owned bridge block (`bridge.port`, `askUser.timeoutMs`, `progress.enabled`); auto-starts when `AskUser` is allowed. See [Env Vars](/config/env-vars/). *(config)*
+- **`interaction`** — the app-owned bridge block (`bridge.port`, `askUser.timeoutMs`, `progress.enabled`); auto-starts for allowed `AskUser` / `TelegramAskButtons`, configured interaction JSON/env, or enabled progress for an opted `tools.mcpRequestContextServers` entry. See [Env Vars](/config/env-vars/). *(config)*
 - **`tools.mcpCallTimeoutMs` / `tools.mcpCallMaxTotalTimeoutMs`** — inactivity timeout (reset by tool progress) and the hard per-call wall clock; raise the latter for long jobs. See [Env Vars](/config/env-vars/). *(config)*
 - **tool progress → channel status** — an opted stdio MCP `POST`s with a run-scoped progress capability; the destination comes from trusted request context and the status appears in the producing chat. *(config + code in your MCP tool)*
 - **`telegram.apiRoot` + `telegram.attachments`** — point the adapter at a self-hosted Bot API server and raise the download/upload caps (2 GB ceiling). See [Telegram → Self-hosted Bot API server](/channels/telegram/). *(config)*

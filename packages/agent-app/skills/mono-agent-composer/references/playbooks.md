@@ -103,6 +103,8 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 **Goal:** a timezone-aware cron job that builds a daily digest with shared history and delivers its final answer verbatim through native notification.
 **Features:** `cron.scheduled-prompts`, `channel.native-notify`, `slack.socket-mode`, `memory.journal`.
 
+**Destination resolution:** an explicit `notifyConversationId` wins; otherwise mono-agent infers only when exactly one notify-capable Telegram/Slack candidate exists. With 0 or 2+ candidates delivery is skipped with a warning. Cron model-exhaustion notices require an explicit `notifyConversationId` and never infer a destination.
+
 ```json
 {
   "runtime": { "model": "claude:claude-sonnet-4-6" },
@@ -254,6 +256,8 @@ const ext = createCollaboratorToolRuntimeExtension({
 **For:** a builder whose Telegram agent needs to ask before acting, run multi-minute tools, and exchange large files.
 **Goal:** one Telegram agent uses `AskUser`, long-running MCP tool progress, a self-hosted Bot API server, and `TelegramSendFile`.
 **Features:** `telegram.long-polling`, `agent-app.adapter-send-tools`, `interaction.ask-user`, `interaction.progress`, `tool-policy.mcp-servers`.
+
+**Bridge startup:** the loopback interaction bridge auto-starts when `AskUser` or `TelegramAskButtons` is allowed, when the `interaction` block or an interaction env override is configured, or when `interaction.progress.enabled` resolves true and `tools.mcpRequestContextServers` names at least one opted project MCP server.
 
 ```json
 {

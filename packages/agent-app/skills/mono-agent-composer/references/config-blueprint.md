@@ -131,8 +131,10 @@ my-agent/
   },
 
   // Human-in-the-loop bridge: blocking AskUser / TelegramAskButtons plus
-  // run-scoped project-MCP progress. It auto-starts when AskUser is allowed or
-  // whenever this block is present.
+  // run-scoped project-MCP progress. It auto-starts when either ask tool is
+  // allowed, this block or an interaction env override is configured, or
+  // interaction.progress.enabled resolves true while
+  // tools.mcpRequestContextServers names at least one opted project MCP server.
   "interaction": {
     "bridge": { "host": "127.0.0.1", "port": 0 },
     "askUser": { "timeoutMs": 600000 },
@@ -217,6 +219,8 @@ my-agent/
         "model": "claude:claude-sonnet-4-6", // optional per-trigger override
         "effort": "high",                  // same eight-level effort enum as runtime
         "notify": true,                     // deliver the successful final answer verbatim
+        // Explicit destination; if omitted, infer only with exactly one candidate.
+        // Zero or multiple candidates skip with a warning.
         "notifyConversationId": "slack:C0123"
       }
     ],
@@ -339,8 +343,11 @@ my-agent/
         "model": "claude:claude-sonnet-4-6", // optional per-trigger override
         "effort": "high",
         "notify": true,                     // successful non-empty final answer is delivered verbatim
+        // Explicit destination; if omitted, infer only with exactly one candidate.
+        // Zero or multiple candidates skip with a warning.
         "notifyConversationId": "slack:C0123",
-        "notifyFailureCooldownHours": 6     // explicit-destination all-models failure notices
+        // Model-exhaustion notices require this explicit destination; never infer.
+        "notifyFailureCooldownHours": 6
       }
     ]
     // Jobs here merge with cron/*.md files (duplicate ids error).

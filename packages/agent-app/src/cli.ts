@@ -915,7 +915,7 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    signature: "mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback] [--show-auth-url] [--include-memory] [--max-runs <n>]",
+    signature: "mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback] [--show-auth-url] [--include-memory] [--max-runs <n>] [--config <path>] [--env-file <path>]",
     lines: [
       "Serve the read-only Session Recorder web PWA from any directory: a live",
       "flight-recorder over every agent's runs (prompt, reasoning, tools, cost).",

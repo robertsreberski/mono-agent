@@ -368,6 +368,10 @@ describe("parseCliArgs", () => {
       "--allow-non-loopback",
       "--show-auth-url",
       "--include-memory",
+      "--config",
+      "./agent.json",
+      "--env-file",
+      "./agent.env",
     ]);
     expect(result.command).toBe("web");
     expect(result.host).toBe("0.0.0.0");
@@ -376,6 +380,8 @@ describe("parseCliArgs", () => {
     expect(result.allowNonLoopback).toBe(true);
     expect(result.showAuthUrl).toBe(true);
     expect(result.includeMemory).toBe(true);
+    expect(result.configPath).toBe("./agent.json");
+    expect(result.envFile).toBe("./agent.env");
     expect(() => parseCliArgs(["web", "--port", "notaport"])).toThrow(/--port/u);
     expect(() => parseCliArgs(["start", "--show-auth-url"])).toThrow(/only supported for/u);
   });
@@ -403,6 +409,9 @@ describe("parseCliArgs", () => {
     expect(renderHelp()).toContain("MONO_AGENT_WEB_AUTH_TOKEN");
     expect(renderHelp()).toContain("--show-auth-url");
     expect(renderHelp()).toContain("--include-memory");
+    expect(renderHelp()).toContain(
+      "[--max-runs <n>] [--config <path>] [--env-file <path>]",
+    );
   });
 
   it("accepts --memory bujo and --memory lite, rejects --memory markdown", () => {
