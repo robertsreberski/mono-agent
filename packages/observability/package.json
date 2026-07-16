@@ -4,6 +4,11 @@
   "description": "Run event recording and artifact summaries for agent hosts.",
   "type": "module",
   "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/robertsreberski/mono-agent.git",
+    "directory": "packages/observability"
+  },
   "private": false,
   "engines": {
     "node": ">=22.19.0"

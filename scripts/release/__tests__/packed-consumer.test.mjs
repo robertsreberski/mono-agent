@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,10 +7,19 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { assertPackedDependencyResolution } from "../dependency-policy.mjs";
 import {
+  assertIsolatedInstallLayout,
   assertMinimumNodeRuntime,
+  assertPackedReleaseMetadata,
+  buildIsolatedConsumerManifest,
   buildPackedConsumerManifest,
+  declaredInternalPackageClosure,
+  declaredInternalPackageNames,
   parsePackedConsumerArgs,
 } from "../verify-packed-consumer.mjs";
+import {
+  parsePackedSmokeArgs,
+  publicExportSpecifiers,
+} from "../fixtures/packed-consumer/public-exports.mjs";
 
 const temporaryDirectories = [];
 
@@ -54,6 +64,159 @@ describe("packed consumer verification", () => {
     expect(() => buildPackedConsumerManifest({ engines: { node: ">=20" } }, [])).toThrow(
       /template engines\.node must be >=22\.19\.0/u,
     );
+  });
+
+  test("derives every concrete runtime export from a packed manifest", () => {
+    expect(publicExportSpecifiers("@mono-agent/example", {
+      exports: {
+        ".": { types: "./dist/index.d.ts", import: "./dist/index.js" },
+        "./feature": { types: "./dist/feature.d.ts", default: "./dist/feature.js" },
+        "./package.json": "./package.json",
+        "./blocked": null,
+      },
+    })).toEqual([
+      "@mono-agent/example",
+      "@mono-agent/example/feature",
+      "@mono-agent/example/package.json",
+    ]);
+    expect(publicExportSpecifiers("create-example", { bin: { create: "./cli.js" } })).toEqual([]);
+    expect(publicExportSpecifiers("legacy-example", { main: "./index.js" })).toEqual(["legacy-example"]);
+    expect(() => publicExportSpecifiers("@mono-agent/example", {
+      exports: { "./features/*": "./dist/features/*.js" },
+    })).toThrow(/wildcard export/u);
+    expect(parsePackedSmokeArgs(["--target", "@mono-agent/example"])).toEqual({
+      target: "@mono-agent/example",
+    });
+    expect(() => parsePackedSmokeArgs(["--target"])).toThrow(/requires a package name/u);
+  });
+
+  test("builds an isolated manifest with only the target as a direct dependency", () => {
+    const template = { name: "consumer", engines: { node: ">=22.19.0" } };
+    const packedPackages = [
+      { name: "@mono-agent/target", tarballPath: "/tmp/target.tgz" },
+      { name: "@mono-agent/declared", tarballPath: "/tmp/declared.tgz" },
+      { name: "@mono-agent/peer", tarballPath: "/tmp/peer.tgz" },
+      { name: "@mono-agent/hidden", tarballPath: "/tmp/hidden.tgz" },
+    ];
+
+    const manifest = buildIsolatedConsumerManifest(
+      template,
+      { name: "@mono-agent/target" },
+      packedPackages,
+    );
+
+    expect(manifest.dependencies).toEqual({
+      "@mono-agent/target": "file:/tmp/target.tgz",
+    });
+    expect(manifest.overrides).toEqual({
+      "@mono-agent/declared": "file:/tmp/declared.tgz",
+      "@mono-agent/hidden": "file:/tmp/hidden.tgz",
+      "@mono-agent/peer": "file:/tmp/peer.tgz",
+    });
+    expect(manifest.dependencies["@mono-agent/hidden"]).toBeUndefined();
+    expect(declaredInternalPackageNames({
+      dependencies: { "@mono-agent/declared": "1.2.3" },
+      peerDependencies: { "@mono-agent/peer": "1.2.3" },
+    }, packedPackages)).toEqual([
+      "@mono-agent/declared",
+      "@mono-agent/peer",
+    ]);
+  });
+
+  test("derives the complete declared internal dependency closure", () => {
+    const manifests = new Map([
+      ["@mono-agent/target", { dependencies: { "@mono-agent/direct": "1.2.3" } }],
+      ["@mono-agent/direct", { optionalDependencies: { "@mono-agent/transitive": "1.2.3" } }],
+      ["@mono-agent/transitive", {}],
+      ["@mono-agent/unrelated", {}],
+    ]);
+
+    expect(declaredInternalPackageClosure("@mono-agent/target", manifests)).toEqual([
+      "@mono-agent/direct",
+      "@mono-agent/target",
+      "@mono-agent/transitive",
+    ]);
+    expect(() => declaredInternalPackageClosure("@mono-agent/missing", manifests)).toThrow(
+      /Packed manifest missing/u,
+    );
+  });
+
+  test("requires exact release repository metadata in the packed manifest", () => {
+    const pkg = {
+      name: "@mono-agent/example",
+      version: "1.2.3",
+      relativeDir: "packages/example",
+    };
+    const manifest = {
+      name: pkg.name,
+      version: pkg.version,
+      repository: {
+        type: "git",
+        url: "git+https://github.com/robertsreberski/mono-agent.git",
+        directory: pkg.relativeDir,
+      },
+    };
+
+    expect(() => assertPackedReleaseMetadata(pkg, manifest)).not.toThrow();
+    expect(() => assertPackedReleaseMetadata(pkg, {
+      ...manifest,
+      repository: { ...manifest.repository, directory: "packages/wrong" },
+    })).toThrow(/Packed @mono-agent\/example repository must be/u);
+  });
+
+  test("isolated packed install exposes an undeclared dependency masked by the combined consumer", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "packed-isolation-regression-"));
+    temporaryDirectories.push(root);
+    const target = packSyntheticPackage(root, {
+      name: "@mono-agent/target",
+      version: "1.2.3",
+      type: "module",
+      exports: { ".": "./index.js" },
+    }, 'import { hidden } from "@mono-agent/hidden"; export { hidden };\n');
+    const hidden = packSyntheticPackage(root, {
+      name: "@mono-agent/hidden",
+      version: "1.2.3",
+      type: "module",
+      exports: { ".": "./index.js" },
+    }, "export const hidden = true;\n");
+    const template = {
+      name: "consumer",
+      version: "0.0.0",
+      private: true,
+      type: "module",
+      engines: { node: ">=22.19.0" },
+    };
+
+    const combinedDir = path.join(root, "combined");
+    fs.mkdirSync(combinedDir);
+    writeJson(path.join(combinedDir, "package.json"), buildPackedConsumerManifest(
+      template,
+      [target, hidden],
+    ));
+    expect(runNpmInstall(combinedDir).status).toBe(0);
+    expect(importPackage(combinedDir, target.name).status).toBe(0);
+
+    const isolatedDir = path.join(root, "isolated");
+    fs.mkdirSync(isolatedDir);
+    const isolatedManifest = buildIsolatedConsumerManifest(
+      template,
+      target,
+      [target, hidden],
+    );
+    writeJson(path.join(isolatedDir, "package.json"), isolatedManifest);
+    expect(runNpmInstall(isolatedDir).status).toBe(0);
+    expect(() => assertIsolatedInstallLayout(
+      isolatedDir,
+      target.name,
+      declaredInternalPackageClosure(target.name, new Map([
+        [target.name, target.packageJson],
+        [hidden.name, hidden.packageJson],
+      ])),
+      [target.name, hidden.name],
+    )).not.toThrow();
+    const isolatedImport = importPackage(isolatedDir, target.name);
+    expect(isolatedImport.status).not.toBe(0);
+    expect(isolatedImport.stderr).toMatch(/Cannot find package '@mono-agent\/hidden'/u);
   });
 
   test("accepts exact packed Pi pins and their actual installed resolution", () => {
@@ -194,4 +357,54 @@ function writePackage(modulesDir, manifest) {
   );
   fs.writeFileSync(path.join(packageDir, "index.js"), "export {};\n");
   return packageDir;
+}
+
+function packSyntheticPackage(root, packageJson, source) {
+  const packageDir = path.join(root, packageJson.name.replace(/[^0-9A-Za-z]+/gu, "-"));
+  const tarballDir = path.join(root, "tarballs");
+  fs.mkdirSync(packageDir, { recursive: true });
+  fs.mkdirSync(tarballDir, { recursive: true });
+  writeJson(path.join(packageDir, "package.json"), packageJson);
+  fs.writeFileSync(path.join(packageDir, "index.js"), source);
+  fs.writeFileSync(path.join(packageDir, "README.md"), `${packageJson.name}\n`);
+  const result = spawnSync("npm", ["pack", "--json", "--pack-destination", tarballDir], {
+    cwd: packageDir,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    throw new Error(`synthetic npm pack failed: ${result.stderr || result.stdout}`);
+  }
+  const [packed] = JSON.parse(result.stdout);
+  return {
+    name: packageJson.name,
+    packageJson,
+    tarballPath: path.join(tarballDir, packed.filename),
+  };
+}
+
+function runNpmInstall(directory) {
+  return spawnSync("npm", [
+    "install",
+    "--no-audit",
+    "--no-fund",
+    "--package-lock=false",
+  ], {
+    cwd: directory,
+    encoding: "utf8",
+  });
+}
+
+function importPackage(directory, name) {
+  return spawnSync(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `await import(${JSON.stringify(name)})`,
+  ], {
+    cwd: directory,
+    encoding: "utf8",
+  });
+}
+
+function writeJson(filePath, value) {
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
