@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   rmSync,
   symlinkSync,
@@ -17,6 +18,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runBuildProvenanceProbe } from "../build-provenance-probe.mjs";
 import {
   prependNodeToPath,
+  resolveTrustedGitExecutable,
   runBuildWithProvenance,
   selectBuildInvocation,
   supportsStrictBuildProvenance,
@@ -447,6 +449,22 @@ describe("provenance build lifecycle", () => {
     });
   });
 
+  it("accepts an exact user-global Windows pnpm entrypoint under PNPM_HOME", () => {
+    expect(selectBuildInvocation("pnpm", ["run", "build:demo"], {
+      platform: "win32",
+      nodePath: "C:\\Program Files\\nodejs\\node.exe",
+      npmExecPath: "D:\\Users\\example\\AppData\\Local\\pnpm\\pnpm.cjs",
+      env: { PNPM_HOME: "D:\\Users\\example\\AppData\\Local\\pnpm" },
+    })).toEqual({
+      command: "C:\\Program Files\\nodejs\\node.exe",
+      args: [
+        "D:\\Users\\example\\AppData\\Local\\pnpm\\pnpm.cjs",
+        "run",
+        "build:demo",
+      ],
+    });
+  });
+
   it("rejects Windows shell fallback and untrusted pnpm entrypoints", () => {
     expect(() => selectBuildInvocation("pnpm", ["run", "build:demo & private-command"], {
       platform: "win32",
@@ -463,6 +481,228 @@ describe("provenance build lifecycle", () => {
         npmExecPath,
       })).toThrow("trusted Windows pnpm entrypoint unavailable");
     }
+  });
+
+  it.each([
+    {
+      label: "relative PNPM_HOME",
+      npmExecPath: "D:\\pnpm\\pnpm.cjs",
+      pnpmHome: "relative\\pnpm",
+    },
+    {
+      label: "traversing PNPM_HOME",
+      npmExecPath: "D:\\private\\pnpm.cjs",
+      pnpmHome: "D:\\trusted\\..\\private",
+    },
+    {
+      label: "drive-root PNPM_HOME",
+      npmExecPath: "D:\\private\\pnpm.cjs",
+      pnpmHome: "D:\\",
+    },
+    {
+      label: "drive-root Node install",
+      nodePath: "C:\\node.exe",
+      npmExecPath: "C:\\private\\pnpm.cjs",
+    },
+    {
+      label: "traversing entrypoint",
+      npmExecPath: "D:\\trusted\\..\\private\\pnpm.cjs",
+      pnpmHome: "D:\\trusted",
+    },
+    {
+      label: "UNC entrypoint",
+      npmExecPath: "\\\\server\\share\\pnpm.cjs",
+      pnpmHome: "\\\\server\\share",
+    },
+    {
+      label: "device entrypoint",
+      npmExecPath: "\\\\?\\D:\\trusted\\pnpm.cjs",
+      pnpmHome: "D:\\trusted",
+    },
+    {
+      label: "reserved device segment",
+      npmExecPath: "D:\\NUL\\pnpm.cjs",
+      pnpmHome: "D:\\NUL",
+    },
+    {
+      label: "control character",
+      npmExecPath: "D:\\trusted\\pnpm.cjs\n--require=private.js",
+      pnpmHome: "D:\\trusted",
+    },
+    {
+      label: "traversing Node runtime",
+      nodePath: "C:\\Program Files\\nodejs\\..\\private\\node.exe",
+      npmExecPath: "D:\\trusted\\pnpm.cjs",
+      pnpmHome: "D:\\trusted",
+    },
+  ])("rejects a malformed Windows trust claim: $label", ({
+    nodePath = "C:\\Program Files\\nodejs\\node.exe",
+    npmExecPath,
+    pnpmHome,
+  }) => {
+    expect(() => selectBuildInvocation("pnpm", ["run", "build:demo"], {
+      platform: "win32",
+      nodePath,
+      npmExecPath,
+      pnpmHome,
+      env: {},
+    })).toThrow("trusted Windows pnpm entrypoint unavailable");
+  });
+
+  function inspectedGit(canonicalPath, overrides = {}) {
+    return {
+      canonicalPath,
+      isFile: true,
+      mode: 0o100755,
+      uid: 0,
+      directoryChainTrusted: true,
+      ...overrides,
+    };
+  }
+
+  it("resolves a canonical Nix-store Git from an absolute profile PATH", () => {
+    const inspected = [];
+    expect(resolveTrustedGitExecutable({
+      platform: "linux",
+      pathEnv: "/home/example/.nix-profile/bin:/run/current-system/sw/bin",
+      currentUid: 1000,
+      inspectExecutable(candidate) {
+        inspected.push(candidate);
+        if (candidate === "/home/example/.nix-profile/bin/git") {
+          return inspectedGit("/nix/store/abc123-git-2.50.0/bin/git", { mode: 0o100555 });
+        }
+        return null;
+      },
+    })).toBe("/nix/store/abc123-git-2.50.0/bin/git");
+    expect(inspected).toEqual(["/home/example/.nix-profile/bin/git"]);
+  });
+
+  it("accepts a current-user-owned executable and skips missing PATH candidates", () => {
+    expect(resolveTrustedGitExecutable({
+      platform: "linux",
+      pathEnv: "/opt/missing/bin:/home/example/bin",
+      currentUid: 1000,
+      inspectExecutable(candidate) {
+        if (candidate === "/home/example/bin/git") {
+          return inspectedGit(candidate, { mode: 0o100700, uid: 1000 });
+        }
+        return null;
+      },
+    })).toBe("/home/example/bin/git");
+  });
+
+  it("does not inspect a repository-local Git candidate from an injected PATH", () => {
+    expect(resolveTrustedGitExecutable({
+      platform: "linux",
+      pathEnv: "/workspace/mono-agent/node_modules/.bin:/nix/profile/bin",
+      forbiddenRoot: "/workspace/mono-agent",
+      currentUid: 1000,
+      inspectExecutable(candidate) {
+        if (candidate === "/workspace/mono-agent/node_modules/.bin/git") {
+          throw new Error("repository candidate must be skipped");
+        }
+        return inspectedGit("/nix/store/abc123-git-2.50.0/bin/git", { mode: 0o100555 });
+      },
+    })).toBe("/nix/store/abc123-git-2.50.0/bin/git");
+  });
+
+  it("rejects an external PATH candidate whose canonical payload is inside the repository", () => {
+    expect(resolveTrustedGitExecutable({
+      platform: "linux",
+      pathEnv: "/opt/wrappers/bin:/nix/profile/bin",
+      forbiddenRoot: "/workspace/mono-agent",
+      currentUid: 1000,
+      inspectExecutable(candidate) {
+        if (candidate === "/opt/wrappers/bin/git") {
+          return inspectedGit("/workspace/mono-agent/private/git", { uid: 1000 });
+        }
+        return inspectedGit("/nix/store/abc123-git-2.50.0/bin/git", { mode: 0o100555 });
+      },
+    })).toBe("/nix/store/abc123-git-2.50.0/bin/git");
+  });
+
+  it("rejects an executable equal to the forbidden root", () => {
+    expect(resolveTrustedGitExecutable({
+      platform: "linux",
+      pathEnv: "/candidate/bin",
+      forbiddenRoot: "/workspace/git",
+      currentUid: 1000,
+      inspectExecutable: () => inspectedGit("/workspace/git", { uid: 1000 }),
+    })).toBeNull();
+  });
+
+  it("does not confuse a sibling prefix with a forbidden-root descendant", () => {
+    expect(resolveTrustedGitExecutable({
+      platform: "linux",
+      pathEnv: "/candidate/bin",
+      forbiddenRoot: "/workspace/mono-agent",
+      currentUid: 1000,
+      inspectExecutable: () => inspectedGit("/workspace/mono-agent-tools/git", { uid: 1000 }),
+    })).toBe("/workspace/mono-agent-tools/git");
+  });
+
+  it("keeps strict macOS Git resolution pinned to the system directory", () => {
+    const inspected = [];
+    expect(resolveTrustedGitExecutable({
+      platform: "darwin",
+      currentUid: 501,
+      inspectExecutable(candidate) {
+        inspected.push(candidate);
+        return inspectedGit(candidate);
+      },
+    })).toBe("/usr/bin/git");
+    expect(inspected).toEqual(["/usr/bin/git"]);
+  });
+
+  it.each([
+    undefined,
+    "",
+    "relative/bin:/usr/bin",
+    ":/usr/bin",
+    "/tmp/../usr/bin",
+    "/usr/bin\n:/bin",
+  ])("rejects a hostile Git PATH value: %s", (pathEnv) => {
+    let inspected = false;
+    expect(resolveTrustedGitExecutable({
+      platform: "linux",
+      pathEnv,
+      currentUid: 1000,
+      inspectExecutable() {
+        inspected = true;
+        return null;
+      },
+    })).toBeNull();
+    expect(inspected).toBe(false);
+  });
+
+  it.each([
+    ["missing", null],
+    ["directory", inspectedGit("/usr/bin/git", { isFile: false })],
+    ["non-executable", inspectedGit("/usr/bin/git", { mode: 0o100644 })],
+    ["writable", inspectedGit("/usr/bin/git", { mode: 0o100777 })],
+    ["set-id", inspectedGit("/usr/bin/git", { mode: 0o106755 })],
+    ["foreign owner", inspectedGit("/usr/bin/git", { uid: 2000 })],
+    ["writable ancestor", inspectedGit("/usr/bin/git", { directoryChainTrusted: false })],
+    ["wrong basename", inspectedGit("/usr/bin/not-git")],
+    ["traversing canonical path", inspectedGit("/nix/store/../private/git")],
+  ])("fails closed for an unsafe Git inspection: %s", (_label, inspection) => {
+    expect(resolveTrustedGitExecutable({
+      platform: "linux",
+      pathEnv: "/usr/bin",
+      currentUid: 1000,
+      inspectExecutable: () => inspection,
+    })).toBeNull();
+  });
+
+  it("does not resolve strict Git on unsupported platforms", () => {
+    expect(resolveTrustedGitExecutable({
+      platform: "win32",
+      pathEnv: "C:\\Program Files\\Git\\bin",
+      currentUid: 1000,
+      inspectExecutable: () => {
+        throw new Error("must not inspect");
+      },
+    })).toBeNull();
   });
 
   it.each(["missing", "symlink"])(
@@ -505,15 +745,16 @@ describe("provenance build lifecycle", () => {
     let statusCalls = 0;
     return (command, args, options = {}) => {
       calls.push({ command, args, options });
-      if (command === "/usr/bin/git" && args.includes("check-ignore")) {
+      const isGit = args[0] === "-C";
+      if (isGit && args.includes("check-ignore")) {
         return { status: 0, stdout: "" };
       }
-      if (command === "/usr/bin/git" && args.includes("rev-parse")) {
+      if (isGit && args.includes("rev-parse")) {
         revParseCalls += 1;
         if (revParseCalls === 3) onFinalRevParse?.();
         return { status: 0, stdout: `${revParseCalls === 1 ? SHA : afterSha}\n` };
       }
-      if (command === "/usr/bin/git" && args.includes("status")) {
+      if (isGit && args.includes("status")) {
         statusCalls += 1;
         return { status: 0, stdout: statusCalls > 1 && afterDirty ? " M source.ts\n" : "" };
       }
@@ -521,6 +762,84 @@ describe("provenance build lifecycle", () => {
       return { status: 127, stdout: "" };
     };
   }
+
+  it("fails before build mutation when no trusted Git executable is available", () => {
+    const root = tempRoot();
+    publishBuildMarker(root, marker());
+    const originalBytes = readFileSync(buildMarkerPath(root), "utf8");
+
+    const result = runBuildWithProvenance({
+      repo: root,
+      platform: "linux",
+      resolveGitExecutable: () => null,
+      runCommand() {
+        throw new Error("must not execute");
+      },
+      commands: [["build", []]],
+    });
+
+    expect(result).toEqual({ exitCode: 1, error: "trusted Git executable unavailable" });
+    expect(readFileSync(buildMarkerPath(root), "utf8")).toBe(originalBytes);
+    expect(() => lstatSync(buildLockPath(root))).toThrow();
+  });
+
+  it("pins the strict lifecycle to the canonical repository if its input symlink changes", () => {
+    const parent = tempRoot();
+    const actualRepo = join(parent, "actual-repo");
+    const replacementRepo = join(parent, "replacement-repo");
+    const linkedRepo = join(parent, "linked-repo");
+    mkdirSync(actualRepo);
+    mkdirSync(replacementRepo);
+    symlinkSync("actual-repo", linkedRepo);
+    const calls = [];
+    let resolverOptions;
+
+    const result = runBuildWithProvenance({
+      repo: linkedRepo,
+      platform: "linux",
+      resolveGitExecutable(options) {
+        resolverOptions = options;
+        rmSync(linkedRepo);
+        symlinkSync("replacement-repo", linkedRepo);
+        return "/usr/bin/git";
+      },
+      runCommand: fakeGit({ buildStatus: 7, calls }),
+      commands: [["build", []]],
+    });
+
+    const canonicalRepo = realpathSync.native(actualRepo);
+    expect(result).toEqual({ exitCode: 7, error: "workspace build failed" });
+    expect(resolverOptions).toEqual({
+      platform: "linux",
+      forbiddenRoot: canonicalRepo,
+    });
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((call) => call.options.cwd === canonicalRepo)).toBe(true);
+    expect(calls.filter((call) => call.args[0] === "-C")
+      .every((call) => call.args[1] === canonicalRepo)).toBe(true);
+  });
+
+  it("uses one exact resolved Nix Git path under the closed environment", () => {
+    const root = tempRoot();
+    const calls = [];
+    const gitExecutable = "/nix/store/abc123-git-2.50.0/bin/git";
+
+    const result = runBuildWithProvenance({
+      repo: root,
+      platform: "linux",
+      resolveGitExecutable: () => gitExecutable,
+      runCommand: fakeGit({ buildStatus: 7, calls }),
+      commands: [["build", []]],
+    });
+
+    expect(result).toEqual({ exitCode: 7, error: "workspace build failed" });
+    const gitCalls = calls.filter((call) => call.args[0] === "-C");
+    expect(gitCalls.length).toBeGreaterThan(0);
+    expect(gitCalls.every((call) => call.command === gitExecutable)).toBe(true);
+    for (const call of gitCalls) {
+      expect(call.options.env).toEqual({ PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" });
+    }
+  });
 
   it("clears a stale marker before building and leaves marker and lock absent on failure", () => {
     const root = tempRoot();
@@ -563,9 +882,11 @@ describe("provenance build lifecycle", () => {
         dependencyDigest,
       }),
     });
-    const gitCalls = calls.filter((call) => call.command === "/usr/bin/git");
+    const gitCalls = calls.filter((call) => call.args[0] === "-C");
     expect(gitCalls.length).toBeGreaterThan(0);
+    expect(new Set(gitCalls.map((call) => call.command)).size).toBe(1);
     for (const call of gitCalls) {
+      expect(call.command).toMatch(/^\/.+\/git$/u);
       expect(call.options.env).toEqual({ PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" });
       expect(Object.keys(call.options.env).some((key) => key.startsWith("GIT_"))).toBe(false);
     }
