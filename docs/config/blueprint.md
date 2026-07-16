@@ -228,8 +228,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "host": "127.0.0.1",
     "port": 0,
     "basePath": "/tui",
-    "allowNonLoopback": false,
-    "apiKey": "optional-bearer"
+    "allowNonLoopback": false              // set MONO_AGENT_TUI_API_KEY in .env when needed
   },
 
   "live": {
@@ -237,8 +236,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "host": "127.0.0.1",
     "port": 0,
     "basePath": "/live",
-    "allowNonLoopback": false,
-    "apiKey": "optional-bearer"
+    "allowNonLoopback": false              // set MONO_AGENT_LIVE_API_KEY in .env when needed
   },
 
   "webhook": {
@@ -268,15 +266,14 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // stream.finalOnly=false. The OpenAI-compatible endpoint still streams tokens.
   "telegram": {
     "enabled": true,                       // opt-in; defaults to false (off → "disabled")
-    "botToken": "...",
+    // Put MONO_AGENT_TELEGRAM_BOT_TOKEN in .env; do not inline botToken here.
     "allowedChatIds": ["123456789"],       // or "allowAllChats": true
     "allowAllChats": false
   },
 
   "slack": {
     "enabled": true,                       // opt-in; defaults to false (off → "disabled")
-    "botToken": "xoxb-...",                // Socket Mode app
-    "appToken": "xapp-...",
+    // Put MONO_AGENT_SLACK_BOT_TOKEN and MONO_AGENT_SLACK_APP_TOKEN in .env.
     "allowedChannelIds": ["C0123"],        // or "allowAllChannels": true
     "allowAllChannels": false,
     "botUserIds": ["U0BOT"],               // mention detection

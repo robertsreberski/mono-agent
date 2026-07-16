@@ -35,6 +35,8 @@ generated configs use `agent-host`, while this older fully-local recipe delibera
 explicit Ollama `memory.llm`. Selecting LM Studio embeddings would not move capture to LM
 Studio or create a cross-provider fallback.
 
+Put `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`; the source config omits the credential.
+
 ```json
 {
   "runtime": {
@@ -42,7 +44,6 @@ Studio or create a cross-provider fallback.
   },
   "telegram": {
     "enabled": true,
-    "botToken": "...",
     "allowedChatIds": ["123456789"]
   },
   "memory": {

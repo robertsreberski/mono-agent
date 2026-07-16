@@ -285,7 +285,7 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | `MONO_AGENT_TUI_PORT` | `tui.port` | Default `0` (ephemeral; published to the trace-source registry). |
 | `MONO_AGENT_TUI_BASE_PATH` | `tui.basePath` | Default `/tui`. |
 | `MONO_AGENT_TUI_ALLOW_NON_LOOPBACK` | `tui.allowNonLoopback` | Required to bind a non-loopback host. |
-| `MONO_AGENT_TUI_API_KEY` | `tui.apiKey` | Optional bearer the console must present. See [../channels/tui.md](/channels/tui/). |
+| `MONO_AGENT_TUI_API_KEY` | `tui.apiKey` | Optional bearer the console must present. Put the value in `.env`; inline `tui.apiKey` remains accepted for compatibility but is not the documented source-config convention. See [../channels/tui.md](/channels/tui/). |
 
 ### Live event relay
 
@@ -296,7 +296,7 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | `MONO_AGENT_LIVE_PORT` | `live.port` | Default `0` (ephemeral; published to the trace-source registry). |
 | `MONO_AGENT_LIVE_BASE_PATH` | `live.basePath` | Default `/live`. |
 | `MONO_AGENT_LIVE_ALLOW_NON_LOOPBACK` | `live.allowNonLoopback` | Required to bind a non-loopback host. |
-| `MONO_AGENT_LIVE_API_KEY` | `live.apiKey` | Optional bearer token for `/v1/info` and `/v1/events`. `mono-agent web` reads it from the agent config and only sends it to trusted loopback live URLs. |
+| `MONO_AGENT_LIVE_API_KEY` | `live.apiKey` | Optional bearer token for `/v1/info` and `/v1/events`. Put the value in `.env`; inline `live.apiKey` remains accepted for compatibility. `mono-agent web` resolves the effective value and only sends it to trusted loopback live URLs. |
 
 ### A2A
 

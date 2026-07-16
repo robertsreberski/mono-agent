@@ -12,13 +12,12 @@ Coverage: **config** (`telegram.long-polling` and `telegram.transcription` in th
 
 ## Configuration
 
-Add a `telegram` block to your `mono-agent.config.json`. The channel is opt-in: with no block, or `enabled: false`, the channel reports as **disabled** (not "waiting").
+Add a `telegram` block to your `mono-agent.config.json`. The channel is opt-in: with no block, or `enabled: false`, the channel reports as **disabled** (not "waiting"). Put the bot token in `.env` as `MONO_AGENT_TELEGRAM_BOT_TOKEN`; the source-config example intentionally omits `botToken`.
 
 ```json
 {
   "telegram": {
     "enabled": true,
-    "botToken": "123456789:AA...",
     "allowedChatIds": ["123456789"],
     "allowAllChats": false
   }
@@ -28,7 +27,7 @@ Add a `telegram` block to your `mono-agent.config.json`. The channel is opt-in: 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `enabled` | boolean | `false` | Opt-in switch. Off → channel is disabled. |
-| `botToken` | string | — | Bot token issued by [BotFather](https://t.me/BotFather). Required when enabled. |
+| `botToken` | string | — | Bot token issued by [BotFather](https://t.me/BotFather). An effective value is required when enabled. Inline config remains accepted for compatibility; new source configs should set `MONO_AGENT_TELEGRAM_BOT_TOKEN` in `.env`. |
 | `allowedChatIds` | string[] | — | Chat IDs (as strings) permitted to talk to the agent. |
 | `allowAllChats` | boolean | `false` | When `true`, accept any chat. Mutually exclusive with a populated `allowedChatIds`. |
 | `pollWatchdogMs` | number | `120000` | Poll-liveness watchdog window. Force-restarts the long-poll runner when no `getUpdates` resolves within the window. On by default; `0` disables. Min `0`, max `3600000`. See [Polling resilience](#polling-resilience-auto-recovery). |
