@@ -6,9 +6,9 @@ sidebar:
 
 # Telegram
 
-The Telegram channel connects your agent to a Telegram bot over long polling. This page covers enabling it, the chat allowlist, final-only delivery behaviour, inbound attachment download, the environment-variable overrides, and a setup + smoke-test walkthrough.
+The Telegram channel connects your agent to a Telegram bot over long polling. This page covers enabling it, the chat allowlist, final-only delivery behaviour, inbound attachment download and optional audio transcription, the environment-variable overrides, and a setup + smoke-test walkthrough.
 
-Coverage: **config** (`telegram.long-polling` in [feature-registry](/reference/feature-matrix/)). The agent talks to a bot you create with BotFather; no inbound port is required.
+Coverage: **config** (`telegram.long-polling` and `telegram.transcription` in the [feature registry](/reference/feature-registry/)). The agent talks to a bot you create with BotFather; no inbound port is required.
 
 ## Configuration
 
@@ -53,6 +53,10 @@ Every key has a `MONO_AGENT_TELEGRAM_*` override. Env vars win over JSON, which 
 | `MONO_AGENT_TELEGRAM_REACTIONS` | `telegram.reactions` |
 | `MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS` | `telegram.pollWatchdogMs` (top-level) |
 | `MONO_AGENT_TELEGRAM_IP_FAMILY` | `telegram.transport.ipFamily` (nested under `telegram.transport`) |
+| `MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT` | `telegram.transcription.endpoint` |
+| `MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL` | `telegram.transcription.model` |
+| `MONO_AGENT_TELEGRAM_TRANSCRIPTION_LANGUAGE` | `telegram.transcription.language` |
+| `MONO_AGENT_TELEGRAM_TRANSCRIPTION_TIMEOUT_MS` | `telegram.transcription.timeoutMs` |
 
 ## Interactive features
 
@@ -172,6 +176,34 @@ The long-poll runner self-heals across transient network failures — a network 
 Inbound Telegram media (photos, documents, voice, video) is fetched via the Bot API and inlined into `request.attachments`, so the agent receives the bytes alongside the text. A multi-photo/video album arrives as several messages sharing a media group and is aggregated into one request. A download that fails is skipped without failing the run.
 
 Download tuning — byte cap and timeout — is configurable via `telegram.attachments.{maxBytes,downloadTimeoutMs}` (defaults: 20 MiB / 30 s); the MIME allowlist remains **code-only** (`DownloadTelegramAttachmentsOptions`). See [Custom Channels](/programmatic/custom-channels/).
+
+## Transcription
+
+Telegram can automatically transcribe inbound voice notes, audio files, and round-video `video_note`s through an OpenAI-compatible `POST /v1/audio/transcriptions` endpoint. The transcript is added to the attachment text the model sees on the current turn; the downloaded audio remains saved. If transcription fails or times out, the run continues with a one-line unavailable note pointing to the saved file.
+
+Transcription is opt-in. Set the full HTTP(S) transcriptions-route URL and a model name; with no `endpoint`, no transcription calls are made. The built-in transcriber has no credential field and sends no `Authorization` header, so the endpoint must accept unauthenticated requests (typically from a local server).
+
+```json
+{
+  "telegram": {
+    "transcription": {
+      "endpoint": "http://localhost:50060/v1/audio/transcriptions",
+      "model": "large-v3",
+      "language": "en",
+      "timeoutMs": 120000
+    }
+  }
+}
+```
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `telegram.transcription.endpoint` | — (off) | Full OpenAI-compatible transcriptions-route URL. Must use HTTP or HTTPS. |
+| `telegram.transcription.model` | — | Required when `endpoint` is set; sent as the multipart `model` field. |
+| `telegram.transcription.language` | — | Optional ISO-639 language hint sent as the multipart `language` field. |
+| `telegram.transcription.timeoutMs` | `120000` | Per-call timeout in milliseconds (`1`–`3600000`), independent of `attachments.downloadTimeoutMs`. |
+
+The transcript is available to the current turn only. Durable history preserves the attachment as a file reference, not the transcript, after provider context is lost. Each field also has a `MONO_AGENT_TELEGRAM_TRANSCRIPTION_*` override in the [environment-variable reference](/config/env-vars/).
 
 ## Self-hosted Bot API server (large files)
 
