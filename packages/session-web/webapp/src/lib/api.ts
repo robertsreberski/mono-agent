@@ -295,7 +295,9 @@ function currentAuthToken(): string | undefined {
   }
   if (cachedAuthToken !== undefined) return cachedAuthToken;
   try {
-    const stored = window.sessionStorage.getItem(AUTH_TOKEN_STORAGE.currentTab.key)?.trim();
+    const stored = window[AUTH_TOKEN_STORAGE.currentTab.storage]
+      .getItem(AUTH_TOKEN_STORAGE.currentTab.key)
+      ?.trim();
     if (stored !== undefined && stored.length > 0) {
       cachedAuthToken = stored;
       return stored;
@@ -304,7 +306,9 @@ function currentAuthToken(): string | undefined {
     /* ignore storage failures */
   }
   try {
-    const stored = window.localStorage.getItem(AUTH_TOKEN_STORAGE.persistent.key)?.trim();
+    const stored = window[AUTH_TOKEN_STORAGE.persistent.storage]
+      .getItem(AUTH_TOKEN_STORAGE.persistent.key)
+      ?.trim();
     if (stored === undefined || stored.length === 0) return undefined;
     cachedAuthToken = stored;
     return stored;
@@ -319,12 +323,12 @@ export function saveAuthToken(token: string): void {
   if (!trimmed) return;
   cachedAuthToken = trimmed;
   try {
-    window.sessionStorage.setItem(AUTH_TOKEN_STORAGE.currentTab.key, trimmed);
+    window[AUTH_TOKEN_STORAGE.currentTab.storage].setItem(AUTH_TOKEN_STORAGE.currentTab.key, trimmed);
   } catch {
     /* ignore storage failures; caller may still use URL token */
   }
   try {
-    window.localStorage.setItem(AUTH_TOKEN_STORAGE.persistent.key, trimmed);
+    window[AUTH_TOKEN_STORAGE.persistent.storage].setItem(AUTH_TOKEN_STORAGE.persistent.key, trimmed);
   } catch {
     /* ignore storage failures */
   }
@@ -334,12 +338,12 @@ export function clearAuthToken(): void {
   cachedAuthToken = undefined;
   if (typeof window === "undefined") return;
   try {
-    window.sessionStorage.removeItem(AUTH_TOKEN_STORAGE.currentTab.key);
+    window[AUTH_TOKEN_STORAGE.currentTab.storage].removeItem(AUTH_TOKEN_STORAGE.currentTab.key);
   } catch {
     /* ignore storage failures */
   }
   try {
-    window.localStorage.removeItem(AUTH_TOKEN_STORAGE.persistent.key);
+    window[AUTH_TOKEN_STORAGE.persistent.storage].removeItem(AUTH_TOKEN_STORAGE.persistent.key);
   } catch {
     /* ignore storage failures */
   }

@@ -138,6 +138,20 @@ describe("session-web API auth", () => {
     expect(fetchMock.mock.calls.map((call) => headersFrom(call).authorization)).toEqual(["Bearer url-secret", "Bearer url-secret"]);
   });
 
+  test("defines distinct current-tab and persistent browser-storage roles", () => {
+    expect(AUTH_TOKEN_STORAGE).toEqual({
+      currentTab: {
+        storage: "sessionStorage",
+        key: "mono-agent.session-web.authToken",
+      },
+      persistent: {
+        storage: "localStorage",
+        key: "mono-agent.session-web.authToken.persisted",
+        lifetime: "until-cleared",
+      },
+    });
+  });
+
   test("persists tokens across browser restarts until both browser copies are cleared", () => {
     const persistentStorage = memoryStorage();
     const currentTabStorage = memoryStorage();
@@ -166,6 +180,33 @@ describe("session-web API auth", () => {
     expect(headersFrom(fetchMock.mock.calls[0] ?? []).authorization).toBe("Bearer restart-secret");
   });
 
+  test.each([401, 403])("surfaces a %i initial or reload API error and clears storage only when asked", async (status) => {
+    const persistentStorage = memoryStorage();
+    const currentTabStorage = memoryStorage();
+    persistentStorage.setItem(AUTH_TOKEN_STORAGE.persistent.key, "stale-secret");
+    currentTabStorage.setItem(AUTH_TOKEN_STORAGE.currentTab.key, "stale-secret");
+    installWindow("", persistentStorage, currentTabStorage);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: "authentication failed" }), {
+      status,
+      headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchInstances()).rejects.toMatchObject({
+      status,
+      message: `/api/instances -> ${status}`,
+    });
+
+    expect(headersFrom(fetchMock.mock.calls[0] ?? []).authorization).toBe("Bearer stale-secret");
+    expect(currentTabStorage.getItem(AUTH_TOKEN_STORAGE.currentTab.key)).toBe("stale-secret");
+    expect(persistentStorage.getItem(AUTH_TOKEN_STORAGE.persistent.key)).toBe("stale-secret");
+
+    clearAuthToken();
+
+    expect(currentTabStorage.getItem(AUTH_TOKEN_STORAGE.currentTab.key)).toBeNull();
+    expect(persistentStorage.getItem(AUTH_TOKEN_STORAGE.persistent.key)).toBeNull();
+  });
+
   test("keeps the package and canonical docs aligned with the browser-storage contract", () => {
     const documents = [
       readFileSync(new URL("../../../README.md", import.meta.url), "utf8"),
@@ -174,13 +215,25 @@ describe("session-web API auth", () => {
 
     for (const document of documents) {
       const normalized = document.replace(/\s+/gu, " ");
-      expect(normalized).toContain(`\`${AUTH_TOKEN_STORAGE.currentTab.storage}\``);
-      expect(normalized).toContain(`\`${AUTH_TOKEN_STORAGE.currentTab.key}\``);
-      expect(normalized).toContain(`\`${AUTH_TOKEN_STORAGE.persistent.storage}\``);
-      expect(normalized).toContain(`\`${AUTH_TOKEN_STORAGE.persistent.key}\``);
+      const storageContract =
+        `into current-tab \`${AUTH_TOKEN_STORAGE.currentTab.storage}\` as \`${AUTH_TOKEN_STORAGE.currentTab.key}\` `
+        + `and persistent \`${AUTH_TOKEN_STORAGE.persistent.storage}\` as \`${AUTH_TOKEN_STORAGE.persistent.key}\`.`;
+      expect(normalized).toContain(
+        storageContract,
+      );
       expect(normalized).toContain("survives page reloads, tab or browser closes, and browser restarts");
-      expect(normalized).toContain("Clear");
-      expect(normalized).toContain("site data");
+      expect(normalized).toContain(
+        "On initial page load or after a manual reload, a JSON API 401/403 exposes the authentication form.",
+      );
+      expect(normalized).toContain(
+        "If the server token changes while the page remains open, a stream 401/403 stays in the reconnecting state and retries with the stored token instead of exposing the form.",
+      );
+      expect(normalized).toContain(
+        "Reload the page to expose the form; enter the current token and choose **Retry**, or choose **Clear** first to remove both browser-storage copies.",
+      );
+      expect(normalized).toContain(
+        "Clearing the site's browser storage/site data also removes them; closing the browser alone does not sign out.",
+      );
     }
   });
 
@@ -262,9 +315,12 @@ describe("session-web API auth", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  test("cancels every non-terminating HTTP error body before reconnecting", async () => {
+  test("keeps the stored token while a 401 stream error reconnects until reload", async () => {
     vi.useFakeTimers();
-    installWindow();
+    const persistentStorage = memoryStorage();
+    const currentTabStorage = memoryStorage();
+    installWindow("", persistentStorage, currentTabStorage);
+    saveAuthToken("stale-stream-secret");
     let created = 0;
     let cancelled = 0;
     const fetchMock = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
@@ -279,13 +335,22 @@ describe("session-web API auth", () => {
       headers: { "content-type": "application/json" },
     }));
     vi.stubGlobal("fetch", fetchMock);
+    const onError = vi.fn();
 
-    const close = openStream({ onMessage: vi.fn(), onError: vi.fn() });
+    const close = openStream({ onMessage: vi.fn(), onError });
     await vi.advanceTimersByTimeAsync(0);
     expect({ created, cancelled }).toEqual({ created: 1, cancelled: 1 });
+    expect(onError).toHaveBeenCalledOnce();
 
     await vi.advanceTimersByTimeAsync(1_000);
     expect({ created, cancelled }).toEqual({ created: 2, cancelled: 2 });
+    expect(onError).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map((call) => headersFrom(call).authorization)).toEqual([
+      "Bearer stale-stream-secret",
+      "Bearer stale-stream-secret",
+    ]);
+    expect(currentTabStorage.getItem(AUTH_TOKEN_STORAGE.currentTab.key)).toBe("stale-stream-secret");
+    expect(persistentStorage.getItem(AUTH_TOKEN_STORAGE.persistent.key)).toBe("stale-stream-secret");
 
     close();
     expect(created - cancelled).toBe(0);
