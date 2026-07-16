@@ -16,6 +16,8 @@ concurrency:
 jobs:
   verify:
     name: Verify (Node ${{ matrix.node-version }})
+    # scripts/__tests__/verify-all.test.mjs enforces the complete ordered action,
+    # environment, and exact run-script projection; VERIFY_GATE_DELTA declares exceptions.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -43,6 +45,10 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Check production dependency vulnerabilities
+        if: ${{ matrix.node-version == '22.19.0' }}
+        run: pnpm run check:dependency-vulnerabilities
 
       - name: Check secrets
         run: |
@@ -92,15 +98,6 @@ jobs:
       - name: Run tests
         run: pnpm test
 
-      - name: Build demos
-        run: pnpm run build:demo
-
-      - name: Typecheck demos
-        run: pnpm run typecheck:demo
-
-      - name: Test demos
-        run: pnpm run test:demo
-
       - name: Check whitespace
         run: git diff --check
 
@@ -110,9 +107,9 @@ jobs:
     timeout-minutes: 20
 
     # website/ is an isolated pnpm workspace (own lockfile) that renders ../docs.
-    # Gate its full pipeline — sync-content -> astro build -> check-links — so the
-    # docs site cannot rot silently. Runs in parallel with `verify`; keep it out
-    # of that job so verify's wall time stays flat.
+    # Gate its full pipeline — check-asides -> sync-content -> astro build ->
+    # check-links — so the docs site cannot rot silently. Runs in parallel with
+    # `verify`; keep it out of that job so verify's wall time stays flat.
     defaults:
       run:
         working-directory: website
@@ -132,5 +129,5 @@ jobs:
       - name: Install website dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build docs site (sync-content -> astro build -> check-links)
+      - name: Build docs site (check-asides -> sync-content -> astro build -> check-links)
         run: pnpm run build

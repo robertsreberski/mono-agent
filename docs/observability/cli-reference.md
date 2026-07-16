@@ -14,9 +14,9 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 
 | Command | Purpose | Key flags |
 | --- | --- | --- |
-| `init` | On a TTY with no flags, run the guided readiness path: name the agent, enter its exact `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure exact route efforts/safety, verify every selected route, then on macOS start the background agent and enter remote temporary configuration mode. Any flag or non-TTY invocation is scaffold-only; off macOS, configuration is manual. | `--name`, `--model`, repeated `--fallback`/`--fallback-effort`, `--route-safety`, legacy `--fallback-models`, `--auth`, `--codex-auth`, `--memory` |
+| `init` | On a TTY with no flags, run the guided readiness path: name the agent, enter its exact `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure exact route efforts/safety, verify every selected route, then on macOS start the background agent and enter remote temporary configuration mode. Any flag or non-TTY invocation is scaffold-only; off macOS, configuration is manual. | `--name`, `--model`, repeated `--fallback`/`--fallback-effort`, `--route-safety`, legacy `--fallback-models` (removed in `v2.0.0`), `--auth`, `--codex-auth`, `--memory` |
 | `setup` | Alias of `init`. | (same as `init`) |
-| `presets` | List the built-in setup presets or show a preset's generated config, `.env.example`, and checklist. Replaces `recipes` (still an alias). | `list`, `show <id>` |
+| `presets` | List the built-in setup presets or show a preset's generated config, `.env.example`, and checklist. Replaces the deprecated `recipes` alias, which is removed in `v2.0.0`. | `list`, `show <id>` |
 | `auth login` | Run direct Codex browser/device login, Pi OAuth for Anthropic/GitHub Copilot/OpenAI Codex, or the OpenCode-Go API-key flow. OpenCode-Go uses masked TTY input by default; `--api-key-stdin` is the explicit headless input mode. Pi credentials are promoted under an owner-only lock with stale-lock repair only when safely proven. | `<provider\|codex>`, `--pi-auth-path <path>`, `--api-key-stdin`, `--codex-auth browser\|device`, `--config <path>` |
 | `sandbox` | Inspect, install, or functionally prove the pinned SRT runtime. Managed setup is private-cache and macOS-only. | `status`, `setup`, `check` |
 | `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias). With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>`, `--json` |
@@ -95,7 +95,7 @@ Exact background file bytes use keyed commitments under a stable per-config 256-
 | `--model <ref>` | Seed the primary model reference (default `codex:gpt-5.6-terra`). |
 | `--fallback <ref>` | Add one canonical fallback route; repeat without a product-imposed count limit. |
 | `--fallback-effort <provider-default\|level>` | Configure the immediately preceding `--fallback`. |
-| `--fallback-models <csv>` | Legacy global-effort-inheriting fallback form. Mutually exclusive with `--fallback`. |
+| `--fallback-models <csv>` | Deprecated legacy global-effort-inheriting fallback form, removed in `v2.0.0`. Mutually exclusive with `--fallback`. |
 | `--route-safety uniform\|per-route-native` | Select common monotonic or explicit provider-native route contracts. |
 | `--codex-auth browser\|device` | Direct Codex login mode; `device` uses headless device auth. |
 | `--effort <level>` | Write primary `runtime.effort`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`. |
@@ -116,7 +116,7 @@ mono-agent init --name "Research Companion" \
 
 The generated config matches [the config blueprint](/config/blueprint/). See [Backends](/runtime/backends/) for the model reference grammar, [Fallback](/runtime/fallback/) for the chain, [Capture & recall](/memory/capture-and-recall/) for the memory tiers, and [Presets & capability modules](/reference/recipes/) for the wizard's tools step and the no-tools guardrail.
 
-The deprecated `--recipe <id>` flag still works: it maps a retired recipe id to the preset that replaced it (with a deprecation notice), or errors with a pointer to the wizard for the fully-retired blueprints. See [Deprecations](/reference/recipes/#deprecations).
+The deprecated `--recipe <id>` flag works until its `v2.0.0` removal: accepted invocations warn, map a retired recipe id to the preset that replaced it, or error with a pointer to the wizard for fully-retired blueprints. See the canonical [deprecation tracker](/reference/deprecations/) and the detailed [recipe map](/reference/recipes/#deprecations).
 
 ### Secret persistence
 
@@ -163,7 +163,7 @@ mono-agent sandbox check
 
 ## `presets`
 
-Presets are saved wizard answer-sets. `presets list` shows the ids, titles, descriptions, and risk levels; `presets show <id>` prints the generated `mono-agent.config.json`, any `.env.example` placeholders, scaffolded files, and the validation checklist. `mono-agent recipes …` remains as a deprecated alias.
+Presets are saved wizard answer-sets. `presets list` shows the ids, titles, descriptions, and risk levels; `presets show <id>` prints the generated `mono-agent.config.json`, any `.env.example` placeholders, scaffolded files, and the validation checklist. `mono-agent recipes …` remains as a deprecated alias until its `v2.0.0` removal.
 
 ```bash
 mono-agent presets list
@@ -172,7 +172,7 @@ mono-agent presets show telegram-assistant
 
 ## `validate`
 
-Loads every config section and prints a status report. It exits `0` when the configuration is structurally valid, including non-fatal `waiting` sections, and `1` on errors. A clean report says it is ready to start; this is a config/liveness result, not the guided wizard's real all-route proof or full **Agent ready** claim. A report with `waiting` sections instead says it needs attention before start. `mono-agent doctor` is an alias — same flags, same report. By default it reads `mono-agent.config.json` from the current folder; override with `--config <path>`. Use `--consumer <path>` to run the same report against a downstream agent folder without changing the current directory or creating missing memory roots there. With `--consumer`, a relative `--config` points inside the consumer folder and the consumer `.env` is loaded by default. It also honors `--env-file <path>` for the dotenv load above.
+Loads every config section and prints a status report. It exits `0` when the configuration is structurally valid, including non-fatal `waiting` sections, and `1` on errors. A clean report says it is ready to start; this is a config/liveness result, not the guided wizard's real all-route proof or full **Agent ready** claim. A report with `waiting` sections instead says it needs attention before start. The Runtime provenance section names the full content-addressed closure id and sanitized install metadata when the CLI producing the report has a valid managed marker, freshly recomputed installed closure, and coherent current closure manifest; otherwise it reports `dev (unmanaged)`. With `--consumer`, this remains the validator CLI's provenance, not an attestation of a separately running daemon. `mono-agent doctor` is an alias — same flags, same report. By default it reads `mono-agent.config.json` from the current folder; override with `--config <path>`. Use `--consumer <path>` to run the same report against a downstream agent folder without changing the current directory or creating missing memory roots there. With `--consumer`, a relative `--config` points inside the consumer folder and the consumer `.env` is loaded by default. It also honors `--env-file <path>` for the dotenv load above.
 
 ```bash
 mono-agent validate
@@ -184,7 +184,7 @@ mono-agent validate --consumer ../local-agent-alpha
 
 | Flag | Effect |
 | --- | --- |
-| `--preset <id>` | Also report whether the preset's promised capabilities are live — each expectation is checked against the doctor report. The deprecated `--recipe <id>` alias maps to the replacing preset. |
+| `--preset <id>` | Also report whether the preset's promised capabilities are live — each expectation is checked against the doctor report. The deprecated `--recipe <id>` alias maps to the replacing preset until its `v2.0.0` removal. |
 | `--consumer <path>` | Validate another agent folder read-only. Relative `--config` and `--env-file` paths resolve inside that folder. |
 | `--config <path>` | Use a non-default config file. With `--consumer`, relative paths are inside the consumer folder. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file. With `--consumer`, relative paths are inside the consumer folder. |
@@ -215,7 +215,7 @@ The **Tools & MCP** section reports the tool policy: allow-all (the default) sho
 
 `validate` includes a **Provider credentials** section covering the primary `runtime.model`, every canonical `runtime.fallbacks` (or legacy `runtime.fallbackModels`) entry, the `agent-host` `memory.llm` model, and every enabled static webhook/cron model override. Disabled channels/entries are ignored; a dynamic request-body override is checked when the request runs because its value does not exist at validate time. Each Pi runtime ref must resolve through an enabled `providers.local[]` entry or an exact model in Pi's built-in catalog. Built-in Pi credentials resolve against the same effective Pi auth path used by `auth login` (including `MONO_AGENT_PI_AUTH_PATH`); the Pi CLI's ambient sibling `models.json` is not imported by the mono-agent runtime. It never mints tokens or makes a model request. Static validation (`liveness: false`, including start preflight) launches no process. Live validation can detect unprobed SDK credentials with bounded, read-only `codex login status` or `claude auth status --json`, cached once per SDK; detection is not labelled as a verified model turn. During guided init, each exact selected route is promoted to verified only after its own live check succeeds.
 
-- A provider configured through an enabled `providers.local[]` entry needs no OAuth. If it declares `apiKeyEnv`, that variable must resolve to a non-empty key (or an inline fallback must resolve); only providers with no key declaration are reported as intentionally keyless. Disabled provider/model entries are rejected.
+- A provider configured through an enabled `providers.local[]` entry needs no OAuth. If it declares `apiKeyEnv`, that variable must resolve to a non-empty key (or a schema-compatible inline fallback must resolve); source configs should still keep the secret in `.env` and store only `apiKeyEnv`. Only providers with no key declaration are reported as intentionally keyless. Disabled provider/model entries are rejected.
 - Without `providers.local[]`, the provider/model pair must exist exactly in Pi's built-in catalog. An unknown model is an `error`, even if an ambient `models.json` happens to name its provider.
 - A built-in provider absent from the Pi auth store → `waiting`, with a `[WARN]` line and a `mono-agent auth login <provider>` hint.
 - An OAuth provider whose access token has **expired** → `waiting`, with a `[WARN]` line noting the expiry and the `mono-agent auth login <provider>` re-auth hint. The credential is not considered ready until a request succeeds.
@@ -234,7 +234,7 @@ An empty or missing artifact directory prints `No runs recorded yet.`, reports `
 
 ### Secret placement
 
-`validate` includes a **Secret placement** section that warns when a secret-marked config field is resolved from the committed `mono-agent.config.json` rather than from `.env`. It covers the core secrets (`memory.embeddings.apiKey`, `memory.supermemory.apiKey`) and every channel credential — `telegram.botToken`, `slack.botToken` / `slack.appToken`, `openaiApi.apiKey`, and the A2A bearer tokens. The section reports `waiting` — it is advisory and never `error`, so it never blocks `start`. Each detail line is prefixed `[WARN]` and names the matching `MONO_AGENT_*` env var to move the secret to, e.g.:
+`validate` includes a **Secret placement** section that warns when a secret-marked config field is resolved from the committed `mono-agent.config.json` rather than from `.env`. It covers the core secrets (`memory.embeddings.apiKey`, `memory.supermemory.apiKey`) and every channel credential — `telegram.botToken`, `slack.botToken` / `slack.appToken`, `webhook.apiKey`, `openaiApi.apiKey`, and the A2A bearer tokens. The section reports `waiting` — it is advisory and never `error`, so it never blocks `start`. Each detail line is prefixed `[WARN]` and names the matching `MONO_AGENT_*` env var to move the secret to, e.g.:
 
 ```text
 [WARN] telegram.botToken is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_TELEGRAM_BOT_TOKEN).
@@ -347,7 +347,7 @@ mono-agent start --foreground
 On start the CLI prints per-section status blocks:
 
 - **instance** — the resolved config path and traceability status (`running (source <id>)`, or `<kind>: <reason>`).
-- **observability** — the exporter status: when configured, the Phoenix endpoint, the Phoenix app URL, any last warning/error, and where JSONL artifacts remain local. When `includeSensitiveData` is enabled it surfaces an explicit yellow `[WARN] includeSensitiveData=true exports redacted/capped user input, assistant replies, tool args/results, and system prompt to Phoenix at <endpoint>; substantive run content leaves this machine.` line (also emitted across `validate` / `status` / background output). The export remains a valid opt-in — this warning does not flip `report.ok` or the `validate` status.
+- **observability** — the exporter status: when configured, the Phoenix endpoint, the Phoenix app URL, any last warning/error, and where JSONL artifacts remain local. When `includeSensitiveData` is enabled it surfaces an explicit yellow `[WARN] includeSensitiveData=true exports user input, assistant replies, tool args/results, and system prompt to Phoenix at <endpoint>; non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. Strings are capped. Substantive run content leaves this machine.` line (also emitted across `validate` / `status` / background output). The export remains a valid opt-in — this warning does not flip `report.ok` or the `validate` status.
 - **channels** — one line per configured channel with a status badge: `running` (plus a `key=value` summary of its facts) or `<kind>: <reason>` (e.g. `disabled`, `waiting`, `degraded`). A channel rendered `degraded: <reason>` carries a warning badge — it is a non-fatal, still-serving state where the live transport dropped but the responder is kept alive and the adapter is self-recovering (e.g. a Telegram poll crash on a network switch). `degraded` counts as an active/serving transport (not idle, not failed) and flips back to `running` once the transport recovers.
 - **runs health** — in foreground mode, the active selected skills, local artifact directory, total recorded summaries, last runs with relative ages, status counts, stale/process-gone `running` summaries, and compact failure-kind counts with explanations.
 

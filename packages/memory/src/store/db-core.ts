@@ -43,7 +43,7 @@ export class MemoryDbCore {
       throw new Error("MemoryDb: dim must be a positive integer.");
     }
     const vecDim = options.dim ?? DEFAULT_VEC_DIM;
-    if (options.path !== ":memory:") {
+    if (options.readOnly !== true && options.path !== ":memory:") {
       mkdirSync(dirname(options.path), { recursive: true });
     }
     this.db = new BetterSqlite3(options.path, options.readOnly === true

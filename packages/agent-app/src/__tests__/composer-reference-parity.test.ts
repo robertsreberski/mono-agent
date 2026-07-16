@@ -196,6 +196,25 @@ describe("mono-agent-composer reference parity", () => {
     expect(pluginConfigRow?.[2]).toBe("`--`");
   });
 
+  it("keeps copyable webhook blueprints free of pseudo-interpolated credentials", () => {
+    const surfaces = [
+      [between(canonicalBlueprint, '"webhook": {', '"openaiApi": {'), "canonical blueprint"],
+      [between(blueprint, '"webhook": {', '"openaiApi": {'), "composer blueprint"],
+    ] as const;
+
+    for (const [webhookBlock, label] of surfaces) {
+      expect(webhookBlock, `${label} must omit a copyable literal API key`).not.toContain('"apiKey"');
+      expect(webhookBlock, `${label} must not imply env: interpolation`).not.toContain(
+        "env:MONO_AGENT_WEBHOOK_API_KEY",
+      );
+      expect(webhookBlock, `${label} must point to the real owner-only env path`).toContain(
+        "MONO_AGENT_WEBHOOK_API_KEY=<strong-random-secret>",
+      );
+      expect(webhookBlock).toContain("owner-only .env");
+      expect(webhookBlock).toContain("JSON strings are literal");
+    }
+  });
+
   it("fails the reviewer synthetic config-row mutation when the composer is unchanged", () => {
     const syntheticRow = readRepoFile(
       "packages/agent-app/src/__tests__/fixtures/composer-reference-synthetic-config-row.md",
@@ -203,6 +222,36 @@ describe("mono-agent-composer reference parity", () => {
     const audit = auditComposerConfigCoverage(`${registry}\n${syntheticRow}\n`, coverage);
 
     expect(audit.missing).toContain("runtime.synthetic-freshness-probe");
+  });
+
+  it("keeps configured cron jobs distinct from programmatic overlap controls", () => {
+    const row = markdownTableRows(coverage).find((cells) =>
+      cells[3]?.includes("`cron.scheduled-prompts`"),
+    );
+
+    expect(row).toHaveLength(4);
+    expect(row?.[0]).toBe(
+      "Cron jobs (five-field expressions, timezones, stable job-id-seeded `H`; agent-app pins overlap to skip)",
+    );
+    expect(row?.[1]).toBe("config + code");
+    expect(row?.[2]).toContain("per-job `model` / `effort`");
+    expect(row?.[2]).toContain("programmatic-only `startCronAdapter` options");
+    expect(row?.[3]).toBe("`cron.scheduled-prompts`");
+  });
+
+  it("keeps per-job cron scheduling distinct from shared harness bounds", () => {
+    const cronChannel = readRepoFile("docs/channels/cron.md");
+    const overlap = section(cronChannel, "Configured overlap: ticks are skipped, never queued");
+    const watchdog = section(cronChannel, "Run watchdog: a wedged run is aborted, not left to starve");
+
+    expect(overlap).toContain("Scheduler overlap state is tracked per job");
+    expect(overlap).toContain("shared agent-app harness admission and execution limits");
+    expect(overlap).toContain("serialize work across different jobs or reject a run");
+    expect(watchdog).toContain("scheduler slot it reclaims are **per job**");
+    expect(watchdog).toContain("shared agent-app harness admission and execution limits");
+    expect(watchdog).toContain("delay sibling provider work or reject it");
+    expect(cronChannel).not.toContain("never block one another");
+    expect(cronChannel).not.toContain("does not affect its siblings");
   });
 
   it("documents every interaction-bridge auto-start path", () => {

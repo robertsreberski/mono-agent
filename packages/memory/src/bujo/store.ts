@@ -328,7 +328,6 @@ export class BujoMemoryStore implements MemoryStore {
       }
       if (!this.readOnly) this.initializeCompletedTurnIntake();
       if (!this.readOnly && this._tier === "journal") this.initializeJournalIndexing();
-      if (!this.readOnly && this._tier === "bujo") this.initializeCaptureQueue();
       if (!this.readOnly) this.initializeRuntimeSnapshot();
     } catch (error) {
       const cleanupErrors: unknown[] = [];
@@ -710,14 +709,16 @@ export class BujoMemoryStore implements MemoryStore {
   }
 
   /**
-   * Enqueue a best-effort intelligent capture. Returns immediately. Captures run strictly
-   * one-at-a-time (serialized across all channels sharing this store), and a failure is caught +
-   * logged so it never breaks the chain, the reply, or the process. No-op without an llm.
+   * Legacy opt-in best-effort capture for direct compatibility callers. The bundled harness uses
+   * `persistCompletedTurn` for this store and never invokes this method. Allocate its queue only on
+   * the first explicit call so an ordinary BuJo store does not carry a dormant background queue.
+   * Captures run one-at-a-time; failures are logged without breaking the caller or the process.
    */
   scheduleCapture(conversationId: string, text: string): void {
     this.assertWritable("scheduleCapture");
-    if (this.captureQueue === undefined) return;
-    const outcome = this.captureQueue.enqueue({
+    if (this._tier !== "bujo" || this.llm === undefined) return;
+    this.initializeCaptureQueue();
+    const outcome = this.captureQueue!.enqueue({
       key: `${conversationId}:${normalizedContentHash(text)}`,
       bytes: Buffer.byteLength(text, "utf8"),
       conversationId,
@@ -765,14 +766,10 @@ export class BujoMemoryStore implements MemoryStore {
   }
 
   /**
-   * LLM-backed intelligent capture: distills the turn text into atomic candidate memories,
-   * reconciles them against the existing index (ADD / UPDATE / SUPERSEDE / NOOP), and extracts
-   * typed entities into the canonical graph.
-   *
-   * Returns `undefined` when no `llm` was configured — use `appendHostSummary` as the always-on
-   * deterministic rapid-log (P1 path). `capture()` is the intelligent path invoked by P3
-   * reflection/cron and future session hooks; it is safe to call on every turn when an LLM is
-   * present, and a no-op when one is not.
+   * Explicit legacy capture primitive for direct callers. It distills the turn text into atomic
+   * candidate memories, reconciles them against the existing index, and extracts graph entities.
+   * The bundled harness does not call this path; its `persistCompletedTurn` boundary drives strict,
+   * idempotent capture instead. Returns `undefined` when no `llm` was configured.
    */
   async capture(
     conversationId: string,
@@ -943,6 +940,7 @@ export class BujoMemoryStore implements MemoryStore {
   }
 
   private initializeCaptureQueue(): void {
+    if (this.captureQueue !== undefined) return;
     this.captureQueue = new BoundedBatchQueue<CaptureJob>({
       maxItems: CAPTURE_QUEUE_MAX_ITEMS,
       maxBytes: CAPTURE_QUEUE_MAX_BYTES,

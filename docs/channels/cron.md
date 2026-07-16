@@ -32,7 +32,7 @@ Cron expressions have exactly five positional fields:
 minute hour day-of-month month day-of-week
 ```
 
-For example, `0 9 * * *` runs every day at 09:00. The default timezone is `UTC`; set an IANA timezone such as `Europe/Rome` when the schedule should follow local civil time. A seconds field and macros such as `@daily` are not supported.
+For example, `0 9 * * *` runs every day at 09:00. The default timezone is `UTC`; set an IANA timezone such as `Europe/Rome` when the schedule should follow local civil time. A seconds field and macros such as `@daily` are not supported. Hashed `H` fields are supported and stay stable across restarts and re-arms because each schedule is seeded from its job `id`; renaming the job intentionally changes that seed and can change its hashed slot.
 
 When you select **Scheduled jobs (cron)** in the guided `mono-agent init` wizard, the expression is validated at the prompt. Its default is `0 8 * * *` at 08:00 UTC. The wizard scaffolds `cron/digest.md` only after the expression is accepted, then validates the effective folder—including any existing jobs that init will preserve—before making runtime model calls.
 
@@ -65,7 +65,7 @@ When you select **Scheduled jobs (cron)** in the guided `mono-agent init` wizard
 | `cron.jobs[]` | array | no | `[]` | Inline job definitions. Merges with `*.md` files in `cron.dir`. |
 | `jobs[].id` | string | yes | — | Unique job id. Duplicate ids (across config and folder) are an error. |
 | `jobs[].enabled` | boolean | no | `true` | Set `false` to keep a job defined but unscheduled. |
-| `jobs[].expression` | string | yes | — | Five fields: `minute hour day-of-month month day-of-week`; no seconds field or macros. |
+| `jobs[].expression` | string | yes | — | Five fields: `minute hour day-of-month month day-of-week`; no seconds field or macros. `H` fields use the stable job `id` as their hash seed. |
 | `jobs[].timezone` | string | no | `UTC` | IANA timezone (e.g. `Europe/Rome`) the expression is evaluated in. |
 | `jobs[].prompt` | string | yes | — | Text sent to the responder on each tick. |
 | `jobs[].conversationId` | string | no | per-tick | Share memory/history across ticks (see below). |
@@ -123,9 +123,11 @@ Folder jobs and inline `jobs[]` are **merged** into one job set. A job id that a
 
 This mirrors how the webhook channel authors per-endpoint prompts; see [Webhook](/channels/webhook/).
 
-## Overlap: ticks are skipped, never queued
+## Configured overlap: ticks are skipped, never queued
 
-If a tick fires while the previous run of the **same job** is still in flight, the new tick is **skipped** — it is not queued and does not run later. The in-flight run continues uninterrupted. Different jobs run independently and never block one another.
+The `@mono-agent/agent-app` cron driver pins the scheduler to `overlap: "skip"`. If a tick fires while the previous run of the **same configured job** is still in flight, the new tick is **skipped** — it is not queued and does not run later. The in-flight run continues uninterrupted. Scheduler overlap state is tracked per job, so one job's active run does not itself make a different job's tick overlap. After scheduler admission, however, shared agent-app harness admission and execution limits can serialize work across different jobs or reject a run when shared capacity is exhausted.
+
+The config schema intentionally has no `overlap`, `maxQueueDepth`, or `overflow` key. Direct embedders of `@mono-agent/cron-adapter` can select queue or replace behavior through the programmatic `startCronAdapter` API; those adapter options are outside this config-focused channel surface.
 
 :::note
 Pick an `expression` whose interval comfortably exceeds the job's typical runtime; otherwise the agent will quietly drop overlapping firings.
@@ -133,9 +135,11 @@ Pick an `expression` whose interval comfortably exceeds the job's typical runtim
 
 ## Run watchdog: a wedged run is aborted, not left to starve
 
-Skip-on-overlap protects against a *still-running* prior tick. A separate watchdog protects against a *wedged* one. If a run never settles (a hung responder, a stuck provider call), it would otherwise hold the job's slot forever and skip **every** future firing as "a prior run is still active." To prevent that, the cron channel runs each job under a **20-minute watchdog** (`maxRunMs`, default `1200000`): a run that does not finish in time is aborted and its slot reclaimed, so the next tick can fire.
+Skip-on-overlap protects against a *still-running* prior tick. A separate watchdog protects against a *wedged* one. If a run never settles (a hung destination resolver, responder, or provider call), it would otherwise hold the job's slot forever and skip **every** future firing as "a prior run is still active." To prevent that, the cron channel runs each job under a **20-minute watchdog** (`maxRunMs`, default `1200000`): a run that does not finish in time is aborted and its slot reclaimed, so the next tick can fire.
 
-The watchdog is **per job** — a wedged job does not affect its siblings — and is comfortably above any real briefing/scan. Set `jobs[].maxRunMs` (or `maxRunMs` frontmatter) to override the default for a specific job. Programmatic callers can still set `maxRunMs` on `startCronAdapter` as the adapter-level fallback. An aborted run is recorded with an `interrupted` status — see [Run artifacts & traces](/observability/artifacts-and-traces/).
+The watchdog and the scheduler slot it reclaims are **per job**: a wedged run does not occupy a sibling job's cron overlap/watchdog slot. That isolation stops at scheduler admission; shared agent-app harness admission and execution limits may still delay sibling provider work or reject it when shared capacity is exhausted. Set `jobs[].maxRunMs` (or `maxRunMs` frontmatter) to override the default for a specific job. Programmatic callers can still set `maxRunMs` on `startCronAdapter` as the adapter-level fallback. An aborted run is recorded with an `interrupted` status — see [Run artifacts & traces](/observability/artifacts-and-traces/).
+
+Programmatic destination resolvers receive the run's `AbortSignal`, and their promise is raced against it independently of the watchdog. Consequently, overlap replacement or adapter stop reclaims a firing that is still resolving even when `maxRunMs` is unset and the resolver ignores the signal; later settlement is discarded.
 
 ## Sharing memory and history with `conversationId`
 

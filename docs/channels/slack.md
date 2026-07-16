@@ -24,12 +24,12 @@ The heartbeat and reconnect behavior are **on by default and need no configurati
 
 ## Configuration
 
+Put the Socket Mode credentials in `.env` as `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN`. The source-config examples intentionally omit both fields.
+
 ```json
 {
   "slack": {
     "enabled": true,
-    "botToken": "xoxb-...",
-    "appToken": "xapp-...",
     "allowedChannelIds": ["C0123"],
     "allowAllChannels": false,
     "botUserIds": ["U0BOT"],
@@ -42,15 +42,15 @@ The heartbeat and reconnect behavior are **on by default and need no configurati
 | Key | Type | Default | Purpose |
 | --- | --- | --- | --- |
 | `enabled` | boolean | `false` | Opt-in flag. While `false` the channel reports `disabled` (not `waiting_for_config`) and token validation is skipped. |
-| `botToken` | string (`xoxb-...`) | — | Bot user OAuth token. **Required** when enabled. |
-| `appToken` | string (`xapp-...`) | — | App-level token for Socket Mode (`connections:write`). **Required** when enabled. |
+| `botToken` | string (`xoxb-...`) | — | Bot user OAuth token. An effective value is **required** when enabled. Inline config remains compatible; new source configs should use `MONO_AGENT_SLACK_BOT_TOKEN` in `.env`. |
+| `appToken` | string (`xapp-...`) | — | App-level token for Socket Mode (`connections:write`). An effective value is **required** when enabled. Inline config remains compatible; new source configs should use `MONO_AGENT_SLACK_APP_TOKEN` in `.env`. |
 | `allowedChannelIds` | string[] | — | Channel IDs the agent may respond in. Required unless `allowAllChannels` is `true`. |
 | `allowAllChannels` | boolean | `false` | Respond in any channel the bot is in. Alternative to `allowedChannelIds`. |
 | `botUserIds` | string[] | — | The bot's Slack user ID(s), used to detect real `@bot` mentions. |
 | `mentionTextAliases` | string[] | — | Plain-text aliases (e.g. `@agent`) that also trigger a response. |
-| `stripMentionText` | boolean | `true` | Strip the mention/alias text from the prompt before the agent sees it. |
-| `shortcuts` | object[] | `[]` | JSON-only global/message shortcut bindings that run configured prompts. See [Shortcuts](#shortcuts). |
-| `homeTab` | object | `{ "enabled": false, "buttons": [] }` | JSON-only App Home header/buttons. See [App Home](#app-home). |
+| `stripMentionText` | boolean | conditional | Strip the mention/alias text from the prompt before the agent sees it. When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`. |
+| `shortcuts` | object[] | `[]` | JSON-only global/message shortcut bindings that run configured prompts; no environment-variable form. See [Shortcuts](#shortcuts). |
+| `homeTab` | object | `{ "enabled": false, "buttons": [] }` | JSON-only App Home header/buttons; no environment-variable form. See [App Home](#app-home). |
 
 :::caution
 Both `botToken` and `appToken` are required when `enabled: true`. If either is missing, or if neither `allowedChannelIds` nor `allowAllChannels` is set, the channel reports `waiting_for_config` instead of starting.
@@ -75,8 +75,24 @@ interaction fields are structured and JSON-only: configure them in
 | `slack.stripMentionText` | `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` |
 
 :::tip
-Keep tokens out of `mono-agent.config.json` in shared repos — set `MONO_AGENT_SLACK_BOT_TOKEN` / `MONO_AGENT_SLACK_APP_TOKEN` from your secret store or `.env` instead.
+Keep tokens out of every source `mono-agent.config.json`, including ignored or untracked development configs. Set `MONO_AGENT_SLACK_BOT_TOKEN` / `MONO_AGENT_SLACK_APP_TOKEN` from your secret store or `.env` instead.
 :::
+
+### Silent delivery and quiet hours
+
+Slack does not expose a bot-controlled notification-suppression field on
+`chat.postMessage`. Programmatic adapter callers may pass `silent: true` through
+`SlackNotifyOptions` / `SlackMessageStreamOptions` for cross-channel option
+parity, but the post still uses normal Slack notification behavior and the
+adapter emits an explicit warning when a logger is configured
+(`silentRequested: true`, `silentApplied: false`). It deliberately does not send
+an invented `silent` or `disable_notification` field.
+
+There is no `slack.quietHours` config key because mono-agent cannot honestly
+enforce that promise at the Slack transport boundary. Slack client/workspace
+notification settings remain authoritative. If guaranteed quiet hours are a
+hard requirement, the programmatic caller must skip or defer the Slack delivery
+instead of relying on `silent: true`.
 
 ### Shortcuts
 
@@ -88,8 +104,6 @@ matches `callbackId`; invoking it runs `prompt` as a proactive agent turn.
 {
   "slack": {
     "enabled": true,
-    "botToken": "xoxb-...",
-    "appToken": "xapp-...",
     "allowedChannelIds": ["C0123"],
     "shortcuts": [
       {
@@ -132,8 +146,6 @@ allowlisted proactive-delivery path as a shortcut.
 {
   "slack": {
     "enabled": true,
-    "botToken": "xoxb-...",
-    "appToken": "xapp-...",
     "allowedChannelIds": ["C0123"],
     "homeTab": {
       "enabled": true,

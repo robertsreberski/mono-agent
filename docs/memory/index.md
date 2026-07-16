@@ -80,6 +80,30 @@ The tier matrix is strict. `lite` rejects embeddings/LLM configuration, `journal
 embeddings and rejects a memory LLM/consolidation, and `bujo` requires both embeddings and
 the memory LLM. Invalid configuration fails instead of silently downshifting.
 
+## Local persistence threat model
+
+The built-in Lite, Journal, and BuJo store is designed for one trusted OS owner on a local
+filesystem. Its defensive file handling primarily protects against process or host crashes during
+fsync-ordered state transitions and against accidental concurrent writers, especially a maintenance
+CLI racing the running agent. Atomic publication, durable receipts, writer leases, stable file-identity
+and single-link checks, owner-only coordination records, and symlink rejection let those cases
+recover deterministically or fail closed instead of reporting a corrupt or partial transition as
+success.
+
+This is not a multi-tenant or adversarial security boundary. In particular, checksums and logical
+digests detect unexpected changes inside the trusted same-user workflow; they do not authenticate
+the store against a malicious process running as that OS owner (or as root) that can rewrite both
+data and its commitments. Network-provider trust and external memory backends are separate
+boundaries. Manual same-owner edits are outside this guarantee: stop the agent and use the
+documented maintenance flows instead of rewriting managed files in place. See [reversible forget
+plans](/memory/validation-and-cli/#reversible-explicit-bujo-forget-plans) and [safe rebuild and
+rollback](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback) for the concrete
+locking, recovery, and integrity rules.
+
+This posture is specific to durability-critical memory state and its coordination records: do not
+copy it mechanically into lower-stakes files, and do not remove an individual guard without
+re-proving the surrounding durability and writer-lease protocol.
+
 ## Config
 
 ### Lite tier (no external deps)
@@ -237,8 +261,9 @@ an SDK runtime model reference such as `pi:openai-codex:gpt-5.6-terra`.
 
 When `memory.mode` is `"bujo"` and `memory.llm` is configured, the agent-app starts an
 **in-app consolidation scheduler** alongside the other channels. It runs
-`store.consolidate()` at the `memory.consolidation.cron` cadence (default `0 */2 * * *`,
-every two hours). Consolidation refreshes the living `index.md`, keeps `future-log.md` as a
+`store.consolidate()` at the UTC `memory.consolidation.cron` cadence (default `0 */2 * * *`,
+every two hours). The schedule accepts shared five-field cron syntax but not hashed `H` fields.
+Consolidation refreshes the living `index.md`, keeps `future-log.md` as a
 literal empty stub, and reports the duplicate-group count. It never decays salience or automatically
 supersedes or rewrites canonical memories.
 

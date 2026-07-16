@@ -2,6 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import {
+  accessSync,
   closeSync,
   constants,
   fchmodSync,
@@ -9,8 +10,10 @@ import {
   fsyncSync,
   lstatSync,
   openSync,
+  realpathSync,
+  statSync,
 } from "node:fs";
-import { delimiter, dirname, resolve, win32 } from "node:path";
+import { delimiter, dirname, posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -26,8 +29,11 @@ import {
 } from "./lib/build-provenance.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const TRUSTED_GIT = "/usr/bin/git";
 const GIT_ENV = Object.freeze({ PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" });
+const MAX_EXECUTABLE_PATH_LENGTH = 4096;
+const MAX_PATH_ENV_LENGTH = 128 * 1024;
+const MAX_PATH_ENTRIES = 1024;
+const WINDOWS_RESERVED_BASENAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9]|conin\$|conout\$)$/iu;
 const BUILD_COMMANDS = Object.freeze([
   ["pnpm", ["-r", "--sort", "run", "build"]],
   ["pnpm", ["run", "build:demo"]],
@@ -94,12 +100,29 @@ export function prependNodeToPath(nodeBin, currentPath, platform = process.platf
     : nodeBin;
 }
 
+function isSafeWindowsDrivePath(path) {
+  if (typeof path !== "string"
+    || path.length === 0
+    || path.length > MAX_EXECUTABLE_PATH_LENGTH
+    || /[\u0000-\u001f\u007f]/u.test(path)
+    || !win32.isAbsolute(path)
+    || !/^[a-z]:[\\/]$/iu.test(win32.parse(path).root)
+    || path.slice(2).includes(":")) {
+    return false;
+  }
+  const segments = path.slice(win32.parse(path).root.length).split(/[\\/]/u).filter(Boolean);
+  return segments.every((segment) => segment !== "."
+    && segment !== ".."
+    && !/[. ]$/u.test(segment)
+    && !WINDOWS_RESERVED_BASENAME.test(segment.split(".", 1)[0]));
+}
+
 function isSafeWindowsExecutable(path, basenamePattern) {
-  return typeof path === "string"
-    && win32.isAbsolute(path)
-    && !/[\0\r\n]/u.test(path)
-    && !path.split(/[\\/]/u).includes("..")
-    && basenamePattern.test(win32.basename(path));
+  return isSafeWindowsDrivePath(path) && basenamePattern.test(win32.basename(path));
+}
+
+function isSafeWindowsTrustRoot(path) {
+  return isSafeWindowsDrivePath(path) && win32.normalize(path) !== win32.parse(path).root;
 }
 
 function isWindowsDescendant(parent, candidate) {
@@ -112,9 +135,9 @@ function isWindowsDescendant(parent, candidate) {
 
 /**
  * Resolve only the two fixed internal pnpm build commands. Windows executes
- * the exact pnpm JS entrypoint from the current Node installation, without a
- * shell or PATH lookup. Missing or outside-install environment claims fail
- * closed instead of selecting an ambient pnpm.cmd/cmd.exe.
+ * the exact pnpm JS entrypoint beneath the current Node installation or an
+ * explicit PNPM_HOME, without a shell or PATH lookup. All other environment
+ * claims fail closed instead of selecting an ambient pnpm.cmd/cmd.exe.
  */
 export function selectBuildInvocation(command, args, options = {}) {
   const platform = options.platform ?? process.platform;
@@ -130,12 +153,145 @@ export function selectBuildInvocation(command, args, options = {}) {
   const npmExecPath = Object.hasOwn(options, "npmExecPath")
     ? options.npmExecPath
     : process.env.npm_execpath;
-  if (isSafeWindowsExecutable(nodePath, /^node\.exe$/iu)
+  const environment = options.env ?? process.env;
+  const pnpmHome = Object.hasOwn(options, "pnpmHome")
+    ? options.pnpmHome
+    : environment.PNPM_HOME;
+  const nodePathIsSafe = isSafeWindowsExecutable(nodePath, /^node\.exe$/iu);
+  const nodeInstallRoot = nodePathIsSafe ? win32.dirname(nodePath) : undefined;
+  const trustedRoots = isSafeWindowsTrustRoot(nodeInstallRoot) ? [nodeInstallRoot] : [];
+  if (isSafeWindowsTrustRoot(pnpmHome)) trustedRoots.push(pnpmHome);
+  if (nodePathIsSafe
     && isSafeWindowsExecutable(npmExecPath, /^pnpm\.(?:cjs|mjs|js)$/iu)
-    && isWindowsDescendant(win32.dirname(nodePath), npmExecPath)) {
+    && trustedRoots.some((root) => isWindowsDescendant(root, npmExecPath))) {
     return { command: nodePath, args: [npmExecPath, ...args] };
   }
   throw new Error("trusted Windows pnpm entrypoint unavailable");
+}
+
+function normalizeSafePosixAbsolutePath(path) {
+  if (typeof path !== "string"
+    || path.length === 0
+    || path.length > MAX_EXECUTABLE_PATH_LENGTH
+    || /[\u0000-\u001f\u007f]/u.test(path)
+    || !posix.isAbsolute(path)
+    || path.split("/").some((segment) => segment === "." || segment === "..")) {
+    return null;
+  }
+  const normalized = posix.normalize(path);
+  const withoutTrailingSeparators = path.length === 1 ? path : path.replace(/\/+$/u, "");
+  return normalized === withoutTrailingSeparators ? normalized : null;
+}
+
+function isPosixDescendantOrSelf(parent, candidate) {
+  const relativePath = posix.relative(parent, candidate);
+  return relativePath === ""
+    || (relativePath !== ".."
+      && !relativePath.startsWith(`..${posix.sep}`)
+      && !posix.isAbsolute(relativePath));
+}
+
+function hasTrustedDirectoryChain(path, currentUid) {
+  let directory = posix.dirname(path);
+  for (let depth = 0; depth < 128; depth += 1) {
+    const details = statSync(directory);
+    const writableByOthers = (details.mode & 0o022) !== 0;
+    const stickyProtected = (details.mode & 0o1000) !== 0;
+    if (!details.isDirectory()
+      || !Number.isInteger(details.mode)
+      || (writableByOthers && !stickyProtected)
+      || !Number.isInteger(details.uid)
+      || (details.uid !== 0 && details.uid !== currentUid)) {
+      return false;
+    }
+    const parent = posix.dirname(directory);
+    if (parent === directory) return true;
+    directory = parent;
+  }
+  return false;
+}
+
+function inspectGitExecutable(path, currentUid) {
+  try {
+    const canonicalPath = realpathSync.native(path);
+    accessSync(canonicalPath, constants.X_OK);
+    const details = statSync(canonicalPath);
+    return {
+      canonicalPath,
+      isFile: details.isFile(),
+      mode: details.mode,
+      uid: details.uid,
+      directoryChainTrusted: hasTrustedDirectoryChain(canonicalPath, currentUid),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isTrustedGitInspection(value, currentUid) {
+  const canonicalPath = normalizeSafePosixAbsolutePath(value?.canonicalPath);
+  return canonicalPath !== null
+    && posix.basename(canonicalPath) === "git"
+    && value?.isFile === true
+    && Number.isInteger(value.mode)
+    && (value.mode & 0o111) !== 0
+    && (value.mode & 0o022) === 0
+    && (value.mode & 0o6000) === 0
+    && Number.isInteger(value.uid)
+    && (value.uid === 0 || value.uid === currentUid)
+    && value.directoryChainTrusted === true;
+}
+
+/**
+ * Resolve Git once from a closed set of absolute PATH directories, then use
+ * its canonical absolute path for every source probe. Profile symlinks (for
+ * example Nix profiles) are accepted only when their final executable has a
+ * trusted owner and mode. Relative/empty PATH entries never imply cwd lookup.
+ */
+export function resolveTrustedGitExecutable(options = {}) {
+  const platform = options.platform ?? process.platform;
+  if (!supportsStrictBuildProvenance(platform)) return null;
+
+  const pathEnv = Object.hasOwn(options, "pathEnv")
+    ? options.pathEnv
+    : platform === "darwin" ? "/usr/bin" : process.env.PATH;
+  const currentUid = options.currentUid
+    ?? (typeof process.getuid === "function" ? process.getuid() : undefined);
+  const inspectExecutable = options.inspectExecutable ?? inspectGitExecutable;
+  const hasForbiddenRoot = Object.hasOwn(options, "forbiddenRoot");
+  const forbiddenRoot = hasForbiddenRoot
+    ? normalizeSafePosixAbsolutePath(options.forbiddenRoot)
+    : null;
+  if (typeof pathEnv !== "string"
+    || pathEnv.length === 0
+    || pathEnv.length > MAX_PATH_ENV_LENGTH
+    || !Number.isInteger(currentUid)
+    || (hasForbiddenRoot && forbiddenRoot === null)) {
+    return null;
+  }
+
+  const entries = pathEnv.split(":");
+  if (entries.length === 0 || entries.length > MAX_PATH_ENTRIES) return null;
+  const directories = entries.map(normalizeSafePosixAbsolutePath);
+  if (directories.some((directory) => directory === null)) return null;
+
+  for (const directory of directories) {
+    const candidate = posix.join(directory, "git");
+    if (forbiddenRoot !== null && isPosixDescendantOrSelf(forbiddenRoot, candidate)) continue;
+    let inspection;
+    try {
+      inspection = inspectExecutable(candidate, currentUid);
+    } catch {
+      inspection = null;
+    }
+    if (isTrustedGitInspection(inspection, currentUid)) {
+      const canonicalPath = normalizeSafePosixAbsolutePath(inspection.canonicalPath);
+      if (forbiddenRoot === null || !isPosixDescendantOrSelf(forbiddenRoot, canonicalPath)) {
+        return canonicalPath;
+      }
+    }
+  }
+  return null;
 }
 
 function run(command, args, options = {}) {
@@ -164,12 +320,12 @@ function run(command, args, options = {}) {
   };
 }
 
-function runTrustedGit(repo, args, runCommand) {
-  return runCommand(TRUSTED_GIT, ["-C", repo, ...args], { cwd: repo, env: GIT_ENV });
+function runTrustedGit(repo, args, runCommand, gitExecutable) {
+  return runCommand(gitExecutable, ["-C", repo, ...args], { cwd: repo, env: GIT_ENV });
 }
 
-function readSourceState(repo, runCommand) {
-  const shaResult = runTrustedGit(repo, ["rev-parse", "HEAD"], runCommand);
+function readSourceState(repo, runCommand, gitExecutable) {
+  const shaResult = runTrustedGit(repo, ["rev-parse", "HEAD"], runCommand, gitExecutable);
   const gitSha = shaResult.status === 0 ? shaResult.stdout.trim().toLowerCase() : "";
   if (!/^[0-9a-f]{40,64}$/u.test(gitSha)) return null;
 
@@ -177,18 +333,24 @@ function readSourceState(repo, runCommand) {
     repo,
     ["status", "--porcelain=v1", "--untracked-files=all"],
     runCommand,
+    gitExecutable,
   );
   if (statusResult.status !== 0) return null;
   return { gitSha, sourceState: statusResult.stdout.length === 0 ? "clean" : "dirty" };
 }
 
-function markerFilesAreIgnored(repo, runCommand) {
+function markerFilesAreIgnored(repo, runCommand, gitExecutable) {
   for (const filename of [
     BUILD_MARKER_FILENAME,
     `${BUILD_MARKER_FILENAME}.tmp-probe`,
     BUILD_LOCK_FILENAME,
   ]) {
-    const result = runTrustedGit(repo, ["check-ignore", "-q", "--", filename], runCommand);
+    const result = runTrustedGit(
+      repo,
+      ["check-ignore", "-q", "--", filename],
+      runCommand,
+      gitExecutable,
+    );
     if (result.status !== 0) return false;
   }
   return true;
@@ -220,7 +382,7 @@ function runPortableBuild(repo, runCommand, commands) {
 }
 
 export function runBuildWithProvenance(options = {}) {
-  const repo = options.repo ?? REPO;
+  let repo = options.repo ?? REPO;
   const runCommand = options.runCommand ?? run;
   const commands = options.commands ?? BUILD_COMMANDS;
   const now = options.now ?? (() => new Date());
@@ -228,6 +390,30 @@ export function runBuildWithProvenance(options = {}) {
 
   if (!supportsStrictBuildProvenance(platform)) {
     return runPortableBuild(repo, runCommand, commands);
+  }
+
+  const resolveGitExecutable = options.resolveGitExecutable ?? resolveTrustedGitExecutable;
+  let canonicalRepo;
+  try {
+    canonicalRepo = normalizeSafePosixAbsolutePath(realpathSync.native(repo));
+  } catch {
+    canonicalRepo = null;
+  }
+  if (canonicalRepo === null) {
+    return { exitCode: 1, error: "trusted Git executable unavailable" };
+  }
+  repo = canonicalRepo;
+  let gitExecutable;
+  try {
+    const resolverOptions = { platform, forbiddenRoot: canonicalRepo };
+    if (Object.hasOwn(options, "pathEnv")) resolverOptions.pathEnv = options.pathEnv;
+    gitExecutable = resolveGitExecutable(resolverOptions);
+  } catch {
+    gitExecutable = null;
+  }
+  gitExecutable = normalizeSafePosixAbsolutePath(gitExecutable);
+  if (gitExecutable === null || posix.basename(gitExecutable) !== "git") {
+    return { exitCode: 1, error: "trusted Git executable unavailable" };
   }
 
   let lock;
@@ -242,10 +428,10 @@ export function runBuildWithProvenance(options = {}) {
   let result;
   try {
     clearBuildMarker(repo);
-    if (!markerFilesAreIgnored(repo, runCommand)) {
+    if (!markerFilesAreIgnored(repo, runCommand, gitExecutable)) {
       result = { exitCode: 1, error: "build provenance files are not ignored" };
     } else {
-      const before = readSourceState(repo, runCommand);
+      const before = readSourceState(repo, runCommand, gitExecutable);
       if (before === null) {
         result = { exitCode: 1, error: "build source state unavailable" };
       } else {
@@ -260,7 +446,7 @@ export function runBuildWithProvenance(options = {}) {
             result = { exitCode: 1, error: "required build entrypoints unavailable or unsafe" };
           }
           if (result.exitCode === 0) {
-            const after = readSourceState(repo, runCommand);
+            const after = readSourceState(repo, runCommand, gitExecutable);
             if (after === null
               || after.gitSha !== before.gitSha
               || after.sourceState !== before.sourceState) {
@@ -281,7 +467,7 @@ export function runBuildWithProvenance(options = {}) {
                 && deploymentStateBefore !== undefined
                 && outputDigest !== undefined
                 && dependencyDigest !== undefined) {
-                const finalSource = readSourceState(repo, runCommand);
+                const finalSource = readSourceState(repo, runCommand, gitExecutable);
                 if (finalSource === null
                   || finalSource.gitSha !== before.gitSha
                   || finalSource.sourceState !== before.sourceState) {

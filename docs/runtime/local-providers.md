@@ -27,7 +27,7 @@ Coverage: `config` — `providers.local[]` (`MONO_AGENT_LOCAL_PROVIDERS_JSON`, o
 | `baseUrl` | string | Server URL, e.g. `http://localhost:11434`. |
 | `enabled` | boolean | Set `false` to keep the entry without loading it. |
 | `trustPublicUrl` | boolean | Default `false`. Non-private (public) URLs are blocked unless this is `true`. |
-| `apiKey` \| `apiKeyEnv` | string | Inline key (untracked file only) or the name of an env var holding it. |
+| `apiKey` \| `apiKeyEnv` | string | `apiKeyEnv` names the environment variable holding the key and is the source-config convention. Inline `apiKey` remains schema-compatible for existing consumers, but keep secret values out of config. |
 | `models[]` | array | Each `{ name, capabilities: { context_window } }`. |
 
 ```json
@@ -87,7 +87,7 @@ Ollama and LM Studio can power memory embeddings independently of the chat runti
 
 ## LM Studio and OpenAI-compatible gateways
 
-LM Studio and any OpenAI-compatible server (vLLM, Together, a self-hosted proxy, etc.) use the same entry shape with `type: "lmstudio"` or `type: "openai_compat"`. Point `baseUrl` at the server and supply a key via `apiKeyEnv` (or inline `apiKey` in an untracked file) when the gateway requires one. If `apiKeyEnv` is declared but does not resolve to a non-empty value, `mono-agent validate` reports the route as `waiting`; omitting both key fields is treated as an intentional keyless provider.
+LM Studio and any OpenAI-compatible server (vLLM, Together, a self-hosted proxy, etc.) use the same entry shape with `type: "lmstudio"` or `type: "openai_compat"`. Point `baseUrl` at the server and supply a key via `apiKeyEnv` when the gateway requires one: keep the secret value in `.env` and only its variable name in config. Inline `apiKey` remains schema-compatible for existing consumers, but ignored or untracked source config is not an exception to this placement convention. If `apiKeyEnv` is declared but does not resolve to a non-empty value, `mono-agent validate` reports the route as `waiting`; omitting both key fields is treated as an intentional keyless provider.
 
 ```json
 {
@@ -131,8 +131,8 @@ These ids are then referenced as `pi:studio:qwen3.6-32b` and `pi:gateway:llama-3
 mono-agent blocks non-private `baseUrl` values by default. To use a public/remote endpoint you must explicitly opt in with `trustPublicUrl: true`, and the URL must be HTTPS. This prevents an agent from silently exfiltrating prompts to an unintended host.
 
 :::caution
-:::
 Only set `trustPublicUrl: true` for gateways you control or trust. Private addresses (`localhost`, `127.0.0.1`, LAN ranges) are allowed without it; anything else is rejected until you trust it explicitly.
+:::
 
 ## Setting providers via environment
 

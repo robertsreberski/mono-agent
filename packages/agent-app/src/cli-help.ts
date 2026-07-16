@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 
 import { EFFORT_LEVELS } from "@mono-agent/config";
 
+import { readinessProbeTimeoutDescription } from "./readiness-probe.js";
 import * as ui from "./ui.js";
 
 interface HelpEntry {
@@ -17,10 +18,13 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "                [--fallback-models <csv>] [--route-safety uniform|per-route-native]\n" +
       "                [--codex-auth browser|device] [--memory lite|journal|bujo]",
     lines: [
-      "Scaffold a mono-agent in the current folder. On a TTY with no flags, launches",
-      "the step-by-step wizard; with --yes or any flag, writes the default/preset",
-      "scaffold non-interactively. --preset seeds a blueprint, --with adds channels,",
+      "Fast scaffold-only path: flags or non-TTY input; without explicit --auth,",
+      "it makes no provider call and never claims readiness. Bare init on a TTY runs",
+      "a real no-tool model call per selected route before committing the scaffold,",
+      `with timeouts of ${readinessProbeTimeoutDescription()}.`,
+      "--preset seeds a blueprint; --with adds channels.",
       `Effort levels: ${EFFORT_LEVELS.join(", ")}; an omitted fallback effort uses that provider's default.`,
+      "--fallback-models is deprecated and will be removed in v2.0.0; repeat --fallback for new scripts.",
       "--auth runs supported provider auth/preflight before writing; --codex-auth device supports headless hosts.",
       "--dry-run previews only. Existing scaffold/config files are not overwritten;",
       "guided secret setup may securely update .env and .gitignore after explicit review.",

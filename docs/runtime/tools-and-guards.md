@@ -37,8 +37,8 @@ These are gated by `tools.allowedTools` / `tools.disallowedTools`. Deny always w
 Env equivalents: `MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS` (comma-separated tool names).
 
 :::note
-:::
 An **omitted** `allowedTools` (or `["*"]`) allows **every** tool subject to `disallowedTools` — the allow-all default. Listing specific names narrows to those; an **explicit empty** `[]` allows none (a deliberate chat-only agent). Add names to `disallowedTools` to subtract from the open default without switching to a full allowlist.
+:::
 
 These are the normalized policy semantics, but the selected runtime must be able to enforce them. Direct `codex:*` normal runs currently accept exact allow-all only (`["*"]` or omitted, with no denylist); restrictive variants fail validation/runtime setup instead of being silently widened. See [Tool policy](/tools/policy/#allow-all-by-default).
 
@@ -62,7 +62,7 @@ Env: `MONO_AGENT_ARTIFACT_DIR`.
 
 ## Usage & cost tracking (auto)
 
-Each run collects per-turn usage, cost, and cache metrics as events for its JSONL artifact. The recorder redacts them, applies a 4,096-byte default cap per string, buffers them in memory, and atomically replaces the bounded events snapshot at the terminal boundary; it does not append or checkpoint events during the run, so a crash can lose buffered data. This is automatic (coverage: `auto`) — it rides on the same `artifacts.dir` and needs no separate flag. See [Artifacts & traces](/observability/artifacts-and-traces/) for the complete write-boundary and stale-reconciliation contract.
+Each run collects per-turn usage, cost, and cache metrics as events for its JSONL artifact. Pi catalog estimates delegate to Pi's native cost calculation, including request-wide pricing tiers and cache-write rates. Tool telemetry uses key-pattern redaction for sensitive-key fields: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. The recorder applies a 4,096-byte default cap per string, buffers events in memory, and atomically replaces the bounded events snapshot at the terminal boundary; it does not append or checkpoint events during the run, so a crash can lose buffered data. This is automatic (coverage: `auto`) — it rides on the same `artifacts.dir` and needs no separate flag. See [Artifacts & traces](/observability/artifacts-and-traces/) for the complete write-boundary and stale-reconciliation contract.
 
 Related per-turn timing also lands in the JSONL: a `provider_bridge_latency` event separates provider/tool/IO time from harness overhead, and per-tool `tool_timing` events carry `execution_ms`. See [Artifacts & traces](/observability/artifacts-and-traces/) and the [CLI reference](/observability/cli-reference/) for reading these, and [Phoenix & backfill](/observability/phoenix-and-backfill/) to export them as spans.
 
@@ -90,8 +90,8 @@ This is automatic on the pi-native bridge (coverage: `provider` + `settings`); t
 The `WebFetch` tool retries transient network failures (timeout, `ECONNRESET`, 5xx) in-tool with backoff. This keeps the model from burning reasoning rounds re-issuing a fetch that failed for a momentary network reason. It is built into the tool (coverage: `auto`) — there is nothing to configure.
 
 :::tip
-:::
 This is distinct from provider-transport retries (`providers.piNative.piMaxRetries` / `maxRetryDelayMs`), which retry the model call itself. WebFetch retry is local to the tool's HTTP request. See [Fallback](/runtime/fallback/) for provider-level retry and failover.
+:::
 
 ## Tool parallelism (code-only)
 

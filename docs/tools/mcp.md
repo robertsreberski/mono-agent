@@ -58,14 +58,28 @@ SSE and streamable HTTP servers use a `url` instead of `command`/`args`:
 {
   "mcpServers": {
     "remote-api": {
-      "url": "https://mcp.example.com/sse",
-      "headers": { "Authorization": "Bearer sk-..." }
+      "url": "https://mcp.example.com/sse"
     }
   }
 }
 ```
 
-Keep tokens as placeholders in committed files; prefer `env` references or a non-tracked `mcp.json`. Run `mono-agent validate` to confirm the file is found — it reports the resolved `MCP config:` path or a `MCP config file is missing:` warning.
+HTTP/SSE header values in `mcp.json` are literal; mono-agent does not expand
+environment references inside them. Do not put credentials in this file,
+whether committed or merely untracked. There is currently no credential
+indirection for authenticated HTTP/SSE entries, so do not declare one unless a
+separate trusted mechanism supplies authentication without putting it in this
+file.
+
+Treat every declared stdio server as fully trusted. Environment delivery is
+runtime-dependent: some runtimes inherit the full agent process environment,
+including unrelated credentials loaded from `.env` or `--env-file`, while
+others launch from a restricted safe list. Literal per-server `env` entries are
+passed through. Do not rely on inherited variables for credential delivery or
+on a restricted runtime for per-server secret isolation.
+
+Run `mono-agent validate` to confirm the file is found; it reports the resolved
+`MCP config:` path or an `MCP config file is missing:` warning.
 
 ## Trusted request context for a stdio server
 
@@ -166,7 +180,7 @@ It supports two actions:
 - `{ "action": "list", "limit": 5 }` lists recent completed prior runs from the exact current conversation bucket; `limit` is optional (default 5, range 1–10).
 - `{ "action": "inspect", "runId": "..." }` verifies that the selected run belongs to that same bucket, then returns normalized chronological evidence: trigger text, visible assistant output, tool calls with linked results, warnings/provider failures, timestamps, and final output.
 
-The current or any running run is excluded, as are other conversations and rollover buckets. The safe projection never returns system prompts, reasoning/thinking, recalled memory or turn-context payloads, raw artifact paths, provider-session metadata, or sensitive-key values. Structured and artifact-shaped opaque tool results are scrubbed or omitted. Existing redaction and per-string bounds apply; total results are deterministically capped and announce truncation. All historical content is labelled untrusted evidence, never instructions.
+The current or any running run is excluded, as are other conversations and rollover buckets. The safe projection never returns system prompts, reasoning/thinking, recalled memory or turn-context payloads, raw artifact paths, or provider-session metadata. Structured and artifact-shaped opaque tool results are scrubbed or omitted. Structured projected values first pass through the shared observability redactor: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. `RunHistory` then applies an additional projection sanitizer. In that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible; numeric values under `apiKey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted. Assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel. An optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted. Per-string bounds still apply, total results are deterministically capped, and truncation is announced. All historical content is labelled untrusted evidence, never instructions.
 
 Use active conversation history first for the current exchange. Use `MemoryRecall` for intentionally captured durable facts, and `RunHistory` for exact evidence from an earlier run or tool call. See [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory).
 

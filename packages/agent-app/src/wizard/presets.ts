@@ -99,7 +99,8 @@ export function presetAnswers(preset: WizardPreset): WizardAnswers {
 
 /**
  * Former recipe id → the preset that now supersedes it, built from each preset's
- * `replacesRecipes`. Powers the deprecated `--recipe <id>` alias on `init`/`validate`:
+ * `replacesRecipes`. Powers the deprecated `--recipe <id>` alias (removed in
+ * v2.0.0) on `init`/`validate`:
  * a mapped id resolves to its preset (with a deprecation notice); an unmapped id is
  * treated as a retired recipe.
  */

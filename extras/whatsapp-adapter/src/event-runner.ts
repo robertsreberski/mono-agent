@@ -36,6 +36,12 @@ interface MessagesUpsertLike {
   messages?: WhatsAppRawMessage[];
 }
 
+// Malformed/control updates have no chat identity, so keep their legacy FIFO
+// ordering on one fallback queue rather than fanning them out unpredictably.
+const UNKEYED_MESSAGE_QUEUE = Symbol("unkeyed-message-queue");
+
+type MessageQueueKey = string | typeof UNKEYED_MESSAGE_QUEUE;
+
 export class WhatsAppEventRunner {
   private readonly socket: WhatsAppSocketLike;
   private readonly adapter: WhatsAppAdapter;
@@ -51,18 +57,19 @@ export class WhatsAppEventRunner {
   private readonly logger: WhatsAppEventRunnerLogger | undefined;
 
   private started = false;
-  private processing = Promise.resolve();
+  private readonly processingByChat = new Map<MessageQueueKey, Promise<void>>();
+  private readonly pendingProcessing = new Set<Promise<void>>();
   private cleanup: (() => void)[] = [];
 
   private readonly handleMessagesUpsert = (payload: unknown): void => {
-    this.processing = this.processing.then(async () => {
-      await this.processMessagesUpsert(payload);
-    });
-    this.processing = this.processing.catch((error: unknown) => {
-      this.logger?.error?.("WhatsApp messages.upsert processing failed.", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+    const dispatch = Promise.resolve()
+      .then(() => this.enqueueMessagesUpsert(payload))
+      .catch((error: unknown) => this.logProcessingError(error));
+    this.pendingProcessing.add(dispatch);
+    void dispatch.then(
+      () => this.pendingProcessing.delete(dispatch),
+      () => this.pendingProcessing.delete(dispatch),
+    );
   };
 
   private readonly handleCredsUpdate = (): void => {
@@ -158,28 +165,67 @@ export class WhatsAppEventRunner {
   }
 
   async idle(): Promise<void> {
-    await this.processing;
+    while (this.pendingProcessing.size > 0) {
+      await Promise.all([...this.pendingProcessing]);
+    }
   }
 
-  private async processMessagesUpsert(payload: unknown): Promise<void> {
+  private enqueueMessagesUpsert(payload: unknown): void {
     if (!isMessagesUpsertLike(payload)) {
-      await this.emitMessageResult({ kind: "ignored", reason: "non_message_update" });
+      this.enqueueProcessing(UNKEYED_MESSAGE_QUEUE, async () => {
+        await this.emitMessageResult({ kind: "ignored", reason: "non_message_update" });
+      });
       return;
     }
 
     if (payload.type !== "notify" && !this.processHistory) {
-      await this.emitMessageResult({ kind: "ignored", reason: "history_sync_ignored" });
+      this.enqueueProcessing(UNKEYED_MESSAGE_QUEUE, async () => {
+        await this.emitMessageResult({ kind: "ignored", reason: "history_sync_ignored" });
+      });
       return;
     }
 
     for (const message of payload.messages ?? []) {
-      try {
-        const result = await this.adapter.handleMessage(message);
-        await this.emitMessageResult(result);
-      } catch (error) {
-        const result: WhatsAppMessageHandlingResult = { kind: "error", error };
-        await this.emitMessageResult(result);
-      }
+      this.enqueueProcessing(messageQueueKey(message), async () => {
+        await this.processMessage(message);
+      });
+    }
+  }
+
+  private enqueueProcessing(key: MessageQueueKey, process: () => Promise<void>): void {
+    const previous = this.processingByChat.get(key) ?? Promise.resolve();
+    const processing = previous
+      .then(process)
+      .catch((error: unknown) => this.logProcessingError(error));
+
+    this.processingByChat.set(key, processing);
+    this.pendingProcessing.add(processing);
+    void processing.then(
+      () => this.finishProcessing(key, processing),
+      () => this.finishProcessing(key, processing),
+    );
+  }
+
+  private finishProcessing(key: MessageQueueKey, processing: Promise<void>): void {
+    this.pendingProcessing.delete(processing);
+    if (this.processingByChat.get(key) === processing) {
+      this.processingByChat.delete(key);
+    }
+  }
+
+  private logProcessingError(error: unknown): void {
+    this.logger?.error?.("WhatsApp messages.upsert processing failed.", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  private async processMessage(message: WhatsAppRawMessage): Promise<void> {
+    try {
+      const result = await this.adapter.handleMessage(message);
+      await this.emitMessageResult(result);
+    } catch (error) {
+      const result: WhatsAppMessageHandlingResult = { kind: "error", error };
+      await this.emitMessageResult(result);
     }
   }
 
@@ -196,6 +242,22 @@ function isMessagesUpsertLike(value: unknown): value is MessagesUpsertLike {
   }
   const messages = value.messages;
   return messages === undefined || Array.isArray(messages);
+}
+
+function messageQueueKey(message: WhatsAppRawMessage): MessageQueueKey {
+  try {
+    if (!isRecord(message) || !isRecord(message.key)) {
+      return UNKEYED_MESSAGE_QUEUE;
+    }
+    const remoteJid = message.key.remoteJid;
+    if (typeof remoteJid !== "string") {
+      return UNKEYED_MESSAGE_QUEUE;
+    }
+    const chatJid = remoteJid.trim();
+    return chatJid.length > 0 ? chatJid : UNKEYED_MESSAGE_QUEUE;
+  } catch {
+    return UNKEYED_MESSAGE_QUEUE;
+  }
 }
 
 function normalizeConnectionUpdate(payload: unknown): WhatsAppConnectionUpdate {

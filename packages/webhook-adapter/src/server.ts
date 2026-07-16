@@ -12,9 +12,13 @@ import {
 } from "@mono-agent/agent-contracts";
 import {
   assertSafeBind,
+  bearerTokensEqual,
   close,
   hostForUrl,
+  isLoopbackHost,
   listen,
+  readAuthorizationBearer,
+  sanitizeInboundHttpHeaders,
 } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
@@ -115,7 +119,11 @@ export interface WebhookEndpointOption {
   readonly notify?: boolean;
   /** Optional destination conversationId for native notification delivery. */
   readonly notifyConversationId?: string;
-  /** Host-resolved fallback used after an explicit endpoint or deliverable request conversation. */
+  /**
+   * Pre-resolved fallback used after an explicit endpoint or deliverable request
+   * conversation. Hosts with a live destination set should prefer the
+   * adapter-level per-invocation resolver.
+   */
   readonly notifyFallbackConversationId?: string;
   /** Per-endpoint runtime model override (raw string; a request body `model` wins). */
   readonly model?: string;
@@ -127,6 +135,8 @@ export interface WebhookAdapterOptions {
   readonly host?: string;
   readonly port?: number;
   readonly allowNonLoopback?: boolean;
+  /** Optional static bearer token. Required for every non-loopback bind. */
+  readonly apiKey?: string;
   readonly retentionMs?: number;
   readonly maxStoredRequests?: number;
   /**
@@ -138,6 +148,14 @@ export interface WebhookAdapterOptions {
   readonly maxRunMs?: number;
   readonly responder: AgentResponder<WebhookInvocationRequest, AgentMessageStream, AgentResponse>;
   readonly logger?: WebhookAdapterLogger;
+  /**
+   * Host-owned fallback resolver for notify-enabled invocations without an
+   * explicit endpoint or deliverable request destination. It runs once per
+   * invocation so request.replyTo and completion delivery share one snapshot.
+   * The optional signal allows cooperative cancellation; the adapter also
+   * races resolver settlement against it.
+   */
+  readonly resolveNotifyFallbackConversationId?: (abortSignal?: AbortSignal) => Promise<string | undefined>;
   /** Endpoints to serve. When omitted, a single legacy endpoint is built from `path`/`defaultMode`. */
   readonly endpoints?: readonly WebhookEndpointOption[];
   /** Legacy single-endpoint path. Folded into a one-element `endpoints` list when `endpoints` is omitted. */
@@ -235,11 +253,12 @@ const DEFAULT_PATH = "/webhook/invoke";
 const DEFAULT_MODE: WebhookInvocationMode = "sync";
 const DEFAULT_RETENTION_MS = 300_000;
 const DEFAULT_MAX_STORED_REQUESTS = 100;
-
+const FORCE_CLOSE_AFTER_MS = 250;
 export async function startWebhookAdapter(options: WebhookAdapterOptions): Promise<WebhookAdapterStartResult> {
   validateOptions(options);
   const host = options.host ?? DEFAULT_HOST;
   const port = options.port ?? DEFAULT_PORT;
+  const apiKey = normalizeOptionalString(options.apiKey);
   const retentionMs = options.retentionMs ?? DEFAULT_RETENTION_MS;
   const maxStoredRequests = options.maxStoredRequests ?? DEFAULT_MAX_STORED_REQUESTS;
   const endpoints = resolveEndpoints(options);
@@ -249,6 +268,13 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       "Webhook adapter refuses to bind a non-loopback host unless allowNonLoopback is true.",
       { host: boundHost },
     ));
+  if (!isLoopbackHost(host) && apiKey === undefined) {
+    throw new WebhookAdapterError(
+      "missing_required_config",
+      "Webhook adapter requires an API key for every non-loopback bind.",
+      { host },
+    );
+  }
 
   const app = express();
   const server = createServer(app);
@@ -257,24 +283,36 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
   const activeByRun = new Map<string, ActiveRun>();
   const statuses = new Map<string, StoredStatus>();
 
-  app.use(express.json({ limit: "1mb" }));
+  const parseJsonBody = express.json({ limit: "1mb" });
   for (const endpoint of endpoints) {
-    app.post(endpoint.path, (req, res) => {
-      void handleInvoke(req, res, endpoint).catch((error: unknown) => {
-        options.logger?.error?.("Webhook invocation failed before response.", {
-          endpoint: endpoint.name,
-          error: errorToMessage(error),
-        });
-        if (!res.headersSent) {
-          res.status(500).json({ status: "failed", error: errorToMessage(error) });
+    app.post(
+      endpoint.path,
+      (req, res, next) => {
+        if (authorize(req, res, apiKey)) {
+          next();
         }
-      });
-    });
+      },
+      parseJsonBody,
+      (req, res) => {
+        void handleInvoke(req, res, endpoint).catch((error: unknown) => {
+          options.logger?.error?.("Webhook invocation failed before response.", {
+            endpoint: endpoint.name,
+            error: errorToMessage(error),
+          });
+          if (!res.headersSent) {
+            res.status(500).json({ status: "failed", error: errorToMessage(error) });
+          }
+        });
+      },
+    );
   }
   // Register one status route per UNIQUE base path (endpoints sharing a parent
   // directory share a status route; lookups hit the shared, requestId-keyed store).
   for (const statusBasePath of new Set(endpoints.map((endpoint) => endpoint.statusBasePath))) {
     app.get(`${statusBasePath}/:requestId`, (req, res) => {
+      if (!authorize(req, res, apiKey)) {
+        return;
+      }
       pruneStatuses(statuses, retentionMs, maxStoredRequests);
       const requestId = req.params.requestId;
       const stored = requestId === undefined ? undefined : statuses.get(requestId);
@@ -300,6 +338,34 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       new WebhookAdapterError("start_failed", "Webhook adapter did not receive a TCP address."),
   });
   const boundPort = address.port;
+
+  async function closeRejectedServer(): Promise<void> {
+    for (const active of activeByRun.values()) {
+      active.controller.abort(new Error("Webhook adapter rejected its actual bound address."));
+    }
+    await closeServerBounded(server);
+    activeByRun.clear();
+    statuses.clear();
+  }
+
+  const boundNonLoopback = !isLoopbackHost(address.address);
+  if (boundNonLoopback && options.allowNonLoopback !== true) {
+    await closeRejectedServer();
+    throw new WebhookAdapterError(
+      "unsafe_host",
+      "Webhook adapter resolved a loopback host to a non-loopback bind address.",
+      { host, boundAddress: address.address, boundPort },
+    );
+  }
+  if (boundNonLoopback && apiKey === undefined) {
+    await closeRejectedServer();
+    throw new WebhookAdapterError(
+      "missing_required_config",
+      "Webhook adapter requires an API key when the actual bound address is non-loopback.",
+      { host, boundAddress: address.address, boundPort },
+    );
+  }
+
   const url = `http://${hostForUrl(host)}:${boundPort}`;
 
   async function handleInvoke(req: Request, res: Response, endpoint: ResolvedEndpoint): Promise<void> {
@@ -342,13 +408,6 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       conversationId: body.conversationId,
       text: composePromptText(endpoint.prompt, body.text),
       abortSignal: controller.signal,
-      ...(endpoint.notify !== true
-        ? {}
-        : toReplyTarget(
-            endpoint.notifyConversationId
-              ?? (isDeliverableConversation(body.conversationId) ? body.conversationId : undefined)
-              ?? endpoint.notifyFallbackConversationId,
-          )),
       metadata: {
         webhook: {
           requestId,
@@ -358,7 +417,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
           path: req.path,
           receivedAt,
           ...(req.socket.remoteAddress === undefined ? {} : { remoteAddress: req.socket.remoteAddress }),
-          headers: req.headers,
+          headers: sanitizeInboundHttpHeaders(req.headers),
           ...(body.metadata === undefined ? {} : { payloadMetadata: body.metadata }),
           ...(endpoint.notify === true
             ? {
@@ -374,6 +433,14 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
         },
       },
     };
+    const resolveRunNotifyConversationId = endpoint.notify === true
+      ? async (abortSignal?: AbortSignal) => await resolveNotifyConversationId(
+          endpoint,
+          body.conversationId,
+          options,
+          abortSignal ?? controller.signal,
+        )
+      : undefined;
 
     if (body.mode === "async") {
       res.status(202).json({
@@ -383,7 +450,20 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
         statusUrl,
         receivedAt,
       });
-      void runResponder({ request, statusUrl, receivedAt, startedAt, statuses, activeByRun, runKey, active, options, retentionMs, maxStoredRequests });
+      void runResponder({
+        request,
+        ...(resolveRunNotifyConversationId === undefined ? {} : { resolveNotifyConversationId: resolveRunNotifyConversationId }),
+        statusUrl,
+        receivedAt,
+        startedAt,
+        statuses,
+        activeByRun,
+        runKey,
+        active,
+        options,
+        retentionMs,
+        maxStoredRequests,
+      });
       return;
     }
 
@@ -393,7 +473,23 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       }
     });
 
-    const status = await runResponder({ request, statusUrl, receivedAt, startedAt, statuses, activeByRun, runKey, active, options, retentionMs, maxStoredRequests });
+    const status = await runResponder({
+      request,
+      ...(resolveRunNotifyConversationId === undefined ? {} : { resolveNotifyConversationId: resolveRunNotifyConversationId }),
+      statusUrl,
+      receivedAt,
+      startedAt,
+      statuses,
+      activeByRun,
+      runKey,
+      active,
+      options,
+      retentionMs,
+      maxStoredRequests,
+    });
+    if (res.destroyed || res.writableEnded) {
+      return;
+    }
     if (status.status === "succeeded") {
       res.status(200).json(status);
       return;
@@ -437,8 +533,49 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
   };
 }
 
+async function closeServerBounded(server: ReturnType<typeof createServer>): Promise<void> {
+  const closePromise = close(server);
+  void closePromise.catch(() => undefined);
+  server.closeIdleConnections();
+  let forceTimer: ReturnType<typeof setTimeout> | undefined;
+  const force = new Promise<"forced">((resolvePromise) => {
+    forceTimer = setTimeout(() => {
+      server.closeAllConnections();
+      resolvePromise("forced");
+    }, FORCE_CLOSE_AFTER_MS);
+    forceTimer.unref?.();
+  });
+  const outcome = await Promise.race([closePromise.then(() => "closed" as const), force]);
+  if (outcome === "closed") {
+    if (forceTimer !== undefined) {
+      clearTimeout(forceTimer);
+    }
+    return;
+  }
+  await Promise.race([
+    closePromise.catch(() => undefined),
+    new Promise<void>((resolvePromise) => {
+      const timer = setTimeout(resolvePromise, FORCE_CLOSE_AFTER_MS);
+      timer.unref?.();
+    }),
+  ]);
+}
+
+function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {
+  if (apiKey === undefined) {
+    return true;
+  }
+  const presented = readAuthorizationBearer(req.header("authorization"));
+  if (presented !== undefined && bearerTokensEqual(presented, apiKey)) {
+    return true;
+  }
+  res.status(401).json({ status: "unauthorized", error: "Invalid API key." });
+  return false;
+}
+
 async function runResponder(input: {
   readonly request: WebhookInvocationRequest;
+  readonly resolveNotifyConversationId?: (abortSignal?: AbortSignal) => Promise<string | undefined>;
   readonly statusUrl: string;
   readonly receivedAt: string;
   readonly startedAt: string;
@@ -463,9 +600,18 @@ async function runResponder(input: {
   const maxRunMs = input.options.maxRunMs;
   let timedOut = false;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
+  let selectedNotifyConversationId: string | undefined;
   try {
     const respondPromise = (async () => {
-      const result = await input.options.responder.respond(input.request, stream);
+      selectedNotifyConversationId = await input.resolveNotifyConversationId?.(input.request.abortSignal);
+      if (input.request.abortSignal.aborted) {
+        throw input.request.abortSignal.reason ?? new Error("Webhook run was cancelled before responder start.");
+      }
+      // The responder receives its own request object. Its structural readonly
+      // type is not a runtime trust boundary, so completion delivery must never
+      // depend on this object (or its replyTo) remaining unmodified.
+      const responderRequest = withSnapshottedReplyTarget(input.request, selectedNotifyConversationId);
+      const result = await input.options.responder.respond(responderRequest, stream);
       await stream.finish(result.text);
       return result;
     })();
@@ -531,10 +677,10 @@ async function runResponder(input: {
       startedAt: input.startedAt,
       completedAt: new Date().toISOString(),
       error: timedOut
-        ? `Webhook run timed out after ${String(maxRunMs)}ms (responder did not settle); reclaiming the slot.`
+        ? `Webhook run timed out after ${String(maxRunMs)}ms (run did not settle); reclaiming the slot.`
         : errorToMessage(error),
     };
-    input.options.logger?.[cancelled ? "warn" : "error"]?.("Webhook responder failed.", {
+    input.options.logger?.[cancelled ? "warn" : "error"]?.("Webhook run failed.", {
       requestId: input.active.requestId,
       conversationId: input.request.conversationId,
       error: status.error,
@@ -551,8 +697,30 @@ async function runResponder(input: {
   // store, callback, and HTTP result separate also prevents an onResult hook
   // from mutating the status later returned by the status endpoint.
   setStatus(input.statuses, status, input.retentionMs, input.maxStoredRequests);
-  emitResult(input, sanitizeWebhookInvocationStatus(status));
+  // Reconstruct the completion request from the run-owned base and private
+  // scalar snapshot. A responder may rewrite/delete replyTo (or inject one when
+  // no route was selected), but none of those mutations can redirect/suppress
+  // native delivery through onResult.
+  const completionRequest = withSnapshottedReplyTarget(input.request, selectedNotifyConversationId);
+  emitResult({ ...input, request: completionRequest }, sanitizeWebhookInvocationStatus(status));
   return sanitizeWebhookInvocationStatus(status);
+}
+
+function withSnapshottedReplyTarget(
+  request: WebhookInvocationRequest,
+  conversationId: string | undefined,
+): WebhookInvocationRequest {
+  const { replyTo: _untrustedReplyTarget, ...requestWithoutReplyTarget } = request;
+  const requestSnapshot: WebhookInvocationRequest = {
+    ...requestWithoutReplyTarget,
+    metadata: {
+      ...requestWithoutReplyTarget.metadata,
+      webhook: { ...requestWithoutReplyTarget.metadata.webhook },
+    },
+  };
+  return conversationId === undefined
+    ? requestSnapshot
+    : { ...requestSnapshot, replyTo: { conversationId } };
 }
 
 function emitResult(input: {
@@ -836,8 +1004,69 @@ function isDeliverableConversation(conversationId: string): boolean {
   return conversationId.startsWith("telegram:") || conversationId.startsWith("slack:");
 }
 
-function toReplyTarget(conversationId: string | undefined): Pick<AgentRequestBase, "replyTo"> {
-  return conversationId === undefined ? {} : { replyTo: { conversationId } };
+async function resolveNotifyConversationId(
+  endpoint: ResolvedEndpoint,
+  requestConversationId: string,
+  options: WebhookAdapterOptions,
+  abortSignal: AbortSignal,
+): Promise<string | undefined> {
+  if (endpoint.notify !== true) {
+    return undefined;
+  }
+  const configured = endpoint.notifyConversationId
+    ?? (isDeliverableConversation(requestConversationId) ? requestConversationId : undefined)
+    ?? endpoint.notifyFallbackConversationId;
+  if (configured !== undefined) {
+    return configured;
+  }
+  if (options.resolveNotifyFallbackConversationId === undefined) {
+    return undefined;
+  }
+  try {
+    const resolution = Promise.resolve(options.resolveNotifyFallbackConversationId(abortSignal));
+    return normalizeOptionalString(await raceAgainstAbort(resolution, abortSignal));
+  } catch (error) {
+    if (abortSignal.aborted) {
+      throw abortSignal.reason ?? error;
+    }
+    options.logger?.warn?.("Webhook native-notify destination resolution failed; running without a reply target.", {
+      endpointName: endpoint.name,
+      error: errorToMessage(error),
+    });
+    return undefined;
+  }
+}
+
+/**
+ * Reject when the request is aborted even if host-owned resolver work ignores
+ * the signal. Both settlement handlers stay attached so a later resolver
+ * rejection is consumed after the abort path has already finalized the run.
+ */
+function raceAgainstAbort<T>(operation: Promise<T>, abortSignal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      abortSignal.removeEventListener("abort", onAbort);
+      reject(abortSignal.reason ?? new Error("Webhook run was aborted."));
+    };
+    // Observe the resolver before consulting the signal. A host resolver can
+    // synchronously trigger stop and only then return its promise; its eventual
+    // rejection must still be consumed after abort wins.
+    void operation.then(
+      (value) => {
+        abortSignal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        abortSignal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+    if (abortSignal.aborted) {
+      onAbort();
+    } else {
+      abortSignal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
 }
 
 function validatePositiveInteger(value: number | undefined, name: string): void {

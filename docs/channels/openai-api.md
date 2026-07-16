@@ -88,7 +88,7 @@ curl http://127.0.0.1:4040/v1/chat/completions \
   }'
 ```
 
-Common sampling parameters (`temperature`, `top_p`, `max_tokens`, `max_completion_tokens`, `stop`, `seed`, `presence_penalty`, `frequency_penalty`, …) are accepted and forwarded to the runtime where the backend supports them.
+Common sampling parameters (`temperature`, `top_p`, `max_tokens`, `max_completion_tokens`, `stop`, `seed`, `logit_bias`, `presence_penalty`, and `frequency_penalty`) are accepted for protocol and request-metadata compatibility, but are not currently applied to the configured runtime. Absent parameters and explicit OpenAI defaults are quiet. Supplying any non-default value emits a names-only `runtime_warning` and continues with the runtime's configured values: streaming responses render it as a reasoning delta, while non-stream JSON responses expose the structured event in the additive `mono_agent.events` extension. As a result, Open WebUI sampling sliders are currently inert for mono-agent requests.
 
 ## Session continuity
 
@@ -104,8 +104,8 @@ The conversation id is resolved from the first present of these, in order:
 Open WebUI strips metadata from the bodies it forwards but, when `ENABLE_FORWARD_USER_INFO_HEADERS` is enabled, sends the chat id as `X-OpenWebUI-Chat-Id` — which is why the header fallbacks exist. `X-Conversation-Id` is the generic equivalent for other proxies.
 
 :::note
-:::
 If no id can be resolved, each request is treated as a fresh conversation. For multi-turn continuity, make sure your client forwards a stable id via body metadata or one of the headers above.
+:::
 
 Because only the latest turn is forwarded, the agent's [memory](/memory/capture-and-recall/) and [sessions](/runtime/sessions-concurrency/) handle history. The same [Tool Policy](/tools/policy/) and runtime guards apply to API turns as to any other channel.
 

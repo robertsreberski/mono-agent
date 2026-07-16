@@ -76,7 +76,7 @@ Point `pi:<provider>:<model>` at a self-hosted endpoint. The `id` becomes the `<
 }
 ```
 
-`type` is `ollama`, `lmstudio`, or `openai_compat`. Supply the key via `apiKeyEnv` (or inline `apiKey` in an untracked file only). See [Local providers](/runtime/local-providers/) for the full provider/env reference and [Embeddings](/memory/embeddings/) for using the same providers in the memory tier.
+`type` is `ollama`, `lmstudio`, or `openai_compat`. Supply the key via `apiKeyEnv`: keep the secret value in `.env` and only its variable name in config. Inline `apiKey` remains schema-compatible for existing consumers, but ignored or untracked source config is not an exception to this placement convention. See [Local providers](/runtime/local-providers/) for the full provider/env reference and [Embeddings](/memory/embeddings/) for using the same providers in the memory tier.
 
 ## Sessions & concurrency
 
@@ -98,5 +98,5 @@ By default a conversation keeps a continuous provider session that is evicted af
 Every backend exposes Read/Write/Edit/Glob/Grep/Bash/WebFetch/WebSearch, gated by [tool policy](/tools/policy/) (`tools.allowedTools` / `tools.disallowedTools`). Auto-guards run with no configuration: 256 KB tool-output truncation with best-effort separate artifact persistence to `artifacts.dir`, WebFetch in-tool retry on transient network errors, per-run cost/usage tracking, and bridge-driven context compaction. See [Built-in tools & auto-guards](/runtime/tools-and-guards/).
 
 :::tip
-:::
 Capabilities such as structured output (`runtimeOptions.outputSchema`), live in-flight input, human-in-the-loop approval gates, and tool parallelism are **code-only** — they are set through harness/runtime options, not config. See [Programmatic API](/programmatic/) and [Approval & structured output](/programmatic/approval-and-structured-output/).
+:::

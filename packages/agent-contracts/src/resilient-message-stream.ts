@@ -14,6 +14,8 @@
  * labels, and reasoning (assistant_thought) is never rendered as prose.
  */
 
+import { types as nodeUtilTypes } from "node:util";
+
 import type {
   AgentMessageStream as AgentMessageStreamBase,
   AgentStreamEvent,
@@ -709,7 +711,40 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (typeof error === "string") return error;
+  if (
+    error === null
+    || error === undefined
+    || typeof error === "number"
+    || typeof error === "boolean"
+  ) {
+    return String(error);
+  }
+  if (typeof error === "bigint") return "[BigInt]";
+  if (typeof error === "symbol") return "[Symbol]";
+  if (typeof error !== "object" && typeof error !== "function") {
+    return "[Error details unavailable]";
+  }
+  if (nodeUtilTypes.isProxy(error)) return "[Error details unavailable]";
+
+  const visited = new Set<object>();
+  let current: object | null = error;
+  while (current !== null && !visited.has(current) && visited.size < 16) {
+    if (nodeUtilTypes.isProxy(current)) return "[Error details unavailable]";
+    visited.add(current);
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(current, "message");
+      if (descriptor !== undefined) {
+        return "value" in descriptor && typeof descriptor.value === "string"
+          ? descriptor.value
+          : "[Error details unavailable]";
+      }
+      current = Object.getPrototypeOf(current) as object | null;
+    } catch {
+      return "[Error details unavailable]";
+    }
+  }
+  return "[Error details unavailable]";
 }
 
 function deliveryDisposition(

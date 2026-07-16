@@ -21,6 +21,9 @@ const SOURCE_STYLE: Record<TuiConfigFieldSource, (text: string) => string> = {
   default: styles.dim,
 };
 
+const CONFIG_LOAD_FAILURE_MESSAGE =
+  "Failed to load config. Check the selected config file and reload.";
+
 /**
  * Read-only, redacted, source-annotated config view built by the same
  * `buildMonoAgentConfigView` the `mono-agent config` command uses. Reads the
@@ -31,6 +34,7 @@ export class ConfigView extends Container {
   private readonly options: ConfigViewOptions;
   private configPath: string | undefined;
   private cwd = process.cwd();
+  private refreshGeneration = 0;
 
   constructor(options: ConfigViewOptions) {
     super();
@@ -53,8 +57,10 @@ export class ConfigView extends Container {
   }
 
   async refresh(): Promise<void> {
-    // Snapshot both inputs: a rapid agent switch mid-load must not paint the
-    // previous agent's config under the new agent's header.
+    // Every refresh supersedes every older one, even when an agent switch
+    // returns to the same path or a manual reload targets that same path.
+    // Path equality alone cannot distinguish those overlapping requests.
+    const generation = ++this.refreshGeneration;
     const requestedPath = this.configPath;
     const requestedCwd = this.cwd;
     if (requestedPath === undefined) {
@@ -69,8 +75,8 @@ export class ConfigView extends Container {
         cwd: requestedCwd,
         jsonPath: requestedPath,
       });
-      if (this.configPath !== requestedPath) {
-        return; // Superseded by a newer agent selection.
+      if (this.refreshGeneration !== generation) {
+        return; // Superseded by a newer selection or reload.
       }
       const sections = buildTuiConfigSummary({
         redacted: redactMonoAgentConfig(config),
@@ -96,11 +102,13 @@ export class ConfigView extends Container {
         }
         this.addChild(new Text(lines.join("\n"), 1, 0));
       }
-    } catch (error) {
-      if (this.configPath !== requestedPath) {
+    } catch {
+      if (this.refreshGeneration !== generation) {
         return;
       }
-      this.showMessage(styles.error(`Failed to load config: ${error instanceof Error ? error.message : String(error)}`));
+      // Parser and loader diagnostics can quote malformed source text. Keep
+      // this redacted operator surface useful without echoing config secrets.
+      this.showMessage(styles.error(CONFIG_LOAD_FAILURE_MESSAGE));
     }
     this.options.tui.requestRender();
   }

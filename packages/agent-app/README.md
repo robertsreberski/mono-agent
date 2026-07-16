@@ -6,6 +6,8 @@ channel plus traceability. Ships the
 `mono-agent` CLI (`init`, `auth`, `sandbox`, `validate`, `memory`, `tui`, `start`) so an agent folder works without
 hand-written composition code.
 
+Setup has two deliberate wall-clock paths: flags or non-TTY input use the fast scaffold-only path (unless explicit `--auth` adds provider setup) and never claim readiness. Bare `mono-agent init` on a TTY makes one real no-tool model call per selected route before committing the scaffold, with timeouts of 90s for each cloud route and 240s for each local route.
+
 ## Category
 
 Category: `app`
@@ -109,7 +111,8 @@ paths, stale locks, invalid dotenv, conflicts, and Windows fail closed to manual
 interactive wizard can start the background agent it requires one disposable no-tool
 response from every selected runtime route and a complete validation report with
 every selected expectation ready. Cancellation, provider failure, timeout (90s
-cloud / 240s local per route), empty output, or any tool action fails the check.
+for each cloud route and 240s for each local route), empty output, or any tool
+action fails the check.
 Escape or Ctrl-C interrupts preflight; recovery can resume verified routes when
 the non-secret plan fingerprint still matches, restart all checks, edit choices,
 or cancel. Authentication repair clears every prior route proof because it can
@@ -177,6 +180,13 @@ name the canonical config. Readiness requires one live launchd-owned trace PID,
 the exact durable snapshot, and, for configuration, a reachable TUI endpoint.
 Stop succeeds only after both launchd unload and worker death are proven.
 
+`mono-agent validate` (and its `doctor` alias) reports the provenance of the CLI
+producing the report in its Runtime provenance section: a private managed marker
+whose freshly recomputed installed closure and coherent current manifest validate
+names its full closure id plus sanitized install metadata; other executions report
+`dev (unmanaged)`. With `--consumer`, this remains the validator CLI's provenance,
+not an attestation of a separately running daemon.
+
 Guided readiness uses a worker-reproducible environment rather than the launching
 shell: durable `.env` values, entered selected secrets, the resolved Pi auth path,
 and operational values such as `PATH`/`HOME`. Shell-only provider credentials and
@@ -215,10 +225,20 @@ allow-all on MCP-capable routes; a restrictive `tools.allowedTools` must name
 `disallowedTools` can remove it. Direct OpenCode and other MCP-incompatible
 routes suppress it. Its `list` and `inspect` actions can read only completed
 prior runs in the exact current conversation bucket and return bounded,
-redacted, normalized evidence. They exclude the current/running run, other
-conversations or rollover buckets, system prompts, reasoning, recalled memory,
-turn-context payloads, and raw artifact paths; historical text is marked
-untrusted.
+normalized evidence. Structured projected values first pass through the shared
+observability redactor: non-numeric values under sensitive-looking object keys
+are redacted; numeric values under matched keys are retained; free text is not
+content-scanned or scrubbed. `RunHistory` then applies an additional projection
+sanitizer. In that second pass, numeric values under `credential`, `private_key`,
+and `bearer` can remain visible; numeric values under `apiKey`, `token`,
+`client_secret`, `password`, `authorization`, and `cookie` are redacted.
+Assignment-shaped password or secret prose is content-scanned and replaced with
+the diagnostic or tool-result omission sentinel. An optionally quoted assignment
+value is exempt only when its complete value is exactly `[redacted]`; any prefix
+or suffix is omitted. Results exclude the
+current/running run, other conversations or rollover buckets, system prompts,
+reasoning, recalled memory, turn-context payloads, and raw artifact paths;
+historical text is marked untrusted.
 
 For missing context, the agent should use active conversation history first,
 `MemoryRecall` for intentionally captured durable facts, and `RunHistory` for

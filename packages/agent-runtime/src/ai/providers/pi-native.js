@@ -34,7 +34,7 @@ import {
 import { closePiMcpClients } from "../../agent/tools/pi-bridge.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../runtime/capabilities-used.js";
-import { resolvePiRuntimeModel } from "./pi-models.js";
+import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "./pi-models.js";
 import {
   textFromContent,
   thinkingFromContent,
@@ -358,6 +358,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
           tool_use: true,
           reasoning: !!options.piResolvedModel.reasoning,
           reasoning_mode: options.piResolvedModel.reasoning ? "effort" : "none",
+          reasoning_levels: options.piResolvedModel.reasoning
+            ? reasoningLevelsForPiModel(options.piResolvedModel)
+            : undefined,
           json_mode: true,
         },
         apiKeys: new Map(),

@@ -14,6 +14,11 @@ import type {
   ResilientMessageStreamLogger,
 } from "@mono-agent/agent-contracts";
 
+import {
+  isSafeSlackPrototypeInstance,
+  readSafeSlackDataProperty,
+  redactSlackErrorMessage,
+} from "./log-redaction.js";
 import { SlackApiError } from "./slack-client.js";
 import type {
   SlackChannelId,
@@ -39,6 +44,13 @@ export interface SlackMessageStreamOptions {
   threadTs?: SlackMessageTs;
   /** Stable UUID forwarded to chat.postMessage for duplicate suppression. */
   clientMsgId?: string;
+  /**
+   * Compatibility request for notification-suppressed delivery. Slack's
+   * `chat.postMessage` API has no bot-controlled suppression field, so this
+   * stream posts normally and, when a logger is configured, emits one explicit
+   * warning before its first post.
+   */
+  silent?: boolean;
   /** Message ts to react to (👀 "seen") in final-only mode. */
   reactToTs?: SlackMessageTs;
   /**
@@ -140,6 +152,7 @@ class SlackChannelTransport implements ChannelTransport {
   private readonly channelId: SlackChannelId;
   private readonly threadTs: SlackMessageTs | undefined;
   private readonly clientMsgId: string | undefined;
+  private readonly silentRequested: boolean;
   private readonly reactToTs: SlackMessageTs | undefined;
   private readonly assistantStatusText: string;
   private readonly onPosted: SlackPostedMessageListener | undefined;
@@ -153,12 +166,14 @@ class SlackChannelTransport implements ChannelTransport {
   private postIndex = 0;
   private reacted = false;
   private assistantStatusUnavailable = false;
+  private silentWarningEmitted = false;
 
   constructor(options: {
     api: SlackWebApi;
     channelId: SlackChannelId;
     threadTs?: SlackMessageTs;
     clientMsgId?: string;
+    silent: boolean;
     reactToTs?: SlackMessageTs;
     assistantStatusText: string;
     maxMessageChars: number;
@@ -170,6 +185,7 @@ class SlackChannelTransport implements ChannelTransport {
     this.channelId = options.channelId;
     this.threadTs = options.threadTs;
     this.clientMsgId = options.clientMsgId;
+    this.silentRequested = options.silent;
     this.reactToTs = options.reactToTs;
     this.assistantStatusText = options.assistantStatusText;
     this.maxMessageChars = options.maxMessageChars;
@@ -214,6 +230,7 @@ class SlackChannelTransport implements ChannelTransport {
     text: string,
     options: { markdown: boolean; contentKind?: ChannelMessageContentKind },
   ): Promise<MessageRef> {
+    this.warnIfSilentDeliveryIsUnsupported();
     const clientMsgId = this.clientMsgId === undefined
       ? undefined
       : slackPostClientMessageId(this.clientMsgId, this.postIndex);
@@ -234,7 +251,7 @@ class SlackChannelTransport implements ChannelTransport {
       // Slack already returned a receipt. Observer/index failures must never
       // turn a confirmed post into a transport retry and duplicate the message.
       this.logger?.warn?.("Slack post observer failed after confirmed delivery.", {
-        reason: error instanceof Error ? error.message : String(error),
+        reason: redactSlackErrorMessage(error),
       });
     }
     this.observeDelivery({
@@ -244,6 +261,22 @@ class SlackChannelTransport implements ChannelTransport {
       operation: "post",
     });
     return slackMessageRef(sent);
+  }
+
+  private warnIfSilentDeliveryIsUnsupported(): void {
+    if (!this.silentRequested || this.silentWarningEmitted) {
+      return;
+    }
+    this.silentWarningEmitted = true;
+    try {
+      this.logger?.warn?.(
+        "Slack chat.postMessage has no bot-controlled silent-delivery option; posting with normal Slack notification behavior.",
+        { silentRequested: true, silentApplied: false },
+      );
+    } catch {
+      // Diagnostics are best-effort. A broken logger must not prevent or retry
+      // the normal Slack delivery this warning describes.
+    }
   }
 
   async edit(
@@ -280,7 +313,7 @@ class SlackChannelTransport implements ChannelTransport {
       // As with posted-message indexing, an observer runs only after Slack has
       // confirmed the write and must never turn that receipt into a retry.
       this.logger?.warn?.("Slack delivery observer failed after confirmed delivery.", {
-        reason: error instanceof Error ? error.message : String(error),
+        reason: redactSlackErrorMessage(error),
       });
     }
   }
@@ -328,6 +361,7 @@ export class SlackMessageStream implements AgentMessageStream {
       channelId: options.channelId,
       ...(options.threadTs === undefined ? {} : { threadTs: options.threadTs }),
       ...(options.clientMsgId === undefined ? {} : { clientMsgId: options.clientMsgId }),
+      silent: options.silent ?? false,
       ...(options.reactToTs === undefined ? {} : { reactToTs: options.reactToTs }),
       assistantStatusText: options.assistantStatusText ?? DEFAULT_ASSISTANT_STATUS_TEXT,
       maxMessageChars,
@@ -372,11 +406,16 @@ export class SlackMessageStream implements AgentMessageStream {
     try {
       await this.inner.finish(finalText);
     } catch (error) {
-      if (error instanceof ChannelDeliveryError) {
+      if (isChannelDeliveryError(error)) {
+        const attempts = readSafeSlackDataProperty(error, "attempts");
         throw new SlackDeliveryError("Slack final delivery failed.", {
-          cause: error.cause,
-          attempts: error.attempts,
-          disposition: error.disposition,
+          cause: readSafeSlackDataProperty(error, "cause"),
+          attempts: typeof attempts === "number" && Number.isSafeInteger(attempts) && attempts >= 0
+            ? attempts
+            : 0,
+          disposition: safeDeliveryDisposition(
+            readSafeSlackDataProperty(error, "disposition"),
+          ),
         });
       }
       throw error;
@@ -389,8 +428,14 @@ export class SlackMessageStream implements AgentMessageStream {
  * exported so the recovery policy can be unit-tested directly.
  */
 export function classifySlackError(error: unknown): SlackSendOutcome {
-  if (error instanceof SlackApiError) {
-    const slackError = (error.slackError ?? "").toLowerCase();
+  if (isSlackApiError(error)) {
+    const rawSlackError = readSafeSlackDataProperty(error, "slackError");
+    const slackError = typeof rawSlackError === "string" ? rawSlackError.toLowerCase() : "";
+    const rawRetryAfterMs = readSafeSlackDataProperty(error, "retryAfterMs");
+    const retryAfterMs = typeof rawRetryAfterMs === "number" ? rawRetryAfterMs : undefined;
+    const rawStatus = readSafeSlackDataProperty(error, "status");
+    const status = typeof rawStatus === "number" ? rawStatus : undefined;
+    const kind = readSafeSlackDataProperty(error, "kind");
     if (
       slackError === "message_not_found" ||
       slackError === "cant_update_message" ||
@@ -407,26 +452,26 @@ export function classifySlackError(error: unknown): SlackSendOutcome {
       return { kind: "reformat_plain", failureCertainty: "not_delivered" };
     }
     if (
-      error.retryAfterMs !== undefined ||
-      error.status === 429 ||
+      retryAfterMs !== undefined ||
+      status === 429 ||
       slackError === "ratelimited" ||
       slackError === "rate_limited"
     ) {
-      if (error.retryAfterMs !== undefined) {
-        return { kind: "retry", retryAfterMs: error.retryAfterMs, failureCertainty: "not_delivered" };
+      if (retryAfterMs !== undefined) {
+        return { kind: "retry", retryAfterMs, failureCertainty: "not_delivered" };
       }
       return { kind: "retry", failureCertainty: "not_delivered" };
     }
-    if (error.kind === "network") {
+    if (kind === "network") {
       return { kind: "retry", failureCertainty: "unknown" };
     }
-    if (error.kind === "aborted") {
+    if (kind === "aborted") {
       return { kind: "fatal", failureCertainty: "unknown" };
     }
-    if (error.status !== undefined && error.status >= 500) {
+    if (status !== undefined && status >= 500) {
       return { kind: "retry", failureCertainty: "unknown" };
     }
-    if (error.slackError !== undefined || (error.status !== undefined && error.status >= 400)) {
+    if (rawSlackError !== undefined || (status !== undefined && status >= 400)) {
       return { kind: "fatal", failureCertainty: "not_delivered" };
     }
     return { kind: "fatal", failureCertainty: "unknown" };
@@ -435,4 +480,18 @@ export function classifySlackError(error: unknown): SlackSendOutcome {
   // Non-SlackApiError (e.g. a transient transport error or a test stub): retry
   // conservatively rather than surfacing it as a hard failure.
   return { kind: "retry", failureCertainty: "unknown" };
+}
+
+function isChannelDeliveryError(error: unknown): error is ChannelDeliveryError {
+  return isSafeSlackPrototypeInstance(error, ChannelDeliveryError.prototype);
+}
+
+function isSlackApiError(error: unknown): error is SlackApiError {
+  return isSafeSlackPrototypeInstance(error, SlackApiError.prototype);
+}
+
+function safeDeliveryDisposition(value: unknown): ChannelDeliveryDisposition {
+  return value === "retryable" || value === "permanent" || value === "unknown"
+    ? value
+    : "unknown";
 }

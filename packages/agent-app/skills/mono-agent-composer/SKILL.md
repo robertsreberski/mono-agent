@@ -35,8 +35,8 @@ Do **not** read or grep the `@mono-agent` TypeScript/package source — `package
 - Ask one question at a time; skip anything the user already answered.
 - Respect existing knowledge: if the folder has `AGENTS.md`, `CLAUDE.md`, `README.md`, or `SOUL.md`, reference it from the identity instead of copying it. `IDENTITY.md` → `## Role` is the single canonical guided-init Role location. Never overwrite an existing identity; say explicitly that a newly entered Role was not written and tell the user to add or edit that heading manually.
 - Fail closed: no allowed tools, no memory writes, loopback-only network until the user opts in.
-- Do not fake runtime success, silently broaden tool access, or hide provider/MCP failures. Backup models are configured failover (`runtime.fallbackModels`), never silent substitution.
-- Secrets stay in env vars or the untracked config file; never commit tokens or `.env*` files.
+- Do not fake runtime success, silently broaden tool access, or hide provider/MCP failures. Backup models are configured failover (`runtime.fallbacks[]`), never silent substitution. Legacy `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain compatibility inputs with no removal deadline, but do not emit them for a new agent.
+- Secrets stay in `.env` or exported environment variables. An ignored or untracked config file is not permission to inline them; never commit tokens or `.env*` files.
 
 ## Prerequisites
 
@@ -64,7 +64,7 @@ Everything below runs in the user's agent folder, not the workspace.
 
    ```bash
    mono-agent init --preset <id> --yes [--with slack,cron] [--effort high] [--auth] [--dry-run]   # preset + .env.example + checklist
-   mono-agent init --model <ref> [--fallback-models <csv>] [--effort <level>] [--auth] [--memory lite|journal|bujo]   # bare scaffold
+   mono-agent init --model <ref> [--fallback <ref> [--fallback-effort <provider-default|level>]]... [--effort <level>] [--auth] [--memory lite|journal|bujo]   # bare scaffold
    ```
 
    Either writes a `mono-agent.config.json` (with `tools.allowedTools` pre-filled from the selected capabilities' recommended tools), an `IDENTITY.md` whose `## Role` body is the one Role destination and which references any knowledge files already present, the managed project-local `mono-agent-configure` and `mono-agent-memory` skills, and `.mono-agent/` working directories (presets also emit a `.env.example` and any extra files). `--effort` writes `runtime.effort` on supporting providers (do not use it with direct `opencode:*` SDK 1.x); `--auth` opts in to provider setup before writing files; `--dry-run` previews without writing or launching auth/preflight commands. Existing scaffold/config files are never overwritten; reviewed secret setup is the deliberate exception that can transactionally replace `.env` and update `.gitignore`.

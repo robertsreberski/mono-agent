@@ -22,14 +22,17 @@ import {
   listen,
   normalizeHostForBind,
   readAuthorizationBearer,
+  sanitizeInboundHttpHeaders,
 } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import {
   DEFAULT_BASE_PATH,
   DEFAULT_HOST,
+  DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
   DEFAULT_MODEL_ID,
   DEFAULT_PORT,
+  MAX_TOOL_SSE_FRAME_BYTES,
 } from "./constants.js";
 import { OpenAIApiAdapterError } from "./errors.js";
 
@@ -104,6 +107,12 @@ export interface OpenAIApiAdapterOptions {
   readonly allowNonLoopback?: boolean;
   readonly apiKey?: string;
   readonly modelId?: string;
+  /**
+   * Per-field UTF-8 preview upper bound for tool arguments/results rendered
+   * into SSE. The adapter may lower it to satisfy the complete frame cap;
+   * callers may lower, but never raise, the hard default boundary.
+   */
+  readonly maxToolPayloadBytes?: number;
   readonly responder: AgentResponder<OpenAIApiChatRequest, AgentMessageStream, AgentResponse>;
   readonly logger?: OpenAIApiAdapterLogger;
 }
@@ -138,13 +147,6 @@ interface ChatCompletionChunkInput {
 
 const OPENAI_OWNED_BY = "host";
 const FORCE_CLOSE_AFTER_MS = 250;
-const SENSITIVE_REQUEST_HEADERS = new Set([
-  "authorization",
-  "cookie",
-  "set-cookie",
-  "proxy-authorization",
-  "x-api-key",
-]);
 const UNSUPPORTED_CHAT_REQUEST_FIELDS = [
   "tools",
   "tool_choice",
@@ -154,6 +156,31 @@ const UNSUPPORTED_CHAT_REQUEST_FIELDS = [
   "audio",
   "modalities",
 ] as const;
+const OPENAI_CHAT_PARAMETER_KEYS = [
+  "temperature",
+  "top_p",
+  "max_tokens",
+  "max_completion_tokens",
+  "stop",
+  "seed",
+  "logit_bias",
+  "presence_penalty",
+  "frequency_penalty",
+] as const;
+type OpenAIChatParameterKey = (typeof OPENAI_CHAT_PARAMETER_KEYS)[number];
+type RuntimeWarningEvent = Extract<AgentStreamEvent, { readonly type: "runtime_warning" }>;
+const OPENAI_CHAT_PARAMETER_DEFAULTS: Readonly<Record<OpenAIChatParameterKey, unknown>> = {
+  temperature: 1,
+  top_p: 1,
+  max_tokens: null,
+  max_completion_tokens: null,
+  stop: null,
+  seed: null,
+  logit_bias: null,
+  presence_penalty: 0,
+  frequency_penalty: 0,
+};
+const UNSUPPORTED_SAMPLING_WARNING_KIND = "openai_api_sampling_parameters_ignored";
 
 export async function startOpenAIApiAdapter(
   options: OpenAIApiAdapterOptions,
@@ -164,6 +191,7 @@ export async function startOpenAIApiAdapter(
   const basePath = normalizeBasePath(options.basePath ?? DEFAULT_BASE_PATH);
   const modelId = normalizeOptionalString(options.modelId) ?? DEFAULT_MODEL_ID;
   const apiKey = normalizeOptionalString(options.apiKey);
+  const maxToolPayloadBytes = normalizeMaxToolPayloadBytes(options.maxToolPayloadBytes);
   assertSafeBind(host, options.allowNonLoopback === true, (boundHost) =>
     new OpenAIApiAdapterError(
       "unsafe_host",
@@ -267,7 +295,7 @@ export async function startOpenAIApiAdapter(
           path: req.path,
           receivedAt,
           ...(req.socket.remoteAddress === undefined ? {} : { remoteAddress: req.socket.remoteAddress }),
-          headers: sanitizeRequestHeaders(req.headers),
+          headers: sanitizeInboundHttpHeaders(req.headers),
           parameters: body.parameters,
           ...(body.imageAttachments.length === 0 ? {} : { attachments: summarizeAttachments(body.imageAttachments) }),
         },
@@ -285,7 +313,14 @@ export async function startOpenAIApiAdapter(
         controller.abort(new Error("OpenAI API adapter is stopping."));
       }
       if (body.stream) {
-        await runStreamingResponder({ request, response: res, requestId, model: body.model, options });
+        await runStreamingResponder({
+          request,
+          response: res,
+          requestId,
+          model: body.model,
+          maxToolPayloadBytes,
+          options,
+        });
         return;
       }
 
@@ -444,12 +479,14 @@ async function runJsonResponder(input: {
       new OpenAIApiAdapterError("invalid_config", "Cannot write to a finished OpenAI API stream."),
   });
   try {
+    const samplingWarning = await emitUnsupportedSamplingWarning(input.request, stream, input.options.logger);
     const response = await input.options.responder.respond(input.request, stream);
     await stream.finish(response.text);
     input.response.status(200).json(chatCompletion({
       id: `chatcmpl-${input.requestId}`,
       model: input.model,
       content: stream.text,
+      ...(samplingWarning === undefined ? {} : { events: [samplingWarning] }),
     }));
   } catch (error) {
     const cancelled = input.request.abortSignal.aborted || isAgentResponseCancelledError(error);
@@ -472,6 +509,7 @@ async function runStreamingResponder(input: {
   readonly response: Response;
   readonly requestId: string;
   readonly model: string;
+  readonly maxToolPayloadBytes: number;
   readonly options: OpenAIApiAdapterOptions;
 }): Promise<void> {
   input.response.writeHead(200, {
@@ -499,10 +537,15 @@ async function runStreamingResponder(input: {
     created: Math.floor(Date.now() / 1000),
     model: input.model,
   };
-  const stream = new SseChatMessageStream(input.response, chunkInput);
+  const stream = new SseChatMessageStream(
+    input.response,
+    chunkInput,
+    input.maxToolPayloadBytes,
+  );
   stream.start();
 
   try {
+    await emitUnsupportedSamplingWarning(input.request, stream, input.options.logger);
     const response = await input.options.responder.respond(input.request, stream);
     await stream.finish(response.text);
   } catch (error) {
@@ -529,6 +572,7 @@ class SseChatMessageStream implements AgentMessageStream {
   constructor(
     private readonly response: Response,
     private readonly chunkInput: ChatCompletionChunkInput,
+    private readonly maxToolPayloadBytes: number,
   ) {}
 
   start(): void {
@@ -570,15 +614,13 @@ class SseChatMessageStream implements AgentMessageStream {
       const name = event.name ?? started?.name ?? "tool";
       const args = event.arguments ?? started?.arguments ?? {};
       this.activeTools.delete(event.id);
-      this.writeChunk({
-        content: openWebUIToolDetails({
-          id: event.id,
-          name,
-          arguments: args,
-          result: event.content,
-          isError: event.isError === true,
-        }),
-      }, null);
+      this.writeToolDetailsChunk({
+        id: event.id,
+        name,
+        arguments: args,
+        result: event.content,
+        isError: event.isError === true,
+      });
       return;
     }
     if (event.type === "runtime_warning") {
@@ -647,7 +689,23 @@ class SseChatMessageStream implements AgentMessageStream {
     delta: Record<string, unknown>,
     finishReason: "stop" | null,
   ): void {
-    this.response.write(`data: ${JSON.stringify({
+    this.response.write(this.serializeChunk(delta, finishReason));
+  }
+
+  private writeToolDetailsChunk(input: OpenWebUIToolDetailsInput): void {
+    const frame = boundedOpenWebUIToolDetailsFrame(
+      input,
+      this.maxToolPayloadBytes,
+      (content) => this.serializeChunk({ content }, null),
+    );
+    this.response.write(frame);
+  }
+
+  private serializeChunk(
+    delta: Record<string, unknown>,
+    finishReason: "stop" | null,
+  ): string {
+    return `data: ${JSON.stringify({
       id: this.chunkInput.id,
       object: "chat.completion.chunk",
       created: this.chunkInput.created,
@@ -659,7 +717,7 @@ class SseChatMessageStream implements AgentMessageStream {
           finish_reason: finishReason,
         },
       ],
-    })}\n\n`);
+    })}\n\n`;
   }
 
   private assertOpen(): void {
@@ -976,19 +1034,8 @@ function firstHeaderValue(value: string | string[] | undefined): string | undefi
 }
 
 function readParameters(body: Record<string, unknown>): Record<string, unknown> {
-  const parameterKeys = [
-    "temperature",
-    "top_p",
-    "max_tokens",
-    "max_completion_tokens",
-    "stop",
-    "seed",
-    "logit_bias",
-    "presence_penalty",
-    "frequency_penalty",
-  ];
   const parameters: Record<string, unknown> = {};
-  for (const key of parameterKeys) {
+  for (const key of OPENAI_CHAT_PARAMETER_KEYS) {
     if (body[key] !== undefined) {
       parameters[key] = body[key];
     }
@@ -996,10 +1043,43 @@ function readParameters(body: Record<string, unknown>): Record<string, unknown> 
   return parameters;
 }
 
+async function emitUnsupportedSamplingWarning(
+  request: OpenAIApiChatRequest,
+  stream: AgentMessageStream,
+  logger: OpenAIApiAdapterLogger | undefined,
+): Promise<RuntimeWarningEvent | undefined> {
+  const ignoredParameters = OPENAI_CHAT_PARAMETER_KEYS.filter((key) =>
+    hasOwn(request.metadata.openaiApi.parameters, key)
+    && request.metadata.openaiApi.parameters[key] !== OPENAI_CHAT_PARAMETER_DEFAULTS[key]);
+  if (ignoredParameters.length === 0) {
+    return;
+  }
+
+  const event: AgentStreamEvent = {
+    type: "runtime_warning",
+    warningKind: UNSUPPORTED_SAMPLING_WARNING_KIND,
+    message: `OpenAI API sampling parameters are currently unsupported and were not applied: ${ignoredParameters.join(", ")}.`,
+    metadata: {
+      openaiApi: {
+        ignoredParameters,
+      },
+    },
+  };
+  logger?.warn?.("OpenAI API sampling parameters were ignored.", {
+    requestId: request.metadata.openaiApi.requestId,
+    conversationId: request.conversationId,
+    warningKind: event.warningKind,
+    ignoredParameters,
+  });
+  await stream.event?.(event);
+  return event;
+}
+
 function chatCompletion(input: {
   readonly id: string;
   readonly model: string;
   readonly content: string;
+  readonly events?: readonly RuntimeWarningEvent[];
 }): Record<string, unknown> {
   return {
     id: input.id,
@@ -1016,19 +1096,14 @@ function chatCompletion(input: {
         finish_reason: "stop",
       },
     ],
+    ...(input.events === undefined || input.events.length === 0
+      ? {}
+      : {
+          mono_agent: {
+            events: input.events,
+          },
+        }),
   };
-}
-
-function sanitizeRequestHeaders(
-  headers: Record<string, string | string[] | undefined>,
-): Record<string, string | string[] | undefined> {
-  const sanitized: Record<string, string | string[] | undefined> = {};
-  for (const [name, value] of Object.entries(headers)) {
-    if (!SENSITIVE_REQUEST_HEADERS.has(name.toLowerCase())) {
-      sanitized[name] = value;
-    }
-  }
-  return sanitized;
 }
 
 function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {
@@ -1066,15 +1141,169 @@ function openAIError(
   };
 }
 
-function openWebUIToolDetails(input: {
+interface OpenWebUIToolDetailsInput {
   readonly id: string;
   readonly name: string;
   readonly arguments: unknown;
   readonly result: unknown;
   readonly isError: boolean;
-}): string {
-  const argumentsJson = stableJson(input.arguments);
-  const resultJson = stableJson(input.result ?? null);
+}
+
+interface RenderedToolPayload {
+  readonly text: string;
+  readonly originalBytes: number;
+}
+
+interface ProjectedToolPayload {
+  readonly text: string;
+  readonly retainedBytes: number;
+}
+
+interface ToolDetailsFrameCandidate {
+  readonly appliedMaxBytes: number;
+  readonly frame: string;
+  readonly frameBytes: number;
+  readonly retainedPayloadBytes: number;
+}
+
+interface ToolPayloadSearchInterval {
+  readonly start: number;
+  readonly end: number;
+}
+
+type ToolDetailsFrameSerializer = (content: string) => string;
+
+function boundedOpenWebUIToolDetailsFrame(
+  input: OpenWebUIToolDetailsInput,
+  configuredMaxPayloadBytes: number,
+  serializeFrame: ToolDetailsFrameSerializer,
+): string {
+  const argumentsPayload = renderToolPayload(input.arguments);
+  const resultPayload = renderToolPayload(input.result ?? null);
+  const candidateAt = (appliedMaxBytes: number): ToolDetailsFrameCandidate => {
+    const argumentsProjection = projectToolPayload(argumentsPayload, appliedMaxBytes);
+    const resultProjection = projectToolPayload(resultPayload, appliedMaxBytes);
+    const frame = serializeFrame(openWebUIToolDetails(
+      input,
+      argumentsProjection.text,
+      resultProjection.text,
+    ));
+    return {
+      appliedMaxBytes,
+      frame,
+      frameBytes: utf8ByteLength(frame),
+      retainedPayloadBytes: argumentsProjection.retainedBytes + resultProjection.retainedBytes,
+    };
+  };
+
+  const configuredCandidate = candidateAt(configuredMaxPayloadBytes);
+  if (configuredCandidate.frameBytes <= MAX_TOOL_SSE_FRAME_BYTES) {
+    return configuredCandidate.frame;
+  }
+
+  // Search every interval on which serialized frame size is monotone. A raw
+  // payload replaces its truncation wrapper at originalBytes, which is the only
+  // possible downward discontinuity. Within a projected representation, each
+  // added scalar contributes at least one serialized byte while omittedBytes
+  // can lose at most one decimal digit; all other metadata lengths stay equal
+  // or grow. Splitting at each raw transition therefore makes binary search
+  // valid, while the global comparison maximizes retained useful payload.
+  let bestCandidate: ToolDetailsFrameCandidate | undefined;
+  for (const interval of toolPayloadSearchIntervals(
+    [argumentsPayload, resultPayload],
+    configuredMaxPayloadBytes,
+  )) {
+    const intervalCandidate = highestFittingToolPayloadCandidate(interval, candidateAt);
+    if (
+      intervalCandidate !== undefined
+      && (
+        bestCandidate === undefined
+        || isBetterToolPayloadCandidate(intervalCandidate, bestCandidate)
+      )
+    ) {
+      bestCandidate = intervalCandidate;
+    }
+  }
+  if (bestCandidate === undefined) {
+    throw new Error(
+      `OpenAI API tool details frame cannot fit within ${String(MAX_TOOL_SSE_FRAME_BYTES)} bytes.`,
+    );
+  }
+  return bestCandidate.frame;
+}
+
+function toolPayloadSearchIntervals(
+  payloads: readonly RenderedToolPayload[],
+  configuredMaxPayloadBytes: number,
+): readonly ToolPayloadSearchInterval[] {
+  const starts = new Set<number>([0]);
+  const addStart = (value: number): void => {
+    if (Number.isSafeInteger(value) && value >= 0 && value <= configuredMaxPayloadBytes) {
+      starts.add(value);
+    }
+  };
+
+  for (const payload of payloads) {
+    // At this exact budget projectToolPayload changes from a metadata wrapper
+    // to the raw payload, which can sharply reduce the serialized frame.
+    addStart(payload.originalBytes);
+  }
+
+  const orderedStarts = [...starts].sort((left, right) => left - right);
+  return orderedStarts.map((start, index) => ({
+    start,
+    end: (orderedStarts[index + 1] ?? configuredMaxPayloadBytes + 1) - 1,
+  }));
+}
+
+function highestFittingToolPayloadCandidate(
+  interval: ToolPayloadSearchInterval,
+  candidateAt: (appliedMaxBytes: number) => ToolDetailsFrameCandidate,
+): ToolDetailsFrameCandidate | undefined {
+  const endCandidate = candidateAt(interval.end);
+  if (endCandidate.frameBytes <= MAX_TOOL_SSE_FRAME_BYTES) {
+    return endCandidate;
+  }
+
+  const startCandidate = candidateAt(interval.start);
+  if (startCandidate.frameBytes > MAX_TOOL_SSE_FRAME_BYTES) {
+    return undefined;
+  }
+
+  let bestCandidate = startCandidate;
+  let lowerBound = interval.start + 1;
+  let upperBound = interval.end - 1;
+  while (lowerBound <= upperBound) {
+    const appliedMaxBytes = lowerBound + Math.floor((upperBound - lowerBound) / 2);
+    const candidate = candidateAt(appliedMaxBytes);
+    if (candidate.frameBytes <= MAX_TOOL_SSE_FRAME_BYTES) {
+      bestCandidate = candidate;
+      lowerBound = appliedMaxBytes + 1;
+    } else {
+      upperBound = appliedMaxBytes - 1;
+    }
+  }
+  return bestCandidate;
+}
+
+function isBetterToolPayloadCandidate(
+  candidate: ToolDetailsFrameCandidate,
+  current: ToolDetailsFrameCandidate,
+): boolean {
+  if (candidate.retainedPayloadBytes !== current.retainedPayloadBytes) {
+    return candidate.retainedPayloadBytes > current.retainedPayloadBytes;
+  }
+  if (candidate.frameBytes !== current.frameBytes) {
+    return candidate.frameBytes < current.frameBytes;
+  }
+  return candidate.appliedMaxBytes < current.appliedMaxBytes;
+}
+
+function openWebUIToolDetails(
+  input: OpenWebUIToolDetailsInput,
+  argumentsJson: string,
+  resultJson: string,
+): string {
   const summary = input.isError ? "Tool Error" : "Tool Executed";
   return [
     `<details type="tool_calls" done="true" id="${escapeHtmlAttribute(input.id)}" name="${escapeHtmlAttribute(input.name)}" arguments="${escapeHtmlAttribute(argumentsJson)}">`,
@@ -1085,15 +1314,102 @@ function openWebUIToolDetails(input: {
   ].join("\n");
 }
 
+interface ToolPayloadTruncation {
+  readonly truncated: true;
+  readonly maxBytes: number;
+  readonly originalBytes: number;
+  readonly retainedBytes: number;
+  readonly omittedBytes: number;
+}
+
+const TOOL_PAYLOAD_ENCODER = new TextEncoder();
+const TOOL_PAYLOAD_DECODER = new TextDecoder("utf-8", {
+  fatal: true,
+  ignoreBOM: true,
+});
+
+/**
+ * Produce a valid-JSON replacement when a rendered tool field exceeds its
+ * applied UTF-8 preview budget. Projection operates on the already-rendered
+ * text and never replaces fields on the source event object.
+ */
+function projectToolPayload(payload: RenderedToolPayload, maxBytes: number): ProjectedToolPayload {
+  if (payload.originalBytes <= maxBytes) {
+    return {
+      text: payload.text,
+      retainedBytes: payload.originalBytes,
+    };
+  }
+  const preview = utf8Prefix(payload.text, maxBytes);
+  const retainedBytes = utf8ByteLength(preview);
+  const truncation: ToolPayloadTruncation = {
+    truncated: true,
+    maxBytes,
+    originalBytes: payload.originalBytes,
+    retainedBytes,
+    omittedBytes: payload.originalBytes - retainedBytes,
+  };
+  return {
+    text: JSON.stringify({
+      __monoAgentTruncation: truncation,
+      preview,
+    }),
+    retainedBytes,
+  };
+}
+
+function renderToolPayload(value: unknown): RenderedToolPayload {
+  const text = stableJson(value);
+  return {
+    text,
+    originalBytes: utf8ByteLength(text),
+  };
+}
+
+function utf8Prefix(value: string, maxBytes: number): string {
+  // At most maxBytes + 1 UTF-16 code units are needed to cover maxBytes of
+  // UTF-8 while still including the low surrogate when the boundary follows a
+  // high surrogate. Repeated frame-fit probes therefore stay bounded even when
+  // the source value is much larger than the wire limit.
+  const sourcePrefix = value.slice(0, Math.min(value.length, maxBytes + 1));
+  const encoded = TOOL_PAYLOAD_ENCODER.encode(sourcePrefix);
+  let end = Math.min(encoded.length, maxBytes);
+  while (end > 0 && (encoded[end]! & 0b1100_0000) === 0b1000_0000) {
+    end -= 1;
+  }
+  return TOOL_PAYLOAD_DECODER.decode(encoded.subarray(0, end));
+}
+
+function utf8ByteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
 function stableJson(value: unknown): string {
   if (typeof value === "string") {
     return value;
   }
   try {
-    return JSON.stringify(value);
+    return JSON.stringify(value) ?? String(value);
   } catch {
     return String(value);
   }
+}
+
+function normalizeMaxToolPayloadBytes(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_MAX_TOOL_PAYLOAD_BYTES;
+  }
+  if (
+    !Number.isSafeInteger(value)
+    || value < 0
+    || value > DEFAULT_MAX_TOOL_PAYLOAD_BYTES
+  ) {
+    throw new OpenAIApiAdapterError(
+      "invalid_config",
+      `OpenAI API maxToolPayloadBytes must be an integer from 0 to ${String(DEFAULT_MAX_TOOL_PAYLOAD_BYTES)}.`,
+    );
+  }
+  return value;
 }
 
 function escapeHtmlAttribute(value: string): string {

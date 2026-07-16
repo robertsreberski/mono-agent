@@ -1713,6 +1713,13 @@
           ],
           "type": "boolean"
         },
+        "apiKey": {
+          "description": "Secret value for webhook.apiKey; prefer the env override.",
+          "examples": [
+            "set-via-MONO_AGENT_WEBHOOK_API_KEY"
+          ],
+          "type": "string"
+        },
         "defaultMode": {
           "description": "Configures defaultMode for the webhook section.",
           "examples": [
@@ -1854,12 +1861,11 @@
           }
         },
         "stripMentionText": {
-          "description": "Configures stripMentionText for the slack section.",
+          "description": "When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`.",
           "examples": [
-            "false"
+            false
           ],
-          "type": "boolean",
-          "default": false
+          "type": "boolean"
         },
         "heartbeatIntervalMs": {
           "description": "Configures heartbeatIntervalMs for the slack section.",

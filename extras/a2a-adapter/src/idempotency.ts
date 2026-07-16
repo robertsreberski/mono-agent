@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, type Stats } from "node:fs";
 import {
+  link,
   lstat,
   mkdir,
   open,
@@ -41,9 +42,11 @@ const STORE_MANIFEST_FILE = "manifest.json";
 const SLOTS_DIRECTORY = "slots";
 const RECORD_FILE_PATTERN = /^[a-f0-9]{64}\.json$/u;
 const SLOT_FILE_PATTERN = /^slot-([0-9]{1,7})\.json$/u;
+const TEMPORARY_RECORD_FILE_PATTERN = /^\.[a-f0-9]{64}\.[a-f0-9-]+\.tmp$/u;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$/u;
 const MAX_RECORD_BYTES = 4 * 1024 * 1024;
+const MAX_RECORD_READ_ATTEMPTS = 20;
 const ACTIVE_POLL_MS = 50;
 const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const MIN_RETENTION_MS = 60_000;
@@ -122,6 +125,15 @@ interface IdempotencyStore {
   save(record: IdempotencyRecord): Promise<void>;
 }
 
+interface FileIdempotencyStoreHooks {
+  /** Deterministic test seam after the admission is durable but before it is published. */
+  readonly beforeAdmissionPublish?: () => Promise<void>;
+  /** Deterministic test seam after publication but before the staging link is removed. */
+  readonly afterAdmissionPublish?: () => Promise<void>;
+  /** Deterministic test seam after opening a canonical record but before pathname revalidation. */
+  readonly afterRecordOpen?: (input: { readonly keyHash: string; readonly attempt: number }) => Promise<void>;
+}
+
 interface RuntimeRequest {
   readonly fingerprint: string;
   readonly accepted: Promise<SendMessageResult>;
@@ -151,12 +163,20 @@ export async function createIdempotentA2ARequestHandler(input: {
     warn?(message: string, metadata?: Record<string, unknown>): void;
     error?(message: string, metadata?: Record<string, unknown>): void;
   };
+  /** @internal Deterministic filesystem scheduling hooks for adversarial tests. */
+  readonly storeHooks?: FileIdempotencyStoreHooks;
 }): Promise<A2ARequestHandler> {
   validateA2AProviderIdempotencyOptions(input.options);
   const retentionMs = normalizeRetentionMs(input.options.retentionMs);
   const maxRecords = normalizeMaxRecords(input.options.maxRecords);
   const providerScope = idempotencyNamespaceHash(input.options.namespace);
-  const store = await FileIdempotencyStore.create(input.options.stateDir.trim(), retentionMs, maxRecords, providerScope);
+  const store = await FileIdempotencyStore.create(
+    input.options.stateDir.trim(),
+    retentionMs,
+    maxRecords,
+    providerScope,
+    input.storeHooks,
+  );
   return new IdempotentA2ARequestHandler(
     input.delegate,
     input.taskStore,
@@ -560,6 +580,7 @@ class FileIdempotencyStore implements IdempotencyStore {
     private readonly providerScope: string,
     private readonly slotsDir: string,
     private readonly slotsDirIdentity: DirectoryIdentity,
+    private readonly hooks: FileIdempotencyStoreHooks,
   ) {}
 
   static async create(
@@ -567,6 +588,7 @@ class FileIdempotencyStore implements IdempotencyStore {
     retentionMs: number,
     maxRecords: number,
     providerScope: string,
+    hooks: FileIdempotencyStoreHooks = {},
   ): Promise<FileIdempotencyStore> {
     const stateDirectory = await ensurePrivateStateDir(resolve(inputPath));
     const slotsDirectory = await ensurePrivateStateDir(resolve(stateDirectory.path, SLOTS_DIRECTORY));
@@ -578,6 +600,7 @@ class FileIdempotencyStore implements IdempotencyStore {
       providerScope,
       slotsDirectory.path,
       slotsDirectory.identity,
+      hooks,
     );
     await store.ensureManifest();
     await store.pruneExpiredTerminalRecords();
@@ -591,9 +614,9 @@ class FileIdempotencyStore implements IdempotencyStore {
     const path = resolve(this.stateDir, `${keyHash}.json`);
     let raw: Buffer;
     try {
-      raw = await secureReadPrivateFile(path, RECORD_FILE_PATTERN);
+      raw = await secureReadPublishedRecord(path, this.stateDir, keyHash, this.hooks);
     } catch (error) {
-      if (isErrno(error, "ENOENT")) {
+      if (error instanceof RecordNotFoundError) {
         await this.assertDirectories();
         return undefined;
       }
@@ -652,41 +675,64 @@ class FileIdempotencyStore implements IdempotencyStore {
     const slot = await this.allocateSlot(record.keyHash);
     const admitted: ActiveRecord = { ...record, slot };
     const destination = resolve(this.stateDir, `${record.keyHash}.json`);
+    const temporary = resolve(this.stateDir, `.${record.keyHash}.${randomUUID()}.tmp`);
     const contents = Buffer.from(`${canonicalJson(admitted)}\n`, "utf8");
     let handle;
     try {
       handle = await open(
-        destination,
+        temporary,
         fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0),
         0o600,
       );
     } catch (error) {
-      if (isErrno(error, "EEXIST")) {
-        await this.assertDirectories();
-        return undefined;
-      }
-      throw storeError("Failed to create the durable A2A idempotency admission.", error);
+      throw storeError("Failed to stage the durable A2A idempotency admission.", error);
     }
     try {
       await handle.writeFile(contents);
       await handle.chmod(0o600);
       await handle.sync();
+      await handle.close();
+      handle = undefined;
     } catch (error) {
-      await handle.close().catch(() => undefined);
-      await unlink(destination).catch(() => undefined);
+      await handle?.close().catch(() => undefined);
+      await unlink(temporary).catch(() => undefined);
       throw storeError("Failed to persist the durable A2A idempotency admission.", error);
     }
+    let published = false;
     try {
-      await handle.close();
+      await this.hooks.beforeAdmissionPublish?.();
+      await this.assertDirectories();
+      try {
+        // A hard link is the portable no-clobber publication primitive: the
+        // canonical name appears atomically and already references the fully
+        // written, fsynced inode. Concurrent publishers cannot replace it.
+        await link(temporary, destination);
+        published = true;
+      } catch (error) {
+        if (!isErrno(error, "EEXIST")) {
+          throw error;
+        }
+        // Persist the shared winner's directory entry before allowing this
+        // process to observe and fail closed on its active admission.
+        await fsyncDirectory(this.stateDir, this.stateDirIdentity);
+        await this.assertDirectories();
+        return undefined;
+      }
+      await this.hooks.afterAdmissionPublish?.();
+      await unlink(temporary);
       await fsyncDirectory(this.stateDir, this.stateDirIdentity);
       await this.verifySlot(slot, record.keyHash);
       await this.assertDirectories();
       return admitted;
     } catch (error) {
-      await handle.close().catch(() => undefined);
-      await unlink(destination).catch(() => undefined);
-      await fsyncDirectory(this.stateDir, this.stateDirIdentity).catch(() => undefined);
-      throw storeError("Failed to finalize the durable A2A idempotency admission.", error);
+      if (published) {
+        // The canonical record is complete and may already be observed. Never
+        // remove it after publication: retaining it is the fail-closed result.
+        throw storeError("Failed to finalize the durable A2A idempotency admission.", error);
+      }
+      throw storeError("Failed to publish the durable A2A idempotency admission.", error);
+    } finally {
+      await unlink(temporary).catch(() => undefined);
     }
   }
 
@@ -886,7 +932,7 @@ class FileIdempotencyStore implements IdempotencyStore {
       if (!entry.isFile() || !RECORD_FILE_PATTERN.test(entry.name)) {
         // Atomic-write remnants are retained for operator inspection; they do
         // not count as admissions because capacity is held by slot files.
-        if (/^\.[a-f0-9]{64}\.[a-f0-9-]+\.tmp$/u.test(entry.name)) {
+        if (TEMPORARY_RECORD_FILE_PATTERN.test(entry.name)) {
           continue;
         }
         throw storeError(`Unexpected entry in A2A idempotency stateDir: ${entry.name}`);
@@ -895,7 +941,12 @@ class FileIdempotencyStore implements IdempotencyStore {
       let record: IdempotencyRecord;
       try {
         record = parseRecord(
-          JSON.parse((await secureReadPrivateFile(resolve(this.stateDir, entry.name), RECORD_FILE_PATTERN)).toString("utf8")),
+          JSON.parse((await secureReadPublishedRecord(
+            resolve(this.stateDir, entry.name),
+            this.stateDir,
+            keyHash,
+            this.hooks,
+          )).toString("utf8")),
           keyHash,
         );
       } catch (error) {
@@ -1596,6 +1647,155 @@ async function secureReadPrivateFile(path: string, allowedName: RegExp): Promise
     return await readFile(handle);
   } finally {
     await handle.close();
+  }
+}
+
+class RecordPathChangedError extends Error {
+  constructor() {
+    super("A2A idempotency record pathname changed during a secure read.");
+    this.name = "RecordPathChangedError";
+  }
+}
+
+class RecordNotFoundError extends Error {
+  constructor() {
+    super("A2A idempotency record does not exist.");
+    this.name = "RecordNotFoundError";
+  }
+}
+
+async function secureReadPublishedRecord(
+  path: string,
+  stateDir: string,
+  keyHash: string,
+  hooks: FileIdempotencyStoreHooks = {},
+): Promise<Buffer> {
+  assertKeyHash(keyHash);
+  if (basename(path) !== `${keyHash}.json`) {
+    throw new Error("invalid record path");
+  }
+  let observedCanonical = false;
+  let lastPathChange: RecordPathChangedError | undefined;
+  for (let attempt = 1; attempt <= MAX_RECORD_READ_ATTEMPTS; attempt += 1) {
+    let handle;
+    try {
+      handle = await open(
+        path,
+        fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0),
+      );
+      observedCanonical = true;
+    } catch (error) {
+      if (!isErrno(error, "ENOENT")) {
+        throw error;
+      }
+      if (!observedCanonical) {
+        throw new RecordNotFoundError();
+      }
+      lastPathChange = new RecordPathChangedError();
+      continue;
+    }
+    try {
+      await hooks.afterRecordOpen?.({ keyHash, attempt });
+      let details = await handle.stat();
+      await assertCurrentRecordPath(path, details);
+      const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+      assertSafeOpenedRecord(details, uid);
+      let validatedTemporaryLink = false;
+      if (details.nlink !== 1) {
+        if (details.nlink !== 2) {
+          throw new Error("record identity or permissions are unsafe");
+        }
+        const expectedPrefix = `.${keyHash}.`;
+        let matchingTemporaryLinks = 0;
+        for (const entry of await readdir(stateDir, { withFileTypes: true })) {
+          if (
+            !entry.name.startsWith(expectedPrefix)
+            || !TEMPORARY_RECORD_FILE_PATTERN.test(entry.name)
+          ) {
+            continue;
+          }
+          let candidate: Stats;
+          try {
+            candidate = await lstat(resolve(stateDir, entry.name));
+          } catch (error) {
+            if (isErrno(error, "ENOENT")) {
+              continue;
+            }
+            throw error;
+          }
+          if (
+            candidate.isFile()
+            && !candidate.isSymbolicLink()
+            && candidate.dev === details.dev
+            && candidate.ino === details.ino
+            && (candidate.mode & 0o777) === 0o600
+            && (uid === undefined || candidate.uid === uid)
+          ) {
+            matchingTemporaryLinks += 1;
+          }
+        }
+        // The publisher may unlink its staging name while the directory is
+        // scanned. Re-read the opened inode before deciding whether its second
+        // link is the one expected from atomic publication.
+        details = await handle.stat();
+        assertSafeOpenedRecord(details, uid);
+        if (details.nlink !== 1 && (details.nlink !== 2 || matchingTemporaryLinks !== 1)) {
+          throw new Error("record identity or permissions are unsafe");
+        }
+        validatedTemporaryLink = details.nlink === 2;
+      }
+      await assertCurrentRecordPath(path, details);
+      const raw = await readFile(handle);
+      const finalDetails = await handle.stat();
+      assertSafeOpenedRecord(finalDetails, uid);
+      if (
+        finalDetails.dev !== details.dev
+        || finalDetails.ino !== details.ino
+        || finalDetails.size !== raw.byteLength
+        || (finalDetails.nlink !== 1 && !(validatedTemporaryLink && finalDetails.nlink === 2))
+      ) {
+        throw new Error("record identity or permissions are unsafe");
+      }
+      await assertCurrentRecordPath(path, finalDetails);
+      return raw;
+    } catch (error) {
+      if (!(error instanceof RecordPathChangedError)) {
+        throw error;
+      }
+      lastPathChange = error;
+    } finally {
+      await handle.close();
+    }
+  }
+  throw lastPathChange ?? new RecordPathChangedError();
+}
+
+function assertSafeOpenedRecord(details: Stats, uid: number | undefined): void {
+  if (
+    !details.isFile()
+    || (details.mode & 0o777) !== 0o600
+    || details.size > MAX_RECORD_BYTES
+    || (uid !== undefined && details.uid !== uid)
+  ) {
+    throw new Error("record identity or permissions are unsafe");
+  }
+}
+
+async function assertCurrentRecordPath(path: string, opened: Stats): Promise<void> {
+  let current: Stats;
+  try {
+    current = await lstat(path);
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) {
+      throw new RecordPathChangedError();
+    }
+    throw error;
+  }
+  if (!current.isFile() || current.isSymbolicLink()) {
+    throw new Error("record identity or permissions are unsafe");
+  }
+  if (current.dev !== opened.dev || current.ino !== opened.ino) {
+    throw new RecordPathChangedError();
   }
 }
 

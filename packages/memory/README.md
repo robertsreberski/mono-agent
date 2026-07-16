@@ -63,6 +63,22 @@ await store.persistCompletedTurn?.({
 });
 ```
 
+### BuJo capture paths
+
+The bundled `@mono-agent/agent-harness` never calls `scheduleCapture` on
+`BujoMemoryStore`. BuJo implements `persistCompletedTurn`, so the harness always
+takes the strong, run-idempotent branch; `writeMode: "capture"` passes the
+approved turn text through that durable intake and the strict capture parser.
+
+`scheduleCapture`, direct `capture()`, and the loose capture primitives exported
+from `@mono-agent/memory/bujo` remain explicit opt-in compatibility/composition
+surfaces for direct embedders and offline calibration tooling. No bundled host
+invokes them. The `scheduleCapture` queue is allocated lazily on its first direct
+call. Creating a writable BuJo store through the bundled host therefore leaves
+that best-effort queue absent, rather than creating an idle queue that no shipped
+trigger can feed. New host integrations should implement or call
+`persistCompletedTurn`; they should not route BuJo turns through the legacy pair.
+
 The built-in store keeps `.capture-intake/{pending,dead,resolved}` private
 (`0700` directories, `0600` files). Filenames are SHA-256 run keys and contain
 no conversation or memory text. Exact retries return `duplicate`; reusing one
@@ -191,6 +207,14 @@ All adoption failures use stable codes and fixed remediation text. `--json`
 prints one parseable metadata-only failure object on stdout; human mode prints
 the same code/message on stderr. Neither form includes paths, memory or model
 text, record/intent/decision ids, database details, or underlying error text.
+
+## Consolidation
+
+`BujoMemoryStore.consolidate()` performs projection-only maintenance. It
+refreshes the derived `index.md`, keeps the retired `future-log.md` projection
+as an empty stub, and returns `{ duplicateGroups }`, the number of
+exact-normalized duplicate-text groups it observed. It does not decay salience,
+supersede or merge records, rewrite canonical memories, or call a chat model.
 
 ## Public API
 

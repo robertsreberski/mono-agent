@@ -123,6 +123,11 @@ export function readinessProbeTimeoutMs(model: RuntimeModelReference): number {
     : CLOUD_READINESS_TIMEOUT_MS;
 }
 
+/** Source-derived operator wording for the per-route readiness deadlines. */
+export function readinessProbeTimeoutDescription(): string {
+  return `${CLOUD_READINESS_TIMEOUT_MS / 1_000}s for each cloud route and ${LOCAL_READINESS_TIMEOUT_MS / 1_000}s for each local route`;
+}
+
 /**
  * The probe must not inherit a configured agent from the shell it happens to
  * run in. Provider auth/runtime variables remain available, while every

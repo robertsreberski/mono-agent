@@ -44,7 +44,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
       throw new MemorySearchError("invalid_embedding_options", "Ollama embedding model is required.");
     }
     this.model = options.model;
-    this.endpoint = (options.endpoint ?? DEFAULT_OLLAMA_ENDPOINT).replace(/\/+$/u, "");
+    this.endpoint = normalizeServiceRoot(options.endpoint ?? DEFAULT_OLLAMA_ENDPOINT, "Ollama");
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.id = `ollama:${this.model}`;
@@ -161,7 +161,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     }
     this.model = options.model;
     this.apiKey = options.apiKey;
-    this.endpoint = (options.endpoint ?? DEFAULT_OPENAI_ENDPOINT).replace(/\/+$/u, "");
+    this.endpoint = normalizeServiceRoot(options.endpoint ?? DEFAULT_OPENAI_ENDPOINT, "OpenAI");
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.id = `openai:${this.model}`;
@@ -295,7 +295,12 @@ function normalizeServiceRoot(value: string, label: string): string {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new MemorySearchError("invalid_embedding_options", `${label} endpoint must be an absolute HTTP(S) service root.`);
   }
-  if (parsed.username.length > 0 || parsed.password.length > 0 || parsed.search.length > 0 || parsed.hash.length > 0) {
+  if (
+    parsed.username.length > 0
+    || parsed.password.length > 0
+    || normalized.includes("?")
+    || normalized.includes("#")
+  ) {
     throw new MemorySearchError(
       "invalid_embedding_options",
       `${label} endpoint service root must not include credentials, a query, or a fragment.`,

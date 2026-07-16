@@ -150,9 +150,13 @@ export function recoverDurableMutationState(
   const migration = tier === "bujo"
     ? recoverPendingMigrateDecisionWithMetadata(root, db, canonicalGraphRepairGuard)
     : (assertNoPendingMigrateDecision(root), undefined);
-  const captureReplayed = replayCaptureOutbox(root, db, {
-    ...(canonicalGraphRepairGuard === undefined ? {} : { canonicalGraphRepairGuard }),
-  }).length;
+  // Lite and Journal never create capture intents. Avoid the empty-outbox
+  // compatibility check, whose missing-sidecar guard materializes the full DB.
+  const captureReplayed = tier !== "bujo" && !captureQueued
+    ? 0
+    : replayCaptureOutbox(root, db, {
+      ...(canonicalGraphRepairGuard === undefined ? {} : { canonicalGraphRepairGuard }),
+    }).length;
   if (missingManagedAuthorityBefore) {
     throw new Error(
       `memory-bujo: managed index was missing ${REPLAY_PROJECTION_FILE}; durable recovery completed but `
@@ -168,11 +172,8 @@ export function recoverDurableMutationState(
       );
     }
     assertReplayProjectionMatchesDb(db, replay.projection);
-  } else {
-    const replay = replayProjectionDbSnapshot(db);
-    if (hasReplayProjectionState(replay)) {
-      throw new Error(`memory-bujo: ${tier} rejects BuJo replay-owned lifecycle and edges.`);
-    }
+  } else if (db.hasReplayProjectionState()) {
+    throw new Error(`memory-bujo: ${tier} rejects BuJo replay-owned lifecycle and edges.`);
   }
   return {
     ...(migration === undefined ? {} : { migrationAction: migration.action }),

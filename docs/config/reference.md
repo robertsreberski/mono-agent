@@ -149,7 +149,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `slack.reconnectStabilityMs` | `integer` | `MONO_AGENT_SLACK_RECONNECT_STABILITY_MS` | unset | `1` | Configures reconnectStabilityMs for the slack section. |
 | `slack.reconnectStartupGraceMs` | `integer` | `MONO_AGENT_SLACK_RECONNECT_STARTUP_GRACE_MS` | unset | `1` | Configures reconnectStartupGraceMs for the slack section. |
 | `slack.shortcuts` | `array` | `--` | [] | `[{"callbackId":"triage","prompt":"Prepare the daily support triage checklist.","channelId":"C0123"}]` | JSON-only global/message Slack shortcut bindings; there is no environment-variable form. |
-| `slack.stripMentionText` | `boolean` | `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` | false | `false` | Configures stripMentionText for the slack section. |
+| `slack.stripMentionText` | `boolean` | `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` | conditional | `false` | When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`. |
 | `telegram.allowAllChats` | `boolean` | `MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS` | false | `true` | Configures allowAllChats for the telegram section. |
 | `telegram.allowedChatIds` | `string[]` | `MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS` | unset | `["example"]` | Configures allowedChatIds for the telegram section. |
 | `telegram.apiRoot` | `string` | `MONO_AGENT_TELEGRAM_API_ROOT` | unset | `example` | Configures apiRoot for the telegram section. |
@@ -189,6 +189,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `tui.host` | `string` | `MONO_AGENT_TUI_HOST` | 127.0.0.1 | `127.0.0.1` | Configures host for the tui section. |
 | `tui.port` | `integer` | `MONO_AGENT_TUI_PORT` | 0 | `0` | Configures port for the tui section. |
 | `webhook.allowNonLoopback` | `boolean` | `MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK` | unset | `true` | Configures allowNonLoopback for the webhook section. |
+| `webhook.apiKey` | `string` | `MONO_AGENT_WEBHOOK_API_KEY` | unset | `set-via-MONO_AGENT_WEBHOOK_API_KEY` | Secret value for webhook.apiKey; prefer the env override. |
 | `webhook.defaultMode` | `string` | `MONO_AGENT_WEBHOOK_DEFAULT_MODE` | sync | `sync` | Configures defaultMode for the webhook section. |
 | `webhook.dir` | `string` | `MONO_AGENT_WEBHOOK_DIR` | webhook | `webhook` | Configures dir for the webhook section. |
 | `webhook.effort` | `string` | `MONO_AGENT_WEBHOOK_EFFORT` | unset | `example` | Configures effort for the webhook section. |

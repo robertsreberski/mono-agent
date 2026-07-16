@@ -55,7 +55,7 @@ Optional flags:
 | `--name <display-name>` | Public agent name. Display metadata only; never used for paths/service/session ids. |
 | `--model <ref>` | Primary runtime model. Format: `pi:<provider>:<model>`, `claude:*`, `codex:*`, or `opencode:*`. Defaults to `codex:gpt-5.6-terra`; selectable Sol refs are `codex:gpt-5.6-sol` and `pi:openai-codex:gpt-5.6-sol`. |
 | `--fallback <ref>` | Repeatable canonical fallback route. Follow immediately with `--fallback-effort <provider-default\|level>` when needed. |
-| `--fallback-models <csv>` | Legacy compatibility form; entries inherit global effort. Do not combine with `--fallback`. |
+| `--fallback-models <csv>` | Deprecated compatibility form removed in `v2.0.0`; entries inherit global effort. Do not combine with `--fallback`. |
 | `--route-safety uniform\|per-route-native` | Common monotonic contract (default) or explicit isolated provider-native route contracts. |
 | `--codex-auth browser\|device` | Direct Codex login mode when `--auth` runs; `device` is for headless hosts. |
 | `--memory lite\|journal\|bujo` | Adds a `memory` section with the chosen tier. Omit it and no memory is configured. See [Capture and Recall](/memory/capture-and-recall/). |
@@ -161,7 +161,7 @@ Check the config section by section before starting:
 mono-agent validate
 ```
 
-`validate` (`app.cli-validate`) prints a per-section report — core, runtime, provider credentials, context, memory, tools, sandbox, observability, and every channel — each tagged with a status:
+`validate` (`app.cli-validate`) prints a per-section report — core, runtime provenance and routes, provider credentials, context, memory, tools, sandbox, observability, and every channel — each tagged with a status:
 
 | Status | Meaning | Action |
 | --- | --- | --- |
@@ -210,7 +210,7 @@ Replace `<PORT>` with the port from the `start` output. A response means the run
 :::note
 Time-to-first-validated-folder is usually under a minute when Node is installed and the CLI package or source build is already available: `mkdir`, `init`, and `validate` are local filesystem/config checks. Time-to-first-reply is not a fixed promise; it depends on provider auth, network latency, model availability, and whether dependencies need to be installed or built first.
 :::
-The webhook channel binds to loopback only. To accept non-loopback requests you must set `webhook.allowNonLoopback: true` (and ideally a non-zero `port`). For async invocation, status polling, multiple named endpoints, and per-endpoint prompts, see [Webhook](/channels/webhook/).
+The webhook channel binds to loopback by default. To accept non-loopback requests you must set both `webhook.allowNonLoopback: true` and `MONO_AGENT_WEBHOOK_API_KEY` (plus, ideally, a non-zero `port`); callers send the key as a bearer on invocation and status requests. A key is optional on loopback and leaving it unset preserves the zero-credential smoke flow above. For async invocation, status polling, multiple named endpoints, and per-endpoint prompts, see [Webhook](/channels/webhook/).
 
 ## Where to next
 

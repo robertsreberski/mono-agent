@@ -126,6 +126,8 @@ The native sandbox's network allowlist is a separate egress boundary. App-owned 
 
 When a blocking `AskUser` or `TelegramAskButtons` call completes, mono-agent stores its exact question, options, outcome, and answer/selection when present in the assistant history copy committed for that turn. This makes the interaction available to a later cold/stateless replay even though the transport posted the question out of band. The final outward message and long-term memory capture remain unchanged. Non-blocking `TelegramAskButtons` (`wait: false`) is not folded into that in-turn record; its later callback remains a synthetic next turn.
 
+The example assumes `MONO_AGENT_SLACK_BOT_TOKEN`, `MONO_AGENT_SLACK_APP_TOKEN`, and `MONO_AGENT_TELEGRAM_BOT_TOKEN` are set in `.env`; credentials are intentionally absent from the source config.
+
 ```json
 {
   "tools": {
@@ -133,13 +135,10 @@ When a blocking `AskUser` or `TelegramAskButtons` call completes, mono-agent sto
   },
   "slack": {
     "enabled": true,
-    "botToken": "xoxb-...",
-    "appToken": "xapp-...",
     "allowedChannelIds": ["C0123"]
   },
   "telegram": {
     "enabled": true,
-    "botToken": "...",
     "allowedChatIds": ["123456789"]
   }
 }
@@ -167,6 +166,8 @@ Cron has one failure-side notification path as well: if a `notify: true` cron jo
 - Otherwise the app infers it **only when exactly one** notify-capable (Telegram/Slack) candidate exists — drawn from seen conversations plus the adapter allowlist.
 - With **0 or 2+** candidates the app skips delivery with a warning rather than guessing.
 - Cron model-exhaustion failure notices are stricter: they require explicit `notifyConversationId` and never use inference.
+
+Inference is evaluated for each cron firing or webhook invocation, immediately before the agent run. That one route snapshot binds both host-only continuation `replyTo` and the run's final native delivery; webhook keeps the delivery route as a private scalar and reconstructs a separate completion request, so a structurally typed responder cannot redirect, delete, or inject it by mutating its request. If the candidate set becomes ambiguous before a later run, that later run has no reply target and its delivery is skipped rather than retaining a destination chosen at process start. Resolver promises are raced against the run's abort signal, so replacement, client disconnect, or stop can reclaim resolver-held slots without waiting for `maxRunMs`.
 
 The owning channel's allowlist is the destination boundary: a delivery to a Telegram/Slack id outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAllChats` / `allowAllChannels`) is refused. WhatsApp is not notify-capable. Delivery is best-effort — a skipped or failed notification does not change the cron job result or the webhook's HTTP response / async stored status.
 

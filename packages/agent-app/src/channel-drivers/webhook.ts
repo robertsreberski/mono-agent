@@ -82,19 +82,20 @@ export function createWebhookChannelDriver(
     async start(input) {
       const endpoints = input.config.endpoints.filter((endpoint) => endpoint.enabled);
       const endpointByName = new Map(endpoints.map((endpoint) => [endpoint.name, endpoint]));
-      const inferredNotifyDestination = endpoints.some(
-        (endpoint) => endpoint.notify === true && endpoint.notifyConversationId === undefined,
-      )
-        ? await inferUniqueNotifyDestination({
-            ...(input.listNotifyDestinations === undefined ? {} : { listNotifyDestinations: input.listNotifyDestinations }),
-          })
-        : undefined;
+      const listNotifyDestinations = input.listNotifyDestinations;
+      const resolveNotifyFallbackConversationId = listNotifyDestinations === undefined
+        ? undefined
+        : async (abortSignal?: AbortSignal) => await inferUniqueNotifyDestination({
+            listNotifyDestinations,
+            ...(abortSignal === undefined ? {} : { abortSignal }),
+          });
       const adapterModule = await loadWebhookModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startWebhookAdapter;
       const adapter = await adapterFactory({
         host: input.config.host,
         port: input.config.port,
         allowNonLoopback: input.config.allowNonLoopback,
+        ...(input.config.apiKey === undefined ? {} : { apiKey: input.config.apiKey }),
         defaultMode: input.config.defaultMode,
         retentionMs: input.config.retentionMs,
         maxStoredRequests: input.config.maxStoredRequests,
@@ -106,20 +107,17 @@ export function createWebhookChannelDriver(
           ...(endpoint.prompt === undefined ? {} : { prompt: endpoint.prompt }),
           ...(endpoint.notify === undefined ? {} : { notify: endpoint.notify }),
           ...(endpoint.notifyConversationId === undefined ? {} : { notifyConversationId: endpoint.notifyConversationId }),
-          ...(endpoint.notify === true && endpoint.notifyConversationId === undefined && inferredNotifyDestination !== undefined
-            ? { notifyFallbackConversationId: inferredNotifyDestination }
-            : {}),
           ...(endpoint.model === undefined ? {} : { model: endpoint.model }),
           ...(endpoint.effort === undefined ? {} : { effort: endpoint.effort }),
         })),
         responder: input.responder,
+        ...(resolveNotifyFallbackConversationId === undefined ? {} : { resolveNotifyFallbackConversationId }),
         onResult: (status, request) => {
           void deliverNativeWebhookNotification({
             endpoint: endpointByName.get(request.metadata.webhook.endpointName),
             status,
             request,
             ...(input.notifyDestination === undefined ? {} : { notifyDestination: input.notifyDestination }),
-            ...(input.listNotifyDestinations === undefined ? {} : { listNotifyDestinations: input.listNotifyDestinations }),
             ...(input.logger === undefined ? {} : { logger: input.logger }),
           });
         },

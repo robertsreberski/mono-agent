@@ -51,6 +51,8 @@ Config-loaded channel usage:
 
 Hosts provide a Baileys socket, adapter options, and a structural `AgentResponder`. The base responder, stream, response, and cancellation contracts come from `@mono-agent/agent-contracts`.
 
+The bundled `WhatsAppEventRunner` derives a queue from each usable, trimmed `remoteJid`; messages without one share a fallback queue. Within a queue it awaits both the message handler and its result callback before starting the next message. Different queues can enter the adapter concurrently, so one chat is not held behind another by the event runner, although host runtime limits can still serialize the underlying agent work. Completion and result-callback order across different chats is not guaranteed to match global receive order. A later message in the same chat, including `/cancel`, does not overtake the in-flight handler.
+
 ## Public API
 
 - `WhatsAppAdapter`, `WhatsAppAdapterOptions`

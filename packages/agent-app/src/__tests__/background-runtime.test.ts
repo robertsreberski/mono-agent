@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile, mkdir } from "node:fs/promises";
+import { link, lstat, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
@@ -235,6 +235,30 @@ describe("ensureManagedBackgroundRuntime", () => {
       await realpath(join(dirname(dirname(first.cliPath)), "node_modules", "@fixture", "workspace-dependency")),
       "index.js",
     ), "utf8")).toBe(source.dependencyContents);
+  });
+
+  it("copies hardlinked source files into single-link managed closure files", async () => {
+    const source = await workspaceFixture();
+    const homeDir = await homeFixture();
+    const externalSourceAlias = join(source.root, "external-source-alias.js");
+    await link(source.dependencyPath, externalSourceAlias);
+
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    const managedDependencyRoot = await realpath(join(
+      dirname(dirname(runtime.cliPath)),
+      "node_modules",
+      "@fixture",
+      "workspace-dependency",
+    ));
+    const managedDependencyPath = join(managedDependencyRoot, "index.js");
+
+    expect((await lstat(source.dependencyPath)).nlink).toBe(2);
+    expect((await lstat(managedDependencyPath)).nlink).toBe(1);
+    expect(await readFile(managedDependencyPath, "utf8")).toBe(source.dependencyContents);
   });
 
   it("read-only attestation binds the canonical cached closure to the exact deploy source", async () => {
@@ -599,6 +623,35 @@ describe("ensureManagedBackgroundRuntime", () => {
       nodePath: process.execPath,
       homeDir,
     }, deps)).rejects.toThrow(/package closure changed while staging/u);
+  });
+
+  it("rejects a staged closure file hardlinked outside the private runtime", async () => {
+    const source = await workspaceFixture();
+    const homeDir = await homeFixture();
+    const externalAlias = join(homeDir, "external-runtime-alias.js");
+    const defaults = defaultManagedBackgroundRuntimeDeps();
+    const deps = fakeInstallerDeps(async (input) => {
+      await defaults.installPackage(input);
+      const lock = JSON.parse(await readFile(join(input.stagingDir, "package-lock.json"), "utf8")) as {
+        packages: Record<string, { name?: string }>;
+      };
+      const dependencyRoot = Object.entries(lock.packages)
+        .find(([, entry]) => entry.name === "@fixture/workspace-dependency")?.[0];
+      if (dependencyRoot === undefined) throw new Error("staged dependency missing from fixture lockfile");
+      await link(join(input.stagingDir, ...dependencyRoot.split("/"), "index.js"), externalAlias);
+    });
+
+    await expect(ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    }, deps)).rejects.toThrow(/must not have additional hard links/u);
+
+    expect(await readFile(externalAlias, "utf8")).toBe(source.dependencyContents);
+    const abiRoot = join(homeDir, ".mono-agent", "runtimes", "agent-app", "9.8.7");
+    const descendants = await recursiveNames(abiRoot);
+    expect(descendants.some((name) => name.includes(".staging-"))).toBe(false);
+    expect(descendants.some((name) => name === ".mono-agent-runtime.json")).toBe(false);
   });
 
   it("repairs a corrupted managed runtime from itself after the disposable source has gone", async () => {

@@ -15,16 +15,29 @@ The published docs at **<https://mono-agent-docs.vercel.app/>** are an [Astro St
 # from this directory (website/)
 pnpm install                 # isolated install — uses website/pnpm-lock.yaml
 pnpm run dev                 # syncs ../docs, then astro dev (live preview)
-pnpm run build               # syncs, astro build, then the link checker
+pnpm run build               # checks asides, syncs, builds, then checks links
+pnpm run check:asides        # reject empty :::type / ::: fence pairs in ../docs
 pnpm run check:links         # validate the built dist/ only
 pnpm run sync                # re-mirror ../docs -> src/content/docs without building
 ```
 
-`scripts/check-links.mjs` validates the built `dist/` (the real rendered output, so it is independent of the Markdown processor) and fails the build on a broken internal link.
+`scripts/check-starlight-asides.mjs` scans the canonical `../docs/**/*.md`
+sources and fails on an opening `:::type` fence immediately followed by `:::`.
+`scripts/check-links.mjs` validates the built `dist/` (the real rendered output,
+so it is independent of the Markdown processor) and fails the build on a broken
+internal link.
 
 ## CI
 
-The repo's `ci.yml` has a dedicated parallel **`website`** job (separate from `verify`) that runs `pnpm install --frozen-lockfile && pnpm run build` here on every pull request and every push to `main`. That is the same `sync-content` → `astro build` → `check-links` pipeline as above, so a broken internal doc link (or any Astro build failure) turns the **`website`** check red. This repo does not use GitHub required-status-check enforcement, so nothing blocks a merge automatically — a red **`website`** check must be treated as a merge blocker by convention (do not merge over it). That is what keeps the docs site from rotting silently.
+The repo's `ci.yml` has a dedicated parallel **`website`** job (separate from
+`verify`) that runs `pnpm install --frozen-lockfile && pnpm run build` here on
+every pull request and every push to `main`. That is the same `check:asides` →
+`sync-content` → `astro build` → `check-links` pipeline as above, so an empty
+aside, broken internal link, or Astro build failure turns the **`website`** check
+red. This repo does not use GitHub required-status-check enforcement, so nothing
+blocks a merge automatically — a red **`website`** check must be treated as a
+merge blocker by convention (do not merge over it). That is what keeps the docs
+site from rotting silently.
 
 ## Version pins — do not bump blindly
 

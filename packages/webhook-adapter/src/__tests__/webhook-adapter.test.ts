@@ -1,8 +1,15 @@
+import dns from "node:dns";
+import { createServer } from "node:http";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 
-import { startWebhookAdapter } from "../index.js";
+import {
+  startWebhookAdapter,
+  WebhookAdapterError,
+  type WebhookAdapterStartResult,
+} from "../index.js";
 
 describe("Webhook adapter", () => {
   it("runs sync HTTP invocations through a structural responder", async () => {
@@ -43,6 +50,199 @@ describe("Webhook adapter", () => {
           requestId: expect.any(String),
         }),
       ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("requires the configured bearer token, protects status lookups, and strips secrets from request metadata", async () => {
+    const apiKey = "fixture-webhook-key";
+    const seenHeaders: unknown[] = [];
+    const responderCalls: string[] = [];
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const responder: AgentResponder = {
+      async respond(request, stream) {
+        responderCalls.push(request.text);
+        seenHeaders.push(request.metadata?.webhook);
+        await stream.append(`echo: ${request.text}`);
+        return {};
+      },
+    };
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      apiKey,
+      responder,
+      logger,
+    });
+
+    try {
+      const rejectedAuthorizationHeaders: readonly (string | undefined)[] = [
+        undefined,
+        "Bearer fixture-webhook-kex", // same length: exercises constant-time comparison
+        "Bearer short", // different length: still fails without leaking which part differed
+        `Basic ${apiKey}`,
+        "Bearer   ",
+        `Bearer ${apiKey} extra`,
+      ];
+      for (const authorization of rejectedAuthorizationHeaders) {
+        const response = await fetch(server.invokeUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(authorization === undefined ? {} : { authorization }),
+          },
+          body: JSON.stringify({ text: "must not run", mode: "sync" }),
+        });
+        expect(response.status).toBe(401);
+        await expect(response.json()).resolves.toEqual({
+          status: "unauthorized",
+          error: "Invalid API key.",
+        });
+      }
+      expect(responderCalls).toEqual([]);
+
+      const accepted = await fetch(server.invokeUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+          cookie: "session=fixture-cookie-secret",
+          "set-cookie": "session=fixture-response-cookie-secret",
+          "proxy-authorization": "Bearer fixture-proxy-secret",
+          "x-api-key": "fixture-secondary-secret",
+          "x-request-id": "safe-request-id",
+        },
+        body: JSON.stringify({ text: "authorized", mode: "async" }),
+      });
+      expect(accepted.status).toBe(202);
+      const acceptedBody = await accepted.json() as { requestId: string; statusUrl: string };
+      expect(responderCalls).toEqual(["authorized"]);
+      expect(seenHeaders).toEqual([
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-request-id": "safe-request-id" }),
+        }),
+      ]);
+      expect(seenHeaders[0]).not.toHaveProperty("headers.authorization");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.cookie");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.set-cookie");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.proxy-authorization");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.x-api-key");
+
+      const missingStatusAuth = await fetch(`${server.url}${acceptedBody.statusUrl}`);
+      expect(missingStatusAuth.status).toBe(401);
+      const wrongStatusAuth = await fetch(`${server.url}${acceptedBody.statusUrl}`, {
+        headers: { authorization: "Bearer wrong" },
+      });
+      expect(wrongStatusAuth.status).toBe(401);
+      const authorizedStatus = await fetch(`${server.url}${acceptedBody.statusUrl}`, {
+        headers: { authorization: `Bearer ${apiKey}` },
+      });
+      expect(authorizedStatus.status).toBe(200);
+
+      const logged = JSON.stringify(Object.values(logger).map((mock) => mock.mock.calls));
+      expect(logged).not.toContain(apiKey);
+      expect(logged).not.toContain("fixture-cookie-secret");
+      expect(logged).not.toContain("fixture-response-cookie-secret");
+      expect(logged).not.toContain("fixture-proxy-secret");
+      expect(logged).not.toContain("fixture-secondary-secret");
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("authenticates protected invocations before parsing malformed or oversized JSON", async () => {
+    const responder = {
+      respond: vi.fn(async () => ({ text: "must not run" })),
+    } satisfies AgentResponder;
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      apiKey: "fixture-webhook-key",
+      responder,
+      logger,
+    });
+    const malformedBody = '{"text":';
+    const oversizedBody = JSON.stringify({ text: "x".repeat(1_048_576) });
+
+    try {
+      for (const body of [malformedBody, oversizedBody]) {
+        for (const authorization of [undefined, "Bearer wrong-key"]) {
+          const response = await fetch(server.invokeUrl, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              ...(authorization === undefined ? {} : { authorization }),
+            },
+            body,
+          });
+          expect(response.status).toBe(401);
+          await expect(response.json()).resolves.toEqual({
+            status: "unauthorized",
+            error: "Invalid API key.",
+          });
+        }
+      }
+
+      for (const body of [malformedBody, oversizedBody]) {
+        const authorized = await fetch(server.invokeUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer fixture-webhook-key",
+          },
+          body,
+        });
+        expect(authorized.status).toBe(400);
+        await expect(authorized.json()).resolves.toMatchObject({ status: "failed" });
+      }
+
+      expect(responder.respond).not.toHaveBeenCalled();
+      expect(Object.values(logger).flatMap((mock) => mock.mock.calls)).toEqual([]);
+    } finally {
+      await server.stop();
+    }
+
+    const keyless = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      responder: echoResponder(),
+    });
+    try {
+      const response = await fetch(keyless.invokeUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: malformedBody,
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ status: "failed" });
+    } finally {
+      await keyless.stop();
+    }
+  });
+
+  it("preserves unauthenticated loopback compatibility when no API key is configured", async () => {
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      responder: echoResponder(),
+    });
+
+    try {
+      const response = await fetch(server.invokeUrl, postJson({ text: "compatible", mode: "sync" }));
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ status: "succeeded", text: "echo: compatible" });
     } finally {
       await server.stop();
     }
@@ -200,6 +400,206 @@ describe("Webhook adapter", () => {
           webhook: expect.objectContaining({ endpointName: "digest" }),
         }),
       ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("snapshots each inferred route before a mid-invocation candidate change", async () => {
+    const seen: unknown[] = [];
+    const completed: unknown[] = [];
+    let candidates = ["slack:C1"];
+    let resolutionCount = 0;
+    const resolveNotifyFallbackConversationId = vi.fn(async () => {
+      const resolved = candidates.length === 1 ? candidates[0] : undefined;
+      if (resolutionCount === 0) {
+        // The allowlist changes after this invocation selects C1 but before the
+        // responder starts. The request must keep the selected route.
+        candidates = ["slack:C1", "slack:C2"];
+      }
+      resolutionCount += 1;
+      return resolved;
+    });
+    const responder: AgentResponder = {
+      async respond(request) {
+        seen.push(request.replyTo);
+        return { text: "digest" };
+      },
+    };
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      endpoints: [{ name: "digest", path: "/digest", mode: "sync", notify: true }],
+      responder,
+      resolveNotifyFallbackConversationId,
+      onResult: (_status, request) => {
+        completed.push(request.replyTo);
+      },
+    });
+
+    try {
+      const first = await fetch(
+        `${server.url}/digest`,
+        postJson({ text: "first", conversationId: "logical:first", mode: "sync" }),
+      );
+      expect(first.status).toBe(200);
+      expect(seen[0]).toEqual({ conversationId: "slack:C1" });
+      expect(completed[0]).toEqual({ conversationId: "slack:C1" });
+
+      const second = await fetch(
+        `${server.url}/digest`,
+        postJson({ text: "second", conversationId: "logical:second", mode: "sync" }),
+      );
+      expect(second.status).toBe(200);
+      expect(seen[1]).toBeUndefined();
+      expect(completed[1]).toBeUndefined();
+      expect(resolveNotifyFallbackConversationId).toHaveBeenCalledTimes(2);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it.each([
+    ["rewrites a selected route", "rewrite", "slack:C1"],
+    ["deletes a selected route", "delete", "slack:C1"],
+    ["injects a route when none was selected", "inject", undefined],
+  ] as const)(
+    "keeps the completion route private when the responder %s",
+    async (_label, tamper, selectedRoute) => {
+      let responderRequest: object | undefined;
+      let completionRequest: object | undefined;
+      let routeBeforeTampering: string | undefined;
+      let onResultCallCount = 0;
+      const deliveredRoutes: string[] = [];
+      const responder: AgentResponder = {
+        async respond(request) {
+          responderRequest = request;
+          routeBeforeTampering = request.replyTo?.conversationId;
+          const mutableRequest = request as { replyTo?: { conversationId: string } };
+          if (tamper === "rewrite" && mutableRequest.replyTo !== undefined) {
+            mutableRequest.replyTo.conversationId = "slack:C2";
+          } else if (tamper === "delete") {
+            delete mutableRequest.replyTo;
+          } else if (tamper === "inject") {
+            mutableRequest.replyTo = { conversationId: "slack:C-INJECTED" };
+          }
+          return { text: "digest" };
+        },
+      };
+      const server = await startWebhookAdapter({
+        host: "127.0.0.1",
+        port: 0,
+        endpoints: [{ name: "digest", path: "/digest", mode: "sync", notify: true }],
+        responder,
+        resolveNotifyFallbackConversationId: async () => selectedRoute,
+        onResult: (status, request) => {
+          onResultCallCount += 1;
+          completionRequest = request;
+          if (status.status === "succeeded" && request.replyTo !== undefined) {
+            deliveredRoutes.push(request.replyTo.conversationId);
+          }
+        },
+      });
+
+      try {
+        const response = await fetch(
+          `${server.url}/digest`,
+          postJson({ text: "payload", conversationId: "logical:digest", mode: "sync" }),
+        );
+        expect(response.status).toBe(200);
+        expect(responderRequest).toBeDefined();
+        expect(completionRequest).toBeDefined();
+        expect(onResultCallCount).toBe(1);
+        expect(routeBeforeTampering).toBe(selectedRoute);
+        expect(completionRequest).not.toBe(responderRequest);
+        if (selectedRoute === undefined) {
+          expect(completionRequest).not.toHaveProperty("replyTo");
+          expect(deliveredRoutes).toEqual([]);
+        } else {
+          expect(completionRequest).toHaveProperty("replyTo.conversationId", "slack:C1");
+          expect(deliveredRoutes).toEqual(["slack:C1"]);
+        }
+      } finally {
+        await server.stop();
+      }
+    },
+  );
+
+  it("preserves route precedence and contains live resolver rejection", async () => {
+    const seen = new Map<string, unknown>();
+    const warn = vi.fn();
+    const resolveNotifyFallbackConversationId = vi.fn(async () => {
+      throw new Error("destination lookup failed");
+    });
+    const responder: AgentResponder = {
+      async respond(request) {
+        const endpointName = (request.metadata as { webhook: { endpointName: string } }).webhook.endpointName;
+        seen.set(endpointName, request.replyTo);
+        return { text: endpointName };
+      },
+    };
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      endpoints: [
+        {
+          name: "explicit",
+          path: "/explicit",
+          mode: "sync",
+          notify: true,
+          notifyConversationId: "slack:C-EXPLICIT",
+          notifyFallbackConversationId: "slack:C-FALLBACK",
+        },
+        {
+          name: "request",
+          path: "/request",
+          mode: "sync",
+          notify: true,
+          notifyFallbackConversationId: "slack:C-FALLBACK",
+        },
+        {
+          name: "fallback",
+          path: "/fallback",
+          mode: "sync",
+          notify: true,
+          notifyFallbackConversationId: "slack:C-FALLBACK",
+        },
+        { name: "dynamic", path: "/dynamic", mode: "sync", notify: true },
+      ],
+      responder,
+      resolveNotifyFallbackConversationId,
+      logger: { warn },
+    });
+
+    try {
+      const explicit = await fetch(
+        `${server.url}/explicit`,
+        postJson({ text: "p", conversationId: "slack:C-REQUEST", mode: "sync" }),
+      );
+      const request = await fetch(
+        `${server.url}/request`,
+        postJson({ text: "p", conversationId: "slack:C-REQUEST", mode: "sync" }),
+      );
+      const fallback = await fetch(
+        `${server.url}/fallback`,
+        postJson({ text: "p", conversationId: "logical:fallback", mode: "sync" }),
+      );
+      const dynamic = await fetch(
+        `${server.url}/dynamic`,
+        postJson({ text: "p", conversationId: "logical:dynamic", mode: "sync" }),
+      );
+
+      expect([explicit.status, request.status, fallback.status, dynamic.status]).toEqual([200, 200, 200, 200]);
+      expect(seen.get("explicit")).toEqual({ conversationId: "slack:C-EXPLICIT" });
+      expect(seen.get("request")).toEqual({ conversationId: "slack:C-REQUEST" });
+      expect(seen.get("fallback")).toEqual({ conversationId: "slack:C-FALLBACK" });
+      expect(seen.has("dynamic")).toBe(true);
+      expect(seen.get("dynamic")).toBeUndefined();
+      expect(resolveNotifyFallbackConversationId).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(
+        "Webhook native-notify destination resolution failed; running without a reply target.",
+        { endpointName: "dynamic", error: "destination lookup failed" },
+      );
     } finally {
       await server.stop();
     }
@@ -616,6 +1016,151 @@ describe("Webhook adapter", () => {
     }
   });
 
+  it("aborts hung destination resolution on client disconnect without maxRunMs and reclaims the slot", async () => {
+    let settleFirstResolver!: (value: string | undefined) => void;
+    const firstResolver = new Promise<string | undefined>((resolve) => {
+      settleFirstResolver = resolve;
+    });
+    const resolverSignals: AbortSignal[] = [];
+    let resolverCallCount = 0;
+    const resolveNotifyFallbackConversationId = vi.fn((abortSignal?: AbortSignal) => {
+      if (abortSignal !== undefined) {
+        resolverSignals.push(abortSignal);
+      }
+      resolverCallCount += 1;
+      return resolverCallCount === 1 ? firstResolver : Promise.resolve("slack:C-SECOND");
+    });
+    const responder = {
+      respond: vi.fn(async (request) => ({
+        text: request.replyTo?.conversationId ?? "no route",
+      })),
+    } satisfies AgentResponder;
+    const completed: Array<{ status: string; conversationId: string }> = [];
+    const onResult = vi.fn((status: { status: string; conversationId: string }) => {
+      completed.push(status);
+    });
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      endpoints: [{ name: "notify", path: "/notify", mode: "sync", notify: true }],
+      responder,
+      resolveNotifyFallbackConversationId,
+      onResult: (status) => onResult(status),
+    });
+
+    try {
+      const controller = new AbortController();
+      const first = fetch(`${server.url}/notify`, {
+        ...postJson({ text: "first", conversationId: "logical:same", mode: "sync" }),
+        signal: controller.signal,
+      });
+      const firstSettled = first.catch(() => undefined);
+
+      await expect.poll(() => server.activeRequestCount).toBe(1);
+      await expect.poll(() => resolveNotifyFallbackConversationId.mock.calls.length).toBe(1);
+      controller.abort();
+      await firstSettled;
+
+      await expect.poll(() => server.activeRequestCount).toBe(0);
+      await expect
+        .poll(() => completed)
+        .toContainEqual(expect.objectContaining({
+          status: "cancelled",
+          conversationId: "logical:same",
+        }));
+      expect(resolverSignals[0]?.aborted).toBe(true);
+
+      // The same endpoint/conversation can start again immediately; its fresh
+      // resolution and responder are not blocked by the discarded resolver.
+      const second = await fetch(
+        `${server.url}/notify`,
+        postJson({ text: "second", conversationId: "logical:same", mode: "sync" }),
+      );
+      expect(second.status).toBe(200);
+      expect(responder.respond).toHaveBeenCalledOnce();
+      expect(responder.respond.mock.calls[0]?.[0]).toHaveProperty(
+        "replyTo.conversationId",
+        "slack:C-SECOND",
+      );
+
+      // Late settlement of the first resolver cannot start another responder
+      // or emit a second terminal result for the disconnected request.
+      settleFirstResolver("slack:C-STALE");
+      for (let turn = 0; turn < 4; turn += 1) {
+        await Promise.resolve();
+      }
+      expect(responder.respond).toHaveBeenCalledOnce();
+      expect(onResult).toHaveBeenCalledTimes(2);
+      expect(completed.filter((status) => status.status === "cancelled")).toHaveLength(1);
+      expect(completed.filter((status) => status.status === "succeeded")).toHaveLength(1);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("observes a resolver that reentrantly stops the adapter before returning a late rejection", async () => {
+    let rejectDiscardedResolver!: (error: Error) => void;
+    const discardedResolver = new Promise<string | undefined>((_resolve, reject) => {
+      rejectDiscardedResolver = reject;
+    });
+    const thenSpy = vi.spyOn(discardedResolver, "then");
+    const responder = {
+      respond: vi.fn(async () => ({ text: "unexpected" })),
+    } satisfies AgentResponder;
+    const completed: Array<{ status: string }> = [];
+    const onResult = vi.fn((status: { status: string }) => {
+      completed.push(status);
+    });
+    let server!: Awaited<ReturnType<typeof startWebhookAdapter>>;
+    let stopPromise: Promise<void> | undefined;
+    let resolverCallCount = 0;
+    const resolveNotifyFallbackConversationId = (): Promise<string | undefined> => {
+      resolverCallCount += 1;
+      // stop() aborts the current request synchronously before its first await,
+      // so the resolver race receives an already-aborted signal.
+      stopPromise = server.stop();
+      return discardedResolver;
+    };
+    server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      endpoints: [{ name: "notify", path: "/notify", mode: "async", notify: true }],
+      responder,
+      resolveNotifyFallbackConversationId,
+      onResult: (status) => onResult(status),
+    });
+
+    try {
+      const accepted = await fetch(
+        `${server.url}/notify`,
+        postJson({ text: "stop", conversationId: "logical:stop", mode: "async" }),
+      );
+      expect(accepted.status).toBe(202);
+      await expect.poll(() => completed).toContainEqual(expect.objectContaining({ status: "cancelled" }));
+      expect(stopPromise).toBeDefined();
+      await stopPromise;
+
+      expect(resolverCallCount).toBe(1);
+      expect(thenSpy).toHaveBeenCalledOnce();
+      expect(responder.respond).not.toHaveBeenCalled();
+      expect(server.activeRequestCount).toBe(0);
+      expect(onResult).toHaveBeenCalledOnce();
+
+      rejectDiscardedResolver(new Error("late discarded resolver rejection"));
+      for (let turn = 0; turn < 4; turn += 1) {
+        await Promise.resolve();
+      }
+      expect(responder.respond).not.toHaveBeenCalled();
+      expect(onResult).toHaveBeenCalledOnce();
+    } finally {
+      if (stopPromise === undefined) {
+        await server.stop();
+      } else {
+        await stopPromise;
+      }
+    }
+  });
+
   it("returns 400 for a malformed JSON body via the express error handler", async () => {
     const server = await startWebhookAdapter({
       host: "127.0.0.1",
@@ -672,6 +1217,192 @@ describe("Webhook adapter", () => {
         responder: { async respond() { return { text: "ok" }; } },
       }),
     ).rejects.toMatchObject({ code: "unsafe_host" });
+  });
+
+  it("rejects an explicitly allowed non-loopback bind without bearer auth", async () => {
+    await expect(
+      startWebhookAdapter({
+        host: "0.0.0.0",
+        port: 0,
+        allowNonLoopback: true,
+        path: "/webhook/invoke",
+        responder: echoResponder(),
+      }),
+    ).rejects.toMatchObject({ code: "missing_required_config" });
+  });
+
+  it("closes a non-loopback actual bind when localhost resolution has no exposure consent", async () => {
+    const originalLookup = dns.lookup;
+    let unexpectedServer: WebhookAdapterStartResult | undefined;
+    let rejection: unknown;
+    dns.lookup = wildcardLocalhostLookup as typeof dns.lookup;
+    try {
+      try {
+        unexpectedServer = await startWebhookAdapter({
+          host: "localhost",
+          port: 0,
+          apiKey: "fixture-key-without-exposure-consent",
+          responder: echoResponder(),
+        });
+      } catch (error) {
+        rejection = error;
+      }
+    } finally {
+      await unexpectedServer?.stop();
+      dns.lookup = originalLookup;
+    }
+    expect(rejection).toMatchObject({
+      code: "unsafe_host",
+      details: {
+        host: "localhost",
+        boundAddress: expect.stringMatching(/^(?:0\.0\.0\.0|::)$/u),
+        boundPort: expect.any(Number),
+      },
+    });
+    if (!(rejection instanceof WebhookAdapterError)
+      || typeof rejection.details.boundPort !== "number") {
+      throw new Error("Expected rejected webhook bind details to include the kernel-selected port.");
+    }
+    await expectPortReusable(rejection.details.boundPort);
+  });
+
+  it("closes a consented non-loopback actual bind when no API key is configured", async () => {
+    const originalLookup = dns.lookup;
+    let unexpectedServer: WebhookAdapterStartResult | undefined;
+    let rejection: unknown;
+    dns.lookup = wildcardLocalhostLookup as typeof dns.lookup;
+    try {
+      try {
+        unexpectedServer = await startWebhookAdapter({
+          host: "localhost",
+          port: 0,
+          allowNonLoopback: true,
+          responder: echoResponder(),
+        });
+      } catch (error) {
+        rejection = error;
+      }
+    } finally {
+      await unexpectedServer?.stop();
+      dns.lookup = originalLookup;
+    }
+    expect(rejection).toMatchObject({
+      code: "missing_required_config",
+      details: {
+        host: "localhost",
+        boundAddress: expect.stringMatching(/^(?:0\.0\.0\.0|::)$/u),
+        boundPort: expect.any(Number),
+      },
+    });
+    if (!(rejection instanceof WebhookAdapterError)
+      || typeof rejection.details.boundPort !== "number") {
+      throw new Error("Expected rejected webhook bind details to include the kernel-selected port.");
+    }
+    await expectPortReusable(rejection.details.boundPort);
+  });
+
+  it("accepts a keyed non-loopback actual bind without weakening auth or header redaction", async () => {
+    const apiKey = "fixture-resolved-bind-key";
+    const seenHeaders: unknown[] = [];
+    const responder: AgentResponder = {
+      async respond(request, stream) {
+        seenHeaders.push(request.metadata?.webhook);
+        await stream.append("resolved bind ok");
+        return {};
+      },
+    };
+    const originalLookup = dns.lookup;
+    let server: WebhookAdapterStartResult | undefined;
+    dns.lookup = wildcardLocalhostLookup as typeof dns.lookup;
+    try {
+      server = await startWebhookAdapter({
+        host: "localhost",
+        port: 0,
+        allowNonLoopback: true,
+        apiKey,
+        responder,
+      });
+      const invokeUrl = `http://127.0.0.1:${server.port}/webhook/invoke`;
+      const unauthorizedResponses = [
+        await fetch(invokeUrl, postJson({ text: "missing auth" })),
+        await fetch(invokeUrl, {
+          ...postJson({ text: "wrong auth" }),
+          headers: { "content-type": "application/json", authorization: "Bearer wrong" },
+        }),
+      ];
+      for (const response of unauthorizedResponses) {
+        expect(response.status).toBe(401);
+        await expect(response.json()).resolves.toEqual({
+          status: "unauthorized",
+          error: "Invalid API key.",
+        });
+      }
+
+      const accepted = await fetch(invokeUrl, {
+        ...postJson({ text: "authorized" }),
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+          cookie: "session=fixture-cookie-secret",
+          "set-cookie": "session=fixture-response-cookie-secret",
+          "proxy-authorization": "Bearer fixture-proxy-secret",
+          "x-api-key": "fixture-secondary-secret",
+          "x-request-id": "safe-resolved-bind-request",
+        },
+      });
+      expect(accepted.status).toBe(200);
+      expect(seenHeaders).toEqual([
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-request-id": "safe-resolved-bind-request" }),
+        }),
+      ]);
+      expect(seenHeaders[0]).not.toHaveProperty("headers.authorization");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.cookie");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.set-cookie");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.proxy-authorization");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.x-api-key");
+    } finally {
+      await server?.stop();
+      dns.lookup = originalLookup;
+    }
+  });
+
+  it("enforces bearer auth on an explicitly allowed non-loopback bind", async () => {
+    const server = await startWebhookAdapter({
+      host: "0.0.0.0",
+      port: 0,
+      allowNonLoopback: true,
+      apiKey: "fixture-non-loopback-key",
+      path: "/webhook/invoke",
+      responder: echoResponder(),
+    });
+    const invokeUrl = `http://127.0.0.1:${server.port}/webhook/invoke`;
+
+    try {
+      const missing = await fetch(invokeUrl, postJson({ text: "missing", mode: "sync" }));
+      expect(missing.status).toBe(401);
+
+      const incorrect = await fetch(invokeUrl, {
+        ...postJson({ text: "incorrect", mode: "sync" }),
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer wrong-key",
+        },
+      });
+      expect(incorrect.status).toBe(401);
+
+      const correct = await fetch(invokeUrl, {
+        ...postJson({ text: "authorized", mode: "sync" }),
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer fixture-non-loopback-key",
+        },
+      });
+      expect(correct.status).toBe(200);
+      await expect(correct.json()).resolves.toMatchObject({ status: "succeeded", text: "echo: authorized" });
+    } finally {
+      await server.stop();
+    }
   });
 
   it("aborts a hung async run at maxRunMs and reclaims the conversation slot", async () => {
@@ -754,6 +1485,56 @@ describe("Webhook adapter", () => {
       const result = await resultPromise;
       expect(result.status).toBe("cancelled");
       await expect.poll(async () => server.activeRequestCount).toBe(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("includes destination resolution in maxRunMs without starting a stale responder", async () => {
+    let resolveResult: ((status: { status: string; error?: string }) => void) | undefined;
+    const resultPromise = new Promise<{ status: string; error?: string }>((resolve) => {
+      resolveResult = resolve;
+    });
+    let settleResolver!: (value: string | undefined) => void;
+    const resolverPromise = new Promise<string | undefined>((resolve) => {
+      settleResolver = resolve;
+    });
+    const resolveNotifyFallbackConversationId = vi.fn(() => resolverPromise);
+    const responder = { respond: vi.fn(async () => ({ text: "unexpected" })) } satisfies AgentResponder;
+    const onResult = vi.fn((status: { status: string; error?: string }) => {
+      resolveResult?.(status);
+    });
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      endpoints: [{ name: "notify", path: "/notify", mode: "async", notify: true }],
+      maxRunMs: 100,
+      responder,
+      resolveNotifyFallbackConversationId,
+      onResult: (status) => onResult(status as { status: string; error?: string }),
+    });
+
+    try {
+      const accepted = await fetch(`${server.url}/notify`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "hang", conversationId: "logical:timeout", mode: "async" }),
+      });
+      expect(accepted.status).toBe(202);
+
+      const result = await resultPromise;
+      expect(result.status).toBe("failed");
+      expect(result.error).toMatch(/timed out/i);
+      expect(resolveNotifyFallbackConversationId).toHaveBeenCalledOnce();
+      expect(responder.respond).not.toHaveBeenCalled();
+      await expect.poll(async () => server.activeRequestCount).toBe(0);
+
+      settleResolver("slack:C1");
+      for (let turn = 0; turn < 4; turn += 1) {
+        await Promise.resolve();
+      }
+      expect(responder.respond).not.toHaveBeenCalled();
+      expect(onResult).toHaveBeenCalledOnce();
     } finally {
       await server.stop();
     }
@@ -879,5 +1660,41 @@ async function invokeSync(url: string, text: string, conversationId: string): Pr
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ text, conversationId, mode: "sync" }),
+  });
+}
+
+async function expectPortReusable(port: number): Promise<void> {
+  const probe = createServer();
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.once("error", rejectPromise);
+    probe.listen(port, "127.0.0.1", () => resolvePromise());
+  });
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.close((error) => error === undefined ? resolvePromise() : rejectPromise(error));
+  });
+}
+
+function wildcardLocalhostLookup(
+  _hostname: string,
+  options: unknown,
+  callback?: unknown,
+): void {
+  const done = typeof options === "function" ? options : callback;
+  if (typeof done !== "function") {
+    throw new TypeError("dns.lookup callback is required");
+  }
+  const all = typeof options === "object"
+    && options !== null
+    && "all" in options
+    && options.all === true;
+  queueMicrotask(() => {
+    if (all) {
+      (done as (
+        error: null,
+        addresses: Array<{ address: string; family: number }>,
+      ) => void)(null, [{ address: "0.0.0.0", family: 4 }]);
+      return;
+    }
+    (done as (error: null, address: string, family: number) => void)(null, "0.0.0.0", 4);
   });
 }

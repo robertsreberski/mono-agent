@@ -42,6 +42,7 @@ The actual bound host/port (when `port: 0`) is printed in the start log. In **sy
 | `path` | string | `/webhook/invoke` | POST path for the default (single) endpoint. |
 | `defaultMode` | `sync` \| `async` | `sync` | Response mode when a request does not override it. |
 | `allowNonLoopback` | boolean | `false` | Required to bind a non-loopback `host`. See warning below. |
+| `apiKey` | string | — | Optional static bearer token on loopback; required for a non-loopback bind. Prefer `MONO_AGENT_WEBHOOK_API_KEY` over committed JSON. Protects invoke and status routes. |
 | `retentionMs` | integer | `300000` | How long async run statuses are retained (min 1, max 86_400_000). |
 | `maxStoredRequests` | integer | `100` | Max async statuses kept before pruning (min 1, max 10_000). Async only. |
 | `maxRunMs` | integer | `1200000` | Wall-clock bound per run (20 min). `0` disables; min 0, max 86_400_000. See [Run watchdog](#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve). |
@@ -54,8 +55,10 @@ The actual bound host/port (when `port: 0`) is printed in the start log. In **sy
 | `dir` | string | `webhook` | Folder of `*.md` endpoint files, resolved against the app working directory. |
 
 :::caution
-The webhook server binds to loopback by default. Setting a non-loopback `host` (e.g. `0.0.0.0`) without `allowNonLoopback: true` is rejected — and exposing the endpoint publicly bypasses channel allowlists, so put it behind a reverse proxy or auth layer you control.
+The webhook server binds to loopback by default. A non-loopback `host` (e.g. `0.0.0.0`) is rejected unless `allowNonLoopback: true` **and** a non-empty `apiKey` are both set. The built-in static bearer protects every invoke and status route, but public exposure still needs TLS, rate limiting, key rotation, and any provider-specific signature verification at a reverse proxy or integration boundary you control.
 :::
+
+When `apiKey` is set, callers send `Authorization: Bearer <key>`. Authentication runs before JSON body parsing, so missing, malformed, and incorrect bearer values all receive the same HTTP `401` without decoding the body; token comparison uses the shared timing-safe contract. The adapter removes `authorization`, `cookie`, `set-cookie`, `proxy-authorization`, and `x-api-key` from request metadata before the responder or artifacts can observe them. Leaving the key unset preserves the existing unauthenticated loopback behavior.
 
 ## Request and response
 
@@ -82,11 +85,13 @@ The request returns immediately with **HTTP 202** and a `statusUrl`. Poll that U
 # kick off
 curl -s http://127.0.0.1:<port>/webhook/invoke \
   -H 'content-type: application/json' \
+  -H "authorization: Bearer $MONO_AGENT_WEBHOOK_API_KEY" \
   -d '{"text": "Research and draft the weekly report.", "mode": "async"}'
-# → 202 { "status": "accepted", "requestId": "...", "statusUrl": "/webhook/invoke/status/..." }
+# → 202 { "status": "accepted", "requestId": "...", "statusUrl": "/webhook/requests/..." }
 
 # poll
-curl -s http://127.0.0.1:<port>/webhook/invoke/status/<requestId>
+curl -s http://127.0.0.1:<port>/webhook/requests/<requestId> \
+  -H "authorization: Bearer $MONO_AGENT_WEBHOOK_API_KEY"
 # → { "status": "succeeded", "text": "..." }
 ```
 
@@ -96,9 +101,11 @@ Harness response metadata is an external boundary. `metadata.summary` may includ
 
 ## Run watchdog: a wedged run is aborted, not left to starve
 
-A hung run (a responder that never settles, a stuck provider call) would otherwise hold its conversation slot forever. This matters most in **async** mode: with no client connection to disconnect, nothing else bounds the run. To prevent that, each webhook run is raced against a **20-minute watchdog** (`maxRunMs`, default `1200000`): a run that does not finish in time has its request signal aborted and its conversation slot reclaimed even if the responder never settles. This brings webhook to parity with [cron's](/channels/cron/#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve) `maxRunMs`.
+A hung run (a destination resolver, responder, or provider call that never settles) would otherwise hold its conversation slot forever. This matters most in **async** mode: with no client connection to disconnect, nothing else bounds the run. To prevent that, each webhook run is raced against a **20-minute watchdog** (`maxRunMs`, default `1200000`): a run that does not finish in time has its request signal aborted and its conversation slot reclaimed even if its in-flight work never settles. This brings webhook to parity with [cron's](/channels/cron/#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve) `maxRunMs`.
 
-Set `webhook.maxRunMs` to override the default (min 0, max 86_400_000); `0` disables the watchdog. A run whose responder resolves **after** the abort is classified `cancelled` rather than `succeeded` — see [Run artifacts & traces](/observability/artifacts-and-traces/).
+Set `webhook.maxRunMs` to override the default (min 0, max 86_400_000); `0` disables the watchdog. Run work that settles **after** the abort cannot produce a successful result — see [Run artifacts & traces](/observability/artifacts-and-traces/).
+
+Programmatic destination resolvers receive the request's `AbortSignal`, and their promise is raced against it independently of the watchdog. A sync client disconnect or adapter stop therefore reclaims a slot that is still resolving even when `maxRunMs` is disabled and resolver code ignores the signal; later settlement cannot start a responder or emit another result.
 
 ## Proactive delivery
 
@@ -125,7 +132,8 @@ The request body may always *request* an override, but the host applies it only
 when it preserves the configured runtime/sandbox boundary; an incompatible value
 is warned and ignored. Its remaining model-selection authority rests on the
 webhook's loopback-only default (`allowNonLoopback: false`). If you expose the
-endpoint beyond loopback, gate it behind your own auth/reverse proxy.
+endpoint beyond loopback, configure `apiKey` (required) and put the service
+behind TLS plus the reverse-proxy controls appropriate for the integration.
 
 A model-override request runs **ephemerally**: it does not resume or persist a shared continuous session, so the delegated model never mixes into a conversation's session lineage (the per-request `conversationId` default already keeps deploys separate). Overrides to configured local providers are supported: mono-agent recomputes the target provider's endpoint and capabilities. An unconfigured or invalid local target clears the inherited endpoint block and is rejected rather than accidentally using the host provider. Execution mode is preserved from the host config when the override model supports it, otherwise the model's default mode is used. An `effort`-only request keeps the same model chain; it is ignored if that chain contains direct OpenCode.
 
@@ -194,6 +202,7 @@ Every key has a `MONO_AGENT_WEBHOOK_*` override, which takes precedence over the
 | `MONO_AGENT_WEBHOOK_PATH` | `webhook.path` |
 | `MONO_AGENT_WEBHOOK_DEFAULT_MODE` | `webhook.defaultMode` |
 | `MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK` | `webhook.allowNonLoopback` |
+| `MONO_AGENT_WEBHOOK_API_KEY` | `webhook.apiKey` |
 | `MONO_AGENT_WEBHOOK_RETENTION_MS` | `webhook.retentionMs` |
 | `MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS` | `webhook.maxStoredRequests` |
 | `MONO_AGENT_WEBHOOK_MAX_RUN_MS` | `webhook.maxRunMs` |

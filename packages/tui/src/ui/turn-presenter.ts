@@ -4,8 +4,7 @@ import type { AgentMessageStream, AgentStreamEvent } from "@mono-agent/agent-con
 import { AssistantCell, NoticeCell, ThinkingCell } from "./components/transcript-cells.js";
 import { ToolPanel } from "./components/tool-panel.js";
 import type { StatusBar } from "./components/status-bar.js";
-
-type RuntimeTelemetryStreamEvent = Extract<AgentStreamEvent, { readonly type: "runtime_telemetry" }>;
+import { sessionBoundaryNotice } from "./session-boundary.js";
 
 export interface TurnPresenterOptions {
   /** The transcript container this turn appends its cells into. */
@@ -322,66 +321,4 @@ export class TurnPresenter implements AgentMessageStream {
 
 function normalizeForCompare(text: string): string {
   return text.replace(/\s+/gu, " ").trim();
-}
-
-const SESSION_BOUNDARY_TELEMETRY = "session_boundary";
-
-function sessionBoundaryNotice(event: RuntimeTelemetryStreamEvent): string | undefined {
-  const data = event.data;
-  const dataKind = stringField(data, "kind");
-  if (
-    event.kind !== SESSION_BOUNDARY_TELEMETRY &&
-    stringField(data, "type") !== SESSION_BOUNDARY_TELEMETRY &&
-    dataKind !== SESSION_BOUNDARY_TELEMETRY
-  ) {
-    return undefined;
-  }
-
-  const boundaryKind = dataKind === SESSION_BOUNDARY_TELEMETRY
-    ? undefined
-    : dataKind;
-  const parts = [boundaryKind === undefined ? "session boundary" : `session boundary: ${formatTelemetryLabel(boundaryKind)}`];
-  const reason = stringField(data, "reason");
-  if (reason !== undefined) {
-    parts.push(formatTelemetryLabel(reason));
-  }
-
-  const transition = sessionBoundaryTransition(data);
-  if (transition !== undefined) {
-    parts.push(transition);
-  }
-
-  const providerSessionId = stringField(data, "providerSessionId");
-  if (providerSessionId !== undefined && boundaryKind === "resume_replay") {
-    parts.push(`provider ${providerSessionId}`);
-  }
-
-  return parts.join(" · ");
-}
-
-function sessionBoundaryTransition(data: Record<string, unknown> | undefined): string | undefined {
-  const previous = stringField(data, "previousConversationId");
-  const current = stringField(data, "conversationId");
-  if (previous !== undefined && current !== undefined && previous !== current) {
-    return `${previous} -> ${current}`;
-  }
-
-  const base = stringField(data, "baseConversationId");
-  if (base !== undefined && current !== undefined && base !== current) {
-    return `${base} -> ${current}`;
-  }
-  return undefined;
-}
-
-function stringField(record: Record<string, unknown> | undefined, key: string): string | undefined {
-  const value = record?.[key];
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed.length === 0 ? undefined : trimmed;
-}
-
-function formatTelemetryLabel(value: string): string {
-  return value.replace(/[_-]+/gu, " ");
 }

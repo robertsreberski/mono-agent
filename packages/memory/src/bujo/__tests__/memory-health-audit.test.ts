@@ -371,6 +371,26 @@ describe("strict BuJo memory health", () => {
     expect(result.issues).toEqual([]);
   });
 
+  it("accepts a healthy BuJo runtime before the legacy capture queue is activated", async () => {
+    const root = tempRoot();
+    const provider = fakeEmbeddings(4);
+    await safeRebuildMemoryIndex({ root, tier: "bujo", embeddings: provider, dim: 4 });
+    publishRuntime(root, "bujo", 0, false, false, {}, {
+      legacyCaptureActive: false,
+    });
+
+    const result = auditBujoMemoryHealth({
+      root,
+      mode: "bujo",
+      configuredEmbeddingModel: provider.id,
+      configuredDimension: 4,
+      now: NOW,
+    });
+
+    expect(result.status).toBe("healthy");
+    expect(result.issues).toEqual([]);
+  });
+
   it("keeps a retired no-active SUPERSEDE lifecycle healthy", async () => {
     const root = tempRoot();
     const replay = await rebuildNoActiveSupersede(root);
@@ -1594,6 +1614,7 @@ function publishRuntime(
   recoveryPaused = false,
   runtimeFault = false,
   intakeOverrides: Partial<ReturnType<CompletedTurnIntakeManager["snapshot"]>> = {},
+  options: { readonly legacyCaptureActive?: boolean } = {},
 ): void {
   const queue = {
     capacity: { items: 64, bytes: 1024 * 1024, batchSize: 32 },
@@ -1632,7 +1653,7 @@ function publishRuntime(
           recoveryRefillQueries: 0,
         },
       } : {}),
-      ...(tier === "bujo" ? { capture: queue } : {}),
+      ...(tier === "bujo" && options.legacyCaptureActive !== false ? { capture: queue } : {}),
       intake: {
         pending: 0,
         dead: 0,

@@ -6,7 +6,7 @@ Category: `communication`
 
 ## Responsibility
 
-Cron-based scheduled invocation adapter for agent hosts. It parses configured cron jobs, schedules future ticks, invokes a structural `AgentResponder`, and reports explicit succeeded, failed, cancelled, or skipped results.
+Cron-based scheduled invocation adapter for agent hosts. It parses configured cron jobs, schedules future ticks, invokes a structural `AgentResponder`, and reports explicit succeeded, failed, cancelled, skipped, queued, or dropped results.
 
 ## Install / Usage
 
@@ -31,9 +31,13 @@ const cron = startCronAdapter({
 });
 ```
 
-Only future ticks after startup are scheduled. Overlapping runs for the same job are skipped, not queued or run concurrently.
+Only future ticks after startup are scheduled. Direct programmatic `startCronAdapter` callers can choose `overlap: "skip" | "queue" | "replace"` (default `"skip"`). In queue mode, `maxQueueDepth` is a soft overflow threshold: the default `overflow: "preserve"` warns but keeps every firing and can grow past it. Select `overflow: "coalesce"` or `"drop-oldest"` to bound pending memory.
 
-Cron expressions use the standard five positional fields `minute hour day-of-month month day-of-week`. The timezone defaults to `UTC`. Six-field expressions with seconds and macro aliases such as `@daily` are not supported. Hosts can validate user input with the same parser used by the scheduler:
+`overlap`, `maxQueueDepth`, and `overflow` are programmatic-only adapter options. The config-first `@mono-agent/agent-app` product does not expose them as cron config keys and pins `overlap: "skip"`, so jobs loaded from `mono-agent.config.json`, `MONO_AGENT_CRON_*`, or the cron folder skip overlapping ticks.
+
+Programmatic hosts composing native notification can set a job's explicit `notifyConversationId`, pass a pre-resolved `notifyFallbackConversationId`, or provide `resolveNotifyFallbackConversationId` on the adapter options. The resolver runs once per firing; the selected route is used for request `replyTo` and returned on the succeeded `CronJobResult`, so a host can deliver the final text on the exact same route without resolving it again after the run. The resolver receives the run's optional `AbortSignal`, and the adapter also races its promise against that signal so replace/stop can reclaim the firing even when resolver code does not cooperate.
+
+Cron expressions use the standard five positional fields `minute hour day-of-month month day-of-week`. The timezone defaults to `UTC`. Six-field expressions with seconds and macro aliases such as `@daily` are not supported. Hashed `H` fields are stable: the scheduler seeds them from the job `id`; direct `validateCronExpression` callers must pass a non-empty `hashSeed` when validating `H`. Hosts can validate user input with the same parser used by the scheduler:
 
 ```ts
 import { validateCronExpression } from "@mono-agent/cron-adapter";
@@ -75,7 +79,8 @@ Summarize yesterday across my channels and post a short digest.
 - `loadCronJobsFromDirectory`
 - `parseCronJobMarkdown`
 - `redactCronAdapterConfig`
-- `cronFieldGroup`
+- `CRON_CONFIG_FIELDS`
+- `toCronJobs`
 - Cron adapter, job, result, metadata, config, and logger types
 
 ## Dependency Boundary
@@ -84,7 +89,7 @@ This adapter depends on `cron-parser` plus shared `@mono-agent/agent-contracts` 
 
 ## What This Package Does Not Own
 
-It does not build prompts, run models, persist missed runs, catch up after restart, queue overlapping jobs, expose UI, or define core core agent settings. Durable scheduling state can be added later by a host-level persistence package.
+It does not build prompts, run models, persist missed runs or pending firings, catch up after restart, expose UI, or define core agent settings. Its programmatic overlap queue is in-memory only; durable scheduling state can be added later by a host-level persistence package.
 
 ## Verification
 

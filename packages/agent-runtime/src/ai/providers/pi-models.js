@@ -2,6 +2,7 @@
 // deprecated/compat-only. `getBuiltinModel(provider, id)` from `providers/all`
 // is the non-deprecated replacement — same 2-arg signature, and it returns
 // `undefined` on an unknown provider/model exactly like the old `getModel`.
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/all";
 import { readRuntimeBrand } from "../../agent/tools/shared/runtime-context.js";
 
@@ -40,6 +41,18 @@ function customCompat(capabilities, isPrivate) {
     supportsReasoningEffort: capabilities?.reasoning_mode === "effort",
     maxTokensField: "max_tokens",
   };
+}
+
+/**
+ * Translate Pi's model-native thinking levels to mono-agent's public effort
+ * spelling. Pi calls the disabled level `off`; mono-agent calls it `none`.
+ * Keeping this derived from the model lets new native levels (such as `max`)
+ * flow through without maintaining a second hard-coded catalog.
+ * @param {any} model
+ * @returns {string[]}
+ */
+export function reasoningLevelsForPiModel(model) {
+  return getSupportedThinkingLevels(model).map((level) => level === "off" ? "none" : level);
 }
 
 // Build the pi-runtime view of a custom provider/model from
@@ -118,7 +131,7 @@ export function resolvePiRuntimeModel(resolved, options) {
       tool_use: true,
       reasoning: !!model.reasoning,
       reasoning_mode: model.reasoning ? "effort" : "none",
-      reasoning_levels: model.reasoning ? ["none", "low", "medium", "high", "xhigh"] : undefined,
+      reasoning_levels: model.reasoning ? reasoningLevelsForPiModel(model) : undefined,
       reasoning_disable_supported: true,
       vision: Array.isArray(model.input) ? model.input.includes("image") : false,
       json_mode: true,

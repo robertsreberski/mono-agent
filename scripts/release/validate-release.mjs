@@ -13,8 +13,13 @@ import {
   publishablePackages,
   sortForPublish,
 } from "./package-graph.mjs";
+import { releaseDependencyPinIssues } from "./dependency-policy.mjs";
 
 const TAG_RE = /^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?)$/;
+const ROOT_DEPENDENCY_SECTIONS = [
+  ...DEPENDENCY_SECTIONS,
+  "devDependencies",
+];
 
 function argValue(name, argv = process.argv.slice(2)) {
   const index = argv.indexOf(name);
@@ -56,6 +61,15 @@ export function validateRelease({
     issues.push(`.nvmrc must be ${MINIMUM_NODE_VERSION}; found ${nodeVersionFile || "(empty)"}`);
   }
 
+  const expectedWorkspaceRange = `workspace:${version}`;
+  for (const section of ROOT_DEPENDENCY_SECTIONS) {
+    for (const [name, range] of Object.entries(rootPackageJson[section] || {})) {
+      if (name.startsWith("@mono-agent/") && range !== expectedWorkspaceRange) {
+        issues.push(`root package.json ${section}.${name} must be ${expectedWorkspaceRange}; found ${range}`);
+      }
+    }
+  }
+
   for (const pkg of publishable) {
     // The `alias` tier is the intentionally unscoped `mono-agent` npm name; every
     // other publishable package must use the @mono-agent scope.
@@ -73,6 +87,8 @@ export function validateRelease({
     }
   }
 
+  issues.push(...releaseDependencyPinIssues(publishable));
+
   for (const pkg of publishable) {
     if (pkg.version !== version) {
       issues.push(`${pkg.name} version must be ${version}; found ${pkg.version} in ${rel(pkg.manifestPath)}`);
@@ -86,9 +102,8 @@ export function validateRelease({
         continue;
       }
 
-      const expectedRange = `workspace:${version}`;
-      if (dep.range !== expectedRange) {
-        issues.push(`${pkg.name} ${dep.section}.${dep.name} must be ${expectedRange}; found ${dep.range}`);
+      if (dep.range !== expectedWorkspaceRange) {
+        issues.push(`${pkg.name} ${dep.section}.${dep.name} must be ${expectedWorkspaceRange}; found ${dep.range}`);
       }
     }
   }
@@ -113,7 +128,8 @@ export function validateRelease({
     for (const pkg of publishOrder) {
       console.log(`- ${pkg.name}@${pkg.version} (${pkg.relativeDir})`);
     }
-    console.log(`Checked internal dependency sections: ${DEPENDENCY_SECTIONS.join(", ")}`);
+    console.log(`Checked package internal dependency sections: ${DEPENDENCY_SECTIONS.join(", ")}`);
+    console.log(`Checked root internal dependency sections: ${ROOT_DEPENDENCY_SECTIONS.join(", ")}`);
   }
 
   return { tag, version, packages, publishablePackages: publishOrder };

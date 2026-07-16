@@ -47,13 +47,12 @@ Each channel is its own JSON section and runs independently — one failing or w
 
 ## Opt-in `enabled` and the five channel statuses
 
-Every channel is **off by default**. You turn one on with its `enabled` flag:
+Every channel is **off by default**. You turn one on with its `enabled` flag. Put credentials such as `MONO_AGENT_TELEGRAM_BOT_TOKEN` in `.env`; the source-config example omits them:
 
 ```json
 {
   "telegram": {
     "enabled": true,
-    "botToken": "123456:ABC-...",
     "allowedChatIds": ["123456789"]
   }
 }
@@ -97,8 +96,8 @@ mono-agent ships with an open tool surface. Memory, channel admission, HTTP bind
 - **Loopback-only network.** HTTP channels (`webhook`, `openaiApi`, and the A2A plugin) bind to localhost and refuse non-loopback callers until you set `allowNonLoopback: true`. For Pi-owned tools, the native sandbox likewise starts with network `mode: "none"` and a deny-by-default filesystem (`.env*`, `.git/config`, `.git/hooks/**` are denied even when you widen the roots). See [Tools → Sandbox](/tools/sandbox/).
 
 :::caution
-:::
 Channels and tools also enforce their own destination allowlists (e.g. `telegram.allowedChatIds`, `slack.allowedChannelIds`). An empty allowlist with `allowAll*` left off means the agent will not act on anyone — that is the intended fail-closed behavior, not a bug.
+:::
 
 ## Configuration precedence: env > JSON > defaults
 

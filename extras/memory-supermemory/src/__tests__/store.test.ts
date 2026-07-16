@@ -10,10 +10,12 @@ class FakeClient implements SupermemoryClient {
   failAdd = false;
   failSearch = false;
   addGate: Promise<void> | undefined;
+  readonly addGates: Array<Promise<void> | undefined> = [];
 
   async add(params: SupermemoryAddParams): Promise<void> {
+    const callIndex = this.added.length;
     this.added.push(params);
-    await this.addGate;
+    await (this.addGates[callIndex] ?? this.addGate);
     if (this.failAdd) {
       throw new Error("boom-add");
     }
@@ -28,11 +30,14 @@ class FakeClient implements SupermemoryClient {
   }
 }
 
-function makeStore(client: SupermemoryClient, maxBytes?: number) {
+function makeStore(
+  client: SupermemoryClient,
+  options: { readonly maxBytes?: number; readonly completedTurnCacheMaxEntries?: number } = {},
+) {
   const warnings: string[] = [];
   const store = new SupermemoryMemoryStore(client, {
     logger: { warn: (m) => warnings.push(m) },
-    ...(maxBytes === undefined ? {} : { maxBytes }),
+    ...options,
   });
   return { store, warnings };
 }
@@ -86,7 +91,7 @@ describe("SupermemoryMemoryStore.load", () => {
   it("truncates the block to maxBytes", async () => {
     const client = new FakeClient();
     client.hits = Array.from({ length: 50 }, (_v, i) => ({ id: `h${i}`, text: "x".repeat(200), score: 0.5 }));
-    const { store } = makeStore(client, 256);
+    const { store } = makeStore(client, { maxBytes: 256 });
 
     const block = await store.load("c", "q");
 
@@ -133,6 +138,15 @@ describe("SupermemoryMemoryStore.appendHostSummary", () => {
 });
 
 describe("SupermemoryMemoryStore.persistCompletedTurn", () => {
+  it.each([0, 1.5, 1_000_001, Number.NaN])(
+    "rejects an invalid completed-turn cache bound (%s)",
+    (completedTurnCacheMaxEntries) => {
+      expect(() => makeStore(new FakeClient(), { completedTurnCacheMaxEntries })).toThrow(
+        /completedTurnCacheMaxEntries/u,
+      );
+    },
+  );
+
   it("awaits one clear remote document and returns its stable admission id", async () => {
     const client = new FakeClient();
     const { store } = makeStore(client);
@@ -189,6 +203,146 @@ describe("SupermemoryMemoryStore.persistCompletedTurn", () => {
       admissionStatus: "duplicate",
       bytesWritten: 0,
     });
+  });
+
+  it("evicts the least-recently-used completed turn while preserving recent duplicate detection", async () => {
+    const client = new FakeClient();
+    const { store } = makeStore(client, { completedTurnCacheMaxEntries: 2 });
+    const first = { runId: "run-first", conversationId: "conversation", summary: "First." };
+    const second = { runId: "run-second", conversationId: "conversation", summary: "Second." };
+    const third = { runId: "run-third", conversationId: "conversation", summary: "Third." };
+
+    const firstAdmission = await store.persistCompletedTurn(first);
+    const secondAdmission = await store.persistCompletedTurn(second);
+    expect((await store.persistCompletedTurn(first)).admissionStatus).toBe("duplicate");
+    await store.persistCompletedTurn(third);
+
+    expect((await store.persistCompletedTurn(first)).admissionStatus).toBe("duplicate");
+    const lateSecondRetry = await store.persistCompletedTurn(second);
+
+    expect(client.added).toHaveLength(4);
+    expect(lateSecondRetry).toMatchObject({
+      id: secondAdmission.id,
+      admissionStatus: "admitted",
+    });
+    expect(client.added[3]?.customId).toBe(secondAdmission.id);
+    expect(client.added[3]?.customId).not.toBe(firstAdmission.id);
+  });
+
+  it("does not let a conflicting lookup refresh a completed turn's LRU position", async () => {
+    const client = new FakeClient();
+    const { store } = makeStore(client, { completedTurnCacheMaxEntries: 2 });
+    const first = { runId: "run-first", conversationId: "conversation", summary: "First." };
+    const second = { runId: "run-second", conversationId: "conversation", summary: "Second." };
+
+    const firstAdmission = await store.persistCompletedTurn(first);
+    await store.persistCompletedTurn(second);
+    await expect(store.persistCompletedTurn({ ...first, summary: "Conflict." }))
+      .rejects.toThrow(/conflicts/iu);
+    await store.persistCompletedTurn({
+      runId: "run-third",
+      conversationId: "conversation",
+      summary: "Third.",
+    });
+
+    expect((await store.persistCompletedTurn(second)).admissionStatus).toBe("duplicate");
+    expect((await store.persistCompletedTurn(first)).admissionStatus).toBe("admitted");
+    expect(client.added).toHaveLength(4);
+    expect(client.added[3]?.customId).toBe(firstAdmission.id);
+  });
+
+  it("treats the first post-eviction payload as a new stable-id upsert and coalesces its retries", async () => {
+    const client = new FakeClient();
+    const { store } = makeStore(client, { completedTurnCacheMaxEntries: 1 });
+    const original = { runId: "run-reused", conversationId: "conversation", summary: "Original." };
+    const originalAdmission = await store.persistCompletedTurn(original);
+    await store.persistCompletedTurn({
+      runId: "run-evictor",
+      conversationId: "conversation",
+      summary: "Evicts the original fingerprint.",
+    });
+    let releaseReplacement!: () => void;
+    client.addGates[2] = new Promise<void>((resolve) => { releaseReplacement = resolve; });
+    const replacement = { ...original, summary: "Replacement after eviction." };
+
+    const replacementAdmission = store.persistCompletedTurn(replacement);
+    const replacementDuplicate = store.persistCompletedTurn(replacement);
+    await expect(store.persistCompletedTurn({ ...replacement, summary: "Concurrent conflict." }))
+      .rejects.toThrow(/conflicts/iu);
+    expect(client.added).toHaveLength(3);
+    releaseReplacement();
+    const [admitted, duplicate] = await Promise.all([replacementAdmission, replacementDuplicate]);
+
+    expect(admitted).toMatchObject({ id: originalAdmission.id, admissionStatus: "admitted" });
+    expect(duplicate).toMatchObject({ id: originalAdmission.id, admissionStatus: "duplicate" });
+    expect(client.added[2]?.customId).toBe(client.added[0]?.customId);
+    expect(client.added[2]?.content).not.toBe(client.added[0]?.content);
+  });
+
+  it("does not let a failed completion evict a successful duplicate fingerprint", async () => {
+    const client = new FakeClient();
+    const { store } = makeStore(client, { completedTurnCacheMaxEntries: 1 });
+    const completed = { runId: "run-completed", conversationId: "conversation", summary: "Completed." };
+
+    await store.persistCompletedTurn(completed);
+    client.failAdd = true;
+    await expect(store.persistCompletedTurn({
+      runId: "run-failed",
+      conversationId: "conversation",
+      summary: "Failed.",
+    })).rejects.toThrow("boom-add");
+    client.failAdd = false;
+
+    expect((await store.persistCompletedTurn(completed)).admissionStatus).toBe("duplicate");
+    expect(client.added).toHaveLength(2);
+  });
+
+  it("orders the LRU by successful completion while in-flight exact retries remain coalesced", async () => {
+    const client = new FakeClient();
+    let releaseLate!: () => void;
+    client.addGates[0] = new Promise<void>((resolve) => { releaseLate = resolve; });
+    const { store } = makeStore(client, { completedTurnCacheMaxEntries: 1 });
+    const late = { runId: "run-late", conversationId: "conversation", summary: "Late completion." };
+    const early = { runId: "run-early", conversationId: "conversation", summary: "Early completion." };
+
+    const lateAdmission = store.persistCompletedTurn(late);
+    const lateDuplicate = store.persistCompletedTurn(late);
+    await expect(store.persistCompletedTurn({ ...late, summary: "Conflicting in-flight payload." }))
+      .rejects.toThrow(/conflicts/iu);
+    const earlyAdmission = await store.persistCompletedTurn(early);
+    releaseLate();
+    const [admitted, duplicate] = await Promise.all([lateAdmission, lateDuplicate]);
+
+    expect(admitted.admissionStatus).toBe("admitted");
+    expect(duplicate).toMatchObject({ admissionStatus: "duplicate", bytesWritten: 0 });
+    expect((await store.persistCompletedTurn(late)).admissionStatus).toBe("duplicate");
+    const retriedEarly = await store.persistCompletedTurn(early);
+    expect(retriedEarly).toMatchObject({ id: earlyAdmission.id, admissionStatus: "admitted" });
+    expect(client.added).toHaveLength(3);
+  });
+
+  it("refreshes a coalesced retry that resumes after another completion evicted it", async () => {
+    const client = new FakeClient();
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    client.addGates[0] = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    client.addGates[1] = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    const { store } = makeStore(client, { completedTurnCacheMaxEntries: 1 });
+    const first = { runId: "run-first", conversationId: "conversation", summary: "First." };
+    const second = { runId: "run-second", conversationId: "conversation", summary: "Second." };
+
+    const firstAdmission = store.persistCompletedTurn(first);
+    const firstDuplicate = store.persistCompletedTurn(first);
+    const secondAdmission = store.persistCompletedTurn(second);
+    releaseFirst();
+    releaseSecond();
+    const [admitted, duplicate] = await Promise.all([firstAdmission, firstDuplicate, secondAdmission]);
+
+    expect(admitted.admissionStatus).toBe("admitted");
+    expect(duplicate).toMatchObject({ admissionStatus: "duplicate", bytesWritten: 0 });
+    expect((await store.persistCompletedTurn(first)).admissionStatus).toBe("duplicate");
+    expect((await store.persistCompletedTurn(second)).admissionStatus).toBe("admitted");
+    expect(client.added).toHaveLength(3);
   });
 
   it("rejects conflicting reuse of a run id before a second request", async () => {

@@ -113,7 +113,10 @@ export interface ManagedSrtSetupResult {
 
 export interface ManagedSrtHooks {
   readonly installDependencies?: (stagingRoot: string, signal: AbortSignal | undefined) => Promise<void>;
-  /** Legacy v1 file-lock liveness seam. V2 directory locks use process incarnation instead. */
+  /**
+   * Permanent v0.8-and-earlier file-lock compatibility. v0.9.0 and later write
+   * v2 directory locks with process incarnation identity instead.
+   */
   readonly processIsAlive?: (pid: number) => "alive" | "dead" | "unknown";
   /** Test/embed seams for persistent v2 install-lock ownership. */
   readonly currentProcessIncarnation?: () => Promise<ProcessIncarnation>;
@@ -156,6 +159,7 @@ export interface ManagedSrtSetupOptions extends SandboxManagerOptions {
   readonly verify?: boolean;
 }
 
+/** Permanent reader shape for owner-only v0.8-and-earlier install-lock files. */
 interface LegacyInstallLockRecord {
   readonly schemaVersion: 1;
   readonly pid: number;
@@ -1144,6 +1148,9 @@ async function acquireInstallLock(options: SandboxManagerOptions): Promise<HeldI
         );
       }
     } else {
+      // Permanent v0.8-and-earlier compatibility: skipped-version upgrades can
+      // encounter crash debris indefinitely. New writes have used the v2
+      // directory/incarnation format since v0.9.0.
       const liveness = options.hooks?.processIsAlive?.(existing.record.pid)
         ?? processLiveness(existing.record.pid);
       if (liveness === "dead") {
@@ -1280,6 +1287,11 @@ async function readSecureInstallLockOwner(
   }
 }
 
+/**
+ * Read the permanent v0.8-and-earlier compatibility format. Keep this bounded,
+ * fail-closed parser indefinitely: a user can skip releases and later encounter
+ * an owner-only file left by a crashed old installer. New writes never use it.
+ */
 async function readSecureLegacyInstallLock(
   lockPath: string,
   observedIdentity: InstallLockIdentity,

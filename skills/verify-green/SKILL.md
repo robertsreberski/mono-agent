@@ -5,37 +5,88 @@ description: Run the mono-agent verification gate — full repo green or fast si
 
 # Verify green
 
-"Green" means the exact CI sequence passes (`.github/workflows/ci.yml`), in this order. Nothing is green because it "looks fine".
+"Green" means both jobs in `.github/workflows/ci.yml` pass. The hosted jobs may
+be unavailable, but their exact commands still define the gate; run them
+locally rather than treating an unavailable check as evidence.
 
-## Full gate (CI order)
+## Full local gate (CI order plus documented delta)
+
+Run this exact CI sequence once under Node 22.19.0 and once under Node 24. On
+the Node 24 pass, skip the two commands annotated as Node 22.19-only.
 
 ```bash
+corepack enable
 node scripts/pnpm-release-age-policy.mjs  # direct pre-install guard; do not route through pnpm
 pnpm run check:node
-pnpm run check:secrets
+pnpm install --frozen-lockfile
+pnpm run check:dependency-vulnerabilities  # Node 22.19 lane only
+docker run --rm \
+  -v "$PWD:/repo" \
+  ghcr.io/gitleaks/gitleaks:v8.30.1 \
+  dir --redact --no-banner --config /repo/.gitleaks.toml /repo
 pnpm run check:oss-hygiene
 pnpm run check:licenses
 pnpm run check:codex-discoverability  # skills/agents Codex parity (wired into CI + verify:all by PR #142)
+VERSION="$(node -e "process.stdout.write(require('./packages/agent-app/package.json').version)")"
+pnpm run release:validate -- --tag "v${VERSION}"
 pnpm run check:architecture     # catalog + README sections + dependency categories
 pnpm run build                  # packages + demos, then strict deploy-output marker on POSIX/macOS
+pnpm run verify:consumers --skip-build
+pnpm run release:pack -- --tag "v${VERSION}"
+pnpm run release:consumer -- --tag "v${VERSION}" --require-minimum  # Node 22.19 lane only
 pnpm run typecheck
-pnpm test                       # includes release:test + scripts:test + all packages + demos
-pnpm run test:demo
+pnpm run test                   # includes release:test + scripts:test + all packages + demos
 git diff --check                # whitespace — CI runs this too
 ```
 
-`pnpm run verify:all` is the closest single command — it adds alpha/beta
-consumer verification (`verify:consumers`) on top of the gate above:
+The Node 24 website job runs independently:
+
+```bash
+(cd website && corepack enable && pnpm install --frozen-lockfile && pnpm run build)
+```
+
+`pnpm run verify:all` runs the local command-level gate, including the
+dependency-vulnerability policy, release package graph, tarballs, packed
+consumer, and alpha/beta consumer contracts:
 
 ```bash
 pnpm run verify:all
 ```
 
-It is **not** a one-shot equivalent of CI, and neither side is a strict superset
-of the other: `verify:all` omits `release:validate`/`release:pack`/`release:consumer`
-(CI runs these — see the tarball-sanity block below), and CI omits
-`verify:consumers` (only `verify:all` runs it). Run both surfaces before claiming
-a change is green.
+The semantic guard in `scripts/__tests__/verify-all.test.mjs` parses strict YAML
+and checks the complete ordered CI projection: checkout/setup actions, Corepack,
+the direct pnpm release-age policy guard, the Node-floor check, frozen dependency
+install, every exact decoded run script, release-tag derivation, failure policy,
+and `if:` behavior on both exact matrix legs (`22.19.0` and `24`). Its
+intentional differences live in `VERIFY_GATE_DELTA`. `ciSetup` documents
+CI-only checkout, Node setup, Corepack, dependency install, and release-tag
+export steps. The other entries document that CI runs the pinned gitleaks
+container instead of the host-aware `check:secrets` wrapper and spells the test
+alias `pnpm test`; local `verify:all` repeats `test:demo` after the root test
+command. CI executes the release-age policy script directly after Corepack and
+before using pnpm; local `verify:all` first checks the Node floor, then invokes
+the equivalent `check:pnpm-policy` package script. CI restricts
+`check:dependency-vulnerabilities` and the packed consumer to Node 22.19.0;
+local `verify:all` runs both on newer supported Node versions, without the
+minimum-version assertion for the packed consumer. CI runs the vulnerability
+check after the frozen install, while the local gate runs it after
+`check:licenses`.
+
+After applying those declared substitutions, `verify:all` is a strict
+command-coverage superset of the CI verify job. It is still not a one-shot
+equivalent of the whole CI workflow: CI supplies the Node 22.19.0/24 matrix,
+performs a frozen dependency install, and runs the separate website job.
+
+Temporary dependency-vulnerability dispositions are strict, accountable
+exceptions rather than a loose allowlist. Every advisory entry pins its exact
+metadata, installed versions, complete production paths, expiry, and a
+nonblank `owner`; `rationale` must already be trimmed and is capped at 4096
+UTF-8 bytes.
+`owner` is capped at 200 UTF-8 bytes, and both accountability fields reject
+control and default-ignorable Unicode characters.
+Unknown fields, duplicate versions/paths, stale entries, drift, and expiry fail
+closed. Update `scripts/dependency-vulnerability-dispositions.json` only with
+the corresponding security review evidence.
 
 On supported POSIX/macOS hosts, the root build holds an exclusive ignored build
 lock, clears any prior marker, builds packages and demos, syncs the output tree,
@@ -46,12 +97,18 @@ normal build commands but do not publish this deploy proof. If a crash leaves a
 lock, remove it only after confirming no root build is still active, then rerun
 the whole build.
 
-Release-relevant tarball sanity (CI runs both on every push; `<version>` = `packages/agent-app/package.json` version):
+Release-relevant tarball sanity (CI runs both in every verify job; `<version>` =
+`packages/agent-app/package.json` version):
 
 ```bash
 pnpm run release:validate -- --tag v<version>
 pnpm run release:pack -- --tag v<version>
+pnpm run release:consumer -- --tag v<version>
 ```
+
+CI runs the packed consumer only on its Node 22.19.0 leg with
+`--require-minimum`; `verify:all` adds that assertion when the local runtime is
+exactly 22.19.0 and otherwise still performs the packed-consumer smoke test.
 
 ## Fast iteration loop (while developing)
 

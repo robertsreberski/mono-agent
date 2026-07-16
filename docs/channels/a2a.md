@@ -33,10 +33,14 @@ The provider is deliberately **text/task only**. It supports plain-text message 
 - No file exchange (text parts only)
 
 :::note
-:::
 If you need richer transport semantics, treat the provider as a stable text gateway and compose the missing pieces in front of it. The surface is kept small on purpose so it stays predictable for other agents to call.
+:::
 
 ## Configuration
+
+Set `MONO_AGENT_A2A_BEARER_TOKEN` in the agent's `.env` when
+`requireBearer` is enabled. The source-config example intentionally omits the
+credential.
 
 ```json
 {
@@ -51,9 +55,8 @@ If you need richer transport semantics, treat the provider as a stable text gate
             "host": "127.0.0.1",
             "port": 4201,
             "publicBaseUrl": "https://agent.example.com",
-            "allowNonLoopback": false,
+            "allowNonLoopback": true,
             "requireBearer": true,
-            "bearerToken": "...",
             "idempotency": {
               "namespace": "my-agent-production",
               "retentionMs": 2592000000,
@@ -71,8 +74,7 @@ If you need richer transport semantics, treat the provider as a stable text gate
             "id": "main",
             "name": "Main",
             "description": "Primary skill.",
-            "tags": ["agent"],
-            "examples": ["Summarize this thread.", "Draft a reply."]
+            "tags": ["agent"]
           }
         }
       }
@@ -110,8 +112,8 @@ Populates the identity block of the Agent Card.
 | `name` | yes when no root name is available | Human-readable Agent Card name. Defaults from root `agent.name` / `MONO_AGENT_NAME`; plugin `config.agent.name` / `MONO_AGENT_A2A_AGENT_NAME` wins. |
 | `description` | yes | What the agent does. |
 | `version` | yes | Agent version string (e.g. `0.1.0`). |
-| `providerOrganization` | no | Organization that operates the agent. |
-| `providerUrl` | no | URL for the operating organization. |
+| `providerOrganization` | no | Organization that operates the agent. Emitted only when `providerUrl` is also set. |
+| `providerUrl` | no | URL for the operating organization. Emitted only when `providerOrganization` is also set. |
 
 ### `config.skill`
 
@@ -123,7 +125,6 @@ A single advertised skill on the Agent Card.
 | `name` | yes | Display name. |
 | `description` | yes | What the skill does. |
 | `tags` | no | String array for categorization. |
-| `examples` | no | Example prompts surfaced to callers. |
 
 ## Environment variables
 
@@ -152,6 +153,10 @@ Every key has a `MONO_AGENT_*` override. Strings split on commas where the value
 | `MONO_AGENT_A2A_SKILL_NAME` | plugin `config.skill.name` |
 | `MONO_AGENT_A2A_SKILL_DESCRIPTION` | plugin `config.skill.description` |
 | `MONO_AGENT_A2A_SKILL_TAGS` | plugin `config.skill.tags` (comma-separated) |
+| `MONO_AGENT_A2A_REMOTE_AGENT_URLS` | plugin `config.consumer.remoteAgentUrls` (comma-separated) |
+| `MONO_AGENT_A2A_DEFAULT_REMOTE_AGENT_URL` | plugin `config.consumer.defaultRemoteAgentUrl` |
+| `MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN` | plugin `config.consumer.bearerToken` |
+| `MONO_AGENT_A2A_TIMEOUT_MS` | plugin `config.consumer.timeoutMs` |
 
 ## Network security
 
@@ -163,8 +168,8 @@ To expose the provider publicly you must opt in on two axes:
 2. Set `requireBearer: true` with a `bearerToken` so callers must present `Authorization: Bearer <token>`. When `requireBearer` is on but no token is configured, start fails.
 
 :::caution
-:::
 A2A speaks plaintext HTTP. Terminate **HTTPS** at a reverse proxy in front of the provider, set `publicBaseUrl` to the public `https://` URL, and always pair public exposure with `requireBearer`. Keep `bearerToken` in `.env` (`MONO_AGENT_A2A_BEARER_TOKEN`), never in committed config.
+:::
 
 ## Startup status
 

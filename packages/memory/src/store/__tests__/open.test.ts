@@ -28,10 +28,26 @@ describe("openMemoryDb", () => {
 
   it("creates the db's parent directory if it does not exist", () => {
     const root = mkdtempSync(join(tmpdir(), "memstore-"));
-    const path = join(root, "nested", "deep", "memory.db");
+    const parent = join(root, "nested", "deep");
+    const path = join(parent, "memory.db");
+    expect(existsSync(parent)).toBe(false);
     const db = openMemoryDb({ path, embeddings: fakeEmbeddings, dim: 8 });
+    expect(existsSync(parent)).toBe(true);
     expect(existsSync(path)).toBe(true);
     db.close();
+  });
+
+  it("does not create a missing parent directory for a read-only open", () => {
+    const root = mkdtempSync(join(tmpdir(), "memstore-readonly-"));
+    const parent = join(root, "nested", "deep");
+    const path = join(parent, "memory.db");
+    expect(existsSync(parent)).toBe(false);
+
+    expect(() => openMemoryDb({ path, readOnly: true, embeddings: fakeEmbeddings, dim: 8 }))
+      .toThrow("Cannot open database because the directory does not exist");
+
+    expect(existsSync(parent)).toBe(false);
+    expect(existsSync(path)).toBe(false);
   });
 
   it.each([false, true])("rejects an empty legacy vector table whose DDL dimension drifts (readOnly=%s)", (readOnly) => {

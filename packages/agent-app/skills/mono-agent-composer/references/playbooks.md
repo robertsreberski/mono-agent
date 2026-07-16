@@ -16,10 +16,12 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 **Goal:** a Telegram bot (long polling) that captures every turn into BuJo memory with scheduled consolidation and recalls past notes semantically.
 **Features:** `telegram.long-polling`, `channel.final-only-delivery`, `memory.bujo`, `memory.per-turn-capture`, `memory.bujo-consolidation`, `memory.recall-tool`, `memory.embeddings`.
 
+Put `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`; the source config omits the credential.
+
 ```json
 {
   "runtime": { "model": "pi:openai-codex:gpt-5.6-terra" },
-  "telegram": { "enabled": true, "botToken": "...", "allowedChatIds": ["123456789"] },
+  "telegram": { "enabled": true, "allowedChatIds": ["123456789"] },
   "memory": {
     "mode": "bujo", "path": "./.mono-agent/memory", "writeMode": "capture",
     "embeddings": { "provider": "ollama", "model": "nomic-embed-text:v1.5", "endpoint": "http://localhost:11434", "dim": 768 },
@@ -36,10 +38,12 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 **Goal:** a mention-triggered Slack Socket Mode bot with a custom MCP tool, Read/Grep, and `SlackSendMessage` for proactive posts.
 **Features:** `slack.socket-mode`, `tool-policy.allowlist`, `tool-policy.mcp-servers`, `agent-app.adapter-send-tools`, `runtime.concurrency`.
 
+Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the source config omits credentials.
+
 ```json
 {
   "runtime": { "model": "pi:openai-codex:gpt-5.6-terra" },
-  "slack": { "enabled": true, "botToken": "xoxb-...", "appToken": "xapp-...", "allowedChannelIds": ["C012345"], "botUserIds": ["U012345"], "mentionTextAliases": ["@agent"] },
+  "slack": { "enabled": true, "allowedChannelIds": ["C012345"], "botUserIds": ["U012345"], "mentionTextAliases": ["@agent"] },
   "tools": { "allowedTools": ["Read", "Grep", "SlackSendMessage", "deployTool"], "mcpConfigPath": "./mcp.json" },
   "concurrency": { "maxConcurrentRuns": 4, "maxPendingRuns": 8 }
 }
@@ -105,10 +109,12 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 
 **Destination resolution:** an explicit `notifyConversationId` wins; otherwise mono-agent infers only when exactly one notify-capable Telegram/Slack candidate exists. With 0 or 2+ candidates delivery is skipped with a warning. Cron model-exhaustion notices require an explicit `notifyConversationId` and never infer a destination.
 
+Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the source config omits credentials.
+
 ```json
 {
   "runtime": { "model": "claude:claude-sonnet-4-6" },
-  "slack": { "enabled": true, "botToken": "xoxb-...", "appToken": "xapp-...", "allowedChannelIds": ["C012345"] },
+  "slack": { "enabled": true, "allowedChannelIds": ["C012345"] },
   "cron": { "jobs": [{ "id": "morning-digest", "enabled": true, "expression": "0 9 * * *", "timezone": "America/New_York", "prompt": "Build the morning digest. Your final answer is the digest to notify.", "conversationId": "daily-digest", "notify": true, "notifyConversationId": "slack:C012345" }] }
 }
 ```
@@ -128,16 +134,17 @@ Flow, check whether one of these fits and adapt it. Verify every key against
       "id": "a2a",
       "config": {
         "enabled": true,
-        "provider": { "host": "127.0.0.1", "port": 4201, "requireBearer": true, "bearerToken": "...", "idempotency": { "namespace": "research-production", "retentionMs": 2592000000, "maxRecords": 10000 } },
+        "provider": { "host": "127.0.0.1", "port": 4201, "requireBearer": true, "idempotency": { "namespace": "research-production", "retentionMs": 2592000000, "maxRecords": 10000 } },
         "agent": { "name": "Research Agent", "description": "Does research.", "version": "0.1.0" },
         "skill": { "id": "research", "name": "Research", "description": "Web research", "tags": ["research"] },
-        "consumer": { "remoteAgentUrls": ["http://127.0.0.1:4201"], "defaultRemoteAgentUrl": "http://127.0.0.1:4201", "bearerToken": "...", "timeoutMs": 30000 }
+        "consumer": { "remoteAgentUrls": ["http://127.0.0.1:4201"], "defaultRemoteAgentUrl": "http://127.0.0.1:4201", "timeoutMs": 30000 }
       }
     }]
   }
 }
 ```
-**Steps:** provider — `init`, add the `@mono-agent/a2a-adapter` plugin entry with `provider`/`agent`/`skill` + bearer; for paid/non-repeatable calls choose a reviewed stable `provider.idempotency.namespace`; `validate`, `start`, confirm the Agent Card is reachable. Consumer — set plugin `config.consumer` (or compose `createA2AConsumerResponder`), then pass the existing logical dispatch id through `idempotencyKey` / `idempotencyKeyForRequest` rather than generating one per attempt.
+**Credentials:** put `MONO_AGENT_A2A_BEARER_TOKEN` in the provider's `.env` and `MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN` in the consumer's `.env`; source config omits both tokens.
+**Steps:** provider — `init`, add the `@mono-agent/a2a-adapter` plugin entry with `provider`/`agent`/`skill` + env-backed bearer; for paid/non-repeatable calls choose a reviewed stable `provider.idempotency.namespace`; `validate`, `start`, confirm the Agent Card is reachable. Consumer — set plugin `config.consumer` (or compose `createA2AConsumerResponder`), then pass the existing logical dispatch id through `idempotencyKey` / `idempotencyKeyForRequest` rather than generating one per attempt.
 **Smoke:** repeat one keyed message to the provider's Agent Card URL with the bearer; confirm the same task/result is returned and the responder runs once.
 
 ## 8. Multi-agent orchestration (`AskCollaborator`) — code
@@ -146,15 +153,23 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 **Features:** `orchestrator.ask-collaborator`, `harness.request-runtime-options`, `runtime.custom`.
 
 ```ts
-const ext = createCollaboratorToolRuntimeExtension({
-  collaborators: [
-    { id: "researcher", label: "Research", responder: researcher },
-    { id: "writer", label: "Writer", responder: writer },
-  ],
-  conversationId, maxCalls: 10,
+const orchestrator = await createConfiguredAgentResponder({
+  config,
+  runtimeOptionsForRequest: async (input) => {
+    const extension = await createCollaboratorToolRuntimeExtension({
+      collaborators: [
+        { id: "researcher", label: "Research", responder: researcher },
+        { id: "writer", label: "Writer", responder: writer },
+      ],
+      conversationId: input.request.conversationId,
+      originalUserMessage: input.request.userMessage,
+      abortSignal: input.request.abortSignal,
+      maxCalls: 10,
+    });
+    // The harness invokes cleanup after success, failure, or request abort.
+    return { runtimeOptions: extension.runtimeOptions, cleanup: extension.cleanup };
+  },
 });
-// pass ext.runtimeOptions via createConfiguredAgentResponder({ runtimeOptionsForRequest })
-// call ext.cleanup() on disposal to close the ephemeral MCP server
 ```
 **Smoke:** give a compound task ("research X then write a summary"); confirm the artifact shows `AskCollaborator` delegating to both, and `cleanup()` closes the MCP port.
 
@@ -175,7 +190,7 @@ const ext = createCollaboratorToolRuntimeExtension({
 
 ## 10. Phoenix-observed agent with the TUI
 **For:** an agent builder evaluating runs in a tracing dashboard.
-**Goal:** run locally with the TUI, attempt a best-effort terminal-batched Phoenix export, and retain a redacted, capped local JSONL snapshot after terminal persistence. A pre-terminal crash can omit the Phoenix batch and lose RAM-buffered JSONL events.
+**Goal:** run locally with the TUI, attempt a best-effort terminal-batched Phoenix export, and retain a key-redacted, capped local JSONL snapshot after terminal persistence. A pre-terminal crash can omit the Phoenix batch and lose RAM-buffered JSONL events.
 **Features:** `observability.phoenix-exporter`, `observability.jsonl-artifacts`, `observability.trace-registry`, `tui.chat`.
 
 ```json
@@ -187,7 +202,7 @@ const ext = createCollaboratorToolRuntimeExtension({
 }
 ```
 **Steps:** start Phoenix (6006) → `init` → add artifacts/traceability/exporter → `validate` (POSTs an empty protobuf) → `start` (prints the Phoenix endpoint) → `mono-agent tui`.
-**Smoke:** complete a TUI prompt; confirm a redacted JSONL artifact AND a Phoenix trace with merged tool spans under the project.
+**Smoke:** complete a TUI prompt; confirm a JSONL artifact AND a Phoenix trace with merged tool spans under the project. Artifact/export strings are capped; non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed.
 
 ## 11. Backfill historical runs to Phoenix
 **For:** an ops engineer onboarding observability after the fact.
@@ -208,11 +223,14 @@ const ext = createCollaboratorToolRuntimeExtension({
 
 ```json
 {
-  "runtime": { "model": "claude:claude-sonnet-4-6", "fallbackModels": ["pi:openai-codex:gpt-5.5", "pi:ollama:gemma4:31b"], "session": { "mode": "continuous" } },
+  "runtime": { "model": "claude:claude-sonnet-4-6", "fallbacks": [{ "model": "pi:openai-codex:gpt-5.5" }, { "model": "pi:ollama:gemma4:31b" }], "session": { "mode": "continuous" } },
   "providers": { "local": [{ "id": "ollama", "type": "ollama", "baseUrl": "http://localhost:11434", "enabled": true }], "piNative": { "transport": "auto", "piMaxRetries": 2, "maxRetryDelayMs": 60000, "piSessionsRoot": ".mono-agent/sessions" } }
 }
 ```
-**Steps:** `ollama pull gemma4:31b` → `mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:openai-codex:gpt-5.5,pi:ollama:gemma4:31b` → add `providers.local` + `piNative.piSessionsRoot` → `validate` → `start`.
+Legacy `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain supported
+with no removal deadline, but this playbook intentionally emits the canonical
+per-route form for a new agent.
+**Steps:** `ollama pull gemma4:31b` → `mono-agent init --model claude:claude-sonnet-4-6 --fallback pi:openai-codex:gpt-5.5 --fallback pi:ollama:gemma4:31b` → add `providers.local` + `piNative.piSessionsRoot` → `validate` → `start`.
 **Boundary:** this mixed Pi/Claude chain intentionally omits the native mono-agent sandbox. Keep direct Codex chains all-direct; keep every route on Pi (including `pi:opencode-go:*`, not direct `opencode:*`) when `sandbox.mode` is `native`.
 **Smoke:** force a retryable primary failure; confirm the run result reports failover to the next model (not silent) and the conversation resumes from the transcript tail.
 

@@ -7,6 +7,8 @@ import {
   spanStatusFor,
 } from "../run-export-mapping.js";
 import type { SpanAttributes } from "../run-export-mapping.js";
+import { DEFAULT_MAX_STRING_BYTES } from "../guards.js";
+import { truncateString } from "../redaction.js";
 import type {
   RecordedRunEventCategory,
   RunExportContext,
@@ -124,7 +126,11 @@ function makeSpan(input: SpanInput): ReadableSpan {
  * `ReadableSpan[]`, enriched with OpenInference semantics (`openinference.span.kind`,
  * `input.value`/`output.value`) so Phoenix renders LLM/Tool/Chain/Agent spans
  * rather than bare INTERNAL spans, and routed to a named project via the
- * resource attribute `openinference.project.name`.
+ * resource attribute `openinference.project.name`. Live export threads the
+ * request prompt through `context.userInput`; backfill forwards persisted
+ * `summary.userInput` when present. The shared mapper bounds either source at
+ * this UTF-8-aware export boundary without mutating the recorder summary or
+ * rewriting a canonical recorder truncation marker.
  */
 export function buildRunReadableSpans(input: BuildRunReadableSpansInput): ReadableSpan[] {
   const { summary, events, context, projectName, startTimeUnixNanos, endTimeUnixNanos, idFactory } =
@@ -153,8 +159,11 @@ export function buildRunReadableSpans(input: BuildRunReadableSpansInput): Readab
   // Root span input/output = the actual conversation: the user's prompt and the
   // final assistant reply (the last coalesced message span), so the trace shows
   // "what was asked" and "what was answered". Both are conversation content, so
-  // they fall back to ids/status when sensitive export is off. The prompt is only
-  // available on the live path (threaded via context.userInput); backfill lacks it.
+  // they fall back to ids/status when sensitive export is off. Live export
+  // threads the request through context.userInput; backfill forwards persisted
+  // summary.userInput when the artifact carries it. Bound either source here so
+  // callers cannot place an unbounded free-text attribute on the outbound span;
+  // the truncator idempotently preserves an existing canonical recorder marker.
   // Failure detail = the collapsed failure kind PLUS the per-attempt failover
   // summary (which models were tried, how each failed) and the capped underlying
   // provider message — so a failed trace reads "failed (provider_unavailable_exhausted:
@@ -167,13 +176,14 @@ export function buildRunReadableSpans(input: BuildRunReadableSpansInput): Readab
   const finalReply = lastMessage === undefined ? "" : String(lastMessage.attributes["output.value"] ?? "");
   const rootInput =
     context.includeSensitiveData && context.userInput !== undefined && context.userInput.length > 0
-      ? context.userInput
+      ? truncateString(context.userInput, DEFAULT_MAX_STRING_BYTES)
       : `run ${summary.runId} · ${summary.conversationId}`;
   const rootOutput = context.includeSensitiveData && finalReply.length > 0 ? finalReply : statusText;
 
   // System instructions are run content, so they ride the same sensitive gate as
-  // the conversation input/output. The string is already redacted+capped at
-  // persist time (the recorder's dedicated system-prompt cap).
+  // the conversation input/output. The retained free-text string is already
+  // capped at persist time (the recorder's dedicated system-prompt cap), but it
+  // is not content-scanned or scrubbed.
   const systemPrompt =
     context.includeSensitiveData && typeof summary.systemPrompt === "string" && summary.systemPrompt.length > 0
       ? summary.systemPrompt

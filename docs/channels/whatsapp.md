@@ -45,7 +45,7 @@ There is no bot token: WhatsApp links your own account as a paired device. Keep 
 | `config.groupMode` | `"mention"` \| `"any"` | `"mention"` | Trigger rule for group messages (DMs always trigger — see below). |
 | `config.botJids` | string[] | `[]` | Your linked account's JID(s), used to detect @mentions of the agent in groups. |
 | `config.mentionTextAliases` | string[] | `[]` | Extra text aliases (e.g. `@agent`) that count as a mention even without a native WhatsApp mention. |
-| `config.stripMentionText` | boolean | `false` | When `true`, the matched mention/alias text is removed from the message before it reaches the agent. |
+| `config.stripMentionText` | boolean | conditional | When `true`, the matched mention/alias text is removed from the message before it reaches the agent. When unset, defaults to `true` only when `mentionTextAliases` is non-empty; `botJids` alone does not enable stripping, so otherwise it defaults to `false`. |
 
 Full annotated example:
 
@@ -95,6 +95,8 @@ To allow every chat instead of an explicit allowlist, set `allowAllChats` and dr
   - `any` — every allowed group message triggers a run.
 
 In both cases the chat must pass the allowlist: it must appear in `allowedChatJids`, or `allowAllChats` must be `true`. A chat that is not allowed is silently ignored.
+
+The bundled event runner derives a queue from each usable, trimmed `remoteJid`; messages without one share a fallback queue. Within a queue it awaits both the message handler and its result callback before starting the next message. Different queues can enter the adapter concurrently, so one chat is not held behind another by the event runner, although configured runtime limits can still serialize the underlying agent turns. Completion and result-callback order across different chats is not guaranteed to match global receive order. A later message in the same chat, including `/cancel`, does not overtake the in-flight handler.
 
 :::tip
 `groupMode: "any"` in a busy group will run the agent on every message. Pair it with a tight `allowedChatJids` and consider [concurrency limits](/runtime/sessions-concurrency/) before enabling it.

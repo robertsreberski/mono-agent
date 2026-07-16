@@ -6,7 +6,7 @@ sidebar:
 
 # Artifacts, latency & trace registry
 
-mono-agent is local-first about observability: every run gets a JSONL event artifact and a summary in a folder on disk, and the host publishes a small heartbeat manifest so the CLI can discover running agents. At `start()`, the recorder performs separate atomic replacements for an empty events file and a `running` summary. It buffers redacted events in memory during the run and caps each event string at 4,096 bytes by default. Terminal `finish()`/`fail()` uses separate atomic replacements for that bounded events snapshot first and the summary second. These temp-file-and-rename writes provide no append, checkpoint, fsync, or cross-file transaction guarantee. The artifacts are the local on-disk record after a successful recorder boundary; the [Phoenix exporter](/observability/phoenix-and-backfill/) is an optional, additive layer on top.
+mono-agent is local-first about observability: every run gets a JSONL event artifact and a summary in a folder on disk, and the host publishes a small heartbeat manifest so the CLI can discover running agents. At `start()`, the recorder performs separate atomic replacements for an empty events file and a `running` summary. It buffers key-redacted events in memory during the run and caps each event string at 4,096 bytes by default. Terminal `finish()`/`fail()` uses separate atomic replacements for that bounded events snapshot first and the summary second. These temp-file-and-rename writes provide no append, checkpoint, fsync, or cross-file transaction guarantee. The artifacts are the local on-disk record after a successful recorder boundary; the [Phoenix exporter](/observability/phoenix-and-backfill/) is an optional, additive layer on top.
 
 This page covers where artifacts land, the latency-attribution events inside them, and the trace-source registry that `mono-agent status` reads.
 
@@ -14,12 +14,16 @@ This page covers where artifacts land, the latency-attribution events inside the
 
 Each agent run writes two files into `artifacts.dir`:
 
-- `run-<id>.events.jsonl` — the terminal snapshot of redacted, bounded events that reached the recorder's in-memory buffer, one event per line (assistant deltas, tool calls/results, timing, usage/cost).
+- `run-<id>.events.jsonl` — the terminal snapshot of key-redacted, bounded events that reached the recorder's in-memory buffer, one event per line (assistant deltas, tool calls/results, timing, usage/cost).
 - `run-<id>.summary.json` — a private local roll-up of the run (final `status`, aggregate usage/cost, model, and the compiled `systemPrompt` when captured). See [Run status](#run-status-and-stale-run-reconciliation) for the status values. Routed runs preserve normalized `failoverHistory` (model, failure, subkind, and request id when available). The companion events JSONL records bounded `provider_route_safety` events with each uniform or provider-native contract/status. Credentials and private resolver options are never copied into either artifact.
 
 Memory-maintenance runs (`mem-*`, used by BuJo capture and rituals) write the same two-file shape under `artifacts.dir/memory/`. Keeping them in a separate namespace lets operator surfaces default to human-facing agent runs while still allowing explicit memory export, audit, and metrics flows.
 
-Artifacts are written for every run regardless of whether any exporter is configured. Secrets are redacted and long strings are capped, but summaries intentionally retain private operator context such as the compiled system prompt; keep the artifact directory access-controlled and do not expose it as an application response. Public `AgentHarnessResponse.metadata.summary` is typed as `ExternalRunSummary` and excludes `systemPrompt` on every path. The webhook adapter repeats that sanitization for sync, async, status, and callback destinations, including custom responders. Separately from JSONL recording, the tool-bloat guard attempts to save each oversized tool-result block under `tool-output/`; only paths returned by a successful persistence callback are retained, and failures leave the compact truncation summary without the omitted bytes (coverage: `auto`).
+Artifacts are written for every run regardless of whether any exporter is configured. Their protection is key-based: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. Long strings are capped. Summaries intentionally retain private operator context such as the compiled system prompt; keep the artifact directory access-controlled and do not expose it as an application response. Public `AgentHarnessResponse.metadata.summary` is typed as `ExternalRunSummary` and excludes `systemPrompt` on every path. The webhook adapter repeats that sanitization for sync, async, status, and callback destinations, including custom responders. Separately from JSONL recording, the tool-bloat guard attempts to save each oversized tool-result block under `tool-output/`; only paths returned by a successful persistence callback are retained, and failures leave the compact truncation summary without the omitted bytes (coverage: `auto`).
+
+:::note
+Current matcher limitations remain follow-up work. Key names that put a space, dot, slash, or colon between `private`/`api` and `key` are not matched (for example, `private key`, `api.key`, `private/key`, or `api:key`). Because matching is substring-based, string values under benign keys such as `credentialType`, `bearerStatus`, and `privateKeyboard` are conservatively redacted. These classifications document the current behavior; this issue does not change the production matcher.
+:::
 
 ```json
 {
@@ -91,7 +95,7 @@ The tool exposes two actions:
 - `list` returns a bounded inventory of completed prior runs in the **exact current conversation bucket**.
 - `inspect` accepts one run id returned by `list` and projects its trigger, visible assistant output, tool calls and linked results, runtime warnings/provider failures, timestamps, and final output.
 
-The boundary is deliberately narrower than direct artifact access. `RunHistory` excludes the current or any running run, other conversations and rollover buckets, system prompts, model reasoning/thinking, recalled memory and turn-context payloads, and raw artifact paths. Results reuse observability redaction and string bounds, impose a deterministic total cap, and report truncation rather than silently presenting an unbounded log. Historical text is labelled **untrusted evidence** and must never be followed as instructions.
+The boundary is deliberately narrower than direct artifact access. `RunHistory` excludes the current or any running run, other conversations and rollover buckets, system prompts, model reasoning/thinking, recalled memory and turn-context payloads, and raw artifact paths. Structured projected values first pass through the shared observability redactor: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. `RunHistory` then applies an additional projection sanitizer. In that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible; numeric values under `apiKey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted. Assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel. An optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted. String and total-result bounds apply, and truncation is reported rather than silently presenting an unbounded log. Historical text is labelled **untrusted evidence** and must never be followed as instructions.
 
 Start with active conversation history for the current exchange. Use `MemoryRecall` for intentionally captured durable facts. Use `RunHistory` only when exact prior-run or tool evidence is needed.
 
@@ -188,8 +192,8 @@ assert health of the remote index. For the exact strict CLI schema and exit cont
 Keep `staleAfterMs` comfortably larger than `heartbeatMs` (the defaults give a 3× margin) so a single missed write does not flap a healthy agent into the stale state. Registries also self-prune: manifests whose heartbeat is older than 7 days AND whose process is no longer running are deleted automatically the next time an agent starts or `mono-agent tui` runs.
 
 :::note
-:::
 `sourceLabel` doubles as the default Phoenix project name when no `projectName` is set on the exporter, so pick a label that reads well in a trace UI as well as in the CLI.
+:::
 
 ## How `start` and `status` use this
 

@@ -12,6 +12,8 @@ The memory subsystem **never silently downshifts**: invalid tier prerequisites a
 
 `mono-agent memory` is the operator preview for the memory configured in the current agent folder. It loads the same `mono-agent.config.json` and `.env` resolution path as the app, so it sees the active memory mode, backend, root path, embeddings provider, and Supermemory settings without a separate root argument.
 
+This operator surface remains available when `memory.recallTool.enabled` is `false`. That setting removes the live `MemoryRecall` tool from the agent; it does not disable explicit operator inspection or maintenance. Preview and live recall share the same backend, Supermemory-container, embeddings, and credential resolution, with bypassing the live-tool gate as the only preview-specific behavior.
+
 Coverage: cli.
 
 ```bash
