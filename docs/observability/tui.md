@@ -6,7 +6,7 @@ sidebar:
 
 # Terminal UI (mono-agent tui)
 
-`mono-agent tui` is the operator console: a live chat with **full insight into the agent's thinking process** — streamed reasoning, tool calls with arguments/progress/results/timing, token usage, cost, provider lifecycle and failover — plus a recorded-run replay browser and a read-only, source-annotated view of the resolved config. It normally connects to the authoritative running agent; `--local` remains an ordinary in-process chat escape hatch, never a configuration host. It ships in `@mono-agent/tui`, built on pi-tui differential rendering. Coverage: `cli` (+ the `tui` config section for remote endpoints).
+`mono-agent tui` is the operator console: a live chat with structured insight into the agent's thinking process — streamed reasoning, tool calls with arguments/progress/results/timing, token usage, cost, provider lifecycle and failover — plus a recorded-run replay browser and a read-only, source-annotated view of the resolved config. It normally connects to the authoritative running agent; `--local` remains an ordinary in-process chat escape hatch, never a configuration host. It ships in `@mono-agent/tui`, built on pi-tui differential rendering. Coverage: `cli` (+ the `tui` config section for remote endpoints).
 
 ## How it connects
 
@@ -43,14 +43,14 @@ Chat runs under its own `conversationId` (default `tui-<sourceId>`), so it never
 | Notices | Runtime warnings and provider failover (`failover gpt-5.6-terra → kimi`) inline in the transcript. |
 | Status bar | Instance label · model · live token usage (`↑input ↓output (cache …)`) · cumulative cost · provider state · hints. |
 
-Oversized tool payloads are truncated on the wire (marked in the panel); the full data is always in the run's [JSONL artifacts](/observability/artifacts-and-traces/) and visible in the replay view.
+Oversized event fields are truncated on the 256 KiB wire frame (marked in the panel). Replay is independently bounded: the recorder redacts and caps each event string at 4,096 bytes by default, keeps events in RAM until terminal persistence, and may leave an empty event trail after a crash. A separately saved `tool-output/` file can preserve an oversized tool-result block when best-effort persistence succeeds, but it is not JSONL replay and does not cover arbitrary stream events. See [Artifacts & traces](/observability/artifacts-and-traces/).
 
 ## Views
 
 | View | Key | Content |
 | --- | --- | --- |
 | chat | `f2` | The live conversation described above. |
-| replay | `f3` | Recorded runs read straight from the agent's artifact dir — every turn from **every** channel (telegram, cron, webhook, …), each expandable into its full coalesced event timeline: thinking, tools, telemetry, failover history, error detail, usage and cost from the run summary. |
+| replay | `f3` | Recorded runs read straight from the agent's artifact dir — runs from any channel (telegram, cron, webhook, …) expand into the redacted, bounded events that reached their JSONL files: thinking, tools, telemetry, failover history, error detail, plus usage and cost from the summary. Payload tails capped before persistence and RAM-buffered events lost in a crash are not recoverable here. |
 | config | `f4` | Redacted, source-annotated resolved config — the same builder as `mono-agent config`, each field tagged `env`/`json`/`default`. Read-only; `r` reloads. The env layer shown is your shell's, not the agent process's (the pane says so). |
 | agents | `f5` | The running-instance picker; `r` refreshes, `enter` connects. |
 
@@ -83,7 +83,7 @@ Conversational configuration is unavailable off macOS because safe apply depends
 
 ## Embedded mode (custom hosts)
 
-The remote and ordinary local modes use the same TUI, which also runs **in-process** against any `AgentResponder` — the same rendering drives both, because the wire protocol replays the exact stream callbacks. Custom hosts can embed it programmatically:
+The remote and ordinary local modes use the same TUI, which also runs **in-process** against any `AgentResponder`. The same rendering drives both; remote mode transports the callbacks through the bounded wire protocol described above. Custom hosts can embed it programmatically:
 
 ```ts
 import { startMonoAgentTui } from "@mono-agent/tui";

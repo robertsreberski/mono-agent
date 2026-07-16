@@ -66,7 +66,7 @@ export class ToolPanel implements Component {
       lines.push(...bodyText.render(width));
     }
     if (this.truncated) {
-      lines.push(...new Text(styles.dim("(payload truncated for streaming — full data in run artifacts)"), 3, 0).render(width));
+      lines.push(...new Text(styles.dim("(payload truncated for streaming; replay may also be bounded)"), 3, 0).render(width));
     }
     return lines;
   }

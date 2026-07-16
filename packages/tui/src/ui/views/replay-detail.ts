@@ -163,11 +163,12 @@ export function buildRawPayloadBody(item: ReplayTimelineItem, expanded: boolean)
  * `type` string containing "tool"): callers fall back to
  * {@link buildRawPayloadBody} for both cases, exactly as before Part B.
  *
- * `timeline` (the run's full coalesced item list) is used to look AHEAD from
+ * `timeline` (the run's coalesced persisted-event item list) is used to look AHEAD from
  * a `tool_use` item for its matching `tool_result` (by `tool_use_id`) so a
  * call+result pair renders as ONE unified panel, like a live tool call
  * settling. `rawEvents` (the run's raw, uncoalesced events) is used to
- * reconstruct a coalesced thinking/text group's FULL joined text -- the
+ * reconstruct the joined text retained in a coalesced thinking/text group's
+ * already redacted/capped raw events -- the
  * combiner's own synthetic payload for a multi-event group carries only the
  * compacted (220-char) `summary`, not the full text (see
  * `combinedEventItem` in event-timeline.ts).
@@ -281,7 +282,8 @@ function blocksOfType(payload: unknown, blockType: "tool_use" | "tool_result"): 
 }
 
 /**
- * Full (untruncated) joined thinking/text block content for a timeline item.
+ * Joined thinking/text content retained by the run's already redacted/capped
+ * raw events, without the replay coalescer's additional summary compaction.
  * A single-event item's `payload` IS the raw redacted event (walk it
  * directly); a coalesced group's synthetic payload carries only the
  * compacted `summary`, so walk the group's own raw events (via

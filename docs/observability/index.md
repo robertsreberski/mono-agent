@@ -21,7 +21,7 @@ Every mono-agent run gets local JSONL artifacts and can optionally be exported t
 
 ## JSONL run artifacts (always on)
 
-Run artifacts are created for every run regardless of whether any exporter is configured. At `start()`, the recorder performs separate atomic replacements for an empty events file and a `running` summary, then buffers redacted events in memory. Terminal `finish()`/`fail()` uses separate atomic replacements for the complete events file first and the summary second. These writes provide no append, checkpoint, fsync, or cross-file transaction guarantee, so a crash can lose buffered events and stale-run reconciliation can report only persisted data. The artifacts also carry the metrics other tools build on: per-run usage/cost/cache (`observability.cost-tracking`), per-turn `provider_bridge_latency`, per-tool `tool_timing` (`execution_ms`), and `mcp_call_duration_ms` on MCP results — letting you separate model-reasoning time from tool/MCP time.
+Run artifacts are created for every run regardless of whether any exporter is configured. At `start()`, the recorder performs separate atomic replacements for an empty events file and a `running` summary, then buffers redacted events in memory with a 4,096-byte default cap per string. Terminal `finish()`/`fail()` uses separate atomic replacements for that bounded events snapshot first and the summary second. These writes provide no append, checkpoint, fsync, or cross-file transaction guarantee, so a crash can lose buffered events and stale-run reconciliation can report only persisted data. The artifacts also carry the metrics other tools build on: per-run usage/cost/cache (`observability.cost-tracking`), per-turn `provider_bridge_latency`, per-tool `tool_timing` (`execution_ms`), and `mcp_call_duration_ms` on MCP results — letting you separate model-reasoning time from tool/MCP time.
 
 ```json
 {
@@ -83,7 +83,7 @@ The full command and flag matrix is in the [CLI reference](/observability/cli-re
 
 ## The TUI
 
-`mono-agent tui` opens the operator console from any directory and connects to any running agent on the machine: live chat with full thinking/tool/telemetry insight, a recorded-run replay browser (every channel's turns), and a source-annotated config view.
+`mono-agent tui` opens the operator console from any directory and connects to any running agent on the machine: live chat with structured thinking/tool/telemetry insight, a bounded recorded-run replay browser (all channel types), and a source-annotated config view.
 
 ```bash
 mono-agent tui                        # discover running agents and connect
@@ -104,7 +104,7 @@ mono-agent web --include-memory
 mono-agent web --max-runs 500
 ```
 
-The backend binds loopback on the stable default port `4599`. Run lists and the initial browser stream are summary-only; a run's full timeline is loaded lazily from its detail endpoint when opened. Memory-maintenance runs are hidden by default; pass `--include-memory` to inspect them.
+The backend binds loopback on the stable default port `4599`. Run lists and the initial browser stream are summary-only; a run's persisted, bounded timeline is loaded lazily from its detail endpoint when opened. Memory-maintenance runs are hidden by default; pass `--include-memory` to inspect them.
 
 For direct LAN and Tailscale access, bind `0.0.0.0` with `--allow-non-loopback`. Startup prints concrete loopback, private LAN, and Tailscale IPv4 URLs instead of `0.0.0.0`. The read-only `/api/*` and `/api/stream` surfaces require a bearer token: set stable `MONO_AGENT_WEB_AUTH_TOKEN` in the invocation folder's owner-only `.env` (or `--env-file`) for service/non-interactive use. A configured token is honored on loopback too. An interactive non-loopback command may generate a one-run token; non-interactive non-loopback startup without a configured token fails closed. Configured tokens are redacted from ordinary output, authenticated mode is not auto-opened through process arguments, and `--show-auth-url` reveals a fragment-bearing bootstrap URL only through an explicit interactive-terminal invocation. The PWA sends API and SSE credentials as an Authorization header, never as an API query parameter.
 

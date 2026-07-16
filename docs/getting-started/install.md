@@ -77,7 +77,7 @@ The operator console is built into the CLI — once an agent is running (`mono-a
 mono-agent tui
 ```
 
-It discovers running agents on the machine and gives you live chat with full thinking/tool/telemetry insight, recorded-run replay, and a config view. The underlying `@mono-agent/tui` package also ships a low-level `mono-agent-tui` bin for custom hosts (`--responder` embedded mode, `--url` direct connect):
+It discovers running agents on the machine and gives you live chat with structured thinking/tool/telemetry insight, bounded recorded-run replay, and a config view. The underlying `@mono-agent/tui` package also ships a low-level `mono-agent-tui` bin for custom hosts (`--responder` embedded mode, `--url` direct connect):
 
 ```bash
 npm i -g @mono-agent/tui   # only needed for the standalone bin

@@ -119,6 +119,30 @@ describe("JsonlRunRecorder", () => {
     expect(summaryJson).toContain('"isolated": true');
   });
 
+  it("caps oversized event strings at the 4,096-byte recorder default before terminal JSONL persistence", async () => {
+    const dir = await tempDir();
+    const tailSentinel = "TAIL-MUST-NOT-REACH-JSONL";
+    const recorder = createJsonlRunRecorder({
+      runId: "run:oversized-event",
+      conversationId: "tui:oversized-event",
+      artifactDir: dir,
+    });
+
+    recorder.onEvent({
+      type: "assistant_thought",
+      text: `${"x".repeat(300_000)}${tailSentinel}`,
+    });
+    const summary = await recorder.finish({});
+    const event = JSON.parse((await readFile(summary.artifactPaths[0] ?? "", "utf8")).trim()) as {
+      text?: string;
+    };
+    const retainedHead = event.text?.split("…[truncated")[0] ?? "";
+
+    expect(Buffer.byteLength(retainedHead, "utf8")).toBe(4_096);
+    expect(event.text).toContain("…[truncated");
+    expect(event.text).not.toContain(tailSentinel);
+  });
+
   it("persists recorder-level isolated identity for running and failed summaries", async () => {
     const dir = await tempDir();
     const recorder = createJsonlRunRecorder({

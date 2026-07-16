@@ -114,9 +114,9 @@ Two independent guards keep assembled prompts and tool traffic bounded:
 | Guard | Coverage | Behavior |
 |-------|----------|----------|
 | Per-skill byte cap | `config` | Each skill instruction body truncated to `context.skillMaxBytes` (default 48000) |
-| Tool-output bloat guard | `auto` | Tool outputs over 256KB are truncated; the full payload is persisted as an artifact under `artifacts.dir` (`MONO_AGENT_ARTIFACT_DIR`) |
+| Tool-output bloat guard | `auto` | Tool outputs over 256KB are truncated; each oversized block is offered to a separate best-effort artifact sink under `artifacts.dir` (`MONO_AGENT_ARTIFACT_DIR`) |
 
-The tool-bloat guard is always on. When a large tool result is truncated in-context, the complete output is written to the artifacts directory so nothing is lost from the run record — see [Artifacts and traces](/observability/artifacts-and-traces/).
+The tool-bloat guard is always on. When a large tool result is truncated in-context, it attempts to save each original block under `tool-output/`. The compact summary lists only paths the sink successfully returned; when the sink is absent or a write fails, the omitted bytes are not recoverable. These separate files are not the run's JSONL event stream or replay guarantee — see [Artifacts and traces](/observability/artifacts-and-traces/).
 
 ## Context compaction
 

@@ -72,9 +72,10 @@ best-effort, and isolated from the JSONL recorder.
 
 ## Timeline Display
 
-`.events.jsonl` artifacts contain one event per line after a terminal recorder
-boundary. The recorder replaces the complete file at that boundary; it does not
-append events while a run is in progress. UI surfaces that need readable
+`.events.jsonl` artifacts contain one redacted, bounded event per line after a
+terminal recorder boundary. Event strings use a 4,096-byte default cap. The
+recorder replaces that terminal snapshot at the boundary; it does not append
+events while a run is in progress. UI surfaces that need readable
 timelines can call `combineRecordedRunEvents()` to collapse adjacent assistant
 `thinking` or visible `text` stream chunks into bounded display rows while
 preserving raw source index ranges and event counts. Browser bundles can import
@@ -105,8 +106,8 @@ Running sources become `stale` when their heartbeat is older than the configured
 Stale-run reconciliation repairs summary status from persisted data only. At
 `start()`, the JSONL recorder performs separate atomic replacements for an empty
 events file and a `running` summary. It then buffers redacted events in memory.
-Terminal `finish()`/`fail()` uses separate atomic replacements for the complete
-events file first and the summary second. These writes provide no append,
+Terminal `finish()`/`fail()` uses separate atomic replacements for the bounded
+events snapshot first and the summary second. These writes provide no append,
 checkpoint, fsync, or cross-file transaction guarantee: a process death can lose
 buffered events and reconcile as `process_death` with `eventCount: 0`. The app's
 live broadcast gives connected TUI/web clients best-effort visibility, not

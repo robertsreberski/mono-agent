@@ -300,7 +300,8 @@ class NdjsonMessageStream implements AgentMessageStream {
 
 /**
  * Shrink the unbounded fields (tool results / progress) of an oversized event
- * and mark the truncation. The full payload stays available in run artifacts.
+ * and mark the truncation. JSONL replay is independently redacted/bounded and
+ * terminally persisted, so this omitted tail is not guaranteed recoverable.
  */
 function truncateEvent(event: AgentStreamEvent): AgentStreamEvent {
   const cap = MAX_FRAME_BYTES / 2;

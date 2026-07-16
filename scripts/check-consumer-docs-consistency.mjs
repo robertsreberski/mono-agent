@@ -10,6 +10,18 @@ const userDocRoots = [
   "PACKAGES.md",
   "docs",
   "packages/observability/README.md",
+  "packages/operator-adapter/README.md",
+  "packages/session-web/README.md",
+  "packages/tui/README.md",
+];
+
+const artifactContractSourcePaths = [
+  "packages/operator-adapter/src/tui/constants.ts",
+  "packages/operator-adapter/src/tui/server.ts",
+  "packages/tui/src/ui/app.ts",
+  "packages/tui/src/ui/components/tool-panel.ts",
+  "packages/tui/src/ui/views/replay-detail.ts",
+  "packages/tui/src/ui/views/replay.ts",
 ];
 
 const monoPackage = (...nameParts) => `@mono-agent/${nameParts.join("-")}`;
@@ -109,6 +121,25 @@ const misleadingArtifactDurabilityClaims = [
     pattern:
       /\bappend-only\b[^\n.!?]{0,100}\b(?:JSONL|event stream|run artifacts?)\b|\b(?:JSONL|event stream|run artifacts?)\b[^\n.!?]{0,100}\bappend-only\b/iu,
   },
+  {
+    label: "full payload guaranteed in run artifacts",
+    pattern:
+      /\bfull\s+(?:data|payload)\b\s+(?:is\s+always\s+|is\s+(?:available|preserved|retained)\s+|stays?\s+(?:available\s+)?|remains?\s+)?(?:in\s+)?(?:the\s+)?run(?:'s)?\s+(?:\[\s*)?(?:JSONL\s+)?artifacts?\b/iu,
+  },
+  {
+    label: "full or no-drop replay timeline",
+    pattern:
+      /\bfull(?:\s+coalesced)?\s+event timeline\b(?:[^\n.!?]{0,160}\bnothing\s+(?:is\s+)?dropped\b)?|\bnothing\s+(?:is\s+)?dropped\b/iu,
+  },
+  {
+    label: "full AgentStreamEvent fidelity",
+    pattern: /\bfull\s+`?AgentStreamEvent`?\s+fidelity\b/iu,
+  },
+  {
+    label: "verbatim complete TUI event stream",
+    pattern:
+      /\bstreams?\s+every\s+(?:structured\s+)?`?AgentStreamEvent`?\s+verbatim\b|\bexact\s+(?:in-process\s+)?stream callbacks?\b/iu,
+  },
 ];
 
 const retiredSurfaces = [
@@ -134,13 +165,20 @@ export async function checkConsumerDocsConsistency(consumerPaths, options = {}) 
   const issues = [];
   let checked = 0;
   let userDocsChecked = 0;
+  let artifactContractSourcesChecked = 0;
 
   if (options.scanUserDocs !== false) {
     const repoRoot = resolve(options.repoRoot ?? process.cwd());
     const userDocRecords = options.userDocRecords ?? await readUserDocRecords(repoRoot);
+    const artifactContractSourceRecords = options.artifactContractSourceRecords
+      ?? await readExplicitTextRecords(repoRoot, artifactContractSourcePaths);
     userDocsChecked = userDocRecords.length;
+    artifactContractSourcesChecked = artifactContractSourceRecords.length;
     issues.push(...scanRetiredDocReferences(userDocRecords));
-    issues.push(...scanMisleadingArtifactDurabilityClaims(userDocRecords));
+    issues.push(...scanMisleadingArtifactDurabilityClaims([
+      ...userDocRecords,
+      ...artifactContractSourceRecords,
+    ]));
   }
 
   for (const rawPath of consumerPaths) {
@@ -177,7 +215,7 @@ export async function checkConsumerDocsConsistency(consumerPaths, options = {}) 
     }
   }
 
-  return { checked, userDocsChecked, warnings, issues };
+  return { checked, userDocsChecked, artifactContractSourcesChecked, warnings, issues };
 }
 
 function parseArgs(argv) {
@@ -245,6 +283,21 @@ async function readUserDocRecords(repoRoot) {
       continue;
     }
     if (pathStat.isFile() && extname(path) === ".md") {
+      records.push({ path, text: await readFile(path, "utf8") });
+    }
+  }
+  return records;
+}
+
+async function readExplicitTextRecords(repoRoot, relativePaths) {
+  const records = [];
+  for (const relativePath of relativePaths) {
+    const path = join(repoRoot, relativePath);
+    if (!(await pathExists(path))) {
+      continue;
+    }
+    const pathStat = await stat(path);
+    if (pathStat.isFile()) {
       records.push({ path, text: await readFile(path, "utf8") });
     }
   }
@@ -337,9 +390,10 @@ function usage() {
     "Usage:",
     `  node ${bin} [--consumer <path> ...]`,
     "",
-    "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, and the observability README)",
+    "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, and relevant package READMEs)",
     "for retired pre-v1 surfaces",
-    "and absolute JSONL artifact-durability claims that contradict the recorder write boundary.",
+    "and scans those docs plus TUI runtime/source text for absolute artifact/replay claims",
+    "that contradict wire truncation, recorder redaction, or the terminal write boundary.",
     "Each optional consumer folder should contain README.md and mono-agent.config.json.",
   ].join("\n");
 }
@@ -366,7 +420,7 @@ async function main() {
   for (const warning of result.warnings) {
     process.stderr.write(`WARN ${warning}\n`);
   }
-  if (result.checked === 0 && result.userDocsChecked === 0) {
+  if (result.checked === 0 && result.userDocsChecked === 0 && result.artifactContractSourcesChecked === 0) {
     process.stderr.write(
       "ERROR No repo user docs or consumer folders were checked.\n",
     );
@@ -383,6 +437,7 @@ async function main() {
 
   process.stdout.write(
     `Repo/consumer docs/config consistency passed for ${result.userDocsChecked} repo doc file(s) ` +
+      `and ${result.artifactContractSourcesChecked} artifact-contract source file(s) ` +
       `and ${result.checked} consumer folder(s).\n`,
   );
 }

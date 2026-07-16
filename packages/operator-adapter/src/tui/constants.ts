@@ -11,6 +11,7 @@ export const TUI_WIRE_SCHEMA = 1;
 /**
  * Upper bound for one serialized NDJSON frame. Oversized payloads (huge tool
  * results / progress chunks) are truncated with a marker rather than stalling
- * or ballooning the socket; the full data remains in the run's JSONL artifacts.
+ * or ballooning the socket. JSONL replay has its own redaction/string caps and
+ * terminal-only event-file boundary, so it is not a full-payload recovery path.
  */
 export const MAX_FRAME_BYTES = 256 * 1024;

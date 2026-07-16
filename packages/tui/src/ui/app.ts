@@ -1089,7 +1089,7 @@ function withCurrentMarker(label: string, isCurrent: boolean): string {
 const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "help", description: "Show keybindings and commands" },
   { name: "agents", description: "Pick another running agent" },
-  { name: "replay", description: "Browse recorded runs (full event timeline)" },
+  { name: "replay", description: "Browse persisted run events" },
   { name: "config", description: "Read-only resolved config" },
   { name: "configure", description: "Open one temporary host-approved configuration conversation" },
   { name: "cancel", description: "Cancel the in-flight turn" },

@@ -47,6 +47,8 @@ describe("check-consumer-docs-consistency", () => {
       "Run memory-bujo recall ./memory \"question\" for manual maintenance.",
       "JSONL artifacts become the completed-run record after terminal persistence; events buffer in memory before then.",
       "JSONL artifacts are not a source of truth for in-flight runs.",
+      "Replay shows only redacted, bounded events that reached terminal persistence.",
+      "A separate tool-output artifact may retain a block when best-effort persistence succeeds.",
       "",
     ].join("\n"));
 
@@ -93,6 +95,86 @@ describe("check-consumer-docs-consistency", () => {
     expect(result.issues.join("\n")).toContain("always-on JSONL run record");
     expect(result.issues.join("\n")).toContain("always-on local traceability fallback");
     expect(result.issues.join("\n")).toContain("append-only JSONL run artifact");
+  });
+
+  it("flags full/no-drop TUI recovery claims across docs, package READMEs, and runtime source text", async () => {
+    const repoRoot = await tempRepo();
+    await writeRepoDoc(repoRoot, "docs/channels/tui.md", [
+      "# TUI channel",
+      "It streams every structured `AgentStreamEvent` verbatim.",
+      "The full data stays in the run's [JSONL artifacts].",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "docs/observability/tui.md", [
+      "# TUI",
+      "The full data is always in the run's JSONL artifacts and visible in replay.",
+      "Replay opens a full coalesced event timeline.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/tui/README.md", [
+      "# TUI package",
+      "Open any run for its full coalesced event timeline (nothing dropped).",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/operator-adapter/README.md", [
+      "# Operator adapter",
+      "The endpoint streams at full `AgentStreamEvent` fidelity.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/tui/src/ui/components/tool-panel.ts", [
+      "const notice = '(payload truncated for streaming — full data in run artifacts)';",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/operator-adapter/src/tui/constants.ts", [
+      "// The full data remains in the run's JSONL artifacts.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/operator-adapter/src/tui/server.ts", [
+      "// The full payload stays available in run artifacts.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/tui/src/ui/views/replay.ts", [
+      "// A full event timeline is richer than live since nothing is dropped.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/tui/src/ui/app.ts", [
+      "const description = 'Browse recorded runs (full event timeline)';",
+    ].join("\n"));
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+    const reported = result.issues.join("\n");
+
+    expect(result.userDocsChecked).toBe(4);
+    expect(result.artifactContractSourcesChecked).toBe(5);
+    expect(reported).toContain("full payload guaranteed in run artifacts");
+    expect(reported).toContain("full or no-drop replay timeline");
+    expect(reported).toContain("full AgentStreamEvent fidelity");
+    expect(reported).toContain("verbatim complete TUI event stream");
+    for (const relativePath of [
+      "docs/channels/tui.md",
+      "docs/observability/tui.md",
+      "packages/tui/README.md",
+      "packages/operator-adapter/README.md",
+      "packages/tui/src/ui/components/tool-panel.ts",
+      "packages/operator-adapter/src/tui/constants.ts",
+      "packages/operator-adapter/src/tui/server.ts",
+      "packages/tui/src/ui/views/replay.ts",
+      "packages/tui/src/ui/app.ts",
+    ]) {
+      expect(reported).toContain(relativePath);
+    }
+  });
+
+  it("allows bounded replay wording and separate best-effort tool-output persistence", async () => {
+    const repoRoot = await tempRepo();
+    await writeRepoDoc(repoRoot, "docs/observability/tui.md", [
+      "# TUI",
+      "Replay shows redacted, capped events that reached terminal JSONL persistence.",
+      "A crash can lose RAM-buffered events before that boundary.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/tui/README.md", [
+      "# TUI package",
+      "Replay is bounded; a separate tool-output file exists only when persistence succeeds.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/tui/src/ui/components/tool-panel.ts", [
+      "const notice = '(payload truncated for streaming; replay may also be bounded)';",
+    ].join("\n"));
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+
+    expect(result.issues).toEqual([]);
   });
 
   it("flags retired pre-v1 names in supplied consumer README files", async () => {
