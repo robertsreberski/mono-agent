@@ -4,6 +4,7 @@
 // deprecated/compat-only). `getBuiltinModel(provider, id)` from `providers/all`
 // is the non-deprecated replacement with the same signature and the same
 // undefined-on-miss behavior the pricing lookup below relies on.
+import { calculateCost as calculatePiCost } from "@earendil-works/pi-ai";
 import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/all";
 
 /**
@@ -192,9 +193,9 @@ function pricingHasRates(pricing = {}) {
  *   - sdk "claude": looked up under pi's "anthropic" provider (its models carry
  *     `cost`), so pi's live rates win over the static CLAUDE_PRICING fallback.
  * @param {ParsedModelReference|null|undefined} parsed
- * @returns {NormalizedPricing|null}
+ * @returns {import("@earendil-works/pi-ai").Model<any>|null}
  */
-function piCatalogPricing(parsed) {
+function piCatalogModel(parsed) {
   if (!parsed?.model) return null;
   let provider;
   if (parsed.sdk === "pi" && parsed.provider) provider = parsed.provider;
@@ -204,11 +205,19 @@ function piCatalogPricing(parsed) {
     // `provider` may be a caller-supplied id (custom providers included), wider
     // than pi-ai's built-in KnownProvider catalog union; the catalog lookup
     // itself is the runtime check, guarded by the catch below.
-    const model = getPiModel(/** @type {*} */ (provider), parsed.model);
-    return model?.cost ? normalizePricing(model.cost, { source: "pi-catalog" }) : null;
+    return getPiModel(/** @type {*} */ (provider), parsed.model) || null;
   } catch {
     return null;
   }
+}
+
+/**
+ * @param {ParsedModelReference|null|undefined} parsed
+ * @returns {NormalizedPricing|null}
+ */
+function piCatalogPricing(parsed) {
+  const model = piCatalogModel(parsed);
+  return model?.cost ? normalizePricing(model.cost, { source: "pi-catalog" }) : null;
 }
 
 /**
@@ -244,6 +253,19 @@ export function resolvePricing({ resolveCustomPricing, model } = {}) {
     || unknownPricing();
 }
 
+/**
+ * @param {any} model
+ * @param {{input: number, output: number, cacheRead: number, cacheWrite: number}} usage
+ * @returns {number}
+ */
+function estimatePiCatalogCost(model, usage) {
+  return calculatePiCost(model, {
+    ...usage,
+    totalTokens: usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  }).total;
+}
+
 export { normalizePricing, zeroPricing, unknownPricing, pricingHasRates, isPrivateHost, parseReference };
 
 /**
@@ -266,12 +288,22 @@ export function estimateCost({
   cacheWriteTokens = 0,
   cacheCreationTokens = 0,
 } = {}) {
-  const pricing = resolvePricing({ resolveCustomPricing, model });
-  if (!pricing?.priced) return null;
   const cacheRead = Math.max(0, Number(cachedTokens) || 0);
   const cacheWrite = Math.max(0, Number(cacheWriteTokens ?? cacheCreationTokens) || 0);
   const input = Math.max(0, Number(inputTokens) || 0);
   const output = Math.max(0, Number(outputTokens) || 0);
+  const parsed = parseReference(model);
+  const customPricing = parsed && typeof resolveCustomPricing === "function"
+    ? resolveCustomPricing(parsed)
+    : null;
+  const piModel = customPricing ? null : piCatalogModel(parsed);
+  if (piModel?.cost) {
+    return estimatePiCatalogCost(piModel, { input, output, cacheRead, cacheWrite });
+  }
+  const pricing = customPricing
+    || claudePricing(parsed)
+    || unknownPricing();
+  if (!pricing?.priced) return null;
   const parts = [
     [input, pricing.input],
     [cacheRead, pricing.cacheRead],

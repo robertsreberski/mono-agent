@@ -92,4 +92,27 @@ describe("estimateCost", () => {
     const cost = estimateCost({ model: "claude:claude-sonnet-4-5", inputTokens: 1_000_000, outputTokens: 1_000_000 });
     expect(cost).toBeCloseTo(3 + 15, 6);
   });
+
+  it("delegates Pi request-wide tier selection at the catalog threshold", () => {
+    const atThreshold = estimateCost({
+      model: "codex:gpt-5.6-sol",
+      inputTokens: 272_000,
+      outputTokens: 1_000_000,
+    });
+    const aboveThreshold = estimateCost({
+      model: "codex:gpt-5.6-sol",
+      inputTokens: 272_001,
+      outputTokens: 1_000_000,
+    });
+
+    expect(atThreshold).toBeCloseTo(1.36 + 30, 6);
+    expect(aboveThreshold).toBeCloseTo(2.72001 + 45, 6);
+  });
+
+  it("uses Pi's cache-write rate in the native catalog estimate", () => {
+    expect(estimateCost({
+      model: "codex:gpt-5.6-terra",
+      cacheWriteTokens: 100_000,
+    })).toBeCloseTo(0.3125, 6);
+  });
 });
