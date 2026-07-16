@@ -309,6 +309,41 @@ describe("reconcile", () => {
     expect(parsed.bullets.find((b) => b.id === "UPD1")?.text).toBe(merged);
   });
 
+  it("keeps the public legacy reconcile path at 280 well-formed Unicode code points", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "LEGACY", "Existing legacy reconciliation memory");
+    db.findSimilar = async () => [{ record: db.get("LEGACY")!, distance: 0.1 }];
+    const candidate: CandidateMemory = {
+      type: "note",
+      text: "Candidate requiring the legacy reconciliation classifier",
+      salience: 0.8,
+      isInsight: false,
+    };
+    const expected = `${"a".repeat(279)}🧠`;
+    const escapedBoundary = `${"a".repeat(139)}\ud83d${"a".repeat(140)}🧠`;
+    const reply = JSON.stringify({
+      action: "update",
+      targetId: "LEGACY",
+      text: escapedBoundary,
+    });
+    expect(reply).toContain("\\ud83d");
+
+    const actions = await reconcile(
+      [candidate],
+      makeDeps(db, root, fakeLlm([["CLASSIFY", reply]])),
+    );
+
+    expect(actions).toEqual([{ kind: "update", id: "LEGACY" }]);
+    expect(db.get("LEGACY")?.text).toBe(expected);
+    expect(Array.from(db.get("LEGACY")?.text ?? "")).toHaveLength(280);
+    expect(db.get("LEGACY")?.text).toMatch(/🧠$/u);
+    expect(db.get("LEGACY")?.text).not.toContain("�");
+    expect(db.get("LEGACY")?.text).not.toMatch(/\p{Cs}/u);
+    expect(parseDailyFile(dailyContent(root)).bullets.find((bullet) => bullet.id === "LEGACY")?.text)
+      .toBe(expected);
+  });
+
   it("case 5 — durable replay stops on pre-existing canonical/index divergence", async () => {
     const root = newRoot();
     const db = openDb(root);
@@ -901,6 +936,43 @@ describe("reconcileBatch", () => {
     const replacementId = actions[1]?.kind === "supersede" ? actions[1].newId : "";
     expect(db.get(replacementId)?.text).toBe(candidates[1]?.text);
     expect(db.get("OLD")?.status).toBe("invalidated");
+  });
+
+  it("keeps the lenient reconciliation path at 280 complete Unicode code points", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "EXACT", "Existing exact-boundary memory");
+    await seed(db, root, "OVER", "Existing over-boundary memory");
+    const candidates: CandidateMemory[] = [
+      { type: "note", text: "Exact-boundary candidate", salience: 0.7, isInsight: false },
+      { type: "note", text: "Over-boundary candidate", salience: 0.8, isInsight: false },
+    ];
+    db.findSimilarMany = async () => [
+      [{ record: db.get("EXACT")!, distance: 0.1 }],
+      [{ record: db.get("OVER")!, distance: 0.1 }],
+    ];
+    const exactBoundary = `${"a".repeat(279)}🧠`;
+    const escapedOverBoundary = `${"a".repeat(139)}\ud83d${"a".repeat(140)}🧠tail`;
+    const reply = JSON.stringify([
+      { index: 0, action: "update", targetId: "EXACT", text: exactBoundary },
+      { index: 1, action: "update", targetId: "OVER", text: escapedOverBoundary },
+    ]);
+    expect(reply).toContain("\\ud83d");
+
+    const actions = await reconcileBatch(
+      candidates,
+      makeDeps(db, root, fakeLlm([["Classify each candidate", reply]])),
+    );
+
+    expect(actions).toEqual([
+      { kind: "update", id: "EXACT" },
+      { kind: "update", id: "OVER" },
+    ]);
+    expect(db.get("EXACT")?.text).toBe(exactBoundary);
+    expect(db.get("OVER")?.text).toBe(exactBoundary);
+    expect(Array.from(db.get("OVER")?.text ?? "")).toHaveLength(280);
+    expect(db.get("OVER")?.text).not.toContain("�");
+    expect(db.get("OVER")?.text).not.toMatch(/\p{Cs}/u);
   });
 
   it("allows an explicit valid add decision for a close candidate", async () => {

@@ -1,5 +1,6 @@
 import { ContextValidationError, loadSkillFilesFromDirectory, normalizeInlineText } from "../context/index.js";
 import type { LoadedSkillFile, MarkdownContextBlock, SkillIndexEntry } from "../context/index.js";
+import { clampUtf8Bytes } from "../context/text.js";
 
 export interface LoadedSkill {
   readonly name: string;
@@ -111,7 +112,7 @@ function loadSkillBody(file: LoadedSkillFile, maxBytes: number): LoadedSkill {
   const buffer = Buffer.from(markdown, "utf8");
   const truncated = buffer.byteLength > maxBytes;
   const content = truncated
-    ? `${buffer.subarray(0, maxBytes).toString("utf8")}\n<!-- truncated to first ${maxBytes} bytes -->`
+    ? `${clampUtf8Bytes(markdown, maxBytes)}\n<!-- truncated to first ${maxBytes} bytes -->`
     : markdown;
   return {
     name: entry.name,
