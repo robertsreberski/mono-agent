@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -29,9 +29,9 @@ describe("check-starlight-asides", () => {
     ].join("\n"))).toEqual([{ line: 3, opening: ":::caution" }]);
   });
 
-  it("fails a representative pre-fix document with an actionable location", () => {
+  it("fails a nested representative pre-fix document with an actionable relative path", () => {
     const docsRoot = temporaryDocs({
-      "broken.md": ":::note\n:::\nOrphaned note text.\n",
+      "channels/broken.md": ":::note\n:::\nOrphaned note text.\n",
     });
     const stderr = sink();
 
@@ -39,16 +39,16 @@ describe("check-starlight-asides", () => {
 
     expect(result.exitCode).toBe(1);
     expect(result.matches).toEqual([{
-      file: "broken.md",
+      file: "channels/broken.md",
       line: 1,
       opening: ":::note",
     }]);
-    expect(stderr.text).toContain("docs/broken.md:1");
+    expect(stderr.text).toContain("docs/channels/broken.md:1");
   });
 
-  it("passes after the paragraph is moved inside the aside", () => {
+  it("passes a nested document after the paragraph is moved inside the aside", () => {
     const docsRoot = temporaryDocs({
-      "fixed.md": ":::note\nThe note text is inside the fence.\n:::\n",
+      "runtime/fixed.md": ":::note\nThe note text is inside the fence.\n:::\n",
     });
     const stdout = sink();
 
@@ -63,7 +63,9 @@ function temporaryDocs(files) {
   const root = mkdtempSync(join(tmpdir(), "mono-agent-asides-"));
   temporaryRoots.push(root);
   for (const [name, contents] of Object.entries(files)) {
-    writeFileSync(join(root, name), contents);
+    const path = join(root, name);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, contents);
   }
   return root;
 }
