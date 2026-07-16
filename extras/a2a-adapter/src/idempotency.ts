@@ -46,6 +46,7 @@ const TEMPORARY_RECORD_FILE_PATTERN = /^\.[a-f0-9]{64}\.[a-f0-9-]+\.tmp$/u;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$/u;
 const MAX_RECORD_BYTES = 4 * 1024 * 1024;
+const MAX_RECORD_READ_ATTEMPTS = 20;
 const ACTIVE_POLL_MS = 50;
 const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const MIN_RETENTION_MS = 60_000;
@@ -129,6 +130,8 @@ interface FileIdempotencyStoreHooks {
   readonly beforeAdmissionPublish?: () => Promise<void>;
   /** Deterministic test seam after publication but before the staging link is removed. */
   readonly afterAdmissionPublish?: () => Promise<void>;
+  /** Deterministic test seam after opening a canonical record but before pathname revalidation. */
+  readonly afterRecordOpen?: (input: { readonly keyHash: string; readonly attempt: number }) => Promise<void>;
 }
 
 interface RuntimeRequest {
@@ -611,9 +614,9 @@ class FileIdempotencyStore implements IdempotencyStore {
     const path = resolve(this.stateDir, `${keyHash}.json`);
     let raw: Buffer;
     try {
-      raw = await secureReadPublishedRecord(path, this.stateDir, keyHash);
+      raw = await secureReadPublishedRecord(path, this.stateDir, keyHash, this.hooks);
     } catch (error) {
-      if (isErrno(error, "ENOENT")) {
+      if (error instanceof RecordNotFoundError) {
         await this.assertDirectories();
         return undefined;
       }
@@ -942,6 +945,7 @@ class FileIdempotencyStore implements IdempotencyStore {
             resolve(this.stateDir, entry.name),
             this.stateDir,
             keyHash,
+            this.hooks,
           )).toString("utf8")),
           keyHash,
         );
@@ -1646,70 +1650,152 @@ async function secureReadPrivateFile(path: string, allowedName: RegExp): Promise
   }
 }
 
-async function secureReadPublishedRecord(path: string, stateDir: string, keyHash: string): Promise<Buffer> {
+class RecordPathChangedError extends Error {
+  constructor() {
+    super("A2A idempotency record pathname changed during a secure read.");
+    this.name = "RecordPathChangedError";
+  }
+}
+
+class RecordNotFoundError extends Error {
+  constructor() {
+    super("A2A idempotency record does not exist.");
+    this.name = "RecordNotFoundError";
+  }
+}
+
+async function secureReadPublishedRecord(
+  path: string,
+  stateDir: string,
+  keyHash: string,
+  hooks: FileIdempotencyStoreHooks = {},
+): Promise<Buffer> {
   assertKeyHash(keyHash);
   if (basename(path) !== `${keyHash}.json`) {
     throw new Error("invalid record path");
   }
-  const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-  try {
-    let details = await handle.stat();
-    const pathDetails = await stat(path);
-    const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
-    if (
-      !details.isFile()
-      || (details.mode & 0o777) !== 0o600
-      || details.dev !== pathDetails.dev
-      || details.ino !== pathDetails.ino
-      || details.size > MAX_RECORD_BYTES
-      || (uid !== undefined && details.uid !== uid)
-    ) {
-      throw new Error("record identity or permissions are unsafe");
-    }
-    if (details.nlink !== 1) {
-      if (details.nlink !== 2) {
-        throw new Error("record identity or permissions are unsafe");
+  let observedCanonical = false;
+  let lastPathChange: RecordPathChangedError | undefined;
+  for (let attempt = 1; attempt <= MAX_RECORD_READ_ATTEMPTS; attempt += 1) {
+    let handle;
+    try {
+      handle = await open(
+        path,
+        fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0),
+      );
+      observedCanonical = true;
+    } catch (error) {
+      if (!isErrno(error, "ENOENT")) {
+        throw error;
       }
-      const expectedPrefix = `.${keyHash}.`;
-      let matchingTemporaryLinks = 0;
-      for (const entry of await readdir(stateDir, { withFileTypes: true })) {
-        if (
-          !entry.name.startsWith(expectedPrefix)
-          || !TEMPORARY_RECORD_FILE_PATTERN.test(entry.name)
-        ) {
-          continue;
+      if (!observedCanonical) {
+        throw new RecordNotFoundError();
+      }
+      lastPathChange = new RecordPathChangedError();
+      continue;
+    }
+    try {
+      await hooks.afterRecordOpen?.({ keyHash, attempt });
+      let details = await handle.stat();
+      await assertCurrentRecordPath(path, details);
+      const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+      assertSafeOpenedRecord(details, uid);
+      let validatedTemporaryLink = false;
+      if (details.nlink !== 1) {
+        if (details.nlink !== 2) {
+          throw new Error("record identity or permissions are unsafe");
         }
-        let candidate: Stats;
-        try {
-          candidate = await lstat(resolve(stateDir, entry.name));
-        } catch (error) {
-          if (isErrno(error, "ENOENT")) {
+        const expectedPrefix = `.${keyHash}.`;
+        let matchingTemporaryLinks = 0;
+        for (const entry of await readdir(stateDir, { withFileTypes: true })) {
+          if (
+            !entry.name.startsWith(expectedPrefix)
+            || !TEMPORARY_RECORD_FILE_PATTERN.test(entry.name)
+          ) {
             continue;
           }
-          throw error;
+          let candidate: Stats;
+          try {
+            candidate = await lstat(resolve(stateDir, entry.name));
+          } catch (error) {
+            if (isErrno(error, "ENOENT")) {
+              continue;
+            }
+            throw error;
+          }
+          if (
+            candidate.isFile()
+            && !candidate.isSymbolicLink()
+            && candidate.dev === details.dev
+            && candidate.ino === details.ino
+            && (candidate.mode & 0o777) === 0o600
+            && (uid === undefined || candidate.uid === uid)
+          ) {
+            matchingTemporaryLinks += 1;
+          }
         }
-        if (
-          candidate.isFile()
-          && !candidate.isSymbolicLink()
-          && candidate.dev === details.dev
-          && candidate.ino === details.ino
-          && (candidate.mode & 0o777) === 0o600
-          && (uid === undefined || candidate.uid === uid)
-        ) {
-          matchingTemporaryLinks += 1;
+        // The publisher may unlink its staging name while the directory is
+        // scanned. Re-read the opened inode before deciding whether its second
+        // link is the one expected from atomic publication.
+        details = await handle.stat();
+        assertSafeOpenedRecord(details, uid);
+        if (details.nlink !== 1 && (details.nlink !== 2 || matchingTemporaryLinks !== 1)) {
+          throw new Error("record identity or permissions are unsafe");
         }
+        validatedTemporaryLink = details.nlink === 2;
       }
-      // The publisher may unlink its staging name while the directory is
-      // scanned. Re-read the opened inode before deciding whether its second
-      // link is the one expected from atomic publication.
-      details = await handle.stat();
-      if (details.nlink !== 1 && (details.nlink !== 2 || matchingTemporaryLinks !== 1)) {
+      await assertCurrentRecordPath(path, details);
+      const raw = await readFile(handle);
+      const finalDetails = await handle.stat();
+      assertSafeOpenedRecord(finalDetails, uid);
+      if (
+        finalDetails.dev !== details.dev
+        || finalDetails.ino !== details.ino
+        || finalDetails.size !== raw.byteLength
+        || (finalDetails.nlink !== 1 && !(validatedTemporaryLink && finalDetails.nlink === 2))
+      ) {
         throw new Error("record identity or permissions are unsafe");
       }
+      await assertCurrentRecordPath(path, finalDetails);
+      return raw;
+    } catch (error) {
+      if (!(error instanceof RecordPathChangedError)) {
+        throw error;
+      }
+      lastPathChange = error;
+    } finally {
+      await handle.close();
     }
-    return await readFile(handle);
-  } finally {
-    await handle.close();
+  }
+  throw lastPathChange ?? new RecordPathChangedError();
+}
+
+function assertSafeOpenedRecord(details: Stats, uid: number | undefined): void {
+  if (
+    !details.isFile()
+    || (details.mode & 0o777) !== 0o600
+    || details.size > MAX_RECORD_BYTES
+    || (uid !== undefined && details.uid !== uid)
+  ) {
+    throw new Error("record identity or permissions are unsafe");
+  }
+}
+
+async function assertCurrentRecordPath(path: string, opened: Stats): Promise<void> {
+  let current: Stats;
+  try {
+    current = await lstat(path);
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) {
+      throw new RecordPathChangedError();
+    }
+    throw error;
+  }
+  if (!current.isFile() || current.isSymbolicLink()) {
+    throw new Error("record identity or permissions are unsafe");
+  }
+  if (current.dev !== opened.dev || current.ino !== opened.ino) {
+    throw new RecordPathChangedError();
   }
 }
 

@@ -543,21 +543,7 @@ describe("durable A2A logical dispatch idempotency", () => {
     const releaseConcurrentCleanup = deferred<void>();
     const delegateEntered = deferred<void>();
     let delegateCalls = 0;
-    const terminal: Message = {
-      messageId: "publication-race-response",
-      contextId: "publication-race-context",
-      taskId: "",
-      role: Role.ROLE_AGENT,
-      parts: [{
-        content: { $case: "text", value: "one durable execution" },
-        filename: "",
-        mediaType: "text/plain",
-        metadata: {},
-      }],
-      metadata: {},
-      extensions: [],
-      referenceTaskIds: [],
-    };
+    const terminal = testTerminalMessage("publication-race-response", "one durable execution");
     const delegate = {
       async sendMessage() {
         delegateCalls += 1;
@@ -565,12 +551,7 @@ describe("durable A2A logical dispatch idempotency", () => {
         return terminal;
       },
     } as unknown as A2ARequestHandler;
-    const options = {
-      stateDir,
-      namespace: "test-logical-provider",
-      retentionMs: 60_000,
-      maxRecords: 100,
-    } as const;
+    const options = testIdempotencyOptions(stateDir);
     const [pausedPublisher, concurrentPublisher] = await Promise.all([
       createIdempotentA2ARequestHandler({
         delegate,
@@ -597,37 +578,8 @@ describe("durable A2A logical dispatch idempotency", () => {
     ]);
     const key = "logical-atomic-publication-1";
     const keyHash = testStoreKeyHash(key);
-    const request: SendMessageRequest = {
-      tenant: "",
-      message: {
-        messageId: "publication-race-request",
-        contextId: "publication-race-context",
-        taskId: "",
-        role: Role.ROLE_USER,
-        parts: [{
-          content: { $case: "text", value: "publish this admission atomically" },
-          filename: "",
-          mediaType: "text/plain",
-          metadata: {},
-        }],
-        metadata: {},
-        extensions: [],
-        referenceTaskIds: [],
-      },
-      configuration: {
-        acceptedOutputModes: ["text/plain"],
-        taskPushNotificationConfig: undefined,
-        historyLength: 1,
-        returnImmediately: false,
-      },
-      metadata: {
-        [A2A_IDEMPOTENCY_METADATA_KEY]: { schemaVersion: 1, key },
-      },
-    };
-    const context = () => new ServerCallContext({
-      requestedExtensions: [A2A_IDEMPOTENCY_EXTENSION_URI],
-    });
-    const pausedOutcome = captureOutcome(pausedPublisher.sendMessage(request, context()));
+    const request = testDirectRequest(key, "publish this admission atomically");
+    const pausedOutcome = captureOutcome(pausedPublisher.sendMessage(request, testServerCallContext()));
     let concurrentOutcome: Promise<CapturedOutcome<Message | Task>> | undefined;
 
     try {
@@ -645,7 +597,7 @@ describe("durable A2A logical dispatch idempotency", () => {
       expect(JSON.parse(await readFile(join(stateDir, stagedNames[0] as string), "utf8")))
         .toMatchObject({ keyHash, status: "active" });
 
-      concurrentOutcome = captureOutcome(concurrentPublisher.sendMessage(request, context()));
+      concurrentOutcome = captureOutcome(concurrentPublisher.sendMessage(request, testServerCallContext()));
       await expectMilestoneBeforeSettlement(
         afterConcurrentPublication.promise,
         concurrentOutcome,
@@ -979,6 +931,163 @@ describe("durable A2A logical dispatch idempotency", () => {
     })).rejects.toMatchObject({ code: "idempotency_store_error" });
   });
 
+  it("securely reopens a canonical record replaced after open by expiry compaction", async () => {
+    const stateDir = await temporaryStateDir();
+    const key = "logical-reopen-after-compaction-1";
+    const keyHash = testStoreKeyHash(key);
+    const options = testIdempotencyOptions(stateDir);
+    const request = testDirectRequest(key, "reopen the compacted receipt");
+    const terminal = testTerminalMessage("reopen-compaction-response", "seed result");
+    const seed = await createIdempotentA2ARequestHandler({
+      delegate: {
+        async sendMessage() {
+          return terminal;
+        },
+      } as unknown as A2ARequestHandler,
+      taskStore: new InMemoryTaskStore(),
+      options,
+    });
+    await seed.sendMessage(request, testServerCallContext());
+    const recordPath = await onlyRecordPath(stateDir);
+    const record = JSON.parse(await readFile(recordPath, "utf8")) as Record<string, unknown>;
+    record.updatedAtMs = Date.now() - 61_000;
+    await writeFile(recordPath, `${JSON.stringify(record)}\n`);
+    await chmod(recordPath, 0o600);
+
+    const oldRecordOpened = deferred<void>();
+    const releaseOldReader = deferred<void>();
+    const pausedReadAttempts: number[] = [];
+    let paused = false;
+    let recordStartupAttempts = true;
+    let successorCalls = 0;
+    const successor = {
+      async sendMessage() {
+        successorCalls += 1;
+        return testTerminalMessage("unexpected-successor", "must not run");
+      },
+    } as unknown as A2ARequestHandler;
+    const pausedCreation = captureOutcome(createIdempotentA2ARequestHandler({
+      delegate: successor,
+      taskStore: new InMemoryTaskStore(),
+      options,
+      storeHooks: {
+        async afterRecordOpen(input) {
+          if (recordStartupAttempts && input.keyHash === keyHash) {
+            pausedReadAttempts.push(input.attempt);
+          }
+          if (!paused && input.keyHash === keyHash) {
+            paused = true;
+            oldRecordOpened.resolve();
+            await releaseOldReader.promise;
+          }
+        },
+      },
+    }));
+
+    try {
+      await expectMilestoneBeforeSettlement(
+        oldRecordOpened.promise,
+        pausedCreation,
+        "old canonical record open",
+      );
+      const openedIdentity = await stat(recordPath);
+      const sibling = await createIdempotentA2ARequestHandler({
+        delegate: successor,
+        taskStore: new InMemoryTaskStore(),
+        options,
+      });
+      const compactedIdentity = await stat(recordPath);
+      expect(compactedIdentity.ino).not.toBe(openedIdentity.ino);
+      expect(JSON.parse(await readFile(recordPath, "utf8"))).toMatchObject({
+        keyHash,
+        status: "tombstone",
+      });
+
+      releaseOldReader.resolve();
+      const pausedResult = await pausedCreation;
+      expect(pausedResult.status).toBe("fulfilled");
+      if (pausedResult.status !== "fulfilled") {
+        throw pausedResult.reason;
+      }
+      recordStartupAttempts = false;
+      expect(pausedReadAttempts.slice(0, 2)).toEqual([1, 2]);
+      expect((await stat(recordPath)).ino).toBe(compactedIdentity.ino);
+      const expiredOutcomes = await Promise.all([
+        captureOutcome(pausedResult.value.sendMessage(request, testServerCallContext())),
+        captureOutcome(sibling.sendMessage(request, testServerCallContext())),
+      ]);
+      for (const outcome of expiredOutcomes) {
+        expect(outcome.status).toBe("rejected");
+        if (outcome.status !== "rejected" || !(outcome.reason instanceof Error)) {
+          throw new Error("Expected a typed expired-result failure.");
+        }
+        expect(classifyA2AIdempotencyTransportError(outcome.reason.message)).toBe("result_expired");
+      }
+      expect(successorCalls).toBe(0);
+    } finally {
+      releaseOldReader.resolve();
+      await pausedCreation;
+    }
+  });
+
+  it("fails closed after bounded canonical record replacement churn", async () => {
+    const stateDir = await temporaryStateDir();
+    const key = "logical-bounded-record-churn-1";
+    const keyHash = testStoreKeyHash(key);
+    const options = testIdempotencyOptions(stateDir);
+    const request = testDirectRequest(key, "never accept an unstable receipt");
+    const seed = await createIdempotentA2ARequestHandler({
+      delegate: {
+        async sendMessage() {
+          return testTerminalMessage("bounded-churn-seed", "stable seed");
+        },
+      } as unknown as A2ARequestHandler,
+      taskStore: new InMemoryTaskStore(),
+      options,
+    });
+    await seed.sendMessage(request, testServerCallContext());
+    const recordPath = await onlyRecordPath(stateDir);
+    let replacements = 0;
+    let exceededReplacementBound = false;
+    let successorCalls = 0;
+
+    await expect(createIdempotentA2ARequestHandler({
+      delegate: {
+        async sendMessage() {
+          successorCalls += 1;
+          return testTerminalMessage("unexpected-churn-successor", "must not run");
+        },
+      } as unknown as A2ARequestHandler,
+      taskStore: new InMemoryTaskStore(),
+      options,
+      storeHooks: {
+        async afterRecordOpen(input) {
+          if (input.attempt > 20) {
+            exceededReplacementBound = true;
+            throw new Error("Canonical record retry bound was exceeded.");
+          }
+          replacements += 1;
+          const temporary = join(
+            stateDir,
+            `.${input.keyHash}.${input.attempt.toString(16).padStart(2, "0")}.tmp`,
+          );
+          await writeFile(temporary, await readFile(recordPath), { mode: 0o600 });
+          await chmod(temporary, 0o600);
+          await rename(temporary, recordPath);
+        },
+      },
+    })).rejects.toMatchObject({ code: "idempotency_store_error" });
+
+    expect(replacements).toBe(20);
+    expect(exceededReplacementBound).toBe(false);
+    expect(successorCalls).toBe(0);
+    expect(JSON.parse(await readFile(recordPath, "utf8"))).toMatchObject({
+      keyHash,
+      status: "completed",
+    });
+    expect((await readdir(stateDir)).filter((name) => name.startsWith(`.${keyHash}.`))).toHaveLength(0);
+  });
+
   it("concurrently compacts an expired result to a permanent tombstone without admitting a successor", async () => {
     const stateDir = await temporaryStateDir();
     const original = await startProvider({
@@ -1080,6 +1189,69 @@ function testStoreKeyHash(key: string): string {
   return createHash("sha256")
     .update(JSON.stringify({ key, providerScope }))
     .digest("hex");
+}
+
+function testIdempotencyOptions(stateDir: string) {
+  return {
+    stateDir,
+    namespace: "test-logical-provider",
+    retentionMs: 60_000,
+    maxRecords: 100,
+  } as const;
+}
+
+function testDirectRequest(key: string, text: string): SendMessageRequest {
+  return {
+    tenant: "",
+    message: {
+      messageId: `request-${key}`,
+      contextId: `context-${key}`,
+      taskId: "",
+      role: Role.ROLE_USER,
+      parts: [{
+        content: { $case: "text", value: text },
+        filename: "",
+        mediaType: "text/plain",
+        metadata: {},
+      }],
+      metadata: {},
+      extensions: [],
+      referenceTaskIds: [],
+    },
+    configuration: {
+      acceptedOutputModes: ["text/plain"],
+      taskPushNotificationConfig: undefined,
+      historyLength: 1,
+      returnImmediately: false,
+    },
+    metadata: {
+      [A2A_IDEMPOTENCY_METADATA_KEY]: { schemaVersion: 1, key },
+    },
+  };
+}
+
+function testTerminalMessage(messageId: string, text: string): Message {
+  return {
+    messageId,
+    contextId: `context-${messageId}`,
+    taskId: "",
+    role: Role.ROLE_AGENT,
+    parts: [{
+      content: { $case: "text", value: text },
+      filename: "",
+      mediaType: "text/plain",
+      metadata: {},
+    }],
+    metadata: {},
+    extensions: [],
+    referenceTaskIds: [],
+  };
+}
+
+function testServerCallContext(): ServerCallContext {
+  return new ServerCallContext({
+    requestedExtensions: [A2A_IDEMPOTENCY_EXTENSION_URI],
+  });
 }
 
 function assertRawPartBuffer(result: Message | Task, expected: Buffer): void {
