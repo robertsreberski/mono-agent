@@ -63,6 +63,9 @@ interface LifecycleCleanupTestSeam {
   artifactRetentionScheduler?: { stop(): void; runNow(): Promise<void> };
   traceSource?: { stop(patch?: unknown): Promise<unknown> };
   __setSharedMemoryForTest(store: unknown): void;
+  stopArtifactRetentionScheduler(): void;
+  resetSharedMemory(): Promise<void>;
+  stopTraceSource(reason: string): Promise<void>;
 }
 
 async function installThrowingLifecycleStops(
@@ -1368,6 +1371,56 @@ describe("startMonoAgentApp", () => {
     ]);
     await app.stop();
   });
+
+  it.each([
+    ["memory ritual", "Memory consolidation scheduler stopped."],
+    ["artifact retention", "Artifact retention scheduler stopped."],
+  ] as const)(
+    "does not misclassify a successful %s stop when its success logger throws",
+    async (target, successMessage) => {
+      await writeConfig(baseConfig());
+      const unrelatedError = new Error(`unrelated ${target} logger failure`);
+      const info = vi.fn((message: string) => {
+        if (message === successMessage) throw unrelatedError;
+      });
+      const warn = vi.fn();
+      const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [], logger: { info, warn } });
+      const controller = app as unknown as LifecycleCleanupTestSeam;
+      let stop: ReturnType<typeof vi.fn>;
+
+      if (target === "memory ritual") {
+        stop = vi.fn();
+        controller.memoryRituals = { stop };
+      } else {
+        await vi.waitFor(() => {
+          expect(controller.artifactRetentionScheduler).toBeDefined();
+        });
+        const retention = controller.artifactRetentionScheduler;
+        if (retention === undefined) throw new Error("artifact retention scheduler missing");
+        stop = vi.fn(() => retention.stop());
+        controller.artifactRetentionScheduler = {
+          runNow: () => retention.runNow(),
+          stop,
+        };
+      }
+
+      try {
+        await expect(app.stop()).rejects.toBe(unrelatedError);
+        expect(stop).toHaveBeenCalledTimes(1);
+        expect(info).toHaveBeenCalledWith(successMessage);
+        expect(
+          warn.mock.calls.filter(([message]) => String(message).includes("scheduler did not stop cleanly")),
+        ).toEqual([]);
+      } finally {
+        // app.stop() deliberately aborted at the injected logger failure. Retire
+        // the remaining best-effort resources without calling app.stop() again
+        // (the controller is already marked stopped).
+        controller.stopArtifactRetentionScheduler();
+        await controller.resetSharedMemory();
+        await controller.stopTraceSource("logger-negative-control-cleanup");
+      }
+    },
+  );
 
   it("does not report an apply as serving when only the passive live channel is running", async () => {
     await writeConfig({ ...baseConfig() });
