@@ -140,13 +140,13 @@ describe("dependency vulnerability gate", () => {
     mismatchedName[1].dependencies["workspace-alias"].from = "outside-workspace";
     expect(() => parsePnpmProductionGraph(JSON.stringify(mismatchedName), {
       rootPackageNames: ["portable-fixture", "workspace-only"],
-    })).toThrow("links non-publishable workspace package outside-workspace");
+    })).toThrow("workspace link workspace-alias has inconsistent alias metadata");
 
     const mismatchedPath = JSON.parse(pnpm11ListFixture());
     mismatchedPath[1].dependencies["workspace-alias"].path = "/outside/workspace-only";
     expect(() => parsePnpmProductionGraph(JSON.stringify(mismatchedPath), {
       rootPackageNames: ["portable-fixture", "workspace-only"],
-    })).toThrow("workspace link workspace-alias does not match root workspace-only");
+    })).toThrow("links non-publishable workspace path /outside/workspace-only");
 
     const zeroCount = JSON.parse(pnpm11ListFixture());
     zeroCount[2].dependencies["workspace-runtime"].dedupedDependenciesCount = 0;
@@ -169,7 +169,7 @@ describe("dependency vulnerability gate", () => {
     const recursiveCount = JSON.parse(pnpm11ListFixture());
     recursiveCount[1].dependencies["workspace-alias"].dependencies["workspace-runtime"]
       .dependencies["vulnerable-transitive"].dependencies = {
-        leaf: { version: "1.0.0", path: "/repo/node_modules/leaf" },
+        leaf: { from: "leaf", version: "1.0.0", path: "/repo/node_modules/leaf" },
       };
     recursiveCount[2].dependencies["workspace-runtime"].dedupedDependenciesCount = 2;
     expect(parsePnpmProductionGraph(JSON.stringify(recursiveCount), {
@@ -186,17 +186,137 @@ describe("dependency vulnerability gate", () => {
 
     const childBearingDedupe = JSON.parse(pnpm11ListFixture());
     childBearingDedupe[2].dependencies["workspace-runtime"].dependencies = {
-      hidden: { version: "99.0.0", path: "/repo/node_modules/hidden" },
+      hidden: { from: "hidden", version: "99.0.0", path: "/repo/node_modules/hidden" },
     };
     expect(() => parsePnpmProductionGraph(JSON.stringify(childBearingDedupe), {
       rootPackageNames: ["portable-fixture", "workspace-only"],
     })).toThrow("deduped entry workspace-runtime must not include dependency children");
 
-    const peerVariantMismatch = JSON.parse(pnpm11ListFixture());
-    peerVariantMismatch[2].dependencies["workspace-runtime"].peersSuffixHash = "different";
-    expect(() => parsePnpmProductionGraph(JSON.stringify(peerVariantMismatch), {
+    const distinctPeerPath = JSON.parse(pnpm11ListFixture());
+    distinctPeerPath[2].dependencies["workspace-runtime"].path = "/repo/node_modules/.pnpm/workspace-runtime_peer-b/node_modules/workspace-runtime";
+    expect(() => parsePnpmProductionGraph(JSON.stringify(distinctPeerPath), {
       rootPackageNames: ["portable-fixture", "workspace-only"],
-    })).toThrow("does not match its expanded subtree");
+    })).toThrow("has no expanded subtree");
+
+    const missingPath = JSON.parse(pnpm11ListFixture());
+    delete missingPath[1].optionalDependencies["optional-win32"].path;
+    expect(() => parsePnpmProductionGraph(JSON.stringify(missingPath), {
+      rootPackageNames: ["portable-fixture", "workspace-only"],
+    })).toThrow("entry optional-win32 is missing its installed path");
+
+    const missingOwner = JSON.parse(pnpm11ListFixture());
+    delete missingOwner[1].optionalDependencies["optional-win32"].from;
+    expect(() => parsePnpmProductionGraph(JSON.stringify(missingOwner), {
+      rootPackageNames: ["portable-fixture", "workspace-only"],
+    })).toThrow("entry optional-win32 is missing registry-owner metadata");
+  });
+
+  it("uses installed paths for workspace roots, cycles, peer variants, and owner identity", () => {
+    const workspaceRuntime = {
+      from: "workspace-runtime",
+      version: "9.0.0",
+      path: "/repo/node_modules/workspace-runtime",
+      dependencies: {
+        leaf: { from: "leaf", version: "1.0.0", path: "/repo/node_modules/leaf" },
+      },
+    };
+    const crossRootLinks = [{
+      name: "consumer-a",
+      path: "/repo/packages/consumer-a",
+      dependencies: {
+        "config-alias": {
+          from: "config-alias",
+          version: "link:../workspace-only",
+          path: "/repo/packages/workspace-only",
+          dependencies: { "workspace-runtime": workspaceRuntime },
+        },
+      },
+    }, {
+      name: "consumer-b",
+      path: "/repo/packages/nested/consumer-b",
+      dependencies: {
+        "other-config-alias": {
+          from: "other-config-alias",
+          version: "link:../../workspace-only",
+          path: "/repo/packages/workspace-only",
+          deduped: true,
+          dedupedDependenciesCount: 2,
+        },
+      },
+    }, {
+      name: "workspace-only",
+      path: "/repo/packages/workspace-only",
+      dependencies: {
+        "workspace-runtime": {
+          from: "workspace-runtime",
+          version: "9.0.0",
+          path: "/repo/node_modules/workspace-runtime",
+          deduped: true,
+          dedupedDependenciesCount: 1,
+        },
+      },
+    }];
+    expect(parsePnpmProductionGraph(JSON.stringify(crossRootLinks), {
+      rootPackageNames: ["consumer-a", "consumer-b", "workspace-only"],
+    }).dependencyPaths).toEqual({
+      "leaf@1.0.0": ["workspace-only -> workspace-runtime@9.0.0 -> leaf@1.0.0"],
+      "workspace-runtime@9.0.0": ["workspace-only -> workspace-runtime@9.0.0"],
+    });
+
+    const cyclic = [{
+      name: "cycle-root",
+      path: "/repo/packages/cycle-root",
+      dependencies: {
+        a: {
+          from: "a",
+          version: "1.0.0",
+          path: "/repo/node_modules/a",
+          dependencies: {
+            b: {
+              from: "b",
+              version: "1.0.0",
+              path: "/repo/node_modules/b",
+              dependencies: {
+                a: { from: "a", version: "1.0.0", path: "/repo/node_modules/a" },
+              },
+            },
+          },
+        },
+      },
+    }];
+    expect(parsePnpmProductionGraph(JSON.stringify(cyclic), {
+      rootPackageNames: ["cycle-root"],
+    })).toEqual({
+      inventory: { a: ["1.0.0"], b: ["1.0.0"] },
+      dependencyPaths: {
+        "a@1.0.0": ["cycle-root -> a@1.0.0"],
+        "b@1.0.0": ["cycle-root -> a@1.0.0 -> b@1.0.0"],
+      },
+    });
+
+    const ownerCollision = [{
+      name: "owner-root",
+      path: "/repo/packages/owner-root",
+      dependencies: {
+        a: { from: "a", version: "1.0.0", path: "/repo/node_modules/shared-path" },
+        b: { from: "b", version: "2.0.0", path: "/repo/node_modules/shared-path" },
+      },
+    }];
+    expect(() => parsePnpmProductionGraph(JSON.stringify(ownerCollision), {
+      rootPackageNames: ["owner-root"],
+    })).toThrow("has conflicting owners a@1.0.0 and b@2.0.0");
+
+    const duplicateRootPath = structuredClone(crossRootLinks);
+    duplicateRootPath[1].path = duplicateRootPath[0].path;
+    expect(() => parsePnpmProductionGraph(JSON.stringify(duplicateRootPath), {
+      rootPackageNames: ["consumer-a", "consumer-b", "workspace-only"],
+    })).toThrow("maps multiple publishable workspace roots to /repo/packages/consumer-a");
+
+    const reservedRootPath = structuredClone(ownerCollision);
+    reservedRootPath[0].dependencies.a.path = reservedRootPath[0].path;
+    expect(() => parsePnpmProductionGraph(JSON.stringify(reservedRootPath), {
+      rootPackageNames: ["owner-root"],
+    })).toThrow("registry package a@1.0.0 reuses publishable workspace root path");
   });
 
   it("pins production/optional inclusion and dev/peer/workspace exclusion at the JSON boundary", async () => {
@@ -343,6 +463,110 @@ describe("dependency vulnerability gate", () => {
     });
   });
 
+  it("validates reverse cycles and prevents target or peer expansion cross-binding", () => {
+    const options = {
+      packageName: "ws",
+      versions: ["8.20.1"],
+      rootPackageNames: ["@mono-agent/slack-adapter"],
+    };
+    const rootDependent = {
+      name: "@mono-agent/slack-adapter",
+      version: "0.11.3",
+      depField: "dependencies",
+    };
+    const legitimateCycle = [{
+      name: "ws",
+      version: "8.20.1",
+      dependents: [{
+        name: "provider",
+        version: "1.0.0",
+        peersSuffixHash: "provider-peer-a",
+        dependents: [
+          rootDependent,
+          {
+            name: "wrapper",
+            version: "1.0.0",
+            dependents: [{ name: "provider", version: "1.0.0", circular: true }],
+          },
+        ],
+      }],
+    }];
+    expect(parsePnpmWhyDependencyPaths(JSON.stringify(legitimateCycle), options)).toEqual({
+      "ws@8.20.1": ["@mono-agent/slack-adapter -> provider@1.0.0 -> ws@8.20.1"],
+    });
+
+    const falseCircular = structuredClone(legitimateCycle);
+    falseCircular[0].dependents.push({ name: "unrelated", version: "1.0.0", circular: true });
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(falseCircular), options))
+      .toThrow("circular branch unrelated@1.0.0 does not reference an ancestor");
+
+    const crossTarget = [
+      {
+        name: "ws",
+        version: "8.20.1",
+        peersSuffixHash: "target-a",
+        dependents: [{
+          name: "provider",
+          version: "1.0.0",
+          peersSuffixHash: "provider-a",
+          dependents: [rootDependent],
+        }],
+      },
+      {
+        name: "ws",
+        version: "8.20.1",
+        peersSuffixHash: "target-b",
+        dependents: [{
+          name: "provider",
+          version: "1.0.0",
+          peersSuffixHash: "provider-a",
+          deduped: true,
+        }],
+      },
+    ];
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(crossTarget), options))
+      .toThrow("deduped branch provider@1.0.0#provider-a");
+
+    const crossPeer = [{
+      name: "ws",
+      version: "8.20.1",
+      dependents: [
+        {
+          name: "provider",
+          version: "1.0.0",
+          peersSuffixHash: "peer-a",
+          dependents: [rootDependent],
+        },
+        {
+          name: "wrapper",
+          version: "1.0.0",
+          dependents: [{
+            name: "provider",
+            version: "1.0.0",
+            peersSuffixHash: "peer-b",
+            deduped: true,
+          }],
+        },
+      ],
+    }];
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(crossPeer), options))
+      .toThrow("deduped branch provider@1.0.0#peer-b");
+
+    const duplicateTarget = [legitimateCycle[0], structuredClone(legitimateCycle[0])];
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(duplicateTarget), options))
+      .toThrow("duplicate target variant ws@8.20.1");
+
+    const duplicateExpanded = structuredClone(legitimateCycle);
+    duplicateExpanded[0].dependents.push({
+      name: "provider",
+      version: "1.0.0",
+      peersSuffixHash: "provider-peer-a",
+      dependents: [rootDependent],
+    });
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(duplicateExpanded), options))
+      .toThrow("duplicate expanded dependents trees for provider@1.0.0#provider-peer-a");
+  });
+
   it("fails closed on incomplete or non-production pnpm 11 why branches", () => {
     const options = {
       packageName: "ws",
@@ -471,7 +695,13 @@ describe("dependency vulnerability gate", () => {
         return commandResult(JSON.stringify([{
           name: manifest.name,
           path: root,
-          dependencies: { lodash: { version: manifest.dependencies.lodash } },
+          dependencies: {
+            lodash: {
+              from: "lodash",
+              version: manifest.dependencies.lodash,
+              path: join(root, "node_modules/lodash"),
+            },
+          },
         }]));
       },
       dispositions: emptyDispositions(),
@@ -510,7 +740,11 @@ describe("dependency vulnerability gate", () => {
           name: "portable-fixture",
           path: "/repo/packages/portable-fixture",
           optionalDependencies: {
-            [packageName]: { version: "1.2.3" },
+            [packageName]: {
+              from: packageName,
+              version: "1.2.3",
+              path: `/repo/node_modules/.pnpm/${packageName.replace("/", "+")}@1.2.3/node_modules/${packageName}`,
+            },
           },
         }]));
       },
@@ -631,7 +865,7 @@ describe("dependency vulnerability gate", () => {
     })).toThrow("within 90 days");
   });
 
-  it("uses the real bulk HTTP boundary and fails closed on transport, non-2xx, malformed JSON, and timeout", async () => {
+  it("fails closed across the real bulk HTTP transport, size, shape, JSON, and timeout boundaries", async () => {
     const inventory = { ws: ["8.20.1"] };
     await expect(queryBulkAdvisories(inventory, {
       fetchImpl: async () => {
@@ -646,6 +880,18 @@ describe("dependency vulnerability gate", () => {
     await expect(queryBulkAdvisories(inventory, {
       fetchImpl: async () => httpResponse("{broken", { raw: true }),
     })).rejects.toThrow("bulk advisory response was not valid JSON");
+
+    await expect(queryBulkAdvisories(inventory, {
+      fetchImpl: async () => ({ ok: true, status: 200, text: "not-a-function" }),
+    })).rejects.toThrow("bulk advisory endpoint returned a malformed HTTP response");
+
+    await expect(queryBulkAdvisories(inventory, {
+      fetchImpl: async () => httpResponse([]),
+    })).rejects.toThrow("response root is not an object");
+
+    await expect(queryBulkAdvisories(inventory, {
+      fetchImpl: async () => httpResponse("x".repeat((8 * 1024 * 1024) + 1), { raw: true }),
+    })).rejects.toThrow("bulk advisory response exceeded 8388608 bytes");
 
     vi.useFakeTimers();
     const pending = queryBulkAdvisories(inventory, {
@@ -703,10 +949,12 @@ describe("dependency vulnerability gate", () => {
 
 function pnpm10ListFixture() {
   const workspaceRuntime = {
+    from: "workspace-runtime",
     version: "9.0.0",
     path: "/repo/node_modules/workspace-runtime",
     dependencies: {
       "vulnerable-transitive": {
+        from: "vulnerable-transitive",
         version: "6.0.0",
         path: "/repo/node_modules/vulnerable-transitive",
       },
@@ -719,10 +967,15 @@ function pnpm10ListFixture() {
       path: "/repo/packages/portable-fixture",
       dependencies: {
         "prod-only": {
+          from: "prod-only",
           version: "1.0.0",
           path: "/repo/node_modules/prod-only",
           dependencies: {
-            transitive: { version: "3.0.0", path: "/repo/node_modules/transitive" },
+            transitive: {
+              from: "transitive",
+              version: "3.0.0",
+              path: "/repo/node_modules/transitive",
+            },
           },
         },
         "safe-alias": {
@@ -730,9 +983,9 @@ function pnpm10ListFixture() {
           version: "4.17.20",
           path: "/repo/node_modules/lodash",
         },
-        shared: { version: "7.0.0", path: "/repo/node_modules/shared" },
+        shared: { from: "shared", version: "7.0.0", path: "/repo/node_modules/shared" },
         "workspace-alias": {
-          from: "workspace-only",
+          from: "workspace-alias",
           version: "link:../workspace-only",
           path: "/repo/packages/workspace-only",
           dependencies: {
@@ -741,7 +994,11 @@ function pnpm10ListFixture() {
         },
       },
       optionalDependencies: {
-        "optional-win32": { version: "2.0.0", path: "/repo/node_modules/optional-win32" },
+        "optional-win32": {
+          from: "optional-win32",
+          version: "2.0.0",
+          path: "/repo/node_modules/optional-win32",
+        },
       },
       devDependencies: {
         "dev-only": { version: "4.0.0", path: "/repo/node_modules/dev-only" },
@@ -756,7 +1013,7 @@ function pnpm10ListFixture() {
       path: "/repo/packages/workspace-only",
       dependencies: {
         "workspace-runtime": workspaceRuntime,
-        shared: { version: "7.0.0", path: "/repo/node_modules/shared" },
+        shared: { from: "shared", version: "7.0.0", path: "/repo/node_modules/shared" },
       },
       devDependencies: {
         "workspace-dev-only": {
@@ -772,6 +1029,7 @@ function pnpm11ListFixture() {
   const pnpm10Roots = JSON.parse(pnpm10ListFixture());
   const workspaceRoot = structuredClone(pnpm10Roots[1]);
   workspaceRoot.dependencies["workspace-runtime"] = {
+    from: "workspace-runtime",
     version: "9.0.0",
     path: "/repo/node_modules/workspace-runtime",
     deduped: true,
