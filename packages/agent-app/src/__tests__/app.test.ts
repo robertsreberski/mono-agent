@@ -58,6 +58,55 @@ function baseConfig(): Record<string, unknown> {
   };
 }
 
+interface LifecycleCleanupTestSeam {
+  memoryRituals?: { stop(): void };
+  artifactRetentionScheduler?: { stop(): void; runNow(): Promise<void> };
+  traceSource?: { stop(patch?: unknown): Promise<unknown> };
+  __setSharedMemoryForTest(store: unknown): void;
+}
+
+async function installThrowingLifecycleStops(
+  app: Awaited<ReturnType<typeof startMonoAgentApp>>,
+  events: string[],
+): Promise<LifecycleCleanupTestSeam> {
+  const controller = app as unknown as LifecycleCleanupTestSeam;
+  await vi.waitFor(() => {
+    expect(controller.artifactRetentionScheduler).toBeDefined();
+  });
+  const retention = controller.artifactRetentionScheduler;
+  const traceSource = controller.traceSource;
+  if (retention === undefined) throw new Error("artifact retention scheduler missing");
+  if (traceSource === undefined) throw new Error("trace source missing");
+
+  controller.memoryRituals = {
+    stop() {
+      events.push("ritual-stop");
+      throw new Error("ritual stop failed");
+    },
+  };
+  controller.artifactRetentionScheduler = {
+    runNow: () => retention.runNow(),
+    stop() {
+      events.push("retention-stop");
+      // Clear the real interval before simulating a scheduler implementation
+      // that throws after its own cleanup.
+      retention.stop();
+      throw new Error("retention stop failed");
+    },
+  };
+  controller.__setSharedMemoryForTest({
+    close: async () => {
+      events.push("memory-close");
+    },
+  });
+  const stopTraceSource = traceSource.stop.bind(traceSource);
+  traceSource.stop = async (patch?: unknown) => {
+    events.push("trace-stop");
+    return await stopTraceSource(patch);
+  };
+  return controller;
+}
+
 async function availableLoopbackPort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve, reject) => {
@@ -1253,6 +1302,71 @@ describe("startMonoAgentApp", () => {
     expect(starts).toBe(2);
     await app.stop();
     expect(stops).toEqual(["start-1", "start-2"]);
+  });
+
+  it("continues shutdown cleanup when ritual and retention scheduler stops throw", async () => {
+    await writeConfig(baseConfig());
+    const warn = vi.fn();
+    const events: string[] = [];
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [], logger: { warn } });
+    const controller = await installThrowingLifecycleStops(app, events);
+
+    await expect(app.stop()).resolves.toBeUndefined();
+
+    expect(events).toEqual(["ritual-stop", "retention-stop", "memory-close", "trace-stop"]);
+    expect(controller.memoryRituals).toBeUndefined();
+    expect(controller.artifactRetentionScheduler).toBeUndefined();
+    expect(
+      warn.mock.calls.filter(([message]) => String(message).includes("scheduler did not stop cleanly")),
+    ).toEqual([
+      ["Memory consolidation scheduler did not stop cleanly.", { reason: "ritual stop failed" }],
+      ["Artifact retention scheduler did not stop cleanly.", { reason: "retention stop failed" }],
+    ]);
+  });
+
+  it("continues reload cleanup and reports a genuinely disabled channel accurately", async () => {
+    await writeConfig(baseConfig());
+    const warn = vi.fn();
+    const events: string[] = [];
+    const start = vi.fn(async () => {
+      throw new Error("disabled channel must not start");
+    });
+    const disabledDriver: ChannelDriver = {
+      id: "disabled-probe" as never,
+      label: "Disabled probe",
+      loadConfig: async () => ({ enabled: false }),
+      isConfigError: () => false,
+      disabledReason: (config) => (
+        (config as { enabled: boolean }).enabled ? undefined : "Disabled by config."
+      ),
+      start,
+    };
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      drivers: [disabledDriver],
+      logger: { warn },
+    });
+    const controller = await installThrowingLifecycleStops(app, events);
+
+    const result = await app.applyConfigChange("disabled-reload");
+
+    expect(result).toEqual({
+      kind: "applied",
+      message: "Saved config and reloaded with no active agent channels.",
+      transports: [],
+    });
+    expect(app.channelStatus(disabledDriver.id)).toEqual({ kind: "disabled", reason: "Disabled by config." });
+    expect(start).not.toHaveBeenCalled();
+    expect(events).toEqual(["ritual-stop", "retention-stop", "memory-close", "trace-stop"]);
+    expect(controller.memoryRituals).toBeUndefined();
+    expect(
+      warn.mock.calls.filter(([message]) => String(message).includes("scheduler did not stop cleanly")),
+    ).toEqual([
+      ["Memory consolidation scheduler did not stop cleanly.", { reason: "ritual stop failed" }],
+      ["Artifact retention scheduler did not stop cleanly.", { reason: "retention stop failed" }],
+    ]);
+    await app.stop();
   });
 
   it("does not report an apply as serving when only the passive live channel is running", async () => {

@@ -207,6 +207,14 @@ export function applyResult(controller: MonoAgentAppController): ConfigApplyResu
     };
   }
 
+  if (transports.length === 0) {
+    return {
+      kind: "applied",
+      message: "Saved config and reloaded with no active agent channels.",
+      transports,
+    };
+  }
+
   return {
     kind: "applied",
     message: `Saved config and reloaded ${transports.join(", ")}.`,
