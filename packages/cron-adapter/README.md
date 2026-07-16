@@ -6,7 +6,7 @@ Category: `communication`
 
 ## Responsibility
 
-Cron-based scheduled invocation adapter for agent hosts. It parses configured cron jobs, schedules future ticks, invokes a structural `AgentResponder`, and reports explicit succeeded, failed, cancelled, or skipped results.
+Cron-based scheduled invocation adapter for agent hosts. It parses configured cron jobs, schedules future ticks, invokes a structural `AgentResponder`, and reports explicit succeeded, failed, cancelled, skipped, queued, or dropped results.
 
 ## Install / Usage
 
@@ -31,7 +31,7 @@ const cron = startCronAdapter({
 });
 ```
 
-Only future ticks after startup are scheduled. Direct programmatic `startCronAdapter` callers can choose `overlap: "skip" | "queue" | "replace"` (default `"skip"`). Queue mode can be bounded with `maxQueueDepth` and `overflow: "preserve" | "coalesce" | "drop-oldest"`.
+Only future ticks after startup are scheduled. Direct programmatic `startCronAdapter` callers can choose `overlap: "skip" | "queue" | "replace"` (default `"skip"`). In queue mode, `maxQueueDepth` is a soft overflow threshold: the default `overflow: "preserve"` warns but keeps every firing and can grow past it. Select `overflow: "coalesce"` or `"drop-oldest"` to bound pending memory.
 
 `overlap`, `maxQueueDepth`, and `overflow` are programmatic-only adapter options. The config-first `@mono-agent/agent-app` product does not expose them as cron config keys and pins `overlap: "skip"`, so jobs loaded from `mono-agent.config.json`, `MONO_AGENT_CRON_*`, or the cron folder skip overlapping ticks.
 
@@ -77,7 +77,8 @@ Summarize yesterday across my channels and post a short digest.
 - `loadCronJobsFromDirectory`
 - `parseCronJobMarkdown`
 - `redactCronAdapterConfig`
-- `cronFieldGroup`
+- `CRON_CONFIG_FIELDS`
+- `toCronJobs`
 - Cron adapter, job, result, metadata, config, and logger types
 
 ## Dependency Boundary

@@ -205,6 +205,17 @@ describe("mono-agent-composer reference parity", () => {
     expect(audit.missing).toContain("runtime.synthetic-freshness-probe");
   });
 
+  it("keeps configured cron jobs distinct from programmatic overlap controls", () => {
+    const row = markdownTableRows(coverage).find((cells) =>
+      cells[3]?.includes("`cron.scheduled-prompts`"),
+    );
+
+    expect(row).toHaveLength(4);
+    expect(row?.[1]).toBe("config + code");
+    expect(row?.[2]).toContain("per-job `model` / `effort`");
+    expect(row?.[2]).toContain("programmatic-only `startCronAdapter` options");
+  });
+
   it("documents every interaction-bridge auto-start path", () => {
     const surfaces = [
       [rowWithRegistryId(registry, "interaction.bridge"), "feature registry"],
