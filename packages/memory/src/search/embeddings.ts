@@ -4,8 +4,13 @@ export class MemorySearchError extends Error {
   readonly code: MemorySearchErrorCode;
   readonly details: Record<string, unknown>;
 
-  constructor(code: MemorySearchErrorCode, message: string, details: Record<string, unknown> = {}) {
-    super(message);
+  constructor(
+    code: MemorySearchErrorCode,
+    message: string,
+    details: Record<string, unknown> = {},
+    options: ErrorOptions = {},
+  ) {
+    super(message, options);
     this.name = "MemorySearchError";
     this.code = code;
     this.details = { ...details, code };
@@ -64,8 +69,11 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
         endpoint: this.endpoint,
       });
     }
-    const json = (await response.json()) as { embeddings?: unknown };
-    return validateEmbeddings(json.embeddings, texts.length);
+    const json = await readEmbeddingResponseJson(response, "Ollama");
+    const embeddings = typeof json === "object" && json !== null
+      ? (json as Record<string, unknown>).embeddings
+      : undefined;
+    return validateEmbeddings(embeddings, texts.length);
   }
 }
 
@@ -131,7 +139,7 @@ export class LmStudioEmbeddingProvider implements EmbeddingProvider {
         endpoint: this.endpoint,
       });
     }
-    return readOpenAICompatibleEmbeddings(response, texts.length);
+    return readOpenAICompatibleEmbeddings(response, texts.length, "LM Studio");
   }
 }
 
@@ -176,7 +184,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
         status: response.status,
       });
     }
-    return readOpenAICompatibleEmbeddings(response, texts.length);
+    return readOpenAICompatibleEmbeddings(response, texts.length, "OpenAI");
   }
 }
 
@@ -216,8 +224,25 @@ export function createEmbeddingProvider(
   throw new MemorySearchError("invalid_embedding_options", `Unknown embedding provider "${String(config.provider)}".`);
 }
 
-async function readOpenAICompatibleEmbeddings(response: Response, expected: number): Promise<number[][]> {
-  const json: unknown = await response.json();
+async function readEmbeddingResponseJson(response: Response, provider: string): Promise<unknown> {
+  try {
+    return await response.json() as unknown;
+  } catch (cause) {
+    throw new MemorySearchError(
+      "embedding_response_invalid",
+      `${provider} embedding response was not valid JSON.`,
+      { provider },
+      { cause },
+    );
+  }
+}
+
+async function readOpenAICompatibleEmbeddings(
+  response: Response,
+  expected: number,
+  provider: string,
+): Promise<number[][]> {
+  const json = await readEmbeddingResponseJson(response, provider);
   const data = typeof json === "object" && json !== null
     ? (json as Record<string, unknown>).data
     : undefined;

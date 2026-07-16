@@ -16,10 +16,19 @@ const fallbackMemorySearchCodes = [
   "embedding_response_invalid",
   "invalid_embedding_options",
 ] as const satisfies readonly MemorySearchErrorCode[];
+const deniedMemorySearchCodes = [
+  "invalid_index_options",
+  "index_read_failed",
+  "index_write_failed",
+] as const satisfies readonly MemorySearchErrorCode[];
 
 describe("isFtsFallbackEligible", () => {
   it.each(fallbackMemorySearchCodes)("accepts the typed provider failure code %s", (code) => {
     expect(isFtsFallbackEligible(semanticSettings, new MemorySearchError(code, "provider unavailable"))).toBe(true);
+  });
+
+  it.each(deniedMemorySearchCodes)("rejects the typed index failure code %s", (code) => {
+    expect(isFtsFallbackEligible(semanticSettings, new MemorySearchError(code, "index failure"))).toBe(false);
   });
 
   it("accepts a real fetch failure with a structured network cause", () => {
@@ -36,6 +45,48 @@ describe("isFtsFallbackEligible", () => {
     const error = new AggregateError([new AggregateError([nested], "nested fetch failures")], "fetch failed");
 
     expect(isFtsFallbackEligible(semanticSettings, error)).toBe(true);
+  });
+
+  it("bounds a huge root AggregateError fan-out before reading or enqueueing every entry", () => {
+    const error = new AggregateError(new Array(200_000).fill(null), "many failures");
+
+    expect(isFtsFallbackEligible(semanticSettings, error)).toBe(false);
+  });
+
+  it("bounds a huge nested AggregateError fan-out before reading or enqueueing every entry", () => {
+    const nested = new AggregateError(new Array(200_000).fill(null), "many nested failures");
+    const error = new AggregateError([nested], "fetch failed");
+
+    expect(isFtsFallbackEligible(semanticSettings, error)).toBe(false);
+  });
+
+  it("recognizes a network failure at the exact traversal bound", () => {
+    const failures = Array.from({ length: 16 }, () => new Error("unrelated failure"));
+    failures[15] = Object.assign(new Error("lookup failed"), { code: "ENOTFOUND" });
+
+    expect(isFtsFallbackEligible(semanticSettings, new AggregateError(failures, "fetch failed"))).toBe(true);
+  });
+
+  it("does not read or recognize a network failure beyond the traversal bound", () => {
+    const error = new AggregateError(new Array<Error | null>(17).fill(null), "fetch failed");
+    let beyondBoundReads = 0;
+    Object.defineProperty(error.errors, 16, {
+      configurable: true,
+      get() {
+        beyondBoundReads += 1;
+        return Object.assign(new Error("lookup failed"), { code: "ENOTFOUND" });
+      },
+    });
+
+    expect(isFtsFallbackEligible(semanticSettings, error)).toBe(false);
+    expect(beyondBoundReads).toBe(0);
+  });
+
+  it("terminates on cyclic cause graphs", () => {
+    const error = new TypeError("fetch failed") as TypeError & { cause?: unknown };
+    error.cause = error;
+
+    expect(isFtsFallbackEligible(semanticSettings, error)).toBe(false);
   });
 
   it("accepts provider aborts and timeouts represented as AbortError", () => {
@@ -68,7 +119,6 @@ describe("isFtsFallbackEligible", () => {
         code: "embedding_request_failed",
       }),
     ],
-    ["a typed index error", new MemorySearchError("index_read_failed", "index read failed")],
     ["an unknown non-error cause", { cause: { code: "ECONNREFUSED" } }],
   ])("rejects %s", (_label, error) => {
     expect(isFtsFallbackEligible(semanticSettings, error)).toBe(false);

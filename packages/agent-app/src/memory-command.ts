@@ -68,6 +68,7 @@ const FTS_FALLBACK_NETWORK_CODES = new Set([
   "UND_ERR_HEADERS_TIMEOUT",
   "UND_ERR_SOCKET",
 ]);
+const MAX_FTS_FALLBACK_CAUSE_CANDIDATES = 16;
 const EMPTY_HEALTH_COUNTS = Object.freeze({
   pending: 0,
   due: 0,
@@ -1575,30 +1576,47 @@ export function isFtsFallbackEligible(
 
 function hasNetworkFailureCause(error: Error): boolean {
   const root = error as unknown as Record<string, unknown>;
-  const pending: unknown[] = [];
-  if (root.cause !== undefined) {
-    pending.push(root.cause);
-  }
-  if (Array.isArray(root.errors)) {
-    pending.push(...root.errors);
-  }
+  const pending: object[] = [];
   const seen = new Set<object>();
-  while (pending.length > 0 && seen.size < 16) {
+  let candidateCount = 0;
+
+  const enqueue = (candidate: unknown): void => {
+    if (candidateCount >= MAX_FTS_FALLBACK_CAUSE_CANDIDATES) {
+      return;
+    }
+    candidateCount += 1;
+    if (typeof candidate !== "object" || candidate === null || seen.has(candidate)) {
+      return;
+    }
+    seen.add(candidate);
+    pending.push(candidate);
+  };
+  const enqueueErrors = (errors: unknown): void => {
+    if (!Array.isArray(errors)) {
+      return;
+    }
+    for (let index = 0; index < errors.length && candidateCount < MAX_FTS_FALLBACK_CAUSE_CANDIDATES; index += 1) {
+      enqueue(errors[index]);
+    }
+  };
+  const enqueueChildren = (record: Record<string, unknown>): void => {
+    if (record.cause !== undefined) {
+      enqueue(record.cause);
+    }
+    enqueueErrors(record.errors);
+  };
+
+  enqueueChildren(root);
+  while (pending.length > 0) {
     const current = pending.shift();
-    if (typeof current !== "object" || current === null || seen.has(current)) {
+    if (current === undefined) {
       continue;
     }
-    seen.add(current);
     const record = current as Record<string, unknown>;
     if (typeof record.code === "string" && FTS_FALLBACK_NETWORK_CODES.has(record.code.toUpperCase())) {
       return true;
     }
-    if (record.cause !== undefined) {
-      pending.push(record.cause);
-    }
-    if (Array.isArray(record.errors)) {
-      pending.push(...record.errors);
-    }
+    enqueueChildren(record);
   }
   return false;
 }

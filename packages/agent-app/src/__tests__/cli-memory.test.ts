@@ -442,6 +442,36 @@ describe("runCli memory", () => {
     expect(search.stdout).toContain("Deploy pipeline uses blue green releases.");
   });
 
+  it("falls back to FTS-only when a successful embedding response contains malformed JSON", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({
+      memory: {
+        mode: "journal",
+        path: memoryRoot,
+        writeMode: "append-host-summary",
+        embeddings: {
+          provider: "ollama",
+          model: "nomic-embed-text:v1.5",
+          endpoint: "http://127.0.0.1:11434",
+        },
+      },
+    });
+    await seedLocalStore(memoryRoot);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })));
+
+    const search = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "search", "deploy", "releases"]))));
+
+    expect(search.code).toBe(0);
+    expect(search.stderr).toBe("");
+    expect(search.stdout).toContain("[WARN] Semantic embeddings unavailable");
+    expect(search.stdout).toContain("FTS-only");
+    expect(search.stdout).toContain("Deploy pipeline uses blue green releases.");
+  });
+
   it.each([
     [
       "a programming TypeError whose message mentions ECONNREFUSED",

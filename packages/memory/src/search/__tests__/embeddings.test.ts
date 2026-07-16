@@ -12,6 +12,59 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
+type ProviderFactory = (fetchImpl: typeof fetch) => {
+  embed(texts: readonly string[]): Promise<number[][]>;
+};
+
+const providerFactories = [
+  ["Ollama", (fetchImpl) => new OllamaEmbeddingProvider({ model: "test-model", fetchImpl })],
+  ["LM Studio", (fetchImpl) => new LmStudioEmbeddingProvider({ model: "test-model", fetchImpl })],
+  ["OpenAI", (fetchImpl) => new OpenAIEmbeddingProvider({ model: "test-model", apiKey: "test-key", fetchImpl })],
+] as const satisfies readonly (readonly [string, ProviderFactory])[];
+
+async function rejectionOf<T>(promise: Promise<T>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected promise to reject");
+}
+
+describe("embedding provider failure taxonomy", () => {
+  it.each(providerFactories)("wraps malformed successful %s JSON as an invalid response with its cause", async (_label, createProvider) => {
+    const fetchImpl = (async () => new Response("{", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+
+    const error = await rejectionOf(createProvider(fetchImpl).embed(["text"]));
+
+    expect(error).toBeInstanceOf(MemorySearchError);
+    expect(error).toMatchObject({ code: "embedding_response_invalid" });
+    expect((error as Error).cause).toBeInstanceOf(SyntaxError);
+  });
+
+  it.each(providerFactories)("keeps non-OK %s responses in the request-failed category", async (_label, createProvider) => {
+    const fetchImpl = (async () => new Response("unavailable", { status: 503 })) as typeof fetch;
+
+    const error = await rejectionOf(createProvider(fetchImpl).embed(["text"]));
+
+    expect(error).toBeInstanceOf(MemorySearchError);
+    expect(error).toMatchObject({ code: "embedding_request_failed" });
+  });
+
+  it.each(providerFactories)("preserves structured %s network failures unchanged", async (_label, createProvider) => {
+    const cause = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+    const networkFailure = Object.assign(new TypeError("fetch failed"), { cause });
+    const fetchImpl = (async () => {
+      throw networkFailure;
+    }) as typeof fetch;
+
+    expect(await rejectionOf(createProvider(fetchImpl).embed(["text"]))).toBe(networkFailure);
+  });
+});
+
 describe("OllamaEmbeddingProvider", () => {
   it("posts to /api/embed and returns the embedding vectors", async () => {
     const calls: Array<{ url: string; body: unknown }> = [];
