@@ -5,6 +5,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { verifyManagedRuntimeClosureForProvenance } from "./background-runtime.js";
+import type { ManagedRuntimeProvenanceVerificationDeps } from "./background-runtime.js";
 import { agentAppPackageVersion } from "./package-version.js";
 
 const PACKAGE_NAME = "@mono-agent/agent-app";
@@ -55,6 +56,7 @@ interface DirectoryProof {
  */
 export async function runtimeProvenanceDetail(
   packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), ".."),
+  deps: ManagedRuntimeProvenanceVerificationDeps = {},
 ): Promise<string> {
   try {
     const layout = managedLayout(resolve(packageRoot));
@@ -94,10 +96,13 @@ export async function runtimeProvenanceDetail(
       packageVersion: marker.packageVersion,
       cliSha256: marker.cliSha256,
       sourceClosureSha256: marker.sourceClosureSha256,
+      closureManifestSha256: marker.closureManifestSha256,
+      executionProofSha256: marker.executionProofSha256,
       nodeAbi: marker.nodeAbi,
       platform: marker.platform,
       arch: marker.arch,
-    })) return UNMANAGED_DETAIL;
+      installedAt: marker.installedAt,
+    }, deps)) return UNMANAGED_DETAIL;
 
     await verifyDirectoryProofs([...privateProofs, ...packageProofs]);
     return `Runtime provenance: managed closure ${closureId} (`

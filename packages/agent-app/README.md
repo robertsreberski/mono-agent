@@ -179,8 +179,8 @@ Stop succeeds only after both launchd unload and worker death are proven.
 
 `mono-agent validate` (and its `doctor` alias) reports the provenance of the CLI
 producing the report in its Runtime provenance section: a private managed marker
-whose current closure manifest validates names its full closure id plus sanitized
-install metadata; other executions report
+whose freshly recomputed installed closure and coherent current manifest validate
+names its full closure id plus sanitized install metadata; other executions report
 `dev (unmanaged)`. With `--consumer`, this remains the validator CLI's provenance,
 not an attestation of a separately running daemon.
 

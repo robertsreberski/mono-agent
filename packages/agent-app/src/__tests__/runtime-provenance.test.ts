@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import process from "node:process";
@@ -30,23 +30,62 @@ interface ManagedFixture {
   readonly marker: Record<string, unknown>;
   readonly closureId: string;
   readonly dependencyPath: string;
+  readonly dependencyRelativePath: string;
 }
 
-async function managedFixture(name: string): Promise<ManagedFixture> {
+async function managedFixture(
+  name: string,
+  options: { readonly additionalPackage?: boolean } = {},
+): Promise<ManagedFixture> {
   const packageVersion = agentAppPackageVersion();
   if (packageVersion === undefined) throw new Error("agent-app version unavailable in test");
   const sourceRoot = join(dir, name, "source");
   const homeDir = join(dir, name, "home");
+  const dependencyName = "@fixture/runtime-dependency";
+  const dependencySource = join(sourceRoot, "node_modules", "@fixture", "runtime-dependency");
   await mkdir(join(sourceRoot, "dist"), { recursive: true });
+  await mkdir(join(dependencySource, "dist"), { recursive: true });
   await mkdir(homeDir, { recursive: true, mode: 0o700 });
   await writeFile(join(sourceRoot, "package.json"), JSON.stringify({
     name: "@mono-agent/agent-app",
     version: packageVersion,
     type: "module",
     bin: { "mono-agent": "./dist/cli.js" },
+    dependencies: { [dependencyName]: "1.0.0" },
   }), "utf8");
-  await writeFile(join(sourceRoot, "dist", "cli.js"), `import "./dependency.js";\n// ${name}\n`, "utf8");
-  await writeFile(join(sourceRoot, "dist", "dependency.js"), `export const fixture = ${JSON.stringify(name)};\n`, "utf8");
+  await writeFile(
+    join(sourceRoot, "dist", "cli.js"),
+    `import ${JSON.stringify(dependencyName)};\n// ${name}\n`,
+    "utf8",
+  );
+  await writeFile(join(dependencySource, "package.json"), JSON.stringify({
+    name: dependencyName,
+    version: "1.0.0",
+    type: "module",
+    exports: "./dist/index.js",
+  }), "utf8");
+  await writeFile(
+    join(dependencySource, "dist", "index.js"),
+    `export const fixture = ${JSON.stringify(name)};\n`,
+    "utf8",
+  );
+  const additionalPackages = options.additionalPackage === true
+    ? [{ packageName: "@fixture/provenance-plugin", packageSource: join(dir, name, "plugin") }]
+    : [];
+  if (additionalPackages[0] !== undefined) {
+    await mkdir(join(additionalPackages[0].packageSource, "dist"), { recursive: true });
+    await writeFile(join(additionalPackages[0].packageSource, "package.json"), JSON.stringify({
+      name: additionalPackages[0].packageName,
+      version: "1.0.0",
+      type: "module",
+      exports: "./dist/index.js",
+    }), "utf8");
+    await writeFile(
+      join(additionalPackages[0].packageSource, "dist", "index.js"),
+      "export const plugin = true;\n",
+      "utf8",
+    );
+  }
 
   let now = Date.parse(INSTALLED_AT);
   const defaults = defaultManagedBackgroundRuntimeDeps();
@@ -56,6 +95,7 @@ async function managedFixture(name: string): Promise<ManagedFixture> {
     homeDir,
     packageVersion,
     packageSource: sourceRoot,
+    additionalPackages,
   }, {
     ...defaults,
     now: () => now,
@@ -72,19 +112,50 @@ async function managedFixture(name: string): Promise<ManagedFixture> {
   const packageRoot = dirname(dirname(runtime.cliPath));
   const markerPath = join(installRoot, ".mono-agent-runtime.json");
   const marker = JSON.parse(await readFile(markerPath, "utf8")) as Record<string, unknown>;
+  const packageLock = JSON.parse(await readFile(join(installRoot, "package-lock.json"), "utf8")) as {
+    packages: Record<string, { name?: string }>;
+  };
+  const dependencyRootRelative = Object.entries(packageLock.packages)
+    .find(([, entry]) => entry.name === dependencyName)?.[0];
+  if (dependencyRootRelative === undefined) throw new Error("managed dependency missing from fixture lockfile");
+  const dependencyRelativePath = `${dependencyRootRelative}/dist/index.js`;
   return {
     packageRoot,
     installRoot,
     markerPath,
     marker,
     closureId: basename(installRoot),
-    dependencyPath: join(packageRoot, "dist", "dependency.js"),
+    dependencyPath: join(installRoot, ...dependencyRelativePath.split("/")),
+    dependencyRelativePath,
   };
 }
 
 async function writeMarker(path: string, marker: unknown): Promise<void> {
   await writeFile(path, JSON.stringify(marker), { mode: 0o600 });
   await chmod(path, 0o600);
+}
+
+async function rewriteClosureManifestForDependency(
+  fixture: ManagedFixture,
+  contents: string,
+): Promise<void> {
+  await writeFile(fixture.dependencyPath, contents, "utf8");
+  const manifestPath = join(fixture.installRoot, ".mono-agent-closure.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+    entries: Array<{ path: string; type: string; sha256?: string }>;
+  };
+  const entry = manifest.entries.find((candidate) =>
+    candidate.type === "file"
+    && candidate.path === fixture.dependencyRelativePath);
+  if (entry === undefined) throw new Error("dependency fixture missing from managed closure manifest");
+  entry.sha256 = sha256(Buffer.from(contents, "utf8"));
+  const manifestContents = `${JSON.stringify(manifest, undefined, 2)}\n`;
+  await writeFile(manifestPath, manifestContents, { encoding: "utf8", mode: 0o600 });
+  const marker = {
+    ...fixture.marker,
+    closureManifestSha256: sha256(Buffer.from(manifestContents, "utf8")),
+  };
+  await writeMarker(fixture.markerPath, marker);
 }
 
 describe("runtimeProvenanceDetail", () => {
@@ -102,6 +173,14 @@ describe("runtimeProvenanceDetail", () => {
     expect(detail).not.toContain(fixture.installRoot);
   });
 
+  it("verifies configured plugin roots when reconstructing a valid managed closure", async () => {
+    const fixture = await managedFixture("managed-plugin", { additionalPackage: true });
+
+    const detail = await runtimeProvenanceDetail(fixture.packageRoot);
+
+    expect(detail).toContain(`Runtime provenance: managed closure ${fixture.closureId}`);
+  });
+
   it("reports dev (unmanaged) outside the canonical managed layout", async () => {
     const packageRoot = join(dir, "workspace", "packages", "agent-app");
     await mkdir(packageRoot, { recursive: true });
@@ -114,6 +193,105 @@ describe("runtimeProvenanceDetail", () => {
     await writeFile(fixture.dependencyPath, "export const fixture = 'tampered';\n", "utf8");
 
     await expect(runtimeProvenanceDetail(fixture.packageRoot)).resolves.toBe(UNMANAGED_DETAIL);
+  });
+
+  it("rejects dependency tampering even when the manifest and marker are coherently rewritten", async () => {
+    const fixture = await managedFixture("forged-manifest");
+    await rewriteClosureManifestForDependency(fixture, "export const fixture = 'forged-manifest';\n");
+
+    await expect(runtimeProvenanceDetail(fixture.packageRoot)).resolves.toBe(UNMANAGED_DETAIL);
+  });
+
+  it("rejects a relocated snapshot with fabricated source-closure and filesystem proofs", async () => {
+    const fixture = await managedFixture("fabricated-proof");
+    const fabricatedSourceClosure = "d".repeat(64);
+    const fabricatedExecutionProof = "e".repeat(64);
+    const cliSha256 = fixture.marker.cliSha256;
+    if (typeof cliSha256 !== "string") throw new Error("fixture marker is missing cliSha256");
+    const relocatedRoot = join(dirname(fixture.installRoot), `${cliSha256}-${fabricatedSourceClosure}`);
+    await rename(fixture.installRoot, relocatedRoot);
+    await writeMarker(join(relocatedRoot, ".mono-agent-runtime.json"), {
+      ...fixture.marker,
+      sourceClosureSha256: fabricatedSourceClosure,
+      executionProofSha256: fabricatedExecutionProof,
+    });
+    const relocatedPackageRoot = join(relocatedRoot, "node_modules", "@mono-agent", "agent-app");
+
+    await expect(runtimeProvenanceDetail(relocatedPackageRoot)).resolves.toBe(UNMANAGED_DETAIL);
+  });
+
+  it("rejects a marker with a fabricated execution proof for an otherwise valid closure", async () => {
+    const fixture = await managedFixture("fabricated-execution-proof");
+    await writeMarker(fixture.markerPath, {
+      ...fixture.marker,
+      executionProofSha256: "e".repeat(64),
+    });
+
+    await expect(runtimeProvenanceDetail(fixture.packageRoot)).resolves.toBe(UNMANAGED_DETAIL);
+  });
+
+  it("rejects an overwrite of an already-captured file during provenance verification", async () => {
+    const fixture = await managedFixture("concurrent-overwrite");
+    let mutated = false;
+
+    const detail = await runtimeProvenanceDetail(fixture.packageRoot, {
+      afterFinalRootCapture: async () => {
+        mutated = true;
+        await writeFile(fixture.dependencyPath, "export const fixture = 'concurrent-overwrite';\n", "utf8");
+      },
+    });
+
+    expect(mutated).toBe(true);
+    expect(detail).toBe(UNMANAGED_DETAIL);
+  });
+
+  it("rejects a non-package closure mutation after the final execution capture", async () => {
+    const fixture = await managedFixture("package-lock-overwrite");
+    let mutated = false;
+
+    const detail = await runtimeProvenanceDetail(fixture.packageRoot, {
+      beforeFinalManifestProof: async () => {
+        mutated = true;
+        await writeFile(join(fixture.installRoot, "package-lock.json"), "{}\n", "utf8");
+      },
+    });
+
+    expect(mutated).toBe(true);
+    expect(detail).toBe(UNMANAGED_DETAIL);
+  });
+
+  it("displays metadata only from the exact marker whose full verification succeeded", async () => {
+    const fixture = await managedFixture("marker-swap");
+    const replacementInstalledAt = "2026-07-16T12:35:57.000Z";
+
+    const detail = await runtimeProvenanceDetail(fixture.packageRoot, {
+      afterInitialClosureCapture: async () => {
+        await writeMarker(fixture.markerPath, {
+          ...fixture.marker,
+          installedAt: replacementInstalledAt,
+        });
+      },
+    });
+
+    expect(detail).toBe(UNMANAGED_DETAIL);
+    expect(detail).not.toContain(replacementInstalledAt);
+  });
+
+  it("rejects a marker replaced during the final full-manifest proof", async () => {
+    const fixture = await managedFixture("marker-final-swap");
+    const replacementInstalledAt = "2026-07-16T12:35:58.000Z";
+
+    const detail = await runtimeProvenanceDetail(fixture.packageRoot, {
+      beforeFinalManifestProof: async () => {
+        await writeMarker(fixture.markerPath, {
+          ...fixture.marker,
+          installedAt: replacementInstalledAt,
+        });
+      },
+    });
+
+    expect(detail).toBe(UNMANAGED_DETAIL);
+    expect(detail).not.toContain(replacementInstalledAt);
   });
 
   it("fails closed without echoing malformed or untrusted marker contents", async () => {

@@ -10,7 +10,7 @@ In the user's agent folder:
 mono-agent validate
 ```
 
-The report covers core config, runtime support for the primary and every fallback model, identity/skills/memory/MCP paths, the sandbox policy, the observability section (artifacts, traceability, and any configured exporters), and every channel (`ok` / `waiting` / `off` / `error`). Its Runtime provenance section identifies the CLI producing the report by a full managed closure id only after validating its private marker and current closure manifest, or reports `dev (unmanaged)`; under `--consumer`, that is still the validator CLI rather than a separately running daemon. Exit 0 means the folder is ready to start. Fix every `[error]`; `[waiting]` channels are simply unconfigured.
+The report covers core config, runtime support for the primary and every fallback model, identity/skills/memory/MCP paths, the sandbox policy, the observability section (artifacts, traceability, and any configured exporters), and every channel (`ok` / `waiting` / `off` / `error`). Its Runtime provenance section identifies the CLI producing the report by a full managed closure id only after validating its private marker, freshly recomputed installed closure, and coherent current closure manifest, or reports `dev (unmanaged)`; under `--consumer`, that is still the validator CLI rather than a separately running daemon. Exit 0 means the folder is ready to start. Fix every `[error]`; `[waiting]` channels are simply unconfigured.
 
 From a separate orchestration folder, validate a downstream consumer without changing cwd:
 
