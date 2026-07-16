@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
 
@@ -12,7 +14,8 @@ import {
   ensureBackgroundReady,
   defaultBackgroundDeps,
   forceRestartBackground,
-  LAUNCHD_LOG_MAX_BYTES,
+  maintainLaunchdLogs,
+  managedLaunchdLogMaintenanceEnvironment,
   resolveInstanceTarget,
   restartBackground,
   startBackground,
@@ -22,11 +25,13 @@ import {
 } from "../background.js";
 import type { BackgroundDeps, InstanceTarget } from "../background.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
+import type { LaunchdLogInspection } from "../launchd-logs.js";
 import type { LaunchctlRunner } from "../launchd.js";
 import type { ProcessIncarnation } from "../process-incarnation.js";
 
 const POLL = { timeoutMs: 5_000, intervalMs: 100 };
 const CLOCK_START = 1_000_000;
+const execFileAsync = promisify(execFile);
 
 function processIncarnation(id: string): ProcessIncarnation {
   return {
@@ -120,46 +125,81 @@ interface RunnerOptions {
   readonly bootoutCode?: number;
   /** Simulate a bootout that fails and leaves the service still loaded. */
   readonly bootoutKeepsLoaded?: boolean;
+  readonly maintenanceLoaded?: boolean;
+  readonly maintenancePid?: number;
+  readonly maintenanceBootstrapCode?: number;
+  readonly maintenanceLoadsAfterBootstrap?: boolean;
+  readonly maintenanceBootoutCode?: number;
+  readonly maintenanceBootoutKeepsLoaded?: boolean;
 }
 
-type StatefulRunner = LaunchctlRunner & { readonly isAlive: (pid: number) => boolean };
+type StatefulRunner = LaunchctlRunner & {
+  readonly isAlive: (pid: number) => boolean;
+  readonly isLoaded: (label: string) => boolean;
+};
 
 function makeRunner(opts: RunnerOptions): { runner: StatefulRunner; calls: string[][] } {
   const calls: string[][] = [];
-  const state: { loaded: boolean; pid?: number } = {
+  const maintenanceLabel = "com.mono-agent-maintenance.demo-0a1b2c3d";
+  const main: { loaded: boolean; pid?: number } = {
     loaded: opts.loaded,
     ...(opts.loaded ? { pid: opts.initialPid ?? 4321 } : {}),
   };
+  const maintenance: { loaded: boolean; pid?: number } = {
+    loaded: opts.maintenanceLoaded ?? false,
+    ...(opts.maintenancePid === undefined ? {} : { pid: opts.maintenancePid }),
+  };
+  const stateForLabel = (label: string | undefined): { loaded: boolean; pid?: number } =>
+    label === maintenanceLabel ? maintenance : main;
+  const labelFromTarget = (target: string | undefined): string | undefined => target?.split("/").at(-1);
   const runner = (async (args: readonly string[]) => {
     calls.push([...args]);
     switch (args[0]) {
-      case "print":
+      case "print": {
+        const state = stateForLabel(labelFromTarget(args[1]));
         return {
           code: state.loaded ? 0 : 113,
           stdout: state.loaded && state.pid !== undefined ? `pid = ${state.pid}\n` : "",
           stderr: "",
         };
+      }
       case "bootstrap": {
-        const code = opts.bootstrapCode ?? 0;
-        if (opts.loadsAfterBootstrap ?? code === 0) {
+        const isMaintenance = args[2]?.includes("com.mono-agent-maintenance.") === true;
+        const state = isMaintenance ? maintenance : main;
+        const code = isMaintenance ? opts.maintenanceBootstrapCode ?? 0 : opts.bootstrapCode ?? 0;
+        if (isMaintenance
+          ? (opts.maintenanceLoadsAfterBootstrap ?? code === 0)
+          : (opts.loadsAfterBootstrap ?? code === 0)) {
           state.loaded = true;
-          state.pid = opts.bootstrapPid ?? 4321;
+          if (!isMaintenance) state.pid = opts.bootstrapPid ?? 4321;
         }
         return { code, stdout: "", stderr: "bootstrap detail" };
       }
       case "kickstart":
         return { code: opts.kickstartCode ?? 0, stdout: "", stderr: "" };
-      case "bootout":
-        if (!opts.bootoutKeepsLoaded) {
+      case "bootout": {
+        const label = labelFromTarget(args[1]);
+        const isMaintenance = label === maintenanceLabel;
+        const state = stateForLabel(label);
+        const keepsLoaded = isMaintenance ? opts.maintenanceBootoutKeepsLoaded : opts.bootoutKeepsLoaded;
+        if (!keepsLoaded) {
           state.loaded = false;
           delete state.pid;
         }
-        return { code: opts.bootoutCode ?? 0, stdout: "", stderr: "bootout detail" };
+        return {
+          code: isMaintenance ? opts.maintenanceBootoutCode ?? 0 : opts.bootoutCode ?? 0,
+          stdout: "",
+          stderr: "bootout detail",
+        };
+      }
       default:
         return { code: 0, stdout: "", stderr: "" };
     }
   }) as StatefulRunner;
-  Object.defineProperty(runner, "isAlive", { value: (pid: number) => state.loaded && state.pid === pid });
+  Object.defineProperties(runner, {
+    isAlive: { value: (pid: number) => [main, maintenance].some((state) => state.loaded && state.pid === pid) },
+    isLoaded: { value: (label: string) => stateForLabel(label).loaded },
+  });
   return { runner, calls };
 }
 
@@ -177,9 +217,10 @@ interface Harness {
   readonly err: string[];
   readonly written: { path: string; data: string }[];
   readonly removed: string[];
-  readonly renamed: { from: string; to: string }[];
   readonly mkdirs: string[];
   readonly tailCalls: string[][];
+  readonly rotations: string[];
+  readonly rotationLoadedStates: boolean[];
 }
 
 function makeHarness(opts: {
@@ -187,7 +228,15 @@ function makeHarness(opts: {
   list: BackgroundDeps["listTraceSources"];
   listRecordedRuns?: BackgroundDeps["listRecordedRuns"];
   isAlive?: (pid: number) => boolean;
-  fileSizes?: Record<string, number>;
+  inspectLaunchdLogs?: BackgroundDeps["inspectLaunchdLogs"];
+  rotateStoppedLaunchdLogs?: BackgroundDeps["rotateStoppedLaunchdLogs"];
+  readLaunchdLogMaintenanceIntent?: BackgroundDeps["readLaunchdLogMaintenanceIntent"];
+  beginLaunchdLogMaintenanceIntent?: BackgroundDeps["beginLaunchdLogMaintenanceIntent"];
+  markLaunchdLogMaintenanceStopped?: BackgroundDeps["markLaunchdLogMaintenanceStopped"];
+  markLaunchdLogMaintenanceRestoring?: BackgroundDeps["markLaunchdLogMaintenanceRestoring"];
+  markLaunchdLogMaintenanceStopping?: BackgroundDeps["markLaunchdLogMaintenanceStopping"];
+  clearLaunchdLogMaintenanceIntent?: BackgroundDeps["clearLaunchdLogMaintenanceIntent"];
+  verifyLaunchdPlist?: BackgroundDeps["verifyLaunchdPlist"];
   ensureManagedRuntime?: BackgroundDeps["ensureManagedRuntime"];
   resolveManagedRuntimePackages?: NonNullable<BackgroundDeps["resolveManagedRuntimePackages"]>;
   acquireLifecycleLock?: BackgroundDeps["acquireLifecycleLock"];
@@ -198,10 +247,10 @@ function makeHarness(opts: {
   const err: string[] = [];
   const written: { path: string; data: string }[] = [];
   const removed: string[] = [];
-  const renamed: { from: string; to: string }[] = [];
   const mkdirs: string[] = [];
   const tailCalls: string[][] = [];
-  const fileSizes = new Map(Object.entries(opts.fileSizes ?? {}));
+  const rotations: string[] = [];
+  const rotationLoadedStates: boolean[] = [];
   const isAlive = opts.isAlive ?? ("isAlive" in opts.runner
     ? (opts.runner as StatefulRunner).isAlive
     : () => false);
@@ -223,24 +272,30 @@ function makeHarness(opts: {
     },
     rm: async (path) => {
       removed.push(path);
-      fileSizes.delete(path);
     },
-    stat: async (path) => {
-      const size = fileSizes.get(path);
-      if (size === undefined) {
-        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      }
-      return { size };
-    },
-    rename: async (from, to) => {
-      const size = fileSizes.get(from);
-      if (size === undefined) {
-        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      }
-      renamed.push({ from, to });
-      fileSizes.delete(from);
-      fileSizes.set(to, size);
-    },
+    inspectLaunchdLogs: opts.inspectLaunchdLogs ?? (async () => emptyLogInspection()),
+    rotateStoppedLaunchdLogs: opts.rotateStoppedLaunchdLogs ?? (async (paths) => {
+      rotations.push(paths.logDir);
+      rotationLoadedStates.push("isLoaded" in opts.runner
+        ? (opts.runner as StatefulRunner).isLoaded("com.mono-agent.demo-0a1b2c3d")
+        : false);
+    }),
+    readLaunchdLogMaintenanceIntent: opts.readLaunchdLogMaintenanceIntent ?? (async () => undefined),
+    beginLaunchdLogMaintenanceIntent: opts.beginLaunchdLogMaintenanceIntent ?? (async () => undefined),
+    markLaunchdLogMaintenanceStopped: opts.markLaunchdLogMaintenanceStopped ?? (async (_paths, intent) => ({
+      ...intent,
+      phase: "stopped",
+    })),
+    markLaunchdLogMaintenanceRestoring: opts.markLaunchdLogMaintenanceRestoring ?? (async (_paths, intent) => ({
+      ...intent,
+      phase: "restoring",
+    })),
+    markLaunchdLogMaintenanceStopping: opts.markLaunchdLogMaintenanceStopping ?? (async (_paths, intent) => ({
+      ...intent,
+      phase: "stopping",
+    })),
+    clearLaunchdLogMaintenanceIntent: opts.clearLaunchdLogMaintenanceIntent ?? (async () => undefined),
+    verifyLaunchdPlist: opts.verifyLaunchdPlist ?? (async () => "plist-identity"),
     isAlive,
     ensureManagedRuntime: opts.ensureManagedRuntime ?? (async (input) => ({
       cliPath: "/home/u/.mono-agent/runtimes/agent-app/verified/dist/cli.js",
@@ -263,10 +318,35 @@ function makeHarness(opts: {
       return 0;
     },
   };
-  return { deps, out, err, written, removed, renamed, mkdirs, tailCalls };
+  return { deps, out, err, written, removed, mkdirs, tailCalls, rotations, rotationLoadedStates };
+}
+
+function emptyLogInspection(overrides: Partial<LaunchdLogInspection> = {}): LaunchdLogInspection {
+  const stream = { activeBytes: 0, retainedBytes: 0, totalBytes: 0, byteAccountingComplete: true, files: [] };
+  return {
+    stdout: stream,
+    stderr: stream,
+    present: false,
+    canMaintain: true,
+    needsMaintenance: false,
+    pendingTransaction: false,
+    pendingMaintenance: false,
+    issues: [],
+    ...overrides,
+  };
 }
 
 describe("background config identity", () => {
+  it("pins the unattended log maintainer to the closed system PATH", () => {
+    const environment = managedLaunchdLogMaintenanceEnvironment({
+      HOME: "/home/u",
+      PATH: "/tmp/shadow:/custom/bin",
+    });
+
+    expect(environment.PATH).toBe("/usr/bin:/bin");
+    expect(Object.values(environment)).not.toContain("/tmp/shadow:/custom/bin");
+  });
+
   it("uses the effective config environment for env-only managed plugin discovery without putting it in launchd", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "mono-agent-background-env-plugin-"));
     try {
@@ -380,11 +460,17 @@ describe("startBackground", () => {
     const { runner } = makeRunner({ loaded: false, bootstrapPid: 9876 });
     const target = makeTarget();
     const source = makeSource(target, { sourceId: "mono-agent-ready-source", pid: 9876 });
-    const harness = makeHarness({ runner, list: listReturning(() => [source]) });
+    let clearedIntents = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => [source]),
+      clearLaunchdLogMaintenanceIntent: async () => { clearedIntents += 1; },
+    });
 
     const result = await ensureBackgroundReady(target, harness.deps, POLL);
 
     expect(result).toEqual({ ok: true, action: "started", source });
+    expect(clearedIntents).toBe(1);
   });
 
   it("requires the live worker metadata and current files to match the exact approved snapshot", async () => {
@@ -483,6 +569,16 @@ describe("startBackground", () => {
     expect(harness.written[0]?.data).toContain(target.label);
     expect(harness.written[0]?.data).toContain("/home/u/.mono-agent/runtimes/agent-app/verified/dist/cli.js");
     expect(harness.written[0]?.data).not.toContain(target.cliPath);
+    expect(harness.written[1]?.path).toContain("com.mono-agent-maintenance.demo-0a1b2c3d.plist");
+    expect(harness.written[1]?.data).toContain("__launchd-log-maintenance");
+    expect(harness.written[1]?.data).toContain("<key>StartInterval</key>");
+    expect(harness.written[1]?.data).toContain("<string>/dev/null</string>");
+    expect(harness.written[1]?.data).toContain("<string>/home/u/.mono-agent</string>");
+    expect(harness.written[1]?.data).not.toContain("<string>/work/demo</string>");
+    expect(harness.written[1]?.data).not.toContain("--expected-background-snapshot");
+    const bootstraps = calls.filter((call) => call[0] === "bootstrap").map((call) => call[2]);
+    expect(bootstraps[0]).toContain("com.mono-agent-maintenance.");
+    expect(bootstraps[1]).toBe(target.paths.plistPath);
     const stdout = harness.out.join("");
     expect(stdout).toContain("started in the background");
     expect(stdout).toContain("4321");
@@ -521,30 +617,64 @@ describe("startBackground", () => {
     expect(runtimeInput?.additionalPackages).toEqual(additionalPackages);
   });
 
-  it("rotates oversized launchd stdout and stderr logs before bootstrap", async () => {
-    const { runner, calls } = makeRunner({ loaded: false });
+  it("rotates launchd logs only after an existing writer is unloaded and before bootstrap", async () => {
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 4321 });
     const target = makeTarget();
+    const oldSource = makeSource(target, { pid: 1111, startedAt: new Date(CLOCK_START - 1).toISOString() });
+    const newSource = makeSource(target, { pid: 4321, startedAt: new Date(CLOCK_START + 1).toISOString() });
     const harness = makeHarness({
       runner,
-      list: listReturning(() => [makeSource(target)]),
-      fileSizes: {
-        [target.paths.stdoutPath]: LAUNCHD_LOG_MAX_BYTES + 1,
-        [target.paths.stderrPath]: LAUNCHD_LOG_MAX_BYTES + 1,
-      },
+      list: listReturning(() => calls.some((call) => call[0] === "bootstrap" && call[2] === target.paths.plistPath)
+        ? [newSource]
+        : [oldSource]),
     });
 
     const code = await startBackground(target, harness.deps, POLL);
 
     expect(code).toBe(0);
-    expect(harness.removed).toEqual(expect.arrayContaining([
-      `${target.paths.stdoutPath}.3`,
-      `${target.paths.stderrPath}.3`,
-    ]));
-    expect(harness.renamed).toEqual(expect.arrayContaining([
-      { from: target.paths.stdoutPath, to: `${target.paths.stdoutPath}.1` },
-      { from: target.paths.stderrPath, to: `${target.paths.stderrPath}.1` },
-    ]));
-    expect(calls.map((call) => call[0])).toContain("bootstrap");
+    expect(harness.rotations).toEqual([target.paths.logDir]);
+    expect(harness.rotationLoadedStates).toEqual([false]);
+    expect(calls.map((call) => call[0])).toEqual(expect.arrayContaining(["bootout", "bootstrap"]));
+    expect(harness.written.some((entry) => entry.path.includes("com.mono-agent-maintenance."))).toBe(true);
+  });
+
+  it("invalidates stale stopped-writer proof before controller bootout and renews it before rotation", async () => {
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 4321 });
+    const target = makeTarget();
+    const oldSource = makeSource(target, { pid: 1111, startedAt: new Date(CLOCK_START - 1).toISOString() });
+    const newSource = makeSource(target, { pid: 4321, startedAt: new Date(CLOCK_START + 1).toISOString() });
+    const stoppedIntent = {
+      version: 1 as const,
+      phase: "stopped" as const,
+      label: target.label,
+      plistFingerprint: "plist-identity",
+    };
+    const lifecycle: string[] = [];
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => calls.some((call) => call[0] === "bootstrap" && call[2] === target.paths.plistPath)
+        ? [newSource]
+        : [oldSource]),
+      readLaunchdLogMaintenanceIntent: async () => stoppedIntent,
+      markLaunchdLogMaintenanceStopping: async (_paths, expected) => {
+        expect(runner.isLoaded(target.label)).toBe(true);
+        lifecycle.push("stopping");
+        return { ...expected, phase: "stopping" };
+      },
+      markLaunchdLogMaintenanceStopped: async (_paths, expected) => {
+        expect(runner.isLoaded(target.label)).toBe(false);
+        lifecycle.push("stopped");
+        return { ...expected, phase: "stopped" };
+      },
+      rotateStoppedLaunchdLogs: async () => { lifecycle.push("rotate"); },
+      clearLaunchdLogMaintenanceIntent: async (_paths, expected) => {
+        expect(expected?.phase).toBe("stopped");
+        lifecycle.push("clear");
+      },
+    });
+
+    await expect(startBackground(target, harness.deps, POLL)).resolves.toBe(0);
+    expect(lifecycle).toEqual(["stopping", "stopped", "rotate", "clear"]);
   });
 
   it("tolerates a bootstrap that reports already-loaded", async () => {
@@ -590,6 +720,113 @@ describe("startBackground", () => {
     expect(stderr).toContain(`mono-agent start ${flags}`);
     expect(stderr).toContain(`mono-agent status ${flags}`);
     expect(stderr).toContain(`mono-agent logs ${flags} --follow`);
+    expect(runner.isLoaded("com.mono-agent-maintenance.demo-0a1b2c3d")).toBe(false);
+  });
+
+  it("never bootstraps the main service when scheduled maintenance cannot load", async () => {
+    const { runner, calls } = makeRunner({ loaded: false, maintenanceBootstrapCode: 5 });
+    const target = makeTarget();
+    const harness = makeHarness({ runner, list: listReturning(() => []) });
+
+    await expect(ensureBackgroundReady(target, harness.deps, POLL))
+      .resolves.toEqual({ ok: false, action: "start", reason: "launchctl" });
+    const bootstraps = calls.filter((call) => call[0] === "bootstrap");
+    expect(bootstraps).toHaveLength(1);
+    expect(bootstraps[0]?.[2]).toContain("com.mono-agent-maintenance.");
+    expect(runner.isLoaded(target.label)).toBe(false);
+  });
+
+  it("rejects a code-zero helper bootstrap that never becomes loaded", async () => {
+    const { runner, calls } = makeRunner({
+      loaded: false,
+      maintenanceBootstrapCode: 0,
+      maintenanceLoadsAfterBootstrap: false,
+    });
+    const target = makeTarget();
+    const harness = makeHarness({ runner, list: listReturning(() => []) });
+
+    await expect(ensureBackgroundReady(target, harness.deps, POLL))
+      .resolves.toEqual({ ok: false, action: "start", reason: "launchctl" });
+    const bootstraps = calls.filter((call) => call[0] === "bootstrap");
+    expect(bootstraps).toHaveLength(1);
+    expect(bootstraps[0]?.[2]).toContain("com.mono-agent-maintenance.");
+    expect(runner.isLoaded(target.label)).toBe(false);
+  });
+
+  it("does not rotate, rewrite, or touch the main service when the old helper cannot stop", async () => {
+    const { runner, calls } = makeRunner({
+      loaded: true,
+      initialPid: 4321,
+      maintenanceLoaded: true,
+      maintenancePid: 7777,
+      maintenanceBootoutKeepsLoaded: true,
+    });
+    const target = makeTarget();
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => [makeSource(target, { pid: 4321 })]),
+      isAlive: (pid) => pid === 4321 || pid === 7777,
+    });
+
+    await expect(ensureBackgroundReady(target, harness.deps, { timeoutMs: 300, intervalMs: 100 }))
+      .resolves.toEqual({ ok: false, action: "restart", reason: "launchctl" });
+    expect(harness.rotations).toEqual([]);
+    expect(harness.written).toEqual([]);
+    expect(calls.filter((call) => call[0] === "bootout" && call[1]?.endsWith(`/${target.label}`)))
+      .toHaveLength(0);
+  });
+
+  it("restores the previously loaded helper when the main writer cannot be proven stopped", async () => {
+    const { runner, calls } = makeRunner({
+      loaded: true,
+      maintenanceLoaded: true,
+      maintenancePid: 7777,
+      bootoutCode: 5,
+      bootoutKeepsLoaded: true,
+    });
+    const target = makeTarget();
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => [makeSource(target, { pid: 4321 })]),
+    });
+
+    await expect(ensureBackgroundReady(target, harness.deps, { timeoutMs: 300, intervalMs: 100 }))
+      .resolves.toEqual({ ok: false, action: "restart", reason: "launchctl" });
+    const mutations = calls.filter((call) => call[0] === "bootout" || call[0] === "bootstrap");
+    expect(mutations.map((call) => call[0])).toEqual(["bootout", "bootout", "bootstrap"]);
+    expect(mutations[0]?.[1]).toContain("com.mono-agent-maintenance.");
+    expect(mutations[1]?.[1]).toContain(target.label);
+    expect(mutations[2]?.[2]).toContain("com.mono-agent-maintenance.");
+    expect(harness.rotations).toEqual([]);
+    expect(harness.written).toEqual([]);
+    expect(runner.isLoaded(target.label)).toBe(true);
+    expect(runner.isLoaded("com.mono-agent-maintenance.demo-0a1b2c3d")).toBe(true);
+  });
+
+  it.each([
+    ["bootstrap error", { maintenanceBootstrapCode: 5 }],
+    ["code-zero false success", { maintenanceBootstrapCode: 0, maintenanceLoadsAfterBootstrap: false }],
+  ] as const)("reports helper restoration failure after main stop failure: %s", async (_name, restore) => {
+    const { runner } = makeRunner({
+      loaded: true,
+      maintenanceLoaded: true,
+      maintenancePid: 7777,
+      bootoutKeepsLoaded: true,
+      ...restore,
+    });
+    const target = makeTarget();
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => [makeSource(target, { pid: 4321 })]),
+    });
+
+    await expect(ensureBackgroundReady(target, harness.deps, { timeoutMs: 300, intervalMs: 100 }))
+      .resolves.toEqual({ ok: false, action: "restart", reason: "launchctl" });
+    expect(harness.rotations).toEqual([]);
+    expect(harness.written).toEqual([]);
+    expect(runner.isLoaded(target.label)).toBe(true);
+    expect(runner.isLoaded("com.mono-agent-maintenance.demo-0a1b2c3d")).toBe(false);
+    expect(harness.err.join(" ")).toContain("scheduled maintenance restoration failed");
   });
 
   it("converts plist preparation exceptions into a preserved-files recovery result", async () => {
@@ -607,19 +844,19 @@ describe("startBackground", () => {
 
     expect(result).toEqual({ ok: false, action: "start", reason: "preparation" });
     const stderr = harness.err.join("");
-    expect(stderr).toContain("Failed to prepare the LaunchAgent");
+    expect(stderr).toContain("Failed to prepare the stopped LaunchAgent");
     expect(stderr).toContain("plist destination is unavailable");
     expect(stderr).toContain("committed agent files were preserved");
     expect(stderr).toContain("mono-agent start");
   });
 
-  it("validates launchd log destinations before committing the plist", async () => {
+  it("validates and rotates launchd log destinations before committing either plist", async () => {
     const { runner } = makeRunner({ loaded: false });
     const target = makeTarget();
     const harness = makeHarness({ runner, list: listReturning(() => []) });
     const deps: BackgroundDeps = {
       ...harness.deps,
-      stat: async () => {
+      rotateStoppedLaunchdLogs: async () => {
         throw new Error("LaunchAgent log must be a regular non-symbolic-link file");
       },
     };
@@ -864,7 +1101,10 @@ describe("filesystem lifecycle lock", () => {
 
 describe("LaunchAgent private filesystem boundary", () => {
   it.skipIf(process.platform === "win32")("rejects symlinked plist and log destinations without modifying their targets", async () => {
-    const home = await mkdtemp(join(tmpdir(), "mono-agent-launchd-paths-"));
+    // macOS exposes tmpdir() through the /var -> /private/var alias. Use its
+    // canonical spelling so this fixture reaches the final-component symlink
+    // assertion instead of correctly failing earlier on the parent alias.
+    const home = await realpath(await mkdtemp(join(tmpdir(), "mono-agent-launchd-paths-")));
     const outsidePlist = join(home, "outside.plist");
     const outsideLog = join(home, "outside.log");
     const launchAgentsDir = join(home, "Library", "LaunchAgents");
@@ -882,12 +1122,557 @@ describe("LaunchAgent private filesystem boundary", () => {
 
       await expect(deps.writeFile(plistPath, "new-plist\n"))
         .rejects.toThrow("non-symbolic-link");
-      await expect(deps.stat(logPath)).rejects.toMatchObject({ code: "ELOOP" });
+      await expect(deps.verifyLaunchdPlist(plistPath)).rejects.toBeDefined();
+      const inspection = await deps.inspectLaunchdLogs({
+        logDir,
+        stdoutPath: logPath,
+        stderrPath: join(logDir, "agent.err.log"),
+      });
+      expect(inspection.canMaintain).toBe(false);
+      expect(inspection.issues.join(" ")).toContain("non-symbolic-link");
       await expect(readFile(outsidePlist, "utf8")).resolves.toBe("outside-plist\n");
       await expect(readFile(outsideLog, "utf8")).resolves.toBe("outside-log\n");
     } finally {
       await rm(home, { recursive: true, force: true });
     }
+  });
+
+  it.skipIf(process.platform === "win32")("fingerprints plist identity and content without accepting in-place drift", async () => {
+    const home = await mkdtemp(join(tmpdir(), "mono-agent-launchd-plist-identity-"));
+    const plistPath = join(home, "agent.plist");
+    try {
+      await writeFile(plistPath, "first definition\n", { encoding: "utf8", mode: 0o600 });
+      const deps = defaultBackgroundDeps();
+      const first = await deps.verifyLaunchdPlist(plistPath);
+
+      await writeFile(plistPath, "second definition\n", { encoding: "utf8", mode: 0o600 });
+      const second = await deps.verifyLaunchdPlist(plistPath);
+
+      expect(second).not.toBe(first);
+      expect(await readFile(plistPath, "utf8")).toBe("second definition\n");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a fifo plist without blocking the maintainer", async () => {
+    const home = await mkdtemp(join(tmpdir(), "mono-agent-launchd-plist-fifo-"));
+    const plistPath = join(home, "agent.plist");
+    try {
+      await execFileAsync("mkfifo", [plistPath]);
+      await expect(defaultBackgroundDeps().verifyLaunchdPlist(plistPath))
+        .rejects.toThrow(/regular non-symbolic-link file/u);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("maintainLaunchdLogs", () => {
+  it("does nothing and never resurrects a main service that was not loaded", async () => {
+    const { runner, calls } = makeRunner({ loaded: false });
+    const target = makeTarget();
+    let inspections = 0;
+    let rotations = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      inspectLaunchdLogs: async () => {
+        inspections += 1;
+        return emptyLogInspection({
+          present: true,
+          needsMaintenance: true,
+          pendingTransaction: true,
+        });
+      },
+      rotateStoppedLaunchdLogs: async () => { rotations += 1; },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(0);
+    expect(inspections).toBe(1);
+    expect(rotations).toBe(0);
+    expect(calls.map((call) => call[0])).not.toContain("bootstrap");
+  });
+
+  it("recovers its durable pending transaction and restores the previously booted worker", async () => {
+    const { runner, calls } = makeRunner({ loaded: false, bootstrapPid: 2222 });
+    const target = makeTarget();
+    let rotations = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      inspectLaunchdLogs: async () => emptyLogInspection({
+        present: true,
+        needsMaintenance: true,
+        pendingTransaction: true,
+        pendingMaintenance: true,
+        issues: ["pending launchd-log rotation transaction requires recovery"],
+      }),
+      readLaunchdLogMaintenanceIntent: async () => ({
+        version: 1,
+        phase: "stopped",
+        label: target.label,
+        plistFingerprint: "plist-identity",
+      }),
+      rotateStoppedLaunchdLogs: async () => { rotations += 1; },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(0);
+    expect(rotations).toBe(1);
+    expect(runner.isLoaded(target.label)).toBe(true);
+    expect(calls.filter((call) => call[0] === "bootstrap" && call[2] === target.paths.plistPath))
+      .toHaveLength(1);
+  });
+
+  it("retries a persisted stopping phase only while launchd still owns the writer", async () => {
+    const { runner } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 2222 });
+    const target = makeTarget();
+    const intent = {
+      version: 1 as const,
+      phase: "stopping" as const,
+      label: target.label,
+      plistFingerprint: "plist-identity",
+    };
+    const lifecycle: string[] = [];
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      inspectLaunchdLogs: async () => emptyLogInspection({
+        present: true,
+        needsMaintenance: true,
+        pendingMaintenance: true,
+      }),
+      readLaunchdLogMaintenanceIntent: async () => intent,
+      markLaunchdLogMaintenanceStopped: async (_paths, expected) => {
+        expect(expected).toEqual(intent);
+        expect(runner.isLoaded(target.label)).toBe(false);
+        lifecycle.push("stopped");
+        return { ...expected, phase: "stopped" };
+      },
+      rotateStoppedLaunchdLogs: async () => { lifecycle.push("rotate"); },
+      markLaunchdLogMaintenanceRestoring: async (_paths, expected) => {
+        lifecycle.push("restoring");
+        return { ...expected, phase: "restoring" };
+      },
+      clearLaunchdLogMaintenanceIntent: async (_paths, expected) => {
+        expect(expected?.phase).toBe("restoring");
+        lifecycle.push("clear");
+      },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(0);
+    expect(lifecycle).toEqual(["stopped", "rotate", "restoring", "clear"]);
+  });
+
+  it("fails closed on a persisted stopping phase after launchd lost the writer pid", async () => {
+    const { runner, calls } = makeRunner({ loaded: false });
+    const target = makeTarget();
+    let marks = 0;
+    let rotations = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      inspectLaunchdLogs: async () => emptyLogInspection({
+        present: true,
+        needsMaintenance: true,
+        pendingMaintenance: true,
+      }),
+      readLaunchdLogMaintenanceIntent: async () => ({
+        version: 1,
+        phase: "stopping",
+        label: target.label,
+        plistFingerprint: "plist-identity",
+      }),
+      markLaunchdLogMaintenanceStopped: async (_paths, intent) => {
+        marks += 1;
+        return { ...intent, phase: "stopped" };
+      },
+      rotateStoppedLaunchdLogs: async () => { rotations += 1; },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(1);
+    expect(marks).toBe(0);
+    expect(rotations).toBe(0);
+    expect(calls.map((call) => call[0])).not.toContain("bootstrap");
+    expect(harness.err.join(" ")).toContain("did not durably prove every old writer PID dead");
+  });
+
+  it("clears a restoring phase only after the exact replacement writer is live", async () => {
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 2222 });
+    const target = makeTarget();
+    let rotations = 0;
+    let clears = 0;
+    const restoring = {
+      version: 1 as const,
+      phase: "restoring" as const,
+      label: target.label,
+      plistFingerprint: "plist-identity",
+    };
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      inspectLaunchdLogs: async () => emptyLogInspection({
+        present: true,
+        needsMaintenance: true,
+        pendingMaintenance: true,
+      }),
+      readLaunchdLogMaintenanceIntent: async () => restoring,
+      rotateStoppedLaunchdLogs: async () => { rotations += 1; },
+      clearLaunchdLogMaintenanceIntent: async (_paths, expected) => {
+        expect(expected).toEqual(restoring);
+        clears += 1;
+      },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(0);
+    expect(clears).toBe(1);
+    expect(rotations).toBe(0);
+    expect(calls.map((call) => call[0])).not.toContain("bootout");
+    expect(calls.map((call) => call[0])).not.toContain("bootstrap");
+  });
+
+  it("refreshes launchd ownership before clearing a restoring phase", async () => {
+    const target = makeTarget();
+    let prints = 0;
+    const runner: LaunchctlRunner = async (args) => {
+      if (args[0] !== "print") return { code: 0, stdout: "", stderr: "" };
+      prints += 1;
+      return prints === 1
+        ? { code: 0, stdout: "pid = 2222\n", stderr: "" }
+        : { code: 113, stdout: "", stderr: "" };
+    };
+    let clears = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      isAlive: (pid) => pid === 2222,
+      inspectLaunchdLogs: async () => emptyLogInspection({
+        present: true,
+        needsMaintenance: true,
+        pendingMaintenance: true,
+      }),
+      readLaunchdLogMaintenanceIntent: async () => ({
+        version: 1,
+        phase: "restoring",
+        label: target.label,
+        plistFingerprint: "plist-identity",
+      }),
+      clearLaunchdLogMaintenanceIntent: async () => { clears += 1; },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(1);
+    expect(clears).toBe(0);
+    expect(prints).toBe(2);
+    expect(harness.err.join(" ")).toContain("replacement writer identity was lost");
+  });
+
+  it("fails closed when a restoring phase loses its replacement writer identity", async () => {
+    const { runner, calls } = makeRunner({ loaded: false });
+    const target = makeTarget();
+    let rotations = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      inspectLaunchdLogs: async () => emptyLogInspection({
+        present: true,
+        needsMaintenance: true,
+        pendingMaintenance: true,
+      }),
+      readLaunchdLogMaintenanceIntent: async () => ({
+        version: 1,
+        phase: "restoring",
+        label: target.label,
+        plistFingerprint: "plist-identity",
+      }),
+      rotateStoppedLaunchdLogs: async () => { rotations += 1; },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(1);
+    expect(rotations).toBe(0);
+    expect(calls.map((call) => call[0])).not.toContain("bootstrap");
+    expect(harness.err.join(" ")).toContain("replacement writer identity was lost");
+  });
+
+  it("skips safely when another lifecycle command owns the lock", async () => {
+    const { runner, calls } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      acquireLifecycleLock: async () => undefined,
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(0);
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses unsafe inventory before bootout or mutation", async () => {
+    const { runner, calls } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    let rotations = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      inspectLaunchdLogs: async () => emptyLogInspection({
+        present: true,
+        canMaintain: false,
+        needsMaintenance: true,
+        issues: ["stdout: symbolic link"],
+      }),
+      rotateStoppedLaunchdLogs: async () => { rotations += 1; },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(1);
+    expect(rotations).toBe(0);
+    expect(calls.map((call) => call[0])).not.toContain("bootout");
+    expect(harness.err.join(" ")).toContain("refused unsafe paths");
+  });
+
+  it("boots out the writer, rotates under the lock, revalidates the plist, and restores only that service", async () => {
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 2222 });
+    const target = makeTarget();
+    let verifies = 0;
+    let rotations = 0;
+    const lifecycle: string[] = [];
+    let intentPublished = false;
+    const guardedRunner: LaunchctlRunner = async (args) => {
+      if (args[0] === "bootout" && args[1]?.endsWith(`/${target.label}`)) {
+        expect(intentPublished).toBe(true);
+      }
+      return await runner(args);
+    };
+    const harness = makeHarness({
+      runner: guardedRunner,
+      list: listReturning(() => []),
+      isAlive: runner.isAlive,
+      inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true }),
+      verifyLaunchdPlist: async (path) => {
+        expect(path).toBe(target.paths.plistPath);
+        verifies += 1;
+        return "plist-identity";
+      },
+      rotateStoppedLaunchdLogs: async () => {
+        expect(runner.isLoaded(target.label)).toBe(false);
+        lifecycle.push("rotate");
+        rotations += 1;
+      },
+      beginLaunchdLogMaintenanceIntent: async () => {
+        intentPublished = true;
+        lifecycle.push("intent");
+      },
+      markLaunchdLogMaintenanceStopped: async (_paths, intent) => {
+        expect(runner.isLoaded(target.label)).toBe(false);
+        lifecycle.push("stopped");
+        return { ...intent, phase: "stopped" };
+      },
+      markLaunchdLogMaintenanceRestoring: async (_paths, intent) => {
+        expect(runner.isLoaded(target.label)).toBe(false);
+        lifecycle.push("restoring");
+        return { ...intent, phase: "restoring" };
+      },
+      clearLaunchdLogMaintenanceIntent: async () => { lifecycle.push("clear"); },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(0);
+    expect(verifies).toBe(3);
+    expect(rotations).toBe(1);
+    expect(lifecycle).toEqual(["intent", "stopped", "rotate", "restoring", "clear"]);
+    expect(calls.filter((call) => call[0] === "bootout")).toHaveLength(1);
+    expect(calls.filter((call) => call[0] === "bootstrap" && call[2] === target.paths.plistPath)).toHaveLength(1);
+  });
+
+  it("collects KeepAlive replacement pids during bootout and refuses rotation until all are dead", async () => {
+    const target = makeTarget();
+    const calls: string[][] = [];
+    let postBootoutPrints = 0;
+    let bootedOut = false;
+    const runner: LaunchctlRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "bootout") {
+        bootedOut = true;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "print") {
+        if (!bootedOut) return { code: 0, stdout: "pid = 1111\n", stderr: "" };
+        postBootoutPrints += 1;
+        if (postBootoutPrints === 1) return { code: 0, stdout: "pid = 2222\n", stderr: "" };
+        return { code: 113, stdout: "", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    let rotations = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      isAlive: (pid) => pid === 2222,
+      inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true }),
+      rotateStoppedLaunchdLogs: async () => { rotations += 1; },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, { timeoutMs: 300, intervalMs: 100 })).toBe(1);
+    expect(rotations).toBe(0);
+    expect(calls.map((call) => call[0])).not.toContain("bootstrap");
+    expect(harness.err.join(" ")).toContain("2222");
+  });
+
+  it("refreshes a stale service snapshot immediately before bootout", async () => {
+    const target = makeTarget();
+    const calls: string[][] = [];
+    let prints = 0;
+    let bootedOut = false;
+    const runner: LaunchctlRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "print") {
+        prints += 1;
+        if (bootedOut) return { code: 113, stdout: "", stderr: "" };
+        return { code: 0, stdout: `pid = ${prints === 1 ? 1111 : 2222}\n`, stderr: "" };
+      }
+      if (args[0] === "bootout") {
+        bootedOut = true;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    let rotations = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      isAlive: (pid) => pid === 2222,
+      inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true }),
+      rotateStoppedLaunchdLogs: async () => { rotations += 1; },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, { timeoutMs: 300, intervalMs: 100 })).toBe(1);
+    expect(rotations).toBe(0);
+    expect(calls.filter((call) => call[0] === "bootout")).toHaveLength(1);
+    expect(harness.err.join(" ")).toContain("2222");
+  });
+
+  it("leaves the main service stopped and reports a failed rotation instead of looping", async () => {
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 2222 });
+    const target = makeTarget();
+    let intents = 0;
+    let clears = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true }),
+      rotateStoppedLaunchdLogs: async () => { throw new Error("fsync failed"); },
+      beginLaunchdLogMaintenanceIntent: async () => { intents += 1; },
+      clearLaunchdLogMaintenanceIntent: async () => { clears += 1; },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(1);
+    expect(runner.isLoaded(target.label)).toBe(false);
+    expect(calls.filter((call) => call[0] === "bootstrap")).toHaveLength(0);
+    expect(intents).toBe(1);
+    expect(clears).toBe(0);
+    expect(harness.err.join(" ")).toContain("fsync failed");
+  });
+
+  it("unloads a replacement that never exposes a live pid instead of leaving KeepAlive looping", async () => {
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 2222 });
+    const target = makeTarget();
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      isAlive: (pid) => pid === 1111 && runner.isAlive(pid),
+      inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true }),
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, { timeoutMs: 300, intervalMs: 100 })).toBe(1);
+    expect(runner.isLoaded(target.label)).toBe(false);
+    expect(calls.filter((call) => call[0] === "bootstrap" && call[2] === target.paths.plistPath))
+      .toHaveLength(1);
+    expect(calls.filter((call) => call[0] === "bootout" && call[1]?.endsWith(`/${target.label}`)))
+      .toHaveLength(2);
+    expect(harness.err.join(" ")).toContain("did not expose a live replacement worker");
+  });
+
+  it("leaves the main service stopped when its plist changes across the maintenance window", async () => {
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 2222 });
+    const target = makeTarget();
+    let verifies = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true }),
+      verifyLaunchdPlist: async () => {
+        verifies += 1;
+        return verifies === 1 ? "original-plist" : "replaced-plist";
+      },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(1);
+    expect(runner.isLoaded(target.label)).toBe(false);
+    expect(calls.filter((call) => call[0] === "bootstrap")).toHaveLength(0);
+    expect(harness.err.join(" ")).toContain("plist changed during stopped-writer maintenance");
+  });
+
+  it("stops a restored worker when the plist changes at the bootstrap boundary", async () => {
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 2222 });
+    const target = makeTarget();
+    let verifies = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true }),
+      verifyLaunchdPlist: async () => {
+        verifies += 1;
+        return verifies < 3 ? "original-plist" : "replaced-plist";
+      },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(1);
+    expect(runner.isLoaded(target.label)).toBe(false);
+    expect(calls.filter((call) => call[0] === "bootstrap" && call[2] === target.paths.plistPath))
+      .toHaveLength(1);
+    expect(calls.filter((call) => call[0] === "bootout" && call[1]?.endsWith(`/${target.label}`)))
+      .toHaveLength(2);
+    expect(harness.err.join(" ")).toContain("changed while launchd restored the worker");
+  });
+
+  it("retains every restore pid when cleaning up a changed-plist worker", async () => {
+    const target = makeTarget();
+    const calls: string[][] = [];
+    let stage: "initial" | "stopped" | "restored" | "final-stopped" = "initial";
+    let restoredPrints = 0;
+    const runner: LaunchctlRunner = async (args) => {
+      calls.push([...args]);
+      if (args[0] === "print") {
+        if (stage === "initial") return { code: 0, stdout: "pid = 1111\n", stderr: "" };
+        if (stage === "restored") {
+          restoredPrints += 1;
+          return { code: 0, stdout: `pid = ${restoredPrints === 1 ? 2222 : 3333}\n`, stderr: "" };
+        }
+        return { code: 113, stdout: "", stderr: "" };
+      }
+      if (args[0] === "bootout") {
+        stage = stage === "initial" ? "stopped" : "final-stopped";
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "bootstrap") {
+        stage = "restored";
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    let verifies = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      isAlive: (pid) => pid === 2222 || (pid === 3333 && stage === "restored"),
+      inspectLaunchdLogs: async () => emptyLogInspection({ present: true, needsMaintenance: true }),
+      verifyLaunchdPlist: async () => {
+        verifies += 1;
+        return verifies < 3 ? "original-plist" : "replaced-plist";
+      },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, { timeoutMs: 300, intervalMs: 100 })).toBe(1);
+    expect(calls.filter((call) => call[0] === "bootout")).toHaveLength(2);
+    expect(harness.err.join(" ")).toContain("2222");
+    expect(harness.err.join(" ")).toContain("remained alive");
   });
 });
 
@@ -1006,19 +1791,106 @@ describe("restartBackground", () => {
 });
 
 describe("stopBackground", () => {
-  it("boots the service out and removes the plist", async () => {
-    const { runner, calls } = makeRunner({ loaded: true });
+  it("boots maintenance out before the service and removes both plists", async () => {
+    const { runner, calls } = makeRunner({ loaded: true, maintenanceLoaded: true, maintenancePid: 7777 });
     const target = makeTarget();
     const existing = makeSource(target, { pid: 4321 });
-    const harness = makeHarness({ runner, list: listReturning(() => [existing]) });
+    let clearedIntents = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => [existing]),
+      clearLaunchdLogMaintenanceIntent: async () => { clearedIntents += 1; },
+    });
 
     const code = await stopBackground(target, harness.deps);
 
     expect(code).toBe(0);
-    expect(calls.map((call) => call[0])).toContain("bootout");
+    const bootouts = calls.filter((call) => call[0] === "bootout").map((call) => call[1]);
+    expect(bootouts[0]).toContain("com.mono-agent-maintenance.");
+    expect(bootouts[1]).toContain(target.label);
+    expect(harness.removed).toContain(
+      resolve(target.paths.launchAgentsDir, "com.mono-agent-maintenance.demo-0a1b2c3d.plist"),
+    );
     expect(harness.removed).toContain(target.paths.plistPath);
     expect(harness.removed).toContain(resolve(target.registryDir, `${existing.sourceId}.json`));
     expect(harness.out.join("")).toContain("Stopped");
+    expect(clearedIntents).toBe(1);
+  });
+
+  it("fails closed on an invalidated maintenance phase whose launchd writer is already gone", async () => {
+    const { runner, calls } = makeRunner({ loaded: false });
+    const target = makeTarget();
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      readLaunchdLogMaintenanceIntent: async () => ({
+        version: 1,
+        phase: "stopping",
+        label: target.label,
+        plistFingerprint: "plist-identity",
+      }),
+    });
+
+    expect(await stopBackground(target, harness.deps, POLL)).toBe(1);
+    expect(calls.map((call) => call[0])).not.toContain("bootout");
+    expect(harness.removed).toEqual([]);
+    expect(harness.err.join(" ")).toContain("without stopped-writer proof");
+  });
+
+  it("invalidates and renews a stopped phase around explicit-stop PID proof", async () => {
+    const { runner } = makeRunner({ loaded: true, initialPid: 4321 });
+    const target = makeTarget();
+    const stoppedIntent = {
+      version: 1 as const,
+      phase: "stopped" as const,
+      label: target.label,
+      plistFingerprint: "plist-identity",
+    };
+    const lifecycle: string[] = [];
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => [makeSource(target, { pid: 4321 })]),
+      readLaunchdLogMaintenanceIntent: async () => stoppedIntent,
+      markLaunchdLogMaintenanceStopping: async (_paths, expected) => {
+        lifecycle.push("stopping");
+        return { ...expected, phase: "stopping" };
+      },
+      markLaunchdLogMaintenanceStopped: async (_paths, expected) => {
+        expect(runner.isLoaded(target.label)).toBe(false);
+        lifecycle.push("stopped");
+        return { ...expected, phase: "stopped" };
+      },
+      clearLaunchdLogMaintenanceIntent: async (_paths, expected) => {
+        expect(expected?.phase).toBe("stopped");
+        lifecycle.push("clear");
+      },
+    });
+
+    expect(await stopBackground(target, harness.deps, POLL)).toBe(0);
+    expect(lifecycle).toEqual(["stopping", "stopped", "clear"]);
+  });
+
+  it("preserves both definitions and never touches the main service when maintenance cannot stop", async () => {
+    const { runner, calls } = makeRunner({
+      loaded: true,
+      maintenanceLoaded: true,
+      maintenancePid: 7777,
+      maintenanceBootoutKeepsLoaded: true,
+    });
+    const target = makeTarget();
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => [makeSource(target, { pid: 4321 })]),
+      isAlive: (pid) => pid === 4321 || pid === 7777,
+    });
+
+    expect(await stopBackground(target, harness.deps, { timeoutMs: 300, intervalMs: 100 })).toBe(1);
+    expect(calls.filter((call) => call[0] === "bootout" && call[1]?.endsWith(`/${target.label}`))).toHaveLength(0);
+    expect(harness.removed).not.toContain(target.paths.plistPath);
+    expect(harness.removed).not.toContain(
+      resolve(target.paths.launchAgentsDir, "com.mono-agent-maintenance.demo-0a1b2c3d.plist"),
+    );
+    expect(harness.err.join(" ")).toContain("Failed to stop scheduled log maintenance");
   });
 
   it("tolerates a not-loaded bootout and unlinks a dead instance's manifest", async () => {
@@ -1036,7 +1908,12 @@ describe("stopBackground", () => {
   });
 
   it("reports failure when bootout errors and the service is still loaded", async () => {
-    const { runner } = makeRunner({ loaded: true, bootoutCode: 1, bootoutKeepsLoaded: true });
+    const { runner } = makeRunner({
+      loaded: true,
+      bootoutCode: 1,
+      bootoutKeepsLoaded: true,
+      maintenanceLoaded: true,
+    });
     const target = makeTarget();
     const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target)]), isAlive: () => true });
 
@@ -1045,7 +1922,32 @@ describe("stopBackground", () => {
     expect(code).toBe(1);
     expect(harness.removed).not.toContain(target.paths.plistPath);
     expect(harness.err.join("")).toContain("Failed to prove");
-    expect(harness.err.join("")).toContain("plist was preserved");
+    expect(harness.err.join("")).toContain("plists were preserved");
+    expect(runner.isLoaded("com.mono-agent-maintenance.demo-0a1b2c3d")).toBe(true);
+  });
+
+  it("preserves both definitions and reports when helper restoration also fails", async () => {
+    const { runner, calls } = makeRunner({
+      loaded: true,
+      bootoutCode: 1,
+      bootoutKeepsLoaded: true,
+      maintenanceLoaded: true,
+      maintenancePid: 7777,
+      maintenanceBootstrapCode: 5,
+    });
+    const target = makeTarget();
+    const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target)]) });
+
+    expect(await stopBackground(target, harness.deps, { timeoutMs: 300, intervalMs: 100 })).toBe(1);
+    const mutations = calls.filter((call) => call[0] === "bootout" || call[0] === "bootstrap");
+    expect(mutations.map((call) => call[0])).toEqual(["bootout", "bootout", "bootstrap"]);
+    expect(harness.removed).not.toContain(target.paths.plistPath);
+    expect(harness.removed).not.toContain(
+      resolve(target.paths.launchAgentsDir, "com.mono-agent-maintenance.demo-0a1b2c3d.plist"),
+    );
+    expect(runner.isLoaded(target.label)).toBe(true);
+    expect(runner.isLoaded("com.mono-agent-maintenance.demo-0a1b2c3d")).toBe(false);
+    expect(harness.err.join(" ")).toContain("Scheduled log maintenance also could not be restored");
   });
 
   it("preserves the plist when launchd unloads but the recorded worker pid remains alive", async () => {
@@ -1059,7 +1961,7 @@ describe("stopBackground", () => {
 
     expect(await stopBackground(target, harness.deps, { timeoutMs: 300, intervalMs: 100 })).toBe(1);
     expect(harness.removed).not.toContain(target.paths.plistPath);
-    expect(harness.err.join("")).toContain("Worker pid(s) 4321 are still alive");
+    expect(harness.err.join("")).toContain(`${target.label} pid(s) 4321 remained alive`);
   });
 });
 

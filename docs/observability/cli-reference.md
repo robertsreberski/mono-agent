@@ -19,12 +19,12 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `presets` | List the built-in setup presets or show a preset's generated config, `.env.example`, and checklist. Replaces the deprecated `recipes` alias, which is removed in `v2.0.0`. | `list`, `show <id>` |
 | `auth login` | Run direct Codex browser/device login, Pi OAuth for Anthropic/GitHub Copilot/OpenAI Codex, or the OpenCode-Go API-key flow. OpenCode-Go uses masked TTY input by default; `--api-key-stdin` is the explicit headless input mode. Pi credentials are promoted under an owner-only lock with stale-lock repair only when safely proven. | `<provider\|codex>`, `--pi-auth-path <path>`, `--api-key-stdin`, `--codex-auth browser\|device`, `--config <path>` |
 | `sandbox` | Inspect, install, or functionally prove the pinned SRT runtime. Managed setup is private-cache and macOS-only. | `status`, `setup`, `check` |
-| `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias). With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>`, `--json` |
+| `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias), including a read-only exact-byte inventory of this config's managed launchd stdout/stderr and retained generations. With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>`, `--json` |
 | `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>` |
 | `memory` | Preview, strictly audit, and safely maintain the configured memory store and its durable completed-turn intake. | `stats`, `today`, `show`, `search`, `top`, `audit`, `inspect`, `retry`, `resolve`, `rebuild`, `rollback`, `adopt-replay`; `--strict`, `--limit`, `--json` |
-| `start` | Start the agent as a background launchd service (or foreground worker). | `--config <path>`, `--env-file <path>`, `--foreground` / `-f` |
-| `restart` | Restart the background instance for this config (starts it if stopped). | `--config <path>`, `--env-file <path>`, `--force` |
-| `stop` | Stop the background instance and remove its LaunchAgent. | `--config <path>`, `--env-file <path>` |
+| `start` | Start the agent as a background launchd service (or foreground worker). Background start also installs the fixed-policy one-shot log-maintenance LaunchAgent. | `--config <path>`, `--env-file <path>`, `--foreground` / `-f` |
+| `restart` | Restart the background instance for this config (starts it if stopped), maintaining logs only while the old writer is proven down. | `--config <path>`, `--env-file <path>`, `--force` |
+| `stop` | Stop the background instance, unloading log maintenance first, and remove both LaunchAgent definitions. | `--config <path>`, `--env-file <path>` |
 | `status` | Show this config's instance plus any other running instances. | `--config <path>`, `--env-file <path>` |
 | `logs` | Print (and optionally follow) the background instance's log files. | `--config <path>`, `--env-file <path>`, `--follow` / `-f`, `--lines <n>` |
 | `web` | Serve the read-only Session Recorder web PWA for every discovered running agent. | `--host <addr>`, `--port <n>`, `--no-open`, `--allow-non-loopback`, `--show-auth-url`, `--include-memory`, `--max-runs <n>`, `--config <path>`, `--env-file <path>` |
@@ -55,6 +55,24 @@ MONO_AGENT_TELEGRAM_BOT_TOKEN=123456:ABC mono-agent start
 ```
 
 Background commands (`start`, `restart`, `stop`, `status`, `logs`) require macOS (launchd). On other platforms use `mono-agent start --foreground`. See [Sessions & concurrency](/runtime/sessions-concurrency/) for how the background worker keeps conversations alive.
+
+Each managed macOS instance has active stdout/stderr files plus three retained
+generations under `~/.mono-agent/logs/`. Every file is capped at 5 MiB by a
+scheduled one-shot check every five minutes, so the post-maintenance ceiling is
+20 MiB per stream. Rotation runs only under the ordinary per-config lifecycle
+lock after launchd unload and PID-death proof; it uses owner-only temporary
+files, bounded tails, fsync, destination identity checks, atomic renames, and a
+per-agent recovery journal. A distinct per-agent lifecycle intent is atomically
+published as `stopping` before bootout, promoted to `stopped` only after unload
+plus observed-PID death proof, then changed to `restoring` before bootstrap so
+the old proof cannot authorize rotation around a replacement writer. It is
+cleared only after exact-plist and live-worker proof. If a pre-proof maintainer dies after launchd loses the PID, recovery fails
+closed instead of rotating from an unproven unloaded state.
+The scheduler owns `/dev/null` output and no `KeepAlive`, so it cannot create a
+second unbounded log. Between checks the active writer can temporarily exceed
+the cap; `validate` / `doctor` reports exact current active, retained, and total
+bytes for safely inspected files without changing the filesystem. Unsafe or
+unreadable byte inventory is reported as unavailable.
 
 ## `init`
 

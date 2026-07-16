@@ -8,6 +8,7 @@ import {
   MANAGED_BACKGROUND_WORKER_ENV,
   sanitizeManagedBackgroundWorkerEnvironment,
 } from "./background-runtime.js";
+import { isBackgroundOperationalEnvName } from "./background-environment.js";
 import { readCliDotenvFile } from "./first-run-readiness.js";
 import { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
@@ -37,7 +38,11 @@ export type {
   RunProviderSetupBeforeInitOptions,
   SecretChecklistDisplayRow,
 } from "./cli-init-command.js";
-import { runBackgroundCommand, runStart } from "./cli-background-command.js";
+import {
+  runBackgroundCommand,
+  runLaunchdLogMaintenanceCommand,
+  runStart,
+} from "./cli-background-command.js";
 export {
   describeChannelStatus,
   ensureStartable,
@@ -49,6 +54,10 @@ export type {
   PrintAppStatusOptions,
 } from "./cli-background-command.js";
 import { runMetrics } from "./metrics.js";
+import {
+  INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+  MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
+} from "./launchd.js";
 import { runSandboxCommand } from "./cli-sandbox-command.js";
 export { runSandboxCommand } from "./cli-sandbox-command.js";
 export type { SandboxCommandDependencies } from "./cli-sandbox-command.js";
@@ -90,6 +99,22 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     }
     process.stderr.write(ui.errorLine(error instanceof Error ? error.message : String(error)));
     process.stdout.write(`\n${renderHelp()}`);
+    return 2;
+  }
+
+  const managedLaunchdLogMaintenance =
+    args.command === INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND
+    && process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV] === "1";
+  if (args.command === INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND) {
+    if (!managedLaunchdLogMaintenance) {
+      process.stderr.write(ui.errorLine("The launchd log maintenance command is reserved for its managed LaunchAgent."));
+      return 2;
+    }
+    sanitizeManagedLaunchdLogMaintenanceEnvironment(process.env);
+    return await runLaunchdLogMaintenanceCommand(args);
+  }
+  if (process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV] === "1") {
+    process.stderr.write(ui.errorLine("The managed log-maintenance marker cannot authorize another CLI command."));
     return 2;
   }
 
@@ -286,6 +311,17 @@ function writeCliDeprecationHints(
       "`--fallback-models` is deprecated and will be removed in v2.0.0; repeat `--fallback <ref>` instead.",
     ));
   }
+}
+
+function sanitizeManagedLaunchdLogMaintenanceEnvironment(
+  env: Record<string, string | undefined>,
+): void {
+  for (const name of Object.keys(env)) {
+    if (name !== MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV && !isBackgroundOperationalEnvName(name)) {
+      delete env[name];
+    }
+  }
+  delete env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV];
 }
 
 /**

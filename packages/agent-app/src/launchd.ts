@@ -27,6 +27,11 @@ export interface LaunchdPaths {
   readonly launchAgentsDir: string;
 }
 
+export interface LaunchdMaintenancePaths {
+  readonly label: string;
+  readonly plistPath: string;
+}
+
 export interface PlistInput {
   readonly label: string;
   readonly nodePath: string;
@@ -42,15 +47,30 @@ export interface PlistInput {
   readonly environment: Readonly<Record<string, string>>;
 }
 
+export interface MaintenancePlistInput {
+  readonly label: string;
+  readonly nodePath: string;
+  readonly cliPath: string;
+  readonly configPath: string;
+  readonly cwd: string;
+  /** Deliberately allowlisted, non-secret maintenance environment. */
+  readonly environment: Readonly<Record<string, string>>;
+  readonly intervalSeconds: number;
+}
+
 export interface LaunchdServiceInfo {
   readonly loaded: boolean;
   readonly pid?: number;
 }
 
 const LABEL_PREFIX = "com.mono-agent";
+const MAINTENANCE_LABEL_PREFIX = "com.mono-agent-maintenance";
 const MAX_FOLDER_SEGMENT = 40;
 const FALLBACK_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin";
 const PATH_EXTRAS = ["/opt/homebrew/bin", "/usr/local/bin"];
+
+export const INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND = "__launchd-log-maintenance";
+export const MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV = "MONO_AGENT_MANAGED_LOG_MAINTENANCE";
 
 /**
  * A stable, launchd-legal label derived from the resolved config path. The
@@ -80,6 +100,30 @@ export function launchdPathsFor(label: string, home: string = accountHomeDirecto
     plistPath: resolve(launchAgentsDir, `${label}.plist`),
     stdoutPath: resolve(logDir, `${label}.out.log`),
     stderrPath: resolve(logDir, `${label}.err.log`),
+  };
+}
+
+/**
+ * The maintenance label deliberately does not begin with `com.mono-agent.`:
+ * fleet discovery treats that namespace as serving agent instances and must
+ * not mistake a scheduled one-shot helper for an extra agent.
+ */
+export function deriveLaunchdMaintenanceLabel(mainLabel: string): string {
+  const match = /^com\.mono-agent\.([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)$/u.exec(mainLabel);
+  if (match?.[1] === undefined) {
+    throw new Error("Launchd maintenance requires a canonical mono-agent label.");
+  }
+  return `${MAINTENANCE_LABEL_PREFIX}.${match[1]}`;
+}
+
+export function launchdMaintenancePathsFor(
+  mainLabel: string,
+  home: string = accountHomeDirectory(),
+): LaunchdMaintenancePaths {
+  const label = deriveLaunchdMaintenanceLabel(mainLabel);
+  return {
+    label,
+    plistPath: resolve(home, "Library", "LaunchAgents", `${label}.plist`),
   };
 }
 
@@ -142,17 +186,49 @@ ${argsXml}
 `;
 }
 
+/** Scheduled one-shot rotator definition. It owns no logs and never KeepAlives. */
+export function buildLaunchdMaintenancePlistXml(input: MaintenancePlistInput): string {
+  if (!Number.isSafeInteger(input.intervalSeconds) || input.intervalSeconds < 1) {
+    throw new Error("Launchd maintenance interval must be a positive safe integer.");
+  }
+  for (const [name, value] of [
+    ["launchd maintenance label", input.label],
+    ["working directory", input.cwd],
+  ] as const) {
+    assertControlFree(value, name);
+  }
+  const argsXml = buildLaunchdMaintenanceProgramArguments(input)
+    .map((arg) => `    <string>${escapeXml(arg)}</string>`)
+    .join("\n");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${escapeXml(input.label)}</string>
+  <key>ProgramArguments</key>
+  <array>
+${argsXml}
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${escapeXml(input.cwd)}</string>
+  <key>StartInterval</key>
+  <integer>${String(input.intervalSeconds)}</integer>
+  <key>StandardOutPath</key>
+  <string>/dev/null</string>
+  <key>StandardErrorPath</key>
+  <string>/dev/null</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
+`;
+}
+
 /** Exact argv persisted by the managed LaunchAgent producer. */
 export function buildLaunchdProgramArguments(input: PlistInput): readonly string[] {
-  const environmentArguments = Object.entries(input.environment)
-    .sort(([left], [right]) => compareCodeUnits(left, right))
-    .map(([key, value]) => {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)) {
-        throw new Error("Launchd environment names must use the portable identifier grammar.");
-      }
-      assertControlFree(value, `launchd environment ${key}`);
-      return `${key}=${value}`;
-    });
+  const environmentArguments = buildEnvironmentArguments(input.environment);
   const arguments_ = [
     "/usr/bin/env",
     "-i",
@@ -169,6 +245,36 @@ export function buildLaunchdProgramArguments(input: PlistInput): readonly string
   ];
   for (const argument of arguments_) assertControlFree(argument, "launchd program argument");
   return arguments_;
+}
+
+/** Exact argv persisted by the private scheduled maintenance LaunchAgent. */
+export function buildLaunchdMaintenanceProgramArguments(
+  input: MaintenancePlistInput,
+): readonly string[] {
+  const arguments_ = [
+    "/usr/bin/env",
+    "-i",
+    ...buildEnvironmentArguments(input.environment),
+    input.nodePath,
+    input.cliPath,
+    INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+    "--config",
+    input.configPath,
+  ];
+  for (const argument of arguments_) assertControlFree(argument, "launchd maintenance program argument");
+  return arguments_;
+}
+
+function buildEnvironmentArguments(environment: Readonly<Record<string, string>>): string[] {
+  return Object.entries(environment)
+    .sort(([left], [right]) => compareCodeUnits(left, right))
+    .map(([key, value]) => {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)) {
+        throw new Error("Launchd environment names must use the portable identifier grammar.");
+      }
+      assertControlFree(value, `launchd environment ${key}`);
+      return `${key}=${value}`;
+    });
 }
 
 function assertControlFree(value: string, label: string): void {
@@ -211,7 +317,7 @@ export function serviceTarget(label: string, uid: number): string {
 export function makeLaunchctlRunner(): LaunchctlRunner {
   return (args) =>
     new Promise<LaunchctlResult>((resolvePromise) => {
-      const child = spawn("launchctl", [...args], { stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn("/bin/launchctl", [...args], { stdio: ["ignore", "pipe", "pipe"] });
       let stdout = "";
       let stderr = "";
       child.stdout?.on("data", (chunk: Buffer) => {
