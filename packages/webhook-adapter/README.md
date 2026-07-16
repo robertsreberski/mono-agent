@@ -24,6 +24,7 @@ import { startWebhookAdapter } from "@mono-agent/webhook-adapter";
 const webhook = await startWebhookAdapter({
   host: "127.0.0.1",
   port: 4310,
+  apiKey: process.env.MONO_AGENT_WEBHOOK_API_KEY,
   responder,
   endpoints: [
     { name: "invoke", path: "/webhook/invoke" },
@@ -45,10 +46,13 @@ Send a sync invocation:
 ```bash
 curl -X POST "$WEBHOOK_URL/webhook/invoke" \
   -H 'content-type: application/json' \
+  -H "authorization: Bearer $MONO_AGENT_WEBHOOK_API_KEY" \
   -d '{"text":"Run the agent","conversationId":"demo","mode":"sync"}'
 ```
 
 Async mode returns `202` with `requestId` and `statusUrl`; status is process-local memory and is not durable across restarts.
+
+`apiKey` is optional for loopback-only use. When configured, every invocation and async status lookup requires `Authorization: Bearer <key>`; malformed, missing, and incorrect credentials receive the same `401` response. Any non-loopback bind requires both `allowNonLoopback: true` and a non-empty key. Host config reads the key from `webhook.apiKey` / `MONO_AGENT_WEBHOOK_API_KEY`, redacts it from config views, and should normally keep it in the environment rather than committed JSON.
 
 Webhook response metadata contains channel-safe run diagnostics such as the run id and status. Compiled system prompts are retained only in local run artifacts and are never returned by this external HTTP API. As defense in depth, the adapter removes `metadata.summary.systemPrompt` even when a custom responder supplies it; sibling summary fields and unrelated metadata are preserved.
 
@@ -90,7 +94,7 @@ This adapter depends on Express plus shared `@mono-agent/agent-contracts` primit
 
 ## What This Package Does Not Own
 
-It does not build prompts, run models, persist async status, authenticate external webhook providers, manage TLS, expose an operator UI, or own core core agent settings. The adapter binds to loopback by default; public deployment safety is host or reverse-proxy responsibility.
+It does not build prompts, run models, persist async status, verify provider-specific webhook signatures, manage TLS, expose an operator UI, or own core agent settings. The adapter binds to loopback by default and provides optional static bearer authentication; TLS, key rotation, rate limiting, and reverse-proxy policy remain host responsibilities.
 
 ## Verification
 

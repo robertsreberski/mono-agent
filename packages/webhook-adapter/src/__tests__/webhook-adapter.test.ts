@@ -48,6 +48,120 @@ describe("Webhook adapter", () => {
     }
   });
 
+  it("requires the configured bearer token, protects status lookups, and strips secrets from request metadata", async () => {
+    const apiKey = "fixture-webhook-key";
+    const seenHeaders: unknown[] = [];
+    const responderCalls: string[] = [];
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const responder: AgentResponder = {
+      async respond(request, stream) {
+        responderCalls.push(request.text);
+        seenHeaders.push(request.metadata?.webhook);
+        await stream.append(`echo: ${request.text}`);
+        return {};
+      },
+    };
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      apiKey,
+      responder,
+      logger,
+    });
+
+    try {
+      const rejectedAuthorizationHeaders: readonly (string | undefined)[] = [
+        undefined,
+        "Bearer fixture-webhook-kex", // same length: exercises constant-time comparison
+        "Bearer short", // different length: still fails without leaking which part differed
+        `Basic ${apiKey}`,
+        "Bearer   ",
+        `Bearer ${apiKey} extra`,
+      ];
+      for (const authorization of rejectedAuthorizationHeaders) {
+        const response = await fetch(server.invokeUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(authorization === undefined ? {} : { authorization }),
+          },
+          body: JSON.stringify({ text: "must not run", mode: "sync" }),
+        });
+        expect(response.status).toBe(401);
+        await expect(response.json()).resolves.toEqual({
+          status: "unauthorized",
+          error: "Invalid API key.",
+        });
+      }
+      expect(responderCalls).toEqual([]);
+
+      const accepted = await fetch(server.invokeUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+          cookie: "session=fixture-cookie-secret",
+          "proxy-authorization": "Bearer fixture-proxy-secret",
+          "x-api-key": "fixture-secondary-secret",
+          "x-request-id": "safe-request-id",
+        },
+        body: JSON.stringify({ text: "authorized", mode: "async" }),
+      });
+      expect(accepted.status).toBe(202);
+      const acceptedBody = await accepted.json() as { requestId: string; statusUrl: string };
+      expect(responderCalls).toEqual(["authorized"]);
+      expect(seenHeaders).toEqual([
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-request-id": "safe-request-id" }),
+        }),
+      ]);
+      expect(seenHeaders[0]).not.toHaveProperty("headers.authorization");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.cookie");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.proxy-authorization");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.x-api-key");
+
+      const missingStatusAuth = await fetch(`${server.url}${acceptedBody.statusUrl}`);
+      expect(missingStatusAuth.status).toBe(401);
+      const wrongStatusAuth = await fetch(`${server.url}${acceptedBody.statusUrl}`, {
+        headers: { authorization: "Bearer wrong" },
+      });
+      expect(wrongStatusAuth.status).toBe(401);
+      const authorizedStatus = await fetch(`${server.url}${acceptedBody.statusUrl}`, {
+        headers: { authorization: `Bearer ${apiKey}` },
+      });
+      expect(authorizedStatus.status).toBe(200);
+
+      const logged = JSON.stringify(Object.values(logger).map((mock) => mock.mock.calls));
+      expect(logged).not.toContain(apiKey);
+      expect(logged).not.toContain("fixture-cookie-secret");
+      expect(logged).not.toContain("fixture-proxy-secret");
+      expect(logged).not.toContain("fixture-secondary-secret");
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("preserves unauthenticated loopback compatibility when no API key is configured", async () => {
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      responder: echoResponder(),
+    });
+
+    try {
+      const response = await fetch(server.invokeUrl, postJson({ text: "compatible", mode: "sync" }));
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ status: "succeeded", text: "echo: compatible" });
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("strips an unsafe responder system prompt from sync HTTP without changing unrelated metadata", async () => {
     const responder: AgentResponder = {
       async respond(_request, stream) {
@@ -1017,6 +1131,56 @@ describe("Webhook adapter", () => {
         responder: { async respond() { return { text: "ok" }; } },
       }),
     ).rejects.toMatchObject({ code: "unsafe_host" });
+  });
+
+  it("rejects an explicitly allowed non-loopback bind without bearer auth", async () => {
+    await expect(
+      startWebhookAdapter({
+        host: "0.0.0.0",
+        port: 0,
+        allowNonLoopback: true,
+        path: "/webhook/invoke",
+        responder: echoResponder(),
+      }),
+    ).rejects.toMatchObject({ code: "missing_required_config" });
+  });
+
+  it("enforces bearer auth on an explicitly allowed non-loopback bind", async () => {
+    const server = await startWebhookAdapter({
+      host: "0.0.0.0",
+      port: 0,
+      allowNonLoopback: true,
+      apiKey: "fixture-non-loopback-key",
+      path: "/webhook/invoke",
+      responder: echoResponder(),
+    });
+    const invokeUrl = `http://127.0.0.1:${server.port}/webhook/invoke`;
+
+    try {
+      const missing = await fetch(invokeUrl, postJson({ text: "missing", mode: "sync" }));
+      expect(missing.status).toBe(401);
+
+      const incorrect = await fetch(invokeUrl, {
+        ...postJson({ text: "incorrect", mode: "sync" }),
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer wrong-key",
+        },
+      });
+      expect(incorrect.status).toBe(401);
+
+      const correct = await fetch(invokeUrl, {
+        ...postJson({ text: "authorized", mode: "sync" }),
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer fixture-non-loopback-key",
+        },
+      });
+      expect(correct.status).toBe(200);
+      await expect(correct.json()).resolves.toMatchObject({ status: "succeeded", text: "echo: authorized" });
+    } finally {
+      await server.stop();
+    }
   });
 
   it("aborts a hung async run at maxRunMs and reclaims the conversation slot", async () => {

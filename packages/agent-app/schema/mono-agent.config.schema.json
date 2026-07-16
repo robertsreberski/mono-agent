@@ -1713,6 +1713,13 @@
           ],
           "type": "boolean"
         },
+        "apiKey": {
+          "description": "Secret value for webhook.apiKey; prefer the env override.",
+          "examples": [
+            "env:MONO_AGENT_WEBHOOK_API_KEY"
+          ],
+          "type": "string"
+        },
         "defaultMode": {
           "description": "Configures defaultMode for the webhook section.",
           "examples": [

@@ -270,6 +270,7 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | `MONO_AGENT_WEBHOOK_PROMPT` | `webhook.prompt` | Pre-instructions for the default single endpoint. |
 | `MONO_AGENT_WEBHOOK_DEFAULT_MODE` | `webhook.defaultMode` | `sync` or `async`; default `sync`. |
 | `MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK` | `webhook.allowNonLoopback` | Must be `true` for a non-loopback bind. |
+| `MONO_AGENT_WEBHOOK_API_KEY` | `webhook.apiKey` | Optional on loopback; required for any enabled non-loopback bind. Clients send it as a bearer. |
 | `MONO_AGENT_WEBHOOK_RETENTION_MS` | `webhook.retentionMs` | Async status retention in milliseconds; default `300000`. |
 | `MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS` | `webhook.maxStoredRequests` | Maximum retained async statuses; default `100`. |
 | `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON` | `webhook.endpoints[]` | JSON array of named endpoints. |

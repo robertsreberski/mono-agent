@@ -218,6 +218,7 @@ new agent.
     "port": 0,                             // 0 picks a free port
     "path": "/webhook/invoke",
     "allowNonLoopback": false,
+    "apiKey": "env:MONO_AGENT_WEBHOOK_API_KEY", // optional on loopback; required off-loopback
     "defaultMode": "sync",                 // sync | async (202 + status URL polling)
     "endpoints": [
       {

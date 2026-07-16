@@ -12,9 +12,12 @@ import {
 } from "@mono-agent/agent-contracts";
 import {
   assertSafeBind,
+  bearerTokensEqual,
   close,
   hostForUrl,
+  isLoopbackHost,
   listen,
+  readAuthorizationBearer,
 } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
@@ -131,6 +134,8 @@ export interface WebhookAdapterOptions {
   readonly host?: string;
   readonly port?: number;
   readonly allowNonLoopback?: boolean;
+  /** Optional static bearer token. Required for every non-loopback bind. */
+  readonly apiKey?: string;
   readonly retentionMs?: number;
   readonly maxStoredRequests?: number;
   /**
@@ -247,11 +252,19 @@ const DEFAULT_PATH = "/webhook/invoke";
 const DEFAULT_MODE: WebhookInvocationMode = "sync";
 const DEFAULT_RETENTION_MS = 300_000;
 const DEFAULT_MAX_STORED_REQUESTS = 100;
+const SENSITIVE_REQUEST_HEADERS = new Set([
+  "authorization",
+  "cookie",
+  "set-cookie",
+  "proxy-authorization",
+  "x-api-key",
+]);
 
 export async function startWebhookAdapter(options: WebhookAdapterOptions): Promise<WebhookAdapterStartResult> {
   validateOptions(options);
   const host = options.host ?? DEFAULT_HOST;
   const port = options.port ?? DEFAULT_PORT;
+  const apiKey = normalizeOptionalString(options.apiKey);
   const retentionMs = options.retentionMs ?? DEFAULT_RETENTION_MS;
   const maxStoredRequests = options.maxStoredRequests ?? DEFAULT_MAX_STORED_REQUESTS;
   const endpoints = resolveEndpoints(options);
@@ -261,6 +274,13 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       "Webhook adapter refuses to bind a non-loopback host unless allowNonLoopback is true.",
       { host: boundHost },
     ));
+  if (!isLoopbackHost(host) && apiKey === undefined) {
+    throw new WebhookAdapterError(
+      "missing_required_config",
+      "Webhook adapter requires an API key for every non-loopback bind.",
+      { host },
+    );
+  }
 
   const app = express();
   const server = createServer(app);
@@ -272,6 +292,9 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
   app.use(express.json({ limit: "1mb" }));
   for (const endpoint of endpoints) {
     app.post(endpoint.path, (req, res) => {
+      if (!authorize(req, res, apiKey)) {
+        return;
+      }
       void handleInvoke(req, res, endpoint).catch((error: unknown) => {
         options.logger?.error?.("Webhook invocation failed before response.", {
           endpoint: endpoint.name,
@@ -287,6 +310,9 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
   // directory share a status route; lookups hit the shared, requestId-keyed store).
   for (const statusBasePath of new Set(endpoints.map((endpoint) => endpoint.statusBasePath))) {
     app.get(`${statusBasePath}/:requestId`, (req, res) => {
+      if (!authorize(req, res, apiKey)) {
+        return;
+      }
       pruneStatuses(statuses, retentionMs, maxStoredRequests);
       const requestId = req.params.requestId;
       const stored = requestId === undefined ? undefined : statuses.get(requestId);
@@ -363,7 +389,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
           path: req.path,
           receivedAt,
           ...(req.socket.remoteAddress === undefined ? {} : { remoteAddress: req.socket.remoteAddress }),
-          headers: req.headers,
+          headers: sanitizeRequestHeaders(req.headers),
           ...(body.metadata === undefined ? {} : { payloadMetadata: body.metadata }),
           ...(endpoint.notify === true
             ? {
@@ -477,6 +503,30 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       await close(server);
     },
   };
+}
+
+function sanitizeRequestHeaders(
+  headers: Record<string, string | string[] | undefined>,
+): Record<string, string | string[] | undefined> {
+  const sanitized: Record<string, string | string[] | undefined> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (!SENSITIVE_REQUEST_HEADERS.has(name.toLowerCase())) {
+      sanitized[name] = value;
+    }
+  }
+  return sanitized;
+}
+
+function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {
+  if (apiKey === undefined) {
+    return true;
+  }
+  const presented = readAuthorizationBearer(req.header("authorization"));
+  if (presented !== undefined && bearerTokensEqual(presented, apiKey)) {
+    return true;
+  }
+  res.status(401).json({ status: "unauthorized", error: "Invalid API key." });
+  return false;
 }
 
 async function runResponder(input: {
