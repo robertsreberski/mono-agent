@@ -20,7 +20,10 @@ import {
   startA2AProvider,
   type A2AProviderStartResult,
 } from "../index.js";
-import { createIdempotentA2ARequestHandler } from "../idempotency.js";
+import {
+  classifyA2AIdempotencyTransportError,
+  createIdempotentA2ARequestHandler,
+} from "../idempotency.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -532,6 +535,158 @@ describe("durable A2A logical dispatch idempotency", () => {
     }
   });
 
+  it("publishes a complete admission before a concurrent provider can observe it", async () => {
+    const stateDir = await temporaryStateDir();
+    const beforePublication = deferred<void>();
+    const releasePublication = deferred<void>();
+    const afterConcurrentPublication = deferred<void>();
+    const releaseConcurrentCleanup = deferred<void>();
+    const delegateEntered = deferred<void>();
+    let delegateCalls = 0;
+    const terminal: Message = {
+      messageId: "publication-race-response",
+      contextId: "publication-race-context",
+      taskId: "",
+      role: Role.ROLE_AGENT,
+      parts: [{
+        content: { $case: "text", value: "one durable execution" },
+        filename: "",
+        mediaType: "text/plain",
+        metadata: {},
+      }],
+      metadata: {},
+      extensions: [],
+      referenceTaskIds: [],
+    };
+    const delegate = {
+      async sendMessage() {
+        delegateCalls += 1;
+        delegateEntered.resolve();
+        return terminal;
+      },
+    } as unknown as A2ARequestHandler;
+    const options = {
+      stateDir,
+      namespace: "test-logical-provider",
+      retentionMs: 60_000,
+      maxRecords: 100,
+    } as const;
+    const [pausedPublisher, concurrentPublisher] = await Promise.all([
+      createIdempotentA2ARequestHandler({
+        delegate,
+        taskStore: new InMemoryTaskStore(),
+        options,
+        storeHooks: {
+          async beforeAdmissionPublish() {
+            beforePublication.resolve();
+            await releasePublication.promise;
+          },
+        },
+      }),
+      createIdempotentA2ARequestHandler({
+        delegate,
+        taskStore: new InMemoryTaskStore(),
+        options,
+        storeHooks: {
+          async afterAdmissionPublish() {
+            afterConcurrentPublication.resolve();
+            await releaseConcurrentCleanup.promise;
+          },
+        },
+      }),
+    ]);
+    const key = "logical-atomic-publication-1";
+    const keyHash = testStoreKeyHash(key);
+    const request: SendMessageRequest = {
+      tenant: "",
+      message: {
+        messageId: "publication-race-request",
+        contextId: "publication-race-context",
+        taskId: "",
+        role: Role.ROLE_USER,
+        parts: [{
+          content: { $case: "text", value: "publish this admission atomically" },
+          filename: "",
+          mediaType: "text/plain",
+          metadata: {},
+        }],
+        metadata: {},
+        extensions: [],
+        referenceTaskIds: [],
+      },
+      configuration: {
+        acceptedOutputModes: ["text/plain"],
+        taskPushNotificationConfig: undefined,
+        historyLength: 1,
+        returnImmediately: false,
+      },
+      metadata: {
+        [A2A_IDEMPOTENCY_METADATA_KEY]: { schemaVersion: 1, key },
+      },
+    };
+    const context = () => new ServerCallContext({
+      requestedExtensions: [A2A_IDEMPOTENCY_EXTENSION_URI],
+    });
+    const pausedOutcome = captureOutcome(pausedPublisher.sendMessage(request, context()));
+    let concurrentOutcome: Promise<CapturedOutcome<Message | Task>> | undefined;
+
+    try {
+      await expectMilestoneBeforeSettlement(
+        beforePublication.promise,
+        pausedOutcome,
+        "pre-publication staging",
+      );
+      await expect(readFile(join(stateDir, `${keyHash}.json`), "utf8"))
+        .rejects.toMatchObject({ code: "ENOENT" });
+      const stagedNames = (await readdir(stateDir)).filter((name) => (
+        name.startsWith(`.${keyHash}.`) && name.endsWith(".tmp")
+      ));
+      expect(stagedNames).toHaveLength(1);
+      expect(JSON.parse(await readFile(join(stateDir, stagedNames[0] as string), "utf8")))
+        .toMatchObject({ keyHash, status: "active" });
+
+      concurrentOutcome = captureOutcome(concurrentPublisher.sendMessage(request, context()));
+      await expectMilestoneBeforeSettlement(
+        afterConcurrentPublication.promise,
+        concurrentOutcome,
+        "concurrent publication",
+      );
+      expect((await stat(join(stateDir, `${keyHash}.json`))).nlink).toBe(2);
+      releasePublication.resolve();
+
+      const outcome = await pausedOutcome;
+      expect(outcome.status).toBe("rejected");
+      if (outcome.status !== "rejected" || !(outcome.reason instanceof Error)) {
+        throw new Error("Expected the losing admission to fail with an Error.");
+      }
+      expect(classifyA2AIdempotencyTransportError(outcome.reason.message)).toBe("in_doubt");
+      expect(delegateCalls).toBe(0);
+
+      releaseConcurrentCleanup.resolve();
+      await expectMilestoneBeforeSettlement(
+        delegateEntered.promise,
+        concurrentOutcome,
+        "delegate entry",
+      );
+      const concurrentResult = await concurrentOutcome;
+      expect(concurrentResult.status).toBe("fulfilled");
+      if (concurrentResult.status !== "fulfilled") {
+        throw concurrentResult.reason;
+      }
+      expect(concurrentResult.value).toEqual(terminal);
+      expect(delegateCalls).toBe(1);
+      expect((await stat(join(stateDir, `${keyHash}.json`))).nlink).toBe(1);
+      expect((await readdir(stateDir)).filter((name) => name.startsWith(`.${keyHash}.`))).toHaveLength(0);
+    } finally {
+      releasePublication.resolve();
+      releaseConcurrentCleanup.resolve();
+      await Promise.allSettled([
+        pausedOutcome,
+        ...(concurrentOutcome === undefined ? [] : [concurrentOutcome]),
+      ]);
+    }
+  });
+
   it.each(["HTTP+JSON", "JSONRPC"] as const)(
     "returns a typed integrity conflict over %s without a second responder call",
     async (transport) => {
@@ -937,6 +1092,34 @@ function assertRawPartBuffer(result: Message | Task, expected: Buffer): void {
   }
   expect(Buffer.isBuffer(content.value)).toBe(true);
   expect(content.value.equals(expected)).toBe(true);
+}
+
+type CapturedOutcome<T> =
+  | { readonly status: "fulfilled"; readonly value: T }
+  | { readonly status: "rejected"; readonly reason: unknown };
+
+function captureOutcome<T>(promise: Promise<T>): Promise<CapturedOutcome<T>> {
+  return promise.then(
+    (value) => ({ status: "fulfilled", value } as const),
+    (reason: unknown) => ({ status: "rejected", reason } as const),
+  );
+}
+
+async function expectMilestoneBeforeSettlement<T>(
+  milestone: Promise<void>,
+  outcome: Promise<CapturedOutcome<T>>,
+  label: string,
+): Promise<void> {
+  const first = await Promise.race([
+    milestone.then(() => ({ kind: "milestone" } as const)),
+    outcome.then((settled) => ({ kind: "settled", settled } as const)),
+  ]);
+  if (first.kind === "settled") {
+    const detail = first.settled.status === "rejected" && first.settled.reason instanceof Error
+      ? `: ${first.settled.reason.message}`
+      : "";
+    throw new Error(`${label} was not reached before the handler settled${detail}`);
+  }
 }
 
 function deferred<T>() {
