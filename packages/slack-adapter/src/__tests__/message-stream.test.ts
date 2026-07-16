@@ -103,6 +103,83 @@ describe("SlackMessageStream", () => {
     ]);
   });
 
+  it("warns before the first silent-requested post and only once across overflow posts", async () => {
+    const api = new FakeSlackApi();
+    const postCountsAtWarning: number[] = [];
+    const warn = vi.fn(() => {
+      postCountsAtWarning.push(api.postMessageCalls.length);
+    });
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C1",
+      finalOnly: false,
+      editDebounceMs: 10_000,
+      maxMessageChars: 32,
+      silent: true,
+      logger: { warn },
+    });
+
+    await stream.append("draft");
+    await stream.finish("a".repeat(70));
+
+    expect(postCountsAtWarning).toEqual([0]);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      "Slack chat.postMessage has no bot-controlled silent-delivery option; posting with normal Slack notification behavior.",
+      { silentRequested: true, silentApplied: false },
+    );
+    expect(api.postMessageCalls.map((call) => call.text)).toEqual([
+      "Thinking...",
+      "a".repeat(32),
+      "a".repeat(6),
+    ]);
+    expect(api.postMessageCalls.every((call) => !Object.hasOwn(call, "silent"))).toBe(true);
+  });
+
+  it("does not let a throwing silent-delivery warning block the Slack post", async () => {
+    const api = new FakeSlackApi();
+    const warn = vi.fn(() => {
+      throw new Error("logger unavailable");
+    });
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C1",
+      finalOnly: true,
+      maxSendRetries: 0,
+      silent: true,
+      logger: { warn },
+    });
+
+    await expect(stream.finish("delivered normally")).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalledOnce();
+    expect(api.postMessageCalls).toEqual([
+      { channel: "C1", text: "delivered normally", mrkdwn: true },
+    ]);
+  });
+
+  it.each([
+    ["omitted", undefined],
+    ["false", false],
+  ] as const)("does not warn when silent is %s", async (_label, silent) => {
+    const api = new FakeSlackApi();
+    const warn = vi.fn();
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C1",
+      finalOnly: true,
+      ...(silent === undefined ? {} : { silent }),
+      logger: { warn },
+    });
+
+    await stream.finish("normal delivery");
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(api.postMessageCalls).toEqual([
+      { channel: "C1", text: "normal delivery", mrkdwn: true },
+    ]);
+  });
+
   it("notifies onPosted with the channel and ts of each posted message", async () => {
     const api = new FakeSlackApi(); // nextTs = 100 → first post "100.000001"
     const posted: Array<{ ts: string; channel: string }> = [];
@@ -217,8 +294,12 @@ describe("SlackMessageStream", () => {
     expect(retriedApi.postMessageCalls.map((call) => call.client_msg_id)).toEqual(firstIds);
   });
 
-  it("reuses the logical post client_msg_id when Slack retries before returning a receipt", async () => {
+  it("reuses the logical post client_msg_id and warns once when Slack retries before returning a receipt", async () => {
     const postCalls: SlackChatPostMessageParams[] = [];
+    const postCountsAtWarning: number[] = [];
+    const warn = vi.fn(() => {
+      postCountsAtWarning.push(postCalls.length);
+    });
     let attempt = 0;
     const api: SlackWebApi = {
       async authTest() {
@@ -249,6 +330,8 @@ describe("SlackMessageStream", () => {
       clientMsgId: "5d465a3c-f7f3-4ac3-9eb6-9afc290211fa",
       maxSendRetries: 1,
       retryBaseDelayMs: 0,
+      silent: true,
+      logger: { warn },
     });
 
     await expect(stream.finish("durable answer")).resolves.toBeUndefined();
@@ -256,6 +339,9 @@ describe("SlackMessageStream", () => {
     expect(postCalls).toHaveLength(2);
     expect(postCalls[0]?.client_msg_id).toMatch(/^[a-f0-9-]{36}$/u);
     expect(postCalls[1]?.client_msg_id).toBe(postCalls[0]?.client_msg_id);
+    expect(postCountsAtWarning).toEqual([0]);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(postCalls.every((call) => !Object.hasOwn(call, "silent"))).toBe(true);
   });
 
   it("flushes final output and sends overflow chunks as thread replies (no labels)", async () => {

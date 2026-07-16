@@ -64,6 +64,7 @@ export type {
   SlackHomeButton,
   SlackHomeTabOptions,
   SlackInteractionHandlingResult,
+  SlackNotifyOptions,
   SlackNotifyResult,
   SlackRequestMetadata,
   SlackShortcutBinding,

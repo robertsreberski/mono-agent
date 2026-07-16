@@ -31,6 +31,18 @@ applies inside a Slack **AI-assistant thread** and requires the app to have the
 regular channels/DMs (or without the scope) the call errors and the adapter uses
 the reaction instead — no configuration needed for the fallback.
 
+## Silent-delivery limitation
+
+Programmatic proactive delivery accepts `silent: true` in both
+`SlackNotifyOptions` and `SlackMessageStreamOptions` so channel integrations can
+use a common option shape. Slack's `chat.postMessage` API has no bot-controlled
+equivalent to Telegram's `disable_notification`, however. The adapter therefore
+posts with normal Slack notification behavior and, when a logger is configured,
+emits one explicit warning; it never forwards an invented `silent` field or
+claims suppression succeeded. Slack client/workspace notification settings
+remain authoritative. A caller that requires guaranteed quiet hours must skip
+or defer the Slack delivery.
+
 ## Shortcuts and App Home
 
 `slack.shortcuts` binds global or message shortcut callback IDs to prompts.

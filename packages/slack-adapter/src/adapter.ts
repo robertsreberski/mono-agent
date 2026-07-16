@@ -122,6 +122,16 @@ export interface SlackNotifyOptions {
   readonly verbatim?: boolean;
   /** Stable host delivery identity. Converted to Slack's UUID client_msg_id. */
   readonly deliveryKey?: string;
+  /**
+   * Request notification-suppressed delivery for cross-channel parity.
+   *
+   * Slack's `chat.postMessage` contract has no bot-controlled equivalent to
+   * Telegram's `disable_notification`. The adapter therefore posts normally
+   * and, when a logger is configured, emits an explicit warning instead of
+   * forwarding an invented field or claiming that Slack client/workspace
+   * notifications were suppressed.
+   */
+  readonly silent?: boolean;
 }
 
 export interface SlackContinuationSynthesisInput {
@@ -763,8 +773,26 @@ export class SlackAdapter {
     try {
       return await queue.run(() =>
         options?.verbatim === true
-          ? this.runVerbatimDelivery(conversationId, channelId, threadTs, text, runKey, controller, options.deliveryKey)
-          : this.runProactiveTurn(conversationId, channelId, threadTs, text, runKey, controller, options?.deliveryKey),
+          ? this.runVerbatimDelivery(
+              conversationId,
+              channelId,
+              threadTs,
+              text,
+              runKey,
+              controller,
+              options.deliveryKey,
+              options.silent,
+            )
+          : this.runProactiveTurn(
+              conversationId,
+              channelId,
+              threadTs,
+              text,
+              runKey,
+              controller,
+              options?.deliveryKey,
+              options?.silent,
+            ),
       );
     } catch (error) {
       if (isSerialQueueFullError(error)) {
@@ -1071,6 +1099,7 @@ export class SlackAdapter {
     threadTs: SlackMessageTs | undefined,
     controller: AbortController,
     deliveryKey?: string,
+    silent?: boolean,
     onAnswerReceipt?: (ref: { readonly ts: SlackMessageTs; readonly channel: SlackChannelId }) => void,
   ): SlackMessageStreamOptions {
     const streamOptions: SlackMessageStreamOptions = {
@@ -1080,6 +1109,7 @@ export class SlackAdapter {
       finalOnly: this.streamOptions.finalOnly ?? true,
       abortSignal: controller.signal,
       ...(deliveryKey === undefined ? {} : { clientMsgId: slackClientMessageId(deliveryKey) }),
+      ...(silent === true ? { silent: true } : {}),
     };
     if (threadTs !== undefined) {
       streamOptions.threadTs = threadTs;
@@ -1137,13 +1167,21 @@ export class SlackAdapter {
     runKey: string,
     controller: AbortController,
     deliveryKey?: string,
+    silent?: boolean,
   ): Promise<SlackNotifyResult> {
     let answerReceipt: { readonly ts: SlackMessageTs; readonly channel: SlackChannelId } | undefined;
-    const stream = new SlackMessageStream(
-      this.buildProactiveStreamOptions(conversationId, channelId, threadTs, controller, deliveryKey, (ref) => {
+    const streamOptions = this.buildProactiveStreamOptions(
+      conversationId,
+      channelId,
+      threadTs,
+      controller,
+      deliveryKey,
+      silent,
+      (ref) => {
         answerReceipt = ref;
-      }),
+      },
     );
+    const stream = new SlackMessageStream(streamOptions);
     try {
       if (controller.signal.aborted) {
         return { delivered: false, reason: "cancelled", code: "cancelled", retryable: false };
@@ -1214,13 +1252,21 @@ export class SlackAdapter {
     runKey: string,
     controller: AbortController,
     deliveryKey?: string,
+    silent?: boolean,
   ): Promise<SlackNotifyResult> {
     let answerReceipt: { readonly ts: SlackMessageTs; readonly channel: SlackChannelId } | undefined;
-    const stream = new SlackMessageStream(
-      this.buildProactiveStreamOptions(conversationId, channelId, threadTs, controller, deliveryKey, (ref) => {
+    const streamOptions = this.buildProactiveStreamOptions(
+      conversationId,
+      channelId,
+      threadTs,
+      controller,
+      deliveryKey,
+      silent,
+      (ref) => {
         answerReceipt = ref;
-      }),
+      },
     );
+    const stream = new SlackMessageStream(streamOptions);
     try {
       if (controller.signal.aborted) {
         return { delivered: false, reason: "cancelled", code: "cancelled", retryable: false };
