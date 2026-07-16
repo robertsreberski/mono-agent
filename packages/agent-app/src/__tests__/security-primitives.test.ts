@@ -473,6 +473,52 @@ describe("shared security primitives", () => {
     await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("keeps owner publication single-linked while a concurrent acquirer inspects it", async () => {
+    const dir = await root();
+    const path = join(dir, "publication-interval.lock");
+    const ownerPath = join(path, "owner.json");
+    const content = `${JSON.stringify({
+      schema: "mono-agent.test-lock.v1",
+      pid: process.pid,
+      token: "publishing-owner",
+      createdAt: new Date(0).toISOString(),
+      incarnation,
+    })}\n`;
+    const common = {
+      path,
+      label: "Publication-interval test lock",
+      schemaTag: "mono-agent.test-lock.v1",
+      ownerlessGraceMs: 60_000,
+      processIncarnation: incarnation,
+      isSameProcessIncarnation: async () => true,
+    };
+    let publishedLinkCount: number | undefined;
+    let contender: Awaited<ReturnType<typeof acquireOwnerPrivateLock>> = undefined;
+
+    await mkdir(path, { mode: 0o700 });
+    await secureFileReplace({
+      path: ownerPath,
+      contents: content,
+      mode: 0o600,
+      target: {
+        expected: { kind: "missing" },
+        recovery: "preserve-current",
+        afterPublish: async (publishedPath, temporaryPath) => {
+          publishedLinkCount = (await lstat(publishedPath)).nlink;
+          await expect(lstat(temporaryPath)).rejects.toMatchObject({ code: "ENOENT" });
+          contender = await acquireOwnerPrivateLock({
+            ...common,
+            randomToken: () => "concurrent-owner",
+          });
+        },
+      },
+    });
+
+    expect(publishedLinkCount).toBe(1);
+    expect(contender).toBeUndefined();
+    expect(await readFile(ownerPath, "utf8")).toBe(content);
+  });
+
   it("does not overwrite a competing owner published in the mkdir window", async () => {
     const dir = await root();
     const path = join(dir, "publication-race.lock");

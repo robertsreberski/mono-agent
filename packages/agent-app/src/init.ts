@@ -170,7 +170,7 @@ export interface SecretEnvPersistenceOptions {
   readonly beforePromotion?: (targetPath: string, temporaryPath: string) => void | Promise<void>;
   /** Test seam after target claim and immediately before exclusive replacement link. */
   readonly beforeInstallLink?: (targetPath: string, temporaryPath: string) => void | Promise<void>;
-  /** Test seam after exclusive replacement link and before claimed-inode cleanup. */
+  /** Test seam after exclusive replacement publication and staging-path detach, before claimed-inode cleanup. */
   readonly afterInstallLink?: (targetPath: string, temporaryPath: string) => void | Promise<void>;
 }
 
