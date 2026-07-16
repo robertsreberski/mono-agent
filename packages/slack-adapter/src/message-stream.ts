@@ -263,10 +263,15 @@ class SlackChannelTransport implements ChannelTransport {
       return;
     }
     this.silentWarningEmitted = true;
-    this.logger?.warn?.(
-      "Slack chat.postMessage has no bot-controlled silent-delivery option; posting with normal Slack notification behavior.",
-      { silentRequested: true, silentApplied: false },
-    );
+    try {
+      this.logger?.warn?.(
+        "Slack chat.postMessage has no bot-controlled silent-delivery option; posting with normal Slack notification behavior.",
+        { silentRequested: true, silentApplied: false },
+      );
+    } catch {
+      // Diagnostics are best-effort. A broken logger must not prevent or retry
+      // the normal Slack delivery this warning describes.
+    }
   }
 
   async edit(
