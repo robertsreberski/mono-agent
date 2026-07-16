@@ -46,6 +46,9 @@ const lmStudioEmbeddings = createEmbeddingProvider({
 LM Studio authentication is optional. Hosts may resolve a key from `apiKeyEnv`
 and pass it as `apiKey`; do not invent a dummy key for a keyless server. Provider
 selection is exclusive—an LM Studio failure never falls back to Ollama or OpenAI.
+Fetch timeouts (`AbortError`) and connection failures (`TypeError`) from all three
+providers surface as `MemorySearchError` with code `embedding_request_failed` and
+retain the original transport error as `cause`.
 The config-first guided wizard and provider-native model discovery/probe live in
 `@mono-agent/agent-app`, not this package.
 

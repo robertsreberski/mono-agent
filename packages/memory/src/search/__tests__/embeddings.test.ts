@@ -77,14 +77,48 @@ describe("embedding provider failure taxonomy", () => {
     expect(error).toMatchObject({ code: "embedding_request_failed" });
   });
 
-  it.each(providerFactories)("preserves structured %s network failures unchanged", async (_label, createProvider) => {
-    const cause = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
-    const networkFailure = Object.assign(new TypeError("fetch failed"), { cause });
+  it.each(providerFactories)("wraps structured %s network failures with a stable code and original cause", async (provider, createProvider) => {
+    const connectionCause = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+    const networkFailure = Object.assign(new TypeError("fetch failed"), { cause: connectionCause });
     const fetchImpl = (async () => {
       throw networkFailure;
     }) as typeof fetch;
 
-    expect(await rejectionOf(createProvider(fetchImpl).embed(["text"]))).toBe(networkFailure);
+    const error = await rejectionOf(createProvider(fetchImpl).embed(["text"]));
+
+    expect(error).toBeInstanceOf(MemorySearchError);
+    expect(error).toMatchObject({
+      code: "embedding_request_failed",
+      details: { code: "embedding_request_failed" },
+      message: `${provider} embeddings request failed before receiving a response.`,
+    });
+    expect((error as Error).cause).toBe(networkFailure);
+  });
+
+  it.each(providerFactories)("wraps %s abort failures with a stable code and original cause", async (provider, createProvider) => {
+    const abortFailure = new DOMException("request aborted", "AbortError");
+    const fetchImpl = (async () => {
+      throw abortFailure;
+    }) as typeof fetch;
+
+    const error = await rejectionOf(createProvider(fetchImpl).embed(["text"]));
+
+    expect(error).toBeInstanceOf(MemorySearchError);
+    expect(error).toMatchObject({
+      code: "embedding_request_failed",
+      details: { code: "embedding_request_failed" },
+      message: `${provider} embeddings request failed before receiving a response.`,
+    });
+    expect((error as Error).cause).toBe(abortFailure);
+  });
+
+  it.each(providerFactories)("preserves non-transport %s fetch failures by identity", async (_provider, createProvider) => {
+    const adapterFailure = new Error("custom fetch adapter invariant failed");
+    const fetchImpl = (async () => {
+      throw adapterFailure;
+    }) as typeof fetch;
+
+    expect(await rejectionOf(createProvider(fetchImpl).embed(["text"]))).toBe(adapterFailure);
   });
 });
 

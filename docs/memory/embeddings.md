@@ -190,6 +190,11 @@ embeddings for Lite or requires the exact model/dimension for Journal/BuJo. Use 
 Each embedding request has a request timeout of **30 s** (default). Embedding calls are also
 wrapped in a circuit breaker so a slow or failing embedding service cannot stall recall:
 
+- A timeout (`AbortError`) or fetch connection failure (`TypeError`) is reported as
+  `MemorySearchError` with code `embedding_request_failed`. The original transport error is
+  retained as the error's `cause`; unrelated adapter and response-validation failures preserve
+  their existing error identity and taxonomy.
+
 - After **3 consecutive failures** the breaker trips **OPEN** and fails fast, throwing
   `embedding_circuit_open` instead of waiting on the unhealthy backend.
 - It stays OPEN for a **30 s cooldown**, then allows a single **HALF-OPEN** trial request.
