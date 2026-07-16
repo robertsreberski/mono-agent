@@ -224,7 +224,17 @@ export function parsePnpmWhyDependencyPaths(source, options) {
     options.rootPackageNames ?? DEFAULT_ROOT_PACKAGE_NAMES,
   );
   const rootPackageNames = new Set(normalizedRootPackageNames);
-  if (document.some((entry) => isRecord(entry) && Object.hasOwn(entry, "dependents"))) {
+  const hasDependentsShape = document.some(
+    (entry) => isRecord(entry) && Object.hasOwn(entry, "dependents"),
+  );
+  const hasChildTreeShape = document.some(
+    (entry) => isRecord(entry)
+      && (Object.hasOwn(entry, "dependencies") || Object.hasOwn(entry, "optionalDependencies")),
+  );
+  if (hasDependentsShape && hasChildTreeShape) {
+    throw new Error("pnpm why output mixes child-tree and dependents-tree shapes.");
+  }
+  if (hasDependentsShape) {
     return parseDependentsShape();
   }
   const rootsByName = new Map();
@@ -1756,7 +1766,8 @@ function isLocalDependencyVersion(version) {
 
 function packageVersionKey(packageName, version) {
   if (!isUnambiguousPackageName(packageName)
-    || typeof version !== "string" || version.length === 0 || version.includes("@")) {
+    || typeof version !== "string" || version.length === 0
+    || version.includes("@") || version.includes("#")) {
     throw new Error("package/version identity cannot be represented unambiguously.");
   }
   return `${packageName}@${version}`;

@@ -849,6 +849,34 @@ describe("dependency vulnerability gate", () => {
     mismatchedLinkOwner[1].dependencies.workspace.from = "workspace-alias";
     expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(mismatchedLinkOwner), options))
       .toThrow("workspace link workspace has inconsistent alias metadata");
+
+    const mixedShapeBypass = [
+      {
+        name: "root-a",
+        version: "1.0.0",
+        path: "/repo/packages/root-a",
+        dependencies: {
+          workspace: {
+            from: "wrong-owner",
+            version: "link:../workspace",
+            path: "/wrong/path",
+          },
+        },
+      },
+      {
+        name: "ws",
+        version: "8.20.1",
+        dependents: [{
+          name: "root-a",
+          version: "1.0.0",
+          depField: "dependencies",
+        }],
+      },
+    ];
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(mixedShapeBypass), {
+      ...options,
+      rootPackageNames: ["root-a", "root-b"],
+    })).toThrow("mixes child-tree and dependents-tree shapes");
   });
 
   it("hydrates realistic pnpm 11 reverse deduped branches by peer-aware identity", () => {
@@ -1859,6 +1887,36 @@ describe("dependency vulnerability gate", () => {
           depField: "dependencies",
         }],
       }],
+    }]), {
+      packageName: "ws",
+      versions: ["8.20.1"],
+      rootPackageNames: ["root"],
+    })).toThrow("package/version identity cannot be represented unambiguously");
+
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify([{
+      name: "ws",
+      version: "8.20.1",
+      dependents: [
+        {
+          name: "provider",
+          version: "1#peer",
+          dependents: [{
+            name: "root",
+            version: "1.0.0",
+            depField: "dependencies",
+          }],
+        },
+        {
+          name: "wrapper",
+          version: "2.0.0",
+          dependents: [{
+            name: "provider",
+            version: "1",
+            peersSuffixHash: "peer",
+            deduped: true,
+          }],
+        },
+      ],
     }]), {
       packageName: "ws",
       versions: ["8.20.1"],
