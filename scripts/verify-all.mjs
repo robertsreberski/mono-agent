@@ -7,6 +7,7 @@ import { runVerifyConsumers } from "./verify-consumers.mjs";
 
 const repoGate = [
   { label: "check:node", command: "pnpm", args: ["run", "check:node"] },
+  { label: "check:pnpm-policy", command: "pnpm", args: ["run", "check:pnpm-policy"] },
   { label: "check:secrets", command: "pnpm", args: ["run", "check:secrets"] },
   { label: "check:oss-hygiene", command: "pnpm", args: ["run", "check:oss-hygiene"] },
   { label: "check:licenses", command: "pnpm", args: ["run", "check:licenses"] },
@@ -112,7 +113,7 @@ function usage() {
     "Usage:",
     "  pnpm run verify:all",
     "",
-    "Runs check:node, check:secrets, check:oss-hygiene, check:licenses, check:codex-discoverability, check:architecture, build, typecheck, test, test:demo, git diff --check, then verify:consumers.",
+    "Runs check:node, check:pnpm-policy, check:secrets, check:oss-hygiene, check:licenses, check:codex-discoverability, check:architecture, build, typecheck, test, test:demo, git diff --check, then verify:consumers.",
   ].join("\n");
 }
 
