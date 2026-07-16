@@ -69,6 +69,22 @@ function packageRecord({
   };
 }
 
+function rootPackageRecord({
+  dependencies = {},
+  optionalDependencies = {},
+  peerDependencies = {},
+  devDependencies = {},
+  nodeEngine = SUPPORTED_NODE_ENGINE,
+} = {}) {
+  return {
+    engines: { node: nodeEngine },
+    dependencies,
+    optionalDependencies,
+    peerDependencies,
+    devDependencies,
+  };
+}
+
 describe("release tag validation", () => {
   test("extracts semver release versions from v-prefixed tags", () => {
     expect(releaseVersionFromTag("v1.2.3")).toBe("1.2.3");
@@ -90,6 +106,7 @@ describe("release graph validation", () => {
     const result = validateRelease({
       tag: "v1.2.3",
       packages: [adapter, contracts],
+      rootPackageJson: rootPackageRecord(),
       silent: true,
     });
 
@@ -98,6 +115,45 @@ describe("release graph validation", () => {
       "@mono-agent/agent-contracts",
       "@mono-agent/slack-adapter",
     ]);
+  });
+
+  test("requires exact lockstep ranges in every root internal dependency section", () => {
+    const contracts = packageRecord({ name: "@mono-agent/agent-contracts" });
+    const exactRootPackageJson = rootPackageRecord({
+      dependencies: { "@mono-agent/agent-contracts": "workspace:1.2.3" },
+      optionalDependencies: { "@mono-agent/agent-contracts": "workspace:1.2.3" },
+      peerDependencies: { "@mono-agent/agent-contracts": "workspace:1.2.3" },
+      devDependencies: {
+        "@mono-agent/agent-contracts": "workspace:1.2.3",
+        vitest: "^3.1.4",
+      },
+    });
+
+    expect(() => validateRelease({
+      tag: "v1.2.3",
+      packages: [contracts],
+      rootPackageJson: exactRootPackageJson,
+      silent: true,
+    })).not.toThrow();
+
+    for (const section of ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"]) {
+      const staleRootPackageJson = structuredClone(exactRootPackageJson);
+      staleRootPackageJson[section]["@mono-agent/agent-contracts"] = "workspace:1.2.2";
+
+      try {
+        validateRelease({
+          tag: "v1.2.3",
+          packages: [contracts],
+          rootPackageJson: staleRootPackageJson,
+          silent: true,
+        });
+        throw new Error(`validateRelease did not reject the stale root ${section} reference`);
+      } catch (error) {
+        expect(error.issues).toEqual([
+          `root package.json ${section}.@mono-agent/agent-contracts must be workspace:1.2.3; found workspace:1.2.2`,
+        ]);
+      }
+    }
   });
 
   test("rejects packages that are not launch-ready", () => {
@@ -120,6 +176,7 @@ describe("release graph validation", () => {
       validateRelease({
         tag: "v1.2.3",
         packages: [contracts, adapter, runtime],
+        rootPackageJson: rootPackageRecord(),
         silent: true,
       }),
     ).toThrow(
@@ -141,7 +198,7 @@ describe("release graph validation", () => {
       validateRelease({
         tag: "v1.2.3",
         packages: [missing, stale],
-        rootPackageJson: { engines: { node: ">=20" } },
+        rootPackageJson: rootPackageRecord({ nodeEngine: ">=20" }),
         nodeVersionFile: "22.18.0",
         silent: true,
       });
@@ -192,6 +249,7 @@ describe("release graph validation", () => {
       validateRelease({
         tag: "v1.2.3",
         packages: [app, a2a, orchestrator, whatsapp],
+        rootPackageJson: rootPackageRecord(),
         silent: true,
       });
       throw new Error("validateRelease did not reject the nonpublishable workspace dependencies");
@@ -225,6 +283,7 @@ describe("release graph validation", () => {
       validateRelease({
         tag: "v1.2.3",
         packages: [app, runtime, tui],
+        rootPackageJson: rootPackageRecord(),
         silent: true,
       });
       throw new Error("validateRelease did not reject floating Pi dependencies");
