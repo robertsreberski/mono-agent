@@ -1,4 +1,5 @@
 const SESSION_BOUNDARY = "session_boundary";
+const BIDI_CONTROL = /\p{Bidi_Control}/u;
 
 /**
  * Human-readable label shared by live runtime telemetry and persisted replay
@@ -43,7 +44,7 @@ export function sessionBoundaryNotice(event: unknown): string | undefined {
 
   const providerSessionId = stringField(source, "providerSessionId");
   if (providerSessionId !== undefined && boundaryKind === "resume_replay") {
-    parts.push(`provider ${providerSessionId}`);
+    parts.push(`provider ${escapeSingleLineField(providerSessionId)}`);
   }
 
   return parts.join(" · ");
@@ -53,12 +54,12 @@ function sessionBoundaryTransition(data: Record<string, unknown> | undefined): s
   const previous = stringField(data, "previousConversationId");
   const current = stringField(data, "conversationId");
   if (previous !== undefined && current !== undefined && previous !== current) {
-    return `${previous} -> ${current}`;
+    return `${escapeSingleLineField(previous)} -> ${escapeSingleLineField(current)}`;
   }
 
   const base = stringField(data, "baseConversationId");
   if (base !== undefined && current !== undefined && base !== current) {
-    return `${base} -> ${current}`;
+    return `${escapeSingleLineField(base)} -> ${escapeSingleLineField(current)}`;
   }
   return undefined;
 }
@@ -73,7 +74,29 @@ function stringField(record: Record<string, unknown> | undefined, key: string): 
 }
 
 function formatTelemetryLabel(value: string): string {
-  return value.replace(/[_-]+/gu, " ");
+  return escapeSingleLineField(value).replace(/[_-]+/gu, " ");
+}
+
+/**
+ * NoticeCell deliberately preserves ANSI styling, so every artifact-derived
+ * field must be made terminal-inert before it reaches that component. Keep
+ * notices single-line and render controls visibly instead of dropping them.
+ */
+function escapeSingleLineField(value: string): string {
+  let escaped = "";
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    if (
+      codePoint <= 0x1f
+      || (codePoint >= 0x7f && codePoint <= 0x9f)
+      || BIDI_CONTROL.test(character)
+    ) {
+      escaped += `\\u${codePoint.toString(16).padStart(4, "0")}`;
+    } else {
+      escaped += character;
+    }
+  }
+  return escaped;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

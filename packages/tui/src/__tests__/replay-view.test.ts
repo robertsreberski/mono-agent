@@ -7,6 +7,7 @@ import { createJsonlRunRecorder } from "@mono-agent/observability";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { ReplayTimelineItem } from "../data/replay.js";
+import { sessionBoundaryNotice } from "../ui/session-boundary.js";
 import { buildDetailCell } from "../ui/views/replay-detail.js";
 import { ReplayView } from "../ui/views/replay.js";
 import { stripAnsi, TestTerminal } from "./test-terminal.js";
@@ -774,6 +775,33 @@ describe("ReplayView detail mode", () => {
     });
     expect(buildDetailCell(adjacentSessionEvent, [adjacentSessionEvent], [])).toBeUndefined();
     expect(buildDetailCell(unrelatedTelemetry, [unrelatedTelemetry], [])).toBeUndefined();
+  });
+
+  it("makes persisted session-boundary fields terminal-inert before notice rendering", () => {
+    // Assert the formatter directly: stripAnsi would erase an injected escape
+    // sequence and could turn a vulnerable NoticeCell assertion falsely green.
+    const notice = sessionBoundaryNotice({
+      type: "session_boundary",
+      kind: "roll\u001b[2J-over",
+      reason: "daily\nrollover\r\t\u0000\u007f\u009b\u202e",
+      previousConversationId: "previous\u001b]52;c;payload\u0007",
+      conversationId: "current\u001b_cursor\u001b\\",
+    });
+
+    expect(notice).toContain("session boundary: roll\\u001b[2J over");
+    expect(notice).toContain("daily\\u000arollover\\u000d\\u0009\\u0000\\u007f\\u009b\\u202e");
+    expect(notice).toContain("previous\\u001b]52;c;payload\\u0007 -> current\\u001b_cursor\\u001b\\");
+    expect(notice).not.toMatch(/[\u0000-\u001f\u007f-\u009f]|\p{Bidi_Control}/u);
+
+    const resumeNotice = sessionBoundaryNotice({
+      type: "session_boundary",
+      kind: "resume_replay",
+      providerSessionId: "provider\u001b]8;;https://example.invalid\u0007link\u001b]8;;\u0007",
+    });
+    expect(resumeNotice).toContain(
+      "provider provider\\u001b]8;;https://example.invalid\\u0007link\\u001b]8;;\\u0007",
+    );
+    expect(resumeNotice).not.toMatch(/[\u0000-\u001f\u007f-\u009f]|\p{Bidi_Control}/u);
   });
 
   it("esc from plain detail (no search, no expansion) returns to the list (regression)", async () => {
