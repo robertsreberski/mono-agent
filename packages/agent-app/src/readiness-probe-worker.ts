@@ -2,6 +2,8 @@ import { isMainThread, parentPort, workerData } from "node:worker_threads";
 
 import { createMonoRuntime, createPiOAuthApiKeyResolver, PI_TRANSPORTS } from "@mono-agent/runtime-adapter";
 import type {
+  CreateMonoRuntimeOptions,
+  MonoRuntimeLike,
   PiTransport,
   RuntimeEventLike,
   RuntimeModelReference,
@@ -27,7 +29,8 @@ const TOOL_EVENT_TYPES = new Set([
   "web_search",
 ]);
 
-interface ReadinessWorkerData {
+/** @internal Clone-safe input accepted from the readiness parent. */
+export interface ReadinessWorkerData {
   readonly cwd: string;
   readonly runtime: {
     readonly model: RuntimeModelReference;
@@ -40,7 +43,8 @@ interface ReadinessWorkerData {
   };
 }
 
-type WorkerOutput =
+/** @internal Bounded, clone-safe messages emitted across the worker boundary. */
+export type ReadinessWorkerOutput =
   | {
       readonly type: "result";
       readonly hasText: boolean;
@@ -54,12 +58,25 @@ type WorkerOutput =
 
 type PiCredentialResolver = ReturnType<typeof createPiOAuthApiKeyResolver>;
 
+/** @internal Narrow worker-thread port surface used by the production entrypoint and unit tests. */
+export interface ReadinessWorkerPort {
+  on(event: "message", listener: (message: unknown) => void): unknown;
+  postMessage(message: ReadinessWorkerOutput): void;
+  close(): void;
+}
+
+/** @internal Runtime constructors injected only by tests; production uses the real adapter. */
+export interface ReadinessWorkerDependencies {
+  readonly createRuntime: (options: CreateMonoRuntimeOptions) => MonoRuntimeLike;
+  readonly createPiApiKeyResolver: typeof createPiOAuthApiKeyResolver;
+}
+
 /**
  * Add readiness redaction tracking without erasing the credential-store
  * methods Pi uses to distinguish OAuth credentials from API keys.
  *
  * @internal Exported as a narrow regression-test seam. Credentials remain in
- * the worker and are never included in WorkerOutput.
+ * the worker and are never included in ReadinessWorkerOutput.
  */
 export function trackPiCredentialResolverSecrets(
   resolver: PiCredentialResolver,
@@ -82,7 +99,8 @@ export function trackPiCredentialResolverSecrets(
   return tracked;
 }
 
-function readWorkerData(value: unknown): ReadinessWorkerData | undefined {
+/** @internal Exported so clone-boundary validation cannot regress unnoticed. */
+export function readWorkerData(value: unknown): ReadinessWorkerData | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return undefined;
   }
@@ -128,18 +146,22 @@ function isRuntimeModelReference(value: unknown): value is RuntimeModelReference
     && (value.reference === undefined || typeof value.reference === "string");
 }
 
-function exactEnvironment(): Readonly<Record<string, string>> {
+function exactEnvironment(
+  environment: Readonly<Record<string, string | undefined>>,
+): Readonly<Record<string, string>> {
   return Object.freeze(Object.fromEntries(
-    Object.entries(process.env).filter(
+    Object.entries(environment).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   ));
 }
 
-function safeWorkerMessage(
+/** @internal Worker-side credential redaction applied before IPC. */
+export function safeWorkerMessage(
   value: unknown,
   fallback: string,
   additionalSecrets: ReadonlySet<string> = new Set(),
+  environment: Readonly<Record<string, string | undefined>> = process.env,
 ): string {
   let message = typeof value === "string"
     ? value
@@ -150,7 +172,7 @@ function safeWorkerMessage(
   // Redact every credential-shaped value and every sufficiently distinctive
   // environment value. This happens before IPC, so raw provider errors never
   // cross the worker boundary even when an SDK includes request details.
-  const environmentValues = Object.entries(process.env)
+  const environmentValues = Object.entries(environment)
     .filter(
       (entry): entry is [string, string] =>
         typeof entry[1] === "string"
@@ -186,7 +208,8 @@ function normalizedEventType(value: unknown): string {
     : "";
 }
 
-function toolActionInEvent(event: RuntimeEventLike): string | undefined {
+/** @internal Fail-closed no-tool event detector used by the live readiness worker. */
+export function toolActionInEvent(event: RuntimeEventLike): string | undefined {
   const eventType = normalizedEventType(event.type);
   if (TOOL_EVENT_TYPES.has(eventType)) {
     return eventType;
@@ -218,25 +241,42 @@ function toolActionInEvent(event: RuntimeEventLike): string | undefined {
   return undefined;
 }
 
-function post(message: WorkerOutput): void {
+function post(port: ReadinessWorkerPort | null, message: ReadinessWorkerOutput): void {
   try {
-    parentPort?.postMessage(message);
+    port?.postMessage(message);
   } catch {
     // The parent has already completed bounded shutdown.
   }
 }
 
-async function run(): Promise<void> {
-  const port = parentPort;
-  const data = readWorkerData(workerData);
+/**
+ * Execute the worker-owned readiness probe against one validated runtime route.
+ *
+ * @internal Production passes the real worker-thread values and runtime
+ * constructors below. The dependency seam exists only so tests execute this
+ * exact orchestration without contacting a provider.
+ */
+export async function runReadinessProbeWorker(input: {
+  readonly port: ReadinessWorkerPort | null;
+  readonly workerData: unknown;
+  readonly environment: Readonly<Record<string, string | undefined>>;
+  readonly dependencies?: ReadinessWorkerDependencies;
+}): Promise<void> {
+  const { port } = input;
+  const data = readWorkerData(input.workerData);
   if (port === null || data === undefined) {
-    post({ type: "error", message: "The isolated readiness worker received invalid startup data." });
+    post(port, { type: "error", message: "The isolated readiness worker received invalid startup data." });
     return;
   }
 
+  const dependencies = input.dependencies ?? {
+    createRuntime: createMonoRuntime,
+    createPiApiKeyResolver: createPiOAuthApiKeyResolver,
+  };
+
   const controller = new AbortController();
   const runtimeSecrets = new Set<string>();
-  let runtime: ReturnType<typeof createMonoRuntime> | undefined;
+  let runtime: MonoRuntimeLike | undefined;
   let disposePromise: Promise<void> | undefined;
   const disposeRuntime = (): Promise<void> => {
     disposePromise ??= Promise.resolve()
@@ -262,20 +302,20 @@ async function run(): Promise<void> {
   });
 
   try {
-    const env = exactEnvironment();
+    const env = exactEnvironment(input.environment);
     if (controller.signal.aborted) {
-      post({ type: "result", hasText: false, cancelled: true });
+      post(port, { type: "result", hasText: false, cancelled: true });
       return;
     }
     // No fallback chain is supplied: this worker exercises only the validated
     // primary model. All config loading and validation stayed in the parent.
     const piApiKeyResolver = data.runtime.piAuthPath === undefined
       ? undefined
-      : createPiOAuthApiKeyResolver({ path: data.runtime.piAuthPath });
+      : dependencies.createPiApiKeyResolver({ path: data.runtime.piAuthPath });
     const trackedPiApiKeyResolver = piApiKeyResolver === undefined
       ? undefined
       : trackPiCredentialResolverSecrets(piApiKeyResolver, runtimeSecrets);
-    runtime = createMonoRuntime({
+    runtime = dependencies.createRuntime({
       workspace: data.runtime.workspace,
       qaOutputDir: data.runtime.artifactDir,
       ...(trackedPiApiKeyResolver === undefined
@@ -300,7 +340,7 @@ async function run(): Promise<void> {
         const action = toolActionInEvent(event);
         if (action !== undefined && firstToolAction === undefined) {
           firstToolAction = action;
-          post({ type: "tool", action });
+          post(port, { type: "tool", action });
           abortAndDispose();
         }
       },
@@ -312,16 +352,16 @@ async function run(): Promise<void> {
       firstToolAction ??= toolActionInEvent(event);
     }
     if (firstToolAction !== undefined) {
-      post({ type: "tool", action: firstToolAction });
+      post(port, { type: "tool", action: firstToolAction });
       return;
     }
     const failureKind = result.failureKind === undefined || result.failureKind === null
       ? undefined
-      : safeWorkerMessage(result.failureKind, "provider_failure", runtimeSecrets);
+      : safeWorkerMessage(result.failureKind, "provider_failure", runtimeSecrets, input.environment);
     const errorMessage = result.error === undefined || result.error === null
       ? undefined
-      : safeWorkerMessage(result.error, "The selected provider reported an error.", runtimeSecrets);
-    post({
+      : safeWorkerMessage(result.error, "The selected provider reported an error.", runtimeSecrets, input.environment);
+    post(port, {
       type: "result",
       hasText: (result.text ?? "").trim().length > 0,
       cancelled: result.cancelled === true,
@@ -329,17 +369,26 @@ async function run(): Promise<void> {
       ...(errorMessage === undefined ? {} : { errorMessage }),
     });
   } catch (error) {
-    post({
+    post(port, {
       type: "error",
-      message: safeWorkerMessage(error, "The isolated readiness worker failed unexpectedly.", runtimeSecrets),
+      message: safeWorkerMessage(
+        error,
+        "The isolated readiness worker failed unexpectedly.",
+        runtimeSecrets,
+        input.environment,
+      ),
     });
   } finally {
     await disposeRuntime();
-    post({ type: "disposed" });
+    post(port, { type: "disposed" });
     port.close();
   }
 }
 
 if (!isMainThread) {
-  await run();
+  await runReadinessProbeWorker({
+    port: parentPort,
+    workerData,
+    environment: process.env,
+  });
 }
