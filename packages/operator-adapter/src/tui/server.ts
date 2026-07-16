@@ -17,6 +17,7 @@ import {
   bearerTokensEqual,
   close,
   hostForUrl,
+  isLoopbackHost,
   listen,
   normalizeOptionalString,
   readAuthorizationBearer,
@@ -193,6 +194,21 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       new TuiAdapterError("start_failed", "TUI adapter failed to listen.", { reason }),
     noAddress: () => new TuiAdapterError("start_failed", "TUI adapter did not receive a TCP address."),
   });
+
+  async function closeRejectedServer(): Promise<void> {
+    await close(server);
+  }
+
+  const boundNonLoopback = !isLoopbackHost(address.address);
+  if (boundNonLoopback && options.allowNonLoopback !== true) {
+    await closeRejectedServer();
+    throw new TuiAdapterError(
+      "unsafe_host",
+      "TUI adapter resolved a loopback host to a non-loopback bind address.",
+      { host, boundAddress: address.address, boundPort: address.port },
+    );
+  }
+
   server.on("error", (error) => {
     options.onServerError?.(errorToMessage(error));
   });

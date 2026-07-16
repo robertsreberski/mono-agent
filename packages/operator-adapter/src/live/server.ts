@@ -6,6 +6,7 @@ import {
   bearerTokensEqual,
   close,
   hostForUrl,
+  isLoopbackHost,
   listen,
   normalizeOptionalString,
   readAuthorizationBearer,
@@ -117,6 +118,28 @@ export async function startLiveAdapter(options: LiveAdapterOptions): Promise<Liv
       new LiveAdapterError("start_failed", "Live adapter failed to listen.", { reason }),
     noAddress: () => new LiveAdapterError("start_failed", "Live adapter did not receive a TCP address."),
   });
+
+  async function closeRejectedServer(): Promise<void> {
+    for (const connection of [...connections]) {
+      connection.teardown();
+      if (!connection.res.writableEnded) {
+        connection.res.end();
+      }
+    }
+    connections.clear();
+    await close(server);
+  }
+
+  const boundNonLoopback = !isLoopbackHost(address.address);
+  if (boundNonLoopback && options.allowNonLoopback !== true) {
+    await closeRejectedServer();
+    throw new LiveAdapterError(
+      "unsafe_host",
+      "Live adapter resolved a loopback host to a non-loopback bind address.",
+      { host, boundAddress: address.address, boundPort: address.port },
+    );
+  }
+
   server.on("error", (error) => {
     options.onServerError?.(errorToMessage(error));
   });
