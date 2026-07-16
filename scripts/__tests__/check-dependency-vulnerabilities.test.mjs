@@ -495,6 +495,66 @@ describe("dependency vulnerability gate", () => {
       "ws@8.20.1": ["@mono-agent/slack-adapter -> provider@1.0.0 -> ws@8.20.1"],
     });
 
+    const hydratedCircular = [{
+      name: "ws",
+      version: "8.20.1",
+      dependents: [
+        {
+          name: "a",
+          version: "1.0.0",
+          dependents: [{
+            name: "provider",
+            version: "1.0.0",
+            dependents: [
+              rootDependent,
+              { name: "a", version: "1.0.0", circular: true },
+            ],
+          }],
+        },
+        {
+          name: "z",
+          version: "1.0.0",
+          dependents: [{ name: "provider", version: "1.0.0", deduped: true }],
+        },
+      ],
+    }];
+    expect(parsePnpmWhyDependencyPaths(JSON.stringify(hydratedCircular), options)).toEqual({
+      "ws@8.20.1": [
+        "@mono-agent/slack-adapter -> provider@1.0.0 -> a@1.0.0 -> ws@8.20.1",
+        "@mono-agent/slack-adapter -> provider@1.0.0 -> z@1.0.0 -> ws@8.20.1",
+      ],
+    });
+
+    const hydrationCreatedCycle = [{
+      name: "ws",
+      version: "8.20.1",
+      dependents: [
+        {
+          name: "a",
+          version: "1.0.0",
+          dependents: [{ name: "provider", version: "1.0.0", deduped: true }],
+        },
+        {
+          name: "z",
+          version: "1.0.0",
+          dependents: [{
+            name: "provider",
+            version: "1.0.0",
+            dependents: [
+              { name: "a", version: "1.0.0", deduped: true },
+              rootDependent,
+            ],
+          }],
+        },
+      ],
+    }];
+    expect(parsePnpmWhyDependencyPaths(JSON.stringify(hydrationCreatedCycle), options)).toEqual({
+      "ws@8.20.1": [
+        "@mono-agent/slack-adapter -> provider@1.0.0 -> a@1.0.0 -> ws@8.20.1",
+        "@mono-agent/slack-adapter -> provider@1.0.0 -> z@1.0.0 -> ws@8.20.1",
+      ],
+    });
+
     const falseCircular = structuredClone(legitimateCycle);
     falseCircular[0].dependents.push({ name: "unrelated", version: "1.0.0", circular: true });
     expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(falseCircular), options))
@@ -889,9 +949,42 @@ describe("dependency vulnerability gate", () => {
       fetchImpl: async () => httpResponse([]),
     })).rejects.toThrow("response root is not an object");
 
+    const bodyChunks = [
+      new Uint8Array(5 * 1024 * 1024),
+      new Uint8Array(4 * 1024 * 1024),
+    ];
+    let bodyReadCount = 0;
+    let bodyCancelled = false;
+    let requestSignal;
     await expect(queryBulkAdvisories(inventory, {
-      fetchImpl: async () => httpResponse("x".repeat((8 * 1024 * 1024) + 1), { raw: true }),
+      fetchImpl: async (_url, request) => {
+        requestSignal = request.signal;
+        return {
+          ok: true,
+          status: 200,
+          body: {
+            getReader() {
+              return {
+                async read() {
+                  bodyReadCount += 1;
+                  if (bodyReadCount <= bodyChunks.length) {
+                    return { done: false, value: bodyChunks[bodyReadCount - 1] };
+                  }
+                  throw new Error("late response chunk was consumed");
+                },
+                cancel() {
+                  bodyCancelled = true;
+                },
+                releaseLock() {},
+              };
+            },
+          },
+        };
+      },
     })).rejects.toThrow("bulk advisory response exceeded 8388608 bytes");
+    expect(bodyReadCount).toBe(2);
+    expect(bodyCancelled).toBe(true);
+    expect(requestSignal.aborted).toBe(true);
 
     vi.useFakeTimers();
     const pending = queryBulkAdvisories(inventory, {
@@ -1128,13 +1221,8 @@ function commandResult(stdout) {
 
 function httpResponse(body, options = {}) {
   const status = options.status ?? 200;
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    async text() {
-      return options.raw ? String(body) : JSON.stringify(body);
-    },
-  };
+  const source = options.raw ? String(body) : JSON.stringify(body);
+  return new Response(source, { status });
 }
 
 function sink() {

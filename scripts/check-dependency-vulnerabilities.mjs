@@ -232,7 +232,6 @@ export function parsePnpmWhyDependencyPaths(source, options) {
         target.dependents,
         [targetKey],
         new Set([targetIdentity]),
-        new Set([targetKey]),
         expandedDependents,
       );
       if (completePathCount === 0) {
@@ -335,7 +334,6 @@ export function parsePnpmWhyDependencyPaths(source, options) {
       dependents,
       suffix,
       ancestorIdentities,
-      ancestorPackages,
       expandedDependents,
     ) {
       let completePathCount = 0;
@@ -344,14 +342,9 @@ export function parsePnpmWhyDependencyPaths(source, options) {
         const dependentName = dependencyRegistryName(dependent.name, dependent);
         const dependentIdentity = reverseDependencyIdentity(dependentName, dependent);
         if (dependent.circular === true) {
-          if (!reverseCircularReferencesAncestor(
-            dependentName,
-            dependent,
-            ancestorIdentities,
-            ancestorPackages,
-          )) {
-            throw new Error(`pnpm why circular branch ${dependentIdentity} does not reference an ancestor.`);
-          }
+          // indexExpandedDependents already proved this marker against the
+          // source tree's ancestry. A deduped expansion can be hydrated under
+          // a different parent, where the original ancestor is not present.
           continue;
         }
         if (rootPackageNames.has(dependentName)) {
@@ -366,7 +359,9 @@ export function parsePnpmWhyDependencyPaths(source, options) {
         }
         const dependentKey = packageVersionKey(dependentName, dependent.version);
         if (ancestorIdentities.has(dependentIdentity)) {
-          throw new Error(`pnpm why repeated ancestor ${dependentIdentity} is not marked circular.`);
+          // Hydration can make a source-valid deduped edge point at a node in
+          // the current traversal ancestry. It is terminal in this path.
+          continue;
         }
         const expandedDependent = dependent.deduped === true
           ? expandedDependents.get(dependentIdentity)
@@ -384,7 +379,6 @@ export function parsePnpmWhyDependencyPaths(source, options) {
           expandedDependent.dependents,
           [dependentKey, ...suffix],
           new Set([...ancestorIdentities, dependentIdentity]),
-          new Set([...ancestorPackages, dependentKey]),
           expandedDependents,
         );
       }
@@ -656,6 +650,9 @@ export async function queryBulkAdvisories(inventory, options = {}) {
   }
   const controller = new AbortController();
   const timeoutError = new Error(`request timed out after ${timeoutMs}ms`);
+  const responseTooLargeError = new Error(
+    `bulk advisory response exceeded ${MAX_RESPONSE_BYTES} bytes.`,
+  );
   let timeout;
 
   let response;
@@ -673,13 +670,16 @@ export async function queryBulkAdvisories(inventory, options = {}) {
         signal: controller.signal,
       });
       if (typeof fetched?.ok !== "boolean" || typeof fetched.status !== "number"
-        || typeof fetched.text !== "function") {
+        || (fetched.body !== null
+          && (!isRecord(fetched.body) || typeof fetched.body.getReader !== "function"))) {
         throw new Error("bulk advisory endpoint returned a malformed HTTP response");
       }
-      const responseSource = await fetched.text();
-      if (typeof responseSource !== "string") {
-        throw new Error("bulk advisory endpoint returned a non-text response body");
-      }
+      const responseSource = await readBoundedResponseBody(
+        fetched.body,
+        MAX_RESPONSE_BYTES,
+        responseTooLargeError,
+        () => controller.abort(responseTooLargeError),
+      );
       return { response: fetched, source: responseSource };
     });
     const timedOut = new Promise((_, reject) => {
@@ -693,14 +693,14 @@ export async function queryBulkAdvisories(inventory, options = {}) {
     if (error === timeoutError) {
       throw new Error(`bulk advisory request timed out after ${timeoutMs}ms.`);
     }
+    if (error === responseTooLargeError) {
+      throw error;
+    }
     throw new Error(`bulk advisory request failed: ${reasonOf(error)}`);
   } finally {
     clearTimeout(timeout);
   }
 
-  if (Buffer.byteLength(source, "utf8") > MAX_RESPONSE_BYTES) {
-    throw new Error(`bulk advisory response exceeded ${MAX_RESPONSE_BYTES} bytes.`);
-  }
   if (!response.ok) {
     throw new Error(`bulk advisory endpoint ${endpoint.href} returned HTTP ${response.status}: ${source.slice(0, 500)}`);
   }
@@ -713,6 +713,53 @@ export async function queryBulkAdvisories(inventory, options = {}) {
   } catch (error) {
     throw new Error(`bulk advisory response was not valid JSON: ${reasonOf(error)}`);
   }
+}
+
+async function readBoundedResponseBody(body, maxBytes, limitError, abortRequest) {
+  if (body === null) {
+    return "";
+  }
+  const reader = body.getReader();
+  if (!isRecord(reader) || typeof reader.read !== "function"
+    || typeof reader.cancel !== "function" || typeof reader.releaseLock !== "function") {
+    throw new Error("bulk advisory endpoint returned a malformed response body");
+  }
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const result = await reader.read();
+      if (!isRecord(result) || typeof result.done !== "boolean") {
+        throw new Error("bulk advisory endpoint returned a malformed response chunk");
+      }
+      if (result.done) {
+        break;
+      }
+      if (!(result.value instanceof Uint8Array)) {
+        throw new Error("bulk advisory endpoint returned a non-byte response chunk");
+      }
+      totalBytes += result.value.byteLength;
+      if (totalBytes > maxBytes) {
+        let cancellation;
+        try {
+          cancellation = reader.cancel(limitError);
+        } catch {
+          // The request abort below still tears down the transport.
+        }
+        abortRequest();
+        void Promise.resolve(cancellation).catch(() => {});
+        throw limitError;
+      }
+      chunks.push(Buffer.from(result.value));
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // A transport abort can release or invalidate the reader first.
+    }
+  }
+  return Buffer.concat(chunks, totalBytes).toString("utf8");
 }
 
 export function evaluateDependencyVulnerabilities({ productionGraph, report, dispositions, now = new Date() }) {
