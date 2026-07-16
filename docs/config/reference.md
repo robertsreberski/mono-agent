@@ -194,7 +194,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `webhook.dir` | `string` | `MONO_AGENT_WEBHOOK_DIR` | webhook | `webhook` | Configures dir for the webhook section. |
 | `webhook.effort` | `string` | `MONO_AGENT_WEBHOOK_EFFORT` | unset | `example` | Configures effort for the webhook section. |
 | `webhook.enabled` | `boolean` | `MONO_AGENT_WEBHOOK_ENABLED` | false | `true` | Enables the webhook capability. |
-| `webhook.endpoints` | `array` | `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON` | [] | `[{"name":"triage","path":"/webhook/triage","prompt":"Triage this payload."}]` | Additional named webhook endpoints beyond webhook.path. |
+| `webhook.endpoints` | `array` | `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON` | [] | `[{"name":"triage","path":"/webhook/triage","prompt":"Triage this payload."}]` | Named webhook endpoints with per-endpoint prompt, model/effort, and maxRunMs overrides. |
 | `webhook.host` | `string` | `MONO_AGENT_WEBHOOK_HOST` | 127.0.0.1 | `127.0.0.1` | Configures host for the webhook section. |
 | `webhook.maxRunMs` | `integer` | `MONO_AGENT_WEBHOOK_MAX_RUN_MS` | unset | `1` | Configures maxRunMs for the webhook section. |
 | `webhook.maxStoredRequests` | `integer` | `MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS` | 100 | `100` | Configures maxStoredRequests for the webhook section. |

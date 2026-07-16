@@ -256,7 +256,8 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "allowNonLoopback": false,             // a non-loopback bind also requires the .env key
     "defaultMode": "sync",                 // sync | async (202 + status URL polling)
     "retentionMs": 300000,                 // async status retention
-    "maxStoredRequests": 100
+    "maxStoredRequests": 100,
+    "maxRunMs": 1200000                    // fallback; endpoints[].maxRunMs overrides, 0 disables
   },
 
   "openaiApi": {

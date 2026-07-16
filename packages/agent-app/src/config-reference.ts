@@ -270,7 +270,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     defaultLabel: "[]",
     defaultValue: [],
     example: [{ name: "triage", path: "/webhook/triage", prompt: "Triage this payload." }],
-    description: "Additional named webhook endpoints beyond webhook.path.",
+    description: "Named webhook endpoints with per-endpoint prompt, model/effort, and maxRunMs overrides.",
   },
   {
     jsonPath: "slack.shortcuts",
@@ -871,6 +871,7 @@ function arrayItemSchemaForField(field: ConfigReferenceField): JsonSchema {
         notifyConversationId: { type: "string" },
         model: { type: "string" },
         effort: { type: "string" },
+        maxRunMs: { type: "integer", minimum: 0, maximum: 86_400_000 },
       },
     };
   }
