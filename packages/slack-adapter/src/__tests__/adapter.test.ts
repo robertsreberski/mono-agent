@@ -8,10 +8,10 @@ import {
 import {
   SerialQueue,
   SerialQueueFullError,
-  SlackAdapter,
   type AgentRequest,
   type AgentResponder,
 } from "../adapter.js";
+import { SlackAdapter, type SlackNotifyOptions } from "../index.js";
 import { SlackApiError } from "../slack-client.js";
 import type {
   SlackChatPostMessageParams,
@@ -98,6 +98,16 @@ class FakeSlackApi implements SlackWebApi {
 }
 
 describe("SlackAdapter", () => {
+  it("exports the public silent notify options contract", () => {
+    const options: readonly SlackNotifyOptions[] = [
+      {},
+      { silent: false },
+      { silent: true },
+    ];
+
+    expect(options.map((entry) => entry.silent)).toEqual([undefined, false, true]);
+  });
+
   it("fails closed unless channels are explicitly allowed", () => {
     expect(
       () =>
@@ -230,6 +240,40 @@ describe("SlackAdapter", () => {
       "Slack chat.postMessage has no bot-controlled silent-delivery option; posting with normal Slack notification behavior.",
       { silentRequested: true, silentApplied: false },
     );
+  });
+
+  it.each([
+    ["verbatim notify with omitted silent", true, undefined],
+    ["verbatim notify with false silent", true, false],
+    ["model-backed notify with omitted silent", false, undefined],
+    ["model-backed notify with false silent", false, false],
+  ] as const)("does not warn for %s", async (_label, verbatim, silent) => {
+    const api = new FakeSlackApi();
+    const warn = vi.fn();
+    const input = verbatim ? "Verbatim normal delivery." : "Prepare normal delivery";
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      logger: { warn },
+      responder: {
+        respond: async () => ({ text: "Model normal delivery." }),
+        deliverVerbatim: async () => undefined,
+      },
+    });
+    const options: SlackNotifyOptions = {
+      ...(verbatim ? { verbatim: true } : {}),
+      ...(silent === undefined ? {} : { silent }),
+    };
+
+    const result = await adapter.notify("C1", undefined, input, options);
+
+    expect(result).toMatchObject({ delivered: true, code: "delivered", channelId: "slack" });
+    expect(warn).not.toHaveBeenCalled();
+    expect(api.postMessageCalls).toEqual([{
+      channel: "C1",
+      text: verbatim ? input : "Model normal delivery.",
+      mrkdwn: true,
+    }]);
   });
 
   it("reports confirmed Slack delivery with explicit degraded history instead of reposting", async () => {
