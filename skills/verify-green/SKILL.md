@@ -5,37 +5,72 @@ description: Run the mono-agent verification gate — full repo green or fast si
 
 # Verify green
 
-"Green" means the exact CI sequence passes (`.github/workflows/ci.yml`), in this order. Nothing is green because it "looks fine".
+"Green" means both jobs in `.github/workflows/ci.yml` pass. The hosted jobs may
+be unavailable, but their exact commands still define the gate; run them
+locally rather than treating an unavailable check as evidence.
 
 ## Full gate (CI order)
 
+Run this verify sequence once under Node 22.19.0 and once under Node 24. On the
+Node 24 pass, skip the two commands annotated as Node 22.19-only.
+
 ```bash
+corepack enable
 node scripts/pnpm-release-age-policy.mjs  # direct pre-install guard; do not route through pnpm
 pnpm run check:node
-pnpm run check:secrets
+pnpm install --frozen-lockfile
+pnpm run check:dependency-vulnerabilities  # Node 22.19 lane only
+docker run --rm \
+  -v "$PWD:/repo" \
+  ghcr.io/gitleaks/gitleaks:v8.30.1 \
+  dir --redact --no-banner --config /repo/.gitleaks.toml /repo
 pnpm run check:oss-hygiene
 pnpm run check:licenses
 pnpm run check:codex-discoverability  # skills/agents Codex parity (wired into CI + verify:all by PR #142)
+VERSION="$(node -e "process.stdout.write(require('./packages/agent-app/package.json').version)")"
+pnpm run release:validate -- --tag "v${VERSION}"
 pnpm run check:architecture     # catalog + README sections + dependency categories
 pnpm run build                  # packages + demos, then strict deploy-output marker on POSIX/macOS
+pnpm run verify:consumers --skip-build
+pnpm run release:pack -- --tag "v${VERSION}"
+pnpm run release:consumer -- --tag "v${VERSION}" --require-minimum  # Node 22.19 lane only
 pnpm run typecheck
 pnpm test                       # includes release:test + scripts:test + all packages + demos
-pnpm run test:demo
 git diff --check                # whitespace — CI runs this too
 ```
 
-`pnpm run verify:all` is the closest single command — it adds alpha/beta
-consumer verification (`verify:consumers`) on top of the gate above:
+The Node 24 website job runs independently:
+
+```bash
+(cd website && corepack enable && pnpm install --frozen-lockfile && pnpm run build)
+```
+
+`pnpm run verify:all` is the closest local aggregate command:
 
 ```bash
 pnpm run verify:all
 ```
 
-It is **not** a one-shot equivalent of CI, and neither side is a strict superset
-of the other: `verify:all` omits `release:validate`/`release:pack`/`release:consumer`
-(CI runs these — see the tarball-sanity block below), and CI omits
-`verify:consumers` (only `verify:all` runs it). Run both surfaces before claiming
-a change is green.
+It is **not** a one-shot equivalent of CI. It neither installs dependencies nor
+runs the release validation/pack/minimum-consumer or website jobs, and it uses
+the repository's local secret checker instead of CI's pinned gitleaks image.
+Both surfaces run `verify:consumers --skip-build`. Both also include
+`check:dependency-vulnerabilities`: CI runs it once on Node 22.19 immediately
+after the frozen install and before secrets, while `verify:all` runs it after
+`check:licenses` in its local repo-gate order. The current `verify:all` also
+invokes `test:demo` after root `pnpm test`; CI relies on the demo tests already
+chained into root `pnpm test` and does not repeat them.
+
+Temporary dependency-vulnerability dispositions are strict, accountable
+exceptions rather than a loose allowlist. Every advisory entry pins its exact
+metadata, installed versions, complete production paths, expiry, and a
+nonblank `owner`; `rationale` must already be trimmed and is capped at 4096
+UTF-8 bytes.
+`owner` is capped at 200 UTF-8 bytes, and both accountability fields reject
+control and default-ignorable Unicode characters.
+Unknown fields, duplicate versions/paths, stale entries, drift, and expiry fail
+closed. Update `scripts/dependency-vulnerability-dispositions.json` only with
+the corresponding security review evidence.
 
 On supported POSIX/macOS hosts, the root build holds an exclusive ignored build
 lock, clears any prior marker, builds packages and demos, syncs the output tree,
@@ -46,7 +81,8 @@ normal build commands but do not publish this deploy proof. If a crash leaves a
 lock, remove it only after confirming no root build is still active, then rerun
 the whole build.
 
-Release-relevant tarball sanity (CI runs both on every push; `<version>` = `packages/agent-app/package.json` version):
+Release-relevant tarball sanity (CI runs both in every verify job; `<version>` =
+`packages/agent-app/package.json` version):
 
 ```bash
 pnpm run release:validate -- --tag v<version>
