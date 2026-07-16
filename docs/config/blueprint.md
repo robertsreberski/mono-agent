@@ -182,8 +182,10 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "unsafeAllowHostProcess": false        // explicit opt-in required for the unsafe fallback
   },
 
-  // Observability: JSONL artifacts (always written; the local fallback) + the
-  // trace-source registry that `mono-agent status` reads.
+  // Observability: the recorder writes empty events + a running summary at start,
+  // buffers redacted/capped events in RAM, then replaces both files at finish/fail.
+  // A pre-terminal crash can lose buffered events. `mono-agent status` reads the
+  // separate trace-source registry.
   "artifacts": {
     "dir": "./.mono-agent/artifacts",
     "retention": {
@@ -206,8 +208,9 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "globalDiscovery": true                // mirror into ~/.mono-agent/trace-sources too (default true)
   },
 
-  // Optional trace viewer: add a Phoenix (OTLP) exporter to browse traces in
-  // Phoenix. Omit this entry to keep only the local JSONL artifacts.
+  // Optional trace viewer: add a best-effort, terminal-batched Phoenix (OTLP)
+  // exporter. Omit it to keep only bounded local terminal JSONL snapshots; a
+  // pre-terminal crash can lose buffered events.
   "observability": {
     "exporters": [
       { "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces" }

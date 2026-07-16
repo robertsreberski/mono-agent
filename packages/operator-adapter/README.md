@@ -9,7 +9,11 @@ Category: `communication`
 Loopback operator endpoints for local mono-agent surfaces:
 
 - the TUI NDJSON turn endpoint, which lets `mono-agent tui` chat with a running
-  agent at full `AgentStreamEvent` fidelity.
+  agent through structured `AgentStreamEvent` frames. Above the 256 KiB encoded
+  cap, assistant-thought and tool-call payload fields are reduced and remeasured;
+  another oversized event variant, or a reducible event whose minimal form still
+  does not fit, becomes a bounded `oversized_event` marker. Other frame kinds are
+  unaffected.
 - the live SSE event relay, which streams the host's in-process run-event bus to
   read-only operator surfaces such as `mono-agent web`.
 

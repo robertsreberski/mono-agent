@@ -175,7 +175,7 @@ const ext = createCollaboratorToolRuntimeExtension({
 
 ## 10. Phoenix-observed agent with the TUI
 **For:** an agent builder evaluating runs in a tracing dashboard.
-**Goal:** run locally with the TUI and stream every run to Phoenix as OpenInference spans; local JSONL is the fallback.
+**Goal:** run locally with the TUI, attempt a best-effort terminal-batched Phoenix export, and retain a redacted, capped local JSONL snapshot after terminal persistence. A pre-terminal crash can omit the Phoenix batch and lose RAM-buffered JSONL events.
 **Features:** `observability.phoenix-exporter`, `observability.jsonl-artifacts`, `observability.trace-registry`, `tui.chat`.
 
 ```json

@@ -6,7 +6,7 @@ sidebar:
 
 # Phoenix-Observed Agent with TUI
 
-This playbook wires a local mono-agent so every run lifecycle streams to a [Phoenix](https://phoenix.arize.com/) tracing dashboard as OpenInference semantic spans, while redacted JSONL artifacts are always written locally as the fallback. You drive the agent from the terminal TUI and watch each prompt show up as AGENT / LLM / TOOL spans.
+This playbook configures best-effort, terminal-batched export to a [Phoenix](https://phoenix.arize.com/) tracing dashboard as OpenInference semantic spans. After a successful terminal recorder boundary, a separate redacted, capped JSONL snapshot remains local. Neither path is crash-safe: process death before that boundary can omit the Phoenix batch and lose RAM-buffered JSONL events. You drive the agent from the terminal TUI and inspect successfully exported prompts as AGENT / LLM / TOOL spans.
 
 ## Who this is for
 
@@ -14,12 +14,12 @@ Agent builders evaluating runs in a tracing dashboard — you want to inspect pr
 
 ## Goal
 
-Run an agent locally with the TUI and stream every run lifecycle to Phoenix as OpenInference semantic spans, with local JSONL as the fallback.
+Run an agent locally with the TUI, attempt a best-effort terminal-batched Phoenix export as OpenInference semantic spans, and retain an independent bounded JSONL snapshot when terminal persistence succeeds.
 
 ## Features used
 
 - [`observability.phoenix-exporter`](/observability/phoenix-and-backfill/) — additive, best-effort OTLP/HTTP protobuf export of each run as a semantic timeline (config).
-- [`observability.jsonl-artifacts`](/observability/artifacts-and-traces/) — redacted `run-*.summary.json` + `run-*.events.jsonl` written on every run; the local fallback (config).
+- [`observability.jsonl-artifacts`](/observability/artifacts-and-traces/) — empty events plus a `running` summary at start, then redacted and capped `run-*.summary.json` + `run-*.events.jsonl` snapshots at finish/fail; a pre-terminal crash can lose buffered events (config).
 - [`observability.trace-registry`](/observability/artifacts-and-traces/) — heartbeat manifests that `mono-agent status` reads (config).
 - [`tui.chat`](/observability/tui/) — the operator console: live chat with thinking/tool/telemetry insight, run replay, and a config view (cli).
 
@@ -52,7 +52,7 @@ Run an agent locally with the TUI and stream every run lifecycle to Phoenix as O
 }
 ```
 
-The exporters array can also be supplied via the `MONO_AGENT_OBSERVABILITY_EXPORTERS` env var (a JSON array of exporter objects). JSONL artifacts are always written regardless of whether a Phoenix exporter is present — the Phoenix entry only adds the trace viewer on top.
+The exporters array can also be supplied via the `MONO_AGENT_OBSERVABILITY_EXPORTERS` env var (a JSON array of exporter objects). The local recorder is independent of Phoenix: it creates an empty-event start snapshot and replaces it with redacted, capped events at finish/fail. Phoenix adds a best-effort terminal batch; exporter failure does not change the run outcome, and process death before terminal persistence can leave neither terminal batch nor buffered JSONL events.
 
 :::caution
 With `includeSensitiveData: false`, exported spans are metadata-only and prompt/result payloads are redacted; set it to `true` only against a trusted local Phoenix.

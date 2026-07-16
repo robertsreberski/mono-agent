@@ -4,6 +4,7 @@ import {
   AgentResponseCancelledError,
   isChannelUserCancelReason,
   parseAgentStreamFrame,
+  serializeAgentStreamFrame,
   type AgentMessageStream,
   type AgentRequestBase,
   type AgentResponder,
@@ -387,5 +388,208 @@ describe("startTuiAdapter", () => {
     expect(event.content.endsWith("… [truncated]")).toBe(true);
     expect(event.metadata?.truncated).toBe(true);
     expect(frames.at(-1)).toEqual({ kind: "finish", finalText: "done" });
+  });
+
+  it("rechecks the encoded byte cap after reducing multibyte event text", async () => {
+    const huge = "é".repeat(MAX_FRAME_BYTES);
+    const priorSinglePass = serializeAgentStreamFrame({
+      kind: "event",
+      event: {
+        type: "assistant_thought",
+        text: huge.slice(0, MAX_FRAME_BYTES / 2),
+        metadata: { truncated: true },
+      },
+    });
+    expect(Buffer.byteLength(priorSinglePass, "utf8")).toBe(262_238);
+
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async (_request, stream) => {
+        await stream.event?.({ type: "assistant_thought", text: huge });
+        return { text: "done" };
+      }),
+    });
+
+    const responseText = await (await postTurn(
+      running.baseUrl,
+      { conversationId: "c", text: "hi" },
+    )).text();
+    const lines = responseText.split("\n").filter((line) => line.length > 0);
+    const eventLine = lines[0];
+    expect(eventLine).toBeDefined();
+    expect(Buffer.byteLength(`${eventLine}\n`, "utf8")).toBeLessThanOrEqual(MAX_FRAME_BYTES);
+
+    const eventFrame = parseAgentStreamFrame(eventLine ?? "") as Extract<
+      AgentStreamWireFrame,
+      { kind: "event" }
+    >;
+    expect(eventFrame.kind).toBe("event");
+    expect(eventFrame.event).toMatchObject({
+      type: "assistant_thought",
+      metadata: { truncated: true },
+    });
+    expect((eventFrame.event as { text: string }).text.length).toBeLessThan(MAX_FRAME_BYTES / 2);
+    expect(lines.slice(1).map(parseAgentStreamFrame)).toEqual([
+      { kind: "finish", finalText: "done" },
+    ]);
+  });
+
+  it("uses a bounded marker when oversized metadata cannot be field-reduced", async () => {
+    let metadataSerializations = 0;
+    let eventFrameSerializations = 0;
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async (_request, stream) => {
+        await stream.event?.({
+          type: "assistant_thought",
+          text: "bounded thought",
+          metadata: {
+            toJSON() {
+              metadataSerializations += 1;
+              return { oversized: "é".repeat(MAX_FRAME_BYTES) };
+            },
+          },
+        });
+        return { text: "done" };
+      }),
+    });
+
+    const originalStringify = JSON.stringify;
+    JSON.stringify = ((...args: unknown[]) => {
+      const value = args[0];
+      if (
+        typeof value === "object"
+        && value !== null
+        && (value as { kind?: unknown }).kind === "event"
+      ) {
+        eventFrameSerializations += 1;
+      }
+      return Reflect.apply(originalStringify, JSON, args) as string | undefined;
+    }) as typeof JSON.stringify;
+    let responseText = "";
+    try {
+      responseText = await (await postTurn(
+        running.baseUrl,
+        { conversationId: "c", text: "hi" },
+      )).text();
+    } finally {
+      JSON.stringify = originalStringify;
+    }
+    const lines = responseText.split("\n").filter((line) => line.length > 0);
+    const eventLine = lines[0];
+    expect(eventLine).toBeDefined();
+    expect(Buffer.byteLength(`${eventLine}\n`, "utf8")).toBeLessThanOrEqual(MAX_FRAME_BYTES);
+    expect(parseAgentStreamFrame(eventLine ?? "")).toEqual({
+      kind: "event",
+      event: {
+        type: "runtime_telemetry",
+        kind: "oversized_event",
+        data: { originalType: "assistant_thought" },
+        metadata: { truncated: true },
+      },
+    });
+    expect(metadataSerializations).toBe(1);
+    // Original oversized frame + one minimal probe + the bounded marker.
+    expect(eventFrameSerializations).toBe(3);
+  });
+
+  it("replaces an oversized runtime warning with one bounded marker", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async (_request, stream) => {
+        await stream.event?.({
+          type: "runtime_warning",
+          message: "warning".repeat(MAX_FRAME_BYTES),
+        });
+        return { text: "done" };
+      }),
+    });
+
+    const responseText = await (await postTurn(
+      running.baseUrl,
+      { conversationId: "c", text: "hi" },
+    )).text();
+    const eventLine = responseText.split("\n").find((line) => line.length > 0);
+    expect(eventLine).toBeDefined();
+    expect(Buffer.byteLength(`${eventLine}\n`, "utf8")).toBeLessThanOrEqual(MAX_FRAME_BYTES);
+    expect(parseAgentStreamFrame(eventLine ?? "")).toEqual({
+      kind: "event",
+      event: {
+        type: "runtime_telemetry",
+        kind: "oversized_event",
+        data: { originalType: "runtime_warning" },
+        metadata: { truncated: true },
+      },
+    });
+  });
+
+  it("serializes an oversized default-branch telemetry payload only once", async () => {
+    let dataSerializations = 0;
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async (_request, stream) => {
+        await stream.event?.({
+          type: "runtime_telemetry",
+          kind: "large_payload",
+          data: {
+            toJSON() {
+              dataSerializations += 1;
+              return { payload: "x".repeat(MAX_FRAME_BYTES) };
+            },
+          },
+        });
+        return { text: "done" };
+      }),
+    });
+
+    const responseText = await (await postTurn(
+      running.baseUrl,
+      { conversationId: "c", text: "hi" },
+    )).text();
+    const eventLine = responseText.split("\n").find((line) => line.length > 0);
+    expect(eventLine).toBeDefined();
+    expect(Buffer.byteLength(`${eventLine}\n`, "utf8")).toBeLessThanOrEqual(MAX_FRAME_BYTES);
+    expect(parseAgentStreamFrame(eventLine ?? "")).toEqual({
+      kind: "event",
+      event: {
+        type: "runtime_telemetry",
+        kind: "oversized_event",
+        data: { originalType: "runtime_telemetry" },
+        metadata: { truncated: true },
+      },
+    });
+    expect(dataSerializations).toBe(1);
+  });
+
+  it("stabilizes a reducible tool payload before the bounded size search", async () => {
+    let contentSerializations = 0;
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async (_request, stream) => {
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "t1",
+          content: {
+            toJSON() {
+              contentSerializations += 1;
+              return { payload: "é".repeat(MAX_FRAME_BYTES) };
+            },
+          },
+        });
+        return { text: "done" };
+      }),
+    });
+
+    const responseText = await (await postTurn(
+      running.baseUrl,
+      { conversationId: "c", text: "hi" },
+    )).text();
+    const eventLine = responseText.split("\n").find((line) => line.length > 0);
+    expect(eventLine).toBeDefined();
+    expect(Buffer.byteLength(`${eventLine}\n`, "utf8")).toBeLessThanOrEqual(MAX_FRAME_BYTES);
+    expect(parseAgentStreamFrame(eventLine ?? "")).toMatchObject({
+      kind: "event",
+      event: {
+        type: "tool_call_completed",
+        id: "t1",
+        metadata: { truncated: true },
+      },
+    });
+    expect(contentSerializations).toBe(1);
   });
 });

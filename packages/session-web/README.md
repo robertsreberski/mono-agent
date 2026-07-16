@@ -76,7 +76,7 @@ when HTTPS-dependent browser behavior such as installable/offline PWA support
 is required.
 
 Run lists and the initial browser SSE snapshot are summary-only and step-less.
-Full run timelines are read lazily from `/api/sessions/:sourceId/:runId` when a
+Persisted, bounded run timelines are read lazily from `/api/sessions/:sourceId/:runId` when a
 detail view opens.
 `/api/sessions` supports `instance`, `limit`, and `offset` query parameters and
 returns page metadata (`total`, `offset`, `limit`, `hasMore`) so the browser can

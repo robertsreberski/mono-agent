@@ -119,6 +119,30 @@ describe("JsonlRunRecorder", () => {
     expect(summaryJson).toContain('"isolated": true');
   });
 
+  it("caps oversized event strings at the 4,096-byte recorder default before terminal JSONL persistence", async () => {
+    const dir = await tempDir();
+    const tailSentinel = "TAIL-MUST-NOT-REACH-JSONL";
+    const recorder = createJsonlRunRecorder({
+      runId: "run:oversized-event",
+      conversationId: "tui:oversized-event",
+      artifactDir: dir,
+    });
+
+    recorder.onEvent({
+      type: "assistant_thought",
+      text: `${"x".repeat(300_000)}${tailSentinel}`,
+    });
+    const summary = await recorder.finish({});
+    const event = JSON.parse((await readFile(summary.artifactPaths[0] ?? "", "utf8")).trim()) as {
+      text?: string;
+    };
+    const retainedHead = event.text?.split("…[truncated")[0] ?? "";
+
+    expect(Buffer.byteLength(retainedHead, "utf8")).toBe(4_096);
+    expect(event.text).toContain("…[truncated");
+    expect(event.text).not.toContain(tailSentinel);
+  });
+
   it("persists recorder-level isolated identity for running and failed summaries", async () => {
     const dir = await tempDir();
     const recorder = createJsonlRunRecorder({
@@ -189,7 +213,7 @@ describe("JsonlRunRecorder", () => {
     expect(summary.sourceDetail).toBeUndefined();
   });
 
-  it("can write a running summary before the final result", async () => {
+  it("writes empty running artifacts, buffers events, and persists them only at the terminal boundary", async () => {
     const dir = await tempDir();
     let now = Date.parse("2026-05-16T08:00:00.000Z");
     const recorder = createJsonlRunRecorder({
@@ -213,8 +237,11 @@ describe("JsonlRunRecorder", () => {
       eventCount: 0,
     });
     expect(await readFile(running.artifactPaths[1] ?? "", "utf8")).toContain('"status": "running"');
+    expect(await readFile(running.artifactPaths[0] ?? "", "utf8")).toBe("");
 
     recorder.onEvent({ type: "assistant", message: "visible" });
+    // onEvent() is process-local buffering, not an append/checkpoint boundary.
+    expect(await readFile(running.artifactPaths[0] ?? "", "utf8")).toBe("");
     now = Date.parse("2026-05-16T08:00:02.500Z");
     const final = await recorder.finish({});
 
@@ -227,6 +254,7 @@ describe("JsonlRunRecorder", () => {
       eventCount: 1,
     });
     expect(await readFile(final.artifactPaths[1] ?? "", "utf8")).toContain('"status": "succeeded"');
+    expect(await readFile(final.artifactPaths[0] ?? "", "utf8")).toContain('"message":"visible"');
   });
 
   it("keeps prepareFinish non-terminal and commits late warnings exactly once", async () => {

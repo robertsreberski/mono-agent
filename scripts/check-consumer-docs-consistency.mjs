@@ -4,7 +4,33 @@ import { constants } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const userDocRoots = ["AGENTS.md", "README.md", "PACKAGES.md", "docs"];
+const userDocRoots = [
+  "AGENTS.md",
+  "README.md",
+  "PACKAGES.md",
+  "docs",
+  "packages/observability/README.md",
+  "packages/operator-adapter/README.md",
+  "packages/session-web/README.md",
+  "packages/tui/README.md",
+  "packages/agent-app/skills/mono-agent-composer/references",
+];
+
+const artifactContractSourcePaths = [
+  "packages/agent-app/src/cli.ts",
+  "packages/operator-adapter/package.json",
+  "packages/operator-adapter/src/tui/constants.ts",
+  "packages/operator-adapter/src/tui/server.ts",
+  "packages/tui/src/ui/app.ts",
+  "packages/tui/src/ui/components/tool-panel.ts",
+  "packages/tui/src/ui/views/replay-detail.ts",
+  "packages/tui/src/ui/views/replay.ts",
+  "packages/session-web/src/aggregator.ts",
+  "packages/session-web/src/history.ts",
+  "packages/session-web/webapp/src/views/DetailView.tsx",
+  "packages/tui/package.json",
+  "scripts/package-catalog.mjs",
+];
 
 const monoPackage = (...nameParts) => `@mono-agent/${nameParts.join("-")}`;
 const packageDir = (...nameParts) => `packages/${nameParts.join("-")}`;
@@ -84,6 +110,98 @@ const retiredDocReferences = [
   },
 ];
 
+const misleadingArtifactDurabilityClaims = [
+  {
+    label: "JSONL artifacts as a source of truth",
+    pattern:
+      /\b(?:local\s+)?JSONL(?:\s+run)?\s+artifacts?\b(?:(?!\bnot\b)[^\n.!?]){0,200}\bsource of truth\b/iu,
+  },
+  {
+    label: "always-on JSONL run record",
+    pattern: /\balways-on(?:\s+JSONL)?\s+run record\b/iu,
+  },
+  {
+    label: "always-on local traceability fallback",
+    pattern: /\balways-on local traceability fallback\b/iu,
+  },
+  {
+    label: "append-only JSONL run artifact",
+    pattern:
+      /\bappend-only\b[^\n.!?]{0,100}\b(?:JSONL|event stream|run artifacts?)\b|\b(?:JSONL|event stream|run artifacts?)\b[^\n.!?]{0,100}\bappend-only\b/iu,
+  },
+  {
+    label: "full payload guaranteed in run artifacts",
+    pattern:
+      /\bfull\s+(?:data|payload)\b\s+(?:is\s+always\s+|is\s+(?:available|preserved|retained)\s+|stays?\s+(?:available\s+)?|remains?\s+)?(?:in\s+)?(?:the\s+)?run(?:'s)?\s+(?:\[\s*)?(?:JSONL\s+)?artifacts?\b/iu,
+  },
+  {
+    label: "full or no-drop replay timeline",
+    pattern:
+      /\bfull(?:\s+coalesced)?\s+event timeline\b(?:[^\n.!?]{0,160}\bnothing\s+(?:is\s+)?dropped\b)?|\bnothing\s+(?:is\s+)?dropped\b/iu,
+  },
+  {
+    label: "full AgentStreamEvent fidelity",
+    pattern: /\bfull\s+`?AgentStreamEvent`?\s+fidelity\b/iu,
+  },
+  {
+    label: "verbatim complete TUI event stream",
+    pattern:
+      /\b(?:streams?\s+)?every\s+(?:structured\s+)?`?AgentStreamEvent`?\s+verbatim\b|\bexact\s+(?:in-process\s+)?stream callbacks?\b/iu,
+  },
+  {
+    label: "full stream-event insight",
+    pattern: /\bfull\s+stream-event\s+insight\b/iu,
+  },
+  {
+    label: "full thinking/tool/telemetry help insight",
+    pattern:
+      /\blive chat with full(?:[\s"',]+)thinking\/tool\/telemetry insight\b/iu,
+  },
+  {
+    label: "full-fidelity TUI NDJSON metadata",
+    pattern: /\bfull[- ]fidelity\s+TUI\s+NDJSON\s+(?:turns?|frames?|stream)\b/iu,
+  },
+  {
+    label: "guaranteed every-run Phoenix stream",
+    pattern:
+      /\bevery\s+run(?:\s+lifecycle)?\s+streams?\s+to\s+(?:a\s+)?\[?Phoenix\b|\bstream\s+every\s+run(?:\s+lifecycle)?\s+to\s+Phoenix\b/iu,
+  },
+  {
+    label: "guaranteed every-run Phoenix export",
+    pattern: /\bexported\s+on\s+every\s+run\b/iu,
+  },
+  {
+    label: "always-written JSONL artifacts",
+    pattern:
+      /\bJSONL(?:\s+run)?(?:\s+artifacts?)?\b(?:(?!\bnot\b)[^\n.!?]){0,180}\b(?:always\s+written|written\s+on\s+every\s+run)\b/iu,
+  },
+  {
+    label: "unbounded session artifact detail",
+    pattern:
+      /\bfull\s+timelines?\s+are\s+loaded\b|\b(?:use\s+\{@link\s+readInstanceSession\}\s+for|contains?|loading)\s+full\s+detail\b|\bA\s+single\s+run\s+read\s+in\s+full\b|\bfuller\s+\(redacted\)\s+payload\b/iu,
+  },
+  {
+    label: "broad TUI wire-bound claim",
+    pattern:
+      /\bper-frame payload bound\b|\bup to the wire bound\b|\bbounded wire protocol\b|\bupper\s+bound\s+for\s+one\s+serialized\s+NDJSON\s+frame\b/iu,
+  },
+  {
+    label: "non-enforced TUI event reduction threshold",
+    pattern:
+      /\b(?:serialized\s+|oversized\s+|remote\s+)?event frames?\b[^\n.!?]{0,220}\b256\s+KiB\b[^\n.!?]{0,220}\bnot\s+a\s+strict\s+(?:byte\s+)?(?:maximum|cap)\b/iu,
+  },
+  {
+    label: "blanket TUI event field-reduction claim",
+    pattern:
+      /\b(?:(?:all|every)\s+)?oversized events?\s+(?:(?:is|are)\s+field[- ]reduced|receive\s+field[- ]level(?:\s+payload)?\s+reduction)\b|\b(?:(?:a|all|every)\s+)?(?:serialized(?:\s+remote)?|remote)\s+event frames?(?:\s+(?:over|above)\s+256\s+KiB)?\s+(?:(?:is|are)\s+field[- ]reduced|receive\s+field[- ]level(?:\s+payload)?\s+reduction)\b/iu,
+  },
+  {
+    label: "guaranteed tool-output artifact persistence",
+    pattern:
+      /\bwhen\s+a\s+(?:tool\s+)?result\s+exceeds\b[^\n.!?]{0,180}\bit\s+is\s+persisted\s+as\s+an\s+artifact\b[^\n.!?]{0,180}\bnothing\s+is\s+silently\s+lost\b/iu,
+  },
+];
+
 const retiredSurfaces = [
   {
     label: "@mono-agent/memory-mcp",
@@ -107,12 +225,20 @@ export async function checkConsumerDocsConsistency(consumerPaths, options = {}) 
   const issues = [];
   let checked = 0;
   let userDocsChecked = 0;
+  let artifactContractSourcesChecked = 0;
 
   if (options.scanUserDocs !== false) {
     const repoRoot = resolve(options.repoRoot ?? process.cwd());
     const userDocRecords = options.userDocRecords ?? await readUserDocRecords(repoRoot);
+    const artifactContractSourceRecords = options.artifactContractSourceRecords
+      ?? await readExplicitTextRecords(repoRoot, artifactContractSourcePaths);
     userDocsChecked = userDocRecords.length;
+    artifactContractSourcesChecked = artifactContractSourceRecords.length;
     issues.push(...scanRetiredDocReferences(userDocRecords));
+    issues.push(...scanMisleadingArtifactDurabilityClaims([
+      ...userDocRecords,
+      ...artifactContractSourceRecords,
+    ]));
   }
 
   for (const rawPath of consumerPaths) {
@@ -149,7 +275,7 @@ export async function checkConsumerDocsConsistency(consumerPaths, options = {}) 
     }
   }
 
-  return { checked, userDocsChecked, warnings, issues };
+  return { checked, userDocsChecked, artifactContractSourcesChecked, warnings, issues };
 }
 
 function parseArgs(argv) {
@@ -223,6 +349,21 @@ async function readUserDocRecords(repoRoot) {
   return records;
 }
 
+async function readExplicitTextRecords(repoRoot, relativePaths) {
+  const records = [];
+  for (const relativePath of relativePaths) {
+    const path = join(repoRoot, relativePath);
+    if (!(await pathExists(path))) {
+      continue;
+    }
+    const pathStat = await stat(path);
+    if (pathStat.isFile()) {
+      records.push({ path, text: await readFile(path, "utf8") });
+    }
+  }
+  return records;
+}
+
 async function readMarkdownRecords(dir) {
   const entries = await readdir(dir, { withFileTypes: true });
   const records = [];
@@ -248,6 +389,23 @@ function scanRetiredDocReferences(records) {
         issues.push(
           `${record.path}:${location.line}:${location.column}: references retired pre-v1 surface ` +
             `"${retiredReference.label}". Update the user docs to the current v1 package map.`,
+        );
+      }
+    }
+  }
+  return issues;
+}
+
+function scanMisleadingArtifactDurabilityClaims(records) {
+  const issues = [];
+  for (const record of records) {
+    for (const claim of misleadingArtifactDurabilityClaims) {
+      for (const match of findPatternMatches(claim.pattern, record.text)) {
+        const location = lineAndColumn(record.text, match.index);
+        issues.push(
+          `${record.path}:${location.line}:${location.column}: uses absolute observability/replay wording ` +
+            `"${claim.label}". Describe transport and string caps, best-effort export, the start snapshot, ` +
+            "in-memory buffering, terminal replacement, and crash-loss/reconciliation boundaries instead.",
         );
       }
     }
@@ -292,7 +450,11 @@ function usage() {
     "Usage:",
     `  node ${bin} [--consumer <path> ...]`,
     "",
-    "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md) for retired pre-v1 surfaces.",
+    "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, relevant package READMEs,",
+    "and mono-agent-composer references)",
+    "for retired pre-v1 surfaces",
+    "and scans those docs plus TUI/session-web source text for absolute artifact/replay claims",
+    "that contradict wire truncation, best-effort export, recorder redaction, or terminal persistence.",
     "Each optional consumer folder should contain README.md and mono-agent.config.json.",
   ].join("\n");
 }
@@ -319,7 +481,7 @@ async function main() {
   for (const warning of result.warnings) {
     process.stderr.write(`WARN ${warning}\n`);
   }
-  if (result.checked === 0 && result.userDocsChecked === 0) {
+  if (result.checked === 0 && result.userDocsChecked === 0 && result.artifactContractSourcesChecked === 0) {
     process.stderr.write(
       "ERROR No repo user docs or consumer folders were checked.\n",
     );
@@ -336,6 +498,7 @@ async function main() {
 
   process.stdout.write(
     `Repo/consumer docs/config consistency passed for ${result.userDocsChecked} repo doc file(s) ` +
+      `and ${result.artifactContractSourcesChecked} artifact-contract source file(s) ` +
       `and ${result.checked} consumer folder(s).\n`,
   );
 }

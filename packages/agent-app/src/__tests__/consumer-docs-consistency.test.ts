@@ -50,7 +50,7 @@ describe("consumer docs/config consistency checker", () => {
     });
 
     const result = await runScript(["--consumer", dir]);
-    expect(result.stdout).toContain("repo doc file(s) and 1 consumer folder(s)");
+    expect(result.stdout).toMatch(successSummaryPattern(1));
     expect(result.stderr).toBe("");
   });
 
@@ -64,7 +64,7 @@ describe("consumer docs/config consistency checker", () => {
     });
 
     const result = await runScript(["--consumer", missingReadmeDir, "--consumer", validDir]);
-    expect(result.stdout).toContain("repo doc file(s) and 1 consumer folder(s)");
+    expect(result.stdout).toMatch(successSummaryPattern(1));
     expect(result.stderr).toContain("README.md missing; skipped");
   });
 
@@ -74,7 +74,7 @@ describe("consumer docs/config consistency checker", () => {
     });
 
     const result = await runScript(["--consumer", missingReadmeDir]);
-    expect(result.stdout).toContain("repo doc file(s) and 0 consumer folder(s)");
+    expect(result.stdout).toMatch(successSummaryPattern(0));
     expect(result.stderr).toContain("README.md missing; skipped");
   });
 
@@ -89,6 +89,15 @@ describe("consumer docs/config consistency checker", () => {
     });
   });
 });
+
+function successSummaryPattern(consumerCount: number): RegExp {
+  return new RegExp(
+    "^Repo/consumer docs/config consistency passed for [1-9]\\d* repo doc file\\(s\\) " +
+      "and 13 artifact-contract source file\\(s\\) " +
+      `and ${consumerCount} consumer folder\\(s\\)\\.\\n$`,
+    "u",
+  );
+}
 
 async function writeConsumer(input: {
   readonly readme?: string;

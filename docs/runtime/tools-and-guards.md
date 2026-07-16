@@ -44,7 +44,7 @@ These are the normalized policy semantics, but the selected runtime must be able
 
 ## Tool-output bloat guard (auto)
 
-Tool results are truncated at a 256KB budget so a single oversized result cannot blow up the context window or the model's reasoning. When a result exceeds the budget it is persisted as an artifact and the truncated portion is replaced with a reference, so nothing is silently lost. Artifacts land in `artifacts.dir`.
+Tool results are truncated at a 256KB budget so a single oversized result cannot blow up the context window or the model's reasoning. When a result exceeds the budget, the guard attempts to save each original block through the artifact sink. The compact replacement references only paths the sink successfully returned; if the sink is absent or a write fails, omitted bytes are not recoverable. Successful files land under `artifacts.dir/tool-output/` and are separate from JSONL replay.
 
 Images get a separate, larger budget than text so vision payloads are not clipped at the text limit.
 
@@ -62,7 +62,7 @@ Env: `MONO_AGENT_ARTIFACT_DIR`.
 
 ## Usage & cost tracking (auto)
 
-Each run records per-turn usage, cost, and cache metrics as events in the run's append-only JSONL artifacts. This is automatic (coverage: `auto`) — it rides on the same `artifacts.dir` and needs no separate flag. Secrets are redacted and long strings truncated in the recorded events.
+Each run collects per-turn usage, cost, and cache metrics as events for its JSONL artifact. The recorder redacts them, applies a 4,096-byte default cap per string, buffers them in memory, and atomically replaces the bounded events snapshot at the terminal boundary; it does not append or checkpoint events during the run, so a crash can lose buffered data. This is automatic (coverage: `auto`) — it rides on the same `artifacts.dir` and needs no separate flag. See [Artifacts & traces](/observability/artifacts-and-traces/) for the complete write-boundary and stale-reconciliation contract.
 
 Related per-turn timing also lands in the JSONL: a `provider_bridge_latency` event separates provider/tool/IO time from harness overhead, and per-tool `tool_timing` events carry `execution_ms`. See [Artifacts & traces](/observability/artifacts-and-traces/) and the [CLI reference](/observability/cli-reference/) for reading these, and [Phoenix & backfill](/observability/phoenix-and-backfill/) to export them as spans.
 

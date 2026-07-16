@@ -119,9 +119,10 @@ function buildRunDescription(run: ReplayRunListItem): string {
 
 /**
  * Recorded-run replay straight from the agent's artifact dir: run list →
- * debugger-style step-through of any past turn's full event timeline
- * (thinking, tools, telemetry, failover) from ANY channel — richer than the
- * live stream since nothing is dropped.
+ * debugger-style step-through of the redacted, bounded events that reached a
+ * run's JSONL file (thinking, tools, telemetry, failover) from any channel.
+ * Recorder-capped payload tails and RAM-buffered events lost to a crash cannot
+ * be reconstructed here.
  */
 export class ReplayView extends Container {
   readonly list: SelectList;

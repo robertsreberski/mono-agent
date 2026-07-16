@@ -76,7 +76,7 @@ The framework creates and writes everything under `.mono-agent/`. You generally 
 
 | Path | Holds | Config key |
 |------|-------|------------|
-| `.mono-agent/artifacts/` | JSONL run summaries and events — the always-on local traceability fallback. | `artifacts.dir` |
+| `.mono-agent/artifacts/` | JSONL run summaries and events — the completed-run record after terminal persistence. `start()` independently replaces empty events plus a `running` summary, later events buffer in RAM, and terminal files are independently replaced; a crash can lose buffered data, and stale reconciliation sees only persisted data. | `artifacts.dir` |
 | `.mono-agent/workspace/` | The runtime working directory, when `runtime.workspace` is not `"."`. | `runtime.workspace` |
 | `.mono-agent/memory/` | Built-in memory root: canonical daily notes, BuJo `graph.jsonl` and owner-only `.replay-projection-v1.json`, durable intake, and the managed `.index/`. The replay sidecar is exact metadata-only authority for BuJo lifecycle/thread replay; do not edit it or SQLite directly. | `memory.path` |
 | `.mono-agent/whatsapp-auth/` | Baileys auth state, written only when the WhatsApp channel is enabled. | (WhatsApp channel) |
