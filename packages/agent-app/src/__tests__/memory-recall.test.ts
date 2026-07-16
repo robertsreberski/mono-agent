@@ -58,18 +58,49 @@ describe("resolveMemoryRecallSettings", () => {
     expect(resolveMemoryRecallSettings(configWithMemory(undefined))).toBeUndefined();
   });
 
-  it("returns undefined when the recall tool is disabled", () => {
-    const settings = resolveMemoryRecallSettings(
-      configWithMemory({
-        mode: "journal",
-        path: "/memory",
-        maxBytes: 64_000,
-        writeMode: "append-host-summary",
-        embeddings: { provider: "ollama", model: "nomic-embed-text" },
-        recallTool: { enabled: false },
-      }),
+  it("bypasses only the live tool gate for previews and preserves built-in secret precedence", () => {
+    const memory = {
+      mode: "journal",
+      path: "/memory",
+      maxBytes: 64_000,
+      writeMode: "append-host-summary",
+      embeddings: {
+        provider: "openai",
+        model: "text-embedding-3-small",
+        endpoint: "https://api.openai.com/v1",
+        apiKey: "resolved-secret",
+        apiKeyEnv: "MEMORY_EMBEDDINGS_KEY",
+        dim: 768,
+        timeoutMs: 4_000,
+        circuitBreaker: { failureThreshold: 7, cooldownMs: 12_000 },
+      },
+    } satisfies NonNullable<MonoAgentConfig["memory"]>;
+    const liveConfig = configWithMemory({ ...memory, recallTool: { enabled: true } });
+    const previewConfig = configWithMemory({ ...memory, recallTool: { enabled: false } });
+
+    expect(resolveMemoryRecallSettings(previewConfig)).toBeUndefined();
+    const previewSettings = resolveMemoryRecallSettings(previewConfig, { ignoreRecallToolGate: true });
+    expect(previewSettings).toEqual(resolveMemoryRecallSettings(liveConfig));
+    expect(previewSettings).toEqual({
+      root: "/memory",
+      tier: "journal",
+      embeddings: {
+        provider: "openai",
+        model: "text-embedding-3-small",
+        endpoint: "https://api.openai.com/v1",
+        apiKey: "resolved-secret",
+        apiKeyEnv: "MEMORY_EMBEDDINGS_KEY",
+        dim: 768,
+        timeoutMs: 4_000,
+        circuitBreaker: { failureThreshold: 7, cooldownMs: 12_000 },
+      },
+    });
+    expect(memoryRecallMcpEnv(previewSettings as MemoryRecallSettings)).toMatchObject({
+      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "MEMORY_EMBEDDINGS_KEY",
+    });
+    expect(memoryRecallMcpEnv(previewSettings as MemoryRecallSettings)).not.toHaveProperty(
+      "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
     );
-    expect(settings).toBeUndefined();
   });
 
   it("defaults the recall tool on for a programmatic memory config that omits recallTool", () => {
@@ -696,6 +727,7 @@ function supermemoryConfig(overrides: {
   readonly container?: string;
   readonly apiKey?: string;
   readonly apiKeyEnv?: string;
+  readonly timeoutMs?: number;
   readonly sourceId?: string;
 }): MonoAgentConfig {
   return {
@@ -711,6 +743,7 @@ function supermemoryConfig(overrides: {
         ...(overrides.container === undefined ? {} : { container: overrides.container }),
         ...(overrides.apiKey === undefined ? {} : { apiKey: overrides.apiKey }),
         ...(overrides.apiKeyEnv === undefined ? {} : { apiKeyEnv: overrides.apiKeyEnv }),
+        ...(overrides.timeoutMs === undefined ? {} : { timeoutMs: overrides.timeoutMs }),
       },
     },
     traceability: { registryDir: "/trace", ...(overrides.sourceId === undefined ? {} : { sourceId: overrides.sourceId }) },
@@ -742,8 +775,36 @@ describe("supermemory backend recall", () => {
     });
   });
 
-  it("returns undefined when the recall tool is disabled", () => {
-    expect(resolveMemoryRecallSettings(supermemoryConfig({ recallEnabled: false }))).toBeUndefined();
+  it("bypasses only the live tool gate for previews and preserves Supermemory precedence", () => {
+    const shared = {
+      container: "explicit-container",
+      sourceId: "trace-container",
+      apiKey: "resolved-sm-secret",
+      apiKeyEnv: "SUPERMEMORY_KEY",
+      timeoutMs: 4_500,
+    } as const;
+    const previewConfig = supermemoryConfig({
+      ...shared,
+      recallEnabled: false,
+    });
+    const liveConfig = supermemoryConfig({ ...shared, recallEnabled: true });
+
+    expect(resolveMemoryRecallSettings(previewConfig)).toBeUndefined();
+    const previewSettings = resolveMemoryRecallSettings(previewConfig, { ignoreRecallToolGate: true });
+    expect(previewSettings).toEqual(resolveMemoryRecallSettings(liveConfig));
+    expect(previewSettings).toEqual({
+      supermemory: {
+        baseUrl: "http://127.0.0.1:6767",
+        container: "explicit-container",
+        apiKey: "resolved-sm-secret",
+        timeoutMs: 4_500,
+      },
+    });
+    expect(memoryRecallMcpEnv(previewSettings as MemoryRecallSettings)).toMatchObject({
+      MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY: "resolved-sm-secret",
+      MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER: "explicit-container",
+      MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS: "4500",
+    });
   });
 
   it("forwards the resolved apiKey VALUE into the child env and round-trips it (cross-runtime safe)", () => {

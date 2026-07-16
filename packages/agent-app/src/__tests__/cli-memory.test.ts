@@ -287,9 +287,16 @@ describe("runCli memory", () => {
     expect(result.stderr).toContain("intake-writer");
   });
 
-  it("previews local stats, today, search, and top from the configured store", async () => {
+  it("previews local stats, today, search, and top even when the live recall tool is disabled", async () => {
     const memoryRoot = join(await tempDir(), "memory");
-    const dir = await agentDir({ memory: { mode: "lite", path: memoryRoot, writeMode: "append-host-summary" } });
+    const dir = await agentDir({
+      memory: {
+        mode: "lite",
+        path: memoryRoot,
+        writeMode: "append-host-summary",
+        recallTool: { enabled: false },
+      },
+    });
     await seedLocalStore(memoryRoot);
 
     const stats = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "stats", "--limit", "5"]))));
@@ -1431,7 +1438,7 @@ describe("runCli memory", () => {
     }
   });
 
-  it("proxies Supermemory search and marks local stats unavailable", async () => {
+  it("previews Supermemory with the live recall tool disabled and marks local stats unavailable", async () => {
     const server = await supermemoryServer();
     try {
       const dir = await agentDir({
@@ -1439,6 +1446,7 @@ describe("runCli memory", () => {
           backend: "supermemory",
           mode: "lite",
           writeMode: "capture",
+          recallTool: { enabled: false },
           supermemory: { baseUrl: server.baseUrl, container: "agent-alpha" },
         },
       });

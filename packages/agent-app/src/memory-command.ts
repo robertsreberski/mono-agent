@@ -32,10 +32,11 @@ import {
   resolveAppTraceRegistryDir,
   resolveGlobalTraceRegistryDir,
 } from "./app-config.js";
+import { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
 import type {
   MemoryRecallBujoSettings,
   MemoryRecallSettings,
-} from "./memory-recall.js";
+} from "./memory-recall-settings.js";
 import * as ui from "./ui.js";
 
 const DEFAULT_SEARCH_LIMIT = 8;
@@ -1487,42 +1488,7 @@ async function runTop(context: MemoryCommandContext, input: RunMemoryCommandInpu
 }
 
 function previewRecallSettings(config: MonoAgentConfig): MemoryRecallSettings | undefined {
-  const memory = config.memory;
-  if (memory === undefined) {
-    return undefined;
-  }
-  if ((memory.backend ?? "bujo") === "supermemory") {
-    const sm = memory.supermemory;
-    if (sm === undefined) {
-      return undefined;
-    }
-    return {
-      supermemory: {
-        baseUrl: sm.baseUrl,
-        container: resolveSupermemoryContainer(config),
-        ...(sm.apiKey === undefined ? {} : { apiKey: sm.apiKey }),
-        ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
-      },
-    };
-  }
-  const embeddings = memory.embeddings;
-  if (embeddings === undefined) {
-    return { root: memory.path, tier: memory.mode };
-  }
-  return {
-    root: memory.path,
-    tier: memory.mode,
-    embeddings: {
-      provider: embeddings.provider,
-      model: embeddings.model,
-      ...(embeddings.endpoint === undefined ? {} : { endpoint: embeddings.endpoint }),
-      ...(embeddings.apiKey === undefined ? {} : { apiKey: embeddings.apiKey }),
-      ...(embeddings.apiKeyEnv === undefined ? {} : { apiKeyEnv: embeddings.apiKeyEnv }),
-      ...(embeddings.dim === undefined ? {} : { dim: embeddings.dim }),
-      ...(embeddings.timeoutMs === undefined ? {} : { timeoutMs: embeddings.timeoutMs }),
-      ...(embeddings.circuitBreaker === undefined ? {} : { circuitBreaker: embeddings.circuitBreaker }),
-    },
-  };
+  return resolveMemoryRecallSettings(config, { ignoreRecallToolGate: true });
 }
 
 async function recallWithFtsFallback(
