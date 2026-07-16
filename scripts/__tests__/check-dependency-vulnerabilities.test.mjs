@@ -232,16 +232,22 @@ describe("dependency vulnerability gate", () => {
 
   it("fails closed on unbound workspace links and contradictory pnpm 11 dedupe metadata", () => {
     const mismatchedName = JSON.parse(pnpm11ListFixture());
-    mismatchedName[1].dependencies["workspace-alias"].from = "outside-workspace";
+    mismatchedName[1].dependencies["workspace-only"].from = "outside-workspace";
     expect(() => parsePnpmProductionGraph(JSON.stringify(mismatchedName), {
       rootPackageNames: ["portable-fixture", "workspace-only"],
-    })).toThrow("workspace link workspace-alias has inconsistent alias metadata");
+    })).toThrow("workspace link workspace-only has inconsistent alias metadata");
 
     const mismatchedPath = JSON.parse(pnpm11ListFixture());
-    mismatchedPath[1].dependencies["workspace-alias"].path = "/outside/workspace-only";
+    mismatchedPath[1].dependencies["workspace-only"].path = "/outside/workspace-only";
     expect(() => parsePnpmProductionGraph(JSON.stringify(mismatchedPath), {
       rootPackageNames: ["portable-fixture", "workspace-only"],
     })).toThrow("links non-publishable workspace path /outside/workspace-only");
+
+    const crossBoundPath = JSON.parse(pnpm11ListFixture());
+    crossBoundPath[1].dependencies["workspace-only"].path = "/repo/packages/portable-fixture";
+    expect(() => parsePnpmProductionGraph(JSON.stringify(crossBoundPath), {
+      rootPackageNames: ["portable-fixture", "workspace-only"],
+    })).toThrow("workspace link workspace-only is not bound to its publishable workspace root");
 
     const zeroCount = JSON.parse(pnpm11ListFixture());
     zeroCount[2].dependencies["workspace-runtime"].dedupedDependenciesCount = 0;
@@ -262,7 +268,7 @@ describe("dependency vulnerability gate", () => {
     })).toThrow("has no expanded subtree");
 
     const recursiveCount = JSON.parse(pnpm11ListFixture());
-    recursiveCount[1].dependencies["workspace-alias"].dependencies["workspace-runtime"]
+    recursiveCount[1].dependencies["workspace-only"].dependencies["workspace-runtime"]
       .dependencies["vulnerable-transitive"].dependencies = {
         leaf: { from: "leaf", version: "1.0.0", path: "/repo/node_modules/leaf" },
       };
@@ -408,8 +414,8 @@ describe("dependency vulnerability gate", () => {
       name: "consumer-a",
       path: "/repo/packages/consumer-a",
       dependencies: {
-        "config-alias": {
-          from: "config-alias",
+        "workspace-only": {
+          from: "workspace-only",
           version: "link:../workspace-only",
           path: "/repo/packages/workspace-only",
           dependencies: { "workspace-runtime": workspaceRuntime },
@@ -419,8 +425,8 @@ describe("dependency vulnerability gate", () => {
       name: "consumer-b",
       path: "/repo/packages/nested/consumer-b",
       dependencies: {
-        "other-config-alias": {
-          from: "other-config-alias",
+        "workspace-only": {
+          from: "workspace-only",
           version: "link:../../workspace-only",
           path: "/repo/packages/workspace-only",
           deduped: true,
@@ -448,7 +454,7 @@ describe("dependency vulnerability gate", () => {
     });
 
     const contradictoryWorkspaceCount = structuredClone(crossRootLinks);
-    contradictoryWorkspaceCount[1].dependencies["other-config-alias"].dedupedDependenciesCount = 999;
+    contradictoryWorkspaceCount[1].dependencies["workspace-only"].dedupedDependenciesCount = 999;
     expect(() => parsePnpmProductionGraph(JSON.stringify(contradictoryWorkspaceCount), {
       rootPackageNames: ["consumer-a", "consumer-b", "workspace-only"],
     })).toThrow("reports 999 dependencies, but expanded occurrences contain 2");
@@ -518,24 +524,24 @@ describe("dependency vulnerability gate", () => {
         path: `/repo/node_modules/${name}`,
       }];
     }));
-    const expandedWorkspaceLinks = Object.fromEntries(Array.from({ length: 200 }, (_, index) => {
-      const alias = `workspace-alias-${index}`;
-      return [alias, {
-        from: alias,
-        version: "link:../workspace",
-        path: "/repo/packages/workspace",
-        dependencies: {
-          "workspace-leaf-0": structuredClone(workspaceDependencies["workspace-leaf-0"]),
+    const consumerNames = Array.from({ length: 200 }, (_, index) => `consumer-${index}`);
+    const consumers = consumerNames.map((name) => ({
+      name,
+      path: `/repo/packages/${name}`,
+      dependencies: {
+        workspace: {
+          from: "workspace",
+          version: "link:../workspace",
+          path: "/repo/packages/workspace",
+          dependencies: {
+            "workspace-leaf-0": structuredClone(workspaceDependencies["workspace-leaf-0"]),
+          },
         },
-      }];
+      },
     }));
 
     const manyLinkDocument = [
-      {
-        name: "consumer",
-        path: "/repo/packages/consumer",
-        dependencies: expandedWorkspaceLinks,
-      },
+      ...consumers,
       {
         name: "workspace",
         path: "/repo/packages/workspace",
@@ -543,7 +549,7 @@ describe("dependency vulnerability gate", () => {
       },
     ];
     const graph = parsePnpmProductionGraph(JSON.stringify(manyLinkDocument), {
-      rootPackageNames: ["consumer", "workspace"],
+      rootPackageNames: [...consumerNames, "workspace"],
     });
     expect(Object.keys(graph.inventory)).toHaveLength(600);
     expect(graph.dependencyPaths["workspace-leaf-0@1.0.0"]).toEqual([
@@ -551,13 +557,13 @@ describe("dependency vulnerability gate", () => {
     ]);
 
     const lastLinkContradiction = structuredClone(manyLinkDocument);
-    lastLinkContradiction[0].dependencies["workspace-alias-199"].dependencies.rogue = {
+    lastLinkContradiction[199].dependencies.workspace.dependencies.rogue = {
       from: "rogue",
       version: "1.0.0",
       path: "/repo/node_modules/rogue",
     };
     expect(() => parsePnpmProductionGraph(JSON.stringify(lastLinkContradiction), {
-      rootPackageNames: ["consumer", "workspace"],
+      rootPackageNames: [...consumerNames, "workspace"],
     })).toThrow("contains a production dependency that contradicts its publishable workspace root");
   });
 
@@ -2095,8 +2101,8 @@ function pnpm10ListFixture() {
           path: "/repo/node_modules/lodash",
         },
         shared: { from: "shared", version: "7.0.0", path: "/repo/node_modules/shared" },
-        "workspace-alias": {
-          from: "workspace-alias",
+        "workspace-only": {
+          from: "workspace-only",
           version: "link:../workspace-only",
           path: "/repo/packages/workspace-only",
           dependencies: {

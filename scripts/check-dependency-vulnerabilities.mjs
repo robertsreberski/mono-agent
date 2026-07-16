@@ -154,14 +154,16 @@ export function parsePnpmProductionGraph(source, options = {}) {
         // Skip its consumer-prefixed occurrence; the requested root below is
         // hydrated from the expansion index if pnpm rendered it as deduped.
         if (isLocalDependencyVersion(child.version)) {
-          const linkedRoot = rootsByPath.get(child.path);
+          const linkedRoot = validatePnpmWorkspaceLinkBinding(
+            childName,
+            child,
+            rootsByPath,
+            "pnpm list",
+          );
           if (linkedRoot === undefined) {
             throw new Error(
               `pnpm list production graph links non-publishable workspace path ${child.path}.`,
             );
-          }
-          if (child.from !== childName) {
-            throw new Error(`pnpm list workspace link ${childName} has inconsistent alias metadata.`);
           }
           continue;
         }
@@ -515,11 +517,13 @@ export function parsePnpmWhyDependencyPaths(source, options) {
         validatePnpmDependencyNode(childName, child, `pnpm why ${section}`);
         const localWorkspaceLink = isLocalDependencyVersion(child.version);
         if (localWorkspaceLink) {
-          if (child.from !== childName) {
-            throw new Error(`pnpm why workspace link ${childName} has inconsistent alias metadata.`);
-          }
-          const linkedRoot = rootsByPath.get(child.path);
-          if (linkedRoot === undefined || linkedRoot.name !== childName) {
+          const linkedRoot = validatePnpmWorkspaceLinkBinding(
+            childName,
+            child,
+            rootsByPath,
+            "pnpm why",
+          );
+          if (linkedRoot === undefined) {
             throw new Error(
               `pnpm why workspace link ${childName} is not bound to its publishable workspace root.`,
             );
@@ -1406,10 +1410,13 @@ function indexExpandedProductionNodes(document, rootsByPath) {
       for (const [childName, child] of Object.entries(children)) {
         validatePnpmForwardDependencyNode(childName, child, `pnpm list ${section}`);
         if (isLocalDependencyVersion(child.version)) {
-          if (child.from !== childName) {
-            throw new Error(`pnpm list workspace link ${childName} has inconsistent alias metadata.`);
-          }
-          if (rootsByPath.has(child.path)) {
+          const linkedRoot = validatePnpmWorkspaceLinkBinding(
+            childName,
+            child,
+            rootsByPath,
+            "pnpm list",
+          );
+          if (linkedRoot !== undefined) {
             const occurrences = workspaceLinksByPath.get(child.path) ?? [];
             occurrences.push({ childName, node: child });
             workspaceLinksByPath.set(child.path, occurrences);
@@ -1573,6 +1580,19 @@ function validatePnpmForwardDependencyNode(childName, child, description) {
   if (typeof child.path !== "string" || child.path.length === 0) {
     throw new Error(`${description} entry ${childName} is missing its installed path.`);
   }
+}
+
+function validatePnpmWorkspaceLinkBinding(childName, child, rootsByPath, description) {
+  if (child.from !== childName) {
+    throw new Error(`${description} workspace link ${childName} has inconsistent alias metadata.`);
+  }
+  const linkedRoot = rootsByPath.get(child.path);
+  if (linkedRoot !== undefined && linkedRoot.name !== childName) {
+    throw new Error(
+      `${description} workspace link ${childName} is not bound to its publishable workspace root.`,
+    );
+  }
+  return linkedRoot;
 }
 
 function validatePnpmReverseNode(node, description) {
