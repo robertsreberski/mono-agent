@@ -731,6 +731,75 @@ describe("Cron adapter", () => {
       }));
   });
 
+  it("observes a resolver that reentrantly replaces its run before returning a late rejection", async () => {
+    const job = { id: "resolve", expression: "* * * * *", prompt: "p", notify: true };
+    const jobStates = new Map();
+    let rejectDiscardedResolver!: (error: Error) => void;
+    const discardedResolver = new Promise<string | undefined>((_resolve, reject) => {
+      rejectDiscardedResolver = reject;
+    });
+    const thenSpy = vi.spyOn(discardedResolver, "then");
+    let resolverCallCount = 0;
+    let options!: Parameters<typeof handleTick>[2];
+    const responder = {
+      respond: vi.fn(async () => ({ text: "done" })),
+    } satisfies AgentResponder;
+    const results: Array<{ kind: string; scheduledAt?: string; notifyConversationId?: string }> = [];
+    options = {
+      responder,
+      overlap: "replace",
+      jobs: [job],
+      resolveNotifyFallbackConversationId: () => {
+        resolverCallCount += 1;
+        if (resolverCallCount === 1) {
+          // Re-enter replacement before returning the first operation. The
+          // resolver race therefore receives an already-aborted signal.
+          handleTick(job, new Date(60_000), options, jobStates);
+          return discardedResolver;
+        }
+        return Promise.resolve("slack:C-NEW");
+      },
+      onResult: (result) => {
+        results.push(result);
+      },
+    };
+
+    handleTick(job, new Date(0), options, jobStates);
+    await expect
+      .poll(() => results)
+      .toContainEqual(expect.objectContaining({
+        kind: "cancelled",
+        scheduledAt: "1970-01-01T00:00:00.000Z",
+      }));
+    await expect.poll(() => responder.respond.mock.calls.length).toBe(1);
+    expect(thenSpy).toHaveBeenCalledOnce();
+    expect(responder.respond.mock.calls[0]?.[0]).toHaveProperty(
+      "replyTo.conversationId",
+      "slack:C-NEW",
+    );
+    await expect
+      .poll(() => results)
+      .toContainEqual(expect.objectContaining({
+        kind: "succeeded",
+        scheduledAt: "1970-01-01T00:01:00.000Z",
+        notifyConversationId: "slack:C-NEW",
+      }));
+    await expect.poll(() => jobStates.size).toBe(0);
+
+    rejectDiscardedResolver(new Error("late discarded resolver rejection"));
+    for (let turn = 0; turn < 4; turn += 1) {
+      await Promise.resolve();
+    }
+    expect(responder.respond).toHaveBeenCalledOnce();
+    expect(
+      results.filter(
+        (result) =>
+          result.scheduledAt === "1970-01-01T00:00:00.000Z"
+          && ["cancelled", "failed", "succeeded"].includes(result.kind),
+      ),
+    ).toHaveLength(1);
+  });
+
   it("overlap:'replace' emits a terminal 'dropped' for a queued firing it discards on a second replace", async () => {
     // Drive handleTick directly (as the prior replace test does) to bypass the
     // validateOptions overlap gate and control the gates precisely. A double

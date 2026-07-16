@@ -949,15 +949,14 @@ async function resolveNotifyConversationId(
  * rejection is consumed after the abort path has already finalized the run.
  */
 function raceAgainstAbort<T>(operation: Promise<T>, abortSignal: AbortSignal): Promise<T> {
-  if (abortSignal.aborted) {
-    return Promise.reject(abortSignal.reason ?? new Error("Webhook run was aborted."));
-  }
   return new Promise<T>((resolve, reject) => {
     const onAbort = (): void => {
       abortSignal.removeEventListener("abort", onAbort);
       reject(abortSignal.reason ?? new Error("Webhook run was aborted."));
     };
-    abortSignal.addEventListener("abort", onAbort, { once: true });
+    // Observe the resolver before consulting the signal. A host resolver can
+    // synchronously trigger stop and only then return its promise; its eventual
+    // rejection must still be consumed after abort wins.
     void operation.then(
       (value) => {
         abortSignal.removeEventListener("abort", onAbort);
@@ -968,6 +967,11 @@ function raceAgainstAbort<T>(operation: Promise<T>, abortSignal: AbortSignal): P
         reject(error);
       },
     );
+    if (abortSignal.aborted) {
+      onAbort();
+    } else {
+      abortSignal.addEventListener("abort", onAbort, { once: true });
+    }
   });
 }
 

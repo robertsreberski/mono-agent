@@ -269,6 +269,7 @@ describe("Webhook adapter", () => {
       let responderRequest: object | undefined;
       let completionRequest: object | undefined;
       let routeBeforeTampering: string | undefined;
+      let onResultCallCount = 0;
       const deliveredRoutes: string[] = [];
       const responder: AgentResponder = {
         async respond(request) {
@@ -292,6 +293,7 @@ describe("Webhook adapter", () => {
         responder,
         resolveNotifyFallbackConversationId: async () => selectedRoute,
         onResult: (status, request) => {
+          onResultCallCount += 1;
           completionRequest = request;
           if (status.status === "succeeded" && request.replyTo !== undefined) {
             deliveredRoutes.push(request.replyTo.conversationId);
@@ -305,6 +307,9 @@ describe("Webhook adapter", () => {
           postJson({ text: "payload", conversationId: "logical:digest", mode: "sync" }),
         );
         expect(response.status).toBe(200);
+        expect(responderRequest).toBeDefined();
+        expect(completionRequest).toBeDefined();
+        expect(onResultCallCount).toBe(1);
         expect(routeBeforeTampering).toBe(selectedRoute);
         expect(completionRequest).not.toBe(responderRequest);
         if (selectedRoute === undefined) {
@@ -890,6 +895,66 @@ describe("Webhook adapter", () => {
       expect(completed.filter((status) => status.status === "succeeded")).toHaveLength(1);
     } finally {
       await server.stop();
+    }
+  });
+
+  it("observes a resolver that reentrantly stops the adapter before returning a late rejection", async () => {
+    let rejectDiscardedResolver!: (error: Error) => void;
+    const discardedResolver = new Promise<string | undefined>((_resolve, reject) => {
+      rejectDiscardedResolver = reject;
+    });
+    const thenSpy = vi.spyOn(discardedResolver, "then");
+    const responder = {
+      respond: vi.fn(async () => ({ text: "unexpected" })),
+    } satisfies AgentResponder;
+    const completed: Array<{ status: string }> = [];
+    const onResult = vi.fn((status: { status: string }) => {
+      completed.push(status);
+    });
+    let server!: Awaited<ReturnType<typeof startWebhookAdapter>>;
+    let stopPromise: Promise<void> | undefined;
+    const resolveNotifyFallbackConversationId = vi.fn(() => {
+      // stop() aborts the current request synchronously before its first await,
+      // so the resolver race receives an already-aborted signal.
+      stopPromise = server.stop();
+      return discardedResolver;
+    });
+    server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      endpoints: [{ name: "notify", path: "/notify", mode: "async", notify: true }],
+      responder,
+      resolveNotifyFallbackConversationId,
+      onResult: (status) => onResult(status),
+    });
+
+    try {
+      const accepted = await fetch(
+        `${server.url}/notify`,
+        postJson({ text: "stop", conversationId: "logical:stop", mode: "async" }),
+      );
+      expect(accepted.status).toBe(202);
+      await expect.poll(() => completed).toContainEqual(expect.objectContaining({ status: "cancelled" }));
+      expect(stopPromise).toBeDefined();
+      await stopPromise;
+
+      expect(thenSpy).toHaveBeenCalledOnce();
+      expect(responder.respond).not.toHaveBeenCalled();
+      expect(server.activeRequestCount).toBe(0);
+      expect(onResult).toHaveBeenCalledOnce();
+
+      rejectDiscardedResolver(new Error("late discarded resolver rejection"));
+      for (let turn = 0; turn < 4; turn += 1) {
+        await Promise.resolve();
+      }
+      expect(responder.respond).not.toHaveBeenCalled();
+      expect(onResult).toHaveBeenCalledOnce();
+    } finally {
+      if (stopPromise === undefined) {
+        await server.stop();
+      } else {
+        await stopPromise;
+      }
     }
   });
 
