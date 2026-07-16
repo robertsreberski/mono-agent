@@ -1,5 +1,31 @@
 # Release notes
 
+## 0.11.3 — Configurable Pi provider transport (2026-07-16)
+
+### Added
+
+- Adds a typed Pi-native transport preference with `auto`, `sse`, `websocket`,
+  and `websocket-cached` modes through `providers.piNative.transport`,
+  `MONO_AGENT_PI_TRANSPORT`, and the programmatic `piTransport` run option.
+- Reports the normalized requested mode as
+  `diagnostics.pi_transport_requested` on every Pi result path.
+
+### Reliability
+
+- Keeps an explicitly configured host transport authoritative over
+  request-scoped runtime extensions while allowing an extension to choose the
+  transport when the host leaves it unset.
+- Preserves Pi's provider-specific compatibility and fallback behavior by
+  defaulting to `auto`; providers without multiple transports ignore the
+  preference.
+
+### Compatibility
+
+- Existing configurations require no changes. Set the new field only when a
+  provider supports or requires an explicit transport.
+- All 21 catalog-publishable packages move together to 0.11.3. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.11.2 — Reliable native-notify continuations (2026-07-15)
 
 ### Fixed
