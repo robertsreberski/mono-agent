@@ -87,8 +87,8 @@ import {
  * Rebuild the SQLite index from canonical markdown. No LLM — re-embeds via the db's provider.
  *
  * After indexing memory bullets, reads `graph.jsonl` and mirrors entities/relations into the db.
- * Note: memory↔entity `about` edges are NOT stored in markdown/graph.jsonl (P2 known lossiness)
- * and are intentionally NOT rebuilt here. This is documented and deferred to P3+.
+ * Legacy memory↔entity `about` edges are retired. They are not canonical source
+ * data, no built-in production path emits them in v1, and rebuild does not recreate them.
  */
 export async function rebuildFromMarkdown(root: string, db: MemoryDb): Promise<{ indexed: number }> {
   const files = listCanonicalFileNames(root, "daily", {
