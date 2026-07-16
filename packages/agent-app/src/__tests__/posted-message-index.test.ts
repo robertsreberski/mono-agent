@@ -39,17 +39,47 @@ afterEach(async () => {
 
 const at = (iso: string) => () => new Date(iso);
 const DEFAULT_COMPACT_MAX_ENTRIES = 5000;
+const DETERMINISTIC_ENTRY_START = Date.parse("2026-01-01T00:00:00.000Z");
+
+function deterministicEntry(index: number): Record<string, string> {
+  return {
+    channelId: `C${String(index)}`,
+    ts: `${String(index)}.0`,
+    conversationId: `conv-${String(index)}`,
+    writtenAt: new Date(DETERMINISTIC_ENTRY_START + index).toISOString(),
+  };
+}
 
 function deterministicEntries(count: number): string {
-  const start = Date.parse("2026-01-01T00:00:00.000Z");
   return `${Array.from({ length: count }, (_, index) =>
-    JSON.stringify({
-      channelId: `C${String(index)}`,
-      ts: `${String(index)}.0`,
-      conversationId: `conv-${String(index)}`,
-      writtenAt: new Date(start + index).toISOString(),
-    }),
+    JSON.stringify(deterministicEntry(index)),
   ).join("\n")}\n`;
+}
+
+function newestDeterministicEntries(total: number, count: number): string {
+  return `${Array.from({ length: count }, (_, offset) =>
+    JSON.stringify(deterministicEntry(total - offset - 1)),
+  ).join("\n")}\n`;
+}
+
+function singleEntryWithByteLength(byteLength: number): string {
+  const entry = {
+    channelId: "C-cached",
+    ts: "cached.1",
+    conversationId: "x",
+    writtenAt: "2025-01-01T00:00:00.000Z",
+  };
+  const minimum = `${JSON.stringify(entry)}\n`;
+  const padding = byteLength - Buffer.byteLength(minimum);
+  if (padding < 0) {
+    throw new Error("Requested posted-message test entry is smaller than its JSON encoding.");
+  }
+  entry.conversationId += "x".repeat(padding);
+  const encoded = `${JSON.stringify(entry)}\n`;
+  if (Buffer.byteLength(encoded) !== byteLength) {
+    throw new Error("Posted-message test entry did not reach its requested byte length.");
+  }
+  return encoded;
 }
 
 function legacyEntriesWithoutWrittenAt(count: number): string {
@@ -345,6 +375,78 @@ describe("posted-message-index", () => {
     expect(count).toBeLessThan(DEFAULT_COMPACT_MAX_ENTRIES);
     expect(await lookupProducingConversation(indexPath, "C-reopen", "reopen.1")).toBe("conv-reopen");
     expect(await lookupProducingConversation(indexPath, "C0", "0.0")).toBeUndefined();
+  });
+
+  it("invalidates a cached count after child compaction rewrites the same inode to the same size", async () => {
+    const childEntryTotal = DEFAULT_COMPACT_MAX_ENTRIES + 1;
+    const childCompacted = newestDeterministicEntries(
+      childEntryTotal,
+      DEFAULT_COMPACT_MAX_ENTRIES,
+    );
+    const cachedSingleEntry = singleEntryWithByteLength(Buffer.byteLength(childCompacted));
+    await writeFile(indexPath, cachedSingleEntry, "utf8");
+
+    // A no-op compaction securely snapshots and caches count=1 in this process.
+    await compactPostedMessageIndex(indexPath);
+    const cachedIdentity = await stat(indexPath);
+    expect(nonEmptyLineCount(await readFile(indexPath, "utf8"))).toBe(1);
+
+    const builtModuleUrl = new URL("../../dist/posted-message-index.js", import.meta.url).href;
+    const child = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        [
+          'import { writeFile } from "node:fs/promises";',
+          "const start = Date.parse(\"2026-01-01T00:00:00.000Z\");",
+          "const count = Number(process.argv[3]);",
+          "const body = `${Array.from({ length: count }, (_, index) => JSON.stringify({",
+          "  channelId: `C${String(index)}` ,",
+          "  ts: `${String(index)}.0`,",
+          "  conversationId: `conv-${String(index)}` ,",
+          "  writtenAt: new Date(start + index).toISOString(),",
+          '})).join("\\n")}\\n`;',
+          "await writeFile(process.argv[2], body, \"utf8\");",
+          "const { compactPostedMessageIndex } = await import(process.argv[1]);",
+          "await compactPostedMessageIndex(process.argv[2]);",
+        ].join("\n"),
+        builtModuleUrl,
+        indexPath,
+        String(childEntryTotal),
+      ],
+      { stdio: ["ignore", "ignore", "pipe"] },
+    );
+    let childStderr = "";
+    child.stderr?.on("data", (chunk) => {
+      childStderr += String(chunk);
+    });
+    const [exitCode, signal] = await once(child, "exit");
+    expect({ exitCode, signal, childError: exitCode === 0 ? "" : childStderr }).toEqual({
+      exitCode: 0,
+      signal: null,
+      childError: "",
+    });
+
+    const rewrittenIdentity = await stat(indexPath);
+    const rewritten = await readFile(indexPath, "utf8");
+    expect(rewrittenIdentity.dev).toBe(cachedIdentity.dev);
+    expect(rewrittenIdentity.ino).toBe(cachedIdentity.ino);
+    expect(rewrittenIdentity.size).toBe(cachedIdentity.size);
+    expect(rewritten).toBe(childCompacted);
+    expect(nonEmptyLineCount(rewritten)).toBe(DEFAULT_COMPACT_MAX_ENTRIES);
+
+    await appendPostedMessage(
+      indexPath,
+      { channelId: "C-parent", ts: "parent.1", conversationId: "conv-parent" },
+      at("2027-01-01T00:00:00.000Z"),
+    );
+
+    // A stale count=1 cache would append directly and produce 5,001 lines.
+    // Freshness invalidation forces a recount and the normal 10% headroom rewrite.
+    expect(nonEmptyLineCount(await readFile(indexPath, "utf8"))).toBe(4_501);
+    expect(await lookupProducingConversation(indexPath, "C-parent", "parent.1"))
+      .toBe("conv-parent");
   });
 
   it("stays bounded across many completed writes and multiple amortized compactions", async () => {

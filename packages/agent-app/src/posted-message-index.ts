@@ -58,8 +58,19 @@ interface PostedMessageIndexState {
   readonly size: number;
 }
 
+interface FileChangeToken {
+  readonly ctimeNs: bigint;
+  readonly mtimeNs: bigint;
+}
+
+interface FileVersion {
+  readonly size: number;
+  readonly changeToken: FileChangeToken;
+}
+
 interface LoadedPostedMessageIndexState extends PostedMessageIndexState {
   readonly identity: FileIdentity;
+  readonly changeToken: FileChangeToken;
 }
 
 interface PostedMessageIndexSnapshot extends LoadedPostedMessageIndexState {
@@ -155,7 +166,6 @@ export async function appendPostedMessage(
     writtenAt: now().toISOString(),
   };
   const line = `${JSON.stringify(record)}\n`;
-  const lineBytes = Buffer.byteLength(line);
   const cap = normalizedAppendCap(maxEntries);
   await withPostedMessageIndexLock(indexPath, async (lock) => {
     const { directoryIdentity } = lock;
@@ -183,13 +193,14 @@ export async function appendPostedMessage(
       inProcessIndexStates.set(indexPath, compacted);
     }
 
-    const nextState: PostedMessageIndexState = {
-      count: state.count + 1,
-      size: state.size + lineBytes,
-    };
     try {
-      await appendSecureIndexLine(indexPath, line, state, directoryIdentity);
-      inProcessIndexStates.set(indexPath, { ...nextState, identity: state.identity });
+      const appended = await appendSecureIndexLine(indexPath, line, state, directoryIdentity);
+      inProcessIndexStates.set(indexPath, {
+        count: state.count + 1,
+        size: appended.size,
+        identity: state.identity,
+        changeToken: appended.changeToken,
+      });
     } catch {
       // Best-effort. Discard any in-process hint so the next writer reconciles
       // count and size from a securely-opened JSONL snapshot.
@@ -324,7 +335,7 @@ async function compactPostedMessageIndexUnlocked(
     // the transaction is prepared. The footer remains beyond the maximum rewrite
     // extent until the new prefix is durable, so process death at any rewrite
     // boundary is recoverable before the next locked reader or writer.
-    await rewritePinnedIndex(
+    const rewritten = await rewritePinnedIndex(
       target,
       indexPath,
       snapshot.identity,
@@ -336,7 +347,12 @@ async function compactPostedMessageIndexUnlocked(
     await assertNoSqliteSidecars(lock.path, directoryIdentity);
     await assertDirectoryIdentity(dirname(indexPath), directoryIdentity);
     await fsyncDirectory(dirname(indexPath), directoryIdentity);
-    return { count: kept.length, size: nextBytes.byteLength, identity: snapshot.identity };
+    return {
+      count: kept.length,
+      size: rewritten.size,
+      identity: snapshot.identity,
+      changeToken: rewritten.changeToken,
+    };
   } catch {
     // Best-effort and fail-closed. No catch path unlinks or renames a pathname. A
     // complete trailer remains on the intended inode for locked recovery; an
@@ -386,15 +402,16 @@ async function recoverPreparedCompaction(
     await assertLockFileIdentity(lock.path, lock.identity);
     await assertNoSqliteSidecars(lock.path, directoryIdentity);
     await assertDirectoryIdentity(dirname(indexPath), directoryIdentity);
-    await rewritePinnedIndex(target, indexPath, targetIdentity, prepared.body);
+    const rewritten = await rewritePinnedIndex(target, indexPath, targetIdentity, prepared.body);
     await assertFileIdentity(indexPath, targetIdentity);
     await assertLockFileIdentity(lock.path, lock.identity);
     await assertNoSqliteSidecars(lock.path, directoryIdentity);
     await fsyncDirectory(dirname(indexPath), directoryIdentity);
     inProcessIndexStates.set(indexPath, {
       count: prepared.record.entryCount,
-      size: prepared.body.byteLength,
+      size: rewritten.size,
       identity: targetIdentity,
+      changeToken: rewritten.changeToken,
     });
     return true;
   } catch {
@@ -557,7 +574,7 @@ async function rewritePinnedIndex(
   expectedIdentity: FileIdentity,
   body: Buffer,
   afterPrefixSync?: () => Promise<void>,
-): Promise<void> {
+): Promise<FileVersion> {
   const before = await handle.stat();
   assertSecureFile(before, indexPath);
   assertSameIdentity(expectedIdentity, before, indexPath);
@@ -575,6 +592,10 @@ async function rewritePinnedIndex(
   if (after.size !== body.byteLength) {
     throw new Error(`Posted-message index ${indexPath} compaction rewrite was incomplete.`);
   }
+  return {
+    size: after.size,
+    changeToken: await preciseFileChangeToken(handle, after, indexPath),
+  };
 }
 
 async function readPreparedCompaction(
@@ -860,11 +881,15 @@ async function loadPostedMessageIndexState(
   directoryIdentity: DirectoryIdentity,
   expectedIdentity: FileIdentity,
 ): Promise<LoadedPostedMessageIndexState | undefined> {
-  const size = await secureFileSize(indexPath, expectedIdentity, directoryIdentity);
+  const current = await secureFileVersion(indexPath, expectedIdentity, directoryIdentity);
   const cached = inProcessIndexStates.get(indexPath);
+  // Size plus inode is not a freshness proof: another locked process can compact
+  // the same inode back to the same byte length. Precise change metadata preserves
+  // the O(1) hot path while forcing a secure recount after any such rewrite.
   if (
     cached !== undefined
-    && cached.size === size
+    && cached.size === current.size
+    && sameFileChangeToken(cached.changeToken, current.changeToken)
     && sameIdentity(cached.identity, expectedIdentity)
   ) {
     return cached;
@@ -1040,10 +1065,19 @@ async function tryReadIndexSnapshot(
     const opened = await handle.stat();
     assertSecureFile(opened, indexPath);
     assertSameIdentity(identity, opened, indexPath);
+    const openedToken = await preciseFileChangeToken(handle, opened, indexPath);
     const bytes = await handle.readFile();
     const after = await handle.stat();
     assertSecureFile(after, indexPath);
     assertSameIdentity(opened, after, indexPath);
+    const afterToken = await preciseFileChangeToken(handle, after, indexPath);
+    if (
+      opened.size !== after.size
+      || !sameFileChangeToken(openedToken, afterToken)
+      || bytes.byteLength !== after.size
+    ) {
+      throw new Error(`Posted-message index ${indexPath} changed while its snapshot was read.`);
+    }
     await assertFileIdentity(indexPath, identity);
     await assertDirectoryIdentity(dirname(indexPath), directoryIdentity);
     const entries = parseEntries(bytes.toString("utf8"));
@@ -1052,6 +1086,7 @@ async function tryReadIndexSnapshot(
       count: entries.length,
       size: bytes.byteLength,
       identity,
+      changeToken: afterToken,
     };
   } catch {
     return undefined;
@@ -1080,7 +1115,7 @@ async function appendSecureIndexLine(
   line: string,
   expected: LoadedPostedMessageIndexState,
   directoryIdentity: DirectoryIdentity,
-): Promise<void> {
+): Promise<FileVersion> {
   let handle: FileHandle | undefined;
   try {
     await assertFileIdentity(indexPath, expected.identity);
@@ -1105,18 +1140,23 @@ async function appendSecureIndexLine(
     if (after.size !== expected.size + lineBytes) {
       throw new Error(`Posted-message index ${indexPath} changed during append.`);
     }
+    const changeToken = await preciseFileChangeToken(handle, after, indexPath);
     await assertFileIdentity(indexPath, expected.identity);
     await assertDirectoryIdentity(dirname(indexPath), directoryIdentity);
+    return {
+      size: after.size,
+      changeToken,
+    };
   } finally {
     await handle?.close().catch(() => undefined);
   }
 }
 
-async function secureFileSize(
+async function secureFileVersion(
   path: string,
   expectedIdentity: FileIdentity,
   directoryIdentity: DirectoryIdentity,
-): Promise<number> {
+): Promise<FileVersion> {
   let handle: FileHandle | undefined;
   try {
     await assertFileIdentity(path, expectedIdentity);
@@ -1124,12 +1164,36 @@ async function secureFileSize(
     const info = await handle.stat();
     assertSecureFile(info, path);
     assertSameIdentity(expectedIdentity, info, path);
+    const changeToken = await preciseFileChangeToken(handle, info, path);
     await assertFileIdentity(path, expectedIdentity);
     await assertDirectoryIdentity(dirname(path), directoryIdentity);
-    return info.size;
+    return {
+      size: info.size,
+      changeToken,
+    };
   } finally {
     await handle?.close().catch(() => undefined);
   }
+}
+
+async function preciseFileChangeToken(
+  handle: FileHandle,
+  expected: Stats,
+  path: string,
+): Promise<FileChangeToken> {
+  const precise = await handle.stat({ bigint: true });
+  if (
+    precise.dev !== BigInt(expected.dev)
+    || precise.ino !== BigInt(expected.ino)
+    || precise.size !== BigInt(expected.size)
+  ) {
+    throw new Error(`Posted-message index ${path} changed while its metadata was read.`);
+  }
+  return { ctimeNs: precise.ctimeNs, mtimeNs: precise.mtimeNs };
+}
+
+function sameFileChangeToken(left: FileChangeToken, right: FileChangeToken): boolean {
+  return left.ctimeNs === right.ctimeNs && left.mtimeNs === right.mtimeNs;
 }
 
 async function ensureOwnerOnlyFile(
