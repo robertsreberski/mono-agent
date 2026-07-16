@@ -119,6 +119,19 @@ describe("codex-app persistent sessions", () => {
     expect(turnStart?.params.effort).toBe("xhigh");
   });
 
+  it("passes effort ultra through unchanged to the app-server", async () => {
+    const factory = stubClientFactory({ threadId: "thread-effort-ultra" });
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, { effort: "ultra" }));
+
+    expect(result.error).toBeNull();
+    const client = factory.clients[0];
+    const threadStart = client.requests.find((request) => request.method === "thread/start");
+    const turnStart = client.requests.find((request) => request.method === "turn/start");
+    expect(threadStart?.params.config?.model_reasoning_effort).toBe("ultra");
+    expect(turnStart?.params.effort).toBe("ultra");
+  });
+
   it.each([
     ["default (unset)", undefined, "workspace-write", "workspaceWrite"],
     ["default", "default", "workspace-write", "workspaceWrite"],
