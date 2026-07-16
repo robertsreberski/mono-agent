@@ -216,7 +216,7 @@ describe("startMemoryRituals", () => {
     expect(fakeTimers.pendingCount()).toBe(0);
   });
 
-  it("computes a positive delay for the default consolidation cron '0 */2 * * *' from 02:00 UTC", () => {
+  it("preserves the default cron's legacy next-run delay exactly in UTC", () => {
     const fakeTimers = createFakeTimers();
     startMemoryRituals({
       store: createFakeStore("bujo"),
@@ -225,13 +225,10 @@ describe("startMemoryRituals", () => {
       clearTimer: fakeTimers.clearTimer,
     }).stop();
 
-    const timer = fakeTimers.timers[0];
-    expect(timer).toBeDefined();
-    expect(timer!.fireAt).toBeGreaterThan(7_100_000);
-    expect(timer!.fireAt).toBeLessThan(7_300_000);
+    expect(fakeTimers.timers[0]?.fireAt).toBe(7_200_000);
   });
 
-  it("respects a custom consolidation cron expression", () => {
+  it("preserves a numeric custom cron's legacy next-run delay exactly in UTC", () => {
     const fakeTimers = createFakeTimers();
     const result = startMemoryRituals({
       store: createFakeStore("bujo"),
@@ -241,17 +238,30 @@ describe("startMemoryRituals", () => {
       clearTimer: fakeTimers.clearTimer,
     });
 
-    expect(fakeTimers.timers[0]?.fireAt).toBeGreaterThan(3_800_000);
-    expect(fakeTimers.timers[0]?.fireAt).toBeLessThan(4_000_000);
+    expect(fakeTimers.timers[0]?.fireAt).toBe(3_900_000);
     result.stop();
   });
 
-  it("warns and schedules nothing for an invalid consolidation cron", () => {
+  it("uses the shared cron parser's named month and weekday support", () => {
+    const fakeTimers = createFakeTimers();
+    const result = startMemoryRituals({
+      store: createFakeStore("bujo"),
+      consolidation: { cron: "15 9 * JAN,MAR MON-FRI" },
+      now: () => new Date("2026-01-05T08:00:00Z"),
+      setTimer: fakeTimers.setTimer,
+      clearTimer: fakeTimers.clearTimer,
+    });
+
+    expect(fakeTimers.timers[0]?.fireAt).toBe(4_500_000);
+    result.stop();
+  });
+
+  it("surfaces the shared parser reason and schedules nothing for malformed cron", () => {
     const fakeTimers = createFakeTimers();
     const warns: string[] = [];
     const result = startMemoryRituals({
       store: createFakeStore("bujo"),
-      consolidation: { cron: "not-a-cron" },
+      consolidation: { cron: "0 0 * FOO *" },
       logger: { info: () => undefined, warn: (m) => { warns.push(m); } },
       now: () => BASE_DATE,
       setTimer: fakeTimers.setTimer,
@@ -259,7 +269,12 @@ describe("startMemoryRituals", () => {
     });
 
     expect(fakeTimers.pendingCount()).toBe(0);
-    expect(warns.some((warning) => /invalid cron/iu.test(warning))).toBe(true);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toMatch(
+      /^Memory consolidation has an invalid cron expression "0 0 \* FOO \*":/u,
+    );
+    expect(warns[0]).toMatch(/resolve alias "foo"/u);
+    expect(warns[0]).toMatch(/Consolidation disabled\.$/u);
     result.stop();
   });
 

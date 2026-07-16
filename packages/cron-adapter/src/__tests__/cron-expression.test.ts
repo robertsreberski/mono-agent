@@ -37,6 +37,43 @@ describe("validateCronExpression", () => {
   });
 
   it.each([
+    {
+      label: "summer offset in a non-local timezone",
+      expression: "0 9 * * *",
+      currentDate: "2026-07-10T06:30:00.000Z",
+      timezone: "Europe/Amsterdam",
+      nextDate: "2026-07-10T07:00:00.000Z",
+    },
+    {
+      label: "spring-forward gap",
+      expression: "30 2 * * *",
+      currentDate: "2026-03-28T23:00:00.000Z",
+      timezone: "Europe/Amsterdam",
+      nextDate: "2026-03-29T01:30:00.000Z",
+    },
+    {
+      label: "fall-back overlap",
+      expression: "30 2 * * *",
+      currentDate: "2026-10-24T22:00:00.000Z",
+      timezone: "Europe/Amsterdam",
+      nextDate: "2026-10-25T00:30:00.000Z",
+    },
+  ])("honors configured timezone semantics across $label", ({
+    expression,
+    currentDate,
+    timezone,
+    nextDate,
+  }) => {
+    expect(validateCronExpression(expression, {
+      currentDate: new Date(currentDate),
+      timezone,
+    })).toEqual({
+      ok: true,
+      nextDate: new Date(nextDate),
+    });
+  });
+
+  it.each([
     [undefined],
     [""],
     [" \t\n "],
