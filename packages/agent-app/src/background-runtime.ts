@@ -1523,7 +1523,7 @@ async function acquireRuntimeLock(
     ...(deps.isSameProcessIncarnation === undefined
       ? {}
       : { isSameProcessIncarnation: deps.isSameProcessIncarnation }),
-    ownerFields: () => identity,
+    ownerFields: () => ({ ...identity }),
     validateOwnerFields: (record) => Object.entries(identity)
       .every(([key, value]) => record[key] === value),
     parseLegacyOwner: (record) => {

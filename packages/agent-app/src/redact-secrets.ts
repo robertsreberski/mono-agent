@@ -67,8 +67,9 @@ export function redactSecrets(value: unknown, options: RedactSecretsOptions): st
 
 function diagnosticMessage(value: unknown, fallback: string): string {
   try {
-    return typeof value === "string"
-      ? value
-      : value instanceof Error && typeof value.message === "string" ? value.message : fallback;
+    if (typeof value === "string") return value;
+    if (!(value instanceof Error)) return fallback;
+    const message = value.message;
+    return typeof message === "string" ? message : fallback;
   } catch { return fallback; }
 }

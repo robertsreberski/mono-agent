@@ -1,15 +1,22 @@
-import { lstat, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { mergeSecretEnvFile, SecretEnvConcurrentModificationError } from "../init.js";
+import {
+  mergeSecretEnvFile,
+  SecretEnvConcurrentModificationError,
+  secretEnvConcurrentModificationCause,
+} from "../init.js";
 import { acquireOwnerPrivateLock } from "../owner-private-lock.js";
 import { redactSecrets } from "../redact-secrets.js";
 import { secureFileReplace } from "../secure-file-replace.js";
 
 const roots: string[] = [];
+const execFileAsync = promisify(execFile);
 const incarnation = {
   schema: "mono-agent.process-incarnation.v1" as const,
   bootSessionId: "security-primitives-test-boot",
@@ -24,6 +31,28 @@ async function root(): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), "mono-agent-security-primitives-"));
   roots.push(path);
   return path;
+}
+
+async function expectFifoRejectionWithoutBlocking(pending: Promise<unknown>, fifo: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const outcome = await Promise.race([
+    pending.then(
+      () => ({ kind: "resolved" as const }),
+      (error: unknown) => ({ kind: "rejected" as const, error }),
+    ),
+    new Promise<{ readonly kind: "blocked" }>((resolveBlocked) => {
+      timer = setTimeout(() => resolveBlocked({ kind: "blocked" }), 500);
+    }),
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
+  if (outcome.kind === "blocked") {
+    await Promise.allSettled([
+      execFileAsync("sh", ["-c", "printf x > \"$1\"", "sh", fifo]),
+      pending,
+    ]);
+  }
+  expect(outcome.kind).toBe("rejected");
+  if (outcome.kind === "rejected") expect(outcome.error).toBeInstanceOf(Error);
 }
 
 describe("shared security primitives", () => {
@@ -83,6 +112,37 @@ describe("shared security primitives", () => {
     await expect(lstat(temporaryPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it.skipIf(process.platform === "win32")("rejects FIFO swaps without blocking shared file and owner readers", async () => {
+    const dir = await root();
+    const path = join(dir, "managed.txt");
+    const temporaryPath = join(dir, ".managed.tmp");
+    const fileReplacement = secureFileReplace({
+      path,
+      temporaryPath,
+      contents: "trusted\n",
+      mode: 0o600,
+      beforeCommit: async (temporary) => {
+        await rename(temporary, `${temporary}.displaced`);
+        await execFileAsync("mkfifo", [temporary]);
+      },
+      commit: (temporary) => rename(temporary, path),
+    });
+    await expectFifoRejectionWithoutBlocking(fileReplacement, temporaryPath);
+
+    const lockPath = join(dir, "fifo-owner.lock");
+    await mkdir(lockPath, { mode: 0o700 });
+    const ownerPath = join(lockPath, "owner.json");
+    await execFileAsync("mkfifo", [ownerPath]);
+    const lockReplacement = acquireOwnerPrivateLock({
+      path: lockPath,
+      label: "FIFO test lock",
+      schemaTag: "mono-agent.test-lock.v1",
+      ownerlessGraceMs: 60_000,
+      processIncarnation: incarnation,
+    });
+    await expectFifoRejectionWithoutBlocking(lockReplacement, ownerPath);
+  });
+
   it("rechecks staged secret bytes immediately before the caller's exclusive publication", async () => {
     const dir = await root();
     const path = join(dir, ".env");
@@ -108,6 +168,36 @@ describe("shared security primitives", () => {
     expect(recoveryPath).toBeDefined();
     await expect(readFile(path, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(recoveryPath!, "utf8")).toBe("TOKEN=original\n");
+  });
+
+  it("keeps recovery evidence when an async publisher swaps in a same-byte inode", async () => {
+    const dir = await root();
+    const path = join(dir, ".env");
+    await writeFile(path, "TOKEN=original\n", { mode: 0o600 });
+    await writeFile(
+      join(dir, ".gitignore"),
+      "/.env\n/..env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n",
+    );
+
+    let failure: unknown;
+    try {
+      await mergeSecretEnvFile(path, { SECOND: "managed" }, {
+        async beforeInstallLink(_target, temporary) {
+          const intended = await readFile(temporary);
+          await rename(temporary, `${temporary}.displaced`);
+          await writeFile(temporary, intended, { mode: 0o600 });
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as Error).cause).toBeInstanceOf(SecretEnvConcurrentModificationError);
+    const cause = secretEnvConcurrentModificationCause(failure)!;
+    expect(cause.recoveryPath).toBeDefined();
+    await expect(readFile(path, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(cause.recoveryPath!, "utf8")).toBe("TOKEN=original\n");
   });
 
   it("serializes a private directory lock and releases only the acquired owner record", async () => {
@@ -137,6 +227,34 @@ describe("shared security primitives", () => {
     await held?.release();
     await held?.release();
     await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not overwrite a competing owner published in the mkdir window", async () => {
+    const dir = await root();
+    const path = join(dir, "publication-race.lock");
+    const competitor = `${JSON.stringify({
+      schema: "mono-agent.test-lock.v1",
+      pid: process.pid,
+      token: "competing-owner",
+      createdAt: new Date(0).toISOString(),
+      incarnation,
+    })}\n`;
+
+    const held = await acquireOwnerPrivateLock({
+      path,
+      label: "Publication-race test lock",
+      schemaTag: "mono-agent.test-lock.v1",
+      ownerlessGraceMs: 60_000,
+      processIncarnation: incarnation,
+      isSameProcessIncarnation: async () => true,
+      randomToken: () => "acquiring-owner",
+      afterDirectoryCreated: async (lockPath) => {
+        await writeFile(join(lockPath, "owner.json"), competitor, { mode: 0o600 });
+      },
+    });
+
+    expect(held).toBeUndefined();
+    expect(await readFile(join(path, "owner.json"), "utf8")).toBe(competitor);
   });
 
   it("preserves exact lock ownership when Windows cannot fsync a directory handle", async () => {
@@ -201,5 +319,20 @@ describe("shared security primitives", () => {
     });
     expect(fallback).not.toContain("fallback-secret");
     expect(fallback.length).toBeLessThanOrEqual(400);
+  });
+
+  it("snapshots an Error message once before redaction", () => {
+    const error = new Error("unused");
+    let reads = 0;
+    Object.defineProperty(error, "message", {
+      configurable: true,
+      get() {
+        reads += 1;
+        return reads === 1 ? "stable provider failure" : "unrecognized-secret";
+      },
+    });
+
+    expect(redactSecrets(error, { fallback: "provider failed" })).toBe("stable provider failure");
+    expect(reads).toBe(1);
   });
 });

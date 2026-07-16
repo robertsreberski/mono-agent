@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  type BigIntStats,
   closeSync,
   constants,
   fchmodSync,
@@ -591,15 +592,15 @@ function removeManagedFileExactSync(root: string, path: string, expected: string
   }
 }
 
-function assertManagedFileInfo(info: Stats, path: string): void {
-  if (!info.isFile() || info.nlink !== 1) {
+function assertManagedFileInfo(info: Stats | BigIntStats, path: string): void {
+  if (!info.isFile() || Number(info.nlink) !== 1) {
     throw new Error(`Managed project skill must be one regular file with one link: ${path}`);
   }
   const uid = process.getuid?.();
-  if (uid !== undefined && info.uid !== uid) {
+  if (uid !== undefined && Number(info.uid) !== uid) {
     throw new Error(`Managed project skill must be owned by the current user: ${path}`);
   }
-  if ((info.mode & 0o022) !== 0) {
+  if ((Number(info.mode) & 0o022) !== 0) {
     throw new Error(`Managed project skill must not be group/world writable: ${path}`);
   }
 }

@@ -1188,7 +1188,10 @@ async function readSecureLegacyInstallLock(
 ): Promise<ExistingLegacyInstallLock | undefined> {
   let handle;
   try {
-    handle = await open(lockPath, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    handle = await open(
+      lockPath,
+      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0),
+    );
     const before = await handle.stat({ bigint: true });
     if (!sameInstallLockIdentity(before, observedIdentity) || before.nlink === 0n) return undefined;
     assertPrivateLegacyInstallLockDetails(before, lockPath);

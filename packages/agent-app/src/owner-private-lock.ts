@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
-import { lstat, mkdir, open, rename, rm, type FileHandle } from "node:fs/promises";
+import { link, lstat, mkdir, open, rename, rm, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import process from "node:process";
 
@@ -117,13 +117,18 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
       return makeHeld(options, created, owner, pid, now, randomToken);
     } catch (error) {
       if (created !== undefined) {
-        try {
-          await abandon(options, created, pid, now, randomToken);
-        } catch (cleanupError) {
-          throw new AggregateError(
-            [error, cleanupError],
-            `${options.label} acquisition and failed-acquisition cleanup both failed.`,
-          );
+        // An exclusive owner publication can lose to a same-user contender
+        // inside the directory we just created. Preserve that record and let
+        // normal inspection decide whether it is live, stale, or unsafe.
+        if (!isErrno(error, "EEXIST")) {
+          try {
+            await abandon(options, created, pid, now, randomToken);
+          } catch (cleanupError) {
+            throw new AggregateError(
+              [error, cleanupError],
+              `${options.label} acquisition and failed-acquisition cleanup both failed.`,
+            );
+          }
         }
       }
       if (!isErrno(error, "EEXIST")) throw error;
@@ -218,7 +223,9 @@ async function publishOwner(
     contents: content,
     mode: 0o600,
     beforeCommit: () => sameDirectoryRequired(options.path, directoryIdentity, options),
-    commit: (temporary) => rename(temporary, ownerPath),
+    // The directory is new, so owner publication must also be create-only.
+    // A contender that appears in the mkdir-to-owner window is never replaced.
+    commit: (temporary) => link(temporary, ownerPath),
   });
   await sameDirectoryRequired(options.path, directoryIdentity, options);
   const owner = await readOwner(ownerPath, options);
@@ -362,7 +369,6 @@ async function quarantine(
     throw error;
   }
   if (!sameObserved(await inspect(stalePath, options), expected)) {
-    await rename(stalePath, options.path).catch(() => undefined);
     return staleRace(options, `${options.label} changed across stale-lock quarantine and was retained at ${stalePath}.`, { stalePath });
   }
   await rm(stalePath, { recursive: true, force: true });

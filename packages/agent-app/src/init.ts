@@ -137,6 +137,24 @@ export class SecretEnvConcurrentModificationError extends Error {
   }
 }
 
+/** Recover the typed concurrency cause through bounded cleanup-error wrapping. */
+export function secretEnvConcurrentModificationCause(
+  error: unknown,
+): SecretEnvConcurrentModificationError | undefined {
+  const seen = new Set<unknown>();
+  let current = error;
+  for (let depth = 0; depth < 16 && current !== undefined && !seen.has(current); depth += 1) {
+    if (current instanceof SecretEnvConcurrentModificationError) return current;
+    seen.add(current);
+    try {
+      current = current instanceof Error ? current.cause : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
 export interface SecretEnvPersistenceOptions {
   /** Preview the exact safety checks and changes without writing. */
   readonly dryRun?: boolean;
@@ -1195,7 +1213,7 @@ async function atomicReplaceFile(options: AtomicReplaceOptions): Promise<void> {
     contents: options.contents,
     mode: options.mode,
     validateTemporary: (details) => {
-      if (options.verifyOwnerOnly === true && (details.mode & 0o777) !== 0o600) {
+      if (options.verifyOwnerOnly === true && (details.mode & 0o777n) !== 0o600n) {
         throw new SecretEnvPersistenceRefusedError(
           "owner-only-permissions-unsupported",
           "Automatic secret persistence could not verify owner-only permissions.",
@@ -1211,8 +1229,8 @@ async function atomicReplaceFile(options: AtomicReplaceOptions): Promise<void> {
       await assertSnapshotUnchanged(options.path, options.reportedPath, options.expected, options.ownerUid);
       await options.beforePromotion?.(options.reportedPath, temporary);
     },
-    commit: async (temporary) => {
-      await promoteTemporaryFileWithoutClobber(options, temporary);
+    commit: async (temporary, proof) => {
+      await promoteTemporaryFileWithoutClobber(options, temporary, proof.assertPath);
       await syncDirectoryBestEffort(dirname(options.path));
     },
   });
@@ -1221,12 +1239,13 @@ async function atomicReplaceFile(options: AtomicReplaceOptions): Promise<void> {
 async function promoteTemporaryFileWithoutClobber(
   options: AtomicReplaceOptions,
   temporaryPath: string,
+  assertStagedPath: (path: string, allowedLinkCounts?: readonly number[]) => Promise<void>,
 ): Promise<void> {
   if (!options.expected.exists) {
     if (!await linkIfAbsent(temporaryPath, options.path)) {
       throw new SecretEnvConcurrentModificationError(options.reportedPath);
     }
-    await assertPromotedContents(options, temporaryPath);
+    await assertPromotedContents(options, temporaryPath, assertStagedPath);
     return;
   }
 
@@ -1309,7 +1328,7 @@ async function promoteTemporaryFileWithoutClobber(
           preserveConcurrentBackup ? backupPath : undefined,
         );
       }
-      await assertTemporaryContentsBeforePromotion(options, temporaryPath);
+      await assertStagedPath(temporaryPath);
       installed = await linkIfAbsent(temporaryPath, options.path);
     } catch {
       if (!preserveConcurrentBackup) {
@@ -1326,7 +1345,7 @@ async function promoteTemporaryFileWithoutClobber(
     }
     try {
       await options.afterInstallLink?.(options.reportedPath, temporaryPath);
-      await assertPromotedContents(options, temporaryPath);
+      await assertPromotedContents(options, temporaryPath, assertStagedPath);
     } catch {
       // If a racing writer deleted our new target, restore the old expected
       // snapshot. If it wrote a newer target, exclusive link preserves it.
@@ -1363,24 +1382,6 @@ async function promoteTemporaryFileWithoutClobber(
     } else {
       await tightenFileOwnerOnlyBestEffort(backupPath);
     }
-  }
-}
-
-async function assertTemporaryContentsBeforePromotion(
-  options: AtomicReplaceOptions,
-  temporaryPath: string,
-): Promise<void> {
-  const temporary = await readSafeFile(
-    temporaryPath,
-    basename(options.path) === ".gitignore" ? "unsafe-gitignore-path" : "unsafe-env-path",
-    basename(options.path) === ".gitignore" ? "malformed-gitignore" : "malformed-env",
-    options.ownerUid,
-    [1],
-  );
-  if (!temporary.exists
-    || !temporary.contents.equals(options.contents)
-    || fileMode(temporary) !== options.mode) {
-    throw new SecretEnvConcurrentModificationError(options.reportedPath);
   }
 }
 
@@ -1424,7 +1425,10 @@ async function linkIfAbsent(source: string, target: string): Promise<boolean> {
 async function assertPromotedContents(
   options: AtomicReplaceOptions,
   temporaryPath: string,
+  assertStagedPath: (path: string, allowedLinkCounts?: readonly number[]) => Promise<void>,
 ): Promise<void> {
+  await assertStagedPath(temporaryPath, [2]);
+  await assertStagedPath(options.path, [2]);
   const temporary = await readSafeFile(
     temporaryPath,
     basename(options.path) === ".gitignore" ? "unsafe-gitignore-path" : "unsafe-env-path",
