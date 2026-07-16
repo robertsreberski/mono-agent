@@ -5,6 +5,7 @@ import { dirname } from "node:path/posix";
 import {
   BufferedMessageStream,
   isAgentResponseCancelledError,
+  isDeliverableConversation,
   type AgentMessageStream,
   type AgentRequestBase,
   type AgentResponder,
@@ -104,6 +105,13 @@ export interface WebhookAdapterLogger {
   warn?(message: string, metadata?: Record<string, unknown>): void;
   error?(message: string, metadata?: Record<string, unknown>): void;
 }
+
+/**
+ * Channel schemes whose request conversation may become a native-notify reply
+ * target. WhatsApp is intentionally excluded until its plugin driver exposes a
+ * native notify hook; explicit and host-resolved destinations remain available.
+ */
+export const NATIVE_NOTIFY_CALLBACK_CHANNEL_IDS = Object.freeze(["telegram", "slack"] as const);
 
 /**
  * One HTTP endpoint of the webhook server. Multiple endpoints share one server,
@@ -1037,10 +1045,6 @@ function composePromptText(prompt: string | undefined, text: string): string {
   return prompt === undefined || prompt.length === 0 ? text : `${prompt}\n\n${text}`;
 }
 
-function isDeliverableConversation(conversationId: string): boolean {
-  return conversationId.startsWith("telegram:") || conversationId.startsWith("slack:");
-}
-
 async function resolveNotifyConversationId(
   endpoint: ResolvedEndpoint,
   requestConversationId: string,
@@ -1051,7 +1055,10 @@ async function resolveNotifyConversationId(
     return undefined;
   }
   const configured = endpoint.notifyConversationId
-    ?? (isDeliverableConversation(requestConversationId) ? requestConversationId : undefined)
+    ?? (isDeliverableConversation(
+      requestConversationId,
+      NATIVE_NOTIFY_CALLBACK_CHANNEL_IDS,
+    ) ? requestConversationId : undefined)
     ?? endpoint.notifyFallbackConversationId;
   if (configured !== undefined) {
     return configured;

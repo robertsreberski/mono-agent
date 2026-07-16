@@ -20,6 +20,7 @@ import type { AgentResponder } from "@mono-agent/agent-contracts";
 ```
 
 Adapter packages extend the base request with transport metadata while keeping the responder and stream shapes compatible across hosts.
+`isDeliverableConversation` parses a conversation scheme against caller-supplied channel ids, leaving concrete delivery policy with the adapter.
 
 ## Public API
 
@@ -125,6 +126,7 @@ hostForUrl
 isAgentResponseCancelledError
 isChannelUserCancelReason
 isCodedError
+isDeliverableConversation
 isLoopbackHost
 isWildcardHost
 layerJsonOntoEnv

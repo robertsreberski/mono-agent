@@ -459,6 +459,7 @@ export type {
   NotifyDestination,
   RunningChannel,
 } from "./channel.js";
+export { isDeliverableConversation } from "./channel.js";
 export {
   LIVE_EVENT_SCHEMA,
   DEFAULT_RUN_EVENT_BUFFER_SIZE,

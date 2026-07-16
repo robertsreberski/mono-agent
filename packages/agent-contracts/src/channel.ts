@@ -8,6 +8,15 @@ import type { RunEventBus } from "./live-events.js";
  */
 export type ChannelId = string;
 
+/** Whether a conversation's scheme is present in a caller-supplied channel-id policy. */
+export function isDeliverableConversation(
+  conversationId: string,
+  deliverableChannelIds: readonly ChannelId[],
+): boolean {
+  const separator = conversationId.indexOf(":");
+  return separator > 0 && deliverableChannelIds.includes(conversationId.slice(0, separator));
+}
+
 /** Structural logger a host passes to channel drivers. All levels optional. */
 export interface ChannelLogger {
   debug?(message: string, metadata?: Record<string, unknown>): void;
