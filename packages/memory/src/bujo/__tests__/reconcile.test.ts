@@ -309,6 +309,41 @@ describe("reconcile", () => {
     expect(parsed.bullets.find((b) => b.id === "UPD1")?.text).toBe(merged);
   });
 
+  it("keeps the public legacy reconcile path at 280 well-formed Unicode code points", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "LEGACY", "Existing legacy reconciliation memory");
+    db.findSimilar = async () => [{ record: db.get("LEGACY")!, distance: 0.1 }];
+    const candidate: CandidateMemory = {
+      type: "note",
+      text: "Candidate requiring the legacy reconciliation classifier",
+      salience: 0.8,
+      isInsight: false,
+    };
+    const expected = `${"a".repeat(279)}🧠`;
+    const escapedBoundary = `${"a".repeat(139)}\ud83d${"a".repeat(140)}🧠`;
+    const reply = JSON.stringify({
+      action: "update",
+      targetId: "LEGACY",
+      text: escapedBoundary,
+    });
+    expect(reply).toContain("\\ud83d");
+
+    const actions = await reconcile(
+      [candidate],
+      makeDeps(db, root, fakeLlm([["CLASSIFY", reply]])),
+    );
+
+    expect(actions).toEqual([{ kind: "update", id: "LEGACY" }]);
+    expect(db.get("LEGACY")?.text).toBe(expected);
+    expect(Array.from(db.get("LEGACY")?.text ?? "")).toHaveLength(280);
+    expect(db.get("LEGACY")?.text).toMatch(/🧠$/u);
+    expect(db.get("LEGACY")?.text).not.toContain("�");
+    expect(db.get("LEGACY")?.text).not.toMatch(/\p{Cs}/u);
+    expect(parseDailyFile(dailyContent(root)).bullets.find((bullet) => bullet.id === "LEGACY")?.text)
+      .toBe(expected);
+  });
+
   it("case 5 — durable replay stops on pre-existing canonical/index divergence", async () => {
     const root = newRoot();
     const db = openDb(root);
