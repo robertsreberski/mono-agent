@@ -67,6 +67,8 @@ A run summary's `status` is one of:
 
 A crashed process can leave a summary stuck at `running` forever. To self-heal that, the host runs `reconcileStaleRunArtifacts()` **once at startup**: it scans the artifacts directory and rewrites any summary left at `running` by a *previous* process to `interrupted` (failure kind `process_death`). It is fire-and-forget — best-effort, runs in the background, and never gates readiness — so a large artifacts directory can never delay start. In the [Phoenix export](/observability/phoenix-and-backfill/), `interrupted` maps to an ERROR span, alongside `failed` and `cancelled`.
 
+Reconciliation repairs status only. The JSONL recorder writes an empty event artifact at `start()` and buffers subsequent events in memory until terminal `finish()`/`fail()`. If the process dies between those boundaries, the reconciled run can report `process_death` with `eventCount: 0` even though events occurred. The live broadcast gives connected TUI/web clients best-effort real-time visibility, but it is not durable recovery or a post-mortem event trail.
+
 Failure kinds are an open string set because provider/runtime adapters can surface new values. The display taxonomy currently explains the common operator-facing kinds including `usage_limit`, `process_death`, `cancelled` and its cancellation variants, `provider_unavailable`, `provider_unavailable_exhausted`, `runtime_error`, `session_not_found`, and `session_busy`; unknown values stay visible and get a generic artifact/log inspection hint.
 
 For a read-only inventory, run `mono-agent audit-runs`. It scans every `*.summary.json` file in the artifact directory, reports malformed summaries, status and failure-kind histograms, unrecognized values, stale `running` summaries, and failure-kind rates. Unlike startup reconciliation, the audit never rewrites `running` summaries; it only flags what the startup reconciler would consider stale.
@@ -77,7 +79,7 @@ mono-agent audit-runs --artifact-dir /path/to/.mono-agent/artifacts --stale-afte
 ```
 
 :::tip
-The artifacts directory is the durable record of what your agent did. Keep it out of version control (it grows per run) but back it up if you care about historical runs you might want to backfill or audit later.
+The artifacts directory is the durable record of completed runs and of data that reached a recorder write boundary; it is not a crash-safe journal of in-flight events. Keep it out of version control (it grows per run) but back it up if you care about historical runs you might want to backfill or audit later.
 :::
 
 ## Agent-facing prior-run evidence (`RunHistory`)

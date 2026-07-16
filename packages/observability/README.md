@@ -94,6 +94,13 @@ heartbeat or update cannot overwrite the stopped manifest.
 
 Running sources become `stale` when their heartbeat is older than the configured stale interval. Stopped and failed sources remain listed so the dashboard can distinguish a clean shutdown from a crashed or misconfigured host. The registry reader validates source/run ids against path traversal, ignores malformed manifests with warnings, and reuses the recorded-run reader's redaction and bounded-read limits.
 
+Stale-run reconciliation repairs summary status only. The JSONL recorder writes
+an empty event artifact at `start()` and buffers later events in memory until
+terminal `finish()`/`fail()`. A process that dies between those boundaries can
+therefore be reconciled as `process_death` with `eventCount: 0` even after events
+occurred. The app's live broadcast gives connected TUI/web clients best-effort
+real-time visibility, but it is not durable recovery or post-mortem evidence.
+
 ## Run Export Contract
 
 The package defines the `RunExporter` contract (`start`/`onEvent`/`finish`/`fail`/`flush`/`close`, all optional and async-capable) and a pure `createCompositeRunRecorder` that wraps the unchanged JSONL recorder. The composite keeps `RunRecorder.onEvent` synchronous, runs the JSONL recorder first and unchanged, buffers events, and replays them to the exporter batch-on-finish under a bounded timeout. Exporter failures and timeouts are swallowed and surfaced as warnings, so export never changes the run outcome and never suppresses JSONL writes.
