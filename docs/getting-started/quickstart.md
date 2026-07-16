@@ -161,7 +161,7 @@ Check the config section by section before starting:
 mono-agent validate
 ```
 
-`validate` (`app.cli-validate`) prints a per-section report — core, runtime, provider credentials, context, memory, tools, sandbox, observability, and every channel — each tagged with a status:
+`validate` (`app.cli-validate`) prints a per-section report — core, runtime provenance and routes, provider credentials, context, memory, tools, sandbox, observability, and every channel — each tagged with a status:
 
 | Status | Meaning | Action |
 | --- | --- | --- |

@@ -115,6 +115,24 @@ async function closedLoopbackBaseUrl(): Promise<string> {
   return baseUrl;
 }
 
+describe("runCli doctor runtime provenance", () => {
+  it("renders the unmanaged provenance of the CLI producing the report", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
+    await writeConsumerConfig(dir, "mono-agent.config.json", {
+      runtime: { model: "pi:openai-codex:gpt-5.6-terra" },
+      context: { identityPath: "./IDENTITY.md" },
+      providers: { piAuthPath: join(dir, "missing-auth.json") },
+    });
+    process.chdir(dir);
+
+    const result = await captureRunCli(["doctor"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Runtime provenance: dev (unmanaged).");
+    expect(result.stderr).toBe("");
+  });
+});
+
 describe("runCli validate --consumer", () => {
   it.each([
     ["missing", undefined, "no Pi credentials found"],
