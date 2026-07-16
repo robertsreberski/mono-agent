@@ -48,6 +48,18 @@ const MEMORY_FORGET_SCHEMA_VERSION = 1;
 const MAX_FORGET_IDS = 32;
 const MAX_FORGET_PLAN_BYTES = 1024 * 1024;
 const MEMORY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u;
+const FTS_FALLBACK_NETWORK_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
 const EMPTY_HEALTH_COUNTS = Object.freeze({
   pending: 0,
   due: 0,
@@ -1542,12 +1554,40 @@ function isFtsFallbackEligible(settings: MemoryRecallSettings, error: unknown): 
   }
   const name = error instanceof Error ? error.name : "";
   const message = reasonOf(error).toLocaleLowerCase("en-US");
+  if (name === "TypeError") {
+    return message.includes("fetch failed") ||
+      message.includes("econnrefused") ||
+      message.includes("enotfound") ||
+      hasNetworkFailureCode(error);
+  }
   return name === "AbortError" ||
-    name === "TypeError" ||
     message.includes("fetch failed") ||
     message.includes("embedding") ||
     message.includes("econnrefused") ||
     message.includes("enotfound");
+}
+
+function hasNetworkFailureCode(error: unknown): boolean {
+  const pending: unknown[] = [error];
+  const seen = new Set<object>();
+  while (pending.length > 0 && seen.size < 16) {
+    const current = pending.shift();
+    if (typeof current !== "object" || current === null || seen.has(current)) {
+      continue;
+    }
+    seen.add(current);
+    const record = current as Record<string, unknown>;
+    if (typeof record.code === "string" && FTS_FALLBACK_NETWORK_CODES.has(record.code.toUpperCase())) {
+      return true;
+    }
+    if (record.cause !== undefined) {
+      pending.push(record.cause);
+    }
+    if (Array.isArray(record.errors)) {
+      pending.push(...record.errors);
+    }
+  }
+  return false;
 }
 
 function readLocalStats(db: MemoryDb, topEntitiesLimit: number): MemoryStoreStats {

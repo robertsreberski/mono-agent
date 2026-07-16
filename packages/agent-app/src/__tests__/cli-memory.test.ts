@@ -413,6 +413,63 @@ describe("runCli memory", () => {
     expect(search.stdout).toContain("Deploy pipeline uses blue green releases.");
   });
 
+  it("falls back to FTS-only for an Undici-shaped TypeError with a network cause", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({
+      memory: {
+        mode: "journal",
+        path: memoryRoot,
+        writeMode: "append-host-summary",
+        embeddings: {
+          provider: "ollama",
+          model: "nomic-embed-text:v1.5",
+          endpoint: "http://127.0.0.1:11434",
+        },
+      },
+    });
+    await seedLocalStore(memoryRoot);
+    const cause = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:11434"), { code: "ECONNREFUSED" });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(Object.assign(new TypeError("request failed"), { cause })));
+
+    const search = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "search", "deploy", "releases"]))));
+
+    expect(search.code).toBe(0);
+    expect(search.stderr).toBe("");
+    expect(search.stdout).toContain("[WARN] Semantic embeddings unavailable");
+    expect(search.stdout).toContain("FTS-only");
+    expect(search.stdout).toContain("Deploy pipeline uses blue green releases.");
+  });
+
+  it("surfaces a non-network TypeError instead of relabeling it as embedding unavailability", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({
+      memory: {
+        mode: "journal",
+        path: memoryRoot,
+        writeMode: "append-host-summary",
+        embeddings: {
+          provider: "ollama",
+          model: "nomic-embed-text:v1.5",
+          endpoint: "http://127.0.0.1:11434",
+        },
+      },
+    });
+    await seedLocalStore(memoryRoot);
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(
+      new TypeError("Cannot read properties of null (reading 'embedding')"),
+    ));
+
+    const search = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "search", "deploy", "releases"]))));
+
+    expect(search.code).toBe(1);
+    expect(search.stdout).toBe("");
+    expect(search.stderr).toContain("memory search failed: Cannot read properties of null (reading 'embedding')");
+    expect(search.stderr).not.toContain("Semantic embeddings unavailable");
+    expect(search.stderr).not.toContain("FTS-only");
+  });
+
   it("keeps a managed BuJo generation pinned while semantic search falls back to graph-capable FTS", async () => {
     const memoryRoot = join(await tempDir(), "memory");
     const dir = await agentDir({
