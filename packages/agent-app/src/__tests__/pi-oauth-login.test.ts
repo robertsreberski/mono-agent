@@ -3,12 +3,12 @@ import { constants as fsConstants } from "node:fs";
 import { mkdtemp, open, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import {
-  loginAnthropic,
-  type OAuthLoginCallbacks,
-  type OAuthProviderInterface,
+import type {
+  OAuthLoginCallbacks,
+  OAuthProviderInterface,
 } from "@earendil-works/pi-ai/oauth";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -19,6 +19,8 @@ import {
 
 const dirs: string[] = [];
 const execFileAsync = promisify(execFile);
+const wrongStateFixtureReportPrefix = "mono-agent-pi-oauth-wrong-state:";
+const wrongStateFixture = fileURLToPath(new URL("./fixtures/pi-oauth-wrong-state.mjs", import.meta.url));
 
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -79,14 +81,28 @@ describe("Pi OAuth terminal wrapper", () => {
     expect((await stat(authPath)).mode & 0o777).toBe(0o600);
   });
 
-  it("keeps Anthropic's shipped code/state validation on the manual redirect path", async () => {
-    await expect(loginAnthropic({
-      onAuth: () => undefined,
-      onPrompt: async () => "",
-      onManualCodeInput: async () =>
-        "http://localhost:53692/callback?code=untrusted-code&state=wrong-state",
-    })).rejects.toThrow("OAuth state mismatch");
-  });
+  it("keeps Anthropic's shipped code/state validation when its fixed callback port is occupied", async () => {
+    const { stdout } = await execFileAsync(process.execPath, [wrongStateFixture], {
+      encoding: "utf8",
+      env: { ...process.env, PI_OAUTH_CALLBACK_HOST: "127.0.0.1" },
+      maxBuffer: 1024 * 1024,
+      timeout: 10_000,
+    });
+    const reportLine = stdout.split("\n")
+      .find((line) => line.startsWith(wrongStateFixtureReportPrefix));
+    if (reportLine === undefined) throw new Error("Pi wrong-state fixture did not report its result");
+
+    expect(JSON.parse(reportLine.slice(wrongStateFixtureReportPrefix.length))).toEqual({
+      error: "OAuth state mismatch",
+      fallbackPrompts: 0,
+      fixedPort: 53692,
+      interceptedBinds: 1,
+      isolatedPort: expect.any(Number),
+      manualInputs: 1,
+      occupation: expect.stringMatching(/^(ambient|fixture)$/u),
+      tokenExchangeAttempts: 0,
+    });
+  }, 15_000);
 
   it.skipIf(process.platform === "win32")("refuses a symlinked auth path without changing its victim", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mono-agent-pi-oauth-wrapper-"));
