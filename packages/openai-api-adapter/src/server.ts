@@ -31,6 +31,7 @@ import {
   DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
   DEFAULT_MODEL_ID,
   DEFAULT_PORT,
+  MAX_TOOL_SSE_FRAME_BYTES,
 } from "./constants.js";
 import { OpenAIApiAdapterError } from "./errors.js";
 
@@ -106,8 +107,9 @@ export interface OpenAIApiAdapterOptions {
   readonly apiKey?: string;
   readonly modelId?: string;
   /**
-   * Per-field UTF-8 preview cap for tool arguments/results rendered into SSE.
-   * Callers may lower, but never raise, the hard default safety boundary.
+   * Per-field UTF-8 preview upper bound for tool arguments/results rendered
+   * into SSE. The adapter may lower it to satisfy the complete frame cap;
+   * callers may lower, but never raise, the hard default boundary.
    */
   readonly maxToolPayloadBytes?: number;
   readonly responder: AgentResponder<OpenAIApiChatRequest, AgentMessageStream, AgentResponse>;
@@ -590,15 +592,13 @@ class SseChatMessageStream implements AgentMessageStream {
       const name = event.name ?? started?.name ?? "tool";
       const args = event.arguments ?? started?.arguments ?? {};
       this.activeTools.delete(event.id);
-      this.writeChunk({
-        content: openWebUIToolDetails({
-          id: event.id,
-          name,
-          arguments: args,
-          result: event.content,
-          isError: event.isError === true,
-        }, this.maxToolPayloadBytes),
-      }, null);
+      this.writeToolDetailsChunk({
+        id: event.id,
+        name,
+        arguments: args,
+        result: event.content,
+        isError: event.isError === true,
+      });
       return;
     }
     if (event.type === "runtime_warning") {
@@ -667,7 +667,23 @@ class SseChatMessageStream implements AgentMessageStream {
     delta: Record<string, unknown>,
     finishReason: "stop" | null,
   ): void {
-    this.response.write(`data: ${JSON.stringify({
+    this.response.write(this.serializeChunk(delta, finishReason));
+  }
+
+  private writeToolDetailsChunk(input: OpenWebUIToolDetailsInput): void {
+    const frame = boundedOpenWebUIToolDetailsFrame(
+      input,
+      this.maxToolPayloadBytes,
+      (content) => this.serializeChunk({ content }, null),
+    );
+    this.response.write(frame);
+  }
+
+  private serializeChunk(
+    delta: Record<string, unknown>,
+    finishReason: "stop" | null,
+  ): string {
+    return `data: ${JSON.stringify({
       id: this.chunkInput.id,
       object: "chat.completion.chunk",
       created: this.chunkInput.created,
@@ -679,7 +695,7 @@ class SseChatMessageStream implements AgentMessageStream {
           finish_reason: finishReason,
         },
       ],
-    })}\n\n`);
+    })}\n\n`;
   }
 
   private assertOpen(): void {
@@ -1086,15 +1102,70 @@ function openAIError(
   };
 }
 
-function openWebUIToolDetails(input: {
+interface OpenWebUIToolDetailsInput {
   readonly id: string;
   readonly name: string;
   readonly arguments: unknown;
   readonly result: unknown;
   readonly isError: boolean;
-}, maxPayloadBytes: number): string {
-  const argumentsJson = boundedToolPayload(input.arguments, maxPayloadBytes);
-  const resultJson = boundedToolPayload(input.result ?? null, maxPayloadBytes);
+}
+
+interface RenderedToolPayload {
+  readonly text: string;
+  readonly originalBytes: number;
+}
+
+type ToolDetailsFrameSerializer = (content: string) => string;
+
+function boundedOpenWebUIToolDetailsFrame(
+  input: OpenWebUIToolDetailsInput,
+  configuredMaxPayloadBytes: number,
+  serializeFrame: ToolDetailsFrameSerializer,
+): string {
+  const argumentsPayload = renderToolPayload(input.arguments);
+  const resultPayload = renderToolPayload(input.result ?? null);
+  const frameAt = (appliedMaxBytes: number): string => {
+    const argumentsJson = projectToolPayload(argumentsPayload, appliedMaxBytes);
+    const resultJson = projectToolPayload(resultPayload, appliedMaxBytes);
+    return serializeFrame(openWebUIToolDetails(input, argumentsJson, resultJson));
+  };
+
+  const configuredFrame = frameAt(configuredMaxPayloadBytes);
+  if (utf8ByteLength(configuredFrame) <= MAX_TOOL_SSE_FRAME_BYTES) {
+    return configuredFrame;
+  }
+
+  // Search the shared per-field preview budget against the exact bytes sent to
+  // response.write(). This accounts for payload-dependent expansion from HTML
+  // escaping, JSON string escaping, and the final `data: ...\n\n` envelope.
+  const metadataOnlyFrame = frameAt(0);
+  if (utf8ByteLength(metadataOnlyFrame) > MAX_TOOL_SSE_FRAME_BYTES) {
+    throw new Error(
+      `OpenAI API tool details frame exceeds ${String(MAX_TOOL_SSE_FRAME_BYTES)} bytes without payload previews.`,
+    );
+  }
+
+  let lowerBound = 0;
+  let upperBound = configuredMaxPayloadBytes - 1;
+  let bestFrame = metadataOnlyFrame;
+  while (lowerBound <= upperBound) {
+    const candidateMaxBytes = lowerBound + Math.floor((upperBound - lowerBound) / 2);
+    const candidateFrame = frameAt(candidateMaxBytes);
+    if (utf8ByteLength(candidateFrame) <= MAX_TOOL_SSE_FRAME_BYTES) {
+      bestFrame = candidateFrame;
+      lowerBound = candidateMaxBytes + 1;
+    } else {
+      upperBound = candidateMaxBytes - 1;
+    }
+  }
+  return bestFrame;
+}
+
+function openWebUIToolDetails(
+  input: OpenWebUIToolDetailsInput,
+  argumentsJson: string,
+  resultJson: string,
+): string {
   const summary = input.isError ? "Tool Error" : "Tool Executed";
   return [
     `<details type="tool_calls" done="true" id="${escapeHtmlAttribute(input.id)}" name="${escapeHtmlAttribute(input.name)}" arguments="${escapeHtmlAttribute(argumentsJson)}">`,
@@ -1114,28 +1185,28 @@ interface ToolPayloadTruncation {
 }
 
 const TOOL_PAYLOAD_ENCODER = new TextEncoder();
-const TOOL_PAYLOAD_DECODER = new TextDecoder();
+const TOOL_PAYLOAD_DECODER = new TextDecoder("utf-8", {
+  fatal: true,
+  ignoreBOM: true,
+});
 
 /**
- * Produce a bounded, valid-JSON replacement when a rendered tool field exceeds
- * its UTF-8 budget. The original value is never mutated. Truncating the field
- * before HTML escaping and writeChunk keeps the surrounding HTML, JSON chunk,
- * and SSE frame structurally valid.
+ * Produce a valid-JSON replacement when a rendered tool field exceeds its
+ * applied UTF-8 preview budget. Projection operates on the already-rendered
+ * text and never replaces fields on the source event object.
  */
-function boundedToolPayload(value: unknown, maxBytes: number): string {
-  const rendered = stableJson(value);
-  const encoded = TOOL_PAYLOAD_ENCODER.encode(rendered);
-  if (encoded.length <= maxBytes) {
-    return rendered;
+function projectToolPayload(payload: RenderedToolPayload, maxBytes: number): string {
+  if (payload.originalBytes <= maxBytes) {
+    return payload.text;
   }
-  const preview = utf8Prefix(encoded, maxBytes);
-  const retainedBytes = TOOL_PAYLOAD_ENCODER.encode(preview).length;
+  const preview = utf8Prefix(payload.text, maxBytes);
+  const retainedBytes = utf8ByteLength(preview);
   const truncation: ToolPayloadTruncation = {
     truncated: true,
     maxBytes,
-    originalBytes: encoded.length,
+    originalBytes: payload.originalBytes,
     retainedBytes,
-    omittedBytes: encoded.length - retainedBytes,
+    omittedBytes: payload.originalBytes - retainedBytes,
   };
   return JSON.stringify({
     __monoAgentTruncation: truncation,
@@ -1143,12 +1214,30 @@ function boundedToolPayload(value: unknown, maxBytes: number): string {
   });
 }
 
-function utf8Prefix(encoded: Uint8Array, maxBytes: number): string {
+function renderToolPayload(value: unknown): RenderedToolPayload {
+  const text = stableJson(value);
+  return {
+    text,
+    originalBytes: utf8ByteLength(text),
+  };
+}
+
+function utf8Prefix(value: string, maxBytes: number): string {
+  // At most maxBytes + 1 UTF-16 code units are needed to cover maxBytes of
+  // UTF-8 while still including the low surrogate when the boundary follows a
+  // high surrogate. Repeated frame-fit probes therefore stay bounded even when
+  // the source value is much larger than the wire limit.
+  const sourcePrefix = value.slice(0, Math.min(value.length, maxBytes + 1));
+  const encoded = TOOL_PAYLOAD_ENCODER.encode(sourcePrefix);
   let end = Math.min(encoded.length, maxBytes);
   while (end > 0 && (encoded[end]! & 0b1100_0000) === 0b1000_0000) {
     end -= 1;
   }
   return TOOL_PAYLOAD_DECODER.decode(encoded.subarray(0, end));
+}
+
+function utf8ByteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
 }
 
 function stableJson(value: unknown): string {

@@ -6,6 +6,7 @@ import { isWildcardHost, type AgentResponder } from "@mono-agent/agent-contracts
 
 import {
   DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
+  MAX_TOOL_SSE_FRAME_BYTES,
   startOpenAIApiAdapter,
   type OpenAIApiChatRequest,
 } from "../index.js";
@@ -690,14 +691,23 @@ describe("OpenAI API adapter", () => {
     }
   });
 
-  it("bounds oversized tool arguments and results before writing valid SSE chunks", async () => {
+  it.each([
+    {
+      label: "ASCII-heavy",
+      payload: "x".repeat(256 * 1024 + 512),
+    },
+    {
+      label: "HTML/JSON/control-escape-heavy",
+      payload: "\\\"\u0000\n\r\t&<>".repeat(32 * 1024),
+    },
+  ])("bounds the complete SSE frame for simultaneous $label tool payloads", async ({ payload }) => {
     const argumentTail = "ARGUMENT-TAIL-MUST-NOT-LEAK";
     const resultTail = "RESULT-TAIL-MUST-NOT-LEAK";
     const argumentsValue = Object.freeze({
-      query: `${"a".repeat(256 * 1024 + 512)}${argumentTail}`,
+      query: `${payload}${argumentTail}`,
     });
     const resultValue = Object.freeze({
-      output: `${"r".repeat(256 * 1024 + 512)}${resultTail}`,
+      output: `${payload}${resultTail}`,
     });
     const argumentsSnapshot = structuredClone(argumentsValue);
     const resultSnapshot = structuredClone(resultValue);
@@ -736,29 +746,29 @@ describe("OpenAI API adapter", () => {
       const payloads = sseDataPayloads(body);
       expect(payloads.at(-1)).toBe("[DONE]");
       const chunks = payloads.slice(0, -1).map((payload) => JSON.parse(payload) as Record<string, unknown>);
+      const detailsFrames = toolDetailsSseFrames(body);
+      expect(detailsFrames).toHaveLength(1);
+      expect(Buffer.byteLength(detailsFrames[0]!, "utf8")).toBeLessThanOrEqual(
+        MAX_TOOL_SSE_FRAME_BYTES,
+      );
       const details = toolDetailsContent(chunks);
       const projected = parseToolDetails(details);
       const argumentsJson = JSON.stringify(argumentsValue);
       const resultJson = JSON.stringify(resultValue);
 
-      expect(projected.arguments.__monoAgentTruncation).toEqual({
-        truncated: true,
-        maxBytes: DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
-        originalBytes: Buffer.byteLength(argumentsJson, "utf8"),
-        retainedBytes: DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
-        omittedBytes: Buffer.byteLength(argumentsJson, "utf8") - DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
-      });
-      expect(projected.result.__monoAgentTruncation).toEqual({
-        truncated: true,
-        maxBytes: DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
-        originalBytes: Buffer.byteLength(resultJson, "utf8"),
-        retainedBytes: DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
-        omittedBytes: Buffer.byteLength(resultJson, "utf8") - DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
-      });
-      expect(Buffer.byteLength(projected.arguments.preview, "utf8"))
-        .toBe(DEFAULT_MAX_TOOL_PAYLOAD_BYTES);
-      expect(Buffer.byteLength(projected.result.preview, "utf8"))
-        .toBe(DEFAULT_MAX_TOOL_PAYLOAD_BYTES);
+      expectAccurateToolPayloadProjection(
+        projected.arguments,
+        Buffer.byteLength(argumentsJson, "utf8"),
+      );
+      expectAccurateToolPayloadProjection(
+        projected.result,
+        Buffer.byteLength(resultJson, "utf8"),
+      );
+      expect(projected.arguments.__monoAgentTruncation.maxBytes)
+        .toBeLessThan(DEFAULT_MAX_TOOL_PAYLOAD_BYTES);
+      expect(projected.arguments.__monoAgentTruncation.maxBytes).toBeGreaterThan(0);
+      expect(projected.result.__monoAgentTruncation.maxBytes)
+        .toBe(projected.arguments.__monoAgentTruncation.maxBytes);
       expect(body).not.toContain(argumentTail);
       expect(body).not.toContain(resultTail);
       expect(body.trim().endsWith("data: [DONE]")).toBe(true);
@@ -769,19 +779,19 @@ describe("OpenAI API adapter", () => {
     }
   });
 
-  it("truncates tool payloads on UTF-8 code-point boundaries with a small cap", async () => {
+  it("preserves a leading U+FEFF while truncating on UTF-8 code-point boundaries", async () => {
     const responder: AgentResponder = {
       async respond(_request, stream) {
         await stream.event?.({
           type: "tool_call_started",
           id: "call-unicode",
           name: "unicode_tool",
-          arguments: "A🧠Z",
+          arguments: "\uFEFFA🧠Z",
         });
         await stream.event?.({
           type: "tool_call_completed",
           id: "call-unicode",
-          content: "é€Z",
+          content: "\uFEFFX€Z",
         });
         return { text: "done" };
       },
@@ -805,26 +815,96 @@ describe("OpenAI API adapter", () => {
           .map((payload) => JSON.parse(payload) as Record<string, unknown>),
       ));
 
-      expect(projected.arguments.preview).toBe("A");
+      expect(projected.arguments.preview).toBe("\uFEFFA");
       expect(projected.arguments.__monoAgentTruncation).toMatchObject({
         truncated: true,
         maxBytes: 4,
-        originalBytes: 6,
-        retainedBytes: 1,
+        originalBytes: 9,
+        retainedBytes: 4,
         omittedBytes: 5,
       });
-      expect(projected.result.preview).toBe("é");
+      expect(projected.result.preview).toBe("\uFEFFX");
       expect(projected.result.__monoAgentTruncation).toMatchObject({
         truncated: true,
         maxBytes: 4,
-        originalBytes: 6,
-        retainedBytes: 2,
+        originalBytes: 8,
+        retainedBytes: 4,
         omittedBytes: 4,
       });
       expect(projected.arguments.preview).not.toContain("�");
       expect(projected.result.preview).not.toContain("�");
       expect(projected.arguments.preview).not.toMatch(/\p{Cs}/u);
       expect(projected.result.preview).not.toMatch(/\p{Cs}/u);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("emits metadata-only streaming projections at a zero cap without mutating inputs", async () => {
+    const argumentTail = "ZERO-CAP-ARGUMENT-TAIL";
+    const resultTail = "ZERO-CAP-RESULT-TAIL";
+    const argumentsValue = Object.freeze({ query: `secret-${argumentTail}` });
+    const resultValue = Object.freeze({ output: `secret-${resultTail}` });
+    const argumentsSnapshot = structuredClone(argumentsValue);
+    const resultSnapshot = structuredClone(resultValue);
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.event?.({
+          type: "tool_call_started",
+          id: "call-zero-cap",
+          name: "metadata_only",
+          arguments: argumentsValue,
+        });
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "call-zero-cap",
+          content: resultValue,
+        });
+        return { text: "done" };
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      maxToolPayloadBytes: 0,
+      responder,
+    });
+
+    try {
+      const response = await postChat(server.baseUrl, {
+        stream: true,
+        messages: [{ role: "user", content: "Metadata only" }],
+      });
+      const body = await response.text();
+      const projected = parseToolDetails(toolDetailsContent(
+        sseDataPayloads(body)
+          .filter((payload) => payload !== "[DONE]")
+          .map((payload) => JSON.parse(payload) as Record<string, unknown>),
+      ));
+      const argumentsJson = JSON.stringify(argumentsValue);
+      const resultJson = JSON.stringify(resultValue);
+
+      expect(projected.arguments.preview).toBe("");
+      expect(projected.arguments.__monoAgentTruncation).toEqual({
+        truncated: true,
+        maxBytes: 0,
+        originalBytes: Buffer.byteLength(argumentsJson, "utf8"),
+        retainedBytes: 0,
+        omittedBytes: Buffer.byteLength(argumentsJson, "utf8"),
+      });
+      expect(projected.result.preview).toBe("");
+      expect(projected.result.__monoAgentTruncation).toEqual({
+        truncated: true,
+        maxBytes: 0,
+        originalBytes: Buffer.byteLength(resultJson, "utf8"),
+        retainedBytes: 0,
+        omittedBytes: Buffer.byteLength(resultJson, "utf8"),
+      });
+      expect(body).not.toContain(argumentTail);
+      expect(body).not.toContain(resultTail);
+      expect(argumentsValue).toEqual(argumentsSnapshot);
+      expect(resultValue).toEqual(resultSnapshot);
     } finally {
       await server.stop();
     }
@@ -1587,6 +1667,28 @@ function sseDataPayloads(body: string): readonly string[] {
     .split("\n")
     .filter((line) => line.startsWith("data: "))
     .map((line) => line.slice("data: ".length));
+}
+
+function toolDetailsSseFrames(body: string): readonly string[] {
+  return body
+    .split("\n\n")
+    .filter((frame) => frame.includes("<details type=\\\"tool_calls\\\""))
+    .map((frame) => `${frame}\n\n`);
+}
+
+function expectAccurateToolPayloadProjection(
+  projection: ParsedToolPayloadProjection,
+  originalBytes: number,
+): void {
+  const retainedBytes = Buffer.byteLength(projection.preview, "utf8");
+  expect(projection.__monoAgentTruncation).toEqual({
+    truncated: true,
+    maxBytes: projection.__monoAgentTruncation.maxBytes,
+    originalBytes,
+    retainedBytes,
+    omittedBytes: originalBytes - retainedBytes,
+  });
+  expect(retainedBytes).toBeLessThanOrEqual(projection.__monoAgentTruncation.maxBytes);
 }
 
 function toolDetailsContent(chunks: readonly Record<string, unknown>[]): string {

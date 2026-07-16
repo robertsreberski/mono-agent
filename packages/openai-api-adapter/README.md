@@ -41,12 +41,19 @@ Open WebUI caveat: title and tag generation requests go to the same backend and 
 
 Streaming responders may send structured stream events through `AgentMessageStream.event()`. Assistant thoughts are emitted as `delta.reasoning_content` so OpenWebUI can render them separately from the final answer. Internally executed tools are rendered as OpenWebUI `<details type="tool_calls">` content blocks after completion. The adapter intentionally does not emit `delta.tool_calls` or `finish_reason: "tool_calls"` for host-owned tools because those fields ask the client to execute tools.
 
-Tool-call argument and result previews are each capped at 128 KiB of UTF-8 by
-default before the OpenWebUI details block is written. Oversized values become a
-valid JSON projection with `__monoAgentTruncation` byte counts plus a
-code-point-safe `preview`; the run artifact retains the full event. Programmatic
-hosts can lower this boundary with `maxToolPayloadBytes` (including `0` to retain
-metadata only), but cannot raise it above the default safety cap.
+Tool-call argument and result previews each have a 128 KiB UTF-8 upper bound by
+default. The adapter lowers the applied per-field bound when HTML/JSON escaping
+would otherwise make the fully serialized OpenWebUI tool-details SSE frame
+exceed 256 KiB. Truncated values become a valid JSON projection with
+`__monoAgentTruncation` applied/original/retained/omitted byte counts plus a
+code-point-safe `preview`.
+Programmatic hosts can lower the preview boundary with `maxToolPayloadBytes`
+(including `0` for metadata-only projections), but cannot raise it above the
+default safety cap. Truncation does not replace fields on the source stream
+event; payload serialization otherwise follows normal JavaScript JSON/string
+conversion semantics, including any user-defined getters or `toJSON` hooks.
+Whether a full event is retained in an artifact is a host-level persistence
+decision.
 
 ## OpenWebUI Upload Support
 
@@ -102,6 +109,7 @@ small summary, excluding full image URLs and data payloads.
 - `redactOpenAIApiAdapterConfig`
 - `openAIApiFieldGroup`
 - `DEFAULT_MAX_TOOL_PAYLOAD_BYTES`
+- `MAX_TOOL_SSE_FRAME_BYTES`
 - OpenAI API adapter config, request metadata, start result, and logger types
 
 ## Dependency Boundary
