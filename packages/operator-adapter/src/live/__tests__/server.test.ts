@@ -1,3 +1,5 @@
+import dns from "node:dns";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import { LIVE_EVENT_SCHEMA, type RunEventFrame } from "@mono-agent/agent-contracts";
@@ -194,6 +196,48 @@ describe("startLiveAdapter", () => {
     ).rejects.toMatchObject({ code: "unsafe_host" });
   });
 
+  it("rechecks the resolved address, closes a rejected port, and permits an explicit non-loopback bind", async () => {
+    const originalLookup = dns.lookup;
+    let unexpectedServer: LiveAdapterHandle | undefined;
+    let rejected: unknown;
+    dns.lookup = wildcardNonLoopbackLookup as typeof dns.lookup;
+    try {
+      try {
+        unexpectedServer = await startLiveAdapter({
+          bus: createLiveEventBus(),
+          host: "localhost",
+          port: 0,
+        });
+      } catch (error) {
+        rejected = error;
+      }
+    } finally {
+      dns.lookup = originalLookup;
+    }
+
+    if (unexpectedServer !== undefined) {
+      await unexpectedServer.stop();
+    }
+    expect(unexpectedServer).toBeUndefined();
+    expect(rejected).toMatchObject({
+      code: "unsafe_host",
+      details: {
+        host: "localhost",
+        boundAddress: "0.0.0.0",
+        boundPort: expect.any(Number),
+      },
+    });
+
+    const boundPort = rejectedBoundPort(rejected);
+    running = await startLiveAdapter({
+      bus: createLiveEventBus(),
+      host: "0.0.0.0",
+      port: boundPort,
+      allowNonLoopback: true,
+    });
+    expect(new URL(running.baseUrl).port).toBe(String(boundPort));
+  });
+
   it("rejects Express route metacharacters in basePath", async () => {
     await expect(startLiveAdapter({ bus: createLiveEventBus(), basePath: "/live/:source" })).rejects.toMatchObject({ code: "invalid_config" });
     await expect(loadLiveAdapterConfig({ env: { MONO_AGENT_LIVE_BASE_PATH: "/live/:source" } })).rejects.toMatchObject({ code: "invalid_config" });
@@ -211,4 +255,36 @@ async function readSseFramesWithDeadline(url: string, count: number, timeoutMs: 
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function wildcardNonLoopbackLookup(
+  _hostname: string,
+  options: unknown,
+  callback?: unknown,
+): void {
+  const done = typeof options === "function" ? options : callback;
+  if (typeof done !== "function") {
+    throw new TypeError("dns.lookup callback is required");
+  }
+  const all = typeof options === "object"
+    && options !== null
+    && (options as { all?: unknown }).all === true;
+  queueMicrotask(() => {
+    if (all) {
+      (done as (error: null, addresses: Array<{ address: string; family: number }>) => void)(
+        null,
+        [{ address: "0.0.0.0", family: 4 }],
+      );
+      return;
+    }
+    (done as (error: null, address: string, family: number) => void)(null, "0.0.0.0", 4);
+  });
+}
+
+function rejectedBoundPort(error: unknown): number {
+  const boundPort = (error as { details?: { boundPort?: unknown } } | undefined)?.details?.boundPort;
+  if (typeof boundPort !== "number") {
+    throw new TypeError("Expected an unsafe_host error with a numeric boundPort detail.");
+  }
+  return boundPort;
 }
