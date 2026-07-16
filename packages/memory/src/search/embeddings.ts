@@ -295,7 +295,12 @@ function normalizeServiceRoot(value: string, label: string): string {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new MemorySearchError("invalid_embedding_options", `${label} endpoint must be an absolute HTTP(S) service root.`);
   }
-  if (parsed.username.length > 0 || parsed.password.length > 0 || parsed.search.length > 0 || parsed.hash.length > 0) {
+  if (
+    parsed.username.length > 0
+    || parsed.password.length > 0
+    || normalized.includes("?")
+    || normalized.includes("#")
+  ) {
     throw new MemorySearchError(
       "invalid_embedding_options",
       `${label} endpoint service root must not include credentials, a query, or a fragment.`,

@@ -161,7 +161,9 @@ describe("OllamaEmbeddingProvider", () => {
     "file:///tmp/ollama.sock",
     "http://user:pass@localhost:11434",
     "http://localhost:11434?route=elsewhere",
+    "http://localhost:11434?",
     "http://localhost:11434#fragment",
+    "http://localhost:11434#",
   ])("rejects invalid service root %s with the stable options code", (endpoint) => {
     expectInvalidEmbeddingOptions(() => new OllamaEmbeddingProvider({ model: "m", endpoint }));
   });
@@ -234,9 +236,11 @@ describe("LmStudioEmbeddingProvider", () => {
     "file:///tmp/lmstudio.sock",
     "http://user:pass@localhost:1234",
     "http://localhost:1234?route=elsewhere",
+    "http://localhost:1234?",
     "http://localhost:1234#fragment",
+    "http://localhost:1234#",
   ])("rejects invalid service root %s", (endpoint) => {
-    expect(() => new LmStudioEmbeddingProvider({ model: "embed-model", endpoint })).toThrow(/service root|absolute HTTP/u);
+    expectInvalidEmbeddingOptions(() => new LmStudioEmbeddingProvider({ model: "embed-model", endpoint }));
   });
 
   it("uses the shared OpenAI-compatible response validator", async () => {
@@ -291,7 +295,9 @@ describe("OpenAIEmbeddingProvider", () => {
     "file:///tmp/openai.sock",
     "https://user:pass@gateway.example.test/v1",
     "https://gateway.example.test/v1?tenant=elsewhere",
+    "https://gateway.example.test/v1?",
     "https://gateway.example.test/v1#fragment",
+    "https://gateway.example.test/v1#",
   ])("rejects invalid service root %s with the stable options code", (endpoint) => {
     expectInvalidEmbeddingOptions(() => new OpenAIEmbeddingProvider({
       model: "text-embedding-3-small",
