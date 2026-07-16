@@ -265,12 +265,12 @@ describe("release graph validation", () => {
   test("rejects floating Pi dependencies in every publishable consumer", () => {
     const app = packageRecord({
       name: "@mono-agent/agent-app",
-      dependencies: { "@earendil-works/pi-ai": "^0.80.5" },
+      dependencies: { "@earendil-works/pi-ai": "^0.80.6" },
     });
     const runtime = packageRecord({
       name: "@mono-agent/agent-runtime",
       dependencies: {
-        "@earendil-works/pi-agent-core": "~0.80.5",
+        "@earendil-works/pi-agent-core": "~0.80.6",
         "@earendil-works/pi-ai": "0.80.8",
       },
     });
@@ -289,9 +289,9 @@ describe("release graph validation", () => {
       throw new Error("validateRelease did not reject floating Pi dependencies");
     } catch (error) {
       expect(error.issues).toEqual([
-        "@mono-agent/agent-app dependencies.@earendil-works/pi-ai must pin known-compatible version 0.80.5 exactly; found ^0.80.5",
-        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-agent-core must pin known-compatible version 0.80.5 exactly; found ~0.80.5",
-        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-ai must pin known-compatible version 0.80.5 exactly; found 0.80.8",
+        "@mono-agent/agent-app dependencies.@earendil-works/pi-ai must pin known-compatible version 0.80.6 exactly; found ^0.80.6",
+        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-agent-core must pin known-compatible version 0.80.6 exactly; found ~0.80.6",
+        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-ai must pin known-compatible version 0.80.6 exactly; found 0.80.8",
         "@mono-agent/tui dependencies.@earendil-works/pi-tui must pin known-compatible version 0.79.10 exactly; found ^0.79.1",
       ]);
     }

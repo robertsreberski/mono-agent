@@ -147,10 +147,19 @@ export async function buildTurnTools(runState, {
 export function thinkingLevelForEffort(effort, capabilities) {
   if (!capabilities?.reasoning || capabilities.reasoning_mode === "none") return "off";
   if (effort === "none") return "off";
-  if (effort === "max") return "xhigh";
+  // Pi <0.80.6 and older/custom model metadata do not advertise native max.
+  // Preserve the historical xhigh ceiling for those models, but pass max
+  // through when the resolved model explicitly declares it.
+  if (effort === "max") {
+    return Array.isArray(capabilities.reasoning_levels)
+      && capabilities.reasoning_levels.includes("max")
+      ? "max"
+      : "xhigh";
+  }
   if (effort === "xhigh") return "xhigh";
   if (effort === "high") return "high";
   if (effort === "medium") return "medium";
+  if (effort === "minimal") return "minimal";
   return "low";
 }
 

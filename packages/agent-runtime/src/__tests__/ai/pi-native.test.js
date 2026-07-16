@@ -243,6 +243,28 @@ describe("pi-native AgentHarness bridge", () => {
   const sessionsRoot = mkdtempSync(join(tmpdir(), "pi-native-sessions-"));
   afterAll(() => rmSync(sessionsRoot, { recursive: true, force: true }));
 
+  it("wires native max through the AgentHarness stream options when advertised", async () => {
+    const model = setup({ reasoning: true });
+    model.thinkingLevelMap = { xhigh: "xhigh", max: "max" };
+    const originalStreamSimple = faux.provider.streamSimple.bind(faux.provider);
+    let observedReasoning;
+    faux.provider.streamSimple = (requestModel, context, options) => {
+      observedReasoning = options?.reasoning;
+      return originalStreamSimple(requestModel, context, options);
+    };
+    faux.setResponses([fauxAssistantMessage([fauxText("max response")])]);
+
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      effort: "max",
+      messages: [{ role: "user", content: "use native max" }],
+      resolvePiApiKey: async () => "faux-key",
+      piSessionsRoot: sessionsRoot,
+    }));
+
+    expect(result.error).toBeNull();
+    expect(observedReasoning).toBe("max");
+  });
+
   it("returns the unified result shape and streams normalized events on a simple turn", async () => {
     const model = setup({ reasoning: true });
     faux.setResponses([

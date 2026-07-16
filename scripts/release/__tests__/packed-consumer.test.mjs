@@ -65,12 +65,12 @@ describe("packed consumer verification", () => {
   });
 
   test("rejects a packed manifest that can float to a newer Pi runtime", () => {
-    const fixture = packedDependencyFixture({ appPiRange: "^0.80.5" });
+    const fixture = packedDependencyFixture({ appPiRange: "^0.80.6" });
 
     expect(() =>
       assertPackedDependencyResolution(fixture.consumerDir, fixture.packages),
     ).toThrow(
-      /Packed @mono-agent\/agent-app dependencies\.@earendil-works\/pi-ai must remain 0\.80\.5; found \^0\.80\.5/u,
+      /Packed @mono-agent\/agent-app dependencies\.@earendil-works\/pi-ai must remain 0\.80\.6; found \^0\.80\.6/u,
     );
   });
 
@@ -80,7 +80,7 @@ describe("packed consumer verification", () => {
     expect(() =>
       assertPackedDependencyResolution(fixture.consumerDir, fixture.packages),
     ).toThrow(
-      /resolved @earendil-works\/pi-ai@0\.80\.8 from @earendil-works\/pi-agent-core@0\.80\.5; expected 0\.80\.5/u,
+      /resolved @earendil-works\/pi-ai@0\.80\.8 from @earendil-works\/pi-agent-core@0\.80\.6; expected 0\.80\.6/u,
     );
   });
 
@@ -106,7 +106,7 @@ describe("packed consumer verification", () => {
 });
 
 function packedDependencyFixture({
-  appPiRange = "0.80.5",
+  appPiRange = "0.80.6",
   installedTuiVersion = "0.79.10",
   nestedCorePiVersion,
   tuiPiRange = "0.79.10",
@@ -124,8 +124,8 @@ function packedDependencyFixture({
     name: "@mono-agent/agent-runtime",
     version: "1.2.3",
     dependencies: {
-      "@earendil-works/pi-agent-core": "0.80.5",
-      "@earendil-works/pi-ai": "0.80.5",
+      "@earendil-works/pi-agent-core": "0.80.6",
+      "@earendil-works/pi-ai": "0.80.6",
     },
   });
   writePackage(modulesDir, {
@@ -135,12 +135,12 @@ function packedDependencyFixture({
   });
   const coreDir = writePackage(modulesDir, {
     name: "@earendil-works/pi-agent-core",
-    version: "0.80.5",
-    dependencies: { "@earendil-works/pi-ai": "^0.80.5" },
+    version: "0.80.6",
+    dependencies: { "@earendil-works/pi-ai": "^0.80.6" },
   });
   writePackage(modulesDir, {
     name: "@earendil-works/pi-ai",
-    version: "0.80.5",
+    version: "0.80.6",
   });
   writePackage(modulesDir, {
     name: "@earendil-works/pi-tui",
@@ -159,15 +159,15 @@ function packedDependencyFixture({
       {
         name: "@mono-agent/agent-app",
         packageJson: {
-          dependencies: { "@earendil-works/pi-ai": "0.80.5" },
+          dependencies: { "@earendil-works/pi-ai": "0.80.6" },
         },
       },
       {
         name: "@mono-agent/agent-runtime",
         packageJson: {
           dependencies: {
-            "@earendil-works/pi-agent-core": "0.80.5",
-            "@earendil-works/pi-ai": "0.80.5",
+            "@earendil-works/pi-agent-core": "0.80.6",
+            "@earendil-works/pi-ai": "0.80.6",
           },
         },
       },
