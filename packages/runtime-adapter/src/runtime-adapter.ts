@@ -185,6 +185,8 @@ export type MonoRuntimeAttemptResolver = (
 ) => MonoRuntimeAttemptResolution | Promise<MonoRuntimeAttemptResolution>;
 
 export interface CreateMonoRuntimeOptions extends MonoRuntimeHostOptions {
+  /** The sandbox implementation is owned and injected by runtime-adapter. */
+  readonly sandbox?: never;
   /**
    * Ordered model chain for provider failover. When present, runs are served by
    * the agent-runtime fallback router: the first entry is attempted first and
@@ -214,7 +216,7 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
   // agent/sandbox-seam.js) — this is the ONE place the real sandbox
   // implementation gets injected, so every mono-agent host's sandbox policy is
   // actually enforced without the kernel depending on this package itself.
-  const hostWithSandbox = { sandbox: monoSandboxImpl, ...hostOptions } as unknown as KernelHostOptions;
+  const hostWithSandbox = { ...hostOptions, sandbox: monoSandboxImpl } as unknown as KernelHostOptions;
   const runtime = chain === undefined
     ? createRuntime(hostWithSandbox)
     : createRouterRuntime({

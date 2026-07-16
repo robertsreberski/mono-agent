@@ -20,6 +20,8 @@ import { createPiOAuthApiKeyResolver, createRuntime } from "@mono-agent/agent-ru
 import { executionModeIncompatibilityReason, parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
 import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
 
+import { createMonoRuntime } from "../runtime-adapter.js";
+import type { CreateMonoRuntimeOptions } from "../runtime-adapter.js";
 import type {
   MonoRuntimeBackendCapabilities,
   MonoRuntimeHostOptions,
@@ -72,6 +74,15 @@ function assertAssignable<T>(_value: T): void {
 }
 
 describe("runtime-adapter facade / agent-runtime kernel structural contract", () => {
+  it("excludes caller-owned sandbox implementations from createMonoRuntime options", () => {
+    expectTypeOf<CreateMonoRuntimeOptions["sandbox"]>().toEqualTypeOf<undefined>();
+
+    if (false) {
+      // @ts-expect-error runtime-adapter owns and injects the sandbox implementation.
+      createMonoRuntime({ sandbox: {} });
+    }
+  });
+
   it("MonoRuntimeHostOptions is assignable to createRuntime's host parameter", () => {
     const facade = null as unknown as WithoutConcreteSandboxEngine<MonoRuntimeHostOptions>;
     assertAssignable<WithoutConcreteSandboxEngine<KernelHostOptions>>(facade);
