@@ -66,28 +66,61 @@ function markdownSection(relativePath: string, heading: string): string {
   return normalized(next === -1 ? rest : rest.slice(0, next));
 }
 
-function interfaceFieldDoc(relativePath: string, interfaceName: string, fieldName: string): string {
+function declarationFieldDoc(relativePath: string, declarationMarker: string, fieldName: string): string {
   const source = readRepoFile(relativePath);
-  const interfaceMarker = `export interface ${interfaceName} {`;
-  const interfaceStart = source.indexOf(interfaceMarker);
-  if (interfaceStart === -1) {
-    throw new Error(`${relativePath} is missing interface ${JSON.stringify(interfaceName)}`);
+  const declarationStart = source.indexOf(declarationMarker);
+  if (declarationStart === -1) {
+    throw new Error(`${relativePath} is missing declaration ${JSON.stringify(declarationMarker)}`);
   }
-  const nextExport = source.indexOf("\nexport ", interfaceStart + interfaceMarker.length);
-  const interfaceSource = source.slice(interfaceStart, nextExport === -1 ? source.length : nextExport);
-  const fieldPattern = new RegExp(`\\breadonly\\s+${fieldName}\\??:`, "u");
-  const fieldMatch = fieldPattern.exec(interfaceSource);
+  const nextExport = source.indexOf("\nexport ", declarationStart + declarationMarker.length);
+  const declarationSource = source.slice(declarationStart, nextExport === -1 ? source.length : nextExport);
+  const fieldPattern = new RegExp(`\\b(?:readonly\\s+)?${fieldName}\\??:`, "u");
+  const fieldMatch = fieldPattern.exec(declarationSource);
   if (fieldMatch === null) {
-    throw new Error(`${relativePath} ${interfaceName} is missing field ${JSON.stringify(fieldName)}`);
+    throw new Error(`${relativePath} ${declarationMarker} is missing field ${JSON.stringify(fieldName)}`);
   }
-  const beforeField = interfaceSource.slice(0, fieldMatch.index);
+  const beforeField = declarationSource.slice(0, fieldMatch.index);
   const commentStart = beforeField.lastIndexOf("/**");
-  const commentEnd = commentStart === -1 ? -1 : interfaceSource.indexOf("*/", commentStart);
+  const commentEnd = commentStart === -1 ? -1 : declarationSource.indexOf("*/", commentStart);
   if (commentStart === -1 || commentEnd === -1 || commentEnd > fieldMatch.index) {
-    throw new Error(`${relativePath} ${interfaceName}.${fieldName} is missing JSDoc`);
+    throw new Error(`${relativePath} ${declarationMarker}.${fieldName} is missing JSDoc`);
+  }
+  if (!/^\s*$/u.test(declarationSource.slice(commentEnd + 2, fieldMatch.index))) {
+    throw new Error(`${relativePath} ${declarationMarker}.${fieldName} has no adjacent JSDoc`);
   }
   return normalized(
-    interfaceSource
+    declarationSource
+      .slice(commentStart + 3, commentEnd)
+      .replace(/^\s*\*\s?/gmu, ""),
+  );
+}
+
+function interfaceFieldDoc(relativePath: string, interfaceName: string, fieldName: string): string {
+  return declarationFieldDoc(relativePath, `export interface ${interfaceName} {`, fieldName);
+}
+
+function typeFieldDoc(relativePath: string, typeName: string, fieldName: string): string {
+  return declarationFieldDoc(relativePath, `export type ${typeName} =`, fieldName);
+}
+
+function functionDoc(relativePath: string, functionName: string): string {
+  const source = readRepoFile(relativePath);
+  const functionPattern = new RegExp(`\\bfunction\\s+${functionName}\\s*\\(`, "u");
+  const functionMatch = functionPattern.exec(source);
+  if (functionMatch === null) {
+    throw new Error(`${relativePath} is missing function ${JSON.stringify(functionName)}`);
+  }
+  const beforeFunction = source.slice(0, functionMatch.index);
+  const commentStart = beforeFunction.lastIndexOf("/**");
+  const commentEnd = commentStart === -1 ? -1 : source.indexOf("*/", commentStart);
+  if (commentStart === -1 || commentEnd === -1 || commentEnd > functionMatch.index) {
+    throw new Error(`${relativePath} ${functionName} is missing JSDoc`);
+  }
+  if (!/^\s*$/u.test(source.slice(commentEnd + 2, functionMatch.index))) {
+    throw new Error(`${relativePath} ${functionName} has no adjacent JSDoc`);
+  }
+  return normalized(
+    source
       .slice(commentStart + 3, commentEnd)
       .replace(/^\s*\*\s?/gmu, ""),
   );
@@ -172,6 +205,24 @@ describe("observability redaction docs parity", () => {
     }
   });
 
+  it("keeps public replay and payload boundaries explicit about shared redaction semantics", () => {
+    const surfaces = [
+      lineContaining("packages/tui/README.md", "| replay | Recorded runs"),
+      interfaceFieldDoc("packages/observability/src/run-export-mapping.ts", "EventSpanMapping", "payload"),
+      typeFieldDoc("packages/agent-contracts/src/live-events.ts", "RunEventFrame", "event"),
+      functionDoc("packages/observability/src/run-export-mapping.ts", "toContentString"),
+    ];
+
+    for (const surface of surfaces) {
+      expect(surface).toContain(SHARED_REDACTION_CONTRACT);
+    }
+
+    const rawStringContent = functionDoc("packages/observability/src/run-export-mapping.ts", "toContentString");
+    expect(rawStringContent).toContain("raw string input is retained free text");
+    expect(rawStringContent).toContain("capped for display");
+    expect(rawStringContent).toContain("not content-scanned or scrubbed");
+  });
+
   it("keeps every published bare-prose field explicit about bounds without claiming content scrubbing", () => {
     const fields = [
       ["packages/observability/src/types.ts", "RunSummary", "error"],
@@ -185,6 +236,7 @@ describe("observability redaction docs parity", () => {
       ["packages/observability/src/session-mapping.ts", "Session", "instr"],
       ["packages/observability/src/session-mapping.ts", "Session", "sysPrompt"],
       ["packages/observability/src/session-mapping.ts", "Session", "error"],
+      ["packages/session-web/webapp/src/lib/types.ts", "Session", "sysPrompt"],
     ] as const;
 
     for (const [relativePath, interfaceName, fieldName] of fields) {

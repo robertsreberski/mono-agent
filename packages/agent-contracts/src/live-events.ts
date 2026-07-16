@@ -50,7 +50,12 @@ export type RunEventFrame =
       readonly runId: string;
       /** 0-based index of this event within the run (recorder emission order). */
       readonly eventIndex: number;
-      /** The raw, already-redacted runtime event. Opaque here; a `RuntimeEventLike`. */
+      /**
+       * The key-redacted, bounded runtime event. Non-numeric values under
+       * sensitive-looking object keys are redacted; numeric values under
+       * matched keys are retained; free text is not content-scanned. Opaque
+       * here; a `RuntimeEventLike`.
+       */
       readonly event: unknown;
       readonly seq: number;
     }

@@ -32,8 +32,10 @@ export interface EventSpanMapping {
   readonly attributes: SpanAttributes;
   /**
    * Only set when sensitive export is opt-in (includeSensitiveData=true). The
-   * payload is STILL passed through `redactJsonValue` before it is attached, so
-   * sensitive keys collapse to `[redacted]` even in opt-in mode.
+   * payload is still passed through `redactJsonValue` before it is attached:
+   * non-numeric values under sensitive-looking object keys are redacted;
+   * numeric values under matched keys are retained; free text is not
+   * content-scanned. Payload strings are byte-bounded by the export limit.
    */
   readonly payload?: unknown;
 }
@@ -321,7 +323,13 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-/** Serialize tool args/results to a bounded, redacted display string. */
+/**
+ * Serialize tool args/results to a bounded display string. Structured input
+ * uses shared key-based redaction: non-numeric values under sensitive-looking
+ * object keys are redacted; numeric values under matched keys are retained;
+ * free text is not content-scanned. Raw string input is retained free text:
+ * capped for display, but not content-scanned or scrubbed.
+ */
 function toContentString(value: unknown, maxStringBytes: number): string {
   const raw = typeof value === "string" ? value : JSON.stringify(redactJsonValue(value, maxStringBytes));
   return compactString(raw ?? "", EXPORT_CONTENT_MAX_CHARS);
