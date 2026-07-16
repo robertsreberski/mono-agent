@@ -66,7 +66,9 @@ my-agent/
         "baseUrl": "http://localhost:11434",
         "enabled": true,
         "trustPublicUrl": false,           // explicit opt-in for non-private URLs
-        "apiKeyEnv": "MY_PROVIDER_KEY",    // or inline "apiKey" (untracked file only)
+        // Keep the key in .env; config stores only its variable name.
+        // Inline "apiKey" remains schema-compatible for existing consumers.
+        "apiKeyEnv": "MY_PROVIDER_KEY",
         "models": [{ "name": "gemma4:31b", "capabilities": { "context_window": 32768 } }]
       }
     ]
@@ -116,7 +118,7 @@ my-agent/
     // and configure the external service instead. Keep API keys in env.
     // "supermemory": {
     //   "baseUrl": "http://127.0.0.1:6767",
-    //   "apiKey": "...",                 // untracked config only; prefer apiKeyEnv
+    //   Inline "apiKey" remains schema-compatible; source configs use apiKeyEnv.
     //   "apiKeyEnv": "SUPERMEMORY_API_KEY",
     //   "container": "my-agent",
     //   "timeoutMs": 10000,

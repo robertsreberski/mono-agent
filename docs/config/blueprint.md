@@ -84,7 +84,9 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
         "baseUrl": "http://localhost:11434",
         "enabled": true,
         "trustPublicUrl": false,           // explicit opt-in for non-private URLs
-        "apiKeyEnv": "MY_PROVIDER_KEY",    // or inline "apiKey" (untracked file only)
+        // Keep the key in .env; config stores only its variable name.
+        // Inline "apiKey" remains schema-compatible for existing consumers.
+        "apiKeyEnv": "MY_PROVIDER_KEY",
         "models": [{ "name": "gemma4:31b", "capabilities": { "context_window": 32768 } }]
       }
     ]
