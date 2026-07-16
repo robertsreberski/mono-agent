@@ -21,7 +21,7 @@ import { executionModeIncompatibilityReason, parseRuntimeModelReference } from "
 import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
 
 import { createMonoRuntime } from "../runtime-adapter.js";
-import type { CreateMonoRuntimeOptions } from "../runtime-adapter.js";
+import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptResolution } from "../runtime-adapter.js";
 import type {
   MonoRuntimeBackendCapabilities,
   MonoRuntimeHostOptions,
@@ -76,10 +76,33 @@ function assertAssignable<T>(_value: T): void {
 describe("runtime-adapter facade / agent-runtime kernel structural contract", () => {
   it("excludes caller-owned sandbox implementations from createMonoRuntime options", () => {
     expectTypeOf<CreateMonoRuntimeOptions["sandbox"]>().toEqualTypeOf<undefined>();
+    expectTypeOf<RuntimeRunOptions["sandbox"]>().toEqualTypeOf<undefined>();
+    expectTypeOf<RuntimeToolOptions["sandbox"]>().toEqualTypeOf<undefined>();
 
     if (false) {
       // @ts-expect-error runtime-adapter owns and injects the sandbox implementation.
       createMonoRuntime({ sandbox: {} });
+
+      const runtime = createMonoRuntime();
+      runtime.run("SYSTEM", {
+        model: { sdk: "pi", provider: "faux", model: "sandbox-test" },
+        messages: [],
+        abortSignal: new AbortController().signal,
+        // @ts-expect-error request extensions may supply policy/engine data, never the implementation.
+        sandbox: {},
+      });
+      runtime.configureTools?.({
+        // @ts-expect-error configureTools may supply policy/engine data, never the implementation.
+        sandbox: {},
+      });
+
+      const resolution: MonoRuntimeAttemptResolution = {
+        options: {
+          // @ts-expect-error route plugins cannot replace the mono sandbox implementation.
+          sandbox: {},
+        },
+      };
+      assertAssignable<MonoRuntimeAttemptResolution>(resolution);
     }
   });
 

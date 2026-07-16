@@ -176,13 +176,16 @@ export interface MonoRuntimeAttemptResolution {
   /** Optional isolated runtime for this route. */
   readonly runtime?: MonoRuntimeLike;
   /** Private per-attempt provider options. These are never copied into router telemetry. */
-  readonly options?: Readonly<Record<string, unknown>>;
+  readonly options?: Readonly<Record<string, unknown>> & {
+    /** The sandbox implementation is owned by createMonoRuntime. */
+    readonly sandbox?: never;
+  };
   readonly cleanup?: () => void | Promise<void>;
 }
 
 export type MonoRuntimeAttemptResolver = (
   context: MonoRuntimeAttemptContext,
-) => MonoRuntimeAttemptResolution | Promise<MonoRuntimeAttemptResolution>;
+) => MonoRuntimeAttemptResolution | undefined | Promise<MonoRuntimeAttemptResolution | undefined>;
 
 export interface CreateMonoRuntimeOptions extends MonoRuntimeHostOptions {
   /** The sandbox implementation is owned and injected by runtime-adapter. */
@@ -216,17 +219,23 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
   // agent/sandbox-seam.js) — this is the ONE place the real sandbox
   // implementation gets injected, so every mono-agent host's sandbox policy is
   // actually enforced without the kernel depending on this package itself.
-  const hostWithSandbox = { ...hostOptions, sandbox: monoSandboxImpl } as unknown as KernelHostOptions;
+  const hostWithSandbox = {
+    ...withoutCallerSandbox(hostOptions),
+    sandbox: monoSandboxImpl,
+  } as unknown as KernelHostOptions;
+  const protectedResolveAttempt = resolveAttempt === undefined
+    ? undefined
+    : protectAttemptResolver(resolveAttempt);
   const runtime = chain === undefined
     ? createRuntime(hostWithSandbox)
     : createRouterRuntime({
         host: hostWithSandbox,
         chain,
         routeSafety,
-        ...(resolveAttempt === undefined
+        ...(protectedResolveAttempt === undefined
           ? {}
           : {
-              resolveAttempt: resolveAttempt as unknown as NonNullable<KernelRouterOptions["resolveAttempt"]>,
+              resolveAttempt: protectedResolveAttempt as unknown as NonNullable<KernelRouterOptions["resolveAttempt"]>,
             }),
       });
 
@@ -244,13 +253,17 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       assertExecutionModeCompatible(runOptions.model, executionMode);
 
       const result = await runtime.run(systemPrompt, {
-        ...runOptions,
+        ...withoutCallerSandbox(runOptions),
         executionMode,
       } as unknown as KernelRunOptions);
       return result as RuntimeResult;
     },
     configureTools(next?: RuntimeToolOptions): void {
-      runtime.configureTools?.(next === undefined ? undefined : ({ ...next } as unknown as KernelToolOptions));
+      runtime.configureTools?.(
+        next === undefined
+          ? undefined
+          : (withoutCallerSandbox(next) as unknown as KernelToolOptions),
+      );
     },
     async syncSession(providerSessionId: string): Promise<boolean> {
       return await runtime.syncSession?.(providerSessionId) === true;
@@ -282,6 +295,37 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
     async disposeAllSessions(): Promise<void> {
       await runtime.disposeAllSessions?.();
     },
+  };
+}
+
+/**
+ * The kernel intentionally supports request/configure-time sandbox implementation
+ * replacement for non-mono hosts. The mono facade does not: it owns one concrete
+ * implementation and accepts only policy/engine data from callers and plugins.
+ * Always return a fresh object so rejecting that implementation never mutates a
+ * caller-owned (possibly frozen) option bag.
+ */
+function withoutCallerSandbox<T extends Readonly<Record<string, unknown>>>(
+  input: T,
+): Omit<T, "sandbox"> {
+  const { sandbox: _callerSandbox, ...rest } = input;
+  return rest;
+}
+
+function protectAttemptResolver(
+  resolveAttempt: MonoRuntimeAttemptResolver,
+): MonoRuntimeAttemptResolver {
+  return async (context) => {
+    const resolution = await resolveAttempt(context);
+    if (resolution === undefined) {
+      return undefined;
+    }
+    return {
+      ...resolution,
+      ...(resolution.options === undefined
+        ? {}
+        : { options: withoutCallerSandbox(resolution.options) }),
+    };
   };
 }
 
