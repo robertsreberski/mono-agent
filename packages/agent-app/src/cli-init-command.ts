@@ -2056,8 +2056,9 @@ function printProviderSetupPlan(plan: ProviderSetupPlan): void {
 
 /**
  * Resolve the preset id for `init`: `--preset` wins, `--recipe` is a deprecated
- * alias mapped to the preset that replaced it. Returns the preset id to compose
- * from, `undefined` for the default scaffold, or `"unknown"` after emitting the
+ * alias removed in v2.0.0 and mapped to the preset that replaced it. Returns
+ * the preset id to compose from, `undefined` for the default scaffold, or
+ * `"unknown"` after emitting the
  * error/hint (an unknown preset, or a retired recipe with no replacement).
  */
 function resolveInitPresetId(args: ParsedCliArgs): string | undefined | "unknown" {
@@ -2078,7 +2079,7 @@ function resolveInitPresetId(args: ParsedCliArgs): string | undefined | "unknown
       process.stderr.write(ui.hint("See the mono-agent-composer skill and docs/playbooks for capability recipes."));
       return "unknown";
     }
-    process.stderr.write(ui.hint(`--recipe is deprecated; using preset ${preset.id}. See \`mono-agent presets list\`.`));
+    process.stderr.write(ui.hint(`Using replacement preset ${preset.id}. See \`mono-agent presets list\`.`));
     return preset.id;
   }
   return undefined;

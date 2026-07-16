@@ -134,8 +134,8 @@ export async function runValidate(args: ParsedCliArgs): Promise<number> {
 
 /**
  * Resolve the preset to check `validate` against: `--preset` wins, `--recipe` is a
- * deprecated alias. Returns the preset, `undefined` (no capability check), or
- * `"unknown"` after emitting the error/hint.
+ * deprecated alias removed in v2.0.0. Returns the preset, `undefined` (no
+ * capability check), or `"unknown"` after emitting the error/hint.
  */
 function resolveValidatePreset(args: ParsedCliArgs): WizardPreset | undefined | "unknown" {
   if (args.preset !== undefined) {
@@ -154,7 +154,7 @@ function resolveValidatePreset(args: ParsedCliArgs): WizardPreset | undefined | 
       process.stderr.write(ui.hint(`Available presets: ${presetIds().join(", ")}. Run \`mono-agent presets list\`.`));
       return "unknown";
     }
-    process.stderr.write(ui.hint(`--recipe is deprecated; using preset ${preset.id}. See \`mono-agent presets list\`.`));
+    process.stderr.write(ui.hint(`Using replacement preset ${preset.id}. See \`mono-agent presets list\`.`));
     return preset;
   }
   return undefined;

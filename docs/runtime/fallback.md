@@ -65,6 +65,11 @@ Existing `runtime.fallbackModels`, `MONO_AGENT_FALLBACK_MODELS`, and
 behavior: they inherit the global `runtime.effort`. Do not configure canonical
 and legacy forms together; choose `runtime.fallbacks` for new agents.
 
+The CLI CSV flag `--fallback-models` is deprecated and every accepted invocation warns
+that it will be removed in `v2.0.0`; repeat `--fallback <ref>` instead. That
+deadline does not remove the JSON or environment compatibility inputs. See the
+canonical [deprecation tracker](/reference/deprecations/) for the exact scope.
+
 ```json
 {
   "runtime": {

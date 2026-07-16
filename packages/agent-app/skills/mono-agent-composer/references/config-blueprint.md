@@ -27,13 +27,18 @@ my-agent/
 
 ## Annotated Config
 
+New configs use `runtime.fallbacks[]`, where each route owns its optional exact
+effort. Legacy `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain
+supported compatibility inputs with no removal deadline; do not emit them for a
+new agent.
+
 ```jsonc
 {
   // Runtime: primary model plus ordered backups tried on retryable provider
   // failures (failover is reported in run results, never silent).
   "runtime": {
     "model": "claude:claude-sonnet-4-6",   // claude:* | codex:* | pi:<provider>:<model>
-    "fallbackModels": ["pi:ollama:gemma4:31b"],
+    "fallbacks": [{ "model": "pi:ollama:gemma4:31b" }],
     "routeSafety": "uniform",              // uniform | per-route-native
     "executionMode": "sdk",                // sdk | cli (default inferred from model)
     "effort": "medium",                    // none|minimal|low|medium|high|xhigh|max|ultra; omit for direct opencode:*
@@ -365,7 +370,7 @@ my-agent/
 mono-agent presets list                 # saved answer-sets (id, risk, description)
 mono-agent presets show <id>            # generated config + .env.example + follow-up checklist
 mono-agent init --preset <id> --yes [--with slack,cron] [--dry-run]   # scaffold from a preset (non-interactive)
-mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b [--memory lite|journal|bujo]
+mono-agent init --model claude:claude-sonnet-4-6 --fallback pi:ollama:gemma4:31b [--memory lite|journal|bujo]
 mono-agent config       # resolved config field-by-field, each value tagged env/json/default
 mono-agent validate [--preset <id>] [--consumer <path>]     # per-section report; --preset also checks the preset's capabilities
 mono-agent start        # traceability + every configured channel
