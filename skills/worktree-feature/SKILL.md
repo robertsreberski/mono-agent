@@ -88,12 +88,17 @@ gh pr checks <n> --watch --interval 30
 Commits are authored as `robertsreberski@gmail.com` (enforced by the local
 `.githooks/pre-commit`; see AGENTS.local.md).
 
-**After merge (mandatory), not optional.** The instant `gh pr merge` confirms
-merged, clean up both sides — remove the worktree and delete the local branch
-(the remote branch self-deletes only when `delete_branch_on_merge` is on; see
-`repo-hygiene-gc`). Skipped per-feature cleanups are exactly how the repo
-regressed from 2 branches / 3 worktrees to 47 branches / 50 worktrees. The
-commands are under *Compare against base / cleanup* below.
+**After merge (mandatory), not optional.** The instant the PR is merged, clean
+up both sides. Do not trust `gh pr merge`'s exit status or commit ancestry as the
+proof: squash merges create a new commit, so `git branch -d` correctly refuses
+the original head. Query the exact PR and require its API state, branch name,
+and head SHA to match before force-deleting that one local branch. The remote
+branch self-deletes only when `delete_branch_on_merge` is on; see
+`repo-hygiene-gc`.
+
+Skipped per-feature cleanups are exactly how the repo regressed from 2 branches
+/ 3 worktrees to 47 branches / 50 worktrees. Run the cleanup block under
+*Compare against base / cleanup* below as part of finishing every merged PR.
 
 ## Compare against base / cleanup
 
@@ -103,13 +108,70 @@ Check whether a failure pre-exists on main without touching your tree:
 git worktree add --detach /tmp/<name>-base-check <commit>
 ```
 
-When merged (run immediately — this is the mandatory post-merge step):
+When merged, record the exact PR number, branch, and worktree. Run this
+immediately from the feature worktree. The function fails closed unless the
+supplied path is the root of a registered worktree in this repository, attached
+to the API-proved branch at the API/local reviewed OID:
+
+<!-- merged-worktree-cleanup:start -->
+```bash
+cleanup_merged_worktree() {
+  local repo="$1"
+  local pr="$2"
+  local branch="$3"
+  local worktree="$4"
+  local repo_common_dir repo_root proof api_branch api_head local_head
+  local worktree_common_dir worktree_root supplied_worktree
+  local worktree_branch worktree_head worktree_status
+
+  git check-ref-format --branch "$branch" >/dev/null || return 1
+  repo_common_dir="$(git rev-parse --path-format=absolute --git-common-dir)" || return 1
+  repo_common_dir="$(cd "$repo_common_dir" && pwd -P)" || return 1
+  repo_root="$(dirname "$repo_common_dir")"
+
+  proof="$(gh pr view "$pr" --repo "$repo" \
+    --json state,mergedAt,headRefName,headRefOid \
+    --jq 'select(.state == "MERGED" and .mergedAt != null) | [.headRefName, .headRefOid] | join(" ")')" || return 1
+  test -n "$proof" || return 1
+  api_branch="${proof%% *}"
+  api_head="${proof#* }"
+  local_head="$(git -C "$repo_root" rev-parse --verify "refs/heads/$branch^{commit}")" || return 1
+
+  worktree_common_dir="$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir)" || return 1
+  worktree_common_dir="$(cd "$worktree_common_dir" && pwd -P)" || return 1
+  worktree_root="$(git -C "$worktree" rev-parse --path-format=absolute --show-toplevel)" || return 1
+  worktree_root="$(cd "$worktree_root" && pwd -P)" || return 1
+  supplied_worktree="$(cd "$worktree" && pwd -P)" || return 1
+  worktree_branch="$(git -C "$worktree" symbolic-ref --quiet --short HEAD)" || return 1
+  worktree_head="$(git -C "$worktree" rev-parse --verify HEAD)" || return 1
+  worktree_status="$(git -C "$worktree" status --porcelain)" || return 1
+
+  test "$api_branch" = "$branch" || return 1
+  test "$api_head" = "$local_head" || return 1
+  test "$worktree_common_dir" = "$repo_common_dir" || return 1
+  test "$worktree_root" = "$supplied_worktree" || return 1
+  test "$worktree_branch" = "$api_branch" || return 1
+  test "$worktree_head" = "$api_head" || return 1
+  test -z "$worktree_status" || return 1
+
+  git -C "$repo_root" worktree remove "$worktree" || return 1
+  git -C "$repo_root" update-ref -d "refs/heads/$branch" "$api_head" || return 1
+  git -C "$repo_root" worktree prune
+}
+```
+<!-- merged-worktree-cleanup:end -->
 
 ```bash
-git worktree remove ~/.config/superpowers/worktrees/mono-agent/<name>
-git branch -d <branch>          # local branch; remote self-deletes only with delete_branch_on_merge on
-git worktree prune
+cleanup_merged_worktree \
+  robertsreberski/mono-agent <number> <branch> \
+  ~/.config/superpowers/worktrees/mono-agent/<name>
 ```
+
+Any failed proof or dirty worktree stops the cleanup. Investigate it; never add
+`--force` to `git worktree remove`, and never weaken the repository, branch, or
+HEAD checks. `git update-ref -d <ref> <old-oid>` is an atomic compare-and-delete:
+if the local branch advances after proof, deletion fails and the advanced ref is
+preserved.
 
 For a periodic *bulk* sweep of accumulated merged branches/worktrees (not just
 this one), use the `repo-hygiene-gc` skill.

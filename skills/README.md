@@ -24,7 +24,7 @@ recurring failure shapes the audit proved out.
 | Skill | Use when |
 |---|---|
 | `verify-green` | Verifying any change — full CI-order gate or single-package loop |
-| `worktree-feature` | Starting isolated feature work; PR from a worktree |
+| `worktree-feature` | Isolated feature work through API-confirmed post-merge cleanup |
 | `fleet-deploy` | Deploying/restarting the live launchd agents |
 | `live-smoke` | Real end-to-end smoke: throwaway agent dir, tmux TUI, web curl |
 | `release-lockstep` | Cutting a lockstep npm release |
@@ -32,5 +32,5 @@ recurring failure shapes the audit proved out.
 | `pi-upstream-recon` | Reading vendored pi source before building; pi bumps |
 | `new-package` | Adding a package that passes `check:architecture` first try |
 | `dead-code-audit` | Prove-or-remove sweeps: dead exports, orphaned wiring, deprecation removability |
-| `repo-hygiene-gc` | Periodic branch/worktree GC + the post-merge cleanup protocol |
+| `repo-hygiene-gc` | API-confirmed branch/worktree GC + lease-safe remote cleanup |
 | `ops-log-hygiene` | Live-fleet log health: size caps, crash-loop tails, restart-churn detection |
