@@ -20,9 +20,9 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     lines: [
       "Fast scaffold-only path: flags or non-TTY input; without explicit --auth,",
       "it makes no provider call and never claims readiness. Bare init on a TTY runs",
-      "one real no-tool model call per selected route before committing the scaffold,",
+      "a real no-tool model call per selected route before committing the scaffold,",
       `with timeouts of ${readinessProbeTimeoutDescription()}.`,
-      "--preset seeds a blueprint, --with adds channels,",
+      "--preset seeds a blueprint; --with adds channels.",
       `Effort levels: ${EFFORT_LEVELS.join(", ")}; an omitted fallback effort uses that provider's default.`,
       "--auth runs supported provider auth/preflight before writing; --codex-auth device supports headless hosts.",
       "--dry-run previews only. Existing scaffold/config files are not overwritten;",
