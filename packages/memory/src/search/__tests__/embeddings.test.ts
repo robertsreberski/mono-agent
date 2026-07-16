@@ -12,14 +12,27 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
-type ProviderFactory = (fetchImpl: typeof fetch) => {
+type ProviderFactory = (fetchImpl: typeof fetch, timeoutMs?: number) => {
   embed(texts: readonly string[]): Promise<number[][]>;
 };
 
 const providerFactories = [
-  ["Ollama", (fetchImpl) => new OllamaEmbeddingProvider({ model: "test-model", fetchImpl })],
-  ["LM Studio", (fetchImpl) => new LmStudioEmbeddingProvider({ model: "test-model", fetchImpl })],
-  ["OpenAI", (fetchImpl) => new OpenAIEmbeddingProvider({ model: "test-model", apiKey: "test-key", fetchImpl })],
+  ["Ollama", (fetchImpl: typeof fetch, timeoutMs?: number) => new OllamaEmbeddingProvider({
+    model: "test-model",
+    fetchImpl,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  })],
+  ["LM Studio", (fetchImpl: typeof fetch, timeoutMs?: number) => new LmStudioEmbeddingProvider({
+    model: "test-model",
+    fetchImpl,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  })],
+  ["OpenAI", (fetchImpl: typeof fetch, timeoutMs?: number) => new OpenAIEmbeddingProvider({
+    model: "test-model",
+    apiKey: "test-key",
+    fetchImpl,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  })],
 ] as const satisfies readonly (readonly [string, ProviderFactory])[];
 
 async function rejectionOf<T>(promise: Promise<T>): Promise<unknown> {
@@ -77,7 +90,7 @@ describe("embedding provider failure taxonomy", () => {
     expect(error).toMatchObject({ code: "embedding_request_failed" });
   });
 
-  it.each(providerFactories)("wraps structured %s network failures with a stable code and original cause", async (provider, createProvider) => {
+  it.each(providerFactories)("wraps request-boundary %s TypeErrors with a stable code and original cause", async (provider, createProvider) => {
     const connectionCause = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
     const networkFailure = Object.assign(new TypeError("fetch failed"), { cause: connectionCause });
     const fetchImpl = (async () => {
@@ -112,7 +125,39 @@ describe("embedding provider failure taxonomy", () => {
     expect((error as Error).cause).toBe(abortFailure);
   });
 
-  it.each(providerFactories)("preserves non-transport %s fetch failures by identity", async (_provider, createProvider) => {
+  it.each(providerFactories)("wraps timer-driven %s timeouts with the abort signal's reason", async (provider, createProvider) => {
+    let observedSignal: AbortSignal | undefined;
+    const fetchImpl = ((_input: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!(signal instanceof AbortSignal)) {
+        reject(new Error("embedding request did not receive an AbortSignal"));
+        return;
+      }
+      observedSignal = signal;
+      const rejectWithAbortReason = (): void => reject(signal.reason);
+      if (signal.aborted) {
+        rejectWithAbortReason();
+        return;
+      }
+      signal.addEventListener("abort", rejectWithAbortReason, { once: true });
+    })) as typeof fetch;
+
+    const error = await rejectionOf(createProvider(fetchImpl, 5).embed(["text"]));
+    const signal = observedSignal as AbortSignal | undefined;
+
+    expect(signal?.aborted).toBe(true);
+    expect(error).toBeInstanceOf(MemorySearchError);
+    expect(error).toMatchObject({
+      code: "embedding_request_failed",
+      details: { code: "embedding_request_failed" },
+      message: `${provider} embeddings request failed before receiving a response.`,
+    });
+    expect((error as Error).cause).toBe(signal?.reason);
+    expect((error as Error).cause).toBeInstanceOf(DOMException);
+    expect(((error as Error).cause as DOMException).name).toBe("AbortError");
+  });
+
+  it.each(providerFactories)("preserves non-TypeError %s fetch failures by identity", async (_provider, createProvider) => {
     const adapterFailure = new Error("custom fetch adapter invariant failed");
     const fetchImpl = (async () => {
       throw adapterFailure;
