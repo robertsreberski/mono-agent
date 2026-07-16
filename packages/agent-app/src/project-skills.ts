@@ -19,6 +19,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import type { GeneratedFile } from "./modules/types.js";
+import { secureFileReplace } from "./secure-file-replace.js";
 
 export const PROJECT_SKILL_VERSION = "1.1.0";
 export const PROJECT_SKILL_MANIFEST_PATH = "skills/.mono-agent-managed.json";
@@ -495,48 +496,15 @@ async function atomicWriteManagedExact(
   const securePath = join(secureParent, basename(path));
   const temporary = join(secureParent, `.${randomUUID()}.mono-agent-tmp`);
   const initialInfo = await managedFileInfo(root, securePath, expected);
-  let handle: number | undefined;
-  let temporaryIdentity: { readonly dev: number; readonly ino: number } | undefined;
-  try {
-    const secureTemporary = inspectManagedFileInsideSync(root, temporary, "Managed project-skill temporary file", true);
-    handle = openSync(
-      secureTemporary,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
-      mode,
-    );
-    writeFileSync(handle, contents, "utf8");
-    fchmodSync(handle, mode);
-    fsyncSync(handle);
-    const temporaryInfo = fstatSync(handle);
-    assertManagedFileInfo(temporaryInfo, secureTemporary);
-    temporaryIdentity = { dev: temporaryInfo.dev, ino: temporaryInfo.ino };
-    closeSync(handle);
-    handle = undefined;
-    commitManagedReplacementSync(root, securePath, secureTemporary, expected, initialInfo);
-  } finally {
-    if (handle !== undefined) closeSync(handle);
-    removeManagedTemporaryIfOwnedSync(root, temporary, temporaryIdentity);
-  }
-}
-
-function removeManagedTemporaryIfOwnedSync(
-  root: string,
-  path: string,
-  identity: { readonly dev: number; readonly ino: number } | undefined,
-): void {
-  if (identity === undefined) return;
-  const securePath = inspectManagedFileInsideSync(root, path, "Managed project-skill temporary file", true);
-  let info: Stats;
-  try {
-    info = lstatSync(securePath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  }
-  if (info.dev !== identity.dev || info.ino !== identity.ino) {
-    throw new Error(`Managed project-skill temporary file changed unexpectedly and was left untouched: ${securePath}`);
-  }
-  unlinkSync(securePath);
+  const secureTemporary = inspectManagedFileInsideSync(root, temporary, "Managed project-skill temporary file", true);
+  await secureFileReplace({
+    path: securePath,
+    temporaryPath: secureTemporary,
+    contents,
+    mode,
+    validateTemporary: (details) => assertManagedFileInfo(details, secureTemporary),
+    commit: () => commitManagedReplacementSync(root, securePath, secureTemporary, expected, initialInfo),
+  });
 }
 
 async function managedFileInfo(root: string, path: string, expected: string | undefined): Promise<Stats | undefined> {

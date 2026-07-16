@@ -16,6 +16,7 @@ import {
 } from "./first-run-managed-memory.js";
 import type { FirstRunManagedMemoryHooks } from "./first-run-managed-memory.js";
 import { assertManagedProjectSkillInitSafe } from "./project-skills.js";
+import { secureFileReplace } from "./secure-file-replace.js";
 
 export interface InitMonoAgentFolderOptions {
   /** Folder the agent is constructed in. Defaults to process.cwd(). */
@@ -1188,39 +1189,33 @@ function ensureExactEnvIgnore(existing: string): string {
 
 async function atomicReplaceFile(options: AtomicReplaceOptions): Promise<void> {
   const temporaryPath = join(dirname(options.path), `.${basename(options.path)}.mono-agent-${randomUUID()}.tmp`);
-  let handle;
-  try {
-    handle = await open(
-      temporaryPath,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-      0o600,
-    );
-    await handle.writeFile(options.contents);
-    await handle.chmod(options.mode);
-    const tempStat = await handle.stat();
-    if (options.verifyOwnerOnly === true && (tempStat.mode & 0o777) !== 0o600) {
-      throw new SecretEnvPersistenceRefusedError(
-        "owner-only-permissions-unsupported",
-        "Automatic secret persistence could not verify owner-only permissions.",
-      );
-    }
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-
-    await options.beforeCommit?.(options.reportedPath, temporaryPath);
-    await assertSnapshotUnchanged(options.path, options.reportedPath, options.expected, options.ownerUid);
-    await options.beforeRename?.();
-    // beforeRename may perform async Git and cross-file checks. Re-read the
-    // target afterwards so an editor cannot win that widened window silently.
-    await assertSnapshotUnchanged(options.path, options.reportedPath, options.expected, options.ownerUid);
-    await options.beforePromotion?.(options.reportedPath, temporaryPath);
-    await promoteTemporaryFileWithoutClobber(options, temporaryPath);
-    await syncDirectoryBestEffort(dirname(options.path));
-  } finally {
-    await handle?.close();
-    await rm(temporaryPath, { force: true });
-  }
+  await secureFileReplace({
+    path: options.path,
+    temporaryPath,
+    contents: options.contents,
+    mode: options.mode,
+    validateTemporary: (details) => {
+      if (options.verifyOwnerOnly === true && (details.mode & 0o777) !== 0o600) {
+        throw new SecretEnvPersistenceRefusedError(
+          "owner-only-permissions-unsupported",
+          "Automatic secret persistence could not verify owner-only permissions.",
+        );
+      }
+    },
+    beforeCommit: async (temporary) => {
+      await options.beforeCommit?.(options.reportedPath, temporary);
+      await assertSnapshotUnchanged(options.path, options.reportedPath, options.expected, options.ownerUid);
+      await options.beforeRename?.();
+      // beforeRename may perform async Git and cross-file checks. Re-read the
+      // target afterwards so an editor cannot win that widened window silently.
+      await assertSnapshotUnchanged(options.path, options.reportedPath, options.expected, options.ownerUid);
+      await options.beforePromotion?.(options.reportedPath, temporary);
+    },
+    commit: async (temporary) => {
+      await promoteTemporaryFileWithoutClobber(options, temporary);
+      await syncDirectoryBestEffort(dirname(options.path));
+    },
+  });
 }
 
 async function promoteTemporaryFileWithoutClobber(
@@ -1314,6 +1309,7 @@ async function promoteTemporaryFileWithoutClobber(
           preserveConcurrentBackup ? backupPath : undefined,
         );
       }
+      await assertTemporaryContentsBeforePromotion(options, temporaryPath);
       installed = await linkIfAbsent(temporaryPath, options.path);
     } catch {
       if (!preserveConcurrentBackup) {
@@ -1337,9 +1333,9 @@ async function promoteTemporaryFileWithoutClobber(
       const backupStillExpected = await claimedBackupStillMatchesExpected(options, backupPath);
       try {
         const restored = await linkIfAbsent(backupPath, options.path);
-        if (restored || backupStillExpected) {
+        if (restored) {
           preserveConcurrentBackup = false;
-        } else {
+        } else if (!backupStillExpected) {
           await tightenFileOwnerOnlyBestEffort(backupPath);
         }
       } catch {
@@ -1367,6 +1363,24 @@ async function promoteTemporaryFileWithoutClobber(
     } else {
       await tightenFileOwnerOnlyBestEffort(backupPath);
     }
+  }
+}
+
+async function assertTemporaryContentsBeforePromotion(
+  options: AtomicReplaceOptions,
+  temporaryPath: string,
+): Promise<void> {
+  const temporary = await readSafeFile(
+    temporaryPath,
+    basename(options.path) === ".gitignore" ? "unsafe-gitignore-path" : "unsafe-env-path",
+    basename(options.path) === ".gitignore" ? "malformed-gitignore" : "malformed-env",
+    options.ownerUid,
+    [1],
+  );
+  if (!temporary.exists
+    || !temporary.contents.equals(options.contents)
+    || fileMode(temporary) !== options.mode) {
+    throw new SecretEnvConcurrentModificationError(options.reportedPath);
   }
 }
 
