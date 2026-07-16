@@ -157,9 +157,11 @@ describe("verify-all", () => {
     expect(result.exitCode).toBe(1);
     expect(execution).toEqual([
       "check:node",
+      "check:pnpm-policy",
       "check:secrets",
       "check:oss-hygiene",
       "check:licenses",
+      "check:dependency-vulnerabilities",
       "check:codex-discoverability",
       "release:validate",
       "check:architecture",
@@ -208,6 +210,39 @@ describe("verify-all", () => {
     expectCiParity(readCiWorkflow());
   });
 
+  it("rejects deleting, moving, or changing the pnpm policy gate", () => {
+    const source = readCiWorkflow();
+    const corepack = [
+      "      - name: Enable Corepack",
+      "        run: corepack enable",
+    ].join("\n");
+    const policy = [
+      "      - name: Check pnpm release-age policy",
+      "        run: node scripts/pnpm-release-age-policy.mjs",
+    ].join("\n");
+    const nodeCheck = [
+      "      - name: Check Node support floor",
+      "        run: pnpm run check:node",
+    ].join("\n");
+    const mutations = [
+      replaceExactly(source, `${policy}\n\n`, ""),
+      replaceExactly(
+        source,
+        `${corepack}\n\n${policy}\n\n${nodeCheck}`,
+        `${corepack}\n\n${nodeCheck}\n\n${policy}`,
+      ),
+      replaceExactly(
+        source,
+        "        run: node scripts/pnpm-release-age-policy.mjs",
+        "        run: node scripts/pnpm-release-age-policy.mjs --help",
+      ),
+    ];
+
+    for (const mutation of mutations) {
+      expect(() => expectCiParity(mutation)).toThrow();
+    }
+  });
+
   it("rejects release argv drift that removes the minimum-version proof", () => {
     const source = readCiWorkflow();
     const original = "        run: pnpm run release:consumer -- --tag \"${{ steps.release-smoke.outputs.tag }}\" --require-minimum";
@@ -219,8 +254,14 @@ describe("verify-all", () => {
 
   it("rejects moving the packed consumer condition to another Node version", () => {
     const source = readCiWorkflow();
-    const original = "        if: ${{ matrix.node-version == '22.19.0' }}";
-    const mutated = "        if: ${{ matrix.node-version == '24' }}";
+    const original = [
+      "      - name: Install packed consumer at the minimum Node version",
+      "        if: ${{ matrix.node-version == '22.19.0' }}",
+    ].join("\n");
+    const mutated = [
+      "      - name: Install packed consumer at the minimum Node version",
+      "        if: ${{ matrix.node-version == '24' }}",
+    ].join("\n");
     const mutatedSource = replaceExactly(source, original, mutated);
 
     expect(() => expectCiParity(mutatedSource)).toThrow();
@@ -243,12 +284,15 @@ describe("verify-all", () => {
 
   it("rejects stale intentional-delta declarations", () => {
     const source = readCiWorkflow();
-    const ciOnlyStep = [
-      "      - name: Build demos",
-      "        run: pnpm run build:demo",
-      "",
+    const testStep = [
+      "      - name: Run tests",
+      "        run: pnpm test",
     ].join("\n");
-    const mutatedSource = replaceExactly(source, ciOnlyStep, "");
+    const localOnlyStep = [
+      "      - name: Test demos",
+      "        run: pnpm run test:demo",
+    ].join("\n");
+    const mutatedSource = replaceExactly(source, testStep, `${testStep}\n\n${localOnlyStep}`);
 
     expect(() => expectCiParity(mutatedSource)).toThrow();
   });
@@ -542,6 +586,10 @@ describe("verify-all", () => {
       "      - name: Check Node support floor",
       "        run: pnpm run check:node",
     ].join("\n");
+    const policy = [
+      "      - name: Check pnpm release-age policy",
+      "        run: node scripts/pnpm-release-age-policy.mjs",
+    ].join("\n");
     const install = [
       "      - name: Install dependencies",
       "        run: pnpm install --frozen-lockfile",
@@ -553,6 +601,11 @@ describe("verify-all", () => {
       "            -v \"$PWD:/repo\" \\",
       "            ghcr.io/gitleaks/gitleaks:v8.30.1 \\",
       "            dir --redact --no-banner --config /repo/.gitleaks.toml /repo",
+    ].join("\n");
+    const dependencyVulnerabilities = [
+      "      - name: Check production dependency vulnerabilities",
+      "        if: ${{ matrix.node-version == '22.19.0' }}",
+      "        run: pnpm run check:dependency-vulnerabilities",
     ].join("\n");
     const releaseTag = [
       "      - name: Derive release smoke tag",
@@ -567,8 +620,16 @@ describe("verify-all", () => {
       `        run: pnpm run release:validate -- --tag "${CI_RELEASE_TAG_EXPRESSION}"`,
     ].join("\n");
     const mutations = [
-      replaceExactly(source, `${corepack}\n\n${nodeCheck}`, `${nodeCheck}\n\n${corepack}`),
-      replaceExactly(source, `${install}\n\n${secrets}`, `${secrets}\n\n${install}`),
+      replaceExactly(
+        source,
+        `${corepack}\n\n${policy}\n\n${nodeCheck}`,
+        `${nodeCheck}\n\n${policy}\n\n${corepack}`,
+      ),
+      replaceExactly(
+        source,
+        `${install}\n\n${dependencyVulnerabilities}\n\n${secrets}`,
+        `${secrets}\n\n${dependencyVulnerabilities}\n\n${install}`,
+      ),
       replaceExactly(
         source,
         `${releaseTag}\n\n${releaseValidate}`,
@@ -670,7 +731,9 @@ function expectCiParity(source) {
   const allDeltaEntries = [
     ...VERIFY_GATE_DELTA.ciSetup,
     ...VERIFY_GATE_DELTA.ciOnly,
+    ...VERIFY_GATE_DELTA.verifyAllOnly,
     ...VERIFY_GATE_DELTA.commandDifferences,
+    ...VERIFY_GATE_DELTA.relocatedCommandDifferences,
     ...VERIFY_GATE_DELTA.matrixDifferences,
   ];
   expect(allDeltaEntries.every((entry) => entry.reason.length > 0)).toBe(true);
@@ -697,6 +760,16 @@ function expectCiParity(source) {
       }
     }
 
+    for (const entry of VERIFY_GATE_DELTA.verifyAllOnly) {
+      const gateIndexes = indexesOfStepKey(expectedCiSteps, entry.gate.label);
+      const anchorIndexes = indexesOfStepKey(expectedCiSteps, entry.after);
+      expect(gateIndexes, `verify-all-only ${entry.gate.label} on Node ${nodeVersion}`).toHaveLength(1);
+      expect(anchorIndexes, `verify-all-only ${entry.gate.label} anchor on Node ${nodeVersion}`).toHaveLength(1);
+      expect(gateIndexes[0], `verify-all-only ${entry.gate.label} position on Node ${nodeVersion}`)
+        .toBe(anchorIndexes[0] + 1);
+      expectedCiSteps = removeExactGate(expectedCiSteps, entry.gate, nodeVersion);
+    }
+
     for (const entry of VERIFY_GATE_DELTA.ciOnly) {
       const anchorIndexes = indexesOfStepKey(expectedCiSteps, entry.after);
       expect(anchorIndexes, `CI-only ${entry.gate.label} anchor on Node ${nodeVersion}`).toHaveLength(1);
@@ -710,6 +783,20 @@ function expectCiParity(source) {
       expectedCiSteps[indexes[0]] = toGateStep(entry.ci);
     }
 
+    for (const entry of VERIFY_GATE_DELTA.relocatedCommandDifferences) {
+      if (entry.ciNodeVersion !== undefined && nodeVersion !== entry.ciNodeVersion) {
+        continue;
+      }
+      const gateIndexes = indexesOfStepKey(expectedCiSteps, entry.label);
+      expect(gateIndexes, `relocated command delta ${entry.label} on Node ${nodeVersion}`).toHaveLength(1);
+      expect(expectedCiSteps[gateIndexes[0]]).toEqual(toGateStep(entry.verifyAll));
+      const verifyAllAnchorIndexes = indexesOfStepKey(expectedCiSteps, entry.verifyAllAfter);
+      expect(verifyAllAnchorIndexes, `verify-all anchor for ${entry.label} on Node ${nodeVersion}`).toHaveLength(1);
+      expect(gateIndexes[0], `verify-all position for ${entry.label} on Node ${nodeVersion}`)
+        .toBe(verifyAllAnchorIndexes[0] + 1);
+      expectedCiSteps.splice(gateIndexes[0], 1);
+    }
+
     for (const entry of VERIFY_GATE_DELTA.ciSetup) {
       const setupStep = { kind: "setup", key: entry.key };
       if (entry.after === null) {
@@ -719,6 +806,15 @@ function expectCiParity(source) {
       const anchorIndexes = indexesOfStepKey(expectedCiSteps, entry.after);
       expect(anchorIndexes, `CI setup ${entry.key} anchor on Node ${nodeVersion}`).toHaveLength(1);
       expectedCiSteps.splice(anchorIndexes[0] + 1, 0, setupStep);
+    }
+
+    for (const entry of VERIFY_GATE_DELTA.relocatedCommandDifferences) {
+      if (entry.ciNodeVersion !== undefined && nodeVersion !== entry.ciNodeVersion) {
+        continue;
+      }
+      const ciAnchorIndexes = indexesOfStepKey(expectedCiSteps, entry.ciAfter);
+      expect(ciAnchorIndexes, `CI anchor for ${entry.label} on Node ${nodeVersion}`).toHaveLength(1);
+      expectedCiSteps.splice(ciAnchorIndexes[0] + 1, 0, toGateStep(entry.ci));
     }
 
     expect(actualCiSteps, `CI semantic step sequence for Node ${nodeVersion}`).toEqual(expectedCiSteps);
@@ -896,6 +992,11 @@ const ACTION_STEPS = Object.freeze([
 
 const CI_RUN_STEP_CONTRACTS = Object.freeze([
   setupRunContract("corepack setup", "corepack enable"),
+  gateRunContract("node scripts/pnpm-release-age-policy.mjs", {
+    label: "check:pnpm-policy",
+    command: "node",
+    args: ["scripts/pnpm-release-age-policy.mjs"],
+  }),
   gateRunContract("pnpm run check:node", {
     label: "check:node",
     command: "pnpm",
@@ -933,6 +1034,11 @@ const CI_RUN_STEP_CONTRACTS = Object.freeze([
     label: "check:licenses",
     command: "pnpm",
     args: ["run", "check:licenses"],
+  }),
+  gateRunContract("pnpm run check:dependency-vulnerabilities", {
+    label: "check:dependency-vulnerabilities",
+    command: "pnpm",
+    args: ["run", "check:dependency-vulnerabilities"],
   }),
   gateRunContract("pnpm run check:codex-discoverability", {
     label: "check:codex-discoverability",

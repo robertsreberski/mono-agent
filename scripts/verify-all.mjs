@@ -44,24 +44,16 @@ export const VERIFY_GATE_DELTA = Object.freeze({
       reason: "CI exports the manifest-derived smoke tag for later steps; local verify:all reads that manifest value in-process.",
     }),
   ]),
-  ciOnly: Object.freeze([
+  ciOnly: Object.freeze([]),
+  verifyAllOnly: Object.freeze([
     Object.freeze({
       gate: Object.freeze({
-        label: "build:demo",
+        label: "test:demo",
         command: "pnpm",
-        args: Object.freeze(["run", "build:demo"]),
+        args: Object.freeze(["run", "test:demo"]),
       }),
       after: "test",
-      reason: "CI repeats the demo build already included by the root build command; removal is tracked by #284.",
-    }),
-    Object.freeze({
-      gate: Object.freeze({
-        label: "typecheck:demo",
-        command: "pnpm",
-        args: Object.freeze(["run", "typecheck:demo"]),
-      }),
-      after: "build:demo",
-      reason: "CI repeats the demo typecheck already included by the root typecheck command; removal is tracked by #284.",
+      reason: "verify:all retains the explicit demo-test rerun while CI relies on the demo tests already chained into the root test command.",
     }),
   ]),
   commandDifferences: Object.freeze([
@@ -106,7 +98,53 @@ export const VERIFY_GATE_DELTA = Object.freeze({
       reason: "pnpm test and pnpm run test invoke the same package script.",
     }),
   ]),
+  relocatedCommandDifferences: Object.freeze([
+    Object.freeze({
+      label: "check:pnpm-policy",
+      ci: Object.freeze({
+        label: "check:pnpm-policy",
+        command: "node",
+        args: Object.freeze(["scripts/pnpm-release-age-policy.mjs"]),
+      }),
+      ciAfter: "corepack setup",
+      verifyAll: Object.freeze({
+        label: "check:pnpm-policy",
+        command: "pnpm",
+        args: Object.freeze(["run", "check:pnpm-policy"]),
+      }),
+      verifyAllAfter: "check:node",
+      reason: "CI runs the policy script directly before invoking pnpm; local verify:all proves the Node floor first, then uses the package-script wrapper.",
+    }),
+    Object.freeze({
+      label: "check:dependency-vulnerabilities",
+      ci: Object.freeze({
+        label: "check:dependency-vulnerabilities",
+        command: "pnpm",
+        args: Object.freeze(["run", "check:dependency-vulnerabilities"]),
+      }),
+      ciAfter: "dependency install",
+      ciNodeVersion: MINIMUM_NODE_VERSION,
+      verifyAll: Object.freeze({
+        label: "check:dependency-vulnerabilities",
+        command: "pnpm",
+        args: Object.freeze(["run", "check:dependency-vulnerabilities"]),
+      }),
+      verifyAllAfter: "check:licenses",
+      reason: "CI runs the production advisory gate immediately after its frozen install on the minimum-Node leg; local verify:all runs it after license policy on every supported runtime.",
+    }),
+  ]),
   matrixDifferences: Object.freeze([
+    Object.freeze({
+      label: "check:dependency-vulnerabilities",
+      ciCondition: `\${{ matrix.node-version == '${MINIMUM_NODE_VERSION}' }}`,
+      ciNodeVersion: MINIMUM_NODE_VERSION,
+      verifyAllOnlyGate: Object.freeze({
+        label: "check:dependency-vulnerabilities",
+        command: "pnpm",
+        args: Object.freeze(["run", "check:dependency-vulnerabilities"]),
+      }),
+      reason: "CI audits production dependencies once on the minimum-Node leg; verify:all runs the same fail-closed audit on every supported local runtime.",
+    }),
     Object.freeze({
       label: "release:consumer",
       ciCondition: `\${{ matrix.node-version == '${MINIMUM_NODE_VERSION}' }}`,
