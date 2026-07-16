@@ -94,7 +94,7 @@ mono-agent validate
 mono-agent start
 ```
 
-`validate` fails with the exact matching plugin install command when the optional package is absent. Once the package and config are present it reports the memory section as `ok` (it does not ping the server — start `supermemory-server` first so captures and recall actually land).
+`validate` fails with the exact matching plugin install command when the optional package is absent. Once the package and config are present it makes a bounded, read-only liveness probe against the exact configured base URL; it sends no API key or memory data. Any HTTP response proves transport reachability. A connection failure or timeout reports the memory section as non-fatal `waiting` with recovery guidance, so start `supermemory-server` or fix `memory.supermemory.baseUrl`, then re-run `mono-agent validate` before relying on capture and recall.
 
 ## Notes and limits
 

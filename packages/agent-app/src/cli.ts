@@ -4006,9 +4006,9 @@ type PreflightFailure = Extract<PreflightResult, { ok: false }>;
  * config. First the config FILE must exist (env vars alone are not enough — a
  * folder without a config is not a configured agent). Then run the structural
  * validation with `liveness:false` (network probes only yield `waiting`, never
- * `error`, so skipping them keeps the verdict but avoids ~6s of timeouts) and
- * refuse on any `error` section. `waiting` (e.g. Ollama/Phoenix not up yet) is
- * runtime-soft and never blocks.
+ * `error`, so skipping them keeps the verdict while avoiding bounded network
+ * timeouts) and refuse on any `error` section. `waiting` (e.g.
+ * Ollama/Supermemory/Phoenix not up yet) is runtime-soft and never blocks.
  */
 export async function ensureStartable(
   args: ParsedCliArgs,

@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -93,6 +94,27 @@ async function captureRunCli(argv: readonly string[]): Promise<{ readonly code: 
   }
 }
 
+async function closedLoopbackBaseUrl(): Promise<string> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    server.close();
+    throw new Error("Expected a loopback TCP address.");
+  }
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error === undefined) resolve();
+      else reject(error);
+    });
+  });
+  return baseUrl;
+}
+
 describe("runCli validate --consumer", () => {
   it.each([
     ["missing", undefined, "no Pi credentials found"],
@@ -142,6 +164,42 @@ describe("runCli validate --consumer", () => {
     expect(result.stdout).toContain("memory.embeddings.apiKey is a secret read from mono-agent.config.json");
     expect(result.stdout).toContain("Config is structurally valid, but needs attention before start.");
     expect(result.stdout).not.toContain("Config is ready to start.");
+  });
+
+  it("reports Supermemory as waiting when its base URL points at a closed port", async () => {
+    const baseUrl = await closedLoopbackBaseUrl();
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");
+    await writeConsumerConfig(dir, "mono-agent.config.json", {
+      runtime: { model: "codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      memory: {
+        backend: "supermemory",
+        mode: "lite",
+        path: ".mono-agent/memory",
+        writeMode: "capture",
+        supermemory: { baseUrl, container: "closed-port-agent" },
+      },
+    });
+    process.chdir(dir);
+
+    const result = await captureRunCli(["validate", "--json"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    const report = JSON.parse(result.stdout) as {
+      readonly ok: boolean;
+      readonly sections: readonly {
+        readonly id: string;
+        readonly status: string;
+        readonly details: readonly string[];
+      }[];
+    };
+    const memory = report.sections.find((section) => section.id === "memory");
+    expect(report.ok).toBe(true);
+    expect(memory?.status).toBe("waiting");
+    expect(memory?.details.join("\n")).toContain(`Supermemory is not reachable at ${baseUrl}`);
+    expect(memory?.details.join("\n")).toContain("memory.supermemory.baseUrl");
+    expect(memory?.details.join("\n")).toContain("mono-agent validate");
   });
 
   it("loads the consumer .env and config without changing the current directory", async () => {
