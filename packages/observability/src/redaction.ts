@@ -3,15 +3,30 @@ import { DEFAULT_MAX_STRING_BYTES } from "./guards.js";
 /**
  * Node-free redaction + truncation helpers shared by the recorder and the
  * export-mapping surface. Non-numeric values under sensitive-looking object
- * keys collapse to `[redacted]`; free-text content is not scanned. Circular
+ * keys collapse to `[redacted]`; free-text content is not scanned unless the
+ * caller explicitly enables the closed high-confidence pattern scan. Circular
  * references collapse to `[circular]`, deeply nested values to `[max-depth]`,
- * and long strings are truncated by UTF-8 byte length. Kept import-free of `node:*`
- * (the prior `Buffer.byteLength` call is replaced with `TextEncoder`) so the
- * mapping module can stay browser-safe.
+ * and long strings are truncated by UTF-8 byte length. Kept import-free of
+ * `node:*` (the prior `Buffer.byteLength` call is replaced with `TextEncoder`)
+ * so the mapping module can stay browser-safe.
  */
 
 const SENSITIVE_KEY_PATTERN =
   /(token|password|authorization|api[_-]?key|cookie|credentials?|private[_-]?key|client[_-]?secret|bearer|secret)/iu;
+
+// This is intentionally a short, closed list of high-confidence credential
+// shapes. Prefix-only matches (for example prose that mentions `sk-` or
+// `ghp_`) are not enough: every pattern requires the documented token length
+// and alphabet. Quantifiers are capped so candidate width stays bounded and
+// scanning cost stays proportional to the caller-selected retained prefix.
+const CONTENT_SECRET_PATTERNS = [
+  /\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{19,511}[A-Za-z0-9]\b/gu,
+  /\bghp_[A-Za-z0-9]{36}\b/gu,
+  /\bgithub_pat_[A-Za-z0-9_]{19,511}[A-Za-z0-9]\b/gu,
+  /\bAKIA[A-Z0-9]{16}\b/gu,
+  /\bxox[baprs]-[A-Za-z0-9-]{19,511}[A-Za-z0-9]\b/gu,
+  /\bxapp-[A-Za-z0-9-]{19,511}[A-Za-z0-9]\b/gu,
+] as const;
 
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
@@ -20,8 +35,32 @@ const MAX_REDACTION_NODES = 10_000;
 const MAX_ARRAY_ITEMS = 1_000;
 const MAX_OBJECT_KEYS = 1_000;
 
-export function redactJsonValue(value: unknown, maxStringBytes = DEFAULT_MAX_STRING_BYTES): unknown {
-  return redact(value, maxStringBytes, 0, undefined, new WeakSet<object>(), { remainingNodes: MAX_REDACTION_NODES });
+export interface RedactJsonValueOptions {
+  /**
+   * Scan retained free-text content for high-confidence credential shapes.
+   * Disabled by default to preserve existing prose exactly. The scan runs only
+   * after UTF-8 truncation, so pattern-matching work is bounded by the retained
+   * prefix selected by `maxStringBytes`. Only that prefix participates; a
+   * boundary fragment shorter than a pattern's minimum credential length
+   * remains a non-match.
+   */
+  readonly contentPatternRedaction?: boolean;
+}
+
+export function redactJsonValue(
+  value: unknown,
+  maxStringBytes = DEFAULT_MAX_STRING_BYTES,
+  options: RedactJsonValueOptions = {},
+): unknown {
+  return redact(
+    value,
+    maxStringBytes,
+    options.contentPatternRedaction === true,
+    0,
+    undefined,
+    new WeakSet<object>(),
+    { remainingNodes: MAX_REDACTION_NODES },
+  );
 }
 
 interface RedactionBudget {
@@ -31,6 +70,7 @@ interface RedactionBudget {
 function redact(
   value: unknown,
   maxStringBytes: number,
+  contentPatternRedaction: boolean,
   depth: number,
   key: string | undefined,
   seen: WeakSet<object>,
@@ -50,7 +90,8 @@ function redact(
     return value;
   }
   if (typeof value === "string") {
-    return truncateString(value, maxStringBytes);
+    const truncated = truncateString(value, maxStringBytes);
+    return contentPatternRedaction ? redactContentPatterns(truncated) : truncated;
   }
   if (typeof value === "bigint") {
     return value.toString();
@@ -59,7 +100,7 @@ function redact(
     return String(value);
   }
   if (value instanceof Error) {
-    return redact(errorToJson(value), maxStringBytes, depth + 1, key, seen, budget);
+    return redact(errorToJson(value), maxStringBytes, contentPatternRedaction, depth + 1, key, seen, budget);
   }
   if (depth >= 12) {
     return "[max-depth]";
@@ -72,7 +113,7 @@ function redact(
     const limit = Math.min(value.length, MAX_ARRAY_ITEMS);
     const out: unknown[] = [];
     for (let index = 0; index < limit; index += 1) {
-      out.push(redact(value[index], maxStringBytes, depth + 1, undefined, seen, budget));
+      out.push(redact(value[index], maxStringBytes, contentPatternRedaction, depth + 1, undefined, seen, budget));
     }
     if (value.length > limit) {
       out.push("[max-items]");
@@ -84,12 +125,28 @@ function redact(
   const limit = Math.min(entries.length, MAX_OBJECT_KEYS);
   for (let index = 0; index < limit; index += 1) {
     const [entryKey, entryValue] = entries[index]!;
-    out[entryKey] = redact(entryValue, maxStringBytes, depth + 1, entryKey, seen, budget);
+    out[entryKey] = redact(
+      entryValue,
+      maxStringBytes,
+      contentPatternRedaction,
+      depth + 1,
+      entryKey,
+      seen,
+      budget,
+    );
   }
   if (entries.length > limit) {
     out.__truncated__ = "[max-keys]";
   }
   return out;
+}
+
+function redactContentPatterns(value: string): string {
+  let redacted = value;
+  for (const pattern of CONTENT_SECRET_PATTERNS) {
+    redacted = redacted.replace(pattern, "[redacted]");
+  }
+  return redacted;
 }
 
 function consumeNode(budget: RedactionBudget): boolean {

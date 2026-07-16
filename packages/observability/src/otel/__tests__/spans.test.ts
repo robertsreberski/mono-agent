@@ -128,6 +128,27 @@ describe("buildRunReadableSpans", () => {
     expect(root.attributes["output.value"]).toBe("The capital of France is Paris.");
   });
 
+  it("redacts secret-shaped root input, output, and system prompt when opted in", () => {
+    const fixture = ["sk", "-", "A".repeat(24)].join("");
+    const root = build({
+      summary: { ...summary, systemPrompt: `system ${fixture}`, eventCount: 1 },
+      events: [
+        { type: "assistant", message: { content: [{ type: "text", text: `reply ${fixture}` }] } },
+      ],
+      ctx: {
+        ...ctx,
+        includeSensitiveData: true,
+        contentPatternRedaction: true,
+        userInput: `prompt ${fixture}`,
+      },
+    })[0]!;
+
+    expect(root.attributes["input.value"]).toBe("prompt [redacted]");
+    expect(root.attributes["output.value"]).toBe("reply [redacted]");
+    expect(root.attributes["mono.agent.system_prompt"]).toBe("system [redacted]");
+    expect(JSON.stringify(root.attributes)).not.toContain(fixture);
+  });
+
   it("bounds a 100k root prompt at the UTF-8 export boundary without mutating source data", () => {
     const userInput = "x".repeat(100_000);
     const exportContext: RunExportContext = { ...ctx, includeSensitiveData: true, userInput };
@@ -256,6 +277,28 @@ describe("buildRunReadableSpans", () => {
     // Structured, queryable mirrors of the same operational metadata.
     expect(root.attributes["mono.agent.failover.count"]).toBe(2);
     expect(root.attributes["mono.agent.error.message"]).toBe("503 Service Unavailable");
+  });
+
+  it("redacts secret-shaped failure details in metadata-only mode when opted in", () => {
+    const fixture = ["AK", "IA", "A".repeat(16)].join("");
+    const root = build({
+      summary: {
+        ...summary,
+        status: "failed",
+        failureKind: "provider_unavailable_exhausted",
+        error: `provider returned ${fixture}`,
+        failoverHistory: [
+          { model: "pi:test:model", subkind: "server_error", requestId: `request-${fixture}` },
+        ],
+      },
+      ctx: { ...ctx, includeSensitiveData: false, contentPatternRedaction: true },
+    })[0]!;
+
+    expect(JSON.stringify(root.attributes)).not.toContain(fixture);
+    expect(root.status.message).not.toContain(fixture);
+    expect(root.attributes["mono.agent.error.message"]).toBe("provider returned [redacted]");
+    expect(root.attributes["mono.agent.failover.detail"]).toContain("request-[redacted]");
+    expect(root.attributes["output.value"]).toContain("last error: provider returned [redacted]");
   });
 
   it("is metadata-only by default: no raw payload attribute", () => {

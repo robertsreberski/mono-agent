@@ -112,6 +112,24 @@ describe("createPhoenixRunExporter", () => {
     expect(cap.bodyText()).toContain("[redacted]");
   });
 
+  it("applies config-level content pattern redaction to free text", async () => {
+    const fixture = ["AK", "IA", "A".repeat(16)].join("");
+    const cap = capturingFetch();
+    const ctx: RunExportContext = { ...baseCtx, includeSensitiveData: true };
+    const exporter = createPhoenixRunExporter(
+      { type: "phoenix", includeSensitiveData: true, contentPatternRedaction: true },
+      { fetch: cap.fetch, now: () => 1 },
+    );
+    await exporter.onEvent?.(
+      { type: "assistant_message", role: "assistant", text: `returned ${fixture}` },
+      eventCtx(0, ctx),
+    );
+    await exporter.finish?.({ ...summary, eventCount: 1 }, ctx);
+
+    expect(cap.bodyText()).not.toContain(fixture);
+    expect(cap.bodyText()).toContain("[redacted]");
+  });
+
   it("uses deterministic ids: re-exporting the same run yields byte-identical bodies", async () => {
     const config: PhoenixExporterConfig = { type: "phoenix" };
     const first = capturingFetch();

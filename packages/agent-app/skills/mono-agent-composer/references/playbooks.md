@@ -198,7 +198,7 @@ const orchestrator = await createConfiguredAgentResponder({
   "runtime": { "model": "claude:claude-sonnet-4-6" },
   "artifacts": { "dir": ".mono-agent/artifacts" },
   "traceability": { "registryDir": ".mono-agent/trace-sources", "sourceId": "my-agent", "heartbeatMs": 10000 },
-  "observability": { "exporters": [{ "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces", "projectName": "my-project", "includeSensitiveData": false, "timeoutMs": 5000 }] }
+  "observability": { "exporters": [{ "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces", "projectName": "my-project", "includeSensitiveData": false, "contentPatternRedaction": false, "timeoutMs": 5000 }] }
 }
 ```
 **Steps:** start Phoenix (6006) → `init` → add artifacts/traceability/exporter → `validate` (POSTs an empty protobuf) → `start` (prints the Phoenix endpoint) → `mono-agent tui`.

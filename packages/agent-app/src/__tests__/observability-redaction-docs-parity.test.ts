@@ -18,6 +18,7 @@ const RUN_HISTORY_SECOND_PASS_CONTRACT = [
   "an optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted.",
 ].join(" ");
 const BACKFILL_INPUT_CONTRACT = "backfill forwards persisted `summary.userinput`";
+const CONTENT_PATTERN_OPTION = "contentpatternredaction";
 
 function repoRoot(): string {
   let dir = here;
@@ -222,7 +223,33 @@ describe("observability redaction docs parity", () => {
     const rawStringContent = functionDoc("packages/observability/src/run-export-mapping.ts", "toContentString");
     expect(rawStringContent).toContain("raw string input is retained free text");
     expect(rawStringContent).toContain("capped for display");
-    expect(rawStringContent).toContain("not content-scanned or scrubbed");
+    expect(rawStringContent).toContain("not content-scanned by default");
+    expect(rawStringContent).toContain(CONTENT_PATTERN_OPTION);
+  });
+
+  it("keeps the exporter content-pattern scan explicitly opt-in and default-off", () => {
+    const operatorSurfaces = [
+      paragraphContaining("README.md", "Phoenix is the recommended trace viewer"),
+      paragraphContaining("packages/observability/README.md", "Privacy default is metadata-only"),
+      lineContaining("docs/observability/phoenix-and-backfill.md", "| `contentPatternRedaction` |"),
+      lineContaining("docs/reference/feature-registry.md", "| `observability.phoenix-exporter` |"),
+    ];
+
+    for (const surface of operatorSurfaces) {
+      expect(surface).toContain(CONTENT_PATTERN_OPTION);
+      expect(surface).toMatch(/\b(?:default(?:s)?(?:-off)?|false|opt-in)\b/u);
+    }
+
+    const implementationSurfaces = [
+      interfaceFieldDoc("packages/observability/src/types.ts", "RunExportContext", "contentPatternRedaction"),
+      interfaceFieldDoc("packages/observability/src/types.ts", "PhoenixExporterConfig", "contentPatternRedaction"),
+      functionDoc("packages/observability/src/run-export-mapping.ts", "toContentString"),
+      functionDoc("packages/observability/src/otel/spans.ts", "buildRunReadableSpans"),
+    ];
+    for (const surface of implementationSurfaces) {
+      expect(surface).toContain("high-confidence");
+      expect(surface).toContain("scan");
+    }
   });
 
   it("keeps persisted backfill input forwarding and its export bound explicit", () => {
@@ -276,7 +303,8 @@ describe("observability redaction docs parity", () => {
       "userInput",
     );
     expect(liveExportInput).toContain("retained free text");
-    expect(liveExportInput).toContain("not content-scanned or scrubbed");
+    expect(liveExportInput).toContain("not content-scanned by default");
+    expect(liveExportInput).toContain(CONTENT_PATTERN_OPTION);
     expect(liveExportInput).not.toMatch(/\bredacted\s*(?:\+|and|into)\b/u);
   });
 });

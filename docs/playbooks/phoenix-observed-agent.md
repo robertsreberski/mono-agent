@@ -45,6 +45,7 @@ Run an agent locally with the TUI, attempt a best-effort terminal-batched Phoeni
         "endpoint": "http://127.0.0.1:6006/v1/traces",
         "projectName": "my-project",
         "includeSensitiveData": false,
+        "contentPatternRedaction": false,
         "timeoutMs": 5000
       }
     ]
@@ -55,7 +56,7 @@ Run an agent locally with the TUI, attempt a best-effort terminal-batched Phoeni
 The exporters array can also be supplied via the `MONO_AGENT_OBSERVABILITY_EXPORTERS` env var (a JSON array of exporter objects). The local recorder is independent of Phoenix: it creates an empty-event start snapshot and replaces it with key-redacted, capped events at finish/fail. Phoenix adds a best-effort terminal batch; exporter failure does not change the run outcome, and process death before terminal persistence can leave neither terminal batch nor buffered JSONL events.
 
 :::caution
-With `includeSensitiveData: false`, exported spans are metadata-only and raw prompt/result payloads are withheld. Set it to `true` only against a trusted local Phoenix; substantive payloads are exported and strings are capped. Non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. Local JSONL artifacts retain that private free text regardless of exporter configuration.
+With `includeSensitiveData: false`, exported spans are metadata-only and raw prompt/result payloads are withheld. Set it to `true` only against a trusted Phoenix; substantive payloads are exported and strings are capped. Non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned by default. `contentPatternRedaction: true` adds a closed high-confidence credential-shape scan over retained outbound text, but remains defense in depth. Local JSONL artifacts retain private free text regardless of exporter configuration.
 :::
 
 ## Steps

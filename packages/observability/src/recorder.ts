@@ -14,6 +14,7 @@ const SYSTEM_PROMPT_MAX_BYTES = 32_000;
 // `redactJsonValue` is re-exported so existing importers (recorder.test.ts
 // imports it via "../recorder.js") keep their import surface unchanged.
 export { redactJsonValue };
+export type { RedactJsonValueOptions } from "./redaction.js";
 
 export type ObservabilityErrorCode = "invalid_recorder_options" | "artifact_write_failed";
 export type ObservabilityErrorDetails = Record<string, unknown> & { readonly code: ObservabilityErrorCode };

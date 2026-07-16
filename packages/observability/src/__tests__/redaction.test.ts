@@ -103,6 +103,59 @@ describe("redactJsonValue", () => {
     expect(Object.keys(redacted.object)).toHaveLength(1_001);
     expect(redacted.object.__truncated__).toBe("[max-keys]");
   });
+
+  it("redacts high-confidence secret-shaped substrings from plain strings when opted in", () => {
+    const fixtures = [
+      ["sk", "-", "A".repeat(24)].join(""),
+      ["ghp", "_", "B".repeat(36)].join(""),
+      ["github", "_pat_", "C".repeat(24)].join(""),
+      ["AK", "IA", "D".repeat(16)].join(""),
+      ["xox", "a-", "E".repeat(24)].join(""),
+      ["xox", "b-", "E".repeat(24)].join(""),
+      ["xox", "p-", "E".repeat(24)].join(""),
+      ["xox", "r-", "E".repeat(24)].join(""),
+      ["xox", "s-", "E".repeat(24)].join(""),
+      ["xapp", "-1-", "F".repeat(24)].join(""),
+    ];
+    const prose = `prefix ${fixtures.join(" middle ")} suffix`;
+
+    expect(redactJsonValue(prose, 4_096, { contentPatternRedaction: true })).toBe(
+      `prefix ${fixtures.map(() => "[redacted]").join(" middle ")} suffix`,
+    );
+  });
+
+  it("leaves content scanning disabled by default", () => {
+    const fixture = ["sk", "-", "A".repeat(24)].join("");
+    expect(redactJsonValue(`plain key: ${fixture}`)).toBe(`plain key: ${fixture}`);
+  });
+
+  it("leaves ordinary prefix prose and near-miss token shapes untouched", () => {
+    const prose = [
+      "The sk- prefix is documented here.",
+      "ghp_ is a token-family label.",
+      "AKIA is also a personal name.",
+      "xoxb- alone is not a credential.",
+      ["ghp", "_", "A".repeat(35)].join(""),
+      ["AK", "IA", "B".repeat(15)].join(""),
+    ].join(" ");
+
+    expect(redactJsonValue(prose, 4_096, { contentPatternRedaction: true })).toBe(prose);
+  });
+
+  it("applies content-pattern scanning recursively without weakening key redaction", () => {
+    const fixture = ["xox", "p-", "A".repeat(24)].join("");
+    expect(
+      redactJsonValue(
+        { note: `credential: ${fixture}`, nested: [`again ${fixture}`], apiKey: "not-shape-dependent" },
+        4_096,
+        { contentPatternRedaction: true },
+      ),
+    ).toEqual({
+      note: "credential: [redacted]",
+      nested: ["again [redacted]"],
+      apiKey: "[redacted]",
+    });
+  });
 });
 
 describe("truncateString", () => {

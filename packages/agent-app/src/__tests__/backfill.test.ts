@@ -128,7 +128,12 @@ describe("backfill mapping integration", () => {
     const spans = buildRunReadableSpans({
       summary: parsed,
       events,
-      context: { runId: parsed.runId, conversationId: parsed.conversationId, includeSensitiveData: false },
+      context: {
+        runId: parsed.runId,
+        conversationId: parsed.conversationId,
+        includeSensitiveData: false,
+        contentPatternRedaction: false,
+      },
       projectName: "local-agent-alpha",
       startTimeUnixNanos: start,
       endTimeUnixNanos: end,
@@ -216,5 +221,50 @@ describe("backfill mapping integration", () => {
     expect(all.outcomes.map((outcome) => outcome.runId).sort()).toEqual(["mem-legacy", "mem-new", "run-agent"]);
     expect(explicitMemory.outcomes).toHaveLength(1);
     expect(explicitMemory.outcomes[0]).toMatchObject({ runId: "mem-new", status: "ok" });
+  });
+
+  it("threads content-pattern redaction into dry-run backfill mapping", async () => {
+    const cwd = join(dir, "consumer");
+    await mkdir(cwd, { recursive: true });
+    const artifactDir = join(cwd, "artifacts");
+    const configPath = join(cwd, "mono-agent.config.json");
+    const fixture = ["xapp", "-1-", "A".repeat(64)].join("");
+    await writeFile(join(cwd, "IDENTITY.md"), "# Identity\n", "utf8");
+    await writeRunIn(
+      artifactDir,
+      "run-agent",
+      { ...summary, runId: "run-agent", conversationId: "chat" },
+      [JSON.stringify({ type: "assistant_message", role: "assistant", text: `returned ${fixture}` })],
+    );
+
+    const writeConfig = async (contentPatternRedaction: boolean): Promise<void> => {
+      await writeFile(configPath, JSON.stringify({
+        runtime: { model: "claude:claude-sonnet-4-6" },
+        context: { identityPath: "./IDENTITY.md" },
+        artifacts: { dir: "./artifacts" },
+        observability: {
+          exporters: [{
+            type: "phoenix",
+            endpoint: "http://127.0.0.1:9/v1/traces",
+            includeSensitiveData: true,
+            contentPatternRedaction,
+          }],
+        },
+      }), "utf8");
+    };
+
+    await writeConfig(false);
+    const unscanned = await backfillRuns({ env: {}, cwd, configPath }, { run: "run-agent", dryRun: true });
+    await writeConfig(true);
+    const scanned = await backfillRuns({ env: {}, cwd, configPath }, { run: "run-agent", dryRun: true });
+
+    const unscannedOutcome = unscanned.outcomes[0];
+    const scannedOutcome = scanned.outcomes[0];
+    expect(unscannedOutcome).toMatchObject({ status: "ok", dryRun: true });
+    expect(scannedOutcome).toMatchObject({ status: "ok", dryRun: true });
+    if (unscannedOutcome?.status !== "ok" || scannedOutcome?.status !== "ok") {
+      throw new Error("expected successful dry-run backfill outcomes");
+    }
+    expect(scannedOutcome.bytes).toBeLessThan(unscannedOutcome.bytes);
   });
 });

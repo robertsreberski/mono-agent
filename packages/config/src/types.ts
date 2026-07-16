@@ -116,6 +116,11 @@ export interface PhoenixExporterConfig {
   readonly headers?: Readonly<Record<string, string>>;
   /** When true, redacted raw payloads are exported; default false (metadata only). */
   readonly includeSensitiveData?: boolean;
+  /**
+   * Scan retained exported free-text values for a closed set of high-confidence
+   * credential shapes. Default false; object-key redaction remains enabled.
+   */
+  readonly contentPatternRedaction?: boolean;
   /** Hard cap (ms) on a single export attempt; bounded {1..60000}, default 5000. */
   readonly timeoutMs?: number;
   /**
