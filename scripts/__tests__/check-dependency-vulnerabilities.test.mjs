@@ -5,10 +5,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  collectProductionGraph,
   evaluateDependencyVulnerabilities,
   loadDependencyVulnerabilityDispositions,
   normalizeDispositions,
+  parsePnpmProductionGraph,
   parsePnpmProductionInventory,
+  parsePnpmWhyDependencyPaths,
   queryBulkAdvisories,
   runDependencyVulnerabilityCheck,
 } from "../check-dependency-vulnerabilities.mjs";
@@ -26,46 +29,171 @@ afterEach(() => {
 });
 
 describe("dependency vulnerability gate", () => {
-  it("normalizes the flattened cross-platform inventory and excludes workspace paths", () => {
-    const inventory = parsePnpmProductionInventory([
-      "/repo/packages/runtime-adapter",
+  it("parses pnpm 10's compact cross-platform production inventory", () => {
+    expect(parsePnpmProductionInventory([
+      "/repo/packages/portable-fixture",
       "/repo/node_modules/.pnpm/ws@8.20.1/node_modules/ws",
       "/repo/node_modules/.pnpm/ws@8.20.1/node_modules/ws",
       "/repo/node_modules/.pnpm/@img+sharp-win32-arm64@0.34.5/node_modules/@img/sharp-win32-arm64",
       "C:\\repo\\node_modules\\.pnpm\\@vscode+ripgrep-win32-x64@1.18.0\\node_modules\\@vscode\\ripgrep-win32-x64",
-      "",
-    ].join("\n"));
-
-    expect(inventory).toEqual({
+    ].join("\n"))).toEqual({
       "@img/sharp-win32-arm64": ["0.34.5"],
       "@vscode/ripgrep-win32-x64": ["1.18.0"],
       ws: ["8.20.1"],
     });
   });
 
-  it("pins production/optional inclusion and dev/peer/workspace exclusion at the pnpm boundary", async () => {
+  it("routes pnpm 10 collection through the compact parseable inventory", async () => {
+    const calls = [];
+    const graph = await collectProductionGraph({
+      pnpmCommand: "pnpm-fixture",
+      cwd: "/repo",
+      runCommand: async (command, args, options) => {
+        calls.push({ command, args, options });
+        return args[0] === "--version"
+          ? commandResult("10.28.2\n")
+          : commandResult([
+            "/repo/node_modules/.pnpm/prod-only@1.0.0/node_modules/prod-only",
+            "/repo/node_modules/.pnpm/optional-win32@2.0.0/node_modules/optional-win32",
+          ].join("\n"));
+      },
+    });
+
+    expect(graph).toEqual({
+      inventory: {
+        "optional-win32": ["2.0.0"],
+        "prod-only": ["1.0.0"],
+      },
+      dependencyPaths: {},
+    });
+    expect(calls).toEqual([
+      { command: "pnpm-fixture", args: ["--version"], options: { cwd: "/repo" } },
+      {
+        command: "pnpm-fixture",
+        args: ["list", "--prod", "--recursive", "--depth", "Infinity", "--parseable"],
+        options: { cwd: "/repo" },
+      },
+    ]);
+  });
+
+  it("rejects unaudited pnpm majors and bounds malformed version output", async () => {
+    const collectWithVersion = (version) => collectProductionGraph({
+      pnpmCommand: "pnpm-fixture",
+      cwd: "/repo",
+      runCommand: async (_command, args) => {
+        expect(args).toEqual(["--version"]);
+        return commandResult(version);
+      },
+    });
+
+    await expect(collectWithVersion("12.0.0\n"))
+      .rejects.toThrow("supports audited pnpm majors 10 and 11; found 12.0.0");
+    await expect(collectWithVersion("11.not-a-version\n"))
+      .rejects.toThrow("pnpm returned an invalid version");
+    await expect(collectWithVersion("11.13.1\nnoise\n"))
+      .rejects.toThrow("pnpm returned an invalid version");
+
+    const hugeError = await collectWithVersion(`${"x".repeat(10_000)}\n`).catch((error) => error);
+    expect(hugeError).toBeInstanceOf(Error);
+    expect(hugeError.message).toContain("pnpm returned an invalid version: ");
+    expect(hugeError.message).toContain("…");
+    expect(hugeError.message.length).toBeLessThan(550);
+  });
+
+  it("normalizes realistic pnpm 10 and pnpm 11 production JSON trees", () => {
+    const expected = {
+      inventory: {
+        lodash: ["4.17.20"],
+        "optional-win32": ["2.0.0"],
+        "prod-only": ["1.0.0"],
+        shared: ["7.0.0"],
+        transitive: ["3.0.0"],
+        "vulnerable-transitive": ["6.0.0"],
+        "workspace-runtime": ["9.0.0"],
+      },
+      dependencyPaths: {
+        "lodash@4.17.20": ["portable-fixture -> lodash@4.17.20"],
+        "optional-win32@2.0.0": ["portable-fixture -> optional-win32@2.0.0"],
+        "prod-only@1.0.0": ["portable-fixture -> prod-only@1.0.0"],
+        "shared@7.0.0": [
+          "portable-fixture -> shared@7.0.0",
+          "workspace-only -> shared@7.0.0",
+        ],
+        "transitive@3.0.0": ["portable-fixture -> prod-only@1.0.0 -> transitive@3.0.0"],
+        "vulnerable-transitive@6.0.0": [
+          "workspace-only -> workspace-runtime@9.0.0 -> vulnerable-transitive@6.0.0",
+        ],
+        "workspace-runtime@9.0.0": ["workspace-only -> workspace-runtime@9.0.0"],
+      },
+    };
+
+    expect(parsePnpmProductionGraph(pnpm10ListFixture(), {
+      rootPackageNames: ["portable-fixture", "workspace-only"],
+    })).toEqual(expected);
+    expect(parsePnpmProductionGraph(pnpm11ListFixture(), {
+      rootPackageNames: ["portable-fixture", "workspace-only"],
+    })).toEqual(expected);
+  });
+
+  it("fails closed on unbound workspace links and contradictory pnpm 11 dedupe metadata", () => {
+    const mismatchedName = JSON.parse(pnpm11ListFixture());
+    mismatchedName[1].dependencies["workspace-alias"].from = "outside-workspace";
+    expect(() => parsePnpmProductionGraph(JSON.stringify(mismatchedName), {
+      rootPackageNames: ["portable-fixture", "workspace-only"],
+    })).toThrow("links non-publishable workspace package outside-workspace");
+
+    const mismatchedPath = JSON.parse(pnpm11ListFixture());
+    mismatchedPath[1].dependencies["workspace-alias"].path = "/outside/workspace-only";
+    expect(() => parsePnpmProductionGraph(JSON.stringify(mismatchedPath), {
+      rootPackageNames: ["portable-fixture", "workspace-only"],
+    })).toThrow("workspace link workspace-alias does not match root workspace-only");
+
+    const zeroCount = JSON.parse(pnpm11ListFixture());
+    zeroCount[2].dependencies["workspace-runtime"].dedupedDependenciesCount = 0;
+    expect(() => parsePnpmProductionGraph(JSON.stringify(zeroCount), {
+      rootPackageNames: ["portable-fixture", "workspace-only"],
+    })).toThrow("must name a positive dependency count");
+
+    const countWithoutDedupe = JSON.parse(pnpm11ListFixture());
+    countWithoutDedupe[2].dependencies["workspace-runtime"].deduped = false;
+    expect(() => parsePnpmProductionGraph(JSON.stringify(countWithoutDedupe), {
+      rootPackageNames: ["portable-fixture", "workspace-only"],
+    })).toThrow("dependency count without deduped true");
+
+    const orphan = JSON.parse(pnpm11ListFixture());
+    orphan[2].dependencies["workspace-runtime"].path = "/repo/node_modules/orphan-runtime";
+    expect(() => parsePnpmProductionGraph(JSON.stringify(orphan), {
+      rootPackageNames: ["portable-fixture", "workspace-only"],
+    })).toThrow("has no expanded subtree");
+  });
+
+  it("pins production/optional inclusion and dev/peer/workspace exclusion at the JSON boundary", async () => {
     const calls = [];
     const result = await runDependencyVulnerabilityCheck({
       argv: [],
       pnpmCommand: "pnpm-fixture",
       runCommand: async (command, args, options) => {
         calls.push({ command, args, options });
+        if (args[0] === "--version") {
+          return commandResult("11.13.1\n");
+        }
         return {
           exitCode: 0,
-          stdout: [
-            "/repo/packages/portable-fixture",
-            "/repo/node_modules/.pnpm/prod-only@1.0.0/node_modules/prod-only",
-            "/repo/node_modules/.pnpm/optional-win32@2.0.0/node_modules/optional-win32",
-          ].join("\n"),
+          stdout: pnpm11ListFixture(),
           stderr: "",
         };
       },
-      rootPackageNames: ["portable-fixture"],
+      rootPackageNames: ["portable-fixture", "workspace-only"],
       dispositions: emptyDispositions(),
       fetchImpl: async (_url, request) => {
         expect(JSON.parse(request.body)).toEqual({
+          lodash: ["4.17.20"],
           "optional-win32": ["2.0.0"],
           "prod-only": ["1.0.0"],
+          shared: ["7.0.0"],
+          transitive: ["3.0.0"],
+          "vulnerable-transitive": ["6.0.0"],
+          "workspace-runtime": ["9.0.0"],
         });
         return httpResponse({});
       },
@@ -75,14 +203,127 @@ describe("dependency vulnerability gate", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(calls).toEqual([{
-      command: "pnpm-fixture",
-      args: ["list", "--prod", "--recursive", "--depth", "Infinity", "--parseable"],
-      options: { cwd: process.cwd() },
-    }]);
-    // `pnpm list --prod` supplies dependencies + optionalDependencies only.
-    // devDependencies and peer-only declarations never enter this flattened output;
-    // local workspace paths are explicitly ignored by the parser above.
+    expect(calls).toEqual([
+      {
+        command: "pnpm-fixture",
+        args: ["--version"],
+        options: { cwd: process.cwd() },
+      },
+      {
+        command: "pnpm-fixture",
+        args: ["list", "--prod", "--recursive", "--depth", "Infinity", "--json"],
+        options: { cwd: process.cwd() },
+      },
+    ]);
+  });
+
+  it("parses pnpm 10 child trees and pnpm 11 dependents trees for why paths", () => {
+    const options = {
+      packageName: "ws",
+      versions: ["8.20.1"],
+      rootPackageNames: ["@mono-agent/agent-app", "@mono-agent/slack-adapter"],
+    };
+    const expected = {
+      "ws@8.20.1": [
+        "@mono-agent/agent-app -> provider@2.0.0 -> ws@8.20.1",
+        "@mono-agent/slack-adapter -> ws@8.20.1",
+      ],
+    };
+
+    expect(parsePnpmWhyDependencyPaths(JSON.stringify([
+      {
+        name: "@mono-agent/agent-app",
+        dependencies: {
+          provider: {
+            version: "2.0.0",
+            dependencies: { ws: { version: "8.20.1" } },
+          },
+        },
+      },
+      {
+        name: "@mono-agent/slack-adapter",
+        dependencies: { "socket-alias": { from: "ws", version: "8.20.1" } },
+      },
+    ]), options)).toEqual(expected);
+
+    expect(parsePnpmWhyDependencyPaths(JSON.stringify([
+      { name: "@mono-agent/agent-app", version: "0.11.2", path: "/repo/packages/agent-app" },
+      {
+        name: "ws",
+        version: "8.20.1",
+        path: "/repo/node_modules/ws",
+        dependents: [
+          {
+            name: "provider",
+            version: "2.0.0",
+            dependents: [{
+              name: "@mono-agent/agent-app",
+              version: "0.11.2",
+              depField: "dependencies",
+            }],
+          },
+          {
+            name: "@mono-agent/slack-adapter",
+            version: "0.11.2",
+            depField: "dependencies",
+          },
+        ],
+      },
+    ]), options)).toEqual(expected);
+  });
+
+  it("fails closed on incomplete or non-production pnpm 11 why branches", () => {
+    const options = {
+      packageName: "ws",
+      versions: ["8.20.1"],
+      rootPackageNames: ["@mono-agent/slack-adapter"],
+    };
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify([{
+      name: "ws",
+      version: "8.20.1",
+      dependents: [{ name: "provider", version: "1.0.0", deduped: true }],
+    }]), options)).toThrow("deduped branch provider@1.0.0 has no complete root path");
+
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify([{
+      name: "ws",
+      version: "8.20.1",
+      dependents: [{
+        name: "@mono-agent/slack-adapter",
+        version: "0.11.3",
+        depField: "devDependencies",
+      }],
+    }]), options)).toThrow("non-production devDependencies path");
+
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify([
+      null,
+      {
+        name: "ws",
+        version: "8.20.1",
+        dependents: [{
+          name: "@mono-agent/slack-adapter",
+          version: "0.11.3",
+          depField: "dependencies",
+        }],
+      },
+    ]), options)).toThrow("malformed top-level entry");
+
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify([
+      {
+        name: "ws",
+        version: "8.20.1",
+        peersSuffixHash: "incomplete",
+      },
+      {
+        name: "ws",
+        version: "8.20.1",
+        peersSuffixHash: "complete",
+        dependents: [{
+          name: "@mono-agent/slack-adapter",
+          version: "0.11.3",
+          depField: "dependencies",
+        }],
+      },
+    ]), options)).toThrow("target variant ws@8.20.1#incomplete has no dependents tree");
   });
 
   it("drives the real collector and HTTP parser for a deliberately vulnerable package", async () => {
@@ -94,15 +335,13 @@ describe("dependency vulnerability gate", () => {
       cwd: root,
       rootPackageNames: [manifest.name],
       runCommand: async (_command, args) => {
-        if (args[0] === "list") {
-          expect(args).toEqual(["list", "--prod", "--recursive", "--depth", "Infinity", "--parseable"]);
-          return commandResult(
-            `${root}/node_modules/.pnpm/lodash@${manifest.dependencies.lodash}/node_modules/lodash\n`,
-          );
+        if (args[0] === "--version") {
+          return commandResult("11.13.1\n");
         }
-        expect(args).toEqual(["why", "lodash", "--prod", "--recursive", "--json"]);
+        expect(args).toEqual(["list", "--prod", "--recursive", "--depth", "Infinity", "--json"]);
         return commandResult(JSON.stringify([{
           name: manifest.name,
+          path: root,
           dependencies: { lodash: { version: manifest.dependencies.lodash } },
         }]));
       },
@@ -134,14 +373,13 @@ describe("dependency vulnerability gate", () => {
       argv: [],
       rootPackageNames: ["portable-fixture"],
       runCommand: async (_command, args) => {
-        if (args[0] === "list") {
-          return commandResult(
-            `/repo/node_modules/.pnpm/@fixture+native-win32-arm64@1.2.3/node_modules/${packageName}\n`,
-          );
+        if (args[0] === "--version") {
+          return commandResult("11.13.1\n");
         }
-        expect(args).toEqual(["why", packageName, "--prod", "--recursive", "--json"]);
+        expect(args).toEqual(["list", "--prod", "--recursive", "--depth", "Infinity", "--json"]);
         return commandResult(JSON.stringify([{
           name: "portable-fixture",
+          path: "/repo/packages/portable-fixture",
           optionalDependencies: {
             [packageName]: { version: "1.2.3" },
           },
@@ -333,6 +571,101 @@ describe("dependency vulnerability gate", () => {
     expect(new Set(dispositions.advisories.map((entry) => entry.expiresAt))).toEqual(new Set([EXPIRES_AT]));
   });
 });
+
+function pnpm10ListFixture() {
+  const workspaceRuntime = {
+    version: "9.0.0",
+    path: "/repo/node_modules/workspace-runtime",
+    dependencies: {
+      "vulnerable-transitive": {
+        version: "6.0.0",
+        path: "/repo/node_modules/vulnerable-transitive",
+      },
+    },
+  };
+  return JSON.stringify([
+    {
+      name: "portable-fixture",
+      version: "1.0.0",
+      path: "/repo/packages/portable-fixture",
+      dependencies: {
+        "prod-only": {
+          version: "1.0.0",
+          path: "/repo/node_modules/prod-only",
+          dependencies: {
+            transitive: { version: "3.0.0", path: "/repo/node_modules/transitive" },
+          },
+        },
+        "safe-alias": {
+          from: "lodash",
+          version: "4.17.20",
+          path: "/repo/node_modules/lodash",
+        },
+        shared: { version: "7.0.0", path: "/repo/node_modules/shared" },
+        "workspace-alias": {
+          from: "workspace-only",
+          version: "link:../workspace-only",
+          path: "/repo/packages/workspace-only",
+          dependencies: {
+            "workspace-runtime": workspaceRuntime,
+          },
+        },
+      },
+      optionalDependencies: {
+        "optional-win32": { version: "2.0.0", path: "/repo/node_modules/optional-win32" },
+      },
+      devDependencies: {
+        "dev-only": { version: "4.0.0", path: "/repo/node_modules/dev-only" },
+      },
+      peerDependencies: {
+        "peer-only": { version: "5.0.0", path: "/repo/node_modules/peer-only" },
+      },
+    },
+    {
+      name: "workspace-only",
+      version: "1.0.0",
+      path: "/repo/packages/workspace-only",
+      dependencies: {
+        "workspace-runtime": workspaceRuntime,
+        shared: { version: "7.0.0", path: "/repo/node_modules/shared" },
+      },
+      devDependencies: {
+        "workspace-dev-only": {
+          version: "10.0.0",
+          path: "/repo/node_modules/workspace-dev-only",
+        },
+      },
+    },
+  ]);
+}
+
+function pnpm11ListFixture() {
+  const pnpm10Roots = JSON.parse(pnpm10ListFixture());
+  const workspaceRoot = structuredClone(pnpm10Roots[1]);
+  workspaceRoot.dependencies["workspace-runtime"] = {
+    version: "9.0.0",
+    path: "/repo/node_modules/workspace-runtime",
+    deduped: true,
+    dedupedDependenciesCount: 1,
+  };
+  return JSON.stringify([
+    {
+      name: "mono-agent",
+      version: "0.0.0",
+      path: "/repo",
+      private: true,
+      // pnpm 11.13.1 includes these root dev packages in `--parseable`
+      // output under `--prod`; root filtering plus JSON sections excludes them.
+      devDependencies: {
+        "@types/node": { version: "22.19.19", path: "/repo/node_modules/@types/node" },
+        "@vitest/coverage-v8": { version: "3.2.4", path: "/repo/node_modules/@vitest/coverage-v8" },
+        vitest: { version: "3.2.4", path: "/repo/node_modules/vitest" },
+      },
+    },
+    pnpm10Roots[0],
+    workspaceRoot,
+  ]);
+}
 
 function temporaryProject(dependencies) {
   const root = mkdtempSync(join(tmpdir(), "mono-agent-vulnerable-dependency-"));
