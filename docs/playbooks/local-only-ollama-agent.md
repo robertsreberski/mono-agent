@@ -20,7 +20,7 @@ An agent that runs entirely on a local Ollama provider via the Pi SDK runtime, w
 
 - [`runtime.local-providers`](/runtime/local-providers/) — register Ollama as a `pi:<provider>:<model>` backend
 - [`runtime.multi-backend`](/runtime/backends/) — the Pi SDK bridge that drives the local provider
-- [`memory.journal`](/memory/capture-and-recall/) — hybrid (BM25 + vector) recall with decay, no LLM required
+- [`memory.journal`](/memory/capture-and-recall/) — hybrid (BM25 + vector) recall with static, non-decaying salience, no LLM required
 - [`memory.embeddings-config`](/memory/embeddings/) — local Ollama embeddings for the journal tier
 - [`sandbox.network-policy`](/tools/sandbox/) — restrict runtime commands to localhost
 

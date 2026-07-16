@@ -97,7 +97,7 @@ The top-level entry point that takes an inbound request and produces a reply, de
 
 ## Consolidation
 
-A scheduled BuJo maintenance pass run by the in-app scheduler (no external cron needed): salience decay, near-duplicate superseding, `index.md` refresh, and an empty retired `future-log.md` stub. Tune via `memory.consolidation.*`; the default cron is `0 */2 * * *`. See [Consolidation](/memory/rituals/).
+A scheduled, projection-only BuJo maintenance pass run by the in-app scheduler (no external cron needed): it refreshes `index.md`, keeps the retired `future-log.md` stub empty, and reports exact-normalized duplicate groups. It never decays static canonical salience or automatically supersedes, deletes, or rewrites canonical memories. Tune it via `memory.consolidation.*`; the default cron is `0 */2 * * *`. See [Consolidation](/memory/rituals/).
 
 ## RRF
 
@@ -109,7 +109,7 @@ The backend-specific glue (e.g. the pi-native bridge) that translates harness op
 
 ## Salience
 
-The decay-weighted importance score the journal and BuJo tiers attach to memories, so older, less-reinforced items rank lower in recall. See [Capture and recall](/memory/capture-and-recall/).
+Static `0..1` importance metadata stored with canonical journal and BuJo memories. Recall uses salience only as a small tie-breaker after RRF and evidence strength; age, last access, and access counts do not decay or otherwise alter it. See [Capture and recall](/memory/capture-and-recall/).
 
 ## srt
 

@@ -671,7 +671,7 @@ export async function createConfiguredMemory(
     if (llmConfig !== undefined || config.memory.consolidation !== undefined) {
       throw new Error("memory.mode 'journal' rejects memory.llm and consolidation; select bujo for curated capture.");
     }
-    // Journal tier: hybrid recall + decay; no chat LLM.
+    // Journal tier: hybrid recall + static, non-decaying salience; no chat LLM.
     return bujo.createBujoMemoryStore({
       root,
       tier: "journal",

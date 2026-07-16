@@ -88,7 +88,7 @@ Should the agent remember anything between conversations?
 
 1. No durable memory yet (recommended for first integration)
 2. Lite memory — FTS keyword recall + rapid-log capture; zero external deps
-3. Journal memory — hybrid recall (BM25+vector) + salience decay; requires embeddings
+3. Journal memory — hybrid recall (BM25+vector) + static salience; requires embeddings
 4. BuJo memory — full tier: journal + LLM capture/reconcile + entity graph + auto-scheduled
    consolidation; requires embeddings AND a chat model
 ```
@@ -149,9 +149,11 @@ stopping the agent and running config-aware `mono-agent memory rebuild --json`.
 **Tier 4 — bujo (embeddings + chat model + consolidation):**
 
 Proactively explain what bujo does: capture → reconcile (ADD/UPDATE/SUPERSEDE/NOOP),
-hybrid BM25+vector recall, entity graph, scheduled consolidation (decay + duplicate
-superseding), living `index.md`, and an empty retired `future-log.md` stub. Consolidation
-is **auto-scheduled in-app** — no external cron or launchd setup needed.
+hybrid BM25+vector recall, entity graph, scheduled projection-only consolidation, living
+`index.md`, and an empty retired `future-log.md` stub. Consolidation refreshes projections
+and reports duplicate groups; it never decays salience or automatically supersedes or
+rewrites canonical memory. It is **auto-scheduled in-app** — no external cron or launchd
+setup needed.
 
 - Ask: which embeddings provider/service-root/model/dimension/auth-env? Use the same
   exclusive choices and real-probe contract as journal.
