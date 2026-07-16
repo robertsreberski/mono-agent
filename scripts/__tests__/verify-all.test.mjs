@@ -12,6 +12,17 @@ import {
 
 const RELEASE_TAG_PLACEHOLDER = "<release-tag>";
 const ALWAYS = "always";
+const CI_CHECKOUT_STEP = [
+  "      - name: Checkout",
+  "        uses: actions/checkout@v4",
+].join("\n");
+const CI_SETUP_NODE_STEP = [
+  "      - name: Setup Node",
+  "        uses: actions/setup-node@v4",
+  "        with:",
+  "          node-version: \"${{ matrix.node-version }}\"",
+].join("\n");
+const CI_ACTION_SEQUENCE = `${CI_CHECKOUT_STEP}\n\n${CI_SETUP_NODE_STEP}`;
 
 describe("verify-all", () => {
   it("runs the repo gate in order, then ends with the exact green verdict lines", async () => {
@@ -259,13 +270,88 @@ describe("verify-all", () => {
 
   it("treats display names as non-semantic metadata", () => {
     const source = readCiWorkflow();
-    const mutatedSource = replaceExactly(
+    const actionsRenamed = replaceExactly(
       source,
+      CI_ACTION_SEQUENCE,
+      CI_ACTION_SEQUENCE
+        .replace("name: Checkout", "name: Renamed checkout display")
+        .replace("name: Setup Node", "name: Renamed setup display"),
+    );
+    const mutatedSource = replaceExactly(
+      actionsRenamed,
       "      - name: Check package architecture",
       "      - name: Renamed architecture display",
     );
 
     expectCiParity(mutatedSource);
+  });
+
+  it("rejects replaced or unknown CI actions", () => {
+    const source = readCiWorkflow();
+    const replacedSetup = replaceExactly(
+      source,
+      CI_ACTION_SEQUENCE,
+      CI_ACTION_SEQUENCE.replace("actions/setup-node@v4", "example.invalid/reviewer-setup@v1"),
+    );
+    const unknownAction = "      - uses: example.invalid/reviewer-action@v1";
+    const insertedUnknown = replaceExactly(
+      source,
+      CI_SETUP_NODE_STEP,
+      `${CI_SETUP_NODE_STEP}\n\n${unknownAction}`,
+    );
+
+    expect(() => parseCiVerifyJob(replacedSetup)).toThrow(/Unclassified CI action step/u);
+    expect(() => parseCiVerifyJob(insertedUnknown)).toThrow(/Unclassified CI action step/u);
+  });
+
+  it("rejects setup-node input drift and unmodeled nested inputs", () => {
+    const source = readCiWorkflow();
+    const matrixInput = "          node-version: \"${{ matrix.node-version }}\"";
+    const fixedVersion = replaceExactly(source, matrixInput, "          node-version: 20");
+    const missingVersion = replaceExactly(source, `${matrixInput}\n`, "");
+    const extraCacheInput = replaceExactly(
+      source,
+      matrixInput,
+      `${matrixInput}\n          cache: pnpm`,
+    );
+
+    expect(() => parseCiVerifyJob(fixedVersion)).toThrow(/CI action inputs drifted: Node setup/u);
+    expect(() => parseCiVerifyJob(missingVersion)).toThrow(/CI action inputs drifted: Node setup/u);
+    expect(() => parseCiVerifyJob(extraCacheInput)).toThrow(/CI action inputs drifted: Node setup/u);
+  });
+
+  it("rejects missing and duplicated required CI actions", () => {
+    const source = readCiWorkflow();
+    const missingSetup = replaceExactly(source, `${CI_SETUP_NODE_STEP}\n\n`, "");
+    const duplicateCheckout = replaceExactly(
+      source,
+      CI_ACTION_SEQUENCE,
+      `${CI_CHECKOUT_STEP}\n\n${CI_ACTION_SEQUENCE}`,
+    );
+
+    expect(() => parseCiVerifyJob(missingSetup)).toThrow();
+    expect(() => parseCiVerifyJob(duplicateCheckout)).toThrow();
+  });
+
+  it("rejects CI action reordering and movement past run steps", () => {
+    const source = readCiWorkflow();
+    const reordered = replaceExactly(
+      source,
+      CI_ACTION_SEQUENCE,
+      `${CI_SETUP_NODE_STEP}\n\n${CI_CHECKOUT_STEP}`,
+    );
+    const corepackStep = [
+      "      - name: Enable Corepack",
+      "        run: corepack enable",
+    ].join("\n");
+    const movedPastCorepack = replaceExactly(
+      source,
+      `${CI_ACTION_SEQUENCE}\n\n${corepackStep}`,
+      `${CI_CHECKOUT_STEP}\n\n${corepackStep}\n\n${CI_SETUP_NODE_STEP}`,
+    );
+
+    expect(() => parseCiVerifyJob(reordered)).toThrow(/must remain at verify-step position/u);
+    expect(() => parseCiVerifyJob(movedPastCorepack)).toThrow(/must remain at verify-step position/u);
   });
 
   it("rejects folded run blocks that change release-tag shell semantics", () => {
@@ -386,6 +472,8 @@ function parseCiVerifyJob(source) {
 
   const gates = [];
   const environmentCounts = new Map(ENVIRONMENT_RUN_STEPS.map((step) => [step.key, 0]));
+  const actionCounts = new Map(ACTION_STEPS.map((step) => [step.key, 0]));
+  const actionOrder = [];
   const stepsStart = verifyJob.indexOf("    steps:\n");
   if (stepsStart < 0) {
     throw new Error("The CI verify job must contain a steps list.");
@@ -399,7 +487,7 @@ function parseCiVerifyJob(source) {
     throw new Error("The CI verify job must contain at least one step.");
   }
 
-  for (const step of steps) {
+  for (const [stepIndex, step] of steps.entries()) {
     const fields = parseStepFields(step);
     const name = fields.get("name")?.value ?? "<unnamed>";
     const continueOnError = fields.get("continue-on-error")?.value;
@@ -410,9 +498,33 @@ function parseCiVerifyJob(source) {
     const run = readRunCommand(step, fields);
     if (run === undefined) {
       assertOnlyStepFields(fields, USES_STEP_FIELDS, name);
-      if (!fields.has("uses")) {
+      const usesField = fields.get("uses");
+      if (usesField === undefined) {
         throw new Error(`Unclassified non-executable CI step: ${name}`);
       }
+
+      const uses = normalizeYamlScalar(usesField.value, `uses on ${name}`);
+      const actionStep = ACTION_STEPS.find((candidate) => candidate.uses === uses);
+      if (actionStep === undefined) {
+        throw new Error(`Unclassified CI action step: ${uses}`);
+      }
+      if (stepIndex !== actionStep.position) {
+        throw new Error(`${actionStep.key} action must remain at verify-step position ${actionStep.position + 1}.`);
+      }
+      const condition = fields.get("if")?.value ?? ALWAYS;
+      if (condition !== ALWAYS) {
+        throw new Error(`CI action condition drifted: ${actionStep.key}`);
+      }
+      const id = fields.get("id")?.value;
+      if (id !== actionStep.id) {
+        throw new Error(`CI action id drifted: ${actionStep.key}`);
+      }
+      const withInputs = parseWithInputs(step, fields, name);
+      if (!sameStringRecord(withInputs, actionStep.withInputs)) {
+        throw new Error(`CI action inputs drifted: ${actionStep.key}`);
+      }
+      actionCounts.set(actionStep.key, actionCounts.get(actionStep.key) + 1);
+      actionOrder.push(actionStep.key);
       continue;
     }
 
@@ -447,12 +559,38 @@ function parseCiVerifyJob(source) {
       throw new Error(`Expected exactly one ${environmentStep.key} environment step; found ${count}.`);
     }
   }
+  for (const actionStep of ACTION_STEPS) {
+    const count = actionCounts.get(actionStep.key);
+    if (count !== 1) {
+      throw new Error(`Expected exactly one ${actionStep.key} action; found ${count}.`);
+    }
+  }
+  if (JSON.stringify(actionOrder) !== JSON.stringify(ACTION_STEPS.map((step) => step.key))) {
+    throw new Error(`CI action order drifted: ${actionOrder.join(", ")}`);
+  }
 
   return { gates, matrixVersions };
 }
 
 const RUN_STEP_FIELDS = new Set(["name", "id", "if", "continue-on-error", "run"]);
 const USES_STEP_FIELDS = new Set(["name", "id", "if", "continue-on-error", "uses", "with"]);
+
+const ACTION_STEPS = Object.freeze([
+  Object.freeze({
+    key: "checkout",
+    position: 0,
+    uses: "actions/checkout@v4",
+    withInputs: Object.freeze({}),
+  }),
+  Object.freeze({
+    key: "Node setup",
+    position: 1,
+    uses: "actions/setup-node@v4",
+    withInputs: Object.freeze({
+      "node-version": "${{ matrix.node-version }}",
+    }),
+  }),
+]);
 
 const ENVIRONMENT_RUN_STEPS = Object.freeze([
   Object.freeze({ key: "corepack setup", command: "corepack enable", style: "scalar" }),
@@ -492,6 +630,68 @@ function assertOnlyStepFields(fields, allowedFields, name) {
       throw new Error(`Unsupported execution field ${field} on CI step: ${name}`);
     }
   }
+}
+
+function parseWithInputs(step, fields, name) {
+  const withField = fields.get("with");
+  if (withField === undefined) {
+    return {};
+  }
+  if (withField.value.length > 0) {
+    throw new Error(`Inline CI action inputs are not supported: ${name}`);
+  }
+
+  const inputs = {};
+  const lines = step.split("\n");
+  for (const line of lines.slice(withField.lineIndex + 1)) {
+    if (/^        [a-z0-9-]+:/u.test(line)) {
+      break;
+    }
+    if (line.length === 0) {
+      continue;
+    }
+    const match = /^          ([a-z0-9-]+):\s*(.+)$/u.exec(line);
+    if (match === null) {
+      throw new Error(`Unmodeled nested CI action input on: ${name}`);
+    }
+    const [, key, source] = match;
+    if (Object.hasOwn(inputs, key)) {
+      throw new Error(`Duplicate CI action input ${key} on: ${name}`);
+    }
+    inputs[key] = normalizeYamlScalar(source, `${key} on ${name}`);
+  }
+  return inputs;
+}
+
+function normalizeYamlScalar(source, context) {
+  const value = source.trim();
+  if (value.length === 0) {
+    throw new Error(`Empty YAML scalar: ${context}`);
+  }
+  if (value.startsWith("\"") || value.endsWith("\"")) {
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed !== "string") {
+        throw new Error("not a string");
+      }
+      return parsed;
+    } catch {
+      throw new Error(`Invalid double-quoted YAML scalar: ${context}`);
+    }
+  }
+  if (value.startsWith("'") || value.endsWith("'")) {
+    if (!value.startsWith("'") || !value.endsWith("'")) {
+      throw new Error(`Invalid single-quoted YAML scalar: ${context}`);
+    }
+    return value.slice(1, -1).replaceAll("''", "'");
+  }
+  return value;
+}
+
+function sameStringRecord(left, right) {
+  const leftEntries = Object.entries(left).sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
+  const rightEntries = Object.entries(right).sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey));
+  return JSON.stringify(leftEntries) === JSON.stringify(rightEntries);
 }
 
 function readRunCommand(step, fields) {

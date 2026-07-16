@@ -54,16 +54,18 @@ consumer, and alpha/beta consumer contracts:
 pnpm run verify:all
 ```
 
-The semantic guard in `scripts/__tests__/verify-all.test.mjs` compares ordered
-labels, command argv, and `if:` behavior on every CI Node-matrix leg. Its exact
-intentional differences live in `VERIFY_GATE_DELTA`: CI runs the pinned
-gitleaks container instead of the host-aware `check:secrets` wrapper and spells
-the test alias `pnpm test`; local `verify:all` repeats `test:demo` after the root
-test command. CI restricts `check:dependency-vulnerabilities` and the packed
-consumer to Node 22.19.0; local `verify:all` runs both on newer supported Node
-versions, without the minimum-version assertion for the packed consumer. CI
-runs the vulnerability check after the frozen install, while the local gate
-runs it after `check:licenses`.
+The semantic guard in `scripts/__tests__/verify-all.test.mjs` checks the exact
+checkout/setup action identities, inputs, count, and position, then compares
+ordered labels, command argv, failure policy, and `if:` behavior on every CI
+Node-matrix leg. Its exact intentional differences live in
+`VERIFY_GATE_DELTA`: CI runs the pinned gitleaks container instead of the
+host-aware `check:secrets` wrapper and spells the test alias `pnpm test`; local
+`verify:all` repeats `test:demo` after the root test command. CI restricts
+`check:dependency-vulnerabilities` and the packed consumer to Node 22.19.0;
+local `verify:all` runs both on newer supported Node versions, without the
+minimum-version assertion for the packed consumer. CI runs the vulnerability
+check after the frozen install, while the local gate runs it after
+`check:licenses`.
 
 After applying those declared substitutions, `verify:all` is a strict
 command-coverage superset of the CI verify job. It is still not a one-shot

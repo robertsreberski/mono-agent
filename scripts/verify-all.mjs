@@ -11,8 +11,8 @@ import { runVerifyConsumers } from "./verify-consumers.mjs";
  * Intentional semantic differences from the CI verify job.
  *
  * scripts/__tests__/verify-all.test.mjs checks the complete ordered command
- * descriptors for every CI Node-matrix leg. Setup and the separate website job
- * are execution-environment differences rather than repo-gate commands.
+ * descriptors for every CI Node-matrix leg. CI setup actions are verified as
+ * exact environment semantics; the separate website job is not a repo gate.
  */
 export const VERIFY_GATE_DELTA = Object.freeze({
   ciOnly: Object.freeze([
