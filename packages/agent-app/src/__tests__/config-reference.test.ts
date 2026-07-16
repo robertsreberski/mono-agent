@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { loadSlackAdapterConfig } from "@mono-agent/slack-adapter";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -195,6 +196,63 @@ describe("config reference", () => {
     expect(webhookEndpoints?.example).toEqual([
       { name: "triage", path: "/webhook/triage", prompt: "Triage this payload." },
     ]);
+
+    const slackShortcuts = allConfigReferenceFields().find((field) => field.jsonPath === "slack.shortcuts");
+    expect(slackShortcuts?.example).toEqual([
+      { callbackId: "triage", prompt: "Prepare the daily support triage checklist.", channelId: "C0123" },
+    ]);
+
+    const slackHomeTab = allConfigReferenceFields().find((field) => field.jsonPath === "slack.homeTab");
+    expect(slackHomeTab?.example).toEqual({
+      enabled: true,
+      headerText: "*Quick actions*",
+      buttons: [
+        { actionId: "triage", label: "Triage", prompt: "Triage today's requests.", channelId: "C0123" },
+      ],
+    });
+  });
+
+  it("keeps JSON-only Slack interaction config discoverable across canonical and consumer docs", () => {
+    const root = repoRoot();
+    const fields = allConfigReferenceFields().filter(
+      (field) => field.jsonPath === "slack.shortcuts" || field.jsonPath === "slack.homeTab",
+    );
+    expect(fields.map((field) => [field.jsonPath, field.env])).toEqual([
+      ["slack.shortcuts", "--"],
+      ["slack.homeTab", "--"],
+    ]);
+
+    const surfaces = [
+      "docs/channels/slack.md",
+      "docs/reference/feature-registry.md",
+      "docs/reference/feature-matrix.md",
+      "packages/slack-adapter/README.md",
+      "packages/agent-app/skills/mono-agent-composer/references/feature-coverage.md",
+      "packages/agent-app/skills/mono-agent-composer/references/config-blueprint.md",
+    ];
+    for (const surface of surfaces) {
+      const contents = readFileSync(join(root, surface), "utf8");
+      for (const field of fields) {
+        expect(contents, `${surface} must mention ${field.jsonPath}`).toContain(field.jsonPath);
+      }
+    }
+  });
+
+  it("keeps the canonical Slack shortcuts and App Home examples loader-valid", async () => {
+    const guide = readFileSync(join(repoRoot(), "docs/channels/slack.md"), "utf8");
+    const jsonBlocks = [...guide.matchAll(/```json\n([\s\S]*?)\n```/g)].map((match) => match[1] ?? "");
+    const loadExample = async (field: "shortcuts" | "homeTab") => {
+      const source = jsonBlocks.find((block) => block.includes(`"${field}"`));
+      expect(source, `Slack guide must include a JSON example for ${field}`).toBeDefined();
+      return loadSlackAdapterConfig({ env: {}, json: JSON.parse(source ?? "{}") });
+    };
+
+    const shortcuts = await loadExample("shortcuts");
+    expect(shortcuts.shortcuts).toHaveLength(1);
+
+    const homeTab = await loadExample("homeTab");
+    expect(homeTab.homeTab).toMatchObject({ enabled: true });
+    expect(homeTab.homeTab.buttons).toHaveLength(1);
   });
 
   it("keeps the committed generated config reference in sync", () => {

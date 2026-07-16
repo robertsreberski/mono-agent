@@ -1,6 +1,6 @@
 # Feature Coverage
 
-Every framework capability and how a composed agent reaches it. This table is the **authoritative, exhaustive** answer to "can the config do X?" — answer from it, do not grep the `@mono-agent` package source to confirm. `config` = a `mono-agent.config.json` key (env var override always exists), `cli` = a `mono-agent` CLI flag/command, `auto` = always on when the app runs, `code` = programmatic escape hatch only, `dev` = development/test tooling. A capability that is absent here, or marked `code`, is not reachable through config — that is the answer, not a cue to read source. The repo's `docs/reference/feature-registry.md` (framework checkout only) and the documentation site at <https://mono-agent-docs.vercel.app/> are longer-form human-facing mirrors of this same table.
+Every framework capability and how a composed agent reaches it. This table is the **authoritative, exhaustive** answer to "can the config do X?" — answer from it, do not grep the `@mono-agent` package source to confirm. `config` = a `mono-agent.config.json` key; an env override exists only where one is listed, and `--` means JSON-only / no env form. `cli` = a `mono-agent` CLI flag/command, `auto` = always on when the app runs, `code` = programmatic escape hatch only, `dev` = development/test tooling. A capability that is absent here, or marked `code`, is not reachable through config — that is the answer, not a cue to read source. The repo's `docs/reference/feature-registry.md` (framework checkout only) and the documentation site at <https://mono-agent-docs.vercel.app/> are longer-form human-facing mirrors of this same table.
 
 ## Runtime
 
@@ -60,7 +60,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Webhook (sync/async HTTP invoke + status polling) | config | `webhook` section |
 | OpenAI-compatible API (/v1/models, /v1/chat/completions, SSE, bearer) | config | `openaiApi` section |
 | Telegram (long polling, chat allowlist) | config | `telegram` section |
-| Slack (Socket Mode, channel allowlist, mention handling) | config | `slack` section |
+| Slack (Socket Mode, channel allowlist, mention handling, config-driven shortcuts, and App Home actions) | config | `slack` section; `slack.shortcuts[]` and `slack.homeTab` are JSON-only |
 | External channel plugins | config | `channels.plugins[]: { package, id?, label?, config? }`; package must export `createChannelDriver(options)` or a default driver factory |
 | WhatsApp (Baileys, QR login, group mention/any triggers) | config | `channels.plugins[].package: "@mono-agent/whatsapp-adapter"` plus plugin `config.{enabled,allowedChatJids,allowAllChats,groupMode,botJids,mentionTextAliases,stripMentionText}` |
 | A2A provider (Agent Card, JSON-RPC + REST, streaming, bearer, opt-in durable dispatch identity) | config | `channels.plugins[].package: "@mono-agent/a2a-adapter"` plus plugin `config.provider` (including `idempotency.{namespace,stateDir,retentionMs,maxRecords}`), `config.agent`, `config.skill`; `config.enabled` is canonical |
