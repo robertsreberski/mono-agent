@@ -89,9 +89,13 @@ const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
   lmstudio: "text-embedding-nomic-embed-text-v1.5",
   openai: "text-embedding-3-small",
 };
-const MEMORY_LLM_ENV_KEYS = [
-  "MONO_AGENT_MEMORY_LLM_PROVIDER",
+/**
+ * Keep model first: the layered loader uses this order when attributing an
+ * incompatible memory.llm environment field.
+ */
+export const MEMORY_LLM_ENV_KEYS = [
   "MONO_AGENT_MEMORY_LLM_MODEL",
+  "MONO_AGENT_MEMORY_LLM_PROVIDER",
   "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
   "MONO_AGENT_MEMORY_LLM_ENDPOINT",
   "MONO_AGENT_MEMORY_LLM_TRACE",

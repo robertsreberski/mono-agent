@@ -5,7 +5,7 @@ import type {
   MonoAgentMemoryEmbeddingsJson,
   MonoAgentMemoryLlmJson,
 } from "./json-source.js";
-import { loadMonoAgentConfig, MonoAgentConfigError } from "./config.js";
+import { loadMonoAgentConfig, MEMORY_LLM_ENV_KEYS, MonoAgentConfigError } from "./config.js";
 import type { MonoAgentConfig } from "./types.js";
 
 export interface LoadMonoAgentConfigWithSourcesInput {
@@ -529,15 +529,6 @@ const MEMORY_CONSOLIDATION_ENV_KEYS = [
   "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED",
   "MONO_AGENT_MEMORY_CONSOLIDATION_CRON",
 ] as const;
-const MEMORY_LLM_ENV_KEYS = [
-  "MONO_AGENT_MEMORY_LLM_MODEL",
-  "MONO_AGENT_MEMORY_LLM_PROVIDER",
-  "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
-  "MONO_AGENT_MEMORY_LLM_ENDPOINT",
-  "MONO_AGENT_MEMORY_LLM_TRACE",
-  "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
-] as const;
-
 function incompatibleJsonMemoryPath(
   mode: string,
   memory: NonNullable<MonoAgentConfigJson["memory"]>,
