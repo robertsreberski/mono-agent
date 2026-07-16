@@ -17,6 +17,28 @@
         "count": 33,
         "suffix": "-_"
       }
+    },
+    {
+      "name": "canonical Bot API URL",
+      "candidatePrefix": "https://api.telegram.org/bot",
+      "candidateSuffix": "/getMe",
+      "id": "234567",
+      "tail": {
+        "character": "C",
+        "count": 33,
+        "suffix": "-_"
+      }
+    },
+    {
+      "name": "canonical Bot API file URL",
+      "candidatePrefix": "https://api.telegram.org/file/bot",
+      "candidateSuffix": "/documents/report.txt",
+      "id": "345678",
+      "tail": {
+        "character": "D",
+        "count": 33,
+        "suffix": "-_"
+      }
     }
   ],
   "ignored": [
@@ -89,6 +111,26 @@
       "tail": {
         "character": "F",
         "count": 34,
+        "suffix": "-_"
+      }
+    },
+    {
+      "name": "robot prefix is not a Bot API path",
+      "candidatePrefix": "robot",
+      "id": "456789",
+      "tail": {
+        "character": "H",
+        "count": 33,
+        "suffix": "-_"
+      }
+    },
+    {
+      "name": "underscore bot prefix is not a Bot API path",
+      "candidatePrefix": "_bot",
+      "id": "567890",
+      "tail": {
+        "character": "I",
+        "count": 33,
         "suffix": "-_"
       }
     }

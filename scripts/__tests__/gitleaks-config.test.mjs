@@ -49,6 +49,7 @@ describe("Telegram token gitleaks rule", () => {
     }
 
     for (const testCase of [...fixture.detected, ...fixture.ignored]) {
+      expect(fixtureSource).not.toContain(materializeToken(testCase));
       expect(fixtureSource).not.toContain(materialize(testCase));
     }
   });
@@ -188,6 +189,10 @@ function readRule(config, id) {
 }
 
 function materialize(testCase) {
+  return `${testCase.candidatePrefix ?? ""}${materializeToken(testCase)}${testCase.candidateSuffix ?? ""}`;
+}
+
+function materializeToken(testCase) {
   const { character, count, suffix } = testCase.tail;
   return `${testCase.id}:${character.repeat(count)}${suffix}`;
 }

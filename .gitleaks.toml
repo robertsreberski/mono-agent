@@ -6,7 +6,7 @@ useDefault = true
 [[rules]]
 id = "telegram-bot-token"
 description = "Telegram Bot API token"
-regex = '''(?:^|[^A-Za-z0-9_])([0-9]{6,10}:[A-Za-z0-9_-]{35})(?:$|[^A-Za-z0-9_-])'''
+regex = '''(?:^|[^A-Za-z0-9_]|/(?:file/)?bot)([0-9]{6,10}:[A-Za-z0-9_-]{35})(?:$|[^A-Za-z0-9_-])'''
 secretGroup = 1
 tags = ["api", "telegram"]
 
