@@ -208,6 +208,82 @@ describe("writeIndex", () => {
     expect(content).toMatch(/Morgan \(person\)|mono-agent \(project\)/u);
   });
 
+  it("shows one row per normalized referent and excludes ephemeral temporal entities", () => {
+    const root = newRoot();
+    const db = openDb(root);
+
+    for (let index = 0; index < 55; index += 1) {
+      const suffix = String(index).padStart(2, "0");
+      db.upsertEntity({
+        id: `project:durable-${suffix}`,
+        name: `Durable ${suffix}`,
+        type: "project",
+        createdAt: FIXED.toISOString(),
+      });
+    }
+    for (const [id, type] of [
+      ["command:canonical-widget", "command"],
+      ["concept:canonical-widget", "concept"],
+      ["tool:canonical-widget", "tool"],
+    ] as const) {
+      db.upsertEntity({ id, name: "Canonical Widget", type, createdAt: FIXED.toISOString() });
+    }
+    db.upsertEntity({
+      id: "concept:novel-1984",
+      name: "1984",
+      type: "concept",
+      createdAt: FIXED.toISOString(),
+    });
+    for (const [id, name] of [
+      ["language:c", "C"],
+      ["language:c-sharp", "C#"],
+      ["language:c-plus-plus", "C++"],
+    ] as const) {
+      db.upsertEntity({ id, name, type: "language", createdAt: FIXED.toISOString() });
+    }
+    db.upsertEntity({
+      id: "project:alpha-agent-primary",
+      name: "Alpha-Agent",
+      type: "project",
+      createdAt: FIXED.toISOString(),
+    });
+    db.upsertEntity({
+      id: "project:alpha-agent-secondary",
+      name: "alpha agent",
+      type: "project",
+      createdAt: FIXED.toISOString(),
+    });
+    db.upsertEntity({ id: "date:today", name: "2026-07-16", type: "date", createdAt: FIXED.toISOString() });
+    db.upsertEntity({ id: "day:thursday", name: "Thursday", type: "day", createdAt: FIXED.toISOString() });
+    db.upsertEntity({ id: "time:one-pm", name: "13:00", createdAt: FIXED.toISOString() });
+    db.upsertEntity({ id: "year:next-year", name: "2027", type: "year", createdAt: FIXED.toISOString() });
+    const inventoryBefore = db.allEntities();
+    const countBefore = db.countEntities();
+
+    writeIndex(root, db, FIXED);
+
+    const content = readFileSync(join(root, "index.md"), "utf8");
+    const entityRows = content
+      .slice(content.indexOf("## Entities"))
+      .split("\n")
+      .filter((line) => line.startsWith("- "));
+    expect(content).toContain(`- Entities: ${countBefore}`);
+    expect(db.allEntities()).toEqual(inventoryBefore);
+    expect(entityRows).toHaveLength(50);
+    expect(entityRows).toContain("- 1984 (concept)");
+    expect(entityRows.filter((line) => /^- C(?:#|\+\+)? \(language\)$/u.test(line))).toEqual([
+      "- C (language)",
+      "- C# (language)",
+      "- C++ (language)",
+    ]);
+    expect(entityRows.filter((line) => line.includes("Canonical Widget"))).toEqual(["- Canonical Widget"]);
+    expect(entityRows.filter((line) => /alpha[ -]agent/iu.test(line))).toEqual(["- Alpha-Agent (project)"]);
+    expect(entityRows.join("\n")).not.toContain("2026-07-16");
+    expect(entityRows.join("\n")).not.toContain("Thursday");
+    expect(entityRows.join("\n")).not.toContain("13:00");
+    expect(entityRows.join("\n")).not.toContain("2027");
+  });
+
   it("creates the root directory if it does not exist", () => {
     const base = mkdtempSync(join(tmpdir(), "bujo-projections-idx-mkdir-"));
     const root = join(base, "deep", "nested");
