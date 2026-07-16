@@ -256,6 +256,32 @@ describe("startMemoryRituals", () => {
     result.stop();
   });
 
+  it("rejects hashed fields instead of re-randomizing their cadence on every re-arm", () => {
+    const fakeTimers = createFakeTimers();
+    const warns: string[] = [];
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    let result: ReturnType<typeof startMemoryRituals> | undefined;
+
+    try {
+      result = startMemoryRituals({
+        store: createFakeStore("bujo"),
+        consolidation: { cron: "H * * * *" },
+        logger: { info: () => undefined, warn: (m) => { warns.push(m); } },
+        now: () => BASE_DATE,
+        setTimer: fakeTimers.setTimer,
+        clearTimer: fakeTimers.clearTimer,
+      });
+      expect(fakeTimers.pendingCount()).toBe(0);
+      expect(warns).toEqual([
+        expect.stringContaining('Hashed "H" cron fields require a non-empty hashSeed.'),
+      ]);
+      expect(random).not.toHaveBeenCalled();
+    } finally {
+      result?.stop();
+      random.mockRestore();
+    }
+  });
+
   it("surfaces the shared parser reason and schedules nothing for malformed cron", () => {
     const fakeTimers = createFakeTimers();
     const warns: string[] = [];

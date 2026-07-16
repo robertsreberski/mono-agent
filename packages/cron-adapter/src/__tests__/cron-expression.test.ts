@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { validateCronExpression } from "../cron-expression.js";
 
@@ -34,6 +34,41 @@ describe("validateCronExpression", () => {
       ok: true,
       nextDate: new Date("2026-01-05T09:00:00.000Z"),
     });
+  });
+
+  it("requires a stable seed for hashed fields without mistaking THU for H", () => {
+    expect(validateCronExpression("H * * * *", {
+      currentDate: new Date("2026-07-10T07:30:00.000Z"),
+    })).toEqual({
+      ok: false,
+      code: "invalid",
+      reason: 'Hashed "H" cron fields require a non-empty hashSeed.',
+    });
+    expect(validateCronExpression("0 8 * * THU", {
+      currentDate: new Date("2026-07-10T07:30:00.000Z"),
+    })).toEqual({
+      ok: true,
+      nextDate: new Date("2026-07-16T08:00:00.000Z"),
+    });
+  });
+
+  it("keeps hashed fields deterministic for repeated parses with the same seed", () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      const options = {
+        currentDate: new Date("2026-07-10T07:30:00.000Z"),
+        hashSeed: "daily-check",
+      } as const;
+
+      const first = validateCronExpression("H * * * *", options);
+      const second = validateCronExpression("H * * * *", options);
+
+      expect(first).toEqual(second);
+      expect(first).toMatchObject({ ok: true, nextDate: expect.any(Date) });
+      expect(random).not.toHaveBeenCalled();
+    } finally {
+      random.mockRestore();
+    }
   });
 
   it.each([

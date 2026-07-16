@@ -61,7 +61,9 @@ used elsewhere in config.
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `memory.consolidation.enabled` | boolean | `true` | Run scheduled consolidation |
-| `memory.consolidation.cron` | string | `0 */2 * * *` | Consolidation cadence |
+| `memory.consolidation.cron` | string | `0 */2 * * *` | Five-field UTC consolidation cadence; hashed `H` fields are not supported |
+
+The consolidation schedule is evaluated in UTC. It accepts the shared parser's five-field syntax, including named months and weekdays, but rejects hashed `H` fields because consolidation has no per-job identity from which to derive a stable hash seed.
 
 ### Enable / disable
 

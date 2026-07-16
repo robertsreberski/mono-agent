@@ -5,6 +5,8 @@ const DEFAULT_TIMEZONE = "UTC";
 export interface CronExpressionValidationOptions {
   readonly currentDate?: Date;
   readonly timezone?: string;
+  /** Stable identity used by cron-parser's hashed `H` fields. */
+  readonly hashSeed?: string;
 }
 
 export type CronExpressionValidationResult =
@@ -44,12 +46,20 @@ export function validateCronExpression(
   if (fields.length !== 5) {
     return { ok: false, code: "field_count", fieldCount: fields.length };
   }
+  if (usesHashedField(fields) && (options.hashSeed === undefined || options.hashSeed.length === 0)) {
+    return {
+      ok: false,
+      code: "invalid",
+      reason: 'Hashed "H" cron fields require a non-empty hashSeed.',
+    };
+  }
 
   try {
     const nextDate = CronExpressionParser.parse(normalized, {
       currentDate: options.currentDate ?? new Date(),
       strict: false,
       tz: options.timezone ?? DEFAULT_TIMEZONE,
+      ...(options.hashSeed === undefined ? {} : { hashSeed: options.hashSeed }),
     }).next().toDate();
     return { ok: true, nextDate };
   } catch (error) {
@@ -59,4 +69,12 @@ export function validateCronExpression(
       reason: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function usesHashedField(fields: readonly string[]): boolean {
+  return fields.some((field, index) => {
+    // THU is a valid day-of-week alias, not cron-parser's uppercase H token.
+    const withoutAliases = index === 4 ? field.replace(/THU/giu, "") : field;
+    return withoutAliases.includes("H");
+  });
 }

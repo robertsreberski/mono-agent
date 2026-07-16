@@ -536,6 +536,7 @@ async function emitResult(options: CronAdapterOptions, result: CronJobResult): P
 function nextDateFor(job: CronJob, currentDate: Date): Date {
   const result = validateCronExpression(job.expression, {
     currentDate,
+    hashSeed: job.id,
     timezone: job.timezone ?? DEFAULT_TIMEZONE,
   });
   if (result.ok) {

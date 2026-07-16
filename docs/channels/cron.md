@@ -32,7 +32,7 @@ Cron expressions have exactly five positional fields:
 minute hour day-of-month month day-of-week
 ```
 
-For example, `0 9 * * *` runs every day at 09:00. The default timezone is `UTC`; set an IANA timezone such as `Europe/Rome` when the schedule should follow local civil time. A seconds field and macros such as `@daily` are not supported.
+For example, `0 9 * * *` runs every day at 09:00. The default timezone is `UTC`; set an IANA timezone such as `Europe/Rome` when the schedule should follow local civil time. A seconds field and macros such as `@daily` are not supported. Hashed `H` fields are supported and stay stable across restarts and re-arms because each schedule is seeded from its job `id`; renaming the job intentionally changes its hashed slot.
 
 When you select **Scheduled jobs (cron)** in the guided `mono-agent init` wizard, the expression is validated at the prompt. Its default is `0 8 * * *` at 08:00 UTC. The wizard scaffolds `cron/digest.md` only after the expression is accepted, then validates the effective folder—including any existing jobs that init will preserve—before making runtime model calls.
 
@@ -65,7 +65,7 @@ When you select **Scheduled jobs (cron)** in the guided `mono-agent init` wizard
 | `cron.jobs[]` | array | no | `[]` | Inline job definitions. Merges with `*.md` files in `cron.dir`. |
 | `jobs[].id` | string | yes | — | Unique job id. Duplicate ids (across config and folder) are an error. |
 | `jobs[].enabled` | boolean | no | `true` | Set `false` to keep a job defined but unscheduled. |
-| `jobs[].expression` | string | yes | — | Five fields: `minute hour day-of-month month day-of-week`; no seconds field or macros. |
+| `jobs[].expression` | string | yes | — | Five fields: `minute hour day-of-month month day-of-week`; no seconds field or macros. `H` fields use the stable job `id` as their hash seed. |
 | `jobs[].timezone` | string | no | `UTC` | IANA timezone (e.g. `Europe/Rome`) the expression is evaluated in. |
 | `jobs[].prompt` | string | yes | — | Text sent to the responder on each tick. |
 | `jobs[].conversationId` | string | no | per-tick | Share memory/history across ticks (see below). |

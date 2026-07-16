@@ -35,7 +35,7 @@ Only future ticks after startup are scheduled. Direct programmatic `startCronAda
 
 `overlap`, `maxQueueDepth`, and `overflow` are programmatic-only adapter options. The config-first `@mono-agent/agent-app` product does not expose them as cron config keys and pins `overlap: "skip"`, so jobs loaded from `mono-agent.config.json`, `MONO_AGENT_CRON_*`, or the cron folder skip overlapping ticks.
 
-Cron expressions use the standard five positional fields `minute hour day-of-month month day-of-week`. The timezone defaults to `UTC`. Six-field expressions with seconds and macro aliases such as `@daily` are not supported. Hosts can validate user input with the same parser used by the scheduler:
+Cron expressions use the standard five positional fields `minute hour day-of-month month day-of-week`. The timezone defaults to `UTC`. Six-field expressions with seconds and macro aliases such as `@daily` are not supported. Hashed `H` fields are stable: the scheduler seeds them from the job `id`; direct `validateCronExpression` callers must pass a non-empty `hashSeed` when validating `H`. Hosts can validate user input with the same parser used by the scheduler:
 
 ```ts
 import { validateCronExpression } from "@mono-agent/cron-adapter";

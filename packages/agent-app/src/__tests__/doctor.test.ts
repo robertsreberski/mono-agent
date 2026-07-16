@@ -2919,6 +2919,33 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
       ),
     ]));
   });
+
+  it("rejects hashed consolidation fields that have no stable per-instance seed", async () => {
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "ollama", model: "qwen3:6b" },
+        consolidation: { cron: "H * * * *" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    const memory = sectionById(report, "memory");
+    expect(report.ok).toBe(false);
+    expect(memory.status).toBe("error");
+    expect(memory.details).toContain(
+      '[ERROR] memory.consolidation.cron is invalid: Hashed "H" cron fields require a non-empty hashSeed.',
+    );
+  });
 });
 
 describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
