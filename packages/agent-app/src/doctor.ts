@@ -129,11 +129,11 @@ export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput 
    */
   readonly allowFilesystemWrites?: boolean;
   /**
-   * When false, skip live probes (Ollama reachability, the Phoenix export probe,
-   * and SDK external-login status checks) and validate only structure/shape.
-   * Those probes can only ever downgrade a section to `waiting`, never `error`,
-   * so skipping them leaves the pass/fail verdict (`ok`) unchanged — the start
-   * preflight relies on this. Defaults to true.
+   * When false, skip live probes (Ollama and Supermemory reachability, the
+   * Phoenix export probe, and SDK external-login status checks) and validate
+   * only structure/shape. Those probes can only ever downgrade a section to
+   * `waiting`, never `error`, so skipping them leaves the pass/fail verdict
+   * (`ok`) unchanged — the start preflight relies on this. Defaults to true.
    */
   readonly liveness?: boolean;
   /**
@@ -1372,9 +1372,8 @@ async function memorySection(
   if (config.memory === undefined) {
     return { id: "memory", label: "Memory", status: "disabled", details: ["No memory configured."] };
   }
-  // External backend (e.g. supermemory): mode/embeddings/llm are bujo-only and ignored, so report the
-  // backend's own shape. We do not ping the instance here (config-shape check); the playbook covers
-  // starting the server.
+  // External backend (e.g. supermemory): mode/embeddings/llm are bujo-only and
+  // ignored, so validate the plugin-owned shape before any soft liveness probe.
   if ((config.memory.backend ?? "bujo") === "supermemory") {
     const sm = config.memory.supermemory;
     if (sm === undefined) {
@@ -1410,19 +1409,32 @@ async function memorySection(
         details: [`[ERROR] ${error instanceof Error ? error.message : String(error)}`],
       };
     }
-    return {
-      id: "memory",
-      label: "Memory",
-      status: "ok",
-      details: [
-        `Backend: supermemory, writeMode: ${config.memory.writeMode}.`,
-        `Endpoint: ${sm.baseUrl} (container "${resolveSupermemoryContainer(config)}").`,
-        sm.apiKey === undefined
-          ? "Auth: no API key configured (keyless — works only if the instance allows it)."
-          : "Auth: API key configured.",
-        "Start the Supermemory instance (e.g. `supermemory-server`) before sending turns; ingestion is async.",
-      ],
-    };
+    const details = [
+      `Backend: supermemory, writeMode: ${config.memory.writeMode}.`,
+      `Endpoint: ${sm.baseUrl} (container "${resolveSupermemoryContainer(config)}").`,
+      sm.apiKey === undefined
+        ? "Auth: no API key configured (keyless — works only if the instance allows it)."
+        : "Auth: API key configured.",
+    ];
+    if (!liveness) {
+      details.push("Supermemory liveness probe skipped; ingestion is async.");
+      return { id: "memory", label: "Memory", status: "ok", details };
+    }
+
+    const probe = await probeSupermemoryEndpoint(sm.baseUrl);
+    if (!probe.reachable) {
+      details.push(
+        `[WARN] Supermemory is not reachable at ${sm.baseUrl} (${probe.reason}). ` +
+        "Start Supermemory or fix memory.supermemory.baseUrl, then re-run `mono-agent validate`; " +
+        "capture and recall will degrade until it is reachable.",
+      );
+      return { id: "memory", label: "Memory", status: "waiting", details };
+    }
+
+    details.push(
+      `Supermemory transport reachable at ${sm.baseUrl} (HTTP ${probe.status}); ingestion is async.`,
+    );
+    return { id: "memory", label: "Memory", status: "ok", details };
   }
   const details: string[] = [
     `Mode: ${config.memory.mode}, path: ${config.memory.path}, writeMode: ${config.memory.writeMode}.`,
@@ -1625,12 +1637,43 @@ async function liteRootWritableWarning(memoryPath: string, allowFilesystemWrites
   return await memoryRootWritableWarnings("lite", memoryPath, allowFilesystemWrites);
 }
 
-const BUJO_PROBE_TIMEOUT_MS = 3_000;
+const LIVENESS_PROBE_TIMEOUT_MS = 3_000;
+
+type SupermemoryProbeResult =
+  | { readonly reachable: true; readonly status: number }
+  | { readonly reachable: false; readonly reason: string };
+
+/**
+ * Read-only transport probe for a configured Supermemory service root. Neither
+ * the hosted nor self-hosted base URL has a documented health response, so any
+ * HTTP status proves reachability; only transport failure or timeout degrades
+ * validation. Manual redirects and omitted auth keep the probe on the exact
+ * configured endpoint without sending memory data or credentials.
+ */
+async function probeSupermemoryEndpoint(endpoint: string): Promise<SupermemoryProbeResult> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => { ctrl.abort(); }, LIVENESS_PROBE_TIMEOUT_MS);
+  try {
+    const response = await fetch(endpoint, {
+      method: "HEAD",
+      redirect: "manual",
+      signal: ctrl.signal,
+    });
+    return { reachable: true, status: response.status };
+  } catch (error) {
+    return {
+      reachable: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Probes Ollama /api/tags and returns a sorted list of model names, or throws. */
 async function fetchOllamaModels(endpoint: string): Promise<string[]> {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => { ctrl.abort(); }, BUJO_PROBE_TIMEOUT_MS);
+  const timer = setTimeout(() => { ctrl.abort(); }, LIVENESS_PROBE_TIMEOUT_MS);
   try {
     const res = await fetch(`${endpoint}/api/tags`, { signal: ctrl.signal });
     if (!res.ok) {
@@ -1737,7 +1780,7 @@ async function localEmbeddingLivenessWarnings(
       endpoint,
       model: embeddings.model,
       expectedDimension: embeddings.dim ?? 768,
-      timeoutMs: BUJO_PROBE_TIMEOUT_MS,
+      timeoutMs: LIVENESS_PROBE_TIMEOUT_MS,
       ...(apiKey === undefined ? {} : { apiKey }),
     });
     return [];
@@ -2873,7 +2916,7 @@ async function exporterSection(input: MonoAgentAppConfigInput, liveness: boolean
  */
 async function probeExporterEndpoint(endpoint: string): Promise<string | undefined> {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => { ctrl.abort(); }, BUJO_PROBE_TIMEOUT_MS);
+  const timer = setTimeout(() => { ctrl.abort(); }, LIVENESS_PROBE_TIMEOUT_MS);
   try {
     const response = await fetch(endpoint, {
       method: "POST",
