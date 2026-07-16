@@ -18,8 +18,11 @@ import type { FailoverAttempt, RunSummary, RuntimeEventLike } from "./types.js";
  * keep `ok` undefined, a run with no assistant text is provisionally `silent`),
  * so the same function serves a live-streaming path.
  *
- * Not a redaction boundary: input events are assumed already redacted by the
- * caller (see `raw` on {@link SessionToolCall}); this function only shapes.
+ * Not a redaction boundary: structured input events are assumed already
+ * key-redacted and bounded by the caller (see `raw` on
+ * {@link SessionToolCall}). Bare summary `userInput`, `systemPrompt`, and
+ * `error` strings are bounded free text and can retain credential-shaped prose;
+ * this function only shapes and applies display caps.
  */
 
 /** Marker userInput carries when recalled long-term memory was appended to the trigger prompt. */
@@ -33,7 +36,7 @@ const TEXT_MAX_CHARS = 20_000;
  * text cap here would gut the tail of a real compiled prompt.
  */
 const SYS_PROMPT_MAX_CHARS = 32_000;
-/** Cap for a tool call's full (already-redacted) argument JSON string. */
+/** Cap for a tool call's full key-redacted argument JSON string; free text is not content-scanned. */
 const RAW_MAX_CHARS = 8_000;
 /** Cap for a one-line digest of args/result. */
 const DIGEST_MAX_CHARS = 120;
@@ -104,7 +107,7 @@ export interface SessionToolCall {
   readonly name: string;
   /** One-line digest of the arguments (first line, truncated ~120 chars). */
   readonly dig: string;
-  /** Full (already-redacted) argument JSON string. */
+  /** Full key-redacted, bounded argument JSON string; string values are not content-scanned. */
   readonly raw: string;
   /** Set when `dig`/`raw` was capped for display. */
   readonly tr?: boolean;
@@ -241,7 +244,10 @@ export interface Session {
   readonly isolated?: boolean;
   readonly api?: string;
   readonly effort?: string;
-  /** Trigger prompt (userInput minus the recalled-memory tail). */
+  /**
+   * Trigger prompt (userInput minus the recalled-memory tail). Retained free
+   * text: capped for display, but not content-scanned or scrubbed.
+   */
   readonly instr: string;
   readonly instrTr?: boolean;
   readonly recalled?: string;
@@ -250,7 +256,10 @@ export interface Session {
   readonly hasRecall: boolean;
   /** The context this turn was driven with (history + recalled memory), when a `turn_context` event was recorded. */
   readonly ctx?: SessionTurnContext;
-  /** The compiled system prompt the run was driven with (redacted + capped). */
+  /**
+   * The compiled system prompt the run was driven with. Retained free text:
+   * capped for display, but not content-scanned or scrubbed.
+   */
   readonly sysPrompt?: string;
   /** Set when `sysPrompt` was capped for display. */
   readonly sysPromptTr?: boolean;
@@ -259,6 +268,10 @@ export interface Session {
   readonly finalTr?: boolean;
   readonly status: string;
   readonly failureKind?: string;
+  /**
+   * Retained free text from a provider/runtime error; bounded upstream, but not
+   * content-scanned or scrubbed.
+   */
   readonly error?: string;
   readonly failoverHistory?: readonly FailoverAttempt[];
   readonly totals: SessionTotals;

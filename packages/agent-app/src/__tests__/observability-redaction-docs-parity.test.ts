@@ -66,6 +66,33 @@ function markdownSection(relativePath: string, heading: string): string {
   return normalized(next === -1 ? rest : rest.slice(0, next));
 }
 
+function interfaceFieldDoc(relativePath: string, interfaceName: string, fieldName: string): string {
+  const source = readRepoFile(relativePath);
+  const interfaceMarker = `export interface ${interfaceName} {`;
+  const interfaceStart = source.indexOf(interfaceMarker);
+  if (interfaceStart === -1) {
+    throw new Error(`${relativePath} is missing interface ${JSON.stringify(interfaceName)}`);
+  }
+  const nextExport = source.indexOf("\nexport ", interfaceStart + interfaceMarker.length);
+  const interfaceSource = source.slice(interfaceStart, nextExport === -1 ? source.length : nextExport);
+  const fieldPattern = new RegExp(`\\breadonly\\s+${fieldName}\\??:`, "u");
+  const fieldMatch = fieldPattern.exec(interfaceSource);
+  if (fieldMatch === null) {
+    throw new Error(`${relativePath} ${interfaceName} is missing field ${JSON.stringify(fieldName)}`);
+  }
+  const beforeField = interfaceSource.slice(0, fieldMatch.index);
+  const commentStart = beforeField.lastIndexOf("/**");
+  const commentEnd = commentStart === -1 ? -1 : interfaceSource.indexOf("*/", commentStart);
+  if (commentStart === -1 || commentEnd === -1 || commentEnd > fieldMatch.index) {
+    throw new Error(`${relativePath} ${interfaceName}.${fieldName} is missing JSDoc`);
+  }
+  return normalized(
+    interfaceSource
+      .slice(commentStart + 3, commentEnd)
+      .replace(/^\s*\*\s?/gmu, ""),
+  );
+}
+
 describe("observability redaction docs parity", () => {
   it("keeps canonical and composer summary surfaces explicit about numeric retention", () => {
     const surfaces = [
@@ -114,5 +141,38 @@ describe("observability redaction docs parity", () => {
         expect(page, `${relativePath} is missing ${term}`).toContain(term);
       }
     }
+  });
+
+  it("keeps every published bare-prose field explicit about bounds without claiming content scrubbing", () => {
+    const fields = [
+      ["packages/observability/src/types.ts", "RunSummary", "error"],
+      ["packages/observability/src/types.ts", "RunSummary", "userInput"],
+      ["packages/observability/src/types.ts", "RunSummary", "systemPrompt"],
+      ["packages/observability/src/types.ts", "JsonlRunRecorderOptions", "userInput"],
+      ["packages/observability/src/types.ts", "JsonlRunRecorderOptions", "systemPrompt"],
+      ["packages/observability/src/types.ts", "RecordedRunListItem", "error"],
+      ["packages/observability/src/types.ts", "RecordedRunListItem", "userInput"],
+      ["packages/observability/src/types.ts", "RecordedRunListItem", "systemPrompt"],
+      ["packages/observability/src/session-mapping.ts", "Session", "instr"],
+      ["packages/observability/src/session-mapping.ts", "Session", "sysPrompt"],
+      ["packages/observability/src/session-mapping.ts", "Session", "error"],
+    ] as const;
+
+    for (const [relativePath, interfaceName, fieldName] of fields) {
+      const doc = interfaceFieldDoc(relativePath, interfaceName, fieldName);
+      expect(doc, `${interfaceName}.${fieldName}`).toContain("retained free text");
+      expect(doc, `${interfaceName}.${fieldName}`).toMatch(/\b(?:bounded|capped|re-bounded)\b/u);
+      expect(doc, `${interfaceName}.${fieldName}`).toContain("not content-scanned or scrubbed");
+      expect(doc, `${interfaceName}.${fieldName}`).not.toMatch(/\bredacted\s*(?:\+|and|into)\b/u);
+    }
+
+    const liveExportInput = interfaceFieldDoc(
+      "packages/observability/src/types.ts",
+      "RunExportContext",
+      "userInput",
+    );
+    expect(liveExportInput).toContain("retained free text");
+    expect(liveExportInput).toContain("not content-scanned or scrubbed");
+    expect(liveExportInput).not.toMatch(/\bredacted\s*(?:\+|and|into)\b/u);
   });
 });

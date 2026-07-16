@@ -172,8 +172,9 @@ export function buildRunReadableSpans(input: BuildRunReadableSpansInput): Readab
   const rootOutput = context.includeSensitiveData && finalReply.length > 0 ? finalReply : statusText;
 
   // System instructions are run content, so they ride the same sensitive gate as
-  // the conversation input/output. The string is already redacted+capped at
-  // persist time (the recorder's dedicated system-prompt cap).
+  // the conversation input/output. The retained free-text string is already
+  // capped at persist time (the recorder's dedicated system-prompt cap), but it
+  // is not content-scanned or scrubbed.
   const systemPrompt =
     context.includeSensitiveData && typeof summary.systemPrompt === "string" && summary.systemPrompt.length > 0
       ? summary.systemPrompt
