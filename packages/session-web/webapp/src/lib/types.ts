@@ -179,7 +179,10 @@ export interface Session {
   hasRecall: boolean;
   /** The context this turn was driven with (history + recalled memory), when recorded. */
   ctx?: TurnContext;
-  /** The compiled system prompt the run was driven with (redacted + capped). */
+  /**
+   * The compiled system prompt the run was driven with. Retained free text:
+   * capped for display, but not content-scanned or scrubbed.
+   */
   sysPrompt?: string;
   /** Set when `sysPrompt` was capped for display. */
   sysPromptTr?: boolean;

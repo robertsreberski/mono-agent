@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_MAX_STRING_BYTES } from "../../guards.js";
 import type { RunExportContext, RunSummary, RuntimeEventLike } from "../../types.js";
 
 import { createDeterministicIdFactory } from "../ids.js";
@@ -125,6 +126,34 @@ describe("buildRunReadableSpans", () => {
     expect(root.attributes["openinference.span.kind"]).toBe("AGENT");
     expect(root.attributes["input.value"]).toBe("What is the capital of France?");
     expect(root.attributes["output.value"]).toBe("The capital of France is Paris.");
+  });
+
+  it("bounds a 100k root prompt at the UTF-8 export boundary without mutating source data", () => {
+    const userInput = "x".repeat(100_000);
+    const exportContext: RunExportContext = { ...ctx, includeSensitiveData: true, userInput };
+    const persistedSummary: RunSummary = { ...summary, userInput };
+    const root = build({ summary: persistedSummary, ctx: exportContext })[0]!;
+
+    expect(root.attributes["input.value"]).toBe(
+      `${"x".repeat(DEFAULT_MAX_STRING_BYTES)}…[truncated ${String(100_000 - DEFAULT_MAX_STRING_BYTES)} bytes]`,
+    );
+    expect(exportContext.userInput).toBe(userInput);
+    expect(persistedSummary.userInput).toBe(userInput);
+  });
+
+  it("caps multibyte root prompts on whole UTF-8 code points", () => {
+    const userInput = "観".repeat(100_000);
+    const encoder = new TextEncoder();
+    const root = build({
+      ctx: { ...ctx, includeSensitiveData: true, userInput },
+    })[0]!;
+    const exported = String(root.attributes["input.value"]);
+    const head = exported.split("…[truncated")[0]!;
+
+    expect(encoder.encode(userInput)).toHaveLength(300_000);
+    expect(encoder.encode(head).length).toBeLessThanOrEqual(DEFAULT_MAX_STRING_BYTES);
+    expect(head).toBe("観".repeat(1_365));
+    expect(exported).toBe(`${head}…[truncated 295905 bytes]`);
   });
 
   it("falls back to ids/status on the root when no prompt/sensitive data is available", () => {

@@ -163,7 +163,7 @@ new agent.
   },
 
   // Observability: the recorder writes empty events + a running summary at start,
-  // buffers redacted/capped events in RAM, then replaces both files at finish/fail.
+  // buffers key-redacted/capped events in RAM, then replaces both files at finish/fail.
   // A pre-terminal crash can lose buffered events. `mono-agent status` reads the
   // separate trace-source registry.
   "artifacts": {

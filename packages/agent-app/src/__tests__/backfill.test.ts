@@ -2,9 +2,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { createJsonlRunRecorder, type RunSummary } from "@mono-agent/observability";
 import { buildRunReadableSpans, createDeterministicIdFactory } from "@mono-agent/observability/otel";
-import type { RunSummary } from "@mono-agent/observability";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { backfillRuns, isRetryable, readRunArtifacts, runStartEndNanos } from "../backfill.js";
 
@@ -26,6 +26,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -136,6 +137,50 @@ describe("backfill mapping integration", () => {
     expect(spans).toHaveLength(1 + events.length);
     // Historical timestamps, not wall-clock now().
     expect(spans[0]!.startTime[0]).toBe(Math.trunc(Date.parse("2026-06-18T00:00:00.000Z") / 1000));
+  });
+
+  it("exports recorder-persisted userInput without rewriting its truncation marker", async () => {
+    const cwd = join(dir, "consumer");
+    const artifactDir = join(cwd, "artifacts");
+    const configPath = join(cwd, "mono-agent.config.json");
+    await mkdir(cwd, { recursive: true });
+    await writeFile(join(cwd, "IDENTITY.md"), "# Identity\n", "utf8");
+    await writeFile(configPath, JSON.stringify({
+      runtime: { model: "claude:claude-sonnet-4-6" },
+      context: { identityPath: "./IDENTITY.md" },
+      artifacts: { dir: "./artifacts" },
+      observability: {
+        exporters: [{
+          type: "phoenix",
+          endpoint: "http://127.0.0.1:6006/v1/traces",
+          includeSensitiveData: true,
+        }],
+      },
+    }), "utf8");
+
+    const recorder = createJsonlRunRecorder({
+      runId: "run-long",
+      conversationId: "conv-long",
+      artifactDir,
+      userInput: "x".repeat(100_000),
+    });
+    await recorder.finish({});
+    const persisted = (await readRunArtifacts(artifactDir, "run-long")).summary.userInput;
+    expect(persisted).toBe(`${"x".repeat(4_096)}…[truncated 95904 bytes]`);
+
+    let postedBody: Uint8Array | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.body instanceof Uint8Array) postedBody = init.body;
+      return new Response(null, { status: 200 });
+    }));
+
+    const result = await backfillRuns({ env: {}, cwd, configPath }, { run: "run-long" });
+    expect(result.outcomes).toEqual([
+      expect.objectContaining({ runId: "run-long", status: "ok" }),
+    ]);
+    expect(postedBody).toBeInstanceOf(Uint8Array);
+    if (postedBody === undefined) throw new Error("backfill did not POST an OTLP body");
+    expect(new TextDecoder().decode(postedBody)).toContain(persisted);
   });
 
   it("exports agent runs by default for --all and includes memory runs with includeMemory", async () => {
