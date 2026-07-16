@@ -124,7 +124,7 @@ export function mergeMigrationRecords(
   }
 }
 
-export async function assertV3Manifest(path: string): Promise<void> {
+export async function assertV3Manifest(path: string): Promise<ContinuationStoreManifest> {
   const raw = await readBoundedOwnerOnlyFile(path, 1024 * 1024, "Continuation v3 manifest");
   let value: unknown;
   try {
@@ -136,9 +136,11 @@ export async function assertV3Manifest(path: string): Promise<void> {
     || value.schemaVersion !== CONTINUATION_RECORD_STORE_SCHEMA_VERSION
     || !requiredString(value.generation)
     || !requiredDate(value.updatedAt)
+    || (value.rollbackGuardRequired !== undefined && typeof value.rollbackGuardRequired !== "boolean")
     || !isObject(value.stats)) {
     throw new Error(`Continuation v3 manifest has a malformed schema: ${path}`);
   }
+  return value as unknown as ContinuationStoreManifest;
 }
 
 export async function persistRecordChanges(
@@ -146,6 +148,7 @@ export async function persistRecordChanges(
   transactionPath: string,
   before: Map<string, DurableContinuationRecord>,
   after: Map<string, DurableContinuationRecord>,
+  beforeCommit?: () => Promise<void>,
 ): Promise<string | undefined> {
   const writes = [...after.values()].filter((record) => {
     const prior = before.get(record.continuationId);
@@ -153,8 +156,10 @@ export async function persistRecordChanges(
   }).map((record) => structuredClone(record));
   const deletes = [...before.keys()].filter((id) => !after.has(id));
   if (writes.length === 0 && deletes.length === 0) return undefined;
+  const transactions = createTransactionBatches(writes, deletes);
+  await beforeCommit?.();
   let generation: string | undefined;
-  for (const transaction of createTransactionBatches(writes, deletes)) {
+  for (const transaction of transactions) {
     await writeJsonAtomic(transactionPath, transaction, true, MAX_TRANSACTION_BYTES);
     await applyRecordTransaction(recordsDir, transaction);
     await rm(transactionPath, { force: true });
@@ -209,11 +214,13 @@ export async function persistManifest(
   generation: string,
   stats: ContinuationStoreStats,
   now: Date,
+  rollbackGuardRequired: boolean,
 ): Promise<void> {
   await writeJsonAtomic(path, {
     schemaVersion: CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
     generation,
     updatedAt: now.toISOString(),
+    rollbackGuardRequired,
     stats,
   } satisfies ContinuationStoreManifest);
 }

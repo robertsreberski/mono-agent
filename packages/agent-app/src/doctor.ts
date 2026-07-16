@@ -60,10 +60,12 @@ import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
 import { findUnknownAppConfigWarnings } from "./config-reference.js";
 import { loadContinuationSettings } from "./continuation-config.js";
+import { readBoundedOwnerOnlyFile } from "./continuation-store-fs.js";
 import {
   CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
   CONTINUATION_STORE_SCHEMA_VERSION,
 } from "./continuation-store.js";
+import { isOriginContextGroupCommit } from "./continuation-store-policy.js";
 import { CONTINUATION_STATES, type ContinuationState } from "./continuations.js";
 import { formatInteractionBridgeUrl, loadInteractionSettings } from "./interaction-bridge.js";
 import { FIRST_RUN_MEMORY_INITIALIZING_MARKER } from "./first-run-managed-memory.js";
@@ -2192,13 +2194,70 @@ async function inspectContinuationState(stateDir: string): Promise<{
     )) {
       return { status: "error", details: ["Continuation store manifest has an unsupported or malformed schema."] };
     }
-    const recordsDirectoryError = await inspectContinuationRecordsDirectory(join(stateDir, "records-v3"));
+    const recordsDirectoryPath = join(stateDir, "records-v3");
+    const recordsDirectoryError = await inspectContinuationRecordsDirectory(recordsDirectoryPath);
     if (recordsDirectoryError !== undefined) return { status: "error", details: [recordsDirectoryError] };
+    let recordsDirectoryHasEntries: boolean;
+    try {
+      recordsDirectoryHasEntries = (await readdir(recordsDirectoryPath)).length > 0;
+    } catch (error) {
+      return {
+        status: "error",
+        details: [`Continuation record directory cannot be inspected: ${continuationReason(error)}`],
+      };
+    }
     const transaction = await inspectContinuationTransaction(join(stateDir, "continuation-transaction-v3.json"));
     if (!transaction.valid) return { status: "error", details: [transaction.detail] };
+    const originGroups = await inspectContinuationEvidenceDirectory(
+      join(stateDir, "origin-context-groups-v1"),
+      "origin-context activation directory",
+    );
+    if (!originGroups.valid) return { status: "error", details: [originGroups.detail] };
+    const legacyRecordsDirectoryPath = join(stateDir, "records-v2");
+    let legacyRecordsDirectoryExists = false;
+    try {
+      const legacyRecordsDirectoryInfo = await lstat(legacyRecordsDirectoryPath);
+      legacyRecordsDirectoryExists = true;
+      if (!legacyRecordsDirectoryInfo.isDirectory() || legacyRecordsDirectoryInfo.isSymbolicLink()) {
+        return { status: "error", details: ["Legacy continuation record directory must be a real directory."] };
+      }
+      const legacyRecordsDirectoryError = await inspectContinuationRecordsDirectory(
+        legacyRecordsDirectoryPath,
+        { allowV2RollbackGuard: true },
+      );
+      if (legacyRecordsDirectoryError !== undefined) {
+        return { status: "error", details: [legacyRecordsDirectoryError] };
+      }
+    } catch (error) {
+      if (continuationFsCode(error) !== "ENOENT") {
+        return {
+          status: "error",
+          details: [`Legacy continuation record directory cannot be inspected: ${continuationReason(error)}`],
+        };
+      }
+    }
+    let legacyStateExists = legacyRecordsDirectoryExists;
+    for (const [path, label] of [
+      [join(stateDir, "continuations-v1.json"), "v1 store"],
+      [join(stateDir, "continuation-store-v2.json"), "v2 manifest"],
+      [join(stateDir, "continuation-transaction-v2.json"), "v2 transaction"],
+    ] as const) {
+      const evidence = await inspectContinuationEvidenceFile(path, label);
+      if (!evidence.valid) return { status: "error", details: [evidence.detail] };
+      legacyStateExists ||= evidence.exists;
+    }
+    const manifestRollbackGuardRequired = manifest.rollbackGuardRequired ?? true;
+    const legacyMigrationPending = legacyStateExists && !manifestRollbackGuardRequired;
+    const rollbackGuardRequired = manifestRollbackGuardRequired
+      || recordsDirectoryHasEntries
+      || transaction.pending
+      || originGroups.hasEntries;
     const rollbackGuard = await inspectContinuationRollbackGuard(
-      join(stateDir, "records-v2", CONTINUATION_V2_ROLLBACK_GUARD),
-      true,
+      join(legacyRecordsDirectoryPath, CONTINUATION_V2_ROLLBACK_GUARD),
+      rollbackGuardRequired,
+      legacyMigrationPending
+        ? "Legacy continuation state is awaiting v3 migration; the current runtime will fence it before v3 materialization."
+        : "The empty v3 store has no v2 rollback guard; the current runtime will install one before its first v3 record becomes durable.",
     );
     if (!rollbackGuard.valid) return { status: "error", details: [rollbackGuard.detail] };
     const owner = await inspectContinuationOwnerDatabase(join(stateDir, "continuations-owner.sqlite"));
@@ -2208,10 +2267,14 @@ async function inspectContinuationState(stateDir: string): Promise<{
       `Retention: at most ${String(manifest.stats.limits.terminalMaxRecords)} terminal tombstones and ${String(manifest.stats.limits.capturedTextMaxRecords)} captured answers.`,
       transaction.detail,
       rollbackGuard.detail,
+      originGroups.detail,
+      ...(legacyMigrationPending ? ["Legacy continuation state is awaiting idempotent v3 migration."] : []),
       owner.detail,
     );
     return {
       status: transaction.pending
+        || originGroups.hasEntries
+        || legacyMigrationPending
         || manifest.stats.unresolvedDelivery > 0
         || manifest.stats.deadLettered > 0
         || manifest.stats.historyDegraded > 0
@@ -2400,9 +2463,136 @@ async function inspectContinuationRecordsDirectory(
   return undefined;
 }
 
+async function inspectContinuationEvidenceDirectory(
+  path: string,
+  label: string,
+): Promise<{ readonly valid: boolean; readonly hasEntries: boolean; readonly detail: string }> {
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    return continuationFsCode(error) === "ENOENT"
+      ? { valid: true, hasEntries: false, detail: `${label} has not been created.` }
+      : { valid: false, hasEntries: false, detail: `${label} cannot be inspected: ${continuationReason(error)}` };
+  }
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    return { valid: false, hasEntries: false, detail: `${label} must be a real directory.` };
+  }
+  const securityError = continuationOwnershipError(info, label, 0o700);
+  if (securityError !== undefined) return { valid: false, hasEntries: false, detail: securityError };
+  try {
+    const entries = await readdir(path, { withFileTypes: true });
+    for (const entry of entries) {
+      const entryPath = join(path, entry.name);
+      const temporary = entry.name.startsWith(".") && entry.name.endsWith(".tmp");
+      if (temporary) {
+        if (!entry.isFile() || entry.isSymbolicLink()) {
+          return {
+            valid: false,
+            hasEntries: true,
+            detail: `${label} temporary entry must be a regular file: ${entry.name}.`,
+          };
+        }
+        continue;
+      }
+      if (!/^[a-f0-9]{64}\.json$/u.test(entry.name) || !entry.isFile() || entry.isSymbolicLink()) {
+        return {
+          valid: false,
+          hasEntries: true,
+          detail: `${label} contains an unexpected entry: ${entry.name}.`,
+        };
+      }
+      const entryInfo = await lstat(entryPath);
+      if (!entryInfo.isFile() || entryInfo.isSymbolicLink() || entryInfo.nlink !== 1) {
+        return {
+          valid: false,
+          hasEntries: true,
+          detail: `${label} marker must be a single-link regular file: ${entry.name}.`,
+        };
+      }
+      const entrySecurityError = continuationOwnershipError(entryInfo, `${label} marker`, 0o600);
+      if (entrySecurityError !== undefined) {
+        return { valid: false, hasEntries: true, detail: entrySecurityError };
+      }
+      if (entryInfo.size > 64 * 1024) {
+        return {
+          valid: false,
+          hasEntries: true,
+          detail: `${label} marker exceeds its safety limit: ${entry.name}.`,
+        };
+      }
+      let marker: unknown;
+      try {
+        marker = JSON.parse(await readBoundedOwnerOnlyFile(
+          entryPath,
+          64 * 1024,
+          "Continuation origin-context group commit",
+        )) as unknown;
+      } catch (error) {
+        return {
+          valid: false,
+          hasEntries: true,
+          detail: `${label} marker contains invalid JSON: ${continuationReason(error)}`,
+        };
+      }
+      if (!isOriginContextGroupCommit(marker) || `${marker.groupKey}.json` !== entry.name) {
+        return {
+          valid: false,
+          hasEntries: true,
+          detail: `${label} marker has a malformed schema or filename: ${entry.name}.`,
+        };
+      }
+    }
+    const hasEntries = entries.length > 0;
+    return {
+      valid: true,
+      hasEntries,
+      detail: hasEntries
+        ? `${label} contains a durable marker awaiting idempotent recovery.`
+        : `${label} is owner-only and empty.`,
+    };
+  } catch (error) {
+    return {
+      valid: false,
+      hasEntries: false,
+      detail: `${label} cannot be inspected: ${continuationReason(error)}`,
+    };
+  }
+}
+
+async function inspectContinuationEvidenceFile(
+  path: string,
+  label: string,
+): Promise<{ readonly valid: boolean; readonly exists: boolean; readonly detail: string }> {
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    return continuationFsCode(error) === "ENOENT"
+      ? { valid: true, exists: false, detail: `Legacy continuation ${label} is absent.` }
+      : {
+        valid: false,
+        exists: false,
+        detail: `Legacy continuation ${label} cannot be inspected: ${continuationReason(error)}`,
+      };
+  }
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) {
+    return {
+      valid: false,
+      exists: true,
+      detail: `Legacy continuation ${label} must be a single-link regular file.`,
+    };
+  }
+  const securityError = continuationOwnershipError(info, `legacy ${label}`, 0o600);
+  return securityError === undefined
+    ? { valid: true, exists: true, detail: `Legacy continuation ${label} is owner-only.` }
+    : { valid: false, exists: true, detail: securityError };
+}
+
 async function inspectContinuationRollbackGuard(
   path: string,
   required: boolean,
+  missingDetail = "The v2 rollback guard is not installed; the current runtime will install it during v3 migration.",
 ): Promise<{ readonly valid: boolean; readonly detail: string }> {
   let info;
   try {
@@ -2411,7 +2601,7 @@ async function inspectContinuationRollbackGuard(
     if (continuationFsCode(error) === "ENOENT") {
       return required
         ? { valid: false, detail: "Continuation v2 rollback guard is missing from the v3 store." }
-        : { valid: true, detail: "The v2 rollback guard is not installed; the current runtime will install it during v3 migration." };
+        : { valid: true, detail: missingDetail };
     }
     return { valid: false, detail: `Continuation v2 rollback guard cannot be inspected: ${continuationReason(error)}` };
   }
@@ -2493,6 +2683,7 @@ function isContinuationStoreManifest(
 ): value is {
   readonly schemaVersion: number;
   readonly generation: string;
+  readonly rollbackGuardRequired?: boolean;
   readonly stats: {
     readonly records: number;
     readonly active: number;
@@ -2510,6 +2701,7 @@ function isContinuationStoreManifest(
   if (!isDoctorObject(value)
     || value.schemaVersion !== schemaVersion
     || typeof value.generation !== "string"
+    || (value.rollbackGuardRequired !== undefined && typeof value.rollbackGuardRequired !== "boolean")
     || !isDoctorObject(value.stats)
     || value.stats.format !== format
     || !isDoctorObject(value.stats.limits)) return false;

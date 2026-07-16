@@ -8,6 +8,7 @@ import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 import { safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 import * as memoryStore from "@mono-agent/memory/store";
 
+import { canonicalContinuationJson, continuationDigest } from "../continuations.js";
 import { validateMonoAgentFolder } from "../doctor.js";
 import type { SdkAuthStatusExecFile } from "../doctor.js";
 import { agentAppPackageVersion } from "../package-version.js";
@@ -255,6 +256,164 @@ describe("validateMonoAgentFolder", () => {
     expect(section.details.join("\n")).toContain("at most 50000 terminal tombstones");
     expect(section.details.join("\n")).toContain("rollback guard prevents older runtimes");
     expect(section.details.join("\n")).not.toContain("TOP SECRET V3");
+  });
+
+  it("accepts an empty v3 store before its lazy rollback guard is needed", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    const recordsDir = join(stateDir, "records-v3");
+    await mkdir(recordsDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    await chmod(recordsDir, 0o700);
+    const manifestPath = join(stateDir, "continuation-store-v3.json");
+    const manifest = {
+      schemaVersion: 3,
+      generation: "generation-empty-v3",
+      updatedAt: new Date().toISOString(),
+      rollbackGuardRequired: false,
+      stats: {
+        format: "per-record-v3",
+        records: 0,
+        active: 0,
+        unresolvedDelivery: 0,
+        deadLettered: 0,
+        terminalTombstones: 0,
+        compacted: 0,
+        capturedText: 0,
+        historyDegraded: 0,
+        limits: {
+          terminalMaxRecords: 50_000,
+          terminalMaxAgeMs: 31_536_000_000,
+          capturedTextMaxRecords: 1_000,
+          capturedTextMaxAgeMs: 2_592_000_000,
+        },
+      },
+    };
+    await writeFile(manifestPath, JSON.stringify(manifest), { mode: 0o600 });
+    await chmod(manifestPath, 0o600);
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      continuations: {},
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const section = sectionById(report, "continuations");
+    expect(section.status).toBe("ok");
+    expect(section.details.join("\n")).toContain("empty v3 store has no v2 rollback guard");
+    expect(section.details.join("\n")).toContain("before its first v3 record becomes durable");
+    expect(await pathExists(join(stateDir, "records-v2"))).toBe(false);
+
+    const unsafeLegacyPath = join(stateDir, "continuations-v1.json");
+    await mkdir(unsafeLegacyPath);
+    const unsafeLegacyReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const unsafeLegacySection = sectionById(unsafeLegacyReport, "continuations");
+    expect(unsafeLegacySection.status).toBe("error");
+    expect(unsafeLegacySection.details.join("\n")).toContain("single-link regular file");
+    await rm(unsafeLegacyPath, { recursive: true });
+
+    const staleRecordPath = join(recordsDir, `${"a".repeat(64)}.json`);
+    await writeFile(staleRecordPath, "{}\n", { mode: 0o600 });
+    const staleRecordReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const staleRecordSection = sectionById(staleRecordReport, "continuations");
+    expect(staleRecordSection.status).toBe("error");
+    expect(staleRecordSection.details.join("\n")).toContain("rollback guard is missing");
+    await rm(staleRecordPath);
+
+    const groupIdentity = {
+      originRunId: "run-doctor-marker",
+      originConversationId: "doctor:marker",
+      historyBoundary: "run-doctor-marker",
+    };
+    const groupKey = continuationDigest(
+      `mono-agent-origin-context-group-v1\0${canonicalContinuationJson(groupIdentity)}`,
+    );
+    const groupMarker = {
+      schemaVersion: 1,
+      groupKey,
+      ...groupIdentity,
+      snapshotDigest: continuationDigest("doctor-marker-snapshot"),
+      memberCount: 1,
+      memberSetDigest: continuationDigest("doctor-marker-members"),
+      activatedAt: "2026-07-14T12:01:00.000Z",
+    };
+    const originGroupsDir = join(stateDir, "origin-context-groups-v1");
+    await mkdir(originGroupsDir, { mode: 0o700 });
+    await writeFile(join(originGroupsDir, `${groupKey}.json`), JSON.stringify(groupMarker), { mode: 0o600 });
+    const groupMarkerReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const groupMarkerSection = sectionById(groupMarkerReport, "continuations");
+    expect(groupMarkerSection.status).toBe("error");
+    expect(groupMarkerSection.details.join("\n")).toContain("rollback guard is missing");
+    await rm(originGroupsDir, { recursive: true });
+
+    const legacyTransactionPath = join(stateDir, "continuation-transaction-v2.json");
+    await writeFile(legacyTransactionPath, "{}\n", { mode: 0o600 });
+    const legacyReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const legacySection = sectionById(legacyReport, "continuations");
+    expect(legacySection.status).toBe("waiting");
+    expect(legacySection.details.join("\n")).toContain("awaiting idempotent v3 migration");
+    await rm(legacyTransactionPath);
+
+    const legacyRecordsDir = join(stateDir, "records-v2");
+    await mkdir(legacyRecordsDir, { mode: 0o700 });
+    await writeFile(
+      join(legacyRecordsDir, "UPGRADED-TO-RECORDS-V3"),
+      "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n",
+      { mode: 0o600 },
+    );
+    const guardedFalseReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const guardedFalseSection = sectionById(guardedFalseReport, "continuations");
+    expect(guardedFalseSection.status).toBe("waiting");
+    expect(guardedFalseSection.details.join("\n")).toContain("awaiting idempotent v3 migration");
+    await rm(legacyRecordsDir, { recursive: true });
+
+    const fieldlessManifest = { ...manifest } as Record<string, unknown>;
+    delete fieldlessManifest.rollbackGuardRequired;
+    await writeFile(manifestPath, JSON.stringify(fieldlessManifest), { mode: 0o600 });
+    const fieldlessReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const fieldlessSection = sectionById(fieldlessReport, "continuations");
+    expect(fieldlessSection.status).toBe("error");
+    expect(fieldlessSection.details.join("\n")).toContain("rollback guard is missing");
+
+    await mkdir(legacyRecordsDir, { mode: 0o700 });
+    await writeFile(
+      join(legacyRecordsDir, "UPGRADED-TO-RECORDS-V3"),
+      "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n",
+      { mode: 0o600 },
+    );
+    await writeFile(manifestPath, JSON.stringify({ ...manifest, rollbackGuardRequired: true }), { mode: 0o600 });
+    const activatedEmptyReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const activatedEmptySection = sectionById(activatedEmptyReport, "continuations");
+    expect(activatedEmptySection.status).toBe("ok");
+    expect(activatedEmptySection.details.join("\n")).toContain("rollback guard prevents older runtimes");
+
+    await mkdir(originGroupsDir, { mode: 0o700 });
+    await writeFile(join(originGroupsDir, `${groupKey}.json`), JSON.stringify(groupMarker), { mode: 0o600 });
+    const guardedMarkerReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const guardedMarkerSection = sectionById(guardedMarkerReport, "continuations");
+    expect(guardedMarkerSection.status).toBe("waiting");
+    expect(guardedMarkerSection.details.join("\n")).toContain("durable marker awaiting idempotent recovery");
+    await writeFile(join(originGroupsDir, `${groupKey}.json`), "{}\n", { mode: 0o600 });
+    const malformedMarkerReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const malformedMarkerSection = sectionById(malformedMarkerReport, "continuations");
+    expect(malformedMarkerSection.status).toBe("error");
+    expect(malformedMarkerSection.details.join("\n")).toContain("malformed schema or filename");
+    await rm(originGroupsDir, { recursive: true });
+
+    await mkdir(originGroupsDir, { mode: 0o700 });
+    await writeFile(join(originGroupsDir, "unexpected.txt"), "{}\n", { mode: 0o600 });
+    const unexpectedMarkerReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const unexpectedMarkerSection = sectionById(unexpectedMarkerReport, "continuations");
+    expect(unexpectedMarkerSection.status).toBe("error");
+    expect(unexpectedMarkerSection.details.join("\n")).toContain("unexpected entry");
+    await rm(originGroupsDir, { recursive: true });
+
+    await mkdir(join(originGroupsDir, `${"d".repeat(64)}.json`), { recursive: true, mode: 0o700 });
+    const directoryMarkerReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const directoryMarkerSection = sectionById(directoryMarkerReport, "continuations");
+    expect(directoryMarkerSection.status).toBe("error");
+    expect(directoryMarkerSection.details.join("\n")).toContain("unexpected entry");
   });
 
   it("reports a legacy v2 store as awaiting migration before and after its exact rollback guard is installed", async () => {

@@ -18,6 +18,165 @@ afterEach(async () => {
 });
 
 describe("continuation origin-context record store", () => {
+  it("does not create legacy records-v2 state for a fresh empty v3 store", async () => {
+    const stateDir = fixture("fresh-empty");
+
+    const first = await openContinuationStore(stateDir);
+    await expect(first.stats()).resolves.toMatchObject({ format: "per-record-v3", records: 0 });
+    expect(await readdir(stateDir)).not.toContain("records-v2");
+    expect(await readdir(join(stateDir, "records-v3"))).toEqual([]);
+    await expect(readFile(join(stateDir, "continuation-store-v3.json"), "utf8")
+      .then((value) => JSON.parse(value) as Record<string, unknown>))
+      .resolves.toMatchObject({ rollbackGuardRequired: false });
+
+    await first.mutate(() => undefined);
+    await first.activateOriginContextGroup({
+      claimFingerprint: hash("no-op-activation"),
+      activatedAt: "2026-07-14T12:01:00.000Z",
+    });
+    expect(await readdir(stateDir)).not.toContain("records-v2");
+
+    const restarted = await openContinuationStore(stateDir);
+    await expect(restarted.stats()).resolves.toMatchObject({ format: "per-record-v3", records: 0 });
+    expect(await readdir(stateDir)).not.toContain("records-v2");
+  });
+
+  it("installs the rollback guard lazily before the first v3 record", async () => {
+    const stateDir = fixture("lazy-guard");
+    const store = await openContinuationStore(stateDir);
+    expect(await readdir(stateDir)).not.toContain("records-v2");
+
+    await store.mutate((records) => {
+      records.set("first-record", durableRecord("first-record", {
+        originContextState: "legacy_missing",
+        synthesisDeferrals: 0,
+      }) as unknown as DurableContinuationRecord);
+    });
+
+    await expect(readFile(
+      join(stateDir, "records-v2", "UPGRADED-TO-RECORDS-V3"),
+      "utf8",
+    )).resolves.toBe(
+      "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n",
+    );
+    expect(await readdir(join(stateDir, "records-v3"))).toHaveLength(1);
+    await expect(readFile(join(stateDir, "continuation-store-v3.json"), "utf8")
+      .then((value) => JSON.parse(value) as Record<string, unknown>))
+      .resolves.toMatchObject({ rollbackGuardRequired: true });
+    const restarted = await openContinuationStore(stateDir);
+    await expect(restarted.get("first-record")).resolves.toMatchObject({
+      continuationId: "first-record",
+      originContextState: "legacy_missing",
+    });
+  });
+
+  it("recovers and migrates an interrupted v2 write while an existing v3 store was still empty", async () => {
+    const stateDir = fixture("empty-v3-rollback");
+    await openContinuationStore(stateDir);
+    expect(await readdir(stateDir)).not.toContain("records-v2");
+
+    const legacy = durableRecord("rolled-back-record", {
+      historyBoundary: "run-rolled-back-record",
+    });
+    await writeFile(join(stateDir, "continuation-transaction-v2.json"), `${JSON.stringify({
+      schemaVersion: 2,
+      generation: "rolled-back-generation",
+      createdAt: "2026-07-14T12:00:00.000Z",
+      writes: [legacy],
+      deletes: [],
+    }, null, 2)}\n`, { mode: 0o600 });
+
+    const reopened = await openContinuationStore(stateDir);
+    await expect(reopened.get("rolled-back-record")).resolves.toMatchObject({
+      continuationId: "rolled-back-record",
+      originContextState: "legacy_missing",
+      synthesisDeferrals: 0,
+    });
+    await expect(stat(
+      join(stateDir, "records-v2", "UPGRADED-TO-RECORDS-V3"),
+    )).resolves.toBeDefined();
+    expect(await readdir(join(stateDir, "records-v3"))).toHaveLength(1);
+  });
+
+  it("finishes a guarded partial rollback migration after a crash before manifest commit", async () => {
+    const stateDir = fixture("guarded-partial-migration");
+    await openContinuationStore(stateDir);
+    const legacyRecordsDir = join(stateDir, "records-v2");
+    const firstLegacy = durableRecord("guarded-first", {
+      historyBoundary: "run-guarded-first",
+    });
+    const secondLegacy = durableRecord("guarded-second", {
+      historyBoundary: "run-guarded-second",
+    });
+    await writeRecord(legacyRecordsDir, firstLegacy);
+    await writeRecord(legacyRecordsDir, secondLegacy);
+    await writeRecord(join(stateDir, "records-v3"), {
+      ...firstLegacy,
+      originContextState: "legacy_missing",
+      synthesisDeferrals: 0,
+    });
+    await writeFile(
+      join(legacyRecordsDir, "UPGRADED-TO-RECORDS-V3"),
+      "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n",
+      { mode: 0o600 },
+    );
+
+    const restarted = await openContinuationStore(stateDir);
+    await expect(restarted.get("guarded-first")).resolves.toMatchObject({
+      continuationId: "guarded-first",
+      originContextState: "legacy_missing",
+    });
+    await expect(restarted.get("guarded-second")).resolves.toMatchObject({
+      continuationId: "guarded-second",
+      originContextState: "legacy_missing",
+    });
+    expect(await readdir(join(stateDir, "records-v3"))).toHaveLength(2);
+    await expect(readFile(join(stateDir, "continuation-store-v3.json"), "utf8")
+      .then((value) => JSON.parse(value) as Record<string, unknown>))
+      .resolves.toMatchObject({ rollbackGuardRequired: true });
+  });
+
+  it("does not reopen legacy migration after retention removes every migrated record", async () => {
+    const stateDir = fixture("retained-empty-migration");
+    await openContinuationStore(stateDir);
+    await writeRecord(join(stateDir, "records-v2"), durableRecord("expired-legacy", {
+      historyBoundary: "run-expired-legacy",
+      state: "expired",
+    }));
+
+    const migrated = await openContinuationStore(stateDir, {
+      retention: { terminalMaxRecords: 0 },
+    });
+    await expect(migrated.stats()).resolves.toMatchObject({ records: 0 });
+    await expect(readFile(join(stateDir, "continuation-store-v3.json"), "utf8")
+      .then((value) => JSON.parse(value) as Record<string, unknown>))
+      .resolves.toMatchObject({ rollbackGuardRequired: true });
+
+    const restarted = await openContinuationStore(stateDir);
+    await expect(restarted.get("expired-legacy")).resolves.toBeUndefined();
+    await expect(restarted.stats()).resolves.toMatchObject({ records: 0 });
+  });
+
+  it("fails before publishing a first v3 record when the lazy guard cannot be created", async () => {
+    const stateDir = fixture("guard-failure");
+    const store = await openContinuationStore(stateDir);
+    const legacyRecordsPath = join(stateDir, "records-v2");
+    await writeFile(legacyRecordsPath, "not a directory\n", { mode: 0o600 });
+
+    await expect(store.mutate((records) => {
+      records.set("must-not-commit", durableRecord("must-not-commit", {
+        originContextState: "legacy_missing",
+        synthesisDeferrals: 0,
+      }) as unknown as DurableContinuationRecord);
+    })).rejects.toThrow();
+    expect(await readdir(join(stateDir, "records-v3"))).toEqual([]);
+    await expect(stat(join(stateDir, "continuation-transaction-v3.json"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    await rm(legacyRecordsPath);
+    const restarted = await openContinuationStore(stateDir);
+    expect(await readdir(stateDir)).not.toContain("records-v2");
+  });
+
   it("retains a shared staged blob until every concurrent pin is released", async () => {
     const stateDir = fixture("shared-pin");
     const store = await openContinuationStore(stateDir);

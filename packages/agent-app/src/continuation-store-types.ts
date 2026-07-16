@@ -160,6 +160,8 @@ export interface ContinuationStoreManifest {
   readonly schemaVersion: typeof CONTINUATION_RECORD_STORE_SCHEMA_VERSION;
   readonly generation: string;
   readonly updatedAt: string;
+  /** Monotonic after complete legacy materialization or the first native v3 commit. */
+  readonly rollbackGuardRequired?: boolean;
   readonly stats: ContinuationStoreStats;
 }
 
