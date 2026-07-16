@@ -3,6 +3,39 @@ import { MAX_MODEL_JSON_CHARS, parseJsonLoose, parseJsonLooseWithDiagnostics } f
 describe("parseJsonLoose", () => {
   it("parses a bare array", () => expect(parseJsonLoose('[{"a":1}]')).toEqual([{ a: 1 }]));
   it("parses fenced json with prose", () => expect(parseJsonLoose('Sure!\n```json\n{"x":[1,2]}\n```\nDone')).toEqual({ x: [1, 2] }));
+  it("does not recover unrelated JSON before an unterminated first fence", () => {
+    const fencedRemainder = '{"answer":';
+    const scan = parseJsonLooseWithDiagnostics<{ answer: string }>(
+      `Example only: {"unrelated":true}\n\`\`\`json\n${fencedRemainder}`,
+    );
+
+    expect(scan.value).toBeUndefined();
+    expect(scan.characters).toBe(fencedRemainder.length);
+    expect(scan.parseAttempts).toBe(0);
+  });
+  it("prefers a valid closed fence over complete JSON before and after it", () => {
+    expect(parseJsonLoose(
+      'Before: {"unrelated":true}\n```json\n{"selected":true}\n```\nAfter: {"alsoUnrelated":true}',
+    )).toEqual({ selected: true });
+  });
+  it("keeps whole-text scanning when no fence exists", () => {
+    expect(parseJsonLoose('Before {"small":true}; selected: {"larger":{"nested":true}}')).toEqual({
+      larger: { nested: true },
+    });
+  });
+  it.each([
+    ["mixed-case JSON tag", "JsOn", "\n", true],
+    ["non-JSON language tag", "javascript", "\n", false],
+    ["Unicode-confusable tag", "jſon", "\n", false],
+    ["Unicode whitespace after JSON tag", "JSON", "\u00a0", true],
+  ])("preserves loose fence handling for a %s", (_label, tag, separator, recognizedJsonTag) => {
+    const payload = '{"edge":true}';
+    const input = ["```", tag, separator, payload, "\n```"].join("");
+    const scan = parseJsonLooseWithDiagnostics<{ edge: boolean }>(input);
+
+    expect(scan.value).toEqual({ edge: true });
+    expect(scan.characters).toBe((recognizedJsonTag ? `${payload}\n` : `${tag}${separator}${payload}\n`).length);
+  });
   it("parses an object embedded in prose with braces inside strings", () => expect(parseJsonLoose('result: {"t":"a } b"} ok')).toEqual({ t: "a } b" }));
   it("returns undefined for non-json", () => expect(parseJsonLoose("no json here")).toBeUndefined());
   it("skips prose/pseudocode brackets before the real JSON", () => {
