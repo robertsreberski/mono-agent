@@ -89,7 +89,7 @@ pnpm run test:demo
 | A2A | Send text to the Agent Card URL with `sendA2AMessage()`. |
 | Webhook | `curl` the invocation path and inspect the response body/status. |
 | Cron | Run a one-off scheduled invocation or wait for one tick. |
-| Observability | Confirm a run writes a redacted JSONL artifact; if an `observability.exporters` Phoenix entry is set, confirm the trace appears in Phoenix. |
+| Observability | Confirm a run writes a JSONL artifact with strings capped: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned. If an `observability.exporters` Phoenix entry is set, confirm the trace appears in Phoenix. |
 | Memory recall tool | With any memory tier configured (`memory.recallTool.enabled` defaults on), ask the agent to recall an old note and confirm `MemoryRecall` appears separately from action-tool allowlists and returns it. |
 | Semantic memory search | With `memory.embeddings` set, first prove the configured provider only: Ollama model advertises `embedding` through `/api/show` and answers `/api/embed`, or LM Studio model has exact `type: "embedding"` in `/api/v1/models` and answers `/v1/embeddings`. Verify the finite vector dimension matches config, then ask a paraphrased question about an old note and confirm `MemoryRecall` returns it. Never accept a cross-provider fallback as proof. |
 

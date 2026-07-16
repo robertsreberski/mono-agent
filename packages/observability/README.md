@@ -6,7 +6,9 @@ Category: `observability`
 
 ## Responsibility
 
-Local JSONL run observability and host trace source discovery. It records runtime events and compact summaries, redacts sensitive payload fields by default, lists recorded runs, reads selected run detail for local operator surfaces, and lets running agent processes register their artifact directories plus optional content-free memory health in a file-backed trace registry.
+Local JSONL run observability and host trace source discovery. It records runtime events and compact summaries, applies key-based redaction and string bounds, lists recorded runs, reads selected run detail for local operator surfaces, and lets running agent processes register their artifact directories plus optional content-free memory health in a file-backed trace registry. Redaction replaces non-numeric values under sensitive-looking object keys; it does not scan free text for secret-shaped content.
+
+Numeric values under matched keys are retained. Current matcher limitations remain follow-up work: space-, dot-, slash-, and colon-separated `private`/`api` + `key` spellings are not matched, while substring matching conservatively redacts string values under benign keys such as `credentialType`, `bearerStatus`, and `privateKeyboard`.
 
 ## Install / Usage
 
@@ -72,7 +74,7 @@ best-effort, and isolated from the JSONL recorder.
 
 ## Timeline Display
 
-`.events.jsonl` artifacts contain one redacted, bounded event per line after a
+`.events.jsonl` artifacts contain one key-redacted, bounded event per line after a
 terminal recorder boundary. Event strings use a 4,096-byte default cap. The
 recorder replaces that terminal snapshot at the boundary; it does not append
 events while a run is in progress. UI surfaces that need readable
@@ -105,7 +107,7 @@ Running sources become `stale` when their heartbeat is older than the configured
 
 Stale-run reconciliation repairs summary status from persisted data only. At
 `start()`, the JSONL recorder performs separate atomic replacements for an empty
-events file and a `running` summary. It then buffers redacted events in memory.
+events file and a `running` summary. It then buffers key-redacted events in memory.
 Terminal `finish()`/`fail()` uses separate atomic replacements for the bounded
 events snapshot first and the summary second. These writes provide no append,
 checkpoint, fsync, or cross-file transaction guarantee: a process death can lose
@@ -119,7 +121,7 @@ The package defines the `RunExporter` contract (`start`/`onEvent`/`finish`/`fail
 
 The `./run-export` subpath exposes the pure, node-free event-to-span attribute mapping (`buildRootSpanAttributes`, `buildEventSpanAttributes`, `countRuntimeWarnings`, `spanKindHint`) plus the exporter-config types. It imports only node-free helpers (guards, redaction, event-classify, content) so it is safe for browser graphs, exactly like `./event-timeline`.
 
-Privacy default is metadata-only: when `includeSensitiveData` is `false`, raw payloads are omitted and only summaries/labels are mapped; when `true`, `redactJsonValue` still runs over the payload before it leaves the process. The actual network transport (OTLP/HTTP protobuf, the Phoenix preset) lives behind the `@mono-agent/observability/otel` subpath.
+Privacy default is metadata-only: when `includeSensitiveData` is `false`, raw payloads are omitted and only summaries/labels are mapped. When `true`, non-numeric values under sensitive-looking object keys are redacted, numeric values under matched keys are retained, and strings are capped before export, but free-text user input, assistant replies, tool prose, error text, and system prompts are not content-scanned or scrubbed. Treat this flag as exporting substantive run content. The actual network transport (OTLP/HTTP protobuf, the Phoenix preset) lives behind the `@mono-agent/observability/otel` subpath.
 
 ## Dependency Boundary
 

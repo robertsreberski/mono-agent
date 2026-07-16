@@ -104,7 +104,9 @@ export interface RunSummary {
   readonly status: RunSummaryStatus;
   readonly failureKind?: string;
   /**
-   * Underlying provider/runtime error message for a failed run (redacted + capped).
+   * Underlying provider/runtime error message for a failed run. Retained free
+   * text: bounded at recorder/reader boundaries, but not content-scanned or
+   * scrubbed.
    * `failureKind` is the taxonomy label ("provider_unavailable_exhausted"); this is
    * the human-readable "why" (the actual provider message), persisted so the trace
    * shows it instead of only the collapsed kind.
@@ -129,14 +131,20 @@ export interface RunSummary {
   readonly runtimeWarnings?: unknown;
   readonly diagnostics?: unknown;
   readonly capabilitiesUsed?: unknown;
-  /** The user's prompt for this run, persisted so backfill can show it as input. */
+  /**
+   * The user's prompt for this run, persisted so backfill can show it as input.
+   * Retained free text: bounded at recorder/reader boundaries, but not
+   * content-scanned or scrubbed.
+   */
   readonly userInput?: string;
   /** Model id this run used; surfaced as `llm.model_name` on the exported span. */
   readonly model?: string;
   /**
    * System instructions for this run (the memory maintenance prompt for memory
    * runs, the compiled identity+skills+memory prompt for channel runs), persisted
-   * redacted+truncated so the trace shows what the model was instructed to do.
+   * as retained free text so the trace shows what the model was instructed to do.
+   * It is capped by the dedicated recorder limit, but not content-scanned or
+   * scrubbed.
    */
   readonly systemPrompt?: string;
   /** Resolved reasoning-effort level the run executed with (e.g. "low", "high"). */
@@ -176,8 +184,10 @@ export interface RunExportContext {
   readonly includeSensitiveData: boolean;
   /**
    * The user's prompt for this run, used as the root span's `input.value` so the
-   * trace shows what was asked. Available on the live path (threaded from the
-   * request); absent for backfill (not recorded in artifacts).
+   * trace shows what was asked. Live export threads the request value directly;
+   * backfill forwards persisted `summary.userInput` when the artifact carries
+   * it (older artifacts may omit it). This retained free text is bounded at the
+   * Phoenix span boundary, but is not content-scanned or scrubbed.
    */
   readonly userInput?: string;
   /**
@@ -233,12 +243,17 @@ export interface JsonlRunRecorderOptions {
   readonly maxStringBytes?: number;
   /** Whether this run is intentionally detached from the shared warm provider session. */
   readonly isolated?: boolean;
-  /** The user's prompt; persisted (redacted) into the summary as `userInput`. */
+  /**
+   * The user's prompt; persisted as retained free text into the summary as
+   * `userInput`. It is bounded by `maxStringBytes`, but not content-scanned or
+   * scrubbed.
+   */
   readonly userInput?: string;
   /**
-   * System instructions for this run; persisted (redacted + capped to a dedicated
-   * larger limit than `maxStringBytes`) into the summary as `systemPrompt`. Used by
-   * the memory path, which supplies its constant prompt at recorder-creation time.
+   * System instructions for this run; persisted as retained free text, capped to
+   * a dedicated larger limit than `maxStringBytes`, into the summary as
+   * `systemPrompt`. The prompt is not content-scanned or scrubbed. Used by the
+   * memory path, which supplies its constant prompt at recorder-creation time.
    */
   readonly systemPrompt?: string;
   /**
@@ -262,7 +277,10 @@ export interface RecordedRunListItem {
   readonly conversationId: string;
   readonly status: RunSummaryStatus;
   readonly failureKind?: string;
-  /** Underlying provider/runtime error message for a failed run (redacted + capped). */
+  /**
+   * Underlying provider/runtime error message for a failed run. Retained free
+   * text: re-bounded by the reader, but not content-scanned or scrubbed.
+   */
   readonly error?: string;
   /** Per-attempt provider failover detail when the fallback router exhausted its chain. */
   readonly failoverHistory?: readonly FailoverAttempt[];
@@ -285,9 +303,17 @@ export interface RecordedRunListItem {
   readonly source?: string;
   /** Trigger name for `source`, e.g. the cron job id or webhook endpoint name. */
   readonly sourceDetail?: string;
-  /** The user's prompt for this run, persisted so backfill/replay can show it as input. */
+  /**
+   * The user's prompt for this run, persisted so backfill/replay can show it as
+   * input. Retained free text: re-bounded by the reader, but not content-scanned
+   * or scrubbed.
+   */
   readonly userInput?: string;
-  /** System instructions for this run (redacted + capped), surfaced so replay can show what the model was instructed with. */
+  /**
+   * System instructions for this run, surfaced so replay can show what the model
+   * was instructed with. Retained free text: re-bounded by the reader, but not
+   * content-scanned or scrubbed.
+   */
   readonly systemPrompt?: string;
   /** Summary artifact filename under the artifact dir, when the list item came from disk. */
   readonly summaryFileName?: string;

@@ -297,7 +297,9 @@ type RunOutcome =
  * outcome per attempted run; a single run's network failure is non-fatal (it
  * becomes a `fail` outcome) so a partial backfill still reports. Trace/span ids
  * are deterministic (keyed on run id) so re-running is idempotent: Phoenix
- * overwrites rather than duplicating.
+ * overwrites rather than duplicating. Backfill forwards persisted
+ * `summary.userInput` through the shared export context when an artifact carries
+ * it; older artifacts without that field retain the root descriptor fallback.
  */
 export async function backfillRuns(
   input: MonoAgentAppConfigInput,

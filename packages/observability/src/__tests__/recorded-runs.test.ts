@@ -11,6 +11,7 @@ import {
   readRecordedRun,
   ObservabilityReadError,
   reconcileStaleRunArtifacts,
+  mapRunToSession,
 } from "../index.js";
 import { classifyRecordedRunEvent } from "../recorded-runs.js";
 
@@ -144,6 +145,49 @@ describe("recorded run reader", () => {
     expect(detail?.summary).toMatchObject(expectedMeta);
   });
 
+  it("retains bare assignment prose across summary, reader, and session surfaces", async () => {
+    const dir = await tempDir();
+    const freeText = "password=free-text-value";
+    const recorder = createJsonlRunRecorder({
+      runId: "run-free-text",
+      conversationId: "telegram:1",
+      artifactDir: dir,
+      userInput: freeText,
+      systemPrompt: freeText,
+    });
+    const summary = await recorder.finish({
+      error: freeText,
+      failureKind: "runtime_error",
+    });
+
+    expect(summary).toMatchObject({
+      userInput: freeText,
+      systemPrompt: freeText,
+      error: freeText,
+    });
+
+    const list = await listRecordedRuns({ artifactDir: dir });
+    expect(list.runs[0]).toMatchObject({
+      userInput: freeText,
+      systemPrompt: freeText,
+      error: freeText,
+    });
+
+    const detail = await readRecordedRun({ artifactDir: dir }, "run-free-text");
+    expect(detail?.summary).toMatchObject({
+      userInput: freeText,
+      systemPrompt: freeText,
+      error: freeText,
+    });
+
+    const session = mapRunToSession(summary, [], { instanceLabel: "test" });
+    expect(session).toMatchObject({
+      instr: freeText,
+      sysPrompt: freeText,
+      error: freeText,
+    });
+  });
+
   it("surfaces systemPrompt on both list items and run detail, truncated at maxStringBytes", async () => {
     const dir = await tempDir();
     const systemPrompt = `You are Mono. ${"Follow the identity and recalled memory. ".repeat(20)}`;
@@ -154,7 +198,7 @@ describe("recorded run reader", () => {
     const list = await listRecordedRuns({ artifactDir: dir, maxStringBytes });
     const listItem = list.runs.find((run) => run.runId === "run-sys");
     expect(listItem?.systemPrompt).toBeDefined();
-    // Redacted at the reader's maxStringBytes -> the head plus a "[truncated …]" tail.
+    // Re-bounded at the reader's maxStringBytes -> the head plus a "[truncated …]" tail.
     expect(listItem!.systemPrompt).toContain("[truncated");
     expect(listItem!.systemPrompt!.startsWith("You are Mono.")).toBe(true);
     expect(listItem!.systemPrompt!.length).toBeLessThan(systemPrompt.length);
