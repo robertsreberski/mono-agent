@@ -65,7 +65,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Capability | Coverage | Where | Registry config ids |
 | --- | --- | --- | --- |
 | Webhook (sync/async HTTP invoke + status polling) | config | `webhook` section; endpoint overrides at `webhook.endpoints[].{model,effort}`; `webhook.maxRunMs` bounds each run | `webhook.http-invoke`, `webhook.run-watchdog` |
-| OpenAI-compatible API (/v1/models, /v1/chat/completions, SSE, bearer) | config | `openaiApi` section | `openai-api.chat-completions` |
+| OpenAI-compatible API (/v1/models, /v1/chat/completions, SSE, bearer) | config | `openaiApi` section; sampling fields remain request metadata, while non-default values are ignored with a `runtime_warning` and runtime config stays authoritative | `openai-api.chat-completions` |
 | Telegram long polling and chat allowlist | config | `telegram` section | `telegram.long-polling` |
 | Telegram command/reaction/button/file interactivity | config | `telegram.commands[]`, `telegram.reactions`, `telegram.quietHours`; `TelegramAskButtons` / `TelegramSendFile` through `tools.allowedTools` | `telegram.interactive` |
 | Telegram inbound audio transcription | config | `telegram.transcription.{endpoint,model,language,timeoutMs}`; opt-in OpenAI-compatible transcription endpoint for voice notes, audio files, and round-video attachments | `telegram.transcription` |
