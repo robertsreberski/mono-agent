@@ -28,6 +28,7 @@ export const packageCatalog = [
     name: "@mono-agent/a2a-adapter",
     path: "extras/a2a-adapter",
     category: "communication",
+    channelIds: ["a2a"],
     responsibility: "Exposes agent responders over A2A and consumes remote A2A agents through direct discovery.",
     allowedDependencyCategories: ["core"],
     publishable: true,
@@ -95,6 +96,7 @@ export const packageCatalog = [
     dir: "cron-adapter",
     name: "@mono-agent/cron-adapter",
     category: "communication",
+    channelIds: ["cron"],
     responsibility: "Invokes agent responders from cron schedules with skip-overlap execution.",
     allowedDependencyCategories: ["core"],
     publishable: true,
@@ -138,6 +140,7 @@ export const packageCatalog = [
     dir: "openai-api-adapter",
     name: "@mono-agent/openai-api-adapter",
     category: "communication",
+    channelIds: ["openai-api"],
     responsibility: "Exposes agent responders through OpenAI-compatible model discovery and Chat Completions endpoints.",
     allowedDependencyCategories: ["core"],
     publishable: true,
@@ -146,6 +149,7 @@ export const packageCatalog = [
     dir: "operator-adapter",
     name: "@mono-agent/operator-adapter",
     category: "communication",
+    channelIds: ["tui", "live"],
     responsibility: "Exposes local operator endpoints: full-fidelity TUI NDJSON turns and read-only live SSE run-event streams.",
     allowedDependencyCategories: ["core"],
     publishable: true,
@@ -162,6 +166,7 @@ export const packageCatalog = [
     dir: "slack-adapter",
     name: "@mono-agent/slack-adapter",
     category: "communication",
+    channelIds: ["slack"],
     responsibility: "Adapts Slack Socket Mode events to structural agent requests and streamed replies.",
     allowedDependencyCategories: ["core"],
     publishable: true,
@@ -170,6 +175,7 @@ export const packageCatalog = [
     dir: "telegram-adapter",
     name: "@mono-agent/telegram-adapter",
     category: "communication",
+    channelIds: ["telegram"],
     responsibility: "Adapts Telegram updates to structural agent requests and streamed replies.",
     allowedDependencyCategories: ["core"],
     publishable: true,
@@ -195,6 +201,7 @@ export const packageCatalog = [
     name: "@mono-agent/whatsapp-adapter",
     path: "extras/whatsapp-adapter",
     category: "communication",
+    channelIds: ["whatsapp"],
     responsibility: "Adapts WhatsApp messages to structural agent requests and streamed replies.",
     allowedDependencyCategories: ["core"],
     publishable: true,
@@ -204,11 +211,20 @@ export const packageCatalog = [
     dir: "webhook-adapter",
     name: "@mono-agent/webhook-adapter",
     category: "communication",
+    channelIds: ["webhook"],
     responsibility: "Invokes agent responders from HTTP webhook requests with sync and async modes.",
     allowedDependencyCategories: ["core"],
     publishable: true,
   },
 ];
+
+export function shippedChannelIdsFromCatalog(catalog = packageCatalog) {
+  return Object.freeze([
+    ...new Set(catalog.flatMap((entry) => entry.channelIds ?? [])),
+  ]);
+}
+
+export const SHIPPED_CHANNEL_IDS = shippedChannelIdsFromCatalog();
 
 export function packageByName() {
   return new Map(packageCatalog.map((entry) => [entry.name, entry]));
