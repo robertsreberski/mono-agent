@@ -306,11 +306,29 @@ The A2A provider is loaded through `channels.plugins[]` with `package: "@mono-ag
 | --- | --- | --- |
 | `MONO_AGENT_A2A_ENABLED` | plugin `config.enabled` | Canonical enable flag for the A2A provider, matching other channels. Wins over the legacy form below when both are set. |
 | `MONO_AGENT_A2A_PROVIDER_ENABLED` | plugin `config.provider.enabled` | Legacy enable flag (still honored). Prefer `MONO_AGENT_A2A_ENABLED`. |
+| `MONO_AGENT_A2A_HOST` | plugin `config.provider.host` | Provider bind host. Non-loopback values require `allowNonLoopback`. |
+| `MONO_AGENT_A2A_PORT` | plugin `config.provider.port` | Provider listen port. |
+| `MONO_AGENT_A2A_PUBLIC_BASE_URL` | plugin `config.provider.publicBaseUrl` | Public base URL advertised in the Agent Card when fronted by a proxy. |
+| `MONO_AGENT_A2A_ALLOW_NON_LOOPBACK` | plugin `config.provider.allowNonLoopback` | Explicit opt-in for a non-loopback bind or public base URL. |
+| `MONO_AGENT_A2A_REQUIRE_BEARER` | plugin `config.provider.requireBearer` | Requires bearer authentication on message/task endpoints. |
 | `MONO_AGENT_A2A_BEARER_TOKEN` | plugin `config.provider.bearerToken` | Used when `requireBearer` is set. See [../channels/a2a.md](/channels/a2a/). |
 | `MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE` | plugin `config.provider.idempotency.namespace` | Explicitly enables durable keyed dispatch and defines its stable authenticated-principal boundary. |
 | `MONO_AGENT_A2A_IDEMPOTENCY_STATE_DIR` | plugin `config.provider.idempotency.stateDir` | Optional durable receipt directory; a namespace-derived owner-only path is used when omitted. |
 | `MONO_AGENT_A2A_IDEMPOTENCY_RETENTION_MS` | plugin `config.provider.idempotency.retentionMs` | Full terminal-result replay horizon; defaults to 30 days. |
 | `MONO_AGENT_A2A_IDEMPOTENCY_MAX_RECORDS` | plugin `config.provider.idempotency.maxRecords` | Hard lifetime unique-key capacity; existing bindings are never evicted. |
+| `MONO_AGENT_A2A_AGENT_NAME` | plugin `config.agent.name` | Public Agent Card name; wins over the root agent name. |
+| `MONO_AGENT_A2A_AGENT_DESCRIPTION` | plugin `config.agent.description` | Agent Card description. |
+| `MONO_AGENT_A2A_AGENT_VERSION` | plugin `config.agent.version` | Agent Card version string. |
+| `MONO_AGENT_A2A_PROVIDER_ORGANIZATION` | plugin `config.agent.providerOrganization` | Optional provider organization advertised in the Agent Card. |
+| `MONO_AGENT_A2A_PROVIDER_URL` | plugin `config.agent.providerUrl` | Optional provider organization URL advertised in the Agent Card. |
+| `MONO_AGENT_A2A_SKILL_ID` | plugin `config.skill.id` | Advertised skill identifier. |
+| `MONO_AGENT_A2A_SKILL_NAME` | plugin `config.skill.name` | Advertised skill name. |
+| `MONO_AGENT_A2A_SKILL_DESCRIPTION` | plugin `config.skill.description` | Advertised skill description. |
+| `MONO_AGENT_A2A_SKILL_TAGS` | plugin `config.skill.tags` | Comma-separated advertised skill tags. |
+| `MONO_AGENT_A2A_REMOTE_AGENT_URLS` | plugin `config.consumer.remoteAgentUrls` | Comma-separated allowlist of remote A2A agent base URLs. |
+| `MONO_AGENT_A2A_DEFAULT_REMOTE_AGENT_URL` | plugin `config.consumer.defaultRemoteAgentUrl` | Default remote A2A agent base URL. |
+| `MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN` | plugin `config.consumer.bearerToken` | Bearer token sent by the programmatic consumer. Keep it in `.env`. |
+| `MONO_AGENT_A2A_TIMEOUT_MS` | plugin `config.consumer.timeoutMs` | Per-request consumer timeout in milliseconds. |
 
 ### Cron
 

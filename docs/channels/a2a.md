@@ -155,6 +155,10 @@ Every key has a `MONO_AGENT_*` override. Strings split on commas where the value
 | `MONO_AGENT_A2A_SKILL_NAME` | plugin `config.skill.name` |
 | `MONO_AGENT_A2A_SKILL_DESCRIPTION` | plugin `config.skill.description` |
 | `MONO_AGENT_A2A_SKILL_TAGS` | plugin `config.skill.tags` (comma-separated) |
+| `MONO_AGENT_A2A_REMOTE_AGENT_URLS` | plugin `config.consumer.remoteAgentUrls` (comma-separated) |
+| `MONO_AGENT_A2A_DEFAULT_REMOTE_AGENT_URL` | plugin `config.consumer.defaultRemoteAgentUrl` |
+| `MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN` | plugin `config.consumer.bearerToken` |
+| `MONO_AGENT_A2A_TIMEOUT_MS` | plugin `config.consumer.timeoutMs` |
 
 ## Network security
 

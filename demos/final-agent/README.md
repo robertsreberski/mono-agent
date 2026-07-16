@@ -256,16 +256,23 @@ From another local Mono host or a one-off package smoke, discover Agent A and se
 node --input-type=module - <<'EOF'
 import { sendA2AMessage } from "@mono-agent/a2a-adapter";
 
+const bearerToken = process.env.MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN;
 const response = await sendA2AMessage({
   agentUrl: "http://127.0.0.1:4300/.well-known/agent-card.json",
-  text: "Say hello from Agent B."
+  text: "Say hello from Agent B.",
+  ...(bearerToken ? { bearerToken } : {})
 });
 
 console.log(response.text);
 EOF
 ```
 
-If `a2a.provider.requireBearer` is true, also set `a2a.provider.bearerToken` for Agent A and pass `bearerToken` in the consumer call. The public Agent Card remains discoverable, but message/task endpoints require `Authorization: Bearer`.
+For bearer authentication, set `MONO_AGENT_A2A_REQUIRE_BEARER=true` and
+`MONO_AGENT_A2A_BEARER_TOKEN` in Agent A's `.env`, then set
+`MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN` in the consumer environment. The
+example above reads the consumer token from that variable. The public Agent
+Card remains discoverable, but message/task endpoints require
+`Authorization: Bearer`.
 
 ## Ollama Local Provider
 
@@ -320,6 +327,9 @@ MONO_AGENT_LOCAL_PROVIDER_BASE_URL=http://localhost:11434
 MONO_AGENT_A2A_PROVIDER_ENABLED=true
 MONO_AGENT_A2A_HOST=127.0.0.1
 MONO_AGENT_A2A_PORT=4300
+MONO_AGENT_A2A_REQUIRE_BEARER=true
+MONO_AGENT_A2A_BEARER_TOKEN=...
+MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN=...
 MONO_AGENT_A2A_AGENT_NAME="Local Agent"
 MONO_AGENT_A2A_AGENT_DESCRIPTION="Local A2A provider."
 MONO_AGENT_A2A_AGENT_VERSION=0.1.0
