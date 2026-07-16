@@ -89,6 +89,20 @@ can therefore replace the remote document at the same stable id. That first requ
 new in-flight/local fingerprint, so its exact concurrent retries coalesce and concurrent
 alternatives still fail as conflicts.
 
+### Legacy BuJo capture compatibility
+
+The bundled harness does not call `scheduleCapture` on `BujoMemoryStore`.
+Because the built-in store implements `persistCompletedTurn`, configured BuJo
+agents always use the strong branch described above; capture mode reaches the
+strict parser only after durable, run-idempotent admission.
+
+BuJo retains `scheduleCapture`, direct `capture()`, and the loose capture exports
+as explicit opt-in compatibility/composition surfaces for direct embedders and
+offline calibration tooling. No bundled host invokes them. Their best-effort
+queue is created only when a direct caller invokes `scheduleCapture`; it is absent
+during normal bundled host operation. New integrations should use
+`persistCompletedTurn` instead.
+
 ### Strict tier write behavior
 
 - **Lite:** projects the admitted normalized host observation to `daily/YYYY-MM-DD.md` and indexes it for FTS. It never embeds and never calls a chat model.

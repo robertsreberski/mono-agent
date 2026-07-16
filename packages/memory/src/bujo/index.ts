@@ -74,7 +74,9 @@ export type { LlmComplete, LlmCompleteOptions } from "./llm.js";
 export { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 export type { MemoryModelKind } from "./model-error.js";
 
-// Phase 2 capture pipeline
+// Opt-in direct-capture surface for embedders and offline calibration tooling. The bundled harness
+// does not call the loose `captureTurn` path; `captureTurnStrict` also remains the internal engine
+// behind `persistCompletedTurn`.
 export { captureTurn, captureTurnStrict } from "./capture.js";
 export type { CaptureTurnResult } from "./capture.js";
 export {
