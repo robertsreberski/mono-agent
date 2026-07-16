@@ -1,5 +1,6 @@
 import dns from "node:dns";
-import { createServer } from "node:http";
+import { createServer, Server } from "node:http";
+import { createConnection } from "node:net";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -1405,6 +1406,206 @@ describe("Webhook adapter", () => {
     }
   });
 
+  it("rejects queued startup requests before responder admission and force-closes slow connections", async () => {
+    const originalLookup = dns.lookup;
+    const originalClose = Server.prototype.close;
+    let queuedResponse: Promise<string> | undefined;
+    let slowConnectionClosed: Promise<void> | undefined;
+    let queuedConnection: ReturnType<typeof createConnection> | undefined;
+    let slowConnection: ReturnType<typeof createConnection> | undefined;
+    let responderCalls = 0;
+    let rejected: unknown;
+    let unexpectedServer: Awaited<ReturnType<typeof startWebhookAdapter>> | undefined;
+
+    dns.lookup = wildcardLocalhostLookup as typeof dns.lookup;
+    Server.prototype.close = function (this: Server, callback?: (error?: Error) => void): Server {
+      const address = this.address();
+      if (typeof address !== "object" || address === null) {
+        throw new TypeError("Expected the intercepted server to have a TCP address.");
+      }
+
+      const body = JSON.stringify({ text: "queued", conversationId: "queued-race", mode: "sync" });
+      const queued = createConnection({ host: "127.0.0.1", port: address.port });
+      queuedConnection = queued;
+      let responseText = "";
+      queuedResponse = new Promise<string>((resolvePromise, rejectPromise) => {
+        queued.on("data", (chunk: Buffer) => {
+          responseText += chunk.toString("utf8");
+        });
+        queued.once("close", () => resolvePromise(responseText));
+        queued.once("error", rejectPromise);
+      });
+      void queuedResponse.catch(() => undefined);
+      const queuedConnected = new Promise<void>((resolvePromise, rejectPromise) => {
+        queued.once("connect", () => {
+          queued.write([
+            "POST /webhook/invoke HTTP/1.1",
+            "Host: 127.0.0.1",
+            "Content-Type: application/json",
+            "Connection: close",
+            `Content-Length: ${Buffer.byteLength(body, "utf8")}`,
+            "",
+            body,
+          ].join("\r\n"), (error?: Error | null) => {
+            if (error !== undefined && error !== null) {
+              rejectPromise(error);
+              return;
+            }
+            resolvePromise();
+          });
+        });
+        queued.once("error", rejectPromise);
+      });
+
+      const slow = createConnection({ host: "127.0.0.1", port: address.port });
+      slowConnection = slow;
+      slowConnectionClosed = new Promise<void>((resolvePromise) => {
+        slow.once("close", () => resolvePromise());
+      });
+      const slowConnected = new Promise<void>((resolvePromise, rejectPromise) => {
+        slow.once("connect", () => {
+          slow.write([
+            "POST /webhook/invoke HTTP/1.1",
+            "Host: 127.0.0.1",
+            "Content-Type: application/json",
+            "Connection: close",
+            "Content-Length: 1000000",
+            "",
+            "{",
+          ].join("\r\n"), (error?: Error | null) => {
+            if (error !== undefined && error !== null) {
+              rejectPromise(error);
+              return;
+            }
+            resolvePromise();
+          });
+        });
+        slow.once("error", rejectPromise);
+      });
+
+      void Promise.all([queuedConnected, slowConnected, queuedResponse])
+        .catch(() => undefined)
+        .finally(() => {
+          originalClose.call(this, callback);
+        });
+      return this;
+    } as typeof Server.prototype.close;
+
+    try {
+      unexpectedServer = await startWebhookAdapter({
+        host: "localhost",
+        port: 0,
+        path: "/webhook/invoke",
+        responder: {
+          async respond() {
+            responderCalls += 1;
+            return { text: "unexpected" };
+          },
+        },
+      });
+    } catch (error) {
+      rejected = error;
+    } finally {
+      dns.lookup = originalLookup;
+      Server.prototype.close = originalClose;
+      queuedConnection?.destroy();
+      slowConnection?.destroy();
+      await unexpectedServer?.stop();
+    }
+
+    expect(unexpectedServer).toBeUndefined();
+    expect(rejected).toMatchObject({
+      code: "unsafe_host",
+      details: {
+        host: "localhost",
+        boundAddress: "0.0.0.0",
+        boundPort: expect.any(Number),
+      },
+    });
+    expect(responderCalls).toBe(0);
+    if (queuedResponse === undefined || slowConnectionClosed === undefined) {
+      throw new TypeError("Expected rejected-bind cleanup to create both race connections.");
+    }
+    const queuedResponseText = await queuedResponse;
+    expect(queuedResponseText).toContain("HTTP/1.1 503 Service Unavailable");
+    expect(queuedResponseText).toContain("Webhook adapter is stopping before request admission.");
+    await slowConnectionClosed;
+
+    const boundPort = rejectedBoundPort(rejected);
+    const permitted = await startWebhookAdapter({
+      host: "0.0.0.0",
+      port: boundPort,
+      allowNonLoopback: true,
+      apiKey: "fixture-port-reuse-key",
+      path: "/webhook/invoke",
+      responder: echoResponder(),
+    });
+    try {
+      expect(permitted.port).toBe(boundPort);
+    } finally {
+      await permitted.stop();
+    }
+  });
+
+  it("preserves unsafe_host and retries cleanup when the first close callback errors", async () => {
+    const originalLookup = dns.lookup;
+    const originalClose = Server.prototype.close;
+    let closeCalls = 0;
+    let rejected: unknown;
+    let unexpectedServer: Awaited<ReturnType<typeof startWebhookAdapter>> | undefined;
+
+    dns.lookup = wildcardLocalhostLookup as typeof dns.lookup;
+    Server.prototype.close = function (this: Server, callback?: (error?: Error) => void): Server {
+      closeCalls += 1;
+      if (closeCalls === 1) {
+        queueMicrotask(() => callback?.(new Error("synthetic rejected-server close failure")));
+        return this;
+      }
+      return originalClose.call(this, callback);
+    } as typeof Server.prototype.close;
+
+    try {
+      unexpectedServer = await startWebhookAdapter({
+        host: "localhost",
+        port: 0,
+        path: "/webhook/invoke",
+        responder: echoResponder(),
+      });
+    } catch (error) {
+      rejected = error;
+    } finally {
+      dns.lookup = originalLookup;
+      Server.prototype.close = originalClose;
+      await unexpectedServer?.stop();
+    }
+
+    expect(unexpectedServer).toBeUndefined();
+    expect(closeCalls).toBe(2);
+    expect(rejected).toMatchObject({
+      code: "unsafe_host",
+      details: {
+        host: "localhost",
+        boundAddress: "0.0.0.0",
+        boundPort: expect.any(Number),
+      },
+    });
+
+    const boundPort = rejectedBoundPort(rejected);
+    const permitted = await startWebhookAdapter({
+      host: "0.0.0.0",
+      port: boundPort,
+      allowNonLoopback: true,
+      apiKey: "fixture-port-reuse-key",
+      path: "/webhook/invoke",
+      responder: echoResponder(),
+    });
+    try {
+      expect(permitted.port).toBe(boundPort);
+    } finally {
+      await permitted.stop();
+    }
+  });
+
   it("aborts a hung async run at maxRunMs and reclaims the conversation slot", async () => {
     let resolveResult: ((status: { status: string; error?: string }) => void) | undefined;
     const resultPromise = new Promise<{ status: string; error?: string }>((resolve) => {
@@ -1697,4 +1898,12 @@ function wildcardLocalhostLookup(
     }
     (done as (error: null, address: string, family: number) => void)(null, "0.0.0.0", 4);
   });
+}
+
+function rejectedBoundPort(error: unknown): number {
+  const boundPort = (error as { details?: { boundPort?: unknown } } | undefined)?.details?.boundPort;
+  if (typeof boundPort !== "number") {
+    throw new TypeError("Expected a rejected bind error with a numeric boundPort detail.");
+  }
+  return boundPort;
 }
