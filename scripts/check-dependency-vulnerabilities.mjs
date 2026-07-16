@@ -509,6 +509,9 @@ export function parsePnpmWhyDependencyPaths(source, options) {
         throw new Error(`pnpm why ${section} must be an object at ${parentPath.join(" -> ")}.`);
       }
       for (const [childName, child] of Object.entries(children).sort(([left], [right]) => left.localeCompare(right))) {
+        if (isRecord(child) && Object.hasOwn(child, "dependents")) {
+          throw new Error("pnpm why output mixes child-tree and dependents-tree shapes.");
+        }
         validatePnpmDependencyNode(childName, child, `pnpm why ${section}`);
         const localWorkspaceLink = isLocalDependencyVersion(child.version);
         if (localWorkspaceLink) {
@@ -1576,6 +1579,9 @@ function validatePnpmReverseNode(node, description) {
   if (!isRecord(node) || typeof node.name !== "string" || node.name.length === 0
     || typeof node.version !== "string" || node.version.length === 0) {
     throw new Error(`${description} is malformed.`);
+  }
+  if (Object.hasOwn(node, "dependencies") || Object.hasOwn(node, "optionalDependencies")) {
+    throw new Error("pnpm why output mixes child-tree and dependents-tree shapes.");
   }
   if (node.from !== undefined && (typeof node.from !== "string" || node.from.length === 0)) {
     throw new Error(`${description} has an invalid registry package name.`);

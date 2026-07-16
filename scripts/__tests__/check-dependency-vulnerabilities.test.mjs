@@ -783,6 +783,20 @@ describe("dependency vulnerability gate", () => {
         ],
       },
     ]), { ...options, pnpmMajor: 11 })).toEqual(expected);
+
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify([{
+      name: "ws",
+      version: "8.20.1",
+      dependents: [{
+        name: "@mono-agent/agent-app",
+        version: "0.11.2",
+        depField: "dependencies",
+        dependencies: {},
+      }],
+    }]), {
+      ...options,
+      pnpmMajor: 11,
+    })).toThrow("mixes child-tree and dependents-tree shapes");
   });
 
   it("requires every pnpm 10 workspace root and binds local links before suppressing paths", () => {
@@ -846,6 +860,16 @@ describe("dependency vulnerability gate", () => {
     unboundLink[1].dependencies.workspace.path = "/repo/packages/not-requested";
     expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(unboundLink), options))
       .toThrow("workspace link workspace is not bound to its publishable workspace root");
+
+    const crossBoundLink = structuredClone(document);
+    crossBoundLink[1].dependencies.workspace.path = "/repo/packages/root-a";
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(crossBoundLink), options))
+      .toThrow("workspace link workspace is not bound to its publishable workspace root");
+
+    const nestedReverseShape = structuredClone(document);
+    nestedReverseShape[1].dependencies.workspace.dependents = [];
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(nestedReverseShape), options))
+      .toThrow("mixes child-tree and dependents-tree shapes");
 
     const mismatchedLinkOwner = structuredClone(document);
     mismatchedLinkOwner[1].dependencies.workspace.from = "workspace-alias";
