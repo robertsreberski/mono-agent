@@ -43,7 +43,7 @@ Chat runs under its own `conversationId` (default `tui-<sourceId>`), so it never
 | Notices | Runtime warnings and provider failover (`failover gpt-5.6-terra → kimi`) inline in the transcript. |
 | Status bar | Instance label · model · live token usage (`↑input ↓output (cache …)`) · cumulative cost · provider state · hints. |
 
-Oversized event fields are truncated on the 256 KiB wire frame (marked in the panel). Replay is independently bounded: the recorder redacts and caps each event string at 4,096 bytes by default, keeps events in RAM until terminal persistence, and may leave an empty event trail after a crash. A separately saved `tool-output/` file can preserve an oversized tool-result block when best-effort persistence succeeds, but it is not JSONL replay and does not cover arbitrary stream events. See [Artifacts & traces](/observability/artifacts-and-traces/).
+Oversized remote event frames trigger field-level payload reduction at the 256 KiB threshold (marked in the panel); the reducer is not a strict maximum for every frame. Replay is independently bounded: the recorder redacts and caps each event string at 4,096 bytes by default, keeps events in RAM until terminal persistence, and may leave an empty event trail after a crash. A separately saved `tool-output/` file can preserve an oversized tool-result block when best-effort persistence succeeds, but it is not JSONL replay and does not cover arbitrary stream events. See [Artifacts & traces](/observability/artifacts-and-traces/).
 
 ## Views
 

@@ -44,7 +44,7 @@ These are the normalized policy semantics, but the selected runtime must be able
 
 ## Tool-output bloat guard (auto)
 
-Tool results are truncated at a 256KB budget so a single oversized result cannot blow up the context window or the model's reasoning. When a result exceeds the budget it is persisted as an artifact and the truncated portion is replaced with a reference, so nothing is silently lost. Artifacts land in `artifacts.dir`.
+Tool results are truncated at a 256KB budget so a single oversized result cannot blow up the context window or the model's reasoning. When a result exceeds the budget, the guard attempts to save each original block through the artifact sink. The compact replacement references only paths the sink successfully returned; if the sink is absent or a write fails, omitted bytes are not recoverable. Successful files land under `artifacts.dir/tool-output/` and are separate from JSONL replay.
 
 Images get a separate, larger budget than text so vision payloads are not clipped at the text limit.
 

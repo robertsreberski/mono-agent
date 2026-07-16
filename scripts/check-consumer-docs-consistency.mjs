@@ -13,6 +13,7 @@ const userDocRoots = [
   "packages/operator-adapter/README.md",
   "packages/session-web/README.md",
   "packages/tui/README.md",
+  "packages/agent-app/skills/mono-agent-composer/references",
 ];
 
 const artifactContractSourcePaths = [
@@ -22,6 +23,10 @@ const artifactContractSourcePaths = [
   "packages/tui/src/ui/components/tool-panel.ts",
   "packages/tui/src/ui/views/replay-detail.ts",
   "packages/tui/src/ui/views/replay.ts",
+  "packages/session-web/src/aggregator.ts",
+  "packages/session-web/src/history.ts",
+  "packages/tui/package.json",
+  "scripts/package-catalog.mjs",
 ];
 
 const monoPackage = (...nameParts) => `@mono-agent/${nameParts.join("-")}`;
@@ -138,7 +143,40 @@ const misleadingArtifactDurabilityClaims = [
   {
     label: "verbatim complete TUI event stream",
     pattern:
-      /\bstreams?\s+every\s+(?:structured\s+)?`?AgentStreamEvent`?\s+verbatim\b|\bexact\s+(?:in-process\s+)?stream callbacks?\b/iu,
+      /\b(?:streams?\s+)?every\s+(?:structured\s+)?`?AgentStreamEvent`?\s+verbatim\b|\bexact\s+(?:in-process\s+)?stream callbacks?\b/iu,
+  },
+  {
+    label: "full stream-event insight",
+    pattern: /\bfull\s+stream-event\s+insight\b/iu,
+  },
+  {
+    label: "guaranteed every-run Phoenix stream",
+    pattern:
+      /\bevery\s+run(?:\s+lifecycle)?\s+streams?\s+to\s+(?:a\s+)?\[?Phoenix\b|\bstream\s+every\s+run(?:\s+lifecycle)?\s+to\s+Phoenix\b/iu,
+  },
+  {
+    label: "guaranteed every-run Phoenix export",
+    pattern: /\bexported\s+on\s+every\s+run\b/iu,
+  },
+  {
+    label: "always-written JSONL artifacts",
+    pattern:
+      /\bJSONL(?:\s+run)?(?:\s+artifacts?)?\b(?:(?!\bnot\b)[^\n.!?]){0,180}\b(?:always\s+written|written\s+on\s+every\s+run)\b/iu,
+  },
+  {
+    label: "unbounded session artifact detail",
+    pattern:
+      /\bfull\s+timelines?\s+are\s+loaded\b|\b(?:use\s+\{@link\s+readInstanceSession\}\s+for|contains?)\s+full\s+detail\b|\bA\s+single\s+run\s+read\s+in\s+full\b|\bfuller\s+\(redacted\)\s+payload\b/iu,
+  },
+  {
+    label: "strict 256 KiB TUI frame cap",
+    pattern:
+      /\b(?:a\s+single|remote\s+(?:NDJSON\s+|TUI\s+)?|structured\s+`?AgentStreamEvent`?\s+)?frames?\s+(?:are\s+|is\s+)?capped\s+at\s+256\s+KiB\b|\bupper\s+bound\s+for\s+one\s+serialized\s+NDJSON\s+frame\b/iu,
+  },
+  {
+    label: "guaranteed tool-output artifact persistence",
+    pattern:
+      /\bwhen\s+a\s+(?:tool\s+)?result\s+exceeds\b[^\n.!?]{0,180}\bit\s+is\s+persisted\s+as\s+an\s+artifact\b[^\n.!?]{0,180}\bnothing\s+is\s+silently\s+lost\b/iu,
   },
 ];
 
@@ -343,9 +381,9 @@ function scanMisleadingArtifactDurabilityClaims(records) {
       for (const match of findPatternMatches(claim.pattern, record.text)) {
         const location = lineAndColumn(record.text, match.index);
         issues.push(
-          `${record.path}:${location.line}:${location.column}: uses absolute artifact durability wording ` +
-            `"${claim.label}". Describe the start snapshot, in-memory buffering, separate terminal ` +
-            "replacements, and crash-loss/reconciliation boundary instead.",
+          `${record.path}:${location.line}:${location.column}: uses absolute observability/replay wording ` +
+            `"${claim.label}". Describe transport and string caps, best-effort export, the start snapshot, ` +
+            "in-memory buffering, terminal replacement, and crash-loss/reconciliation boundaries instead.",
         );
       }
     }
@@ -390,10 +428,11 @@ function usage() {
     "Usage:",
     `  node ${bin} [--consumer <path> ...]`,
     "",
-    "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, and relevant package READMEs)",
+    "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, relevant package READMEs,",
+    "and mono-agent-composer references)",
     "for retired pre-v1 surfaces",
-    "and scans those docs plus TUI runtime/source text for absolute artifact/replay claims",
-    "that contradict wire truncation, recorder redaction, or the terminal write boundary.",
+    "and scans those docs plus TUI/session-web source text for absolute artifact/replay claims",
+    "that contradict wire truncation, best-effort export, recorder redaction, or terminal persistence.",
     "Each optional consumer folder should contain README.md and mono-agent.config.json.",
   ].join("\n");
 }

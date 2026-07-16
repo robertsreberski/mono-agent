@@ -30,9 +30,9 @@ export interface SourceStampedSessionSummary {
 }
 
 /**
- * Matches the TUI replay's detail read (`REPLAY_MAX_STRING_BYTES`). observability's
- * own default (~4 KiB) is tuned for compact summaries and guts tool/message
- * payloads; a session's steps need the fuller (redacted) payload.
+ * Raises the read ceiling for legacy/custom-recorder artifacts. The current
+ * recorder already caps each persisted event string at 4,096 bytes by default;
+ * this 32 KiB ceiling remains bounded and cannot recover pre-terminal crash loss.
  */
 const DETAIL_MAX_STRING_BYTES = 32_768;
 
@@ -55,7 +55,7 @@ export interface ListInstanceSessionSummariesResult {
 /**
  * Newest-first summary rows for an instance. This intentionally reads only
  * `*.summary.json` metadata via `listRecordedRuns` plus summary-file stats; it
- * never touches the events JSONL. Full timelines are loaded by
+ * never touches the events JSONL. Persisted, bounded timelines are loaded by
  * {@link readInstanceSession} on the detail endpoint.
  */
 export async function listInstanceSessionSummaries(
@@ -100,7 +100,8 @@ export async function readInstanceSessionSummaryByFileName(
 
 /**
  * Back-compat alias for callers that only need list rows. These rows are
- * deliberately step-less; use {@link readInstanceSession} for full detail.
+ * deliberately step-less; use {@link readInstanceSession} for persisted,
+ * bounded detail.
  */
 export async function listInstanceSessions(
   instance: DiscoveredWebInstance,
@@ -109,7 +110,7 @@ export async function listInstanceSessions(
   return (await listInstanceSessionSummaries(instance, options)).map((entry) => entry.session);
 }
 
-/** A single run read in full and mapped to a {@link Session}; `undefined` when the run isn't on disk. */
+/** A single run mapped from its persisted, bounded artifact; `undefined` when the run isn't on disk. */
 export async function readInstanceSession(
   instance: DiscoveredWebInstance,
   runId: string,

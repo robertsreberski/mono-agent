@@ -244,10 +244,10 @@ Question:
 Do you need a browsable trace viewer or just local artifacts?
 
 1. JSONL artifacts plus Phoenix as the trace viewer (recommended; add an `observability.exporters` Phoenix entry)
-2. JSONL artifacts only (the local fallback; no external viewer)
+2. JSONL artifacts only (bounded terminal snapshots; no external viewer)
 ```
 
-Fills: `artifacts.dir`, `traceability.registryDir` / `sourceId` / `sourceLabel`, and — when Phoenix is wanted — an `observability.exporters` (phoenix) OTLP entry. Local JSONL artifacts are always written and are the fallback when no exporter is configured. Artifacts record runtime/tool/message events and summaries, not private chain-of-thought. For a terminal operator console, mention `mono-agent tui` (run from anywhere once the agent is started; live chat with thinking/tool insight, run replay, config view). Config is JSON-first — edit `mono-agent.config.json` directly and run `mono-agent restart` to apply changes.
+Fills: `artifacts.dir`, `traceability.registryDir` / `sourceId` / `sourceLabel`, and — when Phoenix is wanted — an `observability.exporters` (phoenix) OTLP entry. The local recorder starts with empty events plus a `running` summary, redacts and caps event strings at 4,096 bytes by default, buffers events in RAM, and replaces the artifacts at finish/fail; a pre-terminal crash can lose buffered events. Phoenix adds a best-effort terminal batch, not a crash-safe stream. Artifacts record runtime/tool/message events and summaries, not private chain-of-thought. For a terminal operator console, mention `mono-agent tui` (run from anywhere once the agent is started; live chat with thinking/tool insight, run replay, config view). Config is JSON-first — edit `mono-agent.config.json` directly and run `mono-agent restart` to apply changes.
 
 ## 9. Acceptance Smoke Test
 

@@ -192,7 +192,7 @@ export const packageCatalog = [
     dir: "tui",
     name: "@mono-agent/tui",
     category: "operator-surface",
-    responsibility: "pi-tui operator console: live chat with full stream-event insight, recorded-run replay, and read-only config view for running agents.",
+    responsibility: "pi-tui operator console: live chat with structured stream-event insight, bounded recorded-run replay, and read-only config view for running agents.",
     allowedDependencyCategories: ["core", "observability"],
     publishable: true,
   },

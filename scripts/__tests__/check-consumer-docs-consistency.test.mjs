@@ -157,6 +157,94 @@ describe("check-consumer-docs-consistency", () => {
     }
   });
 
+  it("flags residual absolute observability claims in playbooks, composer references, and session-web source", async () => {
+    const repoRoot = await tempRepo();
+    await writeRepoDoc(repoRoot, "docs/reference/feature-registry.md", [
+      "# Features",
+      "live chat with full stream-event insight",
+      "every structured `AgentStreamEvent` verbatim",
+      "Rich traces are exported on every run.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "docs/playbooks/phoenix-observed-agent.md", [
+      "# Phoenix",
+      "Every run lifecycle streams to a [Phoenix] dashboard.",
+      "Redacted JSONL artifacts are always written locally as the fallback.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "docs/config/blueprint.md", [
+      "# Blueprint",
+      "JSONL artifacts (always written; the local fallback)",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "docs/runtime/tools-and-guards.md", [
+      "# Tool guard",
+      "When a tool result exceeds the budget it is persisted as an artifact, so nothing is silently lost.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/package-map.md", [
+      "# Package map",
+      "live chat with full stream-event insight",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/playbooks.md", [
+      "# Playbooks",
+      "stream every run to Phoenix as OpenInference spans",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/config-blueprint.md", [
+      "# Blueprint",
+      "JSONL artifacts are always written regardless of exporter state.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md", [
+      "# Discovery",
+      "Local JSONL artifacts are always written and are the fallback.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/session-web/src/history.ts", [
+      "// a session's steps need the fuller (redacted) payload",
+      "// Full timelines are loaded by readInstanceSession.",
+      "// use {@link readInstanceSession} for full detail.",
+      "// A single run read in full.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/session-web/src/aggregator.ts", [
+      "// cached session contains full detail read from the disk artifact",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/operator-adapter/src/tui/constants.ts", [
+      "// Upper bound for one serialized NDJSON frame.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/tui/package.json", JSON.stringify({
+      description: "live chat with full stream-event insight",
+    }));
+    await writeRepoDoc(repoRoot, "scripts/package-catalog.mjs", [
+      "const responsibility = 'live chat with full stream-event insight';",
+    ].join("\n"));
+
+    const result = await checkConsumerDocsConsistency([], { repoRoot });
+    const reported = result.issues.join("\n");
+
+    expect(result.userDocsChecked).toBe(8);
+    expect(result.artifactContractSourcesChecked).toBe(5);
+    expect(reported).toContain("full stream-event insight");
+    expect(reported).toContain("guaranteed every-run Phoenix stream");
+    expect(reported).toContain("guaranteed every-run Phoenix export");
+    expect(reported).toContain("always-written JSONL artifacts");
+    expect(reported).toContain("unbounded session artifact detail");
+    expect(reported).toContain("verbatim complete TUI event stream");
+    expect(reported).toContain("strict 256 KiB TUI frame cap");
+    expect(reported).toContain("guaranteed tool-output artifact persistence");
+    for (const relativePath of [
+      "docs/reference/feature-registry.md",
+      "docs/playbooks/phoenix-observed-agent.md",
+      "docs/config/blueprint.md",
+      "docs/runtime/tools-and-guards.md",
+      "packages/agent-app/skills/mono-agent-composer/references/package-map.md",
+      "packages/agent-app/skills/mono-agent-composer/references/playbooks.md",
+      "packages/agent-app/skills/mono-agent-composer/references/config-blueprint.md",
+      "packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md",
+      "packages/session-web/src/history.ts",
+      "packages/session-web/src/aggregator.ts",
+      "packages/operator-adapter/src/tui/constants.ts",
+      "packages/tui/package.json",
+      "scripts/package-catalog.mjs",
+    ]) {
+      expect(reported).toContain(relativePath);
+    }
+  });
+
   it("allows bounded replay wording and separate best-effort tool-output persistence", async () => {
     const repoRoot = await tempRepo();
     await writeRepoDoc(repoRoot, "docs/observability/tui.md", [
@@ -170,6 +258,31 @@ describe("check-consumer-docs-consistency", () => {
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/tui/src/ui/components/tool-panel.ts", [
       "const notice = '(payload truncated for streaming; replay may also be bounded)';",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/package-map.md", [
+      "# Package map",
+      "Oversized remote event frames trigger field reduction at the 256 KiB threshold; it is not a strict maximum.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md", [
+      "# Discovery",
+      "Phoenix provides best-effort export of every run lifecycle at the terminal boundary.",
+      "JSONL artifacts are not always written to a terminal state; a crash can lose buffered events.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "docs/runtime/tools-and-guards.md", [
+      "# Tool guard",
+      "The guard attempts best-effort persistence; missing or failed sinks leave omitted bytes unavailable.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/session-web/src/history.ts", [
+      "// Loads only persisted, bounded session detail; omitted data cannot be restored.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/session-web/src/aggregator.ts", [
+      "// Tracks sessions whose persisted, bounded detail has been loaded.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/tui/package.json", JSON.stringify({
+      description: "live chat with structured stream-event insight and bounded replay",
+    }));
+    await writeRepoDoc(repoRoot, "scripts/package-catalog.mjs", [
+      "const responsibility = 'structured stream-event insight with bounded replay';",
     ].join("\n"));
 
     const result = await checkConsumerDocsConsistency([], { repoRoot });
