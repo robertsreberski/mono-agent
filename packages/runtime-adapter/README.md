@@ -226,6 +226,20 @@ use. Generated filesystem policy denies global reads first, then reopens only
 configured roots, reviewed immutable OS paths, and narrowly derived runtime
 dependencies; relative deny-write globs stay anchored to the policy root.
 
+The Node executable that starts a managed or explicit SRT CLI must also be
+single-link, executable without setuid/setgid privilege bits, current-user- or
+root-owned, and not group/world-writable. This is a path-sandbox invariant, not
+only a cross-principal ownership check: an unseen hardlink alias inside a writable
+root could expose a user-owned launcher inode to the same-UID sandboxed workload,
+while no portable API can enumerate all aliases.
+NVM, Homebrew Cellar, system Node, and hosted toolcache paths are accepted without
+path allowlisting when their selected executable satisfies that contract. A
+multiple-link rejection names the observed link count and directs the operator
+to a single-link Node installation. Managed cache files and standalone SRT
+executables retain the same single-link rule independently. Explicit Node+CLI
+resolution fails closed on Windows or another platform without POSIX uid
+ownership checks instead of treating POSIX-looking mode bits as NTFS authority.
+
 ## Dependency Boundary
 
 This is the only facade package that depends on `@mono-agent/agent-runtime`. Other packages consume its small `MonoRuntimeLike` interface, backend descriptors, and sandbox policy helpers instead of importing provider/runtime internals.

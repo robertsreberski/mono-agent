@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, opendir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, opendir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +20,12 @@ import {
 
 const lockResource = fileURLToPath(new URL("../../../agent-app/resources/srt/package-lock.json", import.meta.url));
 const tempDirs: string[] = [];
+const TRUSTED_NODE_INSTALL_LAYOUTS = [
+  ["NVM", [".nvm", "versions", "node", "v24.15.0", "bin", "node"]],
+  ["Homebrew", ["opt", "homebrew", "Cellar", "node@24", "24.15.0", "bin", "node"]],
+  ["system", ["usr", "bin", "node"]],
+  ["hosted toolcache", ["opt", "hostedtoolcache", "node", "24.15.0", "x64", "bin", "node"]],
+] as const;
 
 async function tempDir(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "runtime-managed-srt-test-"));
@@ -148,6 +154,106 @@ describe("managed SRT runtime resolution", () => {
     await symlink("tools-real", toolsRoot);
 
     await expect(verifyManagedSrtInstall(fixture.installRoot)).rejects.toThrow(/not a real directory/u);
+  });
+
+  it.each(TRUSTED_NODE_INSTALL_LAYOUTS)(
+    "accepts a trusted single-link %s Node launcher",
+    async (_label, pathSegments) => {
+      const installPrefix = await tempDir();
+      const nodePath = resolve(installPrefix, ...pathSegments);
+      const cliPath = resolve(installPrefix, "managed-srt", "cli.js");
+      await Promise.all([
+        mkdir(dirname(nodePath), { recursive: true }),
+        mkdir(dirname(cliPath), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(nodePath, "#!/bin/sh\nexit 0\n", { mode: 0o700 }),
+        writeFile(cliPath, "// fixture cli\n", { mode: 0o600 }),
+      ]);
+      await Promise.all([chmod(nodePath, 0o700), chmod(cliPath, 0o600)]);
+
+      const launch = await resolveSrtLaunch({ nodePath, cliPath });
+
+      expect(launch).toMatchObject({
+        command: await realpath(nodePath),
+        prefixArgs: [await realpath(cliPath)],
+        source: "explicit",
+      });
+    },
+  );
+
+  it("rejects a hard-linked Node launcher with the writable-root alias reason", async () => {
+    const launchRoot = await tempDir();
+    const writableRoot = await tempDir();
+    const nodePath = resolve(launchRoot, "node");
+    const cliPath = resolve(launchRoot, "cli.js");
+    await writeFile(nodePath, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    await writeFile(cliPath, "// fixture cli\n", { mode: 0o600 });
+    await chmod(nodePath, 0o700);
+    await chmod(cliPath, 0o600);
+    await link(nodePath, resolve(writableRoot, "node-alias"));
+
+    await expect(resolveSrtLaunch({ nodePath, cliPath }))
+      .rejects.toThrow(/Node executable has 2 hard links; expected exactly one so no writable-root alias can modify it/u);
+  });
+
+  it.each([
+    ["setuid", 0o4700, /setuid or setgid privilege bits/u],
+    ["non-executable", 0o600, /not executable by the current user/u],
+  ] as const)("rejects a %s Node launcher", async (_label, mode, reason) => {
+    const launchRoot = await tempDir();
+    const nodePath = resolve(launchRoot, "node");
+    const cliPath = resolve(launchRoot, "cli.js");
+    await writeFile(nodePath, "fixture\n", { mode });
+    await writeFile(cliPath, "// fixture cli\n", { mode: 0o600 });
+    await chmod(nodePath, mode);
+    await chmod(cliPath, 0o600);
+
+    await expect(resolveSrtLaunch({ nodePath, cliPath })).rejects.toThrow(reason);
+  });
+
+  it("fails closed when the platform cannot verify Node ownership", async () => {
+    const launchRoot = await tempDir();
+    const nodePath = resolve(launchRoot, "node.exe");
+    const cliPath = resolve(launchRoot, "cli.js");
+    await writeFile(nodePath, "fixture\n", { mode: 0o700 });
+    await writeFile(cliPath, "// fixture cli\n", { mode: 0o600 });
+
+    await expect(resolveSrtLaunch({ platform: "win32", nodePath, cliPath }))
+      .rejects.toThrow(/ownership cannot be verified on win32.*requires POSIX uid ownership checks/u);
+  });
+
+  it("keeps explicit and managed SRT CLI files single-link", async () => {
+    const launchRoot = await tempDir();
+    const aliasRoot = await tempDir();
+    const nodePath = resolve(launchRoot, "node");
+    const cliPath = resolve(launchRoot, "cli.js");
+    await writeFile(nodePath, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    await writeFile(cliPath, "// fixture cli\n", { mode: 0o600 });
+    await chmod(nodePath, 0o700);
+    await chmod(cliPath, 0o600);
+    await link(cliPath, resolve(aliasRoot, "cli-alias.js"));
+
+    await expect(resolveSrtLaunch({ nodePath, cliPath }))
+      .rejects.toThrow(/SRT CLI has 2 hard links; expected exactly one/u);
+
+    const cacheRoot = await tempDir();
+    const fixture = await createManagedFixture(cacheRoot);
+    await link(fixture.cliPath, resolve(aliasRoot, "managed-cli-alias.js"));
+    await expect(verifyManagedSrtInstall(fixture.installRoot))
+      .rejects.toThrow(/SRT CLI has 2 hard links; expected exactly one/u);
+  });
+
+  it("keeps a standalone external SRT executable single-link", async () => {
+    const binRoot = await tempDir();
+    const aliasRoot = await tempDir();
+    const commandPath = resolve(binRoot, "srt");
+    await writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    await chmod(commandPath, 0o700);
+    await link(commandPath, resolve(aliasRoot, "srt-alias"));
+
+    await expect(resolveSrtLaunch({ command: commandPath }))
+      .rejects.toThrow(/SRT executable has 2 hard links; expected exactly one/u);
   });
 
   it("canonicalizes legacy PATH resolution when the managed target is absent", async () => {

@@ -170,6 +170,37 @@ install roots may not overlap a configured writable root. Negative availability
 checks are retried, so `sandbox setup`/repair can take effect without restarting
 the agent.
 
+### Pre-sandbox Node launcher threat model
+
+The managed SRT CLI is itself launched by Node before SRT can enforce the
+configured filesystem policy. Managed setup and status therefore require the
+selected Node path to be a current-user- or root-owned, non-symbolic regular file
+that is executable, has no setuid/setgid privilege bits, is not
+group/world-writable, and has exactly one hard link. The single-link rule is
+deliberate even though a hard link does not, by itself, grant another OS principal
+write access.
+
+SRT confines the later workload by pathname while that workload still runs as
+the same user. For a user-owned Node executable, an otherwise invisible second
+hard link could name the same owner-writable inode from inside a configured
+writable root. The workload could then modify the launcher through that alias
+even though mono-agent proved that the selected canonical path was outside every
+writable root. There is no portable API to enumerate every hard-link alias.
+Path/device/inode/hash revalidation detects an earlier byte change, but it cannot
+prove alias placement or eliminate the final revalidation-to-execution window.
+Ownership and mode checks alone are therefore insufficient for this path-based
+sandbox boundary.
+
+The rule is installation-manager agnostic: NVM, Homebrew Cellar, system Node,
+and hosted toolcache layouts are all compatible when the selected executable is
+single-link and passes the owner/mode checks. If setup or status reports multiple
+hard links, select or reinstall a single-link Node installation rather than
+copying or relinking the binary ad hoc. The private managed SRT marker, lockfile,
+CLI, package manifest, and dependency tree remain owner-only and single-link as
+a separate cache-integrity invariant. Node+CLI resolution fails closed on Windows
+or another platform without POSIX uid ownership checks; managed setup remains a
+macOS-only capability.
+
 ## Monotonic merge
 
 When a request supplies its own sandbox policy, it is merged with the configured baseline so the result is **never more permissive** than the configured policy. A request-scoped policy can only tighten — it can never widen filesystem access or re-enable host execution:
