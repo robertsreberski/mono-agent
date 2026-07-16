@@ -359,7 +359,8 @@ new agent.
       }
     ]
     // Jobs here merge with cron/*.md files (duplicate ids error).
-    // Overlapping ticks of the same job are skipped, never queued.
+    // Agent-app pins overlap to skip; config exposes no queue/replace controls.
+    // Overlapping ticks of the same configured job are therefore skipped, never queued.
   }
 }
 ```
