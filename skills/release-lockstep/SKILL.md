@@ -128,12 +128,18 @@ failure (the CI smoke step retries for ~150s).
 - Update memory/docs notes recording the release (version, date, anything
   retired or newly published).
 
-## Deprecation aliases carry a removal version
+## Deprecation aliases carry an explicit lifecycle decision
 
-Every deprecation alias/flag must ship with a target removal version (or date) in
-the same commit that introduces it — a deprecation message with no sunset is never
-removed. `--recipe`, `--fallback-models`, and `LEGACY_TOOL_ALIASES` each shipped a
-"deprecated, use X" message but no removal target, so they linger indefinitely.
-Record the sunset in the deprecation message and/or a `@deprecated` JSDoc tag
-naming the version it comes out in, and note the pending removal in this release's
-notes so it actually lands on a later cut.
+Every deprecation alias/flag must ship with either a target removal version/date
+or an explicit permanent-retention decision in the same commit that introduces
+it. A deprecation with neither becomes accidental forever-compatibility. Record
+a sunset in the message and/or a `@deprecated` JSDoc tag; record permanent
+retention beside the compatibility branch or map. Keep both kinds of decision in
+`docs/reference/deprecations.md`; when cutting a target release, remove every due
+implementation/test/doc surface and its tracker row together.
+
+`LEGACY_TOOL_ALIASES` is the deliberate permanent decision recorded there:
+hand-written `allowedTools` / `disallowedTools` lists cannot be migrated safely,
+and dropping a legacy deny-list match could broaden access. Do not schedule that
+map for removal unless an explicit migration preserves both allow and deny
+semantics for every existing config.

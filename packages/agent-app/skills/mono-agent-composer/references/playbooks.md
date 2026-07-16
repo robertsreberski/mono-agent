@@ -215,11 +215,14 @@ const ext = createCollaboratorToolRuntimeExtension({
 
 ```json
 {
-  "runtime": { "model": "claude:claude-sonnet-4-6", "fallbackModels": ["pi:openai-codex:gpt-5.5", "pi:ollama:gemma4:31b"], "session": { "mode": "continuous" } },
+  "runtime": { "model": "claude:claude-sonnet-4-6", "fallbacks": [{ "model": "pi:openai-codex:gpt-5.5" }, { "model": "pi:ollama:gemma4:31b" }], "session": { "mode": "continuous" } },
   "providers": { "local": [{ "id": "ollama", "type": "ollama", "baseUrl": "http://localhost:11434", "enabled": true }], "piNative": { "transport": "auto", "piMaxRetries": 2, "maxRetryDelayMs": 60000, "piSessionsRoot": ".mono-agent/sessions" } }
 }
 ```
-**Steps:** `ollama pull gemma4:31b` → `mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:openai-codex:gpt-5.5,pi:ollama:gemma4:31b` → add `providers.local` + `piNative.piSessionsRoot` → `validate` → `start`.
+Legacy `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain supported
+with no removal deadline, but this playbook intentionally emits the canonical
+per-route form for a new agent.
+**Steps:** `ollama pull gemma4:31b` → `mono-agent init --model claude:claude-sonnet-4-6 --fallback pi:openai-codex:gpt-5.5 --fallback pi:ollama:gemma4:31b` → add `providers.local` + `piNative.piSessionsRoot` → `validate` → `start`.
 **Boundary:** this mixed Pi/Claude chain intentionally omits the native mono-agent sandbox. Keep direct Codex chains all-direct; keep every route on Pi (including `pi:opencode-go:*`, not direct `opencode:*`) when `sandbox.mode` is `native`.
 **Smoke:** force a retryable primary failure; confirm the run result reports failover to the next model (not silent) and the conversation resumes from the transcript tail.
 

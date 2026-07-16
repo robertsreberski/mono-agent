@@ -14,9 +14,9 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 
 | Command | Purpose | Key flags |
 | --- | --- | --- |
-| `init` | On a TTY with no flags, run the guided readiness path: name the agent, enter its exact `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure exact route efforts/safety, verify every selected route, then on macOS start the background agent and enter remote temporary configuration mode. Any flag or non-TTY invocation is scaffold-only; off macOS, configuration is manual. | `--name`, `--model`, repeated `--fallback`/`--fallback-effort`, `--route-safety`, legacy `--fallback-models`, `--auth`, `--codex-auth`, `--memory` |
+| `init` | On a TTY with no flags, run the guided readiness path: name the agent, enter its exact `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure exact route efforts/safety, verify every selected route, then on macOS start the background agent and enter remote temporary configuration mode. Any flag or non-TTY invocation is scaffold-only; off macOS, configuration is manual. | `--name`, `--model`, repeated `--fallback`/`--fallback-effort`, `--route-safety`, legacy `--fallback-models` (removed in `v2.0.0`), `--auth`, `--codex-auth`, `--memory` |
 | `setup` | Alias of `init`. | (same as `init`) |
-| `presets` | List the built-in setup presets or show a preset's generated config, `.env.example`, and checklist. Replaces `recipes` (still an alias). | `list`, `show <id>` |
+| `presets` | List the built-in setup presets or show a preset's generated config, `.env.example`, and checklist. Replaces the deprecated `recipes` alias, which is removed in `v2.0.0`. | `list`, `show <id>` |
 | `auth login` | Run direct Codex browser/device login, Pi OAuth for Anthropic/GitHub Copilot/OpenAI Codex, or the OpenCode-Go API-key flow. OpenCode-Go uses masked TTY input by default; `--api-key-stdin` is the explicit headless input mode. Pi credentials are promoted under an owner-only lock with stale-lock repair only when safely proven. | `<provider\|codex>`, `--pi-auth-path <path>`, `--api-key-stdin`, `--codex-auth browser\|device`, `--config <path>` |
 | `sandbox` | Inspect, install, or functionally prove the pinned SRT runtime. Managed setup is private-cache and macOS-only. | `status`, `setup`, `check` |
 | `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias). With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>`, `--json` |
@@ -95,7 +95,7 @@ Exact background file bytes use keyed commitments under a stable per-config 256-
 | `--model <ref>` | Seed the primary model reference (default `codex:gpt-5.6-terra`). |
 | `--fallback <ref>` | Add one canonical fallback route; repeat without a product-imposed count limit. |
 | `--fallback-effort <provider-default\|level>` | Configure the immediately preceding `--fallback`. |
-| `--fallback-models <csv>` | Legacy global-effort-inheriting fallback form. Mutually exclusive with `--fallback`. |
+| `--fallback-models <csv>` | Deprecated legacy global-effort-inheriting fallback form, removed in `v2.0.0`. Mutually exclusive with `--fallback`. |
 | `--route-safety uniform\|per-route-native` | Select common monotonic or explicit provider-native route contracts. |
 | `--codex-auth browser\|device` | Direct Codex login mode; `device` uses headless device auth. |
 | `--effort <level>` | Write primary `runtime.effort`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`. |
@@ -116,7 +116,7 @@ mono-agent init --name "Research Companion" \
 
 The generated config matches [the config blueprint](/config/blueprint/). See [Backends](/runtime/backends/) for the model reference grammar, [Fallback](/runtime/fallback/) for the chain, [Capture & recall](/memory/capture-and-recall/) for the memory tiers, and [Presets & capability modules](/reference/recipes/) for the wizard's tools step and the no-tools guardrail.
 
-The deprecated `--recipe <id>` flag still works: it maps a retired recipe id to the preset that replaced it (with a deprecation notice), or errors with a pointer to the wizard for the fully-retired blueprints. See [Deprecations](/reference/recipes/#deprecations).
+The deprecated `--recipe <id>` flag works until its `v2.0.0` removal: accepted invocations warn, map a retired recipe id to the preset that replaced it, or error with a pointer to the wizard for fully-retired blueprints. See the canonical [deprecation tracker](/reference/deprecations/) and the detailed [recipe map](/reference/recipes/#deprecations).
 
 ### Secret persistence
 
@@ -163,7 +163,7 @@ mono-agent sandbox check
 
 ## `presets`
 
-Presets are saved wizard answer-sets. `presets list` shows the ids, titles, descriptions, and risk levels; `presets show <id>` prints the generated `mono-agent.config.json`, any `.env.example` placeholders, scaffolded files, and the validation checklist. `mono-agent recipes …` remains as a deprecated alias.
+Presets are saved wizard answer-sets. `presets list` shows the ids, titles, descriptions, and risk levels; `presets show <id>` prints the generated `mono-agent.config.json`, any `.env.example` placeholders, scaffolded files, and the validation checklist. `mono-agent recipes …` remains as a deprecated alias until its `v2.0.0` removal.
 
 ```bash
 mono-agent presets list
@@ -184,7 +184,7 @@ mono-agent validate --consumer ../local-agent-alpha
 
 | Flag | Effect |
 | --- | --- |
-| `--preset <id>` | Also report whether the preset's promised capabilities are live — each expectation is checked against the doctor report. The deprecated `--recipe <id>` alias maps to the replacing preset. |
+| `--preset <id>` | Also report whether the preset's promised capabilities are live — each expectation is checked against the doctor report. The deprecated `--recipe <id>` alias maps to the replacing preset until its `v2.0.0` removal. |
 | `--consumer <path>` | Validate another agent folder read-only. Relative `--config` and `--env-file` paths resolve inside that folder. |
 | `--config <path>` | Use a non-default config file. With `--consumer`, relative paths are inside the consumer folder. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file. With `--consumer`, relative paths are inside the consumer folder. |

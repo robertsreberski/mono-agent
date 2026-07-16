@@ -22,6 +22,7 @@ export interface ParsedCliArgs {
   readonly configPath?: string;
   readonly name?: string;
   readonly model?: string;
+  /** @deprecated Removed in v2.0.0; use repeated `--fallback` entries. */
   readonly fallbackModels?: readonly string[];
   readonly fallbacks?: readonly CliFallbackArg[];
   readonly routeSafety?: RouteSafetyMode;
@@ -29,7 +30,7 @@ export interface ParsedCliArgs {
   readonly memory?: "lite" | "journal" | "bujo";
   /** init/validate: build/check against this preset id. */
   readonly preset?: string;
-  /** init/validate: deprecated alias — maps to the preset that replaced the recipe. */
+  /** @deprecated Removed in v2.0.0; use `--preset`. */
   readonly recipe?: string;
   /** init: additional channels to enable on top of the preset/default config. */
   readonly withChannels?: readonly string[];
@@ -138,7 +139,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   }
   // `doctor`/`setup`/`recipes` are aliases; normalize here so every downstream
   // path (routing, env-file resolution, --consumer) applies unchanged. `doctor`
-  // → `validate`, `setup` → `init`, `recipes` → `presets`.
+  // → `validate`, `setup` → `init`, `recipes` → `presets`. The deprecated
+  // `recipes` branch is removed in v2.0.0; no sunset is set for the other two.
   const cmd = (
     command === "doctor"
       ? "validate"
@@ -355,6 +357,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         }
         break;
       case "--fallback-models":
+        // Deprecated CLI spelling removed in v2.0.0. The similarly named JSON
+        // and environment compatibility inputs are separate and remain supported.
         fallbackModels = requireValue(rest, ++i, flag)
           .split(",")
           .map((entry) => entry.trim())
@@ -415,6 +419,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         preset = requireValue(rest, ++i, flag);
         break;
       case "--recipe":
+        // Deprecated init/validate alias removed in v2.0.0.
         recipe = requireValue(rest, ++i, flag);
         break;
       case "--yes":

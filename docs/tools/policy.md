@@ -143,7 +143,7 @@ The same rules apply through the environment: an **unset** `MONO_AGENT_ALLOWED_T
 
 ## Back-compat: legacy tool names
 
-The tools were renamed to PascalCase, and the old snake_case spellings (`slack_send_message`, `telegram_ask`, `read_skill`, `run_history`, …) are still accepted as **deprecated input aliases** in `allowedTools` / `disallowedTools`. `telegram_send_document` and `telegram_send_photo` both now map to the single `TelegramSendFile` tool, so a `disallowedTools` entry for either legacy name denies the whole file tool. The new PascalCase names are the only ones ever registered, emitted, or recommended — update hand-written lists when convenient. See [Presets & modules](/reference/recipes/#back-compat-legacy-tool-names).
+The tools were renamed to PascalCase, and the old snake_case spellings (`slack_send_message`, `telegram_ask`, `read_skill`, `run_history`, …) remain accepted as **deprecated input aliases** in `allowedTools` / `disallowedTools` under a permanent compatibility decision. There is no scheduled removal: mono-agent cannot rewrite hand-authored policy safely, and an old deny-list entry must never stop matching and silently broaden access. `telegram_send_document` and `telegram_send_photo` both map to the single `TelegramSendFile` tool, so a `disallowedTools` entry for either legacy name denies the whole file tool. The new PascalCase names are the only ones ever registered, emitted, or recommended — update hand-written lists when convenient. See [Presets & modules](/reference/recipes/#back-compat-legacy-tool-names) and the canonical [deprecation tracker](/reference/deprecations/).
 
 ## Programmatic use
 

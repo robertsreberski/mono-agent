@@ -62,6 +62,13 @@ setup. Older versions do not acquire 0.9's permanent OS-level guard, so
 mixed-version setup or repair is unsupported.
 :::
 
+`v0.9.0` also began writing v2 directory install locks whose owner records carry
+process incarnation identity. The bounded, fail-closed reader for owner-only v1
+files is intentionally retained indefinitely: an upgrade can skip releases and
+later encounter a file left by a crashed v0.8-or-earlier installer. New writes
+never use the v1 format. This permanent compatibility decision is recorded in
+the canonical [deprecation tracker](/reference/deprecations/).
+
 Selecting managed SRT during guided init always runs this idempotent managed
 setup and its functional postcondition, even when a compatible external `srt`
 already exists on `PATH`. External SRT remains a status/check and runtime

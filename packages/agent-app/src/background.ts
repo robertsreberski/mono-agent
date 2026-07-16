@@ -1356,7 +1356,10 @@ interface LifecycleLockIdentity {
 export interface FilesystemLifecycleLockOptions {
   readonly pid?: number;
   readonly now?: () => number;
-  /** Legacy owner-record compatibility only; new records use incarnation identity. */
+  /**
+   * Permanent pre-v0.9.0 owner-record compatibility. v0.9.0 and later write
+   * process incarnation identity into every lifecycle-lock owner record.
+   */
   readonly isProcessAlive?: (pid: number) => boolean;
   readonly processIncarnation?: ProcessIncarnation;
   readonly isSameProcessIncarnation?: SameProcessIncarnation;
@@ -1459,6 +1462,9 @@ export async function acquireFilesystemLifecycleLock(
     if (owner !== undefined) {
       let sameOwner = true;
       try {
+        // Permanent pre-v0.9.0 compatibility: a skipped-version upgrade can
+        // encounter crash debris without incarnation identity indefinitely.
+        // All owner records written since v0.9.0 take the stronger branch.
         sameOwner = owner.incarnation === undefined
           ? isProcessAlive(owner.pid)
           : await isSameProcess(owner.pid, owner.incarnation);

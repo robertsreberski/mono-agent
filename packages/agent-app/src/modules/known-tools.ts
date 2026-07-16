@@ -36,12 +36,14 @@ export const ADAPTER_SEND_TOOL_NAMES = [
 ] as const;
 
 /**
- * Old snake_case tool names accepted as INPUT aliases so existing fleet/user
- * configs keep working after the PascalCase rename. Each maps to its canonical
- * new name; `telegram_send_document`/`telegram_send_photo` both collapse to the
- * single `TelegramSendFile` tool. The allow/deny matcher and doctor normalize
- * through this map — the new PascalCase names are the only ones ever registered,
- * emitted, or recommended.
+ * Permanent compatibility input aliases for old snake_case tool names. Existing
+ * hand-written allow/deny policies cannot be migrated automatically; in
+ * particular, a legacy deny-list entry must not stop matching and silently
+ * broaden access. Each alias maps to its canonical PascalCase name;
+ * `telegram_send_document`/`telegram_send_photo` both collapse to the single
+ * `TelegramSendFile` tool. The allow/deny matcher and doctor normalize through
+ * this map, while canonical names are the only ones registered, emitted, or
+ * recommended. There is no scheduled removal.
  */
 export const LEGACY_TOOL_ALIASES: Record<string, string> = {
   slack_send_message: "SlackSendMessage",

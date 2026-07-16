@@ -93,6 +93,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     return 2;
   }
 
+  writeCliDeprecationHints(argv[0], args);
+
   // Only the internal launchd foreground shape may honor the managed-worker
   // marker. A hostile/global launchctl environment must not sanitize unrelated
   // commands such as `mono-agent validate` or `mono-agent status`.
@@ -262,6 +264,27 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.backupPath === undefined ? {} : { backupPath: args.backupPath }),
       });
     }
+  }
+}
+
+function writeCliDeprecationHints(
+  originalCommand: string | undefined,
+  args: ParsedCliArgs,
+): void {
+  if (originalCommand === "recipes") {
+    process.stderr.write(ui.hint(
+      "`mono-agent recipes` is deprecated and will be removed in v2.0.0; use `mono-agent presets`.",
+    ));
+  }
+  if (args.recipe !== undefined) {
+    process.stderr.write(ui.hint(
+      "`--recipe` is deprecated and will be removed in v2.0.0; use `--preset`.",
+    ));
+  }
+  if (args.fallbackModels !== undefined) {
+    process.stderr.write(ui.hint(
+      "`--fallback-models` is deprecated and will be removed in v2.0.0; repeat `--fallback <ref>` instead.",
+    ));
   }
 }
 

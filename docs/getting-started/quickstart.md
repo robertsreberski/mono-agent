@@ -55,7 +55,7 @@ Optional flags:
 | `--name <display-name>` | Public agent name. Display metadata only; never used for paths/service/session ids. |
 | `--model <ref>` | Primary runtime model. Format: `pi:<provider>:<model>`, `claude:*`, `codex:*`, or `opencode:*`. Defaults to `codex:gpt-5.6-terra`; selectable Sol refs are `codex:gpt-5.6-sol` and `pi:openai-codex:gpt-5.6-sol`. |
 | `--fallback <ref>` | Repeatable canonical fallback route. Follow immediately with `--fallback-effort <provider-default\|level>` when needed. |
-| `--fallback-models <csv>` | Legacy compatibility form; entries inherit global effort. Do not combine with `--fallback`. |
+| `--fallback-models <csv>` | Deprecated compatibility form removed in `v2.0.0`; entries inherit global effort. Do not combine with `--fallback`. |
 | `--route-safety uniform\|per-route-native` | Common monotonic contract (default) or explicit isolated provider-native route contracts. |
 | `--codex-auth browser\|device` | Direct Codex login mode when `--auth` runs; `device` is for headless hosts. |
 | `--memory lite\|journal\|bujo` | Adds a `memory` section with the chosen tier. Omit it and no memory is configured. See [Capture and Recall](/memory/capture-and-recall/). |
