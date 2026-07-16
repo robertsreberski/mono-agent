@@ -277,7 +277,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     type: "array",
     defaultLabel: "[]",
     defaultValue: [],
-    example: [{ callbackId: "triage", prompt: "Triage this Slack request.", channelId: "C0123" }],
+    example: [{ callbackId: "triage", prompt: "Prepare the daily support triage checklist.", channelId: "C0123" }],
     description: "JSON-only global/message Slack shortcut bindings; there is no environment-variable form.",
   },
   {
@@ -290,7 +290,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
       headerText: "*Quick actions*",
       buttons: [{ actionId: "triage", label: "Triage", prompt: "Triage today's requests.", channelId: "C0123" }],
     },
-    description: "JSON-only Slack App Home header and prompt-button configuration; there is no environment-variable form.",
+    description: "JSON-only Slack App Home configuration; enabled is optional (default false), buttons is optional (default []), and there is no environment-variable form.",
   },
   {
     jsonPath: "telegram.commands",

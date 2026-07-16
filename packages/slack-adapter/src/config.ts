@@ -20,7 +20,10 @@ import type {
 export interface SlackShortcutConfig {
   readonly callbackId: string;
   readonly prompt: string;
-  /** Destination channel for the reply. Required for global shortcuts (no source channel). */
+  /**
+   * Optional destination. Otherwise use the message source, then the first
+   * allowed channel; a global shortcut goes directly to that allowed fallback.
+   */
   readonly channelId?: string;
   /** Optional message posted instantly on invocation, before the run (e.g. "🔄 Syncing…"). */
   readonly ackText?: string;
@@ -453,7 +456,7 @@ export function redactSlackAdapterConfig(
  * The `slack` section's field registry: the single source of truth both the
  * JSON→env layering below and the app's config provenance view derive from.
  * Covers every env-mappable field (JSON-only structures like `shortcuts` and
- * `homeButtons` are read straight from JSON).
+ * `homeTab` are read straight from JSON).
  */
 export const SLACK_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "slack.enabled", env: "MONO_AGENT_SLACK_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },

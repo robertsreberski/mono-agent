@@ -141,13 +141,13 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `slack.enabled` | `boolean` | `MONO_AGENT_SLACK_ENABLED` | false | `true` | Enables the slack capability. |
 | `slack.heartbeatIntervalMs` | `integer` | `MONO_AGENT_SLACK_HEARTBEAT_INTERVAL_MS` | unset | `1` | Configures heartbeatIntervalMs for the slack section. |
 | `slack.heartbeatTimeoutMs` | `integer` | `MONO_AGENT_SLACK_HEARTBEAT_TIMEOUT_MS` | unset | `1` | Configures heartbeatTimeoutMs for the slack section. |
-| `slack.homeTab` | `object` | `--` | unset | `{"enabled":true,"headerText":"*Quick actions*","buttons":[{"actionId":"triage","label":"Triage","prompt":"Triage today's requests.","channelId":"C0123"}]}` | JSON-only Slack App Home header and prompt-button configuration; there is no environment-variable form. |
+| `slack.homeTab` | `object` | `--` | unset | `{"enabled":true,"headerText":"*Quick actions*","buttons":[{"actionId":"triage","label":"Triage","prompt":"Triage today's requests.","channelId":"C0123"}]}` | JSON-only Slack App Home configuration; enabled is optional (default false), buttons is optional (default []), and there is no environment-variable form. |
 | `slack.mentionTextAliases` | `string[]` | `MONO_AGENT_SLACK_MENTION_TEXT_ALIASES` | unset | `["example"]` | Configures mentionTextAliases for the slack section. |
 | `slack.reconnectInitialBackoffMs` | `integer` | `MONO_AGENT_SLACK_RECONNECT_INITIAL_BACKOFF_MS` | unset | `1` | Configures reconnectInitialBackoffMs for the slack section. |
 | `slack.reconnectMaxBackoffMs` | `integer` | `MONO_AGENT_SLACK_RECONNECT_MAX_BACKOFF_MS` | unset | `1` | Configures reconnectMaxBackoffMs for the slack section. |
 | `slack.reconnectStabilityMs` | `integer` | `MONO_AGENT_SLACK_RECONNECT_STABILITY_MS` | unset | `1` | Configures reconnectStabilityMs for the slack section. |
 | `slack.reconnectStartupGraceMs` | `integer` | `MONO_AGENT_SLACK_RECONNECT_STARTUP_GRACE_MS` | unset | `1` | Configures reconnectStartupGraceMs for the slack section. |
-| `slack.shortcuts` | `array` | `--` | [] | `[{"callbackId":"triage","prompt":"Triage this Slack request.","channelId":"C0123"}]` | JSON-only global/message Slack shortcut bindings; there is no environment-variable form. |
+| `slack.shortcuts` | `array` | `--` | [] | `[{"callbackId":"triage","prompt":"Prepare the daily support triage checklist.","channelId":"C0123"}]` | JSON-only global/message Slack shortcut bindings; there is no environment-variable form. |
 | `slack.stripMentionText` | `boolean` | `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` | false | `false` | Configures stripMentionText for the slack section. |
 | `telegram.allowAllChats` | `boolean` | `MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS` | false | `true` | Configures allowAllChats for the telegram section. |
 | `telegram.allowedChatIds` | `string[]` | `MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS` | unset | `["example"]` | Configures allowedChatIds for the telegram section. |

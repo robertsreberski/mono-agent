@@ -1742,7 +1742,7 @@
             [
               {
                 "callbackId": "triage",
-                "prompt": "Triage this Slack request.",
+                "prompt": "Prepare the daily support triage checklist.",
                 "channelId": "C0123"
               }
             ]
@@ -1755,7 +1755,7 @@
           "default": []
         },
         "homeTab": {
-          "description": "JSON-only Slack App Home header and prompt-button configuration; there is no environment-variable form.",
+          "description": "JSON-only Slack App Home configuration; enabled is optional (default false), buttons is optional (default []), and there is no environment-variable form.",
           "examples": [
             {
               "enabled": true,

@@ -6,7 +6,7 @@ sidebar:
 
 # Slack
 
-The Slack channel connects your agent to a Slack workspace over **Socket Mode** (no public inbound URL required). It is mention-triggered, shows a 👀 "seen" reaction while it works, and delivers only the final answer. Coverage: **config** (`slack.socket-mode`).
+The Slack channel connects your agent to a Slack workspace over **Socket Mode** (no public inbound URL required). It is mention-triggered, shows a 👀 "seen" reaction while it works, and delivers only the final answer. Coverage: **config** (`slack.socket-mode`, `slack.shortcuts`, and `slack.app-home`).
 
 ## How it works
 
@@ -58,10 +58,10 @@ Both `botToken` and `appToken` are required when `enabled: true`. If either is m
 
 ### Environment variables
 
-Every scalar key above has an env override (env precedence: process env >
-`mono-agent.config.json` > defaults). `slack.shortcuts` and `slack.homeTab` are
-structured, JSON-only fields: configure them in `mono-agent.config.json`; they
-have no environment-variable form.
+Every key above except `slack.shortcuts` and `slack.homeTab` has an env override
+(env precedence: process env > `mono-agent.config.json` > defaults). Those two
+interaction fields are structured and JSON-only: configure them in
+`mono-agent.config.json`; they have no environment-variable form.
 
 | Key | Env var |
 | --- | --- |
@@ -94,7 +94,7 @@ matches `callbackId`; invoking it runs `prompt` as a proactive agent turn.
     "shortcuts": [
       {
         "callbackId": "triage_request",
-        "prompt": "Triage this Slack request and propose the next action.",
+        "prompt": "Prepare the daily support triage checklist.",
         "channelId": "C0123",
         "ackText": "Triage started…",
         "threadReply": true
@@ -107,7 +107,7 @@ matches `callbackId`; invoking it runs `prompt` as a proactive agent turn.
 | Field | Required | Purpose |
 | --- | --- | --- |
 | `callbackId` | yes | Exact Slack shortcut `callback_id`; values must be unique (case-insensitive). |
-| `prompt` | yes | Prompt run when the shortcut is invoked. |
+| `prompt` | yes | Static prompt run when the shortcut is invoked. Selected-message text and invoking-user identity are not appended. |
 | `channelId` | no | Pins delivery to this allowed channel. Without it, a message shortcut uses its source channel and thread; a global shortcut falls back to the first `allowedChannelIds` entry. With `allowAllChannels: true` and no explicit allowlist, a global shortcut needs `channelId` or it is ignored because no default destination exists. |
 | `ackText` | no | Best-effort message posted immediately before the run. The turn still runs if this post fails. |
 | `threadReply` | no | Default `false`. With `ackText`, threads the final result under that acknowledgement when there is no source thread. Setting it to `true` without `ackText` is invalid. |
@@ -115,6 +115,11 @@ matches `callbackId`; invoking it runs `prompt` as a proactive agent turn.
 Every resolved destination still passes `allowedChannelIds` / `allowAllChannels`.
 If `channelId` redirects a message shortcut to a different channel, the result is
 top-level there rather than reusing the source channel's thread timestamp.
+A message shortcut reuses its source channel and thread only as delivery
+coordinates; the selected message itself is not added to the configured
+`prompt`. The channel allowlist authorizes only where output may be delivered:
+shortcut and Home-button interactions are not authorized per invoking user, and
+the invoking user's identity is not added to the proactive prompt.
 
 ### App Home
 
@@ -150,9 +155,9 @@ allowlisted proactive-delivery path as a shortcut.
 
 | Field | Required | Purpose |
 | --- | --- | --- |
-| `enabled` | yes | Publishes the view on open when `true`; defaults to `false` when `homeTab` is absent. |
+| `enabled` | no | Default `false`, including when omitted from a present `homeTab` object. Publishes the view on open only when `true`. |
 | `headerText` | no | Markdown header rendered above the buttons. |
-| `buttons` | no | Button bindings. An enabled Home tab must contain at least a header or one button. |
+| `buttons` | no | Default `[]`. Button bindings; an enabled Home tab must contain at least a header or one button, so a header-only tab is valid. |
 | `buttons[].actionId` | yes | Button routing ID; values must be unique (case-insensitive). |
 | `buttons[].label` | yes | Plain-text button label. |
 | `buttons[].prompt` | yes | Prompt run when the button is clicked. |

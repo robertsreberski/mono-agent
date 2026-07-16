@@ -36,7 +36,9 @@ the reaction instead — no configuration needed for the fallback.
 `slack.shortcuts` binds global or message shortcut callback IDs to prompts.
 `slack.homeTab` publishes an optional header and prompt-running buttons when the
 Home tab opens. Both fields are structured JSON-only configuration; they have no
-environment-variable form.
+environment-variable form. App Home defaults to disabled when `enabled` is
+omitted, and `buttons` defaults to an empty array; an enabled header-only tab is
+valid.
 
 ```json
 {
@@ -44,7 +46,7 @@ environment-variable form.
     "shortcuts": [
       {
         "callbackId": "triage_request",
-        "prompt": "Triage this Slack request.",
+        "prompt": "Prepare the daily support triage checklist.",
         "channelId": "C0123"
       }
     ],
@@ -70,7 +72,7 @@ routing behavior, and Slack app setup.
 
 ## Public API
 
-- `slackFieldGroup`
+- `SLACK_CONFIG_FIELDS`
 - `loadSlackAdapterConfig`
 - `redactSlackAdapterConfig`
 - Slack config, event, Web API, and Socket Mode types

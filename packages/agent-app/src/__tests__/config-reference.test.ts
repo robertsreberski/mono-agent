@@ -199,7 +199,7 @@ describe("config reference", () => {
 
     const slackShortcuts = allConfigReferenceFields().find((field) => field.jsonPath === "slack.shortcuts");
     expect(slackShortcuts?.example).toEqual([
-      { callbackId: "triage", prompt: "Triage this Slack request.", channelId: "C0123" },
+      { callbackId: "triage", prompt: "Prepare the daily support triage checklist.", channelId: "C0123" },
     ]);
 
     const slackHomeTab = allConfigReferenceFields().find((field) => field.jsonPath === "slack.homeTab");

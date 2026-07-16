@@ -14,7 +14,7 @@ A scannable projection of every mono-agent capability for non-linear readers: ea
 
 | Code | Meaning |
 | --- | --- |
-| `config` | Declarable in `mono-agent.config.json` (env var override always available) |
+| `config` | Declarable in `mono-agent.config.json`; an env override exists only where one is listed (`--` means JSON-only / no env form) |
 | `cli` | Reached through a `mono-agent` CLI flag/command |
 | `auto` | Always active when the app runs; needs no declaration |
 | `code` | Programmatic escape hatch only — see [Programmatic API](/programmatic/) |
@@ -115,7 +115,7 @@ Built-in channels are independent JSON sections: `telegram`, `slack`, `webhook`,
 | `telegram.interactive` | config | `telegram.commands[]`, `telegram.reactions`, `telegram.quietHours`; `TelegramAskButtons` / `TelegramSendFile` in `tools.allowedTools` | `MONO_AGENT_TELEGRAM_REACTIONS` | [Telegram](/channels/telegram/) | — |
 | `slack.socket-mode` | config | `slack.enabled`, `slack.botToken`, `slack.appToken`, `slack.allowedChannelIds` / `slack.allowAllChannels`, `slack.botUserIds`, `slack.mentionTextAliases`, `slack.stripMentionText`; resilience tuning (all optional, on by default): `slack.heartbeatIntervalMs`, `slack.heartbeatTimeoutMs`, `slack.reconnectInitialBackoffMs`, `slack.reconnectMaxBackoffMs`, `slack.reconnectStabilityMs`, `slack.reconnectStartupGraceMs`, `slack.drainDeadlineMs` | `MONO_AGENT_SLACK_*` (incl. `MONO_AGENT_SLACK_HEARTBEAT_*`, `MONO_AGENT_SLACK_RECONNECT_*`, `MONO_AGENT_SLACK_DRAIN_DEADLINE_MS`) | [Slack](/channels/slack/) | [Slack team bot + MCP tools](/playbooks/slack-team-bot-mcp-tools/) |
 | `slack.shortcuts` | config | `slack.shortcuts[]: {callbackId, prompt, channelId?, ackText?, threadReply?}` | — (JSON-only) | [Slack shortcuts](/channels/slack/#shortcuts) | — |
-| `slack.app-home` | config | `slack.homeTab: {enabled, headerText?, buttons:[{actionId, label, prompt, channelId?, ackText?, threadReply?}]}` | — (JSON-only) | [Slack App Home](/channels/slack/#app-home) | — |
+| `slack.app-home` | config | `slack.homeTab: {enabled?, headerText?, buttons?:[{actionId, label, prompt, channelId?, ackText?, threadReply?}]}`; `enabled` defaults `false`, `buttons` defaults `[]` | — (JSON-only) | [Slack App Home](/channels/slack/#app-home) | — |
 | `channel.plugins` | config | `channels.plugins[]: { package, id?, label?, config? }` | — | [Write your own channel adapter](/programmatic/custom-channels/) | — |
 | `whatsapp.baileys` | config | `channels.plugins[].package: "@mono-agent/whatsapp-adapter"` plus plugin `config.{enabled,allowedChatJids,allowAllChats,groupMode,botJids,mentionTextAliases,stripMentionText}` | `MONO_AGENT_WHATSAPP_*` | [WhatsApp](/channels/whatsapp/) | — |
 | `webhook.http-invoke` | config | `webhook.enabled`, `host`, `port`, `path`, `prompt`, `notify`, `notifyConversationId`, `defaultMode`, `allowNonLoopback`, `retentionMs`, `maxStoredRequests`, `maxRunMs`, `webhook.endpoints[]` (incl. per-endpoint `model`/`effort`; a request body may set `model`/`effort`, request winning over endpoint config), `webhook.dir` | `MONO_AGENT_WEBHOOK_*` (incl. `MONO_AGENT_WEBHOOK_MODEL`, `MONO_AGENT_WEBHOOK_EFFORT`, `MONO_AGENT_WEBHOOK_MAX_RUN_MS`), `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON`, `MONO_AGENT_WEBHOOK_DIR` | [Webhook](/channels/webhook/) | [Webhook automation (sync/async)](/playbooks/webhook-automation-sync-async/) |

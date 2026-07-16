@@ -216,7 +216,7 @@ my-agent/
     "shortcuts": [                         // slack.shortcuts: JSON-only; callbackId matches the Slack app
       {
         "callbackId": "triage_request",
-        "prompt": "Triage this Slack request.",
+        "prompt": "Prepare the daily support triage checklist.",
         "channelId": "C0123",
         "ackText": "Triage started…",
         "threadReply": true
