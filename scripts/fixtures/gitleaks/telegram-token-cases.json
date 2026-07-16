@@ -1,12 +1,12 @@
 {
   "detected": [
     {
-      "name": "six-digit identifier lower bound",
+      "name": "six-digit identifier with every URL-safe tail class",
       "id": "123456",
       "tail": {
-        "character": "A",
-        "count": 33,
-        "suffix": "-_"
+        "character": "x",
+        "count": 30,
+        "suffix": "Aa0_-"
       }
     },
     {
@@ -36,6 +36,42 @@
         "character": "D",
         "count": 33,
         "suffix": "-_"
+      }
+    },
+    {
+      "name": "non-numeric identifier",
+      "id": "A23456",
+      "tail": {
+        "character": "G",
+        "count": 33,
+        "suffix": "-_"
+      }
+    },
+    {
+      "name": "35-character credential tail containing plus",
+      "id": "1234567",
+      "tail": {
+        "character": "g",
+        "count": 34,
+        "suffix": "+"
+      }
+    },
+    {
+      "name": "35-character credential tail containing slash",
+      "id": "12345678",
+      "tail": {
+        "character": "h",
+        "count": 34,
+        "suffix": "/"
+      }
+    },
+    {
+      "name": "35-character credential tail containing equals",
+      "id": "123456789",
+      "tail": {
+        "character": "i",
+        "count": 34,
+        "suffix": "="
       }
     },
     {

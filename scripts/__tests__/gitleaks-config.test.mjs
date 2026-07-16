@@ -53,6 +53,53 @@ describe("Telegram token gitleaks rule", () => {
     }
   });
 
+  it("kills restrictive and permissive token-shape mutations", async () => {
+    const { config, fixture } = await readInputs();
+    const rule = readRule(config, "telegram-bot-token");
+    const mutations = [
+      {
+        name: "uppercase-only credential tail",
+        regex: replaceExactlyOnce(
+          rule.regex,
+          "[A-Za-z0-9_-]{35}",
+          "[A-Z_-]{35}",
+        ),
+        mismatches: [
+          "six-digit identifier with every URL-safe tail class",
+        ],
+      },
+      {
+        name: "alphanumeric identifier",
+        regex: replaceExactlyOnce(
+          rule.regex,
+          "[0-9]{6,10}",
+          "[A-Za-z0-9]{6,10}",
+        ),
+        mismatches: ["non-numeric identifier"],
+      },
+      {
+        name: "standard Base64 punctuation in credential tail",
+        regex: replaceExactlyOnce(
+          rule.regex,
+          "[A-Za-z0-9_-]{35}",
+          "[A-Za-z0-9_+/=-]{35}",
+        ),
+        mismatches: [
+          "35-character credential tail containing plus",
+          "35-character credential tail containing slash",
+          "35-character credential tail containing equals",
+        ],
+      },
+    ];
+
+    for (const mutation of mutations) {
+      expect(
+        shapeMismatches(new RegExp(mutation.regex, "u"), fixture),
+        `${mutation.name} must be killed by the fixture matrix`,
+      ).toEqual(mutation.mismatches);
+    }
+  });
+
   it.skipIf(!hasGitleaks)(
     "flags planted synthetic tokens without flagging near misses",
     async () => {
@@ -93,14 +140,15 @@ describe("Telegram token gitleaks rule", () => {
 
       const report = JSON.parse(await readFile(reportPath, "utf8"));
       expect(report).toHaveLength(fixture.detected.length);
-      expect(report.map((finding) => finding.RuleID)).toEqual([
-        "telegram-bot-token",
-        "telegram-bot-token",
-      ]);
-      expect(report.map((finding) => basename(finding.File))).toEqual([
-        "detected.jsonl",
-        "detected.jsonl",
-      ]);
+      expect(report.map((finding) => finding.RuleID)).toEqual(
+        fixture.detected.map(() => "telegram-bot-token"),
+      );
+      expect(report.map((finding) => basename(finding.File))).toEqual(
+        fixture.detected.map(() => "detected.jsonl"),
+      );
+      expect(report.map((finding) => finding.StartLine)).toEqual(
+        fixture.detected.map((_, index) => index + 1),
+      );
     },
   );
 });
@@ -142,6 +190,24 @@ function readRule(config, id) {
 function materialize(testCase) {
   const { character, count, suffix } = testCase.tail;
   return `${testCase.id}:${character.repeat(count)}${suffix}`;
+}
+
+function shapeMismatches(pattern, fixture) {
+  return [
+    ...fixture.detected.map((testCase) => ({ expected: true, testCase })),
+    ...fixture.ignored.map((testCase) => ({ expected: false, testCase })),
+  ]
+    .filter(({ expected, testCase }) =>
+      pattern.test(JSON.stringify({ candidate: materialize(testCase) })) !== expected)
+    .map(({ testCase }) => testCase.name);
+}
+
+function replaceExactlyOnce(source, search, replacement) {
+  const firstIndex = source.indexOf(search);
+  if (firstIndex === -1 || source.indexOf(search, firstIndex + search.length) !== -1) {
+    throw new Error(`Expected exactly one ${search} fragment in the token rule`);
+  }
+  return source.replace(search, replacement);
 }
 
 function toJsonLines(testCases) {
