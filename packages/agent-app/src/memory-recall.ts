@@ -2,8 +2,6 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { resolveSupermemoryContainer } from "@mono-agent/config";
-import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
   CircuitBreakerEmbeddingOptions,
   EmbeddingProvider,
@@ -11,10 +9,26 @@ import type {
 } from "@mono-agent/memory/search";
 import type { MemoryStatus, MemoryType } from "@mono-agent/memory/store";
 import { isConversationRelativeQuery } from "@mono-agent/memory/bujo";
-import type { BujoTier } from "@mono-agent/memory/bujo";
 import * as z from "zod/v4";
 
+import type {
+  MemoryRecallBujoSettings,
+  MemoryRecallEmbeddings,
+  MemoryRecallSettings,
+  MemoryRecallSupermemorySettings,
+} from "./memory-recall-settings.js";
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
+
+export { resolveMemoryRecallSettings } from "./memory-recall-settings.js";
+export type {
+  MemoryRecallBujoSettings,
+  MemoryRecallEmbeddings,
+  MemoryRecallEmbeddingsCircuitBreaker,
+  MemoryRecallSettings,
+  MemoryRecallSupermemory,
+  MemoryRecallSupermemorySettings,
+  ResolveMemoryRecallSettingsOptions,
+} from "./memory-recall-settings.js";
 
 /**
  * Read-only memory recall, wired from the SINGLE `config.memory` block.
@@ -40,72 +54,6 @@ import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
  */
 
 export const MEMORY_RECALL_MCP_SERVER_NAME = "mono-agent-memory";
-
-/** Circuit-breaker tuning carried into the recall child. Mirrors `config.memory.embeddings.circuitBreaker`. */
-export interface MemoryRecallEmbeddingsCircuitBreaker {
-  readonly failureThreshold?: number;
-  readonly cooldownMs?: number;
-}
-
-/** Embeddings the recall server needs. Mirrors the resolved `config.memory.embeddings` slice. */
-export interface MemoryRecallEmbeddings {
-  readonly provider: "ollama" | "lmstudio" | "openai";
-  readonly model: string;
-  readonly endpoint?: string;
-  /** Resolved key value. Only used as a last resort (inline apiKey, no apiKeyEnv). */
-  readonly apiKey?: string;
-  /** Name of the env var the key was read from; forwarded instead of the raw value when present. */
-  readonly apiKeyEnv?: string;
-  readonly dim?: number;
-  /** Per-call embeddings timeout in ms; mirrors the host default when unset (see createRecallStore). */
-  readonly timeoutMs?: number;
-  /** Circuit-breaker overrides; unset fields fall back to the breaker defaults. */
-  readonly circuitBreaker?: MemoryRecallEmbeddingsCircuitBreaker;
-}
-
-/**
- * Supermemory params the recall child needs to build its REST client (external backend). The key is
- * the RESOLVED value (the loader already turned any `apiKeyEnv` into a literal): unlike the embeddings
- * path, recall forwards the value — not an env-var name — into the child's spec env, because the
- * stdio child does NOT inherit the parent's full environment under every runtime (claude-sdk/codex-app
- * pass only a POSIX safe-list), so a name-only handoff would silently fail to authenticate.
- */
-export interface MemoryRecallSupermemory {
-  readonly baseUrl: string;
-  readonly container: string;
-  readonly apiKey?: string;
-  readonly timeoutMs?: number;
-}
-
-/** bujo recall: a memory root (+ optional embeddings for semantic ranking). */
-export interface MemoryRecallBujoSettings {
-  /** Memory root directory (config.memory.path). */
-  readonly root: string;
-  /** Configured strict tier; required to retain BuJo graph capability in read-only recall. */
-  readonly tier?: BujoTier;
-  /**
-   * Optional exact managed-generation database path. Command paths resolve this
-   * once so a semantic attempt and its FTS fallback cannot observe different
-   * active generations. The child-process env deliberately omits it and
-   * resolves the active generation after startup.
-   */
-  readonly dbPath?: string;
-  /** Embeddings for semantic recall. Omitted for an FTS-only (lite) recall store. */
-  readonly embeddings?: MemoryRecallEmbeddings;
-  /** Explicit degraded path used only after a configured semantic recall failure. */
-  readonly ftsOnlyFallback?: true;
-}
-
-/** supermemory recall: search the external instance over REST. */
-export interface MemoryRecallSupermemorySettings {
-  readonly supermemory: MemoryRecallSupermemory;
-}
-
-/**
- * Recall settings — discriminated structurally by the presence of `supermemory`. The bujo shape is
- * unchanged (root + optional embeddings) so existing configs and env round-trips stay byte-identical.
- */
-export type MemoryRecallSettings = MemoryRecallBujoSettings | MemoryRecallSupermemorySettings;
 
 /** Read-only recall surface the MCP server formats. Both backend stores satisfy it structurally. */
 export interface RecallCapableStore {
@@ -154,60 +102,6 @@ export interface MemoryRecallRuntimeExtension {
 export const DEFAULT_RECALL_EMBEDDINGS_TIMEOUT_MS = 10_000;
 
 /**
- * Resolve recall settings from the single in-app memory block. Returns `undefined` (recall off) only
- * when memory is unconfigured or the recall tool is disabled. When the operator explicitly enables
- * recall on a no-embeddings store (lite tier), settings are returned WITHOUT embeddings so the child
- * serves FTS-only recall — the config layer deliberately supports this forced-on opt-in.
- */
-export function resolveMemoryRecallSettings(config: MonoAgentConfig): MemoryRecallSettings | undefined {
-  const memory = config.memory;
-  if (memory === undefined) {
-    return undefined;
-  }
-  if (memory.recallTool?.enabled === false) {
-    return undefined;
-  }
-  if ((memory.backend ?? "bujo") === "supermemory") {
-    const sm = memory.supermemory;
-    if (sm === undefined) {
-      // Defensive: the loader already rejects backend "supermemory" without a block.
-      return undefined;
-    }
-    return {
-      supermemory: {
-        baseUrl: sm.baseUrl,
-        container: resolveSupermemoryContainer(config),
-        // The loader already resolved apiKeyEnv → apiKey, so forward the value (see type doc).
-        ...(sm.apiKey === undefined ? {} : { apiKey: sm.apiKey }),
-        ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
-      },
-    };
-  }
-  const embeddings = memory.embeddings;
-  if (embeddings === undefined) {
-    // Default-on recall without embeddings → FTS-only recall (no embedding provider built).
-    return { root: memory.path, tier: memory.mode };
-  }
-  return {
-    root: memory.path,
-    tier: memory.mode,
-    embeddings: {
-      provider: embeddings.provider,
-      model: embeddings.model,
-      ...(embeddings.endpoint === undefined ? {} : { endpoint: embeddings.endpoint }),
-      // Prefer forwarding the env-var NAME over the resolved secret value (F13): when apiKeyEnv is
-      // present the child re-reads the key from its inherited env, so the raw key never lands in the
-      // child's spec env. The literal apiKey is kept only as a fallback for the inline-key case.
-      ...(embeddings.apiKeyEnv === undefined ? {} : { apiKeyEnv: embeddings.apiKeyEnv }),
-      ...(embeddings.apiKey === undefined ? {} : { apiKey: embeddings.apiKey }),
-      ...(embeddings.dim === undefined ? {} : { dim: embeddings.dim }),
-      ...(embeddings.timeoutMs === undefined ? {} : { timeoutMs: embeddings.timeoutMs }),
-      ...(embeddings.circuitBreaker === undefined ? {} : { circuitBreaker: embeddings.circuitBreaker }),
-    },
-  };
-}
-
-/**
  * Re-read recall settings from the recall server's own environment (the stdio child process).
  *
  * Only `MONO_AGENT_MEMORY_PATH` is required. When the embeddings provider/model are both absent the
@@ -252,7 +146,7 @@ export function memoryRecallSettingsFromEnv(env: Record<string, string | undefin
   if (rawTier !== undefined && rawTier !== "lite" && rawTier !== "journal" && rawTier !== "bujo") {
     throw new Error(`memory-recall: unsupported MONO_AGENT_MEMORY_MODE "${rawTier}" (expected lite, journal, or bujo).`);
   }
-  const tier = rawTier as BujoTier | undefined;
+  const tier = rawTier as MemoryRecallBujoSettings["tier"];
   const provider = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER);
   const model = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL);
   if (provider === undefined && model === undefined) {
