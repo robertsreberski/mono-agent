@@ -15,6 +15,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
+import { MemorySearchError } from "@mono-agent/memory/search";
+import type { MemorySearchErrorCode } from "@mono-agent/memory/search";
 import type { EntityRecord, IndexMetadata, MemoryDb, MemoryRecord, MemoryStoreAudit, MemoryStoreStats } from "@mono-agent/memory/store";
 import { listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
@@ -48,6 +50,12 @@ const MEMORY_FORGET_SCHEMA_VERSION = 1;
 const MAX_FORGET_IDS = 32;
 const MAX_FORGET_PLAN_BYTES = 1024 * 1024;
 const MEMORY_ID_RE = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/u;
+const FTS_FALLBACK_MEMORY_SEARCH_CODES = new Set<MemorySearchErrorCode>([
+  "embedding_circuit_open",
+  "embedding_request_failed",
+  "embedding_response_invalid",
+  "invalid_embedding_options",
+]);
 const FTS_FALLBACK_NETWORK_CODES = new Set([
   "EAI_AGAIN",
   "ECONNREFUSED",
@@ -1543,32 +1551,37 @@ async function recallWithFtsFallback(
   }
 }
 
-function isFtsFallbackEligible(settings: MemoryRecallSettings, error: unknown): settings is MemoryRecallBujoSettings {
+export function isFtsFallbackEligible(
+  settings: MemoryRecallSettings,
+  error: unknown,
+): settings is MemoryRecallBujoSettings {
   if ("supermemory" in settings || settings.embeddings === undefined) {
     return false;
   }
-  const record = typeof error === "object" && error !== null ? error as Record<string, unknown> : {};
-  const code = typeof record.code === "string" ? record.code : "";
-  if (code.startsWith("embedding_") || code === "invalid_embedding_options") {
+  if (error instanceof MemorySearchError) {
+    return FTS_FALLBACK_MEMORY_SEARCH_CODES.has(error.code);
+  }
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  if (error.name === "AbortError") {
     return true;
   }
-  const name = error instanceof Error ? error.name : "";
-  const message = reasonOf(error).toLocaleLowerCase("en-US");
-  if (name === "TypeError") {
-    return message.includes("fetch failed") ||
-      message.includes("econnrefused") ||
-      message.includes("enotfound") ||
-      hasNetworkFailureCode(error);
+  if (error.name !== "TypeError" && error.name !== "AggregateError") {
+    return false;
   }
-  return name === "AbortError" ||
-    message.includes("fetch failed") ||
-    message.includes("embedding") ||
-    message.includes("econnrefused") ||
-    message.includes("enotfound");
+  return hasNetworkFailureCause(error);
 }
 
-function hasNetworkFailureCode(error: unknown): boolean {
-  const pending: unknown[] = [error];
+function hasNetworkFailureCause(error: Error): boolean {
+  const root = error as unknown as Record<string, unknown>;
+  const pending: unknown[] = [];
+  if (root.cause !== undefined) {
+    pending.push(root.cause);
+  }
+  if (Array.isArray(root.errors)) {
+    pending.push(...root.errors);
+  }
   const seen = new Set<object>();
   while (pending.length > 0 && seen.size < 16) {
     const current = pending.shift();

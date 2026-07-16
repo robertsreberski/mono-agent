@@ -389,6 +389,7 @@ describe("runCli memory", () => {
 
   it("falls back to FTS-only when configured embeddings are down", async () => {
     const memoryRoot = join(await tempDir(), "memory");
+    const endpoint = await closedLoopbackEndpoint();
     const dir = await agentDir({
       memory: {
         mode: "journal",
@@ -397,7 +398,7 @@ describe("runCli memory", () => {
         embeddings: {
           provider: "ollama",
           model: "nomic-embed-text:v1.5",
-          endpoint: "http://127.0.0.1:1",
+          endpoint,
           timeoutMs: 20,
           circuitBreaker: { failureThreshold: 1, cooldownMs: 60_000 },
         },
@@ -429,7 +430,7 @@ describe("runCli memory", () => {
     });
     await seedLocalStore(memoryRoot);
     const cause = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:11434"), { code: "ECONNREFUSED" });
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(Object.assign(new TypeError("request failed"), { cause })));
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(Object.assign(new TypeError("fetch failed"), { cause })));
 
     const search = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
       runCli(["memory", "search", "deploy", "releases"]))));
@@ -441,7 +442,16 @@ describe("runCli memory", () => {
     expect(search.stdout).toContain("Deploy pipeline uses blue green releases.");
   });
 
-  it("surfaces a non-network TypeError instead of relabeling it as embedding unavailability", async () => {
+  it.each([
+    [
+      "a programming TypeError whose message mentions ECONNREFUSED",
+      () => new TypeError("Cannot read properties of undefined (reading 'ECONNREFUSED')"),
+    ],
+    [
+      "an invariant Error whose message mentions embedding",
+      () => new Error("embedding adapter invariant violated"),
+    ],
+  ] as const)("surfaces %s instead of relabeling it as embedding unavailability", async (_label, failure) => {
     const memoryRoot = join(await tempDir(), "memory");
     const dir = await agentDir({
       memory: {
@@ -456,22 +466,22 @@ describe("runCli memory", () => {
       },
     });
     await seedLocalStore(memoryRoot);
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(
-      new TypeError("Cannot read properties of null (reading 'embedding')"),
-    ));
+    const error = failure();
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(error));
 
     const search = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
       runCli(["memory", "search", "deploy", "releases"]))));
 
     expect(search.code).toBe(1);
     expect(search.stdout).toBe("");
-    expect(search.stderr).toContain("memory search failed: Cannot read properties of null (reading 'embedding')");
+    expect(search.stderr).toContain(`memory search failed: ${error.message}`);
     expect(search.stderr).not.toContain("Semantic embeddings unavailable");
     expect(search.stderr).not.toContain("FTS-only");
   });
 
   it("keeps a managed BuJo generation pinned while semantic search falls back to graph-capable FTS", async () => {
     const memoryRoot = join(await tempDir(), "memory");
+    const endpoint = await closedLoopbackEndpoint();
     const dir = await agentDir({
       memory: {
         mode: "bujo",
@@ -480,7 +490,7 @@ describe("runCli memory", () => {
         embeddings: {
           provider: "ollama",
           model: "test-embed",
-          endpoint: "http://127.0.0.1:1",
+          endpoint,
           dim: 8,
           timeoutMs: 20,
           circuitBreaker: { failureThreshold: 1, cooldownMs: 60_000 },
@@ -1664,6 +1674,21 @@ async function supermemoryServer(): Promise<{
       });
     }),
   };
+}
+
+async function closedLoopbackEndpoint(): Promise<string> {
+  const server = createServer();
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address() as AddressInfo;
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+  return `http://127.0.0.1:${address.port}`;
 }
 
 async function failingEmbeddingServer(beforeFailure: () => Promise<void>): Promise<{
