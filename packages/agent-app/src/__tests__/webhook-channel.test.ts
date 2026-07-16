@@ -49,11 +49,12 @@ function succeededStatus(text?: string): WebhookInvocationStatus {
   };
 }
 
-function webhookRequest(endpointName = "digest"): WebhookInvocationRequest {
+function webhookRequest(endpointName = "digest", replyToConversationId?: string): WebhookInvocationRequest {
   return {
     conversationId: "webhook-source",
     text: "payload",
     abortSignal: new AbortController().signal,
+    ...(replyToConversationId === undefined ? {} : { replyTo: { conversationId: replyToConversationId } }),
     metadata: {
       webhook: {
         requestId: "req-1",
@@ -150,7 +151,7 @@ describe("webhook channel driver — native notification delivery", () => {
       },
     });
 
-    captured.onResult?.(succeededStatus("Webhook digest"), webhookRequest());
+    captured.onResult?.(succeededStatus("Webhook digest"), webhookRequest("digest", "telegram:42"));
 
     await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledOnce());
     // Verbatim delivery: the final answer is posted as-is (no echo-turn wrapper).
@@ -175,15 +176,58 @@ describe("webhook channel driver — native notification delivery", () => {
       },
     });
 
-    expect(captured.endpoints).toEqual([
-      expect.objectContaining({ notifyFallbackConversationId: "slack:C1" }),
-    ]);
+    expect(captured.endpoints?.[0]).not.toHaveProperty("notifyFallbackConversationId");
+    const notifyConversationId = await captured.resolveNotifyFallbackConversationId?.();
+    expect(notifyConversationId).toBe("slack:C1");
 
-    captured.onResult?.(succeededStatus("Webhook digest"), webhookRequest());
+    captured.onResult?.(
+      succeededStatus("Webhook digest"),
+      webhookRequest("digest", notifyConversationId),
+    );
 
     await vi.waitFor(() =>
       expect(notifyDestination).toHaveBeenCalledWith("slack:C1", "Webhook digest", { verbatim: true }),
     );
+  });
+
+  it("re-resolves inferred destinations per invocation and delivers only on that request's replyTo", async () => {
+    const warn = vi.fn();
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    let candidates = [
+      { conversationId: "slack:C1", channelId: "slack" as const },
+    ];
+    const listNotifyDestinations = vi.fn(async () => candidates);
+    const captured = await startCapturingWebhook({
+      ...baseInput,
+      logger: { warn },
+      notifyDestination,
+      listNotifyDestinations,
+      config: {
+        ...baseInput.config,
+        endpoints: [{ name: "digest", path: "/digest", mode: "sync", enabled: true, notify: true }],
+      },
+    });
+
+    expect(listNotifyDestinations).not.toHaveBeenCalled();
+    const firstRoute = await captured.resolveNotifyFallbackConversationId?.();
+    candidates = [
+      { conversationId: "slack:C1", channelId: "slack" as const },
+      { conversationId: "slack:C2", channelId: "slack" as const },
+    ];
+    // The first request keeps the route it resolved before starting even though a
+    // second candidate appears before completion; replyTo and delivery cannot drift.
+    captured.onResult?.(succeededStatus("First digest"), webhookRequest("digest", firstRoute));
+    await vi.waitFor(() =>
+      expect(notifyDestination).toHaveBeenCalledWith("slack:C1", "First digest", { verbatim: true }),
+    );
+
+    const secondRoute = await captured.resolveNotifyFallbackConversationId?.();
+    expect(secondRoute).toBeUndefined();
+    captured.onResult?.(succeededStatus("Second digest"), webhookRequest("digest", secondRoute));
+    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+
+    expect(notifyDestination).toHaveBeenCalledTimes(1);
+    expect(listNotifyDestinations).toHaveBeenCalledTimes(2);
   });
 
   it("delivers to the request's conversation when the payload names a deliverable chat (async-callback)", async () => {
@@ -199,7 +243,10 @@ describe("webhook channel driver — native notification delivery", () => {
 
     // No notifyConversationId and no single inferred candidate — the destination is
     // taken from the inbound payload's conversationId (the originating chat).
-    captured.onResult?.(succeededStatus("Job done"), { ...webhookRequest("callback"), conversationId: "telegram:99" });
+    captured.onResult?.(succeededStatus("Job done"), {
+      ...webhookRequest("callback", "telegram:99"),
+      conversationId: "telegram:99",
+    });
 
     await vi.waitFor(() =>
       expect(notifyDestination).toHaveBeenCalledWith("telegram:99", "Job done", { verbatim: true }),
@@ -254,7 +301,10 @@ describe("webhook channel driver — native notification delivery", () => {
       },
     });
 
-    expect(() => captured.onResult?.(succeededStatus("Webhook digest"), webhookRequest())).not.toThrow();
+    expect(() => captured.onResult?.(
+      succeededStatus("Webhook digest"),
+      webhookRequest("digest", "telegram:42"),
+    )).not.toThrow();
 
     await vi.waitFor(() => expect(warn).toHaveBeenCalled());
     expect(warn.mock.calls.at(-1)?.[1]).toMatchObject({ endpointName: "digest", reason: "blocked" });

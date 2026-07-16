@@ -22,13 +22,14 @@ const baseInput = {
   },
 } satisfies ChannelStartInput<CronAdapterConfig>;
 
-function succeededResult(text?: string) {
+function succeededResult(text?: string, notifyConversationId?: string) {
   return {
     kind: "succeeded" as const,
     jobId: "j",
     scheduledAt: "2026-01-01T00:00:00.000Z",
     startedAt: "2026-01-01T00:00:00.000Z",
     completedAt: "2026-01-01T00:00:01.000Z",
+    ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
     ...(text === undefined ? {} : { text }),
   };
 }
@@ -221,15 +222,61 @@ describe("cron channel driver — native notification delivery", () => {
       },
     });
 
-    expect(captured.jobs).toEqual([
-      expect.objectContaining({ notifyFallbackConversationId: "slack:C1" }),
-    ]);
+    expect(captured.jobs[0]).not.toHaveProperty("notifyFallbackConversationId");
+    const notifyConversationId = await captured.resolveNotifyFallbackConversationId?.();
+    expect(notifyConversationId).toBe("slack:C1");
 
-    await captured.onResult?.(succeededResult("Digest"));
+    await captured.onResult?.(succeededResult("Digest", notifyConversationId));
 
     await vi.waitFor(() =>
       expect(notifyDestination).toHaveBeenCalledWith("slack:C1", "Digest", { verbatim: true }),
     );
+  });
+
+  it("re-resolves inferred destinations per run and delivers only on the route bound to that run", async () => {
+    const warn = vi.fn();
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    let candidates = [
+      { conversationId: "slack:C1", channelId: "slack" as const },
+    ];
+    const listNotifyDestinations = vi.fn(async () => candidates);
+    const captured = await startCapturingCron({
+      ...baseInput,
+      logger: { warn },
+      notifyDestination,
+      listNotifyDestinations,
+      config: {
+        jobs: [{
+          id: "j",
+          expression: "* * * * *",
+          timezone: "UTC",
+          prompt: "p",
+          enabled: true,
+          notify: true,
+        }],
+      },
+    });
+
+    expect(listNotifyDestinations).not.toHaveBeenCalled();
+    const firstRoute = await captured.resolveNotifyFallbackConversationId?.();
+    candidates = [
+      { conversationId: "slack:C1", channelId: "slack" as const },
+      { conversationId: "slack:C2", channelId: "slack" as const },
+    ];
+    // The first run keeps the route it resolved before starting even though a
+    // second candidate appears before completion; replyTo and delivery cannot drift.
+    await captured.onResult?.(succeededResult("First digest", firstRoute));
+    await vi.waitFor(() =>
+      expect(notifyDestination).toHaveBeenCalledWith("slack:C1", "First digest", { verbatim: true }),
+    );
+
+    const secondRoute = await captured.resolveNotifyFallbackConversationId?.();
+    expect(secondRoute).toBeUndefined();
+    await captured.onResult?.(succeededResult("Second digest", secondRoute));
+    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+
+    expect(notifyDestination).toHaveBeenCalledTimes(1);
+    expect(listNotifyDestinations).toHaveBeenCalledTimes(2);
   });
 
   it("skips native delivery for blank final text", async () => {
