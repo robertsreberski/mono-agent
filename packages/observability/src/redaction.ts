@@ -16,11 +16,11 @@ const SENSITIVE_KEY_PATTERN =
 
 // This is intentionally a short, closed list of high-confidence credential
 // shapes. Prefix-only matches (for example prose that mentions `sk-` or
-// `ghp_`) are not enough: every pattern requires the documented token length
-// and alphabet. Quantifiers are capped so candidate width stays bounded and
-// scanning cost stays proportional to the caller-selected retained prefix.
+// `ghp_`) are not enough: every pattern requires a credential-specific length
+// and alphabet. Quantifiers are capped and avoid unbounded wildcard matching.
 const CONTENT_SECRET_PATTERNS = [
-  /\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{19,511}[A-Za-z0-9]\b/gu,
+  /\bsk-[A-Za-z0-9]{48}\b/gu,
+  /\bsk-(?:proj-|svcacct-)[A-Za-z0-9_-]{47,511}[A-Za-z0-9]\b/gu,
   /\bghp_[A-Za-z0-9]{36}\b/gu,
   /\bgithub_pat_[A-Za-z0-9_]{19,511}[A-Za-z0-9]\b/gu,
   /\bAKIA[A-Z0-9]{16}\b/gu,
@@ -38,11 +38,10 @@ const MAX_OBJECT_KEYS = 1_000;
 export interface RedactJsonValueOptions {
   /**
    * Scan retained free-text content for high-confidence credential shapes.
-   * Disabled by default to preserve existing prose exactly. The scan runs only
-   * after UTF-8 truncation, so pattern-matching work is bounded by the retained
-   * prefix selected by `maxStringBytes`. Only that prefix participates; a
-   * boundary fragment shorter than a pattern's minimum credential length
-   * remains a non-match.
+   * Disabled by default to preserve existing prose exactly. Matches are
+   * replaced before UTF-8 truncation so the emitted truncation marker describes
+   * the redacted value. An existing canonical marker is preserved while its
+   * retained head is scanned, keeping repeated export/backfill passes stable.
    */
   readonly contentPatternRedaction?: boolean;
 }
@@ -90,8 +89,9 @@ function redact(
     return value;
   }
   if (typeof value === "string") {
-    const truncated = truncateString(value, maxStringBytes);
-    return contentPatternRedaction ? redactContentPatterns(truncated) : truncated;
+    return contentPatternRedaction
+      ? redactStringContent(value, maxStringBytes)
+      : truncateString(value, maxStringBytes);
   }
   if (typeof value === "bigint") {
     return value.toString();
@@ -147,6 +147,41 @@ function redactContentPatterns(value: string): string {
     redacted = redacted.replace(pattern, "[redacted]");
   }
   return redacted;
+}
+
+function redactStringContent(value: string, maxStringBytes: number): string {
+  const preserved = splitPreservableTruncation(value, maxStringBytes);
+  if (preserved !== undefined) {
+    return `${redactContentPatterns(preserved.head)}${preserved.marker}`;
+  }
+  return truncateString(redactContentPatterns(value), maxStringBytes);
+}
+
+function splitPreservableTruncation(
+  value: string,
+  maxStringBytes: number,
+): { readonly head: string; readonly marker: string } | undefined {
+  const match = TRUNCATION_SUFFIX_PATTERN.exec(value);
+  if (match === null || match.index + match[0].length !== value.length) {
+    return undefined;
+  }
+  const omittedBytes = Number(match[1]);
+  const head = value.slice(0, match.index);
+  const retainedBytes = TEXT_ENCODER.encode(head).length;
+  const originalBytes = retainedBytes + omittedBytes;
+  const strictCanonical =
+    Number.isSafeInteger(originalBytes)
+    && originalBytes > maxStringBytes
+    && maxStringBytes - retainedBytes <= 3;
+  const alreadyRedacted = head.includes("[redacted]");
+  if (
+    !Number.isSafeInteger(omittedBytes)
+    || retainedBytes > maxStringBytes
+    || (!strictCanonical && !alreadyRedacted)
+  ) {
+    return undefined;
+  }
+  return { head, marker: match[0] };
 }
 
 function consumeNode(budget: RedactionBudget): boolean {

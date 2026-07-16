@@ -129,7 +129,7 @@ describe("buildRunReadableSpans", () => {
   });
 
   it("redacts secret-shaped root input, output, and system prompt when opted in", () => {
-    const fixture = ["sk", "-", "A".repeat(24)].join("");
+    const fixture = ["sk", "-", "A".repeat(48)].join("");
     const root = build({
       summary: { ...summary, systemPrompt: `system ${fixture}`, eventCount: 1 },
       events: [

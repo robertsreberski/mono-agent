@@ -106,7 +106,9 @@ describe("redactJsonValue", () => {
 
   it("redacts high-confidence secret-shaped substrings from plain strings when opted in", () => {
     const fixtures = [
-      ["sk", "-", "A".repeat(24)].join(""),
+      ["sk", "-", "A".repeat(48)].join(""),
+      ["sk", "-proj-", "B".repeat(64)].join(""),
+      ["sk", "-svcacct-", "C".repeat(64)].join(""),
       ["ghp", "_", "B".repeat(36)].join(""),
       ["github", "_pat_", "C".repeat(24)].join(""),
       ["AK", "IA", "D".repeat(16)].join(""),
@@ -125,7 +127,7 @@ describe("redactJsonValue", () => {
   });
 
   it("leaves content scanning disabled by default", () => {
-    const fixture = ["sk", "-", "A".repeat(24)].join("");
+    const fixture = ["sk", "-", "A".repeat(48)].join("");
     expect(redactJsonValue(`plain key: ${fixture}`)).toBe(`plain key: ${fixture}`);
   });
 
@@ -135,11 +137,31 @@ describe("redactJsonValue", () => {
       "ghp_ is a token-family label.",
       "AKIA is also a personal name.",
       "xoxb- alone is not a credential.",
+      "sk-SK-localization-resource-name",
+      "sk-NO-translation-catalog-entry",
+      "sk-proj-localization-resource-name-for-tests",
+      "sk-svcacct-development-profile-name",
+      ["sk", "-", "A".repeat(47)].join(""),
+      ["sk", "-", "A".repeat(49)].join(""),
       ["ghp", "_", "A".repeat(35)].join(""),
       ["AK", "IA", "B".repeat(15)].join(""),
     ].join(" ");
 
     expect(redactJsonValue(prose, 4_096, { contentPatternRedaction: true })).toBe(prose);
+  });
+
+  it("preserves one stable truncation marker when scanning an already-truncated secret", () => {
+    const fixture = ["xox", "b-", "A".repeat(24)].join("");
+    const original = `prefix ${fixture} ${"x".repeat(256)}`;
+    const truncated = truncateString(original, 64);
+    const marker = truncated.slice(truncated.indexOf("…[truncated"));
+
+    const once = redactJsonValue(truncated, 64, { contentPatternRedaction: true }) as string;
+    const twice = redactJsonValue(once, 64, { contentPatternRedaction: true }) as string;
+
+    expect(once).toBe(`prefix [redacted] ${"x".repeat(27)}${marker}`);
+    expect(once.match(/…\[truncated/gu)).toHaveLength(1);
+    expect(twice).toBe(once);
   });
 
   it("applies content-pattern scanning recursively without weakening key redaction", () => {

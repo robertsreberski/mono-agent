@@ -87,7 +87,7 @@ Add one `phoenix` entry to `observability.exporters[]`. Omit the whole `observab
 | `headers` | object | — | Extra HTTP headers, e.g. an auth token for Phoenix Cloud. Keep secrets as placeholders in committed config. |
 | `timeoutMs` | number | — | Per-export request timeout; bounds how long a failing export can block. |
 
-`contentPatternRedaction` supplements the always-on sensitive-key pass and scans only the retained, byte-capped export value. It uses a closed set of complete token shapes; it does not guess by entropy or make an untrusted collector safe. Local JSONL artifact recording is unchanged.
+`contentPatternRedaction` supplements the always-on sensitive-key pass. Complete matches are replaced before the existing byte cap is applied; an existing canonical truncation marker is preserved across repeated export and backfill passes. The closed shape set does not guess by entropy or make an untrusted collector safe. Local JSONL artifact recording is unchanged.
 
 ### Environment variable
 
