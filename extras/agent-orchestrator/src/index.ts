@@ -112,11 +112,11 @@ export async function createCollaboratorToolRuntimeExtension(
     );
     try {
       await server.connect(transport as unknown as Transport);
-      await transport.handleRequest(req, res, req.body);
       res.on("close", () => {
         void transport.close().catch(() => undefined);
         void server.close().catch(() => undefined);
       });
+      await transport.handleRequest(req, res, req.body);
     } catch (error) {
       if (!res.headersSent) {
         res.status(500).json({
