@@ -175,8 +175,8 @@ describe("mdInline", () => {
     const html = mdInline(`${userToken} \`$& $'\` [cash](https://example.test/$&)`);
 
     expect(html).toMatch(/^\0 mono-agent-inline:0 \0 /u);
-    expect(html).toContain(">$& $'</code>");
-    expect(html).toContain('href="https://example.test/$&"');
+    expect(html).toContain(">$&amp; $&#39;</code>");
+    expect(html).toContain('href="https://example.test/$&amp;"');
     expectOnlyRendererTags(html);
   });
 });
