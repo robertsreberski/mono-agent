@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { distill } from "../distill.js";
+import { distill, normalizeCandidateText } from "../distill.js";
 import { serializeBullet } from "../grammar.js";
 import { fakeLlm } from "./helpers.js";
 
@@ -34,5 +34,20 @@ describe("distill", () => {
     expect(text).not.toContain("<!--mem");
     // The candidate survives normalization and round-trips through serializeBullet without throwing.
     expect(() => serializeBullet({ id: "x", type: "note", status: "open", text, salience: 0.5, isInsight: false, createdAt: "2026-06-15T00:00:00.000Z", refs: [] })).not.toThrow();
+  });
+
+  it("caps candidate text at 280 Unicode code points without splitting an astral character", () => {
+    const exactBoundary = `${"a".repeat(279)}🧠`;
+    const overBoundary = `${exactBoundary}tail`;
+
+    expect(normalizeCandidateText(exactBoundary)).toBe(exactBoundary);
+
+    const first = normalizeCandidateText(overBoundary);
+    const second = normalizeCandidateText(overBoundary);
+    expect(first).toBe(exactBoundary);
+    expect(second).toBe(first);
+    expect(Array.from(first ?? "")).toHaveLength(280);
+    expect(first).not.toContain("�");
+    expect(first).not.toMatch(/\p{Cs}/u);
   });
 });

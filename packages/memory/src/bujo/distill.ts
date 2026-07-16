@@ -35,6 +35,7 @@ export async function distill(text: string, llm: LlmComplete): Promise<Candidate
 }
 
 const VALID_TYPES = new Set<string>(["task", "event", "note"]);
+const MAX_CANDIDATE_TEXT_CODE_POINTS = 280;
 
 export function normalizeCandidate(it: unknown): CandidateMemory[] {
   if (it === null || typeof it !== "object") return [];
@@ -65,6 +66,7 @@ export function normalizeCandidate(it: unknown): CandidateMemory[] {
 /** Normalize any model-authored memory sentence to the canonical bullet-safe form. */
 export function normalizeCandidateText(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
-  const text = value.normalize("NFKC").replace(/\s+/gu, " ").replace(/<!--mem/gu, "").trim().slice(0, 280);
+  const normalized = value.normalize("NFKC").replace(/\s+/gu, " ").replace(/<!--mem/gu, "").trim();
+  const text = Array.from(normalized).slice(0, MAX_CANDIDATE_TEXT_CODE_POINTS).join("");
   return text.length === 0 ? undefined : text;
 }

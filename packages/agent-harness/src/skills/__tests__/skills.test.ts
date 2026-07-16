@@ -65,6 +65,42 @@ describe("loadSelectedSkills", () => {
     expect(result.instructions[0]?.content).toContain("<!-- skill truncated by maxBytes -->");
   });
 
+  it("keeps a skill body ending exactly at maxBytes untruncated", async () => {
+    const root = await mkdtemp(join(tmpdir(), "skills-test-"));
+    tempDirs.push(root);
+    await mkdir(join(root, "exact"));
+    const heading = "# Exact\n\n";
+    const markdown = `${heading}${"a".repeat(256 - Buffer.byteLength(heading, "utf8") - 4)}🧠`;
+    expect(Buffer.byteLength(markdown, "utf8")).toBe(256);
+    await writeFile(join(root, "exact", "SKILL.md"), markdown, "utf8");
+
+    const result = await loadSelectedSkills({ skillsRoot: root, names: ["exact"], maxBytes: 256 });
+
+    expect(result.loaded[0]?.truncated).toBe(false);
+    expect(result.loaded[0]?.content).toBe(markdown);
+  });
+
+  it("walks back a straddling UTF-8 sequence deterministically", async () => {
+    const root = await mkdtemp(join(tmpdir(), "skills-test-"));
+    tempDirs.push(root);
+    await mkdir(join(root, "astral"));
+    const heading = "# Astral\n\n";
+    const safePrefix = `${heading}${"a".repeat(255 - Buffer.byteLength(heading, "utf8"))}`;
+    const markdown = `${safePrefix}🧠tail`;
+    await writeFile(join(root, "astral", "SKILL.md"), markdown, "utf8");
+
+    const first = await loadSelectedSkills({ skillsRoot: root, names: ["astral"], maxBytes: 256 });
+    const second = await loadSelectedSkills({ skillsRoot: root, names: ["astral"], maxBytes: 256 });
+    const expected = `${safePrefix}\n<!-- truncated to first 256 bytes -->`;
+
+    expect(first.loaded[0]?.truncated).toBe(true);
+    expect(first.loaded[0]?.content).toBe(expected);
+    expect(second.loaded[0]?.content).toBe(expected);
+    expect(Buffer.byteLength(safePrefix, "utf8")).toBe(255);
+    expect(first.loaded[0]?.content).not.toContain("�");
+    expect(first.loaded[0]?.content).not.toMatch(/\p{Cs}/u);
+  });
+
   it("rejects duplicate skill names", async () => {
     const root = await createSkillsRoot();
     const error = await loadSelectedSkills({ skillsRoot: root, names: ["research", "Research"] }).catch((caught) => caught);
