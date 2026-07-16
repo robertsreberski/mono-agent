@@ -55,14 +55,19 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
       return [];
     }
     const body = JSON.stringify({ model: this.model, input: [...texts] });
-    const response = await withTimeout(this.timeoutMs, (signal) =>
-      this.fetchImpl(`${this.endpoint}/api/embed`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body,
-        signal,
-      }),
-    );
+    let response: Response;
+    try {
+      response = await withTimeout(this.timeoutMs, (signal) =>
+        this.fetchImpl(`${this.endpoint}/api/embed`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body,
+          signal,
+        }),
+      );
+    } catch (cause) {
+      throw normalizeEmbeddingRequestFailure("Ollama", cause);
+    }
     if (!response.ok) {
       throw new MemorySearchError("embedding_request_failed", `Ollama embeddings request failed (${response.status}).`, {
         status: response.status,
@@ -124,15 +129,20 @@ export class LmStudioEmbeddingProvider implements EmbeddingProvider {
     if (this.apiKey !== undefined) {
       headers.authorization = `Bearer ${this.apiKey}`;
     }
-    const response = await withTimeout(this.timeoutMs, (signal) =>
-      this.fetchImpl(`${this.endpoint}/v1/embeddings`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ model: this.model, input: [...texts] }),
-        redirect: "error",
-        signal,
-      }),
-    );
+    let response: Response;
+    try {
+      response = await withTimeout(this.timeoutMs, (signal) =>
+        this.fetchImpl(`${this.endpoint}/v1/embeddings`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ model: this.model, input: [...texts] }),
+          redirect: "error",
+          signal,
+        }),
+      );
+    } catch (cause) {
+      throw normalizeEmbeddingRequestFailure("LM Studio", cause);
+    }
     if (!response.ok) {
       throw new MemorySearchError("embedding_request_failed", `LM Studio embeddings request failed (${response.status}).`, {
         status: response.status,
@@ -171,14 +181,19 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     if (texts.length === 0) {
       return [];
     }
-    const response = await withTimeout(this.timeoutMs, (signal) =>
-      this.fetchImpl(`${this.endpoint}/embeddings`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
-        body: JSON.stringify({ model: this.model, input: [...texts] }),
-        signal,
-      }),
-    );
+    let response: Response;
+    try {
+      response = await withTimeout(this.timeoutMs, (signal) =>
+        this.fetchImpl(`${this.endpoint}/embeddings`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
+          body: JSON.stringify({ model: this.model, input: [...texts] }),
+          signal,
+        }),
+      );
+    } catch (cause) {
+      throw normalizeEmbeddingRequestFailure("OpenAI", cause);
+    }
     if (!response.ok) {
       throw new MemorySearchError("embedding_request_failed", `OpenAI embeddings request failed (${response.status}).`, {
         status: response.status,
@@ -307,6 +322,18 @@ function normalizeServiceRoot(value: string, label: string): string {
     );
   }
   return normalized;
+}
+
+function normalizeEmbeddingRequestFailure(provider: string, cause: unknown): unknown {
+  if (!(cause instanceof TypeError) && !(cause instanceof Error && cause.name === "AbortError")) {
+    return cause;
+  }
+  return new MemorySearchError(
+    "embedding_request_failed",
+    `${provider} embeddings request failed before receiving a response.`,
+    {},
+    { cause },
+  );
 }
 
 async function withTimeout(timeoutMs: number, run: (signal: AbortSignal) => Promise<Response>): Promise<Response> {
