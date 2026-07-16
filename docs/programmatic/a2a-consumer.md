@@ -51,8 +51,8 @@ Put the remote bearer token in `.env` as
 Keep tokens out of committed config — reference them through environment variables and your config loader. See [Environment variables](/config/env-vars/) for the `MONO_AGENT_*` conventions.
 
 :::caution
-:::
 There is no auto-wired A2A consumer channel. If you set plugin `config.consumer` but never call `createA2AConsumerResponder` (or `sendA2AMessage`), nothing connects to the remote agent.
+:::
 
 ## `createA2AConsumerResponder`
 
@@ -234,8 +234,8 @@ const response = await responderFor(target).respond(request, stream);
 Validate any caller-supplied URL against `remoteAgentUrls` before dialing it, so a request cannot redirect your agent to an arbitrary endpoint.
 
 :::tip
-:::
 Because each responder discovers the Agent Card lazily and caches the client, keeping responders in a map (rather than creating one per turn) avoids re-fetching the card on every request.
+:::
 
 ## Discovery and one-shot send
 

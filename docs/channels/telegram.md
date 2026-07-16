@@ -36,8 +36,8 @@ Add a `telegram` block to your `mono-agent.config.json`. The channel is opt-in: 
 Provide **either** an `allowedChatIds` allowlist **or** `allowAllChats: true`. Leaving both unset means no chat is authorized.
 
 :::caution
-:::
 `allowAllChats: true` lets anyone who finds your bot send it messages (and consume model budget). Prefer an explicit `allowedChatIds` allowlist in production.
+:::
 
 ### Environment variables
 
@@ -151,8 +151,8 @@ Telegram delivers **only the final answer**. While the run is in flight the bot 
 This is built-in behaviour, not a JSON field. Restoring live interim streaming requires a custom channel driver with `stream.finalOnly: false` (`createTelegramChannelDriver`) — coverage **code**. See [Delivery and Send Tools](/channels/delivery-and-send-tools/) for the streaming model across channels and [Custom Channels](/programmatic/custom-channels/) to build a driver.
 
 :::note
-:::
 The OpenAI-compatible [`/v1/chat/completions` endpoint](/channels/openai-api/) still streams token-by-token; final-only applies to the chat adapters (Telegram and Slack).
+:::
 
 ## Polling resilience (auto-recovery)
 

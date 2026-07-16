@@ -131,8 +131,8 @@ These ids are then referenced as `pi:studio:qwen3.6-32b` and `pi:gateway:llama-3
 mono-agent blocks non-private `baseUrl` values by default. To use a public/remote endpoint you must explicitly opt in with `trustPublicUrl: true`, and the URL must be HTTPS. This prevents an agent from silently exfiltrating prompts to an unintended host.
 
 :::caution
-:::
 Only set `trustPublicUrl: true` for gateways you control or trust. Private addresses (`localhost`, `127.0.0.1`, LAN ranges) are allowed without it; anything else is rejected until you trust it explicitly.
+:::
 
 ## Setting providers via environment
 
