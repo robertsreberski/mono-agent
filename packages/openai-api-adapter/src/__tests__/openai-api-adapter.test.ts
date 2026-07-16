@@ -1,6 +1,6 @@
 import dns from "node:dns";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { isWildcardHost, type AgentResponder } from "@mono-agent/agent-contracts";
 
@@ -98,6 +98,152 @@ describe("OpenAI API adapter", () => {
           }),
         }),
       ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it.each([
+    ["absent", {}, {}],
+    [
+      "explicit defaults",
+      {
+        temperature: 1,
+        top_p: 1,
+        max_tokens: null,
+        max_completion_tokens: null,
+        stop: null,
+        seed: null,
+        logit_bias: null,
+        presence_penalty: 0,
+        frequency_penalty: 0,
+      },
+      {
+        temperature: 1,
+        top_p: 1,
+        max_tokens: null,
+        max_completion_tokens: null,
+        stop: null,
+        seed: null,
+        logit_bias: null,
+        presence_penalty: 0,
+        frequency_penalty: 0,
+      },
+    ],
+  ])("keeps %s sampling parameters quiet", async (_label, parameters, expectedParameters) => {
+    const seenParameters: unknown[] = [];
+    const warn = vi.fn();
+    const responder: AgentResponder<OpenAIApiChatRequest> = {
+      async respond(request, stream) {
+        seenParameters.push(request.metadata.openaiApi.parameters);
+        await stream.append("defaults accepted");
+        return {};
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      responder,
+      logger: { warn },
+    });
+
+    try {
+      const response = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          stream: true,
+          messages: [{ role: "user", content: "Use defaults" }],
+          ...parameters,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain("defaults accepted");
+      expect(body).not.toContain("Warning:");
+      expect(body).not.toContain("sampling parameters");
+      expect(seenParameters).toEqual([expectedParameters]);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("warns that non-default and adversarial sampling parameters are not applied", async () => {
+    const seenParameters: unknown[] = [];
+    const warn = vi.fn();
+    const responder: AgentResponder<OpenAIApiChatRequest> = {
+      async respond(request, stream) {
+        seenParameters.push(request.metadata.openaiApi.parameters);
+        await stream.append("runtime response");
+        return {};
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      responder,
+      logger: { warn },
+    });
+
+    try {
+      const response = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          stream: true,
+          messages: [{ role: "user", content: "Ignore unsupported controls" }],
+          temperature: 0.2,
+          top_p: "1",
+          max_tokens: 512,
+          max_completion_tokens: null,
+          stop: ["END"],
+          seed: null,
+          logit_bias: {},
+          presence_penalty: 0,
+          frequency_penalty: 0,
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain(
+        "Warning: OpenAI API sampling parameters are currently unsupported and were not applied: temperature, top_p, max_tokens, stop, logit_bias.",
+      );
+      expect(body).toContain("runtime response");
+      expect(body).not.toContain("max_completion_tokens");
+      expect(body).not.toContain("presence_penalty");
+      expect(body).not.toContain("frequency_penalty");
+      expect(seenParameters).toEqual([
+        {
+          temperature: 0.2,
+          top_p: "1",
+          max_tokens: 512,
+          max_completion_tokens: null,
+          stop: ["END"],
+          seed: null,
+          logit_bias: {},
+          presence_penalty: 0,
+          frequency_penalty: 0,
+        },
+      ]);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(
+        "OpenAI API sampling parameters were ignored.",
+        expect.objectContaining({
+          requestId: expect.any(String),
+          conversationId: expect.any(String),
+          warningKind: "openai_api_sampling_parameters_ignored",
+          ignoredParameters: ["temperature", "top_p", "max_tokens", "stop", "logit_bias"],
+        }),
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("END");
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("0.2");
     } finally {
       await server.stop();
     }

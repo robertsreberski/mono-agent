@@ -88,7 +88,7 @@ curl http://127.0.0.1:4040/v1/chat/completions \
   }'
 ```
 
-Common sampling parameters (`temperature`, `top_p`, `max_tokens`, `max_completion_tokens`, `stop`, `seed`, `presence_penalty`, `frequency_penalty`, …) are accepted and forwarded to the runtime where the backend supports them.
+Common sampling parameters (`temperature`, `top_p`, `max_tokens`, `max_completion_tokens`, `stop`, `seed`, `logit_bias`, `presence_penalty`, and `frequency_penalty`) are accepted for protocol and request-metadata compatibility, but are not currently applied to the configured runtime. Absent parameters and explicit OpenAI defaults are quiet. Supplying any non-default value emits a `runtime_warning`, identifies the ignored parameter names, and continues with the runtime's configured values. As a result, Open WebUI sampling sliders are currently inert for mono-agent requests.
 
 ## Session continuity
 
