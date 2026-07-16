@@ -237,8 +237,9 @@ an SDK runtime model reference such as `pi:openai-codex:gpt-5.6-terra`.
 
 When `memory.mode` is `"bujo"` and `memory.llm` is configured, the agent-app starts an
 **in-app consolidation scheduler** alongside the other channels. It runs
-`store.consolidate()` at the `memory.consolidation.cron` cadence (default `0 */2 * * *`,
-every two hours). Consolidation refreshes the living `index.md`, keeps `future-log.md` as a
+`store.consolidate()` at the UTC `memory.consolidation.cron` cadence (default `0 */2 * * *`,
+every two hours). The schedule accepts shared five-field cron syntax but not hashed `H` fields.
+Consolidation refreshes the living `index.md`, keeps `future-log.md` as a
 literal empty stub, and reports the duplicate-group count. It never decays salience or automatically
 supersedes or rewrites canonical memories.
 

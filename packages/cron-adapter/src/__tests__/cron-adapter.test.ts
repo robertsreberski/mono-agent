@@ -9,6 +9,24 @@ import { CronAdapterError, startCronAdapter, toCronJobs } from "../index.js";
 import { handleTick } from "../scheduler.js";
 
 describe("Cron adapter", () => {
+  it("seeds hashed schedules from the stable job id", () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    let scheduler: ReturnType<typeof startCronAdapter> | undefined;
+
+    try {
+      scheduler = startCronAdapter({
+        responder: { respond: async () => ({}) },
+        jobs: [{ id: "stable-hash", expression: "H * * * *", prompt: "check status" }],
+        now: () => new Date("2026-07-10T07:30:00.000Z"),
+      });
+      expect(scheduler.jobs).toHaveLength(1);
+      expect(random).not.toHaveBeenCalled();
+    } finally {
+      scheduler?.stop();
+      random.mockRestore();
+    }
+  });
+
   it("runs due cron jobs through a structural responder with cron metadata", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

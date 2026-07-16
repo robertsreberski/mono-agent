@@ -182,10 +182,10 @@ const channelCron: CapabilityModule = {
     {
       id: "cronExpression",
       label: "Cron expression",
-      description: "Five-field UTC schedule for the digest (default 08:00 UTC daily).",
+      description: "Five-field UTC schedule for the digest (default 08:00 UTC daily); hashed H fields use the stable digest job id.",
       default: "0 8 * * *",
       validate: (value) => {
-        const result = validateCronExpression(value);
+        const result = validateCronExpression(value, { hashSeed: "digest" });
         if (result.ok) return undefined;
         if (result.code === "required") {
           return "Enter a cron expression using five fields: minute hour day-of-month month day-of-week.";

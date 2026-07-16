@@ -11,6 +11,7 @@ import {
   getBuiltinModels as getPiBuiltinModels,
   getBuiltinProviders as getPiBuiltinProviders,
 } from "@earendil-works/pi-ai/providers/all";
+import { validateCronExpression } from "@mono-agent/cron-adapter";
 import { listRecordedRuns } from "@mono-agent/observability";
 import { serializeTraceSpans } from "@mono-agent/observability/otel";
 import {
@@ -1361,6 +1362,20 @@ async function contextSection(config: MonoAgentConfig, cwd: string): Promise<Val
 
 const DEFAULT_CONSOLIDATION_CRON = "0 */2 * * *";
 
+function memoryConsolidationCronIssue(expression: string): string | undefined {
+  const result = validateCronExpression(expression, { timezone: "UTC" });
+  if (result.ok) {
+    return undefined;
+  }
+  if (result.code === "required") {
+    return "memory.consolidation.cron is required when consolidation is enabled.";
+  }
+  if (result.code === "field_count") {
+    return `memory.consolidation.cron must use exactly five fields; received ${result.fieldCount}.`;
+  }
+  return `memory.consolidation.cron is invalid: ${result.reason}`;
+}
+
 async function memorySection(
   config: MonoAgentConfig,
   cwd: string,
@@ -1467,6 +1482,11 @@ async function memorySection(
       details.push(`Consolidation: ${consolidationCron} (auto).`);
     } else {
       details.push("Consolidation: disabled.");
+    }
+    const cronIssue = memoryConsolidationCronIssue(consolidationCron);
+    if (cronIssue !== undefined) {
+      status = "error";
+      details.push(`[ERROR] ${cronIssue}`);
     }
   }
 

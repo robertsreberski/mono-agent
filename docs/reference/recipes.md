@@ -53,7 +53,7 @@ The wizard composes an agent from these modules. Selecting one auto-checks its r
 | `channel:telegram` | Chat with your agent via a Telegram bot (chat-id allowlist). | `TelegramSendMessage`, `TelegramAskButtons` |
 | `channel:slack` | Socket-Mode Slack bot scoped to a channel allowlist. | `SlackSendMessage` |
 | `channel:openai-api` | Expose the runtime as an OpenAI-compatible loopback endpoint. | — |
-| `channel:cron` | Run on a five-field schedule (`minute hour day-of-month month day-of-week`, UTC by default). Guided init validates it inline, then scaffolds `cron/digest.md`; seconds and macros such as `@daily` are unsupported. | — |
+| `channel:cron` | Run on a five-field schedule (`minute hour day-of-month month day-of-week`, UTC by default). Guided init validates it inline, then scaffolds `cron/digest.md`; seconds and macros such as `@daily` are unsupported. Hashed `H` fields use the stable job `id` as their seed. | — |
 | `channel:a2a` | Expose the agent over A2A (Agent Card + provider endpoint). | — |
 | `memory:lite` | SQLite full-text recall, zero external dependencies. | — |
 | `memory:journal` | Semantic recall via a guided Ollama or LM Studio embeddings service. | — |
