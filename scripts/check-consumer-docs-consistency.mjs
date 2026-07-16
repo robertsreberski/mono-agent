@@ -17,7 +17,7 @@ const userDocRoots = [
 ];
 
 const artifactContractSourcePaths = [
-  "packages/agent-app/src/cli.ts",
+  "packages/agent-app/src/cli-help.ts",
   "packages/operator-adapter/package.json",
   "packages/operator-adapter/src/tui/constants.ts",
   "packages/operator-adapter/src/tui/server.ts",

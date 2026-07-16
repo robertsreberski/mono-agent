@@ -210,10 +210,10 @@ describe("check-consumer-docs-consistency", () => {
       "// Oversized events are field-reduced until the encoded frame fits.",
       "// Every oversized event is field reduced.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/agent-app/src/cli.ts", [
-      "const help = [",
-      "  'Open the operator console: live chat with full',",
-      "  'thinking/tool/telemetry insight, replay, and config.',",
+    await writeRepoDoc(repoRoot, "packages/agent-app/src/cli-help.ts", [
+      "const HELP_COMMANDS = [",
+      "  \"Open the operator console from any directory: live chat with full\",",
+      "  \"thinking/tool/telemetry insight, recorded-run replay, and config view.\",",
       "];",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/operator-adapter/package.json", JSON.stringify({
@@ -271,7 +271,7 @@ describe("check-consumer-docs-consistency", () => {
       "packages/session-web/src/history.ts",
       "packages/session-web/src/aggregator.ts",
       "packages/session-web/webapp/src/views/DetailView.tsx",
-      "packages/agent-app/src/cli.ts",
+      "packages/agent-app/src/cli-help.ts",
       "packages/operator-adapter/package.json",
       "packages/operator-adapter/src/tui/constants.ts",
       "packages/tui/package.json",
@@ -316,8 +316,11 @@ describe("check-consumer-docs-consistency", () => {
     await writeRepoDoc(repoRoot, "packages/session-web/src/aggregator.ts", [
       "// Tracks sessions whose persisted, bounded detail has been loaded.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/agent-app/src/cli.ts", [
-      "const help = 'live chat with structured thinking/tool/telemetry insight';",
+    await writeRepoDoc(repoRoot, "packages/agent-app/src/cli-help.ts", [
+      "const HELP_COMMANDS = [",
+      "  \"Open the operator console from any directory: live chat with structured\",",
+      "  \"thinking/tool/telemetry insight, recorded-run replay, and config view.\",",
+      "];",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/operator-adapter/package.json", JSON.stringify({
       description: "Loopback operator adapters: structured TUI NDJSON turns and live SSE.",
