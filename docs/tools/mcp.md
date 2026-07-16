@@ -66,9 +66,16 @@ SSE and streamable HTTP servers use a `url` instead of `command`/`args`:
 
 HTTP/SSE header values in `mcp.json` are literal; mono-agent does not expand
 environment references inside them. Do not put credentials in this file,
-whether committed or merely untracked. For an authenticated service, use a
-transport that obtains its credential outside `mcp.json`—for example, a stdio
-server that reads inherited process environment—or do not declare the server.
+whether committed or merely untracked. There is currently no credential
+indirection for authenticated HTTP/SSE entries, so do not declare one unless a
+separate trusted mechanism supplies authentication without putting it in this
+file.
+
+Treat every declared stdio server as fully trusted: its child process inherits
+the agent process's entire environment, including unrelated credentials loaded
+from `.env` or `--env-file`, plus any literal per-server `env` entries. Do not
+use stdio inheritance as per-server secret isolation.
+
 Run `mono-agent validate` to confirm the file is found; it reports the resolved
 `MCP config:` path or an `MCP config file is missing:` warning.
 
