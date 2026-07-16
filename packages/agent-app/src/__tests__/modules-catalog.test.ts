@@ -90,6 +90,7 @@ describe("capability-module catalog", () => {
     );
     expect(input.validate?.("61 8 * * *")).toMatch(/^Invalid cron expression: /u);
     expect(input.validate?.("30 7 * * 1-5")).toBeUndefined();
+    expect(input.validate?.("H 7 * * 1-5")).toBeUndefined();
     expect(input.description).toContain("UTC");
     expect(findModule("channel:cron")?.validateExpectations[0]?.note)
       .toBe("Use at least one valid enabled cron/*.md job.");

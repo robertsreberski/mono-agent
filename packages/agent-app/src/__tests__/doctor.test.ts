@@ -2859,6 +2859,93 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(text).toContain("0 */4 * * *");
     expect(text).not.toMatch(/reflection|migration/iu);
   });
+
+  it("fails the memory section preflight for a malformed consolidation cron", async () => {
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "ollama", model: "qwen3:6b" },
+        consolidation: { cron: "61 * * * *" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    const memory = sectionById(report, "memory");
+    expect(report.ok).toBe(false);
+    expect(memory.status).toBe("error");
+    expect(memory.details).toContain("Consolidation: 61 * * * * (auto).");
+    expect(memory.details).toEqual(expect.arrayContaining([
+      expect.stringMatching(
+        /^\[ERROR\] memory\.consolidation\.cron is invalid: .*range 0-59/u,
+      ),
+    ]));
+  });
+
+  it("preflights an explicitly configured cron even while consolidation is disabled", async () => {
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "ollama", model: "qwen3:6b" },
+        consolidation: { enabled: false, cron: "0 0 * FOO *" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    const memory = sectionById(report, "memory");
+    expect(report.ok).toBe(false);
+    expect(memory.status).toBe("error");
+    expect(memory.details).toContain("Consolidation: disabled.");
+    expect(memory.details).toEqual(expect.arrayContaining([
+      expect.stringMatching(
+        /^\[ERROR\] memory\.consolidation\.cron is invalid: .*resolve alias "foo"/u,
+      ),
+    ]));
+  });
+
+  it("rejects hashed consolidation fields that have no stable per-instance seed", async () => {
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "ollama", model: "qwen3:6b" },
+        consolidation: { cron: "H * * * *" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    const memory = sectionById(report, "memory");
+    expect(report.ok).toBe(false);
+    expect(memory.status).toBe("error");
+    expect(memory.details).toContain(
+      '[ERROR] memory.consolidation.cron is invalid: Hashed "H" cron fields require a non-empty hashSeed.',
+    );
+  });
 });
 
 describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {

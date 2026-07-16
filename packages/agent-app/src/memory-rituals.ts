@@ -2,9 +2,9 @@
  * In-app memory ritual scheduler for the `bujo` tier.
  *
  * Schedules lightweight `store.consolidate()` on its configured cron cadence
- * (default: every two hours). Uses a hand-rolled minimal cron next-run calculator
- * (5-field `m h dom mon dow`); avoids adding `cron-parser` as a direct dep of
- * this package.
+ * (default: every two hours). Cron validation and next-run calculation use the
+ * same parser contract as the cron adapter. Memory consolidation has no
+ * timezone setting, so its historical UTC cadence remains explicit here.
  *
  * Design guarantees:
  * - Only schedules for `store.tier() === "bujo"` (needs the LLM tier).
@@ -14,6 +14,8 @@
  *   scheduler reschedules after every run (success or failure).
  * - Injectable `now` / `setTimer` / `clearTimer` for deterministic testing.
  */
+
+import { validateCronExpression } from "@mono-agent/cron-adapter";
 
 const DEFAULT_CONSOLIDATION_CRON = "0 */2 * * *";
 
@@ -156,139 +158,24 @@ export function startMemoryRituals(input: StartMemoryRitualsInput): RunningRitua
 }
 
 // ---------------------------------------------------------------------------
-// Minimal 5-field cron next-run calculator
-// ---------------------------------------------------------------------------
-//
-// Supports `m h dom mon dow` where each field is:
-//   *              matches every value
-//   <number>       exact match
-//   */n            step (e.g. */5 = every 5)
-//   a-b            range
-//   a,b,c          list
-//   a-b/n          range with step
-//
-// Sufficient for the two defaults + most simple expressions.
-// Time complexity: O(minutes-until-next-run), bounded by 366*24*60 ≈ 530k.
+// Shared cron next-run calculation
 // ---------------------------------------------------------------------------
 
 function nextCronDelayMs(expression: string, from: Date): number {
-  const fields = expression.trim().split(/\s+/u);
-  if (fields.length !== 5) {
-    throw new Error(`Expected 5 fields; got ${fields.length}`);
+  const result = validateCronExpression(expression, {
+    currentDate: from,
+    timezone: "UTC",
+  });
+  if (result.ok) {
+    return result.nextDate.getTime() - from.getTime();
   }
-  const [mField, hField, domField, monField, dowField] = fields as [
-    string,
-    string,
-    string,
-    string,
-    string,
-  ];
-
-  // Search forward minute by minute for up to ~2 years
-  // Start from the NEXT minute after `from` (cron fires at the start of the minute)
-  const candidate = new Date(from.getTime());
-  // Advance to the next whole minute
-  candidate.setUTCSeconds(0, 0);
-  candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
-
-  const MAX_ITERATIONS = 365 * 24 * 60 * 2; // 2 years in minutes
-  for (let i = 0; i < MAX_ITERATIONS; i++) {
-    const min = candidate.getUTCMinutes();
-    const hour = candidate.getUTCHours();
-    const dom = candidate.getUTCDate();
-    const mon = candidate.getUTCMonth() + 1; // 1-12
-    const dow = candidate.getUTCDay(); // 0 (Sun) – 6 (Sat)
-
-    if (
-      matchField(mField, min, 0, 59) &&
-      matchField(hField, hour, 0, 23) &&
-      matchField(monField, mon, 1, 12) &&
-      matchDayField(domField, dowField, dom, dow)
-    ) {
-      return candidate.getTime() - from.getTime();
-    }
-
-    candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
+  if (result.code === "required") {
+    throw new Error("Cron expression is required");
   }
-
-  throw new Error(`No match found in 2 years for cron expression "${expression}"`);
-}
-
-/**
- * Standard cron DOM/DOW logic:
- * - If BOTH dom and dow are restricted (not `*`), either matching satisfies.
- * - If only one is restricted, only that one must match.
- * - If both are `*`, always matches.
- */
-function matchDayField(domField: string, dowField: string, dom: number, dow: number): boolean {
-  const domRestricted = domField !== "*";
-  const dowRestricted = dowField !== "*";
-
-  if (domRestricted && dowRestricted) {
-    return matchField(domField, dom, 1, 31) || matchField(dowField, dow, 0, 6);
+  if (result.code === "field_count") {
+    throw new Error(`Expected 5 fields; got ${result.fieldCount}`);
   }
-  if (domRestricted) {
-    return matchField(domField, dom, 1, 31);
-  }
-  if (dowRestricted) {
-    return matchField(dowField, dow, 0, 6);
-  }
-  return true;
-}
-
-function matchField(field: string, value: number, _min: number, _max: number): boolean {
-  // Comma-separated list
-  const parts = field.split(",");
-  return parts.some((part) => matchPart(part.trim(), value, _min, _max));
-}
-
-function matchPart(part: string, value: number, min: number, max: number): boolean {
-  // Wildcard
-  if (part === "*") {
-    return true;
-  }
-
-  // Step: */n or a-b/n
-  const slashIdx = part.indexOf("/");
-  if (slashIdx !== -1) {
-    const stepStr = part.slice(slashIdx + 1);
-    const step = parseInt(stepStr, 10);
-    if (Number.isNaN(step) || step <= 0) {
-      throw new Error(`Invalid step in cron field part "${part}"`);
-    }
-    const rangePart = part.slice(0, slashIdx);
-    let rangeStart = min;
-    let rangeEnd = max;
-    if (rangePart !== "*") {
-      const dashIdx = rangePart.indexOf("-");
-      if (dashIdx !== -1) {
-        rangeStart = parseInt(rangePart.slice(0, dashIdx), 10);
-        rangeEnd = parseInt(rangePart.slice(dashIdx + 1), 10);
-      } else {
-        rangeStart = parseInt(rangePart, 10);
-        rangeEnd = max;
-      }
-    }
-    if (value < rangeStart || value > rangeEnd) {
-      return false;
-    }
-    return (value - rangeStart) % step === 0;
-  }
-
-  // Range: a-b
-  const dashIdx = part.indexOf("-");
-  if (dashIdx !== -1) {
-    const rangeStart = parseInt(part.slice(0, dashIdx), 10);
-    const rangeEnd = parseInt(part.slice(dashIdx + 1), 10);
-    return value >= rangeStart && value <= rangeEnd;
-  }
-
-  // Exact number
-  const num = parseInt(part, 10);
-  if (Number.isNaN(num)) {
-    throw new Error(`Invalid cron field part "${part}"`);
-  }
-  return value === num;
+  throw new Error(result.reason);
 }
 
 // ---------------------------------------------------------------------------
