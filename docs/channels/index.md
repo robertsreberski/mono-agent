@@ -45,11 +45,12 @@ Most channels default to **off**. The deliberate exceptions are the operator sur
 {
   "telegram": {
     "enabled": true,
-    "botToken": "REPLACE_WITH_BOT_TOKEN",
     "allowedChatIds": ["123456789"]
   }
 }
 ```
+
+Put `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in the agent's `.env`; source-config examples omit credentials even though inline fields remain accepted for compatibility.
 
 :::tip
 Run `mono-agent validate` for a per-section report before starting, and `mono-agent status` to read the live state. Config is JSON-first — edit `mono-agent.config.json` (agents can edit it too) and `mono-agent restart` to apply; there is no live re-apply.

@@ -24,12 +24,12 @@ The heartbeat and reconnect behavior are **on by default and need no configurati
 
 ## Configuration
 
+Put the Socket Mode credentials in `.env` as `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN`. The source-config examples intentionally omit both fields.
+
 ```json
 {
   "slack": {
     "enabled": true,
-    "botToken": "xoxb-...",
-    "appToken": "xapp-...",
     "allowedChannelIds": ["C0123"],
     "allowAllChannels": false,
     "botUserIds": ["U0BOT"],
@@ -42,8 +42,8 @@ The heartbeat and reconnect behavior are **on by default and need no configurati
 | Key | Type | Default | Purpose |
 | --- | --- | --- | --- |
 | `enabled` | boolean | `false` | Opt-in flag. While `false` the channel reports `disabled` (not `waiting_for_config`) and token validation is skipped. |
-| `botToken` | string (`xoxb-...`) | — | Bot user OAuth token. **Required** when enabled. |
-| `appToken` | string (`xapp-...`) | — | App-level token for Socket Mode (`connections:write`). **Required** when enabled. |
+| `botToken` | string (`xoxb-...`) | — | Bot user OAuth token. An effective value is **required** when enabled. Inline config remains compatible; new source configs should use `MONO_AGENT_SLACK_BOT_TOKEN` in `.env`. |
+| `appToken` | string (`xapp-...`) | — | App-level token for Socket Mode (`connections:write`). An effective value is **required** when enabled. Inline config remains compatible; new source configs should use `MONO_AGENT_SLACK_APP_TOKEN` in `.env`. |
 | `allowedChannelIds` | string[] | — | Channel IDs the agent may respond in. Required unless `allowAllChannels` is `true`. |
 | `allowAllChannels` | boolean | `false` | Respond in any channel the bot is in. Alternative to `allowedChannelIds`. |
 | `botUserIds` | string[] | — | The bot's Slack user ID(s), used to detect real `@bot` mentions. |
@@ -75,7 +75,7 @@ interaction fields are structured and JSON-only: configure them in
 | `slack.stripMentionText` | `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` |
 
 :::tip
-Keep tokens out of `mono-agent.config.json` in shared repos — set `MONO_AGENT_SLACK_BOT_TOKEN` / `MONO_AGENT_SLACK_APP_TOKEN` from your secret store or `.env` instead.
+Keep tokens out of every source `mono-agent.config.json`, including ignored or untracked development configs. Set `MONO_AGENT_SLACK_BOT_TOKEN` / `MONO_AGENT_SLACK_APP_TOKEN` from your secret store or `.env` instead.
 :::
 
 ### Shortcuts
@@ -88,8 +88,6 @@ matches `callbackId`; invoking it runs `prompt` as a proactive agent turn.
 {
   "slack": {
     "enabled": true,
-    "botToken": "xoxb-...",
-    "appToken": "xapp-...",
     "allowedChannelIds": ["C0123"],
     "shortcuts": [
       {
@@ -132,8 +130,6 @@ allowlisted proactive-delivery path as a shortcut.
 {
   "slack": {
     "enabled": true,
-    "botToken": "xoxb-...",
-    "appToken": "xapp-...",
     "allowedChannelIds": ["C0123"],
     "homeTab": {
       "enabled": true,

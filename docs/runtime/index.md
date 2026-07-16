@@ -76,7 +76,7 @@ Point `pi:<provider>:<model>` at a self-hosted endpoint. The `id` becomes the `<
 }
 ```
 
-`type` is `ollama`, `lmstudio`, or `openai_compat`. Supply the key via `apiKeyEnv` (or inline `apiKey` in an untracked file only). See [Local providers](/runtime/local-providers/) for the full provider/env reference and [Embeddings](/memory/embeddings/) for using the same providers in the memory tier.
+`type` is `ollama`, `lmstudio`, or `openai_compat`. Supply the key via `apiKeyEnv`: keep the secret value in `.env` and only its variable name in config. Inline `apiKey` remains schema-compatible for existing consumers, but ignored or untracked source config is not an exception to this placement convention. See [Local providers](/runtime/local-providers/) for the full provider/env reference and [Embeddings](/memory/embeddings/) for using the same providers in the memory tier.
 
 ## Sessions & concurrency
 

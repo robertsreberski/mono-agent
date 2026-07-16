@@ -23,8 +23,7 @@ Coverage: `config` (the `tui` section of `mono-agent.config.json`).
     "host": "127.0.0.1",
     "port": 0,
     "basePath": "/tui",
-    "allowNonLoopback": false,
-    "apiKey": "optional-bearer"
+    "allowNonLoopback": false
   }
 }
 ```
@@ -36,7 +35,7 @@ Coverage: `config` (the `tui` section of `mono-agent.config.json`).
 | `port` | integer | `0` | `0` = ephemeral. The bound port is published to the trace-source registry, so nothing needs to be fixed. |
 | `basePath` | string | `/tui` | Path prefix for all endpoints. |
 | `allowNonLoopback` | boolean | `false` | Required guard before binding a non-loopback `host`. |
-| `apiKey` | string | _unset_ | Optional bearer token. `mono-agent tui` resolves it from this config file automatically (the registry never carries secrets). |
+| `apiKey` | string | _unset_ | Optional bearer token. Inline config remains accepted for compatibility, but new source configs should omit it and set `MONO_AGENT_TUI_API_KEY` in `.env`; the registry never carries secrets. |
 
 ## Environment variables
 
@@ -49,6 +48,8 @@ Coverage: `config` (the `tui` section of `mono-agent.config.json`).
 | `MONO_AGENT_TUI_ALLOW_NON_LOOPBACK` | `tui.allowNonLoopback` |
 | `MONO_AGENT_TUI_API_KEY` | `tui.apiKey` |
 
+Keep the bearer value in `.env` (or an exported environment variable). `mono-agent tui` resolves the effective value automatically without putting it in the trace-source registry.
+
 ## Live event relay for web PWA
 
 The `live` channel is the sibling default-on operator surface consumed by `mono-agent web`. It is read-only: it exposes run lifecycle frames over SSE, never accepts turns, and lets the web PWA show sub-run updates before the on-disk recorder flushes the final summary.
@@ -60,8 +61,7 @@ The `live` channel is the sibling default-on operator surface consumed by `mono-
     "host": "127.0.0.1",
     "port": 0,
     "basePath": "/live",
-    "allowNonLoopback": false,
-    "apiKey": "optional-bearer"
+    "allowNonLoopback": false
   }
 }
 ```
@@ -73,7 +73,7 @@ The `live` channel is the sibling default-on operator surface consumed by `mono-
 | `port` | integer | `0` | `0` = ephemeral. The bound `baseUrl` is published to the trace-source registry. |
 | `basePath` | string | `/live` | Path prefix for `/v1/events` and `/v1/info`. |
 | `allowNonLoopback` | boolean | `false` | Required guard before binding a non-loopback `host`. |
-| `apiKey` | string | _unset_ | Optional bearer token. `mono-agent web` resolves it from the agent config file; the registry never carries secrets. |
+| `apiKey` | string | _unset_ | Optional bearer token. Inline config remains accepted for compatibility, but new source configs should omit it and set `MONO_AGENT_LIVE_API_KEY` in `.env`; the registry never carries secrets. |
 
 | Env var | Maps to |
 | --- | --- |
@@ -83,6 +83,8 @@ The `live` channel is the sibling default-on operator surface consumed by `mono-
 | `MONO_AGENT_LIVE_BASE_PATH` | `live.basePath` |
 | `MONO_AGENT_LIVE_ALLOW_NON_LOOPBACK` | `live.allowNonLoopback` |
 | `MONO_AGENT_LIVE_API_KEY` | `live.apiKey` |
+
+Keep the bearer value in `.env` (or an exported environment variable). `mono-agent web` resolves the effective value and sends it only to trusted loopback live URLs.
 
 `mono-agent web` trusts live relay URLs only when they resolve to loopback, and it only sends a live API key to those trusted URLs. If you deliberately expose `live` beyond loopback, put it behind a trusted network boundary; the stream contains run prompts, tool events, usage, and terminal summaries.
 

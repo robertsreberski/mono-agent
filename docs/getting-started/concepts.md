@@ -47,13 +47,12 @@ Each channel is its own JSON section and runs independently — one failing or w
 
 ## Opt-in `enabled` and the five channel statuses
 
-Every channel is **off by default**. You turn one on with its `enabled` flag:
+Every channel is **off by default**. You turn one on with its `enabled` flag. Put credentials such as `MONO_AGENT_TELEGRAM_BOT_TOKEN` in `.env`; the source-config example omits them:
 
 ```json
 {
   "telegram": {
     "enabled": true,
-    "botToken": "123456:ABC-...",
     "allowedChatIds": ["123456789"]
   }
 }

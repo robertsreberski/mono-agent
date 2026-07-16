@@ -249,7 +249,13 @@ describe("config reference", () => {
     const loadExample = async (field: "shortcuts" | "homeTab") => {
       const source = jsonBlocks.find((block) => block.includes(`"${field}"`));
       expect(source, `Slack guide must include a JSON example for ${field}`).toBeDefined();
-      return loadSlackAdapterConfig({ env: {}, json: JSON.parse(source ?? "{}") });
+      return loadSlackAdapterConfig({
+        env: {
+          MONO_AGENT_SLACK_BOT_TOKEN: "test-bot-token",
+          MONO_AGENT_SLACK_APP_TOKEN: "test-app-token",
+        },
+        json: JSON.parse(source ?? "{}"),
+      });
     };
 
     const shortcuts = await loadExample("shortcuts");

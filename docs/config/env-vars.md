@@ -15,13 +15,13 @@ The resolution order is **env > JSON > built-in defaults**. An environment varia
 A `.env` file in the agent folder is loaded automatically by the CLI. Variables already exported in your shell take precedence over values in `.env` (exported shell vars win). Pass `--env-file <path>` to load an alternate file instead of `./.env`. For `mono-agent validate --consumer <path>`, the consumer folder's `.env` loads by default, and relative `--env-file` paths resolve inside that consumer folder.
 
 :::caution
-Secrets belong in `.env` (or exported shell vars), never in `mono-agent.config.json`, which is meant to be committed. Keep `.env` untracked. During guided `mono-agent init`, required selected-capability secrets are entered masked and values never appear in examples, review output, logs, or config JSON. Existing non-empty dotenv assignments and comments are preserved. A shell-only selected secret does not skip the prompt: because background start cannot inherit that shell, the entered value must match every non-empty shell/dotenv copy and is then persisted when the dotenv value is missing.
+Secrets belong in `.env` (or exported shell vars), never in `mono-agent.config.json`, which is meant to be committed. Keep `.env` untracked. The mono-agent source checkout is a special case: `pnpm run check:secrets` deliberately scans ignored and untracked files, so do not put real credentials in a repository-root `.env` or its gitignored `mono-agent.config.json`. Store them in an owner-only env file outside the checkout and pass its absolute path with `--env-file`; keep only `apiKeyEnv` names in local-provider config. Ignored or untracked config is never permission to inline a credential. During guided `mono-agent init`, required selected-capability secrets are entered masked and values never appear in examples, review output, logs, or config JSON. Existing non-empty dotenv assignments and comments are preserved. A shell-only selected secret does not skip the prompt: because background start cannot inherit that shell, the entered value must match every non-empty shell/dotenv copy and is then persisted when the dotenv value is missing.
 
 Guided readiness deliberately proves the durable worker environment, not arbitrary launching-shell state. It keeps operational host values such as `PATH` and `HOME`, then uses `.env`, entered selected secrets, and the resolved Pi auth path for provider/config input. A shell-only API key is therefore not readiness evidence. Non-secret `MONO_AGENT_*` overrides already persisted in `.env` are rejected during guided init because they would make the generated JSON differ from the configuration actually started; move the intended value into the wizard/config instead.
 
 On POSIX, automatic persistence canonicalizes the target directory and requires it to be current-user-owned and not group/world-writable. Existing `.env` and `.gitignore` paths must be current-user-owned, single-link, regular, non-symlinked files; `.env` must be untracked, values must round-trip through the runtime dotenv parser, and exact root ignore rules cover `.env` plus transaction artifacts. It then uses an external owner-only lock, an exclusive same-directory temporary file, mode `0600`, flush, concurrent-change checks, and pathname no-clobber promotion. An owned permissive `.env` is tightened, and group/world write bits are removed from the `.gitignore` guard. A pathname competitor stays at the target. The claimed inode is rechecked before installation/cleanup; detected writes through an already-open descriptor are retained at a named owner-only recovery path. A non-cooperative POSIX write after the final check cannot be guaranteed. Tracked/symlinked/hard-linked/foreign-owned/malformed/conflicting paths, empty or unrepresentable secrets, stale locks, and unverifiable Git state fail closed. Windows refuses automatic secret persistence because owner-only access cannot be proven; follow the manual instructions without copying `.env.example` over a populated `.env`.
 
-`mono-agent config` and `mono-agent validate` warn when a secret-marked field is resolved from committed JSON and name the matching `MONO_AGENT_*` variable to move it to. The warning is advisory and non-fatal.
+`mono-agent config` and `mono-agent validate` warn when a secret-marked field is resolved from committed JSON and name the matching `MONO_AGENT_*` variable to move it to. The warning is advisory and non-fatal. The aggregate `providers.local[]` config view is not secret-marked field-by-field, so this advisory does not currently lint an inline local-provider `apiKey`; follow the `apiKeyEnv` convention explicitly.
 :::
 
 :::note
@@ -285,7 +285,7 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | `MONO_AGENT_TUI_PORT` | `tui.port` | Default `0` (ephemeral; published to the trace-source registry). |
 | `MONO_AGENT_TUI_BASE_PATH` | `tui.basePath` | Default `/tui`. |
 | `MONO_AGENT_TUI_ALLOW_NON_LOOPBACK` | `tui.allowNonLoopback` | Required to bind a non-loopback host. |
-| `MONO_AGENT_TUI_API_KEY` | `tui.apiKey` | Optional bearer the console must present. See [../channels/tui.md](/channels/tui/). |
+| `MONO_AGENT_TUI_API_KEY` | `tui.apiKey` | Optional bearer the console must present. Put the value in `.env`; inline `tui.apiKey` remains accepted for compatibility but is not the documented source-config convention. See [../channels/tui.md](/channels/tui/). |
 
 ### Live event relay
 
@@ -296,7 +296,7 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | `MONO_AGENT_LIVE_PORT` | `live.port` | Default `0` (ephemeral; published to the trace-source registry). |
 | `MONO_AGENT_LIVE_BASE_PATH` | `live.basePath` | Default `/live`. |
 | `MONO_AGENT_LIVE_ALLOW_NON_LOOPBACK` | `live.allowNonLoopback` | Required to bind a non-loopback host. |
-| `MONO_AGENT_LIVE_API_KEY` | `live.apiKey` | Optional bearer token for `/v1/info` and `/v1/events`. `mono-agent web` reads it from the agent config and only sends it to trusted loopback live URLs. |
+| `MONO_AGENT_LIVE_API_KEY` | `live.apiKey` | Optional bearer token for `/v1/info` and `/v1/events`. Put the value in `.env`; inline `live.apiKey` remains accepted for compatibility. `mono-agent web` resolves the effective value and only sends it to trusted loopback live URLs. |
 
 ### A2A
 
@@ -306,11 +306,29 @@ The A2A provider is loaded through `channels.plugins[]` with `package: "@mono-ag
 | --- | --- | --- |
 | `MONO_AGENT_A2A_ENABLED` | plugin `config.enabled` | Canonical enable flag for the A2A provider, matching other channels. Wins over the legacy form below when both are set. |
 | `MONO_AGENT_A2A_PROVIDER_ENABLED` | plugin `config.provider.enabled` | Legacy enable flag (still honored). Prefer `MONO_AGENT_A2A_ENABLED`. |
+| `MONO_AGENT_A2A_HOST` | plugin `config.provider.host` | Provider bind host. Non-loopback values require `allowNonLoopback`. |
+| `MONO_AGENT_A2A_PORT` | plugin `config.provider.port` | Provider listen port. |
+| `MONO_AGENT_A2A_PUBLIC_BASE_URL` | plugin `config.provider.publicBaseUrl` | Public base URL advertised in the Agent Card when fronted by a proxy. |
+| `MONO_AGENT_A2A_ALLOW_NON_LOOPBACK` | plugin `config.provider.allowNonLoopback` | Explicit opt-in for a non-loopback bind or public base URL. |
+| `MONO_AGENT_A2A_REQUIRE_BEARER` | plugin `config.provider.requireBearer` | Requires bearer authentication on message/task endpoints. |
 | `MONO_AGENT_A2A_BEARER_TOKEN` | plugin `config.provider.bearerToken` | Used when `requireBearer` is set. See [../channels/a2a.md](/channels/a2a/). |
 | `MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE` | plugin `config.provider.idempotency.namespace` | Explicitly enables durable keyed dispatch and defines its stable authenticated-principal boundary. |
 | `MONO_AGENT_A2A_IDEMPOTENCY_STATE_DIR` | plugin `config.provider.idempotency.stateDir` | Optional durable receipt directory; a namespace-derived owner-only path is used when omitted. |
 | `MONO_AGENT_A2A_IDEMPOTENCY_RETENTION_MS` | plugin `config.provider.idempotency.retentionMs` | Full terminal-result replay horizon; defaults to 30 days. |
 | `MONO_AGENT_A2A_IDEMPOTENCY_MAX_RECORDS` | plugin `config.provider.idempotency.maxRecords` | Hard lifetime unique-key capacity; existing bindings are never evicted. |
+| `MONO_AGENT_A2A_AGENT_NAME` | plugin `config.agent.name` | Public Agent Card name; wins over the root agent name. |
+| `MONO_AGENT_A2A_AGENT_DESCRIPTION` | plugin `config.agent.description` | Agent Card description. |
+| `MONO_AGENT_A2A_AGENT_VERSION` | plugin `config.agent.version` | Agent Card version string. |
+| `MONO_AGENT_A2A_PROVIDER_ORGANIZATION` | plugin `config.agent.providerOrganization` | Provider organization advertised only when `providerUrl` is also set. |
+| `MONO_AGENT_A2A_PROVIDER_URL` | plugin `config.agent.providerUrl` | Provider organization URL advertised only when `providerOrganization` is also set. |
+| `MONO_AGENT_A2A_SKILL_ID` | plugin `config.skill.id` | Advertised skill identifier. |
+| `MONO_AGENT_A2A_SKILL_NAME` | plugin `config.skill.name` | Advertised skill name. |
+| `MONO_AGENT_A2A_SKILL_DESCRIPTION` | plugin `config.skill.description` | Advertised skill description. |
+| `MONO_AGENT_A2A_SKILL_TAGS` | plugin `config.skill.tags` | Comma-separated advertised skill tags. |
+| `MONO_AGENT_A2A_REMOTE_AGENT_URLS` | plugin `config.consumer.remoteAgentUrls` | Comma-separated allowlist of remote A2A agent base URLs. |
+| `MONO_AGENT_A2A_DEFAULT_REMOTE_AGENT_URL` | plugin `config.consumer.defaultRemoteAgentUrl` | Default remote A2A agent base URL. |
+| `MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN` | plugin `config.consumer.bearerToken` | Bearer token sent by the programmatic consumer. Keep it in `.env`. |
+| `MONO_AGENT_A2A_TIMEOUT_MS` | plugin `config.consumer.timeoutMs` | Per-request consumer timeout in milliseconds. |
 
 ### Cron
 

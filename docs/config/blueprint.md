@@ -84,7 +84,9 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
         "baseUrl": "http://localhost:11434",
         "enabled": true,
         "trustPublicUrl": false,           // explicit opt-in for non-private URLs
-        "apiKeyEnv": "MY_PROVIDER_KEY",    // or inline "apiKey" (untracked file only)
+        // Keep the key in .env; config stores only its variable name.
+        // Inline "apiKey" remains schema-compatible for existing consumers.
+        "apiKeyEnv": "MY_PROVIDER_KEY",
         "models": [{ "name": "gemma4:31b", "capabilities": { "context_window": 32768 } }]
       }
     ]
@@ -226,8 +228,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "host": "127.0.0.1",
     "port": 0,
     "basePath": "/tui",
-    "allowNonLoopback": false,
-    "apiKey": "optional-bearer"
+    "allowNonLoopback": false              // set MONO_AGENT_TUI_API_KEY in .env when needed
   },
 
   "live": {
@@ -235,8 +236,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "host": "127.0.0.1",
     "port": 0,
     "basePath": "/live",
-    "allowNonLoopback": false,
-    "apiKey": "optional-bearer"
+    "allowNonLoopback": false              // set MONO_AGENT_LIVE_API_KEY in .env when needed
   },
 
   "webhook": {
@@ -266,15 +266,14 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // stream.finalOnly=false. The OpenAI-compatible endpoint still streams tokens.
   "telegram": {
     "enabled": true,                       // opt-in; defaults to false (off → "disabled")
-    "botToken": "...",
+    // Put MONO_AGENT_TELEGRAM_BOT_TOKEN in .env; do not inline botToken here.
     "allowedChatIds": ["123456789"],       // or "allowAllChats": true
     "allowAllChats": false
   },
 
   "slack": {
     "enabled": true,                       // opt-in; defaults to false (off → "disabled")
-    "botToken": "xoxb-...",                // Socket Mode app
-    "appToken": "xapp-...",
+    // Put MONO_AGENT_SLACK_BOT_TOKEN and MONO_AGENT_SLACK_APP_TOKEN in .env.
     "allowedChannelIds": ["C0123"],        // or "allowAllChannels": true
     "allowAllChannels": false,
     "botUserIds": ["U0BOT"],               // mention detection
@@ -308,9 +307,9 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
             "host": "127.0.0.1",
             "port": 4201,
             "publicBaseUrl": "https://agent.example.com", // Agent Card URL when fronted by a proxy
-            "allowNonLoopback": false,
+            "allowNonLoopback": true,
             "requireBearer": false,
-            "bearerToken": "...",
+            // Put MONO_AGENT_A2A_BEARER_TOKEN in .env when bearer auth is required.
             "idempotency": {              // optional; namespace explicitly enables the v1 extension
               "namespace": "my-agent-production", // stable authenticated-principal boundary
               "stateDir": ".mono-agent/a2a-my-agent", // optional derived owner-only path when omitted
@@ -323,7 +322,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
           "consumer": {                    // settings for calling remote A2A agents
             "remoteAgentUrls": ["http://127.0.0.1:4202"],
             "defaultRemoteAgentUrl": "http://127.0.0.1:4202",
-            "bearerToken": "...",
+            // Put MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN in .env when the remote requires auth.
             "timeoutMs": 30000
             // Consumed programmatically (createA2AConsumerResponder); the app's A2A
             // channel runs the provider side.

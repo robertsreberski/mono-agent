@@ -18,6 +18,9 @@ Use the consumer when your agent needs to delegate to another A2A-speaking agent
 
 The A2A plugin entry's `config.consumer` block stores the remote endpoint(s), auth, and timeout. It does not start anything on its own; your code reads it and constructs a responder.
 
+Put the remote bearer token in `.env` as
+`MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN`; the source-config example omits it.
+
 ```json
 {
   "channels": {
@@ -29,7 +32,6 @@ The A2A plugin entry's `config.consumer` block stores the remote endpoint(s), au
           "consumer": {
             "remoteAgentUrls": ["http://127.0.0.1:4202"],
             "defaultRemoteAgentUrl": "http://127.0.0.1:4202",
-            "bearerToken": "...",
             "timeoutMs": 30000
           }
         }
@@ -43,7 +45,7 @@ The A2A plugin entry's `config.consumer` block stores the remote endpoint(s), au
 | --- | --- | --- |
 | `remoteAgentUrls` | `string[]` | Allowed/known remote agent base URLs. Use this set to drive per-request selection. |
 | `defaultRemoteAgentUrl` | `string` | The remote URL to dial when a request does not name one. |
-| `bearerToken` | `string` | Bearer token sent on discovery and `sendMessage` calls when the remote requires auth. Keep this as a placeholder in committed config (`sk-...`) and inject the real value via env. |
+| `bearerToken` | `string` | Bearer token sent on discovery and `sendMessage` calls when the remote requires auth. Keep it out of committed config and inject it with `MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN`. |
 | `timeoutMs` | `number` | Per-request timeout in milliseconds. |
 
 Keep tokens out of committed config — reference them through environment variables and your config loader. See [Environment variables](/config/env-vars/) for the `MONO_AGENT_*` conventions.

@@ -50,10 +50,12 @@ work inside its bounded background curation queue rather than delaying the chann
 
 :::caution
 The `model` and `dim` must agree with the actual model. A mismatched `dim` corrupts the
-vector index. For OpenAI, supply the key via `apiKeyEnv` (preferred) or inline `apiKey`;
-one of the two is required. LM Studio is keyless by default. If its config declares
-`apiKeyEnv`, that variable must contain a non-empty value: validation reports `waiting` and
-guided readiness does not silently retry keyless when the declared variable is missing.
+vector index. For OpenAI, supply the key via `apiKeyEnv`; inline `apiKey` remains
+schema-compatible for existing consumers, but source configs keep secret values out of
+config. One of the two fields is required. LM Studio is keyless by default. If its config
+declares `apiKeyEnv`, that variable must contain a non-empty value: validation reports
+`waiting` and guided readiness does not silently retry keyless when the declared variable
+is missing.
 :::
 
 ## Guided Journal/BuJo setup

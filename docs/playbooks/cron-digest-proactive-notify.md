@@ -30,7 +30,7 @@ A timezone-aware cron job that builds a daily digest with shared run history and
 
 ## Configuration
 
-Enable the destination adapter and add the cron job. `conversationId` is the cron run-history thread; `notifyConversationId` is the delivery destination. If `notifyConversationId` is omitted, `mono-agent` only infers a destination when exactly one Telegram/Slack notify destination is available. With 0 or 2+ candidates delivery is skipped with a warning. Cron model-exhaustion notices require an explicit `notifyConversationId` and never infer a destination.
+Enable the destination adapter and add the cron job. `conversationId` is the cron run-history thread; `notifyConversationId` is the delivery destination. If `notifyConversationId` is omitted, `mono-agent` only infers a destination when exactly one Telegram/Slack notify destination is available. With 0 or 2+ candidates delivery is skipped with a warning. Cron model-exhaustion notices require an explicit `notifyConversationId` and never infer a destination. Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the source config omits credentials.
 
 ```json
 {
@@ -39,8 +39,6 @@ Enable the destination adapter and add the cron job. `conversationId` is the cro
   },
   "slack": {
     "enabled": true,
-    "botToken": "xoxb-...",
-    "appToken": "xapp-...",
     "allowedChannelIds": ["C012345"]
   },
   "cron": {
