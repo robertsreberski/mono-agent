@@ -903,6 +903,9 @@ export function layerJsonOntoEnv(
   if (json.providers?.piNative?.piMaxRetries !== undefined) {
     fromJson.MONO_AGENT_PI_MAX_RETRIES = String(json.providers.piNative.piMaxRetries);
   }
+  if (json.providers?.piNative?.transport !== undefined) {
+    fromJson.MONO_AGENT_PI_TRANSPORT = String(json.providers.piNative.transport);
+  }
   if (json.providers?.piNative?.maxRetryDelayMs !== undefined) {
     fromJson.MONO_AGENT_MAX_RETRY_DELAY_MS = String(json.providers.piNative.maxRetryDelayMs);
   }

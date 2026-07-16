@@ -1021,6 +1021,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
       };
   if (
     permissionMode === undefined
+    && piNative?.transport === undefined
     && piNative?.piMaxRetries === undefined
     && piNative?.maxRetryDelayMs === undefined
     && settings === undefined
@@ -1029,6 +1030,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
   }
   return {
     ...(permissionMode === undefined ? {} : { permissionMode }),
+    ...(piNative?.transport === undefined ? {} : { piTransport: piNative.transport }),
     ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
     ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
     ...(settings === undefined ? {} : { settings }),

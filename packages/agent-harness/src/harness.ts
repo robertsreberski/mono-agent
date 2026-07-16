@@ -1391,6 +1391,12 @@ export class MonoAgentHarness implements AgentHarness {
       delete merged.sessionIdleTimeoutMs;
       delete merged.sessionId;
       delete merged.providerSessionId;
+      // Provider transport is a host reliability policy. A trigger/request
+      // extension may supply it only when the host left it unset; it cannot
+      // switch an explicitly configured host away from its selected transport.
+      if (this.options.runtimeOptions?.piTransport !== undefined) {
+        merged.piTransport = this.options.runtimeOptions.piTransport;
+      }
       if (request.continuation?.toolsDisabled === true) {
         // Host-authoritative continuation synthesis is side-effect free. This
         // final override runs after every static/request policy layer so neither

@@ -839,6 +839,30 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[0]?.options.permissionMode).toBe("bypassPermissions");
   });
 
+  it("keeps the configured Pi transport authoritative over request extensions", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    const base = monoConfig({ dir, identityPath, artifactDir });
+
+    const responder = await createConfiguredAgentResponder({
+      config: {
+        ...base,
+        providers: { ...base.providers, piNative: { transport: "sse" } },
+      },
+      runtime: fake.runtime,
+      runtimeOptionsForRequest: () => ({ runtimeOptions: { piTransport: "websocket" } }),
+    });
+    await responder.respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(fake.calls[0]?.options.piTransport).toBe("sse");
+  });
+
   it("creates a configured harness when a host wants to wrap the responder itself", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

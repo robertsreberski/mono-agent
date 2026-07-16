@@ -127,6 +127,11 @@ describe("config reference", () => {
     expect(schemaNode(schema, "sandbox", "mode").enum).toEqual(["native", "off"]);
     expect(schemaNode(schema, "sandbox", "network", "mode").enum).toEqual(["none", "localhost", "allowlist"]);
     expect(schemaNode(schema, "sandbox", "fallback").enum).toEqual(["fail-closed", "unsafe-host-process"]);
+    expect(schemaNode(schema, "providers", "piNative", "transport")).toMatchObject({
+      type: "string",
+      default: "auto",
+      enum: ["auto", "sse", "websocket", "websocket-cached"],
+    });
   });
 
   it("models durable continuations as a strict fixed-port host-owned block", () => {

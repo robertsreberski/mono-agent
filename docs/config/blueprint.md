@@ -72,6 +72,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "piAuthPath": "~/.pi/agent/auth.json", // Pi credentials (OAuth/account + API-key providers)
     // Pi-native bridge tuning (all optional).
     "piNative": {
+      "transport": "auto",                // auto | sse | websocket | websocket-cached
       "piMaxRetries": 2,                   // 0-8; transient provider-transport retries
       "maxRetryDelayMs": 60000,            // backoff cap between retries (ms)
       "piSessionsRoot": ".mono-agent/sessions" // durable JSONL sessions → resume across restarts (unset = in-memory)
