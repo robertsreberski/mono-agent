@@ -79,18 +79,22 @@ grep -H '"license"' packages/agent-runtime/package.json packages/agent-app/packa
 # both => GPL-3.0-only
 ```
 
-- **A release-age exclusion is honest only with a real cooldown.** The workspace
-  intentionally enforces no `minimumReleaseAge` today, so it also carries no
-  `minimumReleaseAgeExclude`. Never add an exclusion by itself: without a positive
-  cooldown it is inert and creates false confidence. If a future change adopts the
-  policy, commit `minimumReleaseAge` and any narrowly justified exclusions together
-  in `pnpm-workspace.yaml`, then raise and enforce the pnpm floor that supports the
-  chosen selectors (`minimumReleaseAge` requires pnpm 10.16; version-specific
-  exclusions require 10.19). The current unpinned `pnpm >=10` range is not enough
-  to claim that policy. Confirm both effective values before trusting them:
+- **A release-age policy must be explicit across supported pnpm majors.** pnpm 10
+  defaults `minimumReleaseAge` to 0 while pnpm 11 defaults it to 1440. The workspace
+  therefore requires pnpm 10.16 or newer and commits `minimumReleaseAge: 0` to
+  disable the cooldown consistently. It carries no `minimumReleaseAgeExclude`.
+  Never infer the effective default from an
+  `undefined` config read. If a future change enables a positive cooldown, commit any
+  narrowly justified exclusions beside it and enforce the selector's pnpm floor:
+  bare package names require 10.16, `*`/leading-`!` patterns require 10.17, and
+  version-specific or disjunction selectors require 10.19. Either an exact
+  `packageManager` pin or an
+  adequate `engines.pnpm` lower bound can enforce that floor for local installs.
+  Run the repository preflight rather than trusting raw config output:
 
 ```bash
-pnpm config get minimumReleaseAge          # `undefined` while no cooldown is claimed
+node scripts/pnpm-release-age-policy.mjs
+pnpm config get minimumReleaseAge          # explicit `0` while cooldown is disabled
 pnpm config get minimumReleaseAgeExclude   # `undefined` while no exclusions are claimed
 ```
 

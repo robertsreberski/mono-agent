@@ -7,12 +7,14 @@
   "type": "module",
   "engines": {
     "node": ">=22.19.0",
-    "pnpm": ">=10"
+    "pnpm": ">=10.16.0"
   },
   "scripts": {
-    "preinstall": "node scripts/node-version.mjs",
+    "pnpm:devPreinstall": "node scripts/node-version.mjs && node scripts/pnpm-release-age-policy.mjs",
+    "preinstall": "node scripts/node-version.mjs && node scripts/pnpm-release-age-policy.mjs",
     "build": "node scripts/build-with-provenance.mjs",
     "check:node": "node scripts/node-version.mjs",
+    "check:pnpm-policy": "node scripts/pnpm-release-age-policy.mjs",
     "check:secrets": "node scripts/check-secrets.mjs",
     "check:oss-hygiene": "node scripts/check-oss-hygiene.mjs",
     "check:licenses": "node scripts/check-license-consistency.mjs",

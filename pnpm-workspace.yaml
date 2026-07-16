@@ -10,8 +10,9 @@ allowBuilds:
   protobufjs: true
   sharp: true
 
-# No package release-age cooldown is currently enforced. Keep exclusions absent
-# unless a nonzero minimumReleaseAge is committed here with their rationale.
+# Package release-age cooldown is explicitly disabled across supported pnpm versions.
+# Keep minimumReleaseAgeExclude absent while minimumReleaseAge remains 0.
+minimumReleaseAge: 0
 
 onlyBuiltDependencies:
   - better-sqlite3
