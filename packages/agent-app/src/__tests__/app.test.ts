@@ -27,7 +27,7 @@ import {
   createTelegramChannelDriver,
   defaultChannelDrivers,
 } from "../channels.js";
-import type { ChannelDriver } from "../channels.js";
+import type { ChannelDriver, ChannelStartInput } from "../channels.js";
 import { startContinuationService } from "../continuation-service.js";
 import { canonicalContinuationJson, continuationDigest, type ContinuationStatusSnapshot } from "../continuations.js";
 
@@ -214,6 +214,74 @@ describe("startMonoAgentApp", () => {
     expect(sources).toHaveLength(1);
     expect(sources[0]?.metadata?.backgroundSnapshot).toEqual(backgroundSnapshot);
     await app.stop();
+  });
+
+  it("wires run-artifact commits to the native-notify destination cache", async () => {
+    await writeConfig(baseConfig());
+    const artifactDir = join(dir, "artifacts");
+    await mkdir(artifactDir, { recursive: true });
+    const writeSummary = async (name: string, conversationId: string): Promise<void> => {
+      await writeFile(join(artifactDir, `${name}.summary.json`), JSON.stringify({
+        runId: name,
+        conversationId,
+        status: "succeeded",
+        updatedAt: "2026-07-16T09:00:00.000Z",
+      }));
+    };
+    await writeSummary("seed-a", "telegram:1");
+
+    let channelInput: ChannelStartInput<unknown> | undefined;
+    const driver: ChannelDriver = {
+      id: "telegram",
+      label: "Telegram cache probe",
+      async loadConfig() { return {}; },
+      isConfigError() { return false; },
+      async start(input) {
+        channelInput = input;
+        return {
+          summary: {},
+          stop: async () => undefined,
+          notify: async () => ({ delivered: true }),
+        };
+      },
+    };
+    const runtime = {
+      async run(): Promise<RuntimeResult> {
+        return { text: "ok" };
+      },
+    };
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver], runtime });
+    try {
+      const captured = channelInput;
+      if (captured === undefined || captured.listNotifyDestinations === undefined) {
+        throw new Error("test driver did not receive destination inference");
+      }
+      const { listNotifyDestinations, responder } = captured;
+      const destinationIds = async (): Promise<readonly string[]> =>
+        (await listNotifyDestinations()).map(({ conversationId }) => conversationId).sort();
+
+      expect(await destinationIds()).toEqual(["telegram:1"]);
+      await writeSummary("seed-b", "telegram:2");
+
+      // Default synthetic ids produce artifacts but cannot become destinations,
+      // so they deliberately leave the warm cache alone.
+      await responder.respond(
+        { conversationId: "cron:cache-probe", text: "run", abortSignal: new AbortController().signal },
+        { append: async () => undefined },
+      );
+      expect(await destinationIds()).toEqual(["telegram:1"]);
+
+      // A native-notify-capable artifact commit must cross the real
+      // buildResponder -> configured-recorder -> controller-cache wiring.
+      await responder.respond(
+        { conversationId: "telegram:3", text: "run", abortSignal: new AbortController().signal },
+        { append: async () => undefined },
+      );
+      expect(await destinationIds()).toEqual(["telegram:1", "telegram:2", "telegram:3"]);
+    } finally {
+      await app.stop();
+    }
   });
 
   it("keeps a restarted continuation queued until its destination responder is ready", async () => {

@@ -8,7 +8,7 @@ import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime
 
 import { resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
-import { createConfiguredAgentResponder, createConfiguredAgentRuntime } from "./configured-agent.js";
+import { createConfiguredAgentResponderForApp, createConfiguredAgentRuntime } from "./configured-agent.js";
 import {
   adapterSendToolNames,
   createAdapterSendToolsRuntimeExtension,
@@ -23,6 +23,7 @@ import {
 } from "./request-model-override.js";
 import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
 import { configuredRuntimeFallbackModels, hasConfiguredRuntimeFallbacks } from "./runtime-routes.js";
+import { isNotifyDestinationConversationId } from "./notify-destinations.js";
 import {
   isInteractionToolName,
   reasonOf,
@@ -105,7 +106,7 @@ export async function buildResponder(controller: MonoAgentAppController, coreCon
     ? controller.buildRuntimeForModel(coreConfig)
     : undefined;
   const observabilityContext = await controller.observabilityContext();
-  const responder = await createConfiguredAgentResponder({
+  const responder = await createConfiguredAgentResponderForApp({
     config: coreConfig,
     cwd: controller.cwd,
     runtime,
@@ -136,6 +137,14 @@ export async function buildResponder(controller: MonoAgentAppController, coreCon
     // Publish every run's start/event/finish to the shared bus so the `live`
     // channel can relay it. Best-effort + additive (see broadcast recorder).
     runEventSink: controller.liveEventBus,
+  }, {
+    // Follow the local JSONL source of truth, not outer live/exporter work:
+    // exporter start/finish may still be pending after the summary commits.
+    onRunArtifactCommitted: ({ conversationId }) => {
+      if (isNotifyDestinationConversationId(conversationId)) {
+        controller.seenNotifyDestinations.invalidate();
+      }
+    },
   });
   return responder;
 }

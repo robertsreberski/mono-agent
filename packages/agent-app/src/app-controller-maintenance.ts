@@ -182,9 +182,11 @@ export async function notifyDestination(
 export async function listNotifyDestinations(controller: MonoAgentAppController): Promise<readonly NotifyDestination[]> {
   const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
   const artifactDir = await resolveAppArtifactDir(input);
+  const seenDestinations = await controller.seenNotifyDestinations.list(artifactDir);
   return await resolveNotifyDestinations({
     input,
     artifactDir,
+    seenDestinations,
     isRunning: (id) => controller.running.has(id),
     ...(controller.logger === undefined ? {} : { logger: controller.logger }),
   });

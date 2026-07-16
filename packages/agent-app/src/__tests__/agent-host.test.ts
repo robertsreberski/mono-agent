@@ -49,11 +49,14 @@ import {
   createConfiguredAgentRuntime,
   createConfiguredMemory,
 } from "../index.js";
+import { createConfiguredAgentResponderForApp } from "../configured-agent.js";
 import {
   CONFIGURATION_PROPOSAL_MCP_SERVER_NAME,
   CONFIGURATION_PROPOSAL_TOOL_NAME,
   configurationProposalMcpServerSpec,
 } from "../configuration-proposal-tool.js";
+import { isNotifyDestinationConversationId } from "../notify-destinations.js";
+import { createSeenNotifyDestinationCache } from "../seen-conversations.js";
 
 const tempDirs: string[] = [];
 const servers: Server[] = [];
@@ -334,6 +337,78 @@ describe("agent host composition helpers", () => {
     expect(eventFrames).toContainEqual(expect.objectContaining({ sourceId: "src-1", runId: "run-live-broadcast" }));
     expect(JSON.stringify(eventFrames)).toContain("live event");
     expect(frames.at(-1)).toMatchObject({ sourceId: "src-1", runId: "run-live-broadcast", status: "succeeded" });
+  });
+
+  it("invalidates artifact-derived destinations at local commits without awaiting a slow exporter", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+
+    let releaseExporterStart!: () => void;
+    let releaseExporterFinish!: () => void;
+    const exporterStart = new Promise<void>((resolve) => { releaseExporterStart = resolve; });
+    const exporterFinish = new Promise<void>((resolve) => { releaseExporterFinish = resolve; });
+    const exporter: RunExporter = {
+      start: async () => await exporterStart,
+      finish: async () => await exporterFinish,
+    };
+
+    let scanCalls = 0;
+    const cache = createSeenNotifyDestinationCache({
+      scan: async () => [{ conversationId: `telegram:${++scanCalls}`, channelId: "telegram" }],
+    });
+    await cache.list(artifactDir);
+    expect(scanCalls).toBe(1);
+
+    let startedCommitted!: () => void;
+    let finishedCommitted!: () => void;
+    const started = new Promise<void>((resolve) => { startedCommitted = resolve; });
+    const finished = new Promise<void>((resolve) => { finishedCommitted = resolve; });
+    const responder = await createConfiguredAgentResponderForApp({
+      config: monoConfig({
+        dir,
+        identityPath,
+        artifactDir,
+        observability: { exporters: [{ type: "phoenix", timeoutMs: 60_000 }] },
+      }),
+      runtime: createFakeRuntime(async () => ({ text: "Done" })).runtime,
+      createRunId: () => "run-artifact-cache-boundary",
+      exporterFactory: () => exporter,
+    }, {
+      onRunArtifactCommitted: (event) => {
+        if (isNotifyDestinationConversationId(event.conversationId)) {
+          cache.invalidate();
+        }
+        if (event.phase === "started") startedCommitted();
+        else finishedCommitted();
+      },
+    });
+
+    let responseSettled = false;
+    const response = responder.respond(
+      { conversationId: "telegram:42", text: "Run", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    ).finally(() => { responseSettled = true; });
+
+    await started;
+    expect(JSON.parse(await readFile(join(artifactDir, "run-artifact-cache-boundary.summary.json"), "utf8")))
+      .toMatchObject({ status: "running", conversationId: "telegram:42" });
+    await cache.list(artifactDir);
+    expect(scanCalls).toBe(2);
+    expect(responseSettled).toBe(false);
+
+    releaseExporterStart();
+    await finished;
+    expect(JSON.parse(await readFile(join(artifactDir, "run-artifact-cache-boundary.summary.json"), "utf8")))
+      .toMatchObject({ status: "succeeded", conversationId: "telegram:42" });
+    await cache.list(artifactDir);
+    expect(scanCalls).toBe(3);
+    expect(responseSettled).toBe(false);
+
+    releaseExporterFinish();
+    await response;
+    expect(responseSettled).toBe(true);
   });
 
   it("records and exports memory persistence degradation before one terminal live frame", async () => {
