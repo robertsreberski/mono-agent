@@ -242,6 +242,8 @@ async function assertSecureRegularFile(
   } catch (error) {
     throw corrupt(installRoot, `${label} is unavailable (${errorMessage(error)})`);
   }
+  // Hard-linked files, including external executables, are deliberately rejected;
+  // a launcher-only relaxation remains an open compatibility decision in #191.
   if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
     throw corrupt(installRoot, `${label} is not a single-link regular file`);
   }
