@@ -165,6 +165,38 @@ describe("dependency vulnerability gate", () => {
     expect(() => parsePnpmProductionGraph(JSON.stringify(orphan), {
       rootPackageNames: ["portable-fixture", "workspace-only"],
     })).toThrow("has no expanded subtree");
+
+    const recursiveCount = JSON.parse(pnpm11ListFixture());
+    recursiveCount[1].dependencies["workspace-alias"].dependencies["workspace-runtime"]
+      .dependencies["vulnerable-transitive"].dependencies = {
+        leaf: { version: "1.0.0", path: "/repo/node_modules/leaf" },
+      };
+    recursiveCount[2].dependencies["workspace-runtime"].dedupedDependenciesCount = 2;
+    expect(parsePnpmProductionGraph(JSON.stringify(recursiveCount), {
+      rootPackageNames: ["portable-fixture", "workspace-only"],
+    }).dependencyPaths["leaf@1.0.0"]).toEqual([
+      "workspace-only -> workspace-runtime@9.0.0 -> vulnerable-transitive@6.0.0 -> leaf@1.0.0",
+    ]);
+
+    const positiveCountMismatch = structuredClone(recursiveCount);
+    positiveCountMismatch[2].dependencies["workspace-runtime"].dedupedDependenciesCount = 1;
+    expect(() => parsePnpmProductionGraph(JSON.stringify(positiveCountMismatch), {
+      rootPackageNames: ["portable-fixture", "workspace-only"],
+    })).toThrow("reports 1 dependencies, but its expanded subtree contains 2");
+
+    const childBearingDedupe = JSON.parse(pnpm11ListFixture());
+    childBearingDedupe[2].dependencies["workspace-runtime"].dependencies = {
+      hidden: { version: "99.0.0", path: "/repo/node_modules/hidden" },
+    };
+    expect(() => parsePnpmProductionGraph(JSON.stringify(childBearingDedupe), {
+      rootPackageNames: ["portable-fixture", "workspace-only"],
+    })).toThrow("deduped entry workspace-runtime must not include dependency children");
+
+    const peerVariantMismatch = JSON.parse(pnpm11ListFixture());
+    peerVariantMismatch[2].dependencies["workspace-runtime"].peersSuffixHash = "different";
+    expect(() => parsePnpmProductionGraph(JSON.stringify(peerVariantMismatch), {
+      rootPackageNames: ["portable-fixture", "workspace-only"],
+    })).toThrow("does not match its expanded subtree");
   });
 
   it("pins production/optional inclusion and dev/peer/workspace exclusion at the JSON boundary", async () => {
@@ -272,6 +304,45 @@ describe("dependency vulnerability gate", () => {
     ]), options)).toEqual(expected);
   });
 
+  it("hydrates realistic pnpm 11 reverse deduped branches by peer-aware identity", () => {
+    const options = {
+      packageName: "ws",
+      versions: ["8.20.1"],
+      rootPackageNames: ["@mono-agent/agent-app"],
+    };
+    expect(parsePnpmWhyDependencyPaths(JSON.stringify([{
+      name: "ws",
+      version: "8.20.1",
+      dependents: [
+        {
+          name: "provider",
+          version: "2.0.0",
+          peersSuffixHash: "same",
+          dependents: [{
+            name: "@mono-agent/agent-app",
+            version: "0.11.3",
+            depField: "dependencies",
+          }],
+        },
+        {
+          name: "wrapper",
+          version: "3.0.0",
+          dependents: [{
+            name: "provider",
+            version: "2.0.0",
+            peersSuffixHash: "same",
+            deduped: true,
+          }],
+        },
+      ],
+    }]), options)).toEqual({
+      "ws@8.20.1": [
+        "@mono-agent/agent-app -> provider@2.0.0 -> wrapper@3.0.0 -> ws@8.20.1",
+        "@mono-agent/agent-app -> provider@2.0.0 -> ws@8.20.1",
+      ],
+    });
+  });
+
   it("fails closed on incomplete or non-production pnpm 11 why branches", () => {
     const options = {
       packageName: "ws",
@@ -282,7 +353,7 @@ describe("dependency vulnerability gate", () => {
       name: "ws",
       version: "8.20.1",
       dependents: [{ name: "provider", version: "1.0.0", deduped: true }],
-    }]), options)).toThrow("deduped branch provider@1.0.0 has no complete root path");
+    }]), options)).toThrow("deduped branch provider@1.0.0 above provider@1.0.0 -> ws@8.20.1 has no expanded dependents tree");
 
     expect(() => parsePnpmWhyDependencyPaths(JSON.stringify([{
       name: "ws",
@@ -324,6 +395,64 @@ describe("dependency vulnerability gate", () => {
         }],
       },
     ]), options)).toThrow("target variant ws@8.20.1#incomplete has no dependents tree");
+
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify([
+      {
+        name: "ws",
+        version: "8.20.1",
+        peersSuffixHash: "empty",
+        dependents: [],
+      },
+      {
+        name: "ws",
+        version: "8.20.1",
+        peersSuffixHash: "complete",
+        dependents: [{
+          name: "@mono-agent/slack-adapter",
+          version: "0.11.3",
+          depField: "dependencies",
+        }],
+      },
+    ]), options)).toThrow("target variant ws@8.20.1#empty has no complete production dependency path");
+
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify([{
+      name: "ws",
+      version: "8.20.1",
+      dependents: [
+        {
+          name: "provider",
+          version: "1.0.0",
+          dependents: [{
+            name: "@mono-agent/slack-adapter",
+            version: "0.11.3",
+            depField: "dependencies",
+          }],
+        },
+        {
+          name: "wrapper",
+          version: "1.0.0",
+          dependents: [{
+            name: "provider",
+            version: "1.0.0",
+            deduped: true,
+            dependents: [],
+          }],
+        },
+      ],
+    }]), options)).toThrow("deduped branch provider@1.0.0 must not include dependents");
+
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify([{
+      name: "ws",
+      version: "8.20.1",
+      dependents: [
+        { name: "orphan", version: "1.0.0", dependents: [] },
+        {
+          name: "@mono-agent/slack-adapter",
+          version: "0.11.3",
+          depField: "dependencies",
+        },
+      ],
+    }]), options)).toThrow("incomplete branch orphan@1.0.0 has an empty dependents tree");
   });
 
   it("drives the real collector and HTTP parser for a deliberately vulnerable package", async () => {

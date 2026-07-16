@@ -182,6 +182,7 @@ export function parsePnpmWhyDependencyPaths(source, options) {
 
   function parseDependentsShape() {
     const paths = {};
+    const targetVariants = new Set();
     for (const target of document) {
       if (!isRecord(target) || typeof target.name !== "string" || target.name.length === 0) {
         throw new Error("pnpm why output contains a malformed top-level entry.");
@@ -193,19 +194,37 @@ export function parsePnpmWhyDependencyPaths(source, options) {
       if (typeof target.version !== "string" || target.version.length === 0) {
         throw new Error(`pnpm why target ${target.name} has a malformed version.`);
       }
+      validatePnpmReverseNode(target, `pnpm why target ${target.name}`);
       if (!targetVersions.has(target.version)) {
         continue;
       }
+      if (target.deduped !== undefined || target.circular !== undefined || target.depField !== undefined) {
+        throw new Error(`pnpm why target variant ${reverseDependencyIdentity(targetName, target)} is malformed.`);
+      }
+      const targetIdentity = reverseDependencyIdentity(targetName, target);
+      if (targetVariants.has(targetIdentity)) {
+        throw new Error(`pnpm why contains duplicate target variant ${targetIdentity}.`);
+      }
+      targetVariants.add(targetIdentity);
       if (!Object.hasOwn(target, "dependents")) {
         throw new Error(
-          `pnpm why target variant ${reverseDependencyIdentity(targetName, target)} has no dependents tree.`,
+          `pnpm why target variant ${targetIdentity} has no dependents tree.`,
         );
       }
       if (!Array.isArray(target.dependents)) {
         throw new Error(`pnpm why dependents must be an array for ${packageVersionKey(packageName, target.version)}.`);
       }
       const targetKey = packageVersionKey(packageName, target.version);
-      traverseDependents(target.dependents, [targetKey], new Set([targetKey]));
+      const expandedDependents = indexExpandedDependents(target.dependents, targetIdentity);
+      const completePathCount = traverseDependents(
+        target.dependents,
+        [targetKey],
+        new Set([targetIdentity]),
+        expandedDependents,
+      );
+      if (completePathCount === 0) {
+        throw new Error(`pnpm why target variant ${targetIdentity} has no complete production dependency path.`);
+      }
     }
     for (const version of targetVersions) {
       const key = packageVersionKey(packageName, version);
@@ -216,19 +235,76 @@ export function parsePnpmWhyDependencyPaths(source, options) {
     }
     return paths;
 
-    function traverseDependents(dependents, suffix, ancestors) {
-      for (const dependent of dependents) {
-        if (!isRecord(dependent) || typeof dependent.name !== "string" || dependent.name.length === 0) {
-          throw new Error(`pnpm why contains a malformed dependent above ${suffix.join(" -> ")}.`);
-        }
-        if (dependent.depField !== undefined
-          && dependent.depField !== "dependencies"
-          && dependent.depField !== "optionalDependencies") {
+    function indexExpandedDependents(dependents, targetIdentity) {
+      // pnpm 11 expands a reverse graph node once per target variant and emits
+      // identity-only `deduped` references for later occurrences. Hydrate only
+      // from that target's expanded sibling so peer variants cannot cross-bind.
+      const expandedDependents = new Map();
+      const dedupedDependents = [];
+      scan(dependents, [targetIdentity]);
+      for (const { identity, suffix } of dedupedDependents) {
+        if (!expandedDependents.has(identity)) {
           throw new Error(
-            `pnpm why contains non-production ${String(dependent.depField)} path through ${dependent.name}.`,
+            `pnpm why deduped branch ${identity} above ${suffix.join(" -> ")} has no expanded dependents tree.`,
           );
         }
+      }
+      return expandedDependents;
+
+      function scan(entries, suffix) {
+        for (const dependent of entries) {
+          validatePnpmReverseNode(dependent, `pnpm why dependent above ${suffix.join(" -> ")}`);
+          const dependentName = dependencyRegistryName(dependent.name, dependent);
+          if (dependent.circular === true) {
+            if (dependent.deduped === true || Object.hasOwn(dependent, "dependents")
+              || dependent.depField !== undefined) {
+              throw new Error(`pnpm why circular branch ${dependentName}@${dependent.version} is malformed.`);
+            }
+            continue;
+          }
+          if (rootPackageNames.has(dependentName)) {
+            if (dependent.deduped === true || Object.hasOwn(dependent, "dependents")) {
+              throw new Error(`pnpm why publishable root ${dependentName} must be a terminal dependent.`);
+            }
+            continue;
+          }
+          if (dependent.depField !== undefined) {
+            throw new Error(`pnpm why package dependent ${dependentName} unexpectedly has depField.`);
+          }
+          const identity = reverseDependencyIdentity(dependentName, dependent);
+          if (dependent.deduped === true) {
+            if (Object.hasOwn(dependent, "dependents")) {
+              throw new Error(`pnpm why deduped branch ${identity} must not include dependents.`);
+            }
+            dedupedDependents.push({ identity, suffix: [identity, ...suffix] });
+            continue;
+          }
+          if (dependent.dependents === undefined) {
+            continue;
+          }
+          if (!Array.isArray(dependent.dependents)) {
+            throw new Error(`pnpm why dependents must be an array for ${identity}.`);
+          }
+          if (dependent.dependents.length === 0) {
+            throw new Error(`pnpm why incomplete branch ${identity} has an empty dependents tree.`);
+          }
+          if (expandedDependents.has(identity)) {
+            throw new Error(`pnpm why contains duplicate expanded dependents trees for ${identity}.`);
+          }
+          expandedDependents.set(identity, dependent);
+          scan(dependent.dependents, [identity, ...suffix]);
+        }
+      }
+    }
+
+    function traverseDependents(dependents, suffix, ancestors, expandedDependents) {
+      let completePathCount = 0;
+      for (const dependent of dependents) {
+        validatePnpmReverseNode(dependent, `pnpm why dependent above ${suffix.join(" -> ")}`);
         const dependentName = dependencyRegistryName(dependent.name, dependent);
+        if (dependent.circular === true) {
+          continue;
+        }
         if (rootPackageNames.has(dependentName)) {
           if (dependent.depField === undefined) {
             throw new Error(`pnpm why publishable root ${dependentName} is missing depField.`);
@@ -236,29 +312,34 @@ export function parsePnpmWhyDependencyPaths(source, options) {
           const targetKey = suffix.at(-1);
           paths[targetKey] ??= [];
           paths[targetKey].push([dependentName, ...suffix].join(" -> "));
+          completePathCount += 1;
           continue;
-        }
-        if (typeof dependent.version !== "string" || dependent.version.length === 0) {
-          throw new Error(`pnpm why contains a malformed dependent version for ${dependentName}.`);
         }
         const dependentKey = packageVersionKey(dependentName, dependent.version);
         const dependentIdentity = reverseDependencyIdentity(dependentName, dependent);
         if (ancestors.has(dependentIdentity)) {
           continue;
         }
-        if (dependent.dependents === undefined) {
-          const qualifier = dependent.deduped === true ? "deduped" : "incomplete";
-          throw new Error(`pnpm why ${qualifier} branch ${dependentKey} has no complete root path.`);
+        const expandedDependent = dependent.deduped === true
+          ? expandedDependents.get(dependentIdentity)
+          : dependent;
+        if (expandedDependent === undefined) {
+          throw new Error(`pnpm why deduped branch ${dependentIdentity} has no expanded dependents tree.`);
         }
-        if (!Array.isArray(dependent.dependents)) {
+        if (expandedDependent.dependents === undefined) {
+          throw new Error(`pnpm why incomplete branch ${dependentKey} has no complete root path.`);
+        }
+        if (!Array.isArray(expandedDependent.dependents)) {
           throw new Error(`pnpm why dependents must be an array for ${dependentKey}.`);
         }
-        traverseDependents(
-          dependent.dependents,
+        completePathCount += traverseDependents(
+          expandedDependent.dependents,
           [dependentKey, ...suffix],
           new Set([...ancestors, dependentIdentity]),
+          expandedDependents,
         );
       }
+      return completePathCount;
     }
   }
 
@@ -955,6 +1036,9 @@ function indexExpandedProductionNodes(document) {
       }
       for (const [childName, child] of Object.entries(children)) {
         validatePnpmDependencyNode(childName, child, `pnpm list ${section}`);
+        if (child.circular === true) {
+          continue;
+        }
         if (child.deduped === true) {
           dedupedNodes.push({ childName, node: child });
           continue;
@@ -992,15 +1076,21 @@ function resolveExpandedProductionNode(childName, child, expandedNodes) {
     throw new Error(`pnpm list deduped node ${identity} has no expanded subtree.`);
   }
   if (dependencyRegistryName(expanded.childName, expanded.node) !== dependencyRegistryName(childName, child)
-    || expanded.node.version !== child.version) {
+    || expanded.node.version !== child.version
+    || expanded.node.peersSuffixHash !== child.peersSuffixHash) {
     throw new Error(`pnpm list deduped node ${identity} does not match its expanded subtree.`);
   }
-  const expandedChildCount = ["dependencies", "optionalDependencies"].reduce((count, section) => {
-    const children = expanded.node[section];
-    return count + (isRecord(children) ? Object.keys(children).length : 0);
-  }, 0);
+  // pnpm's count is the recursive number of entries in the cached rendered
+  // subtree (nested deduped/circular entries count once), not the direct arity.
+  const expandedChildCount = countProductionSubtreeEntries(expanded.node);
   if (expandedChildCount === 0) {
     throw new Error(`pnpm list deduped node ${identity} resolves to an empty expanded subtree.`);
+  }
+  if (child.dedupedDependenciesCount !== expandedChildCount) {
+    throw new Error(
+      `pnpm list deduped node ${identity} reports ${child.dedupedDependenciesCount} dependencies, `
+      + `but its expanded subtree contains ${expandedChildCount}.`,
+    );
   }
   return expanded.node;
 }
@@ -1019,13 +1109,76 @@ function validatePnpmDependencyNode(childName, child, description) {
   if (child.deduped !== undefined && typeof child.deduped !== "boolean") {
     throw new Error(`${description} contains an invalid deduped marker for ${childName}.`);
   }
+  if (child.circular !== undefined && typeof child.circular !== "boolean") {
+    throw new Error(`${description} contains an invalid circular marker for ${childName}.`);
+  }
+  if (child.peersSuffixHash !== undefined
+    && (typeof child.peersSuffixHash !== "string" || child.peersSuffixHash.length === 0)) {
+    throw new Error(`${description} contains an invalid peer-variant hash for ${childName}.`);
+  }
+  if (child.circular === true) {
+    if (child.deduped === true || child.dedupedDependenciesCount !== undefined
+      || Object.hasOwn(child, "dependencies") || Object.hasOwn(child, "optionalDependencies")) {
+      throw new Error(`${description} circular entry ${childName} must not include dependency metadata.`);
+    }
+    return;
+  }
   if (child.deduped === true) {
     if (!Number.isSafeInteger(child.dedupedDependenciesCount) || child.dedupedDependenciesCount <= 0) {
       throw new Error(`${description} deduped entry ${childName} must name a positive dependency count.`);
     }
+    if (Object.hasOwn(child, "dependencies") || Object.hasOwn(child, "optionalDependencies")) {
+      throw new Error(`${description} deduped entry ${childName} must not include dependency children.`);
+    }
   } else if (child.dedupedDependenciesCount !== undefined) {
     throw new Error(`${description} entry ${childName} has a dependency count without deduped true.`);
   }
+}
+
+function validatePnpmReverseNode(node, description) {
+  if (!isRecord(node) || typeof node.name !== "string" || node.name.length === 0
+    || typeof node.version !== "string" || node.version.length === 0) {
+    throw new Error(`${description} is malformed.`);
+  }
+  if (node.from !== undefined && (typeof node.from !== "string" || node.from.length === 0)) {
+    throw new Error(`${description} has an invalid registry package name.`);
+  }
+  if (node.peersSuffixHash !== undefined
+    && (typeof node.peersSuffixHash !== "string" || node.peersSuffixHash.length === 0)) {
+    throw new Error(`${description} has an invalid peer-variant hash.`);
+  }
+  if (node.deduped !== undefined && typeof node.deduped !== "boolean") {
+    throw new Error(`${description} has an invalid deduped marker.`);
+  }
+  if (node.circular !== undefined && typeof node.circular !== "boolean") {
+    throw new Error(`${description} has an invalid circular marker.`);
+  }
+  if (node.depField !== undefined
+    && node.depField !== "dependencies"
+    && node.depField !== "optionalDependencies") {
+    throw new Error(`pnpm why contains non-production ${String(node.depField)} path through ${node.name}.`);
+  }
+}
+
+function countProductionSubtreeEntries(parent) {
+  let count = 0;
+  for (const section of ["dependencies", "optionalDependencies"]) {
+    const children = parent[section];
+    if (children === undefined) {
+      continue;
+    }
+    if (!isRecord(children)) {
+      throw new Error(`pnpm list ${section} must be an object while validating a deduped subtree.`);
+    }
+    for (const [childName, child] of Object.entries(children)) {
+      validatePnpmDependencyNode(childName, child, `pnpm list ${section}`);
+      count += 1;
+      if (child.deduped !== true && child.circular !== true) {
+        count += countProductionSubtreeEntries(child);
+      }
+    }
+  }
+  return count;
 }
 
 function dependencyRegistryName(childName, child) {
@@ -1063,6 +1216,7 @@ function directProductionDependencySignature(childName, child) {
         dependencyRegistryName(dependencyName, dependency),
         dependency.version,
         dependency.path ?? "",
+        dependency.peersSuffixHash ?? "",
       ]);
     }
   }
