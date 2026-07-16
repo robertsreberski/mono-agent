@@ -20,7 +20,10 @@ import {
   startA2AProvider,
   type A2AProviderStartResult,
 } from "../index.js";
-import { createIdempotentA2ARequestHandler } from "../idempotency.js";
+import {
+  classifyA2AIdempotencyTransportError,
+  createIdempotentA2ARequestHandler,
+} from "../idempotency.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -532,6 +535,110 @@ describe("durable A2A logical dispatch idempotency", () => {
     }
   });
 
+  it("publishes a complete admission before a concurrent provider can observe it", async () => {
+    const stateDir = await temporaryStateDir();
+    const beforePublication = deferred<void>();
+    const releasePublication = deferred<void>();
+    const afterConcurrentPublication = deferred<void>();
+    const releaseConcurrentCleanup = deferred<void>();
+    const delegateEntered = deferred<void>();
+    let delegateCalls = 0;
+    const terminal = testTerminalMessage("publication-race-response", "one durable execution");
+    const delegate = {
+      async sendMessage() {
+        delegateCalls += 1;
+        delegateEntered.resolve();
+        return terminal;
+      },
+    } as unknown as A2ARequestHandler;
+    const options = testIdempotencyOptions(stateDir);
+    const [pausedPublisher, concurrentPublisher] = await Promise.all([
+      createIdempotentA2ARequestHandler({
+        delegate,
+        taskStore: new InMemoryTaskStore(),
+        options,
+        storeHooks: {
+          async beforeAdmissionPublish() {
+            beforePublication.resolve();
+            await releasePublication.promise;
+          },
+        },
+      }),
+      createIdempotentA2ARequestHandler({
+        delegate,
+        taskStore: new InMemoryTaskStore(),
+        options,
+        storeHooks: {
+          async afterAdmissionPublish() {
+            afterConcurrentPublication.resolve();
+            await releaseConcurrentCleanup.promise;
+          },
+        },
+      }),
+    ]);
+    const key = "logical-atomic-publication-1";
+    const keyHash = testStoreKeyHash(key);
+    const request = testDirectRequest(key, "publish this admission atomically");
+    const pausedOutcome = captureOutcome(pausedPublisher.sendMessage(request, testServerCallContext()));
+    let concurrentOutcome: Promise<CapturedOutcome<Message | Task>> | undefined;
+
+    try {
+      await expectMilestoneBeforeSettlement(
+        beforePublication.promise,
+        pausedOutcome,
+        "pre-publication staging",
+      );
+      await expect(readFile(join(stateDir, `${keyHash}.json`), "utf8"))
+        .rejects.toMatchObject({ code: "ENOENT" });
+      const stagedNames = (await readdir(stateDir)).filter((name) => (
+        name.startsWith(`.${keyHash}.`) && name.endsWith(".tmp")
+      ));
+      expect(stagedNames).toHaveLength(1);
+      expect(JSON.parse(await readFile(join(stateDir, stagedNames[0] as string), "utf8")))
+        .toMatchObject({ keyHash, status: "active" });
+
+      concurrentOutcome = captureOutcome(concurrentPublisher.sendMessage(request, testServerCallContext()));
+      await expectMilestoneBeforeSettlement(
+        afterConcurrentPublication.promise,
+        concurrentOutcome,
+        "concurrent publication",
+      );
+      expect((await stat(join(stateDir, `${keyHash}.json`))).nlink).toBe(2);
+      releasePublication.resolve();
+
+      const outcome = await pausedOutcome;
+      expect(outcome.status).toBe("rejected");
+      if (outcome.status !== "rejected" || !(outcome.reason instanceof Error)) {
+        throw new Error("Expected the losing admission to fail with an Error.");
+      }
+      expect(classifyA2AIdempotencyTransportError(outcome.reason.message)).toBe("in_doubt");
+      expect(delegateCalls).toBe(0);
+
+      releaseConcurrentCleanup.resolve();
+      await expectMilestoneBeforeSettlement(
+        delegateEntered.promise,
+        concurrentOutcome,
+        "delegate entry",
+      );
+      const concurrentResult = await concurrentOutcome;
+      expect(concurrentResult.status).toBe("fulfilled");
+      if (concurrentResult.status !== "fulfilled") {
+        throw concurrentResult.reason;
+      }
+      expect(concurrentResult.value).toEqual(terminal);
+      expect(delegateCalls).toBe(1);
+      expect((await stat(join(stateDir, `${keyHash}.json`))).nlink).toBe(1);
+      expect((await readdir(stateDir)).filter((name) => name.startsWith(`.${keyHash}.`))).toHaveLength(0);
+    } finally {
+      releasePublication.resolve();
+      releaseConcurrentCleanup.resolve();
+      await Promise.allSettled([
+        pausedOutcome,
+        ...(concurrentOutcome === undefined ? [] : [concurrentOutcome]),
+      ]);
+    }
+  });
+
   it.each(["HTTP+JSON", "JSONRPC"] as const)(
     "returns a typed integrity conflict over %s without a second responder call",
     async (transport) => {
@@ -824,6 +931,163 @@ describe("durable A2A logical dispatch idempotency", () => {
     })).rejects.toMatchObject({ code: "idempotency_store_error" });
   });
 
+  it("securely reopens a canonical record replaced after open by expiry compaction", async () => {
+    const stateDir = await temporaryStateDir();
+    const key = "logical-reopen-after-compaction-1";
+    const keyHash = testStoreKeyHash(key);
+    const options = testIdempotencyOptions(stateDir);
+    const request = testDirectRequest(key, "reopen the compacted receipt");
+    const terminal = testTerminalMessage("reopen-compaction-response", "seed result");
+    const seed = await createIdempotentA2ARequestHandler({
+      delegate: {
+        async sendMessage() {
+          return terminal;
+        },
+      } as unknown as A2ARequestHandler,
+      taskStore: new InMemoryTaskStore(),
+      options,
+    });
+    await seed.sendMessage(request, testServerCallContext());
+    const recordPath = await onlyRecordPath(stateDir);
+    const record = JSON.parse(await readFile(recordPath, "utf8")) as Record<string, unknown>;
+    record.updatedAtMs = Date.now() - 61_000;
+    await writeFile(recordPath, `${JSON.stringify(record)}\n`);
+    await chmod(recordPath, 0o600);
+
+    const oldRecordOpened = deferred<void>();
+    const releaseOldReader = deferred<void>();
+    const pausedReadAttempts: number[] = [];
+    let paused = false;
+    let recordStartupAttempts = true;
+    let successorCalls = 0;
+    const successor = {
+      async sendMessage() {
+        successorCalls += 1;
+        return testTerminalMessage("unexpected-successor", "must not run");
+      },
+    } as unknown as A2ARequestHandler;
+    const pausedCreation = captureOutcome(createIdempotentA2ARequestHandler({
+      delegate: successor,
+      taskStore: new InMemoryTaskStore(),
+      options,
+      storeHooks: {
+        async afterRecordOpen(input) {
+          if (recordStartupAttempts && input.keyHash === keyHash) {
+            pausedReadAttempts.push(input.attempt);
+          }
+          if (!paused && input.keyHash === keyHash) {
+            paused = true;
+            oldRecordOpened.resolve();
+            await releaseOldReader.promise;
+          }
+        },
+      },
+    }));
+
+    try {
+      await expectMilestoneBeforeSettlement(
+        oldRecordOpened.promise,
+        pausedCreation,
+        "old canonical record open",
+      );
+      const openedIdentity = await stat(recordPath);
+      const sibling = await createIdempotentA2ARequestHandler({
+        delegate: successor,
+        taskStore: new InMemoryTaskStore(),
+        options,
+      });
+      const compactedIdentity = await stat(recordPath);
+      expect(compactedIdentity.ino).not.toBe(openedIdentity.ino);
+      expect(JSON.parse(await readFile(recordPath, "utf8"))).toMatchObject({
+        keyHash,
+        status: "tombstone",
+      });
+
+      releaseOldReader.resolve();
+      const pausedResult = await pausedCreation;
+      expect(pausedResult.status).toBe("fulfilled");
+      if (pausedResult.status !== "fulfilled") {
+        throw pausedResult.reason;
+      }
+      recordStartupAttempts = false;
+      expect(pausedReadAttempts.slice(0, 2)).toEqual([1, 2]);
+      expect((await stat(recordPath)).ino).toBe(compactedIdentity.ino);
+      const expiredOutcomes = await Promise.all([
+        captureOutcome(pausedResult.value.sendMessage(request, testServerCallContext())),
+        captureOutcome(sibling.sendMessage(request, testServerCallContext())),
+      ]);
+      for (const outcome of expiredOutcomes) {
+        expect(outcome.status).toBe("rejected");
+        if (outcome.status !== "rejected" || !(outcome.reason instanceof Error)) {
+          throw new Error("Expected a typed expired-result failure.");
+        }
+        expect(classifyA2AIdempotencyTransportError(outcome.reason.message)).toBe("result_expired");
+      }
+      expect(successorCalls).toBe(0);
+    } finally {
+      releaseOldReader.resolve();
+      await pausedCreation;
+    }
+  });
+
+  it("fails closed after bounded canonical record replacement churn", async () => {
+    const stateDir = await temporaryStateDir();
+    const key = "logical-bounded-record-churn-1";
+    const keyHash = testStoreKeyHash(key);
+    const options = testIdempotencyOptions(stateDir);
+    const request = testDirectRequest(key, "never accept an unstable receipt");
+    const seed = await createIdempotentA2ARequestHandler({
+      delegate: {
+        async sendMessage() {
+          return testTerminalMessage("bounded-churn-seed", "stable seed");
+        },
+      } as unknown as A2ARequestHandler,
+      taskStore: new InMemoryTaskStore(),
+      options,
+    });
+    await seed.sendMessage(request, testServerCallContext());
+    const recordPath = await onlyRecordPath(stateDir);
+    let replacements = 0;
+    let exceededReplacementBound = false;
+    let successorCalls = 0;
+
+    await expect(createIdempotentA2ARequestHandler({
+      delegate: {
+        async sendMessage() {
+          successorCalls += 1;
+          return testTerminalMessage("unexpected-churn-successor", "must not run");
+        },
+      } as unknown as A2ARequestHandler,
+      taskStore: new InMemoryTaskStore(),
+      options,
+      storeHooks: {
+        async afterRecordOpen(input) {
+          if (input.attempt > 20) {
+            exceededReplacementBound = true;
+            throw new Error("Canonical record retry bound was exceeded.");
+          }
+          replacements += 1;
+          const temporary = join(
+            stateDir,
+            `.${input.keyHash}.${input.attempt.toString(16).padStart(2, "0")}.tmp`,
+          );
+          await writeFile(temporary, await readFile(recordPath), { mode: 0o600 });
+          await chmod(temporary, 0o600);
+          await rename(temporary, recordPath);
+        },
+      },
+    })).rejects.toMatchObject({ code: "idempotency_store_error" });
+
+    expect(replacements).toBe(20);
+    expect(exceededReplacementBound).toBe(false);
+    expect(successorCalls).toBe(0);
+    expect(JSON.parse(await readFile(recordPath, "utf8"))).toMatchObject({
+      keyHash,
+      status: "completed",
+    });
+    expect((await readdir(stateDir)).filter((name) => name.startsWith(`.${keyHash}.`))).toHaveLength(0);
+  });
+
   it("concurrently compacts an expired result to a permanent tombstone without admitting a successor", async () => {
     const stateDir = await temporaryStateDir();
     const original = await startProvider({
@@ -927,6 +1191,69 @@ function testStoreKeyHash(key: string): string {
     .digest("hex");
 }
 
+function testIdempotencyOptions(stateDir: string) {
+  return {
+    stateDir,
+    namespace: "test-logical-provider",
+    retentionMs: 60_000,
+    maxRecords: 100,
+  } as const;
+}
+
+function testDirectRequest(key: string, text: string): SendMessageRequest {
+  return {
+    tenant: "",
+    message: {
+      messageId: `request-${key}`,
+      contextId: `context-${key}`,
+      taskId: "",
+      role: Role.ROLE_USER,
+      parts: [{
+        content: { $case: "text", value: text },
+        filename: "",
+        mediaType: "text/plain",
+        metadata: {},
+      }],
+      metadata: {},
+      extensions: [],
+      referenceTaskIds: [],
+    },
+    configuration: {
+      acceptedOutputModes: ["text/plain"],
+      taskPushNotificationConfig: undefined,
+      historyLength: 1,
+      returnImmediately: false,
+    },
+    metadata: {
+      [A2A_IDEMPOTENCY_METADATA_KEY]: { schemaVersion: 1, key },
+    },
+  };
+}
+
+function testTerminalMessage(messageId: string, text: string): Message {
+  return {
+    messageId,
+    contextId: `context-${messageId}`,
+    taskId: "",
+    role: Role.ROLE_AGENT,
+    parts: [{
+      content: { $case: "text", value: text },
+      filename: "",
+      mediaType: "text/plain",
+      metadata: {},
+    }],
+    metadata: {},
+    extensions: [],
+    referenceTaskIds: [],
+  };
+}
+
+function testServerCallContext(): ServerCallContext {
+  return new ServerCallContext({
+    requestedExtensions: [A2A_IDEMPOTENCY_EXTENSION_URI],
+  });
+}
+
 function assertRawPartBuffer(result: Message | Task, expected: Buffer): void {
   if (!("parts" in result)) {
     throw new Error("Expected a replayed Message result.");
@@ -937,6 +1264,34 @@ function assertRawPartBuffer(result: Message | Task, expected: Buffer): void {
   }
   expect(Buffer.isBuffer(content.value)).toBe(true);
   expect(content.value.equals(expected)).toBe(true);
+}
+
+type CapturedOutcome<T> =
+  | { readonly status: "fulfilled"; readonly value: T }
+  | { readonly status: "rejected"; readonly reason: unknown };
+
+function captureOutcome<T>(promise: Promise<T>): Promise<CapturedOutcome<T>> {
+  return promise.then(
+    (value) => ({ status: "fulfilled", value } as const),
+    (reason: unknown) => ({ status: "rejected", reason } as const),
+  );
+}
+
+async function expectMilestoneBeforeSettlement<T>(
+  milestone: Promise<void>,
+  outcome: Promise<CapturedOutcome<T>>,
+  label: string,
+): Promise<void> {
+  const first = await Promise.race([
+    milestone.then(() => ({ kind: "milestone" } as const)),
+    outcome.then((settled) => ({ kind: "settled", settled } as const)),
+  ]);
+  if (first.kind === "settled") {
+    const detail = first.settled.status === "rejected" && first.settled.reason instanceof Error
+      ? `: ${first.settled.reason.message}`
+      : "";
+    throw new Error(`${label} was not reached before the handler settled${detail}`);
+  }
 }
 
 function deferred<T>() {
