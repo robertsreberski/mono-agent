@@ -28,7 +28,7 @@ Boundary rules:
 | Host-only history append / unsynchronized provider result | The prior durable provider epoch | Canonical history, memory, and run artifacts | The next provider turn receives a fresh epoch id and replays canonical history |
 | Idle eviction / replaced / disposed provider session | Warm runtime continuity for that conversation id | Durable Pi transcripts, durable history, memory, and run artifacts | App log line and status metadata event (`evicted`) with reason |
 | Detached status read | Nothing | All runtime/session state | No runtime event; status reads the latest published config + store snapshot |
-| `mono-agent restart --force` / explicit purge | Durable Pi transcript store under `piSessionsRoot` | Durable memory under `memory.path` and recorded run artifacts | Restart/status output only |
+| `mono-agent restart --force` / explicit purge | Durable Pi transcripts under `piSessionsRoot` and canonical active conversation history beside `artifacts.dir` | Durable memory under `memory.path` and recorded run artifacts | Restart/status output only |
 
 ## Provider sessions
 
@@ -132,7 +132,7 @@ Each clean record also carries the durable provider transcript revision. A proce
 When `piSessionsRoot` is unset, sessions are in-memory only. A programmatic custom `historyStore` also stays process-local unless it both implements `beginProviderSessionTurn` and advertises `providerSessionRetirement: "fail-closed"`; the harness withholds the durable path because fencing alone cannot reclaim cold JSONL after rotation or retention. Advertise that capability only when the store can durably fence before the provider, serialize the conversation across processes, expose a monotonic provider transcript revision, atomically publish the next revision or rotate the epoch with history commit, and prove exact-id provider transcript retirement before making an epoch unreachable.
 
 :::caution
-`mono-agent restart --force` purges `piSessionsRoot` so the agent resumes nothing — a fresh start. Durable memory under `memory.path` is untouched, and the purge is a no-op when sessions are in-memory.
+`mono-agent restart --force` purges both `piSessionsRoot` and canonical active conversation history, so the agent neither resumes a provider transcript nor replays an earlier chat turn — a fresh start. Durable memory under `memory.path` and recorded run artifacts remain untouched. A missing sessions or history store is a no-op.
 :::
 
 For retry behavior across *different* models (provider failover, not transport retries), see [Fallback models](/runtime/fallback/). Transport retries here are within a single model; fallback moves to the next model in the chain.

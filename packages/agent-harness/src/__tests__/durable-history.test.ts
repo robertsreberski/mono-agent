@@ -92,6 +92,38 @@ describe("DurableConversationHistoryStore", () => {
     expect((await readdir(root)).some((name) => name.endsWith(".tmp"))).toBe(false);
   }, 15_000);
 
+  it("recovers cold from a stable truncated record and replaces it on the next append", async () => {
+    const dir = await tempDir();
+    const root = join(dir, "history");
+    const store = createDurableHistoryStore({ root });
+    await store.append("conversation", [{ role: "assistant", content: "committed before corruption" }]);
+    const recordPath = (await historyRecords(root)).get("conversation") as string;
+    const original = await readHistoryRecord(root, "conversation");
+    const originalEpoch = original.providerSession?.epoch as string;
+
+    await writeFile(recordPath, '{"version":2,"conversationId":"conversation","messages":[');
+
+    const restarted = createDurableHistoryStore({ root });
+    await expect(restarted.load("conversation")).resolves.toEqual([]);
+    const coldTurn = await restarted.beginProviderSessionTurn("conversation", "run-after-truncation");
+    expect(coldTurn.providerSessionId).not.toBe(originalEpoch);
+    const prepared = await coldTurn.prepareCommit(
+      [{ role: "user", content: "fresh after truncation" }],
+      { providerSessionSynced: true },
+    );
+    await prepared.commit();
+
+    await expect(createDurableHistoryStore({ root }).load("conversation"))
+      .resolves.toEqual([{ role: "user", content: "fresh after truncation" }]);
+    const recoveredRecord = JSON.parse(await readFile(recordPath, "utf8")) as TestHistoryRecord;
+    expect(recoveredRecord).toMatchObject({
+      version: 2,
+      conversationId: "conversation",
+      providerSession: { revision: 1 },
+    });
+    expect(recoveredRecord.providerSession?.epoch).not.toBe(originalEpoch);
+  });
+
   it("rotates missing, legacy V1, and dirty provider epochs before use", async () => {
     const dir = await tempDir();
     const root = join(dir, "history");

@@ -93,8 +93,8 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     signature: "mono-agent restart [--config <path>] [--force]",
     lines: [
       "Restart the background instance for this config (starts it if stopped).",
-      "--force also clears the persisted pi sessions so it starts with fresh",
-      "conversations instead of resuming saved ones (durable memory is untouched).",
+      "--force clears persisted pi sessions and active conversation history so",
+      "the agent starts fresh. Durable memory and run artifacts are untouched.",
     ],
   },
   {

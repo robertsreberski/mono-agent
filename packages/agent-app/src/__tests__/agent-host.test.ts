@@ -949,6 +949,67 @@ describe("agent host composition helpers", () => {
     expect(historyEntries).toContain(".locks");
   });
 
+  it("recreates a Telegram-like stateless responder with the first turn replayed exactly once", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, ".mono-agent", "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const base = monoConfig({ dir, identityPath, artifactDir });
+    const config: MonoAgentConfig = {
+      ...base,
+      runtime: {
+        ...base.runtime,
+        maxTurns: 0,
+        fallbackModels: [{
+          sdk: "opencode",
+          provider: "github-copilot",
+          model: "gpt-5.1",
+          reference: "opencode:github-copilot:gpt-5.1",
+        }],
+        session: {
+          mode: "continuous",
+          idleTimeoutMs: 60_000,
+          rollover: "daily",
+          rolloverTimezone: "UTC",
+        },
+      },
+      tools: { allowedTools: ["*"], disallowedTools: [] },
+    };
+    const now = () => new Date("2026-07-17T12:00:00Z");
+    const firstRuntime = createFakeRuntime(async () => ({
+      text: "FIRST_ASSISTANT_REPLAY_MARKER",
+      providerSessionId: "must-not-resume",
+    }));
+    const firstResponder = await createConfiguredAgentResponder({ config, runtime: firstRuntime.runtime, now });
+    await firstResponder.respond(
+      {
+        conversationId: "telegram:42",
+        text: "FIRST_USER_REPLAY_MARKER",
+        abortSignal: new AbortController().signal,
+      },
+      { append: async () => {} },
+    );
+
+    const restartedRuntime = createFakeRuntime(async () => ({ text: "answer-after-restart" }));
+    const restartedResponder = await createConfiguredAgentResponder({ config, runtime: restartedRuntime.runtime, now });
+    await restartedResponder.respond(
+      {
+        conversationId: "telegram:42",
+        text: "What did you send?",
+        abortSignal: new AbortController().signal,
+      },
+      { append: async () => {} },
+    );
+
+    const secondPrompt = restartedRuntime.calls[0]?.prompt ?? "";
+    expect(restartedRuntime.calls[0]?.options.sessionId).toBeUndefined();
+    expect(restartedRuntime.calls[0]?.options.providerSessionId).toBeUndefined();
+    expect(secondPrompt.split("FIRST_USER_REPLAY_MARKER")).toHaveLength(2);
+    expect(secondPrompt.split("FIRST_ASSISTANT_REPLAY_MARKER")).toHaveLength(2);
+    expect((await readdir(join(dir, ".mono-agent", "history")))
+      .filter((name) => name.endsWith(".history.json"))).toHaveLength(1);
+  });
+
   it("continues to honor a caller-supplied conversation history store", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
