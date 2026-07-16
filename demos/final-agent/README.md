@@ -30,8 +30,18 @@ Prerequisites: Node.js 22.19.0 or newer and an existing pnpm 10 or newer install
 ```bash
 pnpm install --frozen-lockfile
 pnpm run build
-pnpm run demo:final
+(
+  set -a
+  [ ! -f .env ] || . ./.env
+  set +a
+  pnpm run demo:final
+)
 ```
+
+The short-lived subshell loads an optional owner-only `.env` without leaving
+its values exported in the interactive parent shell. Keep that file untracked
+and set its mode to `0600` when it contains credentials. The direct demo
+entrypoint does not load `.env` itself.
 
 The demo starts headless and prints status to the terminal:
 
@@ -95,9 +105,9 @@ Then inspect the recorded run via the local JSONL artifacts under `.mono-agent/d
 
 ## Minimal `mono-agent.config.json`
 
-Export `MONO_AGENT_TELEGRAM_BOT_TOKEN` in the shell that launches the demo when
-Telegram is enabled. The direct demo entrypoint does not load `.env`. Do not
-commit bot tokens or provider credentials; the source-config example omits them.
+Put `MONO_AGENT_TELEGRAM_BOT_TOKEN` in the owner-only `.env` loaded by the
+short-lived launch subshell when Telegram is enabled. Do not commit bot tokens
+or provider credentials; the source-config example omits them.
 
 This demo is a programmatic host that passes the A2A driver directly so it can inject test and deployment seams; its A2A settings therefore live in the driver-local top-level `a2a` section. The CLI-equivalent `@mono-agent/agent-app` host loads A2A through `channels.plugins[]` instead; see the main [A2A channel docs](../../docs/channels/a2a.md).
 
@@ -200,8 +210,9 @@ Enable the OpenAI API adapter with a real runtime configuration:
 }
 ```
 
-Export `MONO_AGENT_OPENAI_API_KEY=demo-key` in the shell that launches the demo
-when client authentication is desired. Start the demo and use the printed
+Put `MONO_AGENT_OPENAI_API_KEY=demo-key` in the owner-only `.env` loaded by the
+short-lived launch subshell when client authentication is desired. Start the
+demo and use the printed
 OpenAI API base URL in OpenWebUI. If OpenWebUI runs in local Docker while the
 demo runs on the host, keep the adapter bound to host loopback (`127.0.0.1`) and
 use `http://host.docker.internal:4311/v1` from OpenWebUI instead of
@@ -263,7 +274,11 @@ a2a:       running - http://127.0.0.1:4300/.well-known/agent-card.json
 From another local Mono host or a one-off package smoke, discover Agent A and send text:
 
 ```bash
-node --input-type=module - <<'EOF'
+(
+  set -a
+  [ ! -f .env ] || . ./.env
+  set +a
+  node --input-type=module - <<'EOF'
 import { sendA2AMessage } from "@mono-agent/a2a-adapter";
 
 const bearerToken = process.env.MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN;
@@ -275,14 +290,15 @@ const response = await sendA2AMessage({
 
 console.log(response.text);
 EOF
+)
 ```
 
-For bearer authentication, export `MONO_AGENT_A2A_REQUIRE_BEARER=true` and
-`MONO_AGENT_A2A_BEARER_TOKEN` in the shell that launches Agent A, then export
-`MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN` in the consumer environment. The direct
-demo entrypoint does not load `.env`; the example above reads the consumer token
-from the exported variable. The public Agent Card remains discoverable, but
-message/task endpoints require `Authorization: Bearer`.
+For bearer authentication, put `MONO_AGENT_A2A_REQUIRE_BEARER=true`,
+`MONO_AGENT_A2A_BEARER_TOKEN`, and
+`MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN` in the owner-only `.env`. The launch and
+consumer subshells source it only for their child processes; the example above
+reads the consumer token from that environment. The public Agent Card remains
+discoverable, but message/task endpoints require `Authorization: Bearer`.
 
 ## Ollama Local Provider
 
@@ -323,11 +339,10 @@ For artifact lookup, `MONO_AGENT_ARTIFACT_DIR` wins, then `artifacts.dir` from `
 
 For source discovery, `MONO_AGENT_TRACE_REGISTRY_DIR` wins, then `traceability.registryDir`, then `~/.mono-agent/trace-sources`. The default is intentionally host-shared so multiple agent processes from different working directories appear in one local dashboard. Source id and label can be set with `MONO_AGENT_TRACE_SOURCE_ID` / `MONO_AGENT_TRACE_SOURCE_LABEL` or `traceability.sourceId` / `traceability.sourceLabel`; otherwise the demo uses a deterministic path-derived id and the label `Final Agent Demo`. Heartbeat and stale intervals follow `MONO_AGENT_TRACE_HEARTBEAT_MS` / `MONO_AGENT_TRACE_STALE_AFTER_MS`, then `traceability.heartbeatMs` / `traceability.staleAfterMs`, then the built-in defaults.
 
-Useful env overrides. The direct demo entrypoint does not load `.env`; this
-shell block exports every assignment it contains:
+Useful entries for the untracked, owner-only `.env` sourced by the short-lived
+launch subshell:
 
-```bash
-set -a
+```dotenv
 MONO_AGENT_TELEGRAM_BOT_TOKEN=...
 MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS=...
 MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS=false
@@ -359,7 +374,7 @@ MONO_AGENT_OPENAI_API_HOST=127.0.0.1
 MONO_AGENT_OPENAI_API_PORT=4311
 MONO_AGENT_OPENAI_API_BASE_PATH=/v1
 MONO_AGENT_OPENAI_API_MODEL_ID=mono-agent
-# Use a strong value outside demos.
+# Use a strong value outside demos; keep this file mode 0600.
 MONO_AGENT_OPENAI_API_KEY=demo-key
 MONO_AGENT_CRON_ENABLED=true
 MONO_AGENT_CRON_EXPRESSION="0 * * * *"
@@ -368,7 +383,6 @@ MONO_AGENT_CRON_PROMPT="Run scheduled check."
 MONO_AGENT_TRACE_REGISTRY_DIR=~/.mono-agent/trace-sources
 MONO_AGENT_TRACE_SOURCE_ID=final-agent
 MONO_AGENT_TRACE_SOURCE_LABEL="Final Agent Demo"
-set +a
 ```
 
 ## Persistent memory (tiered bujo memory)
