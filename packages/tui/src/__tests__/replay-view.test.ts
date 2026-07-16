@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { ReplayTimelineItem } from "../data/replay.js";
 import { sessionBoundaryNotice } from "../ui/session-boundary.js";
-import { buildDetailCell } from "../ui/views/replay-detail.js";
+import { buildDetailCell, buildRawPayloadBody } from "../ui/views/replay-detail.js";
 import { ReplayView } from "../ui/views/replay.js";
 import { stripAnsi, TestTerminal } from "./test-terminal.js";
 
@@ -262,6 +262,19 @@ async function writeSessionBoundaryFixture(runId: string): Promise<void> {
     previousConversationId: "telegram:42#2026-07-15",
     conversationId: "telegram:42#2026-07-16",
     reason: "daily_rollover",
+  });
+  await recorder.finish({ text: "ready" });
+}
+
+async function writeHostileSessionBoundaryFixture(runId: string): Promise<void> {
+  const recorder = createJsonlRunRecorder({ runId, conversationId: "telegram:42#2026-07-16", artifactDir: dir });
+  recorder.onEvent({
+    type: "session_boundary",
+    timestamp: "2026-07-16T00:00:00.000Z",
+    kind: "roll\u001b[2J-over",
+    previousConversationId: "previous\u001b]52;c;payload\u0007",
+    conversationId: "current\u001b_payload\u001b\\",
+    reason: "daily\u009brollover\u202e",
   });
   await recorder.finish({ text: "ready" });
 }
@@ -802,6 +815,35 @@ describe("ReplayView detail mode", () => {
       "provider provider\\u001b]8;;https://example.invalid\\u0007link\\u001b]8;;\\u0007",
     );
     expect(resumeNotice).not.toMatch(/[\u0000-\u001f\u007f-\u009f]|\p{Bidi_Control}/u);
+  });
+
+  it("keeps hostile persisted session-boundary controls inert in the event row and raw expansion", async () => {
+    await writeHostileSessionBoundaryFixture("run-hostile-boundary");
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+    await openRun(view, "run-hostile-boundary");
+
+    const collapsed = view.render(100).join("\n");
+    expect(collapsed).toContain("\\u009b");
+    expect(collapsed).toContain("\\u202e");
+    expect(collapsed).not.toContain("\u009b");
+    expect(collapsed).not.toContain("\u202e");
+    expect(collapsed).not.toContain("\u001b]52;c;payload\u0007");
+
+    view.handleInput("\r");
+    const expanded = view.render(100).join("\n");
+    expect(expanded).toContain("\\u009b");
+    expect(expanded).toContain("\\u202e");
+    expect(expanded).not.toContain("\u009b");
+    expect(expanded).not.toContain("\u202e");
+    expect(expanded).not.toContain("\u001b]52;c;payload\u0007");
+
+    const directRaw = buildRawPayloadBody({
+      ...runtimeTimelineItem(0, { type: "runtime" }),
+      payload: "raw\n\u001b]52;c;payload\u0007\u009b\u202e",
+    }, true);
+    expect(directRaw).toBe("raw\\u000a\\u001b]52;c;payload\\u0007\\u009b\\u202e");
   });
 
   it("esc from plain detail (no search, no expansion) returns to the list (regression)", async () => {

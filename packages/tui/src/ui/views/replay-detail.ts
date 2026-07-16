@@ -7,6 +7,7 @@ import { AssistantCell, NoticeCell, ThinkingCell, UserCell } from "../components
 import { ToolPanel } from "../components/tool-panel.js";
 import { extractUsage, formatClock, formatDurationMs, formatTokens, formatUsd } from "../format.js";
 import { sessionBoundaryNotice } from "../session-boundary.js";
+import { escapeTerminalControls } from "../terminal-text.js";
 import { styles } from "../theme.js";
 
 /** Canonical (not alphabetical) filter-category order matching the t/o/m/y/e keymap. */
@@ -118,10 +119,10 @@ export function buildStatusLine(state: StatusLineState): string {
  * cell redesign below -- only the BODY under it now varies by category.
  */
 export function buildPayloadHeader(item: ReplayTimelineItem): string {
-  let header = `#${item.index} ${item.label}`;
+  let header = `#${item.index} ${escapeTerminalControls(item.label)}`;
   const timing: string[] = [];
   if (item.timestamp !== undefined) {
-    timing.push(item.timestamp);
+    timing.push(escapeTerminalControls(item.timestamp));
   }
   if (item.deltaMs !== undefined) {
     timing.push(`+${formatDurationMs(item.deltaMs)}`);
@@ -375,13 +376,19 @@ function thinkingStatsSuffix(contentChars: number, timestamp: string | undefined
 
 function formatPayloadRaw(payload: unknown): string {
   if (typeof payload === "string") {
-    return payload;
+    return escapeTerminalControls(payload);
   }
   try {
     const json = JSON.stringify(payload, null, 2);
-    return json ?? String(payload);
+    return json === undefined
+      ? escapeTerminalControls(String(payload))
+      : escapeTerminalControls(json, { allowLineFeed: true });
   } catch {
-    return String(payload);
+    try {
+      return escapeTerminalControls(String(payload));
+    } catch {
+      return "[unrenderable payload]";
+    }
   }
 }
 
