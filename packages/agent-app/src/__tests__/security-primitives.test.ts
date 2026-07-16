@@ -607,7 +607,7 @@ describe("shared security primitives", () => {
     await held?.release();
   });
 
-  it("does not quarantine restarted owner staging after a stale publication observation", async () => {
+  it("pins stale owner staging so a same-mtime restart cannot reuse its generation", async () => {
     const dir = await root();
     const path = join(dir, "restarted-owner-publication.lock");
     const ownerPath = join(path, "owner.json");
@@ -630,6 +630,7 @@ describe("shared security primitives", () => {
     await writeFile(temporaryPath, content, { mode: 0o600 });
     await link(temporaryPath, ownerPath);
     await utimes(path, new Date(0), new Date(0));
+    const original = await lstat(ownerPath, { bigint: true });
 
     await expect(acquireOwnerPrivateLock({
       path,
@@ -645,6 +646,8 @@ describe("shared security primitives", () => {
         await writeFile(temporaryPath, restarted, { mode: 0o600 });
         await link(temporaryPath, ownerPath);
         await utimes(path, new Date(0), new Date(0));
+        const replacement = await lstat(ownerPath, { bigint: true });
+        expect(replacement.dev !== original.dev || replacement.ino !== original.ino).toBe(true);
       },
       staleRace: "return",
     })).resolves.toBeUndefined();
@@ -652,6 +655,53 @@ describe("shared security primitives", () => {
     expect(await readFile(temporaryPath, "utf8")).toBe(restarted);
     expect(await readFile(ownerPath, "utf8")).toBe(restarted);
     expect((await lstat(ownerPath)).nlink).toBe(2);
+  });
+
+  it("does not quarantine an in-place owner publication rewrite with restored directory mtime", async () => {
+    const dir = await root();
+    const path = join(dir, "rewritten-owner-publication.lock");
+    const ownerPath = join(path, "owner.json");
+    const temporaryPath = join(path, ".owner.mono-agent-publication.tmp");
+    const content = `${JSON.stringify({
+      schema: "mono-agent.test-lock.v1",
+      pid: process.pid,
+      token: "stale-owner",
+      createdAt: new Date(0).toISOString(),
+      incarnation,
+    })}\n`;
+    const rewritten = `${JSON.stringify({
+      schema: "mono-agent.test-lock.v1",
+      pid: process.pid,
+      token: "rewritten-owner",
+      createdAt: new Date(1).toISOString(),
+      incarnation,
+    })}\n`;
+    await mkdir(path, { mode: 0o700 });
+    await writeFile(temporaryPath, content, { mode: 0o600 });
+    await link(temporaryPath, ownerPath);
+    await utimes(path, new Date(0), new Date(0));
+    const original = await lstat(ownerPath, { bigint: true });
+
+    await expect(acquireOwnerPrivateLock({
+      path,
+      label: "Rewritten-publication test lock",
+      schemaTag: "mono-agent.test-lock.v1",
+      ownerlessGraceMs: 0,
+      processIncarnation: incarnation,
+      now: () => Date.now() + 60_000,
+      randomToken: () => "replacement-owner",
+      beforeStaleRename: async () => {
+        await writeFile(temporaryPath, rewritten);
+        await utimes(path, new Date(0), new Date(0));
+      },
+      staleRace: "return",
+    })).resolves.toBeUndefined();
+
+    const retained = await lstat(ownerPath, { bigint: true });
+    expect({ dev: retained.dev, ino: retained.ino }).toEqual({ dev: original.dev, ino: original.ino });
+    expect(await readFile(temporaryPath, "utf8")).toBe(rewritten);
+    expect(await readFile(ownerPath, "utf8")).toBe(rewritten);
+    expect(retained.nlink).toBe(2n);
   });
 
   it("does not overwrite a competing owner published in the mkdir window", async () => {

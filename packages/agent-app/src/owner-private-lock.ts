@@ -25,13 +25,14 @@ interface Owner {
   readonly pid: number; readonly incarnation?: ProcessIncarnation;
   readonly content: string; readonly identity: Identity;
 }
-interface OwnerPublication { readonly [OWNER_PUBLICATION_IN_PROGRESS]: Identity }
+interface PublicationPin {
+  readonly handle: FileHandle; readonly details: BigIntStats; readonly content: Buffer; closed: boolean;
+}
+interface OwnerPublication { readonly [OWNER_PUBLICATION_IN_PROGRESS]: PublicationPin }
 type OwnerReadResult = Owner | OwnerPublication | undefined;
 type Observed =
-  | {
-      readonly kind: "ownerless"; readonly identity: Identity; readonly mtimeMs: number;
-      readonly publication?: Identity;
-    }
+  | { readonly kind: "ownerless"; readonly identity: Identity; readonly mtimeMs: number;
+      readonly [OWNER_PUBLICATION_IN_PROGRESS]?: PublicationPin }
   | { readonly kind: "owned"; readonly identity: Identity; readonly owner: Owner };
 interface ArtifactInput { readonly path: string; readonly pid: number; readonly now: number; readonly token: string }
 
@@ -150,32 +151,39 @@ export async function acquireOwnerPrivateLock(options: OwnerPrivateLockOptions):
       }
       continue;
     }
-    await options.afterInspected?.(observed);
-    let stale = observed.kind === "ownerless"
-      && now() - observed.mtimeMs >= options.ownerlessGraceMs;
-    if (observed.kind === "owned") {
-      try {
-        stale = !(observed.owner.incarnation === undefined
-          ? await (options.isLegacyProcessAlive?.(observed.owner.pid) ?? true)
-          : await sameProcess(observed.owner.pid, observed.owner.incarnation));
-      } catch (error) {
-        const decision = options.livenessError?.(error, observed.owner);
-        if (decision instanceof Error) throw decision;
-        if (decision !== "assume-live") throw error;
-        stale = false;
+    try {
+      await options.afterInspected?.(observed);
+      let stale = observed.kind === "ownerless"
+        && now() - observed.mtimeMs >= options.ownerlessGraceMs;
+      if (observed.kind === "owned") {
+        try {
+          stale = !(observed.owner.incarnation === undefined
+            ? await (options.isLegacyProcessAlive?.(observed.owner.pid) ?? true)
+            : await sameProcess(observed.owner.pid, observed.owner.incarnation));
+        } catch (error) {
+          const decision = options.livenessError?.(error, observed.owner);
+          if (decision instanceof Error) throw decision;
+          if (decision !== "assume-live") throw error;
+          stale = false;
+        }
       }
+      if (stale) {
+        if (await quarantine(options, observed, pid, now, randomToken) === "retry") continue;
+        return undefined;
+      }
+      if ((options.maxAcquireAttempts !== undefined && attempts >= options.maxAcquireAttempts)
+        || timeout === 0 || now() >= deadline) {
+        const error = options.timeoutError?.(observed);
+        if (error !== undefined) throw error;
+        return undefined;
+      }
+      // A fresh publication is only observed, never quarantined. Release its
+      // inode pin before waiting so the publisher can finish on every platform.
+      await closeObserved(observed);
+      await (options.sleep ?? sleep)(Math.min(options.pollIntervalMs ?? 100, Math.max(0, deadline - now())));
+    } finally {
+      await closeObserved(observed);
     }
-    if (stale) {
-      if (await quarantine(options, observed, pid, now, randomToken) === "retry") continue;
-      return undefined;
-    }
-    if ((options.maxAcquireAttempts !== undefined && attempts >= options.maxAcquireAttempts)
-      || timeout === 0 || now() >= deadline) {
-      const error = options.timeoutError?.(observed);
-      if (error !== undefined) throw error;
-      return undefined;
-    }
-    await (options.sleep ?? sleep)(Math.min(options.pollIntervalMs ?? 100, Math.max(0, deadline - now())));
   }
 }
 
@@ -194,11 +202,11 @@ function makeHeld(
     async release(releaseOptions = {}) {
       if (released) return;
       const expected: Observed = { kind: "owned", identity: expectedIdentity, owner: expectedOwner };
-      if (!sameObserved(await inspect(options.path, options), expected)) {
+      if (!await matchesObserved(options.path, options, expected)) {
         throw unsafe(options, `${options.label} identity or owner changed before release; the replacement was left untouched.`);
       }
       await releaseOptions.beforeRename?.(options.path);
-      if (!sameObserved(await inspect(options.path, options), expected)) {
+      if (!await matchesObserved(options.path, options, expected)) {
         throw unsafe(options, `${options.label} changed at the release boundary; the replacement was left untouched.`);
       }
       const releasedPath = artifactPath(options, "released", pid, now, randomToken);
@@ -208,7 +216,7 @@ function makeHeld(
         if (isErrno(error, "ENOENT")) throw unsafe(options, `${options.label} disappeared during release.`);
         throw error;
       }
-      if (!sameObserved(await inspect(releasedPath, options), expected)) {
+      if (!await matchesObserved(releasedPath, options, expected)) {
         throw unsafe(options, `${options.label} changed across release and was retained at ${releasedPath}.`, { releasedPath });
       }
       released = true;
@@ -235,7 +243,11 @@ async function publishOwner(
   });
   await sameDirectoryRequired(options.path, directoryIdentity, options);
   const owner = await readOwner(ownerPath, options);
-  if (owner === undefined || isOwnerPublication(owner) || owner.content !== content) {
+  if (owner !== undefined && isOwnerPublication(owner)) {
+    await closePublication(owner[OWNER_PUBLICATION_IN_PROGRESS]);
+    throw unsafe(options, `The atomically published ${options.label} owner record could not be verified.`);
+  }
+  if (owner === undefined || owner.content !== content) {
     throw unsafe(options, `The atomically published ${options.label} owner record could not be verified.`);
   }
   return owner;
@@ -251,19 +263,25 @@ async function inspect(path: string, options: OwnerPrivateLockOptions): Promise<
   }
   const directoryIdentity = identity(details);
   const owner = await readOwner(join(path, "owner.json"), options);
-  if (!(await sameDirectory(path, directoryIdentity, options))) return undefined;
-  if (owner === undefined) {
-    return { kind: "ownerless", identity: directoryIdentity, mtimeMs: Number(details.mtimeMs) };
+  let transferred = false;
+  try {
+    if (!(await sameDirectory(path, directoryIdentity, options))) return undefined;
+    if (owner === undefined) {
+      return { kind: "ownerless", identity: directoryIdentity, mtimeMs: Number(details.mtimeMs) };
+    }
+    if (isOwnerPublication(owner)) {
+      const publication = owner[OWNER_PUBLICATION_IN_PROGRESS];
+      transferred = true;
+      return {
+        kind: "ownerless", identity: directoryIdentity, mtimeMs: Number(details.mtimeMs),
+        [OWNER_PUBLICATION_IN_PROGRESS]: publication,
+      };
+    }
+    return { kind: "owned", identity: directoryIdentity, owner };
+  } finally {
+    if (!transferred && owner !== undefined && isOwnerPublication(owner))
+      await closePublication(owner[OWNER_PUBLICATION_IN_PROGRESS]);
   }
-  if (isOwnerPublication(owner)) {
-    return {
-      kind: "ownerless",
-      identity: directoryIdentity,
-      mtimeMs: Number(details.mtimeMs),
-      publication: owner[OWNER_PUBLICATION_IN_PROGRESS],
-    };
-  }
-  return { kind: "owned", identity: directoryIdentity, owner };
 }
 
 async function readOwner(path: string, options: OwnerPrivateLockOptions): Promise<OwnerReadResult> {
@@ -279,27 +297,29 @@ async function readOwner(path: string, options: OwnerPrivateLockOptions): Promis
     if (isErrno(error, "ENOENT")) return undefined;
     throw unsafe(options, message(error));
   }
+  let transferred = false;
   try {
-    const before = await handle.stat({ bigint: true });
+    let before = await handle.stat({ bigint: true });
     if (before.nlink === 0n) return undefined;
     // The current publisher temporarily gives the staged owner inode one exact
     // second name. Never accept that state as an owner; normal grace and
     // quarantine policy treats a crashed publication like other ownerless state.
-    if (before.nlink === 2n && await frameworkOwnerPublicationInProgress(handle, path, before)) {
-      return { [OWNER_PUBLICATION_IN_PROGRESS]: identity(before) };
+    if (before.nlink === 2n) {
+      const publication = await pinOwnerPublication(handle, path, before, options);
+      if (publication !== undefined) {
+        transferred = true;
+        return { [OWNER_PUBLICATION_IN_PROGRESS]: publication };
+      }
+      const settled = await settledOwnerDetails(handle, path, before);
+      if (settled !== undefined) before = settled;
     }
     ownerFile(before, path, options);
     const fileIdentity = identity(before);
     const content = await boundedRead(handle, path, options);
     const after = await handle.stat({ bigint: true });
     if (after.nlink === 0n) return undefined;
-    let named: BigIntStats;
-    try {
-      named = await lstat(path, { bigint: true });
-    } catch (error) {
-      if (isErrno(error, "ENOENT")) return undefined;
-      throw error;
-    }
+    const named = await lstatExisting(path);
+    if (named === undefined) return undefined;
     ownerFile(after, path, options);
     ownerFile(named, path, options);
     if (options.allowCurrentUserLegacyOwnerMode !== true) {
@@ -332,11 +352,15 @@ async function readOwner(path: string, options: OwnerPrivateLockOptions): Promis
     if (options.invalidOwner === "ownerless") return undefined;
     throw unsafe(options, `${options.label} owner record is malformed or has an unexpected schema.`);
   } finally {
-    await handle.close();
+    if (!transferred) await handle.close();
   }
 }
 
 async function boundedRead(handle: FileHandle, path: string, options: OwnerPrivateLockOptions): Promise<string> {
+  return (await boundedReadBuffer(handle, path, options)).toString("utf8");
+}
+
+async function boundedReadBuffer(handle: FileHandle, path: string, options: OwnerPrivateLockOptions): Promise<Buffer> {
   const buffer = Buffer.alloc(OWNER_MAX_BYTES + 1);
   let offset = 0;
   while (offset < buffer.length) {
@@ -345,39 +369,42 @@ async function boundedRead(handle: FileHandle, path: string, options: OwnerPriva
     offset += bytesRead;
   }
   if (offset > OWNER_MAX_BYTES) throw unsafe(options, `${options.label} owner record ${path} exceeds ${OWNER_MAX_BYTES} bytes.`);
-  return buffer.subarray(0, offset).toString("utf8");
+  return buffer.subarray(0, offset);
 }
 
-async function frameworkOwnerPublicationInProgress(
-  handle: FileHandle,
-  path: string,
-  before: BigIntStats,
-): Promise<boolean> {
-  if (!ownerPublicationFile(before, before, 2n)) return false;
-  try {
-    return ownerPublicationFile(
-      await lstat(join(dirname(path), OWNER_PUBLICATION_TEMPORARY), { bigint: true }),
-      before,
-      2n,
-    );
-  } catch (error) {
-    if (!isErrno(error, "ENOENT")) throw error;
-    const settled = await handle.stat({ bigint: true });
-    try {
-      return ownerPublicationFile(settled, before, 1n)
-        && ownerPublicationFile(await lstat(path, { bigint: true }), before, 1n);
-    } catch (settledError) {
-      if (isErrno(settledError, "ENOENT")) return false;
-      throw settledError;
-    }
-  }
+async function pinOwnerPublication(handle: FileHandle, path: string, before: BigIntStats,
+  options: OwnerPrivateLockOptions): Promise<PublicationPin | undefined> {
+  if (!ownerPublicationFile(before, before, 2n)) return undefined;
+  const content = await boundedReadBuffer(handle, path, options);
+  const after = await handle.stat({ bigint: true });
+  const named = await lstatExisting(path);
+  const staged = await lstatExisting(join(dirname(path), OWNER_PUBLICATION_TEMPORARY));
+  if (named === undefined || staged === undefined
+    || ![after, named, staged].every((value) => samePublicationSnapshot(value, before))) return undefined;
+  if (BigInt(content.length) !== before.size) return undefined;
+  return { handle, details: before, content: Buffer.from(content), closed: false };
 }
 
-function ownerPublicationFile(
-  details: BigIntStats,
-  expected: { readonly dev: bigint; readonly ino: bigint },
-  linkCount: bigint,
-): boolean {
+async function settledOwnerDetails(handle: FileHandle, path: string,
+  expected: Identity): Promise<BigIntStats | undefined> {
+  const settled = await handle.stat({ bigint: true });
+  const named = await lstatExisting(path);
+  if (named === undefined) return undefined;
+  return ownerPublicationFile(settled, expected, 1n)
+    && ownerPublicationFile(named, expected, 1n)
+    ? settled
+    : undefined;
+}
+
+function samePublicationSnapshot(value: BigIntStats, expected: BigIntStats): boolean {
+  return ownerPublicationFile(value, expected, 2n)
+    && value.size === expected.size
+    && value.mtimeNs === expected.mtimeNs
+    && value.ctimeNs === expected.ctimeNs;
+}
+
+function ownerPublicationFile(details: BigIntStats,
+  expected: { readonly dev: bigint; readonly ino: bigint }, linkCount: bigint): boolean {
   return details.isFile()
     && !details.isSymbolicLink()
     && details.nlink === linkCount
@@ -390,6 +417,11 @@ function isOwnerPublication(value: Owner | OwnerPublication): value is OwnerPubl
   return OWNER_PUBLICATION_IN_PROGRESS in value;
 }
 
+async function lstatExisting(path: string): Promise<BigIntStats | undefined> {
+  try { return await lstat(path, { bigint: true }); }
+  catch (error) { if (isErrno(error, "ENOENT")) return undefined; throw error; }
+}
+
 async function quarantine(
   options: OwnerPrivateLockOptions,
   expected: Observed,
@@ -398,9 +430,9 @@ async function quarantine(
   randomToken: () => string,
 ): Promise<"retry" | "return"> {
   await options.beforeStaleRename?.(options.path);
-  const current = await inspect(options.path, options);
+  const current = await compareObserved(options.path, options, expected);
   if (current === undefined) return "retry";
-  if (!sameObserved(current, expected)) {
+  if (!current) {
     return staleRace(options, `${options.label} changed during stale-lock verification; the replacement was left untouched.`);
   }
   const stalePath = artifactPath(options, "stale", pid, now, randomToken);
@@ -408,9 +440,9 @@ async function quarantine(
     await rename(options.path, stalePath);
   } catch (error) {
     if (isErrno(error, "ENOENT")) {
-      const current = await inspect(options.path, options);
+      const current = await compareObserved(options.path, options, expected);
       if (current === undefined) return "retry";
-      if (!sameObserved(current, expected)) {
+      if (!current) {
         return staleRace(
           options,
           `${options.label} changed while stale-lock quarantine was attempted; the replacement was left untouched.`,
@@ -431,9 +463,10 @@ async function quarantine(
     }
     throw error;
   }
-  if (!sameObserved(await inspect(stalePath, options), expected)) {
+  if (await compareObserved(stalePath, options, expected) !== true) {
     return staleRace(options, `${options.label} changed across stale-lock quarantine and was retained at ${stalePath}.`, { stalePath });
   }
+  await closeObserved(expected);
   await rm(stalePath, { recursive: true, force: true });
   return "retry";
 }
@@ -528,18 +561,46 @@ async function syncDirectory(path: string, expected: Identity, options: OwnerPri
   await sameDirectoryRequired(path, expected, options);
 }
 
-function sameObserved(value: Observed | undefined, expected: Observed): boolean {
-  if (value === undefined || value.kind !== expected.kind || !sameIdentity(value.identity, expected.identity)) return false;
+async function matchesObserved(path: string, options: OwnerPrivateLockOptions,
+  expected: Observed): Promise<boolean> {
+  return await compareObserved(path, options, expected) === true;
+}
+
+async function compareObserved(path: string, options: OwnerPrivateLockOptions,
+  expected: Observed): Promise<boolean | undefined> {
+  const value = await inspect(path, options);
+  try {
+    return value === undefined ? undefined : sameObserved(value, expected);
+  } finally {
+    await closeObserved(value);
+  }
+}
+
+function sameObserved(value: Observed, expected: Observed): boolean {
+  if (value.kind !== expected.kind || !sameIdentity(value.identity, expected.identity)) return false;
   if (value.kind === "ownerless") {
     if (expected.kind !== "ownerless") return false;
-    if (value.publication === undefined || expected.publication === undefined) {
-      return value.publication === expected.publication && value.mtimeMs === expected.mtimeMs;
-    }
-    return sameIdentity(value.publication, expected.publication);
+    if (value.mtimeMs !== expected.mtimeMs) return false;
+    const valuePin = value[OWNER_PUBLICATION_IN_PROGRESS];
+    const expectedPin = expected[OWNER_PUBLICATION_IN_PROGRESS];
+    if (valuePin === undefined || expectedPin === undefined) return valuePin === expectedPin;
+    return !valuePin.closed && !expectedPin.closed
+      && samePublicationSnapshot(valuePin.details, expectedPin.details)
+      && valuePin.content.equals(expectedPin.content);
   }
   return expected.kind === "owned"
     && value.owner.content === expected.owner.content
     && sameIdentity(value.owner.identity, expected.owner.identity);
+}
+
+async function closeObserved(observed: Observed | undefined): Promise<void> {
+  const publication = observed?.kind === "ownerless" ? observed[OWNER_PUBLICATION_IN_PROGRESS] : undefined;
+  if (publication !== undefined) await closePublication(publication);
+}
+
+async function closePublication(publication: PublicationPin): Promise<void> {
+  if (publication.closed) return;
+  await publication.handle.close(); publication.closed = true;
 }
 
 function artifactPath(options: OwnerPrivateLockOptions, kind: "stale" | "released" | "abandoned", pid: number, now: () => number, randomToken: () => string): string {
