@@ -33,8 +33,49 @@ const ADAPTER_ENV_PREFIXES = {
   "whatsapp-adapter": ["MONO_AGENT_WHATSAPP_"],
 } as const;
 const JSON_ONLY_ADAPTER_FIELDS = [
-  ["slack.shortcuts", "MONO_AGENT_SLACK_SHORTCUTS"],
-  ["slack.homeTab", "MONO_AGENT_SLACK_HOME_TAB"],
+  {
+    jsonPath: "slack.shortcuts",
+    nonexistentEnvKey: "MONO_AGENT_SLACK_SHORTCUTS",
+    docs: [
+      ["docs/config/env-vars.md", "- `slack.shortcuts`"],
+      ["docs/config/reference.md", "| `slack.shortcuts` |"],
+      ["docs/channels/slack.md", "| `shortcuts` |"],
+      ["docs/reference/feature-registry.md", "| `slack.shortcuts` |"],
+      ["docs/reference/feature-matrix.md", "| `slack.shortcuts` |"],
+    ],
+  },
+  {
+    jsonPath: "slack.homeTab",
+    nonexistentEnvKey: "MONO_AGENT_SLACK_HOME_TAB",
+    docs: [
+      ["docs/config/env-vars.md", "- `slack.homeTab`"],
+      ["docs/config/reference.md", "| `slack.homeTab` |"],
+      ["docs/channels/slack.md", "| `homeTab` |"],
+      ["docs/reference/feature-registry.md", "| `slack.app-home` |"],
+      ["docs/reference/feature-matrix.md", "| `slack.app-home` |"],
+    ],
+  },
+] as const;
+const CONDITIONAL_MENTION_STRIP_DOCS = [
+  {
+    contract: "When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`.",
+    docs: [
+      ["docs/config/env-vars.md", "| `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` |"],
+      ["docs/config/reference.md", "| `slack.stripMentionText` |"],
+      ["docs/channels/slack.md", "| `stripMentionText` |"],
+      ["docs/reference/feature-registry.md", "| `slack.socket-mode` |"],
+      ["docs/reference/feature-matrix.md", "| `slack.socket-mode` |"],
+    ],
+  },
+  {
+    contract: "When unset, defaults to `true` only when `mentionTextAliases` is non-empty; `botJids` alone does not enable stripping, so otherwise it defaults to `false`.",
+    docs: [
+      ["docs/config/env-vars.md", "| `MONO_AGENT_WHATSAPP_STRIP_MENTION_TEXT` |"],
+      ["docs/channels/whatsapp.md", "| `config.stripMentionText` |"],
+      ["docs/reference/feature-registry.md", "| `whatsapp.baileys` |"],
+      ["docs/reference/feature-matrix.md", "| `whatsapp.baileys` |"],
+    ],
+  },
 ] as const;
 const SHARED_ENV_KEYS_READ_BY_ADAPTERS = new Set(["MONO_AGENT_NAME"]);
 
@@ -44,6 +85,19 @@ function envKeysIn(source: string): string[] {
 
 function envTableKeysIn(source: string): string[] {
   return [...source.matchAll(ENV_TABLE_KEY_PATTERN)].map((match) => match[1] ?? "");
+}
+
+function canonicalAndGeneratedDocPaths(root: string, canonicalPath: string): string[] {
+  const canonical = join(root, canonicalPath);
+  const generatedRoot = join(root, "website/src/content/docs");
+  if (!existsSync(generatedRoot)) {
+    return [canonical];
+  }
+  return [canonical, join(generatedRoot, canonicalPath.slice("docs/".length))];
+}
+
+function markdownLineStartingWith(source: string, prefix: string): string | undefined {
+  return source.split("\n").find((line) => line.startsWith(prefix));
 }
 
 /** Every `MONO_AGENT_*` literal the loader + all adapters actually read. */
@@ -180,22 +234,34 @@ describe("env-vars.md <-> code parity", () => {
   });
 
   it("keeps JSON-only adapter fields explicit instead of inventing env keys", () => {
-    const generatedReference = readFileSync(join(root, "docs/config/reference.md"), "utf8");
-    const docs = [
-      "docs/config/env-vars.md",
-      "docs/channels/slack.md",
-      "docs/reference/feature-registry.md",
-    ].map((path) => [path, readFileSync(join(root, path), "utf8")] as const);
-
-    for (const [jsonPath, nonexistentEnvKey] of JSON_ONLY_ADAPTER_FIELDS) {
+    for (const { jsonPath, nonexistentEnvKey, docs } of JSON_ONLY_ADAPTER_FIELDS) {
       expect(code.has(nonexistentEnvKey), nonexistentEnvKey).toBe(false);
-      const referenceRow = generatedReference
-        .split("\n")
-        .find((line) => line.startsWith(`| \`${jsonPath}\` |`));
-      expect(referenceRow, `${jsonPath} must be in the generated config reference`).toBeDefined();
+      for (const [canonicalPath, linePrefix] of docs) {
+        for (const path of canonicalAndGeneratedDocPaths(root, canonicalPath)) {
+          const line = markdownLineStartingWith(readFileSync(path, "utf8"), linePrefix);
+          const relativePath = path.slice(root.length + 1);
+          expect(line, `${relativePath} must have the ${jsonPath} contract line`).toBeDefined();
+          expect(line, `${relativePath} must identify ${jsonPath} as JSON-only`).toContain("JSON-only");
+          expect(line, `${relativePath} must say ${jsonPath} has no env form`).toContain("no environment-variable form");
+        }
+      }
+      const referenceRow = markdownLineStartingWith(
+        readFileSync(join(root, "docs/config/reference.md"), "utf8"),
+        `| \`${jsonPath}\` |`,
+      );
       expect(referenceRow, `${jsonPath} must have no environment mapping`).toContain("| `--` |");
-      for (const [path, contents] of docs) {
-        expect(contents, `${path} must identify ${jsonPath} as JSON-only`).toContain(jsonPath);
+    }
+  });
+
+  it("documents mention stripping with the loaders' conditional defaults", () => {
+    for (const { contract, docs } of CONDITIONAL_MENTION_STRIP_DOCS) {
+      for (const [canonicalPath, linePrefix] of docs) {
+        for (const path of canonicalAndGeneratedDocPaths(root, canonicalPath)) {
+          const line = markdownLineStartingWith(readFileSync(path, "utf8"), linePrefix);
+          const relativePath = path.slice(root.length + 1);
+          expect(line, `${relativePath} must have the mention-strip contract line`).toBeDefined();
+          expect(line, `${relativePath} must document the exact conditional default`).toContain(contract);
+        }
       }
     }
   });

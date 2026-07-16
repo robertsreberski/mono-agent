@@ -1854,12 +1854,11 @@
           }
         },
         "stripMentionText": {
-          "description": "Configures stripMentionText for the slack section.",
+          "description": "When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`.",
           "examples": [
-            "false"
+            false
           ],
-          "type": "boolean",
-          "default": false
+          "type": "boolean"
         },
         "heartbeatIntervalMs": {
           "description": "Configures heartbeatIntervalMs for the slack section.",

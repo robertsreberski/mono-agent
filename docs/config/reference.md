@@ -149,7 +149,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `slack.reconnectStabilityMs` | `integer` | `MONO_AGENT_SLACK_RECONNECT_STABILITY_MS` | unset | `1` | Configures reconnectStabilityMs for the slack section. |
 | `slack.reconnectStartupGraceMs` | `integer` | `MONO_AGENT_SLACK_RECONNECT_STARTUP_GRACE_MS` | unset | `1` | Configures reconnectStartupGraceMs for the slack section. |
 | `slack.shortcuts` | `array` | `--` | [] | `[{"callbackId":"triage","prompt":"Prepare the daily support triage checklist.","channelId":"C0123"}]` | JSON-only global/message Slack shortcut bindings; there is no environment-variable form. |
-| `slack.stripMentionText` | `boolean` | `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` | false | `false` | Configures stripMentionText for the slack section. |
+| `slack.stripMentionText` | `boolean` | `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` | conditional | `false` | When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`. |
 | `telegram.allowAllChats` | `boolean` | `MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS` | false | `true` | Configures allowAllChats for the telegram section. |
 | `telegram.allowedChatIds` | `string[]` | `MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS` | unset | `["example"]` | Configures allowedChatIds for the telegram section. |
 | `telegram.apiRoot` | `string` | `MONO_AGENT_TELEGRAM_API_ROOT` | unset | `example` | Configures apiRoot for the telegram section. |

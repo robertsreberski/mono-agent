@@ -229,7 +229,7 @@ Most channels are opt-in via their `enabled` flag (default off). The operator su
 | `MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS` | `slack.allowAllChannels` | Allow any joined channel instead of requiring `allowedChannelIds`; default `false`. |
 | `MONO_AGENT_SLACK_BOT_USER_IDS` | `slack.botUserIds` | Comma-separated bot user IDs used to recognize native mentions. |
 | `MONO_AGENT_SLACK_MENTION_TEXT_ALIASES` | `slack.mentionTextAliases` | Comma-separated plain-text aliases that trigger the bot. |
-| `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` | `slack.stripMentionText` | Remove the matched mention or alias before the prompt reaches the agent; default `true`. |
+| `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` | `slack.stripMentionText` | Remove the matched mention or alias before the prompt reaches the agent. When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`. |
 | `MONO_AGENT_SLACK_HEARTBEAT_INTERVAL_MS` | `slack.heartbeatIntervalMs` | Socket Mode ping/silence probe interval (ms); default `30000`. |
 | `MONO_AGENT_SLACK_HEARTBEAT_TIMEOUT_MS` | `slack.heartbeatTimeoutMs` | Silence budget before the watchdog force-recycles the socket (ms); default `90000`, `0` disables the watchdog. |
 | `MONO_AGENT_SLACK_RECONNECT_INITIAL_BACKOFF_MS` | `slack.reconnectInitialBackoffMs` | First reconnect backoff after a non-graceful drop (ms); default `500`. |
@@ -240,7 +240,10 @@ Most channels are opt-in via their `enabled` flag (default off). The operator su
 
 All Slack resilience vars are optional integers (`0`–`3600000`); omit to use the default. They tune the terminate-first, jittered, stability-gated reconnect loop and the silence watchdog. See [../channels/slack.md](/channels/slack/).
 
-`slack.shortcuts` and `slack.homeTab` are structured, JSON-only fields. Configure them in `mono-agent.config.json`; neither field has a `MONO_AGENT_SLACK_*` variable.
+The structured Slack interaction fields are configured only in `mono-agent.config.json`:
+
+- `slack.shortcuts` is JSON-only and has no environment-variable form.
+- `slack.homeTab` is JSON-only and has no environment-variable form.
 
 ### WhatsApp
 
@@ -254,7 +257,7 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | `MONO_AGENT_WHATSAPP_GROUP_MODE` | plugin `config.groupMode` | `mention` / `any`. See [../channels/whatsapp.md](/channels/whatsapp/). |
 | `MONO_AGENT_WHATSAPP_BOT_JIDS` | plugin `config.botJids` | Comma-separated linked-account JIDs used to recognize native group mentions. |
 | `MONO_AGENT_WHATSAPP_MENTION_TEXT_ALIASES` | plugin `config.mentionTextAliases` | Comma-separated text aliases that count as group mentions. |
-| `MONO_AGENT_WHATSAPP_STRIP_MENTION_TEXT` | plugin `config.stripMentionText` | Remove the matched mention or alias before the prompt reaches the agent; default `false`. |
+| `MONO_AGENT_WHATSAPP_STRIP_MENTION_TEXT` | plugin `config.stripMentionText` | Remove the matched mention or alias before the prompt reaches the agent. When unset, defaults to `true` only when `mentionTextAliases` is non-empty; `botJids` alone does not enable stripping, so otherwise it defaults to `false`. |
 
 ### Webhook
 

@@ -198,6 +198,18 @@ describe("loadSlackAdapterConfig", () => {
     });
   });
 
+  it("defaults mention stripping on for either native bot IDs or text aliases", async () => {
+    const [withoutMentionIdentity, withBotUserId, withTextAlias] = await Promise.all([
+      loadSlackAdapterConfig({ env: {} }),
+      loadSlackAdapterConfig({ env: { MONO_AGENT_SLACK_BOT_USER_IDS: "U0BOT" } }),
+      loadSlackAdapterConfig({ env: { MONO_AGENT_SLACK_MENTION_TEXT_ALIASES: "@agent" } }),
+    ]);
+
+    expect(withoutMentionIdentity.stripMentionText).toBe(false);
+    expect(withBotUserId.stripMentionText).toBe(true);
+    expect(withTextAlias.stripMentionText).toBe(true);
+  });
+
   it("ignores malformed shortcuts config while disabled", async () => {
     const config = await loadSlackAdapterConfig({
       env: {},
