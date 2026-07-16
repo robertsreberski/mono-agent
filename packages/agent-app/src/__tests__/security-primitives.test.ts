@@ -619,7 +619,13 @@ describe("shared security primitives", () => {
       createdAt: new Date(0).toISOString(),
       incarnation,
     })}\n`;
-    const restarted = "restarted owner staging\n";
+    const restarted = `${JSON.stringify({
+      schema: "mono-agent.test-lock.v1",
+      pid: process.pid,
+      token: "restarted-owner",
+      createdAt: new Date(1).toISOString(),
+      incarnation,
+    })}\n`;
     await mkdir(path, { mode: 0o700 });
     await writeFile(temporaryPath, content, { mode: 0o600 });
     await link(temporaryPath, ownerPath);
@@ -637,13 +643,15 @@ describe("shared security primitives", () => {
         await rm(ownerPath);
         await rm(temporaryPath);
         await writeFile(temporaryPath, restarted, { mode: 0o600 });
-        await utimes(path, new Date(1_000), new Date(1_000));
+        await link(temporaryPath, ownerPath);
+        await utimes(path, new Date(0), new Date(0));
       },
       staleRace: "return",
     })).resolves.toBeUndefined();
 
     expect(await readFile(temporaryPath, "utf8")).toBe(restarted);
-    await expect(lstat(ownerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(ownerPath, "utf8")).toBe(restarted);
+    expect((await lstat(ownerPath)).nlink).toBe(2);
   });
 
   it("does not overwrite a competing owner published in the mkdir window", async () => {

@@ -25,9 +25,13 @@ interface Owner {
   readonly pid: number; readonly incarnation?: ProcessIncarnation;
   readonly content: string; readonly identity: Identity;
 }
-type OwnerReadResult = Owner | undefined | typeof OWNER_PUBLICATION_IN_PROGRESS;
+interface OwnerPublication { readonly [OWNER_PUBLICATION_IN_PROGRESS]: Identity }
+type OwnerReadResult = Owner | OwnerPublication | undefined;
 type Observed =
-  | { readonly kind: "ownerless"; readonly identity: Identity; readonly mtimeMs: number }
+  | {
+      readonly kind: "ownerless"; readonly identity: Identity; readonly mtimeMs: number;
+      readonly publication?: Identity;
+    }
   | { readonly kind: "owned"; readonly identity: Identity; readonly owner: Owner };
 interface ArtifactInput { readonly path: string; readonly pid: number; readonly now: number; readonly token: string }
 
@@ -231,7 +235,7 @@ async function publishOwner(
   });
   await sameDirectoryRequired(options.path, directoryIdentity, options);
   const owner = await readOwner(ownerPath, options);
-  if (owner === undefined || owner === OWNER_PUBLICATION_IN_PROGRESS || owner.content !== content) {
+  if (owner === undefined || isOwnerPublication(owner) || owner.content !== content) {
     throw unsafe(options, `The atomically published ${options.label} owner record could not be verified.`);
   }
   return owner;
@@ -248,9 +252,18 @@ async function inspect(path: string, options: OwnerPrivateLockOptions): Promise<
   const directoryIdentity = identity(details);
   const owner = await readOwner(join(path, "owner.json"), options);
   if (!(await sameDirectory(path, directoryIdentity, options))) return undefined;
-  return owner === undefined || owner === OWNER_PUBLICATION_IN_PROGRESS
-    ? { kind: "ownerless", identity: directoryIdentity, mtimeMs: Number(details.mtimeMs) }
-    : { kind: "owned", identity: directoryIdentity, owner };
+  if (owner === undefined) {
+    return { kind: "ownerless", identity: directoryIdentity, mtimeMs: Number(details.mtimeMs) };
+  }
+  if (isOwnerPublication(owner)) {
+    return {
+      kind: "ownerless",
+      identity: directoryIdentity,
+      mtimeMs: Number(details.mtimeMs),
+      publication: owner[OWNER_PUBLICATION_IN_PROGRESS],
+    };
+  }
+  return { kind: "owned", identity: directoryIdentity, owner };
 }
 
 async function readOwner(path: string, options: OwnerPrivateLockOptions): Promise<OwnerReadResult> {
@@ -273,7 +286,7 @@ async function readOwner(path: string, options: OwnerPrivateLockOptions): Promis
     // second name. Never accept that state as an owner; normal grace and
     // quarantine policy treats a crashed publication like other ownerless state.
     if (before.nlink === 2n && await frameworkOwnerPublicationInProgress(handle, path, before)) {
-      return OWNER_PUBLICATION_IN_PROGRESS;
+      return { [OWNER_PUBLICATION_IN_PROGRESS]: identity(before) };
     }
     ownerFile(before, path, options);
     const fileIdentity = identity(before);
@@ -371,6 +384,10 @@ function ownerPublicationFile(
     && sameIdentity(details, expected)
     && (typeof process.getuid !== "function" || details.uid === BigInt(process.getuid()))
     && (details.mode & 0o777n) === 0o600n;
+}
+
+function isOwnerPublication(value: Owner | OwnerPublication): value is OwnerPublication {
+  return OWNER_PUBLICATION_IN_PROGRESS in value;
 }
 
 async function quarantine(
@@ -513,10 +530,16 @@ async function syncDirectory(path: string, expected: Identity, options: OwnerPri
 
 function sameObserved(value: Observed | undefined, expected: Observed): boolean {
   if (value === undefined || value.kind !== expected.kind || !sameIdentity(value.identity, expected.identity)) return false;
-  return value.kind === "ownerless" ? expected.kind === "ownerless" && value.mtimeMs === expected.mtimeMs
-    : (expected.kind === "owned"
+  if (value.kind === "ownerless") {
+    if (expected.kind !== "ownerless") return false;
+    if (value.publication === undefined || expected.publication === undefined) {
+      return value.publication === expected.publication && value.mtimeMs === expected.mtimeMs;
+    }
+    return sameIdentity(value.publication, expected.publication);
+  }
+  return expected.kind === "owned"
     && value.owner.content === expected.owner.content
-    && sameIdentity(value.owner.identity, expected.owner.identity));
+    && sameIdentity(value.owner.identity, expected.owner.identity);
 }
 
 function artifactPath(options: OwnerPrivateLockOptions, kind: "stale" | "released" | "abandoned", pid: number, now: () => number, randomToken: () => string): string {
